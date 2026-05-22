@@ -147,6 +147,8 @@ Multi-line imports count total character length across all lines. Consolidate va
 - Database: MongoDB
 - Backend runs on `http://localhost:3080/`; frontend dev server on `http://localhost:3090/`
 
+- Local frontend/backend dev startup sequence: see `docs/local-dev.md`.
+
 ---
 
 ## Testing
