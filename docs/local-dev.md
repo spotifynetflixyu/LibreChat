@@ -12,6 +12,19 @@ Use `librechat.example.yaml` as the reference when you need to enable optional f
 
 The backend also expects `.env` to include the database URLs required by your local setup, including `MONGO_URI` and any project-specific Postgres URL such as `STEEL_POSTGRES_URL`.
 
+For Steel development, use the Supabase Session pooler URL for `STEEL_POSTGRES_URL`
+instead of the direct `db.<project-ref>.supabase.co` URL. The direct URL may
+require IPv6 and fail to resolve on local networks. The local development URL
+shape is:
+
+```env
+STEEL_POSTGRES_URL=postgresql://postgres.<project-ref>:<password>@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require&uselibpqcompat=true
+```
+
+This keeps local `pg` behavior compatible with libpq `sslmode=require`.
+Production should use CA-backed `verify-full` once the Supabase root
+certificate is configured.
+
 Use this sequence when starting the Vite frontend against the local backend:
 
 ```bash

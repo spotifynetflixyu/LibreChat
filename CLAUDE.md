@@ -25,6 +25,29 @@ The source code for `@librechat/agents` (major backend dependency, same team) is
 - Frontend/backend shared API logic (endpoints, types, data-service) goes in `/packages/data-provider`.
 - Build data-provider from project root: `npm run build:data-provider`.
 
+## Supabase Schema Workflow
+
+Steel PostgreSQL lives in Supabase Postgres through `STEEL_POSTGRES_URL`.
+LibreChat and Steel application state use the configured cloud MongoDB through
+`MONGO_URI`. Do not add Docker-dependent setup for Steel database work unless
+the user explicitly changes this environment decision.
+
+`supabase/schema.sql` is the complete current Steel Supabase schema snapshot.
+Every code agent that changes the Steel PostgreSQL schema must update this file
+in the same change.
+
+`supabase/migration/*.sql` files are one-change migration records. Every Steel
+PostgreSQL schema change must add a new migration file under
+`supabase/migration/` for the specific change being made. Do not edit old
+migration files after they have been applied; create a follow-up migration.
+
+Keep Steel tables in the `steel` schema, not `public`. Keep the schema private
+to backend code unless a future task explicitly exposes selected objects via
+Supabase Data API grants and RLS policies. This project currently has the
+`vector` extension installed in the `public` schema, so SQL uses unqualified
+`vector(...)` types with `public` in the search path; verify `pg_extension`
+before changing that assumption.
+
 ---
 
 ## Code Style

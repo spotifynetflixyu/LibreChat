@@ -1,3 +1,59 @@
+# Steel Dev Preflight Setup
+
+- [x] Read `docs/plan_v8.1.md` database boundary and local dev notes.
+- [x] Check local Postgres configuration without printing secrets.
+- [x] Resolve Step 1: choose the canonical PostgreSQL target for schema import.
+- [x] Resolve Step 2: verify Supabase SQL access and pgvector extension readiness.
+- [x] Create `supabase/schema.sql` as the complete Steel Supabase schema snapshot.
+- [x] Create an initial one-change SQL file under `supabase/migration/`.
+- [x] Update project agent docs with the schema snapshot plus migration rule.
+- [x] Apply `supabase/migration/202605230001_initial_steel_schema.sql` in Supabase SQL Editor.
+- [x] Verify Steel Supabase schema objects after initial migration.
+- [x] Inventory `docs/reference/doc` source files before planning data import.
+- [x] Verify Steel Supabase trigger/function wiring.
+- [x] Smoke-test `updated_at` and `price_history` behavior inside a rollback transaction.
+- [x] Resolve the first non-data engineering preflight target.
+- [x] Add `pg` as the Steel backend Postgres client dependency.
+- [x] Add a test-first Steel Postgres connection helper in `packages/api`.
+- [x] Verify the helper can perform a read-only Supabase smoke query through `STEEL_POSTGRES_URL`.
+- [x] Decide Supabase pooler TLS behavior for local backend development.
+- [ ] Decide Supabase CA-backed `verify-full` policy for deployed backend environments.
+
+## Review
+
+- `docs/plan_v8.1.md` requires MongoDB for LibreChat/application state and PostgreSQL `steel` schema for structured steel business data.
+- `.env` already has a non-empty `STEEL_POSTGRES_URL`.
+- The development database target is Supabase Postgres via `STEEL_POSTGRES_URL`; Docker is intentionally out of scope for this setup.
+- The MongoDB target is the configured cloud MongoDB via `MONGO_URI`; Docker MongoDB is intentionally out of scope.
+- `psql` CLI is not currently available on PATH.
+- Supabase SQL access is verified by the user; `vector` extension exists at version `0.8.0` in the `public` schema.
+- Supabase CLI is not currently available on PATH, so the initial migration filename is created directly rather than via `supabase migration new`.
+- Added `supabase/schema.sql` and `supabase/migration/202605230001_initial_steel_schema.sql`; both currently contain the same initial Steel schema.
+- Updated `AGENTS.md` and `CLAUDE.md` so code agents must update the full schema snapshot and add a one-change migration together.
+- Supabase SQL Editor reported the initial migration succeeded with no returned rows.
+- `source_embeddings.embedding` was verified as PostgreSQL `vector`.
+- `docs/reference/doc` contains company reference inputs for later structured import: `公式編號.xlsx`, `客戶資料.xlsx`, `產品價格.xlsx`, `系統訂單.xlsx`, and `龍頂鋼鐵手冊__文字版.docx`.
+- Runtime AI should query normalized database/tool results, not directly inspect XLSX/DOCX reference files for prices or specs.
+- The `steel` schema table list contains all 21 expected base tables.
+- Trigger wiring is present: `price_items` has `record_price_history`, and every table with an `updated_at` column has `set_updated_at`.
+- Rollback smoke test proved `price_items.unit_price` updates write `steel.price_history` with `old_unit_price`, `new_unit_price`, and `last_import_log_id`.
+- Do not process or import `docs/reference/doc` files until the user confirms the source data is correct.
+- Current dependency check: `packages/api` has `zod` and `ioredis`; no Postgres client dependency is present yet. `openai` is currently only declared in the legacy `api` package.
+- Ambiguous customer terms such as `常用的` should resolve through admin-taught preference rules/memory, not hard-coded product-table defaults such as `is_default`.
+- For incomplete price questions with multiple matching specs, AI should ask for the missing spec detail and may show all candidate prices, e.g. t8 and t12, in NTD.
+- User approved `pg` for the Steel backend Postgres access layer.
+- Added `pg` runtime dependency for `api`, `pg` peer dependency for `packages/api`, and `@types/pg` for `packages/api`.
+- Added `packages/api/src/steel/postgres.ts` with `STEEL_POSTGRES_URL` config, conservative pool defaults, and a read-only readiness query.
+- The focused Steel Postgres unit test passes, and `npm run build:api` completes without TypeScript warnings.
+- Read-only live smoke is blocked because the current `STEEL_POSTGRES_URL` uses a direct Supabase host that does not resolve from this environment; use Supavisor session pooler for IPv4-compatible local development.
+- To reduce future upstream merge conflicts, Steel code should stay in additive project-specific paths; premature root exports/core entrypoint edits should be avoided until runtime integration needs them.
+- After switching `STEEL_POSTGRES_URL` to the Supavisor session pooler, DNS resolves to IPv4 and the read-only helper smoke query returns `steelSchemaExists=true`, `steelTableCount=21`, and `vectorExtensionVersion=0.8.0`.
+- Additional SSL introspection returned `ssl=false`; treat Supabase pooler TLS/CA verification as a separate explicit preflight decision before production deployment.
+- Testing `?sslmode=require` alone with the current Node `pg` stack fails with `self-signed certificate in certificate chain` because current `pg-connection-string` treats `require` like `verify-full`.
+- Testing `?sslmode=require&uselibpqcompat=true` succeeds for the read-only Supabase smoke query, but production should still prefer explicit CA-backed `verify-full` once the Supabase CA certificate is configured.
+- `.env` now uses the Supavisor session pooler with `sslmode=require&uselibpqcompat=true`, and the Steel Postgres helper smoke query passes.
+- `docs/local-dev.md` documents the local Steel `STEEL_POSTGRES_URL` pooler format.
+
 # Frontend Dev Build Check
 
 - [x] Review project workflow docs and root npm scripts.

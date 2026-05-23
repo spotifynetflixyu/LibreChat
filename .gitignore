@@ -124,6 +124,7 @@ uploads/
 
 # owner
 release/
+reference/
 
 # Helm
 helm/librechat/Chart.lock
