@@ -49,8 +49,28 @@ The customer-facing workbook output that shows only quote fields approved for th
 _Avoid_: Internal review sheet, admin export, source trace
 
 **Import Source Type**:
-The admin-selected dataset category that determines which database table an uploaded DOCX/XLSX can update.
-_Avoid_: AI-inferred target table, arbitrary upload type
+The admin-selected dataset category that determines which database table an ERP export XLSX or table-maintenance workflow can update.
+_Avoid_: AI-inferred target table, arbitrary upload type, handbook DOCX upload type
+
+**ERP Export XLSX**:
+An XLSX file exported from the ERP and uploaded by an admin as formal source data for parser preview, old-data matching, review, and database update.
+_Avoid_: Direct ERP connector, customer chat attachment, unreviewed database mutation
+
+**Steel Handbook DOCX**:
+The steel handbook DOCX used during development to design and validate the real schema/data model for steel specs, dimensions, weights, and rules. Current source text may contain typos, but code/data-import discussions should use corrected business concepts before any later importable data or SQL is produced.
+_Avoid_: Ongoing Admin upload format, reusable runtime parser, price source, direct database mutation, immediate real-data SQL import, typo-preserving import
+
+**Source Schema Mapping**:
+An agreed mapping from Chinese source labels, headers, and handbook terms to English **Canonical Schema Keys** used by code, APIs, tools, AI API prompts, and database query contracts.
+_Avoid_: Treating Chinese source labels as code-owned field names, database column names, tool argument keys, or AI-generated new schema keys
+
+**Canonical Schema Key**:
+The English field, key, path, or column name used by programmatic Steel contracts for a mapped business concept.
+_Avoid_: Raw Chinese source header, display label, translated-at-query-time field guess
+
+**Admin Table Maintenance**:
+The ongoing admin web workflow that fetches existing database rows and lets an admin preview or edit table data before saving through validated backend APIs.
+_Avoid_: File upload requirement, raw database editor, AI-only update
 
 **ERP Customer Code**:
 The external ERP identifier used to match an imported customer to an existing customer record.
@@ -72,10 +92,16 @@ _Avoid_: Product name, spec text alone, guessed item match
 - When **Quoted Unit Price** changes, **Line Total** is recalculated through the **Price Formula**; when **Line Total** changes, **Quoted Unit Price** is recalculated for that **Workbook Line**.
 - Existing **Workbook Line** prices and quantities remain unchanged across chat rounds unless the customer explicitly asks to update or recalculate that line.
 - A **Customer Export** may show the customer-visible **Quoted Unit Price** and **Line Total**, but not customer tier or internal calculation/debug fields.
-- An **Import Source Type** is chosen before upload and constrains parsing, merge rows, delete handling, and the final database API commit.
-- Admin Import accepts only DOCX/XLSX uploads; PDF/image/text evidence is not a formal Import Source.
+- An **Import Source Type** is chosen before an import/edit session and constrains parsing, merge rows, delete handling, and the final database API commit.
+- An **ERP Export XLSX** becomes formal database input only after parser preview, old-data matching, admin review, and a validated transaction commit.
+- A **Steel Handbook DOCX** is a one-time development schema-design reference, not an ongoing Admin web upload path, reusable product parser, or immediate production-data import.
+- **Admin Table Maintenance** fetches database rows through backend APIs and saves reviewed edits through validation and audit.
+- Admin ERP import accepts XLSX uploads; PDF/image/text evidence is not a formal Import Source.
 - **ERP Customer Code** is the import upsert key for customers.
 - **ERP Item Code** plus customer tier is the import upsert key for price items.
+- Chinese labels and headers from `docs/reference/doc` map through **Source Schema Mapping** before they become schema, DTO, tool, or database-query concepts.
+- Programmatic lookup uses English **Canonical Schema Keys**; Chinese names, aliases, and original labels may remain as data values, display labels, search aliases, or source text.
+- AI API prompt/tool context uses **Source Schema Mapping** to resolve Chinese wording to existing **Canonical Schema Keys**; backend validation rejects unknown keys.
 
 ## Example dialogue
 
@@ -98,4 +124,7 @@ _Avoid_: Product name, spec text alone, guessed item match
 - "latest database price" means the default for new pricing or explicit recalculation, not permission to refresh existing workbook prices automatically.
 - Customer or item rows without the confirmed ERP key are not guessed updates; they require review.
 - "customer-facing Excel" means **Customer Export**, not a full workbook dump.
-- Files under `docs/reference/doc` are development references only; production-style data changes enter through Admin import.
+- The handbook DOCX under `docs/reference/doc` may be used to design the real schema/data model; real handbook data SQL/import work is deferred until after the chat UX path is prioritized and code/data-import discussions have corrected the source concepts.
+- Chinese reference materials under `docs/reference/doc` do not justify Chinese code/database/tool field names; they require an agreed **Source Schema Mapping** to English **Canonical Schema Keys** first.
+- ERP export files do not update formal data directly; parser output must be compared with old data and confirmed by an admin before commit.
+- The Admin web UI does not need a DOCX upload path for ongoing updates.

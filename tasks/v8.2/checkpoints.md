@@ -8,8 +8,11 @@ Required:
 
 - [ ] `STEEL_GUEST_MODE=false` is the documented default.
 - [ ] OpenAI Responses calls use `conversation`; prior response IDs are audit/fallback only.
-- [ ] Formal Admin Import accepts DOCX / XLSX parsed data only.
-- [ ] Admin Import rejects PDF/image/.txt uploads before parsing.
+- [ ] Ongoing formal Admin Import accepts ERP XLSX parsed data only.
+- [ ] Admin ERP Import rejects DOCX/PDF/image/.txt uploads before parsing.
+- [ ] Steel handbook DOCX is scoped to real schema/data-model design first; real handbook data SQL/import is deferred to a later code-agent data task, and it is not Admin web upload or reusable product parser.
+- [ ] Chinese reference labels under `docs/reference/doc` are mapped to English canonical schema keys before they shape schema, API mock data, tools, or database queries.
+- [ ] `tasks/v8.2/source-schema-mapping.md` exists and is linked from the phase plan.
 - [ ] Workbook JSON requires seven fixed sheets.
 - [ ] Customer quote sheet hides customer tier and internal fields.
 - [ ] Price-before-weight rule is explicit.
@@ -19,8 +22,9 @@ Required:
 Verification:
 
 ```bash
-rtk proxy rg -n "報價明細|總結|人工複核清單|價格來源|判讀備註|系統訂單|給客戶用" tasks/v8.2 steel_librechat_plan_v8.2.md
-rtk proxy rg -n "DOCX / XLSX|rejects PDF|拒絕 PDF|ExcelJS|Quote Resolution|Eval Harness" tasks/v8.2 steel_librechat_plan_v8.2.md
+rtk proxy rg -n "報價明細|總結|人工複核清單|價格來源|判讀備註|系統訂單|給客戶用" tasks/v8.2 docs/steel_librechat_plan_v8.2.md
+rtk proxy rg -n "ERP XLSX|handbook DOCX|rejects PDF|拒絕 PDF|ExcelJS|Quote Resolution|Eval Harness" tasks/v8.2 docs/steel_librechat_plan_v8.2.md
+rtk proxy rg -n "source schema mapping|canonical schema|中文來源|英文 canonical" CONTEXT.md tasks/v8.2 docs/steel_librechat_plan_v8.2.md
 ```
 
 ## Checkpoint 1: Foundation Gate
@@ -35,7 +39,7 @@ Required:
 - [ ] Route tests cover both `STEEL_GUEST_MODE=true` and `STEEL_GUEST_MODE=false`.
 - [ ] Audit primitive exists.
 - [ ] Supabase schema/migration rule is preserved.
-- [ ] `steel_source_versions` metadata supports DOCX/XLSX source uploads, parser status, and source manifests.
+- [ ] `steel_source_versions` metadata supports ERP XLSX imports; handbook DOCX only informs schema/data model unless a later data-import task is approved.
 
 Verification:
 
@@ -52,6 +56,13 @@ rtk npm run test:packages:api
 
 Required:
 
+- [ ] Handbook content has been reviewed for real schema/data-model implications.
+- [ ] Source schema mapping records Chinese source label/header, English canonical key, target table/DTO/tool field, type/unit, normalizer, and source reference.
+- [ ] Source schema mapping does not require `review_status`, `corrected_text`, or a typo approval workflow.
+- [ ] Code-owned mapping design exists for `packages/api/src/steel/schema/mapping.ts`.
+- [ ] AI API prompt/tool context can use the mapping to resolve Chinese wording to existing canonical keys.
+- [ ] Repository filters, SQL columns, DTO keys, workbook paths, and tool arguments use English canonical keys.
+- [ ] Chinese labels, product names, aliases, and source excerpts are stored only as values/display/source/search data, not code-owned query field names.
 - [ ] Supabase repositories use parameterized SQL.
 - [ ] Lookup tools validate with Zod.
 - [ ] No raw SQL/Mongo query tools exist.
@@ -84,6 +95,31 @@ Required:
 
 - [ ] Authenticated user can create Steel conversation meta.
 - [ ] User can send a Steel message with selected model.
+- [ ] Workbook JSON, patch request/response, selected refs, changed paths, and changed-field summary DTOs live in `packages/data-provider/src/steel/workbooks.ts`.
+- [ ] Conversation message request types reuse workbook DTOs instead of redefining selected-cell or patch metadata shapes.
+- [ ] Backend Zod validation in `packages/api/src/steel/workbook/schema.ts` is the canonical runtime validation authority.
+- [ ] Frontend code and tests consume shared workbook DTOs/API responses and do not define an independent workbook validation schema.
+- [ ] Chat Workspace is an independent Steel workspace and does not require MVP changes to the core LibreChat chat store/message flow.
+- [ ] Desktop and mobile Steel views share the same UX framework, API contracts, and mock data.
+- [ ] Mobile Workbook Preview opens as a full-view modal with a visible top-right close button.
+- [ ] Selecting one workbook cell applies selected styling and adds a field marker to the bottom message input.
+- [ ] Message submit sends at most one structured `selected_workbook_refs` item; backend validation does not rely on marker text alone.
+- [ ] Multi-round conversations can keep modifying workbook data through subsequent patch requests.
+- [ ] Text-only requests can update multiple workbook fields only when each target is explicit and backend validation accepts every patch path.
+- [ ] AI workbook patches do not require a per-update preview/confirmation gate in Phase 3.
+- [ ] Latest accepted workbook patch fields are highlighted with a background color distinct from selected-cell styling until the next accepted workbook patch.
+- [ ] Failed or rejected patch attempts do not highlight workbook fields and do not replace the previous accepted-patch highlight set.
+- [ ] Phase 3 does not expose an explicit Undo button or version-control UI.
+- [ ] User-requested revert/change flows go through chat and produce validated workbook patches.
+- [ ] Successful AI workbook patches produce a concise chat summary of changed fields.
+- [ ] Chat does not render a full diff table for successful workbook patches.
+- [ ] Chat Workspace can use API mock data from `packages/data-provider/src/steel/mock/`, shaped from `docs/reference/doc` without importing real data.
+- [ ] Mock workbook fixtures derived from Chinese reference examples use English DTO/API keys and preserve Chinese only as display/source/alias data.
+- [ ] Mocked AI/prompt tests include source-schema mapping context and reject unknown keys through clarification/manual-review behavior.
+- [ ] Frontend and backend tests do not define separate mock workbook datasets.
+- [ ] Mock workbook fixtures are imported through the explicit mock path and are not re-exported by the production Steel data-provider barrel.
+- [ ] Mock workbook fixtures are typed against shared workbook DTOs and pass backend workbook validation where required.
+- [ ] Workbook Preview renders all seven tabs from mock or real workbook API data.
 - [ ] OpenAI adapter records conversation/response IDs according to Phase 0 decision.
 - [ ] Prompt bundle records context refs.
 - [ ] Tool-calling loop executes whitelisted tools only.
@@ -91,13 +127,22 @@ Required:
 - [ ] Workbook JSON contains all seven required sheet IDs.
 - [ ] Workbook line persists formula, default unit price, quoted unit price, line total, adjustment source, quote trace, and source refs.
 - [ ] Workbook patch writes `steel_workbook_patches`.
-- [ ] Manual live OpenAI API smoke run creates or patches a customer-visible workbook before UX polish.
+- [ ] Selected-cell edit requests return workbook patches or refreshed workbook data that synchronizes the UI.
+- [ ] Patch responses include changed paths or equivalent metadata for latest-updated-field highlighting.
+- [ ] A new accepted patch replaces the previous latest-highlight set instead of accumulating old highlighted fields.
+- [ ] Failed/rejected patch responses include a user-facing reason and no changed paths.
+- [ ] No frontend-only undo path can mutate workbook JSON outside the patch service.
+- [ ] Patch responses include changed-field summary items for chat acknowledgement.
+- [ ] Ambiguous multi-field edit requests ask for clarification or produce manual-review output instead of guessing patch targets.
+- [ ] Manual live OpenAI API smoke run creates or patches a customer-visible workbook before Phase 4.
 - [ ] Stale patch version returns `409`.
 
 Verification:
 
 ```bash
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/(openai|prompt|workbook|tools|quote)/.*\\.spec\\.ts$"
+rtk npm run test:client -- --runTestsByPath client/src/features/steel
+rtk npm run build:client-package
 rtk npm run build:api
 ```
 
@@ -137,16 +182,17 @@ Download customer quote sheet.
 Expected: customer-facing fields only; internal traceability appears only in internal workbook sheets.
 ```
 
-## Checkpoint 5: Admin DOCX / XLSX Import Safety Gate
+## Checkpoint 5: Admin ERP XLSX Import And Table Maintenance Gate
 
 Required:
 
-- [ ] Admin upload guard accepts only DOCX/XLSX.
-- [ ] Admin upload guard rejects PDF/image/.txt before parsing.
+- [ ] Admin upload guard accepts only ERP XLSX.
+- [ ] Admin upload guard rejects DOCX/PDF/image/.txt before parsing.
 - [ ] Rejected Admin uploads create no source versions, parsed rows, merge rows, or formal database writes.
 - [ ] Preview rows include source file, sheet/table/section, confidence, review flags, and source refs.
 - [ ] Admin Import session target table is explicitly chosen before parsing.
-- [ ] DOCX / XLSX parser uses approved or synthetic fixtures.
+- [ ] ERP XLSX parser uses approved or synthetic fixtures.
+- [ ] Admin table UI fetches existing rows for preview/edit without DOCX upload.
 - [ ] Mapping profile records lookup keys and required fields.
 - [ ] Old data matching is deterministic.
 - [ ] Code owns `valid`, `invalid`, and `needs_review`.
@@ -180,6 +226,7 @@ Required:
 - [ ] Multi-key price search eval exists.
 - [ ] Stock allocation eval exists.
 - [ ] Admin upload policy rejection eval exists.
+- [ ] Handbook-derived lookup fixture exists only if a later task imports handbook data in this phase.
 - [ ] Seven-sheet Excel export eval exists.
 - [ ] Customer quote mask eval exists.
 - [ ] System order sheet eval exists.

@@ -6,7 +6,7 @@
 - When the user asks to write docs, create or update a real project docs file under `docs/` instead of only adding operational notes to agent-facing files.
 - For the steel setup, do not assume Docker services are part of local development; the user uses cloud MongoDB and Supabase Postgres through `.env`.
 - For Supabase pgvector, check the actual `pg_extension.extnamespace`; this project currently has `vector` installed in `public`, not `extensions`.
-- Do not process or import files under `docs/reference/doc`; treat them as AI/dev logic references only unless a future correction explicitly changes the rule.
+- Do not process or import files under `docs/reference/doc` as real data unless explicitly asked. Steel handbook DOCX currently informs schema/data-model design first; real data SQL/import comes later.
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
 - When a customer asks price for an incomplete steel spec with multiple matches, show candidate prices while asking for the missing detail; only lead with a specific candidate when backed by a preference rule or deterministic ranking.
 - For local `pg` connections to Supabase, prefer the Supavisor session pooler URL when the direct `db.<project>.supabase.co` host does not resolve or the environment lacks IPv6 support.
@@ -17,8 +17,27 @@
 - Steel workbook pricing must persist the accepted line calculation: formula, database default unit price, quoted unit price, line total, and explicit unit-price/total-price adjustments belong in the workbook, not only in chat text.
 - Never touch existing workbook prices, quantities, or totals just because a newer database price exists; only update them when the user explicitly requests a change or recalculation for that line.
 - Customer-facing Excel must hide `customer_tier` and internal/debug fields; export `quoted_unit_price` and `line_total` under customer-friendly price labels instead of exposing raw internal workbook field names.
-- `docs/reference/doc` files are only AI/dev logic references; real data import must flow through Admin source type selection, XLSX upload, merge/update/delete review, then API commit to the target database table.
-- For Steel MVP, prove the real OpenAI chat-to-workbook path before UX polish or queue infrastructure; keep small flows synchronous with explicit payload and timeout limits unless measurement proves BullMQ is needed earlier.
+- `docs/reference/doc` files are generally AI/dev logic references. Steel handbook DOCX is a schema/data-model reference before chat UX work; ongoing formal data updates flow through ERP XLSX import or Admin table UI review, then API commit to the target database table.
+- For Steel MVP, prioritize the minimal chat UX and workbook preview with API mock data; real OpenAI smoke validates the vertical slice before moving on, but UX development does not wait for real data import.
+- Build Steel Chat UX as an independent Steel workspace first; avoid making core LibreChat chat-store/global-message-flow changes a Phase 3 dependency.
+- Keep desktop and mobile Steel UI on one shared UX framework and data contract; responsive layout differences should not create a separate mobile-only workflow.
+- For selected workbook-cell chat edits, show a composer marker for UX but send structured selected refs; never make backend patch targeting depend on AI parsing marker text alone.
+- Limit Phase 3 workbook cell selection to one cell per submit, but allow multi-round workbook edits and text-described multi-field edits when each generated patch op is explicit and backend-validated.
+- Do not add a per-AI-patch confirmation gate to Phase 3 workbook editing; keep chat flow fast and mark latest accepted changed fields with background color instead.
+- Latest-update workbook highlights should persist until the next accepted workbook patch and then be replaced, not auto-timeout or accumulate.
+- Failed or rejected workbook patches must not highlight fields or clear the previous accepted-patch highlight; explain the non-update in chat.
+- Do not add an explicit Undo button to Phase 3 workbook editing; users ask AI in chat to revert/change data, and the result must go through the validated patch service.
+- Successful AI workbook patches should reply with a concise changed-field summary in chat; avoid full diff tables in the Phase 3 chat flow.
+- Keep Steel workbook contract ownership split: public DTOs in `packages/data-provider/src/steel/workbooks.ts`, canonical Zod/runtime validation in `packages/api/src/steel/workbook/schema.ts`, and no frontend-owned workbook validation schema.
+- Keep Steel API mock data in one shared folder, `packages/data-provider/src/steel/mock/`, so frontend fixtures and backend mock endpoints do not drift.
+- Keep Steel mock fixtures behind explicit mock imports; do not re-export them from the production Steel data-provider `index.ts` barrel.
 - Use ExcelJS deliberately for customer-facing Steel export rendering; keep parser/read-back concerns separate from the customer XLSX renderer unless implementation evidence supports consolidation.
 - When a Steel plan is version-bumped, update and rename the phase plan folder too; do not leave implementation tasks under the old version path after creating the new top-level spec.
-- Steel Admin data import must only accept DOCX/XLSX uploads. Do not plan or implement an Admin PDF parser or PDF transformation flow; PDF/image evidence can belong to quote conversations only, not formal Admin source import.
+- Steel Admin data import must only accept ERP XLSX uploads for ongoing file import. Do not plan or implement an Admin DOCX/PDF parser or PDF transformation flow; PDF/image evidence can belong to quote conversations only, not formal Admin source import.
+- Keep Phase 0 as a decision-baseline/documentation gate. Live provider smoke tests and persisted runtime evidence belong to the implementation phase that owns the vertical slice.
+- For Steel Admin data updates, treat ERP-exported XLSX as the confirmed formal source path: upload, parse, compare with old data, admin confirm, then commit to the database.
+- Treat steel handbook DOCX as a real schema/data-model design reference first, not an ongoing Admin web upload path, reusable parser, or immediate data import. Prioritize chat UX; real handbook data SQL/import is a later task.
+- Because `docs/reference/doc` source data is Chinese, create an agreed source schema mapping before code uses it: Chinese labels/headers/terms map to English canonical schema keys, and programmatic DTO/API/tool/repository/DB query contracts stay English while Chinese remains as display/source/alias values.
+- Do not understate `docs/reference/doc` as mock-only. It can guide the real Steel schema/data model; real importable data/SQL is deferred to a later code-agent data task that starts from correct data.
+- For Steel source-schema mapping, do not add typo approval workflow fields such as `review_status` or `corrected_text` unless a later import task explicitly needs them. User expects later code-agent data discussions to start from correct data.
+- Teach the AI API the source-schema mapping through prompt/tool context so it can resolve Chinese wording to existing English canonical keys; backend validators must still reject unknown or invented keys.

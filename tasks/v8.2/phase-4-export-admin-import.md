@@ -1,8 +1,8 @@
-# Phase 4: Export And Admin DOCX / XLSX Import
+# Phase 4: Export And Admin ERP XLSX Import
 
-Goal: make the MVP operational: users can export a seven-sheet workbook, and admins can safely preview, validate, merge, and commit DOCX/XLSX source data so quotes reflect current confirmed database values.
+Goal: make the MVP operational: users can export a seven-sheet workbook, and admins can safely preview, validate, merge, and commit ERP-exported XLSX data or table UI edits so quotes reflect current confirmed database values.
 
-Non-goal: build an Admin PDF parser. Admin Import rejects PDF, image PDF, screenshots, image files, and `.txt`; those files do not create parsed rows, merge rows, or formal database writes.
+Non-goal: build an Admin DOCX/PDF parser in the web UI. Admin ERP Import rejects DOCX, PDF, image PDF, screenshots, image files, and `.txt`; those files do not create parsed rows, merge rows, or formal database writes. Steel handbook DOCX first informs schema/data-model design outside this Admin upload path; real data SQL/import is deferred.
 
 ## Part A: Excel Export MVP
 
@@ -16,7 +16,7 @@ Current repo state:
 Decision:
 
 - Use ExcelJS deliberately for customer-facing export rendering.
-- Keep `xlsx` for Admin import parsing and generated workbook read-back tests unless implementation proves a single library should own those paths too.
+- Keep `xlsx` for ERP import parsing and generated workbook read-back tests unless implementation proves a single library should own those paths too.
 
 Tasks:
 
@@ -109,15 +109,14 @@ rtk npm run test:api -- --runTestsByPath api/server/routes/steel/index.spec.js
 rtk npm run build:api
 ```
 
-## Part B: Admin Upload Policy And DOCX / XLSX Parsing
+## Part B: Admin ERP XLSX Import And Table Maintenance
 
-### Milestone 4.3: Import Session And Upload Guard
+### Milestone 4.3: ERP Import Session And Upload Guard
 
 Files:
 
 - Create `packages/api/src/steel/admin/imports/session.ts`
 - Create `packages/api/src/steel/admin/imports/upload.ts`
-- Create `packages/api/src/steel/admin/imports/docx.ts`
 - Create `packages/api/src/steel/admin/imports/xlsx.ts`
 - Create `packages/api/src/steel/admin/imports/parser.ts`
 - Create `packages/api/src/steel/admin/imports/mapping.ts`
@@ -128,21 +127,21 @@ Tasks:
 
 - Start with one confirmed target table, preferably `price_items` or `customers`.
 - Require Admin to choose source type / target table before upload.
-- Accept only `.docx` and `.xlsx` by MIME type and extension.
-- Reject `.pdf`, scanned PDF, image PDF, screenshots, image files, and `.txt` before parsing.
+- Accept only ERP-exported `.xlsx` by MIME type and extension for the ongoing Admin upload flow.
+- Reject `.docx`, `.pdf`, scanned PDF, image PDF, screenshots, image files, and `.txt` before parsing.
 - Ensure rejected uploads do not create source versions, parsed rows, merge rows, or database writes.
-- Parse XLSX rows and DOCX sections/tables into normalized preview rows.
-- Store raw DOCX/XLSX file reference and parsed row summary.
+- Parse XLSX rows into normalized preview rows.
+- Store raw XLSX file reference and parsed row summary.
 - Create `steel_admin_import_sessions`.
 - Create or reuse `steel_admin_mapping_profiles`.
-- Do not process `docs/reference/doc` files directly. Use synthetic fixtures or Admin-uploaded approved fixtures.
+- Do not expose the steel handbook DOCX through this Admin upload flow; its schema/data-model boundary is owned by Phase 2.
 
 Acceptance:
 
-- Upload guard tests prove non-DOCX/XLSX files are rejected.
+- Upload guard tests prove non-XLSX ERP import files, including DOCX, are rejected.
 - Parser handles header row detection only when deterministic or explicitly configured.
 - Unknown mapping yields `needs_review`, not best-effort mutation.
-- PDF cannot enter Admin Import through upload, source version, parser, or merge-table paths.
+- DOCX/PDF/image/text files cannot enter Admin ERP Import through upload, source version, parser, or merge-table paths.
 
 Verification:
 
@@ -150,7 +149,7 @@ Verification:
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/admin/imports/.*\\.spec\\.ts$"
 ```
 
-### Milestone 4.4: Preview, Old Data Match, And Validation
+### Milestone 4.4: Preview, Old Data Match, Table Edit, And Validation
 
 Files:
 
@@ -158,6 +157,8 @@ Files:
 - Create `packages/api/src/steel/admin/imports/lookup.ts`
 - Create `packages/api/src/steel/admin/imports/validate.ts`
 - Create `packages/api/src/steel/admin/imports/merge.ts`
+- Create `packages/api/src/steel/admin/tables/fetch.ts`
+- Create `packages/api/src/steel/admin/tables/update.ts`
 
 Tasks:
 
@@ -165,6 +166,8 @@ Tasks:
 - Look up old Supabase rows by confirmed mapping profile keys.
 - Rows missing confirmed lookup keys become `needs_review`, not guessed updates.
 - Build New, Old, and Merge rows.
+- Fetch existing table rows for Admin table-maintenance UI preview/edit flows.
+- Validate table UI edits with the same backend-owned rules used by XLSX import.
 - Support create, update, delete, ignore.
 - Mark `valid`, `invalid`, and `needs_review` in code.
 - Keep AI out of validity decisions.
@@ -175,7 +178,8 @@ Acceptance:
 - `invalid` and `needs_review` are code-owned.
 - AI merge patches can only modify data fields, not validation rules.
 - Source type constrains target table; AI cannot change it through a merge patch.
-- Preview rows never claim PDF/source-image provenance because those files cannot enter Admin Import.
+- Preview rows never claim DOCX/PDF/source-image provenance because those files cannot enter Admin ERP Import.
+- Admin table UI can preview/edit existing rows without requiring DOCX upload.
 
 Verification:
 
@@ -233,8 +237,9 @@ Tasks:
   - no zero-filled unknown prices
   - multi-key price search
   - stock allocation
-  - Admin upload policy rejects files that are not DOCX or XLSX
-  - DOCX/XLSX preview data
+- Admin upload policy rejects files that are not ERP XLSX
+- ERP XLSX preview data
+- Admin table UI preview/edit data
   - seven-sheet Excel export
   - customer quote mask
   - system order sheet
@@ -253,8 +258,9 @@ Do not move to Phase 5 until:
 - Excel export can be downloaded and audited.
 - Seven-sheet export tests pass.
 - Customer export masking tests pass.
-- Admin upload policy tests prove PDF/image/.txt files are rejected before parsing.
-- Admin import safely updates at least one target table from DOCX/XLSX parsed data.
+- Admin upload policy tests prove DOCX/PDF/image/.txt files are rejected before parsing.
+- Admin import safely updates at least one target table from ERP XLSX parsed data.
+- Admin table UI safely previews and edits at least one target table without DOCX upload.
 - Rollback behavior is tested.
 - Updated prices are visible to Phase 2 lookup tools.
 - MVP eval cases run and report failures clearly.

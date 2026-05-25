@@ -47,7 +47,7 @@ Gate:
 - Inactive/deleted sources are excluded from retrieval.
 - Guest retrieval can only use public/default active sources.
 - Embedding model and dimension are stored; mixed embedding versions are rejected or reindexed.
-- DOCX/XLSX source versions keep uploaded file refs, parser metadata, and Admin review status.
+- ERP XLSX source versions keep uploaded/source file refs, parser metadata, and review status. Future handbook data SQL/import work must define reviewed import provenance when it is implemented.
 
 Verification:
 
@@ -70,7 +70,7 @@ Scope:
 Gate:
 
 - OCR output is evidence, not authoritative price/spec data.
-- Formal Admin data import still requires Admin-uploaded DOCX/XLSX parsed data.
+- Formal ongoing Admin data import still requires Admin-uploaded ERP XLSX parsed data or validated table UI edits.
 - Holes, slots, bends, cut marks, and dimensions have source refs.
 - Ambiguous vision output cannot write confirmed workbook totals without low-confidence mark.
 - PDF/image evidence cannot create Admin source versions, merge rows, or formal database writes.
@@ -96,7 +96,8 @@ Gate:
 - Code remains the only owner of validity and commit eligibility.
 - Admin has a clear diff before commit.
 - Every AI-suggested patch is version-checked.
-- Admin import rows visibly show uploaded DOCX/XLSX source file, sheet/table/section, mapping, and validation status.
+- Admin import rows visibly show uploaded ERP XLSX source file, sheet/table/section, mapping, and validation status.
+- Admin table UI visibly shows fetched old data, edited values, validation status, and pending commit diff.
 
 Verification:
 
@@ -132,7 +133,7 @@ rtk npm run build:api
 
 Scope:
 
-- Add fixtures for real-like text orders, drawing interpretations, Admin DOCX/XLSX preview rows, system order rows, and customer quote rows.
+- Add fixtures for real-like text orders, drawing interpretations, Admin ERP XLSX preview rows, handbook-shaped lookup data when available, system order rows, and customer quote rows.
 - Add regression reports in `packages/api/src/steel/evals/reports`.
 - Add CI-friendly command for focused Steel evals.
 
@@ -144,7 +145,7 @@ Gate:
   - no zero-filled unknowns
   - seven fixed sheets
   - customer quote mask
-  - Admin upload policy rejecting files that are not DOCX or XLSX
+  - Admin upload policy rejecting files that are not ERP XLSX
   - stock allocation
   - cutting/hole/slotting/bending calculations
   - system order output
@@ -161,7 +162,7 @@ Scope:
 
 - Deferred until after the Phase 3 real-OpenAI chat-to-workbook smoke path is proven.
 - Jobs for source reindex.
-- Jobs for large DOCX/XLSX parse.
+- Jobs for large ERP XLSX parse.
 - Jobs for large workbook export.
 - Job status endpoint.
 
@@ -206,8 +207,9 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/exports/.*signed.
 
 Scope:
 
-- Chat Workspace.
-- Workbook Preview with seven tabs.
+- Harden the Phase 3 Chat Workspace.
+- Harden the Phase 3 Workbook Preview with seven tabs.
+- Harden the shared desktop/mobile Steel UX framework without introducing a separate mobile-only workflow.
 - Source Admin.
 - Import Admin.
 - Memory Review.
@@ -216,10 +218,12 @@ Scope:
 
 Gate:
 
-- User can paste a LINE order and see workbook preview.
+- Phase 3 chat UX remains functional with real API data.
+- Mobile and desktop layouts keep the same data contracts and core workflow.
 - User can filter manual review rows.
 - Customer quote preview does not display internal fields.
-- Admin can preview DOCX/XLSX parsed source data before import.
+- Admin can preview ERP XLSX parsed source data before import.
+- Admin can fetch and edit existing table data without DOCX upload.
 - Admin can review memory candidate.
 
 Verification:
@@ -234,7 +238,7 @@ rtk npm run build:client-package
 Before broad release:
 
 - Run full relevant test matrix.
-- Run manual vertical slice on local dev: backend health, authenticated Steel quote, workbook patch, Excel export, DOCX/XLSX Admin import update, quote reflects new price.
+- Run manual vertical slice on local dev: backend health, authenticated Steel quote, workbook patch, Excel export, ERP XLSX Admin import or table UI update, quote reflects new price.
 - Review audit logs for every external write.
 - Review prompt-injection test coverage for source chunks, tool results, OCR text, and Admin import rows.
 - Confirm OpenAI model list, API type shape, and cost guardrails are current.

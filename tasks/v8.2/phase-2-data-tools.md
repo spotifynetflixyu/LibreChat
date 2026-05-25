@@ -5,6 +5,8 @@ Goal: make Steel quoting deterministic before involving OpenAI orchestration. To
 ## Scope
 
 - Supabase read repositories for customers, aliases, tiers, prices, weight specs, processing/cutting/hole/slotting/bending prices, formulas, orders, and source chunks.
+- Use steel handbook DOCX contents to design and validate the real schema/data model shape, without implementing real handbook data SQL import yet.
+- Source schema mapping from Chinese `docs/reference/doc` labels/headers/terms to English canonical schema keys used by DTOs, repositories, tools, AI API prompt context, and database queries.
 - Material normalization dictionary.
 - Customer tier resolver.
 - Product price candidate search and ranking.
@@ -45,6 +47,42 @@ Verification:
 
 ```bash
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/repositories/.*\\.spec\\.ts$"
+rtk npm run build:api
+```
+
+## Milestone 2.1A: Handbook Schema Design Boundary
+
+Tasks:
+
+- Inspect/organize steel handbook DOCX contents to identify schema needs for specs, dimensions, weights, material rules, handbook notes, and source chunks.
+- Build and extend `tasks/v8.2/source-schema-mapping.md` for Chinese labels/headers/terms found in `docs/reference/doc`.
+- For each mapped concept, record Chinese source label/header, English canonical key, target table/DTO/tool field, type/unit, normalizer, and source reference.
+- Use the mapping to design real Supabase tables/columns and shared DTO fields when the handbook reveals a missing business concept.
+- Do not add a correction approval workflow to the mapping; when source text has typos, map the corrected business concept that code/data-import agents should use.
+- Keep programmatic query contracts English-only: repository filters, SQL column names, DTO keys, workbook paths, and tool argument names use canonical English keys.
+- Preserve Chinese values as source/display/search data where useful, including aliases, original source labels, product names, sheet labels, and source excerpts.
+- Ensure mock data shaped from Chinese references uses English DTO/API keys and Chinese only as values or display/source labels.
+- Design the code-owned mapping module at `packages/api/src/steel/schema/mapping.ts` and focused tests at `packages/api/src/steel/schema/mapping.spec.ts`.
+- Design a prompt serializer that teaches the AI API the allowed source-label-to-canonical-key mapping without exposing raw SQL access.
+- Do not create reusable handbook parser modules under `packages/api`.
+- Update the first-pass Supabase schema/data model only when the handbook content proves a missing structure.
+- Defer real handbook data SQL/import implementation until after chat UX and workbook vertical slice work.
+- Keep ongoing Admin web routes free of DOCX upload paths.
+
+Acceptance:
+
+- Phase 2 schemas can represent handbook-style specs/rules/source refs when data exists, using corrected canonical concepts rather than typo-preserved source fields.
+- Chinese source references have an agreed mapping to English canonical schema keys before their fields are used by code or database queries.
+- Code mapping design exists for backend prompt/tool/schema use.
+- Repository/tool/prompt contracts and tests use English keys while still supporting Chinese aliases/source values through normalization/search data.
+- AI API mapping behavior is specified: unknown source labels produce clarification/manual review, not invented canonical keys.
+- The codebase does not expose a handbook DOCX parser tool or route.
+- No real handbook data SQL/import is required to start chat UX development.
+- Any schema change still updates both `supabase/schema.sql` and a one-change migration.
+
+Verification:
+
+```bash
 rtk npm run build:api
 ```
 
@@ -267,4 +305,4 @@ Do not move to Phase 3 until:
 - Price-before-weight behavior is tested.
 - Missing price cannot render as `0`.
 - Tool call logging and sanitizer exist.
-- `tasks/todo.md` records which real data imports are still blocked pending Admin flow.
+- `tasks/todo.md` records which real data imports are still deferred, including handbook data SQL/import and Admin ERP XLSX flow.

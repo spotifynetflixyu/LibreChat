@@ -11,7 +11,7 @@ Goal: create the Steel module skeleton, shared contracts, Mongo state models, ro
 - Environment-gated guest/auth access.
 - Audit primitive.
 - Supabase repository wrapper around `packages/api/src/steel/postgres.ts`.
-- Source artifact/source version metadata for DOCX/XLSX Admin workflows and rejection audit for non-DOCX/XLSX uploads.
+- Source artifact/source version metadata for ERP XLSX Admin workflows and rejection audit for unsupported uploads; handbook DOCX may inform schema/data model but does not require source-version parser metadata yet.
 
 ## Milestone 1.1: Shared Contracts
 
@@ -45,6 +45,8 @@ Tasks:
   - `CustomerQuoteRow`
   - `AdminMergeRow`
   - `MemoryCandidate`
+- Keep workbook-related public DTOs in `packages/data-provider/src/steel/workbooks.ts`, including workbook patch request/response, selected workbook refs, changed paths, and changed-field summary items.
+- Allow conversation message request types in `packages/data-provider/src/steel/conversations.ts`, but make them reuse workbook DTOs rather than duplicating selected-cell or patch metadata shapes.
 - Add Steel endpoint helpers under `/api/steel`.
 - Add React Query keys that do not collide with existing LibreChat keys.
 - Keep arbitrary JSON wrapped in named types; avoid broad `Record<string, unknown>` as a shortcut.
@@ -52,6 +54,7 @@ Tasks:
 Acceptance:
 
 - Types are stable enough for backend, frontend, and tests.
+- Workbook mock fixtures are typed against `packages/data-provider/src/steel/workbooks.ts`.
 - Dynamic path params use `encodeURIComponent`.
 - `packages/data-provider` exports only stable public types.
 
@@ -90,7 +93,7 @@ Tasks:
 - Add source/import indexes: `project_source_id`, `source_id`, `parse_status`, `admin_review_status`.
 - Keep raw provider payload storage bounded; store IDs, token counts, selected model, context refs, and error summaries.
 - Model workbook JSON with seven fixed sheet IDs.
-- Model source versions with original DOCX/XLSX file ID, source file type, parse version, parse status, extraction summary, and admin review status.
+- Model source versions with original ERP XLSX file ID, source file type, parse version, parse status, extraction summary, and review status.
 
 Acceptance:
 
@@ -98,7 +101,7 @@ Acceptance:
 - Guest conversation meta can be found by token hash.
 - Workbook version sequence starts at `1`.
 - Patch records preserve before/after version sequence.
-- Source version preserves uploaded DOCX/XLSX metadata and parser status.
+- Source version preserves ERP XLSX import metadata and parser status.
 - Audit logs can be written without coupling to AI code.
 
 Verification:
@@ -188,6 +191,6 @@ Do not move to Phase 2 until:
 - Shared Steel contracts build.
 - Mongo Steel state schemas build and have focused tests.
 - Environment-gated Steel conversation routes have route tests for enabled and disabled guest modes.
-- Source artifact/source version metadata can represent DOCX/XLSX uploads and parser status; Admin PDF/image/.txt rejection is specified.
+- Source artifact/source version metadata can represent ERP XLSX imports and parser status; Admin DOCX/PDF/image/.txt rejection for ongoing web import is specified. Handbook DOCX real-data provenance is deferred with the later SQL/import task.
 - Supabase readiness helper still passes unit tests.
 - `tasks/todo.md` review section records implemented route list and schema files.
