@@ -1,3 +1,54 @@
+# V8.2 Spec Upgrade
+
+- [x] Read current v8.1 plan package, Supabase schema, and project glossary before writing v8.2.
+- [x] Create `steel_librechat_plan_v8.2.md` in Traditional Chinese as an executable development spec.
+- [x] Remove external database/enterprise connector planning and replace old import wording with DOCX / XLSX / Admin Import wording.
+- [x] Add Admin DOCX/XLSX-only upload policy, seven fixed Workbook sheets, Quote Resolution Engine, eval harness, interfaces, API routes, schemas, and production checklist.
+- [x] Verify required v8.2 terms are present and removed v8.1 planning terms are absent.
+- [x] Rename `tasks/v8.1` to `tasks/v8.2` and update the phase plans to match `steel_librechat_plan_v8.2.md`.
+- [x] Verify `tasks/v8.2` no longer contains stale v8.1-only import, workbook, PDF, or connector assumptions.
+- [x] Apply user correction: remove Admin PDF parser/transformation planning and restrict Admin data uploads to DOCX/XLSX only.
+
+## Review
+
+- User supplied the v8.2 handoff as the approved design baseline. The task is to consolidate it into one implementation-ready spec file, not to implement runtime code yet.
+- Created `steel_librechat_plan_v8.2.md` with 30 core sections plus API route, Mongo schema, Supabase schema, Admin preview, UX, and production checklist drafts.
+- Verification checked required v8.2 anchors, TypeScript interface draft names, fixed seven-sheet names, Admin DOCX/XLSX-only upload policy, ExcelJS, Supabase PostgreSQL, and removed old connector/import planning terms.
+- Renamed the phase-plan package from `tasks/v8.1` to `tasks/v8.2` and rewrote README, checkpoints, and phases 0-5 around v8.2.
+- Phase plans now include Admin DOCX/XLSX upload policy, DOCX/XLSX Admin Import, fixed seven-sheet Workbook, Quote Resolution Engine, normalization, price search/ranking, stock allocation, deterministic calculators, ExcelJS export, Admin preview, and eval harness gates.
+
+# V8.2 Dev Planning Package
+
+- [x] Read `CLAUDE.md`, `CONTEXT.md`, `tasks/lessons.md`, and `docs/plan_v8.1.md`.
+- [x] Inventory current Steel implementation state before planning new work.
+- [x] Create phase-based dev plans under `tasks/v8.2/`.
+- [x] Add checkpoints, acceptance criteria, verification commands, and PM decision gates.
+- [x] Verify the plan package covers all major v8.2 modules and current repo constraints.
+- [x] Record planning review results.
+
+## Review
+
+- `docs/plan_v8.1.md` is an architecture and feature planning doc, not an implementation-ready task breakdown.
+- Current implemented Steel code is still narrow: `packages/api/src/steel/postgres.ts`, its unit test, the initial Supabase schema/migration, and local-dev docs.
+- Existing domain glossary already defines `Canonical Product`, `Product Alias`, `Spec Candidate`, `Preference Rule`, and `Clarification`; the dev plan must preserve those terms.
+- This pass should not import or process `docs/reference/doc` source files; source-data files are AI/dev logic references only.
+- The requested output location is now `tasks/v8.2/`, so this planning package intentionally uses that path instead of the generic `docs/plans/` convention.
+- Created the v8.2 plan package: `README.md`, phase 0-5 plan files, and `checkpoints.md`.
+- User corrected guest mode: quote conversation/workbook/export access must be controlled by an environment flag. Enabled means no login or permission required; disabled means login plus admin-approved Steel permission required.
+- Grill-with-docs resolved the guest mode default: `STEEL_GUEST_MODE` defaults to `false` and fails closed unless explicitly set to `true`.
+- Phase 0 high-risk decisions are now recorded through the export library decision.
+- Grill-with-docs resolved the OpenAI state contract: Responses API calls use `conversation` only; `previous_response_id` is mutually exclusive with `conversation` and is stored only for audit/fallback.
+- User corrected quote traceability: workbook lines must persist the related formula, database default unit price, quoted unit price, line total, and explicit unit-price/total-price adjustments as permanent workbook data.
+- Grill-with-docs resolved workbook price stability: latest database unit price is only the default for new pricing or explicit recalculation; existing workbook prices, quantities, and totals must not change unless the user asks to change that line.
+- v8.2 replaces old import-key wording with neutral Admin source-data keys; rows missing confirmed lookup keys go to `needs_review`.
+- Grill-with-docs resolved retrieval strategy: Steel uses its own PostgreSQL + pgvector retrieval module so required project/source/version/chunk/category/guest filters are enforced server-side.
+- Grill-with-docs resolved customer Excel mask: allow only customer quote fields using `quoted_unit_price` and `line_total` for visible prices, and hide `customer_tier` plus internal/debug fields.
+- Grill-with-docs resolved async boundary: first prove a real OpenAI chat can create a customer-visible workbook; keep MVP small flows synchronous with payload/timeout limits and defer BullMQ to Phase 5 unless measured scale forces it earlier.
+- Grill-with-docs resolved source data readiness: `docs/reference/doc` is AI/dev reference only; real data updates flow through Admin source type selection, XLSX upload, merge/update/delete review, then backend API commit to the related table.
+- Current dependency check found `openai@5.8.2` only in the legacy `api` package, and `xlsx@0.20.3` but no `exceljs`; Phase 4 must add ExcelJS deliberately to the backend package that owns customer-facing export rendering.
+- Grill-with-docs resolved export rendering: use ExcelJS for customer-facing XLSX output, while keeping `xlsx` for admin import parsing and generated workbook read-back tests unless implementation proves consolidation is better.
+- The plan covers all final v8.2 modules through phase ownership: conversation meta, projects, sources, instructions, Admin DOCX/XLSX source parsing, Admin import, AI merge table, tool registry, OpenAI orchestrator, prompt builder, Quote Resolution Engine, normalization, pricing, stock allocation, calculators, workbook, Excel export, memory, retrieval, evals, audit, repositories, permissions, and async jobs.
+
 # Steel Dev Preflight Setup
 
 - [x] Read `docs/plan_v8.1.md` database boundary and local dev notes.
@@ -32,12 +83,12 @@
 - Updated `AGENTS.md` and `CLAUDE.md` so code agents must update the full schema snapshot and add a one-change migration together.
 - Supabase SQL Editor reported the initial migration succeeded with no returned rows.
 - `source_embeddings.embedding` was verified as PostgreSQL `vector`.
-- `docs/reference/doc` contains company reference inputs for later structured import: `公式編號.xlsx`, `客戶資料.xlsx`, `產品價格.xlsx`, `系統訂單.xlsx`, and `龍頂鋼鐵手冊__文字版.docx`.
+- `docs/reference/doc` contains company reference inputs for AI/dev logic reference only: `公式編號.xlsx`, `客戶資料.xlsx`, `產品價格.xlsx`, `系統訂單.xlsx`, and `龍頂鋼鐵手冊__文字版.docx`.
 - Runtime AI should query normalized database/tool results, not directly inspect XLSX/DOCX reference files for prices or specs.
 - The `steel` schema table list contains all 21 expected base tables.
 - Trigger wiring is present: `price_items` has `record_price_history`, and every table with an `updated_at` column has `set_updated_at`.
 - Rollback smoke test proved `price_items.unit_price` updates write `steel.price_history` with `old_unit_price`, `new_unit_price`, and `last_import_log_id`.
-- Do not process or import `docs/reference/doc` files until the user confirms the source data is correct.
+- Do not process or import `docs/reference/doc` files; real data updates must go through Admin source type selection, XLSX upload, merge/update/delete review, and backend API commit.
 - Current dependency check: `packages/api` has `zod` and `ioredis`; no Postgres client dependency is present yet. `openai` is currently only declared in the legacy `api` package.
 - Ambiguous customer terms such as `常用的` should resolve through admin-taught preference rules/memory, not hard-coded product-table defaults such as `is_default`.
 - For incomplete price questions with multiple matching specs, AI should ask for the missing spec detail and may show all candidate prices, e.g. t8 and t12, in NTD.

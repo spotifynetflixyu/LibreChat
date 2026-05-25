@@ -1,0 +1,242 @@
+# Phase 5: Production Expansion
+
+Goal: expand beyond the authenticated MVP while protecting data integrity, access control, source traceability, and user trust.
+
+Each item below should be implemented as its own small plan with a checkpoint before external usage.
+
+## 5A: Guest Mode Hardening
+
+Scope:
+
+- `POST /api/steel/conversations/:conversationMetaId/link-account`
+- Optional guest token rotation.
+- 30-day guest expiry policy.
+- Export retention cleanup.
+- Public/default source restrictions for guest retrieval.
+- Abuse/rate-limit controls for `STEEL_GUEST_MODE=true`.
+
+Gate:
+
+- Token is never stored plaintext.
+- Expired guest conversation cannot access workbook/export.
+- Link-account verifies token before assigning `user_id`.
+- `STEEL_GUEST_MODE=true` never grants Admin, Source, Instruction, Memory, or import management access.
+- Admin can still inspect audit records.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(conversations|permissions)/.*guest.*\\.spec\\.ts$"
+rtk npm run test:api -- --runTestsByPath api/server/routes/steel/guest.spec.js
+```
+
+## 5B: Projects, Sources, Instructions, And Retrieval
+
+Scope:
+
+- Steel Projects.
+- Versioned Project Instructions.
+- File and text Project Sources.
+- Source version lifecycle: active, inactive, deleted.
+- Chunking and embeddings.
+- Steel Supabase PostgreSQL + pgvector retrieval module.
+
+Gate:
+
+- Prompt runs record exact instruction/source version IDs.
+- Inactive/deleted sources are excluded from retrieval.
+- Guest retrieval can only use public/default active sources.
+- Embedding model and dimension are stored; mixed embedding versions are rejected or reindexed.
+- DOCX/XLSX source versions keep uploaded file refs, parser metadata, and Admin review status.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(projects|sources|instructions|retrieval)/.*\\.spec\\.ts$"
+rtk npm run build:api
+```
+
+## 5C: Full PDF / OCR / Vision Drawing Evidence Flow
+
+Scope:
+
+- Production-grade page rendering and orientation detection.
+- OCR and vision comparison.
+- Drawing interpretation schema for holes, bends, slots, cut marks, tables, and notes.
+- Marked image preview for quote user review.
+- Low-confidence drawing interpretations in workbook manual review and interpretation notes.
+- Quote conversation PDF/image evidence remains separate from Admin data import.
+
+Gate:
+
+- OCR output is evidence, not authoritative price/spec data.
+- Formal Admin data import still requires Admin-uploaded DOCX/XLSX parsed data.
+- Holes, slots, bends, cut marks, and dimensions have source refs.
+- Ambiguous vision output cannot write confirmed workbook totals without low-confidence mark.
+- PDF/image evidence cannot create Admin source versions, merge rows, or formal database writes.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(vision|workbook|tools)/.*\\.spec\\.ts$"
+```
+
+## 5D: AI Merge Table Full UX
+
+Scope:
+
+- Multi-round Admin chat for mapping profile patch and merge table patch.
+- New / Old / Merge tabs in `client/src/features/steel/imports`.
+- Low-confidence row review.
+- Admin confirms final update.
+
+Gate:
+
+- AI can modify data content only.
+- Code remains the only owner of validity and commit eligibility.
+- Admin has a clear diff before commit.
+- Every AI-suggested patch is version-checked.
+- Admin import rows visibly show uploaded DOCX/XLSX source file, sheet/table/section, mapping, and validation status.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/admin/imports/.*\\.spec\\.ts$"
+rtk npm run test:client -- --runTestsByPath client/src/features/steel/imports/__tests__/ImportReview.test.tsx
+```
+
+## 5E: System Memory Candidate Review
+
+Scope:
+
+- Memory candidate detection from user corrections, resolved low confidence, repeated errors, source conflict, and Admin-created candidates.
+- Admin review and merge.
+- System memory activation/disable/supersede.
+- Promote memory to Project Instruction.
+
+Gate:
+
+- Memory cannot provide material prices, processing prices, customer tier prices, or override Supabase results.
+- Memory cannot override deterministic calculator results.
+- Scope is explicit: global, project, customer, or material type.
+- Conflicts are recorded and resolved before activation when overlap matters.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/memory/.*\\.spec\\.ts$"
+rtk npm run build:api
+```
+
+## 5F: Eval Harness Expansion
+
+Scope:
+
+- Add fixtures for real-like text orders, drawing interpretations, Admin DOCX/XLSX preview rows, system order rows, and customer quote rows.
+- Add regression reports in `packages/api/src/steel/evals/reports`.
+- Add CI-friendly command for focused Steel evals.
+
+Gate:
+
+- Eval failures identify case ID, assertion, expected value, actual value, and source fixture.
+- Evals cover:
+  - price-first behavior
+  - no zero-filled unknowns
+  - seven fixed sheets
+  - customer quote mask
+  - Admin upload policy rejecting files that are not DOCX or XLSX
+  - stock allocation
+  - cutting/hole/slotting/bending calculations
+  - system order output
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/evals/.*\\.spec\\.ts$"
+```
+
+## 5G: Async Jobs And Scale
+
+Scope:
+
+- Deferred until after the Phase 3 real-OpenAI chat-to-workbook smoke path is proven.
+- Jobs for source reindex.
+- Jobs for large DOCX/XLSX parse.
+- Jobs for large workbook export.
+- Job status endpoint.
+
+Gate:
+
+- Jobs are idempotent.
+- Failed jobs preserve actionable error summaries.
+- Progress endpoint cannot leak another user's job state.
+- Synchronous endpoints have payload and timeout limits.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/jobs/.*\\.spec\\.ts$"
+rtk npm run build:api
+```
+
+## 5H: Signed Export Links And Retention
+
+Scope:
+
+- Short-lived signed download token.
+- 24-hour default expiry for signed links.
+- 7-day default retention for guest exports unless changed by Admin policy.
+- Export file retention cleanup.
+- Audit on each download.
+
+Gate:
+
+- Token is scoped to export ID and user/guest access context.
+- Expired token fails.
+- Deleted/closed workbook export fails.
+- Download audit includes actor, export ID, workbook ID, and conversation meta ID.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/exports/.*signed.*\\.spec\\.ts$"
+```
+
+## 5I: Frontend UX Hardening
+
+Scope:
+
+- Chat Workspace.
+- Workbook Preview with seven tabs.
+- Source Admin.
+- Import Admin.
+- Memory Review.
+- Low-confidence overview.
+- Customer quote/system order quick download actions.
+
+Gate:
+
+- User can paste a LINE order and see workbook preview.
+- User can filter manual review rows.
+- Customer quote preview does not display internal fields.
+- Admin can preview DOCX/XLSX parsed source data before import.
+- Admin can review memory candidate.
+
+Verification:
+
+```bash
+rtk npm run test:client
+rtk npm run build:client-package
+```
+
+## Final Production Readiness Gate
+
+Before broad release:
+
+- Run full relevant test matrix.
+- Run manual vertical slice on local dev: backend health, authenticated Steel quote, workbook patch, Excel export, DOCX/XLSX Admin import update, quote reflects new price.
+- Review audit logs for every external write.
+- Review prompt-injection test coverage for source chunks, tool results, OCR text, and Admin import rows.
+- Confirm OpenAI model list, API type shape, and cost guardrails are current.
+- Confirm database TLS policy and Supabase permissions for deployed environment.
+- Confirm eval harness covers critical business regressions.

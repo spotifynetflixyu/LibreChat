@@ -6,10 +6,19 @@
 - When the user asks to write docs, create or update a real project docs file under `docs/` instead of only adding operational notes to agent-facing files.
 - For the steel setup, do not assume Docker services are part of local development; the user uses cloud MongoDB and Supabase Postgres through `.env`.
 - For Supabase pgvector, check the actual `pg_extension.extnamespace`; this project currently has `vector` installed in `public`, not `extensions`.
-- Do not process or import files under `docs/reference/doc` until the user explicitly confirms the source data is correct.
+- Do not process or import files under `docs/reference/doc`; treat them as AI/dev logic references only unless a future correction explicitly changes the rule.
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
 - When a customer asks price for an incomplete steel spec with multiple matches, show candidate prices while asking for the missing detail; only lead with a specific candidate when backed by a preference rule or deterministic ranking.
 - For local `pg` connections to Supabase, prefer the Supavisor session pooler URL when the direct `db.<project>.supabase.co` host does not resolve or the environment lacks IPv6 support.
 - Keep Steel changes isolated from upstream LibreChat hot files where possible; avoid premature root exports or core entrypoint edits until a route actually needs them.
 - Every wrap-up response should include explicit next tasks so the user knows what to do next.
 - With the current Node `pg` stack, `sslmode=require` alone may behave like `verify-full`; use `uselibpqcompat=true&sslmode=require` for libpq-compatible dev behavior, and plan CA-backed `verify-full` for production.
+- Steel guest mode is not a later-only product phase; it should be controlled by an environment flag. When enabled, quote conversation/workbook/export guest access requires no login or role permission. When disabled, Steel quote access requires login plus an admin-approved permission.
+- Steel workbook pricing must persist the accepted line calculation: formula, database default unit price, quoted unit price, line total, and explicit unit-price/total-price adjustments belong in the workbook, not only in chat text.
+- Never touch existing workbook prices, quantities, or totals just because a newer database price exists; only update them when the user explicitly requests a change or recalculation for that line.
+- Customer-facing Excel must hide `customer_tier` and internal/debug fields; export `quoted_unit_price` and `line_total` under customer-friendly price labels instead of exposing raw internal workbook field names.
+- `docs/reference/doc` files are only AI/dev logic references; real data import must flow through Admin source type selection, XLSX upload, merge/update/delete review, then API commit to the target database table.
+- For Steel MVP, prove the real OpenAI chat-to-workbook path before UX polish or queue infrastructure; keep small flows synchronous with explicit payload and timeout limits unless measurement proves BullMQ is needed earlier.
+- Use ExcelJS deliberately for customer-facing Steel export rendering; keep parser/read-back concerns separate from the customer XLSX renderer unless implementation evidence supports consolidation.
+- When a Steel plan is version-bumped, update and rename the phase plan folder too; do not leave implementation tasks under the old version path after creating the new top-level spec.
+- Steel Admin data import must only accept DOCX/XLSX uploads. Do not plan or implement an Admin PDF parser or PDF transformation flow; PDF/image evidence can belong to quote conversations only, not formal Admin source import.
