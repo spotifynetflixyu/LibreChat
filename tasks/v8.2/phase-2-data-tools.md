@@ -1,6 +1,6 @@
 # Phase 2: Quote Data And Tools
 
-Goal: make Steel quoting deterministic before involving OpenAI orchestration. Tools must query backend-owned repositories, validate inputs, sanitize outputs, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.2.md`.
+Goal: make Steel quoting deterministic before involving Steel AI provider orchestration. Tools must query backend-owned repositories, validate inputs, sanitize outputs, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.2_openharness_verified.md`.
 
 ## Scope
 
@@ -12,7 +12,7 @@ Goal: make Steel quoting deterministic before involving OpenAI orchestration. To
 - Product price candidate search and ranking.
 - Stock allocation engine.
 - Deterministic calculation engine.
-- Tool registry with Zod-validated business tools.
+- Tool registry with Zod-validated business tools for both OpenHarness OAuth and OpenAI API fallback runs.
 - Tool call logging and prompt-injection filtering.
 
 ## Milestone 2.1: Supabase Read Repositories
@@ -63,7 +63,7 @@ Tasks:
 - Preserve Chinese values as source/display/search data where useful, including aliases, original source labels, product names, sheet labels, and source excerpts.
 - Ensure mock data shaped from Chinese references uses English DTO/API keys and Chinese only as values or display/source labels.
 - Design the code-owned mapping module at `packages/api/src/steel/schema/mapping.ts` and focused tests at `packages/api/src/steel/schema/mapping.spec.ts`.
-- Design a prompt serializer that teaches the AI API the allowed source-label-to-canonical-key mapping without exposing raw SQL access.
+- Design a prompt serializer that teaches Steel AI providers the allowed source-label-to-canonical-key mapping without exposing raw SQL access.
 - Do not create reusable handbook parser modules under `packages/api`.
 - Update the first-pass Supabase schema/data model only when the handbook content proves a missing structure.
 - Defer real handbook data SQL/import implementation until after chat UX and workbook vertical slice work.
@@ -75,7 +75,7 @@ Acceptance:
 - Chinese source references have an agreed mapping to English canonical schema keys before their fields are used by code or database queries.
 - Code mapping design exists for backend prompt/tool/schema use.
 - Repository/tool/prompt contracts and tests use English keys while still supporting Chinese aliases/source values through normalization/search data.
-- AI API mapping behavior is specified: unknown source labels produce clarification/manual review, not invented canonical keys.
+- AI provider mapping behavior is specified: unknown source labels produce clarification/manual review, not invented canonical keys.
 - The codebase does not expose a handbook DOCX parser tool or route.
 - No real handbook data SQL/import is required to start chat UX development.
 - Any schema change still updates both `supabase/schema.sql` and a one-change migration.
@@ -280,7 +280,9 @@ Tasks:
 - Apply conversation access checks for scoped tools.
 - Apply per-run call limits.
 - Log every tool call with input summary, result status, duration, and error category.
-- Sanitize tool output before returning it to OpenAI.
+- Sanitize tool output before returning it to any Steel AI provider.
+- Keep tool definitions provider-neutral: OpenHarness and OpenAI adapters may serialize them differently, but backend validation/execution is shared.
+- Return typed tool errors that the orchestrator can classify for fallback or manual review.
 - Do not provide raw SQL, raw Mongo, read file, or list directory tools.
 
 Acceptance:
@@ -288,6 +290,7 @@ Acceptance:
 - Missing prices never become `0`.
 - Ambiguous specs return candidates plus targeted clarification.
 - Tool result sanitizer neutralizes prompt-injection-like source text.
+- Tool tests can run through provider-neutral executor mocks without depending on a specific OpenHarness or OpenAI SDK.
 
 Verification:
 

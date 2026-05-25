@@ -1,10 +1,10 @@
-# Phase 5: Production Expansion
+# Phase 6: Production Hardening
 
-Goal: expand beyond the authenticated MVP while protecting data integrity, access control, source traceability, and user trust.
+Goal: expand beyond the authenticated MVP while protecting data integrity, access control, source traceability, provider reliability, and user trust.
 
 Each item below should be implemented as its own small plan with a checkpoint before external usage.
 
-## 5A: Guest Mode Hardening
+## 6A: Guest Mode Hardening
 
 Scope:
 
@@ -30,16 +30,15 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/(conversations|pe
 rtk npm run test:api -- --runTestsByPath api/server/routes/steel/guest.spec.js
 ```
 
-## 5B: Projects, Sources, Instructions, And Retrieval
+## 6B: Retrieval And Source Sync
 
 Scope:
 
-- Steel Projects.
-- Versioned Project Instructions.
-- File and text Project Sources.
-- Source version lifecycle: active, inactive, deleted.
 - Chunking and embeddings.
 - Steel Supabase PostgreSQL + pgvector retrieval module.
+- Source version lifecycle: active, inactive, deleted.
+- Reindex jobs for source changes.
+- Retrieval filters for provider prompt context.
 
 Gate:
 
@@ -47,21 +46,24 @@ Gate:
 - Inactive/deleted sources are excluded from retrieval.
 - Guest retrieval can only use public/default active sources.
 - Embedding model and dimension are stored; mixed embedding versions are rejected or reindexed.
-- ERP XLSX source versions keep uploaded/source file refs, parser metadata, and review status. Future handbook data SQL/import work must define reviewed import provenance when it is implemented.
+- ERP XLSX source versions keep uploaded/source file refs, parser metadata, and review status.
+- Future handbook data SQL/import work must define reviewed import provenance when it is implemented.
 
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/(projects|sources|instructions|retrieval)/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(sources|retrieval)/.*\\.spec\\.ts$"
 rtk npm run build:api
 ```
 
-## 5C: Full PDF / OCR / Vision Drawing Evidence Flow
+## 6C: Full PDF / OCR / Vision Drawing Evidence Flow
 
 Scope:
 
-- Production-grade page rendering and orientation detection.
-- OCR and vision comparison.
+- Production-grade file metadata, retention, and provider file refs.
+- AI-first orientation detection, PDF/image evidence, and drawing interpretation.
+- OpenHarness capability smoke for image/PDF/XLSX remains optional per driver/model; unsupported paths fallback to `openai_api`.
+- Official OpenAI API file/vision/XLSX fallback paths for PDF page image, uploaded file input, spreadsheet evidence, File Search, and Code Interpreter when enabled.
 - Drawing interpretation schema for holes, bends, slots, cut marks, tables, and notes.
 - Marked image preview for quote user review.
 - Low-confidence drawing interpretations in workbook manual review and interpretation notes.
@@ -69,7 +71,8 @@ Scope:
 
 Gate:
 
-- OCR output is evidence, not authoritative price/spec data.
+- OCR/vision output is evidence, not authoritative price/spec data.
+- Node/backend owns upload, file metadata, provider refs, ACL, audit, fallback routing, and workbook validation.
 - Formal ongoing Admin data import still requires Admin-uploaded ERP XLSX parsed data or validated table UI edits.
 - Holes, slots, bends, cut marks, and dimensions have source refs.
 - Ambiguous vision output cannot write confirmed workbook totals without low-confidence mark.
@@ -78,15 +81,15 @@ Gate:
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/(vision|workbook|tools)/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(vision|ai|workbook|tools)/.*\\.spec\\.ts$"
 ```
 
-## 5D: AI Merge Table Full UX
+## 6D: AI Merge Table Full UX
 
 Scope:
 
 - Multi-round Admin chat for mapping profile patch and merge table patch.
-- New / Old / Merge tabs in `client/src/features/steel/imports`.
+- New / Old / Merge tabs in `client/src/features/steel/admin/imports`.
 - Low-confidence row review.
 - Admin confirms final update.
 
@@ -103,10 +106,10 @@ Verification:
 
 ```bash
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/admin/imports/.*\\.spec\\.ts$"
-rtk npm run test:client -- --runTestsByPath client/src/features/steel/imports/__tests__/ImportReview.test.tsx
+rtk npm run test:client -- --runTestsByPath client/src/features/steel/admin/imports
 ```
 
-## 5E: System Memory Candidate Review
+## 6E: System Memory Candidate Review
 
 Scope:
 
@@ -129,11 +132,12 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/memory/.*\\.spec\
 rtk npm run build:api
 ```
 
-## 5F: Eval Harness Expansion
+## 6F: Eval Harness
 
 Scope:
 
 - Add fixtures for real-like text orders, drawing interpretations, Admin ERP XLSX preview rows, handbook-shaped lookup data when available, system order rows, and customer quote rows.
+- Add provider capability/fallback eval fixtures where mocked provider results prove typed error routing.
 - Add regression reports in `packages/api/src/steel/evals/reports`.
 - Add CI-friendly command for focused Steel evals.
 
@@ -146,6 +150,7 @@ Gate:
   - seven fixed sheets
   - customer quote mask
   - Admin upload policy rejecting files that are not ERP XLSX
+  - provider capability/fallback classification
   - stock allocation
   - cutting/hole/slotting/bending calculations
   - system order output
@@ -156,11 +161,11 @@ Verification:
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/evals/.*\\.spec\\.ts$"
 ```
 
-## 5G: Async Jobs And Scale
+## 6G: Async Jobs And Scale
 
 Scope:
 
-- Deferred until after the Phase 3 real-OpenAI chat-to-workbook smoke path is proven.
+- Deferred until after the Phase 3 real-provider chat-to-workbook smoke path is proven.
 - Jobs for source reindex.
 - Jobs for large ERP XLSX parse.
 - Jobs for large workbook export.
@@ -180,7 +185,7 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/jobs/.*\\.spec\\.
 rtk npm run build:api
 ```
 
-## 5H: Signed Export Links And Retention
+## 6H: Signed Export Links And Retention
 
 Scope:
 
@@ -203,7 +208,33 @@ Verification:
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/exports/.*signed.*\\.spec\\.ts$"
 ```
 
-## 5I: Frontend UX Hardening
+## 6I: Provider Production Readiness
+
+Scope:
+
+- OpenHarness OAuth token storage and operational risk review.
+- Official OpenAI API fallback cost/rate-limit/budget observability.
+- Provider/version pin review.
+- Model allowlist review.
+- Capability smoke scheduler or admin runbook.
+- Typed provider error dashboard/audit review.
+
+Gate:
+
+- Production either explicitly accepts OpenHarness OAuth provider risk or disables it outside local/dev.
+- `OPENAI_API_KEY` fallback remains configured for production-safe operation when required.
+- OAuth `remaining quota` is not treated as a guaranteed API feature.
+- API fallback handles usage limits, rate limits, budget, billing, API-key, and project-policy errors.
+- Capability status is current enough before enabling file/vision/XLSX workflows.
+
+Verification:
+
+```bash
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/ai/.*\\.spec\\.ts$"
+rtk npm run build:api
+```
+
+## 6J: Frontend UX Hardening
 
 Scope:
 
@@ -239,8 +270,9 @@ Before broad release:
 
 - Run full relevant test matrix.
 - Run manual vertical slice on local dev: backend health, authenticated Steel quote, workbook patch, Excel export, ERP XLSX Admin import or table UI update, quote reflects new price.
-- Review audit logs for every external write.
+- Run OpenHarness OAuth and OpenAI API fallback provider smoke tests.
+- Review audit logs for every external write and every provider fallback.
 - Review prompt-injection test coverage for source chunks, tool results, OCR text, and Admin import rows.
-- Confirm OpenAI model list, API type shape, and cost guardrails are current.
+- Confirm OpenHarness/OpenAI model list, API type shape, provider capability status, and cost guardrails are current.
 - Confirm database TLS policy and Supabase permissions for deployed environment.
 - Confirm eval harness covers critical business regressions.

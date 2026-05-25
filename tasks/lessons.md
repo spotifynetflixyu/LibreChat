@@ -41,3 +41,7 @@
 - Do not understate `docs/reference/doc` as mock-only. It can guide the real Steel schema/data model; real importable data/SQL is deferred to a later code-agent data task that starts from correct data.
 - For Steel source-schema mapping, do not add typo approval workflow fields such as `review_status` or `corrected_text` unless a later import task explicitly needs them. User expects later code-agent data discussions to start from correct data.
 - Teach the AI API the source-schema mapping through prompt/tool context so it can resolve Chinese wording to existing English canonical keys; backend validators must still reject unknown or invented keys.
+- Put Steel admin-only APIs under `/api/admin/steel/...`; keep `/api/steel/...` for quote/user-facing routes.
+- Before any live OpenHarness/ChatGPT OAuth provider smoke or chat UI test, document and complete the ChatGPT OAuth binding flow and token-storage expectations.
+- Do not create DOCX parser/import metadata for Steel source handling; Phase 1 source/import scaffolding supports XLSX only, with handbook DOCX remaining schema-design reference.
+- Phase 1 should teach and verify local LibreChat admin/user account setup before Steel route testing; current LibreChat behavior makes the first registered user ADMIN and later registrations USER.

@@ -1,6 +1,6 @@
 # Phase 0: v8.2 Decision Baseline
 
-Goal: lock the decisions that would otherwise cause rework in schema, import, source upload policy, workbook, export, quote resolution, and OpenAI orchestration.
+Goal: lock the decisions that would otherwise cause rework in schema, import, source upload policy, workbook, export, quote resolution, and Steel AI provider orchestration.
 
 This phase is documentation-first. Do not build production endpoints beyond scaffolding until these decisions are reflected in the implementation plan and `tasks/todo.md`.
 
@@ -22,21 +22,25 @@ Exit criteria:
 - Admin routes remain unavailable to guest users regardless of mode.
 - Guest token is stored only as a hash.
 
-## D0.2 OpenAI State Contract
+## D0.2 Steel AI Provider And State Contract
 
-Decision: The Steel orchestrator passes `conversation` to Responses API and does not pass `previous_response_id` in the same request.
+Decision: Steel AI execution goes through a `SteelAIProvider` interface. The default driver is `openharness_chatgpt_oauth`; the fallback and production-safe driver is `openai_api` backed by `OPENAI_API_KEY`.
 
 Confirmed baseline:
 
-- Use `conversation` as the provider-side durable state handle.
-- Store response IDs, including prior response ID, only for audit, traceability, and fallback recovery.
-- Chain recovery never relies on fetching historical conversation text from OpenAI.
-- Reconfirm current OpenAI SDK/API types immediately before implementation because Responses API event and file/vision shapes can change.
+- OpenHarness ChatGPT/Codex OAuth is a provider runtime, not a replacement for LibreChat auth, roles, conversations, files, Admin shell, Steel tools, repositories, calculators, workbook validation, or audit.
+- OpenHarness session/conversation IDs are runtime trace only. They are not official OpenAI Conversations API state and are not the business source of truth.
+- Official OpenAI Responses / Conversations state is used only by the `openai_api` driver.
+- When the `openai_api` driver uses official Responses API conversation state, it passes `conversation` and does not pass `previous_response_id` in the same request. Previous response IDs are audit/fallback metadata only.
+- Chain recovery never relies on fetching historical conversation text from a provider. Prompt bundle reconstruction uses LibreChat messages, `steel_conversation_meta`, current workbook state, context refs, active sources, instructions, and memory.
+- Every provider run stores bounded metadata in `steel_ai_runs`: provider, provider session/conversation/response IDs when available, selected model, token usage when available, context refs, tool call IDs, attached file refs, fallback reason, typed error category, and error summary.
+- Reconfirm current OpenAI SDK/API types immediately before implementing the `openai_api` driver because Responses API event and file/vision shapes can change.
 
 Exit criteria:
 
-- The implementation plan assigns the focused live Responses smoke test to Phase 3, not Phase 0.
-- The Phase 3 OpenAI run plan records provider IDs, token usage, selected model, context refs, and tool call IDs.
+- The implementation plan assigns live provider smoke tests to Phase 3, not Phase 0.
+- Phase 3 records at least one OpenHarness OAuth live smoke and at least one official OpenAI API fallback live smoke.
+- The Phase 3 run plan records provider IDs, selected provider, selected model, token usage when available, context refs, tool call IDs, fallback reason, and typed provider error categories.
 
 ## D0.3 Workbook Line Pricing Traceability
 
@@ -90,7 +94,7 @@ Required filters:
 - source type/category
 - guest/public access
 
-MVP note: Phase 3 can proceed with deterministic database tools even if full retrieval is deferred to Phase 5.
+MVP note: Phase 3 can proceed with deterministic database tools even if full retrieval is deferred to Phase 6.
 
 ## D0.6 Customer Quote Sheet Mask
 
@@ -171,10 +175,10 @@ Rules:
 
 - Build the minimal Chat Workspace and Workbook Preview with shared API mock data in `packages/data-provider/src/steel/mock/` before real handbook data import.
 - Keep API mock fixtures behind the explicit mock path; do not re-export them from `packages/data-provider/src/steel/index.ts`.
-- Prove real OpenAI chat can create a customer-visible seven-sheet workbook before moving to Phase 4.
+- Prove real provider chat can create a customer-visible seven-sheet workbook before moving to Phase 4, with one OpenHarness OAuth smoke and one official OpenAI API fallback smoke.
 - BullMQ infrastructure comes later.
 - Small workbook generation, small import fixtures, and the first quote vertical slice stay synchronous with payload limits and timeout expectations.
-- Source reindex, large XLSX parse, and large workbook export can move to Phase 5 jobs.
+- Source reindex, large XLSX parse, and large workbook export can move to Phase 6 jobs.
 
 ## D0.9 Excel Rendering Library
 
@@ -229,6 +233,7 @@ Decision: v8.2 requires an eval harness before broad beta.
 Minimum evals:
 
 - Text order parsing.
+- Provider capability/fallback classification for unsupported tool, file, vision, and XLSX paths.
 - Customer tier resolver.
 - Multi-key price search.
 - Price candidate ranking.
@@ -290,13 +295,36 @@ Exit criteria:
 - Repository/tool/prompt tests use English field names for filters and assertions while covering Chinese aliases/source values as data.
 - The plan contains no requirement for Chinese database column names, DTO keys, or tool argument keys just because the source docs are Chinese.
 
+## D0.15 Driver Capability, Model Selector, And Fallback Gates
+
+Decision: model availability and runtime routing are backend-owned. The Steel Workspace model selector reads a backend allowlist with driver capability status; it does not expose LibreChat's global provider list directly.
+
+Rules:
+
+- `STEEL_AI_DRIVER_DEFAULT=openharness_chatgpt_oauth`.
+- `STEEL_AI_DRIVER_FALLBACK=openai_api`.
+- `@openharness/core` and `@openharness/provider-chatgpt` versions are pinned before implementation, and their experimental risk is recorded.
+- OpenHarness OAuth token material is stored server-side or in a local encrypted development file. It is never stored in frontend localStorage.
+- Capability smoke tests cover text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and provider conversation/state handling.
+- Pure text and already-smoked backend tool workflows may prefer OpenHarness.
+- File, vision, PDF, XLSX, hosted File Search, Code Interpreter, or hosted shell workflows must fallback to `openai_api` unless the OpenHarness driver has passed the matching smoke test.
+- `check quota remaining` is not an OpenHarness driver requirement. OAuth usage display is limited to subscription driver status, recent errors, and fallback status.
+- API fallback is usage-based, not unlimited. It must handle rate limits, usage limits, budget, billing, API-key, and project-policy errors.
+- Failed driver capabilities return typed errors such as `provider_tool_call_unsupported`, `provider_file_input_unsupported`, `provider_vision_input_unsupported`, `provider_xlsx_input_unsupported`, and `provider_hosted_tool_unsupported`.
+
+Exit criteria:
+
+- Phase 1 contract/schema work includes driver enum, capability result shape, model option shape, provider run metadata, and typed provider error categories.
+- Phase 3 provider implementation includes injectable OpenHarness and OpenAI drivers, capability smoke tests, fallback routing, and unified `SteelAIEvent` translation.
+- Checkpoints require both OpenHarness OAuth and OpenAI API fallback live smoke evidence before Phase 4.
+
 ## Phase 0 Lock Review
 
-Status: locked after final Phase 0 question pass.
+Status: locked after OpenHarness-verified v8.2 replan.
 
 Approved decisions:
 
-- Phase 0 is allowed to close with D0.1-D0.14 as the decision baseline. Remaining work belongs to Phase 1/2 implementation planning, not more Phase 0 discovery.
+- Phase 0 is closed with D0.1-D0.15 as the decision baseline. The OpenHarness provider/capability additions are reflected across phases and checkpoints. Remaining work belongs to Phase 1/2/3 implementation planning, not more Phase 0 discovery.
 - Phase 1 Guest Mode implementation stays narrow: `STEEL_GUEST_MODE` gate, conversation-scoped guest token hash, and Admin routes always unavailable to guests. Public share links, retention automation, and advanced guest hardening remain later work.
 - When `STEEL_GUEST_MODE=false`, Steel quote access should use Steel-specific permissions/capabilities, such as `steel.quote.access` and `steel.admin.access`, through existing LibreChat auth/role seams. Do not collapse Steel access into a generic Admin boolean.
 - Phase 2 source-schema mapping first covers handbook schema concepts, workbook DTO/API keys, ERP customer/price keys, and tool arguments. Full future RAG/source mapping is not required for the first pass.
@@ -306,5 +334,5 @@ Approved decisions:
 - Do not change Supabase schema in Phase 0. Phase 2 handbook/mapping work decides the minimal schema delta, and every schema change updates both `supabase/schema.sql` and one new migration.
 - Admin ERP Import MVP should start with either `price_items` or customers depending on ERP key reliability. Prefer `price_items` if ERP item code plus customer tier is stable enough, because it validates quote value fastest; otherwise start with customers/customer aliases/customer tiers.
 - Internal DB/DTO/tool keys remain English. Customer-facing Excel sheet labels and headers use Chinese business wording.
-- Phase 3 live OpenAI smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through deterministic tools while recording model, provider IDs, tool call IDs, and context refs.
+- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through deterministic tools using OpenHarness OAuth, and one equivalent fallback smoke uses official OpenAI API. Both record provider, model, provider IDs, fallback status, tool call IDs, and context refs.
 - After Phase 0, plan Phase 1 and Phase 2 together, but implement Phase 1 contracts/routes/auth/audit first while a separate data/schema pass can extend Phase 2 mapping and schema design in parallel.

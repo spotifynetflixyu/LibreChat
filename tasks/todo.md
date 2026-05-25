@@ -1,3 +1,59 @@
+# V8.2 Admin Route And Setup Runbook Sync
+
+- [x] Record the focused sync scope before editing docs.
+- [x] Update the verified v8.2 spec so admin-only Steel routes use `/api/admin/steel/...`.
+- [x] Update `tasks/v8.2` phase/checkpoint docs to match the admin route split.
+- [x] Add local admin/user account setup runbook.
+- [x] Add ChatGPT OAuth binding prerequisite runbook.
+- [x] Run focused grep/diff verification.
+- [x] Record review results.
+
+## Review
+
+- Updated the verified v8.2 spec API route draft so quote/user routes stay under `/api/steel/...`, while admin diagnostics, source/project management, import/table/memory controls, and eval runs use `/api/admin/steel/...`.
+- Updated Phase 3, Phase 5, checkpoints, and README gates so ChatGPT OAuth binding is a prerequisite before real OpenHarness smoke or chat UI live testing, and admin-only source/eval routes are under `/api/admin/steel/...`.
+- Added `docs/steel-account-setup.md` with the local admin/user creation flow and the current LibreChat first-registered-user role rule.
+- Added `docs/steel-chatgpt-oauth-setup.md` with token-storage rules, binding flow, smoke order, fallback expectations, and evidence requirements.
+- Verification: stale route grep for `/api/steel/admin`, `/api/steel/projects`, `/api/steel/sources`, `/api/steel/source-versions`, and `/api/steel/evals` returned no matches across the verified spec and `tasks/v8.2`.
+- Verification: required anchors for `/api/admin/steel`, setup docs, ChatGPT OAuth binding, and first-user role behavior are present.
+- Verification: `git diff --check` passed.
+
+# V8.2 Phase 0 OpenHarness Lock Pass
+
+- [x] Read `tasks/v8.2/phase-0-decisions.md` after the OpenHarness-verified replan.
+- [x] Lock D0.1-D0.15 as the active Phase 0 decision baseline.
+- [x] Mark `tasks/v8.2/checkpoints.md` Checkpoint 0 as passed.
+- [x] Run focused Phase 0 consistency verification.
+- [x] Record review results.
+
+## Review
+
+- Phase 0 is now locked after the OpenHarness-verified v8.2 replan.
+- `tasks/v8.2/phase-0-decisions.md` no longer says Phase 0 is superseded.
+- `tasks/v8.2/checkpoints.md` Checkpoint 0 is marked passed and its baseline items are checked.
+- Focused verification confirmed required anchors for fixed seven-sheet workbook, SteelAIProvider/OpenHarness/OpenAI fallback capability policy, ERP XLSX/Admin upload boundaries, source schema mapping, and the absence of stale old-spec/OpenAI-only planning terms.
+- No implementation code was changed; this was the documentation/decision gate required before Phase 1 implementation planning.
+
+# V8.2 OpenHarness Verified Replan
+
+- [x] Read `CLAUDE.md`, `CONTEXT.md`, `tasks/lessons.md`, `docs/steel_librechat_plan_v8.2_openharness_verified.md`, and the current `tasks/v8.2` package.
+- [x] Update `tasks/v8.2` to use the OpenHarness-verified Steel AI Provider framework instead of the old OpenAI-first framing.
+- [x] Remove stale references to `docs/steel_librechat_plan_v8.2.md` and point the task package at the verified spec file.
+- [x] Add provider driver, capability smoke, fallback, model allowlist, file/vision/XLSX evidence, state-trace, and production-risk gates to the phase plans and checkpoints.
+- [x] Run focused document consistency checks across `tasks/v8.2`.
+- [x] Record review results.
+
+## Review
+
+- Updated `tasks/v8.2/README.md` to point at `docs/steel_librechat_plan_v8.2_openharness_verified.md` and define the OpenHarness-verified phase map.
+- Updated Phase 0 with `SteelAIProvider`, `openharness_chatgpt_oauth` default, `openai_api` fallback, provider state boundaries, capability smoke, model selector, and fallback decisions.
+- Updated Phase 1 to include AI driver/model/capability/run metadata contracts without implementing full provider behavior yet.
+- Updated Phase 2 to keep tools provider-neutral so OpenHarness and OpenAI adapters only serialize tool definitions.
+- Rewrote Phase 3 around `SteelAIProvider`, OpenHarness OAuth adapter, OpenAI API fallback adapter, unified `SteelAIEvent`, capability gates, fallback routing, backend model allowlist, and both live provider smoke cases.
+- Split the old Phase 4/5 shape into `phase-4-excel-export.md`, `phase-5-admin-source-management.md`, and `phase-6-production-hardening.md`, matching the new spec's phase structure.
+- Updated `tasks/v8.2/checkpoints.md` so checkpoints require provider capability smoke, typed provider errors, fallback evidence, and both OpenHarness OAuth plus OpenAI API fallback smoke before Phase 4.
+- Focused consistency checks passed: no stale references to `docs/steel_librechat_plan_v8.2.md`, old phase file names, or OpenAI-only Phase 3 adapter/state gates remain in `tasks/v8.2`.
+
 # V8.2 Spec Upgrade
 
 - [x] Read current v8.1 plan package, Supabase schema, and project glossary before writing v8.2.
