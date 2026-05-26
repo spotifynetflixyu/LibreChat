@@ -1,3 +1,46 @@
+# V8.3 OpenAI OAuth Provider Real Auth
+
+- [x] Write dedicated implementation plan with todo checklist.
+- [x] Confirm the plan before implementation.
+- [x] Add requested Steel OpenAI env keys to `.env.example`, plan, runbook, and lessons.
+- [x] Add AI SDK/openai-oauth-provider dependencies and overrides.
+- [x] Add Steel OpenAI runtime env parser.
+- [x] Add provider DTO contracts and sanitized response types.
+- [x] Implement direct `openai-oauth-provider` adapter with fake-auth tests.
+- [x] Add real-auth manual smoke test gated by env.
+- [x] Add authenticated `/api/steel/ai/chat` route.
+- [x] Add minimal LibreChat Steel OAuth chat surface.
+- [x] Run focused automated verification.
+- [ ] Run local real-auth browser smoke.
+- [x] Record results and remaining risks.
+
+## Review
+
+- Plan created at `tasks/v8.3/openai-oauth-provider-real-auth-implementation.md`.
+- User approved implementation and added env contract: `STEEL_OPENAI_PROVIDER`, `STEEL_OPENAI_DEFAULT_MODEL`, and `STEEL_OPENAI_REASONING_EFFORT`.
+- Dependency path adjusted after npm peer conflict: do not add top-level `ai@6` because `ai-tokenizer@1.0.6` peers on `ai@^5`; install `openai-oauth-provider` plus AI SDK provider packages and call the provider model interface directly.
+- Verification: `npm ls openai-oauth-provider @ai-sdk/openai @ai-sdk/provider @ai-sdk/provider-utils` shows a single overridden provider package set; `npm ls ai` shows no top-level `ai` package.
+- Implemented `packages/api/src/steel/ai/config.ts`, `packages/api/src/steel/ai/provider.ts`, `POST /api/steel/ai/chat`, and the minimal authenticated client route at `/steel/oauth-chat`.
+- Added gated real-auth manual spec `packages/api/src/steel/ai/provider.real-auth.manual.spec.ts`.
+- Live provider smoke passed with local `~/.codex/auth.json`: expected text `librechat-steel-oauth-live-ok`, provider `openai_oauth_responses`, model `gpt-5.4`, response ID present, usage present, and no secret-shaped fields in the returned DTO.
+- Focused tests passed: `packages/data-provider/src/steel/ai.spec.ts`, `packages/api/src/steel/ai/config.spec.ts`, `packages/api/src/steel/ai/provider.spec.ts`, `packages/api/src/steel/handlers.spec.ts`, and `api/server/routes/__tests__/steel.spec.js`.
+- Build verification: `npm run build:data-provider` passed; `npm run build:api` passed with the pre-existing Redis `KeyvRedis` type warning in `packages/api/src/cache/cacheFactory.ts`.
+- Frontend verification: touched-file ESLint passed. `npm run build:client` remains blocked before this Steel route by missing root resolution for `framer-motion` from `packages/client/dist/index.es.js`; `client npm run typecheck` has many existing repo-wide errors and no Steel route errors in the filtered output.
+- Remaining risk: full browser smoke through a running LibreChat server is not done in this slice.
+
+# V8.3 Phase 1 Platform Foundation Grill
+
+- [x] Read project guidance, lessons, context, memory, and the target Phase 1 plan.
+- [x] Cross-check unresolved Phase 1 decisions against current code and v8.3 docs.
+- [x] Ask the user one batched set of unresolved questions with recommended answers.
+- [x] Record the grill review result after decisions are resolved.
+
+## Review
+
+- Reviewed `tasks/v8.3/phase-1-platform-foundation.md` against live Steel context, v8.3 roadmap/spec docs, setup runbooks, ADRs, current route shells, Steel DTOs, Mongo schema scaffolding, access helpers, and provider seam code.
+- User agreed to all recommendations: Phase 1 now expects direct `openai-oauth-provider` as the coded path, a full foundation gate rather than the earlier partial slice, split Mongo schema files, durable `steel_audit_logs`, real conversation routes, `unverified` capability status vocabulary, and docs-only production `verify-full` policy until deployment CA details are known.
+- Updated Phase 1/checkpoint/runbook/ADR docs to remove stale local-proxy-primary wording and clarify the expected Phase 1 implementation outcome.
+
 # Pre-commit Markdown Formatting
 
 - [x] Add `*.md` prettier formatting to `.husky/lint-staged.config.js`.
@@ -472,3 +515,104 @@
 - Documented local `librechat.yaml` and MeiliSearch log handling in `docs/local-dev.md`.
 - Disabled local MeiliSearch by setting `SEARCH=false`, clearing `MEILI_HOST` and `MEILI_MASTER_KEY`, and setting `MEILI_NO_SYNC=true` in `.env`.
 - Verified backend startup after disabling MeiliSearch: `http://localhost:3080/api/config` returned `200`, and captured startup logs had no `mongoMeili`, `indexSync`, or `fetch failed` lines.
+
+# Backend Dev Logger Dependency Fix
+
+- [x] Reproduce the dependency resolution failure from the reported require stack.
+- [x] Confirm `packages/data-schemas/dist/config/winston.cjs` directly requires `winston-daily-rotate-file`.
+- [x] Move `winston-daily-rotate-file` into `packages/data-schemas` runtime dependencies.
+- [x] Keep `winston` as a compatible peer of the existing backend `winston@3.11.0`.
+- [x] Verify logger import, dependency tree, package build, and backend HTTP readiness.
+
+## Review
+
+- Root cause: `@librechat/data-schemas` directly imports `winston-daily-rotate-file`, but the package was only declared as a peer and only installed under sibling `api/node_modules`, which Node cannot resolve from `packages/data-schemas/dist`.
+- Added root lockfile entries for `winston-daily-rotate-file` and its missing transitive `object-hash` package so workspace resolution works from `data-schemas`.
+- `npm ls winston winston-daily-rotate-file --depth=0` passes.
+- `npm run build:data-schemas` passes.
+- `npm run build:api` passes with the pre-existing Redis `KeyvRedis` TypeScript warning in `packages/api/src/cache/cacheFactory.ts`.
+- Existing backend process on `http://localhost:3080` returns `200` for `/api/config`.
+
+# Frontend Dev Workspace Peer Dependency Fix
+
+- [x] Reproduce Vite dependency scan failure for `framer-motion` and `@react-spring/web`.
+- [x] Confirm the imports originate from `packages/client/dist/index.es.js`.
+- [x] Add Vite aliases for workspace peer dependencies provided by the frontend app.
+- [x] Add missing `react-window` dependency required by `react-vtree`.
+- [x] Rebuild `packages/client`.
+- [x] Smoke-test `npm run frontend:dev` on an alternate port.
+
+## Review
+
+- Root cause: Vite resolves `@librechat/client` through the workspace package realpath, so peer imports from `packages/client/dist` do not automatically see packages installed under sibling `client/node_modules`.
+- Added `WORKSPACE_PEER_ALIASES` in `client/vite.config.ts` for `@react-spring/web`, `framer-motion`, and `react-window`.
+- Added `react-window@^1.8.11` to `client/package.json` because `react-vtree@3.0.0` imports `react-window` as a peer and its v3 code expects the v1 list exports.
+- `npm run build:client-package` passes.
+- `PORT=3091 npm run frontend:dev` starts without dependency scan errors; `http://localhost:3091/steel/oauth-chat` and `http://localhost:3091/api/config` both returned `200`.
+
+# Steel OAuth Chat Auth Path Fix
+
+- [x] Reproduce the `/api/steel/ai/chat` 401 behavior.
+- [x] Distinguish LibreChat JWT 401 from OpenAI OAuth provider auth failure.
+- [x] Confirm local `~/.codex/auth.json` can be loaded without exposing token material.
+- [x] Identify `.env` literal `$HOME/.codex/auth.json` as the provider auth failure root cause.
+- [x] Add backend expansion for `~`, `$HOME`, `${HOME}`, `$CODEX_HOME`, and `${CODEX_HOME}` in `STEEL_OPENAI_OAUTH_AUTH_FILE`.
+- [x] Remove the active local default `STEEL_OPENAI_OAUTH_AUTH_FILE` from `.env`.
+- [x] Keep a commented hosted/server example in `.env.example` for GCP-style mounted secret files.
+- [x] Prevent failed assistant turns from being sent back to the provider on the next Steel test-page submit.
+
+## Review
+
+- `openai-oauth-provider` real-auth manual spec passes with local `~/.codex/auth.json`.
+- Direct built-handler smoke with `STEEL_OPENAI_OAUTH_AUTH_FILE=$HOME/.codex/auth.json` expands to `/Users/neven/.codex/auth.json` and returns `steel-expanded-auth-ok`.
+- Focused package API tests pass: `config.spec.ts`, `handlers.spec.ts`, and `provider.spec.ts`.
+- Focused data-provider Steel AI contract tests pass.
+- API Steel route shell tests pass.
+- `npm run build:api` passes with only the pre-existing Redis `KeyvRedis` TypeScript warning in `packages/api/src/cache/cacheFactory.ts`.
+- `docs/steel-openai-oauth-responses-setup.md` now documents GCP/server deployment via an absolute path to a mounted `auth.json`.
+
+# Steel OAuth Chat Waiting State Fix
+
+- [x] Reproduce the exact prompt through the built provider adapter.
+- [x] Confirm direct OAuth provider returns `steel-librechat-oauth-ok` instead of hanging.
+- [x] Confirm unauthenticated `/api/steel/ai/chat` still returns LibreChat JWT `401 No auth token` quickly.
+- [x] Identify provider-auth HTTP `401` as a bad boundary for the frontend because Axios treats every 401 as a LibreChat session refresh trigger.
+- [x] Change Steel provider failures to HTTP `502` while preserving `errorCategory: auth` for provider-auth failures.
+- [x] Add regression coverage for provider auth failures not using browser session refresh semantics.
+- [x] Rebuild `packages/api/dist`.
+
+## Review
+
+- Built provider smoke for `Reply exactly: steel-librechat-oauth-ok` returned the exact text with usage and response ID.
+- Provider auth failure smoke now returns HTTP `502` with `errorCategory: auth`, avoiding the global frontend JWT refresh interceptor.
+- `packages/api` focused Steel tests pass.
+- `npm run build:api` passes with only the pre-existing Redis `KeyvRedis` TypeScript warning in `packages/api/src/cache/cacheFactory.ts`.
+- Backend must be manually restarted after this fix because root nodemon ignores `packages/` changes.
+
+# Frontend Dev Health Proxy Fix
+
+- [x] Confirm authenticated frontend health checks call `/health`.
+- [x] Confirm backend owns `/health` and `/readyz` on port 3080.
+- [x] Add Vite dev proxy entries for `/health` and `/readyz`.
+- [x] Update local dev docs with frontend proxy health probes.
+- [x] Smoke-test `/health`, `/readyz`, and `/api/config` through a Vite dev server.
+
+## Review
+
+- Root cause: Vite dev server proxied `/api` and `/oauth`, but not backend health endpoints, so `/health` could fall through to the frontend router/cache layer.
+- `PORT=3091 npm run frontend:dev` returned backend `200 OK` for `http://localhost:3091/health` and `http://localhost:3091/readyz`.
+- `http://localhost:3091/api/config` still returns `200 OK` through the existing `/api` proxy.
+
+# Balance Route Missing Record Fix
+
+- [x] Reproduce unauthenticated `/api/balance` route behavior to distinguish route absence from missing user balance data.
+- [x] Confirm logged-in `404` comes from `Balance not found`, not Vite proxy routing.
+- [x] Reuse existing balance initialization middleware on `/api/balance`.
+- [x] Add focused regression coverage for `/api/balance` initialization.
+- [x] Run focused tests and diff checks.
+
+## Review
+
+- Root cause: `/api/balance` existed, but it only read the user's balance record. Existing users could get `404 Balance not found` after balance was enabled because initialization only ran during auth flows.
+- Added the existing `createSetBalanceConfig` middleware to `/api/balance` before the balance controller, so a missing record can be initialized on first balance read when balance is enabled and `startBalance` is configured.
+- `cd api && npx jest server/routes/__tests__/balance.spec.js --runInBand` passes.

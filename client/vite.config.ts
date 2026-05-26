@@ -28,6 +28,12 @@ const NODE_POLYFILL_SHIMS: Record<string, string> = {
   ),
 };
 
+const WORKSPACE_PEER_ALIASES: Record<string, string> = {
+  '@react-spring/web': require.resolve('@react-spring/web'),
+  'framer-motion': require.resolve('framer-motion'),
+  'react-window': require.resolve('react-window'),
+};
+
 // https://vitejs.dev/config/
 const backendPort = (process.env.BACKEND_PORT && Number(process.env.BACKEND_PORT)) || 3080;
 const backendURL = process.env.HOST
@@ -47,7 +53,15 @@ export default defineConfig(({ command }) => ({
         target: backendURL,
         changeOrigin: true,
       },
+      '/health': {
+        target: backendURL,
+        changeOrigin: true,
+      },
       '/oauth': {
+        target: backendURL,
+        changeOrigin: true,
+      },
+      '/readyz': {
         target: backendURL,
         changeOrigin: true,
       },
@@ -317,6 +331,7 @@ export default defineConfig(({ command }) => ({
       '~': path.join(__dirname, 'src/'),
       $fonts: path.resolve(__dirname, 'public/fonts'),
       'micromark-extension-math': 'micromark-extension-llm-math',
+      ...WORKSPACE_PEER_ALIASES,
     },
   },
 }));

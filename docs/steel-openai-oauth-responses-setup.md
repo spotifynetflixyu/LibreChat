@@ -1,6 +1,6 @@
 # Steel openai-oauth Responses Setup
 
-This runbook is the gate before any real `openai_oauth_responses` provider call, live provider smoke, or Steel chat UI live test. Phase 1 should create and test the OpenAI OAuth proxy route/service seam early, but it may do so with injectable clients before hitting a real provider.
+This runbook is the gate before any real `openai_oauth_responses` provider call, live provider smoke, or Steel chat UI live test. Phase 1 should create and test the OpenAI OAuth provider seam early, but it may do so with fake auth and mocked `fetch` before hitting a real provider.
 
 ## What This Binding Is
 
@@ -48,26 +48,16 @@ Important constraints to preserve:
 ## Local Configuration Shape
 
 ```env
-STEEL_AI_DRIVER_DEFAULT=openai_oauth_responses
-STEEL_AI_DRIVER_SECONDARY=openai_api
-STEEL_AI_REQUIRE_CAPABILITY_PASSED=true
-
-STEEL_OPENAI_OAUTH_RESPONSES_ENABLED=true
-STEEL_OPENAI_OAUTH_AUTO_FALLBACK=false
-
-STEEL_OPENAI_API_KEY_REQUIRED_FOR_PRODUCTION=true
-STEEL_OPENAI_API_ENABLE_ONLY_AFTER_SMOKE_TEST=true
-OPENAI_API_KEY=...
-
-STEEL_ALLOWED_MODEL_PROVIDER=openai_oauth_responses,openai_api
-STEEL_ENABLE_MULTI_PROVIDER=true
+STEEL_OPENAI_PROVIDER=OAUTH
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4
+STEEL_OPENAI_REASONING_EFFORT=medium
 ```
 
-`OPENAI_API_KEY` is still required for enabled `openai_api` fallback tests and production-safe operation. It does not replace the openai-oauth binding.
+`STEEL_OPENAI_PROVIDER=OAUTH` uses direct `openai-oauth-provider` first. `STEEL_OPENAI_PROVIDER=API` uses the official OpenAI API path first after that path is implemented and smoke-tested. The local proxy remains a manual local/dev probe only and must not be hosted as a multi-user service. Direct provider mode does not need a `/v1` base URL or transport selector.
 
-`STEEL_OPENAI_OAUTH_ALLOW_PRODUCTION=true` applies to the direct-provider path after dependency overrides/resolutions, packaging verification, server-side auth storage, and capability smoke gates pass. The local proxy remains a manual local/dev probe only and must not be hosted as a multi-user service. Direct provider mode does not need a `/v1` base URL or transport selector.
+`STEEL_OPENAI_DEFAULT_MODEL` accepts `gpt-5.4` or `gpt-5.5`; default is `gpt-5.4`. `STEEL_OPENAI_REASONING_EFFORT` accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; default is `medium`.
 
-`STEEL_OPENAI_OAUTH_AUTO_FALLBACK=false` means OAuth remains the primary path and the app will not automatically reroute failed or unsupported OAuth calls to `openai_api`. Even when enabled, fallback still requires the target `openai_api` capability smoke result to be `passed`.
+For local development, leave `STEEL_OPENAI_OAUTH_AUTH_FILE` unset so the provider can discover `~/.codex/auth.json`. For hosted/server deployments such as GCP, mount the Codex/OpenAI OAuth `auth.json` as a secret-backed file and set `STEEL_OPENAI_OAUTH_AUTH_FILE` to that absolute path, for example `/var/secrets/openai-oauth/auth.json`. The backend also expands `~`, `$HOME`, `${HOME}`, `$CODEX_HOME`, and `${CODEX_HOME}` for compatibility, but absolute paths are preferred in deployed environments.
 
 ## Binding Flow
 
@@ -87,7 +77,7 @@ STEEL_ENABLE_MULTI_PROVIDER=true
 7. Store only non-secret token metadata in audit/debug records, such as provider name, account label, expiry if available, and last bind time.
 8. Verify the server can load the binding without printing secrets.
 9. Only after the binding is verified, run `POST /api/admin/steel/ai/capability-smoke`.
-10. Only after text/tool/structured/workbook-patch smoke passes, test the Steel chat UI against `openai_oauth_responses`.
+10. Only after text/tool/structured/workbook-patch smoke passes, test the Steel chat UI at `/steel/oauth-chat` against `openai_oauth_responses`.
 
 If the binding fails, classify it as an auth/provider setup error. Do not silently call OpenAI API during setup; fallback behavior is tested only after the primary failure is visible and auditable.
 
@@ -134,7 +124,24 @@ curl -sS http://127.0.0.1:10531/v1/responses \
   }'
 ```
 
-Steel's automated tests should not require this live proxy. They should use an injectable local-proxy client with mocked `fetch` for `/models` and `/responses`, then reserve real proxy calls for admin-triggered smoke evidence.
+Steel's automated tests should not require this live proxy. They should test the direct `openai-oauth-provider` adapter with fake auth and mocked `fetch`, then reserve real proxy calls for manual diagnostics only.
+
+## Direct Provider Live Smoke
+
+Run the gated manual spec only on a developer machine with local auth material available. It intentionally requires an opt-in env flag and should not print auth material:
+
+```bash
+STEEL_OPENAI_OAUTH_REAL_AUTH_TEST=true \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4 \
+STEEL_OPENAI_REASONING_EFFORT=medium \
+NODE_OPTIONS=--experimental-vm-modules \
+npm --workspace packages/api exec -- \
+  jest --runTestsByPath src/steel/ai/provider.real-auth.manual.spec.ts \
+  --coverage=false \
+  --ci \
+  --forceExit \
+  --testPathIgnorePatterns='\.integration\.|\.helper\.|__tests__/helpers/'
+```
 
 ## Expected Evidence
 

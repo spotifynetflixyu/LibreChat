@@ -37,7 +37,7 @@ export type SteelFallbackEnvKey = (typeof steelFallbackEnvKeys)[number];
 export const steelCapabilityStatusSchema = z.enum([
   'passed',
   'failed',
-  'not_run',
+  'unverified',
   'disabled',
   'not_applicable',
 ]);
@@ -95,14 +95,56 @@ export const steelProviderSmokeTestResultSchema = z.object({
 
 export type SteelProviderSmokeTestResult = z.infer<typeof steelProviderSmokeTestResultSchema>;
 
-export type SteelAIProviderErrorCategory =
-  | 'auth'
-  | 'subscription_or_rate_limit'
-  | 'provider_tool_call_unsupported'
-  | 'provider_file_input_unsupported'
-  | 'provider_vision_input_unsupported'
-  | 'provider_xlsx_input_unsupported'
-  | 'provider_hosted_tool_unsupported'
-  | 'structured_output_invalid'
-  | 'provider_timeout'
-  | 'unknown';
+export const steelAIProviderErrorCategories = [
+  'auth',
+  'subscription_or_rate_limit',
+  'provider_tool_call_unsupported',
+  'provider_file_input_unsupported',
+  'provider_vision_input_unsupported',
+  'provider_xlsx_input_unsupported',
+  'provider_hosted_tool_unsupported',
+  'structured_output_invalid',
+  'provider_timeout',
+  'unknown',
+] as const;
+
+export const steelAIProviderErrorCategorySchema = z.enum(steelAIProviderErrorCategories);
+
+export type SteelAIProviderErrorCategory = z.infer<typeof steelAIProviderErrorCategorySchema>;
+
+export const steelProviderUsageSchema = z.object({
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+});
+
+export type SteelProviderUsage = z.infer<typeof steelProviderUsageSchema>;
+
+export const steelProviderChatMessageSchema = z.object({
+  role: z.enum(['system', 'user', 'assistant']),
+  content: z.string().min(1),
+});
+
+export type SteelProviderChatMessage = z.infer<typeof steelProviderChatMessageSchema>;
+
+export const steelProviderChatRequestSchema = z.object({
+  model: z.string().min(1).optional(),
+  messages: z.array(steelProviderChatMessageSchema).min(1),
+  maxOutputTokens: z.number().int().positive().optional(),
+});
+
+export type SteelProviderChatRequest = z.infer<typeof steelProviderChatRequestSchema>;
+
+export const steelProviderChatResponseSchema = z.object({
+  provider: z.enum(steelAIDrivers),
+  model: z.string().min(1),
+  text: z.string(),
+  responseId: z.string().min(1).optional(),
+  usage: steelProviderUsageSchema.optional(),
+  unsupportedSettings: z.array(z.string().min(1)).default([]),
+  warnings: z.array(z.string().min(1)).default([]),
+  errorCategory: steelAIProviderErrorCategorySchema.optional(),
+  errorSummary: z.string().min(1).optional(),
+});
+
+export type SteelProviderChatResponse = z.infer<typeof steelProviderChatResponseSchema>;

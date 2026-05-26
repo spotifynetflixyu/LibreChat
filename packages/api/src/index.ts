@@ -59,6 +59,8 @@ export * from './stream';
 export { memoryDiagnostics } from './utils/memory';
 /* Steel */
 export * from './steel/access';
+export * from './steel/ai/config';
+export * from './steel/ai/provider';
 export * from './steel/handlers';
 export * from './steel/models';
 export * from './steel/oauth';

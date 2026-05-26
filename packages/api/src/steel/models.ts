@@ -1,5 +1,5 @@
 type SteelAIDriver = 'openai_oauth_responses' | 'openai_api';
-type SteelCapabilityStatus = 'passed' | 'failed' | 'not_run' | 'disabled' | 'not_applicable';
+type SteelCapabilityStatus = 'passed' | 'failed' | 'unverified' | 'disabled' | 'not_applicable';
 
 type SteelCapabilityId =
   | 'text'
@@ -57,16 +57,16 @@ export interface SteelModelOption {
 
 const defaultProvider: SteelAIDriver = 'openai_oauth_responses';
 const defaultCapabilities: SteelCapabilityMap = {
-  text: 'not_run',
-  streaming: 'not_run',
-  tool_calling: 'not_run',
-  structured_output: 'not_run',
-  workbook_patch: 'not_run',
-  image_input: 'not_run',
-  pdf_input: 'not_run',
-  xlsx_input: 'not_run',
-  file_search: 'not_run',
-  code_interpreter: 'not_run',
+  text: 'unverified',
+  streaming: 'unverified',
+  tool_calling: 'unverified',
+  structured_output: 'unverified',
+  workbook_patch: 'unverified',
+  image_input: 'unverified',
+  pdf_input: 'unverified',
+  xlsx_input: 'unverified',
+  file_search: 'unverified',
+  code_interpreter: 'unverified',
   conversation_state: 'not_applicable',
 };
 

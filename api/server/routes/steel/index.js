@@ -7,5 +7,6 @@ const router = express.Router();
 const handlers = createSteelHandlers({ getModelsConfig });
 
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
+router.post('/ai/chat', requireJwtAuth, handlers.chat);
 
 module.exports = router;

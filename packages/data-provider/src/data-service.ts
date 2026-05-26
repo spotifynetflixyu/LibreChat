@@ -13,6 +13,7 @@ import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
 import * as permissions from './accessPermissions';
+import type { SteelProviderChatRequest, SteelProviderChatResponse } from './steel';
 
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
@@ -32,6 +33,12 @@ export function getFavorites(): Promise<q.TUserFavorite[]> {
 
 export function updateFavorites(favorites: q.TUserFavorite[]): Promise<q.TUserFavorite[]> {
   return request.post(`${endpoints.apiBaseUrl()}/api/user/settings/favorites`, { favorites });
+}
+
+export function sendSteelChat(
+  payload: SteelProviderChatRequest,
+): Promise<SteelProviderChatResponse> {
+  return request.post(endpoints.steelChat(), payload);
 }
 
 /**

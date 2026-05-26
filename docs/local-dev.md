@@ -67,7 +67,11 @@ After the backend is healthy, verify the frontend proxy:
 
 ```bash
 curl -i http://localhost:3090/api/config
+curl -i http://localhost:3090/health
+curl -i http://localhost:3090/readyz
 ```
+
+`/health` and `/readyz` are backend health endpoints proxied by the Vite dev server. They are not standalone React routes.
 
 ## MeiliSearch Logs
 

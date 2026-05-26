@@ -50,12 +50,15 @@ Required:
 - [ ] Steel AI driver enum, capability result shape, provider run metadata, typed provider error categories, and model option shape exist.
 - [ ] Model allowlist endpoint is backend-owned, does not expose raw provider secrets, and aligns with LibreChat `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior instead of inventing a parallel model system.
 - [ ] Admin route protection reuses existing LibreChat `ADMIN`/`USER` role and capability semantics before adding Steel-specific permission layering.
-- [ ] An early OpenAI OAuth proxy test seam exists before full workbook orchestration, without requiring Phase 1 to complete the Phase 3 live workbook smoke.
-- [ ] The first openai-oauth implementation path targets the local HTTP `/v1` proxy with injectable fetch for `/models`, `/responses`, and `/health`.
-- [ ] Direct `openai-oauth-provider` package usage is allowed as the primary path after AI SDK versions are unified through package-manager overrides/resolutions, packaging verification passes, model discovery remains backend-owned, and auth material remains server-only.
+- [ ] An early OpenAI OAuth provider test seam exists before full workbook orchestration, without requiring Phase 1 to complete the Phase 3 live workbook smoke.
+- [ ] The first coded openai-oauth implementation path is direct `openai-oauth-provider`; the local HTTP `/v1` proxy remains manual diagnostics only.
+- [ ] Direct `openai-oauth-provider` package usage is allowed only after AI SDK versions are unified through package-manager overrides/resolutions, packaging verification passes, model discovery remains backend-owned, and auth material remains server-only.
 - [ ] `openai_oauth_responses` request serialization is stateless full-history and rejects `previous_response_id` / `item_reference`.
 - [ ] Adapter-dropped or unsupported LibreChat runtime settings are recorded in provider metadata instead of silently treated as applied.
 - [ ] `steel_ai_runs` can represent both openai-oauth responses trace metadata and OpenAI API fallback metadata.
+- [ ] Capability status vocabulary uses `unverified`, `passed`, `failed`, `disabled`, and `not_applicable`; stale `not_run` status is not used in new contracts.
+- [ ] Steel Mongo schemas are split by owner file rather than accumulated in one broad `steel.ts` file.
+- [ ] Durable audit writes go to `steel_audit_logs`.
 - [ ] Supabase schema/migration rule is preserved.
 - [ ] `steel_source_versions` metadata supports ERP XLSX imports with stable append-only column assumptions; handbook DOCX only informs schema/data model unless a later data-import task is approved.
 
@@ -141,7 +144,7 @@ Required:
 - [ ] Mock workbook fixtures are typed against shared workbook DTOs and pass backend workbook validation where required.
 - [ ] Workbook Preview renders all seven tabs from mock or real workbook API data.
 - [ ] `SteelAIProvider` interface exists with openai-oauth and OpenAI API fallback adapters.
-- [ ] openai-oauth adapter uses the local HTTP `/v1` proxy first, with mocked `/models` and `/responses` tests before live smoke.
+- [ ] openai-oauth adapter uses direct `openai-oauth-provider`, with fake auth and mocked `fetch` tests before live smoke.
 - [ ] openai-oauth adapter uses server-side/local encrypted token storage and never frontend localStorage.
 - [ ] OpenAI API adapter is Responses-first, uses official Responses `conversation` state, and does not mix `previousResponseId` into the same call.
 - [ ] openai-oauth provider state is recorded only as trace metadata.

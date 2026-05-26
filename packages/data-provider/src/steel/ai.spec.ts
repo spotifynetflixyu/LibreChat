@@ -1,9 +1,12 @@
 import {
   isSteelAIDriver,
+  steelAIProviderErrorCategories,
   steelAIDrivers,
   steelCapabilityIds,
   steelFallbackEnvKeys,
   steelModelOptionSchema,
+  steelProviderChatRequestSchema,
+  steelProviderChatResponseSchema,
 } from './ai';
 
 describe('Steel AI public contracts', () => {
@@ -58,16 +61,80 @@ describe('Steel AI public contracts', () => {
         streaming: 'passed',
         tool_calling: 'passed',
         structured_output: 'passed',
-        workbook_patch: 'not_run',
+        workbook_patch: 'unverified',
         image_input: 'failed',
-        pdf_input: 'not_run',
-        xlsx_input: 'not_run',
-        file_search: 'not_run',
-        code_interpreter: 'not_run',
+        pdf_input: 'unverified',
+        xlsx_input: 'unverified',
+        file_search: 'unverified',
+        code_interpreter: 'unverified',
         conversation_state: 'not_applicable',
       },
     });
 
     expect(parsed.defaultForSteel).toBe(true);
+  });
+
+  it('keeps provider chat responses sanitized for browser use', () => {
+    expect(steelAIProviderErrorCategories).toEqual([
+      'auth',
+      'subscription_or_rate_limit',
+      'provider_tool_call_unsupported',
+      'provider_file_input_unsupported',
+      'provider_vision_input_unsupported',
+      'provider_xlsx_input_unsupported',
+      'provider_hosted_tool_unsupported',
+      'structured_output_invalid',
+      'provider_timeout',
+      'unknown',
+    ]);
+
+    const parsed = steelProviderChatResponseSchema.parse({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.4',
+      text: 'steel-provider-ok',
+      responseId: 'resp_123',
+      usage: {
+        inputTokens: 12,
+        outputTokens: 4,
+        totalTokens: 16,
+      },
+      unsupportedSettings: ['previous_response_id'],
+      warnings: ['stateful replay is not supported'],
+    });
+
+    expect(parsed).toEqual({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.4',
+      text: 'steel-provider-ok',
+      responseId: 'resp_123',
+      usage: {
+        inputTokens: 12,
+        outputTokens: 4,
+        totalTokens: 16,
+      },
+      unsupportedSettings: ['previous_response_id'],
+      warnings: ['stateful replay is not supported'],
+    });
+    expect(JSON.stringify(parsed)).not.toMatch(/access_token|authorization|authFile|rawProvider/i);
+  });
+
+  it('validates minimal Steel provider chat requests', () => {
+    expect(
+      steelProviderChatRequestSchema.parse({
+        model: 'gpt-5.4',
+        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        maxOutputTokens: 64,
+      }),
+    ).toEqual({
+      model: 'gpt-5.4',
+      messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+      maxOutputTokens: 64,
+    });
+
+    expect(() =>
+      steelProviderChatRequestSchema.parse({
+        messages: [],
+      }),
+    ).toThrow();
   });
 });

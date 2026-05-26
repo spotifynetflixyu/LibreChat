@@ -1,8 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const controller = require('../controllers/Balance');
-const { requireJwtAuth } = require('../middleware/');
+const { createSetBalanceConfig } = require('@librechat/api');
+const controller = require('~/server/controllers/Balance');
+const { findBalanceByUser, upsertBalanceFields } = require('~/models');
+const { requireJwtAuth } = require('~/server/middleware');
+const { getAppConfig } = require('~/server/services/Config');
 
-router.get('/', requireJwtAuth, controller);
+const setBalanceConfig = createSetBalanceConfig({
+  getAppConfig,
+  findBalanceByUser,
+  upsertBalanceFields,
+});
+
+router.get('/', requireJwtAuth, setBalanceConfig, controller);
 
 module.exports = router;
