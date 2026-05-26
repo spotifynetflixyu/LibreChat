@@ -1,26 +1,26 @@
-# Steel v8.2 Checkpoints
+# Steel v8.3 Checkpoints
 
 Use this file as the implementation follow-up tracker. Copy a checkpoint into `tasks/todo.md` when it becomes active, then record evidence in that task's Review section.
 
-## Checkpoint 0: v8.2 Baseline Review
+## Checkpoint 0: v8.3 Baseline Review
 
-Status: passed for the OpenHarness-verified Phase 0 lock.
+Status: passed for the openai-oauth-responses-primary Phase 0 lock.
 
 Required:
 
 - [x] `STEEL_GUEST_MODE=false` is the documented default.
-- [x] `docs/steel_librechat_plan_v8.2_openharness_verified.md` is the active spec reference.
+- [x] `docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md` is the active spec reference.
 - [x] Steel AI execution uses a `SteelAIProvider` abstraction.
-- [x] `openharness_chatgpt_oauth` is the default local/dev driver and `openai_api` is the fallback/production-safe driver.
-- [x] OpenHarness session/conversation IDs are runtime trace only, not official OpenAI Conversation state.
-- [x] Official OpenAI Responses calls use `conversation`; prior response IDs are audit/fallback only and only apply to the `openai_api` driver.
+- [x] `openai_oauth_responses` is the default local/dev driver and `openai_api` is the capability-gated secondary driver.
+- [x] openai-oauth session/conversation IDs are runtime trace only, not official OpenAI Conversation state.
+- [x] Official OpenAI Responses calls use `conversation`; prior response IDs are audit/fallback metadata only and only apply to the `openai_api` driver.
 - [x] Backend model selector uses driver capability status and hides disabled/failed runtime options.
 - [x] Capability smoke/fallback policy covers text, stream, tools, structured output, image/PDF/XLSX input, File Search, and Code Interpreter.
 - [x] Ongoing formal Admin Import accepts ERP XLSX parsed data only.
 - [x] Admin ERP Import rejects DOCX/PDF/image/.txt uploads before parsing.
 - [x] Steel handbook DOCX is scoped to real schema/data-model design first; real handbook data SQL/import is deferred to a later code-agent data task, and it is not Admin web upload or reusable product parser.
-- [x] Chinese reference labels under `docs/reference/doc` are mapped to English canonical schema keys before they shape schema, API mock data, tools, or database queries.
-- [x] `tasks/v8.2/source-schema-mapping.md` exists and is linked from the phase plan.
+- [x] Chinese reference labels under `docs/reference` are mapped to English canonical schema keys before they shape schema, API mock data, tools, or database queries.
+- [x] `tasks/v8.3/source-schema-mapping.md` exists and is linked from the phase plan.
 - [x] Workbook JSON requires seven fixed sheets.
 - [x] Customer quote sheet hides customer tier and internal fields.
 - [x] Price-before-weight rule is explicit.
@@ -30,10 +30,10 @@ Required:
 Verification:
 
 ```bash
-rtk proxy rg -n "報價明細|總結|人工複核清單|價格來源|判讀備註|系統訂單|給客戶用" tasks/v8.2 docs/steel_librechat_plan_v8.2_openharness_verified.md
-rtk proxy rg -n "SteelAIProvider|openharness_chatgpt_oauth|openai_api|capability smoke|fallback|SteelAIEvent" tasks/v8.2 docs/steel_librechat_plan_v8.2_openharness_verified.md
-rtk proxy rg -n "ERP XLSX|handbook DOCX|rejects PDF|拒絕 PDF|ExcelJS|Quote Resolution|Eval Harness" tasks/v8.2 docs/steel_librechat_plan_v8.2_openharness_verified.md
-rtk proxy rg -n "source schema mapping|canonical schema|中文來源|英文 canonical" CONTEXT.md tasks/v8.2 docs/steel_librechat_plan_v8.2_openharness_verified.md
+rtk proxy rg -n "報價明細|總結|人工複核清單|價格來源|判讀備註|系統訂單|給客戶用" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
+rtk proxy rg -n "SteelAIProvider|openai_oauth_responses|openai_api|capability smoke|fallback|SteelAIEvent" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
+rtk proxy rg -n "ERP XLSX|handbook DOCX|rejects PDF|拒絕 PDF|ExcelJS|Quote Resolution|Eval Harness" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
+rtk proxy rg -n "source schema mapping|canonical schema|中文來源|英文 canonical" CONTEXT.md tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
 ```
 
 ## Checkpoint 1: Foundation Gate
@@ -49,7 +49,7 @@ Required:
 - [ ] Audit primitive exists.
 - [ ] Steel AI driver enum, capability result shape, provider run metadata, typed provider error categories, and model option shape exist.
 - [ ] Model allowlist endpoint is backend-owned and does not expose raw provider secrets.
-- [ ] `steel_ai_runs` can represent both OpenHarness OAuth trace metadata and OpenAI API fallback metadata.
+- [ ] `steel_ai_runs` can represent both openai-oauth responses trace metadata and OpenAI API fallback metadata.
 - [ ] Supabase schema/migration rule is preserved.
 - [ ] `steel_source_versions` metadata supports ERP XLSX imports; handbook DOCX only informs schema/data model unless a later data-import task is approved.
 
@@ -69,12 +69,12 @@ rtk npm run test:packages:api
 Required:
 
 - [ ] Handbook content has been reviewed for real schema/data-model implications.
-- [ ] Source schema mapping records Chinese source label/header, English canonical key, target table/DTO/tool field, type/unit, normalizer, and source reference.
+- [ ] Source schema mapping records DB-bound Chinese source label/header, English canonical key, target database surface, type/unit, normalizer, and source reference for spec, price, formula, and processing-price fields.
 - [ ] Source schema mapping does not require `review_status`, `corrected_text`, or a typo approval workflow.
 - [ ] Code-owned mapping design exists for `packages/api/src/steel/schema/mapping.ts`.
 - [ ] AI API prompt/tool context can use the mapping to resolve Chinese wording to existing canonical keys.
-- [ ] Repository filters, SQL columns, DTO keys, workbook paths, and tool arguments use English canonical keys.
-- [ ] Chinese labels, product names, aliases, and source excerpts are stored only as values/display/source/search data, not code-owned query field names.
+- [ ] Repository filters, SQL columns, DTO keys, and tool arguments use English canonical keys.
+- [ ] Chinese labels, product names, aliases, ERP workbook sheet names, and source excerpts are stored only as values/display/source/search data, not code-owned query field names.
 - [ ] Supabase repositories use parameterized SQL.
 - [ ] Lookup tools validate with Zod.
 - [ ] No raw SQL/Mongo query tools exist.
@@ -86,7 +86,7 @@ Required:
 - [ ] Stock allocation prices long materials by sellable stock length, not net finished length.
 - [ ] Deterministic calculators own weight and processing calculations.
 - [ ] Tool calls are logged and sanitized before model use.
-- [ ] Tool definitions are provider-neutral; OpenHarness and OpenAI adapters only serialize them.
+- [ ] Tool definitions are provider-neutral; openai-oauth and OpenAI adapters only serialize them.
 
 Verification:
 
@@ -115,8 +115,9 @@ Required:
 - [ ] Chat Workspace is an independent Steel workspace and does not require MVP changes to the core LibreChat chat store/message flow.
 - [ ] Desktop and mobile Steel views share the same UX framework, API contracts, and mock data.
 - [ ] Mobile Workbook Preview opens as a full-view modal with a visible top-right close button.
-- [ ] Selecting one workbook cell applies selected styling and adds a field marker to the bottom message input.
-- [ ] Message submit sends at most one structured `selected_workbook_refs` item; backend validation does not rely on marker text alone.
+- [ ] Selecting workbook cells applies selected styling and adds field markers with clear sheet and field/cell positions to the bottom message input.
+- [ ] Message submit can send multiple structured `selected_workbook_refs` items; backend validation does not rely on marker text alone.
+- [ ] When no user text has been entered, the next cell selection replaces the existing marker; after user text exists, the next cell selection inserts a new marker on a new line.
 - [ ] Multi-round conversations can keep modifying workbook data through subsequent patch requests.
 - [ ] Text-only requests can update multiple workbook fields only when each target is explicit and backend validation accepts every patch path.
 - [ ] AI workbook patches do not require a per-update preview/confirmation gate in Phase 3.
@@ -126,21 +127,26 @@ Required:
 - [ ] User-requested revert/change flows go through chat and produce validated workbook patches.
 - [ ] Successful AI workbook patches produce a concise chat summary of changed fields.
 - [ ] Chat does not render a full diff table for successful workbook patches.
-- [ ] Chat Workspace can use API mock data from `packages/data-provider/src/steel/mock/`, shaped from `docs/reference/doc` without importing real data.
+- [ ] Chat Workspace can use API mock data from `packages/data-provider/src/steel/mock/`, shaped from `docs/reference` without importing real data.
 - [ ] Mock workbook fixtures derived from Chinese reference examples use English DTO/API keys and preserve Chinese only as display/source/alias data.
 - [ ] Mocked AI/prompt tests include source-schema mapping context and reject unknown keys through clarification/manual-review behavior.
 - [ ] Frontend and backend tests do not define separate mock workbook datasets.
 - [ ] Mock workbook fixtures are imported through the explicit mock path and are not re-exported by the production Steel data-provider barrel.
 - [ ] Mock workbook fixtures are typed against shared workbook DTOs and pass backend workbook validation where required.
 - [ ] Workbook Preview renders all seven tabs from mock or real workbook API data.
-- [ ] `SteelAIProvider` interface exists with OpenHarness and OpenAI fallback adapters.
-- [ ] OpenHarness adapter uses server-side/local encrypted token storage and never frontend localStorage.
-- [ ] OpenAI fallback adapter uses official Responses `conversation` state and does not mix `previousResponseId` into the same call.
-- [ ] OpenHarness provider state is recorded only as trace metadata.
+- [ ] `SteelAIProvider` interface exists with openai-oauth and OpenAI API fallback adapters.
+- [ ] openai-oauth adapter uses server-side/local encrypted token storage and never frontend localStorage.
+- [ ] OpenAI API adapter is Responses-first, uses official Responses `conversation` state, and does not mix `previousResponseId` into the same call.
+- [ ] openai-oauth provider state is recorded only as trace metadata.
+- [ ] LibreChat UI / preset / agent model parameters are converted to provider-neutral runtime options and are not silently ignored.
+- [ ] The five fallback keys are the only active v8.3 fallback env contract.
+- [ ] Disabled fallback flags return typed unsupported errors without calling OpenAI API.
+- [ ] Enabled fallback flags call `openai_api` only when the matching secondary capability has a passed smoke result.
 - [ ] Capability smoke records exist for text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and conversation/state behavior.
 - [ ] Backend model selector returns provider, smoke status, support flags, and enabled/disabled status.
-- [ ] ChatGPT OAuth binding runbook has been completed before any live OpenHarness provider smoke or chat UI live test.
-- [ ] Failed or unverified file/vision/XLSX/hosted-tool capabilities fallback to `openai_api` or return typed low-confidence/manual-review errors.
+- [ ] openai-oauth binding runbook has been completed before any live openai-oauth provider smoke or chat UI live test.
+- [ ] Failed or unverified file/vision/XLSX/hosted-tool capabilities fallback to `openai_api` only when env-enabled, otherwise return typed low-confidence/manual-review errors.
+- [ ] Provider unsupported/fallback notices render inside the chat transcript as small warning text, not toast UI.
 - [ ] Typed provider errors include auth, subscription/rate, tool unsupported, file input unsupported, vision input unsupported, XLSX input unsupported, hosted tool unsupported, and invalid structured output.
 - [ ] Prompt bundle records context refs.
 - [ ] Tool-calling loop executes whitelisted tools only.
@@ -155,9 +161,9 @@ Required:
 - [ ] No frontend-only undo path can mutate workbook JSON outside the patch service.
 - [ ] Patch responses include changed-field summary items for chat acknowledgement.
 - [ ] Ambiguous multi-field edit requests ask for clarification or produce manual-review output instead of guessing patch targets.
-- [ ] Manual live OpenHarness OAuth smoke run creates or patches a customer-visible workbook before Phase 4.
+- [ ] Manual live openai-oauth responses smoke run creates or patches a customer-visible workbook before Phase 4.
 - [ ] Manual live OpenAI API fallback smoke run creates or patches a customer-visible workbook before Phase 4.
-- [ ] Manual provider smoke evidence records provider, model, provider IDs when available, fallback reason, tool call IDs, workbook ID/version, context refs, and typed error category when relevant.
+- [ ] Manual provider smoke evidence records requested provider, effective provider, model, provider IDs when available, fallback or unsupported reason, tool call IDs, workbook ID/version, context refs, and typed error category when relevant.
 - [ ] Stale patch version returns `409`.
 
 Verification:
@@ -273,7 +279,7 @@ Required before any beta capability is exposed:
 
 - [ ] Guest token security tests pass if guest mode is enabled.
 - [ ] Retrieval filters exclude inactive/deleted source versions.
-- [ ] OpenHarness OAuth production risk is explicitly accepted or disabled outside local/dev.
+- [ ] openai-oauth responses production risk is explicitly accepted or disabled outside local/dev.
 - [ ] OpenAI API fallback cost/rate/budget handling is verified.
 - [ ] Capability smoke status is current for enabled file/vision/XLSX workflows.
 - [ ] System Memory tests prove memory cannot override prices.
@@ -302,5 +308,5 @@ Ask these before closing each phase:
 - What can cause AI output to bypass backend validation?
 - What can make an old quote look more auditable than it really is?
 - What happens when official OpenAI API state expires or API fallback becomes too expensive?
-- What happens when the default OpenHarness driver loses auth, hits subscription limits, or lacks file/vision/XLSX support?
+- What happens when the default openai-oauth driver loses auth, hits subscription limits, or lacks file/vision/XLSX support?
 - Can this phase be reverted independently?

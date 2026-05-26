@@ -6,7 +6,7 @@
 - When the user asks to write docs, create or update a real project docs file under `docs/` instead of only adding operational notes to agent-facing files.
 - For the steel setup, do not assume Docker services are part of local development; the user uses cloud MongoDB and Supabase Postgres through `.env`.
 - For Supabase pgvector, check the actual `pg_extension.extnamespace`; this project currently has `vector` installed in `public`, not `extensions`.
-- Do not process or import files under `docs/reference/doc` as real data unless explicitly asked. Steel handbook DOCX currently informs schema/data-model design first; real data SQL/import comes later.
+- Do not process or import files under `docs/reference` as real data unless explicitly asked. Steel handbook DOCX currently informs schema/data-model design first; real data SQL/import comes later.
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
 - When a customer asks price for an incomplete steel spec with multiple matches, show candidate prices while asking for the missing detail; only lead with a specific candidate when backed by a preference rule or deterministic ranking.
 - For local `pg` connections to Supabase, prefer the Supavisor session pooler URL when the direct `db.<project>.supabase.co` host does not resolve or the environment lacks IPv6 support.
@@ -17,7 +17,7 @@
 - Steel workbook pricing must persist the accepted line calculation: formula, database default unit price, quoted unit price, line total, and explicit unit-price/total-price adjustments belong in the workbook, not only in chat text.
 - Never touch existing workbook prices, quantities, or totals just because a newer database price exists; only update them when the user explicitly requests a change or recalculation for that line.
 - Customer-facing Excel must hide `customer_tier` and internal/debug fields; export `quoted_unit_price` and `line_total` under customer-friendly price labels instead of exposing raw internal workbook field names.
-- `docs/reference/doc` files are generally AI/dev logic references. Steel handbook DOCX is a schema/data-model reference before chat UX work; ongoing formal data updates flow through ERP XLSX import or Admin table UI review, then API commit to the target database table.
+- `docs/reference` files are generally AI/dev logic references. Steel handbook DOCX is a schema/data-model reference before chat UX work; ongoing formal data updates flow through ERP XLSX import or Admin table UI review, then API commit to the target database table.
 - For Steel MVP, prioritize the minimal chat UX and workbook preview with API mock data; real OpenAI smoke validates the vertical slice before moving on, but UX development does not wait for real data import.
 - Build Steel Chat UX as an independent Steel workspace first; avoid making core LibreChat chat-store/global-message-flow changes a Phase 3 dependency.
 - Keep desktop and mobile Steel UI on one shared UX framework and data contract; responsive layout differences should not create a separate mobile-only workflow.
@@ -37,11 +37,17 @@
 - Keep Phase 0 as a decision-baseline/documentation gate. Live provider smoke tests and persisted runtime evidence belong to the implementation phase that owns the vertical slice.
 - For Steel Admin data updates, treat ERP-exported XLSX as the confirmed formal source path: upload, parse, compare with old data, admin confirm, then commit to the database.
 - Treat steel handbook DOCX as a real schema/data-model design reference first, not an ongoing Admin web upload path, reusable parser, or immediate data import. Prioritize chat UX; real handbook data SQL/import is a later task.
-- Because `docs/reference/doc` source data is Chinese, create an agreed source schema mapping before code uses it: Chinese labels/headers/terms map to English canonical schema keys, and programmatic DTO/API/tool/repository/DB query contracts stay English while Chinese remains as display/source/alias values.
-- Do not understate `docs/reference/doc` as mock-only. It can guide the real Steel schema/data model; real importable data/SQL is deferred to a later code-agent data task that starts from correct data.
+- Because `docs/reference` source data is Chinese, create an agreed source schema mapping before code uses it: Chinese labels/headers/terms map to English canonical schema keys, and programmatic DTO/API/tool/repository/DB query contracts stay English while Chinese remains as display/source/alias values.
+- Do not understate `docs/reference` as mock-only. It can guide the real Steel schema/data model; real importable data/SQL is deferred to a later code-agent data task that starts from correct data.
 - For Steel source-schema mapping, do not add typo approval workflow fields such as `review_status` or `corrected_text` unless a later import task explicitly needs them. User expects later code-agent data discussions to start from correct data.
 - Teach the AI API the source-schema mapping through prompt/tool context so it can resolve Chinese wording to existing English canonical keys; backend validators must still reject unknown or invented keys.
 - Put Steel admin-only APIs under `/api/admin/steel/...`; keep `/api/steel/...` for quote/user-facing routes.
-- Before any live OpenHarness/ChatGPT OAuth provider smoke or chat UI test, document and complete the ChatGPT OAuth binding flow and token-storage expectations.
+- Before any live `openai_oauth_responses` provider smoke or chat UI test, document and complete the openai-oauth binding flow and token-storage expectations.
 - Do not create DOCX parser/import metadata for Steel source handling; Phase 1 source/import scaffolding supports XLSX only, with handbook DOCX remaining schema-design reference.
 - Phase 1 should teach and verify local LibreChat admin/user account setup before Steel route testing; current LibreChat behavior makes the first registered user ADMIN and later registrations USER.
+- Steel agent layer must preserve LibreChat UI/preset/agent model parameters as requested runtime settings; `openai_oauth_responses` is the priority v8.3 provider, not a shortcut that bypasses settings such as Responses API options or reasoning summaries.
+- Do not design Steel provider capability failures as silent fallback or toast notifications. Local/dev fallback flags should default false, return typed unsupported errors, and show provider unsupported/fallback reasons as inline small warning text in the chat transcript.
+- For v8.3 `openai_oauth_responses`, use only the unified fallback keys `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED`, `STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED`, `STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED`, `STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED`, and `STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED`; do not add separate DOCX/PDF/XLS fallback keys.
+- V8.3 source-schema mapping should focus on database-bound spec, price, formula, and processing-price fields; workbook sheet names remain Chinese ERP-facing output labels, not translated database keys.
+- Mobile Workbook Preview selected targets must support multiple marked targets when the user has typed instructions; composer markers should show sheet and field/cell position clearly, while backend targeting still uses structured selected refs.
+- Treat `docs/reference/公式編號 - Sheet1.csv` as a development reference for formula names and structure only; calculator runtime data should come from reviewed app-ready data such as JSON or database rows.

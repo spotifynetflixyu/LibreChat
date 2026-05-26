@@ -62,8 +62,8 @@ Scope:
 
 - Production-grade file metadata, retention, and provider file refs.
 - AI-first orientation detection, PDF/image evidence, and drawing interpretation.
-- OpenHarness capability smoke for image/PDF/XLSX remains optional per driver/model; unsupported paths fallback to `openai_api`.
-- Official OpenAI API file/vision/XLSX fallback paths for PDF page image, uploaded file input, spreadsheet evidence, File Search, and Code Interpreter when enabled.
+- openai-oauth capability smoke for file, vision, spreadsheet, and hosted-tool workflows remains per driver/model; unsupported paths return typed errors unless the matching unified fallback key is enabled and the secondary capability has passed.
+- Official OpenAI API file/vision/XLSX/hosted-tool fallback paths for PDF page image, uploaded file input, spreadsheet evidence, File Search, and Code Interpreter when enabled.
 - Drawing interpretation schema for holes, bends, slots, cut marks, tables, and notes.
 - Marked image preview for quote user review.
 - Low-confidence drawing interpretations in workbook manual review and interpretation notes.
@@ -72,7 +72,7 @@ Scope:
 Gate:
 
 - OCR/vision output is evidence, not authoritative price/spec data.
-- Node/backend owns upload, file metadata, provider refs, ACL, audit, fallback routing, and workbook validation.
+- Node/backend owns upload, file metadata, provider refs, ACL, audit, capability preflight, explicit provider fallback, and workbook validation.
 - Formal ongoing Admin data import still requires Admin-uploaded ERP XLSX parsed data or validated table UI edits.
 - Holes, slots, bends, cut marks, and dimensions have source refs.
 - Ambiguous vision output cannot write confirmed workbook totals without low-confidence mark.
@@ -212,7 +212,7 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/exports/.*signed.
 
 Scope:
 
-- OpenHarness OAuth token storage and operational risk review.
+- openai-oauth responses token storage and operational risk review.
 - Official OpenAI API fallback cost/rate-limit/budget observability.
 - Provider/version pin review.
 - Model allowlist review.
@@ -221,10 +221,11 @@ Scope:
 
 Gate:
 
-- Production either explicitly accepts OpenHarness OAuth provider risk or disables it outside local/dev.
+- Production either explicitly accepts openai-oauth responses provider risk or disables it outside local/dev.
 - `OPENAI_API_KEY` fallback remains configured for production-safe operation when required.
 - OAuth `remaining quota` is not treated as a guaranteed API feature.
 - API fallback handles usage limits, rate limits, budget, billing, API-key, and project-policy errors.
+- Production config does not add separate DOCX/PDF/XLS fallback keys; those route through the unified file, vision, spreadsheet, or hosted-tool classes.
 - Capability status is current enough before enabling file/vision/XLSX workflows.
 
 Verification:
@@ -270,9 +271,9 @@ Before broad release:
 
 - Run full relevant test matrix.
 - Run manual vertical slice on local dev: backend health, authenticated Steel quote, workbook patch, Excel export, ERP XLSX Admin import or table UI update, quote reflects new price.
-- Run OpenHarness OAuth and OpenAI API fallback provider smoke tests.
+- Run openai-oauth responses and OpenAI API fallback provider smoke tests.
 - Review audit logs for every external write and every provider fallback.
 - Review prompt-injection test coverage for source chunks, tool results, OCR text, and Admin import rows.
-- Confirm OpenHarness/OpenAI model list, API type shape, provider capability status, and cost guardrails are current.
+- Confirm openai-oauth/OpenAI model list, API type shape, provider capability status, and cost guardrails are current.
 - Confirm database TLS policy and Supabase permissions for deployed environment.
 - Confirm eval harness covers critical business regressions.

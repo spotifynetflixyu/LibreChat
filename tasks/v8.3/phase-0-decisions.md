@@ -1,4 +1,4 @@
-# Phase 0: v8.2 Decision Baseline
+# Phase 0: v8.3 Decision Baseline
 
 Goal: lock the decisions that would otherwise cause rework in schema, import, source upload policy, workbook, export, quote resolution, and Steel AI provider orchestration.
 
@@ -24,23 +24,26 @@ Exit criteria:
 
 ## D0.2 Steel AI Provider And State Contract
 
-Decision: Steel AI execution goes through a `SteelAIProvider` interface. The default driver is `openharness_chatgpt_oauth`; the fallback and production-safe driver is `openai_api` backed by `OPENAI_API_KEY`.
+Decision: Steel AI execution goes through a `SteelAIProvider` interface. The default driver is `openai_oauth_responses`; the capability-gated secondary driver is `openai_api` backed by `OPENAI_API_KEY`.
 
 Confirmed baseline:
 
-- OpenHarness ChatGPT/Codex OAuth is a provider runtime, not a replacement for LibreChat auth, roles, conversations, files, Admin shell, Steel tools, repositories, calculators, workbook validation, or audit.
-- OpenHarness session/conversation IDs are runtime trace only. They are not official OpenAI Conversations API state and are not the business source of truth.
-- Official OpenAI Responses / Conversations state is used only by the `openai_api` driver.
+- openai-oauth /v1/responses is a provider runtime, not a replacement for LibreChat auth, roles, conversations, files, Admin shell, Steel tools, repositories, calculators, workbook validation, or audit.
+- LibreChat UI / preset / agent model parameters remain effective requested runtime settings. Steel must translate them into provider-neutral runtime options and must not silently ignore enabled settings.
+- `openai_oauth_responses` is stateless full-history. Any provider IDs are runtime trace only; they are not official OpenAI Conversations API state and are not the business source of truth.
+- The `openai_api` driver is Responses-first. Official OpenAI Responses / Conversations state is used only by the `openai_api` driver, and Responses-only settings must not downgrade to Chat Completions.
 - When the `openai_api` driver uses official Responses API conversation state, it passes `conversation` and does not pass `previous_response_id` in the same request. Previous response IDs are audit/fallback metadata only.
+- `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED=true` is mandatory. The four `STEEL_FALLBACK_ON_*` flags default false; when one is true, fallback still requires the matching `openai_api` capability status to be `passed`.
+- Provider unsupported / fallback messages appear inside the chat transcript as small warning text, not as toast UI.
 - Chain recovery never relies on fetching historical conversation text from a provider. Prompt bundle reconstruction uses LibreChat messages, `steel_conversation_meta`, current workbook state, context refs, active sources, instructions, and memory.
-- Every provider run stores bounded metadata in `steel_ai_runs`: provider, provider session/conversation/response IDs when available, selected model, token usage when available, context refs, tool call IDs, attached file refs, fallback reason, typed error category, and error summary.
+- Every provider run stores bounded metadata in `steel_ai_runs`: requested provider, effective provider, requested/effective settings, unsupported settings, provider session/conversation/response IDs when available, selected model, token usage when available, context refs, tool call IDs, attached file refs, fallback reason, typed error category, and error summary.
 - Reconfirm current OpenAI SDK/API types immediately before implementing the `openai_api` driver because Responses API event and file/vision shapes can change.
 
 Exit criteria:
 
 - The implementation plan assigns live provider smoke tests to Phase 3, not Phase 0.
-- Phase 3 records at least one OpenHarness OAuth live smoke and at least one official OpenAI API fallback live smoke.
-- The Phase 3 run plan records provider IDs, selected provider, selected model, token usage when available, context refs, tool call IDs, fallback reason, and typed provider error categories.
+- Phase 3 records at least one openai-oauth responses live smoke and at least one official OpenAI API fallback live smoke.
+- The Phase 3 run plan records provider IDs, requested provider, effective provider, selected model, token usage when available, context refs, tool call IDs, fallback or unsupported reason, and typed provider error categories.
 
 ## D0.3 Workbook Line Pricing Traceability
 
@@ -66,7 +69,7 @@ Rules:
 
 ## D0.4 ERP Codes And Admin Import Keys
 
-Decision: v8.2 Admin data updates are based on admin-uploaded ERP export XLSX files. Parser output is matched against old data, reviewed, confirmed, and then committed to the database.
+Decision: v8.3 Admin data updates are based on admin-uploaded ERP export XLSX files. Parser output is matched against old data, reviewed, confirmed, and then committed to the database.
 
 Target schema direction:
 
@@ -175,7 +178,7 @@ Rules:
 
 - Build the minimal Chat Workspace and Workbook Preview with shared API mock data in `packages/data-provider/src/steel/mock/` before real handbook data import.
 - Keep API mock fixtures behind the explicit mock path; do not re-export them from `packages/data-provider/src/steel/index.ts`.
-- Prove real provider chat can create a customer-visible seven-sheet workbook before moving to Phase 4, with one OpenHarness OAuth smoke and one official OpenAI API fallback smoke.
+- Prove real provider chat can create a customer-visible seven-sheet workbook before moving to Phase 4, with one openai-oauth responses smoke and one official OpenAI API fallback smoke.
 - BullMQ infrastructure comes later.
 - Small workbook generation, small import fixtures, and the first quote vertical slice stay synchronous with payload limits and timeout expectations.
 - Source reindex, large XLSX parse, and large workbook export can move to Phase 6 jobs.
@@ -228,7 +231,7 @@ Exit criteria:
 
 ## D0.12 Steel Eval Harness
 
-Decision: v8.2 requires an eval harness before broad beta.
+Decision: v8.3 requires an eval harness before broad beta.
 
 Minimum evals:
 
@@ -272,25 +275,27 @@ Exit criteria:
 
 ## D0.14 Chinese Source Schema Mapping
 
-Decision: Reference materials under `docs/reference/doc` are Chinese source inputs. Before they inform schema, API mock data, tools, AI API prompt context, or database queries, they must pass through `tasks/v8.2/source-schema-mapping.md`, an agreed mapping from Chinese source labels/headers/terms to English canonical schema keys.
+Decision: Reference materials under `docs/reference` are Chinese source inputs. Before they inform spec tables, price tables, formula tables, processing-price tables, tools, AI API prompt context, or database queries, DB-bound fields must pass through `tasks/v8.3/source-schema-mapping.md`, an agreed mapping from Chinese source labels/headers/terms to English canonical schema keys.
 
 Rules:
 
-- Programmatic contracts use English canonical identifiers: DTO fields, workbook paths, tool argument names, repository filters, SQL column names, and API response keys.
+- Programmatic DB/query contracts use English canonical identifiers: SQL column names, repository filters, tool argument names, DTO fields, and API response keys.
 - Chinese source labels are preserved as data values where useful: display labels, source labels, aliases, original text, search terms, and audit/source references.
-- The mapping artifact records at least Chinese source label/header, English canonical key, target table/DTO/tool field, type/unit, normalizer, and source reference.
-- Mock data shaped from `docs/reference/doc` must use English DTO/API keys even when the visible workbook label or source text is Chinese.
+- The mapping artifact records at least Chinese source label/header, English canonical key, target database surface, type/unit, normalizer, and source reference.
+- Mock data shaped from `docs/reference` must use English DTO/API keys even when the visible workbook label or source text is Chinese.
 - The mapping may be used to design the real Supabase schema/data model; it is not limited to mock data.
 - No separate `review_status`, `corrected_text`, or typo approval workflow is required in the mapping artifact; by the time importable data/SQL is generated, code-agent discussion should already use corrected business concepts.
 - The implementation plan must include a code-owned source-schema mapping module, initially designed as `packages/api/src/steel/schema/mapping.ts`, plus focused tests.
 - AI API prompt/tool orchestration must receive a compact mapping context so it can map Chinese source/customer wording to existing canonical keys.
 - AI may propose mapped keys in structured output, selected workbook refs, workbook patches, and tool arguments, but backend validation remains authoritative and rejects unknown keys.
 - Do not translate or infer schema fields ad hoc inside query code; repositories and tools query by English canonical keys/columns.
-- This does not require translating every product/customer-facing value to English. Product names, aliases, sheet labels, and source excerpts may remain Chinese data.
+- This does not require translating every product/customer-facing value to English. Product names, aliases, ERP workbook sheet labels, and source excerpts may remain Chinese data.
+- ERP workbook sheet names stay Chinese and are not translated into database schema keys.
+- `docs/reference/公式編號 - Sheet1.csv` is a formula naming/structure reference; runtime calculator data should come from reviewed app-ready JSON or database rows.
 
 Exit criteria:
 
-- Phase 2 produces or updates `tasks/v8.2/source-schema-mapping.md` before schema/mock-data assumptions are treated as stable.
+- Phase 2 produces or updates `tasks/v8.3/source-schema-mapping.md` before schema/mock-data assumptions are treated as stable.
 - Phase 2 designs the code version of the mapping and its AI API serialization contract.
 - Repository/tool/prompt tests use English field names for filters and assertions while covering Chinese aliases/source values as data.
 - The plan contains no requirement for Chinese database column names, DTO keys, or tool argument keys just because the source docs are Chinese.
@@ -301,38 +306,43 @@ Decision: model availability and runtime routing are backend-owned. The Steel Wo
 
 Rules:
 
-- `STEEL_AI_DRIVER_DEFAULT=openharness_chatgpt_oauth`.
-- `STEEL_AI_DRIVER_FALLBACK=openai_api`.
-- `@openharness/core` and `@openharness/provider-chatgpt` versions are pinned before implementation, and their experimental risk is recorded.
-- OpenHarness OAuth token material is stored server-side or in a local encrypted development file. It is never stored in frontend localStorage.
+- `STEEL_AI_DRIVER_DEFAULT=openai_oauth_responses`.
+- `STEEL_AI_DRIVER_SECONDARY=openai_api`.
+- `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED=true`.
+- `STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED=false`.
+- `STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED=false`.
+- `STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED=false`.
+- `STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED=false`.
+- openai-oauth responses token material is stored server-side or in a local encrypted development file. It is never stored in frontend localStorage.
 - Capability smoke tests cover text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and provider conversation/state handling.
-- Pure text and already-smoked backend tool workflows may prefer OpenHarness.
-- File, vision, PDF, XLSX, hosted File Search, Code Interpreter, or hosted shell workflows must fallback to `openai_api` unless the OpenHarness driver has passed the matching smoke test.
-- `check quota remaining` is not an OpenHarness driver requirement. OAuth usage display is limited to subscription driver status, recent errors, and fallback status.
+- Pure text and already-smoked backend tool workflows may prefer openai-oauth.
+- File, vision, spreadsheet, and hosted-tool workflows must pass `openai_oauth_responses` capability smoke before using that capability. If not supported, they return typed errors unless the matching fallback flag is enabled and `openai_api` has a passed smoke result for that same capability.
+- `check quota remaining` is not an openai-oauth driver requirement. OAuth usage display is limited to subscription driver status, recent errors, and fallback status.
 - API fallback is usage-based, not unlimited. It must handle rate limits, usage limits, budget, billing, API-key, and project-policy errors.
 - Failed driver capabilities return typed errors such as `provider_tool_call_unsupported`, `provider_file_input_unsupported`, `provider_vision_input_unsupported`, `provider_xlsx_input_unsupported`, and `provider_hosted_tool_unsupported`.
+- Do not add separate DOCX, PDF, or XLS fallback keys; route those cases through the unified file, vision, spreadsheet, or hosted-tool capability classes as appropriate.
 
 Exit criteria:
 
 - Phase 1 contract/schema work includes driver enum, capability result shape, model option shape, provider run metadata, and typed provider error categories.
-- Phase 3 provider implementation includes injectable OpenHarness and OpenAI drivers, capability smoke tests, fallback routing, and unified `SteelAIEvent` translation.
-- Checkpoints require both OpenHarness OAuth and OpenAI API fallback live smoke evidence before Phase 4.
+- Phase 3 provider implementation includes injectable openai-oauth and OpenAI drivers, capability smoke tests, typed unsupported errors, env-gated API fallback, and unified `SteelAIEvent` translation.
+- Checkpoints require both openai-oauth responses and OpenAI API fallback live smoke evidence before Phase 4.
 
 ## Phase 0 Lock Review
 
-Status: locked after OpenHarness-verified v8.2 replan.
+Status: locked after openai-oauth-responses-primary v8.3 replan.
 
 Approved decisions:
 
-- Phase 0 is closed with D0.1-D0.15 as the decision baseline. The OpenHarness provider/capability additions are reflected across phases and checkpoints. Remaining work belongs to Phase 1/2/3 implementation planning, not more Phase 0 discovery.
+- Phase 0 is closed with D0.1-D0.15 as the decision baseline. The openai-oauth provider/capability additions are reflected across phases and checkpoints. Remaining work belongs to Phase 1/2/3 implementation planning, not more Phase 0 discovery.
 - Phase 1 Guest Mode implementation stays narrow: `STEEL_GUEST_MODE` gate, conversation-scoped guest token hash, and Admin routes always unavailable to guests. Public share links, retention automation, and advanced guest hardening remain later work.
 - When `STEEL_GUEST_MODE=false`, Steel quote access should use Steel-specific permissions/capabilities, such as `steel.quote.access` and `steel.admin.access`, through existing LibreChat auth/role seams. Do not collapse Steel access into a generic Admin boolean.
-- Phase 2 source-schema mapping first covers handbook schema concepts, workbook DTO/API keys, ERP customer/price keys, and tool arguments. Full future RAG/source mapping is not required for the first pass.
-- `tasks/v8.2/source-schema-mapping.md` is the Phase 2 discussion source of truth. During implementation, design `packages/api/src/steel/schema/mapping.ts`; after that module exists, code becomes the runtime source while the markdown keeps decision context.
+- Phase 2 source-schema mapping first covers DB-bound spec, price, formula, and processing-price keys. Workbook sheet names remain Chinese ERP-facing labels and are not database schema keys.
+- `tasks/v8.3/source-schema-mapping.md` is the Phase 2 discussion source of truth. During implementation, design `packages/api/src/steel/schema/mapping.ts`; after that module exists, code becomes the runtime source while the markdown keeps decision context.
 - AI API mapping context must be task-scoped. Workbook patch prompts receive workbook keys; price search receives price/search keys. Do not place the entire schema mapping into every prompt.
 - Phase 3 mock data does not wait for complete mapping. It must use locked canonical keys and remain replaceable by future real schema/API data.
 - Do not change Supabase schema in Phase 0. Phase 2 handbook/mapping work decides the minimal schema delta, and every schema change updates both `supabase/schema.sql` and one new migration.
 - Admin ERP Import MVP should start with either `price_items` or customers depending on ERP key reliability. Prefer `price_items` if ERP item code plus customer tier is stable enough, because it validates quote value fastest; otherwise start with customers/customer aliases/customer tiers.
-- Internal DB/DTO/tool keys remain English. Customer-facing Excel sheet labels and headers use Chinese business wording.
-- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through deterministic tools using OpenHarness OAuth, and one equivalent fallback smoke uses official OpenAI API. Both record provider, model, provider IDs, fallback status, tool call IDs, and context refs.
+- Internal DB/DTO/tool keys remain English. Customer-facing and ERP-facing Excel sheet labels and headers use Chinese business wording.
+- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through deterministic tools using openai-oauth responses, and one equivalent API fallback smoke uses official OpenAI API. Both record requested provider, effective provider, model, provider IDs, fallback status, tool call IDs, and context refs.
 - After Phase 0, plan Phase 1 and Phase 2 together, but implement Phase 1 contracts/routes/auth/audit first while a separate data/schema pass can extend Phase 2 mapping and schema design in parallel.

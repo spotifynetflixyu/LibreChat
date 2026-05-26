@@ -184,8 +184,5 @@
       "admin/",
       "packages/"
     ]
-  },
-  "dependencies": {
-    "@openharness/core": "^0.6.2"
   }
 }

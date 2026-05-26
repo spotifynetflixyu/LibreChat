@@ -68,6 +68,14 @@ _Avoid_: Treating Chinese source labels as code-owned field names, database colu
 The English field, key, path, or column name used by programmatic Steel contracts for a mapped business concept.
 _Avoid_: Raw Chinese source header, display label, translated-at-query-time field guess
 
+**ERP Workbook Sheet Name**:
+The Chinese workbook sheet name required by ERP-facing quote workbook output.
+_Avoid_: English-only sheet label, translated ERP sheet
+
+**Selected Workbook Target**:
+One explicit workbook cell or field position the user marks as the target of a chat instruction.
+_Avoid_: Vague workbook area, AI-guessed patch target
+
 **Admin Table Maintenance**:
 The ongoing admin web workflow that fetches existing database rows and lets an admin preview or edit table data before saving through validated backend APIs.
 _Avoid_: File upload requirement, raw database editor, AI-only update
@@ -99,9 +107,11 @@ _Avoid_: Product name, spec text alone, guessed item match
 - Admin ERP import accepts XLSX uploads; PDF/image/text evidence is not a formal Import Source.
 - **ERP Customer Code** is the import upsert key for customers.
 - **ERP Item Code** plus customer tier is the import upsert key for price items.
-- Chinese labels and headers from `docs/reference/doc` map through **Source Schema Mapping** before they become schema, DTO, tool, or database-query concepts.
+- Chinese labels and headers from `docs/reference` map through **Source Schema Mapping** before they become schema, DTO, tool, or database-query concepts.
 - Programmatic lookup uses English **Canonical Schema Keys**; Chinese names, aliases, and original labels may remain as data values, display labels, search aliases, or source text.
 - AI API prompt/tool context uses **Source Schema Mapping** to resolve Chinese wording to existing **Canonical Schema Keys**; backend validation rejects unknown keys.
+- **ERP Workbook Sheet Names** stay Chinese for workbook/export interoperability even when internal DTO keys and database fields are English.
+- A chat message may include multiple **Selected Workbook Targets** when the user has written instructions for multiple marked cells or fields; backend workbook patching still validates each structured target.
 
 ## Example dialogue
 
@@ -124,7 +134,8 @@ _Avoid_: Product name, spec text alone, guessed item match
 - "latest database price" means the default for new pricing or explicit recalculation, not permission to refresh existing workbook prices automatically.
 - Customer or item rows without the confirmed ERP key are not guessed updates; they require review.
 - "customer-facing Excel" means **Customer Export**, not a full workbook dump.
-- The handbook DOCX under `docs/reference/doc` may be used to design the real schema/data model; real handbook data SQL/import work is deferred until after the chat UX path is prioritized and code/data-import discussions have corrected the source concepts.
-- Chinese reference materials under `docs/reference/doc` do not justify Chinese code/database/tool field names; they require an agreed **Source Schema Mapping** to English **Canonical Schema Keys** first.
+- The handbook DOCX under `docs/reference` may be used to design the real schema/data model; real handbook data SQL/import work is deferred until after the chat UX path is prioritized and code/data-import discussions have corrected the source concepts.
+- Chinese reference materials under `docs/reference` do not justify Chinese code/database/tool field names; they require an agreed **Source Schema Mapping** to English **Canonical Schema Keys** first.
+- A workbook badge without sheet and field/cell position is not a clear **Selected Workbook Target**.
 - ERP export files do not update formal data directly; parser output must be compared with old data and confirmed by an admin before commit.
 - The Admin web UI does not need a DOCX upload path for ongoing updates.

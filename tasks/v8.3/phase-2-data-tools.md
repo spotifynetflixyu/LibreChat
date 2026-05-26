@@ -1,18 +1,18 @@
 # Phase 2: Quote Data And Tools
 
-Goal: make Steel quoting deterministic before involving Steel AI provider orchestration. Tools must query backend-owned repositories, validate inputs, sanitize outputs, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.2_openharness_verified.md`.
+Goal: make Steel quoting deterministic before involving Steel AI provider orchestration. Tools must query backend-owned repositories, validate inputs, sanitize outputs, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
 
 ## Scope
 
 - Supabase read repositories for customers, aliases, tiers, prices, weight specs, processing/cutting/hole/slotting/bending prices, formulas, orders, and source chunks.
 - Use steel handbook DOCX contents to design and validate the real schema/data model shape, without implementing real handbook data SQL import yet.
-- Source schema mapping from Chinese `docs/reference/doc` labels/headers/terms to English canonical schema keys used by DTOs, repositories, tools, AI API prompt context, and database queries.
+- Source schema mapping from Chinese `docs/reference` labels/headers/terms to English canonical schema keys used by spec, price, formula, processing-price, tool, AI API prompt context, and database query contracts.
 - Material normalization dictionary.
 - Customer tier resolver.
 - Product price candidate search and ranking.
 - Stock allocation engine.
 - Deterministic calculation engine.
-- Tool registry with Zod-validated business tools for both OpenHarness OAuth and OpenAI API fallback runs.
+- Tool registry with Zod-validated business tools for both openai-oauth responses and OpenAI API fallback runs.
 - Tool call logging and prompt-injection filtering.
 
 ## Milestone 2.1: Supabase Read Repositories
@@ -55,12 +55,14 @@ rtk npm run build:api
 Tasks:
 
 - Inspect/organize steel handbook DOCX contents to identify schema needs for specs, dimensions, weights, material rules, handbook notes, and source chunks.
-- Build and extend `tasks/v8.2/source-schema-mapping.md` for Chinese labels/headers/terms found in `docs/reference/doc`.
-- For each mapped concept, record Chinese source label/header, English canonical key, target table/DTO/tool field, type/unit, normalizer, and source reference.
+- Build and extend `tasks/v8.3/source-schema-mapping.md` for Chinese labels/headers/terms found in `docs/reference`.
+- For each mapped concept, record Chinese source label/header, English canonical key, target database surface, type/unit, normalizer, and source reference.
 - Use the mapping to design real Supabase tables/columns and shared DTO fields when the handbook reveals a missing business concept.
 - Do not add a correction approval workflow to the mapping; when source text has typos, map the corrected business concept that code/data-import agents should use.
-- Keep programmatic query contracts English-only: repository filters, SQL column names, DTO keys, workbook paths, and tool argument names use canonical English keys.
-- Preserve Chinese values as source/display/search data where useful, including aliases, original source labels, product names, sheet labels, and source excerpts.
+- Keep programmatic query contracts English-only: repository filters, SQL column names, DTO keys, and tool argument names use canonical English keys.
+- Preserve Chinese values as source/display/search data where useful, including aliases, original source labels, product names, ERP workbook sheet labels, and source excerpts.
+- Treat fixed workbook sheet names as Chinese ERP-facing output labels, not database schema keys.
+- Treat `docs/reference/公式編號 - Sheet1.csv` as a formula structure reference; calculator runtime data should come from reviewed app-ready JSON or database rows.
 - Ensure mock data shaped from Chinese references uses English DTO/API keys and Chinese only as values or display/source labels.
 - Design the code-owned mapping module at `packages/api/src/steel/schema/mapping.ts` and focused tests at `packages/api/src/steel/schema/mapping.spec.ts`.
 - Design a prompt serializer that teaches Steel AI providers the allowed source-label-to-canonical-key mapping without exposing raw SQL access.
@@ -281,8 +283,8 @@ Tasks:
 - Apply per-run call limits.
 - Log every tool call with input summary, result status, duration, and error category.
 - Sanitize tool output before returning it to any Steel AI provider.
-- Keep tool definitions provider-neutral: OpenHarness and OpenAI adapters may serialize them differently, but backend validation/execution is shared.
-- Return typed tool errors that the orchestrator can classify for fallback or manual review.
+- Keep tool definitions provider-neutral: openai-oauth and OpenAI adapters may serialize them differently, but backend validation/execution is shared.
+- Return typed tool errors that the orchestrator can classify for provider fallback, unsupported capability, or manual review.
 - Do not provide raw SQL, raw Mongo, read file, or list directory tools.
 
 Acceptance:
@@ -290,7 +292,7 @@ Acceptance:
 - Missing prices never become `0`.
 - Ambiguous specs return candidates plus targeted clarification.
 - Tool result sanitizer neutralizes prompt-injection-like source text.
-- Tool tests can run through provider-neutral executor mocks without depending on a specific OpenHarness or OpenAI SDK.
+- Tool tests can run through provider-neutral executor mocks without depending on a specific openai-oauth or OpenAI SDK.
 
 Verification:
 

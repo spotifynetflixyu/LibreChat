@@ -6,8 +6,8 @@ Goal: deliver the first usable chat UX vertical slice: Chat Workspace message ->
 
 - Authenticated conversation message endpoint.
 - Backend model allowlist and driver selection.
-- `SteelAIProvider` interface with OpenHarness ChatGPT/Codex OAuth default driver and official OpenAI API fallback driver.
-- Capability smoke tests and fallback routing for text, streaming, tool calling, structured output, workbook patch, image/PDF/XLSX input, File Search, and Code Interpreter.
+- `SteelAIProvider` interface with openai-oauth /v1/responses default driver and official OpenAI API explicit fallback driver.
+- Capability smoke tests and env-gated fallback routing for text, streaming, tool calling, structured output, workbook patch, image/PDF/XLSX input, File Search, and Code Interpreter.
 - Prompt bundle builder.
 - Provider-neutral tool-calling loop.
 - Quote Resolution Engine integration.
@@ -15,14 +15,14 @@ Goal: deliver the first usable chat UX vertical slice: Chat Workspace message ->
 - Workbook JSON engine with seven fixed sheets.
 - JSON Patch application and concurrency control.
 - Basic customer-visible workbook API.
-- API mock data shaped from `docs/reference/doc` examples for chat UX development only.
+- API mock data shaped from `docs/reference` examples for chat UX development only; formula runtime fixtures should come from reviewed app-ready JSON or database rows, not direct CSV parsing.
 - `client/src/features/steel` Chat Workspace.
 - Seven-tab Workbook Preview with low-confidence/manual-review visibility.
 - Unified Steel UX framework for desktop and mobile responsive web layouts.
 - Mobile Workbook Preview full-view modal with selected-cell-to-message workflow.
 - Latest accepted workbook patch field highlighting.
 
-Full source RAG, Memory Review UI, production OCR/vision drawing evidence, full Admin import, Admin table maintenance, and real handbook data SQL/import remain out of scope for this phase. Reference files under `docs/reference/doc` may inform real schema design and mock API fixtures, but their values are not imported into the database in this phase.
+Full source RAG, Memory Review UI, production OCR/vision drawing evidence, full Admin import, Admin table maintenance, and real handbook data SQL/import remain out of scope for this phase. Reference files under `docs/reference` may inform real schema design and mock API fixtures, but their values are not imported into the database in this phase.
 
 ## Milestone 3.0: Chat UX Shell And API Mock Data
 
@@ -36,7 +36,7 @@ Files:
 
 Tasks:
 
-- Build the first Chat Workspace screen for message entry, backend model/provider selection, send state, response status, and fallback status.
+- Build the first Chat Workspace screen for message entry, backend model/provider selection, send state, response status, and inline provider warning status.
 - Build a Workbook Preview with the seven fixed tabs and stable empty/loading/error states.
 - Use `packages/data-provider/src/steel/workbooks.ts` as the public DTO owner for workbook JSON, patch request/response, selected workbook refs, changed paths, and changed-field summary items.
 - Keep backend canonical Zod validation in `packages/api/src/steel/workbook/schema.ts`; frontend code and mock data must not define an independent workbook validation schema.
@@ -44,9 +44,10 @@ Tasks:
 - Read available models from the Steel backend allowlist. Show provider/driver status from backend data, not from frontend guesses.
 - Use the same Steel UX framework for desktop and mobile: shared components, hooks, API contracts, and mock data; only layout behavior changes at responsive breakpoints.
 - On mobile, open Workbook Preview as a full-view modal with a clear top-right close button; closing returns to the same chat draft and selected model state.
-- Support one selected workbook cell at a time with a stable selected CSS state.
-- When a user selects a workbook cell, show a field marker/chip in the bottom message input so the user can type the requested change against that exact cell.
-- Send the selected field as structured `selected_workbook_refs` alongside the message; Phase 3 allows at most one selected ref per submit.
+- Support multiple selected workbook targets per submit with stable selected CSS state.
+- When a user selects a workbook cell, show a field marker/chip in the bottom message input that includes the sheet and field/cell position, so the user can confirm the target.
+- If the message input has no user-entered text, the next selected cell replaces the existing marker. If the user has entered text, the next selected cell is added as a new marker on a new line.
+- Send selected targets as structured `selected_workbook_refs` alongside the message; Phase 3 supports multiple selected refs per submit.
 - Allow multi-round chat edits to continue modifying workbook data after each accepted patch.
 - Allow users to describe multiple workbook changes in text without selecting every cell; AI may propose multiple patch operations only when the target fields are unambiguous.
 - Do not require a patch preview/diff confirmation step for every AI workbook update in Phase 3.
@@ -67,7 +68,7 @@ Acceptance:
 - The Steel chat/workbook route works without depending on core LibreChat chat-store changes beyond minimal navigation/registration.
 - Desktop and mobile layouts expose the same core actions: send message, inspect seven workbook tabs, see manual-review rows, and view customer quote output.
 - Mobile users can open workbook preview in a full-view modal and close it with a visible top-right X.
-- Selecting one workbook cell highlights it and inserts a field marker into the bottom composer; submitting sends both the user's text and a single structured selected-cell ref.
+- Selecting workbook cells highlights them and inserts clear sheet/field markers into the bottom composer; submitting sends both the user's text and structured selected refs.
 - Multi-round conversations can patch workbook data over time.
 - Accepted AI workbook patches update the workbook without a required per-patch confirmation gate.
 - The latest changed workbook cells/fields are marked with a background color after the patch is accepted and stay highlighted until the next accepted workbook patch.
@@ -108,7 +109,7 @@ Request shape:
 {
   "message": "幫我查這筆訂單價格",
   "selected_model": "gpt-5.5",
-  "selected_provider": "openharness_chatgpt_oauth",
+  "selected_provider": "openai_oauth_responses",
   "reasoning_effort": "low",
   "selected_workbook_refs": [
     {
@@ -119,6 +120,15 @@ Request shape:
       "column_key": "quoted_unit_price",
       "label": "報價明細 / line-1 / 報價單價",
       "current_value": "120"
+    },
+    {
+      "workbook_id": "workbook-id",
+      "version_seq": 3,
+      "sheet_id": "manual_review",
+      "row_id": "review-2",
+      "column_key": "confidence_reason",
+      "label": "人工複核清單 / review-2 / 低信心原因",
+      "current_value": "尺寸不清"
     }
   ]
 }
@@ -128,7 +138,7 @@ Tasks:
 
 - Validate request body.
 - Validate `selected_provider` and `selected_model` against the backend Steel model allowlist and capability status.
-- Validate selected workbook refs against the current workbook/version and allowed sheet/column set; Phase 3 rejects requests with more than one selected ref.
+- Validate selected workbook refs against the current workbook/version and allowed sheet/column set; Phase 3 accepts multiple refs only when each target is explicit and allowed.
 - Apply Phase 1 access guard.
 - Include selected workbook refs in the prompt context as structured references, not only as user-visible text.
 - Create `steel_ai_runs` record before external provider calls start.
@@ -162,36 +172,38 @@ Files:
 - Create `packages/api/src/steel/ai/runs.ts`
 - Create `packages/api/src/steel/ai/models.ts`
 - Create `packages/api/src/steel/ai/capabilities.ts`
-- Create `packages/api/src/steel/ai/providers/openharness-chatgpt-oauth/client.ts`
-- Create `packages/api/src/steel/ai/providers/openharness-chatgpt-oauth/provider.ts`
-- Create `packages/api/src/steel/ai/providers/openai-api-fallback/client.ts`
-- Create `packages/api/src/steel/ai/providers/openai-api-fallback/provider.ts`
+- Create `packages/api/src/steel/ai/providers/openai-oauth-responses/client.ts`
+- Create `packages/api/src/steel/ai/providers/openai-oauth-responses/provider.ts`
+- Create `packages/api/src/steel/ai/providers/openai-api/client.ts`
+- Create `packages/api/src/steel/ai/providers/openai-api/provider.ts`
 - Add tests under `packages/api/src/steel/ai/**/*.spec.ts`
 
 Tasks:
 
 - Define the `SteelAIProvider` interface with `listModels`, `smokeTest`, and `run`.
-- Convert OpenHarness and OpenAI provider events into a unified `SteelAIEvent`.
-- Pin `@openharness/core` and `@openharness/provider-chatgpt` versions before relying on runtime behavior.
-- Complete `docs/steel-chatgpt-oauth-setup.md` before any real OpenHarness provider smoke or chat UI live test.
-- Keep OpenHarness client/session injectable so tests do not require real OAuth.
-- Store OpenHarness OAuth token material server-side or in a local encrypted development file; never put it in frontend localStorage.
-- Implement official OpenAI API fallback with injectable client and current Responses API type checks.
+- Convert openai-oauth and OpenAI provider events into a unified `SteelAIEvent`.
+- Complete `docs/steel-openai-oauth-responses-setup.md` before any real openai-oauth provider smoke or chat UI live test.
+- Read LibreChat UI / preset / agent model parameters into provider-neutral `SteelRuntimeOptions`; do not silently ignore enabled settings.
+- Keep openai-oauth client/session injectable so tests do not require real OAuth.
+- Store openai-oauth responses token material server-side or in a local encrypted development file; never put it in frontend localStorage.
+- Implement official OpenAI API secondary driver with injectable client and current Responses API type checks.
+- Force `openai_api` to use the Responses API for v8.3 fallback paths; `STEEL_OPENAI_API_ENABLE_ONLY_AFTER_SMOKE_TEST=true` means the driver remains disabled until its relevant smoke cases pass.
 - For `openai_api`, use official `conversation` state and do not send `previousResponseId` with `conversation`; previous response IDs are audit/fallback metadata only.
-- For `openharness_chatgpt_oauth`, store session/conversation IDs as runtime trace only.
+- For `openai_oauth_responses`, store session/conversation IDs as runtime trace only.
 - Persist capability smoke results per provider/model for text, streaming, tool calling, structured output, workbook patch, image input, PDF input, XLSX input, File Search, Code Interpreter, and conversation state.
-- Route pure text and passed tool workflows to OpenHarness by default.
-- Fallback to `openai_api` when OpenHarness reports unsupported tool call, file input, vision input, XLSX input, hosted tool, auth, rate/subscription limit, or invalid event shape.
-- Do not require `remaining quota` for OpenHarness; record subscription/rate/auth failures as typed statuses.
+- Route pure text and passed tool workflows to openai-oauth by default.
+- When openai-oauth lacks a required capability, return a typed unsupported error unless the matching `STEEL_FALLBACK_ON_*` flag is enabled and `openai_api` has a passed smoke result for that same capability.
+- Return chat-inline small warning metadata for unsupported/fallbackd provider decisions; do not design this as toast UI.
+- Do not require `remaining quota` for openai-oauth; record subscription/rate/auth failures as typed statuses.
 - Record API token usage/cost/rate metadata when available for `openai_api`.
 
 Acceptance:
 
-- Provider tests cover first run, subsequent run, provider error, unsupported capability, fallback marking, and invalid structured output.
-- OpenHarness adapter can be tested without real OAuth.
+- Provider tests cover first run, subsequent run, provider error, unsupported capability, env-disabled typed errors, env-enabled capability-gated API fallback, and invalid structured output.
+- openai-oauth adapter can be tested without real OAuth.
 - OpenAI adapter can be tested without real API calls.
 - Capability records are usable by the model selector and orchestrator routing policy.
-- Manual live smoke test plan is documented before moving to Phase 4, and ChatGPT OAuth binding is complete before it hits a real provider.
+- Manual live smoke test plan is documented before moving to Phase 4, and openai-oauth binding is complete before it hits a real provider.
 
 Verification:
 
@@ -225,7 +237,7 @@ MVP behavior:
 
 - Include current user instruction, optional agent instructions, current workbook summary, available tools, structured schema, and task-scoped source-schema mapping context.
 - Record empty arrays in `context_refs` for sources/instructions/memories until those modules exist.
-- Keep provider-specific serialization outside the core prompt bundle so OpenHarness and OpenAI adapters can format messages/tools without changing business prompt rules.
+- Keep provider-specific serialization outside the core prompt bundle so openai-oauth and OpenAI adapters can format messages/tools without changing business prompt rules.
 
 Acceptance:
 
@@ -350,17 +362,19 @@ Tasks:
 - Enforce max tool calls per run.
 - Parse structured workbook output or workbook patch.
 - Apply workbook patch through workbook service only.
-- Persist `context_refs`, `tool_call_ids`, provider IDs, selected provider/model, and fallback status.
+- Persist `context_refs`, `tool_call_ids`, provider IDs, requested/effective provider/model, and fallback status.
 - Convert provider auth/rate/subscription/capability failures into typed errors.
-- Automatically fallback to `openai_api` when fallback policy says the selected OpenHarness capability is unsupported.
+- If openai-oauth capability is unsupported and no matching fallback flag is enabled, return typed unsupported error without calling OpenAI API.
+- If openai-oauth capability is unsupported and the matching fallback flag is enabled, fallback directly to `openai_api` only when the same capability is `passed` for the secondary driver.
+- Render provider unsupported/fallback notices inside the chat transcript as small warning text, not toast.
 - Keep file/vision/XLSX/hosted-tool routing explicit; do not assume same-model means same capability across drivers.
 
 Acceptance:
 
-- Mocked OpenHarness run can call price tools and produce a workbook patch.
+- Mocked openai-oauth run can call price tools and produce a workbook patch.
 - Mocked OpenAI fallback run can call price tools and produce a workbook patch.
-- Mocked OpenHarness unsupported file/vision/XLSX path falls back to OpenAI API or returns a typed manual-review error according to policy.
-- Mocked run can use selected workbook refs to propose a patch for the targeted workbook cell.
+- Mocked openai-oauth unsupported file/vision/XLSX path falls back to OpenAI API or returns a typed manual-review error according to policy.
+- Mocked run can use multiple selected workbook refs to propose patches for targeted workbook cells.
 - Mocked run can process a text-only request with multiple explicit workbook changes and produce multiple validated patch operations.
 - Runaway tool loop stops with typed error and audit record.
 - Invalid structured output does not mutate workbook state.
@@ -374,26 +388,26 @@ rtk npm run build:api
 
 ## Milestone 3.7: Live Provider Smoke
 
-Prerequisite: complete `docs/steel-chatgpt-oauth-setup.md` and verify the server can load the ChatGPT OAuth binding without printing secrets. Do not run these cases against a real OpenHarness provider before that prerequisite is complete.
+Prerequisite: complete `docs/steel-openai-oauth-responses-setup.md` and verify the server can load the openai-oauth binding without printing secrets. Do not run these cases against a real openai-oauth provider before that prerequisite is complete.
 
 Required manual smoke cases:
 
 | Case | Driver | Scenario | Pass condition |
 |---|---|---|---|
-| OH-01 | `openharness_chatgpt_oauth` | Pure text LINE-style order | Streams or returns response through Steel provider adapter |
-| OH-02 | `openharness_chatgpt_oauth` | Backend API tool call | Model emits tool call, backend executes, sanitized result returns to model |
-| OH-03 | `openharness_chatgpt_oauth` | Structured workbook patch | Patch passes backend schema validation and updates workbook |
-| OH-04 | `openharness_chatgpt_oauth` | Image/PDF/XLSX capability probe | Passed capability is recorded, or typed unsupported error triggers fallback |
+| OAUTH-01 | `openai_oauth_responses` | Pure text LINE-style order | Streams or returns response through Steel provider adapter |
+| OAUTH-02 | `openai_oauth_responses` | Backend API tool call | Model emits tool call, backend executes, sanitized result returns to model |
+| OAUTH-03 | `openai_oauth_responses` | Structured workbook patch | Patch passes backend schema validation and updates workbook |
+| OAUTH-04 | `openai_oauth_responses` | Image/PDF/XLSX capability probe | Passed capability is recorded, or typed unsupported error is returned when matching fallback is disabled or secondary capability is not passed |
 | API-01 | `openai_api` | Official Responses API conversation | `conversation` pattern works and previous response ID is audit only |
 | API-02 | `openai_api` | Customer-visible workbook from chat | Creates or patches a seven-sheet workbook |
-| API-03 | `openai_api` | File/vision/XLSX fallback | Produces evidence or low-confidence/manual-review result without corrupting workbook |
+| API-03 | `openai_api` | File/vision/XLSX explicit fallback | Produces evidence or low-confidence/manual-review result without corrupting workbook |
 
 Evidence to record in `tasks/todo.md` review:
 
 - Provider and model.
 - Capability case ID.
 - Provider session/conversation/response IDs when available.
-- Fallback reason when fallback occurs.
+- Fallback or unsupported reason when relevant.
 - Tool call IDs.
 - Workbook ID/version.
 - Context refs.
@@ -407,22 +421,23 @@ Do not move to Phase 4 until:
 - The Chat Workspace is implemented as an independent Steel workspace, with no MVP dependency on changing the core LibreChat chat store/message flow.
 - Desktop and mobile use the same Steel UX framework and data contracts.
 - Mobile Workbook Preview uses a full-view modal with top-right close control.
-- Phase 3 UI supports one selected workbook cell per submit; text-only instructions may still ask AI to update multiple unambiguous workbook fields.
-- Selected workbook cells are represented as structured refs in message requests and drive workbook patch sync after AI processing.
+- Phase 3 UI supports multiple selected workbook targets per submit when each marker has clear sheet and field/cell position.
+- Selected workbook cells are represented as structured refs in message requests and drive workbook patch sync after AI processing; backend targeting does not depend on parsing marker text alone.
 - Workbook patches do not require per-update user confirmation in Phase 3.
 - Latest updated workbook cells/fields are visibly highlighted with a background color after accepted patches, until replaced by the next accepted patch.
 - Failed or rejected patch attempts show a chat explanation and do not highlight workbook fields.
 - Phase 3 has no explicit Undo button; revert/change requests go through chat and the validated patch service.
 - Successful AI workbook patches include a concise chat summary of changed fields, not a full diff table.
 - Backend model selector returns driver capability status and hides failed/disabled runtime options.
-- OpenHarness and OpenAI provider adapters are injectable and tested without real external calls.
+- openai-oauth and OpenAI provider adapters are injectable and tested without real external calls.
 - Capability smoke records exist for all MVP model/provider options.
-- ChatGPT OAuth binding setup is complete before real OpenHarness provider smoke or Steel chat UI live testing.
-- OpenHarness OAuth live smoke creates or patches a customer-visible workbook for a text/tool/structured workflow.
+- openai-oauth binding setup is complete before real openai-oauth provider smoke or Steel chat UI live testing.
+- openai-oauth responses live smoke creates or patches a customer-visible workbook for a text/tool/structured workflow.
 - Official OpenAI API fallback live smoke creates or patches a customer-visible workbook and verifies the official `conversation` pattern.
-- File/vision/XLSX capability failures either fallback to `openai_api` or return typed low-confidence/manual-review errors.
+- File/vision/XLSX capability failures either fallback to `openai_api` when enabled or return typed low-confidence/manual-review errors.
+- Provider unsupported/fallback UI is rendered as inline small warning text in the chat transcript, not toast.
 - Workbook Preview renders all seven tabs and hides customer-blocked fields.
 - Workbook patch concurrency is tested.
-- Provider run records include selected provider, selected model, provider IDs when available, context refs, tool call IDs, fallback status, and typed provider error categories.
+- Provider run records include requested provider, effective provider, selected model, provider IDs when available, context refs, tool call IDs, fallback status, and typed provider error categories.
 - Workbook JSON contains all seven fixed sheets.
 - No AI output can directly mutate MongoDB/Supabase outside whitelisted services.

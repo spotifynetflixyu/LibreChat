@@ -2,7 +2,7 @@
 
 Goal: make the quote workbook operational outside the chat surface: users can export the seven-sheet workbook, selected sheets, system order sheet, and customer quote sheet without refreshing or corrupting persisted workbook prices.
 
-Non-goal: Admin ERP XLSX import, table maintenance, source management, RAG, memory, or production OCR hardening. Those move to later phases under the OpenHarness-verified framework.
+Non-goal: Admin ERP XLSX import, table maintenance, source management, RAG, memory, or production OCR hardening. Those move to later phases under the openai-oauth-responses-primary framework.
 
 ## Milestone 4.0: Export Library Setup
 
