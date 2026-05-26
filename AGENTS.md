@@ -3,6 +3,12 @@
 Read `CLAUDE.md` before making project changes. It is the canonical project
 agent document for this repository.
 
+## Conversation Wrap-Up
+
+Every final or wrap-up response must include a `Next Tasks` section with
+concrete options for the user to choose from. Keep the options short,
+actionable, and specific to the current work.
+
 ## Supabase Schema Rule
 
 Steel PostgreSQL schema changes must always update both files:

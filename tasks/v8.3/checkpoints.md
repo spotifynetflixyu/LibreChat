@@ -48,10 +48,16 @@ Required:
 - [ ] Route tests cover both `STEEL_GUEST_MODE=true` and `STEEL_GUEST_MODE=false`.
 - [ ] Audit primitive exists.
 - [ ] Steel AI driver enum, capability result shape, provider run metadata, typed provider error categories, and model option shape exist.
-- [ ] Model allowlist endpoint is backend-owned and does not expose raw provider secrets.
+- [ ] Model allowlist endpoint is backend-owned, does not expose raw provider secrets, and aligns with LibreChat `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior instead of inventing a parallel model system.
+- [ ] Admin route protection reuses existing LibreChat `ADMIN`/`USER` role and capability semantics before adding Steel-specific permission layering.
+- [ ] An early OpenAI OAuth proxy test seam exists before full workbook orchestration, without requiring Phase 1 to complete the Phase 3 live workbook smoke.
+- [ ] The first openai-oauth implementation path targets the local HTTP `/v1` proxy with injectable fetch for `/models`, `/responses`, and `/health`.
+- [ ] Direct `openai-oauth-provider` package usage is allowed as the primary path after AI SDK versions are unified through package-manager overrides/resolutions, packaging verification passes, model discovery remains backend-owned, and auth material remains server-only.
+- [ ] `openai_oauth_responses` request serialization is stateless full-history and rejects `previous_response_id` / `item_reference`.
+- [ ] Adapter-dropped or unsupported LibreChat runtime settings are recorded in provider metadata instead of silently treated as applied.
 - [ ] `steel_ai_runs` can represent both openai-oauth responses trace metadata and OpenAI API fallback metadata.
 - [ ] Supabase schema/migration rule is preserved.
-- [ ] `steel_source_versions` metadata supports ERP XLSX imports; handbook DOCX only informs schema/data model unless a later data-import task is approved.
+- [ ] `steel_source_versions` metadata supports ERP XLSX imports with stable append-only column assumptions; handbook DOCX only informs schema/data model unless a later data-import task is approved.
 
 Verification:
 
@@ -135,15 +141,20 @@ Required:
 - [ ] Mock workbook fixtures are typed against shared workbook DTOs and pass backend workbook validation where required.
 - [ ] Workbook Preview renders all seven tabs from mock or real workbook API data.
 - [ ] `SteelAIProvider` interface exists with openai-oauth and OpenAI API fallback adapters.
+- [ ] openai-oauth adapter uses the local HTTP `/v1` proxy first, with mocked `/models` and `/responses` tests before live smoke.
 - [ ] openai-oauth adapter uses server-side/local encrypted token storage and never frontend localStorage.
 - [ ] OpenAI API adapter is Responses-first, uses official Responses `conversation` state, and does not mix `previousResponseId` into the same call.
 - [ ] openai-oauth provider state is recorded only as trace metadata.
-- [ ] LibreChat UI / preset / agent model parameters are converted to provider-neutral runtime options and are not silently ignored.
+- [ ] openai-oauth adapter sends full reconstructed context on every run and never sends `previous_response_id` or `item_reference`.
+- [ ] openai-oauth adapter records unsupported or proxy-dropped settings such as stateful replay and output-token controls.
+- [ ] Direct `openai-oauth-provider` in-process usage is covered by tests with mocked fetch/fake auth and packaging verification; AI SDK 6 is not treated as a blocker, but package versions must be unified with overrides/resolutions.
+- [ ] LibreChat UI / preset / agent model parameters and default settings are converted to provider-neutral runtime options and are not silently ignored.
 - [ ] The five fallback keys are the only active v8.3 fallback env contract.
 - [ ] Disabled fallback flags return typed unsupported errors without calling OpenAI API.
 - [ ] Enabled fallback flags call `openai_api` only when the matching secondary capability has a passed smoke result.
 - [ ] Capability smoke records exist for text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and conversation/state behavior.
 - [ ] Backend model selector returns provider, smoke status, support flags, and enabled/disabled status.
+- [ ] Backend model selector preserves LibreChat UI / preset / default model settings as requested runtime options and reports unsupported Steel provider capabilities inline.
 - [ ] openai-oauth binding runbook has been completed before any live openai-oauth provider smoke or chat UI live test.
 - [ ] Failed or unverified file/vision/XLSX/hosted-tool capabilities fallback to `openai_api` only when env-enabled, otherwise return typed low-confidence/manual-review errors.
 - [ ] Provider unsupported/fallback notices render inside the chat transcript as small warning text, not toast UI.
@@ -162,6 +173,7 @@ Required:
 - [ ] Patch responses include changed-field summary items for chat acknowledgement.
 - [ ] Ambiguous multi-field edit requests ask for clarification or produce manual-review output instead of guessing patch targets.
 - [ ] Manual live openai-oauth responses smoke run creates or patches a customer-visible workbook before Phase 4.
+- [ ] Manual live openai-oauth smoke includes `/health`, `/v1/models`, a pure `/v1/responses` probe, and a stateless second-turn case.
 - [ ] Manual live OpenAI API fallback smoke run creates or patches a customer-visible workbook before Phase 4.
 - [ ] Manual provider smoke evidence records requested provider, effective provider, model, provider IDs when available, fallback or unsupported reason, tool call IDs, workbook ID/version, context refs, and typed error category when relevant.
 - [ ] Stale patch version returns `409`.

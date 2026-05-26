@@ -6,6 +6,7 @@ const adminConfig = require('./admin/config');
 const adminGrants = require('./admin/grants');
 const adminGroups = require('./admin/groups');
 const adminRoles = require('./admin/roles');
+const adminSteel = require('./admin/steel');
 const adminUsers = require('./admin/users');
 const endpoints = require('./endpoints');
 const staticRoute = require('./static');
@@ -27,6 +28,7 @@ const roles = require('./roles');
 const oauth = require('./oauth');
 const files = require('./files');
 const share = require('./share');
+const steel = require('./steel');
 const tags = require('./tags');
 const auth = require('./auth');
 const keys = require('./keys');
@@ -41,6 +43,7 @@ module.exports = {
   adminGrants,
   adminGroups,
   adminRoles,
+  adminSteel,
   adminUsers,
   keys,
   apiKeys,
@@ -50,6 +53,7 @@ module.exports = {
   oauth,
   files,
   share,
+  steel,
   banner,
   agents,
   convos,

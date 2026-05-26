@@ -51,3 +51,5 @@ export * from './feedback';
 export * from './parameterSettings';
 /* code-execution sandbox */
 export * from './codeEnvRef';
+/* Steel */
+export * from './steel';

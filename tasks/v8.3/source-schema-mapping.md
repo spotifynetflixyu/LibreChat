@@ -14,6 +14,7 @@ This v8.3 mapping is intentionally narrower than the old v8.2 draft. It only cov
 - Formula reference files, including `docs/reference/公式編號 - Sheet1.csv`, are used to understand formula naming and structure. Runtime/calculator data should come from reviewed app-ready data such as JSON or reviewed database rows, not from parsing the CSV directly at quote time.
 - Current source files may contain text typos, but no separate typo approval workflow is required. By the time code agents generate importable data or SQL, mapping rows should already use the corrected business concept.
 - Do not add `review_status`, `corrected_text`, or approval-state columns to this mapping unless a later data-import task explicitly needs them.
+- Treat ERP XLSX column names as stable and append-only for v8.3 import design. Future source files may add columns, but existing required columns should not be renamed; parsers should tolerate extra columns while preserving required-key validation.
 - Backend validation remains authoritative. The AI API can propose a canonical key from the mapping, but it cannot create new keys or bypass DTO/tool/schema validation.
 
 ## Source Of Truth Path

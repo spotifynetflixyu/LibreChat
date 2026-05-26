@@ -270,6 +270,14 @@ export const agents = ({ path = '', options }: { path?: string; options?: object
 
 export const activeJobs = () => `${BASE_URL}/api/agents/chat/active`;
 
+export const steelBase = () => `${BASE_URL}/api/steel`;
+export const steelModels = () => `${steelBase()}/ai/models`;
+export const steelConversation = (conversationId: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}`;
+
+export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
+export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;
+
 export const mcp = {
   tools: `${BASE_URL}/api/mcp/tools`,
   servers: `${BASE_URL}/api/mcp/servers`,

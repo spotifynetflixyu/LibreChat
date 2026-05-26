@@ -1,3 +1,170 @@
+# Pre-commit Markdown Formatting
+
+- [x] Add `*.md` prettier formatting to `.husky/lint-staged.config.js`.
+- [x] Verify lint-staged config loads and formatting checks pass.
+- [x] Record review evidence.
+
+## Review
+
+- Added a `*.md` lint-staged entry that runs `prettier --write`.
+- Verification: `node -e "console.log(require('./.husky/lint-staged.config.js'))"` loaded the config and showed the new Markdown rule.
+- Verification: `npx prettier --check .husky/lint-staged.config.js tasks/todo.md` passed.
+- Verification: `git diff --check -- .husky/lint-staged.config.js tasks/todo.md` passed.
+
+# V8.3 Remove OAuth Transport Selector
+
+- [x] Remove `STEEL_OPENAI_OAUTH_TRANSPORT` from `.env.example`.
+- [x] Remove env-controlled local proxy mode from setup/spec/phase docs.
+- [x] Update `tasks/lessons.md` with the direct-provider-only env rule.
+- [x] Run focused grep verification and `git diff --check`.
+
+## Review
+
+- Removed `STEEL_OPENAI_OAUTH_TRANSPORT` from `.env.example`; Steel OAuth env now only exposes `STEEL_OPENAI_OAUTH_RESPONSES_ENABLED` and `STEEL_OPENAI_OAUTH_AUTO_FALLBACK`.
+- Removed env-controlled local proxy/provider-mode language from setup/spec/phase docs. Direct `openai-oauth-provider` is now the only coded runtime path; local proxy remains manual smoke-probe material only.
+- Verification: focused grep found no active `STEEL_OPENAI_OAUTH_TRANSPORT` or `STEEL_OPENAI_OAUTH_LOCAL_PROXY_BASE_URL` assignment in `.env.example`, setup/spec env blocks, or v8.3 task docs.
+- Verification: `git diff --check -- .env.example docs/steel-openai-oauth-responses-setup.md docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md tasks/v8.3/README.md tasks/v8.3/phase-0-decisions.md tasks/v8.3/phase-1-platform-foundation.md tasks/v8.3/phase-3-quote-workbook-mvp.md tasks/v8.3/openai-oauth-provider-spike.md tasks/lessons.md tasks/todo.md` passed.
+
+# V8.3 Direct Provider Base URL Cleanup
+
+- [x] Remove active `STEEL_OPENAI_OAUTH_RESPONSES_BASE_URL` from `.env.example`.
+- [x] Clarify that the localhost `/v1` URL is local-proxy-only manual diagnostic material, not runtime env.
+- [x] Update setup/spec/phase docs and `tasks/lessons.md`.
+- [x] Run focused grep verification and `git diff --check`.
+
+## Review
+
+- Removed active `STEEL_OPENAI_OAUTH_RESPONSES_BASE_URL` from `.env.example`; direct provider mode now has no active `/v1` URL.
+- Superseded: a later correction removed the transport selector entirely; local proxy is now manual diagnostic material only, not runtime env.
+- Updated setup runbook, active v8.3 spec, Phase 3 provider notes, and lessons so URL semantics are local-proxy-only.
+- Verification: focused grep found no `STEEL_OPENAI_OAUTH_RESPONSES_BASE_URL` assignment in `.env.example`, setup runbook, active spec, or task docs.
+- Verification: `git diff --check -- .env.example docs/steel-openai-oauth-responses-setup.md docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md tasks/v8.3/phase-3-quote-workbook-mvp.md tasks/lessons.md tasks/todo.md` passed.
+
+# V8.3 .env.example Fallback Key Rename
+
+- [x] Rename simplified `.env.example` fallback switch from `STEEL_OPENAI_API_ENABLED` to `STEEL_OPENAI_OAUTH_AUTO_FALLBACK`.
+- [x] Sync v8.3 setup/spec env blocks so the key describes automatic OAuth fallback behavior.
+- [x] Update `tasks/lessons.md` with the fallback-key naming rule.
+- [x] Run focused grep verification and `git diff --check`.
+
+## Review
+
+- Renamed the simplified operator-facing fallback switch to `STEEL_OPENAI_OAUTH_AUTO_FALLBACK=false` in `.env.example`.
+- Synced the setup runbook and active v8.3 spec env blocks, and added wording that the flag means automatic reroute from OAuth primary to `openai_api`, still gated by passed capability smoke results.
+- Verification: grep found the new key in `.env.example`, setup runbook, active spec, todo, and lessons; old `STEEL_OPENAI_API_ENABLED` remains only as explanatory text in the lesson/todo correction, not as an env assignment.
+- Verification: `git diff --check -- .env.example docs/steel-openai-oauth-responses-setup.md docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md tasks/lessons.md tasks/todo.md` passed.
+
+# V8.3 .env.example Steel AI Routing Simplification
+
+- [x] Simplify `.env.example` Steel AI provider routing to only operator-facing switches and URL.
+- [x] Update `tasks/lessons.md` with the env-example simplification rule.
+- [x] Run focused env grep and `git diff --check`.
+
+## Review
+
+- Reduced `.env.example` Steel AI routing to `STEEL_OPENAI_OAUTH_RESPONSES_ENABLED` and the fallback switch later renamed to `STEEL_OPENAI_OAUTH_AUTO_FALLBACK`; later corrections removed transport/proxy URL env entirely.
+- Detailed provider defaults remain documented in the v8.3 plan/runbook, but are no longer exposed as sample env knobs.
+- Verification: focused grep found no removed internal Steel AI routing env keys in `.env.example`.
+- Verification: `git diff --check -- .env.example tasks/lessons.md tasks/todo.md` passed.
+
+# V8.3 openai-oauth Primary Decision Correction
+
+- [x] Record user correction: Vercel AI SDK 6 is Apache-2.0, production-approved, and should be unified through overrides/resolutions.
+- [x] Update `tasks/lessons.md` with the dependency decision pattern.
+- [x] Update the openai-oauth provider spike result so AI SDK 6 is no longer a blocker.
+- [x] Update v8.3 README, checkpoints, Phase 1, Phase 3, setup runbook, and active spec so `openai-oauth` is primary with unified AI SDK versions.
+- [x] Run focused grep verification and `git diff --check`.
+- [x] Record review evidence in this file.
+
+## Review
+
+- Updated `tasks/lessons.md` with the correction pattern: AI SDK 6 is Apache-2.0, production-approved, not a blocker, and must be unified through package-manager overrides/resolutions when `openai-oauth-provider` is used.
+- Updated the provider spike result, v8.3 README, Phase 0, Phase 1, Phase 3, checkpoints, setup runbook, active v8.3 spec, and `.env.example` so direct `openai-oauth-provider` is the preferred primary path after version unification and packaging verification.
+- Local HTTP proxy wording is now diagnostic/fallback local-dev only; direct provider production use is represented by `STEEL_OPENAI_OAUTH_ALLOW_PRODUCTION=true`, while proxy production hosting remains blocked by `STEEL_OPENAI_OAUTH_LOCAL_PROXY_ALLOW_PRODUCTION=false`.
+- Verification: focused stale-term grep across `tasks/v8.3`, the setup runbook, active spec, `tasks/todo.md`, and `.env.example` returned no stale direct-provider blocker/local-proxy-default hits.
+- Superseded verification: later env simplification removed active proxy-production/internal keys from `.env.example`; those details remain in setup/spec docs only.
+- Verification: `git diff --check` passed.
+
+# V8.3 openai-oauth-provider Compliance And Dependency Spike
+
+- [x] Record the direct-provider spike scope before running isolated dependency tests.
+- [x] Create an isolated `/tmp` Node project and install `openai-oauth-provider` with its AI SDK peers without changing LibreChat package files.
+- [x] Verify package metadata, license, peer dependency, ESM/runtime import behavior, and transitive dependency footprint.
+- [x] Run a mocked direct-provider smoke that proves `createOpenAIOAuth()` can call `/responses` through injected fetch without a real OAuth token.
+- [x] Run a minimal live direct-provider text smoke with local Codex auth without printing tokens or request headers.
+- [x] Compare direct provider path against the local HTTP proxy path for LibreChat integration risk.
+- [x] Update the v8.3 phase plan/runbook with the spike result.
+- [x] Run focused verification and `git diff --check`.
+- [x] Record final spike evidence and next implementation choices in this file.
+
+## Review
+
+- Created isolated spike project at `/tmp/lc-openai-oauth-provider-spike`; installed `openai-oauth-provider@1.0.3`, `ai@6.0.191`, `@ai-sdk/openai@3.0.65`, `typescript@6.0.3`, and `tsx@4.22.3`. No LibreChat package files were changed.
+- Package metadata: `openai-oauth-provider@1.0.3` is `AGPL-3.0-only`; it depends on AI SDK 6-era packages and introduced duplicate AI SDK provider/openai package versions in the isolated install.
+- Import/runtime checks: Node 22.17.1 could both `require('openai-oauth-provider')` and dynamic import it; exported keys were `createOpenAIOAuth`, `deriveAccountId`, `loadAuthTokens`, `openai`, and `parseJwtClaims`.
+- TypeScript check passed with `moduleResolution=bundler`; `createOpenAIOAuth()` returned a model accepted by AI SDK `generateText()`.
+- Mocked smoke passed: fake auth plus mocked `fetch` proved `generateText({ model: openai('gpt-5.4') })` calls `https://chatgpt.com/backend-api/codex/responses`, injects OAuth headers, normalizes the body to `stream: true`, `instructions: ""`, `store: false`, and returns text/usage/provider metadata from mocked SSE.
+- Live smoke passed with local `~/.codex/auth.json`: `gpt-5.4` returned exactly `librechat-provider-live-ok`; output included usage and provider metadata, and no token material or request headers were printed.
+- Superseded decision: the later user correction approves AI SDK 6 for production and makes direct `openai-oauth-provider` the coded provider path, with package-manager overrides/resolutions required to unify AI SDK package versions. Keep local HTTP proxy only as a manual diagnostic smoke probe.
+- Added `tasks/v8.3/openai-oauth-provider-spike.md` and updated v8.3 README, Phase 1, Phase 3, checkpoints, setup runbook, and active v8.3 spec with this result.
+- Verification: focused grep found the spike result and direct-provider blockers across active docs. `git diff --check` passed.
+
+# V8.3 openai-oauth Provider Research Plan Update
+
+- [x] Research `EvanZhouDev/openai-oauth` README, package surfaces, CLI proxy, direct AI SDK provider, live tests, and license/dependency shape.
+- [x] Update the active v8.3 spec with the researched integration decision.
+- [x] Update `tasks/v8.3` phase/checkpoint docs so implementation starts with the local HTTP `/v1` proxy path and treats the direct provider package as a gated compatibility/compliance spike.
+- [x] Update the openai-oauth setup runbook with concrete commands, smoke probes, and stateless `/v1/responses` constraints.
+- [x] Run focused documentation verification and `git diff --check`.
+- [x] Record review evidence and next tasks in this file.
+
+## Review
+
+- Researched `EvanZhouDev/openai-oauth` at repo commit `aa526920af322568968a30fe820b2b9d55545f8a`; npm metadata reported `openai-oauth@1.0.2` and `openai-oauth-provider@1.0.3`, both `AGPL-3.0-only`.
+- Key finding: `openai-oauth` CLI/local server exposes an OpenAI-compatible localhost `/v1` surface with `/v1/models`, `/v1/responses`, and `/v1/chat/completions`; `/v1/responses` is stateless and rejects provider replay state such as `previous_response_id` / `item_reference`.
+- Superseded finding: the later dependency correction approves AI SDK 6 for production; direct `openai-oauth-provider` is now the preferred primary path once AI SDK package versions are unified through overrides/resolutions and packaging is verified.
+- Superseded update: a later correction changed this to direct `openai-oauth-provider` primary path, with local HTTP proxy retained only for diagnostic/fallback local-dev adapter tests.
+- Setup runbook now includes `npx @openai/codex login`, `npx openai-oauth@latest --host 127.0.0.1 --port 10531`, optional `--models`, `/health`, `/v1/models`, and `/v1/responses` smoke probes.
+- Superseded verification: active v8.3 docs now keep the stateless replay constraints, but no longer treat AI SDK 6 or direct-provider usage as blockers.
+- Verification: `git diff --check -- tasks/todo.md tasks/v8.3 docs/steel-openai-oauth-responses-setup.md docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md` passed.
+
+# V8.3 Phase 1 Foundation And OAuth Proxy Start
+
+- [x] Record the Phase 1/2 start decisions and user corrections before implementation.
+- [x] Inspect existing LibreChat model/default setting, role/admin, route registration, and data-provider patterns before adding Steel-specific seams.
+- [x] Update v8.3 phase/checkpoint docs if live code inspection shows the plan needs narrower integration wording.
+- [x] Write failing tests for Steel shared DTO contracts and model option/provider capability types.
+- [x] Implement the minimal `packages/data-provider/src/steel` public contracts and endpoint/key helpers needed for Phase 1.
+- [x] Write failing tests for Steel Mongo schemas, including `steel_` collection names, guest token hash lookup, provider run metadata, and capability smoke result shape.
+- [x] Implement minimal Steel Mongo schemas in `packages/data-schemas` without full business behavior.
+- [x] Write failing tests for Steel access decisions around `STEEL_GUEST_MODE`, LibreChat ADMIN/USER role handling, and admin route denial for guests.
+- [x] Implement Steel access helpers and thin route shells under `/api/steel` and `/api/admin/steel`.
+- [x] Write failing tests for backend-owned Steel model options that reuse LibreChat model/default setting concepts where available.
+- [x] Implement minimal model option service and provider metadata contracts, keeping `openai_oauth_responses` as the early priority path and `openai_api` as capability-gated secondary.
+- [x] Add an early OpenAI OAuth proxy smoke/test seam that can be exercised before full workbook orchestration.
+- [x] Keep Phase 2 source-schema mapping changes narrow; treat ERP XLSX columns as stable append-only and tolerate new columns while preserving required-key validation.
+- [x] Run focused verification: data-provider build/tests, data-schemas tests/build, packages/api Steel tests/build, and `git diff --check`.
+- [x] Record review evidence and remaining next tasks in this file.
+
+## Active Decisions
+
+- Work stays on the current branch.
+- Phase 1 implementation comes first: contracts, schemas, routes, auth/role access, audit, provider metadata, and early OAuth proxy seam.
+- Phase 2 mapping/schema design can proceed in parallel, but this pass should not make broad Supabase schema changes.
+- Model allowlist/default model behavior must adapt to LibreChat's existing model/default setting framework before adding Steel-only behavior.
+- Admin route authorization should first use existing LibreChat account role semantics for ADMIN vs USER.
+- ERP XLSX fields are basically stable and append-only; future files may add columns but should not rename existing columns.
+- OpenAI OAuth as proxy must be developed and tested early enough to guide later workbook and provider adjustments.
+
+## Review
+
+- Implemented the first Phase 1 foundation slice only: shared Steel DTO/provider contracts, endpoint/key helpers, minimal Mongo schema definitions, access helpers, LibreChat model-option adaptation, OpenAI OAuth proxy client seam, and thin `/api/steel` plus `/api/admin/steel` route shells.
+- Updated v8.3 docs for the locked corrections: adapt model/default settings through LibreChat first, use existing ADMIN/USER route semantics first, treat ERP XLSX columns as stable append-only, and prioritize an early `openai_oauth_responses` proxy seam.
+- Added focused red-first coverage before implementation in `packages/data-provider`, `packages/data-schemas`, `packages/api`, and `api/server/routes`.
+- Verification passed for focused Steel tests: data-provider `src/steel/ai.spec.ts` and `src/steel/workbooks.spec.ts`; data-schemas `src/schema/steel.spec.ts`; packages/api `src/steel/access.spec.ts`, `models.spec.ts`, and `oauth.spec.ts`; API route smoke `server/routes/__tests__/steel.spec.js`.
+- Verification passed for package builds: `npm run build:data-provider`, `npm run build:data-schemas`, and `npm run build:api`.
+- Remaining Phase 1 work: full conversation route behavior, guest token issuance/hash persistence, workbook orchestration schemas beyond public DTOs, audit service wiring, real capability persistence, and real OpenAI OAuth provider smoke. No Supabase schema or migration was changed in this slice.
+
 # V8.3 OpenAI OAuth Responses Package Sync
 
 - [x] Record the v8.3 docs/package scope and user corrections before editing.

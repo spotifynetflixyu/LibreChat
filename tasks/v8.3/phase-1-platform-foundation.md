@@ -1,6 +1,6 @@
 # Phase 1: Platform Foundation
 
-Goal: create the Steel module skeleton, shared contracts, Mongo state models, route boundary, permissions, audit primitives, provider-state metadata, model allowlist contracts, and Supabase repository seam without building full AI behavior yet.
+Goal: create the Steel module skeleton, shared contracts, Mongo state models, route boundary, permissions, audit primitives, provider-state metadata, model option contracts aligned with LibreChat's existing model/default-setting framework, an early OpenAI OAuth proxy seam, and the Supabase repository seam without building full workbook AI behavior yet.
 
 ## Scope
 
@@ -12,6 +12,8 @@ Goal: create the Steel module skeleton, shared contracts, Mongo state models, ro
 - Environment-gated guest/auth access.
 - Audit primitive: a reusable audit event schema/service that records actor, action, target, result, error category, and correlation IDs before Phase 2/3/4 add real business writes.
 - Steel AI provider enum, capability result contract, model option contract, provider run metadata, and typed provider error categories.
+- LibreChat model/default-setting alignment for Steel model options: inspect `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and runtime setting behavior before adding Steel-only selection logic.
+- Early OpenAI OAuth provider seam that can be tested before full workbook orchestration. Use direct `openai-oauth-provider` as the coded provider path after package-manager overrides/resolutions unify AI SDK versions and build packaging is verified. Keep the local HTTP `/v1` proxy only as a manual diagnostic smoke probe. The completed spike is recorded in `tasks/v8.3/openai-oauth-provider-spike.md`.
 - Supabase repository wrapper around `packages/api/src/steel/postgres.ts`.
 - Source artifact/source version metadata for ERP XLSX Admin workflows and rejection audit for unsupported uploads. Phase 1 does not create DOCX parser/import metadata; handbook DOCX remains a planning/schema-design reference only.
 - Setup runbooks for local admin/user account creation and openai-oauth binding prerequisites before any live provider smoke or chat UI test.
@@ -56,9 +58,10 @@ Tasks:
   - `SteelAIProviderErrorCategory`
 - Keep workbook-related public DTOs in `packages/data-provider/src/steel/workbooks.ts`, including workbook patch request/response, selected workbook refs, changed paths, and changed-field summary items.
 - Allow conversation message request types in `packages/data-provider/src/steel/conversations.ts`, but make them reuse workbook DTOs rather than duplicating selected-cell or patch metadata shapes.
-- Define model-selector response types around backend allowlist/capability status, not the raw LibreChat global provider list.
+- Define model-selector response types around backend allowlist/capability status while preserving the effective LibreChat model/default setting concepts that Steel must translate into provider-neutral runtime options.
 - Include `openai_oauth_responses` and `openai_api` as the only v8.3 driver IDs unless a later plan explicitly adds another provider.
 - Include capability flags for text, streaming, tool calling, structured output, image, PDF, XLSX, File Search, Code Interpreter, spreadsheet augmentation, and conversation state.
+- Include runtime-setting support metadata so the openai-oauth adapter can report adapter-dropped or unsupported settings such as official Responses state options or output-token controls that the local proxy does not honor.
 - Add Steel endpoint helpers under `/api/steel`.
 - Add React Query keys that do not collide with existing LibreChat keys.
 - Keep arbitrary JSON wrapped in named types; avoid broad `Record<string, unknown>` as a shortcut.
@@ -170,12 +173,19 @@ Tasks:
 - Add service-level access checks rather than trusting route middleware alone.
 - Create audit event helper that every later write path can reuse.
 - Define Phase 1 audit event names: `conversation_created`, `guest_token_issued`, `access_denied`, `model_list_viewed`, `capability_smoke_requested`, and `source_upload_rejected`.
-- Add backend-owned model allowlist endpoint that returns only enabled model/provider pairs and smoke status.
+- Add backend-owned model option endpoint that returns only enabled model/provider pairs and smoke status, using LibreChat `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior as the input framework instead of creating a parallel model selector.
+- Add an `openai_oauth_responses` provider module using direct `openai-oauth-provider` and AI SDK 6 as the only coded runtime path.
+- Keep local HTTP proxy probes in runbook/manual diagnostics only; do not add an env-controlled local proxy provider mode.
+- Use injectable clients/fetch so unit tests do not require real OAuth.
+- Add package-manager overrides/resolutions for `ai`, `@ai-sdk/openai`, `@ai-sdk/provider`, and `@ai-sdk/provider-utils` before adding the direct provider dependency, so the backend does not carry duplicate AI SDK runtime versions.
 - Define env contracts for `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED`, `STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED`, `STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED`, `STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED`, and `STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED`.
 - Keep capability-smoke under `/api/admin/steel/...` and make it admin-only or local-dev-only until security review says otherwise.
-- Do not require Phase 1 capability smoke to call real providers. Phase 1 creates the route contract, persistence shape, and setup instructions; Phase 3 performs live provider smoke after openai-oauth binding is complete.
+- Add an early OpenAI OAuth provider seam that can be unit-tested and smoke-tested without full workbook orchestration. The Phase 1 implementation should use the direct provider adapter when dependency overrides and packaging verification are included in the same implementation slice. Full live quote-workbook provider smoke remains a Phase 3 gate after openai-oauth binding is complete.
+- Preserve the `openai-oauth-provider` spike decision in code/docs: the package can install, import, typecheck, run with mocked fetch, and make a live local-auth text call. AI SDK 6 is Apache-2.0 and production-approved; the remaining dependency requirement is unified package versions via overrides/resolutions.
+- Ensure the adapter never sends or stores `previous_response_id` / `item_reference` for `openai_oauth_responses`; the local proxy is stateless and expects full-history input.
+- Ensure the adapter does not claim official Responses settings were applied when the local proxy drops or rewrites them. Unsupported settings should be recorded in provider run metadata and surfaced through admin/debug or inline warning metadata as appropriate.
 - Do not expose openai-oauth responses tokens, OpenAI API keys, or raw provider payloads through model/capability endpoints.
-- Document how the user should create a local LibreChat admin account and normal user account before Steel route testing. Verify against current LibreChat behavior where the first registered user becomes `ADMIN` and later registrations default to `USER`.
+- Document how the user should create a local LibreChat admin account and normal user account before Steel route testing. Verify against current LibreChat behavior where the first registered user becomes `ADMIN` and later registrations default to `USER`; admin route shells should reuse existing role/capability semantics first.
 - Document the openai-oauth binding prerequisites and local token-storage expectations before any live openai-oauth smoke or chat UI testing.
 
 Acceptance:
@@ -188,6 +198,9 @@ Acceptance:
 - Model selector hides disabled or failed provider/model options unless an admin/debug view explicitly requests diagnostics.
 - Capability smoke results are persisted or auditable enough for later typed unsupported and fallback decisions.
 - Admin-only Steel diagnostics are reachable only through `/api/admin/steel/...`.
+- The openai-oauth local-proxy client can list models and submit a `/responses` payload through mocked `fetch` in tests.
+- The adapter serializes every `openai_oauth_responses` run as `stateless_full_history`, rejects provider-state inputs, and records unsupported/dropped runtime settings.
+- No `openai-oauth-provider` package dependency is added in Phase 1 until dependency overrides/resolutions and packaging verification are in the same implementation slice. Tests must still be able to run with injectable clients and without real OAuth.
 - The setup docs teach admin/user account creation and openai-oauth binding prerequisites without requiring a live provider call in Phase 1.
 
 Verification:
@@ -233,8 +246,10 @@ Do not move to Phase 2 until:
 - Shared Steel contracts build.
 - Mongo Steel state schemas build and have focused tests.
 - Environment-gated Steel conversation routes have route tests for enabled and disabled guest modes.
-- Provider/model contracts and capability records exist before Phase 3 orchestrator work.
-- Source artifact/source version metadata can represent ERP XLSX imports and parser status; Admin DOCX/PDF/image/.txt rejection for ongoing web import is specified. Handbook DOCX real-data provenance is deferred with the later SQL/import task.
+- Provider/model contracts and capability records exist before Phase 3 orchestrator work, and they preserve LibreChat model/default setting inputs as provider-neutral runtime options.
+- An OpenAI OAuth provider seam exists early enough to test provider authorization flow before workbook orchestration.
+- Direct `openai-oauth-provider` implementation is allowed as the primary path only when AI SDK versions are unified through overrides/resolutions, packaging verification passes, model discovery stays backend-owned, and auth material remains server-only.
+- Source artifact/source version metadata can represent ERP XLSX imports and parser status under stable append-only column assumptions; Admin DOCX/PDF/image/.txt rejection for ongoing web import is specified. Handbook DOCX real-data provenance is deferred with the later SQL/import task.
 - Steel admin APIs use `/api/admin/steel/...`; quote/user-facing APIs use `/api/steel/...`.
 - Local account setup and openai-oauth setup runbooks exist before Phase 3 chat UI/provider testing.
 - Supabase readiness helper still passes unit tests.

@@ -5,8 +5,9 @@ Goal: deliver the first usable chat UX vertical slice: Chat Workspace message ->
 ## Scope
 
 - Authenticated conversation message endpoint.
-- Backend model allowlist and driver selection.
+- Backend model options and driver selection, aligned with LibreChat's existing `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior.
 - `SteelAIProvider` interface with openai-oauth /v1/responses default driver and official OpenAI API explicit fallback driver.
+- `openai_oauth_responses` adapter uses direct `openai-oauth-provider` as the coded provider path after AI SDK package versions are unified with overrides/resolutions and packaging is verified. Keep the `openai-oauth` local HTTP `/v1` proxy only as a manual diagnostic smoke probe.
 - Capability smoke tests and env-gated fallback routing for text, streaming, tool calling, structured output, workbook patch, image/PDF/XLSX input, File Search, and Code Interpreter.
 - Prompt bundle builder.
 - Provider-neutral tool-calling loop.
@@ -137,7 +138,7 @@ Request shape:
 Tasks:
 
 - Validate request body.
-- Validate `selected_provider` and `selected_model` against the backend Steel model allowlist and capability status.
+- Validate `selected_provider` and `selected_model` against the backend Steel model options and capability status, preserving LibreChat UI / preset / default setting inputs as provider-neutral runtime options.
 - Validate selected workbook refs against the current workbook/version and allowed sheet/column set; Phase 3 accepts multiple refs only when each target is explicit and allowed.
 - Apply Phase 1 access guard.
 - Include selected workbook refs in the prompt context as structured references, not only as user-visible text.
@@ -183,13 +184,21 @@ Tasks:
 - Define the `SteelAIProvider` interface with `listModels`, `smokeTest`, and `run`.
 - Convert openai-oauth and OpenAI provider events into a unified `SteelAIEvent`.
 - Complete `docs/steel-openai-oauth-responses-setup.md` before any real openai-oauth provider smoke or chat UI live test.
-- Read LibreChat UI / preset / agent model parameters into provider-neutral `SteelRuntimeOptions`; do not silently ignore enabled settings.
+- Read LibreChat UI / preset / agent model parameters and default settings into provider-neutral `SteelRuntimeOptions`; do not silently ignore enabled settings or bypass LibreChat defaults.
 - Keep openai-oauth client/session injectable so tests do not require real OAuth.
+- Implement the first `openai_oauth_responses` adapter with direct `openai-oauth-provider` and AI SDK 6 only; do not add an env-selected local proxy mode.
+  - Model discovery stays backend-owned; direct provider mode does not rely on provider internals for model lists.
+  - Local proxy commands remain manual smoke probes in the setup runbook, not runtime routing code.
+  - The adapter sends full prompt/conversation history on every run.
+  - The adapter never sends `previous_response_id` or `item_reference` for this driver.
+  - The adapter treats official Responses state and any provider/proxy-dropped settings as unsupported runtime settings, not as successful applied settings.
+- Direct in-process `openai-oauth-provider` is the preferred primary implementation after dependency overrides/resolutions and packaging verification. The spike in `tasks/v8.3/openai-oauth-provider-spike.md` proved install/import/typecheck/mocked fetch/live text viability. Vercel AI SDK 6 is Apache-2.0 and production-approved; implementation must unify AI SDK package versions and keep auth material server-only.
 - Store openai-oauth responses token material server-side or in a local encrypted development file; never put it in frontend localStorage.
 - Implement official OpenAI API secondary driver with injectable client and current Responses API type checks.
 - Force `openai_api` to use the Responses API for v8.3 fallback paths; `STEEL_OPENAI_API_ENABLE_ONLY_AFTER_SMOKE_TEST=true` means the driver remains disabled until its relevant smoke cases pass.
 - For `openai_api`, use official `conversation` state and do not send `previousResponseId` with `conversation`; previous response IDs are audit/fallback metadata only.
 - For `openai_oauth_responses`, store session/conversation IDs as runtime trace only.
+- For `openai_oauth_responses`, store local proxy URL, model, response ID when returned, stream/non-stream mode, unsupported settings, and typed proxy/provider error categories as bounded run metadata. Never store OAuth auth file contents or raw provider payloads.
 - Persist capability smoke results per provider/model for text, streaming, tool calling, structured output, workbook patch, image input, PDF input, XLSX input, File Search, Code Interpreter, and conversation state.
 - Route pure text and passed tool workflows to openai-oauth by default.
 - When openai-oauth lacks a required capability, return a typed unsupported error unless the matching `STEEL_FALLBACK_ON_*` flag is enabled and `openai_api` has a passed smoke result for that same capability.
@@ -201,6 +210,9 @@ Acceptance:
 
 - Provider tests cover first run, subsequent run, provider error, unsupported capability, env-disabled typed errors, env-enabled capability-gated API fallback, and invalid structured output.
 - openai-oauth adapter can be tested without real OAuth.
+- openai-oauth local-proxy adapter can be tested with mocked `/models` and `/responses` fetch calls.
+- openai-oauth live smoke is run through a local `npx openai-oauth@latest --host 127.0.0.1 --port 10531` process after the setup runbook is complete.
+- Direct `openai-oauth-provider` adapter can be tested with mocked `fetch`, fake auth, and live local-auth text smoke. It becomes the default runtime path after dependency version unification and packaging verification.
 - OpenAI adapter can be tested without real API calls.
 - Capability records are usable by the model selector and orchestrator routing policy.
 - Manual live smoke test plan is documented before moving to Phase 4, and openai-oauth binding is complete before it hits a real provider.
@@ -392,15 +404,17 @@ Prerequisite: complete `docs/steel-openai-oauth-responses-setup.md` and verify t
 
 Required manual smoke cases:
 
-| Case | Driver | Scenario | Pass condition |
-|---|---|---|---|
-| OAUTH-01 | `openai_oauth_responses` | Pure text LINE-style order | Streams or returns response through Steel provider adapter |
-| OAUTH-02 | `openai_oauth_responses` | Backend API tool call | Model emits tool call, backend executes, sanitized result returns to model |
-| OAUTH-03 | `openai_oauth_responses` | Structured workbook patch | Patch passes backend schema validation and updates workbook |
-| OAUTH-04 | `openai_oauth_responses` | Image/PDF/XLSX capability probe | Passed capability is recorded, or typed unsupported error is returned when matching fallback is disabled or secondary capability is not passed |
-| API-01 | `openai_api` | Official Responses API conversation | `conversation` pattern works and previous response ID is audit only |
-| API-02 | `openai_api` | Customer-visible workbook from chat | Creates or patches a seven-sheet workbook |
-| API-03 | `openai_api` | File/vision/XLSX explicit fallback | Produces evidence or low-confidence/manual-review result without corrupting workbook |
+| Case     | Driver                   | Scenario                             | Pass condition                                                                                                                                 |
+| -------- | ------------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| OAUTH-00 | `openai_oauth_responses` | Local proxy readiness and model list | `GET /health` succeeds and `/v1/models` returns the configured or account-discovered allowlist without printing token material                 |
+| OAUTH-01 | `openai_oauth_responses` | Pure text LINE-style order           | Streams or returns response through Steel provider adapter                                                                                     |
+| OAUTH-02 | `openai_oauth_responses` | Backend API tool call                | Model emits tool call, backend executes, sanitized result returns to model                                                                     |
+| OAUTH-03 | `openai_oauth_responses` | Structured workbook patch            | Patch passes backend schema validation and updates workbook                                                                                    |
+| OAUTH-04 | `openai_oauth_responses` | Image/PDF/XLSX capability probe      | Passed capability is recorded, or typed unsupported error is returned when matching fallback is disabled or secondary capability is not passed |
+| OAUTH-05 | `openai_oauth_responses` | Stateless second turn                | Steel sends full reconstructed context and does not send `previous_response_id` / `item_reference`                                             |
+| API-01   | `openai_api`             | Official Responses API conversation  | `conversation` pattern works and previous response ID is audit only                                                                            |
+| API-02   | `openai_api`             | Customer-visible workbook from chat  | Creates or patches a seven-sheet workbook                                                                                                      |
+| API-03   | `openai_api`             | File/vision/XLSX explicit fallback   | Produces evidence or low-confidence/manual-review result without corrupting workbook                                                           |
 
 Evidence to record in `tasks/todo.md` review:
 

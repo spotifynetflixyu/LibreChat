@@ -29,8 +29,10 @@ Decision: Steel AI execution goes through a `SteelAIProvider` interface. The def
 Confirmed baseline:
 
 - openai-oauth /v1/responses is a provider runtime, not a replacement for LibreChat auth, roles, conversations, files, Admin shell, Steel tools, repositories, calculators, workbook validation, or audit.
+- Research on `EvanZhouDev/openai-oauth` confirms two surfaces: `openai-oauth-provider` direct Vercel AI SDK provider and the `openai-oauth` local HTTP `/v1` proxy. v8.3 implementation uses direct `openai-oauth-provider` as the only coded runtime path after AI SDK package versions are unified through overrides/resolutions and LibreChat packaging is verified; the local HTTP proxy remains a manual local-dev smoke probe only.
 - LibreChat UI / preset / agent model parameters remain effective requested runtime settings. Steel must translate them into provider-neutral runtime options and must not silently ignore enabled settings.
 - `openai_oauth_responses` is stateless full-history. Any provider IDs are runtime trace only; they are not official OpenAI Conversations API state and are not the business source of truth.
+- `openai_oauth_responses` must not send `previous_response_id` or `item_reference`; unsupported or proxy-dropped runtime settings are recorded in provider metadata.
 - The `openai_api` driver is Responses-first. Official OpenAI Responses / Conversations state is used only by the `openai_api` driver, and Responses-only settings must not downgrade to Chat Completions.
 - When the `openai_api` driver uses official Responses API conversation state, it passes `conversation` and does not pass `previous_response_id` in the same request. Previous response IDs are audit/fallback metadata only.
 - `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED=true` is mandatory. The four `STEEL_FALLBACK_ON_*` flags default false; when one is true, fallback still requires the matching `openai_api` capability status to be `passed`.
@@ -346,3 +348,10 @@ Approved decisions:
 - Internal DB/DTO/tool keys remain English. Customer-facing and ERP-facing Excel sheet labels and headers use Chinese business wording.
 - Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through deterministic tools using openai-oauth responses, and one equivalent API fallback smoke uses official OpenAI API. Both record requested provider, effective provider, model, provider IDs, fallback status, tool call IDs, and context refs.
 - After Phase 0, plan Phase 1 and Phase 2 together, but implement Phase 1 contracts/routes/auth/audit first while a separate data/schema pass can extend Phase 2 mapping and schema design in parallel.
+
+Post-lock implementation clarifications:
+
+- Phase 1 model-option work must inspect and adapt LibreChat's existing `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior before adding Steel-only selection logic.
+- Phase 1 Admin route protection should first use LibreChat account role/capability behavior for `ADMIN` and `USER`; Steel-specific permissions can layer on top after that seam is proven.
+- ERP XLSX source columns are treated as stable and append-only for v8.3 planning: future exports may add columns, but existing required columns should not be renamed.
+- OpenAI OAuth as proxy must have an early development/test seam before full workbook orchestration, while full live quote-workbook smoke remains a Phase 3 gate.

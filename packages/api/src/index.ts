@@ -57,6 +57,11 @@ export * from './cache';
 export * from './stream';
 /* Diagnostics */
 export { memoryDiagnostics } from './utils/memory';
+/* Steel */
+export * from './steel/access';
+export * from './steel/handlers';
+export * from './steel/models';
+export * from './steel/oauth';
 /* types */
 export type * from './mcp/types';
 export type * from './flow/types';
