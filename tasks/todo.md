@@ -1,3 +1,21 @@
+# V8.3 Phase 1 Foundation Completion Slice
+
+- [ ] Record accepted grill decisions and the Traditional Chinese workbook label correction.
+- [ ] Record that `/steel/oauth-chat` already proves OAuth file support, and confirm the active route is the OAuth Responses API path.
+- [ ] Split Steel Mongo schemas into `packages/data-schemas/src/schema/steel/` owner files and replace stale `not_run` capability status with `unverified`.
+- [ ] Restrict Steel OAuth Responses model support to `gpt-5.5`; remove `gpt-5.4` and lower models from the active allowlist.
+- [ ] Add durable `steel_audit_logs` schema/model and reusable audit service.
+- [ ] Add Steel conversation services and routes for authenticated, guest, and owner-token read paths.
+- [ ] Add service-level access checks for `STEEL_GUEST_MODE=true|false`, owner denial, and guest-token denial.
+- [ ] Keep `/api` wrappers thin and update route tests for guest/auth/admin boundaries.
+- [ ] Reconcile v8.3 env naming drift: fallback means choosing the API driver instead of OAuth, with no `STEEL_FALLBACK_*` matrix and no fallback model key.
+- [ ] Add legacy Office source metadata and a server-conversion proof script task: `.xls` / `.doc` may be handled by AI/provider now, while server-side conversion ships only after the script succeeds.
+- [ ] Run focused data-provider, data-schemas, API, route, build, and diff checks.
+
+## Review
+
+- Pending.
+
 # V8.3 File Analysis Instructions Management
 
 - [x] Record plan for confirming the instruction management contract.

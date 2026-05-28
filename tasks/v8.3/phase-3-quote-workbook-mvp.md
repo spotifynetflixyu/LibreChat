@@ -6,9 +6,9 @@ Goal: deliver the first usable chat UX vertical slice: Chat Workspace message ->
 
 - Authenticated conversation message endpoint.
 - Backend model options and driver selection, aligned with LibreChat's existing `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior.
-- `SteelAIProvider` interface with openai-oauth /v1/responses default driver and official OpenAI API explicit fallback driver.
+- `SteelAIProvider` interface with openai-oauth /v1/responses default driver and official OpenAI API secondary driver.
 - `openai_oauth_responses` adapter uses direct `openai-oauth-provider` as the coded provider path after AI SDK package versions are unified with overrides/resolutions and packaging is verified. Keep the `openai-oauth` local HTTP `/v1` proxy only as a manual diagnostic smoke probe.
-- Capability smoke tests and env-gated fallback routing for text, streaming, tool calling, structured output, workbook patch, image/PDF/XLSX input, File Search, and Code Interpreter.
+- Code-owned capability support for text, streaming, tool calling, structured output, workbook patch, image/PDF/XLSX input, File Search, and Code Interpreter. Phase 3 may add more evidence, but Phase 1 does not build an Admin UI smoke runner.
 - Prompt bundle builder.
 - Provider-neutral tool-calling loop.
 - Quote Resolution Engine integration.
@@ -41,6 +41,7 @@ Tasks:
 - Build a Workbook Preview with the seven fixed tabs and stable empty/loading/error states.
 - Use `packages/data-provider/src/steel/workbooks.ts` as the public DTO owner for workbook JSON, patch request/response, selected workbook refs, changed paths, and changed-field summary items.
 - Keep backend canonical Zod validation in `packages/api/src/steel/workbook/schema.ts`; frontend code and mock data must not define an independent workbook validation schema.
+- Render workbook-facing field labels in Traditional Chinese. Use headers from `docs/reference/*.xlsx` where available, while keeping workbook DTO keys, patch paths, and backend validation keys in English.
 - Build the Phase 3 UI as an independent Steel workspace under `client/src/features/steel`; reuse LibreChat auth/navigation/model-selector shell patterns, but do not rework the core LibreChat chat store or global message flow for the MVP.
 - Read available models from the Steel backend allowlist. Show provider/driver status from backend data, not from frontend guesses.
 - Use the same Steel UX framework for desktop and mobile: shared components, hooks, API contracts, and mock data; only layout behavior changes at responsive breakpoints.
@@ -70,6 +71,7 @@ Acceptance:
 - Desktop and mobile layouts expose the same core actions: send message, inspect seven workbook tabs, see manual-review rows, and view customer quote output.
 - Mobile users can open workbook preview in a full-view modal and close it with a visible top-right X.
 - Selecting workbook cells highlights them and inserts clear sheet/field markers into the bottom composer; submitting sends both the user's text and structured selected refs.
+- Workbook Preview, selected-target markers, changed-field summaries, and customer-facing workbook output use Traditional Chinese field labels, not raw English internal keys.
 - Multi-round conversations can patch workbook data over time.
 - Accepted AI workbook patches update the workbook without a required per-patch confirmation gate.
 - The latest changed workbook cells/fields are marked with a background color after the patch is accepted and stay highlighted until the next accepted workbook patch.
@@ -195,13 +197,13 @@ Tasks:
 - Direct in-process `openai-oauth-provider` is the preferred primary implementation after dependency overrides/resolutions and packaging verification. The spike in `tasks/v8.3/openai-oauth-provider-spike.md` proved install/import/typecheck/mocked fetch/live text viability. Vercel AI SDK 6 is Apache-2.0 and production-approved; implementation must unify AI SDK package versions and keep auth material server-only.
 - Store openai-oauth responses token material server-side or in a local encrypted development file; never put it in frontend localStorage.
 - Implement official OpenAI API secondary driver with injectable client and current Responses API type checks.
-- Force `openai_api` to use the Responses API for v8.3 fallback paths; `STEEL_OPENAI_API_ENABLE_ONLY_AFTER_SMOKE_TEST=true` means the driver remains disabled until its relevant smoke cases pass.
+- Force `openai_api` to use the Responses API for v8.3 secondary-driver paths. Do not add per-capability fallback env flags; choosing API is an explicit driver decision.
 - For `openai_api`, use official `conversation` state and do not send `previousResponseId` with `conversation`; previous response IDs are audit/fallback metadata only.
 - For `openai_oauth_responses`, store session/conversation IDs as runtime trace only.
 - For `openai_oauth_responses`, store local proxy URL, model, response ID when returned, stream/non-stream mode, unsupported settings, and typed proxy/provider error categories as bounded run metadata. Never store OAuth auth file contents or raw provider payloads.
-- Persist capability smoke results per provider/model for text, streaming, tool calling, structured output, workbook patch, image input, PDF input, XLSX input, File Search, Code Interpreter, and conversation state.
+- Persist code-owned capability support per provider/model for text, streaming, tool calling, structured output, workbook patch, image input, PDF input, XLSX input, File Search, Code Interpreter, and conversation state.
 - Route pure text and passed tool workflows to openai-oauth by default.
-- When openai-oauth lacks a required capability, return a typed unsupported error unless the matching `STEEL_FALLBACK_ON_*` flag is enabled and `openai_api` has a passed smoke result for that same capability.
+- When openai-oauth lacks a required capability, return a typed unsupported error unless the backend explicitly routes that workflow through the `openai_api` driver.
 - Return chat-inline small warning metadata for unsupported/fallbackd provider decisions; do not design this as toast UI.
 - Do not require `remaining quota` for openai-oauth; record subscription/rate/auth failures as typed statuses.
 - Record API token usage/cost/rate metadata when available for `openai_api`.
@@ -291,6 +293,7 @@ Tasks:
 
 - Define workbook JSON v1 with stable sheet IDs.
 - Require every workbook to include all seven fixed sheets.
+- Require workbook display metadata to include Traditional Chinese field labels for every visible field; labels should be derived from `docs/reference/*.xlsx` headers where available.
 - Require every priced workbook line to persist original item name, normalized item name, formula identity/version, calculation basis, database default unit price, quoted unit price, line total, adjustment source, quote trace, price source refs, and weight source refs.
 - Treat latest database unit price as default only for new lines or explicit recalculation.
 - Reject patches that change existing quantity, quoted unit price, or line total unless tied to current user request for that line.
@@ -314,6 +317,7 @@ Acceptance:
 - Patch tests prove unit-price and total-price paired recalculation.
 - Patch tests prove later chat rounds do not refresh existing line prices from the database without explicit request.
 - Workbook creation always includes seven fixed sheets.
+- Workbook creation and mock fixtures keep English internal keys while rendering Traditional Chinese field labels.
 - Accepted patch responses expose changed paths and changed-field summary items.
 - Backend workbook tests reject DTO-shaped payloads that violate runtime validation rules.
 - Latest-updated-field highlighting persists until the next accepted patch and is replaced, not accumulated.
@@ -378,8 +382,8 @@ Tasks:
 - Apply workbook patch through workbook service only.
 - Persist `context_refs`, `tool_call_ids`, provider IDs, requested/effective provider/model, and fallback status.
 - Convert provider auth/rate/subscription/capability failures into typed errors.
-- If openai-oauth capability is unsupported and no matching fallback flag is enabled, return typed unsupported error without calling OpenAI API.
-- If openai-oauth capability is unsupported and the matching fallback flag is enabled, fallback directly to `openai_api` only when the same capability is `passed` for the secondary driver.
+- If openai-oauth capability is unsupported, return typed unsupported error unless the backend explicitly chooses the `openai_api` driver for that workflow.
+- If `openai_api` is used for a workflow, require backend policy/evidence for that capability instead of per-capability fallback flags.
 - Render provider unsupported/fallback notices inside the chat transcript as small warning text, not toast.
 - Keep file/vision/XLSX/hosted-tool routing explicit; do not assume same-model means same capability across drivers.
 
@@ -446,11 +450,11 @@ Do not move to Phase 4 until:
 - Successful AI workbook patches include a concise chat summary of changed fields, not a full diff table.
 - Backend model selector returns driver capability status and hides failed/disabled runtime options.
 - openai-oauth and OpenAI provider adapters are injectable and tested without real external calls.
-- Capability smoke records exist for all MVP model/provider options.
+- Code-owned capability support records exist for all MVP model/provider options.
 - openai-oauth binding setup is complete before real openai-oauth provider smoke or Steel chat UI live testing.
 - openai-oauth responses live smoke creates or patches a customer-visible workbook for a text/tool/structured workflow.
-- Official OpenAI API fallback live smoke creates or patches a customer-visible workbook and verifies the official `conversation` pattern.
-- File/vision/XLSX capability failures either fallback to `openai_api` when enabled or return typed low-confidence/manual-review errors.
+- Official OpenAI API workflow evidence creates or patches a customer-visible workbook and verifies the official `conversation` pattern if API driver is approved for that workflow.
+- File/vision/XLSX capability failures return typed low-confidence/manual-review errors unless backend explicitly chooses the `openai_api` workflow.
 - Provider unsupported/fallback UI is rendered as inline small warning text in the chat transcript, not toast.
 - Workbook Preview renders all seven tabs and hides customer-blocked fields.
 - Workbook patch concurrency is tested.

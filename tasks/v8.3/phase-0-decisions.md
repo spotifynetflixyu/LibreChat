@@ -35,7 +35,7 @@ Confirmed baseline:
 - `openai_oauth_responses` must not send `previous_response_id` or `item_reference`; unsupported or proxy-dropped runtime settings are recorded in provider metadata.
 - The `openai_api` driver is Responses-first. Official OpenAI Responses / Conversations state is used only by the `openai_api` driver, and Responses-only settings must not downgrade to Chat Completions.
 - When the `openai_api` driver uses official Responses API conversation state, it passes `conversation` and does not pass `previous_response_id` in the same request. Previous response IDs are audit/fallback metadata only.
-- `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED=true` is mandatory. The four `STEEL_FALLBACK_ON_*` flags default false; when one is true, fallback still requires the matching `openai_api` capability status to be `passed`.
+- Do not use `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED` or `STEEL_FALLBACK_ON_*` flags in active v8.3 docs or code. If the workflow uses the API driver, that is an explicit `openai_api` driver decision.
 - Provider unsupported / fallback messages appear inside the chat transcript as small warning text, not as toast UI.
 - Chain recovery never relies on fetching historical conversation text from a provider. Prompt bundle reconstruction uses LibreChat messages, `steel_conversation_meta`, current workbook state, context refs, active sources, instructions, and memory.
 - Every provider run stores bounded metadata in `steel_ai_runs`: requested provider, effective provider, requested/effective settings, unsupported settings, provider session/conversation/response IDs when available, selected model, token usage when available, context refs, tool call IDs, attached file refs, fallback reason, typed error category, and error summary.
@@ -308,27 +308,25 @@ Decision: model availability and runtime routing are backend-owned. The Steel Wo
 
 Rules:
 
-- `STEEL_AI_DRIVER_DEFAULT=openai_oauth_responses`.
-- `STEEL_AI_DRIVER_SECONDARY=openai_api`.
-- `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED=true`.
-- `STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED=false`.
-- `STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED=false`.
-- `STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED=false`.
-- `STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED=false`.
+- Default driver is `openai_oauth_responses`.
+- Secondary API driver is `openai_api`.
+- Fallback means selecting/routing to `openai_api` instead of the default OAuth driver; it is not model fallback.
+- Do not use a per-capability `STEEL_FALLBACK_*` env matrix in active v8.3 docs or code.
+- Active OAuth Responses model support is `gpt-5.5` only; `gpt-5.4` and lower models are unsupported.
 - openai-oauth responses token material is stored server-side or in a local encrypted development file. It is never stored in frontend localStorage.
-- Capability smoke tests cover text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and provider conversation/state handling.
+- Capability support is code-owned for Phase 1. Do not build a new Admin UI for capability smoke; record `openai_oauth_responses` + `gpt-5.5` support and reuse `/steel/oauth-chat` file-support evidence.
 - Pure text and already-smoked backend tool workflows may prefer openai-oauth.
-- File, vision, spreadsheet, and hosted-tool workflows must pass `openai_oauth_responses` capability smoke before using that capability. If not supported, they return typed errors unless the matching fallback flag is enabled and `openai_api` has a passed smoke result for that same capability.
+- File, vision, spreadsheet, and hosted-tool workflows use the backend support matrix and typed errors. If a workflow must use the API driver, that is an explicit `openai_api` driver decision, not a per-capability fallback env.
 - `check quota remaining` is not an openai-oauth driver requirement. OAuth usage display is limited to subscription driver status, recent errors, and fallback status.
 - API fallback is usage-based, not unlimited. It must handle rate limits, usage limits, budget, billing, API-key, and project-policy errors.
 - Failed driver capabilities return typed errors such as `provider_tool_call_unsupported`, `provider_file_input_unsupported`, `provider_vision_input_unsupported`, `provider_xlsx_input_unsupported`, and `provider_hosted_tool_unsupported`.
-- Do not add separate DOCX, PDF, or XLS fallback keys; route those cases through the unified file, vision, spreadsheet, or hosted-tool capability classes as appropriate.
+- Do not add separate DOCX, PDF, XLS, model, or per-capability fallback keys.
 
 Exit criteria:
 
 - Phase 1 contract/schema work includes driver enum, capability result shape, model option shape, provider run metadata, and typed provider error categories.
-- Phase 3 provider implementation includes injectable openai-oauth and OpenAI drivers, capability smoke tests, typed unsupported errors, env-gated API fallback, and unified `SteelAIEvent` translation.
-- Checkpoints require both openai-oauth responses and OpenAI API fallback live smoke evidence before Phase 4.
+- Phase 3 provider implementation includes injectable openai-oauth and OpenAI drivers, typed unsupported errors, explicit API driver routing where needed, and unified `SteelAIEvent` translation.
+- Checkpoints require openai-oauth responses live evidence and any approved OpenAI API driver evidence before Phase 4.
 
 ## Phase 0 Lock Review
 

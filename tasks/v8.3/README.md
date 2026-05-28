@@ -31,6 +31,7 @@ The plan assumes the current repository state:
 - Model selection is served by backend allowlist/capability status, but the implementation must adapt LibreChat's existing `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior before adding Steel-only selection logic. Do not create a parallel model system.
 - The steel handbook DOCX under `docs/reference` is allowed as a real schema/data-model design reference; real handbook data SQL/import work is deferred to a later code-agent data task.
 - Chinese source labels/headers/terms from `docs/reference` must be mapped to English canonical schema keys before they shape DTOs, repository filters, SQL columns, tool arguments, workbook paths, prompt context, or mock API keys.
+- Workbook UI/export field labels must be Traditional Chinese, preferably derived from `docs/reference/*.xlsx` headers where available. Internal DTO keys, workbook patch paths, schema keys, and database/query contracts stay English.
 - Ongoing formal Admin Import accepts ERP-exported XLSX parsed data only. DOCX/PDF/image/text uploads are rejected before parser, merge-table, or database write paths.
 - Use the glossary in `CONTEXT.md`; ambiguous wording such as `常用的` resolves through admin-taught rules/memory, not hard-coded product defaults.
 
@@ -54,6 +55,7 @@ The v8.3 MVP is production-shaped and access is environment-gated:
   - 給客戶用
 - ExcelJS export for full workbook, system order, and customer quote sheets.
 - Customer quote sheet uses backend-owned allowlist and hides customer tier/internal fields.
+- Workbook Preview, changed-field summaries, selected-target markers, and Excel output use Traditional Chinese field labels while carrying English structured keys internally.
 - Chat Workspace and seven-tab Workbook Preview are part of the Phase 3 vertical slice, implemented as an independent Steel workspace under `client/src/features/steel`.
 - Desktop and mobile web UI share one Steel UX framework: same components, hooks, API contracts, and mock data, with responsive layout changes only.
 - Mobile Workbook Preview opens as a full-view modal with a top-right close control; Phase 3 supports multiple marked workbook targets per submit as structured message refs for AI-assisted workbook patching. Composer markers must show the sheet and field/cell position.

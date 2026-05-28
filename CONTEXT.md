@@ -56,6 +56,10 @@ _Avoid_: AI-inferred target table, arbitrary upload type, handbook DOCX upload t
 An XLSX file exported from the ERP and uploaded by an admin as formal source data for parser preview, old-data matching, review, and database update.
 _Avoid_: Direct ERP connector, customer chat attachment, unreviewed database mutation
 
+**Legacy Office File**:
+A pre-OOXML Office file such as `.xls` or `.doc`. The AI/provider may handle it directly, but server-side conversion to `.xlsx` or `.docx` must be proven by a development script before it becomes production behavior.
+_Avoid_: Assuming open-source converters are reliable without test evidence, treating legacy conversion as mandatory Phase 1 runtime behavior
+
 **Steel Handbook DOCX**:
 The steel handbook DOCX used during development to design and validate the real schema/data model for steel specs, dimensions, weights, and rules. Current source text may contain typos, but code/data-import discussions should use corrected business concepts before any later importable data or SQL is produced.
 _Avoid_: Ongoing Admin upload format, reusable runtime parser, price source, direct database mutation, immediate real-data SQL import, typo-preserving import
@@ -71,6 +75,10 @@ _Avoid_: Raw Chinese source header, display label, translated-at-query-time fiel
 **ERP Workbook Sheet Name**:
 The Chinese workbook sheet name required by ERP-facing quote workbook output.
 _Avoid_: English-only sheet label, translated ERP sheet
+
+**Workbook Field Label**:
+The Traditional Chinese label shown for a workbook column or editable field in the UI, workbook preview, and Excel output.
+_Avoid_: English internal key, database column, patch path
 
 **Selected Workbook Target**:
 One explicit workbook cell or field position the user marks as the target of a chat instruction.
@@ -88,6 +96,10 @@ _Avoid_: Display name, legal name, guessed customer match
 The external ERP identifier used with customer tier to match an imported price item to an existing price record.
 _Avoid_: Product name, spec text alone, guessed item match
 
+**Account Data Privacy**:
+The single-company access model where each authenticated account can only access its own Steel quotes/workbooks unless admin permissions apply, and guest access is scoped by conversation token.
+_Avoid_: Multi-company tenant model, organization/workspace scoping
+
 ## Relationships
 
 - A **Product Alias** maps to exactly one intended **Canonical Product** in a given company context.
@@ -102,16 +114,19 @@ _Avoid_: Product name, spec text alone, guessed item match
 - A **Customer Export** may show the customer-visible **Quoted Unit Price** and **Line Total**, but not customer tier or internal calculation/debug fields.
 - An **Import Source Type** is chosen before an import/edit session and constrains parsing, merge rows, delete handling, and the final database API commit.
 - An **ERP Export XLSX** becomes formal database input only after parser preview, old-data matching, admin review, and a validated transaction commit.
+- A **Legacy Office File** may be handled by the AI/provider; server-side conversion to `.xlsx` or `.docx` is only production behavior after a converter proof script succeeds.
 - A **Steel Handbook DOCX** is a one-time development schema-design reference, not an ongoing Admin web upload path, reusable product parser, or immediate production-data import.
 - **Admin Table Maintenance** fetches database rows through backend APIs and saves reviewed edits through validation and audit.
-- Admin ERP import accepts XLSX uploads; PDF/image/text evidence is not a formal Import Source.
+- Admin ERP import accepts `.xlsx` uploads; legacy `.xls` is only accepted through a tested normalization path. PDF/image/text evidence is not a formal Import Source, and DOC/DOCX remains outside ongoing Admin web import unless a later data-import task approves it.
 - **ERP Customer Code** is the import upsert key for customers.
 - **ERP Item Code** plus customer tier is the import upsert key for price items.
 - Chinese labels and headers from `docs/reference` map through **Source Schema Mapping** before they become schema, DTO, tool, or database-query concepts.
 - Programmatic lookup uses English **Canonical Schema Keys**; Chinese names, aliases, and original labels may remain as data values, display labels, search aliases, or source text.
 - AI API prompt/tool context uses **Source Schema Mapping** to resolve Chinese wording to existing **Canonical Schema Keys**; backend validation rejects unknown keys.
 - **ERP Workbook Sheet Names** stay Chinese for workbook/export interoperability even when internal DTO keys and database fields are English.
+- **Workbook Field Labels** stay Traditional Chinese, using `docs/reference` XLSX headers where available, even when internal workbook column keys, DTO keys, and patch paths are English.
 - A chat message may include multiple **Selected Workbook Targets** when the user has written instructions for multiple marked cells or fields; backend workbook patching still validates each structured target.
+- Steel v8.3 is a single-company system. Use **Account Data Privacy** through `userId`, owner checks, admin role/capability checks, and guest-token hashes; do not add tenant or organization scoping.
 
 ## Example dialogue
 
@@ -137,5 +152,7 @@ _Avoid_: Product name, spec text alone, guessed item match
 - The handbook DOCX under `docs/reference` may be used to design the real schema/data model; real handbook data SQL/import work is deferred until after the chat UX path is prioritized and code/data-import discussions have corrected the source concepts.
 - Chinese reference materials under `docs/reference` do not justify Chinese code/database/tool field names; they require an agreed **Source Schema Mapping** to English **Canonical Schema Keys** first.
 - A workbook badge without sheet and field/cell position is not a clear **Selected Workbook Target**.
+- English workbook DTO keys do not justify English UI/export labels; visible workbook field labels should be Traditional Chinese while structured keys remain English.
 - ERP export files do not update formal data directly; parser output must be compared with old data and confirmed by an admin before commit.
 - The Admin web UI does not need a DOCX upload path for ongoing updates.
+- Tenant or organization scoping is over-modeling for this project; per-account privacy is the required boundary.

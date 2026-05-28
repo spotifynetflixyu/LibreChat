@@ -51,6 +51,8 @@ Required:
 - [ ] Model allowlist endpoint is backend-owned, does not expose raw provider secrets, and aligns with LibreChat `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior instead of inventing a parallel model system.
 - [ ] Admin route protection reuses existing LibreChat `ADMIN`/`USER` role and capability semantics before adding Steel-specific permission layering.
 - [ ] An early OpenAI OAuth provider test seam exists before full workbook orchestration, without requiring Phase 1 to complete the Phase 3 live workbook smoke.
+- [ ] `/steel/oauth-chat` file-support evidence is reused to justify the Phase 1 `openai_oauth_responses` capability baseline instead of duplicating a broad file smoke runner.
+- [ ] The active OAuth Responses allowlist is `gpt-5.5` only; `gpt-5.4` and lower models are not exposed as supported Steel models.
 - [ ] The first coded openai-oauth implementation path is direct `openai-oauth-provider`; the local HTTP `/v1` proxy remains manual diagnostics only.
 - [ ] Direct `openai-oauth-provider` package usage is allowed only after AI SDK versions are unified through package-manager overrides/resolutions, packaging verification passes, model discovery remains backend-owned, and auth material remains server-only.
 - [ ] `openai_oauth_responses` request serialization is stateless full-history and rejects `previous_response_id` / `item_reference`.
@@ -60,7 +62,7 @@ Required:
 - [ ] Steel Mongo schemas are split by owner file rather than accumulated in one broad `steel.ts` file.
 - [ ] Durable audit writes go to `steel_audit_logs`.
 - [ ] Supabase schema/migration rule is preserved.
-- [ ] `steel_source_versions` metadata supports ERP XLSX imports with stable append-only column assumptions; handbook DOCX only informs schema/data model unless a later data-import task is approved.
+- [ ] `steel_source_versions` metadata supports `.xlsx`, `.xls`, `.docx`, and `.doc` source artifacts with original/normalized format and conversion status. Server-side `.xls` / `.doc` conversion is only enabled after a development script proves it works; AI/provider handling of legacy files remains allowed.
 
 Verification:
 
@@ -121,6 +123,7 @@ Required:
 - [ ] Conversation message request types reuse workbook DTOs instead of redefining selected-cell or patch metadata shapes.
 - [ ] Backend Zod validation in `packages/api/src/steel/workbook/schema.ts` is the canonical runtime validation authority.
 - [ ] Frontend code and tests consume shared workbook DTOs/API responses and do not define an independent workbook validation schema.
+- [ ] Workbook Preview, selected-target markers, changed-field summaries, and customer-facing workbook output render Traditional Chinese field labels derived from `docs/reference/*.xlsx` headers where available, while internal DTO keys and patch paths remain English.
 - [ ] Chat Workspace is an independent Steel workspace and does not require MVP changes to the core LibreChat chat store/message flow.
 - [ ] Desktop and mobile Steel views share the same UX framework, API contracts, and mock data.
 - [ ] Mobile Workbook Preview opens as a full-view modal with a visible top-right close button.
@@ -138,6 +141,7 @@ Required:
 - [ ] Chat does not render a full diff table for successful workbook patches.
 - [ ] Chat Workspace can use API mock data from `packages/data-provider/src/steel/mock/`, shaped from `docs/reference` without importing real data.
 - [ ] Mock workbook fixtures derived from Chinese reference examples use English DTO/API keys and preserve Chinese only as display/source/alias data.
+- [ ] Mock workbook fixtures include Traditional Chinese display labels for visible workbook fields.
 - [ ] Mocked AI/prompt tests include source-schema mapping context and reject unknown keys through clarification/manual-review behavior.
 - [ ] Frontend and backend tests do not define separate mock workbook datasets.
 - [ ] Mock workbook fixtures are imported through the explicit mock path and are not re-exported by the production Steel data-provider barrel.
@@ -152,10 +156,10 @@ Required:
 - [ ] openai-oauth adapter records unsupported or proxy-dropped settings such as stateful replay and output-token controls.
 - [ ] Direct `openai-oauth-provider` in-process usage is covered by tests with mocked fetch/fake auth and packaging verification; AI SDK 6 is not treated as a blocker, but package versions must be unified with overrides/resolutions.
 - [ ] LibreChat UI / preset / agent model parameters and default settings are converted to provider-neutral runtime options and are not silently ignored.
-- [ ] The five fallback keys are the only active v8.3 fallback env contract.
-- [ ] Disabled fallback flags return typed unsupported errors without calling OpenAI API.
-- [ ] Enabled fallback flags call `openai_api` only when the matching secondary capability has a passed smoke result.
-- [ ] Capability smoke records exist for text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and conversation/state behavior.
+- [ ] No per-capability `STEEL_FALLBACK_*` env matrix is active in v8.3.
+- [ ] Fallback means selecting or routing to the `openai_api` driver instead of the default OAuth driver; it is not model fallback.
+- [ ] `openai_api` is only used after its relevant capability is explicitly supported by backend policy/evidence.
+- [ ] Code-owned capability support records exist for text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and conversation/state behavior.
 - [ ] Backend model selector returns provider, smoke status, support flags, and enabled/disabled status.
 - [ ] Backend model selector preserves LibreChat UI / preset / default model settings as requested runtime options and reports unsupported Steel provider capabilities inline.
 - [ ] openai-oauth binding runbook has been completed before any live openai-oauth provider smoke or chat UI live test.
@@ -167,6 +171,7 @@ Required:
 - [ ] Tool-calling loop executes whitelisted tools only.
 - [ ] Structured output creates or patches Workbook JSON.
 - [ ] Workbook JSON contains all seven required sheet IDs.
+- [ ] Workbook JSON/display metadata exposes Traditional Chinese labels for visible fields without using those labels as patch keys.
 - [ ] Workbook line persists formula, default unit price, quoted unit price, line total, adjustment source, quote trace, and source refs.
 - [ ] Workbook patch writes `steel_workbook_patches`.
 - [ ] Selected-cell edit requests return workbook patches or refreshed workbook data that synchronizes the UI.

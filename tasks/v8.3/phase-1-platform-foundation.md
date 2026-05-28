@@ -15,7 +15,7 @@ Goal: create the Steel module skeleton, shared contracts, Mongo state models, ro
 - LibreChat model/default-setting alignment for Steel model options: inspect `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and runtime setting behavior before adding Steel-only selection logic.
 - Early OpenAI OAuth provider seam that can be tested before full workbook orchestration. Use direct `openai-oauth-provider` as the coded provider path after package-manager overrides/resolutions unify AI SDK versions and build packaging is verified. Keep the local HTTP `/v1` proxy only as a manual diagnostic smoke probe. The completed spike is recorded in `tasks/v8.3/openai-oauth-provider-spike.md`.
 - Supabase repository wrapper around `packages/api/src/steel/postgres.ts`.
-- Source artifact/source version metadata for ERP XLSX Admin workflows and rejection audit for unsupported uploads. Phase 1 does not create DOCX parser/import metadata; handbook DOCX remains a planning/schema-design reference only.
+- Source artifact/source version metadata for ERP workbook and document files, including `.xlsx`, legacy `.xls`, `.docx`, and legacy `.doc` handling. AI/provider handling of legacy files is allowed; server-side conversion to `.xlsx` / `.docx` is only promoted after a development script proves the converter works reliably. Phase 1 does not create a reusable Admin DOCX import workflow; handbook DOCX remains a planning/schema-design reference unless a later data-import task approves more.
 - Setup runbooks for local admin/user account creation and openai-oauth binding prerequisites before any live provider smoke or chat UI test.
 
 ## Current Baseline
@@ -90,22 +90,23 @@ rtk npm run test:packages:data-provider
 
 Files:
 
-- Create `packages/data-schemas/src/schema/steelConversationMeta.ts`
-- Create `packages/data-schemas/src/schema/steelWorkbook.ts`
-- Create `packages/data-schemas/src/schema/steelWorkbookPatch.ts`
-- Create `packages/data-schemas/src/schema/steelAIRun.ts`
-- Create `packages/data-schemas/src/schema/steelAICapability.ts`
-- Create `packages/data-schemas/src/schema/steelToolCall.ts`
-- Create `packages/data-schemas/src/schema/steelExcelExport.ts`
-- Create `packages/data-schemas/src/schema/steelProject.ts`
-- Create `packages/data-schemas/src/schema/steelProjectSource.ts`
-- Create `packages/data-schemas/src/schema/steelSourceVersion.ts`
-- Create `packages/data-schemas/src/schema/steelAdminImportSession.ts`
-- Create `packages/data-schemas/src/schema/steelAdminMergeTable.ts`
-- Create `packages/data-schemas/src/schema/steelAdminMappingProfile.ts`
-- Create `packages/data-schemas/src/schema/steelMemoryCandidate.ts`
-- Create `packages/data-schemas/src/schema/steelMemory.ts`
-- Create `packages/data-schemas/src/schema/steelAuditLog.ts`
+- Create Steel-owned schema files under `packages/data-schemas/src/schema/steel/` so project schemas are visually separated from LibreChat core schemas.
+- Create `packages/data-schemas/src/schema/steel/conversationMeta.ts`
+- Create `packages/data-schemas/src/schema/steel/workbook.ts`
+- Create `packages/data-schemas/src/schema/steel/workbookPatch.ts`
+- Create `packages/data-schemas/src/schema/steel/aiRun.ts`
+- Create `packages/data-schemas/src/schema/steel/aiCapability.ts`
+- Create `packages/data-schemas/src/schema/steel/toolCall.ts`
+- Create `packages/data-schemas/src/schema/steel/excelExport.ts`
+- Create `packages/data-schemas/src/schema/steel/project.ts`
+- Create `packages/data-schemas/src/schema/steel/projectSource.ts`
+- Create `packages/data-schemas/src/schema/steel/sourceVersion.ts`
+- Create `packages/data-schemas/src/schema/steel/adminImportSession.ts`
+- Create `packages/data-schemas/src/schema/steel/adminMergeTable.ts`
+- Create `packages/data-schemas/src/schema/steel/adminMappingProfile.ts`
+- Create `packages/data-schemas/src/schema/steel/memoryCandidate.ts`
+- Create `packages/data-schemas/src/schema/steel/memory.ts`
+- Create `packages/data-schemas/src/schema/steel/auditLog.ts`
 - Create matching method modules only where behavior is non-trivial.
 - Do not keep all Steel schema definitions in one growing `steel.ts`; use split schema owner files plus barrel exports.
 
@@ -118,9 +119,9 @@ Tasks:
 - Model `steel_conversation_meta.aiProviderMeta` as provider runtime trace, not the source of workbook truth.
 - Store `openai_oauth_responses` provider IDs only as trace metadata; the driver itself remains stateless full-history.
 - Store official OpenAI `conversation` / response IDs only for the `openai_api` driver, which is Responses-first.
-- Store driver capability smoke results per provider/model so the model selector, typed unsupported errors, and env-gated API fallback policy have an auditable source.
+- Store driver capability support per provider/model so the model selector and typed unsupported errors have an auditable source. Phase 1 does not require an Admin UI or broad smoke runner; the active support matrix is code-owned and limited to `openai_oauth_responses` + `gpt-5.5` unless a later decision expands it.
 - Model workbook JSON with seven fixed sheet IDs.
-- Model source versions with original ERP XLSX file ID, source file type, parse version, parse status, extraction summary, and review status.
+- Model source versions with original file ID, source file type, original format, normalized format when available, conversion status, parse version, parse status, extraction summary, and review status. `.xls` / `.doc` legacy files may be sent to the AI/provider when supported; server-side conversion metadata is recorded only after converter script evidence exists.
 - Model provider run records without requiring `remaining quota` for openai-oauth responses.
 - Model `steel_audit_logs` as the durable Phase 1 audit collection.
 
@@ -135,7 +136,7 @@ Acceptance:
 - Audit logs persist actor, action, target, result, error category, correlation IDs, and bounded metadata in `steel_audit_logs`.
 - Provider run metadata can represent openai-oauth responses traces and OpenAI API fallback traces without one driver pretending to expose the other driver's state model.
 - Capability results can mark file/vision/XLSX/hosted-tool support as `unverified`, `passed`, or `failed`.
-- Capability metadata can explain when fallback flags are disabled or when a secondary capability lacks a passed smoke result.
+- Capability metadata can explain whether a provider/model capability is supported and whether a workflow must explicitly choose the API driver instead of the OAuth driver.
 
 Verification:
 
@@ -188,10 +189,12 @@ Tasks:
 - Keep local HTTP proxy probes in runbook/manual diagnostics only; do not add an env-controlled local proxy provider mode.
 - Use injectable clients/fetch so unit tests do not require real OAuth.
 - Add package-manager overrides/resolutions for `ai`, `@ai-sdk/openai`, `@ai-sdk/provider`, and `@ai-sdk/provider-utils` before adding the direct provider dependency, so the backend does not carry duplicate AI SDK runtime versions.
-- Define env contracts for `STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED`, `STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED`, `STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED`, `STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED`, and `STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED`.
-- Keep capability-smoke under `/api/admin/steel/...` and make it admin-only or local-dev-only until security review says otherwise.
+- Remove stale per-capability `STEEL_FALLBACK_*` contracts from active Phase 1 docs and code. OAuth remains the default provider path; fallback means selecting the `openai_api` driver instead of `openai_oauth_responses`, not choosing a different fallback model.
+- Keep any capability-smoke route under `/api/admin/steel/...` and make it admin-only or local-dev-only until security review says otherwise, but do not build a new Admin UI for Phase 1.
+- Treat `/steel/oauth-chat` file evidence as the existing proof that the OAuth Responses path can support file inputs. Phase 1 capability support can be hard-coded for `openai_oauth_responses` + `gpt-5.5` after confirming the route is using the OAuth Responses API path.
 - Add an early OpenAI OAuth provider seam that can be unit-tested and smoke-tested without full workbook orchestration. The Phase 1 implementation should use the direct provider adapter when dependency overrides and packaging verification are included in the same implementation slice. Full live quote-workbook provider smoke remains a Phase 3 gate after openai-oauth binding is complete.
 - Preserve the `openai-oauth-provider` spike decision in code/docs: the package can install, import, typecheck, run with mocked fetch, and make a live local-auth text call. AI SDK 6 is Apache-2.0 and production-approved; the remaining dependency requirement is unified package versions via overrides/resolutions.
+- Restrict the active OAuth Responses model allowlist to `gpt-5.5`; `gpt-5.4` and lower models are not supported in v8.3.
 - Ensure the adapter never sends or stores `previous_response_id` / `item_reference` for `openai_oauth_responses`; the driver is stateless full-history and expects reconstructed context every run.
 - Ensure the adapter does not claim official Responses settings were applied when the direct provider or diagnostic proxy normalizes, drops, or rewrites them. Unsupported settings should be recorded in provider run metadata and surfaced through admin/debug or inline warning metadata as appropriate.
 - Do not expose openai-oauth responses tokens, OpenAI API keys, or raw provider payloads through model/capability endpoints.
@@ -259,7 +262,7 @@ Do not move to Phase 2 until:
 - Provider/model contracts and capability records exist before Phase 3 orchestrator work, and they preserve LibreChat model/default setting inputs as provider-neutral runtime options.
 - An OpenAI OAuth provider seam exists early enough to test provider authorization flow before workbook orchestration.
 - Direct `openai-oauth-provider` implementation is allowed as the primary path only when AI SDK versions are unified through overrides/resolutions, packaging verification passes, model discovery stays backend-owned, and auth material remains server-only.
-- Source artifact/source version metadata can represent ERP XLSX imports and parser status under stable append-only column assumptions; Admin DOCX/PDF/image/.txt rejection for ongoing web import is specified. Handbook DOCX real-data provenance is deferred with the later SQL/import task.
+- Source artifact/source version metadata can represent `.xlsx`, `.xls`, `.docx`, and `.doc` inputs with original/normalized format and conversion status. Legacy `.xls` / `.doc` server-side conversion is not production behavior until a development script proves the converter works; AI/provider handling remains allowed. Handbook DOCX real-data provenance is deferred with the later SQL/import task.
 - Steel admin APIs use `/api/admin/steel/...`; quote/user-facing APIs use `/api/steel/...`.
 - Local account setup and openai-oauth setup runbooks exist before Phase 3 chat UI/provider testing.
 - Supabase readiness helper still passes unit tests.
