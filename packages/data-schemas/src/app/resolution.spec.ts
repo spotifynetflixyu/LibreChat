@@ -39,6 +39,32 @@ describe('mergeConfigOverrides', () => {
     expect(iface.parameters).toBe(true);
   });
 
+  it('deep merges file analysis instructions into runtime app config', () => {
+    const base = {
+      fileAnalysis: {
+        instructions: 'Base file instructions.',
+      },
+    } as unknown as AppConfig;
+    const configs = [
+      fakeConfig(
+        {
+          fileAnalysis: {
+            instructions:
+              'Attached images and image-based PDFs may be rotated. Preserve Traditional Chinese exactly.',
+          },
+        },
+        10,
+      ),
+    ];
+
+    const result = mergeConfigOverrides(base, configs);
+
+    expect(result.fileAnalysis?.instructions).toBe(
+      'Attached images and image-based PDFs may be rotated. Preserve Traditional Chinese exactly.',
+    );
+    expect(base.fileAnalysis?.instructions).toBe('Base file instructions.');
+  });
+
   it('sorts by priority — higher priority wins', () => {
     const configs = [
       fakeConfig({ registration: { enabled: false } }, 100),

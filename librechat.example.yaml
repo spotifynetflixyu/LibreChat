@@ -669,6 +669,12 @@ endpoints:
 # # See the Custom Configuration Guide for more information on Assistants Config:
 # # https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/assistants_endpoint
 
+# fileAnalysis:
+#   # Admin-configurable guidance injected into OpenAI-native file/image analysis.
+#   # This is not the LibreChat/Mistral OCR upload pipeline.
+#   # The Admin Panel UI should update this same field rather than hard-coding prompt text.
+#   instructions: "Attached images or image-based documents may be rotated. If text appears rotated, rotate it mentally before reading. Preserve Chinese text exactly."
+
 # Web Search Configuration (optional)
 # webSearch:
 #   # Jina Reranking Configuration

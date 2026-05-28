@@ -5,6 +5,7 @@ data-node
 meili_data*
 data/
 logs
+tmp/
 *.log
 audit.json
 

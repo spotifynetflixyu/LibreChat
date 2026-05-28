@@ -124,16 +124,61 @@ describe('Steel AI public contracts', () => {
         model: 'gpt-5.4',
         messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
         maxOutputTokens: 64,
+        reasoningEffort: 'high',
       }),
     ).toEqual({
       model: 'gpt-5.4',
       messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
       maxOutputTokens: 64,
+      reasoningEffort: 'high',
     });
 
     expect(() =>
       steelProviderChatRequestSchema.parse({
         messages: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      steelProviderChatRequestSchema.parse({
+        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        reasoningEffort: 'none',
+      }),
+    ).toThrow();
+  });
+
+  it('validates browser-safe Steel provider chat file payloads', () => {
+    const parsed = steelProviderChatRequestSchema.parse({
+      messages: [
+        {
+          role: 'user',
+          content: 'Read the attachment.',
+          files: [
+            {
+              filename: 'steel-oauth-smoke.txt',
+              mediaType: 'text/plain',
+              dataBase64: Buffer.from('Steel OAuth capability smoke', 'utf8').toString('base64'),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.messages[0].files).toEqual([
+      {
+        filename: 'steel-oauth-smoke.txt',
+        mediaType: 'text/plain',
+        dataBase64: 'U3RlZWwgT0F1dGggY2FwYWJpbGl0eSBzbW9rZQ==',
+      },
+    ]);
+    expect(() =>
+      steelProviderChatRequestSchema.parse({
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the attachment.',
+            files: [{ filename: 'bad.txt', mediaType: 'text/plain', dataBase64: '' }],
+          },
+        ],
       }),
     ).toThrow();
   });

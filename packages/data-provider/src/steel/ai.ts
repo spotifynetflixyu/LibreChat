@@ -120,17 +120,36 @@ export const steelProviderUsageSchema = z.object({
 
 export type SteelProviderUsage = z.infer<typeof steelProviderUsageSchema>;
 
+export const steelProviderChatFileSchema = z.object({
+  filename: z.string().min(1).optional(),
+  mediaType: z.string().min(1),
+  dataBase64: z
+    .string()
+    .min(1)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+
+export type SteelProviderChatFile = z.infer<typeof steelProviderChatFileSchema>;
+
 export const steelProviderChatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant']),
   content: z.string().min(1),
+  files: z.array(steelProviderChatFileSchema).optional(),
 });
 
 export type SteelProviderChatMessage = z.infer<typeof steelProviderChatMessageSchema>;
+
+export const steelProviderReasoningEfforts = ['low', 'medium', 'high', 'xhigh'] as const;
+
+export const steelProviderReasoningEffortSchema = z.enum(steelProviderReasoningEfforts);
+
+export type SteelProviderReasoningEffort = z.infer<typeof steelProviderReasoningEffortSchema>;
 
 export const steelProviderChatRequestSchema = z.object({
   model: z.string().min(1).optional(),
   messages: z.array(steelProviderChatMessageSchema).min(1),
   maxOutputTokens: z.number().int().positive().optional(),
+  reasoningEffort: steelProviderReasoningEffortSchema.optional(),
 });
 
 export type SteelProviderChatRequest = z.infer<typeof steelProviderChatRequestSchema>;

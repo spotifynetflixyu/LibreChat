@@ -1,3 +1,130 @@
+# V8.3 File Analysis Instructions Management
+
+- [x] Record plan for confirming the instruction management contract.
+- [x] Add focused regression coverage for Admin config updates to `fileAnalysis.instructions`.
+- [x] Add focused regression coverage for runtime config override merge of `fileAnalysis.instructions`.
+- [x] Update Steel OAuth docs with the management path and Admin Panel UI follow-up.
+- [x] Run focused tests, docs grep, and diff checks.
+
+## Review
+
+- Confirmed the current management path is config-driven, not provider-adapter code: local/base config uses `librechat.yaml`, and Admin config overrides can patch `fileAnalysis.instructions`.
+- Confirmed the runtime path: merged `AppConfig.fileAnalysis.instructions` reaches request config; Steel prefixes it only for image/PDF file-bearing user messages, and normal LibreChat file formatting uses the same runtime instruction text without mutating stored user text.
+- Added Admin config handler coverage for `PATCH /api/admin/config/:principalType/:principalId/fields` with `fieldPath: "fileAnalysis.instructions"`.
+- Added config override merge coverage proving DB/YAML overrides deep-merge `fileAnalysis.instructions` into runtime `AppConfig`.
+- Updated Steel OAuth setup docs, v8.3 active spec, Phase 3 prompt-order notes, and checkpoints. The docs now distinguish `fileAnalysis.instructions` from LibreChat `ocr` config and record that a dedicated Admin Panel textarea should edit this same field.
+- Verification passed: focused Admin config Jest, config resolution Jest, touched-file ESLint, Prettier write check, docs grep, and `git diff --check`.
+- Caveat: this slice confirms and documents the backend/API management contract; it does not add the dedicated Admin Panel visual editor field yet.
+
+# V8.3 Steel OAuth Image Detail High
+
+- [x] Record plan for forcing highest OpenAI image detail.
+- [x] Add failing provider test for image file `imageDetail: high`.
+- [x] Set OpenAI image detail to `high` for Steel OAuth image file parts.
+- [x] Run focused provider tests, lint, API build, and diff checks.
+
+## Review
+
+- User asked to use the highest `imageDetail` setting first, before adding image preprocessing.
+- Scope is Steel OAuth provider image inputs only: `image/*` file parts get OpenAI `imageDetail: high`; PDF inputs remain `input_file` and are not affected by image detail.
+- Added provider coverage proving image file parts include `providerOptions.openai.imageDetail = high`.
+- Verified focused provider tests, touched-file ESLint, API build, and `git diff --check`.
+- `build:api` still emits existing TypeScript warnings outside this slice but exits 0.
+
+# V8.3 Steel OAuth Chat Reasoning Controls
+
+- [x] Record plan for reasoning effort selector and New Chat reset.
+- [x] Add failing tests for request-level reasoning effort override.
+- [x] Add failing UI tests for selector payload and New Chat reset.
+- [x] Implement data-provider and Steel backend support for `reasoningEffort`.
+- [x] Add `/steel/oauth-chat` selector for `low`, `medium`, `high`, and `xhigh`.
+- [x] Add `/steel/oauth-chat` New Chat button that clears local chat state.
+- [x] Run focused tests, lint, builds, and diff checks.
+
+## Review
+
+- User asked for `/steel/oauth-chat` to switch reasoning effort directly from the UI and add a New Chat button.
+- Scope is page-local runtime behavior: selector sends `reasoningEffort` on each chat request, while env config remains the backend default when no request override is provided.
+- New Chat should reset local UI state only: messages, input, selected files, pending provider metadata, and send/encoding state.
+- Added request contract support for `reasoningEffort: low | medium | high | xhigh`; backend rejects unsupported request values and otherwise falls back to env config.
+- Added `/steel/oauth-chat` reasoning selector and a New Chat button that clears the local thread while preserving the selected model and reasoning effort.
+- Verified red/green tests for data-provider request schema, Steel handler override/rejection, and UI payload/reset behavior.
+- Verification passed: focused Jest suites, touched-file ESLint, `npm run build:data-provider`, `npm run build:api`, `npm run build:client`, and `git diff --check`.
+- `build:api` still emits existing TypeScript warnings outside this slice; `build:client` emits existing large-chunk/PWA glob warnings but exits 0.
+- Unauthenticated Playwright smoke reached `/login?redirect_to=%2Fsteel%2Foauth-chat`, so visual browser verification requires a logged-in browser/session.
+
+# V8.3 Configurable File Vision Instructions
+
+- [x] Record plan and correction lesson.
+- [x] Add failing tests for configurable file instructions.
+- [x] Add a shared config-driven file instruction helper.
+- [x] Wire the helper into Steel OAuth file messages.
+- [x] Wire the helper into normal LibreChat image/document message formatting.
+- [x] Keep PDF/image file-analysis guidance configurable and note that Admin Panel UI must edit the same config field.
+- [x] Run focused tests and diff checks.
+
+## Review
+
+- User observed rotated JPG Chinese extraction works when the instruction explicitly says images may need rotation and Chinese recognition.
+- User clarified this must not be hard-coded in Steel code only: normal LibreChat must inject the same instruction, and Admin Panel UI must be able to update it.
+- User also clarified PDFs may wrap images, so PDF/document inputs need the same configurable guidance.
+- Added `fileAnalysis.instructions` to the LibreChat config schema and example YAML. The example notes that Admin Panel UI should update this same field instead of baking prompt text into code.
+- Added a shared API helper that injects configured instructions only for image or PDF targets and keeps the instruction text out of provider adapters.
+- Steel `/api/steel/ai/chat` now prefixes configured file instructions onto file-bearing user messages before calling the OAuth provider, including PDF attachments.
+- Normal LibreChat attachment processing now carries the same runtime-only file instruction into prompt formatting for image/document messages without mutating the stored user text.
+- Focused verification passed for API helper/Steel handler tests, data-provider config parsing, LibreChat prompt formatting, BaseClient attachment tests, data-provider/data-schemas builds, API build, touched-file ESLint, and `git diff --check`.
+- User corrected the boundary: LibreChat's `ocr` config is the Mistral/custom OCR upload pipeline, while this requirement targets OpenAI-native file/image analysis.
+- Renamed the config contract from `ocr.instructions` to `fileAnalysis.instructions` so the prompt guidance is not coupled to LibreChat's OCR framework.
+- Caveat: this slice records and exposes the shared `fileAnalysis.instructions` config contract for Admin Panel editing, but does not add a dedicated Admin Panel visual editor field yet.
+
+# V8.3 OpenAI OAuth UI File Upload Smoke
+
+- [x] Add a repeatable fixture export command that writes manual smoke files under `tmp/steel-oauth-fixtures/`.
+- [x] Include `.txt`, `.pdf`, `.docx`, `.xlsx`, `.png`, and a 90-degree pixel-rotated `.jpg` fixture with English, Chinese, numeric, and sentinel text.
+- [x] Add provider-level rotated JPG real-auth smoke before touching browser UI.
+- [x] Extend Steel chat request parsing so JSON file payloads reach `sendSteelOAuthChat()` as provider file parts.
+- [x] Add `/steel/oauth-chat` file attachment UI and send selected files with the current message.
+- [x] Verify focused unit tests, gated real-auth smoke, API build, and browser smoke through `/steel/oauth-chat`.
+
+## Review
+
+- User asked to proceed in order: first disk fixtures, then rotated JPG capability smoke, then `/steel/oauth-chat` UI upload.
+- Current file capability fixtures are generated in-memory only; there is no manual fixture directory yet.
+- Current `/steel/oauth-chat` UI only sends text and the backend route only parses message role/content, so browser upload requires both client and handler changes.
+- Added `npm run steel:export-oauth-fixtures` in `packages/api`; it writes manual files to `/Users/neven/Documents/projects/LibreChat/tmp/steel-oauth-fixtures/`.
+- Exported files: `steel-oauth-smoke.txt`, `steel-oauth-smoke.pdf`, `steel-oauth-smoke.docx`, `steel-oauth-smoke.xlsx`, `steel-oauth-smoke.png`, `steel-oauth-smoke-rotated.jpg`, and `manifest.json`.
+- Added browser-safe file DTO shape `files[].dataBase64` and backend decode into provider `Uint8Array` file parts.
+- Added `/steel/oauth-chat` attachment control, selected-file chips, and JSON file payload sending.
+- Provider-level rotated JPG strict smoke currently classifies as parse-wrong: it extracts the sentinel, English, and number, but misses the Chinese phrase from the 90-degree rotated JPG.
+- Browser smoke passed through `/steel/oauth-chat` with `steel-oauth-smoke.txt`: request included `files[].dataBase64`, filename `steel-oauth-smoke.txt`, media type `text/plain`, and the assistant response contained `TXT_SENTINEL_7F3A`, `鋼鐵檔案測試`, and `73921`.
+- Manual rotated JPG UI smoke through `/steel/oauth-chat` read `JPG_ROTATED_SENTINEL_C5F9`, `Steel OAuth capability smoke`, and `73921`, but misread the Chinese phrase as `钥鏈檔案測試` instead of `鋼鐵檔案測試`; classify this as parse-wrong, not passed.
+- Follow-up manual prompt test passed when the injected/user prompt explicitly said the Chinese text is Traditional Chinese; this points to prompt-language guidance as the primary fix before escalating to model or reasoning-effort changes.
+- Created local browser-smoke account `steel.oauth.ui.smoke.20260527@example.com` for this verification run.
+
+# V8.3 OpenAI OAuth File Capability Smoke
+
+- [x] Confirm scope change: text-only `/steel/oauth-chat` smoke was manually proven.
+- [x] Exclude `steel-oauth-smoke.jpg`; PNG image coverage is enough for this slice.
+- [x] Add generated non-secret fixtures with English, Chinese, numeric content, and unique sentinels.
+- [x] Add provider-level file-part adapter coverage before live OAuth file smoke.
+- [x] Run gated `openai_oauth_responses` real-auth smoke for TXT, PDF, DOCX, XLSX, and PNG.
+- [x] Classify each result as passed, unsupported, parse-wrong, or request/adapter failure.
+- [x] Record commands, smoke evidence, skipped checks, and remaining risks.
+
+## Review
+
+- User confirmed text OAuth is already manually working.
+- The remaining question is whether `openai_oauth_responses` can analyze uploaded document/image contents: `.txt`, `.pdf`, `.docx`, `.xlsx`, and `.png`.
+- This is a provider-level capability probe, not a `/steel/oauth-chat` browser upload test, because the current smoke page only sends text messages.
+- Added generated in-memory fixtures for `.txt`, `.pdf`, `.docx`, `.xlsx`, and `.png`. Each fixture contains English text, Chinese text, numeric text, and a unique sentinel. `.jpg` is intentionally excluded.
+- Added provider adapter coverage proving message file attachments are serialized as AI SDK file parts, `passThroughUnsupportedFiles` is forwarded, and abort signals reach the provider call.
+- Focused non-live verification passed for `config.spec.ts`, `fixtures.spec.ts`, `provider.spec.ts`, `provider.real-auth.manual.spec.ts`, and `provider.file-capability.manual.spec.ts`; gated manual specs are skipped unless their env flags are enabled.
+- Real-auth smoke command passed with `STEEL_OPENAI_OAUTH_AUTH_FILE="~/.codex/auth.json"`, `STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4`, `STEEL_OPENAI_REASONING_EFFORT=medium`, and `NODE_OPTIONS=--experimental-vm-modules`.
+- Real-auth classification: TXT passed in 4.641s, PDF passed in 14.108s, DOCX passed in 5.724s, XLSX passed in 6.278s, and PNG passed in 3.606s.
+- Earlier manual-spec auth failure exposed a resolver mismatch: direct tests used the raw `~/.codex/auth.json` string instead of the backend auth-file resolver. The text and file-capability manual specs now use `resolveSteelOpenAIOAuthAuthFilePath()`.
+- Regression smoke for the existing text real-auth manual spec passed with the literal `~/.codex/auth.json` env value.
+- `npm run build:api` passed with the existing `cacheFactory.ts` Redis/KeyvRedis type warning; `git diff --check` passed.
+
 # V8.3 OpenAI OAuth Provider Real Auth
 
 - [x] Write dedicated implementation plan with todo checklist.

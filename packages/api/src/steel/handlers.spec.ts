@@ -52,6 +52,110 @@ describe('createSteelHandlers', () => {
     });
   });
 
+  it('decodes browser-safe chat file payloads before calling the provider adapter', async () => {
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.4',
+      text: 'steel-file-ok',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the attachment.',
+            files: [
+              {
+                filename: 'steel-oauth-smoke.txt',
+                mediaType: 'text/plain',
+                dataBase64: Buffer.from('TXT_SENTINEL_7F3A', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the attachment.',
+            files: [
+              {
+                filename: 'steel-oauth-smoke.txt',
+                mediaType: 'text/plain',
+                data: new Uint8Array(Buffer.from('TXT_SENTINEL_7F3A', 'utf8')),
+              },
+            ],
+          },
+        ],
+        passThroughUnsupportedFiles: true,
+      }),
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('injects configured file instructions for image and PDF file payloads', async () => {
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.4',
+      text: 'steel-file-ok',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const instructions =
+      'Attached images or image-based documents may be rotated. Preserve Chinese text exactly.';
+    const req = {
+      config: {
+        fileAnalysis: { instructions },
+      },
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the attachment.',
+            files: [
+              {
+                filename: 'scan.pdf',
+                mediaType: 'application/pdf',
+                dataBase64: Buffer.from('PDF_SENTINEL', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          expect.objectContaining({
+            content: `${instructions}\n\nRead the attachment.`,
+          }),
+        ],
+      }),
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
   it('expands configured local OAuth auth file paths before calling the provider', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
@@ -83,6 +187,62 @@ describe('createSteelHandlers', () => {
       }),
     );
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('uses request-level reasoning effort when provided', async () => {
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.4',
+      text: 'steel-chat-ok',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const handlers = createSteelHandlers({
+      env: { STEEL_OPENAI_REASONING_EFFORT: 'medium' },
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        reasoningEffort: 'high',
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasoningEffort: 'high',
+      }),
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('rejects unsupported request-level reasoning effort values', async () => {
+    const sendChat = jest.fn();
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        reasoningEffort: 'minimal',
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorSummary: 'reasoningEffort must be one of: low, medium, high, xhigh',
+      }),
+    );
   });
 
   it('rejects API provider mode until the API adapter is implemented', async () => {

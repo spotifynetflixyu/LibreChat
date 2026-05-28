@@ -7,6 +7,7 @@ const {
   getBalanceConfig,
   buildMessageFiles,
   extractFileContext,
+  buildFileInstructions: importedBuildFileInstructions,
   encodeAndFormatAudios,
   encodeAndFormatVideos,
   encodeAndFormatDocuments,
@@ -29,6 +30,28 @@ const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
 const TextStream = require('./TextStream');
 const db = require('~/models');
+
+const buildFileInstructions =
+  typeof importedBuildFileInstructions === 'function'
+    ? importedBuildFileInstructions
+    : ({ config, files }) => {
+        const instructions = config?.fileAnalysis?.instructions?.trim();
+        if (!instructions) {
+          return undefined;
+        }
+        for (const file of files) {
+          const type = (file.mediaType ?? file.type ?? '').trim().toLowerCase();
+          const filename = (file.filename ?? '').trim().toLowerCase();
+          if (
+            type.startsWith('image/') ||
+            type === 'application/pdf' ||
+            filename.endsWith('.pdf')
+          ) {
+            return instructions;
+          }
+        }
+        return undefined;
+      };
 
 class BaseClient {
   constructor(apiKey, options = {}) {
@@ -1266,6 +1289,14 @@ class BaseClient {
         categorizedAttachments.documents.push(file);
         allFiles.push(file);
       }
+    }
+
+    const fileInstructions = buildFileInstructions({
+      config: this.options.req?.config,
+      files: [...categorizedAttachments.images, ...categorizedAttachments.documents],
+    });
+    if (fileInstructions) {
+      message.fileInstructions = fileInstructions;
     }
 
     const [imageFiles] = await Promise.all([

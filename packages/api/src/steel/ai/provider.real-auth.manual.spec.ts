@@ -1,6 +1,4 @@
-import path from 'path';
-
-import { parseSteelOpenAIConfig } from './config';
+import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from './config';
 import { sendSteelOAuthChat } from './provider';
 
 const runRealAuth = process.env.STEEL_OPENAI_OAUTH_REAL_AUTH_TEST === 'true';
@@ -10,9 +8,7 @@ describeRealAuth('Steel OpenAI OAuth provider real auth smoke', () => {
   it('gets a deterministic response without exposing auth material', async () => {
     const config = parseSteelOpenAIConfig(process.env);
     const expected = 'librechat-steel-oauth-live-ok';
-    const authFilePath =
-      process.env.STEEL_OPENAI_OAUTH_AUTH_FILE ??
-      path.join(process.env.HOME ?? '', '.codex/auth.json');
+    const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
 
     const response = await sendSteelOAuthChat({
       authFilePath,

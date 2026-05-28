@@ -163,6 +163,7 @@ Required:
 - [ ] Provider unsupported/fallback notices render inside the chat transcript as small warning text, not toast UI.
 - [ ] Typed provider errors include auth, subscription/rate, tool unsupported, file input unsupported, vision input unsupported, XLSX input unsupported, hosted tool unsupported, and invalid structured output.
 - [ ] Prompt bundle records context refs.
+- [ ] Image/PDF prompt guidance comes from `fileAnalysis.instructions`, is editable through Admin config override, and is not hard-coded in Steel provider adapters.
 - [ ] Tool-calling loop executes whitelisted tools only.
 - [ ] Structured output creates or patches Workbook JSON.
 - [ ] Workbook JSON contains all seven required sheet IDs.

@@ -236,18 +236,20 @@ Files:
 Prompt order:
 
 1. User current-turn instruction.
-2. LibreChat Agent instructions when present.
-3. Steel Project Instructions.
-4. Active Text Sources.
-5. Relevant System Memories.
-6. Retrieved Source Chunks.
-7. Current Workbook Summary.
-8. Available Tools.
-9. Structured Output Schema.
+2. Runtime File Analysis Instructions from `fileAnalysis.instructions` when the current turn has image or PDF attachments.
+3. LibreChat Agent instructions when present.
+4. Steel Project Instructions.
+5. Active Text Sources.
+6. Relevant System Memories.
+7. Retrieved Source Chunks.
+8. Current Workbook Summary.
+9. Available Tools.
+10. Structured Output Schema.
 
 MVP behavior:
 
 - Include current user instruction, optional agent instructions, current workbook summary, available tools, structured schema, and task-scoped source-schema mapping context.
+- Keep image/PDF guidance under `fileAnalysis.instructions`, editable through `librechat.yaml` or Admin config override; do not hard-code rotated-image or Traditional Chinese guidance in the provider adapter.
 - Record empty arrays in `context_refs` for sources/instructions/memories until those modules exist.
 - Keep provider-specific serialization outside the core prompt bundle so openai-oauth and OpenAI adapters can format messages/tools without changing business prompt rules.
 

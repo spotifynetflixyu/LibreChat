@@ -49,6 +49,8 @@ export interface AppConfig {
   config: Partial<TCustomConfig>;
   /** OCR configuration */
   ocr?: TCustomConfig['ocr'];
+  /** OpenAI-native file/image analysis prompt guidance */
+  fileAnalysis?: TCustomConfig['fileAnalysis'];
   /** File paths configuration */
   paths?: {
     uploads: string;

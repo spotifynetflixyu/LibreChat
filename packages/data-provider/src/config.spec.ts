@@ -440,6 +440,22 @@ describe('allowedAddressesSchema', () => {
       expect(result.success).toBe(true);
     });
 
+    it('accepts configurable file analysis instructions for OpenAI-native file guidance', () => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        fileAnalysis: {
+          instructions:
+            'Attached images or image-based documents may be rotated. Preserve Chinese text exactly.',
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.fileAnalysis?.instructions).toBe(
+          'Attached images or image-based documents may be rotated. Preserve Chinese text exactly.',
+        );
+      }
+    });
+
     it('rejects a public IP at the endpoints location', () => {
       const result = configSchema.safeParse({
         version: '1.0',

@@ -1,24 +1,90 @@
 import { useMemo, useState } from 'react';
-import { AlertCircle, Bot, Loader2, Send, UserRound } from 'lucide-react';
+import {
+  AlertCircle,
+  Bot,
+  Loader2,
+  MessageSquarePlus,
+  Paperclip,
+  Send,
+  UserRound,
+  X,
+} from 'lucide-react';
 import { dataService } from 'librechat-data-provider';
-import type { SteelProviderChatMessage, SteelProviderChatResponse } from 'librechat-data-provider';
+import type {
+  SteelProviderChatFile,
+  SteelProviderChatMessage,
+  SteelProviderReasoningEffort,
+  SteelProviderChatResponse,
+} from 'librechat-data-provider';
 
 type SteelChatTurn = SteelProviderChatMessage & {
   id: string;
   status?: 'error';
+  attachmentNames?: string[];
+};
+
+type SelectedSteelFile = SteelProviderChatFile & {
+  id: string;
 };
 
 const modelOptions = ['gpt-5.4', 'gpt-5.5'] as const;
+const reasoningEffortOptions: SteelProviderReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 const titleText = 'Steel OAuth Chat';
 const tokensLabel = 'tokens';
 const emptyStateText = 'Ready';
 const pendingText = 'Waiting for provider';
+const newChatText = 'New chat';
 
-function createTurn(role: SteelProviderChatMessage['role'], content: string): SteelChatTurn {
+function createTurn(
+  role: SteelProviderChatMessage['role'],
+  content: string,
+  attachmentNames: string[] = [],
+): SteelChatTurn {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role,
     content,
+    ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
+  };
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
+  if (typeof file.arrayBuffer === 'function') {
+    return file.arrayBuffer();
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('FileReader did not return an ArrayBuffer.'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('File read failed.'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function toSelectedSteelFile(file: File): Promise<SelectedSteelFile> {
+  const dataBase64 = bytesToBase64(new Uint8Array(await readFileAsArrayBuffer(file)));
+
+  return {
+    id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+    filename: file.name,
+    mediaType: file.type || 'application/octet-stream',
+    dataBase64,
   };
 }
 
@@ -57,15 +123,48 @@ function getErrorText(error: unknown): string {
 export default function SteelOAuthChat() {
   const [input, setInput] = useState('');
   const [model, setModel] = useState<(typeof modelOptions)[number]>('gpt-5.4');
+  const [reasoningEffort, setReasoningEffort] = useState<SteelProviderReasoningEffort>('medium');
   const [messages, setMessages] = useState<SteelChatTurn[]>([]);
   const [lastResponse, setLastResponse] = useState<SteelProviderChatResponse | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [isEncodingFiles, setIsEncodingFiles] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<SelectedSteelFile[]>([]);
 
   const providerLabel = useMemo(
     () => lastResponse?.provider ?? 'openai_oauth_responses',
     [lastResponse],
   );
-  const canSend = input.trim().length > 0 && !isSending;
+  const canSend =
+    (input.trim().length > 0 || selectedFiles.length > 0) && !isSending && !isEncodingFiles;
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (files.length === 0) {
+      return;
+    }
+
+    setIsEncodingFiles(true);
+    try {
+      const nextFiles = await Promise.all(files.map(toSelectedSteelFile));
+      setSelectedFiles((current) => [...current, ...nextFiles]);
+    } finally {
+      setIsEncodingFiles(false);
+    }
+  };
+
+  const removeSelectedFile = (id: string) => {
+    setSelectedFiles((current) => current.filter((file) => file.id !== id));
+  };
+
+  const handleNewChat = () => {
+    setInput('');
+    setMessages([]);
+    setLastResponse(null);
+    setSelectedFiles([]);
+    setIsSending(false);
+    setIsEncodingFiles(false);
+  };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -73,18 +172,37 @@ export default function SteelOAuthChat() {
       return;
     }
 
-    const nextUserTurn = createTurn('user', input.trim());
+    const outgoingFiles = selectedFiles.map(({ filename, mediaType, dataBase64 }) => ({
+      filename,
+      mediaType,
+      dataBase64,
+    }));
+    const content = input.trim() || 'Read the attached file(s).';
+    const nextUserTurn = {
+      ...createTurn(
+        'user',
+        content,
+        outgoingFiles.map((file) => file.filename ?? 'attachment'),
+      ),
+      ...(outgoingFiles.length > 0 ? { files: outgoingFiles } : {}),
+    };
     const nextMessages = [...messages, nextUserTurn];
     setInput('');
+    setSelectedFiles([]);
     setMessages(nextMessages);
     setIsSending(true);
 
     try {
       const response = await dataService.sendSteelChat({
         model,
+        reasoningEffort,
         messages: nextMessages
           .filter((message) => message.status !== 'error')
-          .map(({ role, content }) => ({ role, content })),
+          .map(({ role, content, files }) => ({
+            role,
+            content,
+            ...(files != null && files.length > 0 ? { files } : {}),
+          })),
       });
       setLastResponse(response);
       setMessages([...nextMessages, createTurn('assistant', response.text)]);
@@ -121,21 +239,51 @@ export default function SteelOAuthChat() {
               )}
             </div>
           </div>
-          <div className="flex rounded-lg border border-border-light p-1" aria-label="Model">
-            {modelOptions.map((option) => (
-              <button
-                key={option}
-                type="button"
-                className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
-                  option === model
-                    ? 'bg-surface-active-alt text-text-primary'
-                    : 'text-text-secondary hover:bg-surface-hover'
-                }`}
-                onClick={() => setModel(option)}
-              >
-                {option}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="flex h-9 items-center gap-2 rounded-lg border border-border-light px-3 text-sm text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={isSending || isEncodingFiles}
+              onClick={handleNewChat}
+            >
+              <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+              {newChatText}
+            </button>
+            <div className="flex rounded-lg border border-border-light p-1" aria-label="Model">
+              {modelOptions.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+                    option === model
+                      ? 'bg-surface-active-alt text-text-primary'
+                      : 'text-text-secondary hover:bg-surface-hover'
+                  }`}
+                  onClick={() => setModel(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <div
+              className="flex rounded-lg border border-border-light p-1"
+              aria-label="Reasoning effort"
+            >
+              {reasoningEffortOptions.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+                    option === reasoningEffort
+                      ? 'bg-surface-active-alt text-text-primary'
+                      : 'text-text-secondary hover:bg-surface-hover'
+                  }`}
+                  onClick={() => setReasoningEffort(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
           </div>
         </header>
 
@@ -176,6 +324,18 @@ export default function SteelOAuthChat() {
                       }`}
                     >
                       {message.content}
+                      {message.attachmentNames != null && message.attachmentNames.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {message.attachmentNames.map((name) => (
+                            <span
+                              key={name}
+                              className="max-w-56 truncate rounded border border-border-light px-2 py-0.5 text-xs text-text-secondary"
+                            >
+                              {name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {isUser && (
                       <div className="mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-surface-secondary">
@@ -196,7 +356,42 @@ export default function SteelOAuthChat() {
         </div>
 
         <form className="border-t border-border-light pt-3" onSubmit={handleSubmit}>
+          {selectedFiles.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {selectedFiles.map((file) => (
+                <span
+                  key={file.id}
+                  className="flex max-w-64 items-center gap-2 rounded border border-border-light bg-surface-secondary px-2 py-1 text-xs text-text-primary"
+                >
+                  <span className="truncate">{file.filename}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${file.filename}`}
+                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded hover:bg-surface-hover"
+                    onClick={() => removeSelectedFile(file.id)}
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2 rounded-lg border border-border-light bg-surface-secondary p-2">
+            <label
+              className="flex h-10 w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-lg text-text-secondary hover:bg-surface-hover"
+              title="Attach files"
+            >
+              <Paperclip className="h-4 w-4" aria-hidden="true" />
+              <input
+                aria-label="Attach files"
+                className="sr-only"
+                multiple
+                type="file"
+                onChange={(event) => {
+                  void handleFileChange(event);
+                }}
+              />
+            </label>
             <textarea
               className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-text-secondary"
               placeholder="Message Steel"
@@ -213,10 +408,10 @@ export default function SteelOAuthChat() {
             <button
               type="submit"
               aria-label="Send"
-              disabled={!canSend}
+              disabled={!canSend || isEncodingFiles}
               className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-text-primary text-surface-primary transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {isSending ? (
+              {isSending || isEncodingFiles ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               ) : (
                 <Send className="h-4 w-4" aria-hidden="true" />

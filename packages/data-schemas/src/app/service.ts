@@ -113,6 +113,7 @@ export const AppService = async (params?: {
 
   const defaultConfig = {
     ocr,
+    fileAnalysis: config.fileAnalysis,
     paths,
     config,
     memory,

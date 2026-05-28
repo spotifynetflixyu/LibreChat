@@ -16,9 +16,16 @@ type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 
 export type SteelOAuthChatMessageRole = 'system' | 'user' | 'assistant';
 
+export interface SteelOAuthChatFile {
+  filename?: string;
+  mediaType: string;
+  data: Uint8Array | string | URL;
+}
+
 export interface SteelOAuthChatMessage {
   role: SteelOAuthChatMessageRole;
   content: string;
+  files?: SteelOAuthChatFile[];
 }
 
 export interface SteelProviderUsage {
@@ -38,6 +45,7 @@ export interface SteelProviderChatResponse {
 }
 
 export interface SendSteelOAuthChatOptions {
+  abortSignal?: AbortSignal;
   authFilePath?: string;
   createOpenAIOAuth?: CreateOpenAIOAuth;
   ensureFresh?: boolean;
@@ -45,6 +53,7 @@ export interface SendSteelOAuthChatOptions {
   maxOutputTokens?: number;
   messages: SteelOAuthChatMessage[];
   model: string;
+  passThroughUnsupportedFiles?: boolean;
   reasoningEffort: SteelOpenAIReasoningEffort;
 }
 
@@ -68,6 +77,25 @@ function toLanguageModelMessage(message: SteelOAuthChatMessage): LanguageModelV3
         type: 'text',
         text: message.content,
       },
+      ...(message.files ?? []).map((file) => {
+        const mediaType = file.mediaType.trim().toLowerCase();
+
+        return {
+          type: 'file' as const,
+          filename: file.filename,
+          mediaType: file.mediaType,
+          data: file.data,
+          ...(mediaType.startsWith('image/')
+            ? {
+                providerOptions: {
+                  openai: {
+                    imageDetail: 'high',
+                  },
+                },
+              }
+            : {}),
+        };
+      }),
     ],
   };
 }
@@ -110,6 +138,7 @@ function getUsage(result: LanguageModelV3GenerateResult): SteelProviderChatRespo
 }
 
 export async function sendSteelOAuthChat({
+  abortSignal,
   authFilePath,
   createOpenAIOAuth: injectedCreateOpenAIOAuth,
   ensureFresh = true,
@@ -117,6 +146,7 @@ export async function sendSteelOAuthChat({
   maxOutputTokens,
   messages,
   model,
+  passThroughUnsupportedFiles,
   reasoningEffort,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
@@ -128,10 +158,12 @@ export async function sendSteelOAuthChat({
   });
 
   const result = await openai(model).doGenerate({
+    abortSignal,
     prompt: toPrompt(messages),
     maxOutputTokens,
     providerOptions: {
       openai: {
+        passThroughUnsupportedFiles,
         reasoningEffort,
       },
     },

@@ -1,10 +1,22 @@
 const { EModelEndpoint, ContentTypes } = require('librechat-data-provider');
+const { prefixFileInstructions: importedPrefixFileInstructions } = require('@librechat/api');
 const {
   AIMessage,
   ToolMessage,
   HumanMessage,
   SystemMessage,
 } = require('@librechat/agents/langchain/messages');
+
+const prefixFileInstructions =
+  typeof importedPrefixFileInstructions === 'function'
+    ? importedPrefixFileInstructions
+    : (content, instructions) => {
+        const trimmedInstructions = instructions?.trim();
+        if (!trimmedInstructions || content.startsWith(trimmedInstructions)) {
+          return content;
+        }
+        return `${trimmedInstructions}\n\n${content}`;
+      };
 
 /**
  * Formats a message to OpenAI Vision API payload format.
@@ -56,7 +68,11 @@ const formatMessage = ({ message, userName, assistantName, endpoint, langChain =
     _role = roleMapping[lc_id[2]];
   }
   const role = _role ?? (sender && sender?.toLowerCase() === 'user' ? 'user' : 'assistant');
-  const content = _content ?? text ?? '';
+  const rawContent = _content ?? text ?? '';
+  const content =
+    role === 'user' && typeof rawContent === 'string'
+      ? prefixFileInstructions(rawContent, message.fileInstructions)
+      : rawContent;
   const formattedMessage = {
     role,
     content,

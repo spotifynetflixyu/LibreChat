@@ -393,6 +393,39 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(403);
     });
 
+    it('allows managing file analysis instructions through config field patches', async () => {
+      const instructions =
+        'Attached images and image-based PDFs may be rotated. Preserve Traditional Chinese exactly.';
+      const hasConfigCapability = jest.fn(
+        async (_user: unknown, section: unknown, verb: unknown) =>
+          section === 'fileAnalysis' && verb === 'manage',
+      );
+      const { handlers, deps } = createHandlers({ hasConfigCapability });
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          entries: [{ fieldPath: 'fileAnalysis.instructions', value: instructions }],
+        },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(hasConfigCapability).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1' }),
+        null,
+        'manage',
+      );
+      expect(hasConfigCapability).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1' }),
+        'fileAnalysis',
+        'manage',
+      );
+      const patchedFields = deps.patchConfigFields.mock.calls[0][3];
+      expect(patchedFields).toEqual({ 'fileAnalysis.instructions': instructions });
+    });
+
     it('strips interface permission field entries but keeps UI field entries', async () => {
       const { handlers, deps } = createHandlers();
       const req = mockReq({

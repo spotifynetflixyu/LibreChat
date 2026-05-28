@@ -59,6 +59,50 @@ STEEL_OPENAI_REASONING_EFFORT=medium
 
 For local development, leave `STEEL_OPENAI_OAUTH_AUTH_FILE` unset so the provider can discover `~/.codex/auth.json`. For hosted/server deployments such as GCP, mount the Codex/OpenAI OAuth `auth.json` as a secret-backed file and set `STEEL_OPENAI_OAUTH_AUTH_FILE` to that absolute path, for example `/var/secrets/openai-oauth/auth.json`. The backend also expands `~`, `$HOME`, `${HOME}`, `$CODEX_HOME`, and `${CODEX_HOME}` for compatibility, but absolute paths are preferred in deployed environments.
 
+## File Analysis Instructions
+
+OpenAI-native image/file guidance is configured through the neutral LibreChat config field:
+
+```yaml
+fileAnalysis:
+  instructions: >
+    Treat attached images and image-based PDFs as visual OCR tasks.
+    Attached images or image-based PDFs may contain rotated text.
+    If text or image appears rotated, rotate it mentally before reading.
+    The Chinese text is Traditional Chinese.
+    Do not convert to Simplified Chinese.
+    Preserve each Chinese character exactly as seen.
+```
+
+This field is not the LibreChat `ocr` config. `ocr` config belongs to the Mistral/custom OCR upload pipeline; `fileAnalysis.instructions` is runtime prompt guidance for model-native file/image analysis.
+
+Confirmed runtime contract:
+
+- Steel `/api/steel/ai/chat` reads `req.config.fileAnalysis.instructions` and prefixes it only onto user messages that include image attachments or PDF attachments, including image-based PDFs.
+- Normal LibreChat attachment formatting uses the same runtime instruction text through message `fileInstructions` and keeps the stored user text unchanged.
+- Provider adapters must not hard-code this prompt text. They only serialize file/image parts and provider options.
+- `image/*` parts may additionally set provider-specific detail, such as OpenAI `imageDetail: high`, but that is separate from the configurable instruction text.
+
+Confirmed management contract:
+
+- Base/local deployments can set the value in `librechat.yaml`.
+- Admin config overrides can patch the same field with `PATCH /api/admin/config/:principalType/:principalId/fields` and `fieldPath: "fileAnalysis.instructions"`.
+- The route is guarded by Admin access plus `manage:configs` or the section capability `manage:configs:fileAnalysis`; cache invalidation runs after mutations.
+- A dedicated Admin Panel textarea should write this same config field. Do not add `ocr.instructions`, Steel-only constants, or provider-adapter prompt strings.
+
+Example global/base override payload, using the current `role/__base__` base-principal convention:
+
+```json
+{
+  "entries": [
+    {
+      "fieldPath": "fileAnalysis.instructions",
+      "value": "Treat attached images and image-based PDFs as visual OCR tasks. Text may be rotated. Preserve Traditional Chinese exactly."
+    }
+  ]
+}
+```
+
 ## Binding Flow
 
 1. Create or choose the local LibreChat `ADMIN` account from `docs/steel-account-setup.md`.

@@ -1263,6 +1263,10 @@ export const ocrSchema = z.object({
   strategy: z.nativeEnum(OCRStrategy).default(OCRStrategy.MISTRAL_OCR),
 });
 
+export const fileAnalysisSchema = z.object({
+  instructions: z.string().optional(),
+});
+
 export const balanceSchema = z.object({
   enabled: z.boolean().optional().default(false),
   startBalance: z.number().optional().default(20000),
@@ -1346,6 +1350,7 @@ export const configSchema = z.object({
   version: z.string(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
+  fileAnalysis: fileAnalysisSchema.optional(),
   webSearch: webSearchSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),

@@ -1,12 +1,15 @@
 import { buildSteelModelOptions } from './models';
+import { applyFileInstructionsToMessages, type FileInstructionConfig } from '../files/instructions';
 import {
   parseSteelOpenAIConfig,
   resolveSteelOpenAIOAuthAuthFilePath,
   type SteelOpenAIConfigEnv,
+  type SteelOpenAIReasoningEffort,
 } from './ai/config';
 import {
   sendSteelOAuthChat,
   type SendSteelOAuthChatOptions,
+  type SteelOAuthChatFile,
   type SteelOAuthChatMessage,
   type SteelProviderChatResponse,
 } from './ai/provider';
@@ -15,8 +18,11 @@ import type { Request, Response } from 'express';
 
 type ModelsConfig = Record<string, string[] | undefined>;
 
+const requestReasoningEfforts = ['low', 'medium', 'high', 'xhigh'] as const;
+
 interface SteelRequest extends Request {
   config?: {
+    fileAnalysis?: FileInstructionConfig['fileAnalysis'];
     modelSpecs?: {
       list?: Array<{
         name: string;
@@ -78,6 +84,56 @@ function createErrorResponse(
   };
 }
 
+function parseBase64FileData(value: unknown, index: number, fileIndex: number): Uint8Array {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`messages[${index}].files[${fileIndex}].dataBase64 must be a non-empty string`);
+  }
+
+  const dataBase64 = value.trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64) || dataBase64.length % 4 !== 0) {
+    throw new Error(`messages[${index}].files[${fileIndex}].dataBase64 must be valid base64`);
+  }
+
+  const data = Buffer.from(dataBase64, 'base64');
+  if (data.length === 0) {
+    throw new Error(`messages[${index}].files[${fileIndex}].dataBase64 must decode to bytes`);
+  }
+
+  return new Uint8Array(data);
+}
+
+function parseMessageFiles(value: unknown, index: number): SteelOAuthChatFile[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`messages[${index}].files must be a non-empty array when provided`);
+  }
+
+  return value.map((file, fileIndex) => {
+    if (!isRecord(file)) {
+      throw new Error(`messages[${index}].files[${fileIndex}] must be an object`);
+    }
+    const { filename, mediaType, dataBase64 } = file;
+    if (filename !== undefined && (typeof filename !== 'string' || filename.length === 0)) {
+      throw new Error(
+        `messages[${index}].files[${fileIndex}].filename must be a non-empty string when provided`,
+      );
+    }
+    if (typeof mediaType !== 'string' || mediaType.length === 0) {
+      throw new Error(
+        `messages[${index}].files[${fileIndex}].mediaType must be a non-empty string`,
+      );
+    }
+
+    return {
+      filename,
+      mediaType,
+      data: parseBase64FileData(dataBase64, index, fileIndex),
+    };
+  });
+}
+
 function parseMessages(value: unknown): SteelOAuthChatMessage[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error('messages must contain at least one chat message');
@@ -96,8 +152,14 @@ function parseMessages(value: unknown): SteelOAuthChatMessage[] {
       throw new Error(`messages[${index}].content must be a non-empty string`);
     }
 
-    return { role, content };
+    const files = parseMessageFiles(item.files, index);
+
+    return files ? { role, content, files } : { role, content };
   });
+}
+
+function hasMessageFiles(messages: SteelOAuthChatMessage[]): boolean {
+  return messages.some((message) => (message.files?.length ?? 0) > 0);
 }
 
 function parseOptionalModel(value: unknown, defaultModel: string): string {
@@ -120,6 +182,20 @@ function parseOptionalMaxOutputTokens(value: unknown): number | undefined {
   }
 
   return value;
+}
+
+function parseOptionalReasoningEffort(
+  value: unknown,
+  defaultReasoningEffort: SteelOpenAIReasoningEffort,
+): SteelOpenAIReasoningEffort {
+  if (value === undefined) {
+    return defaultReasoningEffort;
+  }
+  if (typeof value === 'string' && (requestReasoningEfforts as readonly string[]).includes(value)) {
+    return value as SteelOpenAIReasoningEffort;
+  }
+
+  throw new Error(`reasoningEffort must be one of: ${requestReasoningEfforts.join(', ')}`);
 }
 
 function getErrorMessage(error: unknown): string {
@@ -167,10 +243,15 @@ export function createSteelHandlers({
       let messages: SteelOAuthChatMessage[];
       let model: string;
       let maxOutputTokens: number | undefined;
+      let reasoningEffort: SteelOpenAIReasoningEffort;
       try {
         messages = parseMessages(body.messages);
         model = parseOptionalModel(body.model, config.model);
         maxOutputTokens = parseOptionalMaxOutputTokens(body.maxOutputTokens);
+        reasoningEffort = parseOptionalReasoningEffort(
+          body.reasoningEffort,
+          config.reasoningEffort,
+        );
       } catch (error) {
         res
           .status(400)
@@ -200,12 +281,19 @@ export function createSteelHandlers({
       }
 
       try {
+        const messagesWithInstructions = applyFileInstructionsToMessages(
+          messages,
+          (req as SteelRequest).config,
+        );
         const result = await sendChat({
           authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
           maxOutputTokens,
-          messages,
+          messages: messagesWithInstructions,
           model,
-          reasoningEffort: config.reasoningEffort,
+          ...(hasMessageFiles(messagesWithInstructions)
+            ? { passThroughUnsupportedFiles: true }
+            : {}),
+          reasoningEffort,
         });
         res.status(200).json(result);
       } catch (error) {

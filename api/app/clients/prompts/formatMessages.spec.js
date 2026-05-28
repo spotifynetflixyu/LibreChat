@@ -19,6 +19,24 @@ describe('formatMessage', () => {
     });
   });
 
+  it('prepends runtime file instructions to user message text', () => {
+    const message = {
+      sender: 'user',
+      text: 'Read the attachment.',
+      fileInstructions:
+        'Attached images or image-based documents may be rotated. Preserve Chinese text exactly.',
+    };
+
+    const result = formatMessage({ message });
+
+    expect(result).toEqual({
+      role: 'user',
+      content:
+        'Attached images or image-based documents may be rotated. Preserve Chinese text exactly.\n\nRead the attachment.',
+    });
+    expect(message.text).toBe('Read the attachment.');
+  });
+
   it('sanitizes the name by replacing invalid characters (per OpenAI)', () => {
     const input = {
       message: {

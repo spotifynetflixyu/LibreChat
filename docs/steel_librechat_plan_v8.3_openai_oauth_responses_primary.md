@@ -528,6 +528,8 @@ Routing 規則：
 
 本案仍採用 AI-first 判讀，不採用 Node app 自行實作主 OCR / 主圖面判讀 / 主 Excel semantic evidence。但 v8.3 將 provider 能力分成已測與未測；AI-first 不代表任何 driver 都可讀任何檔案。
 
+檔案/圖片判讀 prompt guidance 必須走 LibreChat config 的 `fileAnalysis.instructions`。此欄位是 OpenAI-native / provider-native file analysis guidance，不是 LibreChat `ocr` / Mistral OCR pipeline 設定。Admin Panel 的設定 UI 必須更新同一個欄位，或透過既有 Admin config override API 寫入 `fieldPath: "fileAnalysis.instructions"`；不得在 Steel UI、provider adapter 或 `ocr.instructions` 寫死旋轉圖片、繁中辨識、image-based PDF 等提示。
+
 流程：
 
 ```text
@@ -552,6 +554,7 @@ Node/backend 必須負責，不能省略：
 - Tool args Zod validation、ACL、tenant boundary、prompt-injection filter、output sanitize、audit log、max tool-call guard。
 - Workbook patch validation、公式驗證、不可填 0 規則、低信心規則、七分頁 schema validation。
 - capability smoke test result 保存與 routing gate。
+- `fileAnalysis.instructions` 的 runtime 注入：只有目前 turn 含 image / PDF 類附件時才注入，包含 image-based PDF；不改寫使用者原始 message text。
 - source refs / evidence refs 保存。
 
 ### 6.7 Provider state 規則
@@ -1467,6 +1470,8 @@ official OpenAI API fallback 不可未測假定；所有 fallback capability 必
 ```
 
 所有圖片、掃描 PDF、拍照圖面、訂單截圖、手寫單、材料表圖片，在讀文字前必須先由 AI 判斷方向；若需要裁切、旋轉、放大、影像處理，優先使用已通過 capability smoke test 的 provider 能力或 backend deterministic image preprocessing，不可假設任何 driver 都可用 hosted tools。
+
+方向、繁中保留、image-based PDF 等提示屬於 `fileAnalysis.instructions` runtime config。此設定由 `librechat.yaml` 或 Admin config override 管理；Admin Panel UI 後續應提供文字欄位更新同一份 config。Provider adapter 只負責 payload/options，例如 OpenAI image `imageDetail`，不擁有這段提示文字。
 
 流程：
 
