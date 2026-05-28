@@ -1,20 +1,71 @@
 # V8.3 Phase 1 Foundation Completion Slice
 
-- [ ] Record accepted grill decisions and the Traditional Chinese workbook label correction.
-- [ ] Record that `/steel/oauth-chat` already proves OAuth file support, and confirm the active route is the OAuth Responses API path.
-- [ ] Split Steel Mongo schemas into `packages/data-schemas/src/schema/steel/` owner files and replace stale `not_run` capability status with `unverified`.
-- [ ] Restrict Steel OAuth Responses model support to `gpt-5.5`; remove `gpt-5.4` and lower models from the active allowlist.
-- [ ] Add durable `steel_audit_logs` schema/model and reusable audit service.
-- [ ] Add Steel conversation services and routes for authenticated, guest, and owner-token read paths.
-- [ ] Add service-level access checks for `STEEL_GUEST_MODE=true|false`, owner denial, and guest-token denial.
-- [ ] Keep `/api` wrappers thin and update route tests for guest/auth/admin boundaries.
-- [ ] Reconcile v8.3 env naming drift: fallback means choosing the API driver instead of OAuth, with no `STEEL_FALLBACK_*` matrix and no fallback model key.
-- [ ] Add legacy Office source metadata and a server-conversion proof script task: `.xls` / `.doc` may be handled by AI/provider now, while server-side conversion ships only after the script succeeds.
-- [ ] Run focused data-provider, data-schemas, API, route, build, and diff checks.
+- [x] Record accepted grill decisions and the Traditional Chinese workbook label correction.
+- [x] Record that `/steel/oauth-chat` already proves OAuth file support, and confirm the active route is the OAuth Responses API path.
+- [x] Split Steel Mongo schemas into `packages/data-schemas/src/schema/steel/` owner files and replace stale `not_run` capability status with `unverified`.
+- [x] Restrict Steel OAuth Responses model support to `gpt-5.5`; remove `gpt-5.4` and lower models from the active allowlist.
+- [x] Add durable `steel_audit_logs` schema/model and reusable audit service.
+- [x] Add Steel conversation services and routes for authenticated, guest, and owner-token read paths.
+- [x] Add service-level access checks for `STEEL_GUEST_MODE=true|false`, owner denial, and guest-token denial.
+- [x] Keep `/api` wrappers thin and update route tests for guest/auth/admin boundaries.
+- [x] Reconcile v8.3 env naming drift: fallback means choosing the API driver instead of OAuth, with no `STEEL_FALLBACK_*` matrix and no fallback model key.
+- [x] Add legacy Office source metadata and a server-conversion proof script task: `.xls` / `.doc` may be handled by AI/provider now, while server-side conversion ships only after the script succeeds.
+- [x] Run focused data-provider, data-schemas, API, route, build, and diff checks.
 
 ## Review
 
-- Pending.
+- Added Phase 1 Steel conversation contracts for authenticated and guest creation plus owner/guest-token read responses. These extend the existing Steel data-provider boundary without introducing tenant/org scoping.
+- Split Steel Mongo schema/model ownership into `packages/data-schemas/src/schema/steel/`, `packages/data-schemas/src/models/steel/`, and `packages/data-schemas/src/types/steel/`. New collections include `steel_audit_logs` and `steel_source_versions`; capability status now uses `unverified` instead of stale `not_run`.
+- Added `steel_audit_logs` model support and `createMongooseSteelAuditRecorder()` as the reusable Phase 1 audit primitive.
+- Added Steel conversation repository/service coverage for authenticated create, guest create, guest-mode disabled denial, non-admin user denial, owner-only read, and guest-token hash denial.
+- Added thin route wrappers for `POST /api/steel/conversations/authenticated`, `POST /api/steel/conversations/guest`, and `GET /api/steel/conversations/:conversationMetaId`.
+- Tightened active Steel OAuth model support to `gpt-5.5` only and removed the stale local proxy runtime helper. The local `openai-oauth` proxy remains manual diagnostics only; the coded runtime path is direct `openai-oauth-provider`.
+- Reconciled active v8.3 docs so fallback means explicitly choosing the `openai_api` driver. No `STEEL_FALLBACK_*`, `STEEL_OPENAI_OAUTH_AUTO_FALLBACK`, or fallback-model contract remains in active runtime docs/code.
+- Added `npm run steel:prove-office-conversion` in `packages/api` as the development proof gate for `.xls` / `.doc` server-side conversion. Runtime conversion is still not enabled until a real converter proof succeeds; this machine currently has no `soffice`/`libreoffice` binary on `PATH`, so the script fails clearly with status `2` against `docs/reference/legacy/客戶資料.xls`.
+- Verification passed: focused data-provider Steel Jest, data-schemas Steel Jest, API Steel config/provider/models/conversation/handler Jest, API Steel Postgres Jest, API route Jest, `build:data-provider`, `build:data-schemas`, `build:api`, touched-file ESLint, conversion-proof CLI help, stale-contract grep, Markdown subset Prettier check, and `git diff --check`.
+- Caveat: `build:api` still emits existing repo-wide TypeScript warnings in non-Steel files such as `agents/resources.ts`, `app/config.ts`, `endpoints/config/*`, `cache/cacheFactory.ts`, `middleware/remoteAgentAuth.ts`, and `middleware/share.ts`. The Steel-specific missing export warnings were fixed by exporting Steel model creators from `@librechat/data-schemas`.
+
+# V8.3 Phase 1 Follow-Up: LibreOffice Proof And Diff Review
+
+- [x] Install or locate LibreOffice/soffice locally.
+- [x] Rerun `steel:prove-office-conversion` against legacy `.xls` references.
+- [x] Review the current Phase 1 diff for defects before any Phase 2 work.
+- [x] Record proof and review result.
+
+## Review
+
+- Installed LibreOffice through Homebrew cask; `soffice` is now linked at `/opt/homebrew/bin/soffice`.
+- `npm run steel:prove-office-conversion -- ../../docs/reference/legacy/客戶資料.xls ../../docs/reference/legacy/產品價格.xls` passed and produced `.xlsx` outputs under `/var/folders/.../T/steel-office-conversion-*`.
+- No `.doc` legacy fixtures currently exist under `docs/reference`; only `docs/reference/legacy/客戶資料.xls` and `docs/reference/legacy/產品價格.xls` were available for proof.
+- Review finding P1: `GET /api/steel/conversations/:conversationMetaId` does not run auth middleware, so normal logged-in owner reads will not populate `req.user`; authenticated conversation records then return 401 unless some unrelated upstream middleware has already set `req.user`.
+- Review finding P2: conversation access errors return the Error class name as `errorCategory`, losing the service's typed category such as `steel_guest_mode_disabled` or `steel_quote_access_denied`.
+- Resolved P1 before closing Phase 1: conversation reads now run JWT auth unless `x-steel-guest-token` is present, preserving owner reads while still allowing guest-token reads.
+- Resolved P2 before closing Phase 1: Steel conversation access errors now return typed `errorCategory` values.
+- Phase 1 is closed after rerunning focused data-provider, data-schemas, API, route, build, lint, conversion proof, formatting, and diff checks. Do not start Phase 2 until explicitly requested.
+
+# V8.3 Phase 1 Conversion Proof Output Directory
+
+- [x] Change `steel:prove-office-conversion` output from OS temp folders to `tmp/steel-office-conversion/`.
+- [x] Reuse the repo-level `tmp/` ignore rule for conversion proof artifacts.
+- [x] Rerun the conversion proof and diff checks.
+
+## Review
+
+- `steel:prove-office-conversion` now writes converted `.xlsx` / `.docx` files to `tmp/steel-office-conversion/`.
+- Root `tmp/` is already ignored by git so conversion proof artifacts remain local-only.
+- Removed stale OS temp `steel-office-conversion-*` folders created by earlier proof runs.
+
+# V8.3 Phase 1 Temp Directory Unification
+
+- [x] Move `steel:prove-office-conversion` output to root `tmp/steel-office-conversion/`.
+- [x] Remove the redundant `packages/api/.tmp/` ignore rule and local artifacts.
+- [x] Rerun conversion proof, ignore checks, formatting/lint, and diff checks.
+
+## Review
+
+- The package-local `packages/api/.tmp/` path is removed from `.gitignore` and from local disk.
+- `npm run steel:prove-office-conversion -- ../../docs/reference/legacy/客戶資料.xls ../../docs/reference/legacy/產品價格.xls` now writes both files under root `tmp/steel-office-conversion/`.
+- `git check-ignore` confirms the generated `.xlsx` outputs are covered by the existing root `tmp/` rule.
 
 # V8.3 File Analysis Instructions Management
 

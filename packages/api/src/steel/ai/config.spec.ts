@@ -5,15 +5,15 @@ import {
 } from './config';
 
 describe('Steel OpenAI runtime config', () => {
-  it('defaults to OAuth, gpt-5.4, and medium reasoning effort', () => {
+  it('defaults to OAuth, gpt-5.5, and medium reasoning effort', () => {
     expect(parseSteelOpenAIConfig({})).toEqual({
       provider: 'OAUTH',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       reasoningEffort: 'medium',
     });
   });
 
-  it('accepts API provider and the alternate approved model', () => {
+  it('accepts API provider with the active approved model', () => {
     expect(
       parseSteelOpenAIConfig({
         STEEL_OPENAI_PROVIDER: 'API',
@@ -31,6 +31,11 @@ describe('Steel OpenAI runtime config', () => {
     expect(() =>
       parseSteelOpenAIConfig({
         STEEL_OPENAI_PROVIDER: 'LOCAL',
+      }),
+    ).toThrow(SteelOpenAIConfigError);
+    expect(() =>
+      parseSteelOpenAIConfig({
+        STEEL_OPENAI_DEFAULT_MODEL: 'gpt-5.4',
       }),
     ).toThrow(SteelOpenAIConfigError);
     expect(() =>

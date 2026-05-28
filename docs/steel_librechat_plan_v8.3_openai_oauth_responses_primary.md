@@ -2109,12 +2109,12 @@ Expected：
 ### 30.2 AI Provider / openai-oauth / official OpenAI API
 
 - [ ] `SteelAIProvider` interface 已抽象化，不讓 Steel Orchestrator 直接依賴單一 provider client 或 official OpenAI client。
-- [ ] `openai_oauth_responses` driver 已實作，使用 `openai-oauth` CLI localhost proxy base URL 與 `/v1/responses` endpoint。
+- [ ] `openai_oauth_responses` driver 已實作，使用 direct `openai-oauth-provider` 作為 coded runtime path；`openai-oauth` CLI localhost proxy 只作手動 diagnostic smoke probe。
 - [ ] `openai_oauth_responses` driver 固定 `stateMode=stateless_full_history`，每次 request 由 backend 傳完整 prompt bundle。
 - [ ] OAuth login / token store 有 server-side 保護；不把 OAuth token 存在 frontend localStorage。
 - [ ] `check quota remaining` 不作 OAuth driver 必備功能；OAuth driver 只做 model availability / rate-limit / auth error smoke handling。
 - [ ] LibreChat Steel Workspace model selector 預設選擇 `openai_oauth_responses` + `gpt-5.5`，不顯示 `gpt-5.4` 或以下模型，並沿用 LibreChat model/default setting framework 解析預設 model 與 runtime settings。
-- [ ] Phase 1 已建立可測的 OpenAI OAuth proxy route/service seam；完整 chat-to-workbook live smoke 仍屬 Phase 3 gate。
+- [ ] Phase 1 已建立可測的 OpenAI OAuth direct-provider service seam；完整 chat-to-workbook live smoke 仍屬 Phase 3 gate。
 - [ ] `openai_oauth_responses` text / streaming smoke test passed。
 - [ ] `openai_oauth_responses` tool calling / tool result round-trip smoke test passed。
 - [ ] `openai_oauth_responses` structured workbook patch smoke test passed；invalid structured output 不修改 workbook。

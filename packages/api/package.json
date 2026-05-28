@@ -32,6 +32,7 @@
     "test:s3-integration": "jest --testPathPatterns=\"src/storage/s3/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand",
     "verify": "npm run test:ci",
     "steel:export-oauth-fixtures": "node scripts/export-steel-oauth-fixtures.cjs",
+    "steel:prove-office-conversion": "node scripts/prove-steel-office-conversion.cjs",
     "b:clean": "bun run rimraf dist",
     "b:build": "bun run b:clean && bun run rollup -c --silent --bundleConfigAsCjs",
     "b:build:dev": "bun run b:clean && NODE_ENV=development bun run rollup -c --silent --bundleConfigAsCjs",

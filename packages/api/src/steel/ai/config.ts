@@ -1,7 +1,7 @@
 import os from 'os';
 
 export type SteelOpenAIProviderPreference = 'OAUTH' | 'API';
-export type SteelOpenAIDefaultModel = 'gpt-5.4' | 'gpt-5.5';
+export type SteelOpenAIDefaultModel = 'gpt-5.5';
 export type SteelOpenAIReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface SteelOpenAIConfig {
@@ -29,7 +29,7 @@ export class SteelOpenAIConfigError extends Error {
 }
 
 const providerValues = ['OAUTH', 'API'] as const;
-const modelValues = ['gpt-5.4', 'gpt-5.5'] as const;
+const modelValues = ['gpt-5.5'] as const;
 const reasoningEffortValues = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
 function parseEnumValue<T extends string>(
@@ -60,7 +60,7 @@ export function parseSteelOpenAIConfig(env: SteelOpenAIConfigEnv = process.env):
     model: parseEnumValue(
       'STEEL_OPENAI_DEFAULT_MODEL',
       env.STEEL_OPENAI_DEFAULT_MODEL,
-      'gpt-5.4',
+      'gpt-5.5',
       modelValues,
     ),
     reasoningEffort: parseEnumValue(

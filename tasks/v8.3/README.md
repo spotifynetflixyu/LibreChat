@@ -25,9 +25,9 @@ The plan assumes the current repository state:
 - The `openai_api` driver is Responses-first. Responses-only settings such as reasoning summaries must not downgrade to Chat Completions.
 - Driver capability smoke tests decide whether a model can handle text, streaming, tool calling, structured output, image/PDF/XLSX input, File Search, Code Interpreter, and conversation state.
 - openai-oauth session/conversation IDs are provider runtime trace only. Official OpenAI Responses/Conversations state is used only by the `openai_api` driver.
-- The openai-oauth local proxy is stateless for `/v1/responses`; Steel must send full reconstructed context each run and must not use `previous_response_id` or `item_reference` with `openai_oauth_responses`.
-- Any openai-oauth proxy-dropped or unsupported runtime settings are recorded as unsupported settings instead of being treated as successfully applied defaults.
-- Fallback flags default to false. Fallback to `openai_api` is allowed only when the relevant `STEEL_FALLBACK_ON_*` key is true and the matching secondary capability has a passed smoke result.
+- The OAuth Responses path is treated as stateless full-history; Steel must send full reconstructed context each run and must not use `previous_response_id` or `item_reference` with `openai_oauth_responses`.
+- Any openai-oauth provider/proxy-dropped or unsupported runtime settings are recorded as unsupported settings instead of being treated as successfully applied defaults.
+- There is no per-capability fallback env matrix in active v8.3. Using `openai_api` is an explicit backend driver choice, and the matching secondary capability must have passed smoke evidence.
 - Model selection is served by backend allowlist/capability status, but the implementation must adapt LibreChat's existing `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior before adding Steel-only selection logic. Do not create a parallel model system.
 - The steel handbook DOCX under `docs/reference` is allowed as a real schema/data-model design reference; real handbook data SQL/import work is deferred to a later code-agent data task.
 - Chinese source labels/headers/terms from `docs/reference` must be mapped to English canonical schema keys before they shape DTOs, repository filters, SQL columns, tool arguments, workbook paths, prompt context, or mock API keys.

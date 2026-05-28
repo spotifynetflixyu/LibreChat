@@ -5,23 +5,44 @@ const mockListModels = jest.fn((_req, res) => res.status(200).json({ options: []
 const mockChat = jest.fn((_req, res) =>
   res.status(200).json({
     provider: 'openai_oauth_responses',
-    model: 'gpt-5.4',
+    model: 'gpt-5.5',
     text: 'steel-chat-ok',
     unsupportedSettings: [],
     warnings: [],
   }),
 );
 const mockCapabilitySmoke = jest.fn((_req, res) =>
-  res.status(202).json({ status: 'accepted', provider: 'openai_oauth_responses' }),
+  res.status(200).json({
+    provider: 'openai_oauth_responses',
+    model: 'gpt-5.5',
+    source: 'code_owned_support_matrix',
+  }),
+);
+const mockCreateAuthenticatedConversation = jest.fn((_req, res) =>
+  res.status(201).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
+);
+const mockCreateGuestConversation = jest.fn((_req, res) =>
+  res.status(201).json({
+    id: 'steel_meta_guest_1',
+    createdFrom: 'guest',
+    guestToken: 'guest-token-raw',
+  }),
+);
+const mockReadConversation = jest.fn((_req, res) =>
+  res.status(200).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
 );
 const mockCreateSteelHandlers = jest.fn(() => ({
   chat: mockChat,
+  createAuthenticatedConversation: mockCreateAuthenticatedConversation,
+  createGuestConversation: mockCreateGuestConversation,
   listModels: mockListModels,
+  readConversation: mockReadConversation,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
   requestCapabilitySmoke: mockCapabilitySmoke,
 }));
 const mockRequireCapability = jest.fn(() => (_req, _res, next) => next());
+const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 
 jest.mock('@librechat/api', () => ({
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
@@ -35,7 +56,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('~/server/middleware', () => ({
-  requireJwtAuth: (_req, _res, next) => next(),
+  requireJwtAuth: (...args) => mockRequireJwtAuth(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -62,6 +83,10 @@ function createApp() {
 }
 
 describe('Steel route shells', () => {
+  beforeEach(() => {
+    mockRequireJwtAuth.mockClear();
+  });
+
   it('registers user-facing Steel model options under /api/steel', async () => {
     const app = createApp();
 
@@ -81,11 +106,64 @@ describe('Steel route shells', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-chat-ok',
       unsupportedSettings: [],
       warnings: [],
     });
+  });
+
+  it('registers authenticated Steel conversation creation under /api/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/steel/conversations/authenticated')
+      .send({ libreChatConversationId: 'lc_1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({
+      id: 'steel_meta_auth_1',
+      createdFrom: 'authenticated',
+    });
+  });
+
+  it('registers guest Steel conversation creation without JWT middleware', async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/steel/conversations/guest')
+      .send({ libreChatConversationId: 'lc_guest_1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({
+      id: 'steel_meta_guest_1',
+      createdFrom: 'guest',
+      guestToken: 'guest-token-raw',
+    });
+  });
+
+  it('registers Steel conversation read under /api/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).get('/api/steel/conversations/steel_meta_auth_1');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      id: 'steel_meta_auth_1',
+      createdFrom: 'authenticated',
+    });
+    expect(mockRequireJwtAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets guest-token Steel conversation reads reach the service without JWT middleware', async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .get('/api/steel/conversations/steel_meta_guest_1')
+      .set('x-steel-guest-token', 'guest-token-raw');
+
+    expect(res.status).toBe(200);
+    expect(mockRequireJwtAuth).not.toHaveBeenCalled();
   });
 
   it('registers admin-only capability smoke under /api/admin/steel', async () => {
@@ -93,10 +171,11 @@ describe('Steel route shells', () => {
 
     const res = await request(app).post('/api/admin/steel/ai/capability-smoke');
 
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      status: 'accepted',
       provider: 'openai_oauth_responses',
+      model: 'gpt-5.5',
+      source: 'code_owned_support_matrix',
     });
   });
 });

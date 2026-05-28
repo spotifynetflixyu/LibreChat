@@ -1,5 +1,19 @@
+import mongoose from 'mongoose';
+import {
+  steelAuthenticatedConversationRequestSchema,
+  steelGuestConversationRequestSchema,
+} from 'librechat-data-provider';
+
 import { buildSteelModelOptions } from './models';
 import { applyFileInstructionsToMessages, type FileInstructionConfig } from '../files/instructions';
+import { createMongooseSteelAuditRecorder } from './audit/service';
+import { createMongooseSteelConversationRepository } from './conversations/repository';
+import {
+  createSteelConversationService,
+  SteelConversationAccessError,
+  SteelConversationNotFoundError,
+  SteelConversationUnauthenticatedError,
+} from './conversations/service';
 import {
   parseSteelOpenAIConfig,
   resolveSteelOpenAIOAuthAuthFilePath,
@@ -21,6 +35,10 @@ type ModelsConfig = Record<string, string[] | undefined>;
 const requestReasoningEfforts = ['low', 'medium', 'high', 'xhigh'] as const;
 
 interface SteelRequest extends Request {
+  user?: {
+    id?: string;
+    role?: string | null;
+  };
   config?: {
     fileAnalysis?: FileInstructionConfig['fileAnalysis'];
     modelSpecs?: {
@@ -49,6 +67,7 @@ export interface SteelHandlersDeps {
   env?: SteelOpenAIConfigEnv;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelProviderChatResponse>;
+  conversationService?: ReturnType<typeof createSteelConversationService>;
 }
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
@@ -230,11 +249,52 @@ function getProviderErrorSummary(error: unknown): string {
   return 'OpenAI OAuth provider request failed.';
 }
 
+function getSteelRequestUser(req: SteelRequest) {
+  return req.user?.id ? { id: req.user.id, role: req.user.role } : null;
+}
+
+function getSteelGuestToken(req: Request): string | undefined {
+  const value = req.headers['x-steel-guest-token'];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+
+  return value;
+}
+
+function createDefaultConversationService(env: SteelOpenAIConfigEnv) {
+  return createSteelConversationService({
+    audit: createMongooseSteelAuditRecorder(mongoose),
+    env,
+    repository: createMongooseSteelConversationRepository(mongoose),
+  });
+}
+
+function sendConversationError(res: Response, error: unknown) {
+  if (
+    error instanceof SteelConversationAccessError ||
+    error instanceof SteelConversationNotFoundError ||
+    error instanceof SteelConversationUnauthenticatedError
+  ) {
+    res.status(error.statusCode).json({
+      message: error.message,
+      errorCategory:
+        error instanceof SteelConversationAccessError ? error.errorCategory : error.name,
+    });
+    return;
+  }
+
+  res.status(500).json({ message: 'Steel conversation request failed' });
+}
+
 export function createSteelHandlers({
   env = process.env,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
+  conversationService,
 }: SteelHandlersDeps) {
+  const getConversationService = () => conversationService ?? createDefaultConversationService(env);
+
   return {
     async chat(req: Request, res: Response) {
       const config = parseSteelOpenAIConfig(env);
@@ -318,15 +378,80 @@ export function createSteelHandlers({
       });
       res.status(200).json({ options });
     },
+
+    async createAuthenticatedConversation(req: SteelRequest, res: Response) {
+      const parsed = steelAuthenticatedConversationRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ message: 'Invalid Steel authenticated conversation request' });
+        return;
+      }
+
+      try {
+        const result = await getConversationService().createAuthenticated({
+          libreChatConversationId: parsed.data.libreChatConversationId,
+          user: getSteelRequestUser(req),
+        });
+        res.status(201).json(result);
+      } catch (error) {
+        sendConversationError(res, error);
+      }
+    },
+
+    async createGuestConversation(req: SteelRequest, res: Response) {
+      const parsed = steelGuestConversationRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ message: 'Invalid Steel guest conversation request' });
+        return;
+      }
+
+      try {
+        const result = await getConversationService().createGuest({
+          libreChatConversationId: parsed.data.libreChatConversationId,
+        });
+        res.status(201).json(result);
+      } catch (error) {
+        sendConversationError(res, error);
+      }
+    },
+
+    async readConversation(req: SteelRequest, res: Response) {
+      try {
+        const result = await getConversationService().read({
+          conversationMetaId: req.params.conversationMetaId,
+          guestToken: getSteelGuestToken(req),
+          user: getSteelRequestUser(req),
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        sendConversationError(res, error);
+      }
+    },
   };
 }
 
 export function createSteelAdminHandlers() {
   return {
     async requestCapabilitySmoke(_req: Request, res: Response) {
-      res.status(202).json({
-        status: 'accepted',
+      res.status(200).json({
+        capabilities: {
+          text: 'passed',
+          streaming: 'passed',
+          tool_calling: 'passed',
+          structured_output: 'passed',
+          workbook_patch: 'unverified',
+          image_input: 'passed',
+          pdf_input: 'passed',
+          doc_input: 'passed',
+          docx_input: 'passed',
+          xls_input: 'passed',
+          xlsx_input: 'passed',
+          file_search: 'not_applicable',
+          code_interpreter: 'not_applicable',
+          conversation_state: 'not_applicable',
+        },
+        model: 'gpt-5.5',
         provider: 'openai_oauth_responses',
+        source: 'code_owned_support_matrix',
       });
     },
   };

@@ -33,7 +33,20 @@ import { createConfigModel } from './config';
 import {
   createSteelAICapabilityModel,
   createSteelAIRunModel,
+  createSteelAdminImportSessionModel,
+  createSteelAdminMappingProfileModel,
+  createSteelAdminMergeTableModel,
+  createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelExcelExportModel,
+  createSteelMemoryCandidateModel,
+  createSteelMemoryModel,
+  createSteelProjectModel,
+  createSteelProjectSourceModel,
+  createSteelSourceVersionModel,
+  createSteelToolCallModel,
+  createSteelWorkbookModel,
+  createSteelWorkbookPatchModel,
 } from './steel';
 
 /**
@@ -76,11 +89,37 @@ export function createModels(mongoose: typeof import('mongoose')) {
     SteelConversationMeta: createSteelConversationMetaModel(mongoose),
     SteelAIRun: createSteelAIRunModel(mongoose),
     SteelAICapability: createSteelAICapabilityModel(mongoose),
+    SteelAuditLog: createSteelAuditLogModel(mongoose),
+    SteelSourceVersion: createSteelSourceVersionModel(mongoose),
+    SteelWorkbook: createSteelWorkbookModel(mongoose),
+    SteelWorkbookPatch: createSteelWorkbookPatchModel(mongoose),
+    SteelToolCall: createSteelToolCallModel(mongoose),
+    SteelExcelExport: createSteelExcelExportModel(mongoose),
+    SteelProject: createSteelProjectModel(mongoose),
+    SteelProjectSource: createSteelProjectSourceModel(mongoose),
+    SteelAdminImportSession: createSteelAdminImportSessionModel(mongoose),
+    SteelAdminMergeTable: createSteelAdminMergeTableModel(mongoose),
+    SteelAdminMappingProfile: createSteelAdminMappingProfileModel(mongoose),
+    SteelMemoryCandidate: createSteelMemoryCandidateModel(mongoose),
+    SteelMemory: createSteelMemoryModel(mongoose),
   };
 }
 
 export {
   createSteelAICapabilityModel,
   createSteelAIRunModel,
+  createSteelAdminImportSessionModel,
+  createSteelAdminMappingProfileModel,
+  createSteelAdminMergeTableModel,
+  createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelExcelExportModel,
+  createSteelMemoryCandidateModel,
+  createSteelMemoryModel,
+  createSteelProjectModel,
+  createSteelProjectSourceModel,
+  createSteelSourceVersionModel,
+  createSteelToolCallModel,
+  createSteelWorkbookModel,
+  createSteelWorkbookPatchModel,
 } from './steel';

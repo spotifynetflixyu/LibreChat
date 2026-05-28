@@ -70,5 +70,6 @@
 - For OpenAI-native file/image analysis of Traditional Chinese fixtures, explicitly say the Chinese text is Traditional Chinese and must be preserved exactly; this can fix glyph/locale confusion before changing model or reasoning effort.
 - Treat Steel admin capability smoke as code-owned provider/model capability evidence, not a customer feature or Admin UI; for Phase 1, hard-code `openai_oauth_responses` + `gpt-5.5` Responses API support and reuse proven `/steel/oauth-chat` file-support evidence.
 - For legacy Office files, AI/provider handling of `.xls` and `.doc` is allowed, but server-side conversion to `.xlsx`/`.docx` must be proven by a development script before becoming production behavior.
+- Keep Steel legacy Office conversion proof outputs in the repo-level ignored directory `tmp/steel-office-conversion/` so artifacts are inspectable, share one temp convention, and avoid package-local `.tmp` directories.
 - Steel v8.3 supports `gpt-5.5` for the OAuth Responses path; do not keep `gpt-5.4` or lower models in the active allowlist.
 - Steel v8.3 supports one company only; preserve per-account privacy with owner/user and guest-token access checks, not tenant or organization scoping.

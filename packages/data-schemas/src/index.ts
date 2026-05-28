@@ -6,6 +6,24 @@ export * from './schema';
 export * from './utils';
 export { createModels } from './models';
 export {
+  createSteelAICapabilityModel,
+  createSteelAIRunModel,
+  createSteelAdminImportSessionModel,
+  createSteelAdminMappingProfileModel,
+  createSteelAdminMergeTableModel,
+  createSteelAuditLogModel,
+  createSteelConversationMetaModel,
+  createSteelExcelExportModel,
+  createSteelMemoryCandidateModel,
+  createSteelMemoryModel,
+  createSteelProjectModel,
+  createSteelProjectSourceModel,
+  createSteelSourceVersionModel,
+  createSteelToolCallModel,
+  createSteelWorkbookModel,
+  createSteelWorkbookPatchModel,
+} from './models';
+export {
   createMethods,
   RoleConflictError,
   DEFAULT_REFRESH_TOKEN_EXPIRY,

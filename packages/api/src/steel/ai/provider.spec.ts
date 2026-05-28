@@ -34,7 +34,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         ({
           specificationVersion: 'v3',
           provider: 'openai.responses',
-          modelId: 'gpt-5.4',
+          modelId: 'gpt-5.5',
           supportedUrls: {},
           doGenerate,
         }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
@@ -45,7 +45,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       fetch: fetchResponses,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'Reply exactly: steel-provider-mock-ok' }],
       reasoningEffort: 'medium',
     });
@@ -75,7 +75,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
     expect(response).toEqual({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-provider-mock-ok',
       responseId: 'resp_steel_mock',
       usage: {
@@ -115,7 +115,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         ({
           specificationVersion: 'v3',
           provider: 'openai.responses',
-          modelId: 'gpt-5.4',
+          modelId: 'gpt-5.5',
           supportedUrls: {},
           doGenerate,
         }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
@@ -127,7 +127,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       passThroughUnsupportedFiles: true,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       messages: [
         {
           role: 'user',
@@ -197,7 +197,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         ({
           specificationVersion: 'v3',
           provider: 'openai.responses',
-          modelId: 'gpt-5.4',
+          modelId: 'gpt-5.5',
           supportedUrls: {},
           doGenerate,
         }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
@@ -207,7 +207,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       passThroughUnsupportedFiles: true,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       messages: [
         {
           role: 'user',

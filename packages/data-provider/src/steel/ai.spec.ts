@@ -3,7 +3,6 @@ import {
   steelAIProviderErrorCategories,
   steelAIDrivers,
   steelCapabilityIds,
-  steelFallbackEnvKeys,
   steelModelOptionSchema,
   steelProviderChatRequestSchema,
   steelProviderChatResponseSchema,
@@ -17,14 +16,10 @@ describe('Steel AI public contracts', () => {
     expect(isSteelAIDriver('openharness_chatgpt_oauth')).toBe(false);
   });
 
-  it('uses the five approved fallback env keys only', () => {
-    expect(steelFallbackEnvKeys).toEqual([
-      'STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED',
-      'STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED',
-      'STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED',
-      'STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED',
-      'STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED',
-    ]);
+  it('does not expose a per-capability fallback env matrix', async () => {
+    const contracts = await import('./ai');
+
+    expect('steelFallbackEnvKeys' in contracts).toBe(false);
   });
 
   it('models capabilities needed by the provider selector and smoke gates', () => {
@@ -36,6 +31,9 @@ describe('Steel AI public contracts', () => {
       'workbook_patch',
       'image_input',
       'pdf_input',
+      'doc_input',
+      'docx_input',
+      'xls_input',
       'xlsx_input',
       'file_search',
       'code_interpreter',
@@ -45,9 +43,9 @@ describe('Steel AI public contracts', () => {
 
   it('accepts a model option shaped by LibreChat defaults and provider capabilities', () => {
     const parsed = steelModelOptionSchema.parse({
-      id: 'openai_oauth_responses:gpt-5.1',
-      label: 'gpt-5.1',
-      model: 'gpt-5.1',
+      id: 'openai_oauth_responses:gpt-5.5',
+      label: 'gpt-5.5',
+      model: 'gpt-5.5',
       provider: 'openai_oauth_responses',
       source: 'librechat_model_spec',
       endpoint: '/v1/responses',
@@ -64,6 +62,9 @@ describe('Steel AI public contracts', () => {
         workbook_patch: 'unverified',
         image_input: 'failed',
         pdf_input: 'unverified',
+        doc_input: 'unverified',
+        docx_input: 'unverified',
+        xls_input: 'unverified',
         xlsx_input: 'unverified',
         file_search: 'unverified',
         code_interpreter: 'unverified',
@@ -90,7 +91,7 @@ describe('Steel AI public contracts', () => {
 
     const parsed = steelProviderChatResponseSchema.parse({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-provider-ok',
       responseId: 'resp_123',
       usage: {
@@ -104,7 +105,7 @@ describe('Steel AI public contracts', () => {
 
     expect(parsed).toEqual({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-provider-ok',
       responseId: 'resp_123',
       usage: {
@@ -121,13 +122,13 @@ describe('Steel AI public contracts', () => {
   it('validates minimal Steel provider chat requests', () => {
     expect(
       steelProviderChatRequestSchema.parse({
-        model: 'gpt-5.4',
+        model: 'gpt-5.5',
         messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
         maxOutputTokens: 64,
         reasoningEffort: 'high',
       }),
     ).toEqual({
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
       maxOutputTokens: 64,
       reasoningEffort: 'high',

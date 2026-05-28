@@ -1,20 +1,6 @@
-type SteelAIDriver = 'openai_oauth_responses' | 'openai_api';
-type SteelCapabilityStatus = 'passed' | 'failed' | 'unverified' | 'disabled' | 'not_applicable';
+import type { SteelAIDriver, SteelCapabilityMap, SteelModelOption } from 'librechat-data-provider';
 
-type SteelCapabilityId =
-  | 'text'
-  | 'streaming'
-  | 'tool_calling'
-  | 'structured_output'
-  | 'workbook_patch'
-  | 'image_input'
-  | 'pdf_input'
-  | 'xlsx_input'
-  | 'file_search'
-  | 'code_interpreter'
-  | 'conversation_state';
-
-type SteelCapabilityMap = Record<SteelCapabilityId, SteelCapabilityStatus>;
+const activeSteelOAuthModel = 'gpt-5.5';
 
 interface LibreChatModelSpec {
   name: string;
@@ -35,24 +21,15 @@ interface LibreChatModelSpec {
 }
 
 interface SteelModelOptionsInput {
-  models: Record<string, string[] | undefined>;
+  models: {
+    [endpoint: string]: string[] | undefined;
+  };
   modelSpecs?: {
     list?: LibreChatModelSpec[];
   };
-  capabilities?: Record<string, SteelCapabilityMap | undefined>;
-}
-
-export interface SteelModelOption {
-  id: string;
-  label: string;
-  model: string;
-  provider: SteelAIDriver;
-  source: 'librechat_model_spec' | 'default_preset' | 'endpoint_model';
-  endpoint: '/v1/responses' | '/v1/chat/completions';
-  defaultForSteel: boolean;
-  requestedSettings: Record<string, string | number | boolean | null | string[] | number[]>;
-  capabilities: SteelCapabilityMap;
-  disabledReason?: string;
+  capabilities?: {
+    [id: string]: SteelCapabilityMap | undefined;
+  };
 }
 
 const defaultProvider: SteelAIDriver = 'openai_oauth_responses';
@@ -64,6 +41,9 @@ const defaultCapabilities: SteelCapabilityMap = {
   workbook_patch: 'unverified',
   image_input: 'unverified',
   pdf_input: 'unverified',
+  doc_input: 'unverified',
+  docx_input: 'unverified',
+  xls_input: 'unverified',
   xlsx_input: 'unverified',
   file_search: 'unverified',
   code_interpreter: 'unverified',
@@ -106,8 +86,16 @@ function getRequestedSettings(spec: LibreChatModelSpec) {
   return settings;
 }
 
-function hasLibreChatModel(models: SteelModelOptionsInput['models'], endpoint: string, model: string) {
+function hasLibreChatModel(
+  models: SteelModelOptionsInput['models'],
+  endpoint: string,
+  model: string,
+) {
   return models[endpoint]?.includes(model) === true;
+}
+
+function isActiveSteelModel(model: string): boolean {
+  return model === activeSteelOAuthModel;
 }
 
 export function buildSteelModelOptions({
@@ -121,7 +109,12 @@ export function buildSteelModelOptions({
     const endpoint = spec.preset.endpoint ?? '';
     const model = spec.preset.model ?? '';
 
-    if (!endpoint || !model || !hasLibreChatModel(models, endpoint, model)) {
+    if (
+      !endpoint ||
+      !model ||
+      !isActiveSteelModel(model) ||
+      !hasLibreChatModel(models, endpoint, model)
+    ) {
       continue;
     }
 
@@ -144,6 +137,10 @@ export function buildSteelModelOptions({
   }
 
   for (const model of models.openAI ?? []) {
+    if (!isActiveSteelModel(model)) {
+      continue;
+    }
+
     const id = getModelOptionId(defaultProvider, model);
     options.push({
       id,

@@ -16,6 +16,9 @@ export const steelCapabilityIds = [
   'workbook_patch',
   'image_input',
   'pdf_input',
+  'doc_input',
+  'docx_input',
+  'xls_input',
   'xlsx_input',
   'file_search',
   'code_interpreter',
@@ -23,16 +26,6 @@ export const steelCapabilityIds = [
 ] as const;
 
 export type SteelAIDriverCapability = (typeof steelCapabilityIds)[number];
-
-export const steelFallbackEnvKeys = [
-  'STEEL_FALLBACK_REQUIRE_CAPABILITY_PASSED',
-  'STEEL_FALLBACK_ON_FILE_INPUT_UNSUPPORTED',
-  'STEEL_FALLBACK_ON_VISION_INPUT_UNSUPPORTED',
-  'STEEL_FALLBACK_ON_XLSX_INPUT_UNSUPPORTED',
-  'STEEL_FALLBACK_ON_HOSTED_TOOL_UNSUPPORTED',
-] as const;
-
-export type SteelFallbackEnvKey = (typeof steelFallbackEnvKeys)[number];
 
 export const steelCapabilityStatusSchema = z.enum([
   'passed',

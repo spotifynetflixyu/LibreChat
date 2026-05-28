@@ -49,13 +49,13 @@ Important constraints to preserve:
 
 ```env
 STEEL_OPENAI_PROVIDER=OAUTH
-STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5
 STEEL_OPENAI_REASONING_EFFORT=medium
 ```
 
 `STEEL_OPENAI_PROVIDER=OAUTH` uses direct `openai-oauth-provider` first. `STEEL_OPENAI_PROVIDER=API` uses the official OpenAI API path first after that path is implemented and smoke-tested. The local proxy remains a manual local/dev probe only and must not be hosted as a multi-user service. Direct provider mode does not need a `/v1` base URL or transport selector.
 
-`STEEL_OPENAI_DEFAULT_MODEL` accepts `gpt-5.4` or `gpt-5.5`; default is `gpt-5.4`. `STEEL_OPENAI_REASONING_EFFORT` accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; default is `medium`.
+`STEEL_OPENAI_DEFAULT_MODEL` accepts `gpt-5.5`; default is `gpt-5.5`. `gpt-5.4` and lower models are not supported by the active Steel v8.3 OAuth Responses allowlist. `STEEL_OPENAI_REASONING_EFFORT` accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; default is `medium`.
 
 For local development, leave `STEEL_OPENAI_OAUTH_AUTH_FILE` unset so the provider can discover `~/.codex/auth.json`. For hosted/server deployments such as GCP, mount the Codex/OpenAI OAuth `auth.json` as a secret-backed file and set `STEEL_OPENAI_OAUTH_AUTH_FILE` to that absolute path, for example `/var/secrets/openai-oauth/auth.json`. The backend also expands `~`, `$HOME`, `${HOME}`, `$CODEX_HOME`, and `${CODEX_HOME}` for compatibility, but absolute paths are preferred in deployed environments.
 
@@ -116,7 +116,7 @@ Example global/base override payload, using the current `role/__base__` base-pri
    ```bash
    npx openai-oauth@latest --host 127.0.0.1 --port 10531
    ```
-   If a deterministic model list is needed during Steel testing, pass `--models gpt-5.4,gpt-5.3-codex` or the currently approved model list.
+   If a deterministic model list is needed during Steel testing, pass `--models gpt-5.5` or the currently approved model list.
 6. Persist token material only through the configured server-side encrypted store or local encrypted development file.
 7. Store only non-secret token metadata in audit/debug records, such as provider name, account label, expiry if available, and last bind time.
 8. Verify the server can load the binding without printing secrets.
@@ -143,7 +143,7 @@ Run smoke tests in this order:
 12. XLS/XLSX or spreadsheet evidence.
 13. Hosted tools such as File Search, Code Interpreter, or Hosted Shell if the selected driver exposes them.
 
-Only mark a capability supported after a real smoke passes. Unsupported or unverified capability paths return typed low-confidence/manual-review errors unless the matching `STEEL_FALLBACK_ON_*` flag is enabled and `openai_api` has a passed smoke result for that same capability.
+Only mark a capability supported after a real smoke passes. Unsupported or unverified capability paths return typed low-confidence/manual-review errors unless the workflow explicitly selects the `openai_api` driver and `openai_api` has a passed smoke result for that same capability.
 
 ## Local Proxy Smoke Probes
 
@@ -155,7 +155,7 @@ curl -sS http://127.0.0.1:10531/v1/models
 curl -sS http://127.0.0.1:10531/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "stream": false,
     "input": [
       {
@@ -176,7 +176,7 @@ Run the gated manual spec only on a developer machine with local auth material a
 
 ```bash
 STEEL_OPENAI_OAUTH_REAL_AUTH_TEST=true \
-STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4 \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5 \
 STEEL_OPENAI_REASONING_EFFORT=medium \
 NODE_OPTIONS=--experimental-vm-modules \
 npm --workspace packages/api exec -- \

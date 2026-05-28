@@ -1,4 +1,5 @@
-import { createSteelHandlers } from './handlers';
+import { createSteelAdminHandlers, createSteelHandlers } from './handlers';
+import { SteelConversationAccessError } from './conversations/service';
 
 import type { Request, Response } from 'express';
 
@@ -17,7 +18,7 @@ describe('createSteelHandlers', () => {
   it('sends authenticated Steel chat through the OAuth provider adapter', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-chat-ok',
       unsupportedSettings: [],
       warnings: [],
@@ -39,13 +40,13 @@ describe('createSteelHandlers', () => {
       authFilePath: undefined,
       maxOutputTokens: undefined,
       messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       reasoningEffort: 'medium',
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-chat-ok',
       unsupportedSettings: [],
       warnings: [],
@@ -55,7 +56,7 @@ describe('createSteelHandlers', () => {
   it('decodes browser-safe chat file payloads before calling the provider adapter', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-file-ok',
       unsupportedSettings: [],
       warnings: [],
@@ -109,7 +110,7 @@ describe('createSteelHandlers', () => {
   it('injects configured file instructions for image and PDF file payloads', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-file-ok',
       unsupportedSettings: [],
       warnings: [],
@@ -159,7 +160,7 @@ describe('createSteelHandlers', () => {
   it('expands configured local OAuth auth file paths before calling the provider', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-chat-ok',
       unsupportedSettings: [],
       warnings: [],
@@ -192,7 +193,7 @@ describe('createSteelHandlers', () => {
   it('uses request-level reasoning effort when provided', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: 'steel-chat-ok',
       unsupportedSettings: [],
       warnings: [],
@@ -265,7 +266,7 @@ describe('createSteelHandlers', () => {
     expect(res.status).toHaveBeenCalledWith(501);
     expect(res.json).toHaveBeenCalledWith({
       provider: 'openai_api',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: '',
       unsupportedSettings: [],
       warnings: [],
@@ -295,7 +296,7 @@ describe('createSteelHandlers', () => {
     expect(res.status).toHaveBeenCalledWith(502);
     expect(res.json).toHaveBeenCalledWith({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: '',
       unsupportedSettings: [],
       warnings: [],
@@ -320,12 +321,67 @@ describe('createSteelHandlers', () => {
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({
       provider: 'openai_oauth_responses',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       text: '',
       unsupportedSettings: [],
       warnings: [],
       errorCategory: 'unknown',
       errorSummary: 'messages must contain at least one chat message',
+    });
+  });
+
+  it('returns typed Steel conversation access error categories', async () => {
+    const conversationService = {
+      createAuthenticated: jest.fn(),
+      createGuest: jest.fn(async () => {
+        throw new SteelConversationAccessError(
+          'Steel guest mode is disabled',
+          'steel_guest_mode_disabled',
+        );
+      }),
+      read: jest.fn(),
+    };
+    const handlers = createSteelHandlers({
+      conversationService,
+      getModelsConfig: jest.fn(),
+    });
+    const req = { body: { libreChatConversationId: 'lc_guest_1' } } as Request;
+    const res = createResponse();
+
+    await handlers.createGuestConversation(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Steel guest mode is disabled',
+      errorCategory: 'steel_guest_mode_disabled',
+    });
+  });
+});
+
+describe('createSteelAdminHandlers', () => {
+  it('returns the code-owned gpt-5.5 OAuth Responses support matrix', async () => {
+    const handlers = createSteelAdminHandlers();
+    const req = { body: {} } as Request;
+    const res = createResponse();
+
+    await handlers.requestCapabilitySmoke(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.5',
+      source: 'code_owned_support_matrix',
+      capabilities: expect.objectContaining({
+        text: 'passed',
+        streaming: 'passed',
+        image_input: 'passed',
+        pdf_input: 'passed',
+        doc_input: 'passed',
+        docx_input: 'passed',
+        xls_input: 'passed',
+        xlsx_input: 'passed',
+        conversation_state: 'not_applicable',
+      }),
     });
   });
 });
