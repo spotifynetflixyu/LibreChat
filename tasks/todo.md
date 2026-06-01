@@ -1,3 +1,20 @@
+# Steel Data Rules Architecture Work Package
+
+- [x] Record accepted Phase 2 data/rule decisions from the company manual quoting workflow.
+- [x] Create a dedicated multi-phase work package under `tasks/steel-data-rules-architecture/`.
+- [x] Link the package from the active v8.3 Phase 2 plan so it does not drift from implementation work.
+- [x] Update `CONTEXT.md` with the resolved business vocabulary for quote request evidence, material rules, product-price unit weight, and cutting price source.
+- [x] Update `tasks/lessons.md` with the new correction patterns.
+- [x] Run focused documentation verification.
+
+## Review
+
+- Created `tasks/steel-data-rules-architecture/` as the dedicated package for mapping the real manual quoting workflow into database facts, rule facts, and AI tool-calling contracts.
+- Captured the accepted decisions: product-price unit weight wins over handbook unit weight when source rows disagree during reviewed data organization; C-type rules are disclosed to AI only for C-type quote items; H non-standard-length surcharge adjusts material unit price only; cutting always uses the cutting price source; `切工價錢.xlsx` is a formal cutting-price source; customer inquiry files are quote evidence, not formal import sources.
+- Added phase files and checkpoints covering source inventory, canonical data/schema, material-rule architecture, tool-calling, Admin update flow, and verification scenarios.
+- Updated the active v8.3 Phase 2 plan with a pointer to the new package.
+- Updated glossary and lessons so future agents preserve these boundaries.
+
 # V8.3 Phase 1 Foundation Completion Slice
 
 - [x] Record accepted grill decisions and the Traditional Chinese workbook label correction.

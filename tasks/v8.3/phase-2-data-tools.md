@@ -2,6 +2,8 @@
 
 Goal: make Steel quoting deterministic before involving Steel AI provider orchestration. Tools must query backend-owned repositories, validate inputs, sanitize outputs, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
 
+Detailed data/rule architecture for the company's manual quoting workflow lives in [`../steel-data-rules-architecture/README.md`](../steel-data-rules-architecture/README.md). Treat that package as the Phase 2 companion plan for source priority, material-specific rules, source refs, tool-calling boundaries, and Admin maintenance scope.
+
 ## Scope
 
 - Supabase read repositories for customers, aliases, tiers, prices, weight specs, processing/cutting/hole/slotting/bending prices, formulas, orders, and source chunks.
