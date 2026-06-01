@@ -12,10 +12,15 @@ Use `librechat.example.yaml` as the reference when you need to enable optional f
 
 The backend also expects `.env` to include the database URLs required by your local setup, including `MONGO_URI` and any project-specific Postgres URL such as `STEEL_POSTGRES_URL`.
 
-For Steel development, use the Supabase Session pooler URL for `STEEL_POSTGRES_URL`
-instead of the direct `db.<project-ref>.supabase.co` URL. The direct URL may
-require IPv6 and fail to resolve on local networks. The local development URL
-shape is:
+For Steel development, `STEEL_POSTGRES_URL` is the runtime source of truth. Use
+the Supabase direct database URL when your network supports it:
+
+```env
+STEEL_POSTGRES_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres
+```
+
+If the direct `db.<project-ref>.supabase.co` URL fails to resolve locally, use
+the Supabase Session pooler URL instead:
 
 ```env
 STEEL_POSTGRES_URL=postgresql://postgres.<project-ref>:<password>@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require&uselibpqcompat=true

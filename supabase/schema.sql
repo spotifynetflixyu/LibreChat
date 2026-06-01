@@ -27,11 +27,15 @@ CREATE TABLE IF NOT EXISTS steel.customer_tiers (
   priority INTEGER NOT NULL DEFAULT 100,
   discount_rate NUMERIC(8, 5),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT customer_tiers_code_unique UNIQUE (code),
   CONSTRAINT customer_tiers_discount_rate_check CHECK (
     discount_rate IS NULL OR discount_rate >= 0
+  ),
+  CONSTRAINT customer_tiers_source_refs_check CHECK (
+    jsonb_typeof(source_refs) = 'array'
   )
 );
 
@@ -46,10 +50,12 @@ CREATE TABLE IF NOT EXISTS steel.customers (
   notes TEXT,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   import_log_id TEXT,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT customers_erp_customer_code_unique UNIQUE (erp_customer_code),
-  CONSTRAINT customers_status_check CHECK (status IN ('active', 'inactive', 'deleted'))
+  CONSTRAINT customers_status_check CHECK (status IN ('active', 'inactive', 'deleted')),
+  CONSTRAINT customers_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array')
 );
 
 CREATE TABLE IF NOT EXISTS steel.customer_aliases (
@@ -58,8 +64,12 @@ CREATE TABLE IF NOT EXISTS steel.customer_aliases (
   alias TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'manual',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT customer_aliases_source_refs_check CHECK (
+    jsonb_typeof(source_refs) = 'array'
+  )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS customer_aliases_customer_alias_unique
@@ -73,9 +83,13 @@ CREATE TABLE IF NOT EXISTS steel.price_categories (
   material_family TEXT,
   default_unit TEXT NOT NULL DEFAULT 'kg',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT price_categories_code_unique UNIQUE (code)
+  CONSTRAINT price_categories_code_unique UNIQUE (code),
+  CONSTRAINT price_categories_source_refs_check CHECK (
+    jsonb_typeof(source_refs) = 'array'
+  )
 );
 
 CREATE TABLE IF NOT EXISTS steel.price_items (
@@ -87,16 +101,48 @@ CREATE TABLE IF NOT EXISTS steel.price_items (
   product_name TEXT NOT NULL,
   material_grade TEXT,
   unit TEXT NOT NULL DEFAULT 'kg',
-  unit_price NUMERIC(14, 4) NOT NULL,
+  unit_price NUMERIC(14, 4),
+  product_price_unit_weight NUMERIC(14, 5),
+  product_price_unit_weight_unit TEXT,
   currency TEXT NOT NULL DEFAULT 'TWD',
   effective_from DATE,
   effective_to DATE,
   active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   last_import_log_id TEXT,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT price_items_unit_price_check CHECK (unit_price >= 0),
+  CONSTRAINT price_items_unit_price_check CHECK (unit_price IS NULL OR unit_price >= 0),
+  CONSTRAINT price_items_product_price_unit_weight_check CHECK (
+    product_price_unit_weight IS NULL OR product_price_unit_weight > 0
+  ),
+  CONSTRAINT price_items_product_weight_unit_required_check CHECK (
+    product_price_unit_weight IS NULL
+    OR product_price_unit_weight_unit IS NOT NULL
+  ),
+  CONSTRAINT price_items_product_weight_unit_check CHECK (
+    product_price_unit_weight_unit IS NULL
+    OR product_price_unit_weight_unit IN ('kg_per_m', 'kg_per_piece', 'kg_per_unit')
+  ),
+  CONSTRAINT price_items_value_state_check CHECK (
+    value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')
+  ),
+  CONSTRAINT price_items_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT price_items_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT price_items_unit_price_required_check CHECK (
+    value_state = 'unknown' OR unit_price IS NOT NULL
+  ),
+  CONSTRAINT price_items_unknown_unit_price_check CHECK (
+    value_state <> 'unknown' OR unit_price IS NULL
+  ),
+  CONSTRAINT price_items_true_zero_unit_price_check CHECK (
+    value_state <> 'true_zero' OR unit_price IS NOT DISTINCT FROM 0
+  ),
   CONSTRAINT price_items_effective_range_check CHECK (
     effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from
   )
@@ -108,6 +154,9 @@ ON steel.price_items (spec_key, active, customer_tier_id);
 CREATE UNIQUE INDEX IF NOT EXISTS price_items_erp_tier_unique
 ON steel.price_items (erp_item_code, COALESCE(customer_tier_id, 0))
 WHERE erp_item_code IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS price_items_review_state_idx
+ON steel.price_items (review_state, active);
 
 CREATE TABLE IF NOT EXISTS steel.price_rule_conditions (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -136,14 +185,20 @@ CREATE TABLE IF NOT EXISTS steel.weight_specs (
   length_m NUMERIC(10, 3),
   weight_kg_per_m NUMERIC(14, 5),
   weight_kg_per_piece NUMERIC(14, 5),
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  source_ref TEXT,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT weight_specs_spec_key_unique UNIQUE (spec_key),
   CONSTRAINT weight_specs_weight_check CHECK (
-    weight_kg_per_m IS NOT NULL OR weight_kg_per_piece IS NOT NULL
-  )
+    (weight_kg_per_m IS NOT NULL AND weight_kg_per_m > 0)
+    OR (weight_kg_per_piece IS NOT NULL AND weight_kg_per_piece > 0)
+  ),
+  CONSTRAINT weight_specs_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT weight_specs_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array')
 );
 
 CREATE INDEX IF NOT EXISTS weight_specs_family_shape_idx
@@ -155,12 +210,24 @@ CREATE TABLE IF NOT EXISTS steel.material_rules (
   name TEXT NOT NULL,
   rule_type TEXT NOT NULL,
   rule_body JSONB NOT NULL DEFAULT '{}'::jsonb,
+  priority INTEGER NOT NULL DEFAULT 100,
+  material_family TEXT,
+  condition_type TEXT,
   active BOOLEAN NOT NULL DEFAULT true,
-  source_ref TEXT,
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT material_rules_code_unique UNIQUE (code)
+  CONSTRAINT material_rules_code_unique UNIQUE (code),
+  CONSTRAINT material_rules_priority_check CHECK (priority >= 0),
+  CONSTRAINT material_rules_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT material_rules_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array')
 );
+
+CREATE INDEX IF NOT EXISTS material_rules_lookup_idx
+ON steel.material_rules (material_family, rule_type, active, priority);
 
 CREATE TABLE IF NOT EXISTS steel.processing_prices (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -168,20 +235,46 @@ CREATE TABLE IF NOT EXISTS steel.processing_prices (
   product_family TEXT,
   spec_key TEXT,
   unit TEXT NOT NULL,
-  unit_price NUMERIC(14, 4) NOT NULL,
+  unit_price NUMERIC(14, 4),
   min_price NUMERIC(14, 4),
   currency TEXT NOT NULL DEFAULT 'TWD',
   active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   import_log_id TEXT,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT processing_prices_unit_price_check CHECK (unit_price >= 0),
-  CONSTRAINT processing_prices_min_price_check CHECK (min_price IS NULL OR min_price >= 0)
+  CONSTRAINT processing_prices_unit_price_check CHECK (
+    unit_price IS NULL OR unit_price >= 0
+  ),
+  CONSTRAINT processing_prices_min_price_check CHECK (min_price IS NULL OR min_price >= 0),
+  CONSTRAINT processing_prices_value_state_check CHECK (
+    value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')
+  ),
+  CONSTRAINT processing_prices_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT processing_prices_source_refs_check CHECK (
+    jsonb_typeof(source_refs) = 'array'
+  ),
+  CONSTRAINT processing_prices_unit_price_required_check CHECK (
+    value_state = 'unknown' OR unit_price IS NOT NULL
+  ),
+  CONSTRAINT processing_prices_unknown_unit_price_check CHECK (
+    value_state <> 'unknown' OR unit_price IS NULL
+  ),
+  CONSTRAINT processing_prices_true_zero_unit_price_check CHECK (
+    value_state <> 'true_zero' OR unit_price IS NOT DISTINCT FROM 0
+  )
 );
 
 CREATE INDEX IF NOT EXISTS processing_prices_lookup_idx
 ON steel.processing_prices (processing_type, product_family, spec_key, active);
+
+CREATE INDEX IF NOT EXISTS processing_prices_review_state_idx
+ON steel.processing_prices (review_state, active);
 
 CREATE TABLE IF NOT EXISTS steel.cutting_prices (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -190,22 +283,44 @@ CREATE TABLE IF NOT EXISTS steel.cutting_prices (
   spec_key TEXT,
   length_m NUMERIC(10, 3),
   unit TEXT NOT NULL DEFAULT 'cut',
-  unit_price NUMERIC(14, 4) NOT NULL,
+  unit_price NUMERIC(14, 4),
   surcharge_per_kg NUMERIC(14, 4),
   currency TEXT NOT NULL DEFAULT 'TWD',
   active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   import_log_id TEXT,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT cutting_prices_unit_price_check CHECK (unit_price >= 0),
+  CONSTRAINT cutting_prices_unit_price_check CHECK (unit_price IS NULL OR unit_price >= 0),
   CONSTRAINT cutting_prices_surcharge_check CHECK (
     surcharge_per_kg IS NULL OR surcharge_per_kg >= 0
+  ),
+  CONSTRAINT cutting_prices_value_state_check CHECK (
+    value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')
+  ),
+  CONSTRAINT cutting_prices_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT cutting_prices_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT cutting_prices_unit_price_required_check CHECK (
+    value_state = 'unknown' OR unit_price IS NOT NULL
+  ),
+  CONSTRAINT cutting_prices_unknown_unit_price_check CHECK (
+    value_state <> 'unknown' OR unit_price IS NULL
+  ),
+  CONSTRAINT cutting_prices_true_zero_unit_price_check CHECK (
+    value_state <> 'true_zero' OR unit_price IS NOT DISTINCT FROM 0
   )
 );
 
 CREATE INDEX IF NOT EXISTS cutting_prices_lookup_idx
 ON steel.cutting_prices (product_family, cut_type, spec_key, active);
+
+CREATE INDEX IF NOT EXISTS cutting_prices_review_state_idx
+ON steel.cutting_prices (review_state, active);
 
 CREATE TABLE IF NOT EXISTS steel.cutting_price_adjustments (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -213,11 +328,19 @@ CREATE TABLE IF NOT EXISTS steel.cutting_price_adjustments (
   condition_type TEXT NOT NULL,
   adjustment_type TEXT NOT NULL,
   adjustment_value NUMERIC(14, 4) NOT NULL,
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT cutting_price_adjustments_type_check CHECK (
     adjustment_type IN ('fixed', 'per_kg', 'percent')
+  ),
+  CONSTRAINT cutting_price_adjustments_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT cutting_price_adjustments_source_refs_check CHECK (
+    jsonb_typeof(source_refs) = 'array'
   )
 );
 
@@ -228,13 +351,32 @@ CREATE TABLE IF NOT EXISTS steel.hole_prices (
   thickness_min_mm NUMERIC(10, 3),
   thickness_max_mm NUMERIC(10, 3),
   unit TEXT NOT NULL DEFAULT 'hole',
-  unit_price NUMERIC(14, 4) NOT NULL,
+  unit_price NUMERIC(14, 4),
   currency TEXT NOT NULL DEFAULT 'TWD',
   active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT hole_prices_unit_price_check CHECK (unit_price >= 0)
+  CONSTRAINT hole_prices_unit_price_check CHECK (unit_price IS NULL OR unit_price >= 0),
+  CONSTRAINT hole_prices_value_state_check CHECK (
+    value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')
+  ),
+  CONSTRAINT hole_prices_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT hole_prices_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT hole_prices_unit_price_required_check CHECK (
+    value_state = 'unknown' OR unit_price IS NOT NULL
+  ),
+  CONSTRAINT hole_prices_unknown_unit_price_check CHECK (
+    value_state <> 'unknown' OR unit_price IS NULL
+  ),
+  CONSTRAINT hole_prices_true_zero_unit_price_check CHECK (
+    value_state <> 'true_zero' OR unit_price IS NOT DISTINCT FROM 0
+  )
 );
 
 CREATE INDEX IF NOT EXISTS hole_prices_lookup_idx
@@ -246,13 +388,32 @@ CREATE TABLE IF NOT EXISTS steel.slotting_prices (
   length_mm NUMERIC(10, 3),
   width_mm NUMERIC(10, 3),
   unit TEXT NOT NULL DEFAULT 'slot',
-  unit_price NUMERIC(14, 4) NOT NULL,
+  unit_price NUMERIC(14, 4),
   currency TEXT NOT NULL DEFAULT 'TWD',
   active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT slotting_prices_unit_price_check CHECK (unit_price >= 0)
+  CONSTRAINT slotting_prices_unit_price_check CHECK (unit_price IS NULL OR unit_price >= 0),
+  CONSTRAINT slotting_prices_value_state_check CHECK (
+    value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')
+  ),
+  CONSTRAINT slotting_prices_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT slotting_prices_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT slotting_prices_unit_price_required_check CHECK (
+    value_state = 'unknown' OR unit_price IS NOT NULL
+  ),
+  CONSTRAINT slotting_prices_unknown_unit_price_check CHECK (
+    value_state <> 'unknown' OR unit_price IS NULL
+  ),
+  CONSTRAINT slotting_prices_true_zero_unit_price_check CHECK (
+    value_state <> 'true_zero' OR unit_price IS NOT DISTINCT FROM 0
+  )
 );
 
 CREATE INDEX IF NOT EXISTS slotting_prices_lookup_idx
@@ -265,13 +426,32 @@ CREATE TABLE IF NOT EXISTS steel.bending_prices (
   thickness_min_mm NUMERIC(10, 3),
   thickness_max_mm NUMERIC(10, 3),
   unit TEXT NOT NULL DEFAULT 'bend',
-  unit_price NUMERIC(14, 4) NOT NULL,
+  unit_price NUMERIC(14, 4),
   currency TEXT NOT NULL DEFAULT 'TWD',
   active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT bending_prices_unit_price_check CHECK (unit_price >= 0)
+  CONSTRAINT bending_prices_unit_price_check CHECK (unit_price IS NULL OR unit_price >= 0),
+  CONSTRAINT bending_prices_value_state_check CHECK (
+    value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')
+  ),
+  CONSTRAINT bending_prices_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT bending_prices_source_refs_check CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT bending_prices_unit_price_required_check CHECK (
+    value_state = 'unknown' OR unit_price IS NOT NULL
+  ),
+  CONSTRAINT bending_prices_unknown_unit_price_check CHECK (
+    value_state <> 'unknown' OR unit_price IS NULL
+  ),
+  CONSTRAINT bending_prices_true_zero_unit_price_check CHECK (
+    value_state <> 'true_zero' OR unit_price IS NOT DISTINCT FROM 0
+  )
 );
 
 CREATE INDEX IF NOT EXISTS bending_prices_lookup_idx
@@ -356,13 +536,34 @@ CREATE TABLE IF NOT EXISTS steel.formula_versions (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
   code TEXT NOT NULL,
   version_seq INTEGER NOT NULL,
+  display_name TEXT,
+  source_expression TEXT,
   formula_body JSONB NOT NULL,
+  compiled_formula JSONB,
+  allowed_variables JSONB NOT NULL DEFAULT '[]'::jsonb,
   active BOOLEAN NOT NULL DEFAULT true,
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_by TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT formula_versions_code_version_unique UNIQUE (code, version_seq)
+  CONSTRAINT formula_versions_code_version_unique UNIQUE (code, version_seq),
+  CONSTRAINT formula_versions_compiled_formula_check CHECK (
+    compiled_formula IS NULL OR jsonb_typeof(compiled_formula) = 'object'
+  ),
+  CONSTRAINT formula_versions_allowed_variables_check CHECK (
+    jsonb_typeof(allowed_variables) = 'array'
+  ),
+  CONSTRAINT formula_versions_review_state_check CHECK (
+    review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')
+  ),
+  CONSTRAINT formula_versions_source_refs_check CHECK (
+    jsonb_typeof(source_refs) = 'array'
+  )
 );
+
+CREATE INDEX IF NOT EXISTS formula_versions_active_review_idx
+ON steel.formula_versions (code, active, review_state);
 
 CREATE TABLE IF NOT EXISTS steel.import_rule_notes (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -379,9 +580,15 @@ CREATE TABLE IF NOT EXISTS steel.price_history (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
   price_item_id BIGINT NOT NULL REFERENCES steel.price_items(id) ON DELETE CASCADE,
   old_unit_price NUMERIC(14, 4),
-  new_unit_price NUMERIC(14, 4) NOT NULL,
+  new_unit_price NUMERIC(14, 4),
   changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  import_log_id TEXT
+  import_log_id TEXT,
+  CONSTRAINT price_history_old_unit_price_check CHECK (
+    old_unit_price IS NULL OR old_unit_price >= 0
+  ),
+  CONSTRAINT price_history_new_unit_price_check CHECK (
+    new_unit_price IS NULL OR new_unit_price >= 0
+  )
 );
 
 CREATE OR REPLACE FUNCTION steel.record_price_history()

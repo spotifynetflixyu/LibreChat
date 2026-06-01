@@ -1,3 +1,188 @@
+# Steel Phase 2 Adjustable Calculation Rule Overrides
+
+- [x] Extend selected calculation rules so lesson/memory/admin defaults can carry adjustable numeric parameters.
+- [x] Accept explicit user-provided conversation overrides for numbers or prices without hardcoding those values in code.
+- [x] Keep fixed formula identity separate from adjustable parameters.
+- [x] Preserve `產品價格.xlsx` zero-as-missing behavior unless a user override supplies the value or a confirmed true-zero rule applies through non-product-price evidence.
+- [x] Verify with focused pricing/tool tests, lint, build, smoke, and diff checks.
+
+## Review
+
+- Extended `selectedCalculationRule` with optional `formulaCode`, `defaultParameters`, and `parameterOverrides`.
+- `formulaCode` identifies the fixed formula path; `defaultParameters` represent lesson/memory/admin defaults; `parameterOverrides` represent explicit user, quote-evidence, or admin adjustments.
+- `rank_price_candidates` now accepts a high-confidence `unitPrice` / `unit_price` override from the selected rule and applies it before rejecting missing prices.
+- Medium/low-confidence overrides return `parameter_override_not_confirmed`, so the chat flow asks for confirmation instead of silently pricing.
+- The selected rule and its override details are returned in `priceDecision.calculationRule` so later calculators can audit which defaults and custom numbers were used.
+- Verification passed: focused Steel Jest suites, focused ESLint, `npm run build:api`, built-package user-override smoke, and diff hygiene checks.
+
+# Steel Phase 2 Price Decision Rules
+
+- [x] Add backend price decision contract for ranked candidates.
+- [x] Treat `產品價格.xlsx` zero values as missing price, not confirmed free price.
+- [x] Require an AI/memory/admin selected calculation rule before any zero charge becomes confirmed true zero.
+- [x] Let the selected calculation rule decide whether the price path skips remainder calculation.
+- [x] Require user confirmation when multiple usable price candidates remain.
+- [x] Add `rank_price_candidates` to the provider-neutral Steel tool executor.
+
+## Review
+
+- Added `packages/api/src/steel/pricing/decision.ts` and focused tests for price ranking/decision behavior.
+- Added `rank_price_candidates` to the Steel tool registry and executor. It is a pure decision tool and does not query Supabase directly.
+- Product/material price `0` from `產品價格.xlsx` is rejected with `product_price_zero_is_missing`.
+- A zero charge is usable only when the caller supplies a selected calculation rule with `effect = true_zero_charge`, matching `appliesToChargeTypes`, and `confidence = high`.
+- The current C-type cutting/hole free-charge behavior is represented as an AI/memory/admin selected calculation rule, not as product-family hardcoding in pricing code.
+- True-zero decisions normalize `valueState` to `true_zero` and use the selected rule's `skipRemainderCalculation` flag.
+- Zero cutting/hole values without a selected calculation rule are rejected by default, even for C-type steel.
+- Multiple positive usable candidates return `confirm_candidates` so the user chooses before pricing.
+- Verification passed: focused Steel Jest suites, focused ESLint, `npm run build:api`, built-package `rank_price_candidates` smoke, and diff hygiene checks.
+
+# Steel Phase 2 AI Spec Clarification
+
+- [x] Add backend contract for AI-proposed quote item candidates.
+- [x] Require user confirmation when AI confidence is not high.
+- [x] Require user confirmation when multiple plausible spec candidates exist.
+- [x] Preserve one high-confidence complete candidate as usable but still traceable to AI inference.
+- [x] Add focused tests and export the normalization layer.
+
+## Review
+
+- Added `packages/api/src/steel/normalization/clarify.ts` as the backend contract for AI-proposed quote item candidates.
+- Added `normalize_quote_item` to the provider-neutral Steel tool registry and executor. This tool validates AI candidate output; it does not query raw files or Supabase directly.
+- `resolveSteelQuoteItemCandidates()` returns `use_candidate` only for one high-confidence complete candidate.
+- Medium/low confidence candidates return `ask_user` with bounded options for user confirmation.
+- Multiple plausible candidates return `confirm_candidates` so the chat flow can show choices before pricing.
+- Missing required fields return a targeted question naming the missing canonical fields.
+- Focused red/green tests passed for the clarification rules and executor integration.
+
+# Steel Phase 2 Tool Executor MVP
+
+- [x] Add provider-neutral Steel tool schemas and registry for repository-backed tools.
+- [x] Add executor envelopes, bounded logging, per-run call limit handling, and typed errors.
+- [x] Sanitize tool results before returning them to any Steel AI provider.
+- [x] Wire existing read repositories into tool handlers without raw SQL or raw file access.
+- [x] Verify the tool executor with focused red/green tests, API build, and diff hygiene.
+- [x] Record deferred scope: real Admin ERP XLSX import and real handbook data SQL/import remain later work.
+
+## Review
+
+- Added `packages/api/src/steel/tools/` with provider-neutral Zod schemas, registry definitions, result envelopes, sanitizer, executor, and tests.
+- Implemented repository-backed tools: `lookup_customer`, `search_customers`, `search_price_candidates`, `lookup_spec_price`, `lookup_weight_spec`, `lookup_cutting_price`, `lookup_processing_price`, `lookup_material_rules`, `lookup_formula_version`, `find_order_items`, and `search_source_chunks`.
+- The registry deliberately excludes raw SQL, raw Mongo, file-read, and directory-listing tools.
+- Tool execution validates arguments before SQL dispatch, enforces optional per-run call limits, returns typed success/error envelopes, and emits bounded log entries with source refs and redaction version.
+- Tool output sanitization redacts prompt-injection-like source text and drops undefined fields before returning data to provider adapters.
+- Unknown prices remain `null` with `valueState = unknown`; tool code does not convert missing prices to `0`.
+- Exported `postgres`, `repositories`, and `tools` through the package root so thin `/api` wrappers can consume the new Steel layers from `@librechat/api`.
+- Verification passed: initial red tests failed for missing modules, then focused tool tests passed, repository plus tool tests passed, and `npm run build:api` passed with only existing non-Steel TypeScript warnings.
+- Live Supabase cloud smoke through `.env` `STEEL_POSTGRES_URL` passed against the built package: `search_price_candidates` returned a success envelope with zero candidates for a synthetic no-match spec.
+- Deferred scope remains unchanged: real Admin ERP XLSX import, import commit/upsert workflows, and real handbook data SQL/import belong to later Phase 5 or explicitly approved data-import work.
+
+# Steel Phase 2 Repository Layer
+
+- [x] Add canonical repository helpers for `source_refs`, `value_state`, and `review_state`.
+- [x] Add read repositories for Phase 2 quote facts and source chunks.
+- [x] Add validation that rejects malformed `source_refs` before insert serialization.
+- [x] Verify the repositories against focused Jest coverage.
+- [x] Verify the exported Steel API build boundary and live Supabase cloud schema.
+
+## Review
+
+- Added `packages/api/src/steel/repositories/` with typed query helpers for price items, customers, weight specs, processing/cutting/hole/slotting/bending prices, material rules, formula versions, order items, and source chunks.
+- Default quote-facing repository reads filter to `review_state = reviewed` and active rows where the table has `active`; callers can opt into a different review state or inactive records where that is useful for Admin workflows.
+- Added `parseSteelSourceRefs()` and `serializeSteelSourceRefsForInsert()` so code validates canonical `source_refs` arrays before writing JSONB values.
+- Exported the repository layer through `packages/api/src/steel/index.ts`.
+- Focused repository verification passed: 8 Jest suites, 14 tests.
+- Steel Postgres plus repository verification passed: 9 Jest suites, 18 tests.
+- `npm run build:api` passed. It still emits existing non-Steel TypeScript warnings in config/cache/middleware files, but no new Steel repository warnings.
+- Live Supabase cloud read probe through `.env` `STEEL_POSTGRES_URL` passed with `source_refs_array_violations = 0`.
+- Hosted Supabase MCP config is present in `.mcp.json`; the endpoint is reachable and returns `401` until the client/user completes OAuth authentication.
+
+# Steel Supabase Cloud Migration Setup And Phase 2 Schema
+
+- [x] Remove Docker-oriented Supabase local-stack setup and root npm scripts.
+- [x] Add project MCP config for the hosted Supabase MCP server.
+- [x] Update agent docs so Steel uses cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
+- [x] Generate the Phase 2 schema migration with Supabase CLI.
+- [x] Update `supabase/schema.sql` with the same Phase 2 schema changes.
+- [x] Apply the migration to the cloud Supabase development database.
+- [x] Verify the cloud schema, formatting, and diff hygiene.
+
+## Review
+
+- Removed the root `npm run supabase:*` scripts and the generated local-stack `supabase/config.toml` / `supabase/.gitignore` files.
+- Kept Steel runtime database connection on `.env` `STEEL_POSTGRES_URL`; `.env.example` and local-dev docs show the direct Supabase `db.<project-ref>.supabase.co` URL shape first, with the Session pooler documented as a fallback.
+- Added project `.mcp.json` for the hosted Supabase MCP server scoped to project ref `iumtsqkuppgopxskuwns`.
+- Preserved the canonical singular `supabase/migration/` directory by adding `supabase/migrations` as a symlink for Supabase CLI migration generation only.
+- Generated `supabase/migration/20260601101055_phase2_canonical_quote_facts.sql` with `npx supabase migration new phase2_canonical_quote_facts`.
+- Updated `supabase/schema.sql` with the same Phase 2 columns, constraints, and indexes.
+- Applied the migration to the cloud Supabase development database through `.env` `STEEL_POSTGRES_URL`.
+- Live verification passed: required Phase 2 columns, constraints, and indexes are present; `weight_specs.source_ref` and `material_rules.source_ref` are removed; Steel still has 21 tables; `anon` and `authenticated` have no Steel schema/table access.
+
+# Steel Phase 2 Supabase Schema Delta Plan
+
+- [x] Inspect current Supabase schema snapshot and accepted Phase 2 canonical contracts.
+- [x] Create a schema delta plan under `tasks/steel-data-rules-architecture/`.
+- [x] Link the schema delta plan from the active Phase 2 architecture package.
+- [x] Run focused docs verification, Markdown formatting, and `git diff --check`.
+
+## Review
+
+- Created `tasks/steel-data-rules-architecture/phase-2-schema-delta-plan.md` as a review-only plan, not a migration.
+- Proposed migration filename `supabase/migration/202606010001_phase2_canonical_quote_facts.sql` for the later implementation step.
+- Planned table deltas for source-backed customer/category data, `price_items`, `weight_specs`, `material_rules`, processing/cutting/hole/slotting/bending price tables, cutting adjustments, and formula versions.
+- Preserved project schema discipline: later implementation must update both `supabase/schema.sql` and one migration, with Steel tables still in the private `steel` schema.
+- Linked the plan from `tasks/steel-data-rules-architecture/README.md`, `phase-2-canonical-data-model.md`, and checkpoints.
+- Verification passed: required-contract grep found the plan anchors, plan-safety grep confirmed the plan is not an applied migration, Markdown Prettier completed successfully, and `git diff --check` passed.
+
+# Steel Phase 2 Canonical Contracts
+
+- [x] Record accepted Phase 2 canonical answers from the grill.
+- [x] Update source-ref, schema-value, true-zero, material-rule, formula, and tool-boundary contracts across active Phase 2 docs.
+- [x] Expand ADR 0002 into a full rationale document.
+- [x] Reconcile stale active-looking wording in `tasks/todo.md`, source mapping, and v8.3 planning docs.
+- [x] Run focused docs verification, Markdown formatting, and `git diff --check`.
+
+## Review
+
+- Accepted all Phase 2 canonical grill recommendations and updated the active docs package before any schema/code implementation.
+- Locked source refs as a canonical `source_refs` JSONB array with `channel`, `factType`, locator, confidence, `sourceVersionId`, `extractedLabel`, and `canonicalKey`; normalized source-ref tables are deferred.
+- Locked schema direction for typed product-price unit weight, value/review state, material-rule priority/selectors, formula source/review shape, and nullable unknown price/charge values instead of zero placeholders.
+- Narrowed true-zero to Admin-reviewed price/charge facts; zero unit weight remains invalid or unknown unless a later source-specific task proves a real zero-weight concept.
+- Clarified Phase 2 tool boundaries: provider-neutral executor only, `normalize_quote_adjustment` is non-mutating, no Phase 2 `apply_workbook_patch` stub, and Phase 3 selected workbook refs use camelCase DTOs without trusted client `currentValue`.
+- Expanded `docs/adr/0002-steel-source-priority-policy.md` into a full ADR with status, context, decision, consequences, and rejected alternatives.
+- Verification passed: stale-contract grep returned no matches for old Phase 2 terms, required-contract grep found the new anchors, Markdown Prettier completed successfully, and `git diff --check` passed.
+
+# Steel Data Rules Phase 1 Source Inventory
+
+- [x] Read `CLAUDE.md`, Steel lessons, Phase 1 source inventory plan, and data-rule checkpoints.
+- [x] Inspect every `docs/reference` source for sheets/headers/row counts/sample evidence.
+- [x] Expand `tasks/steel-data-rules-architecture/phase-1-source-inventory.md` with source authority, source-ref strategy, review confidence, and AI/tool usage boundaries.
+- [x] Reconcile related checkpoints or source-schema mapping docs if the inventory exposes drift.
+- [x] Run focused documentation verification, Markdown formatting, and `git diff --check`.
+
+## Review
+
+- Started Phase 1 as a docs/source-inventory slice. No Supabase schema, migration, parser, runtime import, or tool implementation is in scope for this step.
+- Inspected reference source structure: customer workbook rows/header/tiers, product price rows/tier prices/unit weights/processing-like rows, formula workbook rows and CSV encoding caveat, handbook page/section anchors, H-type text rule, cutting workbook sheets/confidence notes, system-order output headers, quote evidence RTF, and legacy XLS shape.
+- Expanded `tasks/steel-data-rules-architecture/phase-1-source-inventory.md` with inventory evidence, source-ref locator strategy, source-specific authority semantics, review confidence rules, and AI/tool use boundaries.
+- Reconciled formula-source wording in `tasks/v8.3/source-schema-mapping.md` and `tasks/v8.3/phase-2-data-tools.md` to prefer `公式編號.xlsx`; the CSV remains development reference only because current parsing showed an encoding/readability caveat.
+- Verification passed: Markdown Prettier, Phase 1/source-ref grep, stale v8.3 formula-CSV runtime grep with no matches, and `git diff --check`.
+
+# Steel Data Rules Phase 0 Grill
+
+- [x] Read `CLAUDE.md`, existing Steel lessons, target Phase 0 decisions, `CONTEXT.md`, downstream data-rule phase docs, and source references.
+- [x] Batch all unresolved Phase 0 grill questions with recommended answers.
+- [x] Update `CONTEXT.md` immediately when a domain term or relationship changes.
+- [x] Update `tasks/steel-data-rules-architecture/phase-0-decisions.md` and related active docs when decision wording changes.
+- [x] Run focused docs verification after resolved edits.
+
+## Review
+
+- Started grill pass from `tasks/steel-data-rules-architecture/phase-0-decisions.md`.
+- Current evidence: the Phase 0 decisions are already reflected in `CONTEXT.md`; downstream risk is mainly whether source-priority wording is precise enough for Phase 2 schema/tool behavior.
+- Resolved grill corrections: product-price unit weight is the main quote weight when reviewed product price data carries one; H-type lengths outside 6M, 9M, 10M, and 12M automatically receive +0.3/kg on material unit price only; customer chat can create quote-specific line adjustments such as no-charge, special price, added surcharge, or one-line rule override.
+- Updated `CONTEXT.md`, the Steel data-rules package, `tasks/v8.3/phase-2-data-tools.md`, `tasks/v8.3/source-schema-mapping.md`, `tasks/lessons.md`, and new ADR `docs/adr/0002-steel-source-priority-policy.md`.
+- Verification passed: focused term grep for glossary/package/v8.3 links, source-schema grep for `product_price_unit_weight`, `cutting_unit_price`, material rules, quote-specific adjustment, and true zero, stale-wording grep with no matches, Markdown Prettier, and `git diff --check`.
+
 # Steel Data Rules Architecture Work Package
 
 - [x] Record accepted Phase 2 data/rule decisions from the company manual quoting workflow.
@@ -10,7 +195,7 @@
 ## Review
 
 - Created `tasks/steel-data-rules-architecture/` as the dedicated package for mapping the real manual quoting workflow into database facts, rule facts, and AI tool-calling contracts.
-- Captured the accepted decisions: product-price unit weight wins over handbook unit weight when source rows disagree during reviewed data organization; C-type rules are disclosed to AI only for C-type quote items; H non-standard-length surcharge adjusts material unit price only; cutting always uses the cutting price source; `切工價錢.xlsx` is a formal cutting-price source; customer inquiry files are quote evidence, not formal import sources.
+- Captured the accepted decisions: product-price unit weight is the main quote weight when reviewed product-price data carries it; C-type rules are disclosed to AI only for C-type quote items; H non-standard-length surcharge adjusts material unit price only; product price owns material/product/processing price, while cutting source owns cutting except for explicit reviewed product-price chargeable cutting/processing rows for the requested work; `切工價錢.xlsx` is a formal cutting-price source; customer inquiry files are quote evidence, not formal import sources.
 - Added phase files and checkpoints covering source inventory, canonical data/schema, material-rule architecture, tool-calling, Admin update flow, and verification scenarios.
 - Updated the active v8.3 Phase 2 plan with a pointer to the new package.
 - Updated glossary and lessons so future agents preserve these boundaries.

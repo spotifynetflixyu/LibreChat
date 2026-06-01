@@ -14,6 +14,7 @@ Owned update surfaces:
 - Formula versions.
 - Material rules.
 - Source refs and reviewed confidence.
+- True-zero review markers for otherwise blank or `0.00` price/charge source values.
 
 ## Source-Specific Policy
 
@@ -31,11 +32,14 @@ Owned update surfaces:
 5. Admin confirms valid rows.
 6. Backend commits in a transaction and writes audit/source refs.
 
+Phase 2 should persist reviewed facts with nullable numeric values plus explicit value/review state. Unknown values are not written as `0`, and true-zero prices or charges require Admin confirmation.
+
 ## Non-Goals
 
 - Do not build a DOCX/PDF Admin import path for customer inquiries.
 - Do not let Admin update price/rule facts through unvalidated free-form prompt memory.
 - Do not let AI commit formal source changes without backend validation and Admin confirmation.
+- Do not promote customer-requested quote-specific adjustments into formal source data unless a separate Admin review explicitly creates or updates a formal row/rule.
 
 ## Exit Criteria
 

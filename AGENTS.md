@@ -16,6 +16,8 @@ Steel PostgreSQL schema changes must always update both files:
 - `supabase/schema.sql` is the complete current Steel Supabase schema snapshot.
 - `supabase/migration/*.sql` files are one-change migration records.
 
-Do not update one without the other. Keep Steel database setup on Supabase
-Postgres through `STEEL_POSTGRES_URL` and cloud MongoDB through `MONGO_URI`;
-do not introduce Docker-dependent setup for Steel database work.
+Do not update one without the other. Create new migration files automatically
+with `npx supabase migration new <change_name>` instead of asking the user to
+create them manually. Keep Steel database setup on Supabase cloud Postgres
+through `.env` `STEEL_POSTGRES_URL` and cloud MongoDB through `MONGO_URI`; do
+not introduce Docker-dependent setup for Steel database work.

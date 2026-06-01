@@ -5,6 +5,7 @@
 - When diagnosing Vite proxy errors, hit both `http://localhost:3080/api/config` and `http://localhost:3090/api/config` to distinguish backend startup failures from proxy configuration issues.
 - When the user asks to write docs, create or update a real project docs file under `docs/` instead of only adding operational notes to agent-facing files.
 - For the steel setup, do not assume Docker services are part of local development; the user uses cloud MongoDB and Supabase Postgres through `.env`.
+- Do not add root `npm run supabase:*` scripts or `supabase/config.toml` for Steel unless the user explicitly asks for a local Docker-backed Supabase stack; Steel database development uses Supabase cloud through `.env` `STEEL_POSTGRES_URL`.
 - For Supabase pgvector, check the actual `pg_extension.extnamespace`; this project currently has `vector` installed in `public`, not `extensions`.
 - Do not process or import files under `docs/reference` as real data unless explicitly asked. Steel handbook DOCX currently informs schema/data-model design first; real data SQL/import comes later.
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
@@ -73,8 +74,15 @@
 - Keep Steel legacy Office conversion proof outputs in the repo-level ignored directory `tmp/steel-office-conversion/` so artifacts are inspectable, share one temp convention, and avoid package-local `.tmp` directories.
 - Steel v8.3 supports `gpt-5.5` for the OAuth Responses path; do not keep `gpt-5.4` or lower models in the active allowlist.
 - Steel v8.3 supports one company only; preserve per-account privacy with owner/user and guest-token access checks, not tenant or organization scoping.
-- When product price data and the steel handbook disagree on unit weight during reviewed table organization, use the product price value for that product-price-derived quote fact; keep handbook weight as general spec/weight reference, not a global override.
+- When reviewed product price data carries unit weight, treat product-price unit weight as the main quote weight for that matched priced item; keep handbook weight as separate general spec/weight evidence, not a replacement source.
 - Material-specific rules must be task-scoped for AI: only provide the C-type steel rule when the order has a C-type item or strong candidate, instead of dumping all company rules into every prompt.
-- H-type non-standard-length surcharge changes material unit price only; cutting remains priced from cutting-price data.
+- H-type non-standard-length surcharge automatically applies to normalized H-type lengths outside 6M, 9M, 10M, and 12M; it changes material unit price only, while cutting remains priced from cutting-price data.
 - Treat `docs/reference/切工價錢.xlsx` as a formal cutting-price source, with later Admin/backend maintenance, not as prompt-only guidance.
 - Treat customer inquiry files such as RTF, handwriting, PDF, image, photo, and chat text as quote request evidence/parser fixtures, not formal Admin import sources.
+- Treat customer instructions such as no-charge items, special prices, added surcharges, or one-line rule overrides as quote-specific adjustments saved on workbook lines; do not mutate formal source tables or material rules from chat alone.
+- For customer order parsing, AI is expected to infer likely specs because every customer's order shape can differ; backend code should constrain that inference into canonical candidate fields, confidence, source refs, and manual-review/clarification paths instead of treating the AI guess as a confirmed fact.
+- When AI is uncertain about a Steel spec or repository lookup returns multiple plausible options, the quote flow must ask the user to confirm before pricing; present bounded candidate options instead of silently selecting one.
+- In `產品價格.xlsx`, a `0` price means no price. A zero cutting/hole/processing charge becomes true zero only when a separate selected calculation rule or reviewed business rule confirms the free charge.
+- Do not hard-code C-type steel calculation behavior directly in pricing/calculator code. The AI should select the applicable calculation lesson/memory/formula, and backend code should validate that selected rule before allowing true-zero charges or skipping remainder calculation.
+- Steel calculation lessons/memory define default behavior and formula selection, not rigid numeric logic. User-provided numbers or prices in the conversation can override adjustable parameters; keep the formula identity fixed while making numeric parameters explicit, sourced, and validated.
+- When running a grill/planning pass and the user asks `一次問我所有問題`, batch all unresolved questions with recommendations instead of asking one at a time.

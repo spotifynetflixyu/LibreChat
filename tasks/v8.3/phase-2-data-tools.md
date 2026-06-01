@@ -14,7 +14,8 @@ Detailed data/rule architecture for the company's manual quoting workflow lives 
 - Product price candidate search and ranking.
 - Stock allocation engine.
 - Deterministic calculation engine.
-- Tool registry with Zod-validated business tools for both openai-oauth responses and OpenAI API fallback runs.
+- Quote-specific adjustment handling for customer-requested no-charge, special-price, surcharge, or one-line rule override instructions.
+- Tool registry with Zod-validated business tools for both `openai_oauth_responses` and explicitly selected `openai_api` driver runs.
 - Tool call logging and prompt-injection filtering.
 
 ## Milestone 2.1: Supabase Read Repositories
@@ -37,8 +38,9 @@ Tasks:
 - Return typed rows with explicit nullable fields.
 - Keep table names in repository modules, not tool handlers.
 - Filter `active = true` by default for prices/rules.
-- Include source IDs/row IDs for `context_refs`, quote trace, and audit.
+- Include canonical `source_refs` for `context_refs`, quote trace, and audit.
 - Preserve pricing unit; do not convert unit type in repository layer.
+- Preserve source refs needed to distinguish product-price unit weight, handbook weight, cutting price, material rule, and quote-specific adjustment evidence.
 
 Acceptance:
 
@@ -64,7 +66,7 @@ Tasks:
 - Keep programmatic query contracts English-only: repository filters, SQL column names, DTO keys, and tool argument names use canonical English keys.
 - Preserve Chinese values as source/display/search data where useful, including aliases, original source labels, product names, ERP workbook sheet labels, and source excerpts.
 - Treat fixed workbook sheet names as Chinese ERP-facing output labels, not database schema keys.
-- Treat `docs/reference/公式編號 - Sheet1.csv` as a formula structure reference; calculator runtime data should come from reviewed app-ready JSON or database rows.
+- Treat `docs/reference/公式編號.xlsx` as the preferred formula structure reference. The CSV copy has an encoding/readability caveat; calculator runtime data should come from reviewed app-ready JSON or database rows.
 - Ensure mock data shaped from Chinese references uses English DTO/API keys and Chinese only as values or display/source labels.
 - Design the code-owned mapping module at `packages/api/src/steel/schema/mapping.ts` and focused tests at `packages/api/src/steel/schema/mapping.spec.ts`.
 - Design a prompt serializer that teaches Steel AI providers the allowed source-label-to-canonical-key mapping without exposing raw SQL access.
@@ -83,6 +85,7 @@ Acceptance:
 - The codebase does not expose a handbook DOCX parser tool or route.
 - No real handbook data SQL/import is required to start chat UX development.
 - Any schema change still updates both `supabase/schema.sql` and a one-change migration.
+- Schema delta planning uses typed/indexed fields for product-price unit weight, value/review state, rule priority/selectors, formula source/review shape, and `source_refs`.
 
 Verification:
 
@@ -101,6 +104,10 @@ Files:
 
 Tasks:
 
+- Accept AI-proposed quote item candidates because customer order formats vary by customer, file, and message style.
+- Treat AI-proposed specs as candidates, not confirmed facts, until backend validation and ambiguity handling complete.
+- Return `ask_user` when AI confidence is not high or required fields are missing.
+- Return `confirm_candidates` when multiple plausible specs exist, with bounded options for the user to choose from before pricing.
 - Normalize full-width/half-width characters.
 - Normalize `x`, `X`, `*`, and multiplication separators.
 - Normalize mm/M/米/公尺/呎/尺/英吋.
@@ -117,6 +124,8 @@ Acceptance:
 
 - Alias conversion produces candidates, not exact-match claims.
 - Unknown thickness/material/length/unit/surface treatment lowers confidence.
+- Uncertain AI interpretation never proceeds directly to pricing; it asks the user or returns options for confirmation.
+- Multiple plausible AI/spec candidates are presented for user confirmation instead of silently selecting one.
 
 Verification:
 
@@ -168,15 +177,24 @@ Tasks:
 - Rank by category, material/surface, dimensions, thickness, length, unit, and customer tier.
 - Preserve candidate differences and rejected reasons.
 - Enforce price-before-weight.
+- Use product-price unit weight as the main quote weight when reviewed product price data carries unit weight; keep handbook weight as separate evidence.
 - Never fill missing price with `0`.
+- Treat blank or `0.00` values from `產品價格.xlsx` as unknown/missing price, not free price.
+- Confirm zero cutting/hole/processing charges only through an AI/memory/admin selected calculation rule or reviewed business rule; do not infer true-zero from product family in code.
+- The current C-type cutting/hole free-charge behavior is a selectable calculation rule/lesson; when selected with high confidence, it can mark the charge true zero and skip remainder calculation.
+- Treat lesson/memory/admin rule parameters as defaults. User-provided conversation numbers or amounts can override adjustable parameters when the override is explicit and high confidence.
+- Keep formula identity fixed through `formulaCode`; keep numeric values adjustable through `defaultParameters` and `parameterOverrides`.
+- Do not treat zero unit weight as true zero in Phase 2.
 - Never convert incompatible unit pricing, e.g. kg to piece, piece to kg, cut to M, hole to piece.
 
 Acceptance:
 
 - `黑圓管48.1` searches 48.3 and 1 1/2 variants.
 - Missing thickness returns candidates and low confidence.
-- Price `0` becomes `未確認` or low-confidence estimate from another non-zero candidate.
+- Product price `0` becomes `未確認` / no-price even when a C-type rule exists; non-product zero charges need selected calculation-rule evidence before they can become true zero.
+- A user saying a custom unit price or amount can produce a high-confidence `parameterOverride`; uncertain overrides ask the user to confirm first.
 - Fully matched row uses that row's pricing unit.
+- Multiple usable price candidates are presented to the user for confirmation instead of silently selected.
 
 Verification:
 
@@ -194,7 +212,7 @@ Files:
 
 Tasks:
 
-- Apply "not selling exact cut length" unless user explicitly says cut-clear is allowed.
+- Apply "not selling exact cut length" unless the customer explicitly allows exact finished-length pricing.
 - Allocate finished lengths against sellable stock length.
 - Default unknown stock length to 6M with low confidence.
 - Return stock length, stock pieces, pieces per stock, required finished pieces, remainder length/weight, algorithm, confidence, and low-confidence reason.
@@ -229,6 +247,36 @@ Tasks:
 - Separate confirmed totals from low-confidence estimated totals.
 - Use `未確認`, not `0`, for unknown unit price or amount.
 - Record formula code/version and calculation basis for workbook lines.
+- Validate and normalize explicit quote-specific adjustments after default price/rule resolution. Calculators may consume the normalized adjustment object, but Phase 2 does not persist workbook mutation.
+
+Canonical quote adjustment object:
+
+```ts
+interface SteelQuoteAdjustment {
+  adjustmentType: 'no_charge' | 'special_price' | 'surcharge' | 'material_rule_override';
+  target: {
+    lineId?: string;
+    chargeType?:
+      | 'material'
+      | 'cutting'
+      | 'hole'
+      | 'slotting'
+      | 'bending'
+      | 'processing'
+      | 'line_total';
+    fieldKey?: string;
+  };
+  amount?: number;
+  unit?: 'TWD' | 'TWD_PER_KG' | 'percent' | string;
+  instruction: string;
+  reason?: string;
+  sourceRefs: SteelSourceRef[];
+  confidence: 'high' | 'medium' | 'low';
+  manualReviewRequired: boolean;
+}
+```
+
+The adjustment object is evidence for calculation and later workbook persistence. It is not a formal source-data update.
 
 Acceptance:
 
@@ -237,6 +285,7 @@ Acceptance:
 - Slotting fee uses continuous slot paths.
 - Bending fee counts direction changes, not dimension lines.
 - Line total separates confirmed and low-confidence estimated fees.
+- Special-price, no-charge, surcharge, and rule-override inputs affect only the current workbook line calculation and do not mutate source tables.
 
 Verification:
 
@@ -275,23 +324,27 @@ Allowed MVP tools:
 - `calculate_slotting_fee`
 - `calculate_bending_fee`
 - `calculate_line_total`
+- `normalize_quote_adjustment`
 - `get_workbook`
-- `apply_workbook_patch` as a stub until Phase 3 implements mutation.
 
 Tasks:
 
 - Validate every argument with Zod.
+- Include `normalize_quote_item` as the first backend guard for AI-proposed quote item candidates.
+- `normalize_quote_item` returns `use_candidate`, `ask_user`, or `confirm_candidates` so provider orchestration can ask the user before pricing uncertain specs.
 - Apply conversation access checks for scoped tools.
 - Apply per-run call limits.
-- Log every tool call with input summary, result status, duration, and error category.
+- Log every tool call with tool name, provider tool-call ID when available, input summary, result status, duration, source refs, error category, output summary, and redaction version.
 - Sanitize tool output before returning it to any Steel AI provider.
 - Keep tool definitions provider-neutral: openai-oauth and OpenAI adapters may serialize them differently, but backend validation/execution is shared.
-- Return typed tool errors that the orchestrator can classify for provider fallback, unsupported capability, or manual review.
+- Return typed tool errors that the orchestrator can classify for explicitly selected secondary driver routing, unsupported capability, or manual review.
 - Do not provide raw SQL, raw Mongo, read file, or list directory tools.
+- Do not persist raw full prompts, source tables, raw source files, or full customer inquiry contents in tool-call logs.
 
 Acceptance:
 
 - Missing prices never become `0`.
+- Customer-requested quote adjustments are represented distinctly from formal source facts.
 - Ambiguous specs return candidates plus targeted clarification.
 - Tool result sanitizer neutralizes prompt-injection-like source text.
 - Tool tests can run through provider-neutral executor mocks without depending on a specific openai-oauth or OpenAI SDK.

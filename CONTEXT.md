@@ -68,17 +68,25 @@ _Avoid_: Ongoing Admin upload format, reusable runtime parser, price source, dir
 Customer-supplied inquiry material used to understand the requested quote, such as chat text, handwritten notes, PDFs, images, photos, RTF samples, or mixed attachments.
 _Avoid_: Formal Admin import source, database source of truth, price source
 
+**Quote-Specific Adjustment**:
+A customer-requested change that applies only to the current quote line, such as excluding a charge, using a special price, or adding a surcharge.
+_Avoid_: Formal source-data update, hidden override, permanent pricing rule
+
 **Product Price Unit Weight**:
-The unit weight value carried by reviewed product price data for a specific priced item. When it conflicts with the handbook unit weight during database organization, it wins for that product-price-derived quote fact.
-_Avoid_: Replacing all handbook weight specs globally, AI-inferred weight
+The primary unit weight used for a quote when reviewed product price data carries unit weight for the priced item.
+_Avoid_: AI-inferred weight, deleting handbook evidence
+
+**True Zero Price**:
+An admin-reviewed zero price or charge that means the business intentionally charges zero for that price or processing fact.
+_Avoid_: Blank source value, missing price, unreviewed `0.00`, zero unit weight
 
 **Cutting Price Source**:
-The reviewed cutting-price dataset used to price cutting work when product price data does not already provide an explicit cutting item.
+The reviewed cutting-price dataset used to price cutting work when product price data does not already provide an explicit reviewed chargeable cutting item.
 _Avoid_: AI-estimated cutting price, prompt-only cutting table
 
 **Material Rule**:
-A company-approved rule that changes how a material family or matched product candidate is priced, allocated, or processed.
-_Avoid_: Global prompt text applied to every item, product-table default
+A company-approved default rule that changes how a material family or matched product candidate is priced, allocated, or processed.
+_Avoid_: Global prompt text applied to every item, product-table default, unchangeable quote result
 
 **Source Schema Mapping**:
 An agreed mapping from Chinese source labels, headers, and handbook terms to English **Canonical Schema Keys** used by code, APIs, tools, AI API prompts, and database query contracts.
@@ -87,6 +95,10 @@ _Avoid_: Treating Chinese source labels as code-owned field names, database colu
 **Canonical Schema Key**:
 The English field, key, path, or column name used by programmatic Steel contracts for a mapped business concept.
 _Avoid_: Raw Chinese source header, display label, translated-at-query-time field guess
+
+**Source Reference**:
+The structured trace that identifies where a formal quote fact, evidence item, or quote-specific adjustment came from, including its source channel, fact category, locator, confidence, and mapped canonical key when applicable.
+_Avoid_: Unstructured filename string, raw source-file dump, hidden provenance
 
 **ERP Workbook Sheet Name**:
 The Chinese workbook sheet name required by ERP-facing quote workbook output.
@@ -133,9 +145,13 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - A **Legacy Office File** may be handled by the AI/provider; server-side conversion to `.xlsx` or `.docx` is only production behavior after a converter proof script succeeds.
 - A **Steel Handbook DOCX** is a one-time development schema-design reference, not an ongoing Admin web upload path, reusable product parser, or immediate production-data import.
 - **Quote Request Evidence** helps interpret the current order, but it does not update formal customer, product, price, weight, formula, or cutting-price tables by itself.
-- **Product Price Unit Weight** wins over handbook unit weight for the specific product-price-derived quote fact when both reviewed sources disagree; the handbook remains the general spec/weight reference when no product-price unit weight exists.
+- A **Quote-Specific Adjustment** may override default database prices, material rules, or processing charges for the current **Workbook Line**, but it does not mutate formal source data.
+- **Product Price Unit Weight** is the main quote weight when present on reviewed product price data; handbook weight remains separate evidence and the general spec/weight reference when product price has no reviewed unit weight.
+- A missing or unreviewed `0.00` price is not a **True Zero Price**; tools return `未確認`, a low-confidence estimate, or manual review until an admin confirms the zero-price business fact.
 - A **Cutting Price Source** is formal cutting-price data and can be maintained through Admin workflows; cutting fees still remain separate from material unit-price adjustments.
 - A **Material Rule** is retrieved task-by-task for matching quote items. For example, the C-type steel rule is used only when the order contains a C-type steel item or strong candidate.
+- A **Material Rule** provides the default company behavior for a matched item; a **Quote-Specific Adjustment** can override that behavior for one quote line when the customer explicitly asks.
+- A **Source Reference** may point to Admin ERP XLSX data, Admin table maintenance, handbook-reviewed data, material-rule data, or chat evidence, but those channels do not have the same authority.
 - **Admin Table Maintenance** fetches database rows through backend APIs and saves reviewed edits through validation and audit.
 - Admin ERP import accepts `.xlsx` uploads; legacy `.xls` is only accepted through a tested normalization path. PDF/image/text evidence is not a formal Import Source, and DOC/DOCX remains outside ongoing Admin web import unless a later data-import task approves it.
 - **ERP Customer Code** is the import upsert key for customers.
@@ -177,4 +193,6 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - The Admin web UI does not need a DOCX upload path for ongoing updates.
 - Tenant or organization scoping is over-modeling for this project; per-account privacy is the required boundary.
 - C-type steel rules should not be injected into unrelated material prompts; only matching C-type quote items should receive C-type roll-forming behavior.
-- H-type non-standard-length surcharge adjusts material unit price only; cutting remains priced by the cutting-price source.
+- H-type regular lengths are 6M, 9M, 10M, and 12M; other H-type lengths receive the non-standard +0.3/kg material surcharge automatically after unit normalization, while cutting remains priced by the cutting-price source.
+- "Customer asked for a special case" means a **Quote-Specific Adjustment**, not a change to formal product price, handbook weight, cutting-price, or material-rule data.
+- "0.00" in a source file does not mean free work unless it has been reviewed as a **True Zero Price**.

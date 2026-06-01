@@ -6,12 +6,16 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 
 ## Accepted Decisions
 
-- Product-price rows are the first authority for quote price and product-specific unit weight. If a reviewed `產品價格.xlsx` row and `龍頂鋼鐵手冊__文字版.docx` disagree on unit weight while organizing source data into the database, use the product-price row's number for that product-price-derived quote fact. The handbook remains the authority for general weight/spec lookup when the price source does not provide a reviewed unit weight.
+- Product-price rows are the first authority for quote price and product-specific unit weight. If reviewed `產品價格.xlsx` data carries unit weight, use that product-price unit weight as the main quote weight for the matching priced item. The handbook remains separate evidence and the authority for general weight/spec lookup when the price source does not provide a reviewed unit weight.
 - Material-specific rules are task-scoped. The C-type steel rule is given to the AI only when the current order contains a C-type steel item or a strong C-type candidate.
-- H-type steel non-standard length surcharge adjusts the material unit price only. Cutting remains priced through cutting-price data.
+- H-type steel regular lengths are 6M, 9M, 10M, and 12M. Other normalized H-type lengths automatically receive the +0.3/kg non-standard material surcharge. Cutting remains priced through cutting-price data.
 - `切工價錢.xlsx` is a formal cutting-price source. Later Admin updates should maintain it through backend/Admin workflows rather than prompt-only instructions.
-- If source prices conflict, product price data wins for product/material/processing price values unless an Admin-reviewed source explicitly supersedes it.
+- If source prices conflict, product price data wins for product/material/processing price values unless an Admin-reviewed source explicitly supersedes it. Product-price processing/cutting rows override cutting lookup only when they are explicit reviewed chargeable items for the requested work; generic labels, blanks, and `0.00` rows do not override the cutting source.
 - Customer inquiry files such as `docs/reference/客戶詢價.rtf` are quote request evidence and parser fixtures. They are not formal Admin import sources because real inquiries may arrive as handwriting, PDF, image, photo, chat text, or mixed attachments.
+- Customer chat instructions can create quote-specific adjustments such as no-charge items, special prices, added surcharges, or one-line rule overrides. These adjustments apply to the current workbook line and do not mutate formal source data or material rules.
+- Blank or `0.00` price/charge source values are unknown unless Admin review explicitly marks them as true zero price facts. Zero unit weight remains invalid or unknown unless a later source-specific data task proves a legitimate zero-weight business concept.
+- Phase 2 source refs use one canonical `source_refs` JSONB array on quoteable fact rows. Each ref distinguishes source channel, fact category, locator, confidence, canonical key, and optional source version ID. Do not use a lone filename string as provenance.
+- High-query and rule-critical fields are typed, not hidden in `metadata`: product-price unit weight, value/review state, material-rule priority/selectors, and formula source/review fields.
 
 ## Manual Workflow To System Mapping
 
@@ -27,12 +31,13 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 ## Architecture Layers
 
 1. Source inventory layer
-   - Tracks where each fact came from: workbook, sheet, row, page, source version, confidence, and review status.
+   - Tracks where each fact came from: source channel, fact category, workbook, sheet, row, page, source version, confidence, and review status.
    - Includes structured references to `客戶資料.xlsx`, `產品價格.xlsx`, `公式編號.xlsx`, `切工價錢.xlsx`, `H型鋼.txt`, and handbook-derived reviewed data.
 
 2. Canonical business data layer
    - PostgreSQL tables hold normalized customer, price, weight, formula, processing-price, and source-ref facts.
    - Programmatic keys stay English; Chinese labels remain values, aliases, display labels, and source excerpts.
+   - Unknown values stay nullable with explicit value/review state instead of using `0` as a placeholder.
 
 3. Material rule layer
    - Stores company-specific rules that change the normal quoting path for specific material families or conditions.
@@ -44,7 +49,7 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
    - The backend remains authoritative for validation, rule lookup, price choice, calculation, and confidence marking.
 
 5. Workbook/output layer
-   - Workbook lines persist the chosen price source, weight source, material rule, formula, calculation basis, and low-confidence reasons.
+   - Workbook lines persist the chosen price source, weight source, material rule, quote-specific adjustments, formula, calculation basis, and low-confidence reasons.
    - Customer-facing outputs hide internal tier/debug/source details according to the export allowlist.
 
 ## Phase Map
@@ -54,6 +59,7 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 | 0     | `phase-0-decisions.md`            | Manual workflow decisions are locked and reflected in active docs                                                |
 | 1     | `phase-1-source-inventory.md`     | Source files are inventoried with stable source-ref strategy and no raw inquiry import confusion                 |
 | 2     | `phase-2-canonical-data-model.md` | Schema and mapping plan can represent customers, prices, weights, formulas, cutting, processing, and source refs |
+| 2A    | `phase-2-schema-delta-plan.md`    | Supabase migration and snapshot changes are reviewed before repository implementation starts                     |
 | 3     | `phase-3-material-rules.md`       | C-type, H-type, long-material, cutting, hole, slotting, and bending rules have database-owned contracts          |
 | 4     | `phase-4-tool-calling.md`         | AI tools can retrieve only normalized facts/rules and cannot rely on raw source files                            |
 | 5     | `phase-5-admin-maintenance.md`    | Future Admin update flow is scoped for product price, cutting price, formulas, and rules                         |

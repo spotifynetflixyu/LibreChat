@@ -27,7 +27,7 @@ The source code for `@librechat/agents` (major backend dependency, same team) is
 
 ## Supabase Schema Workflow
 
-Steel PostgreSQL lives in Supabase Postgres through `STEEL_POSTGRES_URL`.
+Steel PostgreSQL lives in Supabase cloud Postgres through `STEEL_POSTGRES_URL`.
 LibreChat and Steel application state use the configured cloud MongoDB through
 `MONGO_URI`. Do not add Docker-dependent setup for Steel database work unless
 the user explicitly changes this environment decision.
@@ -40,6 +40,11 @@ in the same change.
 PostgreSQL schema change must add a new migration file under
 `supabase/migration/` for the specific change being made. Do not edit old
 migration files after they have been applied; create a follow-up migration.
+Create new migration files automatically with
+`npx supabase migration new <change_name>`; do not ask the user to create the
+migration manually. The Supabase CLI writes to the standard
+`supabase/migrations` path, which is a symlink to this repo's canonical
+`supabase/migration` directory. Keep that symlink intact.
 
 Keep Steel tables in the `steel` schema, not `public`. Keep the schema private
 to backend code unless a future task explicitly exposes selected objects via
@@ -47,6 +52,13 @@ Supabase Data API grants and RLS policies. This project currently has the
 `vector` extension installed in the `public` schema, so SQL uses unqualified
 `vector(...)` types with `public` in the search path; verify `pg_extension`
 before changing that assumption.
+
+Supabase development is cloud-only for this project; see
+`docs/steel-supabase-development.md`. Apply tested schema migrations through the
+cloud Supabase connection in `.env` `STEEL_POSTGRES_URL`, not through a local
+Docker Supabase stack. Supabase MCP is configured in the tracked project
+`.mcp.json`; authenticate through the MCP client instead of committing tokens or
+personal secrets.
 
 ---
 

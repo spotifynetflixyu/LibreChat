@@ -49,7 +49,7 @@ Tasks:
 - Support multiple selected workbook targets per submit with stable selected CSS state.
 - When a user selects a workbook cell, show a field marker/chip in the bottom message input that includes the sheet and field/cell position, so the user can confirm the target.
 - If the message input has no user-entered text, the next selected cell replaces the existing marker. If the user has entered text, the next selected cell is added as a new marker on a new line.
-- Send selected targets as structured `selected_workbook_refs` alongside the message; Phase 3 supports multiple selected refs per submit.
+- Send selected targets as structured `selectedWorkbookRefs` alongside the message; Phase 3 supports multiple selected refs per submit.
 - Allow multi-round chat edits to continue modifying workbook data after each accepted patch.
 - Allow users to describe multiple workbook changes in text without selecting every cell; AI may propose multiple patch operations only when the target fields are unambiguous.
 - Do not require a patch preview/diff confirmation step for every AI workbook update in Phase 3.
@@ -114,30 +114,31 @@ Request shape:
   "selected_model": "gpt-5.5",
   "selected_provider": "openai_oauth_responses",
   "reasoning_effort": "low",
-  "selected_workbook_refs": [
+  "selectedWorkbookRefs": [
     {
-      "workbook_id": "workbook-id",
-      "version_seq": 3,
-      "sheet_id": "quote_details",
-      "row_id": "line-1",
-      "column_key": "quoted_unit_price",
-      "label": "報價明細 / line-1 / 報價單價",
-      "current_value": "120"
+      "workbookId": "workbook-id",
+      "workbookVersion": 3,
+      "sheetId": "quote_details",
+      "rowId": "line-1",
+      "columnKey": "quoted_unit_price",
+      "displayLabel": "報價明細 / line-1 / 報價單價"
     },
     {
-      "workbook_id": "workbook-id",
-      "version_seq": 3,
-      "sheet_id": "manual_review",
-      "row_id": "review-2",
-      "column_key": "confidence_reason",
-      "label": "人工複核清單 / review-2 / 低信心原因",
-      "current_value": "尺寸不清"
+      "workbookId": "workbook-id",
+      "workbookVersion": 3,
+      "sheetId": "manual_review",
+      "rowId": "review-2",
+      "columnKey": "confidence_reason",
+      "displayLabel": "人工複核清單 / review-2 / 低信心原因"
     }
   ]
 }
 ```
 
 Tasks:
+
+- Use camelCase DTO fields for public Steel JSON contracts, matching `packages/data-provider/src/steel/workbooks.ts`.
+- Do not trust client-sent current cell values as source evidence. Backend reads the current workbook state by workbook ID, version, sheet, row, and column before validating patches.
 
 - Validate request body.
 - Validate `selected_provider` and `selected_model` against the backend Steel model options and capability status, preserving LibreChat UI / preset / default setting inputs as provider-neutral runtime options.
@@ -304,7 +305,7 @@ Tasks:
 - Recalculate quoted unit price when line total changes.
 - Apply RFC 6902 JSON Patch.
 - Reject patch paths touching system fields.
-- Require `target_version_seq`.
+- Require `targetVersionSeq`.
 - Return `409` on version mismatch.
 - Write `steel_workbook_patches` for each accepted patch.
 - Return accepted patch metadata, including changed workbook paths and summary items, so the UI can highlight latest updated fields and show concise chat acknowledgements.

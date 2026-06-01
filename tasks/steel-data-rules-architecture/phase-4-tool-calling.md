@@ -29,6 +29,15 @@ Outputs:
 - processing notes
 - candidate aliases
 - low-confidence reasons
+- user confirmation state: `use_candidate`, `ask_user`, or `confirm_candidates`
+
+Rules:
+
+- AI may infer likely specs from customer-specific order formats, uploaded evidence, and chat text.
+- AI-inferred specs are candidates until backend validation accepts one high-confidence complete candidate.
+- If AI confidence is not high, the tool result must ask the user to confirm before pricing.
+- If multiple plausible candidates exist, the tool result must present bounded options and wait for user confirmation.
+- Missing canonical fields produce a targeted clarification question rather than a guessed price lookup.
 
 ### Price And Rule Tools
 
@@ -44,7 +53,14 @@ Rules:
 - Return product-price unit weight when present.
 - Return handbook weight specs separately.
 - Include adopted/rejected reasons.
-- Do not confirm zero price as valid quote price unless source marks true zero by Admin review.
+- Do not confirm zero price, zero processing price, or zero cutting price as valid unless reviewed business rules mark a true-zero exception.
+- `產品價格.xlsx` `0` values are missing price by default, not free price.
+- True-zero charge exceptions come from a selected calculation rule or reviewed business rule, not from product-family hardcoding.
+- For the current C-type cutting/hole lesson, AI selects the rule only when the order context supports it; backend tools validate `effect`, matching charge type, and high confidence before accepting true zero.
+- True-zero decisions skip remainder calculation only when the selected calculation rule says to do so.
+- Lessons and memories provide default behavior and default parameters. User-provided conversation numbers, counts, rates, or money amounts become `parameterOverrides` only when explicit and high confidence.
+- Formula selection is fixed by `formulaCode`; numbers remain adjustable through `defaultParameters` and `parameterOverrides`.
+- Do not treat zero unit weight as true zero in Phase 2.
 - Include task-scoped material rules only.
 
 ### Calculation Tools
@@ -60,9 +76,17 @@ Rules:
 
 Rules:
 
-- Calculators receive only normalized facts and validated rule outputs.
+- Calculators receive only normalized facts, validated rule outputs, and explicit quote-specific adjustments.
 - Calculators never search raw source files.
 - Confirmed totals and low-confidence estimates remain separate.
+- Quote-specific adjustments can exclude charges, apply special prices, add surcharges, or override default material-rule behavior for the current workbook line only.
+- Phase 2 validates and normalizes adjustment objects, but does not mutate workbook state. Phase 3 persists accepted adjustments on workbook lines.
+
+### Tool Executor Boundary
+
+`packages/api/src/steel/tools/execute.ts` should be provider-neutral. It validates arguments, dispatches backend-owned tool handlers, logs bounded summaries, sanitizes results, and returns typed success/error envelopes.
+
+Provider adapters serialize tool definitions and results differently, but they must not own business validation, calculation, source priority, workbook mutation, or source-file access.
 
 ## Prompt Context Policy
 
@@ -71,6 +95,7 @@ The AI gets enough context to decide which tool to call next:
 - current quote request evidence summary
 - known customer/tier facts
 - normalized quote item facts
+- explicit customer-requested quote-specific adjustments
 - available tool list
 - matching source-schema mapping packet
 - matching material rules only
@@ -86,5 +111,5 @@ The AI must not receive:
 
 - Tool schemas are provider-neutral.
 - Tool results are sanitized and bounded.
-- Tool-call logs preserve enough summary, duration, source refs, and error category for audit.
+- Tool-call logs preserve tool name, provider tool-call ID when available, status, duration, input summary, output summary, source refs, error category, and redaction version.
 - The Phase 3 prompt bundle can consume these contracts directly.
