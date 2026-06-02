@@ -20,6 +20,62 @@ export type SteelSourceConversionStatus =
   | 'succeeded'
   | 'failed'
   | 'skipped';
+export type SteelRuleProposalType =
+  | 'customer_default'
+  | 'material_rule'
+  | 'price_override'
+  | 'formula_default';
+export type SteelRuleProposalStatus = 'needs_review' | 'reviewed' | 'rejected';
+export type SteelRuleProposalScopeType =
+  | 'customer'
+  | 'customer_tier'
+  | 'material_family'
+  | 'product_family'
+  | 'company';
+export type SteelRuleProposalChargeType =
+  | 'material'
+  | 'cutting'
+  | 'hole'
+  | 'slotting'
+  | 'bending'
+  | 'processing';
+export type SteelRuleProposalConfidence = 'low' | 'medium' | 'high';
+export type SteelRuleProposalParameterValueType = 'string' | 'number' | 'boolean' | 'null';
+export type SteelRuleProposalParameterValue = string | number | boolean | null;
+
+export interface SteelRuleProposalSelectorEntry {
+  key: string;
+  value: SteelRuleProposalParameterValue;
+}
+
+export interface SteelRuleProposalSelector {
+  materialFamily?: string;
+  productFamily?: string;
+  specification?: string;
+  workType?: string;
+  conditionText?: string;
+  customerAlias?: string;
+  additionalSelectors?: SteelRuleProposalSelectorEntry[];
+}
+
+export interface SteelRuleProposalDefaultParameter {
+  key: string;
+  value: SteelRuleProposalParameterValue;
+  valueType: SteelRuleProposalParameterValueType;
+  unit?: string;
+  reason?: string;
+}
+
+export interface SteelRuleProposalSourceRef {
+  channel: string;
+  factType: string;
+  sourceFile?: string;
+  sourceVersionId?: string;
+  locator?: string;
+  confidence?: SteelRuleProposalConfidence;
+  extractedLabel?: string;
+  canonicalKey?: string;
+}
 
 export interface ISteelConversationMeta extends Document {
   libreChatConversationId?: string;
@@ -118,6 +174,32 @@ export interface ISteelToolCall extends Document {
   aiRunId?: string;
   toolName: string;
   status: 'pending' | 'succeeded' | 'failed';
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface ISteelMemoryCandidate extends Document {
+  proposalType: SteelRuleProposalType;
+  status: SteelRuleProposalStatus;
+  scopeType: SteelRuleProposalScopeType;
+  customerId?: string;
+  customerTierId?: string;
+  materialFamily?: string;
+  productFamily?: string;
+  chargeType: SteelRuleProposalChargeType;
+  formulaCode: string;
+  formulaVersionId?: string;
+  selector: SteelRuleProposalSelector;
+  proposedDefaultParameters: SteelRuleProposalDefaultParameter[];
+  sourceRefs: SteelRuleProposalSourceRef[];
+  createdFromConversationId: string;
+  createdFromWorkbookLineId?: string;
+  createdByUserId: string;
+  reviewedByUserId?: string;
+  reviewedAt?: Date;
+  reviewNote?: string;
+  reason: string;
+  confidence: SteelRuleProposalConfidence;
   createdAt?: Date;
   updatedAt?: Date;
 }

@@ -8,4 +8,5 @@ export * from './handlers';
 export * from './normalization';
 export * from './pricing';
 export * from './repositories';
+export * from './rules';
 export * from './tools';

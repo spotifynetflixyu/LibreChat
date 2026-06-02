@@ -154,11 +154,13 @@ export function createSteelAdminMappingProfileModel(mongoose: Mongoose) {
 }
 
 export function createSteelMemoryCandidateModel(mongoose: Mongoose) {
-  return createSteelNamedStateModel(
-    mongoose,
-    'SteelMemoryCandidate',
-    steelMemoryCandidateSchema,
-    'steel_memory_candidates',
+  return (
+    mongoose.models.SteelMemoryCandidate ||
+    mongoose.model<t.ISteelMemoryCandidate>(
+      'SteelMemoryCandidate',
+      steelMemoryCandidateSchema,
+      'steel_memory_candidates',
+    )
   );
 }
 

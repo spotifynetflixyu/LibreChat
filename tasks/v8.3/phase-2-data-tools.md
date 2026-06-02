@@ -184,6 +184,8 @@ Tasks:
 - The current C-type cutting/hole free-charge behavior is a selectable calculation rule/lesson; when selected with high confidence, it can mark the charge true zero and skip remainder calculation.
 - Treat lesson/memory/admin rule parameters as defaults. User-provided conversation numbers or amounts can override adjustable parameters when the override is explicit and high confidence.
 - Keep formula identity fixed through `formulaCode`; keep numeric values adjustable through `defaultParameters` and `parameterOverrides`.
+- AI must retrieve matching lesson/memory through backend tools using normalized customer/item/charge context. Retrieval returns bounded reviewed candidates with origin refs, not the whole memory corpus.
+- Do not persist conversation overrides as customer defaults directly. "Save as customer default" must create a reviewed rule proposal for Admin approval first; only approved database facts can publish lesson/memory entries.
 - Do not treat zero unit weight as true zero in Phase 2.
 - Never convert incompatible unit pricing, e.g. kg to piece, piece to kg, cut to M, hole to piece.
 

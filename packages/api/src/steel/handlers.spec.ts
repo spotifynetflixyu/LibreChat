@@ -356,6 +356,59 @@ describe('createSteelHandlers', () => {
       errorCategory: 'steel_guest_mode_disabled',
     });
   });
+
+  it('creates authenticated Steel rule proposals through the proposal service', async () => {
+    const ruleProposalService = {
+      create: jest.fn(async () => ({
+        id: 'proposal_1',
+        proposalType: 'customer_default',
+        status: 'needs_review',
+        scopeType: 'customer',
+        customerId: 'cust_1',
+        chargeType: 'cutting',
+        formulaCode: 'C_TYPE_FINISHED_LENGTH',
+        selector: { materialFamily: 'c_channel' },
+        proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
+        sourceRefs: [{ channel: 'conversation', factType: 'quote_override' }],
+        createdFromConversationId: 'steel_meta_1',
+        createdByUserId: 'user_1',
+        reason: 'Pending Admin review.',
+        confidence: 'high',
+        createdAt: '2026-06-02T00:00:00.000Z',
+        updatedAt: '2026-06-02T00:00:00.000Z',
+      })),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      ruleProposalService,
+    });
+    const req = {
+      user: { id: 'user_1' },
+      body: {
+        proposalType: 'customer_default',
+        scopeType: 'customer',
+        customerId: 'cust_1',
+        chargeType: 'cutting',
+        formulaCode: 'C_TYPE_FINISHED_LENGTH',
+        selector: { materialFamily: 'c_channel' },
+        proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
+        sourceRefs: [{ channel: 'conversation', factType: 'quote_override' }],
+        createdFromConversationId: 'steel_meta_1',
+        reason: 'Pending Admin review.',
+        confidence: 'high',
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.createRuleProposal(req, res);
+
+    expect(ruleProposalService.create).toHaveBeenCalledWith({
+      body: req.body,
+      user: { id: 'user_1', role: undefined },
+    });
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'needs_review' }));
+  });
 });
 
 describe('createSteelAdminHandlers', () => {

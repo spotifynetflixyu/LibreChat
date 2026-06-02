@@ -72,6 +72,22 @@ _Avoid_: Formal Admin import source, database source of truth, price source
 A customer-requested change that applies only to the current quote line, such as excluding a charge, using a special price, or adding a surcharge.
 _Avoid_: Formal source-data update, hidden override, permanent pricing rule
 
+**Rule Proposal**:
+A structured candidate for a reusable customer/material default created from quote evidence and held for Admin review.
+_Avoid_: Direct memory write, reviewed rule, automatic customer default
+
+**Lesson/Memory Entry**:
+A task-scoped AI retrieval item generated from reviewed database facts such as material rules, calculation defaults, or formula versions.
+_Avoid_: Source of truth, unreviewed chat memory, prompt-only business rule
+
+**LibreChat User Memory**:
+The user's custom memory layer from LibreChat, scoped to that user or account and separate from Steel Admin-reviewed facts.
+_Avoid_: Admin-reviewed rule, site-wide default, formal source-data update
+
+**Lesson/Memory Retrieval Packet**:
+A bounded backend-produced set of reviewed lesson/memory candidates for the current customer, item, charge type, and formula context.
+_Avoid_: Full memory dump, raw prompt memory, unfiltered semantic retrieval, user memory merged into reviewed origins
+
 **Product Price Unit Weight**:
 The primary unit weight used for a quote when reviewed product price data carries unit weight for the priced item.
 _Avoid_: AI-inferred weight, deleting handbook evidence
@@ -146,6 +162,8 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - A **Steel Handbook DOCX** is a one-time development schema-design reference, not an ongoing Admin web upload path, reusable product parser, or immediate production-data import.
 - **Quote Request Evidence** helps interpret the current order, but it does not update formal customer, product, price, weight, formula, or cutting-price tables by itself.
 - A **Quote-Specific Adjustment** may override default database prices, material rules, or processing charges for the current **Workbook Line**, but it does not mutate formal source data.
+- **LibreChat User Memory** can override the priority of matching Admin-reviewed lesson/memory for the current user's workflow, but it remains a user-scoped memory layer and does not mutate reviewed Steel facts.
+- **Lesson/Memory Retrieval Packets** should keep Admin-reviewed lesson/memory candidates separate from **LibreChat User Memory** candidates so backend validation can enforce scope, origin, and formula compatibility.
 - **Product Price Unit Weight** is the main quote weight when present on reviewed product price data; handbook weight remains separate evidence and the general spec/weight reference when product price has no reviewed unit weight.
 - A missing or unreviewed `0.00` price is not a **True Zero Price**; tools return `未確認`, a low-confidence estimate, or manual review until an admin confirms the zero-price business fact.
 - A **Cutting Price Source** is formal cutting-price data and can be maintained through Admin workflows; cutting fees still remain separate from material unit-price adjustments.
@@ -195,4 +213,5 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - C-type steel rules should not be injected into unrelated material prompts; only matching C-type quote items should receive C-type roll-forming behavior.
 - H-type regular lengths are 6M, 9M, 10M, and 12M; other H-type lengths receive the non-standard +0.3/kg material surcharge automatically after unit normalization, while cutting remains priced by the cutting-price source.
 - "Customer asked for a special case" means a **Quote-Specific Adjustment**, not a change to formal product price, handbook weight, cutting-price, or material-rule data.
+- "User memory says otherwise" means a **LibreChat User Memory** priority override for that user, not an Admin-reviewed Steel fact or a site-wide default.
 - "0.00" in a source file does not mean free work unless it has been reviewed as a **True Zero Price**.

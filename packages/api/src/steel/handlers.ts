@@ -8,12 +8,14 @@ import { buildSteelModelOptions } from './models';
 import { applyFileInstructionsToMessages, type FileInstructionConfig } from '../files/instructions';
 import { createMongooseSteelAuditRecorder } from './audit/service';
 import { createMongooseSteelConversationRepository } from './conversations/repository';
+import { createMongooseSteelRuleProposalRepository } from './rules/repository';
 import {
   createSteelConversationService,
   SteelConversationAccessError,
   SteelConversationNotFoundError,
   SteelConversationUnauthenticatedError,
 } from './conversations/service';
+import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
 import {
   parseSteelOpenAIConfig,
   resolveSteelOpenAIOAuthAuthFilePath,
@@ -68,6 +70,7 @@ export interface SteelHandlersDeps {
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelProviderChatResponse>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
+  ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
 }
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
@@ -270,6 +273,12 @@ function createDefaultConversationService(env: SteelOpenAIConfigEnv) {
   });
 }
 
+function createDefaultRuleProposalService() {
+  return createSteelRuleProposalService({
+    repository: createMongooseSteelRuleProposalRepository(mongoose),
+  });
+}
+
 function sendConversationError(res: Response, error: unknown) {
   if (
     error instanceof SteelConversationAccessError ||
@@ -287,13 +296,27 @@ function sendConversationError(res: Response, error: unknown) {
   res.status(500).json({ message: 'Steel conversation request failed' });
 }
 
+function sendRuleProposalError(res: Response, error: unknown) {
+  if (error instanceof SteelRuleProposalValidationError) {
+    res.status(error.statusCode).json({
+      message: error.message,
+      errorCategory: error.errorCategory,
+    });
+    return;
+  }
+
+  res.status(500).json({ message: 'Steel rule proposal request failed' });
+}
+
 export function createSteelHandlers({
   env = process.env,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
   conversationService,
+  ruleProposalService,
 }: SteelHandlersDeps) {
   const getConversationService = () => conversationService ?? createDefaultConversationService(env);
+  const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
 
   return {
     async chat(req: Request, res: Response) {
@@ -424,6 +447,18 @@ export function createSteelHandlers({
         res.status(200).json(result);
       } catch (error) {
         sendConversationError(res, error);
+      }
+    },
+
+    async createRuleProposal(req: SteelRequest, res: Response) {
+      try {
+        const result = await getRuleProposalService().create({
+          body: req.body ?? {},
+          user: getSteelRequestUser(req),
+        });
+        res.status(201).json(result);
+      } catch (error) {
+        sendRuleProposalError(res, error);
       }
     },
   };

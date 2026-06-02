@@ -31,10 +31,14 @@ const mockCreateGuestConversation = jest.fn((_req, res) =>
 const mockReadConversation = jest.fn((_req, res) =>
   res.status(200).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
 );
+const mockCreateRuleProposal = jest.fn((_req, res) =>
+  res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
+);
 const mockCreateSteelHandlers = jest.fn(() => ({
   chat: mockChat,
   createAuthenticatedConversation: mockCreateAuthenticatedConversation,
   createGuestConversation: mockCreateGuestConversation,
+  createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
   readConversation: mockReadConversation,
 }));
@@ -164,6 +168,18 @@ describe('Steel route shells', () => {
 
     expect(res.status).toBe(200);
     expect(mockRequireJwtAuth).not.toHaveBeenCalled();
+  });
+
+  it('registers authenticated Steel rule proposal creation under /api/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/steel/rule-proposals')
+      .send({ proposalType: 'customer_default' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ id: 'proposal_1', status: 'needs_review' });
+    expect(mockRequireJwtAuth).toHaveBeenCalledTimes(1);
   });
 
   it('registers admin-only capability smoke under /api/admin/steel', async () => {

@@ -10,6 +10,7 @@ Copy the active checkpoint into `tasks/todo.md` when implementation starts, then
 - [ ] H-type non-regular lengths automatically receive the +0.3/kg material-unit-price-only surcharge.
 - [ ] `切工價錢.xlsx` is treated as a formal cutting-price source.
 - [ ] Quote-specific adjustments can override default price/rule behavior for one workbook line without mutating formal source data.
+- [ ] Conversation adjustments can only become customer defaults through a rule proposal and Admin review path, not direct lesson/memory mutation.
 - [ ] Blank or `0.00` price/charge source values are unknown unless Admin review marks a true zero price.
 - [ ] Zero unit weight is invalid or unknown unless a later source-specific task proves a legitimate zero-weight concept.
 
@@ -56,8 +57,12 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/(rules|allocation
 
 - [ ] AI tools expose normalized lookup/calculation contracts, not raw SQL/Mongo/file access.
 - [ ] Prompt bundles include task-scoped source-schema mapping and material rules only when relevant.
+- [ ] AI retrieves lesson/memory through backend tools using typed filters and bounded reviewed candidates, not by receiving all memory in prompt context.
 - [ ] Missing or unreviewed zero prices return `未確認` or low-confidence candidates, never confirmed zero totals.
 - [ ] Explicit customer quote-specific adjustments are represented separately from formal price/rule facts.
+- [ ] "Save as customer default" creates a `needs_review` rule proposal only after required customer/material/charge/formula/parameter fields are known.
+- [ ] Reviewed customer/tier/company defaults persist in `steel.calculation_rule_defaults`, while published retrieval entries persist in `steel.lesson_memory_entries`.
+- [ ] AI-selected `selectedCalculationRule` is rejected if its lesson/memory origin is stale, unreviewed, inactive, or out of scope.
 - [ ] Tool results include source refs, confidence, adopted/rejected candidates, and low-confidence reasons.
 - [ ] Tool-call logs store bounded summaries and sanitized output.
 
@@ -65,6 +70,30 @@ Verification:
 
 ```bash
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/tools/.*\\.spec\\.ts$"
+rtk npm run build:api
+```
+
+## Checkpoint D2: Rule Proposal Backend Gate
+
+- [ ] `steel_memory_candidates` stores structured rule proposals instead of generic name/status placeholders.
+- [ ] `POST /api/steel/rule-proposals` requires JWT auth and creates only `needs_review` proposals.
+- [ ] Proposal creation rejects missing scope-specific selectors, missing source refs, missing formula code, or empty adjustable parameters.
+- [ ] Created proposals record authenticated `createdByUserId`, source refs, reason, confidence, selector, and proposed default parameters.
+- [ ] Client requests cannot set review/publish fields such as `status`, `reviewedByUserId`, `reviewedAt`, or lesson/memory publication refs.
+- [ ] Admin review UI and Admin approval/reject/publish mutations remain deferred to Phase 5 or a later explicit backend/Admin slice.
+- [ ] Global/site-managed lesson/memory remains a future extension module, not part of the rule proposal backend gate.
+- [ ] Confirmed conversation scenarios prove when AI should create a proposal, when it should ask for scope/spec confirmation, and when it should keep the adjustment quote-specific.
+- [ ] Phase 4B closeout explicitly returns next implementation focus to the core order quoting path.
+
+Verification:
+
+```bash
+rtk npm run test:packages:data-provider -- --runInBand --testPathPatterns="src/steel/rules\\.spec\\.ts$"
+rtk npm run test:packages:data-schemas -- --runInBand --testPathPatterns="src/schema/steel\\.spec\\.ts$"
+rtk npm run test:packages:api -- --runInBand --testPathPatterns="src/steel/(rules|handlers)\\.spec\\.ts$"
+rtk cd api && npx jest server/routes/__tests__/steel.spec.js --runInBand --coverage=false
+rtk npm run build:data-provider
+rtk npm run build:data-schemas
 rtk npm run build:api
 ```
 

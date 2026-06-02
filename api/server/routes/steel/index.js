@@ -28,5 +28,6 @@ router.get(
 );
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.post('/ai/chat', requireJwtAuth, handlers.chat);
+router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 
 module.exports = router;

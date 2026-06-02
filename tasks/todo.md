@@ -1,3 +1,83 @@
+# Steel Phase 4B Rule Proposal Backend
+
+- [x] Add Phase 4B plan and checkpoint for backend-only proposal creation.
+- [x] Add public rule proposal create/read schemas.
+- [x] Replace the generic `steel_memory_candidates` placeholder schema with structured proposal fields.
+- [x] Add backend proposal service/repository and authenticated create handler.
+- [x] Register `/api/steel/rule-proposals` under JWT auth.
+- [x] Verify focused schemas, handler, route, builds, and diff hygiene.
+
+## Review
+
+- Added `tasks/steel-data-rules-architecture/phase-4b-rule-proposal-backend.md` and linked it from the phase map/checkpoints.
+- Kept Admin review UI, Admin approval/rejection API, promotion into `steel.calculation_rule_defaults`, and publication into `steel.lesson_memory_entries` deferred.
+- Added `packages/data-provider/src/steel/rules.ts` with strict public create/response schemas for structured rule proposals.
+- Replaced the generic Mongo `steel_memory_candidates` name/status placeholder with proposal fields, source refs, selectors, adjustable parameters, creator/reviewer metadata, and review queue indexes.
+- Added `packages/api/src/steel/rules/` service/repository and `createRuleProposal` handler.
+- Registered `POST /api/steel/rule-proposals` under existing JWT auth.
+- No Supabase migration was needed in Phase 4B because the proposal surface uses the existing Mongo collection; the earlier Phase 4A Supabase migration remains the Postgres lesson/default schema change.
+- Clarified that AI uses tool calling to request proposal creation; backend validation owns persistence, and global/site-managed lesson/memory is a future extension module.
+- Added the confirmed conversation scenarios for quote-only adjustments, explicit future defaults, unclear scope, multiple candidates, product-price zero handling, and global memory requests.
+- Closed Phase 4B scope so remaining Admin review/backend/UI and global lesson/memory extension work stays deferred while implementation returns to the core order quoting path.
+- Verification passed: focused data-provider/data-schemas/API/route Jest suites and `npm run build:data-provider`, `npm run build:data-schemas`, `npm run build:api`.
+- `npm run build:api` still reports existing non-Steel TypeScript warnings in config/cache/middleware files; no new Steel build failure was introduced.
+
+# Steel Phase 4A Lesson/Memory Schema
+
+- [x] Generate a Supabase migration for reviewed calculation defaults and published lesson/memory entries.
+- [x] Update `supabase/schema.sql` with the same Phase 4A schema.
+- [x] Apply the migration to cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
+- [x] Verify table columns, constraints, indexes, triggers, and private Steel access posture.
+- [x] Update architecture checkpoints/review evidence.
+
+## Review
+
+- Generated `supabase/migration/20260602035007_phase4a_lesson_memory_defaults.sql` with `npx supabase migration new phase4a_lesson_memory_defaults`.
+- Added `steel.calculation_rule_defaults` for Admin-reviewed durable customer/tier/material/product/company calculation defaults.
+- Added `steel.lesson_memory_entries` for published task-scoped retrieval entries generated from reviewed facts.
+- Kept LibreChat user memory outside Steel Admin-reviewed tables; user memory remains an adapter/retrieval layer, not a persisted site-wide default.
+- Updated `supabase/schema.sql` with the same tables, constraints, indexes, and `set_updated_at` triggers.
+- Applied the migration to cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
+- Live cloud verification passed: both tables exist, expected column/constraint/index/trigger counts are present, `anon`/`authenticated` have no grants, and rollback insert smoke passed.
+- Verification passed: Markdown Prettier, schema grep, `npm run build:api`, and `git diff --check`.
+
+# Steel Lesson/Memory Layer Boundary Update
+
+- [x] Distinguish LibreChat user memory from Steel Admin-reviewed lesson/memory.
+- [x] Define priority rules where user custom memory can override reviewed defaults without mutating them.
+- [x] Update provider-neutral tool contract so both layers stay scoped, bounded, and backend-validated.
+- [x] Update lessons with the new boundary.
+- [x] Verify Markdown formatting, required terms, and diff hygiene.
+
+## Review
+
+- Updated `CONTEXT.md` with `LibreChat User Memory` and clarified that it stays separate from reviewed Steel facts.
+- Updated Phase 4A so Steel Admin-reviewed lesson/memory is the site-managed default retrieval layer, while LibreChat user memory is a user/account-scoped custom memory layer.
+- Locked quote-time priority: current quote override first, then applicable LibreChat user memory, then Admin-reviewed customer/tier/company defaults.
+- Added `retrieve_user_memory` and separate `userMemoryCandidates` handling to the provider-neutral retrieval contract.
+- Clarified that user memory can override retrieval priority but cannot mutate reviewed Steel facts, invent formula codes, or bypass backend validation.
+- Verification passed: Markdown Prettier, required-term grep, and `git diff --check`.
+
+# Steel Lesson/Memory Promotion Architecture
+
+- [x] Separate quote-specific overrides from reusable customer defaults.
+- [x] Define rule proposals as the only path from conversation adjustments to Admin-reviewed defaults.
+- [x] Define lesson/memory as generated task-scoped retrieval over reviewed database facts, not source of truth.
+- [x] Define how AI retrieves matching lesson/memory through backend tools and scoped filters.
+- [x] Update Phase 2/Phase 4/Phase 5 docs and checkpoints with the Admin approval boundary.
+- [x] Verify docs formatting, required terms, and diff hygiene.
+
+## Review
+
+- Added `tasks/steel-data-rules-architecture/phase-4a-lesson-memory-architecture.md`.
+- Added `Rule Proposal` and `Lesson/Memory Entry` to `CONTEXT.md`.
+- Planned lifecycle: quote override -> rule proposal with `needs_review` -> Admin review -> reviewed database rule/default/formula/price row -> generated task-scoped lesson/memory.
+- Locked that "save as customer default" must not write lesson/memory directly; it only creates a structured proposal after required customer/material/charge/formula/parameter fields are known.
+- Planned future storage surfaces: proposal surface (`steel_rule_proposals` or `steel_memory_candidates`) and reviewed default surface (`steel.calculation_rule_defaults`) referencing `steel.formula_versions.code` instead of duplicating formulas.
+- Planned retrieval surface `steel.lesson_memory_entries` and quote-facing tools `retrieve_lesson_memory`, `rank_lesson_memory`, and `select_calculation_rule`.
+- Locked retrieval behavior: typed filters first, bounded reviewed candidates only, origin refs required, and backend revalidation before selected lesson/memory becomes `selectedCalculationRule`.
+- Verification passed: Markdown Prettier, retrieval-contract grep, memory-dump guard grep, and `git diff --check`.
+
 # Steel Phase 2 Adjustable Calculation Rule Overrides
 
 - [x] Extend selected calculation rules so lesson/memory/admin defaults can carry adjustable numeric parameters.

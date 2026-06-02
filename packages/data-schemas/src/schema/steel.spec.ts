@@ -5,6 +5,7 @@ import {
   createSteelAIRunModel,
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelMemoryCandidateModel,
   createSteelSourceVersionModel,
 } from '../models/steel';
 
@@ -75,6 +76,40 @@ describe('Steel Mongo schemas', () => {
       'succeeded',
       'failed',
       'skipped',
+    ]);
+  });
+
+  it('stores Steel memory candidates as structured rule proposals', () => {
+    const SteelMemoryCandidate = createSteelMemoryCandidateModel(mongoose);
+
+    expect(SteelMemoryCandidate.collection.name).toBe('steel_memory_candidates');
+    expect(SteelMemoryCandidate.schema.path('proposalType').options.enum).toEqual([
+      'customer_default',
+      'material_rule',
+      'price_override',
+      'formula_default',
+    ]);
+    expect(SteelMemoryCandidate.schema.path('status').options.enum).toEqual([
+      'needs_review',
+      'reviewed',
+      'rejected',
+    ]);
+    expect(SteelMemoryCandidate.schema.path('chargeType').options.enum).toEqual([
+      'material',
+      'cutting',
+      'hole',
+      'slotting',
+      'bending',
+      'processing',
+    ]);
+    expect(SteelMemoryCandidate.schema.path('name')).toBeUndefined();
+    expect(SteelMemoryCandidate.schema.indexes()).toContainEqual([
+      { status: 1, createdAt: -1 },
+      expect.any(Object),
+    ]);
+    expect(SteelMemoryCandidate.schema.indexes()).toContainEqual([
+      { createdByUserId: 1, status: 1, updatedAt: -1 },
+      expect.any(Object),
     ]);
   });
 });

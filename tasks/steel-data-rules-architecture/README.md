@@ -43,26 +43,34 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
    - Stores company-specific rules that change the normal quoting path for specific material families or conditions.
    - Rules are retrieved only when the normalized quote item matches the material family or condition.
 
-4. Tool execution layer
+4. Lesson/memory promotion layer
+   - Treats lesson and memory entries as generated retrieval surfaces over reviewed database facts, not as the formal source of truth.
+   - Lets conversation-specific quote overrides become rule proposals only after explicit user intent, then requires Admin review before they can become customer defaults.
+   - Publishes task-scoped lessons/memory from reviewed rows so AI can select formulas and defaults without hard-coded numeric logic.
+   - Retrieves lessons/memory through backend typed filters before semantic ranking, returning only bounded reviewed candidates with origin refs.
+
+5. Tool execution layer
    - AI receives compact task-scoped prompt context and calls backend tools.
    - Tool schemas, repository filters, and calculator inputs use canonical English keys.
    - The backend remains authoritative for validation, rule lookup, price choice, calculation, and confidence marking.
 
-5. Workbook/output layer
+6. Workbook/output layer
    - Workbook lines persist the chosen price source, weight source, material rule, quote-specific adjustments, formula, calculation basis, and low-confidence reasons.
    - Customer-facing outputs hide internal tier/debug/source details according to the export allowlist.
 
 ## Phase Map
 
-| Phase | File                              | Exit gate                                                                                                        |
-| ----- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| 0     | `phase-0-decisions.md`            | Manual workflow decisions are locked and reflected in active docs                                                |
-| 1     | `phase-1-source-inventory.md`     | Source files are inventoried with stable source-ref strategy and no raw inquiry import confusion                 |
-| 2     | `phase-2-canonical-data-model.md` | Schema and mapping plan can represent customers, prices, weights, formulas, cutting, processing, and source refs |
-| 2A    | `phase-2-schema-delta-plan.md`    | Supabase migration and snapshot changes are reviewed before repository implementation starts                     |
-| 3     | `phase-3-material-rules.md`       | C-type, H-type, long-material, cutting, hole, slotting, and bending rules have database-owned contracts          |
-| 4     | `phase-4-tool-calling.md`         | AI tools can retrieve only normalized facts/rules and cannot rely on raw source files                            |
-| 5     | `phase-5-admin-maintenance.md`    | Future Admin update flow is scoped for product price, cutting price, formulas, and rules                         |
-| 6     | `phase-6-verification.md`         | Manual scenarios prove source precedence, rule selection, and no-zero-price behavior                             |
+| Phase | File                                     | Exit gate                                                                                                        |
+| ----- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 0     | `phase-0-decisions.md`                   | Manual workflow decisions are locked and reflected in active docs                                                |
+| 1     | `phase-1-source-inventory.md`            | Source files are inventoried with stable source-ref strategy and no raw inquiry import confusion                 |
+| 2     | `phase-2-canonical-data-model.md`        | Schema and mapping plan can represent customers, prices, weights, formulas, cutting, processing, and source refs |
+| 2A    | `phase-2-schema-delta-plan.md`           | Supabase migration and snapshot changes are reviewed before repository implementation starts                     |
+| 3     | `phase-3-material-rules.md`              | C-type, H-type, long-material, cutting, hole, slotting, and bending rules have database-owned contracts          |
+| 4     | `phase-4-tool-calling.md`                | AI tools can retrieve only normalized facts/rules and cannot rely on raw source files                            |
+| 4A    | `phase-4a-lesson-memory-architecture.md` | Quote overrides can become Admin-reviewed rule proposals before publication as task-scoped lessons/memory        |
+| 4B    | `phase-4b-rule-proposal-backend.md`      | Quote conversations can create structured `needs_review` proposals while Admin review UI remains deferred        |
+| 5     | `phase-5-admin-maintenance.md`           | Future Admin update flow is scoped for product price, cutting price, formulas, and rules                         |
+| 6     | `phase-6-verification.md`                | Manual scenarios prove source precedence, rule selection, and no-zero-price behavior                             |
 
 Use `checkpoints.md` as the implementation tracker when this package becomes active.
