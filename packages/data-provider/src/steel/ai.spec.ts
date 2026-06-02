@@ -7,6 +7,7 @@ import {
   steelProviderChatRequestSchema,
   steelProviderChatResponseSchema,
 } from './ai';
+import { requiredSteelWorkbookSheetIds } from './workbooks';
 
 describe('Steel AI public contracts', () => {
   it('keeps the v8.3 driver contract narrow', () => {
@@ -124,12 +125,34 @@ describe('Steel AI public contracts', () => {
       steelProviderChatRequestSchema.parse({
         model: 'gpt-5.5',
         messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        workbookId: 'wb_1',
+        workbookVersion: 2,
+        selectedWorkbookRefs: [
+          {
+            workbookId: 'wb_1',
+            workbookVersion: 2,
+            sheetId: 'quote_details',
+            rowId: 'line_1',
+            columnKey: 'material_unit_price',
+          },
+        ],
         maxOutputTokens: 64,
         reasoningEffort: 'high',
       }),
     ).toEqual({
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+      workbookId: 'wb_1',
+      workbookVersion: 2,
+      selectedWorkbookRefs: [
+        {
+          workbookId: 'wb_1',
+          workbookVersion: 2,
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+        },
+      ],
       maxOutputTokens: 64,
       reasoningEffort: 'high',
     });
@@ -145,6 +168,49 @@ describe('Steel AI public contracts', () => {
         reasoningEffort: 'none',
       }),
     ).toThrow();
+  });
+
+  it('allows Steel chat responses to carry an accepted workbook patch for UI refresh', () => {
+    const sheets = requiredSteelWorkbookSheetIds.map((sheetId) => ({
+      id: sheetId,
+      label: sheetId,
+      columns: [
+        { key: 'material_unit_price', label: '材料單價', valueType: 'currency', editable: true },
+      ],
+      rows: [{ id: 'line_1', cells: { material_unit_price: 115 } }],
+    }));
+    const parsed = steelProviderChatResponseSchema.parse({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.5',
+      text: '已更新：報價明細 line-1 材料單價 120 -> 115',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: {
+        workbook: {
+          id: 'wb_1',
+          version: 3,
+          sheets,
+        },
+        changedPaths: [
+          { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+        ],
+        changedFieldSummary: [
+          {
+            sheetId: 'quote_details',
+            rowId: 'line_1',
+            columnKey: 'material_unit_price',
+            label: '材料單價',
+            previousValue: 120,
+            nextValue: 115,
+          },
+        ],
+      },
+    });
+
+    expect(parsed.workbookPatch?.workbook?.version).toBe(3);
+    expect(parsed.workbookPatch?.changedPaths).toEqual([
+      { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+    ]);
   });
 
   it('validates browser-safe Steel provider chat file payloads', () => {

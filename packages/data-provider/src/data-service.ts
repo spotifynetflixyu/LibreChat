@@ -13,7 +13,14 @@ import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
 import * as permissions from './accessPermissions';
-import type { SteelProviderChatRequest, SteelProviderChatResponse } from './steel';
+import type {
+  SteelProviderChatRequest,
+  SteelProviderChatResponse,
+  SteelWorkbookCreateRequest,
+  SteelWorkbookPatchRequest,
+  SteelWorkbookPatchResponse,
+  SteelWorkbookReadResponse,
+} from './steel';
 
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
@@ -39,6 +46,22 @@ export function sendSteelChat(
   payload: SteelProviderChatRequest,
 ): Promise<SteelProviderChatResponse> {
   return request.post(endpoints.steelChat(), payload);
+}
+
+export function createSteelWorkbook(
+  payload: SteelWorkbookCreateRequest,
+): Promise<SteelWorkbookReadResponse> {
+  return request.post(endpoints.steelWorkbooks(), payload);
+}
+
+export function getSteelWorkbook(workbookId: string): Promise<SteelWorkbookReadResponse> {
+  return request.get(endpoints.steelWorkbook(workbookId));
+}
+
+export function patchSteelWorkbook(
+  payload: SteelWorkbookPatchRequest,
+): Promise<SteelWorkbookPatchResponse> {
+  return request.patch(endpoints.steelWorkbook(payload.workbookId), payload);
 }
 
 /**

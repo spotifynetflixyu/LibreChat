@@ -246,6 +246,12 @@ Files:
 Tasks:
 
 - Implement plate, bar, cutting, hole, slotting, bending, and line-total calculators.
+- Implement cut count as a separate deterministic step inside the cutting calculator contract. It returns `operationCutCount` for physical/system-order use and `billableCutCount` for quote charging.
+- Count head trim, tail trim, split/multi-piece separation cuts, and remainder behavior from normalized evidence. If one stock piece produces `n` finished pieces with no remainder and no tail trim, separation cuts are `n - 1`; if a remainder exists, separation cuts are `n` because the last finished piece must still be separated from the remainder.
+- "Remainder omits tail trim" omits only the extra tail trim/finish cut, not the separation cut between the last finished piece and the remainder.
+- Implement hole fee from structured hole groups: hole type, round diameter, non-round length/width or dimension label, count per piece, quantity multiplier, source refs, and confidence.
+- Support future Admin-reviewed prices for non-round hole types such as oval, long, rectangular, and custom holes even when the current source price row is `0` or missing during development.
+- Implement slotting fee from structured slot paths: path type, segment lengths, path quantity, quantity multiplier, source refs, and confidence.
 - Separate confirmed totals from low-confidence estimated totals.
 - Use `未確認`, not `0`, for unknown unit price or amount.
 - Record formula code/version and calculation basis for workbook lines.
@@ -282,9 +288,12 @@ The adjustment object is evidence for calculation and later workbook persistence
 
 Acceptance:
 
-- Cutting fee handles repair head/tail count correctly.
-- Hole fee ignores center/dimension/hidden lines.
-- Slotting fee uses continuous slot paths.
+- Cutting fee handles no-head/no-tail, repair head/tail, split/multi-piece count, and remainder-tail behavior correctly.
+- Hole fee ignores center/dimension/hidden lines, R corners, bend lines, cut-angle markers, and welding symbols.
+- Hole fee handles `4-Ø22` style notation as per-piece hole count multiplied by item quantity.
+- Hole fee handles oval/long/rectangular/custom non-round hole types through reviewed price lookup or returns `未確認` when no reviewed price exists.
+- Slotting fee uses continuous slot paths, including straight, L, U/ㄇ, and disconnected multi-path totals.
+- Slotting fee does not treat a normal outside profile or ordinary plate edge as slotting without explicit evidence.
 - Bending fee counts direction changes, not dimension lines.
 - Line total separates confirmed and low-confidence estimated fees.
 - Special-price, no-charge, surcharge, and rule-override inputs affect only the current workbook line calculation and do not mutate source tables.
@@ -321,6 +330,7 @@ Allowed MVP tools:
 - `allocate_stock_lengths`
 - `calculate_plate_weight`
 - `calculate_bar_weight`
+- `calculate_cut_count`
 - `calculate_cutting_fee`
 - `calculate_hole_fee`
 - `calculate_slotting_fee`

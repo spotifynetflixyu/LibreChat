@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
 export const requiredSteelWorkbookSheetIds = [
-  'quote_details',
+  'system_order',
   'summary',
   'manual_review',
+  'quote_details',
   'price_sources',
   'interpretation_notes',
-  'system_order',
   'customer_quote',
 ] as const;
 
@@ -43,6 +43,30 @@ export type SteelChangedFieldSummary = z.infer<typeof steelChangedFieldSummarySc
 
 const steelWorkbookCellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
+export type SteelWorkbookCellValue = z.infer<typeof steelWorkbookCellValueSchema>;
+
+export const steelWorkbookColumnValueTypes = [
+  'text',
+  'number',
+  'currency',
+  'boolean',
+  'date',
+  'status',
+  'formula',
+] as const;
+
+export const steelWorkbookColumnValueTypeSchema = z.enum(steelWorkbookColumnValueTypes);
+
+export const steelWorkbookColumnSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  valueType: steelWorkbookColumnValueTypeSchema.default('text'),
+  editable: z.boolean().default(false),
+  widthPx: z.number().int().positive().optional(),
+});
+
+export type SteelWorkbookColumn = z.infer<typeof steelWorkbookColumnSchema>;
+
 export const steelWorkbookRowSchema = z.object({
   id: z.string().min(1),
   cells: z.record(steelWorkbookCellValueSchema).default({}),
@@ -53,6 +77,7 @@ export type SteelWorkbookRow = z.infer<typeof steelWorkbookRowSchema>;
 export const steelWorkbookSheetSchema = z.object({
   id: steelWorkbookSheetIdSchema,
   label: z.string().min(1),
+  columns: z.array(steelWorkbookColumnSchema).min(1),
   rows: z.array(steelWorkbookRowSchema),
 });
 
@@ -79,13 +104,37 @@ export const steelWorkbookSchema = z
 
 export type SteelWorkbook = z.infer<typeof steelWorkbookSchema>;
 
+export const steelWorkbookPatchOperationSchema = z.object({
+  op: z.literal('set_cell'),
+  sheetId: steelWorkbookSheetIdSchema,
+  rowId: z.string().min(1),
+  columnKey: z.string().min(1),
+  value: steelWorkbookCellValueSchema,
+  reason: z.string().min(1).optional(),
+});
+
+export type SteelWorkbookPatchOperation = z.infer<typeof steelWorkbookPatchOperationSchema>;
+
 export const steelWorkbookPatchRequestSchema = z.object({
   workbookId: z.string().min(1),
   workbookVersion: z.number().int().positive(),
   selectedWorkbookRefs: z.array(steelSelectedWorkbookRefSchema).default([]),
+  operations: z.array(steelWorkbookPatchOperationSchema).min(1).max(100),
 });
 
 export type SteelWorkbookPatchRequest = z.infer<typeof steelWorkbookPatchRequestSchema>;
+
+export const steelWorkbookCreateRequestSchema = z.object({
+  conversationMetaId: z.string().min(1).optional(),
+});
+
+export type SteelWorkbookCreateRequest = z.infer<typeof steelWorkbookCreateRequestSchema>;
+
+export const steelWorkbookReadResponseSchema = z.object({
+  workbook: steelWorkbookSchema,
+});
+
+export type SteelWorkbookReadResponse = z.infer<typeof steelWorkbookReadResponseSchema>;
 
 export const steelWorkbookPatchResponseSchema = z.object({
   workbook: steelWorkbookSchema.optional(),

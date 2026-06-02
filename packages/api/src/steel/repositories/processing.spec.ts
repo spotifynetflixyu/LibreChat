@@ -166,6 +166,53 @@ describe('Steel processing repositories', () => {
     ]);
   });
 
+  it('searches non-round hole prices by typed dimensions', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          id: '7',
+          hole_type: 'oval',
+          diameter_mm: null,
+          length_mm: '30.000',
+          width_mm: '15.000',
+          dimension_label: '30x15',
+          thickness_min_mm: null,
+          thickness_max_mm: '12.000',
+          unit: 'hole',
+          unit_price: '18.0000',
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    });
+
+    const result = await searchSteelHolePrices({ query } as SteelRepositoryClient, {
+      holeType: 'oval',
+      lengthMm: 30,
+      widthMm: 15,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('length_mm = $3'), [
+      'reviewed',
+      'oval',
+      30,
+      15,
+      20,
+    ]);
+    expect(result[0]).toMatchObject({
+      id: 7,
+      holeType: 'oval',
+      diameterMm: null,
+      lengthMm: 30,
+      widthMm: 15,
+      dimensionLabel: '30x15',
+      unitPrice: 18,
+    });
+  });
+
   it('searches reviewed active material rules by lookup selector', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [

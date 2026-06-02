@@ -1,3 +1,153 @@
+# Steel Workbook Canonical Headers
+
+- [x] Record the requested seven-sheet header contract.
+- [x] Add failing service tests for exact sheet header order and required seed rows.
+- [x] Update initial workbook definitions without changing public sheet ids.
+- [x] Verify focused service/repository tests, build, formatting, and diff checks.
+
+## Review
+
+- Updated the initial Steel workbook contract so new workbooks keep the seven public sheet ids but render the requested visible sheet labels and exact header order.
+- Verified `docs/reference/系統訂單.xlsx` first-row headers match the requested 20-column ERP system-order header.
+- `報價明細` now contains the full pricing, weight, source, confidence, fee, and review columns. Its patch-oriented material price key is `material_unit_price` with label `材料單價`.
+- `總結` now seeds `總重量` and `總額`; `給客戶` now seeds a final `訂單總額` row.
+- Synchronized stale workbook test fixtures from `quoted_unit_price` / `單價` to `material_unit_price` / `材料單價`.
+- Build-output cloud Mongo smoke passed: `createWorkbook` returned `201`, visible sheet labels were `報價明細`, `總結`, `人工複核`, `價格來源`, `判讀備註`, `系統訂單`, `給客戶`; `報價明細` had 40 headers, `系統訂單` had 20 headers, and `給客戶` included the `訂單總額` row. The temporary workbook was deleted.
+- User-corrected visible sheet order is now canonical: `系統訂單`, `總結`, `人工複核`, `報價明細`, `價格來源`, `判讀備註`, `給客戶`. The public sheet ids remain stable.
+- Rebuilt data-provider before API tests so `packages/api` consumed the updated `requiredSteelWorkbookSheetIds` order.
+- Build-output cloud Mongo order smoke passed: `createWorkbook` returned `201` with sheet labels exactly `系統訂單`, `總結`, `人工複核`, `報價明細`, `價格來源`, `判讀備註`, `給客戶`; the temporary workbook was deleted.
+- No Supabase migration was needed because this changes Mongo workbook JSON initialization and tests only.
+
+# Steel Workbook Live Endpoint Still 500
+
+- [x] Confirm which backend process is serving `:3080` and whether it uses this worktree/build.
+- [x] Verify built `packages/api/dist` contains the workbook repository fix and diagnostic response.
+- [x] Reproduce workbook creation against the live backend or live Mongo seam.
+- [x] Fix any remaining backend issue with focused regression coverage.
+- [x] Verify focused tests/build/diff checks and document the final live-smoke result.
+
+## Review
+
+- Root cause of the repeated `{"message":"Steel workbook request failed"}` on `steel/v8.3`: the running/build target branch did not yet include the workbook repository plain-object fix or the diagnostic workbook handler response that were present in the detached Codex worktree.
+- Confirmed the Codex worktree had `steel_workbook_unknown` diagnostics and the Mongoose `toPlain()` fix, while `/Users/neven/Documents/projects/LibreChat` on branch `steel/v8.3` did not.
+- Applied the same verified repository and handler changes directly to the `steel/v8.3` branch worktree so rebuilding that branch uses the fixed code.
+- No local `:3080` or `:3090` listener was visible from the tool environment during diagnosis, so the live browser request could not be replayed against the user's currently running process.
+- Verified the built branch handler directly against `.env` `MONGO_URI`: after an explicit `mongoose.connect`, `createWorkbook` returned `201`, created seven sheets, and the first sheet label was `報價明細`; the smoke script then deleted the temporary workbook data.
+- Verified the diagnostic path too: calling the handler without an active Mongo connection now returns `errorCategory: steel_workbook_unknown` and an `errorSummary`, so any remaining generic-only response is from an older running backend.
+
+# Steel Workbook API 500 Bug Fix
+
+- [x] Reproduce `POST /api/steel/workbooks` failure at the real repository/schema seam.
+- [x] Identify whether the failure is Mongoose workbook schema, stale package build, or runtime database configuration.
+- [x] Add a regression test for the real failure mode before changing production code.
+- [x] Implement the minimal backend fix and preserve the retryable frontend error state.
+- [x] Verify focused workbook API tests, build, formatting, and diff hygiene.
+
+## Review
+
+- Root cause: the Mongoose workbook repository returned Mongoose documents/subdocuments directly into `toRecord()`. Spreading those subdocuments dropped getter-backed fields, so Zod saw `sheets[].id`, `label`, `columns[].key`, and `rows[].id` as `undefined`.
+- Added `packages/api/src/steel/workbook/repository.spec.ts` with a real `mongodb-memory-server` create/read path through `createMongooseSteelWorkbookRepository`.
+- Fixed `packages/api/src/steel/workbook/repository.ts` by converting workbook documents, sheet subdocuments, column subdocuments, and row subdocuments to plain objects before shaping the public workbook DTO.
+- Added workbook handler diagnostics for unexpected 500s: production still hides internals, development returns `errorCategory: steel_workbook_unknown` plus `errorSummary`, and the server logger records the underlying error.
+- Verification passed: focused `handlers.spec.ts` + `workbook/repository.spec.ts`, Prettier, `npm run build:api`, and `git diff --check`. `build:api` still reports existing non-Steel TypeScript warnings in app/config/cache/middleware files; no new Steel warnings remain.
+
+# Steel OAuth Chat Workbook Layout
+
+- [x] Document the approved UI layout plan.
+- [x] Add failing tests for gpt-5.5-only model behavior, workbook panel toggle, and draggable divider resizing.
+- [x] Remove the gpt-5.4 model option and model selector from `/steel/oauth-chat`.
+- [x] Add right-header workbook panel open/close icon behavior.
+- [x] Add desktop workbook divider dragging with min 100px, max chat view width minus 200px, and default 1:1 sizing.
+- [x] Verify focused client tests, formatting, filtered typecheck, diff hygiene, and browser smoke where possible.
+
+## Review
+
+- Added `docs/plans/2026-06-02-steel-oauth-chat-workbook-layout.md` with the approved UI implementation plan.
+- Removed the model selector from `/steel/oauth-chat`; chat requests now always send `model: 'gpt-5.5'`.
+- Added a right-header icon-only workbook toggle using `Hide workbook` / `Show workbook` aria labels.
+- Added a desktop workbook divider with mouse drag resizing. The panel defaults to `50%`, clamps to a `100px` minimum, and clamps maximum width to layout width minus `200px` chat space.
+- Workbook hide/show keeps workbook state intact; it only removes the panel from the layout.
+- Verification passed: focused `SteelOAuthChat` Jest red/green suite, Prettier, filtered client typecheck for Steel UI files, and `git diff --check`.
+- In-app browser smoke could not reach the route because the browser session blocked localhost navigation with `net::ERR_BLOCKED_BY_CLIENT`; no UI data-changing browser actions were attempted.
+
+# Steel Workbook Loading Bug Fix
+
+- [x] Add a regression test for failed workbook initialization showing an error instead of infinite loading.
+- [x] Confirm the regression test fails against the current UI behavior.
+- [x] Add explicit workbook initialization state, error display, and retry behavior.
+- [x] Verify focused client tests, formatting, typecheck filter, and diff hygiene.
+
+## Review
+
+- Root cause: `SteelOAuthChat` did not catch `createSteelWorkbook` failures, so `workbook` stayed `null` and `SteelWorkbookPreview` rendered `Workbook loading` forever.
+- Added a regression test that rejects `createSteelWorkbook`, verifies the error is visible, verifies loading disappears, and verifies `Retry workbook` reloads the workbook.
+- Added explicit workbook loading/error state in `SteelOAuthChat` and passed it into the workbook preview.
+- Added a retryable error state in `client/src/features/steel/workbook/Preview.tsx`.
+- Verification passed: focused SteelOAuthChat Jest, Prettier, filtered client typecheck for Steel UI files, and `git diff --check`.
+
+# Steel Workbook UI Patch Slice
+
+- [ ] Extend workbook DTOs so seven-sheet quote workbooks have renderable sheet/column/row metadata.
+- [ ] Extend Mongo workbook and patch schemas so workbook JSON is durable app state, not a one-time attachment.
+- [ ] Add backend workbook service/repository for create, read, and optimistic-version patch.
+- [ ] Register workbook API routes under `/api/steel/workbooks`.
+- [ ] Add a reusable LibreChat workbook preview that renders tabs, rows, and recent patch highlights.
+- [ ] Wire the current Steel route to create/read a workbook and apply multi-turn patch responses.
+- [ ] Verify focused data-provider, data-schemas, API, route, and client tests plus builds/diff checks.
+
+## Review
+
+- Extended `packages/data-provider/src/steel/workbooks.ts` so every workbook sheet carries UI-renderable column metadata, rows, selected refs, changed paths, changed summaries, and explicit `set_cell` patch operations.
+- Extended `packages/data-provider/src/steel/ai.ts` so Steel chat requests can carry current workbook context and chat responses can carry an accepted `workbookPatch` for UI refresh.
+- Extended Mongo Steel workbook schemas so `steel_workbooks` stores full workbook JSON and `steel_workbook_patches` stores operations, selected refs, changed paths, changed summaries, accepted/rejected status, and rejection reason.
+- Added `packages/api/src/steel/workbook/` service and Mongoose repository for create/read/optimistic-version patch.
+- Registered `POST /api/steel/workbooks`, `GET /api/steel/workbooks/:workbookId`, and `PATCH /api/steel/workbooks/:workbookId` under JWT auth.
+- Added data-provider wrappers: `createSteelWorkbook`, `getSteelWorkbook`, and `patchSteelWorkbook`.
+- Added reusable LibreChat workbook preview at `client/src/features/steel/workbook/Preview.tsx` and mounted it on `client/src/routes/SteelOAuthChat.tsx`.
+- The Steel route now creates a workbook, sends current `workbookId`/`workbookVersion` with chat requests, and refreshes/highlights the preview when a later chat response includes `workbookPatch`.
+- Verification passed: data-provider Steel AI/workbook Jest, data-schemas Steel schema Jest, packages/api workbook/handler Jest, api route shell Jest, client SteelOAuthChat Jest, `build:data-provider`, `build:data-schemas`, direct `packages/api` build, filtered client typecheck for new Steel UI files, and `git diff --check`.
+- Full `client` typecheck still fails on existing unrelated repository errors; the filtered output no longer contains `SteelOAuthChat` or `client/src/features/steel/workbook/Preview.tsx`.
+
+# Steel Non-Round Hole Calculator Slice
+
+- [x] Create a Supabase migration for non-round hole dimensions on `steel.hole_prices`.
+- [x] Update `supabase/schema.sql` with the same `hole_prices` shape.
+- [x] Apply and verify the migration on cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
+- [x] Add repository/tool tests for non-round hole lookup.
+- [x] Implement repository/tool support for `oval`, `long`, `rectangular`, and `custom` hole price lookup.
+- [x] Add failing calculator tests for round and non-round hole fees.
+- [x] Implement `calculate_hole_fee`.
+- [x] Run focused tests, build, formatting, and diff checks.
+
+## Review
+
+- Generated `supabase/migration/20260602092407_phase_cd_non_round_hole_prices.sql` with `npx supabase migration new phase_cd_non_round_hole_prices`.
+- Added `length_mm`, `width_mm`, and `dimension_label` to `steel.hole_prices`, plus positive-length/width checks and `hole_prices_non_round_lookup_idx`.
+- Updated `supabase/schema.sql` with the same current schema snapshot.
+- Applied the migration SQL to cloud Supabase through `.env` `STEEL_POSTGRES_URL`; `supabase db push --dry-run` showed remote migration history is not aligned with previously applied migrations, so this task used direct SQL apply and live verification rather than replaying all old migrations.
+- Live cloud verification passed for new columns, check constraints, index, and rollback insert smoke for an `oval` 30x15 reviewed hole price row.
+- Added non-round hole repository lookup fields and `lookup_hole_price` tool support.
+- Added `calculateHoleFee` as a pure backend calculator for round and non-round hole groups.
+- Verification passed: repository/tool/calculator red-green Jest suites, combined focused Jest run, `npm run build:api`, `git diff --check`, and required-term grep.
+- `npm run build:api` still reports existing non-Steel TypeScript warnings in config/cache/middleware files; no new Steel build failure was introduced.
+
+# Steel Cutting/Hole/Slotting Rule Docs
+
+- [x] Read `docs/reference/instruction.txt` for hole and slotting rules.
+- [x] Document confirmed cut-count semantics, including head/tail trim, remainder behavior, and billable vs operation cut counts.
+- [x] Document hole-count and slotting-length calculator contracts.
+- [x] Sync the active architecture package and v8.3 implementation roadmap.
+- [x] Verify Markdown formatting and diff hygiene.
+
+## Review
+
+- Updated `tasks/steel-data-rules-architecture/phase-3-material-rules.md` with confirmed cut-count semantics, hole processing rules, and slotting path rules.
+- Expanded hole processing docs so future Admin-reviewed oval, long, rectangular, and custom non-round hole prices are supported by runtime lookup/calculators even when current source rows are missing or `0`.
+- Updated `tasks/steel-data-rules-architecture/phase-4-tool-calling.md` so AI produces structured cutting/hole/slotting candidates and backend calculators own deterministic computation.
+- Updated `tasks/steel-data-rules-architecture/checkpoints.md` with rule/tool/manual scenario gates for cut count, holes, and slotting.
+- Synced `tasks/v8.3/phase-2-data-tools.md` and `docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md` so the implementation roadmap includes `calculate_cut_count`, hole groups, and slotting paths.
+- Verification passed: Markdown Prettier, `git diff --check`, and required-term grep for `calculate_cut_count`, `operationCutCount`, `billableCutCount`, hole groups, and slotting paths.
+
 # Steel Phase 4B Rule Proposal Backend
 
 - [x] Add Phase 4B plan and checkpoint for backend-only proposal creation.

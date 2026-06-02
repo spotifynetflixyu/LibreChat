@@ -61,6 +61,28 @@ export const steelToolArgsSchemas = {
     .refine(atLeastOneFilter(['productFamily', 'cutType', 'specKey']), {
       message: 'Provide productFamily, cutType, or specKey',
     }),
+  lookup_hole_price: z
+    .object({
+      holeType: nonEmptyString.optional(),
+      diameterMm: z.number().positive().optional(),
+      lengthMm: z.number().positive().optional(),
+      widthMm: z.number().positive().optional(),
+      dimensionLabel: nonEmptyString.optional(),
+      reviewState: reviewStateSchema,
+      includeInactive: z.boolean().optional(),
+      limit: limitSchema,
+    })
+    .refine(
+      (value) =>
+        value.holeType !== undefined ||
+        value.diameterMm !== undefined ||
+        value.lengthMm !== undefined ||
+        value.widthMm !== undefined ||
+        value.dimensionLabel !== undefined,
+      {
+        message: 'Provide holeType, diameterMm, lengthMm, widthMm, or dimensionLabel',
+      },
+    ),
   lookup_processing_price: z
     .object({
       processingType: nonEmptyString.optional(),

@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
+import { logger } from '@librechat/data-schemas';
 import {
   steelAuthenticatedConversationRequestSchema,
   steelGuestConversationRequestSchema,
+  steelWorkbookCreateRequestSchema,
 } from 'librechat-data-provider';
 
 import { buildSteelModelOptions } from './models';
@@ -9,6 +11,7 @@ import { applyFileInstructionsToMessages, type FileInstructionConfig } from '../
 import { createMongooseSteelAuditRecorder } from './audit/service';
 import { createMongooseSteelConversationRepository } from './conversations/repository';
 import { createMongooseSteelRuleProposalRepository } from './rules/repository';
+import { createMongooseSteelWorkbookRepository } from './workbook/repository';
 import {
   createSteelConversationService,
   SteelConversationAccessError,
@@ -16,6 +19,12 @@ import {
   SteelConversationUnauthenticatedError,
 } from './conversations/service';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
+import {
+  createSteelWorkbookService,
+  SteelWorkbookNotFoundError,
+  SteelWorkbookValidationError,
+  SteelWorkbookVersionConflictError,
+} from './workbook/service';
 import {
   parseSteelOpenAIConfig,
   resolveSteelOpenAIOAuthAuthFilePath,
@@ -71,6 +80,7 @@ export interface SteelHandlersDeps {
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelProviderChatResponse>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
+  workbookService?: ReturnType<typeof createSteelWorkbookService>;
 }
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
@@ -279,6 +289,12 @@ function createDefaultRuleProposalService() {
   });
 }
 
+function createDefaultWorkbookService() {
+  return createSteelWorkbookService({
+    repository: createMongooseSteelWorkbookRepository(mongoose),
+  });
+}
+
 function sendConversationError(res: Response, error: unknown) {
   if (
     error instanceof SteelConversationAccessError ||
@@ -308,15 +324,42 @@ function sendRuleProposalError(res: Response, error: unknown) {
   res.status(500).json({ message: 'Steel rule proposal request failed' });
 }
 
+function shouldExposeErrorSummary(env: SteelOpenAIConfigEnv): boolean {
+  return env['NODE_ENV'] !== 'production';
+}
+
+function sendWorkbookError(res: Response, error: unknown, env: SteelOpenAIConfigEnv) {
+  if (
+    error instanceof SteelWorkbookNotFoundError ||
+    error instanceof SteelWorkbookValidationError ||
+    error instanceof SteelWorkbookVersionConflictError
+  ) {
+    res.status(error.statusCode).json({
+      message: error.message,
+      errorCategory: error.errorCategory,
+    });
+    return;
+  }
+
+  logger.error('[steelWorkbook] request failed:', error);
+  res.status(500).json({
+    message: 'Steel workbook request failed',
+    errorCategory: 'steel_workbook_unknown',
+    ...(shouldExposeErrorSummary(env) ? { errorSummary: getErrorMessage(error) } : {}),
+  });
+}
+
 export function createSteelHandlers({
   env = process.env,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
   conversationService,
   ruleProposalService,
+  workbookService,
 }: SteelHandlersDeps) {
   const getConversationService = () => conversationService ?? createDefaultConversationService(env);
   const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
+  const getWorkbookService = () => workbookService ?? createDefaultWorkbookService();
 
   return {
     async chat(req: Request, res: Response) {
@@ -459,6 +502,57 @@ export function createSteelHandlers({
         res.status(201).json(result);
       } catch (error) {
         sendRuleProposalError(res, error);
+      }
+    },
+
+    async createWorkbook(req: SteelRequest, res: Response) {
+      const parsed = steelWorkbookCreateRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({
+          message: 'Invalid Steel workbook create request',
+          errorCategory: 'steel_workbook_create_invalid',
+        });
+        return;
+      }
+
+      try {
+        const result = await getWorkbookService().create(parsed.data);
+        res.status(201).json(result);
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+      }
+    },
+
+    async readWorkbook(req: SteelRequest, res: Response) {
+      try {
+        const result = await getWorkbookService().read({
+          workbookId: req.params.workbookId,
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+      }
+    },
+
+    async patchWorkbook(req: SteelRequest, res: Response) {
+      const body = isRecord(req.body) ? req.body : {};
+      const bodyWorkbookId = body.workbookId;
+      if (bodyWorkbookId !== undefined && bodyWorkbookId !== req.params.workbookId) {
+        res.status(400).json({
+          message: 'Steel workbook patch workbookId does not match route',
+          errorCategory: 'steel_workbook_patch_invalid',
+        });
+        return;
+      }
+
+      try {
+        const result = await getWorkbookService().patch({
+          ...body,
+          workbookId: req.params.workbookId,
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        sendWorkbookError(res, error, env);
       }
     },
   };

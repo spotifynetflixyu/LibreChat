@@ -60,6 +60,9 @@ interface HolePriceRow {
   id: string | number;
   hole_type: string;
   diameter_mm: string | number | null;
+  length_mm: string | number | null;
+  width_mm: string | number | null;
+  dimension_label: string | null;
   thickness_min_mm: string | number | null;
   thickness_max_mm: string | number | null;
   unit: string;
@@ -143,6 +146,9 @@ export interface SteelCuttingPrice extends SteelChargeRow {
 export interface SteelHolePrice extends SteelChargeRow {
   holeType: string;
   diameterMm: number | null;
+  lengthMm: number | null;
+  widthMm: number | null;
+  dimensionLabel?: string;
   thicknessMinMm: number | null;
   thicknessMaxMm: number | null;
 }
@@ -188,6 +194,10 @@ interface SearchSteelCuttingPricesInput extends SearchStateInput {
 
 interface SearchSteelHolePricesInput extends SearchStateInput {
   holeType?: string;
+  diameterMm?: number;
+  lengthMm?: number;
+  widthMm?: number;
+  dimensionLabel?: string;
 }
 
 interface SearchSteelSlottingPricesInput extends SearchStateInput {
@@ -225,6 +235,20 @@ function addOptionalFilter(
   value: string | undefined,
 ) {
   if (!value) {
+    return;
+  }
+
+  values.push(value);
+  where.push(`${column} = $${values.length}`);
+}
+
+function addOptionalNumberFilter(
+  where: string[],
+  values: SteelSqlParameter[],
+  column: string,
+  value: number | undefined,
+) {
+  if (value === undefined) {
     return;
   }
 
@@ -352,6 +376,10 @@ export async function searchSteelHolePrices(
   const values: SteelSqlParameter[] = [];
   addDefaultStateFilters(where, values, input);
   addOptionalFilter(where, values, 'hole_type', input.holeType);
+  addOptionalNumberFilter(where, values, 'diameter_mm', input.diameterMm);
+  addOptionalNumberFilter(where, values, 'length_mm', input.lengthMm);
+  addOptionalNumberFilter(where, values, 'width_mm', input.widthMm);
+  addOptionalFilter(where, values, 'dimension_label', input.dimensionLabel);
   values.push(getLimit(input.limit));
 
   const result = await client.query<HolePriceRow>(
@@ -360,6 +388,9 @@ SELECT
   id,
   hole_type,
   diameter_mm,
+  length_mm,
+  width_mm,
+  dimension_label,
   thickness_min_mm,
   thickness_max_mm,
   unit,
@@ -371,7 +402,12 @@ SELECT
   source_refs
 FROM steel.hole_prices
 WHERE ${where.join('\n  AND ')}
-ORDER BY hole_type ASC, diameter_mm ASC NULLS LAST, id ASC
+ORDER BY
+  hole_type ASC,
+  diameter_mm ASC NULLS LAST,
+  length_mm ASC NULLS LAST,
+  width_mm ASC NULLS LAST,
+  id ASC
 LIMIT $${values.length}
 `,
     values,
@@ -381,6 +417,9 @@ LIMIT $${values.length}
     ...mapCharge(row),
     holeType: row.hole_type,
     diameterMm: parseNullableNumber(row.diameter_mm),
+    lengthMm: parseNullableNumber(row.length_mm),
+    widthMm: parseNullableNumber(row.width_mm),
+    dimensionLabel: parseNullableString(row.dimension_label),
     thicknessMinMm: parseNullableNumber(row.thickness_min_mm),
     thicknessMaxMm: parseNullableNumber(row.thickness_max_mm),
   }));

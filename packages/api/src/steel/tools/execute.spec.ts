@@ -180,6 +180,59 @@ describe('executeSteelTool', () => {
     });
   });
 
+  it('looks up non-round hole prices through a hole-specific tool', async () => {
+    const client = createClient([
+      [
+        {
+          id: '8',
+          hole_type: 'oval',
+          diameter_mm: null,
+          length_mm: '30.000',
+          width_mm: '15.000',
+          dimension_label: '30x15',
+          thickness_min_mm: null,
+          thickness_max_mm: '12.000',
+          unit: 'hole',
+          unit_price: '18.0000',
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'hole_price',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'lookup_hole_price',
+      arguments: {
+        holeType: 'oval',
+        lengthMm: 30,
+        widthMm: 15,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls[0]?.values).toEqual(['reviewed', 'oval', 30, 15, 20]);
+    expect(result.data.holePrices[0]).toMatchObject({
+      holeType: 'oval',
+      lengthMm: 30,
+      widthMm: 15,
+      dimensionLabel: '30x15',
+      unitPrice: 18,
+    });
+  });
+
   it('normalizes AI quote item candidates into a user confirmation when uncertain', async () => {
     const client = createClient([]);
 

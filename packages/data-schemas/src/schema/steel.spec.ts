@@ -7,6 +7,8 @@ import {
   createSteelConversationMetaModel,
   createSteelMemoryCandidateModel,
   createSteelSourceVersionModel,
+  createSteelWorkbookModel,
+  createSteelWorkbookPatchModel,
 } from '../models/steel';
 
 describe('Steel Mongo schemas', () => {
@@ -109,6 +111,29 @@ describe('Steel Mongo schemas', () => {
     ]);
     expect(SteelMemoryCandidate.schema.indexes()).toContainEqual([
       { createdByUserId: 1, status: 1, updatedAt: -1 },
+      expect.any(Object),
+    ]);
+  });
+
+  it('stores renderable Steel workbook sheets and patch operations', () => {
+    const SteelWorkbook = createSteelWorkbookModel(mongoose);
+    const SteelWorkbookPatch = createSteelWorkbookPatchModel(mongoose);
+
+    expect(SteelWorkbook.collection.name).toBe('steel_workbooks');
+    expect(SteelWorkbook.schema.path('sheets')).toBeDefined();
+    expect(SteelWorkbook.schema.path('sheets.0.columns')).toBeDefined();
+    expect(SteelWorkbook.schema.path('sheets.0.rows')).toBeDefined();
+    expect(SteelWorkbook.schema.indexes()).toContainEqual([
+      { conversationMetaId: 1, status: 1, updatedAt: -1 },
+      expect.any(Object),
+    ]);
+
+    expect(SteelWorkbookPatch.collection.name).toBe('steel_workbook_patches');
+    expect(SteelWorkbookPatch.schema.path('operations')).toBeDefined();
+    expect(SteelWorkbookPatch.schema.path('changedPaths')).toBeDefined();
+    expect(SteelWorkbookPatch.schema.path('changedFieldSummary')).toBeDefined();
+    expect(SteelWorkbookPatch.schema.indexes()).toContainEqual([
+      { workbookId: 1, beforeVersion: 1 },
       expect.any(Object),
     ]);
   });

@@ -45,6 +45,9 @@ rtk proxy rg -n "source_refs|product_price_unit_weight|value_state|review_state|
 - [ ] H-type non-standard-length rule returns a material unit-price adjustment only and applies automatically to non-regular normalized H-type lengths.
 - [ ] Long-material allocation rule applies to non-C long materials unless the customer explicitly allows exact finished-length pricing.
 - [ ] Cutting rules can resolve H-type and black-iron cutting prices and adjustment notes.
+- [ ] Cutting rules distinguish `operationCutCount` from `billableCutCount` and cover head trim, tail trim, no-head/no-tail, split/multi-piece, and remainder-tail behavior.
+- [ ] Hole rules count only confirmed round/oval/long/rectangular/bolt/punched/custom holes and reject center lines, dimension lines, hidden lines, R corners, bend lines, cut marks, and welding symbols.
+- [ ] Slotting rules calculate continuous slot path length, including L/U/multi-segment paths, without treating normal outside profiles as slotting.
 - [ ] Quote-specific adjustments can override a material rule for one workbook line while preserving the formal rule.
 
 Verification:
@@ -60,6 +63,9 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/(rules|allocation
 - [ ] AI retrieves lesson/memory through backend tools using typed filters and bounded reviewed candidates, not by receiving all memory in prompt context.
 - [ ] Missing or unreviewed zero prices return `未確認` or low-confidence candidates, never confirmed zero totals.
 - [ ] Explicit customer quote-specific adjustments are represented separately from formal price/rule facts.
+- [ ] `calculate_cut_count` returns operation/billable counts with adopted/rejected reasons before `calculate_cutting_fee` prices the charge.
+- [ ] `calculate_hole_fee` consumes structured hole groups, including non-round dimensions when present, and item quantity instead of raw OCR text.
+- [ ] `calculate_slotting_fee` consumes structured slot paths and returns total slotting meters before pricing.
 - [ ] "Save as customer default" creates a `needs_review` rule proposal only after required customer/material/charge/formula/parameter fields are known.
 - [ ] Reviewed customer/tier/company defaults persist in `steel.calculation_rule_defaults`, while published retrieval entries persist in `steel.lesson_memory_entries`.
 - [ ] AI-selected `selectedCalculationRule` is rejected if its lesson/memory origin is stale, unreviewed, inactive, or out of scope.
@@ -104,6 +110,9 @@ rtk npm run build:api
 - [ ] H-type non-regular length sample applies +0.3/kg to material price only and uses cutting data separately.
 - [ ] Product price weight conflict sample uses product-price unit weight as the main quote weight for the matched line.
 - [ ] Cutting price lookup sample uses `切工價錢.xlsx` imported/reviewed cutting data as formal source.
+- [ ] Cut-count sample covers split/no-head/no-tail, head/tail trim, and remainder omitting only tail trim, not the separation cut.
+- [ ] Hole sample confirms `4-Ø22` style notation, oval/long/rectangular non-round hole groups, quantity multiplier, and non-hole line rejection.
+- [ ] Slotting sample confirms straight, L, and U/ㄇ path length calculation with unclear paths sent to manual review.
 - [ ] Customer special-price/no-charge/surcharge sample records a quote-specific adjustment without changing formal source rows.
 
 Verification:

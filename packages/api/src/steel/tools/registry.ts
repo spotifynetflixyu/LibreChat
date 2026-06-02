@@ -51,6 +51,11 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     argsSchema: steelToolArgsSchemas.lookup_cutting_price,
   },
   {
+    name: 'lookup_hole_price',
+    description: 'Look up round and non-round hole prices from reviewed hole-price data.',
+    argsSchema: steelToolArgsSchemas.lookup_hole_price,
+  },
+  {
     name: 'lookup_processing_price',
     description: 'Look up generic processing prices from reviewed processing data.',
     argsSchema: steelToolArgsSchemas.lookup_processing_price,

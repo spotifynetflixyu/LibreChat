@@ -27,6 +27,9 @@ Outputs:
 - normalized category/material/spec candidates
 - dimensions and quantity
 - processing notes
+- cutting intent candidates, including head/tail trim, split/multi-piece intent, and remainder-related notes
+- hole evidence groups with count/type/diameter or non-round dimension candidates
+- slotting path candidates with segment lengths and path quantities
 - candidate aliases
 - low-confidence reasons
 - user confirmation state: `use_candidate`, `ask_user`, or `confirm_candidates`
@@ -38,6 +41,7 @@ Rules:
 - If AI confidence is not high, the tool result must ask the user to confirm before pricing.
 - If multiple plausible candidates exist, the tool result must present bounded options and wait for user confirmation.
 - Missing canonical fields produce a targeted clarification question rather than a guessed price lookup.
+- Missing or low-confidence cutting/head-tail, hole-count, or slotting-path evidence produces a targeted clarification question before confirmed fee calculation.
 
 ### Price And Rule Tools
 
@@ -73,12 +77,14 @@ Rules:
 - "Save as this customer's default" is not a direct memory write. Tool orchestration may create only a structured rule proposal with `needs_review` status; Admin review must approve it before it becomes reviewed rule/default data and later published lesson/memory.
 - Do not treat zero unit weight as true zero in Phase 2.
 - Include task-scoped material rules only.
+- `lookup_processing_price` can be scoped by processing charge type such as `hole`, `slotting`, `bending`, or `processing`; it must not return unrelated processing prices as a silent fallback.
 
 ### Calculation Tools
 
 - `allocate_stock_lengths`
 - `calculate_plate_weight`
 - `calculate_bar_weight`
+- `calculate_cut_count`
 - `calculate_cutting_fee`
 - `calculate_hole_fee`
 - `calculate_slotting_fee`
@@ -90,6 +96,10 @@ Rules:
 - Calculators receive only normalized facts, validated rule outputs, and explicit quote-specific adjustments.
 - Calculators never search raw source files.
 - Confirmed totals and low-confidence estimates remain separate.
+- `calculate_cut_count` returns both `operationCutCount` and `billableCutCount`, plus adopted/rejected head trim, tail trim, remainder, and special-cut reasons.
+- `calculate_cutting_fee` consumes a validated cut-count result, reviewed cutting price, selected calculation rule, and quote-specific adjustments. It does not re-interpret raw text.
+- `calculate_hole_fee` consumes structured hole groups, supports round and non-round hole types, excludes non-hole drawing marks, multiplies by item quantity, and returns total hole count plus fee confidence.
+- `calculate_slotting_fee` consumes structured slot paths, sums continuous segment lengths, multiplies by item quantity, converts to meters, and returns total slotting meters plus fee confidence.
 - Quote-specific adjustments can exclude charges, apply special prices, add surcharges, or override default material-rule behavior for the current workbook line only.
 - Phase 2 validates and normalizes adjustment objects, but does not mutate workbook state. Phase 3 persists accepted adjustments on workbook lines.
 

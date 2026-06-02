@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { steelSelectedWorkbookRefSchema, steelWorkbookPatchResponseSchema } from './workbooks';
+
 export const steelAIDrivers = ['openai_oauth_responses', 'openai_api'] as const;
 
 export type SteelAIDriver = (typeof steelAIDrivers)[number];
@@ -141,11 +143,14 @@ export type SteelProviderReasoningEffort = z.infer<typeof steelProviderReasoning
 export const steelProviderChatRequestSchema = z.object({
   model: z.string().min(1).optional(),
   messages: z.array(steelProviderChatMessageSchema).min(1),
+  workbookId: z.string().min(1).optional(),
+  workbookVersion: z.number().int().positive().optional(),
+  selectedWorkbookRefs: z.array(steelSelectedWorkbookRefSchema).default([]),
   maxOutputTokens: z.number().int().positive().optional(),
   reasoningEffort: steelProviderReasoningEffortSchema.optional(),
 });
 
-export type SteelProviderChatRequest = z.infer<typeof steelProviderChatRequestSchema>;
+export type SteelProviderChatRequest = z.input<typeof steelProviderChatRequestSchema>;
 
 export const steelProviderChatResponseSchema = z.object({
   provider: z.enum(steelAIDrivers),
@@ -157,6 +162,7 @@ export const steelProviderChatResponseSchema = z.object({
   warnings: z.array(z.string().min(1)).default([]),
   errorCategory: steelAIProviderErrorCategorySchema.optional(),
   errorSummary: z.string().min(1).optional(),
+  workbookPatch: steelWorkbookPatchResponseSchema.optional(),
 });
 
 export type SteelProviderChatResponse = z.infer<typeof steelProviderChatResponseSchema>;

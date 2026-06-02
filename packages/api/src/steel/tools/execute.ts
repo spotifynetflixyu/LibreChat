@@ -5,6 +5,7 @@ import {
   searchSteelPriceItems,
   searchSteelWeightSpecs,
   searchSteelCuttingPrices,
+  searchSteelHolePrices,
   searchSteelMaterialRules,
   searchSteelSourceChunks,
   searchSteelProcessingPrices,
@@ -104,6 +105,7 @@ function summarizeOutput(data: SteelToolJsonObject): string {
     'priceCandidates',
     'weightSpecs',
     'cuttingPrices',
+    'holePrices',
     'processingPrices',
     'materialRules',
     'orderItems',
@@ -234,6 +236,12 @@ async function dispatchSteelTool(
       const cuttingPrices = await searchSteelCuttingPrices(client, input);
 
       return { cuttingPrices };
+    }
+    case 'lookup_hole_price': {
+      const input = steelToolArgsSchemas.lookup_hole_price.parse(args);
+      const holePrices = await searchSteelHolePrices(client, input);
+
+      return { holePrices };
     }
     case 'lookup_processing_price': {
       const input = steelToolArgsSchemas.lookup_processing_price.parse(args);

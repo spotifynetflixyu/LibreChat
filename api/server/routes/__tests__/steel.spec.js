@@ -34,12 +34,28 @@ const mockReadConversation = jest.fn((_req, res) =>
 const mockCreateRuleProposal = jest.fn((_req, res) =>
   res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
+const mockCreateWorkbook = jest.fn((_req, res) =>
+  res.status(201).json({ workbook: { id: 'wb_1', version: 1, sheets: [] } }),
+);
+const mockReadWorkbook = jest.fn((_req, res) =>
+  res.status(200).json({ workbook: { id: 'wb_1', version: 1, sheets: [] } }),
+);
+const mockPatchWorkbook = jest.fn((_req, res) =>
+  res.status(200).json({
+    workbook: { id: 'wb_1', version: 2, sheets: [] },
+    changedPaths: [{ sheetId: 'quote_details', rowId: 'line_1', columnKey: 'quoted_unit_price' }],
+    changedFieldSummary: [],
+  }),
+);
 const mockCreateSteelHandlers = jest.fn(() => ({
   chat: mockChat,
   createAuthenticatedConversation: mockCreateAuthenticatedConversation,
   createGuestConversation: mockCreateGuestConversation,
+  createWorkbook: mockCreateWorkbook,
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
+  patchWorkbook: mockPatchWorkbook,
+  readWorkbook: mockReadWorkbook,
   readConversation: mockReadConversation,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
@@ -180,6 +196,38 @@ describe('Steel route shells', () => {
     expect(res.status).toBe(201);
     expect(res.body).toEqual({ id: 'proposal_1', status: 'needs_review' });
     expect(mockRequireJwtAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers Steel workbook create/read/patch routes under /api/steel', async () => {
+    const app = createApp();
+
+    const createRes = await request(app)
+      .post('/api/steel/workbooks')
+      .send({ conversationMetaId: 'steel_meta_1' });
+    const readRes = await request(app).get('/api/steel/workbooks/wb_1');
+    const patchRes = await request(app)
+      .patch('/api/steel/workbooks/wb_1')
+      .send({
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        operations: [
+          {
+            op: 'set_cell',
+            sheetId: 'quote_details',
+            rowId: 'line_1',
+            columnKey: 'quoted_unit_price',
+            value: 115,
+          },
+        ],
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(readRes.status).toBe(200);
+    expect(patchRes.status).toBe(200);
+    expect(mockCreateWorkbook).toHaveBeenCalledTimes(1);
+    expect(mockReadWorkbook).toHaveBeenCalledTimes(1);
+    expect(mockPatchWorkbook).toHaveBeenCalledTimes(1);
   });
 
   it('registers admin-only capability smoke under /api/admin/steel', async () => {

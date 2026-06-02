@@ -28,6 +28,9 @@ router.get(
 );
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.post('/ai/chat', requireJwtAuth, handlers.chat);
+router.post('/workbooks', requireJwtAuth, handlers.createWorkbook);
+router.get('/workbooks/:workbookId', requireJwtAuth, handlers.readWorkbook);
+router.patch('/workbooks/:workbookId', requireJwtAuth, handlers.patchWorkbook);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 
 module.exports = router;

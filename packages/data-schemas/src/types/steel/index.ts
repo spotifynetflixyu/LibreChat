@@ -155,6 +155,7 @@ export interface ISteelWorkbook extends Document {
   conversationMetaId?: string;
   workbookId: string;
   version: number;
+  sheets: SteelWorkbookSheet[];
   status: 'active' | 'archived';
   createdAt?: Date;
   updatedAt?: Date;
@@ -164,9 +165,81 @@ export interface ISteelWorkbookPatch extends Document {
   workbookId: string;
   beforeVersion: number;
   afterVersion: number;
+  selectedWorkbookRefs?: SteelSelectedWorkbookRef[];
+  operations: SteelWorkbookPatchOperation[];
+  changedPaths: SteelChangedPath[];
+  changedFieldSummary: SteelChangedFieldSummary[];
   status: 'accepted' | 'rejected';
+  rejectedReason?: string;
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+export type SteelWorkbookSheetId =
+  | 'quote_details'
+  | 'summary'
+  | 'manual_review'
+  | 'price_sources'
+  | 'interpretation_notes'
+  | 'system_order'
+  | 'customer_quote';
+
+export type SteelWorkbookColumnValueType =
+  | 'text'
+  | 'number'
+  | 'currency'
+  | 'boolean'
+  | 'date'
+  | 'status'
+  | 'formula';
+
+export type SteelWorkbookCellValue = string | number | boolean | null;
+
+export interface SteelWorkbookColumn {
+  key: string;
+  label: string;
+  valueType: SteelWorkbookColumnValueType;
+  editable: boolean;
+  widthPx?: number;
+}
+
+export interface SteelWorkbookRow {
+  id: string;
+  cells: Record<string, SteelWorkbookCellValue>;
+}
+
+export interface SteelWorkbookSheet {
+  id: SteelWorkbookSheetId;
+  label: string;
+  columns: SteelWorkbookColumn[];
+  rows: SteelWorkbookRow[];
+}
+
+export interface SteelSelectedWorkbookRef {
+  workbookId: string;
+  workbookVersion: number;
+  sheetId: SteelWorkbookSheetId;
+  rowId: string;
+  columnKey: string;
+  displayLabel?: string;
+}
+
+export interface SteelChangedPath {
+  sheetId: SteelWorkbookSheetId;
+  rowId: string;
+  columnKey: string;
+}
+
+export interface SteelChangedFieldSummary extends SteelChangedPath {
+  label: string;
+  previousValue?: SteelWorkbookCellValue;
+  nextValue?: SteelWorkbookCellValue;
+}
+
+export interface SteelWorkbookPatchOperation extends SteelChangedPath {
+  op: 'set_cell';
+  value: SteelWorkbookCellValue;
+  reason?: string;
 }
 
 export interface ISteelToolCall extends Document {

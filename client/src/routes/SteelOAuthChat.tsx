@@ -1,10 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Bot,
+  GripVertical,
   Loader2,
   MessageSquarePlus,
   Paperclip,
+  PanelRightClose,
+  PanelRightOpen,
   Send,
   UserRound,
   X,
@@ -15,7 +18,10 @@ import type {
   SteelProviderChatMessage,
   SteelProviderReasoningEffort,
   SteelProviderChatResponse,
+  SteelChangedPath,
+  SteelWorkbook,
 } from 'librechat-data-provider';
+import SteelWorkbookPreview from '~/features/steel/workbook/Preview';
 
 type SteelChatTurn = SteelProviderChatMessage & {
   id: string;
@@ -27,7 +33,9 @@ type SelectedSteelFile = SteelProviderChatFile & {
   id: string;
 };
 
-const modelOptions = ['gpt-5.4', 'gpt-5.5'] as const;
+const steelModel = 'gpt-5.5';
+const workbookMinWidthPx = 100;
+const chatMinWidthPx = 200;
 const reasoningEffortOptions: SteelProviderReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 const titleText = 'Steel OAuth Chat';
 const tokensLabel = 'tokens';
@@ -120,12 +128,24 @@ function getErrorText(error: unknown): string {
   return 'Steel chat request failed.';
 }
 
+function clampWorkbookWidth(widthPx: number, layoutWidthPx: number): number {
+  const maxWorkbookWidthPx = Math.max(workbookMinWidthPx, layoutWidthPx - chatMinWidthPx);
+  return Math.min(maxWorkbookWidthPx, Math.max(workbookMinWidthPx, Math.round(widthPx)));
+}
+
 export default function SteelOAuthChat() {
+  const layoutRef = useRef<HTMLElement | null>(null);
   const [input, setInput] = useState('');
-  const [model, setModel] = useState<(typeof modelOptions)[number]>('gpt-5.4');
   const [reasoningEffort, setReasoningEffort] = useState<SteelProviderReasoningEffort>('medium');
   const [messages, setMessages] = useState<SteelChatTurn[]>([]);
   const [lastResponse, setLastResponse] = useState<SteelProviderChatResponse | null>(null);
+  const [workbook, setWorkbook] = useState<SteelWorkbook | null>(null);
+  const [changedPaths, setChangedPaths] = useState<SteelChangedPath[]>([]);
+  const [isWorkbookLoading, setIsWorkbookLoading] = useState(true);
+  const [workbookError, setWorkbookError] = useState<string | null>(null);
+  const [isWorkbookPanelOpen, setIsWorkbookPanelOpen] = useState(true);
+  const [isWorkbookResizing, setIsWorkbookResizing] = useState(false);
+  const [workbookWidthPx, setWorkbookWidthPx] = useState<number | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isEncodingFiles, setIsEncodingFiles] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<SelectedSteelFile[]>([]);
@@ -136,6 +156,65 @@ export default function SteelOAuthChat() {
   );
   const canSend =
     (input.trim().length > 0 || selectedFiles.length > 0) && !isSending && !isEncodingFiles;
+
+  const initializeWorkbook = useCallback(async () => {
+    setIsWorkbookLoading(true);
+    setWorkbookError(null);
+    try {
+      const result = await dataService.createSteelWorkbook({});
+      setWorkbook(result.workbook);
+      setChangedPaths([]);
+    } catch (error) {
+      setWorkbook(null);
+      setChangedPaths([]);
+      setWorkbookError(getErrorText(error));
+    } finally {
+      setIsWorkbookLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void initializeWorkbook();
+  }, [initializeWorkbook]);
+
+  const resizeWorkbookPanel = useCallback((clientX: number) => {
+    const layout = layoutRef.current;
+    if (!layout) {
+      return;
+    }
+
+    const rect = layout.getBoundingClientRect();
+    const layoutWidth = layout.clientWidth || rect.width;
+    if (layoutWidth <= 0) {
+      return;
+    }
+
+    setWorkbookWidthPx(clampWorkbookWidth(layoutWidth - (clientX - rect.left), layoutWidth));
+  }, []);
+
+  useEffect(() => {
+    if (!isWorkbookResizing) {
+      return undefined;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => resizeWorkbookPanel(event.clientX);
+    const handleMouseUp = () => setIsWorkbookResizing(false);
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isWorkbookResizing, resizeWorkbookPanel]);
+
+  const handleWorkbookResizeStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsWorkbookPanelOpen(true);
+    setIsWorkbookResizing(true);
+    resizeWorkbookPanel(event.clientX);
+  };
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -162,8 +241,10 @@ export default function SteelOAuthChat() {
     setMessages([]);
     setLastResponse(null);
     setSelectedFiles([]);
+    setChangedPaths([]);
     setIsSending(false);
     setIsEncodingFiles(false);
+    void initializeWorkbook();
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -194,8 +275,15 @@ export default function SteelOAuthChat() {
 
     try {
       const response = await dataService.sendSteelChat({
-        model,
+        model: steelModel,
         reasoningEffort,
+        ...(workbook
+          ? {
+              workbookId: workbook.id,
+              workbookVersion: workbook.version,
+              selectedWorkbookRefs: [],
+            }
+          : {}),
         messages: nextMessages
           .filter((message) => message.status !== 'error')
           .map(({ role, content, files }) => ({
@@ -205,6 +293,10 @@ export default function SteelOAuthChat() {
           })),
       });
       setLastResponse(response);
+      if (response.workbookPatch?.workbook) {
+        setWorkbook(response.workbookPatch.workbook);
+        setChangedPaths(response.workbookPatch.changedPaths);
+      }
       setMessages([...nextMessages, createTurn('assistant', response.text)]);
     } catch (error) {
       setMessages([
@@ -219,9 +311,19 @@ export default function SteelOAuthChat() {
     }
   };
 
+  const workbookToggleLabel = isWorkbookPanelOpen ? 'Hide workbook' : 'Show workbook';
+  const WorkbookToggleIcon = isWorkbookPanelOpen ? PanelRightClose : PanelRightOpen;
+  const workbookPanelStyle = {
+    width: workbookWidthPx == null ? '50%' : `${workbookWidthPx}px`,
+  };
+
   return (
-    <main className="flex h-full min-h-0 bg-surface-primary text-text-primary">
-      <section className="mx-auto flex h-full w-full max-w-5xl flex-col px-4 py-4 md:px-6">
+    <main
+      ref={layoutRef}
+      data-testid="steel-workbook-layout"
+      className="flex h-full min-h-0 flex-col bg-surface-primary text-text-primary lg:flex-row"
+    >
+      <section className="flex h-full min-w-0 flex-1 flex-col px-4 py-4 md:px-6">
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border-light pb-3">
           <div>
             <h1 className="text-xl font-semibold">{titleText}</h1>
@@ -249,22 +351,6 @@ export default function SteelOAuthChat() {
               <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
               {newChatText}
             </button>
-            <div className="flex rounded-lg border border-border-light p-1" aria-label="Model">
-              {modelOptions.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
-                    option === model
-                      ? 'bg-surface-active-alt text-text-primary'
-                      : 'text-text-secondary hover:bg-surface-hover'
-                  }`}
-                  onClick={() => setModel(option)}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
             <div
               className="flex rounded-lg border border-border-light p-1"
               aria-label="Reasoning effort"
@@ -284,6 +370,15 @@ export default function SteelOAuthChat() {
                 </button>
               ))}
             </div>
+            <button
+              type="button"
+              aria-label={workbookToggleLabel}
+              title={workbookToggleLabel}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-light text-text-primary hover:bg-surface-hover"
+              onClick={() => setIsWorkbookPanelOpen((current) => !current)}
+            >
+              <WorkbookToggleIcon className="h-4 w-4" aria-hidden="true" />
+            </button>
           </div>
         </header>
 
@@ -420,6 +515,34 @@ export default function SteelOAuthChat() {
           </div>
         </form>
       </section>
+      {isWorkbookPanelOpen && (
+        <>
+          <div
+            role="separator"
+            aria-label="Resize workbook panel"
+            aria-orientation="vertical"
+            className="hidden w-2 cursor-col-resize items-center justify-center border-l border-border-light bg-surface-primary hover:bg-surface-hover lg:flex"
+            onMouseDown={handleWorkbookResizeStart}
+          >
+            <GripVertical className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+          </div>
+          <aside
+            aria-label="Workbook panel"
+            className="min-h-0 border-t border-border-light lg:flex-shrink-0 lg:border-t-0"
+            style={workbookPanelStyle}
+          >
+            <SteelWorkbookPreview
+              workbook={workbook}
+              changedPaths={changedPaths}
+              error={workbookError}
+              isLoading={isWorkbookLoading}
+              onRetry={() => {
+                void initializeWorkbook();
+              }}
+            />
+          </aside>
+        </>
+      )}
     </main>
   );
 }

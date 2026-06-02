@@ -1,4 +1,5 @@
 import { createSteelAdminHandlers, createSteelHandlers } from './handlers';
+import { logger } from '@librechat/data-schemas';
 import { SteelConversationAccessError } from './conversations/service';
 
 import type { Request, Response } from 'express';
@@ -408,6 +409,121 @@ describe('createSteelHandlers', () => {
     });
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'needs_review' }));
+  });
+
+  it('creates Steel workbooks through the workbook service', async () => {
+    const workbookService = {
+      create: jest.fn(async () => ({
+        workbook: {
+          id: 'wb_1',
+          version: 1,
+          sheets: [],
+        },
+      })),
+      patch: jest.fn(),
+      read: jest.fn(),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      workbookService,
+    });
+    const req = {
+      body: { conversationMetaId: 'steel_meta_1' },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.createWorkbook(req, res);
+
+    expect(workbookService.create).toHaveBeenCalledWith({ conversationMetaId: 'steel_meta_1' });
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith({ workbook: { id: 'wb_1', version: 1, sheets: [] } });
+  });
+
+  it('returns a diagnostic workbook error in development for unexpected create failures', async () => {
+    const loggerSpy = jest.spyOn(logger, 'error').mockImplementation();
+    const workbookService = {
+      create: jest.fn(async () => {
+        throw new Error('Mongo workbook schema rejected sheets');
+      }),
+      patch: jest.fn(),
+      read: jest.fn(),
+    };
+    const handlers = createSteelHandlers({
+      env: { NODE_ENV: 'development' },
+      getModelsConfig: jest.fn(),
+      workbookService,
+    });
+    const req = {
+      body: {},
+    } as Request;
+    const res = createResponse();
+
+    await handlers.createWorkbook(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(loggerSpy).toHaveBeenCalledWith('[steelWorkbook] request failed:', expect.any(Error));
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Steel workbook request failed',
+      errorCategory: 'steel_workbook_unknown',
+      errorSummary: 'Mongo workbook schema rejected sheets',
+    });
+  });
+
+  it('patches Steel workbooks through the workbook service', async () => {
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(),
+      patch: jest.fn(async () => ({
+        changedPaths: [
+          { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+        ],
+        changedFieldSummary: [
+          {
+            sheetId: 'quote_details',
+            rowId: 'line_1',
+            columnKey: 'material_unit_price',
+            label: '材料單價',
+            previousValue: null,
+            nextValue: 115,
+          },
+        ],
+        workbook: { id: 'wb_1', version: 2, sheets: [] },
+      })),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        operations: [
+          {
+            op: 'set_cell',
+            sheetId: 'quote_details',
+            rowId: 'line_1',
+            columnKey: 'material_unit_price',
+            value: 115,
+          },
+        ],
+      },
+      params: { workbookId: 'wb_1' },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.patchWorkbook(req, res);
+
+    expect(workbookService.patch).toHaveBeenCalledWith(req.body);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedPaths: [
+          { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+        ],
+      }),
+    );
   });
 });
 
