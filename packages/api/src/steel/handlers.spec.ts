@@ -54,6 +54,272 @@ describe('createSteelHandlers', () => {
     });
   });
 
+  it('applies provider workbook patch operations before returning the OAuth chat response', async () => {
+    const operations = [
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'material_unit_price',
+        value: 115,
+        reason: 'AI matched the reviewed C-type steel quote line.',
+      },
+    ];
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '已更新報價明細。',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: { operations },
+    }));
+    const workbookPatch = {
+      workbook: { id: 'wb_1', version: 2, sheets: [] },
+      changedPaths: [
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'material_unit_price' },
+      ],
+      changedFieldSummary: [
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          label: '材料單價',
+          previousValue: null,
+          nextValue: 115,
+        },
+      ],
+    };
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: { id: 'wb_1', version: 1, sheets: [] },
+      })),
+      patch: jest.fn(async () => workbookPatch),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const selectedWorkbookRefs = [
+      {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'material_unit_price',
+      },
+    ];
+    const req = {
+      body: {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs,
+        messages: [{ role: 'user', content: '把 line 1 材料單價改成 115' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workbookPatchTool: true,
+      }),
+    );
+    expect(workbookService.read).toHaveBeenCalledWith({ workbookId: 'wb_1' });
+    expect(workbookService.patch).toHaveBeenCalledWith({
+      workbookId: 'wb_1',
+      workbookVersion: 1,
+      selectedWorkbookRefs,
+      operations,
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.5',
+      text: '已更新報價明細。',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch,
+    });
+  });
+
+  it('returns a visible workbook update summary when the model only emits a patch tool call', async () => {
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: {
+        operations: [
+          {
+            op: 'set_cell' as const,
+            sheetId: 'quote_details' as const,
+            rowId: 'line_1',
+            columnKey: 'material_unit_price',
+            value: 115,
+          },
+        ],
+      },
+    }));
+    const workbookPatch = {
+      workbook: { id: 'wb_1', version: 2, sheets: [] },
+      changedPaths: [
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'material_unit_price' },
+      ],
+      changedFieldSummary: [
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          label: '材料單價',
+          previousValue: null,
+          nextValue: 115,
+        },
+      ],
+    };
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: { id: 'wb_1', version: 1, sheets: [] },
+      })),
+      patch: jest.fn(async () => workbookPatch),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: 'set quote_details line_1 material_unit_price 115' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.5',
+      text: '已更新 workbook：材料單價 -> 115',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch,
+    });
+  });
+
+  it('sends workbook structure context so AI resolves visible summary labels to internal patch targets', async () => {
+    const operations = [
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_total_amount',
+        columnKey: 'value',
+        value: 100,
+        reason: 'User asked to update the summary total amount.',
+      },
+    ];
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: { operations },
+    }));
+    const workbookPatch = {
+      workbook: { id: 'wb_1', version: 2, sheets: [] },
+      changedPaths: [
+        { sheetId: 'summary' as const, rowId: 'summary_total_amount', columnKey: 'value' },
+      ],
+      changedFieldSummary: [
+        {
+          sheetId: 'summary' as const,
+          rowId: 'summary_total_amount',
+          columnKey: 'value',
+          label: '值',
+          previousValue: null,
+          nextValue: 100,
+        },
+      ],
+    };
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: {
+          id: 'wb_1',
+          version: 1,
+          sheets: [
+            {
+              id: 'summary',
+              label: '總結',
+              columns: [
+                { key: 'item', label: '項目', valueType: 'text', editable: false },
+                { key: 'value', label: '值', valueType: 'currency', editable: true },
+                { key: 'note', label: '備註', valueType: 'text', editable: true },
+              ],
+              rows: [
+                { id: 'summary_total_weight', cells: { item: '總重量', value: null, note: null } },
+                { id: 'summary_total_amount', cells: { item: '總額', value: null, note: null } },
+              ],
+            },
+          ],
+        },
+      })),
+      patch: jest.fn(async () => workbookPatch),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: '總結的總額更新為100' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    const sendChatOptions = sendChat.mock.calls[0]?.[0];
+    expect(workbookService.read).toHaveBeenCalledWith({ workbookId: 'wb_1' });
+    expect(sendChatOptions).toEqual(
+      expect.objectContaining({
+        workbookPatchTool: true,
+        workbookContextText: expect.stringContaining('sheet id="summary" label="總結"'),
+      }),
+    );
+    expect(sendChatOptions.workbookContextText).toContain('column label="值" key="value"');
+    expect(sendChatOptions.workbookContextText).toContain('row id="summary_total_amount"');
+    expect(sendChatOptions.workbookContextText).toContain('item="總額"');
+    expect(workbookService.patch).toHaveBeenCalledWith({
+      workbookId: 'wb_1',
+      workbookVersion: 1,
+      selectedWorkbookRefs: [],
+      operations,
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      provider: 'openai_oauth_responses',
+      model: 'gpt-5.5',
+      text: '已更新 workbook：值 -> 100',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch,
+    });
+  });
+
   it('decodes browser-safe chat file payloads before calling the provider adapter', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,

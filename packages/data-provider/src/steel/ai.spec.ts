@@ -6,6 +6,7 @@ import {
   steelModelOptionSchema,
   steelProviderChatRequestSchema,
   steelProviderChatResponseSchema,
+  steelProviderWorkbookPatchProposalSchema,
 } from './ai';
 import { requiredSteelWorkbookSheetIds } from './workbooks';
 
@@ -210,6 +211,32 @@ describe('Steel AI public contracts', () => {
     expect(parsed.workbookPatch?.workbook?.version).toBe(3);
     expect(parsed.workbookPatch?.changedPaths).toEqual([
       { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+    ]);
+  });
+
+  it('allows provider tool output to propose operations-only workbook patches', () => {
+    const parsed = steelProviderWorkbookPatchProposalSchema.parse({
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          value: 115,
+          reason: 'AI matched the reviewed C-type steel quote line.',
+        },
+      ],
+    });
+
+    expect(parsed.operations).toEqual([
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'material_unit_price',
+        value: 115,
+        reason: 'AI matched the reviewed C-type steel quote line.',
+      },
     ]);
   });
 

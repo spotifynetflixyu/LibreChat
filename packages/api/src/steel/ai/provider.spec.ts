@@ -248,4 +248,118 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       }),
     );
   });
+
+  it('enables the workbook patch tool and extracts model tool calls into patch operations', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [
+        { type: 'text', text: '已更新報價明細。' },
+        {
+          type: 'tool-call',
+          toolCallId: 'tool_call_1',
+          toolName: 'patch_workbook',
+          input: JSON.stringify({
+            operations: [
+              {
+                op: 'set_cell',
+                sheetId: 'quote_details',
+                rowId: 'line_1',
+                columnKey: 'material_unit_price',
+                value: 115,
+                reason: 'User asked AI to update this workbook cell.',
+              },
+            ],
+          }),
+        },
+      ],
+      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+      usage: {
+        inputTokens: {
+          total: 21,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 8,
+          text: 8,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_steel_workbook_patch_mock' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'set quote_details line_1 material_unit_price 115' }],
+      reasoningEffort: 'medium',
+      workbookPatchTool: true,
+      workbookContextText:
+        'sheet id="summary" label="總結"\ncolumn label="值" key="value"\nrow id="summary_total_amount" cells: item="總額"',
+    });
+
+    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    expect(generateOptions.prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'system',
+          content: expect.stringContaining('sheet id="summary" label="總結"'),
+        }),
+      ]),
+    );
+    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
+    expect(systemPrompt.content).toContain('column label="值" key="value"');
+    expect(systemPrompt.content).toContain('Do not ask the user for internal workbook ids or keys');
+    expect(doGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolChoice: { type: 'auto' },
+        tools: [
+          expect.objectContaining({
+            type: 'function',
+            name: 'patch_workbook',
+            inputSchema: expect.objectContaining({
+              properties: expect.objectContaining({
+                operations: expect.objectContaining({
+                  items: expect.objectContaining({
+                    properties: expect.objectContaining({
+                      op: { type: 'string', const: 'set_cell' },
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        ],
+      }),
+    );
+    expect(response).toEqual(
+      expect.objectContaining({
+        text: '已更新報價明細。',
+        workbookPatch: {
+          operations: [
+            {
+              op: 'set_cell',
+              sheetId: 'quote_details',
+              rowId: 'line_1',
+              columnKey: 'material_unit_price',
+              value: 115,
+              reason: 'User asked AI to update this workbook cell.',
+            },
+          ],
+        },
+      }),
+    );
+  });
 });

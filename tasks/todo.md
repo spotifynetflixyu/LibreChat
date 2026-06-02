@@ -1,3 +1,68 @@
+# Steel OAuth Chat Workbook Context Retrieval
+
+- [x] Keep this scoped to `/steel/oauth-chat`; do not move workbook patching into formal Steel Workspace or official chat.
+- [x] Read the current workbook before provider calls when workbook id/version context is present.
+- [x] Send bounded workbook structure context to the OpenAI OAuth provider so AI resolves visible labels to internal ids/keys.
+- [x] Add regression coverage for `總結` / `總額` mapping to `summary.summary_total_amount.value`.
+- [x] Verify focused provider/API/client tests, direct API build, live OAuth smoke, service restart, and diff hygiene.
+
+## Review
+
+- User correction: the user should not provide workbook internal ids or keys. AI must obtain the workbook structure/context and decide the typed `patch_workbook` operation itself.
+- Root cause hypothesis: the previous tool-calling slice enabled typed patch operations, but the provider prompt did not include the current workbook's visible labels, rows, columns, and id/key mapping.
+- Added backend workbook context retrieval before provider calls when `workbookId` and `workbookVersion` are present.
+- Added bounded workbook context serialization with sheet labels, column labels/keys, row ids, and cell values so phrases such as `總結的總額` can resolve to `summary.summary_total_amount.value`.
+- Added provider prompt guidance telling AI not to ask users for internal workbook ids or keys when the target can be resolved from context.
+- Regression tests now prove the provider receives workbook context and the handler applies the `總結` / `總額` patch target through the workbook service.
+- Real OAuth provider smoke passed: `總結的總額更新為100` returned `summary` / `summary_total_amount` / `value` / `100` as a typed `patch_workbook` operation.
+- Verification passed: focused provider/handler Jest, client SteelOAuthChat Jest, direct `packages/api` build, real OAuth smoke, `git diff --check`, and restarted local dev services with `3080/api/config` plus `3090/steel/oauth-chat` returning `200`.
+- Direct `packages/api` build still reports the existing non-Steel Redis type warning in `src/cache/cacheFactory.ts`, but exits `0`.
+
+# Steel OAuth Chat AI Workbook Patch Tooling
+
+- [x] Keep the slice scoped to `/steel/oauth-chat`; do not move behavior into formal Steel Workspace or official chat.
+- [x] Remove the manual-command direction; natural-language workbook updates must be decided by AI/tool calling.
+- [x] Provide a typed `patch_workbook` tool to the OpenAI OAuth provider when workbook context is present.
+- [x] Extract AI tool calls into workbook patch operations and apply them through the existing workbook service.
+- [x] Verify focused provider/API/client behavior, builds/formatting, and diff hygiene.
+- [x] Provide corrected manual browser test steps for natural-language workbook updates.
+
+## Review
+
+- User correction: this should not be implemented as hidden dev command parsing. `/steel/oauth-chat` should let AI decide whether to execute a workbook patch through tool calling, then backend validation applies the typed operations.
+- Removed the manual-command path from the handler; natural-language messages now still go through the OpenAI OAuth provider.
+- Added a `patch_workbook` function tool to the provider adapter when workbook context is present.
+- Added provider extraction of `tool-call` content into typed `workbookPatch.operations`.
+- Handler passes `workbookPatchTool: true` only when the request includes `workbookId` and `workbookVersion`, then applies AI-emitted operations through `workbookService.patch`.
+- The corrected manual browser test input is natural language: `set quote_details line_1 material_unit_price 115`.
+- Verification passed: packages/api provider/handler Jest, client SteelOAuthChat Jest, direct `packages/api` build, Prettier, and `git diff --check`.
+- Direct `packages/api` build still reports the existing non-Steel Redis type warning in `src/cache/cacheFactory.ts`, but no new Steel warning remains.
+- Manual-command grep passed with no code/task hits for `manualWorkbook`, `Manual workbook`, `/workbook set`, or `workbook test command`.
+- Local manual-test services are reachable after backend restart: backend `http://localhost:3080/api/config` returned `200`, and frontend `http://localhost:3090/steel/oauth-chat` returned `200`.
+- User-reported provider failure was reproduced in Node runtime: plain OAuth text passed, but `workbookPatchTool=true` failed with `Invalid schema for function 'patch_workbook'` because `op` used `const` without a `type`.
+- Fixed `patch_workbook` schema by adding explicit `type` keys and making strict-tool fields required; added a regression assertion for the `op` schema.
+- Real OAuth tool smoke passed after the fix: `set quote_details line_1 material_unit_price 115` returned a typed `workbookPatch.operations` payload instead of provider failure.
+- Added a handler fallback summary so a pure tool-call response still returns visible assistant text after the workbook patch is applied.
+- Restarted backend dev after the fix; backend `http://localhost:3080/api/config` returned `200`, and frontend `http://localhost:3090/steel/oauth-chat` returned `200`.
+
+# Steel OAuth Chat Workbook Patch Backend
+
+- [x] Keep the slice scoped to `/steel/oauth-chat`; do not move workbook behavior into formal Steel Workspace or official chat.
+- [x] Extend the Steel chat schema so AI/provider output can propose operations-only workbook patches.
+- [x] Add a failing handler test proving `/steel/oauth-chat` applies provider patch operations through the workbook service.
+- [x] Implement backend patch application so the response returns the persisted workbook patch result, not raw provider operations.
+- [x] Verify focused data-provider/API tests, builds/formatting, and diff hygiene.
+
+## Review
+
+- Added `steelProviderWorkbookPatchProposalSchema` for provider/tool output that proposes operations-only workbook patches.
+- Added the red/green handler test proving `/steel/oauth-chat` merges request workbook context with provider patch operations, calls `workbookService.patch`, and returns the persisted workbook patch result.
+- Updated the Steel chat handler so raw provider operations are never returned directly to the browser; successful patches return the workbook service result, known workbook conflicts/validation errors return `rejectedReason`, and malformed provider patch output returns `structured_output_invalid`.
+- Kept this scoped to `/steel/oauth-chat`; no formal Steel Workspace or official chat integration was added.
+- No Supabase migration was needed because this slice only changes chat/workbook API contracts and Mongo workbook patch application.
+- Verification passed: data-provider Steel AI Jest, `build:data-provider`, packages/api Steel handler Jest, direct `packages/api` build, Prettier, and `git diff --check`.
+- Direct `packages/api` build still reports the existing non-Steel Redis type warning in `src/cache/cacheFactory.ts`, but exits `0`.
+
 # Steel Workbook Canonical Headers
 
 - [x] Record the requested seven-sheet header contract.
@@ -107,6 +172,7 @@
 - The Steel route now creates a workbook, sends current `workbookId`/`workbookVersion` with chat requests, and refreshes/highlights the preview when a later chat response includes `workbookPatch`.
 - Verification passed: data-provider Steel AI/workbook Jest, data-schemas Steel schema Jest, packages/api workbook/handler Jest, api route shell Jest, client SteelOAuthChat Jest, `build:data-provider`, `build:data-schemas`, direct `packages/api` build, filtered client typecheck for new Steel UI files, and `git diff --check`.
 - Full `client` typecheck still fails on existing unrelated repository errors; the filtered output no longer contains `SteelOAuthChat` or `client/src/features/steel/workbook/Preview.tsx`.
+- Scope correction: `/steel/oauth-chat` remains the full-flow validation harness. Do not move this into formal Steel Workspace or official chat until the user confirms the complete flow.
 
 # Steel Non-Round Hole Calculator Slice
 

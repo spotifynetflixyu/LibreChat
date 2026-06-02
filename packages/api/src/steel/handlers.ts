@@ -3,8 +3,11 @@ import { logger } from '@librechat/data-schemas';
 import {
   steelAuthenticatedConversationRequestSchema,
   steelGuestConversationRequestSchema,
+  steelProviderChatRequestSchema,
+  steelProviderWorkbookPatchProposalSchema,
   steelWorkbookCreateRequestSchema,
 } from 'librechat-data-provider';
+import { ZodError } from 'zod';
 
 import { buildSteelModelOptions } from './models';
 import { applyFileInstructionsToMessages, type FileInstructionConfig } from '../files/instructions';
@@ -36,10 +39,17 @@ import {
   type SendSteelOAuthChatOptions,
   type SteelOAuthChatFile,
   type SteelOAuthChatMessage,
-  type SteelProviderChatResponse,
+  type SteelProviderChatResponse as SteelOAuthProviderChatResponse,
 } from './ai/provider';
 
 import type { Request, Response } from 'express';
+import type { z } from 'zod';
+import type {
+  SteelWorkbook,
+  SteelWorkbookCellValue,
+  SteelProviderWorkbookPatchProposal,
+  SteelWorkbookPatchResponse,
+} from 'librechat-data-provider';
 
 type ModelsConfig = Record<string, string[] | undefined>;
 
@@ -77,11 +87,19 @@ interface SteelRequest extends Request {
 export interface SteelHandlersDeps {
   env?: SteelOpenAIConfigEnv;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
-  sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelProviderChatResponse>;
+  sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelChatProviderResult>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
   workbookService?: ReturnType<typeof createSteelWorkbookService>;
 }
+
+type SteelChatProviderResult = Omit<SteelOAuthProviderChatResponse, 'workbookPatch'> & {
+  workbookPatch?: SteelProviderWorkbookPatchProposal;
+};
+
+type SteelChatHandlerResult = Omit<SteelOAuthProviderChatResponse, 'workbookPatch'> & {
+  workbookPatch?: SteelWorkbookPatchResponse;
+};
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
 
@@ -91,9 +109,20 @@ interface SteelChatErrorResponse {
   text: '';
   unsupportedSettings: string[];
   warnings: string[];
-  errorCategory: 'auth' | 'provider_timeout' | 'unknown';
+  errorCategory: 'auth' | 'provider_timeout' | 'structured_output_invalid' | 'unknown';
   errorSummary: string;
 }
+
+const steelChatWorkbookContextSchema = steelProviderChatRequestSchema.pick({
+  workbookId: true,
+  workbookVersion: true,
+  selectedWorkbookRefs: true,
+});
+
+type SteelChatWorkbookContext = z.infer<typeof steelChatWorkbookContextSchema>;
+
+const maxWorkbookContextRowsPerSheet = 80;
+const maxWorkbookContextCellLength = 120;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -295,6 +324,77 @@ function createDefaultWorkbookService() {
   });
 }
 
+function escapeWorkbookContextText(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxWorkbookContextCellLength);
+}
+
+function formatWorkbookContextCellValue(value: SteelWorkbookCellValue): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'string') {
+    return `"${escapeWorkbookContextText(value)}"`;
+  }
+
+  return String(value);
+}
+
+function formatWorkbookContextCells(row: SteelWorkbook['sheets'][number]['rows'][number]): string {
+  const cells = Object.entries(row.cells).map(([key, value]) => {
+    return `${escapeWorkbookContextText(key)}=${formatWorkbookContextCellValue(value)}`;
+  });
+
+  return cells.length > 0 ? cells.join(' ') : '(empty)';
+}
+
+function createWorkbookContextText(workbook: SteelWorkbook): string {
+  return workbook.sheets
+    .map((sheet) => {
+      const columns = sheet.columns
+        .map((column) => {
+          return [
+            `column label="${escapeWorkbookContextText(column.label)}"`,
+            `key="${escapeWorkbookContextText(column.key)}"`,
+            `type="${column.valueType}"`,
+            `editable=${column.editable}`,
+          ].join(' ');
+        })
+        .join('\n');
+      const rows = sheet.rows
+        .slice(0, maxWorkbookContextRowsPerSheet)
+        .map((row) => {
+          return `row id="${escapeWorkbookContextText(row.id)}" cells: ${formatWorkbookContextCells(row)}`;
+        })
+        .join('\n');
+
+      return [
+        `sheet id="${sheet.id}" label="${escapeWorkbookContextText(sheet.label)}"`,
+        'columns:',
+        columns || '(no columns)',
+        'rows:',
+        rows || '(no rows)',
+      ].join('\n');
+    })
+    .join('\n\n');
+}
+
+async function getChatWorkbookContextText(
+  workbookContext: SteelChatWorkbookContext,
+  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
+): Promise<string | undefined> {
+  if (!workbookContext.workbookId || !workbookContext.workbookVersion) {
+    return undefined;
+  }
+
+  const readResult = await getWorkbookService().read({ workbookId: workbookContext.workbookId });
+  return createWorkbookContextText(readResult.workbook);
+}
+
 function sendConversationError(res: Response, error: unknown) {
   if (
     error instanceof SteelConversationAccessError ||
@@ -349,6 +449,88 @@ function sendWorkbookError(res: Response, error: unknown, env: SteelOpenAIConfig
   });
 }
 
+function isKnownWorkbookPatchError(error: unknown): error is Error {
+  return (
+    error instanceof SteelWorkbookNotFoundError ||
+    error instanceof SteelWorkbookValidationError ||
+    error instanceof SteelWorkbookVersionConflictError
+  );
+}
+
+function rejectedWorkbookPatch(reason: string): SteelWorkbookPatchResponse {
+  return {
+    changedPaths: [],
+    changedFieldSummary: [],
+    rejectedReason: reason,
+  };
+}
+
+function getWorkbookPatchSummaryText(
+  responseText: string,
+  patch: SteelWorkbookPatchResponse,
+): string {
+  if (responseText.trim().length > 0) {
+    return responseText;
+  }
+
+  const [firstChange] = patch.changedFieldSummary;
+  if (!firstChange) {
+    return '已更新 workbook。';
+  }
+
+  if (patch.changedFieldSummary.length === 1) {
+    return `已更新 workbook：${firstChange.label} -> ${String(firstChange.nextValue)}`;
+  }
+
+  return `已更新 workbook：${patch.changedFieldSummary.length} 個欄位`;
+}
+
+async function applyChatWorkbookPatch(
+  result: SteelChatProviderResult,
+  workbookContext: SteelChatWorkbookContext,
+  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
+): Promise<SteelChatHandlerResult> {
+  const { workbookPatch, ...response } = result;
+  if (!workbookPatch) {
+    return response;
+  }
+
+  const proposal = steelProviderWorkbookPatchProposalSchema.parse(workbookPatch);
+  if (!workbookContext.workbookId || !workbookContext.workbookVersion) {
+    const rejectedReason = 'Workbook context is required to apply workbook patch operations.';
+    return {
+      ...response,
+      warnings: [...response.warnings, rejectedReason],
+      workbookPatch: rejectedWorkbookPatch(rejectedReason),
+    };
+  }
+
+  try {
+    const appliedPatch = await getWorkbookService().patch({
+      workbookId: workbookContext.workbookId,
+      workbookVersion: workbookContext.workbookVersion,
+      selectedWorkbookRefs: workbookContext.selectedWorkbookRefs,
+      operations: proposal.operations,
+    });
+
+    return {
+      ...response,
+      text: getWorkbookPatchSummaryText(response.text, appliedPatch),
+      workbookPatch: appliedPatch,
+    };
+  } catch (error) {
+    if (isKnownWorkbookPatchError(error)) {
+      return {
+        ...response,
+        warnings: [...response.warnings, error.message],
+        workbookPatch: rejectedWorkbookPatch(error.message),
+      };
+    }
+
+    throw error;
+  }
+}
+
 export function createSteelHandlers({
   env = process.env,
   getModelsConfig,
@@ -370,6 +552,7 @@ export function createSteelHandlers({
       let model: string;
       let maxOutputTokens: number | undefined;
       let reasoningEffort: SteelOpenAIReasoningEffort;
+      let workbookContext: SteelChatWorkbookContext;
       try {
         messages = parseMessages(body.messages);
         model = parseOptionalModel(body.model, config.model);
@@ -378,6 +561,7 @@ export function createSteelHandlers({
           body.reasoningEffort,
           config.reasoningEffort,
         );
+        workbookContext = steelChatWorkbookContextSchema.parse(body);
       } catch (error) {
         res
           .status(400)
@@ -406,12 +590,22 @@ export function createSteelHandlers({
         return;
       }
 
+      const messagesWithInstructions = applyFileInstructionsToMessages(
+        messages,
+        (req as SteelRequest).config,
+      );
+
+      let workbookContextText: string | undefined;
       try {
-        const messagesWithInstructions = applyFileInstructionsToMessages(
-          messages,
-          (req as SteelRequest).config,
-        );
-        const result = await sendChat({
+        workbookContextText = await getChatWorkbookContextText(workbookContext, getWorkbookService);
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+        return;
+      }
+
+      let result: SteelChatProviderResult;
+      try {
+        result = await sendChat({
           authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
           maxOutputTokens,
           messages: messagesWithInstructions,
@@ -420,8 +614,10 @@ export function createSteelHandlers({
             ? { passThroughUnsupportedFiles: true }
             : {}),
           reasoningEffort,
+          ...(workbookContext.workbookId && workbookContext.workbookVersion
+            ? { workbookContextText, workbookPatchTool: true }
+            : {}),
         });
-        res.status(200).json(result);
       } catch (error) {
         res
           .status(502)
@@ -433,6 +629,28 @@ export function createSteelHandlers({
               getProviderErrorSummary(error),
             ),
           );
+        return;
+      }
+
+      try {
+        const response = await applyChatWorkbookPatch(result, workbookContext, getWorkbookService);
+        res.status(200).json(response);
+      } catch (error) {
+        if (error instanceof ZodError) {
+          res
+            .status(502)
+            .json(
+              createErrorResponse(
+                'openai_oauth_responses',
+                model,
+                'structured_output_invalid',
+                'OpenAI OAuth provider returned an invalid Steel workbook patch.',
+              ),
+            );
+          return;
+        }
+
+        sendWorkbookError(res, error, env);
       }
     },
 

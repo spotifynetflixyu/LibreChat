@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { steelSelectedWorkbookRefSchema, steelWorkbookPatchResponseSchema } from './workbooks';
+import {
+  steelSelectedWorkbookRefSchema,
+  steelWorkbookPatchOperationSchema,
+  steelWorkbookPatchResponseSchema,
+} from './workbooks';
 
 export const steelAIDrivers = ['openai_oauth_responses', 'openai_api'] as const;
 
@@ -151,6 +155,14 @@ export const steelProviderChatRequestSchema = z.object({
 });
 
 export type SteelProviderChatRequest = z.input<typeof steelProviderChatRequestSchema>;
+
+export const steelProviderWorkbookPatchProposalSchema = z.object({
+  operations: z.array(steelWorkbookPatchOperationSchema).min(1).max(100),
+});
+
+export type SteelProviderWorkbookPatchProposal = z.infer<
+  typeof steelProviderWorkbookPatchProposalSchema
+>;
 
 export const steelProviderChatResponseSchema = z.object({
   provider: z.enum(steelAIDrivers),
