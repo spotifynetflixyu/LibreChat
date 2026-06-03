@@ -22,6 +22,32 @@ steel.material_rules
 
 Material rules are company defaults. A customer can still request a quote-specific adjustment in chat, such as excluding a charge, using a special price, adding a surcharge, or overriding the default rule for one workbook line.
 
+## Formula And Rule Selection
+
+Formula/rule selection is an AI orchestration decision over reviewed backend data, not a product-family `if` statement inside calculators.
+
+The intended flow is:
+
+1. AI reads the customer's natural-language order, file evidence, or workbook context and proposes normalized quote item candidates.
+2. Backend tools validate the candidate shape and ambiguity state.
+3. AI uses normalized material family, product family, spec, dimensions, length, quantity, and processing intent to call formula/rule lookup tools.
+4. AI selects a reviewed `formulaCode` and `selectedCalculationRule` when the returned candidates support the item.
+5. Backend tools validate that selected formula/rule origin, review state, active state, material selector, formula compatibility, and source refs still match before calculating.
+6. Calculators execute the selected formula/rule with explicit numeric inputs and parameter overrides; they do not rediscover business rules from raw text.
+
+`docs/reference/公式編號.xlsx` is the source reference for formula meaning. For example, formula code `C` maps to `C型鋼` with the source expression `四捨五入(單位重*長度,2)/100`. Runtime calculators should use reviewed database formula rows derived from that source, not read the spreadsheet directly.
+
+For C-type steel, AI may select the C-type finished-length calculation rule when the normalized quote item strongly matches C-type aliases/specs. Backend validation then allows that selected rule to:
+
+- use finished length for material quantity
+- skip long-material stock allocation
+- mark cutting and hole charges as true zero when the selected rule or quote-specific override explicitly supports that effect
+- keep physical cut or hole evidence as notes/system-order facts when useful
+
+Backend code must reject a silent zero if AI sends `cutting = 0` or `hole = 0` without a selected rule, reviewed true-zero fact, or explicit quote-specific override.
+
+The C-type no-charge cutting/hole behavior must exist as a configured site-managed default rule/lesson/memory before quote runs can select it. This default can be seeded or Admin-reviewed, but it must be data/retrieval-owned. Backend pricing and calculator code must not create the behavior from product family alone.
+
 ## MVP Rule Types
 
 ### C-Type Roll Forming
@@ -67,6 +93,8 @@ Behavior:
 
 - Product price explicit reviewed cutting item wins.
 - Otherwise use cutting-price data.
+- For every material whose matched facts can include cutting price, if the order requires cutting and head/tail trimming is not already explicit, ask whether to cut head, cut tail, no-head/no-tail, or split-only before confirmed cutting fee calculation.
+- If cutting is not required or the user explicitly says no cutting, workbook cutting fields should still record zero cutting, zero fee, and the no-cut reason.
 - H-type cutting and black-iron cutting have different source sections.
 - Repair head/tail, no-head/no-tail, angled cuts, and remainder behavior produce cutting-count or adjustment behavior only when confirmed by quote evidence, a reviewed rule, or explicit user instruction.
 - Generic labels, blank prices, and `0.00` rows do not override cutting-price lookup unless Admin review marks them as a true zero price or confirmed charge behavior.
@@ -88,6 +116,7 @@ Behavior:
   - For one stock piece producing `n` finished pieces with no remainder and no tail trim, separation cuts are `n - 1`.
   - For one stock piece producing `n` finished pieces with a remainder, separation cuts are `n`; the last finished piece still needs to be separated from the remainder.
   - "Remainder omits tail trim" omits only the extra tail trim/finish cut. It does not omit the separation cut between the last finished piece and the remainder.
+  - When a remainder exists and the selected rule omits tail trim, assistant text and workbook notes must explicitly say tail trim is not counted.
   - Head trim adds one operation per stock piece when required.
   - Tail trim adds one operation per stock piece when required, unless `omitTailTrimWhenRemainder` is active and a remainder exists.
 - If head/tail trimming is unclear, the rule result should ask the user or mark the cutting count low confidence instead of silently choosing the cheaper path.

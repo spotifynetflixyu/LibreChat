@@ -1,3 +1,56 @@
+# Steel AI Audit Storage And High-Confidence Preview Correction
+
+- [x] Move AI Python code/output storage from visible workbook notes to backend-readable DB audit schema design.
+- [x] Model calculation audit storage for multi-item orders with order/workbook-level current state and item/line-level audit records.
+- [x] Correct workbook/calculation storage policy so database keeps only latest state; `version` is an update counter, not historical retention.
+- [x] Clarify workbook preview may show concise AI/backend difference summaries in `價格來源` or `判讀備註`, while Python code/output stays in DB audit records.
+- [x] Reframe 全華興 / 亞L30x30 as a high-confidence best-effort preview from typo/incomplete specs, not a blocker scenario.
+- [x] Sync lessons and checkpoints for future implementation agents.
+- [x] Verify Markdown formatting and diff hygiene.
+
+## Review
+
+- Corrected the AI Python audit storage boundary: Python code/output and verbose execution artifacts belong in backend-readable DB audit records, while `價格來源` and `判讀備註` may still show concise human-readable AI/backend difference summaries.
+- Updated schema planning to support multi-item orders with one current `quote_calculation_state` for order/workbook-level current data and `quote_calculation_item_audits` for each current material line or workbook row.
+- Corrected workbook persistence policy: `version` is only a visible update counter/freshness marker, and accepted updates overwrite old workbook/calculation data instead of retaining historical database versions.
+- Updated the 全華興 / 亞L30x30 scenario so typo/incomplete specs can still produce a highest-confidence source-backed preview; overall confidence may remain `中` until the user supplies thickness or material variant.
+- Added a multi-item scenario proving one order can contain separate C-type and angle lines, each with its own current calculation plan, audit row, confidence, and workbook patch target.
+- Verification passed: Markdown Prettier, required-term grep, and `git diff --check`.
+
+# Steel AI Python Audit And Estimate Scenario Docs Sync
+
+- [x] Clarify that AI Python/backend numeric mismatch does not block workbook preview patching when backend calculation succeeds.
+- [x] Document backend-confirmed numbers as highest confidence while preserving AI/backend difference notes for user review.
+- [x] Add the 全華興 / 亞L30x30 approximate quote scenario with customer tier lookup, nearest product-price candidate, medium confidence, and low-confidence reasons.
+- [x] Sync lessons so future agents do not reject preview patches solely because AI Python differs from backend calculation.
+- [x] Verify Markdown formatting and diff hygiene.
+
+## Review
+
+- Updated the Steel AI/Python audit boundary so AI Python or Code Interpreter evidence no longer blocks workbook preview patching when backend calculation succeeds.
+- Backend-confirmed calculator values are documented as the highest-confidence numeric source; AI/backend differences are preserved as concise workbook/manual-review notes plus full DB audit evidence for user inspection and multi-round correction.
+- Added a concrete 全華興 / 亞L30x30 approximate quote scenario: customer tier `A級`, highest-confidence reviewed product-price candidate `錏成型角鐵 30x30x2.5x6M`, A-tier price `194.3 元/支`, quantity about 100, medium overall confidence, and low-confidence reason for missing thickness.
+- Updated project lessons so future agents keep approximate estimates and backend-wins mismatch behavior.
+- Verification passed: Markdown Prettier, required-term grep, and `git diff --check`.
+
+# Steel AI Rule And Formula Orchestration Docs Sync
+
+- [x] Clarify that formula/rule selection starts from AI-normalized material/spec context and reviewed formula/rule data.
+- [x] Clarify that AI decides which backend tools to call, while backend validates selected formula/rule/source and calculates deterministically.
+- [x] Document that C-type cutting/hole true zero comes from selected rule or quote-specific override, not backend product-family hardcoding.
+- [x] Add concrete simulated AI logic scenarios for C-type, ambiguity, missing price, custom override, and H-type surcharge.
+- [x] Sync user-corrected behavior for nearest material-price candidates, H-type head/tail clarification, and applied customer-default disclosure.
+- [x] Sync user-corrected behavior that C-type free cutting/hole must be preconfigured as a default rule/lesson and that all cuttable materials ask head/tail when cutting is needed.
+- [x] Verify Markdown formatting, required-term grep, and diff hygiene.
+
+## Review
+
+- Updated the Steel data-rules architecture package and v8.3 Phase 2 roadmap to make the AI/backend boundary explicit.
+- Added `tasks/steel-data-rules-architecture/ai-rule-selection-scenarios.md` as a durable scenario reference for the next C-type quote vertical slice.
+- Updated scenarios from user correction: C-type default true-zero comes from global/site-managed lesson/memory retrieval, zero material price asks with nearest candidates, H-type cutting asks head/tail before cut-count, and approved customer H-type defaults must be disclosed when applied.
+- Updated cutting behavior: no-cut still records `0` cutting in workbook; cuttable materials with cutting needed ask head/tail; remainder-tail omission is explained in chat and workbook notes.
+- No Supabase migration was needed because this is a documentation/architecture sync only.
+
 # Steel OAuth Chat Workbook Context Retrieval
 
 - [x] Keep this scoped to `/steel/oauth-chat`; do not move workbook patching into formal Steel Workspace or official chat.

@@ -14,6 +14,10 @@ Detailed data/rule architecture for the company's manual quoting workflow lives 
 - Product price candidate search and ranking.
 - Stock allocation engine.
 - Deterministic calculation engine.
+- AI-selected formula/rule orchestration over reviewed backend data, with backend validation before deterministic calculation.
+- Optional AI Python / Code Interpreter calculation audit comparison, where backend-confirmed results remain the highest-confidence numeric source when backend calculation succeeds.
+- Multi-item quote calculation audit storage: one current order/workbook-level calculation state and one current item/line audit record per steel material candidate or workbook row.
+- Current-only workbook/calculation persistence: `version` is a visible update counter/freshness marker, while accepted updates overwrite latest database state instead of retaining historical workbook versions.
 - Quote-specific adjustment handling for customer-requested no-charge, special-price, surcharge, or one-line rule override instructions.
 - Tool registry with Zod-validated business tools for both `openai_oauth_responses` and explicitly selected `openai_api` driver runs.
 - Tool call logging and prompt-injection filtering.
@@ -182,6 +186,9 @@ Tasks:
 - Treat blank or `0.00` values from `產品價格.xlsx` as unknown/missing price, not free price.
 - Confirm zero cutting/hole/processing charges only through an AI/memory/admin selected calculation rule or reviewed business rule; do not infer true-zero from product family in code.
 - The current C-type cutting/hole free-charge behavior is a selectable calculation rule/lesson; when selected with high confidence, it can mark the charge true zero and skip remainder calculation.
+- The C-type cutting/hole free-charge rule must be configured as a default rule/lesson/memory fixture before AI can select it; backend code must not create the no-charge behavior from C-type product family alone.
+- Formula selection starts from AI-normalized material/spec context and reviewed `steel.formula_versions` rows. For example, `docs/reference/公式編號.xlsx` maps formula code `C` to `C型鋼`, but runtime tools use reviewed database rows rather than reading the spreadsheet.
+- Backend pricing/calculator code validates AI-selected `formulaCode` and `selectedCalculationRule`; it does not hard-code C-type free cutting or hole behavior by product family.
 - Treat lesson/memory/admin rule parameters as defaults. User-provided conversation numbers or amounts can override adjustable parameters when the override is explicit and high confidence.
 - Keep formula identity fixed through `formulaCode`; keep numeric values adjustable through `defaultParameters` and `parameterOverrides`.
 - AI must retrieve matching lesson/memory through backend tools using normalized customer/item/charge context. Retrieval returns bounded reviewed candidates with origin refs, not the whole memory corpus.
@@ -194,6 +201,8 @@ Acceptance:
 - `黑圓管48.1` searches 48.3 and 1 1/2 variants.
 - Missing thickness returns candidates and low confidence.
 - Product price `0` becomes `未確認` / no-price even when a C-type rule exists; non-product zero charges need selected calculation-rule evidence before they can become true zero.
+- Missing or zero material price can return nearest reviewed nonzero price/spec candidates. The assistant asks the user to confirm one candidate or provide a quote-specific unit price before producing a confirmed customer-facing total.
+- When the user explicitly asks for an approximate quote and the highest-confidence reviewed candidate is clearly source-backed, the assistant may provide a preview estimate with assumed spec and low-confidence reason, even when the input has typos or incomplete dimensions.
 - A user saying a custom unit price or amount can produce a high-confidence `parameterOverride`; uncertain overrides ask the user to confirm first.
 - Fully matched row uses that row's pricing unit.
 - Multiple usable price candidates are presented to the user for confirmation instead of silently selected.
@@ -249,7 +258,11 @@ Tasks:
 - Implement cut count as a separate deterministic step inside the cutting calculator contract. It returns `operationCutCount` for physical/system-order use and `billableCutCount` for quote charging.
 - Count head trim, tail trim, split/multi-piece separation cuts, and remainder behavior from normalized evidence. If one stock piece produces `n` finished pieces with no remainder and no tail trim, separation cuts are `n - 1`; if a remainder exists, separation cuts are `n` because the last finished piece must still be separated from the remainder.
 - "Remainder omits tail trim" omits only the extra tail trim/finish cut, not the separation cut between the last finished piece and the remainder.
+- For every material that can carry cutting price, if cutting is needed and head/tail trimming is not explicit, the assistant must ask before confirmed cutting fee calculation.
+- If a remainder omits tail trim, assistant text and workbook notes must say `有餘料，切尾不計入`.
+- If cutting is not needed, workbook still records zero cutting count/fee with the no-cut reason.
 - Implement hole fee from structured hole groups: hole type, round diameter, non-round length/width or dimension label, count per piece, quantity multiplier, source refs, and confidence.
+- Compare optional AI Python / Code Interpreter calculation evidence with backend canonical calculation per item/line. If backend calculation succeeds, workbook numeric fields use backend-confirmed values; full Python code/output stays in current DB audit records, while concise AI/backend differences may appear in `價格來源` or `判讀備註`.
 - Support future Admin-reviewed prices for non-round hole types such as oval, long, rectangular, and custom holes even when the current source price row is `0` or missing during development.
 - Implement slotting fee from structured slot paths: path type, segment lengths, path quantity, quantity multiplier, source refs, and confidence.
 - Separate confirmed totals from low-confidence estimated totals.
@@ -325,6 +338,11 @@ Allowed MVP tools:
 - `rank_price_candidates`
 - `lookup_spec_price`
 - `lookup_weight_spec`
+- `lookup_formula_version`
+- `lookup_material_rules`
+- `retrieve_lesson_memory`
+- `retrieve_user_memory`
+- `select_calculation_rule`
 - `lookup_cutting_price`
 - `lookup_processing_price`
 - `allocate_stock_lengths`

@@ -41,7 +41,10 @@ rtk proxy rg -n "source_refs|product_price_unit_weight|value_state|review_state|
 ## Checkpoint C: Rule Retrieval Gate
 
 - [ ] `lookup_material_rules` returns only rules relevant to normalized quote items.
+- [ ] Formula lookup returns reviewed formula candidates by normalized material/spec context, such as formula code `C` for C-type steel, without reading `公式編號.xlsx` at runtime.
 - [ ] C-type rule blocks long-material stock allocation unless explicit separate cutting conditions apply.
+- [ ] Backend calculators do not hard-code `if C-type then cutting/hole = 0`; they require a selected calculation rule, reviewed true-zero fact, or quote-specific override.
+- [ ] C-type cutting/hole no-charge behavior is available only as a configured default rule/lesson/memory selected by AI and validated by backend tools.
 - [ ] H-type non-standard-length rule returns a material unit-price adjustment only and applies automatically to non-regular normalized H-type lengths.
 - [ ] Long-material allocation rule applies to non-C long materials unless the customer explicitly allows exact finished-length pricing.
 - [ ] Cutting rules can resolve H-type and black-iron cutting prices and adjustment notes.
@@ -60,17 +63,29 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/(rules|allocation
 
 - [ ] AI tools expose normalized lookup/calculation contracts, not raw SQL/Mongo/file access.
 - [ ] Prompt bundles include task-scoped source-schema mapping and material rules only when relevant.
+- [ ] AI orchestrates formula/rule/tool selection from normalized quote context, while backend tools validate selected formula/rule/source before deterministic calculation.
 - [ ] AI retrieves lesson/memory through backend tools using typed filters and bounded reviewed candidates, not by receiving all memory in prompt context.
 - [ ] Missing or unreviewed zero prices return `未確認` or low-confidence candidates, never confirmed zero totals.
+- [ ] Missing or zero material prices can present nearest reviewed candidate prices for confirmation, but cannot patch a confirmed customer-facing total before user confirmation.
+- [ ] Explicit approximate quote requests can produce preview estimates from the highest-confidence reviewed price candidate, with assumed spec and low-confidence reason, even when the user input has typos or incomplete dimensions.
 - [ ] Explicit customer quote-specific adjustments are represented separately from formal price/rule facts.
 - [ ] `calculate_cut_count` returns operation/billable counts with adopted/rejected reasons before `calculate_cutting_fee` prices the charge.
+- [ ] All cuttable materials ask about head/tail trimming when cutting is needed and evidence is not explicit.
+- [ ] No-cut lines still patch workbook cutting fields as zero with a no-cut reason.
+- [ ] Remainder-tail paths explicitly say and record that tail trim is not counted.
 - [ ] `calculate_hole_fee` consumes structured hole groups, including non-round dimensions when present, and item quantity instead of raw OCR text.
 - [ ] `calculate_slotting_fee` consumes structured slot paths and returns total slotting meters before pricing.
 - [ ] "Save as customer default" creates a `needs_review` rule proposal only after required customer/material/charge/formula/parameter fields are known.
 - [ ] Reviewed customer/tier/company defaults persist in `steel.calculation_rule_defaults`, while published retrieval entries persist in `steel.lesson_memory_entries`.
 - [ ] AI-selected `selectedCalculationRule` is rejected if its lesson/memory origin is stale, unreviewed, inactive, or out of scope.
+- [ ] Applied Admin-reviewed customer defaults are disclosed in assistant text, for example customer-scoped H-type cutting/hole no-charge rules.
 - [ ] Tool results include source refs, confidence, adopted/rejected candidates, and low-confidence reasons.
 - [ ] Tool-call logs store bounded summaries and sanitized output.
+- [ ] Optional AI Python / Code Interpreter calculation evidence is compared against backend canonical calculation per item/line, with backend-confirmed numbers used for preview patching when backend succeeds.
+- [ ] AI Python code/output and verbose execution artifacts are stored in DB calculation audit records, not visible workbook cells.
+- [ ] Concise AI/backend calculation differences may be preserved in `價格來源`, `判讀備註`, or manual-review fields instead of blocking preview patches by default.
+- [ ] Multi-item orders maintain one current calculation state and multiple current item/line audit records, one per material candidate or workbook line.
+- [ ] Accepted workbook/calculation updates overwrite latest database state; workbook `version` is only a visible update counter/freshness marker, not retained history.
 
 Verification:
 
@@ -107,13 +122,22 @@ rtk npm run build:api
 
 - [ ] `客戶詢價.rtf` C-type sample parses into C-type quote items and retrieves the C-type rule.
 - [ ] C-type sample calculates by finished length and does not produce stock-piece/remainder/general-cutting charges.
+- [ ] C-type sample proves true-zero cutting/hole is accepted only through selected calculation rule or quote-specific override, not by product-family hardcoding.
+- [ ] C-type no-charge cutting/hole default is present as a configured rule/lesson/memory fixture before AI selects it.
 - [ ] H-type non-regular length sample applies +0.3/kg to material price only and uses cutting data separately.
+- [ ] H-type cutting sample asks whether to cut head/tail when the user only says "要切" and cut-count affects price.
+- [ ] General cuttable-material sample with remainder explains `有餘料，切尾不計入` and still counts the separation cut.
+- [ ] Explicit no-cut sample records zero cutting in workbook.
 - [ ] Product price weight conflict sample uses product-price unit weight as the main quote weight for the matched line.
 - [ ] Cutting price lookup sample uses `切工價錢.xlsx` imported/reviewed cutting data as formal source.
 - [ ] Cut-count sample covers split/no-head/no-tail, head/tail trim, and remainder omitting only tail trim, not the separation cut.
 - [ ] Hole sample confirms `4-Ø22` style notation, oval/long/rectangular non-round hole groups, quantity multiplier, and non-hole line rejection.
 - [ ] Slotting sample confirms straight, L, and U/ㄇ path length calculation with unclear paths sent to manual review.
 - [ ] Customer special-price/no-charge/surcharge sample records a quote-specific adjustment without changing formal source rows.
+- [ ] 全華興 / 亞L30x30 approximate quote sample uses customer tier A, highest-confidence reviewed product-price candidate, medium overall confidence, and provisional workbook notes.
+- [ ] AI Python/backend mismatch sample patches backend-confirmed numbers, stores full Python evidence in DB audit records, and records a concise difference summary for review.
+- [ ] Multi-material order sample proves C-type and angle lines have separate current audit rows and separate confidence states before order totals aggregate.
+- [ ] Workbook version sample proves the UI version increments while old workbook/calculation data is overwritten rather than retained.
 
 Verification:
 

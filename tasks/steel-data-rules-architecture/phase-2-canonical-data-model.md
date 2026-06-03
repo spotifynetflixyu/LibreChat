@@ -43,6 +43,17 @@ Goal: define the normalized database shape that AI tools can query without readi
 - Tier-specific values where the source has tier columns.
 - Adjustment rules and notes as structured rules where confirmed; unclear handwritten notes remain manual-review data.
 
+### Quote Calculation Audit Records
+
+- Backend-readable calculation audit records are split into one current order/workbook-level state and item/line-level audit rows because one customer order can include multiple steel materials.
+- Database storage keeps only the latest workbook/calculation state. New accepted workbook patches or recalculations overwrite the previous current state instead of creating retained historical versions.
+- `workbook_version` is only a visible update counter and optimistic freshness marker. It is not a historical snapshot key and must not imply old workbook data is retained.
+- Each current item audit row links back to one material line with external references such as `conversation_id`, `workbook_id`, `workbook_version`, `sheet_id`, `row_id`, and `item_index`.
+- Item audit rows store `calculation_plan`, AI Python / Code Interpreter code, AI execution output, AI numeric result, backend canonical result, comparison status, and structured difference summary for that line.
+- Python code, raw stdout, container output, and long JSON artifacts stay in database audit records so workbook layout remains stable.
+- `價格來源` and `判讀備註` may still contain concise human-readable AI/backend difference summaries, source choices, and assumptions for the user.
+- Workbook rows may carry compact audit references/status; backend reads the current audit tables for detailed comparison and explanation, not for old-version replay.
+
 ## Accepted Schema Direction
 
 Phase 2 should produce a schema delta plan before implementation. Do not implement repositories against loose `metadata` contracts when a field is used for lookup, ranking, calculation, or audit.
@@ -78,6 +89,8 @@ Typed/indexed fields required before repositories:
 - Cutting/processing/hole/slotting/bending prices: nullable price fields, `value_state`, `review_state`, `source_refs`.
 - Material rules: `priority`, lookup selector fields such as `material_family` or condition type, `source_refs`; keep `rule_body` JSONB validated by code per `rule_type`.
 - Formula versions: source expression, compiled safe AST/DSL, allowed variables, review state, `source_refs`; calculators execute only the compiled safe form.
+- Calculation state: `conversation_id`, `workbook_id`, `workbook_version`, `request_message_id`, provider/model refs, status, and source refs for the current quote state.
+- Calculation item audits: `calculation_state_id`, `item_index`, `workbook_id`, `row_id`, material/spec summary, `calculation_plan`, `ai_python_code`, `ai_python_output`, `ai_result`, `backend_result`, `comparison_status`, `difference_summary`, and `source_refs`.
 
 Use `metadata` only for non-query source notes, import details, or extra display/audit context.
 

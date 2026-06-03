@@ -122,6 +122,32 @@ Behavior:
 - Do not write reviewed Supabase facts.
 - Do not publish global/site-managed lesson/memory.
 
+Future Admin-approved behavior:
+
+- After a later Admin approval/publish workflow creates a customer-scoped reviewed default and publishes the matching task-scoped lesson/memory entry, the next matching order for that customer may retrieve it.
+- When such a customer default is applied, the assistant should explicitly tell the user which customer rule was applied.
+
+### Scenario 2A: Future Default For H-Type
+
+User says:
+
+```text
+這個客戶以後 H 型鋼切跟孔都不用算錢。
+```
+
+Assistant response:
+
+```text
+我可以建立一筆待審核的客戶預設規則。Admin 審核前，它不會自動套用到正式預設或 lesson/memory。審核通過後，下次此客戶的 H 型鋼訂單會明確提示已套用該客戶規則。
+```
+
+Behavior:
+
+- AI may call `create_rule_proposal` only after customer and H-type scope are clear.
+- The proposal selector must include customer scope and material family H-type.
+- Pending proposal must not affect current/future quote lookup until approved.
+- After future Admin approval and lesson/memory publication, a matching H-type order should disclose the applied customer default, such as `已套用此客戶預設規則：H 型鋼切工與孔工不計價。`
+
 ### Scenario 3: Scope Is Unclear
 
 User says:
