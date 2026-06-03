@@ -43,6 +43,7 @@ describe('createSteelHandlers', () => {
       messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
       model: 'gpt-5.5',
       reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({

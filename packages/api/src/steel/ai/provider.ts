@@ -62,6 +62,7 @@ export interface SendSteelOAuthChatOptions {
   model: string;
   passThroughUnsupportedFiles?: boolean;
   reasoningEffort: SteelOpenAIReasoningEffort;
+  steelRuntimePolicy?: boolean;
   workbookContextText?: string;
   workbookPatchTool?: boolean;
 }
@@ -113,6 +114,21 @@ function toPrompt(messages: SteelOAuthChatMessage[]): LanguageModelV3Prompt {
   return messages.map(toLanguageModelMessage);
 }
 
+function getSteelRuntimePolicyInstruction(): string {
+  return [
+    'AI owns Steel tool orchestration.',
+    'Interpret the user request, normalize ambiguous material/specification text, and choose whether to use product-price, unit-weight, cutting, processing, formula/rule, lookup_defaults, or workbook tools.',
+    'Generate material/specification candidates in reasoning; do not call a backend tool only to normalize raw wording or create search terms.',
+    'Call backend tools when you need reviewed rows, scoped quote-default candidates, deterministic calculation, or validated workbook output.',
+    'Backend tools validate structured inputs, search reviewed source rows, apply bounded safety policy, and perform deterministic calculations; do not invent source facts or silently accept unchecked assumptions.',
+    'Do not treat raw customer text such as `亞L30x30` as a confirmed product-price key.',
+    'First derive candidate material and specification fields, then generate candidate material and specification queries such as 錏角鐵 30x30, 錏成型角鐵 30x30, 鍍鋅角鐵 30x30, 角鐵 30x30, or L30x30 before searching reviewed price rows.',
+    'For material price questions like `一支多少`, search reviewed price rows with derived candidates.',
+    'If reviewed facts are missing, zero-valued, ambiguous, or only approximate, present bounded options with source differences and ask the user to confirm before treating the result as final.',
+    'When workbook context is available and a candidate price is usable only as a preview, write provisional workbook updates with confidence, source, and option notes instead of confirmed totals.',
+  ].join(' ');
+}
+
 function getWorkbookPatchInstruction(workbookContextText?: string): string {
   const instruction = [
     'You can update the visible Steel workbook by calling the patch_workbook tool.',
@@ -128,17 +144,34 @@ function getWorkbookPatchInstruction(workbookContextText?: string): string {
     : instruction;
 }
 
-function toPromptWithWorkbookPatchTool(
+function toPromptWithSystemInstruction(
   messages: SteelOAuthChatMessage[],
-  workbookContextText?: string,
+  systemInstruction: string,
 ): LanguageModelV3Prompt {
   return [
     {
       role: 'system',
-      content: getWorkbookPatchInstruction(workbookContextText),
+      content: systemInstruction,
     },
     ...toPrompt(messages),
   ];
+}
+
+function getSystemInstruction({
+  steelRuntimePolicy,
+  workbookContextText,
+  workbookPatchTool,
+}: {
+  steelRuntimePolicy?: boolean;
+  workbookContextText?: string;
+  workbookPatchTool?: boolean;
+}): string | undefined {
+  const instructions = [
+    ...(steelRuntimePolicy ? [getSteelRuntimePolicyInstruction()] : []),
+    ...(workbookPatchTool ? [getWorkbookPatchInstruction(workbookContextText)] : []),
+  ];
+
+  return instructions.length > 0 ? instructions.join('\n\n') : undefined;
 }
 
 const workbookPatchFunctionTool: LanguageModelV3FunctionTool = {
@@ -233,6 +266,7 @@ export async function sendSteelOAuthChat({
   model,
   passThroughUnsupportedFiles,
   reasoningEffort,
+  steelRuntimePolicy,
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
@@ -244,10 +278,16 @@ export async function sendSteelOAuthChat({
     responsesState: false,
   });
 
+  const systemInstruction = getSystemInstruction({
+    steelRuntimePolicy,
+    workbookContextText,
+    workbookPatchTool,
+  });
+
   const result = await openai(model).doGenerate({
     abortSignal,
-    prompt: workbookPatchTool
-      ? toPromptWithWorkbookPatchTool(messages, workbookContextText)
+    prompt: systemInstruction
+      ? toPromptWithSystemInstruction(messages, systemInstruction)
       : toPrompt(messages),
     maxOutputTokens,
     ...(workbookPatchTool

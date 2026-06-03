@@ -614,6 +614,7 @@ export function createSteelHandlers({
             ? { passThroughUnsupportedFiles: true }
             : {}),
           reasoningEffort,
+          steelRuntimePolicy: true,
           ...(workbookContext.workbookId && workbookContext.workbookVersion
             ? { workbookContextText, workbookPatchTool: true }
             : {}),

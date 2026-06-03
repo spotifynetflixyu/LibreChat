@@ -36,6 +36,43 @@ POST /api/admin/steel/source-versions/:versionId/confirm
 Tasks:
 
 - Implement minimal project/source/instruction CRUD required by Admin Import and future retrieval.
+- Store the Steel Agent Instruction in the database as the Admin-managed default
+  instruction injected into every Steel quote turn. Admin can edit, review,
+  activate/deactivate, and version it through backend/Admin flows.
+- Store Steel Instruction Packets in the database, not only in prompt files.
+  `docs/reference/instruction.txt` can seed initial packets, but runtime
+  `lookup_instructions` reads reviewed active database rows.
+- Planned database surfaces:
+  - `steel.agent_instructions`: one or more versioned default Agent Instruction
+    records, with exactly one reviewed active default per scope.
+  - `steel.instruction_packets`: task-scoped instruction packets returned by
+    `lookup_instructions`.
+- `steel.agent_instructions` should support structured sections so Admin can
+  update defaults without editing provider code:
+  - `fileOcrRules`
+  - `toolRules`
+  - `orderInferenceRules`
+  - `workbookRules`
+  - `responseRules`
+- The first Agent Instruction seed text lives in
+  [`../steel-data-rules-architecture/agent-instructions.md`](../steel-data-rules-architecture/agent-instructions.md).
+  `steel.instruction_packets` selector/request/response design lives in
+  [`../steel-data-rules-architecture/instruction-packets.md`](../steel-data-rules-architecture/instruction-packets.md).
+  Database body text injected into AI prompts should be Traditional Chinese;
+  canonical API/schema keys can remain English.
+- Support Admin updates for instruction packets through backend/Admin flows:
+  create draft, edit selectors/body, mark reviewed, activate/deactivate,
+  supersede old versions, and preserve source refs/audit.
+- Classify instruction packets by multi-axis selectors:
+  - `taskType`: material_price_lookup, formula_selection, default_selection,
+    drawing_interpretation, processing_detection, workbook_output,
+    confirmation_policy
+  - `materialFamily` and `productFamily`
+  - `surfaceTreatment`
+  - `processingType`: cutting, holes, slotting, bending, none
+  - optional `formulaCode`, `customerId`, `customerTierId`, `projectId`
+  - `priority`, `reviewState`, `active`, `effectiveAt`, `supersedesId`,
+    `sourceRefs`
 - Keep every source-management endpoint under `/api/admin/steel/...`.
 - Track source type/category, source status, source version status, parser/review status, and source refs.
 - Keep Admin ERP XLSX source versions distinct from quote conversation evidence.
@@ -45,9 +82,15 @@ Tasks:
 Acceptance:
 
 - Admin can create/list Steel projects and sources.
+- Admin can update the default Steel Agent Instruction without code changes, and
+  runtime prompt context records its instruction/version ID.
 - Source versions can represent ERP XLSX import metadata and review status.
 - Quote conversation PDF/image evidence cannot become a formal Admin import source version.
 - Future retrieval filters have enough metadata for project, source, version, chunk, category, and guest/public access.
+- `lookup_instructions` can retrieve bounded task-scoped reviewed packets by
+  task type, material/product family, surface, processing type, formula code,
+  customer/tier/project scope, and priority without exposing the whole
+  instruction corpus.
 
 Verification:
 

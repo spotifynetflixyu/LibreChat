@@ -26,7 +26,7 @@ Backend tools decide:
 
 Backend calculators must not implement product-family shortcuts such as `if C-type then cutting = 0`. They calculate from selected and validated formula/rule inputs.
 
-C-type cutting/hole no-charge behavior must be configured as a site-managed default rule/lesson/memory before it can be selected. AI retrieves and selects that default; backend validation accepts or rejects the selected origin. The calculator does not infer this behavior from C-type product family alone.
+C-type cutting/hole no-charge behavior must be configured as a site-managed quote default before it can be selected. AI retrieves and selects that default; backend validation accepts or rejects the selected origin. The calculator does not infer this behavior from C-type product family alone.
 
 For any material whose matched facts can include cutting price and whose order requires cutting, AI asks about head/tail trimming unless the evidence, selected rule, or user instruction already makes it explicit. If no cutting is needed, the workbook still records cutting as `0` with a reason such as `無需切料`. If a remainder exists and the selected rule omits tail trim, assistant text and workbook notes must explicitly say `有餘料，切尾不計入`.
 
@@ -46,22 +46,23 @@ C150*3.0 長度 1200，數量 10支
 
 Expected AI logic:
 
-1. Propose normalized quote item: material family C-type, spec candidate `C150`, thickness `3.0`, length `1200mm`, quantity `10`.
-2. Call `lookup_customer` / `search_customers` when customer context is present so tier and customer-scoped defaults can participate.
-3. Call `normalize_quote_item`; proceed only if the candidate is high confidence or user confirmed.
-4. Call `search_price_candidates` / `rank_price_candidates`.
-5. Call `lookup_weight_spec` or use reviewed product-price unit weight if the price row carries one.
-6. Call `lookup_formula_version` and select formula code `C` when returned as a reviewed C-type match.
-7. Call `retrieve_lesson_memory` / `lookup_material_rules` / `select_calculation_rule` for the preconfigured site-managed C-type lesson/default that says C-type cutting and hole charges are not counted.
-8. Select the C-type finished-length rule.
-9. Call `calculate_line_total` with material price, unit weight, length, quantity, formula code `C`, selected calculation rule, and charge exclusions.
-10. Propose workbook patch for quote details, price sources, interpretation notes, manual review if needed, summary, and customer quote.
+1. Call `lookup_instructions` for C-type/material-price interpretation policy seeded by `docs/reference/instruction.txt`, including price-before-weight and C-type finished-length/no-general-cutting behavior.
+2. Propose normalized quote item: material family C-type, spec candidate `C150`, thickness `3.0`, length `1200mm`, quantity `10`.
+3. Call `search_customers` when customer context is present so tier and customer-scoped defaults can participate. Exact customer matches are returned by this tool, not by a separate `lookup_customer` MVP tool.
+4. Use AI reasoning plus the returned Instruction Packets to produce material/spec candidates; proceed only if the candidate is high confidence or user confirmed.
+5. Call `search_price_candidates` with confirmed normalized keys or AI-derived `candidateQueries`.
+6. Use reviewed product-price unit weight when the returned price row carries one; otherwise rely on backend internal validation or formula/default facts rather than an exposed `lookup_weight_spec` MVP tool.
+7. Call `lookup_formula` and select formula code `C` when returned as a reviewed C-type match.
+8. Call `lookup_defaults` for the preconfigured site-managed C-type quote default that says C-type cutting and hole charges are not counted. Material-rule lookup and selected-rule validation are backend internal policy, not separate MVP tools.
+9. Select the C-type finished-length rule.
+10. AI proposes the workbook calculation using material price, unit weight, length, quantity, formula code `C`, selected default/rule, and charge exclusions; backend validation/calculation confirms accepted numeric fields before they become confirmed totals.
+11. Propose workbook patch for quote details, price sources, interpretation notes, manual review if needed, summary, and customer quote.
 
 Expected backend validation:
 
 - Formula code `C` must exist as reviewed and active.
 - Selected C-type rule must match the normalized material/spec.
-- Cutting/hole true zero is accepted only because selected global/site-managed lesson/memory, reviewed rule, or explicit quote-specific override supports it.
+- Cutting/hole true zero is accepted only because selected global/site-managed quote default, reviewed rule, or explicit quote-specific override supports it.
 - Product material price `0` still means no material price; it cannot be rescued by free cutting/hole behavior.
 - If no cutting is needed under the selected C-type rule, workbook cutting fields still record `0` cutting with the selected rule/default as reason.
 
@@ -73,10 +74,10 @@ User:
 C100*50*20*2.3 長度 2M 數量 8支，切孔不用算
 ```
 
-Tool result:
+Reviewed price result:
 
 ```text
-rank_price_candidates -> best material price has valueState=unknown because source price is 0
+search_price_candidates -> best material price has valueState=unknown because source price is 0
 ```
 
 Expected AI logic:
@@ -110,8 +111,8 @@ C100 長度 1.5米 20支
 Expected AI logic:
 
 1. Propose candidates such as `C100x50`, `C100x50x20`, and available thickness variants.
-2. Call `normalize_quote_item`.
-3. Receive `confirm_candidates`.
+2. Produce bounded candidate options from AI reasoning.
+3. Treat the candidate state as `confirm_candidates`.
 4. Ask the user to choose before price/formula calculation.
 
 Expected assistant message:
@@ -145,7 +146,7 @@ Expected backend validation:
 
 - Override is high confidence because the user explicitly says "材料單價用 115".
 - Override is scoped to the current workbook line.
-- No customer default or lesson/memory mutation occurs unless the user explicitly asks to save it as a future default, and then only a `needs_review` proposal can be created.
+- No customer default or quote defaults mutation occurs unless the user explicitly asks to save it as a future default, and then only a `needs_review` proposal can be created.
 
 ## Scenario 5: H-Type Non-Standard Length
 
@@ -238,9 +239,9 @@ User:
 Expected AI logic:
 
 1. Confirm the scope if customer, material family, charge type, or formula selector is unclear.
-2. If enough structure is known, call rule-proposal creation through backend tool/API, not direct lesson/memory publication.
+2. If enough structure is known, call rule-proposal creation through backend tool/API, not direct quote defaults publication.
 3. Continue the current quote with quote-specific override only when applicable.
-4. After future Admin approval and publication into the site-managed lesson/memory retrieval layer, the next matching order for this customer should retrieve that customer-scoped H-type default.
+4. After future Admin approval and publication into the site-managed quote defaults retrieval layer, the next matching order for this customer should retrieve that customer-scoped H-type default.
 5. When the approved default is applied, the assistant should explicitly tell the user that this customer's H-type cutting and hole charges are not counted.
 
 Expected assistant message:
@@ -252,7 +253,7 @@ Expected assistant message:
 Backend guard:
 
 - Pending proposal must not participate in quote lookup.
-- Quote assistant cannot publish global/site-managed lesson/memory directly.
+- Quote assistant cannot publish global/site-managed quote defaults directly.
 - Published customer-scoped defaults must remain scoped by customer and material selector, not become an all-customer H-type rule.
 
 Expected future applied-default assistant message:
@@ -309,19 +310,26 @@ User:
 
 Expected AI logic:
 
-1. Call `lookup_customer` / `search_customers` and match `全華興` to tier `A級`.
-2. Normalize `亞L30*30` as an angle/formed angle candidate with alias handling between `亞` and reviewed source spelling such as `錏`.
-3. Call `search_price_candidates` / `rank_price_candidates` against reviewed product-price data.
-4. Select the highest-confidence explainable candidate only if the ranked result is source-backed and clearly better than alternatives: `錏成型角鐵 30x30x2.5x6M`.
-5. Use A-tier unit price `194.3 元/支` from the reviewed product-price row.
-6. Treat quantity as approximate because the user said `大約100支`.
-7. Produce a preview quote from the highest-confidence candidate, with overall confidence `中` because the user omitted thickness and exact surface/material variant.
-8. If equally plausible candidates such as different thickness or hot-dip galvanized material have similar rank, ask the user to confirm instead of pricing.
+1. Call `lookup_instructions` for material alias/surface-treatment/angle-steel price-search policy, especially oral conversion rules such as `L` as angle/L steel and `亞` as a low-confidence surface clue that must be validated against reviewed rows.
+2. Call `search_customers` and match `全華興` to tier `A級`.
+3. AI first reads the raw item text as evidence and identifies both issues: `亞` may be a typo/colloquial material clue, and `L30x30` is incomplete because thickness/length/surface variant are not confirmed.
+4. AI proposes possible material/spec candidates from the raw evidence and returned Instruction Packets, not a confirmed source fact. For `亞L30*30`, likely candidates include angle/L steel, equal angle `30x30`, and possible surface/product wording such as `錏`, `錏成型角鐵`, `鍍鋅角鐵`, or generic `角鐵`.
+5. AI decides which reviewed-data tool path to use from the normalized candidate and user intent. For this "一支多少" material-price question, the appropriate path is product-price lookup, not handbook weight, cutting price, or material-rule lookup.
+6. For the product-price path, AI directly provides derived `candidateQueries` to `search_price_candidates`; it must not query reviewed price rows with the raw typo string `亞L30x30`. Bounded query candidates include `錏成型角鐵` + `30x30`, `鍍鋅角鐵` + `30x30`, `角鐵` + `30x30`, and optional `L30x30`.
+7. Call `search_price_candidates` with the derived candidate queries and use the returned reviewed rows plus backend safety marks to decide whether the result is usable, ambiguous, missing, or only an estimate.
+8. If there is one clearly highest-confidence source-backed candidate, use it for a preview estimate and ask the user to confirm the assumption. Example: `錏成型角鐵 30x30x2.5x6M`.
+9. Use A-tier unit price `194.3 元/支` from the reviewed product-price row.
+10. Treat quantity as approximate because the user said `大約100支`.
+11. Produce a preview quote from the highest-confidence candidate, with overall confidence `中` because the user omitted thickness and exact surface/material variant.
+12. Generate a provisional workbook update: write the likely line item, candidate price/source refs, confidence, missing fields, and manual-review/confirmation note. Do not mark the line as a final confirmed customer-facing total until the user confirms the candidate or provides exact thickness/unit price.
+13. Explain the assumption and list bounded options in chat so the user can judge without opening source files.
+14. If multiple plausible candidates remain, do not list only the highest candidate. Present bounded options with product name, spec, tier price, unit, source, and the difference that matters.
+15. If product price is `0` or missing for the exact candidate, keep that unavailable candidate visible as an option with the unavailable reason, then list nearest reviewed candidates or ask the user to provide the exact unit price.
 
 Expected assistant message:
 
 ```text
-全華興查到是 **A級**。用產品價格表比對「亞L30×30」，最接近採用：
+全華興查到是 **A級**。你寫「亞L30×30」，我先推導為可能的角鐵/L鐵 30×30，再用這些候選查產品價格表；最接近採用：
 
 | 品項       | 規格          | A級單價       | 數量    | 小計          |
 | ---------- | ------------- | ------------- | ------- | ------------- |
@@ -332,21 +340,46 @@ Expected assistant message:
 依據：客戶資料表顯示全華興為 A級；報價規則要求產品價格需先查產品價格表、找到匹配品項後依客戶分級取價，不可用手冊重量取代價格表單價。
 
 信心：**中**
-低信心原因：你只寫「亞L30×30」，未寫厚度；我先用價格表最接近且常用的 **錏成型角鐵 30×30×2.5×6M** 暫估。若客人要 3.0t 或熱浸鍍鋅，價格會不同。
+低信心原因：你只寫「亞L30×30」，未寫厚度；`亞` 不是已確認品名，我只把它當作可能的 `錏`/鍍鋅相關候選，再用 reviewed price rows 查到 **錏成型角鐵 30×30×2.5×6M** 暫估。若客人要 3.0t 或熱浸鍍鋅，價格會不同。
+
+請確認是否採用這個規格；如果不是，請選下面其中一個或直接提供正確厚度/單價。
+```
+
+Expected assistant message when multiple plausible candidates remain:
+
+```text
+全華興查到是 **A級**。你寫「亞L30×30」，但厚度沒寫完整；產品價格表有多個接近品項，請選一個：
+
+| 選項 | 品項       | 規格           | A級單價       | 差異/需確認 |
+| ---- | ---------- | -------------- | ------------- | ----------- |
+| 1    | 錏成型角鐵 | 30×30×2.5×6M  | 194.3 元/支   | 先前常用近似；厚度 2.5t |
+| 2    | 錏成型角鐵 | 30×30×3.0×6M  | 221 元/支     | 厚度 3.0t，單價較高 |
+
+目前不寫 confirmed 總額；你回「選 1」、「選 2」，或直接給厚度/單價後我再更新報價。
 ```
 
 Expected workbook patch:
 
-- `報價明細` records customer `全華興`, customer tier `A級` internally, item `錏成型角鐵`, assumed spec `30x30x2.5x6M`, unit `支`, unit price `194.3`, approximate quantity `100`, and line estimate `19430`.
+- `報價明細` records customer `全華興`, customer tier `A級` internally, item `錏成型角鐵`, assumed spec `30x30x2.5x6M`, unit `支`, unit price `194.3`, approximate quantity `100`, provisional line estimate `19430`, and confirmation/manual-review state.
 - `價格來源` records the reviewed product-price row and A-tier price source.
-- `判讀備註` records that `亞L30x30` was normalized to `錏成型角鐵 30x30x2.5x6M`, missing thickness lowered confidence, and the quote is provisional.
+- `判讀備註` records that AI detected typo/incomplete spec, used `亞L30x30` only as evidence, searched derived candidates, selected/returned `錏成型角鐵 30x30x2.5x6M`, missing thickness lowered confidence, and the quote is provisional.
 - `人工複核` is marked when the workbook has a review/confidence field for provisional estimates.
 
 Backend guard:
 
 - Product-price table row wins over handbook weight for this piece-priced quote.
-- The preview is allowed because the user asked approximately and the selected candidate is the highest-confidence source-backed match. Overall confidence remains medium when required dimensions are missing.
-- If the product price is `0`, missing, or tied across multiple plausible specs, no estimated customer-facing total is patched before confirmation.
+- AI owns tool orchestration: after candidate reasoning it chooses among the MVP
+  reviewed lookup tools: `lookup_instructions`, `search_customers`,
+  `search_price_candidates`, `lookup_defaults`, and `lookup_formula`. Backend
+  tools validate the chosen tool input and source facts, but do not silently
+  choose the domain lookup path from raw text. Weight, cutting, processing,
+  material-rule, ranking, and calculator details remain backend internal unless
+  a later slice explicitly exposes them.
+- `search_price_candidates` must not use raw typo/incomplete source text such as `亞L30x30` as a canonical `product_name` or `spec_key`. It searches only derived `candidateQueries` or confirmed normalized keys.
+- Workbook generation may record provisional estimates and candidate/source context, but confirmed totals require user confirmation when spec or price candidate selection remains ambiguous.
+- The preview is allowed because the user asked approximately and the selected candidate is the highest-confidence source-backed match. Overall confidence remains medium when required dimensions are missing, and assistant text must ask the user to confirm the assumed candidate.
+- If multiple plausible reviewed candidates remain, tool output must include all bounded options with enough product/spec/price/source detail for the user to choose without opening the source files.
+- If the product price is `0`, missing, or tied across multiple plausible specs, no confirmed customer-facing total is patched before confirmation. A provisional/manual-review workbook note may record the candidates.
 
 ## Scenario 9: Multi-Item Order Calculation Audit Scope
 

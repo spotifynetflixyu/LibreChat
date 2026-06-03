@@ -249,6 +249,70 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
+  it('adds the AI-led Steel runtime policy when requested', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: '我會先查 reviewed facts，再列出候選給使用者確認。' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: {
+          total: 31,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 9,
+          text: 9,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_steel_runtime_policy_mock' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
+    expect(systemPrompt).toEqual(
+      expect.objectContaining({
+        role: 'system',
+        content: expect.stringContaining('AI owns Steel tool orchestration'),
+      }),
+    );
+    expect(systemPrompt.content).toContain('Do not treat raw customer text such as `亞L30x30`');
+    expect(systemPrompt.content).toContain(
+      'Generate material/specification candidates in reasoning',
+    );
+    expect(systemPrompt.content).toContain('Call backend tools when you need reviewed rows');
+    expect(systemPrompt.content).toContain('lookup_defaults');
+    expect(systemPrompt.content).not.toContain('lesson-memory');
+    expect(systemPrompt.content).toContain('generate candidate material and specification queries');
+    expect(systemPrompt.content).toContain('reviewed price rows');
+    expect(systemPrompt.content).toContain('bounded options');
+    expect(generateOptions.prompt[1]).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: '亞L30x30 一支多少' }],
+    });
+  });
+
   it('enables the workbook patch tool and extracts model tool calls into patch operations', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [

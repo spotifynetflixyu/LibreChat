@@ -9,7 +9,7 @@ This phase creates the proposal record only. It does not approve, publish, rejec
 Implemented surface:
 
 - Public request/response schemas for rule proposals.
-- Explicit Mongo schema for `steel_memory_candidates` as the proposal collection.
+- Explicit Mongo schema for `steel_rule_proposals` as the proposal collection.
 - Backend service and repository for creating pending proposals.
 - Authenticated quote-facing route for saving a reusable-default proposal after the user explicitly asks for it.
 - Focused tests proving missing required selectors are rejected and successful proposals start as `needs_review`.
@@ -19,12 +19,12 @@ Deferred surface:
 - Admin review UI.
 - Admin approval/rejection API.
 - Promotion into `steel.calculation_rule_defaults`.
-- Global/site-managed lesson/memory extension module, including publishing into `steel.lesson_memory_entries`.
-- Lesson/memory retrieval tools for that extension module.
+- Global/site-managed quote defaults extension module, including publishing into `steel.quote_defaults`.
+- `lookup_defaults` retrieval tool for that extension module.
 
 ## Data Contract
 
-Use the existing Mongo collection name `steel_memory_candidates` as the proposal surface. Phase 4A already reserves this as an acceptable proposal collection, and keeping the collection avoids inventing another storage location before the Admin review workflow exists.
+Use the existing Mongo collection name `steel_rule_proposals` as the proposal surface. Phase 4A already reserves this as an acceptable proposal collection, and keeping the collection avoids inventing another storage location before the Admin review workflow exists.
 
 Required create fields:
 
@@ -70,15 +70,15 @@ Rules:
 
 The quote assistant may ask whether to save a quote override as a future default only after this backend create path exists.
 
-The intended AI integration is tool calling: AI decides whether the current conversation has enough confirmed structure, then calls a backend tool/API that maps to `POST /api/steel/rule-proposals`. The AI does not write Mongo, Supabase, or lesson/memory directly.
+The intended AI integration is tool calling: AI decides whether the current conversation has enough confirmed structure, then calls a backend tool/API that maps to `POST /api/steel/rule-proposals`. The AI does not write Mongo, Supabase, or quote defaults directly.
 
 If the AI is uncertain or backend lookup found multiple plausible options, it must ask the user to confirm before calling the create path. The create path is not a substitute for disambiguation; it only persists a structured proposal after the required fields are known.
 
-Pending proposals must not participate in deterministic quote lookup, lesson/memory retrieval, or `selectedCalculationRule` validation.
+Pending proposals must not participate in deterministic quote lookup, quote defaults retrieval, or `selectedCalculationRule` validation.
 
 ## Confirmed Conversation Scenarios
 
-These scenarios define how the quote assistant should behave before any future Admin review or global lesson/memory extension exists.
+These scenarios define how the quote assistant should behave before any future Admin review or global quote defaults extension exists.
 
 ### Scenario 1: Current Quote Only
 
@@ -98,7 +98,7 @@ Behavior:
 
 - Do not call `create_rule_proposal`.
 - Store or apply only a quote-specific adjustment for the current workbook line.
-- Do not mutate formal prices, rules, defaults, or lesson/memory.
+- Do not mutate formal prices, rules, defaults, or quote defaults.
 
 ### Scenario 2: User Explicitly Requests A Future Default
 
@@ -111,20 +111,20 @@ User says:
 Assistant response:
 
 ```text
-我可以建立一筆待審核的客戶預設規則。Admin 審核前，它不會自動套用到正式預設或 lesson/memory。
+我可以建立一筆待審核的客戶預設規則。Admin 審核前，它不會自動套用到正式預設或 quote defaults。
 ```
 
 Behavior:
 
 - AI may call `create_rule_proposal` through backend tool calling.
 - The tool maps to `POST /api/steel/rule-proposals`.
-- The backend stores a Mongo `steel_memory_candidates` row with `status = needs_review`.
+- The backend stores a Mongo `steel_rule_proposals` row with `status = needs_review`.
 - Do not write reviewed Supabase facts.
-- Do not publish global/site-managed lesson/memory.
+- Do not publish global/site-managed quote defaults.
 
 Future Admin-approved behavior:
 
-- After a later Admin approval/publish workflow creates a customer-scoped reviewed default and publishes the matching task-scoped lesson/memory entry, the next matching order for that customer may retrieve it.
+- After a later Admin approval/publish workflow creates a customer-scoped reviewed default and publishes the matching task-scoped quote default, the next matching order for that customer may retrieve it.
 - When such a customer default is applied, the assistant should explicitly tell the user which customer rule was applied.
 
 ### Scenario 2A: Future Default For H-Type
@@ -138,7 +138,7 @@ User says:
 Assistant response:
 
 ```text
-我可以建立一筆待審核的客戶預設規則。Admin 審核前，它不會自動套用到正式預設或 lesson/memory。審核通過後，下次此客戶的 H 型鋼訂單會明確提示已套用該客戶規則。
+我可以建立一筆待審核的客戶預設規則。Admin 審核前，它不會自動套用到正式預設或 quote defaults。審核通過後，下次此客戶的 H 型鋼訂單會明確提示已套用該客戶規則。
 ```
 
 Behavior:
@@ -146,7 +146,7 @@ Behavior:
 - AI may call `create_rule_proposal` only after customer and H-type scope are clear.
 - The proposal selector must include customer scope and material family H-type.
 - Pending proposal must not affect current/future quote lookup until approved.
-- After future Admin approval and lesson/memory publication, a matching H-type order should disclose the applied customer default, such as `已套用此客戶預設規則：H 型鋼切工與孔工不計價。`
+- After future Admin approval and quote defaults publication, a matching H-type order should disclose the applied customer default, such as `已套用此客戶預設規則：H 型鋼切工與孔工不計價。`
 
 ### Scenario 3: Scope Is Unclear
 
@@ -219,18 +219,18 @@ User says:
 Assistant response:
 
 ```text
-目前我只能建立待審核規則 proposal。全站 global lesson/memory 是未來 extension module，等 Admin review backend/UI 和 publish 流程規劃後才會處理。
+目前我只能建立待審核規則 proposal。全站 global quote defaults 是未來 extension module，等 Admin review backend/UI 和 publish 流程規劃後才會處理。
 ```
 
 Behavior:
 
 - Create only a pending proposal when required fields are known.
-- Do not write global/site-managed lesson/memory.
+- Do not write global/site-managed quote defaults.
 - Do not let the AI permanently remember a Steel business rule outside the reviewed extension module.
 
 ## Closeout Boundary
 
-Phase 4B closes after the rule proposal backend and the confirmed conversation scenarios are documented and verified. Remaining Admin review backend/UI, approval/rejection, and global/site-managed lesson/memory extension work should stay deferred.
+Phase 4B closes after the rule proposal backend and the confirmed conversation scenarios are documented and verified. Remaining Admin review backend/UI, approval/rejection, and global/site-managed quote defaults extension work should stay deferred.
 
 The next implementation focus should return to the core order quoting path: parse customer order evidence, normalize quote items, retrieve reviewed price/rule/formula facts, ask for confirmation when needed, calculate the quote, and persist the accepted workbook result.
 

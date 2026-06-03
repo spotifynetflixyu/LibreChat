@@ -17,7 +17,7 @@ Owned update surfaces:
 - Source refs and reviewed confidence.
 - True-zero review markers for otherwise blank or `0.00` price/charge source values.
 
-LibreChat user memory is not an Admin-owned formal update surface. It can affect quote-time priority for the current user's workflow, but it remains separate from Admin-reviewed Steel facts and generated site-managed lesson/memory.
+LibreChat user memory is not an Admin-owned formal update surface. It can affect quote-time priority for the current user's workflow, but it remains separate from Admin-reviewed Steel facts and generated site-managed quote defaults.
 
 ## Source-Specific Policy
 
@@ -37,7 +37,7 @@ LibreChat user memory is not an Admin-owned formal update surface. It can affect
 
 Phase 2 should persist reviewed facts with nullable numeric values plus explicit value/review state. Unknown values are not written as `0`, and true-zero prices or charges require Admin confirmation.
 
-## Lesson/Memory Promotion Path
+## Quote Default Promotion Path
 
 Conversation-derived defaults must go through a proposal workflow before they become reusable lessons or memory.
 
@@ -46,9 +46,9 @@ Conversation-derived defaults must go through a proposal workflow before they be
 3. The proposal records customer/material/charge scope, reviewed `formulaCode`, proposed adjustable parameters, source refs, and the originating conversation/workbook line.
 4. Admin reviews conflicts with current prices/rules/defaults and chooses approve, reject, keep as one-time adjustment, or request more information.
 5. Approval writes reviewed database facts first.
-6. Lesson/memory entries are generated from reviewed facts and carry origin table/ID/revision refs.
+6. Quote defaults are generated from reviewed facts and carry origin table/ID/revision refs.
 
-The AI must not update Admin-reviewed lesson/memory directly. Steel Admin-reviewed lesson/memory is a task-scoped retrieval layer over reviewed facts, not the authoritative store. LibreChat user memory remains a separate user-scoped layer and must not be stored as an Admin-reviewed default.
+The AI must not update Admin-reviewed quote defaults directly. Steel Admin-reviewed quote defaults are a task-scoped retrieval layer over reviewed facts, not the authoritative store. LibreChat user memory remains a separate user-scoped layer and must not be stored as an Admin-reviewed default.
 
 ## Non-Goals
 

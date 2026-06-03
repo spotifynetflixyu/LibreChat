@@ -10,9 +10,12 @@ Input: `docs/reference/客戶詢價.rtf`.
 
 Expected:
 
+- Retrieve only task-scoped Instruction Packets needed for C-type/material-price
+  interpretation from `lookup_instructions`; do not inject the full
+  `docs/reference/instruction.txt` file.
 - Parse `C150*3.0` and line lengths/quantities as C-type quote items.
 - Retrieve C-type rule only for these items through canonical alias/family matching or a strong normalized C-type candidate.
-- C-type cutting/hole no-charge behavior comes from a configured default rule/lesson/memory selected by AI and validated by backend tools, not from backend product-family hardcoding.
+- C-type cutting/hole no-charge behavior comes from a configured quote default or reviewed rule selected by AI and validated by backend tools, not from backend product-family hardcoding.
 - Use product price first.
 - Use finished-length quantity.
 - Do not run long-material allocation.
@@ -85,6 +88,20 @@ Expected:
 
 Zero unit weight is not accepted as true zero in these scenarios; it is invalid or unknown unless a later source-specific test names and proves a legitimate zero-weight concept.
 
+### Typo Or Incomplete Material Price
+
+Input: `亞L30x30 一支多少` or `全華興 報價 亞L30*30一支多少 大約100支`.
+
+Expected:
+
+- AI treats the raw text as quote request evidence, not a canonical lookup key.
+- AI identifies likely typo/colloquial material wording and incomplete spec fields.
+- AI proposes possible material/spec candidates such as angle/L steel 30x30 with possible `錏`, `錏成型角鐵`, `鍍鋅角鐵`, or generic `角鐵` wording.
+- AI chooses the product-price lookup path because the user asks "一支多少"; backend code does not hard-code that tool choice from raw text.
+- Product-price lookup uses confirmed normalized keys or AI-derived candidate queries, never raw-only `亞L30x30`.
+- Reviewed price candidates include enough product, spec, tier price, unit, source, and difference detail for the user to choose without opening source files.
+- Workbook patch records only provisional estimate/source/confidence/missing-field state until the user confirms the candidate or supplies exact thickness/unit price.
+
 ### Quote-Specific Adjustment
 
 Input: customer asks that one line not count cutting, use a special price, or add an extra surcharge.
@@ -101,7 +118,7 @@ Input: a future Admin-reviewed customer-scoped default says this customer's H-ty
 
 Expected:
 
-- The default is retrieved through scoped lesson/memory or reviewed default lookup only for the matching customer and H-type item.
+- The default is retrieved through scoped quote defaults or reviewed default lookup only for the matching customer and H-type item.
 - The assistant explicitly tells the user the customer default was applied.
 - Workbook trace records the selected rule/default origin.
 

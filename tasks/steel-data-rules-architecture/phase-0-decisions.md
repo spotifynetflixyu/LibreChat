@@ -48,6 +48,17 @@ Blank or `0.00` price, cutting, or processing charge values are unknown by defau
 
 Zero unit weight is not part of the true-zero shortcut. A blank, missing, or `0.00` unit weight remains invalid or unknown unless a later source-specific data task proves and names a legitimate zero-weight business concept.
 
+### D0.8 AI-Led Tool Orchestration
+
+AI owns quote interpretation and business tool orchestration. It reads quote request evidence, proposes material/spec candidates, chooses the relevant backend business tools, compares reviewed results, proposes workbook updates, and asks for confirmation when confidence is not high enough.
+
+Backend tools own validation, source-backed lookup execution, deterministic
+ranking/calculation, audit, and guardrails. Backend code must not silently
+choose product-price, customer, quote-default, formula, or workbook output paths
+from raw customer text. Weight, cutting, processing, material-rule, ranking,
+and calculator details are backend internal capabilities unless a later slice
+explicitly exposes them.
+
 ## Exit Criteria
 
 - These decisions are reflected in `CONTEXT.md`.

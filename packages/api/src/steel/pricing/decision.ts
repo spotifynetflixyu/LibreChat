@@ -46,7 +46,7 @@ export const steelPriceCandidateSchema = z.object({
 
 export const steelSelectedCalculationRuleSchema = z.object({
   ruleId: z.string().trim().min(1),
-  source: z.enum(['ai_selected_lesson', 'memory', 'admin_review']),
+  source: z.enum(['quote_default', 'admin_review']),
   formulaCode: z.string().trim().min(1).optional(),
   appliesToChargeTypes: z.array(chargeTypeSchema).min(1),
   effect: z.enum(['true_zero_charge', 'normal_formula']),
@@ -77,6 +77,7 @@ export type SteelPriceDecisionReason =
   | 'confirmed_price'
   | 'calculation_parameter_override'
   | 'calculation_rule_true_zero'
+  | 'estimate_price_requires_confirmation'
   | 'multiple_usable_candidates'
   | 'no_usable_price';
 
@@ -97,9 +98,11 @@ export interface SteelPriceConfirmationOption {
   label: string;
   specKey: string;
   unit: string;
-  unitPrice: number;
+  unitPrice: number | null;
   valueState: SteelPriceCandidate['valueState'];
   matchType: SteelPriceCandidate['matchType'];
+  sourceRefs: SteelPriceCandidate['sourceRefs'];
+  unavailableReason?: SteelRejectedPriceCandidateReason;
 }
 
 export interface SteelRankedPriceCandidate extends SteelPriceCandidate {
@@ -212,10 +215,54 @@ function toOption(candidate: SteelRankedPriceCandidate): SteelPriceConfirmationO
     label: candidate.label,
     specKey: candidate.specKey,
     unit: candidate.unit,
-    unitPrice: candidate.unitPrice ?? 0,
+    unitPrice: candidate.unitPrice,
     valueState: candidate.valueState,
     matchType: candidate.matchType,
+    sourceRefs: candidate.sourceRefs,
   };
+}
+
+function toUnavailableOption(
+  candidate: SteelPriceCandidate,
+  unavailableReason: SteelRejectedPriceCandidateReason,
+): SteelPriceConfirmationOption {
+  return {
+    optionId: candidate.candidateId,
+    label: candidate.label,
+    specKey: candidate.specKey,
+    unit: candidate.unit,
+    unitPrice: null,
+    valueState: 'unknown',
+    matchType: candidate.matchType,
+    sourceRefs: candidate.sourceRefs,
+    unavailableReason,
+  };
+}
+
+function buildConfirmationOptions(
+  candidates: SteelPriceCandidate[],
+  usableCandidates: SteelRankedPriceCandidate[],
+  rejectedCandidates: SteelRejectedPriceCandidate[],
+  maxOptions: number,
+): SteelPriceConfirmationOption[] {
+  const usableById = new Map(
+    usableCandidates.map((candidate) => [candidate.candidateId, candidate]),
+  );
+  const rejectedById = new Map(
+    rejectedCandidates.map((candidate) => [candidate.candidateId, candidate.reason]),
+  );
+
+  return candidates
+    .flatMap((candidate) => {
+      const rejectedReason = rejectedById.get(candidate.candidateId);
+      if (rejectedReason) {
+        return [toUnavailableOption(candidate, rejectedReason)];
+      }
+
+      const usableCandidate = usableById.get(candidate.candidateId);
+      return usableCandidate ? [toOption(usableCandidate)] : [];
+    })
+    .slice(0, maxOptions);
 }
 
 function createSelectedPriceDecision(
@@ -238,14 +285,18 @@ function createSelectedPriceDecision(
   };
 }
 
-function noPrice(rejectedCandidates: SteelRejectedPriceCandidate[]): SteelPriceDecision {
+function noPrice(
+  candidates: SteelPriceCandidate[],
+  rejectedCandidates: SteelRejectedPriceCandidate[],
+  maxOptions: number,
+): SteelPriceDecision {
   return {
     action: 'no_price',
-    confirmationRequired: false,
+    confirmationRequired: true,
     manualReviewRequired: true,
     reason: 'no_usable_price',
     selectedCandidate: undefined,
-    options: [],
+    options: buildConfirmationOptions(candidates, [], rejectedCandidates, maxOptions),
     rejectedCandidates,
     skipRemainderCalculation: false,
   };
@@ -302,7 +353,7 @@ export function rankSteelPriceCandidates(input: SteelRankPriceCandidatesInput): 
   );
 
   if (usableCandidates.length === 0) {
-    return noPrice(rejectedCandidates);
+    return noPrice(parsed.candidates, rejectedCandidates, parsed.maxOptions ?? 5);
   }
 
   if (usableCandidates.length > 1) {
@@ -312,7 +363,12 @@ export function rankSteelPriceCandidates(input: SteelRankPriceCandidatesInput): 
       manualReviewRequired: false,
       reason: 'multiple_usable_candidates',
       selectedCandidate: undefined,
-      options: usableCandidates.slice(0, parsed.maxOptions ?? 5).map(toOption),
+      options: buildConfirmationOptions(
+        parsed.candidates,
+        usableCandidates,
+        rejectedCandidates,
+        parsed.maxOptions ?? 5,
+      ),
       rejectedCandidates,
       skipRemainderCalculation: false,
     };
@@ -346,6 +402,24 @@ export function rankSteelPriceCandidates(input: SteelRankPriceCandidatesInput): 
       skipRemainderCalculation,
       calculationRule,
     );
+  }
+
+  if (selectedCandidate.matchType === 'estimate') {
+    return {
+      action: 'use_price',
+      confirmationRequired: true,
+      manualReviewRequired: false,
+      reason: 'estimate_price_requires_confirmation',
+      selectedCandidate,
+      options: buildConfirmationOptions(
+        parsed.candidates,
+        usableCandidates,
+        rejectedCandidates,
+        parsed.maxOptions ?? 5,
+      ),
+      rejectedCandidates,
+      skipRemainderCalculation: false,
+    };
   }
 
   return createSelectedPriceDecision(

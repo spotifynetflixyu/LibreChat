@@ -46,7 +46,7 @@ For C-type steel, AI may select the C-type finished-length calculation rule when
 
 Backend code must reject a silent zero if AI sends `cutting = 0` or `hole = 0` without a selected rule, reviewed true-zero fact, or explicit quote-specific override.
 
-The C-type no-charge cutting/hole behavior must exist as a configured site-managed default rule/lesson/memory before quote runs can select it. This default can be seeded or Admin-reviewed, but it must be data/retrieval-owned. Backend pricing and calculator code must not create the behavior from product family alone.
+The C-type no-charge cutting/hole behavior must exist as a configured site-managed quote default or reviewed rule before quote runs can select it. This default can be seeded or Admin-reviewed, but it must be data/retrieval-owned. Backend pricing and calculator code must not create the behavior from product family alone.
 
 ## MVP Rule Types
 
@@ -130,9 +130,11 @@ Behavior:
 - Product price explicit reviewed hole/punching item wins.
 - Otherwise use reviewed hole-processing data through processing-price lookup.
 - Runtime lookup and calculators must support future Admin-reviewed non-round hole prices even when the current source price row is `0` or missing.
-- C-type hole fees are true zero only when the selected C-type calculation rule validates the zero charge; hole count can still be recorded in notes and system output.
-- Hole count must come from drawing/vision evidence when available, not only from a bottom table or OCR text.
-- A notation such as `4-Ø22` means four holes per piece unless the drawing context proves otherwise.
+- C-type holes do not use the generic hole-fee path by default; they follow the selected C-type special pricing rule/default. Hole count can still be recorded in notes and system output.
+- Hole count follows table count first, with drawing hole positions used for cross-check.
+- Clear drawing/order table counts are high-confidence primary evidence for hole count. If `產品價格.xlsx` has a clear punching/hole-processing item for the requested work, that item wins over generic hole-fee lookup.
+- Drawing/vision hole positions are cross-check evidence. If the table count and visible hole positions differ, record both, mark manual review, and ask the user/admin to confirm whether the table or drawing is wrong instead of silently replacing the table count.
+- A notation such as `4-Ø22` in a clearly matched table row means four holes per piece unless the table row is ambiguous or conflicting evidence requires manual review.
 - One round, oval, long, rectangular, bolt, or punched hole counts as one hole unless a reviewed rule explicitly defines a different unit.
 - Total holes are calculated as the sum of per-piece/per-stock hole groups multiplied by the item quantity.
 - Center lines, dimension lines, hidden lines, R corners, bend lines, cut-angle markers, and welding symbols must not be counted as holes.
@@ -177,6 +179,8 @@ The prompt bundle should not include all material rules. It should include:
 
 ## Exit Criteria
 
-- AI can request relevant rules through `lookup_material_rules`.
+- AI can access relevant rules through task-scoped prompt context,
+  `lookup_instructions`, `lookup_defaults`, `lookup_formula`, or backend
+  validation without exposing a separate MVP `lookup_material_rules` tool.
 - Irrelevant rules are not injected into unrelated quote items.
 - Material rules are covered by unit tests and manual scenario tests.

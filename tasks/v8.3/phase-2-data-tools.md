@@ -1,6 +1,6 @@
 # Phase 2: Quote Data And Tools
 
-Goal: make Steel quoting deterministic before involving Steel AI provider orchestration. Tools must query backend-owned repositories, validate inputs, sanitize outputs, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
+Goal: make Steel backend business tools deterministic while preserving AI-led quote orchestration. AI chooses the business tool path from normalized quote context and user intent; backend tools query reviewed repositories, validate inputs, sanitize outputs, reject unsafe raw lookups, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
 
 Detailed data/rule architecture for the company's manual quoting workflow lives in [`../steel-data-rules-architecture/README.md`](../steel-data-rules-architecture/README.md). Treat that package as the Phase 2 companion plan for source priority, material-specific rules, source refs, tool-calling boundaries, and Admin maintenance scope.
 
@@ -9,7 +9,7 @@ Detailed data/rule architecture for the company's manual quoting workflow lives 
 - Supabase read repositories for customers, aliases, tiers, prices, weight specs, processing/cutting/hole/slotting/bending prices, formulas, orders, and source chunks.
 - Use steel handbook DOCX contents to design and validate the real schema/data model shape, without implementing real handbook data SQL import yet.
 - Source schema mapping from Chinese `docs/reference` labels/headers/terms to English canonical schema keys used by spec, price, formula, processing-price, tool, AI API prompt context, and database query contracts.
-- Material normalization dictionary.
+- AI-proposed material/spec candidate validation, alias/search-term generation, and raw typo lookup guardrails.
 - Customer tier resolver.
 - Product price candidate search and ranking.
 - Stock allocation engine.
@@ -108,6 +108,12 @@ Files:
 
 Tasks:
 
+- Keep AI-led tool orchestration as the core framework. Backend tools expose
+  table-specific capabilities and guardrails; they do not silently choose
+  product-price, customer, quote-default, formula, or workbook output paths from
+  raw customer text. Weight, cutting, processing, material-rule, ranking, and
+  calculator details stay backend internal unless a later slice explicitly
+  exposes them.
 - Accept AI-proposed quote item candidates because customer order formats vary by customer, file, and message style.
 - Treat AI-proposed specs as candidates, not confirmed facts, until backend validation and ambiguity handling complete.
 - Return `ask_user` when AI confidence is not high or required fields are missing.
@@ -186,13 +192,13 @@ Tasks:
 - Treat blank or `0.00` values from `產品價格.xlsx` as unknown/missing price, not free price.
 - Confirm zero cutting/hole/processing charges only through an AI/memory/admin selected calculation rule or reviewed business rule; do not infer true-zero from product family in code.
 - The current C-type cutting/hole free-charge behavior is a selectable calculation rule/lesson; when selected with high confidence, it can mark the charge true zero and skip remainder calculation.
-- The C-type cutting/hole free-charge rule must be configured as a default rule/lesson/memory fixture before AI can select it; backend code must not create the no-charge behavior from C-type product family alone.
+- The C-type cutting/hole free-charge rule must be configured as a quote default or reviewed rule fixture before AI can select it; backend code must not create the no-charge behavior from C-type product family alone.
 - Formula selection starts from AI-normalized material/spec context and reviewed `steel.formula_versions` rows. For example, `docs/reference/公式編號.xlsx` maps formula code `C` to `C型鋼`, but runtime tools use reviewed database rows rather than reading the spreadsheet.
 - Backend pricing/calculator code validates AI-selected `formulaCode` and `selectedCalculationRule`; it does not hard-code C-type free cutting or hole behavior by product family.
-- Treat lesson/memory/admin rule parameters as defaults. User-provided conversation numbers or amounts can override adjustable parameters when the override is explicit and high confidence.
+- Treat quote defaults/admin rule parameters as defaults. User-provided conversation numbers or amounts can override adjustable parameters when the override is explicit and high confidence.
 - Keep formula identity fixed through `formulaCode`; keep numeric values adjustable through `defaultParameters` and `parameterOverrides`.
-- AI must retrieve matching lesson/memory through backend tools using normalized customer/item/charge context. Retrieval returns bounded reviewed candidates with origin refs, not the whole memory corpus.
-- Do not persist conversation overrides as customer defaults directly. "Save as customer default" must create a reviewed rule proposal for Admin approval first; only approved database facts can publish lesson/memory entries.
+- AI must retrieve matching quote defaults through backend tools using normalized customer/item/charge context. Retrieval returns bounded reviewed candidates with origin refs, not the whole memory corpus.
+- Do not persist conversation overrides as customer defaults directly. "Save as customer default" must create a reviewed rule proposal for Admin approval first; only approved database facts can publish quote defaults.
 - Do not treat zero unit weight as true zero in Phase 2.
 - Never convert incompatible unit pricing, e.g. kg to piece, piece to kg, cut to M, hole to piece.
 
@@ -328,40 +334,150 @@ Files:
 - Create `packages/api/src/steel/tools/sanitize.ts`
 - Add tests under `packages/api/src/steel/tools/*.spec.ts`
 
-Allowed MVP tools:
+Allowed MVP runtime tools:
 
-- `lookup_customer`
+- `lookup_instructions`
 - `search_customers`
-- `normalize_quote_item`
-- `generate_price_search_terms`
 - `search_price_candidates`
-- `rank_price_candidates`
-- `lookup_spec_price`
-- `lookup_weight_spec`
-- `lookup_formula_version`
-- `lookup_material_rules`
-- `retrieve_lesson_memory`
-- `retrieve_user_memory`
-- `select_calculation_rule`
-- `lookup_cutting_price`
-- `lookup_processing_price`
-- `allocate_stock_lengths`
-- `calculate_plate_weight`
-- `calculate_bar_weight`
-- `calculate_cut_count`
-- `calculate_cutting_fee`
-- `calculate_hole_fee`
-- `calculate_slotting_fee`
-- `calculate_bending_fee`
-- `calculate_line_total`
-- `normalize_quote_adjustment`
-- `get_workbook`
+- `lookup_defaults`
+- `lookup_formula`
+
+MVP flow:
+
+1. AI starts from the Admin-managed Agent Instruction injected into every Steel
+   quote turn, not from a code-hardcoded provider prompt. The Agent Instruction
+   says raw customer text is evidence and tells AI when to call
+   `lookup_instructions` before applying detailed material/spec/process
+   inference.
+2. AI judges the order's steel category, likely material/product family,
+   surface treatment, dimensions, quantity, and missing fields from quote
+   evidence.
+3. AI calls `lookup_instructions` when it needs task-scoped quoting rules for
+   candidate generation, such as `docs/reference/instruction.txt` derived
+   price-before-weight policy, material alias expansion, C-type rules,
+   long-material cutting behavior, hole/slot/bending interpretation, or workbook
+   output requirements. The tool returns bounded reviewed instruction packets,
+   not the full instruction source. The request is batched by interpreted order
+   context: include all detected material families, task types, processing
+   types, formula candidates, customer/tier/project context, and low-confidence
+   facets together. Do not query instruction packets separately for hole count,
+   cut count, slotting path, bending, formula, or each small material-line
+   detail unless later user input materially changes the context. The lookup
+   should expand matching packet groups, such as `h-type-quote-core`,
+   `c-type-quote-core`, `angle-zinc-quote-core`, `plate-processing-core`, and
+   `workbook-output-core`, so one call returns the related price/formula/
+   cutting/hole/workbook rules needed by the detected context.
+4. AI generates bounded product-price `candidateQueries`, such as
+   `錏成型角鐵 30x30`, `鍍鋅角鐵 30x30`, or `角鐵 30x30`, instead of passing raw
+   typo text to backend lookup.
+5. Backend tools return reviewed instruction, customer, price, default, and
+   formula candidates with source refs, confidence, missing/zero markers, and
+   bounded alternatives.
+6. AI chooses the most credible calculation path from returned facts, explains
+   assumptions/options, and produces a provisional workbook patch. Confirmed
+   customer-facing totals require sufficient reviewed facts or user
+   confirmation.
+
+Instruction packet storage:
+
+- Instruction packets live in the database and are Admin-updateable through
+  backend/Admin flows. `docs/reference/instruction.txt` is a seed/reference
+  source, not the runtime storage surface.
+- Classification should be multi-axis. Start with steel/material family, but
+  also include task type, product family, surface treatment, processing type,
+  formula code, customer/tier/project scope, priority, review state, active
+  status, version/supersession, and source refs.
+- Runtime lookup is batched by the interpreted order context, not by individual
+  detail. A mixed order should send every detected material/task/process/formula
+  facet in one `lookup_instructions` request so returned packets can be applied
+  across all relevant lines.
+- Related packets should be grouped by stable `packetGroup` / bundle keys. The
+  tool should return grouped sibling packets together; it should not make the AI
+  issue separate lookups for a material's formula, cutting, holes, workbook
+  notes, or confirmation rules.
+- Steel/material family is still an important selector, but not sufficient by
+  itself. Global policies such as price-before-weight, processing policies such
+  as hole/slot/bending interpretation, and workbook-output rules need their own
+  task/facet selectors.
+- Detailed Agent Instruction seed text lives in
+  [`../steel-data-rules-architecture/agent-instructions.md`](../steel-data-rules-architecture/agent-instructions.md).
+  Instruction Packet selector/request/response design lives in
+  [`../steel-data-rules-architecture/instruction-packets.md`](../steel-data-rules-architecture/instruction-packets.md).
+  Future prompt-injected Agent Instruction and Instruction Packet body text
+  should be Traditional Chinese; canonical API/schema keys can remain English.
+
+Agent Instruction content:
+
+- The Agent Instruction is the Admin-managed default instruction injected into
+  every Steel quote turn. It can include global OCR/file handling, tool routing,
+  order-line inference, workbook output, confirmation, and source-validation
+  rules.
+- OCR/file rules cover image/PDF orientation checks, Traditional Chinese
+  preservation, drawing-vs-table precedence, low-confidence OCR handling, and
+  source/evidence refs. This is Steel order interpretation policy; generic
+  provider file handling still stays under `fileAnalysis.instructions` where
+  applicable.
+- Tool rules cover `lookup_instructions`, `search_customers`,
+  `search_price_candidates`, `lookup_defaults`, `lookup_formula`, raw-typo
+  guardrails, and when not to call a tool.
+- Workbook rules cover when AI may write provisional workbook notes/candidates,
+  when confirmed totals are forbidden, and when to use the workbook output tool
+  after reviewed facts or user confirmation are sufficient.
+
+Workbook output tool:
+
+- `patch_workbook` is a provider-facing workbook output tool when workbook
+  context is present. It is not one of the reviewed lookup tools.
+- AI may call `patch_workbook` to propose typed workbook operations. Backend
+  workbook validation/service applies or rejects those operations.
+- Keep `get_workbook` out of the MVP lookup tool list. Workbook structure
+  context is provided by the quote runtime; a future explicit workbook-context
+  tool can be added only if runtime context is insufficient.
+
+Not exposed as MVP tools:
+
+- `lookup_customer`: redundant with `search_customers`, which can return exact
+  and ambiguous customer matches.
+- `lookup_spec_price`: redundant with `search_price_candidates` exact or
+  candidate-query modes.
+- `lookup_weight_spec`, `lookup_cutting_price`, `lookup_processing_price`, and
+  `lookup_material_rules`: backend internal repositories or future extension
+  tools. The MVP lookup surface should use `search_price_candidates`,
+  `lookup_defaults`, and `lookup_formula` to return the facts AI needs for
+  quote reasoning.
+- `lookup_formula_version`: storage-oriented naming; MVP exposes
+  `lookup_formula` and lets backend return reviewed active formula candidates
+  and version refs.
+- `select_calculation_rule`, ranking helpers, and calculation primitives:
+  backend internal validation/calculation policies, not AI-callable MVP tools.
+- `get_workbook`: workbook context should be provided by the quote runtime or a
+  later explicit workbook-context tool, not part of the reviewed-data MVP tool
+  list.
+- `search_source_chunks`: too broad for the MVP AI inference path. Use
+  `lookup_instructions` for reviewed task-scoped instruction packets instead of
+  arbitrary source text retrieval.
 
 Tasks:
 
 - Validate every argument with Zod.
-- Include `normalize_quote_item` as the first backend guard for AI-proposed quote item candidates.
-- `normalize_quote_item` returns `use_candidate`, `ask_user`, or `confirm_candidates` so provider orchestration can ask the user before pricing uncertain specs.
+- Keep business tool selection in AI orchestration. Backend tools expose
+  validated lookup capabilities and reject unsafe raw inputs, but they do not
+  silently choose product-price, customer, default, formula, or workbook output
+  paths from raw customer text.
+- Do not expose quote-item normalization, price-search-term generation, or price-ranking helpers as runtime tools. AI generates material/spec candidates and `candidateQueries` in reasoning; backend tools validate lookup inputs and source-backed outputs.
+- Add `lookup_instructions` as the instruction retrieval tool. It should return
+  reviewed, task-scoped instruction packets seeded by sources such as
+  `docs/reference/instruction.txt`, with version/source refs and applicability
+  filters. It must not dump the entire instruction file into prompt context.
+- Keep the Agent Instruction Admin-managed and default-injected every turn. It
+  can define global workflow/tool rules and route to `lookup_instructions`.
+  Task-scoped material/process/formula details should still be stored as
+  reviewed instruction packets when selective retrieval is needed.
+- `search_price_candidates` queries reviewed price rows with confirmed normalized keys or derived `candidateQueries`, not with unnormalized customer evidence.
+- Add `lookup_defaults` as the other core reviewed lookup tool when the AI needs global/site-managed material defaults, customer defaults, formula defaults, or no-charge defaults. It must use typed filters and return bounded reviewed candidates with origin refs, not dump all defaults into prompt context.
+- Add `lookup_formula` as the formula retrieval tool. It should return reviewed
+  active formula candidates and version/source refs without exposing
+  storage-oriented version selection as a separate AI decision.
 - Apply conversation access checks for scoped tools.
 - Apply per-run call limits.
 - Log every tool call with tool name, provider tool-call ID when available, input summary, result status, duration, source refs, error category, output summary, and redaction version.

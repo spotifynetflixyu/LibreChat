@@ -133,6 +133,29 @@ describe('executeSteelTool', () => {
     });
   });
 
+  it('does not expose AI reasoning helpers as executable runtime tools', async () => {
+    const client = createClient([]);
+
+    for (const toolName of [
+      'normalize_quote_item',
+      'generate_price_search_terms',
+      'rank_price_candidates',
+    ]) {
+      const result = await executeSteelTool({
+        client,
+        toolName,
+        arguments: {},
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        toolName,
+        errorCategory: 'unknown_tool',
+      });
+    }
+    expect(client.calls).toHaveLength(0);
+  });
+
   it('preserves unknown prices as null instead of converting them to zero', async () => {
     const client = createClient([
       [
@@ -233,196 +256,82 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('normalizes AI quote item candidates into a user confirmation when uncertain', async () => {
-    const client = createClient([]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'normalize_quote_item',
-      arguments: {
-        originalText: '黑圓管 1英半',
-        candidates: [
-          {
-            candidateId: 'pipe-48',
-            displayName: '黑圓管 48.3mm',
-            specKey: 'black_round_pipe_48.3',
-            productFamily: '圓管',
-            confidence: 'medium',
-            missingFields: [],
-            sourceRefs: [],
-          },
-        ],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-    expect(client.calls).toHaveLength(0);
-    expect(result.data).toMatchObject({
-      normalization: {
-        action: 'ask_user',
-        confirmationRequired: true,
-        reason: 'ai_uncertain',
-        options: [
-          {
-            optionId: 'pipe-48',
-            label: '黑圓管 48.3mm',
-            specKey: 'black_round_pipe_48.3',
-          },
-        ],
-      },
-    });
-  });
-
-  it('ranks product price zero as no price through tool execution', async () => {
-    const client = createClient([]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'rank_price_candidates',
-      arguments: {
-        productFamily: 'C型鋼',
-        chargeType: 'material',
-        candidates: [
-          {
-            candidateId: 'price-zero',
-            label: 'C150 材料價',
-            specKey: 'C150',
-            unit: 'kg',
-            unitPrice: 0,
-            valueState: 'confirmed',
-            matchType: 'exact',
-            sourceRefs: [
-              {
-                channel: 'admin_erp_xlsx',
-                factType: 'product_price',
-                sourceFile: 'docs/reference/產品價格.xlsx',
-                canonicalKey: 'unit_price',
-              },
-            ],
-          },
-        ],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-    expect(client.calls).toHaveLength(0);
-    expect(result.data).toMatchObject({
-      priceDecision: {
-        action: 'no_price',
-        manualReviewRequired: true,
-        reason: 'no_usable_price',
-        rejectedCandidates: [
-          {
-            candidateId: 'price-zero',
-            reason: 'product_price_zero_is_missing',
-          },
-        ],
-      },
-    });
-  });
-
-  it('uses selected calculation rules instead of product-family hardcoding for zero charge decisions', async () => {
-    const client = createClient([]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'rank_price_candidates',
-      arguments: {
-        productFamily: 'C型鋼',
-        chargeType: 'cutting',
-        selectedCalculationRule: {
-          ruleId: 'c-type-cutting-free',
-          source: 'ai_selected_lesson',
-          appliesToChargeTypes: ['cutting'],
-          effect: 'true_zero_charge',
-          confidence: 'high',
-          skipRemainderCalculation: true,
-          sourceRefs: [],
-        },
-        candidates: [
-          {
-            candidateId: 'c-cut-free',
-            label: 'C型鋼切工不收費',
-            specKey: 'C150',
-            unit: 'piece',
-            unitPrice: 0,
-            valueState: 'confirmed',
-            matchType: 'exact',
-            sourceRefs: [],
-          },
-        ],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-    expect(result.data).toMatchObject({
-      priceDecision: {
-        action: 'use_price',
-        reason: 'calculation_rule_true_zero',
-        skipRemainderCalculation: true,
-        calculationRule: {
-          ruleId: 'c-type-cutting-free',
-        },
-      },
-    });
-  });
-
-  it('passes user-provided calculation parameter overrides through price ranking', async () => {
-    const client = createClient([]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'rank_price_candidates',
-      arguments: {
-        productFamily: 'C型鋼',
-        chargeType: 'cutting',
-        selectedCalculationRule: {
-          ruleId: 'c-type-cutting-formula',
-          source: 'memory',
-          formulaCode: 'cutting_fee_v1',
-          appliesToChargeTypes: ['cutting'],
-          effect: 'normal_formula',
-          confidence: 'high',
-          skipRemainderCalculation: true,
-          parameterOverrides: [
+  it('searches prices from derived candidate queries and does not query raw user text', async () => {
+    const client = createClient([
+      [
+        {
+          id: '21',
+          erp_item_code: 'A-L30-25',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'angle_L30x30x2.5x6M',
+          product_name: '錏成型角鐵',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '194.3000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [
             {
-              parameterKey: 'unitPrice',
-              valueType: 'money',
-              value: 25,
-              unit: 'TWD/piece',
-              source: 'user_message',
-              confidence: 'high',
-              sourceRefs: [
-                {
-                  channel: 'conversation',
-                  factType: 'quote_specific_override',
-                },
-              ],
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
             },
           ],
-          sourceRefs: [],
         },
-        candidates: [
+        {
+          id: '22',
+          erp_item_code: 'A-L30-30',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'angle_L30x30x3.0x6M',
+          product_name: '錏成型角鐵',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '221.0000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        originalText: '亞L30x30',
+        candidateQueries: [
           {
-            candidateId: 'c-cut-missing',
-            label: 'C型鋼切工',
-            specKey: 'C150',
-            unit: 'piece',
-            unitPrice: null,
-            valueState: 'unknown',
-            matchType: 'exact',
-            sourceRefs: [],
+            queryId: 'formed-angle-ya',
+            productName: '錏成型角鐵',
+            specKeyContains: '30x30',
+            confidence: 'medium',
+            reason: 'AI interpreted L30x30 as angle steel and 亞 as possible 錏',
+          },
+          {
+            queryId: 'raw-user-text',
+            productName: '亞L30x30',
+            confidence: 'low',
+            reason: 'raw user text must be filtered out',
           },
         ],
+        customerTierId: 1,
+        limit: 5,
       },
     });
 
@@ -430,19 +339,50 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%30x30%', '%錏成型角鐵%', 1, 5]);
+    expect(JSON.stringify(client.calls[0])).not.toContain('亞L30x30');
     expect(result.data).toMatchObject({
-      priceDecision: {
-        action: 'use_price',
-        reason: 'calculation_parameter_override',
-        selectedCandidate: {
-          unitPrice: 25,
+      priceCandidates: [
+        {
+          specKey: 'angle_L30x30x2.5x6M',
+          productName: '錏成型角鐵',
+          unitPrice: 194.3,
         },
-        calculationRule: {
-          ruleId: 'c-type-cutting-formula',
-          formulaCode: 'cutting_fee_v1',
+        {
+          specKey: 'angle_L30x30x3.0x6M',
+          productName: '錏成型角鐵',
+          unitPrice: 221,
         },
+      ],
+      rejectedSearchQueries: [
+        {
+          queryId: 'raw-user-text',
+          reason: 'raw_user_text_is_not_a_reviewed_candidate',
+        },
+      ],
+    });
+  });
+
+  it('rejects direct raw typo price search before SQL when original text is present', async () => {
+    const client = createClient([]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        originalText: '亞L30x30',
+        productName: '亞L30x30',
+        limit: 5,
       },
     });
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCategory: 'invalid_arguments',
+      errorSummary: expect.stringContaining('Do not search reviewed prices with raw user text'),
+    });
+    expect(client.calls).toHaveLength(0);
   });
 
   it('sanitizes prompt-injection-like source text from tool output', async () => {

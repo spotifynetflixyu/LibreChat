@@ -83,14 +83,14 @@
 - For customer order parsing, AI is expected to infer likely specs because every customer's order shape can differ; backend code should constrain that inference into canonical candidate fields, confidence, source refs, and manual-review/clarification paths instead of treating the AI guess as a confirmed fact.
 - When AI is uncertain about a Steel spec or repository lookup returns multiple plausible options, the quote flow must ask the user to confirm before pricing; present bounded candidate options instead of silently selecting one.
 - In `產品價格.xlsx`, a `0` price means no price. A zero cutting/hole/processing charge becomes true zero only when a separate selected calculation rule or reviewed business rule confirms the free charge.
-- Do not hard-code C-type steel calculation behavior directly in pricing/calculator code. The AI should select the applicable calculation lesson/memory/formula, and backend code should validate that selected rule before allowing true-zero charges or skipping remainder calculation.
-- Steel calculation lessons/memory define default behavior and formula selection, not rigid numeric logic. User-provided numbers or prices in the conversation can override adjustable parameters; keep the formula identity fixed while making numeric parameters explicit, sourced, and validated.
-- Do not let Steel chat save customer defaults directly into lesson/memory. Conversation adjustments become quote-specific overrides first; reusable customer defaults require a structured rule proposal, Admin approval, reviewed database facts, and only then generated task-scoped lesson/memory.
-- Steel AI should obtain lesson/memory through backend retrieval using normalized customer/item/charge/formula context and typed filters. Do not dump all memory into prompts; return bounded reviewed candidates with origin refs and revalidate the selected origin before pricing.
-- Keep LibreChat user memory separate from Steel Admin-reviewed lesson/memory. User memory is a user/account-scoped custom memory layer that may override quote-time priority for that user, but it must not mutate reviewed Steel facts or be merged into site-managed Admin-reviewed defaults.
-- When the user defers Admin review UI, implement only the backend/data slice that the plan currently owns. Do not sneak in Admin approval screens or publish mutations before the user explicitly opens that phase.
-- Treat global/site-managed Steel lesson/memory as a future extension module. Core quote flow may use AI tool calling to create `needs_review` proposals through backend APIs, but it must not publish global memory directly.
-- After closing a proposal/memory architecture slice, return implementation focus to the core Steel order quoting path unless the user explicitly reopens Admin review or global lesson/memory extension scope.
+- Do not hard-code C-type steel calculation behavior directly in pricing/calculator code. The AI should select the applicable quote default, reviewed rule, or formula, and backend code should validate that selected rule before allowing true-zero charges or skipping remainder calculation.
+- Steel quote defaults define default behavior and formula selection, not rigid numeric logic. User-provided numbers or prices in the conversation can override adjustable parameters; keep the formula identity fixed while making numeric parameters explicit, sourced, and validated.
+- Do not let Steel chat save customer defaults directly into quote defaults. Conversation adjustments become quote-specific overrides first; reusable customer defaults require a structured rule proposal, Admin approval, reviewed database facts, and only then generated task-scoped quote defaults.
+- Steel AI should obtain quote defaults through `lookup_defaults` using interpreted customer/item/charge/formula context and typed filters. Do not dump all defaults into prompts; return bounded reviewed candidates with origin refs and revalidate the selected origin before pricing.
+- Keep LibreChat user memory separate from Steel Admin-reviewed quote defaults. User memory is a user/account-scoped custom memory layer that may override quote-time priority for that user, but it must not mutate reviewed Steel facts or be merged into site-managed Admin-reviewed defaults.
+- When the user says Admin review UI is paused, treat the pause narrowly: do not build visible Admin review screens, but continue sequencing non-UI backend/data work such as approval/reject/publish APIs, reviewed defaults, `lookup_defaults`, and quote-runtime validation when those slices are in the approved roadmap.
+- Treat global/site-managed Steel quote defaults as a future extension module. Core quote flow may use AI tool calling to create `needs_review` proposals through backend APIs, but it must not publish global defaults directly.
+- After closing a proposal/memory architecture slice, return implementation focus to the core Steel order quoting path unless the user explicitly reopens Admin review or global quote defaults extension scope.
 - When running a grill/planning pass and the user asks `一次問我所有問題`, batch all unresolved questions with recommendations instead of asking one at a time.
 - Do not treat the current absence of reviewed DB rows or `0` source prices as a reason to omit feature support. Steel runtime/schema/tool/calculator development must support future Admin-reviewed prices for non-round holes such as oval, long, rectangular, and custom slot-like holes even when current source data is missing or unpriced.
 - Steel workbook initialization in UI must always surface API failures with an explicit error and retry path; do not leave `workbook === null` as an indefinite loading state after `createSteelWorkbook` rejects.
@@ -103,8 +103,10 @@
 - Do not ask users for Steel workbook internal `sheetId`, `rowId`, or `columnKey`. The backend should provide bounded workbook structure context so AI can resolve visible Chinese sheet/field wording such as `總結` and `總額` into stable internal ids before tool calling.
 - Steel quote AI should analyze natural-language specs, choose formula/rule/tool paths, and call backend tools; backend code should validate selected formula/rule/source and run deterministic calculators, not hard-code C-type free cutting/hole behavior by product family.
 - When material price is unknown or `0`, Steel AI should present nearest reviewed price/spec candidates and ask for confirmation or a user-supplied unit price; workbook may record candidate/manual-review state, but no confirmed total should be patched before confirmation.
-- When an Admin-reviewed customer-scoped rule/default is applied through lesson/memory retrieval, Steel AI should explicitly tell the user the customer rule was applied, for example that this customer's H-type cutting/hole charges are not counted.
-- C-type cutting/hole no-charge behavior must exist as a configured default rule/lesson/memory and be selected by AI; neither backend calculators nor pricing code may infer it only from `material_family = C-type`.
+- If an exact Steel material price is missing but there is exactly one nearest reviewed positive candidate, the AI may use that candidate for a preview estimate; it must disclose the assumption and ask the user to confirm or provide the exact price.
+- For incomplete Steel specs with multiple plausible reviewed candidates, such as `全華興 / 亞L30x30`, list all bounded candidate options with product name, spec, tier price, unit, and source context; do not show only the highest approximate match or make the user open source files to decide.
+- When an Admin-reviewed customer-scoped rule/default is applied through `lookup_defaults`, Steel AI should explicitly tell the user the customer rule was applied, for example that this customer's H-type cutting/hole charges are not counted.
+- C-type cutting/hole no-charge behavior must exist as a configured quote default or reviewed rule and be selected by AI; neither backend calculators nor pricing code may infer it only from `material_family = C-type`.
 - For any material that can carry a cutting price and needs cutting, Steel AI must ask about head/tail trimming when not already explicit; if remainder logic omits tail trim, assistant text and workbook notes must say tail trim is not counted, and no-cut lines must still record zero cutting in the workbook.
 - Treat OpenAI Code Interpreter / AI-written Python as optional calculation evidence, not the trusted Steel quote calculator. Backend-owned deterministic calculation must still recompute and validate formula/rule/source inputs before any workbook patch is accepted.
 - When AI Python and backend recalculation differ but backend calculation succeeds, Steel workbook patching should use the backend-confirmed number as highest confidence and include the AI/backend difference in audit notes instead of blocking the preview patch.
@@ -112,3 +114,70 @@
 - Store AI Python code/output and verbose execution artifacts in backend-readable database audit fields, not visible workbook text sheets. `價格來源` and `判讀備註` may still contain concise human-readable AI/backend difference summaries.
 - When a Steel request has typos or incomplete specs but the user asks for a quick approximate preview, AI should return the highest-confidence source-backed candidate with assumptions and confidence, then let the user refine through later messages.
 - Steel workbook `version` is only a visible update counter / optimistic freshness marker. Database storage should keep only the latest workbook/calculation state and overwrite old data unless the user explicitly asks for historical snapshots.
+- In wrap-up `Next Tasks`, describe both the implementation item and the logic behind it; do not list short labels without explaining what will be built or why.
+- Do not imply visually different Chinese typo/alias matches such as `亞` to `錏` are automatic fuzzy text matches. Candidate generation must come from a reviewed alias/normalization rule or an explicitly low-confidence AI-proposed search expansion that is revalidated against reviewed source rows before being shown for confirmation.
+- For typo/incomplete material text such as `亞L30x30`, AI should first propose possible steel material/spec candidates, then query reviewed tables with those normalized candidates. Do not query source tables with nonexistent raw user text as if it were a canonical product/spec key.
+- When correcting typo/incomplete Steel price lookup, fix the process order, not only the alias list: raw customer text is evidence for AI/normalization, while `search_price_candidates` should receive derived product/spec query candidates such as material family, surface wording, and size terms.
+- Steel AI, not hardcoded backend routing, should decide which business lookup tool to use after normalization. Backend tools provide validated table-specific capabilities and guardrails; they should reject unsafe raw typo lookups but should not silently choose the domain tool path for the AI.
+- For examples like `亞L30x30 一支多少`, model the full runtime chain: AI identifies typo/incomplete spec, proposes approximate material/spec candidates, chooses and calls the relevant reviewed-data tools, continues lookup/ranking, writes a provisional workbook update with source/confidence notes, and asks the user to confirm from bounded options.
+- Treat AI-led tool orchestration as the core Steel quote runtime framework in docs and implementation plans. Future designs should start from AI choosing the business tool path from normalized context, with backend providing validated tools, guardrails, source-backed results, deterministic calculation, and audit.
+- Do not expose AI reasoning helpers such as `normalize_quote_item`, `generate_price_search_terms`, or `rank_price_candidates` as Steel runtime tools. AI should generate material/spec candidates and price `candidateQueries` in reasoning; backend tools should focus on reviewed-row lookup, `lookup_defaults`, deterministic validation/calculation, and workbook output.
+- Use the shorter quote-default naming for reusable reviewed Steel defaults: runtime tool `lookup_defaults`, Supabase table `steel.quote_defaults`, and selected rule source `quote_default`. Avoid reintroducing `lesson_memory` names except when explicitly discussing LibreChat user memory as a separate future adapter.
+- Do not let the Allowed MVP tool list grow from backend repository/module names.
+  For the AI-led Steel quote MVP, expose only `search_customers`,
+  `search_price_candidates`, `lookup_defaults`, and `lookup_formula` as
+  reviewed lookup tools, plus `lookup_instructions` for task-scoped reviewed
+  instruction packets. Exact customer/spec lookup, formula-version naming,
+  weight/cutting/processing/material-rule lookup, arbitrary source-chunk search,
+  ranking, calculator primitives, and workbook-read helpers are backend
+  internal capabilities or future extensions unless a later slice proves they
+  need to be AI-callable.
+- Treat `docs/reference/instruction.txt` as a seed source for reviewed,
+  task-scoped Steel Instruction Packets, not as a monolithic prompt pasted into
+  every run. AI may use `lookup_instructions` before candidate generation for
+  price-before-weight policy, oral material aliases, C-type rules, long-material
+  cutting, hole/slot/bending interpretation, and workbook output rules.
+- Steel Agent Instruction is the Admin-managed default instruction injected into
+  every Steel quote turn. Do not treat it as a code-fixed provider prompt.
+  Runtime should record its version/source, while detailed task-specific rules
+  remain retrievable through `lookup_instructions` Instruction Packets. Use
+  planned database surfaces `steel.agent_instructions` and
+  `steel.instruction_packets` rather than provider constants.
+- Steel Agent Instruction should include global order-inference sections for
+  file/OCR rules, reviewed tool routing, order-line inference, workbook output
+  policy, confirmation behavior, and source validation. Workbook updates are
+  currently produced through the provider-facing `patch_workbook` output tool
+  and then validated/applied by backend workbook services; do not classify
+  `patch_workbook` as a reviewed lookup tool.
+- When the user asks to confirm Agent Instruction content before framework or
+  schema design, first record database-ready seed text with the actual quote
+  behavior rules. Only then design `instruction_packets`, storage, or Admin
+  lifecycle details, so future work does not drift back into backend-first
+  tool/schema design.
+- Keep Steel `agent_instructions` and `instruction_packets` in separate docs and
+  future database surfaces. `agent_instructions` owns the every-turn default AI
+  instruction prompt; `instruction_packets` owns task-scoped retrieved packet
+  design and packet bodies. Future prompt-injected body text for both layers
+  should be Traditional Chinese, while canonical API/schema/tool keys may remain
+  English.
+- `lookup_instructions` should use one batched full-facet request per
+  interpreted Steel order context. Include all detected material families, task
+  types, processing types, formula candidates, customer/tier/project context,
+  and low-confidence facets together; do not query instruction packets
+  separately for each small detail such as hole count, cut count, slotting path,
+  bending, formula, or individual line fragments.
+- For Steel drawing/order evidence, do not treat visible hole positions as
+  automatically higher authority than a clear drawing/order table count. A table
+  notation such as `4-Ø22` is high-confidence per-piece/per-stock hole evidence
+  when the row maps clearly to the material line; drawing hole positions are a
+  cross-check. If table count and drawing positions differ, record both and mark
+  manual review instead of silently overriding the table.
+- For Steel hole pricing, explicit reviewed punching/hole-processing product
+  price rows win over generic hole-fee lookup. C-type holes follow the selected
+  C-type special pricing rule/default and should not be charged again through
+  the generic hole-fee path.
+- Organize Steel Instruction Packets by stable material/task packet groups, not
+  as isolated fine-grained fragments. A batched `lookup_instructions` call
+  should return the related price, formula, cutting, hole, workbook, and
+  confirmation packets for the detected steel context together; do not force AI
+  to query each detail rule separately.

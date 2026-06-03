@@ -238,30 +238,57 @@ Files:
 
 Prompt order:
 
-1. User current-turn instruction.
-2. Runtime File Analysis Instructions from `fileAnalysis.instructions` when the current turn has image or PDF attachments.
-3. LibreChat Agent instructions when present.
-4. Steel Project Instructions.
-5. Active Text Sources.
-6. Relevant System Memories.
-7. Retrieved Source Chunks.
-8. Current Workbook Summary.
-9. Available Tools.
-10. Structured Output Schema.
+1. Steel Agent Instruction, Admin-managed and injected into every Steel quote turn.
+2. User current-turn instruction.
+3. Runtime File Analysis Instructions from `fileAnalysis.instructions` when the current turn has image or PDF attachments.
+4. LibreChat Agent instructions when present.
+5. Steel Project Instructions.
+6. Active Text Sources.
+7. Relevant System Memories.
+8. Retrieved Source Chunks.
+9. Current Workbook Summary.
+10. Available Tools.
+11. Structured Output Schema.
 
 MVP behavior:
 
-- Include current user instruction, optional agent instructions, current workbook summary, available tools, structured schema, and task-scoped source-schema mapping context.
+- Include the Admin-managed Steel Agent Instruction every turn, current user
+  instruction, optional LibreChat agent instructions, current workbook summary,
+  available tools, structured schema, task-scoped source-schema mapping context,
+  and task-scoped instruction context when already retrieved. When the AI needs
+  quote interpretation rules that are not already in prompt context, it should
+  call `lookup_instructions` instead of receiving the whole
+  `docs/reference/instruction.txt` file.
 - Keep image/PDF guidance under `fileAnalysis.instructions`, editable through `librechat.yaml` or Admin config override; do not hard-code rotated-image or Traditional Chinese guidance in the provider adapter.
 - Record empty arrays in `context_refs` for sources/instructions/memories until those modules exist.
 - Keep provider-specific serialization outside the core prompt bundle so openai-oauth and OpenAI adapters can format messages/tools without changing business prompt rules.
 
+Workbook update path:
+
+- Current `/steel/oauth-chat` workbook updates use the provider-facing
+  `patch_workbook` function tool when workbook context is present.
+- `patch_workbook` is an output tool, not a reviewed lookup tool. AI proposes
+  typed operations; backend workbook validation and the workbook service apply
+  or reject them.
+- Workbook context is supplied by the quote runtime so AI can map visible sheet,
+  row, and column labels to `sheetId`, `rowId`, and `columnKey`. The user should
+  not need to provide internal workbook IDs.
+- Successful patches return persisted workbook patch results and changed paths
+  for UI sync/highlighting. Failed or rejected patches leave workbook state
+  unchanged and return a reason.
+
 Acceptance:
 
-- Current-turn user instruction has highest priority.
+- Current-turn user instruction has highest priority for quote-specific business
+  intent, but cannot override the Steel Agent Instruction's tool, safety, or
+  source-validation rules.
 - Memory cannot override current user instruction, Supabase price results, weight results, or backend calculations.
 - Prompt bundle tests assert ordering.
 - Mapping context is task-scoped; workbook patch prompts do not receive unrelated SQL/table mapping details.
+- Instruction context is task-scoped; workbook patch prompts do not receive the
+  full `docs/reference/instruction.txt` file.
+- Workbook updates happen through `patch_workbook` plus backend workbook service
+  validation, not direct provider mutation.
 
 Verification:
 

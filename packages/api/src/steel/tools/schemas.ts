@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
-import { steelQuoteItemCandidatesInputSchema } from '../normalization/clarify';
-import { steelRankPriceCandidatesInputSchema } from '../pricing/decision';
+import { isRawUserTextPriceSearchQuery, steelPriceSearchCandidateSchema } from '../normalization';
 
 const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
@@ -12,6 +11,52 @@ function atLeastOneFilter<Field extends string>(fields: readonly Field[]) {
     fields.some((field) => value[field] !== undefined && value[field] !== '');
 }
 
+const searchPriceCandidatesSchema = z
+  .object({
+    originalText: nonEmptyString.optional(),
+    specKey: nonEmptyString.optional(),
+    specKeyContains: nonEmptyString.optional(),
+    productName: nonEmptyString.optional(),
+    candidateQueries: z.array(steelPriceSearchCandidateSchema).max(10).optional(),
+    customerTierId: z.number().int().positive().optional(),
+    reviewState: reviewStateSchema,
+    includeInactive: z.boolean().optional(),
+    limit: limitSchema,
+  })
+  .superRefine((input, ctx) => {
+    const hasDirectFilter =
+      input.specKey !== undefined ||
+      input.specKeyContains !== undefined ||
+      input.productName !== undefined;
+    const hasCandidateQueries =
+      input.candidateQueries !== undefined && input.candidateQueries.length > 0;
+
+    if (!hasDirectFilter && !hasCandidateQueries) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide specKey, specKeyContains, productName, or candidateQueries',
+      });
+    }
+
+    if (hasCandidateQueries && input.originalText === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide originalText with candidateQueries',
+        path: ['originalText'],
+      });
+    }
+
+    if (
+      input.originalText !== undefined &&
+      isRawUserTextPriceSearchQuery(input.originalText, input)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Do not search reviewed prices with raw user text',
+      });
+    }
+  });
+
 export const steelToolArgsSchemas = {
   lookup_customer: z.object({
     searchText: nonEmptyString,
@@ -21,20 +66,7 @@ export const steelToolArgsSchemas = {
     includeInactive: z.boolean().optional(),
     limit: limitSchema,
   }),
-  normalize_quote_item: steelQuoteItemCandidatesInputSchema,
-  search_price_candidates: z
-    .object({
-      specKey: nonEmptyString.optional(),
-      productName: nonEmptyString.optional(),
-      customerTierId: z.number().int().positive().optional(),
-      reviewState: reviewStateSchema,
-      includeInactive: z.boolean().optional(),
-      limit: limitSchema,
-    })
-    .refine(atLeastOneFilter(['specKey', 'productName']), {
-      message: 'Provide specKey or productName',
-    }),
-  rank_price_candidates: steelRankPriceCandidatesInputSchema,
+  search_price_candidates: searchPriceCandidatesSchema,
   lookup_spec_price: z.object({
     specKey: nonEmptyString,
     customerTierId: z.number().int().positive().optional(),

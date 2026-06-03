@@ -1,1 +1,1 @@
-export * from './clarify';
+export * from './search';

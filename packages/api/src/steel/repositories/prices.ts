@@ -55,8 +55,9 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   sourceRefs: SteelSourceRef[];
 }
 
-interface SearchSteelPriceItemsInput {
+export interface SearchSteelPriceItemsInput {
   specKey?: string;
+  specKeyContains?: string;
   productName?: string;
   customerTierId?: number;
   reviewState?: SteelReviewState;
@@ -99,6 +100,11 @@ export async function searchSteelPriceItems(
   if (input.specKey) {
     values.push(input.specKey);
     where.push(`spec_key = $${values.length}`);
+  }
+
+  if (input.specKeyContains) {
+    values.push(`%${input.specKeyContains}%`);
+    where.push(`spec_key ILIKE $${values.length}`);
   }
 
   if (input.productName) {

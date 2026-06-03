@@ -28,11 +28,30 @@ describe('rankSteelPriceCandidates', () => {
 
     expect(result).toEqual({
       action: 'no_price',
-      confirmationRequired: false,
+      confirmationRequired: true,
       manualReviewRequired: true,
       reason: 'no_usable_price',
       selectedCandidate: undefined,
-      options: [],
+      options: [
+        {
+          optionId: 'price-zero',
+          label: 'C150 材料價',
+          specKey: 'C150',
+          unit: 'kg',
+          unitPrice: null,
+          valueState: 'unknown',
+          matchType: 'exact',
+          sourceRefs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              canonicalKey: 'unit_price',
+            },
+          ],
+          unavailableReason: 'product_price_zero_is_missing',
+        },
+      ],
       rejectedCandidates: [
         {
           candidateId: 'price-zero',
@@ -43,20 +62,20 @@ describe('rankSteelPriceCandidates', () => {
     });
   });
 
-  it('accepts cutting zero only when an AI-selected lesson confirms the free charge', () => {
+  it('accepts cutting zero only when a quote default confirms the free charge', () => {
     const result = rankSteelPriceCandidates({
       productFamily: 'C型鋼',
       chargeType: 'cutting',
       selectedCalculationRule: {
         ruleId: 'c-type-cutting-free',
-        source: 'ai_selected_lesson',
+        source: 'quote_default',
         appliesToChargeTypes: ['cutting'],
         effect: 'true_zero_charge',
         confidence: 'high',
         skipRemainderCalculation: true,
         sourceRefs: [
           {
-            channel: 'memory',
+            channel: 'quote_defaults',
             factType: 'calculation_lesson',
             canonicalKey: 'c_type_cutting_free',
           },
@@ -90,7 +109,7 @@ describe('rankSteelPriceCandidates', () => {
       skipRemainderCalculation: true,
       calculationRule: {
         ruleId: 'c-type-cutting-free',
-        source: 'ai_selected_lesson',
+        source: 'quote_default',
       },
       selectedCandidate: {
         candidateId: 'c-cut-free',
@@ -134,13 +153,13 @@ describe('rankSteelPriceCandidates', () => {
     ]);
   });
 
-  it('accepts hole zero only when a memory rule confirms the free charge', () => {
+  it('accepts hole zero only when a quote default confirms the free charge', () => {
     const result = rankSteelPriceCandidates({
       productFamily: 'C型鋼',
       chargeType: 'hole',
       selectedCalculationRule: {
         ruleId: 'c-type-hole-free',
-        source: 'memory',
+        source: 'quote_default',
         appliesToChargeTypes: ['hole'],
         effect: 'true_zero_charge',
         confidence: 'high',
@@ -205,7 +224,7 @@ describe('rankSteelPriceCandidates', () => {
       chargeType: 'hole',
       selectedCalculationRule: {
         ruleId: 'c-type-hole-free',
-        source: 'ai_selected_lesson',
+        source: 'quote_default',
         appliesToChargeTypes: ['hole'],
         effect: 'true_zero_charge',
         confidence: 'medium',
@@ -241,7 +260,7 @@ describe('rankSteelPriceCandidates', () => {
       chargeType: 'cutting',
       selectedCalculationRule: {
         ruleId: 'c-type-cutting-formula',
-        source: 'memory',
+        source: 'quote_default',
         formulaCode: 'cutting_fee_v1',
         appliesToChargeTypes: ['cutting'],
         effect: 'normal_formula',
@@ -255,7 +274,7 @@ describe('rankSteelPriceCandidates', () => {
             unit: 'TWD/piece',
             sourceRefs: [
               {
-                channel: 'memory',
+                channel: 'quote_defaults',
                 factType: 'calculation_default',
                 canonicalKey: 'c_type_cutting_default_unit_price',
               },
@@ -324,7 +343,7 @@ describe('rankSteelPriceCandidates', () => {
       chargeType: 'cutting',
       selectedCalculationRule: {
         ruleId: 'c-type-cutting-formula',
-        source: 'memory',
+        source: 'quote_default',
         formulaCode: 'cutting_fee_v1',
         appliesToChargeTypes: ['cutting'],
         effect: 'normal_formula',
@@ -402,5 +421,280 @@ describe('rankSteelPriceCandidates', () => {
       skipRemainderCalculation: false,
     });
     expect(result.options.map((option) => option.optionId)).toEqual(['angle-a', 'angle-b']);
+  });
+
+  it('lists all bounded approximate options with source refs for incomplete 全華興 angle quote requests', () => {
+    const result = rankSteelPriceCandidates({
+      productFamily: '角鐵',
+      chargeType: 'material',
+      candidates: [
+        {
+          candidateId: 'angle-l30-missing',
+          label: '亞L30x30 精準規格缺厚度',
+          specKey: 'angle_L30x30',
+          unit: 'piece',
+          unitPrice: null,
+          valueState: 'unknown',
+          matchType: 'exact',
+          sourceRefs: [
+            {
+              channel: 'chat_evidence',
+              factType: 'quote_request_evidence',
+              locator: 'message=全華興 / 亞L30x30',
+              canonicalKey: 'spec_key',
+            },
+          ],
+        },
+        {
+          candidateId: 'angle-l30-2_5',
+          label: '錏成型角鐵 30x30x2.5x6M A級',
+          specKey: 'angle_L30x30x2.5x6M',
+          unit: 'piece',
+          unitPrice: 194.3,
+          valueState: 'confirmed',
+          matchType: 'estimate',
+          sourceRefs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              locator: 'sheet=Sheet1;row=estimate-1',
+              extractedLabel: '售價A',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+        {
+          candidateId: 'angle-l30-3_0',
+          label: '錏成型角鐵 30x30x3.0x6M A級',
+          specKey: 'angle_L30x30x3.0x6M',
+          unit: 'piece',
+          unitPrice: 221,
+          valueState: 'confirmed',
+          matchType: 'estimate',
+          sourceRefs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              locator: 'sheet=Sheet1;row=estimate-2',
+              extractedLabel: '售價A',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      action: 'confirm_candidates',
+      confirmationRequired: true,
+      reason: 'multiple_usable_candidates',
+      selectedCandidate: undefined,
+    });
+    expect(result.options).toEqual([
+      {
+        optionId: 'angle-l30-missing',
+        label: '亞L30x30 精準規格缺厚度',
+        specKey: 'angle_L30x30',
+        unit: 'piece',
+        unitPrice: null,
+        valueState: 'unknown',
+        matchType: 'exact',
+        unavailableReason: 'missing_price',
+        sourceRefs: [
+          {
+            channel: 'chat_evidence',
+            factType: 'quote_request_evidence',
+            locator: 'message=全華興 / 亞L30x30',
+            canonicalKey: 'spec_key',
+          },
+        ],
+      },
+      {
+        optionId: 'angle-l30-2_5',
+        label: '錏成型角鐵 30x30x2.5x6M A級',
+        specKey: 'angle_L30x30x2.5x6M',
+        unit: 'piece',
+        unitPrice: 194.3,
+        valueState: 'confirmed',
+        matchType: 'estimate',
+        sourceRefs: [
+          {
+            channel: 'admin_erp_xlsx',
+            factType: 'product_price',
+            sourceFile: 'docs/reference/產品價格.xlsx',
+            locator: 'sheet=Sheet1;row=estimate-1',
+            extractedLabel: '售價A',
+            canonicalKey: 'unit_price',
+          },
+        ],
+      },
+      {
+        optionId: 'angle-l30-3_0',
+        label: '錏成型角鐵 30x30x3.0x6M A級',
+        specKey: 'angle_L30x30x3.0x6M',
+        unit: 'piece',
+        unitPrice: 221,
+        valueState: 'confirmed',
+        matchType: 'estimate',
+        sourceRefs: [
+          {
+            channel: 'admin_erp_xlsx',
+            factType: 'product_price',
+            sourceFile: 'docs/reference/產品價格.xlsx',
+            locator: 'sheet=Sheet1;row=estimate-2',
+            extractedLabel: '售價A',
+            canonicalKey: 'unit_price',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('uses one nearest reviewed material fact as a preview while asking the user to confirm', () => {
+    const result = rankSteelPriceCandidates({
+      productFamily: 'C型鋼',
+      chargeType: 'material',
+      candidates: [
+        {
+          candidateId: 'c150-exact-missing',
+          label: 'C150 精準規格缺材料價',
+          specKey: 'C150',
+          unit: 'kg',
+          unitPrice: null,
+          valueState: 'unknown',
+          matchType: 'exact',
+          sourceRefs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+        {
+          candidateId: 'c150-nearest-reviewed',
+          label: 'C150x50x20x3.0 已審核近似材料價',
+          specKey: 'C150x50x20x3.0',
+          unit: 'kg',
+          unitPrice: 42,
+          valueState: 'confirmed',
+          matchType: 'estimate',
+          sourceRefs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      action: 'use_price',
+      confirmationRequired: true,
+      manualReviewRequired: false,
+      reason: 'estimate_price_requires_confirmation',
+      selectedCandidate: {
+        candidateId: 'c150-nearest-reviewed',
+        unitPrice: 42,
+        matchType: 'estimate',
+      },
+    });
+    expect(result.options).toEqual([
+      {
+        optionId: 'c150-exact-missing',
+        label: 'C150 精準規格缺材料價',
+        specKey: 'C150',
+        unit: 'kg',
+        unitPrice: null,
+        valueState: 'unknown',
+        matchType: 'exact',
+        sourceRefs: [
+          {
+            channel: 'admin_erp_xlsx',
+            factType: 'product_price',
+            sourceFile: 'docs/reference/產品價格.xlsx',
+            canonicalKey: 'unit_price',
+          },
+        ],
+        unavailableReason: 'missing_price',
+      },
+      {
+        optionId: 'c150-nearest-reviewed',
+        label: 'C150x50x20x3.0 已審核近似材料價',
+        specKey: 'C150x50x20x3.0',
+        unit: 'kg',
+        unitPrice: 42,
+        valueState: 'confirmed',
+        matchType: 'estimate',
+        sourceRefs: [
+          {
+            channel: 'admin_erp_xlsx',
+            factType: 'product_price',
+            sourceFile: 'docs/reference/產品價格.xlsx',
+            canonicalKey: 'unit_price',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('returns missing reviewed material facts as user choices instead of zero-price options', () => {
+    const result = rankSteelPriceCandidates({
+      productFamily: 'C型鋼',
+      chargeType: 'material',
+      candidates: [
+        {
+          candidateId: 'price-zero',
+          label: 'C150 材料價來源為 0',
+          specKey: 'C150',
+          unit: 'kg',
+          unitPrice: 0,
+          valueState: 'confirmed',
+          matchType: 'exact',
+          sourceRefs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      action: 'no_price',
+      confirmationRequired: true,
+      manualReviewRequired: true,
+      reason: 'no_usable_price',
+      selectedCandidate: undefined,
+    });
+    expect(result.options).toEqual([
+      {
+        optionId: 'price-zero',
+        label: 'C150 材料價來源為 0',
+        specKey: 'C150',
+        unit: 'kg',
+        unitPrice: null,
+        valueState: 'unknown',
+        matchType: 'exact',
+        sourceRefs: [
+          {
+            channel: 'admin_erp_xlsx',
+            factType: 'product_price',
+            sourceFile: 'docs/reference/產品價格.xlsx',
+            canonicalKey: 'unit_price',
+          },
+        ],
+        unavailableReason: 'product_price_zero_is_missing',
+      },
+    ]);
   });
 });

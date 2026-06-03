@@ -20,20 +20,10 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     argsSchema: steelToolArgsSchemas.search_customers,
   },
   {
-    name: 'normalize_quote_item',
-    description:
-      'Resolve AI-proposed quote item candidates into usable or user-confirmation states.',
-    argsSchema: steelToolArgsSchemas.normalize_quote_item,
-  },
-  {
     name: 'search_price_candidates',
-    description: 'Search reviewed product price candidates without converting price units.',
+    description:
+      'Search reviewed product price candidates from normalized candidate queries without converting price units.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
-  },
-  {
-    name: 'rank_price_candidates',
-    description: 'Rank price candidates and decide whether to use, reject, or ask the user.',
-    argsSchema: steelToolArgsSchemas.rank_price_candidates,
   },
   {
     name: 'lookup_spec_price',

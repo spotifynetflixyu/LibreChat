@@ -13,8 +13,7 @@ import {
 import { getSteelToolDefinition, isSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas, type SteelToolName } from './schemas';
-import { resolveSteelQuoteItemCandidates } from '../normalization';
-import { rankSteelPriceCandidates } from '../pricing';
+import { generateSteelPriceSearchTerms } from '../normalization';
 
 import type {
   SteelToolResult,
@@ -23,8 +22,12 @@ import type {
   SteelToolErrorCategory,
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
+import type { SteelPriceItem } from '../repositories';
 
 type SteelRawToolOutput = { [key: string]: unknown };
+type SearchPriceCandidatesInput = ReturnType<
+  typeof steelToolArgsSchemas.search_price_candidates.parse
+>;
 
 export interface SteelToolRunState {
   maxCalls: number;
@@ -133,6 +136,60 @@ function summarizeOutput(data: SteelToolJsonObject): string {
   return `keys=${Object.keys(data).length}`;
 }
 
+function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
+  const seen = new Set<number>();
+
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.id)) {
+      return false;
+    }
+
+    seen.add(candidate.id);
+    return true;
+  });
+}
+
+async function searchPriceCandidates(
+  client: SteelRepositoryClient,
+  input: SearchPriceCandidatesInput,
+): Promise<SteelRawToolOutput> {
+  if (!input.candidateQueries || input.candidateQueries.length === 0) {
+    const priceCandidates = await searchSteelPriceItems(client, input);
+
+    return { priceCandidates };
+  }
+
+  if (input.originalText === undefined) {
+    throw new Error('originalText is required with candidateQueries');
+  }
+
+  const searchTerms = generateSteelPriceSearchTerms({
+    originalText: input.originalText,
+    candidates: input.candidateQueries,
+  });
+  const priceCandidates: SteelPriceItem[] = [];
+
+  for (const query of searchTerms.candidateQueries) {
+    const candidates = await searchSteelPriceItems(client, {
+      specKey: query.specKey,
+      specKeyContains: query.specKeyContains,
+      productName: query.productName,
+      customerTierId: input.customerTierId,
+      reviewState: input.reviewState,
+      includeInactive: input.includeInactive,
+      limit: input.limit,
+    });
+
+    priceCandidates.push(...candidates);
+  }
+
+  return {
+    priceCandidates: dedupePriceCandidates(priceCandidates),
+    searchQueries: searchTerms.candidateQueries,
+    rejectedSearchQueries: searchTerms.rejectedQueries,
+  };
+}
+
 async function emitLog(
   options: ExecuteSteelToolOptions,
   status: 'success' | 'error',
@@ -201,23 +258,10 @@ async function dispatchSteelTool(
 
       return { customers };
     }
-    case 'normalize_quote_item': {
-      const input = steelToolArgsSchemas.normalize_quote_item.parse(args);
-      const normalization = resolveSteelQuoteItemCandidates(input);
-
-      return { normalization };
-    }
     case 'search_price_candidates': {
       const input = steelToolArgsSchemas.search_price_candidates.parse(args);
-      const priceCandidates = await searchSteelPriceItems(client, input);
 
-      return { priceCandidates };
-    }
-    case 'rank_price_candidates': {
-      const input = steelToolArgsSchemas.rank_price_candidates.parse(args);
-      const priceDecision = rankSteelPriceCandidates(input);
-
-      return { priceDecision };
+      return searchPriceCandidates(client, input);
     }
     case 'lookup_spec_price': {
       const input = steelToolArgsSchemas.lookup_spec_price.parse(args);

@@ -1,3 +1,385 @@
+# Steel Core Quote Runtime Implementation Queue
+
+Scope boundary: Admin review UI is paused. The pause applies to visible Admin
+screens only. Continue sequencing backend/data/tool work for quote runtime,
+calculation, rule proposal review APIs, approval/publish flows, and reviewed
+quote defaults retrieval when each slice is ready. Do not build Admin screens
+until the user explicitly reopens UI scope.
+
+- [x] Record the corrected scope boundary: Admin review UI paused only; other
+      implementation work remains sequenced.
+- [x] Active slice: reviewed fact price decisions return bounded user-choice
+      options when exact reviewed facts are missing, zero-as-missing, or
+      ambiguous; preview estimates may be marked provisional, but no final
+      confirmed workbook total is produced before confirmation.
+- [x] Correct the typo/incomplete-spec price lookup order: AI reasoning
+      proposes material/spec `candidateQueries` first, then backend searches
+      reviewed price rows with those candidates instead of querying raw text
+      such as `亞L30x30`.
+- [x] Lock AI-led tool orchestration as the core Steel quote runtime framework
+      in related docs: AI chooses business tool paths from normalized context;
+      backend provides validated tools, guardrails, source-backed results,
+      deterministic calculation, and audit.
+- [x] Wire the AI-led orchestration policy into `/steel/oauth-chat` provider
+      prompts so runtime calls start from candidate normalization/tool choice,
+      not backend-fixed lookup routing.
+- [x] Demote AI reasoning helpers from runtime tools: remove
+      `normalize_quote_item`, `generate_price_search_terms`, and
+      `rank_price_candidates` from the executable tool registry, keep
+      `search_price_candidates` as the price reviewed-row lookup tool, and use
+      `lookup_defaults` / `steel.quote_defaults` for reviewed reusable defaults.
+- [x] Active docs slice: reduce Allowed MVP runtime tools to the AI-led quote
+      flow. AI judges steel category, surface, size, and candidate price
+      queries; backend exposed lookup tools are `lookup_instructions`,
+      `search_price_candidates`, `lookup_defaults`, `search_customers`, and
+      `lookup_formula`. Weight, cutting, processing, material-rule, ranking,
+      exact-customer, arbitrary source-chunk search, and calculator primitives
+      become backend internal capabilities or later extensions, not MVP tools.
+- [x] Active docs slice: design AI inference rules as task-scoped
+      instructions. Add `lookup_instructions` to the Allowed MVP runtime tools
+      so AI can retrieve reviewed instruction packets seeded by
+      `docs/reference/instruction.txt` before deriving material/spec/query
+      candidates. Keep `search_source_chunks`, alias lookup, and source-text
+      search out of MVP unless a later slice proves they need to be AI-callable.
+- [x] Active docs slice: rename pre-tool policy to Agent Instruction and mark it
+      Admin-managed. Agent Instruction is the default instruction injected into
+      every Steel quote turn and can be updated/versioned through backend/Admin
+      flows; task-scoped Instruction Packets are still retrieved with
+      `lookup_instructions`. Planned storage is `steel.agent_instructions` and
+      `steel.instruction_packets`.
+- [x] Active docs slice: design `steel.agent_instructions` content sections for
+      OCR/file rules, reviewed tool routing, order-line inference, workbook
+      output policy, response/confirmation policy, and source validation. Clarify
+      that workbook updates currently use the provider-facing `patch_workbook`
+      output tool plus backend workbook service validation, not a reviewed lookup
+      tool.
+- [x] Active docs slice: record the first `steel.agent_instructions` seed text
+      as a database-ready default instruction. The text should cover OCR/file
+      evidence, AI-led tool choice, raw-typo guardrails, candidate generation,
+      reviewed lookup usage, workbook provisional/confirmed writes, and user
+      confirmation behavior.
+- [x] Active docs slice: design `steel.instruction_packets` as task-scoped,
+      reviewed instruction records. Define packet purpose, selectors, payload
+      shape, `lookup_instructions` request/response behavior, admin lifecycle,
+      and sample packets for `亞L30x30` angle lookup and C-type quote behavior.
+- [x] Verify the Agent Instruction / Instruction Packet docs slice with
+      Prettier, required-term greps, stale-term greps, and `git diff --check`.
+- [x] Active docs correction: split the combined Agent Instruction / Instruction
+      Packet baseline into separate documents. `agent_instructions` should own
+      only the default AI instruction prompt text; `instruction_packets` should
+      own only task-scoped packet design and seed packet text.
+- [x] Active docs correction: make future AI instruction prompt injection
+      uniformly Traditional Chinese. Database content bodies for
+      `steel.agent_instructions` and `steel.instruction_packets` should be
+      Traditional Chinese; API/schema field keys can remain canonical English.
+- [x] Verify the split-doc correction with Prettier, stale combined-doc greps,
+      required separate-doc greps, and `git diff --check`.
+- [x] Active docs slice: inspect `docs/reference/instruction.txt`,
+      `docs/reference/H型鋼.txt`, `docs/reference/切工價錢.xlsx`, and
+      `docs/reference/公式編號.xlsx`, then classify fine-grained quote
+      interpretation rules into Traditional Chinese `steel.instruction_packets`
+      seed packets.
+- [x] Verify the reference-derived instruction packet docs slice with Prettier,
+      required packet/source greps, and `git diff --check`.
+- [x] Active docs correction: update `lookup_instructions` to use one batched
+      full-facet request per interpreted order context. AI should send all
+      detected material families, task types, processing types, formula
+      candidates, and customer/tier context together, not issue separate packet
+      lookups for each small detail such as hole count, cut count, or slotting.
+- [x] Verify the batched full-facet instruction lookup correction with
+      Prettier, required grep, stale per-detail wording grep, and
+      `git diff --check`.
+- [x] Active docs correction: update hole-count interpretation so clear
+      drawing/order table numbers are high-confidence primary evidence, while
+      drawing hole positions are used to cross-check. If table count and drawing
+      positions differ, mark manual review instead of silently trusting drawing
+      over the table.
+- [x] Verify the hole-count table-priority correction with Prettier, required
+      grep, stale old-priority grep, and `git diff --check`.
+- [x] Active docs correction: organize related steel Instruction Packets into
+      packet groups/bundles so one batched `lookup_instructions` call can return
+      all relevant detailed rules for the detected material/task/process
+      context, instead of independent packet fragments.
+- [x] Verify the Instruction Packet group/bundle correction with Prettier,
+      required group/bundle grep, stale fragmented-query grep, and
+      `git diff --check`.
+- [ ] Run baseline verification for the already-landed Phase 2/4B slices:
+      repository/tool/rule-proposal tests, schema grep, builds, and diff hygiene.
+- [ ] Produce a checkpoint gap matrix for
+      `tasks/steel-data-rules-architecture/checkpoints.md` A-E so the next
+      implementation starts from proven gaps, not assumptions.
+- [ ] Implement source-schema mapping as code in
+      `packages/api/src/steel/schema/mapping.ts` with prompt-serializer tests.
+- [ ] Connect the provider-neutral Steel business tool executor to
+      `/steel/oauth-chat` and `openai_oauth_responses`, keeping `patch_workbook`
+      as a validated workbook-output tool.
+- [ ] Implement the C-type quote vertical slice from
+      `tasks/steel-data-rules-architecture/ai-rule-selection-scenarios.md`:
+      parse evidence, normalize quote items, retrieve reviewed customer/price/
+      rule/formula facts, ask for confirmation on ambiguity, and avoid confirmed
+      totals for missing or zero material prices.
+- [ ] Implement deterministic calculation primitives needed by the vertical
+      slice: formula execution, product-price unit weight precedence, line
+      totals, cut count, cutting fee, hole fee, slotting fee, bending fee, and
+      quote-specific adjustment normalization.
+- [ ] Persist accepted quote results into the workbook with source refs,
+      confidence, manual-review reasons, latest-only workbook/calculation state,
+      and concise audit notes.
+- [ ] Add current calculation audit storage/repositories for
+      `quote_calculation_state` and `quote_calculation_item_audits`, including
+      optional AI Python evidence comparison where backend canonical numbers win.
+- [ ] Implement reviewed quote defaults retrieval as `lookup_defaults` against
+      `steel.quote_defaults`, with typed filters, bounded candidates,
+      selected-origin validation, and explicit user disclosure for applied
+      customer defaults. Keep LibreChat user-memory adapter as a later separate
+      layer.
+- [ ] Implement non-UI Admin rule review backend: list queues, approve, reject,
+      keep-one-time, request-info, publish reviewed defaults, and exclude pending
+      proposals from quote lookup until approved.
+- [ ] Implement non-UI Admin data maintenance backend/import services for ERP
+      XLSX-backed product price, cutting price, formulas, and rules. Keep
+      handbook DOCX real-data import deferred unless a later task opens it.
+- [ ] Prove manual scenario gate E: C-type sample, H-type surcharge/head-tail,
+      product-price unit weight conflict, missing/zero material price, no-cut,
+      non-round holes, slotting, approximate quote, multi-material audit, and
+      workbook latest-version behavior.
+- [ ] After the queue is approved, move the active slice into a detailed
+      `docs/plans/YYYY-MM-DD-...md` implementation plan before code changes.
+
+## Review
+
+- User correction captured: the paused item is Admin review UI only. Backend
+  review APIs, approval/publish data flows, quote defaults retrieval, quote
+  runtime, calculation, audit, and workbook persistence remain in the
+  implementation queue.
+- Current implementation starts with reviewed fact price decisions: when lookup
+  finds missing or ambiguous price facts, the tool result must include bounded
+  options the user can choose from or use to provide a quote-specific price.
+- User correction: when the exact reviewed price is missing but there is one
+  nearest reviewed positive candidate, the AI may use that candidate for a
+  preview, but the response must explain the assumption and ask the user to
+  confirm or provide the exact price.
+- Implemented the reviewed-facts price decision slice in
+  `packages/api/src/steel/pricing/decision.ts`: missing or zero-as-missing
+  facts now return unavailable options with `unitPrice: null`, while a single
+  nearest reviewed estimate is selected for preview with
+  `confirmationRequired: true`.
+- Added the 全華興 / 亞L30x30 multi-candidate guard: incomplete angle quote
+  requests now preserve all bounded approximate options with source refs, so AI
+  can list product/spec/tier price/source choices for the user instead of
+  showing only the highest approximate match.
+- User correction: the issue is not just a missing `亞` to `錏` alias. The
+  lookup order must be AI-proposed material/spec candidates first, reviewed
+  table lookup second; raw typo strings are not canonical price keys.
+- Added derived `candidateQueries` support for `search_price_candidates`.
+  Raw-only terms such as `亞L30x30` are filtered or rejected; derived terms such
+  as `錏成型角鐵` + `30x30` can search reviewed rows and return multiple
+  thickness/price options. Superseding correction: query generation is AI
+  reasoning, not a runtime tool.
+- User correction: AI should decide which reviewed-data lookup tool to use
+  after normalization. The backend owns table-specific schemas, validation, raw
+  typo guards, source refs, and deterministic ranking; it should not silently
+  choose the domain lookup path for the AI.
+- User correction: the `亞L30x30 一支多少` sample is a full runtime chain, not
+  only a lookup contract. AI detects typo/incomplete spec, proposes approximate
+  material/spec candidates, calls reviewed-data tools, continues lookup/ranking,
+  writes a provisional workbook update, and explains assumptions/options for
+  user confirmation.
+- Documentation update: promoted AI-led tool orchestration to the core framework
+  in `CONTEXT.md`, `tasks/steel-data-rules-architecture/README.md`,
+  `checkpoints.md`, Phase 4 tool-calling, Phase 6 verification, and v8.3 Phase
+  2 data tools. Future implementation should not start from backend-fixed
+  product/weight/cutting/rule routing.
+- Implemented the first runtime enforcement slice: `/steel/oauth-chat` now
+  passes `steelRuntimePolicy: true`, and the OpenAI OAuth provider adds a system
+  instruction that AI owns Steel tool orchestration, must derive candidate
+  material/spec queries before searching reviewed price rows, must not treat raw
+  typo text such as `亞L30x30` as a confirmed price key, and must present
+  bounded options/confirmation for missing, zero, ambiguous, or approximate
+  reviewed facts.
+- User correction: not every reasoning step needs a tool. Runtime should expose
+  reviewed-row lookup tools and workbook/calculation validation tools, not AI
+  helper tools. Removed `normalize_quote_item`, `generate_price_search_terms`,
+  and `rank_price_candidates` from the executable tool registry; renamed the
+  reviewed default concept to `lookup_defaults` / `steel.quote_defaults` /
+  `quote_default`.
+- User correction: the Allowed MVP tool list is still too broad. For the MVP
+  quote flow, AI should derive material category, surface, dimensions, and
+  price query candidates itself, then call only reviewed lookup tools:
+  `lookup_instructions`, `search_price_candidates`, `lookup_defaults`,
+  `search_customers`, and `lookup_formula`. Exact lookup aliases,
+  formula-version naming, weight/cutting/processing/material-rule lookups,
+  ranking helpers, arbitrary source-chunk search, calculation primitives, and
+  workbook read tools should not appear as exposed MVP tools unless a later
+  implementation slice proves they are needed.
+- User correction: the AI inference process itself needs instruction design.
+  `docs/reference/instruction.txt` should seed reviewed, task-scoped
+  Instruction Packets for candidate generation and quote interpretation.
+  Added `lookup_instructions` to the Allowed MVP runtime tools because AI needs
+  a bounded query path for those rules before generating material/spec/price
+  candidates. Did not add `search_source_chunks` or a separate alias lookup to
+  MVP: instruction retrieval covers interpretation policy, while
+  `search_price_candidates` validates derived candidates against reviewed price
+  rows.
+- User correction: call the pre-tool default rules `Agent Instruction`, not the
+  old longer name. Agent Instruction is also Admin-managed and
+  injected into every Steel quote turn. It is not a code-fixed provider prompt;
+  runtime should use the reviewed active Agent Instruction and record its
+  version/source. Planned database surfaces are `steel.agent_instructions` for
+  the default injected instruction and `steel.instruction_packets` for
+  task-scoped retrieved packets.
+- User expectation: Agent Instruction should cover OCR/file interpretation,
+  tool routing, workbook behavior, and order inference. Updated the docs to
+  model `steel.agent_instructions` with structured sections: `fileOcrRules`,
+  `toolRules`, `orderInferenceRules`, `workbookRules`, and `responseRules`.
+- Workbook clarification: current `/steel/oauth-chat` can update workbooks via
+  the provider-facing `patch_workbook` output tool when workbook context is
+  present. AI proposes typed workbook operations; backend workbook schemas and
+  services validate/apply them. This remains separate from the MVP reviewed
+  lookup tools.
+- Updated the related docs to the reduced Allowed MVP runtime tool contract:
+  `CONTEXT.md`, v8.3 primary spec, v8.3 Phase 2 data tools, Steel data-rules
+  README, checkpoints, Phase 0 decisions, Phase 3 material rules, Phase 4
+  tool-calling, Phase 4A quote defaults, and AI rule-selection scenarios.
+- Verification passed for this docs cleanup slice: touched-doc Prettier check,
+  `git diff --check`, and stale white-list grep confirmed no old broad
+  allowed-tool heading or old one-tool-per-line bullets such as
+  `lookup_customer`, `lookup_spec_price`, `lookup_weight_spec`,
+  `lookup_formula_version`, `lookup_material_rules`, `select_calculation_rule`,
+  `lookup_cutting_price`, `lookup_processing_price`, or `get_workbook` remain
+  as active allowed-tool entries.
+- Verification passed for the instruction-query addition: touched-doc Prettier
+  check, stale white-list grep, `lookup_instructions` required-term grep across
+  core docs, and `git diff --check` passed. `lookup_instructions` is now the
+  only added query tool for AI inference; `search_source_chunks` remains
+  explicitly excluded from the MVP inference path.
+- Verification passed for Agent Instruction rename/management correction:
+  touched-doc Prettier check, stale old-name grep, Agent Instruction/DB-surface
+  required-term grep, and `git diff --check` passed.
+- Verification passed for Agent Instruction content/workbook clarification:
+  touched-doc Prettier check, required-term grep for `fileOcrRules`,
+  `toolRules`, `orderInferenceRules`, `workbookRules`, `responseRules`,
+  `patch_workbook`, `Workbook Output Tool`, `steel.agent_instructions`, and
+  `steel.instruction_packets`, stale old-name grep, and `git diff --check`
+  passed.
+- Split the earlier combined Agent Instruction / Instruction Packet baseline
+  into two documents:
+  `tasks/steel-data-rules-architecture/agent-instructions.md` owns only the
+  first `steel.agent_instructions` prompt seed, while
+  `tasks/steel-data-rules-architecture/instruction-packets.md` owns only
+  `steel.instruction_packets` selectors, storage shape, `lookup_instructions`
+  request/response behavior, Admin lifecycle, conflict policy, and seed packet
+  text.
+- The prompt-injected body text for future DB-backed
+  `steel.agent_instructions` and `steel.instruction_packets` is now documented
+  as Traditional Chinese. Canonical API/schema/tool keys such as
+  `fileOcrRules`, `toolRules`, `taskTypes`, and `requiredLookups` can remain
+  English.
+- The Instruction Packet seed examples now live in `instruction-packets.md` with
+  Traditional Chinese bodies and blocking rules:
+  `angle-surface-oral-zh-v1`, `c-type-basic-quote-zh-v1`, and
+  `workbook-provisional-confirmed-zh-v1`.
+- Removed the earlier combined baseline and updated references in `CONTEXT.md`,
+  v8.3 primary spec, v8.3 Phase 2, v8.3 Phase 5, Steel data-rules README, and
+  Phase 4 tool-calling to point at the separate `agent-instructions.md` and
+  `instruction-packets.md` docs.
+- Verification passed for the split-doc correction: touched-doc Prettier check,
+  stale combined-doc grep, required separate-doc / Traditional Chinese
+  injection-term grep, and `git diff --check`.
+- Inspected `docs/reference/instruction.txt`, `docs/reference/H型鋼.txt`,
+  `docs/reference/切工價錢.xlsx`, and `docs/reference/公式編號.xlsx`. For xlsx
+  sources, extracted workbook sheet/table contents using the bundled Python
+  runtime after the artifact-tool native dependency was blocked by macOS code
+  signing.
+- Expanded `tasks/steel-data-rules-architecture/instruction-packets.md` with
+  reference-derived Traditional Chinese seed packets:
+  `price-source-priority-zh-v1`,
+  `oral-material-candidate-generation-zh-v1`,
+  `formula-code-selection-zh-v1`, `h-type-length-surcharge-zh-v1`,
+  `h-and-i-beam-cutting-price-zh-v1`, `black-steel-cutting-price-zh-v1`,
+  `cut-count-and-trim-detection-zh-v1`,
+  `drawing-processing-detection-zh-v1`, and
+  `workbook-output-columns-zh-v1`.
+- The new packets classify detailed rules by runtime task/material/process:
+  price-source priority and missing-price handling, oral material candidate
+  generation, formula code selection from `公式編號.xlsx`, H-type regular/
+  non-standard length surcharge from `H型鋼.txt`, H/i-beam cutting details,
+  black steel pipe/angle/channel/flat cutting details, cut-count/head-tail
+  trim behavior, drawing/OCR processing detection, and workbook output notes.
+- Verification passed for the reference-derived instruction packet docs slice:
+  Prettier check for `instruction-packets.md` and `tasks/todo.md`, required
+  packet-name grep, required source/detail grep for the four reference sources
+  and selected H/cutting/formula markers, and `git diff --check`.
+- User correction captured: `lookup_instructions` is a batched full-facet lookup
+  per interpreted order context, not a per-detail query loop. The request should
+  include all detected steel/material families, task types, processing types,
+  formula candidates, customer/tier/project context, and low-confidence facets
+  together, then returned packets are applied across the relevant lines.
+- Updated Agent Instruction seed text, `instruction-packets.md`, Phase 4
+  tool-calling, v8.3 Phase 2 data tools, Steel data-rules README, and lessons
+  so hole count, cut count, slotting path, bending, formula, and individual line
+  fragments do not become separate `lookup_instructions` tool calls.
+- Verification passed for the batched full-facet `lookup_instructions`
+  correction: touched-doc Prettier check, required-term grep for batched/
+  full-facet/materialContexts wording, stale request-shape grep confirming no
+  `matchedSelectors` or old `limit: 5` example remains, and `git diff --check`.
+- User correction captured: hole count follows table count first, with drawing
+  hole positions used for cross-check. If table count and drawing positions
+  differ, record both and mark manual review instead of silently overriding the
+  table.
+- Updated `drawing-processing-detection-zh-v1` with the Traditional Chinese
+  【孔洞】 rule: round holes, long holes, bolt holes, punched holes, `4-Ø22` and
+  `6-Ø26` count as holes; `4-Ø22` means four holes per piece; total holes equal
+  per-piece/per-stock count times quantity; non-hole drawing marks must not be
+  counted; explicit `產品價格.xlsx` punching/hole-processing items win; C-type
+  holes follow the C-type special pricing rule.
+- Synced Agent Instruction, Phase 3 material rules, and lessons so table counts
+  are high-confidence primary evidence, drawing/vision is cross-check evidence,
+  and conflicts become manual review.
+- Verification passed for the hole-count table-priority correction: touched-doc
+  Prettier check, required-term grep for table-priority/C-type/product-price
+  hole wording, stale old-priority grep, and `git diff --check`.
+- User correction captured: related steel Instruction Packets must be organized
+  into material/task packet groups so one batched `lookup_instructions` call can
+  return all relevant detailed rules for the detected context.
+- Updated `instruction-packets.md` with `packetGroup`, `groupRole`,
+  `relatedPacketSlugs`, selector `packetGroups`, `packetGroupHints`, response
+  `packetGroups`, and a seed group map covering `global-quote-core`,
+  `angle-zinc-quote-core`, `c-type-quote-core`, `h-type-quote-core`,
+  `black-long-material-cutting-core`, `plate-processing-core`, and
+  `workbook-output-core`.
+- Added packet group membership to each seed packet so price, formula, cutting,
+  hole/drawing, workbook, and confirmation rules can be retrieved together
+  instead of forcing separate instruction lookups.
+- Synced Agent Instruction, Phase 4 tool-calling, v8.3 Phase 2 data tools,
+  Steel data-rules README, and lessons to require group expansion for related
+  steel rules.
+- Verification passed for the Instruction Packet group/bundle correction:
+  touched-doc Prettier check, required grep for packet groups, `packetGroupHints`
+  and seeded group keys, fragmented-query guard grep, and `git diff --check`.
+- Updated core docs to point at the new baseline:
+  `CONTEXT.md`, v8.3 primary spec, v8.3 Phase 2 data tools, v8.3 Phase 5 Admin
+  source management, Steel data-rules README, and Phase 4 tool-calling. The new
+  doc is explicitly docs/design only; implementation that adds Steel PostgreSQL
+  schema must still update both `supabase/schema.sql` and a new migration.
+- Verification passed for this Agent Instruction / Instruction Packet docs
+  slice: touched-doc Prettier check, stale bootstrap-name grep, required-term
+  grep for Agent Instruction/Instruction Packet/workbook output terms and seed
+  packet names, and `git diff --check`.
+- Verification passed for this tool-boundary/schema-rename slice: focused Steel
+  Jest suite covering normalization search, price repositories, executable tool
+  registry/executor, pricing decisions, provider policy, and chat handler
+  behavior passed with 51 tests; old-name schema/tool grep returned no active
+  `lesson_memory_entries`, `retrieve_lesson_memory`, `retrieve_user_memory`,
+  `ai_selected_lesson`, `entry_type`, or `supersedes_entry_id` matches;
+  Prettier, `git diff --check`, and `npm run build:api` also passed. The API
+  build still emits the existing non-Steel Redis type warning in
+  `src/cache/cacheFactory.ts`, but exits `0`.
+- Verification passed: focused normalization/pricing/repository/tool Jest with
+  38 tests, Prettier, `git diff --check`, and `npm run build:api`. The API
+  build still emits the existing non-Steel Redis type warning in
+  `src/cache/cacheFactory.ts`, but exits `0`.
+
 # Steel AI Audit Storage And High-Confidence Preview Correction
 
 - [x] Move AI Python code/output storage from visible workbook notes to backend-readable DB audit schema design.
@@ -47,7 +429,7 @@
 
 - Updated the Steel data-rules architecture package and v8.3 Phase 2 roadmap to make the AI/backend boundary explicit.
 - Added `tasks/steel-data-rules-architecture/ai-rule-selection-scenarios.md` as a durable scenario reference for the next C-type quote vertical slice.
-- Updated scenarios from user correction: C-type default true-zero comes from global/site-managed lesson/memory retrieval, zero material price asks with nearest candidates, H-type cutting asks head/tail before cut-count, and approved customer H-type defaults must be disclosed when applied.
+- Updated scenarios from user correction: C-type default true-zero comes from global/site-managed quote defaults retrieval, zero material price asks with nearest candidates, H-type cutting asks head/tail before cut-count, and approved customer H-type defaults must be disclosed when applied.
 - Updated cutting behavior: no-cut still records `0` cutting in workbook; cuttable materials with cutting needed ask head/tail; remainder-tail omission is explained in chat and workbook notes.
 - No Supabase migration was needed because this is a documentation/architecture sync only.
 
@@ -271,7 +653,7 @@
 
 - [x] Add Phase 4B plan and checkpoint for backend-only proposal creation.
 - [x] Add public rule proposal create/read schemas.
-- [x] Replace the generic `steel_memory_candidates` placeholder schema with structured proposal fields.
+- [x] Replace the generic proposal placeholder schema with structured proposal fields.
 - [x] Add backend proposal service/repository and authenticated create handler.
 - [x] Register `/api/steel/rule-proposals` under JWT auth.
 - [x] Verify focused schemas, handler, route, builds, and diff hygiene.
@@ -279,21 +661,21 @@
 ## Review
 
 - Added `tasks/steel-data-rules-architecture/phase-4b-rule-proposal-backend.md` and linked it from the phase map/checkpoints.
-- Kept Admin review UI, Admin approval/rejection API, promotion into `steel.calculation_rule_defaults`, and publication into `steel.lesson_memory_entries` deferred.
+- Kept Admin review UI, Admin approval/rejection API, promotion into `steel.calculation_rule_defaults`, and publication into `steel.quote_defaults` deferred for that Phase 4B closeout. Superseded by the current queue above: only Admin review UI remains paused; non-UI backend approval/publish work should be sequenced.
 - Added `packages/data-provider/src/steel/rules.ts` with strict public create/response schemas for structured rule proposals.
-- Replaced the generic Mongo `steel_memory_candidates` name/status placeholder with proposal fields, source refs, selectors, adjustable parameters, creator/reviewer metadata, and review queue indexes.
+- Replaced the generic Mongo proposal name/status placeholder with proposal fields, source refs, selectors, adjustable parameters, creator/reviewer metadata, and review queue indexes. Current docs use `steel_rule_proposals` for the proposal surface.
 - Added `packages/api/src/steel/rules/` service/repository and `createRuleProposal` handler.
 - Registered `POST /api/steel/rule-proposals` under existing JWT auth.
-- No Supabase migration was needed in Phase 4B because the proposal surface uses the existing Mongo collection; the earlier Phase 4A Supabase migration remains the Postgres lesson/default schema change.
-- Clarified that AI uses tool calling to request proposal creation; backend validation owns persistence, and global/site-managed lesson/memory is a future extension module.
+- No Supabase migration was needed in Phase 4B because the proposal surface uses Mongo; the earlier Phase 4A Supabase migration remains the Postgres quote-default schema change.
+- Clarified that AI uses tool calling to request proposal creation; backend validation owns persistence, and global/site-managed quote defaults are a future extension module.
 - Added the confirmed conversation scenarios for quote-only adjustments, explicit future defaults, unclear scope, multiple candidates, product-price zero handling, and global memory requests.
-- Closed Phase 4B scope so remaining Admin review/backend/UI and global lesson/memory extension work stays deferred while implementation returns to the core order quoting path.
+- Closed Phase 4B scope so remaining Admin review/backend/UI and global quote defaults extension work stays deferred while implementation returns to the core order quoting path.
 - Verification passed: focused data-provider/data-schemas/API/route Jest suites and `npm run build:data-provider`, `npm run build:data-schemas`, `npm run build:api`.
 - `npm run build:api` still reports existing non-Steel TypeScript warnings in config/cache/middleware files; no new Steel build failure was introduced.
 
-# Steel Phase 4A Lesson/Memory Schema
+# Steel Phase 4A Quote Default Schema
 
-- [x] Generate a Supabase migration for reviewed calculation defaults and published lesson/memory entries.
+- [x] Generate a Supabase migration for reviewed calculation defaults and published quote defaults.
 - [x] Update `supabase/schema.sql` with the same Phase 4A schema.
 - [x] Apply the migration to cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
 - [x] Verify table columns, constraints, indexes, triggers, and private Steel access posture.
@@ -301,18 +683,18 @@
 
 ## Review
 
-- Generated `supabase/migration/20260602035007_phase4a_lesson_memory_defaults.sql` with `npx supabase migration new phase4a_lesson_memory_defaults`.
+- Generated the Phase 4A Supabase migration. Current filename and schema naming have been updated to `supabase/migration/20260602035007_phase4a_quote_defaults.sql`.
 - Added `steel.calculation_rule_defaults` for Admin-reviewed durable customer/tier/material/product/company calculation defaults.
-- Added `steel.lesson_memory_entries` for published task-scoped retrieval entries generated from reviewed facts.
+- Added `steel.quote_defaults` for published task-scoped retrieval entries generated from reviewed facts.
 - Kept LibreChat user memory outside Steel Admin-reviewed tables; user memory remains an adapter/retrieval layer, not a persisted site-wide default.
 - Updated `supabase/schema.sql` with the same tables, constraints, indexes, and `set_updated_at` triggers.
 - Applied the migration to cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
 - Live cloud verification passed: both tables exist, expected column/constraint/index/trigger counts are present, `anon`/`authenticated` have no grants, and rollback insert smoke passed.
 - Verification passed: Markdown Prettier, schema grep, `npm run build:api`, and `git diff --check`.
 
-# Steel Lesson/Memory Layer Boundary Update
+# Steel Quote Default Layer Boundary Update
 
-- [x] Distinguish LibreChat user memory from Steel Admin-reviewed lesson/memory.
+- [x] Distinguish LibreChat user memory from Steel Admin-reviewed quote defaults.
 - [x] Define priority rules where user custom memory can override reviewed defaults without mutating them.
 - [x] Update provider-neutral tool contract so both layers stay scoped, bounded, and backend-validated.
 - [x] Update lessons with the new boundary.
@@ -321,35 +703,35 @@
 ## Review
 
 - Updated `CONTEXT.md` with `LibreChat User Memory` and clarified that it stays separate from reviewed Steel facts.
-- Updated Phase 4A so Steel Admin-reviewed lesson/memory is the site-managed default retrieval layer, while LibreChat user memory is a user/account-scoped custom memory layer.
+- Updated Phase 4A so Steel Admin-reviewed quote defaults are the site-managed default retrieval layer, while LibreChat user memory is a user/account-scoped custom memory layer.
 - Locked quote-time priority: current quote override first, then applicable LibreChat user memory, then Admin-reviewed customer/tier/company defaults.
-- Added `retrieve_user_memory` and separate `userMemoryCandidates` handling to the provider-neutral retrieval contract.
+- Earlier docs considered `lookup_user_memory` and separate `userMemoryCandidates` handling. Superseding correction: the MVP exposed default lookup tool is `lookup_defaults`; LibreChat user memory remains a later separate adapter.
 - Clarified that user memory can override retrieval priority but cannot mutate reviewed Steel facts, invent formula codes, or bypass backend validation.
 - Verification passed: Markdown Prettier, required-term grep, and `git diff --check`.
 
-# Steel Lesson/Memory Promotion Architecture
+# Steel Quote Default Promotion Architecture
 
 - [x] Separate quote-specific overrides from reusable customer defaults.
 - [x] Define rule proposals as the only path from conversation adjustments to Admin-reviewed defaults.
-- [x] Define lesson/memory as generated task-scoped retrieval over reviewed database facts, not source of truth.
-- [x] Define how AI retrieves matching lesson/memory through backend tools and scoped filters.
+- [x] Define quote defaults as generated task-scoped retrieval over reviewed database facts, not source of truth.
+- [x] Define how AI retrieves matching quote defaults through backend tools and scoped filters.
 - [x] Update Phase 2/Phase 4/Phase 5 docs and checkpoints with the Admin approval boundary.
 - [x] Verify docs formatting, required terms, and diff hygiene.
 
 ## Review
 
-- Added `tasks/steel-data-rules-architecture/phase-4a-lesson-memory-architecture.md`.
-- Added `Rule Proposal` and `Lesson/Memory Entry` to `CONTEXT.md`.
-- Planned lifecycle: quote override -> rule proposal with `needs_review` -> Admin review -> reviewed database rule/default/formula/price row -> generated task-scoped lesson/memory.
-- Locked that "save as customer default" must not write lesson/memory directly; it only creates a structured proposal after required customer/material/charge/formula/parameter fields are known.
-- Planned future storage surfaces: proposal surface (`steel_rule_proposals` or `steel_memory_candidates`) and reviewed default surface (`steel.calculation_rule_defaults`) referencing `steel.formula_versions.code` instead of duplicating formulas.
-- Planned retrieval surface `steel.lesson_memory_entries` and quote-facing tools `retrieve_lesson_memory`, `rank_lesson_memory`, and `select_calculation_rule`.
-- Locked retrieval behavior: typed filters first, bounded reviewed candidates only, origin refs required, and backend revalidation before selected lesson/memory becomes `selectedCalculationRule`.
+- Added `tasks/steel-data-rules-architecture/phase-4a-quote-defaults-architecture.md`.
+- Added `Rule Proposal` and `Quote Default` to `CONTEXT.md`.
+- Planned lifecycle: quote override -> rule proposal with `needs_review` -> Admin review -> reviewed database rule/default/formula/price row -> generated task-scoped quote defaults.
+- Locked that "save as customer default" must not write quote defaults directly; it only creates a structured proposal after required customer/material/charge/formula/parameter fields are known.
+- Planned future storage surfaces: proposal surface (`steel_rule_proposals`) and reviewed default surface (`steel.calculation_rule_defaults`) referencing `steel.formula_versions.code` instead of duplicating formulas.
+- Planned retrieval surface `steel.quote_defaults`, quote-facing tool `lookup_defaults`, internal/default validation policy, and `select_calculation_rule`.
+- Locked retrieval behavior: typed filters first, bounded reviewed candidates only, origin refs required, and backend revalidation before selected quote defaults becomes `selectedCalculationRule`.
 - Verification passed: Markdown Prettier, retrieval-contract grep, memory-dump guard grep, and `git diff --check`.
 
 # Steel Phase 2 Adjustable Calculation Rule Overrides
 
-- [x] Extend selected calculation rules so lesson/memory/admin defaults can carry adjustable numeric parameters.
+- [x] Extend selected calculation rules so quote defaults/admin defaults can carry adjustable numeric parameters.
 - [x] Accept explicit user-provided conversation overrides for numbers or prices without hardcoding those values in code.
 - [x] Keep fixed formula identity separate from adjustable parameters.
 - [x] Preserve `產品價格.xlsx` zero-as-missing behavior unless a user override supplies the value or a confirmed true-zero rule applies through non-product-price evidence.
@@ -358,8 +740,8 @@
 ## Review
 
 - Extended `selectedCalculationRule` with optional `formulaCode`, `defaultParameters`, and `parameterOverrides`.
-- `formulaCode` identifies the fixed formula path; `defaultParameters` represent lesson/memory/admin defaults; `parameterOverrides` represent explicit user, quote-evidence, or admin adjustments.
-- `rank_price_candidates` now accepts a high-confidence `unitPrice` / `unit_price` override from the selected rule and applies it before rejecting missing prices.
+- `formulaCode` identifies the fixed formula path; `defaultParameters` represent quote defaults/admin defaults; `parameterOverrides` represent explicit user, quote-evidence, or admin adjustments.
+- Price decision policy accepts a high-confidence `unitPrice` / `unit_price` override from the selected rule and applies it before rejecting missing prices. Superseding correction: this remains internal policy, not an exposed runtime tool.
 - Medium/low-confidence overrides return `parameter_override_not_confirmed`, so the chat flow asks for confirmation instead of silently pricing.
 - The selected rule and its override details are returned in `priceDecision.calculationRule` so later calculators can audit which defaults and custom numbers were used.
 - Verification passed: focused Steel Jest suites, focused ESLint, `npm run build:api`, built-package user-override smoke, and diff hygiene checks.
@@ -368,22 +750,22 @@
 
 - [x] Add backend price decision contract for ranked candidates.
 - [x] Treat `產品價格.xlsx` zero values as missing price, not confirmed free price.
-- [x] Require an AI/memory/admin selected calculation rule before any zero charge becomes confirmed true zero.
+- [x] Require a `quote_default` or Admin-reviewed selected calculation rule before any zero charge becomes confirmed true zero.
 - [x] Let the selected calculation rule decide whether the price path skips remainder calculation.
 - [x] Require user confirmation when multiple usable price candidates remain.
-- [x] Add `rank_price_candidates` to the provider-neutral Steel tool executor.
+- [x] Add price-ranking decision policy. Superseding correction: do not expose it as a runtime tool.
 
 ## Review
 
 - Added `packages/api/src/steel/pricing/decision.ts` and focused tests for price ranking/decision behavior.
-- Added `rank_price_candidates` to the Steel tool registry and executor. It is a pure decision tool and does not query Supabase directly.
+- Added price-ranking decision policy. Superseding correction: `rank_price_candidates` was removed from the executable Steel tool registry; ranking/confirmation stays backend internal policy plus AI explanation.
 - Product/material price `0` from `產品價格.xlsx` is rejected with `product_price_zero_is_missing`.
 - A zero charge is usable only when the caller supplies a selected calculation rule with `effect = true_zero_charge`, matching `appliesToChargeTypes`, and `confidence = high`.
-- The current C-type cutting/hole free-charge behavior is represented as an AI/memory/admin selected calculation rule, not as product-family hardcoding in pricing code.
+- The current C-type cutting/hole free-charge behavior is represented as a `quote_default` or Admin-reviewed selected calculation rule, not as product-family hardcoding in pricing code.
 - True-zero decisions normalize `valueState` to `true_zero` and use the selected rule's `skipRemainderCalculation` flag.
 - Zero cutting/hole values without a selected calculation rule are rejected by default, even for C-type steel.
 - Multiple positive usable candidates return `confirm_candidates` so the user chooses before pricing.
-- Verification passed: focused Steel Jest suites, focused ESLint, `npm run build:api`, built-package `rank_price_candidates` smoke, and diff hygiene checks.
+- Verification passed at the time for focused Steel Jest suites, focused ESLint, `npm run build:api`, built-package price-decision smoke, and diff hygiene checks. Superseded runtime-tool exposure was later removed.
 
 # Steel Phase 2 AI Spec Clarification
 
@@ -395,13 +777,13 @@
 
 ## Review
 
-- Added `packages/api/src/steel/normalization/clarify.ts` as the backend contract for AI-proposed quote item candidates.
-- Added `normalize_quote_item` to the provider-neutral Steel tool registry and executor. This tool validates AI candidate output; it does not query raw files or Supabase directly.
-- `resolveSteelQuoteItemCandidates()` returns `use_candidate` only for one high-confidence complete candidate.
+- Earlier slice added `packages/api/src/steel/normalization/clarify.ts` and `resolveSteelQuoteItemCandidates()` as a backend contract for AI-proposed quote item candidates.
+- Superseding correction: AI candidate generation stays in reasoning, not a runtime helper. `clarify.ts` / `clarify.spec.ts` were removed, and `normalize_quote_item` must not be exposed as an executable runtime tool.
+- AI should ask for confirmation when candidate confidence is not high, when multiple plausible candidates exist, or when required fields are missing.
 - Medium/low confidence candidates return `ask_user` with bounded options for user confirmation.
 - Multiple plausible candidates return `confirm_candidates` so the chat flow can show choices before pricing.
 - Missing required fields return a targeted question naming the missing canonical fields.
-- Focused red/green tests passed for the clarification rules and executor integration.
+- Focused red/green tests passed for the clarification rules. Superseded executor integration was later removed from the runtime tool registry.
 
 # Steel Phase 2 Tool Executor MVP
 

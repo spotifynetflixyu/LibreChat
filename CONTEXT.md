@@ -68,6 +68,10 @@ _Avoid_: Ongoing Admin upload format, reusable runtime parser, price source, dir
 Customer-supplied inquiry material used to understand the requested quote, such as chat text, handwritten notes, PDFs, images, photos, RTF samples, or mixed attachments.
 _Avoid_: Formal Admin import source, database source of truth, price source
 
+**AI Tool Orchestration**:
+The AI-led process that interprets quote request evidence, proposes material/spec candidates, chooses the relevant backend business tools, compares reviewed results, proposes workbook updates, and asks for confirmation when confidence is not high enough.
+_Avoid_: Backend-hidden product/price/weight/cutting routing from raw customer text
+
 **Quote-Specific Adjustment**:
 A customer-requested change that applies only to the current quote line, such as excluding a charge, using a special price, or adding a surcharge.
 _Avoid_: Formal source-data update, hidden override, permanent pricing rule
@@ -76,7 +80,7 @@ _Avoid_: Formal source-data update, hidden override, permanent pricing rule
 A structured candidate for a reusable customer/material default created from quote evidence and held for Admin review.
 _Avoid_: Direct memory write, reviewed rule, automatic customer default
 
-**Lesson/Memory Entry**:
+**Quote Default**:
 A task-scoped AI retrieval item generated from reviewed database facts such as material rules, calculation defaults, or formula versions.
 _Avoid_: Source of truth, unreviewed chat memory, prompt-only business rule
 
@@ -84,9 +88,29 @@ _Avoid_: Source of truth, unreviewed chat memory, prompt-only business rule
 The user's custom memory layer from LibreChat, scoped to that user or account and separate from Steel Admin-reviewed facts.
 _Avoid_: Admin-reviewed rule, site-wide default, formal source-data update
 
-**Lesson/Memory Retrieval Packet**:
-A bounded backend-produced set of reviewed lesson/memory candidates for the current customer, item, charge type, and formula context.
+**Default Lookup Packet**:
+A bounded backend-produced set of reviewed quote-default candidates for the current customer, item, charge type, and formula context.
 _Avoid_: Full memory dump, raw prompt memory, unfiltered semantic retrieval, user memory merged into reviewed origins
+
+**Instruction Packet**:
+A bounded, reviewed, task-scoped quoting instruction retrieved for the current quote interpretation task, such as material alias expansion, price-before-weight policy, C-type rules, long-material cutting rules, hole/slot/bending interpretation, or workbook-output requirements. Planned storage is `steel.instruction_packets`. `docs/reference/instruction.txt` is the current reference seed for these rules, but runtime should retrieve only relevant packets rather than dump the whole file into every prompt.
+The current seed/design baseline is
+`tasks/steel-data-rules-architecture/instruction-packets.md`. Packet bodies
+injected into AI prompts should be Traditional Chinese; canonical API/schema
+keys can remain English.
+_Avoid_: Full instruction dump, raw source text search, hard-coded provider prompt rule
+
+**Agent Instruction**:
+The Admin-managed default instruction injected into every Steel quote turn before tool use. Planned storage is `steel.agent_instructions`. It tells AI the built-in order-inference workflow: file/OCR handling, raw customer text as evidence, reviewed lookup tool routing, workbook output behavior, confirmation policy, and avoiding raw typo table lookups. Detailed task-specific steel rules can still be retrieved through Instruction Packets.
+The current seed/design baseline is
+`tasks/steel-data-rules-architecture/agent-instructions.md`. The prompt body
+injected into AI should be Traditional Chinese; canonical API/schema keys can
+remain English.
+_Avoid_: Code-hardcoded provider prompt, full instruction corpus, one-off task packet
+
+**Workbook Output Tool**:
+A provider-facing function tool that lets AI propose structured workbook patch operations after it has enough reviewed or provisional quote facts. The current `/steel/oauth-chat` implementation uses `patch_workbook` when workbook context is present; backend validation and workbook services apply or reject the patch.
+_Avoid_: Reviewed lookup tool, direct DB mutation, raw natural-language workbook edit
 
 **Product Price Unit Weight**:
 The primary unit weight used for a quote when reviewed product price data carries unit weight for the priced item.
@@ -161,9 +185,22 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - A **Legacy Office File** may be handled by the AI/provider; server-side conversion to `.xlsx` or `.docx` is only production behavior after a converter proof script succeeds.
 - A **Steel Handbook DOCX** is a one-time development schema-design reference, not an ongoing Admin web upload path, reusable product parser, or immediate production-data import.
 - **Quote Request Evidence** helps interpret the current order, but it does not update formal customer, product, price, weight, formula, or cutting-price tables by itself.
+- **AI Tool Orchestration** is the core Steel quote runtime framework: AI
+  interprets quote evidence, derives steel category/surface/dimensions and
+  price query candidates, then chooses among the MVP reviewed lookup tools:
+  `lookup_instructions`, `search_customers`, `search_price_candidates`,
+  `lookup_defaults`, and `lookup_formula`. Weight, cutting, processing,
+  material-rule, ranking, and calculation primitives are backend internal
+  validation/calculation capabilities unless a later slice explicitly exposes
+  them.
+- Before `lookup_instructions`, AI follows the Admin-managed
+  **Agent Instruction** that is injected into every Steel quote turn. It may
+  classify rough task facets and route tool use, then retrieve database-backed
+  **Instruction Packets** for detailed steel inference rules.
+- Backend tools validate the AI-chosen tool inputs, reject unsafe raw typo lookups, return reviewed source-backed candidates, and run deterministic calculators. Backend code must not silently choose the business lookup path from raw customer text.
 - A **Quote-Specific Adjustment** may override default database prices, material rules, or processing charges for the current **Workbook Line**, but it does not mutate formal source data.
-- **LibreChat User Memory** can override the priority of matching Admin-reviewed lesson/memory for the current user's workflow, but it remains a user-scoped memory layer and does not mutate reviewed Steel facts.
-- **Lesson/Memory Retrieval Packets** should keep Admin-reviewed lesson/memory candidates separate from **LibreChat User Memory** candidates so backend validation can enforce scope, origin, and formula compatibility.
+- **LibreChat User Memory** can override the priority of matching Admin-reviewed quote defaults for the current user's workflow, but it remains a user-scoped memory layer and does not mutate reviewed Steel facts.
+- **Default Lookup Packets** should keep Admin-reviewed quote-default candidates separate from **LibreChat User Memory** candidates so backend validation can enforce scope, origin, and formula compatibility.
 - **Product Price Unit Weight** is the main quote weight when present on reviewed product price data; handbook weight remains separate evidence and the general spec/weight reference when product price has no reviewed unit weight.
 - A missing or unreviewed `0.00` price is not a **True Zero Price**; tools return `未確認`, a low-confidence estimate, or manual review until an admin confirms the zero-price business fact.
 - A **Cutting Price Source** is formal cutting-price data and can be maintained through Admin workflows; cutting fees still remain separate from material unit-price adjustments.
@@ -191,6 +228,10 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 > **AI:** "H 型鋼 200x200 是 t8 嗎？目前查到 t8 是 1000 元、t12 是 1200 元，幣別是 NTD。"
 > **Domain expert:** "The AI may show candidate prices while clarifying the missing thickness, but any leading candidate must come from a preference rule or deterministic ranking."
 >
+> **Customer:** "亞L30x30 一支多少？"
+> **AI:** Treat `亞L30x30` as quote request evidence, identify possible typo and incomplete spec, propose angle/L steel 30x30 candidates, choose the product-price lookup path for the "一支多少" intent, query reviewed price rows with derived candidates, write only provisional workbook output, and ask the user to confirm from bounded options.
+> **Domain expert:** "AI owns the tool choice. Backend validates and guards each tool call; it does not hard-code this raw text into a backend-selected lookup path."
+>
 > **Customer:** "這一項總價打到 9000."
 > **Domain expert:** "Update that workbook line's line total, then recalculate and save the quoted unit price through the related price formula."
 
@@ -198,6 +239,7 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 
 - "常用的" does not mean a fixed product-table default. It means an admin-taught **Preference Rule** that can vary by product, customer, project, region, or other business context.
 - "多少錢" with an incomplete spec is not a single-price question when multiple **Spec Candidates** match. The AI should clarify the missing detail while showing known candidate prices when available.
+- Typo/incomplete material text, such as `亞L30x30`, is not a canonical lookup key. AI should propose possible material/spec candidates and choose the relevant tool path; backend tools should reject raw typo table lookups and return source-backed candidates only.
 - **Guest Mode** does not mean anonymous admin access or open access to every quote. It is scoped to the returning customer's own conversation/workbook/export token.
 - "permanent workbook data" means the accepted **Workbook Line** calculation is saved in the workbook state, not left only in chat text or a tool result.
 - "latest database price" means the default for new pricing or explicit recalculation, not permission to refresh existing workbook prices automatically.

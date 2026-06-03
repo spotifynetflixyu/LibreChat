@@ -104,4 +104,44 @@ describe('Steel price repositories', () => {
     expect(result[0]?.unitPrice).toBeNull();
     expect(result[0]?.valueState).toBe('unknown');
   });
+
+  it('searches reviewed price candidates with derived product and partial spec terms', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          id: '21',
+          erp_item_code: 'A-L30-25',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'angle_L30x30x2.5x6M',
+          product_name: '錏成型角鐵',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '194.3000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      productName: '錏成型角鐵',
+      specKeyContains: '30x30',
+      customerTierId: 1,
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
+      'reviewed',
+      '%30x30%',
+      '%錏成型角鐵%',
+      1,
+      5,
+    ]);
+  });
 });

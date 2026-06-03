@@ -1,10 +1,10 @@
-# Phase 4A: Lesson And Memory Promotion Architecture
+# Phase 4A: Quote Defaults Architecture
 
 Goal: define how conversation-specific adjustments can become reviewed customer defaults without letting chat directly mutate formal rules, prices, formulas, or prompt memory.
 
 ## Core Boundary
 
-Lessons and memories are retrieval surfaces, not the source of truth.
+Quote defaults are retrieval surfaces, not the source of truth.
 
 Formal truth lives in reviewed database facts:
 
@@ -13,17 +13,17 @@ Formal truth lives in reviewed database facts:
 - Future reviewed default-rule tables own customer-scoped default parameters when a rule is customer-specific.
 - Mongo workbook state owns quote-specific adjustments for the current conversation/workbook line.
 
-AI can propose, select, and explain rules. It cannot publish permanent lessons/memory or update formal rule tables without Admin review.
+AI can propose, select, and explain rules. It cannot publish permanent quote defaults or update formal rule tables without Admin review.
 
-## Memory Layers
+## Default Layers
 
-Steel must keep two memory concepts separate.
+Steel must keep reusable Steel quote defaults separate from LibreChat user memory.
 
-### Steel Admin-Reviewed Lesson/Memory
+### Steel Admin-Reviewed Quote Default
 
-Steel Admin-reviewed lesson/memory is the site-managed default retrieval layer. It is generated from reviewed Steel database facts and applies according to business scope such as customer, customer tier, material family, product family, charge type, and formula code.
+Steel Admin-reviewed quote defaults are the site-managed default retrieval layer. They are generated from reviewed Steel database facts and apply according to business scope such as customer, customer tier, material family, product family, charge type, and formula code.
 
-Implementation note: global or site-managed lesson/memory belongs to a future extension module. The current core backend slice may create structured `needs_review` rule proposals, but it must not publish global lessons/memory until that extension module is explicitly planned.
+Implementation note: global or site-managed quote defaults belong to a future extension module. The current core backend slice may create structured `needs_review` rule proposals, but it must not publish global quote defaults until that extension module is explicitly planned.
 
 Rules:
 
@@ -40,8 +40,8 @@ Rules:
 
 - It is scoped to the LibreChat user/account memory owner.
 - It can override the priority of matching Admin-reviewed defaults for that user's quote workflow.
-- It must not mutate Steel Admin-reviewed facts, formula versions, material rules, prices, or published Steel lesson/memory entries.
-- It must be surfaced as a separate `userMemoryCandidate` layer with source/user scope, confidence, and reason, not merged into Admin-reviewed origins.
+- It must not mutate Steel Admin-reviewed facts, formula versions, material rules, prices, or published Steel quote defaults.
+- It must be surfaced as a separate `userMemoryCandidate` layer with source/user scope, confidence, and reason, not merged into Admin-reviewed quote-default origins.
 - It cannot create a new `formulaCode`, bypass formula validation, or turn an unreviewed business fact into a reviewed default.
 
 Layer priority for quote-time rule selection:
@@ -71,7 +71,7 @@ Rules:
 - Applies only to the current quote/workbook line unless promoted later.
 - Stored with conversation/workbook source refs and audit data.
 - Can override adjustable parameters such as `unitPrice`, count, rate, surcharge, or skip behavior.
-- Does not update `steel.material_rules`, price tables, formula tables, or lesson/memory indexes.
+- Does not update `steel.material_rules`, price tables, formula tables, or quote-default indexes.
 
 ### Rule Proposal
 
@@ -96,26 +96,26 @@ Rules:
 - If the change needs a new formula path, Admin must approve a reviewed `formula_versions` row first. AI cannot invent a new `formulaCode`.
 - If only numbers change, Admin updates reviewed default parameters, not code.
 
-### Published Lesson/Memory
+### Quote Defaults Table
 
-Published lesson/memory is generated from reviewed facts.
+Published quote defaults are generated from reviewed facts.
 
 Rules:
 
 - It references reviewed database rows by origin table, origin ID, revision, and source refs.
-- It is task-scoped at retrieval time. The AI receives only relevant lessons/memory for the current customer, material family, charge type, and formula path.
+- It is task-scoped at retrieval time. The AI receives only relevant quote defaults for the current customer, material family, charge type, and formula path.
 - It can be rebuilt or invalidated from reviewed database changes.
 - It is never the only copy of a business rule.
 
 ## AI Retrieval Architecture
 
-AI should not receive all lessons/memory in the prompt. It should receive a bounded retrieval packet produced by backend tools from normalized quote context.
+AI should not receive all quote defaults in the prompt. It should receive a bounded lookup packet produced by backend tools from interpreted quote context.
 
 Retrieval inputs:
 
 - customer ID, customer tier, and aliases when known
 - current LibreChat user/account memory scope
-- normalized product/spec candidates
+- interpreted product/spec candidates
 - product family and material family
 - charge type: material, cutting, hole, slotting, bending, or processing
 - reviewed `formulaCode` candidates when a formula path is already known
@@ -124,8 +124,8 @@ Retrieval inputs:
 
 Retrieval hard filters:
 
-- Steel Admin-reviewed lesson/memory entries require `review_state = reviewed`
-- Steel Admin-reviewed lesson/memory entries require `active = true`
+- Steel Admin-reviewed quote defaults require `review_state = reviewed`
+- Steel Admin-reviewed quote defaults require `active = true`
 - not invalidated or superseded
 - scope matches the current task: customer-specific, material/product family, charge type, formula code, or company-global fallback
 - proposal rows with `needs_review` or `rejected` status are excluded
@@ -146,9 +146,9 @@ When Admin-reviewed ranks tie, use reviewed priority first, then newer reviewed 
 Retrieval output:
 
 ```text
-lessonMemoryCandidates[]
-- lessonMemoryEntryId
-- entryType: calculation_default | material_rule | preference_rule | formula_hint | true_zero_rule
+defaultCandidates[]
+- quoteDefaultId
+- defaultType: calculation_default | material_rule | preference_rule | formula_hint | true_zero_rule
 - originTable
 - originId
 - originRevision
@@ -175,20 +175,20 @@ userMemoryCandidates[]
 - sourceRefs
 - confidence
 - relevanceReason
-- overridesLessonMemoryEntryId nullable
+- overridesQuoteDefaultId nullable
 ```
 
 AI use:
 
 - AI may select one candidate as `selectedCalculationRule`.
 - AI may select an applicable LibreChat user memory candidate before an Admin-reviewed default when the user memory is task-scoped and high confidence.
-- AI may combine one reviewed lesson/memory default with explicit quote-specific `parameterOverrides`.
+- AI may combine one reviewed quote default with explicit quote-specific `parameterOverrides`.
 - AI must ask the user when candidates conflict, confidence is not high, or required selectors are missing.
-- AI must not invent `lessonMemoryEntryId`, `userMemoryEntryId`, `formulaCode`, default parameters, or origin refs.
+- AI must not invent `quoteDefaultId`, `userMemoryEntryId`, `formulaCode`, default parameters, or origin refs.
 
 Backend validation after AI selection:
 
-- selected Admin-reviewed lesson/memory entry still exists, is reviewed, active, and in scope
+- selected Admin-reviewed quote default still exists, is reviewed, active, and in scope
 - selected LibreChat user memory entry still exists, belongs to the current user/account scope, and is in task scope
 - selected formula code is reviewed and active
 - selected effect applies to the requested charge type
@@ -197,25 +197,28 @@ Backend validation after AI selection:
 
 ## Retrieval Tool Plan
 
-Future provider-neutral tools should keep lesson/memory retrieval behind backend validation.
+Future provider-neutral tools should keep quote defaults retrieval behind backend validation.
 
-Quote-facing tools:
+Quote-facing MVP tool:
 
-- `retrieve_lesson_memory`: returns bounded reviewed candidates for normalized customer/item/charge context.
-- `retrieve_user_memory`: returns bounded LibreChat user custom memory candidates for the current user/account and normalized task context.
-- `rank_lesson_memory`: validates/ranks retrieved candidates when more than one applies.
-- `select_calculation_rule`: validates the AI-selected candidate and converts it into `selectedCalculationRule`.
+- `lookup_defaults`: returns bounded reviewed candidates for normalized customer/item/charge context.
+
+Not exposed as MVP tools:
+
+- `lookup_user_memory`: future adapter that returns bounded LibreChat user custom memory candidates for the current user/account and normalized task context.
+- `rank_defaults`: internal validation/ranking policy for retrieved candidates when more than one applies.
+- `select_calculation_rule`: backend internal validation that converts an AI-selected candidate into `selectedCalculationRule` only after source scope, review state, and formula compatibility checks pass.
 
 Admin-only tools or APIs:
 
 - `create_rule_proposal`: creates a `needs_review` proposal after required fields are known.
 - `approve_rule_proposal`: writes reviewed database facts and audit refs.
-- `publish_lesson_memory`: rebuilds lesson/memory entries from reviewed facts.
-- `invalidate_lesson_memory`: invalidates generated entries when reviewed origin facts change.
+- `publish_quote_defaults`: rebuilds quote defaults from reviewed facts.
+- `invalidate_quote_defaults`: invalidates generated entries when reviewed origin facts change.
 
 Quote-facing AI must not call Admin-only publication tools.
 
-Quote-facing tools may return both Admin-reviewed lesson/memory and LibreChat user memory, but they must keep the two layers separately labeled through ranking and validation.
+Quote-facing tools may return both Admin-reviewed quote defaults and LibreChat user memory, but they must keep the two layers separately labeled through ranking and validation.
 
 ## Promotion Flow
 
@@ -226,7 +229,7 @@ customer conversation
   -> rule proposal with needs_review status
   -> Admin review and validation
   -> reviewed database rule/default/formula/price row
-  -> generated task-scoped lesson/memory entry
+  -> generated task-scoped quote default
   -> future AI rule selection
 ```
 
@@ -241,7 +244,7 @@ Purpose: hold candidate defaults created from conversation context before Admin 
 Suggested table or Mongo collection:
 
 ```text
-steel_rule_proposals or steel_memory_candidates
+steel_rule_proposals
 - id
 - proposal_type: customer_default | material_rule | price_override | formula_default
 - status: needs_review | reviewed | rejected
@@ -299,14 +302,14 @@ This table should not duplicate formula bodies. It stores the reviewed `formula_
 
 ### Published Retrieval Surface
 
-Purpose: let AI retrieve the matching reviewed lesson/memory without scanning all rules or prompt text.
+Purpose: let AI retrieve the matching reviewed quote defaults without scanning all rules or prompt text.
 
 Implemented table:
 
 ```text
-steel.lesson_memory_entries
+steel.quote_defaults
 - id
-- entry_type
+- default_type
 - origin_table
 - origin_id
 - origin_revision
@@ -325,7 +328,7 @@ steel.lesson_memory_entries
 - source_refs JSONB array
 - active
 - review_state
-- supersedes_entry_id nullable
+- supersedes_default_id nullable
 - published_at
 - invalidated_at nullable
 - created_at
@@ -350,12 +353,12 @@ LibreChat user memory adapter
 - default_parameters
 - confidence
 - source_refs
-- overrides_lesson_memory_entry_id nullable
+- overrides_quote_default_id nullable
 - created_at
 - updated_at
 ```
 
-This surface should adapt existing LibreChat memory records where possible. It should not duplicate Steel Admin-reviewed facts or write into `steel.lesson_memory_entries`.
+This surface should adapt existing LibreChat memory records where possible. It should not duplicate Steel Admin-reviewed facts or write into `steel.quote_defaults`.
 
 ## Tool Contract
 
@@ -406,7 +409,7 @@ Approval options:
 ## Non-Goals
 
 - Do not let chat write reviewed rules directly.
-- Do not let AI publish persistent lessons/memory directly.
+- Do not let AI publish persistent quote defaults directly.
 - Do not store LibreChat user memory as if it were an Admin-reviewed Steel fact.
 - Do not store formulas only as natural-language memory.
 - Do not promote quote overrides automatically because they repeat.
@@ -419,11 +422,11 @@ Future implementation must prove:
 - quote override writes do not mutate formal rule tables
 - rule proposal records are excluded from quote lookup until reviewed
 - Admin approval writes source refs and audit trail
-- published lessons/memory can be rebuilt from reviewed database rows
-- stale memory is invalidated after reviewed rule updates
-- AI receives only task-scoped reviewed lessons/memory
+- published quote defaults can be rebuilt from reviewed database rows
+- stale quote defaults are invalidated after reviewed rule updates
+- AI receives only task-scoped reviewed quote defaults
 - AI receives only task-scoped LibreChat user memory for the current user/account scope
 - LibreChat user memory can override retrieval priority without mutating Admin-reviewed facts
-- lesson/memory retrieval applies typed filters before semantic ranking
-- AI-selected `selectedCalculationRule` is rejected when its origin lesson/memory entry is stale, unreviewed, inactive, or out of scope
+- quote defaults retrieval applies typed filters before semantic ranking
+- AI-selected `selectedCalculationRule` is rejected when its origin quote default is stale, unreviewed, inactive, or out of scope
 - AI-selected `selectedCalculationRule` is rejected when its origin user memory belongs to a different user/account, is out of scope, or tries to bypass reviewed formula validation
