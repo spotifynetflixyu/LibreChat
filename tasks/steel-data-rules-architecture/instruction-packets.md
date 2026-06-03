@@ -349,8 +349,13 @@ Body:
   - `L30x30`
 - 若 `search_price_candidates` 回傳多個厚度或品名，必須列出所有 bounded
   options，包含產品、規格、厚度、tier price、unit 與 source context。
+- 對 `一支多少` 這類快速報價，若回傳一個或多個 reviewed positive approximate
+  candidates，先用最高信心且有來源支撐的候選作 provisional quote，再列出其他
+  bounded options 讓使用者確認。
 - 若只有一個最近似 reviewed positive candidate，可用於 provisional estimate；
   但回覆必須說明採用的產品/規格假設，並請使用者確認。
+- 若沒有 positive source-backed price candidate，不可編造價格；說明已查的候選並
+  請使用者補厚度、長度、表面處理、客戶/分級或提供單價。
 
 Blocking rules:
 
@@ -374,15 +379,14 @@ Body:
 
 - C 型鋼仍必須先查 reviewed product-price rows，不可只用重量推價。
 - C 型鋼通常是成品長度鋼捲抽料 / 成型下料，不套一般 6M 素材配料邏輯。
-- 除非使用者 evidence、reviewed price rows 或 `lookup_defaults` 明確支持，否則
-  不加一般切工、餘料或一般孔加工費。
+- C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。
+- C 型鋼切工/孔費免費不代表材料單價、特殊加工、非 C 型鋼加工或其他 charge 免費。
 - AI 應呼叫 `lookup_formula` 查 reviewed formula candidates，並呼叫
-  `lookup_defaults` 查 reviewed no-charge/default behavior。
-- true-zero charge 是否成立，由 backend validation 決定，不由此 packet 單獨決定。
+  `lookup_defaults` 查 reviewed no-charge/default behavior 與適用範圍。
 
 Blocking rules:
 
-- 不要因 `materialFamily = c_type` 就在 backend calculator hard-code 免費切工或孔費。
+- 不要把 C 型鋼切工/孔費免費規則套用到材料單價、特殊加工或非 C 型鋼品項。
 - 不要把 C 型鋼套用一般長條料 6M 配料、餘料與一般切工邏輯。
 
 ### `workbook-provisional-confirmed-zh-v1`
@@ -545,7 +549,7 @@ Body:
 Blocking rules:
 
 - 不要從 `公式編號.xlsx` 直接讀出公式後在 AI 端當作 confirmed calculator。
-- 不要跳過 `lookup_formula` 或 backend formula validation。
+- 不要跳過 `lookup_formula` 或 reviewed formula validation。
 
 ### `h-type-length-surcharge-zh-v1`
 
@@ -742,8 +746,7 @@ Body:
   `4-Ø22`、`6-Ø26` 等都要計入；`4-Ø22` = 每片 4 孔。1 個圓孔或長孔算
   1 孔，除非規則另定。總孔數 = 每片/每支孔數 × 數量。中心線、尺寸線、虛線、
   R 角、折線、切角、焊接符號不可誤判為孔。若 `產品價格.xlsx` 有明確沖孔加工
-  品項，優先用該品項。C 型鋼孔洞預設不另算孔費，依【C 型鋼專用計價規則】
-  處理。
+  品項，優先用該品項。C 型鋼孔費預設免費。
 - 圖面孔位用於交叉確認表格孔數是否合理。若表格孔數與實際孔位數、局部放大圖、
   手寫備註或 OCR/vision 判讀不一致，必須列出差異並標記人工複核，不能靜默改用
   圖面孔位覆蓋表格數字，也不能直接假設表格填錯。

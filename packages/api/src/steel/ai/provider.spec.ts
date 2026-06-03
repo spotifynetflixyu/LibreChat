@@ -284,7 +284,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
+      messages: [{ role: 'user', content: '請說明亞L30x30的推論流程' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
     });
@@ -307,10 +307,513 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain('generate candidate material and specification queries');
     expect(systemPrompt.content).toContain('reviewed price rows');
     expect(systemPrompt.content).toContain('bounded options');
+    expect(systemPrompt.content).toContain(
+      'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before',
+    );
+    expect(systemPrompt.content).toContain(
+      'Do not pass customerTierId to search_price_candidates unless the user gave a customer/tier',
+    );
+    expect(systemPrompt.content).toContain(
+      '未取得 search_price_candidates tool result 前，不可回答查不到',
+    );
     expect(generateOptions.prompt[1]).toEqual({
       role: 'user',
-      content: [{ type: 'text', text: '亞L30x30 一支多少' }],
+      content: [{ type: 'text', text: '請說明亞L30x30的推論流程' }],
     });
+  });
+
+  it('executes AI-callable Steel business tools and continues with tool results', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_tool_call_1',
+            toolName: 'lookup_instructions',
+            input: JSON.stringify({
+              taskTypes: ['quote_price'],
+              evidenceSummary: 'user asked 亞L30x30 一支多少',
+              materialContexts: [
+                {
+                  lineRefs: ['line_1'],
+                  materialCandidates: ['angle'],
+                  surfaceCandidates: ['錏', '鍍鋅'],
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 31,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_steel_tool_first' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'text',
+            text: '已查到角鐵/錏材推論規則。',
+          },
+        ],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 44,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 9,
+            text: 9,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_steel_tool_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest.fn(async () => ({
+      ok: true as const,
+      toolName: 'lookup_instructions' as const,
+      data: {
+        packetGroups: [
+          {
+            group: 'angle-zinc-quote-core',
+            lineRefs: ['line_1'],
+            packetSlugs: ['angle-surface-oral-zh-v1'],
+          },
+        ],
+      },
+      sourceRefs: [],
+      durationMs: 2,
+      redactionVersion: 1 as const,
+    }));
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請查角鐵/錏材推論規則' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+    const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    expect(firstOptions.tools?.map((tool) => tool.name)).toEqual([
+      'lookup_instructions',
+      'lookup_defaults',
+      'lookup_formula',
+      'search_customers',
+      'search_price_candidates',
+    ]);
+    expect(executeSteelToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerToolCallId: 'steel_tool_call_1',
+        toolName: 'lookup_instructions',
+        arguments: expect.objectContaining({
+          evidenceSummary: 'user asked 亞L30x30 一支多少',
+        }),
+      }),
+    );
+    const secondOptions = doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions;
+    expect(secondOptions.prompt).toEqual(
+      expect.arrayContaining([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'steel_tool_call_1',
+              toolName: 'lookup_instructions',
+              input: expect.objectContaining({
+                evidenceSummary: 'user asked 亞L30x30 一支多少',
+              }),
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'steel_tool_call_1',
+              toolName: 'lookup_instructions',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  ok: true,
+                  toolName: 'lookup_instructions',
+                  data: expect.objectContaining({
+                    packetGroups: expect.any(Array),
+                  }),
+                }),
+              },
+            },
+          ],
+        },
+      ]),
+    );
+    expect(response).toEqual(
+      expect.objectContaining({
+        text: '已查到角鐵/錏材推論規則。',
+        responseId: 'resp_steel_tool_final',
+        usage: {
+          inputTokens: 75,
+          outputTokens: 21,
+          totalTokens: 96,
+        },
+      }),
+    );
+  });
+
+  it('requires Steel tool calls until a price request gets search_price_candidates results', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_lookup_1',
+            toolName: 'lookup_instructions',
+            input: JSON.stringify({
+              taskTypes: ['material_price_lookup'],
+              evidenceSummary: 'user asked 亞L30x30 一支多少',
+              materialContexts: [{ materialCandidates: ['angle'] }],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 20,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 5,
+            text: 5,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_required_lookup' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_price_1',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({
+              originalText: '亞L30x30',
+              candidateQueries: [
+                {
+                  queryId: 'formed-zinc-angle',
+                  productName: '錏角鐵 L30x30',
+                  confidence: 'medium',
+                  reason: 'AI interpreted 亞 as possible 錏 and L30x30 as angle steel',
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 30,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 7,
+            text: 7,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_required_price' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '暫估採錏成型角鐵 30x30x2.5x6M。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 40,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 9,
+            text: 9,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_required_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
+      ok: true as const,
+      toolName: toolName as 'lookup_instructions' | 'search_price_candidates',
+      data:
+        toolName === 'search_price_candidates'
+          ? {
+              priceCandidates: [
+                {
+                  productName: '錏成型角鐵',
+                  specKey: 'angle_L30x30x2.5x6M',
+                  unitPrice: 194.3,
+                },
+              ],
+            }
+          : { packetGroups: [] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(3);
+    expect((doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
+      type: 'required',
+    });
+    expect((doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
+      type: 'required',
+    });
+    expect((doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
+      type: 'auto',
+    });
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(2);
+    expect(response.text).toBe('暫估採錏成型角鐵 30x30x2.5x6M。');
+  });
+
+  it('does not return text before a required price lookup has executed', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '我需要你先提供客戶和長度。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 20,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 5,
+            text: 5,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_missing_price_1' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '還是需要先補資料。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 24,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 6,
+            text: 6,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_missing_price_2' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth,
+        ensureFresh: false,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        steelToolMaxCalls: 1,
+      }),
+    ).rejects.toThrow(
+      'search_price_candidates was required before answering this Steel price request.',
+    );
+
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+    const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(
+      secondPrompt.some(
+        (message) =>
+          message.role === 'system' &&
+          typeof message.content === 'string' &&
+          message.content.includes('Call search_price_candidates'),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns Steel tool execution failures to the model as tool results', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_tool_call_error_1',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({
+              originalText: '亞L30x30',
+              candidateQueries: [
+                {
+                  queryId: 'formed-angle-ya',
+                  productName: '錏成型角鐵',
+                  specKeyContains: '30x30',
+                  reason: 'AI interpreted L30x30 as angle steel and 亞 as possible 錏',
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 20,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 5,
+            text: 5,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_steel_tool_error_first' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '目前查表工具不可用，請稍後再試。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 30,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 7,
+            text: 7,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_steel_tool_error_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest.fn(async () => {
+      throw new Error('STEEL_POSTGRES_URL is required for Steel Postgres access');
+    });
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    const secondOptions = doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions;
+    expect(secondOptions.prompt).toEqual(
+      expect.arrayContaining([
+        {
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  ok: false,
+                  toolName: 'search_price_candidates',
+                  errorCategory: 'repository_error',
+                  errorSummary: 'STEEL_POSTGRES_URL is required for Steel Postgres access',
+                }),
+              },
+            }),
+          ],
+        },
+      ]),
+    );
   });
 
   it('enables the workbook patch tool and extracts model tool calls into patch operations', async () => {

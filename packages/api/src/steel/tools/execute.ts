@@ -1,19 +1,15 @@
 import {
-  findSteelOrderItems,
   findSteelFormulaVersion,
   searchSteelCustomers,
   searchSteelPriceItems,
-  searchSteelWeightSpecs,
-  searchSteelCuttingPrices,
-  searchSteelHolePrices,
-  searchSteelMaterialRules,
-  searchSteelSourceChunks,
-  searchSteelProcessingPrices,
+  searchSteelQuoteDefaults,
 } from '../repositories';
 import { getSteelToolDefinition, isSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas, type SteelToolName } from './schemas';
 import { generateSteelPriceSearchTerms } from '../normalization';
+import { lookupSteelInstructions } from './instructions';
+import { getSteelQuoteDefaultSearchInput, lookupSteelDefaults } from './defaults';
 
 import type {
   SteelToolResult,
@@ -23,6 +19,7 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelPriceItem } from '../repositories';
+import type { LookupFormulaInput } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchPriceCandidatesInput = ReturnType<
@@ -104,15 +101,12 @@ function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSo
 
 function summarizeOutput(data: SteelToolJsonObject): string {
   const summaryKeys = [
+    'packets',
+    'packetGroups',
+    'defaultCandidates',
+    'formulaCandidates',
     'customers',
     'priceCandidates',
-    'weightSpecs',
-    'cuttingPrices',
-    'holePrices',
-    'processingPrices',
-    'materialRules',
-    'orderItems',
-    'sourceChunks',
   ];
   const summary = summaryKeys
     .map((key) => {
@@ -123,14 +117,6 @@ function summarizeOutput(data: SteelToolJsonObject): string {
 
   if (summary) {
     return summary;
-  }
-
-  if ('matchedCustomer' in data) {
-    return data.matchedCustomer === null ? 'matchedCustomer=none' : 'matchedCustomer=1';
-  }
-
-  if ('formulaVersion' in data) {
-    return data.formulaVersion === null ? 'formulaVersion=none' : 'formulaVersion=1';
   }
 
   return `keys=${Object.keys(data).length}`;
@@ -147,6 +133,50 @@ function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
     seen.add(candidate.id);
     return true;
   });
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim() !== ''))];
+}
+
+function getFormulaCodes(input: LookupFormulaInput): string[] {
+  return uniqueStrings(
+    input.materialContexts.flatMap((context) => context.formulaCandidates ?? []),
+  );
+}
+
+function getFormulaLineRefs(input: LookupFormulaInput, code: string): string[] {
+  return uniqueStrings(
+    input.materialContexts
+      .filter((context) => (context.formulaCandidates ?? []).includes(code))
+      .flatMap((context) => context.lineRefs ?? []),
+  );
+}
+
+async function lookupFormulaCandidates(
+  client: SteelRepositoryClient,
+  input: LookupFormulaInput,
+): Promise<SteelRawToolOutput> {
+  const formulaCandidates: SteelRawToolOutput[] = [];
+
+  for (const code of getFormulaCodes(input)) {
+    const formulaVersion = await findSteelFormulaVersion(client, {
+      code,
+      reviewState: input.reviewState,
+    });
+
+    if (!formulaVersion) {
+      continue;
+    }
+
+    formulaCandidates.push({
+      lineRefs: getFormulaLineRefs(input, code),
+      code,
+      formulaVersion,
+    });
+  }
+
+  return { formulaCandidates };
 }
 
 async function searchPriceCandidates(
@@ -174,7 +204,6 @@ async function searchPriceCandidates(
       specKey: query.specKey,
       specKeyContains: query.specKeyContains,
       productName: query.productName,
-      customerTierId: input.customerTierId,
       reviewState: input.reviewState,
       includeInactive: input.includeInactive,
       limit: input.limit,
@@ -238,19 +267,24 @@ async function dispatchSteelTool(
   args: unknown,
 ): Promise<SteelRawToolOutput> {
   switch (toolName) {
-    case 'lookup_customer': {
-      const input = steelToolArgsSchemas.lookup_customer.parse(args);
-      const candidates = await searchSteelCustomers(client, {
-        searchText: input.searchText,
-        limit: 2,
-      });
+    case 'lookup_instructions': {
+      const input = steelToolArgsSchemas.lookup_instructions.parse(args);
 
-      return {
-        matchedCustomer: candidates.length === 1 ? candidates[0] : null,
-        candidates,
-        confidence: candidates.length === 1 ? 'high' : 'low',
-        manualReviewRequired: candidates.length !== 1,
-      };
+      return lookupSteelInstructions(input);
+    }
+    case 'lookup_defaults': {
+      const input = steelToolArgsSchemas.lookup_defaults.parse(args);
+      const quoteDefaults = await searchSteelQuoteDefaults(
+        client,
+        getSteelQuoteDefaultSearchInput(input),
+      );
+
+      return lookupSteelDefaults(input, quoteDefaults);
+    }
+    case 'lookup_formula': {
+      const input = steelToolArgsSchemas.lookup_formula.parse(args);
+
+      return lookupFormulaCandidates(client, input);
     }
     case 'search_customers': {
       const input = steelToolArgsSchemas.search_customers.parse(args);
@@ -262,60 +296,6 @@ async function dispatchSteelTool(
       const input = steelToolArgsSchemas.search_price_candidates.parse(args);
 
       return searchPriceCandidates(client, input);
-    }
-    case 'lookup_spec_price': {
-      const input = steelToolArgsSchemas.lookup_spec_price.parse(args);
-      const priceCandidates = await searchSteelPriceItems(client, input);
-
-      return { priceCandidates };
-    }
-    case 'lookup_weight_spec': {
-      const input = steelToolArgsSchemas.lookup_weight_spec.parse(args);
-      const weightSpecs = await searchSteelWeightSpecs(client, input);
-
-      return { weightSpecs };
-    }
-    case 'lookup_cutting_price': {
-      const input = steelToolArgsSchemas.lookup_cutting_price.parse(args);
-      const cuttingPrices = await searchSteelCuttingPrices(client, input);
-
-      return { cuttingPrices };
-    }
-    case 'lookup_hole_price': {
-      const input = steelToolArgsSchemas.lookup_hole_price.parse(args);
-      const holePrices = await searchSteelHolePrices(client, input);
-
-      return { holePrices };
-    }
-    case 'lookup_processing_price': {
-      const input = steelToolArgsSchemas.lookup_processing_price.parse(args);
-      const processingPrices = await searchSteelProcessingPrices(client, input);
-
-      return { processingPrices };
-    }
-    case 'lookup_material_rules': {
-      const input = steelToolArgsSchemas.lookup_material_rules.parse(args);
-      const materialRules = await searchSteelMaterialRules(client, input);
-
-      return { materialRules };
-    }
-    case 'lookup_formula_version': {
-      const input = steelToolArgsSchemas.lookup_formula_version.parse(args);
-      const formulaVersion = await findSteelFormulaVersion(client, input);
-
-      return { formulaVersion };
-    }
-    case 'find_order_items': {
-      const input = steelToolArgsSchemas.find_order_items.parse(args);
-      const orderItems = await findSteelOrderItems(client, input);
-
-      return { orderItems };
-    }
-    case 'search_source_chunks': {
-      const input = steelToolArgsSchemas.search_source_chunks.parse(args);
-      const sourceChunks = await searchSteelSourceChunks(client, input);
-
-      return { sourceChunks };
     }
     default:
       throw new Error(`Unhandled Steel tool: ${toolName}`);

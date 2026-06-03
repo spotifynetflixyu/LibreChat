@@ -211,7 +211,7 @@ Acceptance:
 - When the user explicitly asks for an approximate quote and the highest-confidence reviewed candidate is clearly source-backed, the assistant may provide a preview estimate with assumed spec and low-confidence reason, even when the input has typos or incomplete dimensions.
 - A user saying a custom unit price or amount can produce a high-confidence `parameterOverride`; uncertain overrides ask the user to confirm first.
 - Fully matched row uses that row's pricing unit.
-- Multiple usable price candidates are presented to the user for confirmation instead of silently selected.
+- Multiple usable price candidates are presented to the user for confirmation instead of silently selected; for quick `一支多少` requests, the assistant may lead with the highest-confidence source-backed candidate as a provisional quote while still listing the other plausible options.
 
 Verification:
 

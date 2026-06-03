@@ -10,9 +10,20 @@ export interface SteelToolDefinition {
 
 const steelToolDefinitions: SteelToolDefinition[] = [
   {
-    name: 'lookup_customer',
-    description: 'Find one customer and tier match, or return candidates when ambiguous.',
-    argsSchema: steelToolArgsSchemas.lookup_customer,
+    name: 'lookup_instructions',
+    description:
+      'Retrieve reviewed Steel instruction packet groups for a batched interpreted order context.',
+    argsSchema: steelToolArgsSchemas.lookup_instructions,
+  },
+  {
+    name: 'lookup_defaults',
+    description: 'Retrieve reviewed quote defaults for batched Steel material contexts.',
+    argsSchema: steelToolArgsSchemas.lookup_defaults,
+  },
+  {
+    name: 'lookup_formula',
+    description: 'Retrieve reviewed formula candidates for batched Steel material contexts.',
+    argsSchema: steelToolArgsSchemas.lookup_formula,
   },
   {
     name: 'search_customers',
@@ -24,51 +35,6 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     description:
       'Search reviewed product price candidates from normalized candidate queries without converting price units.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
-  },
-  {
-    name: 'lookup_spec_price',
-    description: 'Look up product price candidates for a normalized spec key.',
-    argsSchema: steelToolArgsSchemas.lookup_spec_price,
-  },
-  {
-    name: 'lookup_weight_spec',
-    description: 'Look up reviewed handbook-style weight specs separately from product price.',
-    argsSchema: steelToolArgsSchemas.lookup_weight_spec,
-  },
-  {
-    name: 'lookup_cutting_price',
-    description: 'Look up cutting prices from reviewed cutting-price data.',
-    argsSchema: steelToolArgsSchemas.lookup_cutting_price,
-  },
-  {
-    name: 'lookup_hole_price',
-    description: 'Look up round and non-round hole prices from reviewed hole-price data.',
-    argsSchema: steelToolArgsSchemas.lookup_hole_price,
-  },
-  {
-    name: 'lookup_processing_price',
-    description: 'Look up generic processing prices from reviewed processing data.',
-    argsSchema: steelToolArgsSchemas.lookup_processing_price,
-  },
-  {
-    name: 'lookup_material_rules',
-    description: 'Look up task-scoped material rules only.',
-    argsSchema: steelToolArgsSchemas.lookup_material_rules,
-  },
-  {
-    name: 'lookup_formula_version',
-    description: 'Look up the latest reviewed active formula version by formula code.',
-    argsSchema: steelToolArgsSchemas.lookup_formula_version,
-  },
-  {
-    name: 'find_order_items',
-    description: 'Find historical ERP order items by ERP order code.',
-    argsSchema: steelToolArgsSchemas.find_order_items,
-  },
-  {
-    name: 'search_source_chunks',
-    description: 'Search active reviewed source chunks for bounded quote context.',
-    argsSchema: steelToolArgsSchemas.search_source_chunks,
   },
 ];
 

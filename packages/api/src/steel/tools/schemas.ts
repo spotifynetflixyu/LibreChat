@@ -6,10 +6,29 @@ const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
 
-function atLeastOneFilter<Field extends string>(fields: readonly Field[]) {
-  return (value: Partial<{ [key in Field]: string | number | undefined }>) =>
-    fields.some((field) => value[field] !== undefined && value[field] !== '');
-}
+const instructionMaterialContextSchema = z.object({
+  lineRefs: z.array(nonEmptyString).min(1).max(20).optional(),
+  packetGroupHints: z.array(nonEmptyString).min(1).max(20).optional(),
+  materialCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
+  surfaceCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
+  formulaCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
+  processingTypes: z.array(nonEmptyString).min(1).max(20).optional(),
+  lowConfidenceReasons: z.array(nonEmptyString).min(1).max(20).optional(),
+});
+
+const lookupInstructionsSchema = z.object({
+  taskTypes: z.array(nonEmptyString).min(1).max(20),
+  packetGroupHints: z.array(nonEmptyString).min(1).max(20).optional(),
+  evidenceSummary: nonEmptyString,
+  materialContexts: z.array(instructionMaterialContextSchema).min(1).max(20),
+  customerContext: z
+    .object({
+      customerName: nonEmptyString.optional(),
+      tierKnown: z.boolean().optional(),
+    })
+    .optional(),
+  limit: limitSchema,
+});
 
 const searchPriceCandidatesSchema = z
   .object({
@@ -58,8 +77,24 @@ const searchPriceCandidatesSchema = z
   });
 
 export const steelToolArgsSchemas = {
-  lookup_customer: z.object({
-    searchText: nonEmptyString,
+  lookup_instructions: lookupInstructionsSchema,
+  lookup_defaults: z.object({
+    materialContexts: z.array(instructionMaterialContextSchema).min(1).max(20),
+    customerContext: z
+      .object({
+        customerId: z.number().int().positive().optional(),
+        customerTierId: z.number().int().positive().optional(),
+        customerName: nonEmptyString.optional(),
+        tierKnown: z.boolean().optional(),
+      })
+      .optional(),
+    reviewState: reviewStateSchema,
+    includeInactive: z.boolean().optional(),
+    limit: limitSchema,
+  }),
+  lookup_formula: z.object({
+    materialContexts: z.array(instructionMaterialContextSchema).min(1).max(20),
+    reviewState: reviewStateSchema,
   }),
   search_customers: z.object({
     searchText: nonEmptyString,
@@ -67,96 +102,9 @@ export const steelToolArgsSchemas = {
     limit: limitSchema,
   }),
   search_price_candidates: searchPriceCandidatesSchema,
-  lookup_spec_price: z.object({
-    specKey: nonEmptyString,
-    customerTierId: z.number().int().positive().optional(),
-    reviewState: reviewStateSchema,
-    includeInactive: z.boolean().optional(),
-    limit: limitSchema,
-  }),
-  lookup_weight_spec: z.object({
-    specKey: nonEmptyString,
-    productFamily: nonEmptyString.optional(),
-    shape: nonEmptyString.optional(),
-    reviewState: reviewStateSchema,
-    limit: limitSchema,
-  }),
-  lookup_cutting_price: z
-    .object({
-      productFamily: nonEmptyString.optional(),
-      cutType: nonEmptyString.optional(),
-      specKey: nonEmptyString.optional(),
-      reviewState: reviewStateSchema,
-      includeInactive: z.boolean().optional(),
-      limit: limitSchema,
-    })
-    .refine(atLeastOneFilter(['productFamily', 'cutType', 'specKey']), {
-      message: 'Provide productFamily, cutType, or specKey',
-    }),
-  lookup_hole_price: z
-    .object({
-      holeType: nonEmptyString.optional(),
-      diameterMm: z.number().positive().optional(),
-      lengthMm: z.number().positive().optional(),
-      widthMm: z.number().positive().optional(),
-      dimensionLabel: nonEmptyString.optional(),
-      reviewState: reviewStateSchema,
-      includeInactive: z.boolean().optional(),
-      limit: limitSchema,
-    })
-    .refine(
-      (value) =>
-        value.holeType !== undefined ||
-        value.diameterMm !== undefined ||
-        value.lengthMm !== undefined ||
-        value.widthMm !== undefined ||
-        value.dimensionLabel !== undefined,
-      {
-        message: 'Provide holeType, diameterMm, lengthMm, widthMm, or dimensionLabel',
-      },
-    ),
-  lookup_processing_price: z
-    .object({
-      processingType: nonEmptyString.optional(),
-      productFamily: nonEmptyString.optional(),
-      specKey: nonEmptyString.optional(),
-      reviewState: reviewStateSchema,
-      includeInactive: z.boolean().optional(),
-      limit: limitSchema,
-    })
-    .refine(atLeastOneFilter(['processingType', 'productFamily', 'specKey']), {
-      message: 'Provide processingType, productFamily, or specKey',
-    }),
-  lookup_material_rules: z
-    .object({
-      materialFamily: nonEmptyString.optional(),
-      ruleType: nonEmptyString.optional(),
-      conditionType: nonEmptyString.optional(),
-      reviewState: reviewStateSchema,
-      includeInactive: z.boolean().optional(),
-      limit: limitSchema,
-    })
-    .refine(atLeastOneFilter(['materialFamily', 'ruleType', 'conditionType']), {
-      message: 'Provide materialFamily, ruleType, or conditionType',
-    }),
-  lookup_formula_version: z.object({
-    code: nonEmptyString,
-    reviewState: reviewStateSchema,
-  }),
-  find_order_items: z.object({
-    erpOrderCode: nonEmptyString,
-    limit: z.number().int().min(1).max(200).optional(),
-  }),
-  search_source_chunks: z
-    .object({
-      projectSourceId: nonEmptyString.optional(),
-      searchText: nonEmptyString.optional(),
-      status: z.enum(['active', 'inactive', 'deleted']).optional(),
-      limit: limitSchema,
-    })
-    .refine(atLeastOneFilter(['projectSourceId', 'searchText']), {
-      message: 'Provide projectSourceId or searchText',
-    }),
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
+export type LookupDefaultsInput = z.infer<typeof steelToolArgsSchemas.lookup_defaults>;
+export type LookupFormulaInput = z.infer<typeof steelToolArgsSchemas.lookup_formula>;
+export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;

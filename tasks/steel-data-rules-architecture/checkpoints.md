@@ -51,7 +51,7 @@ rtk proxy rg -n "source_refs|product_price_unit_weight|value_state|review_state|
       material/spec context, such as formula code `C` for C-type steel, without
       reading `公式編號.xlsx` at runtime.
 - [ ] C-type rule blocks long-material stock allocation unless explicit separate cutting conditions apply.
-- [ ] Backend calculators do not hard-code `if C-type then cutting/hole = 0`; they require a selected calculation rule, reviewed true-zero fact, or quote-specific override.
+- [ ] Backend calculators do not hard-code `if C-type then cutting/hole = 0`; they require a selected quote default, calculation rule, reviewed true-zero fact, or quote-specific override.
 - [ ] C-type cutting/hole no-charge behavior is available only as a configured quote default or reviewed rule selected by AI and validated by backend tools.
 - [ ] H-type non-standard-length rule returns a material unit-price adjustment only and applies automatically to non-regular normalized H-type lengths.
 - [ ] Long-material allocation rule applies to non-C long materials unless the customer explicitly allows exact finished-length pricing.
@@ -147,7 +147,7 @@ rtk npm run build:api
 
 - [ ] `客戶詢價.rtf` C-type sample parses into C-type quote items and retrieves the C-type rule.
 - [ ] C-type sample calculates by finished length and does not produce stock-piece/remainder/general-cutting charges.
-- [ ] C-type sample proves true-zero cutting/hole is accepted only through selected calculation rule or quote-specific override, not by product-family hardcoding.
+- [ ] C-type sample proves true-zero cutting/hole is accepted through the configured quote default, selected calculation rule, or quote-specific override, not by product-family hardcoding.
 - [ ] C-type no-charge cutting/hole default is present as a configured quote-default or reviewed-rule fixture before AI selects it.
 - [ ] H-type non-regular length sample applies +0.3/kg to material price only and uses cutting data separately.
 - [ ] H-type cutting sample asks whether to cut head/tail when the user only says "要切" and cut-count affects price.

@@ -99,4 +99,28 @@ describe('generateSteelPriceSearchTerms', () => {
       }),
     ).toThrow('Provide at least one derived price search candidate');
   });
+
+  it('downgrades size-only specKey candidates to partial spec lookup', () => {
+    const result = generateSteelPriceSearchTerms({
+      originalText: '亞L30x30 一支多少',
+      candidates: [
+        {
+          queryId: 'formed-angle-ya',
+          label: '錏角鐵 30x30',
+          productName: '錏角鐵',
+          specKey: '30x30',
+          specKeyContains: '30x30',
+          confidence: 'high',
+          reason: 'AI interpreted L30x30 as angle steel 30x30',
+        },
+      ],
+    });
+
+    expect(result.candidateQueries[0]).toMatchObject({
+      queryId: 'formed-angle-ya',
+      productName: '錏角鐵',
+      specKeyContains: '30x30',
+    });
+    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
+  });
 });

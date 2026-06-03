@@ -144,4 +144,55 @@ describe('Steel price repositories', () => {
       5,
     ]);
   });
+
+  it('matches oral zinc angle candidates with bounded product-name tokens', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      productName: '錏角鐵',
+      specKeyContains: '30x30',
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('product_name ILIKE $3'), [
+      'reviewed',
+      '%30x30%',
+      '%錏%',
+      '%角鐵%',
+      5,
+    ]);
+  });
+
+  it('splits size text out of derived product-name candidates', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      productName: '錏成型角鐵 30x30',
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE $2'), [
+      'reviewed',
+      '%30x30%',
+      '%錏成型角鐵%',
+      5,
+    ]);
+  });
+
+  it('splits L-size text out of oral product-name candidates', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      productName: '錏角鐵 L30x30',
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE $2'), [
+      'reviewed',
+      '%30x30%',
+      '%錏%',
+      '%角鐵%',
+      5,
+    ]);
+  });
 });

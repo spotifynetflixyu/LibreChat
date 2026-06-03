@@ -49,6 +49,15 @@ function normalizeComparableText(value: string): string {
     .trim();
 }
 
+function getSizeOnlySpecKeyContains(specKey: string): string | undefined {
+  const normalized = normalizeComparableText(specKey);
+  if (!/^l?\d+(?:\.\d+)?x\d+(?:\.\d+)?$/i.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized.replace(/^l/i, '');
+}
+
 function hasRawUserTextQuery(originalText: string, candidate: SteelPriceSearchQueryText): boolean {
   const normalizedOriginal = normalizeComparableText(originalText);
   const queryTexts = [candidate.productName, candidate.specKey, candidate.specKeyContains].filter(
@@ -107,6 +116,21 @@ export interface SteelPriceSearchTermsResult {
   structuredFilters?: z.infer<typeof steelPriceStructuredFiltersSchema>;
 }
 
+function normalizeCandidateQuery(candidate: SteelPriceSearchCandidate): SteelPriceSearchCandidate {
+  const specKeyContains = candidate.specKey
+    ? getSizeOnlySpecKeyContains(candidate.specKey)
+    : undefined;
+  if (!specKeyContains) {
+    return candidate;
+  }
+
+  const { specKey: _specKey, ...candidateWithoutExactSpecKey } = candidate;
+  return {
+    ...candidateWithoutExactSpecKey,
+    specKeyContains: candidate.specKeyContains ?? specKeyContains,
+  };
+}
+
 export function generateSteelPriceSearchTerms(
   input: SteelPriceSearchTermsInput,
 ): SteelPriceSearchTermsResult {
@@ -114,6 +138,7 @@ export function generateSteelPriceSearchTerms(
   const maxQueries = parsed.maxQueries ?? 10;
   const candidateQueries = parsed.candidates
     .filter((candidate) => !hasRawUserTextQuery(parsed.originalText, candidate))
+    .map(normalizeCandidateQuery)
     .slice(0, maxQueries);
   const rejectedQueries = parsed.candidates
     .filter((candidate) => hasRawUserTextQuery(parsed.originalText, candidate))

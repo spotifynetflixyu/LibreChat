@@ -1,4 +1,5 @@
 export * from './customers';
+export * from './defaults';
 export * from './formulas';
 export * from './orders';
 export * from './prices';

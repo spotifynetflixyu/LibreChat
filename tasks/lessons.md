@@ -9,7 +9,9 @@
 - For Supabase pgvector, check the actual `pg_extension.extnamespace`; this project currently has `vector` installed in `public`, not `extensions`.
 - Do not process or import files under `docs/reference` as real data unless explicitly asked. Steel handbook DOCX currently informs schema/data-model design first; real data SQL/import comes later.
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
-- When a customer asks price for an incomplete steel spec with multiple matches, show candidate prices while asking for the missing detail; only lead with a specific candidate when backed by a preference rule or deterministic ranking.
+- When a customer asks price for an incomplete steel spec with multiple matches, first run reviewed lookup from bounded AI-derived candidates when possible. For quick `一支多少` requests, lead with the highest-confidence source-backed approximate candidate as a provisional quote, then list the other plausible specs/options for confirmation.
+- For Steel price lookup, backend may apply bounded token matching to AI-derived oral product candidates such as `錏角鐵` -> product rows containing `錏` and `角鐵`. This is different from accepting raw typo strings like `亞L30x30` as product-price keys, which remains forbidden.
+- For Steel quick-price lookup, do not default missing customer/tier to A or tier 1. If the user did not provide customer/tier and no `search_customers` result selected one, omit `customerTierId` so reviewed lookup can return all applicable tier candidates.
 - For local `pg` connections to Supabase, prefer the Supavisor session pooler URL when the direct `db.<project>.supabase.co` host does not resolve or the environment lacks IPv6 support.
 - Keep Steel changes isolated from upstream LibreChat hot files where possible; avoid premature root exports or core entrypoint edits until a route actually needs them.
 - Every wrap-up response should include explicit next tasks so the user knows what to do next.
@@ -81,9 +83,9 @@
 - Treat customer inquiry files such as RTF, handwriting, PDF, image, photo, and chat text as quote request evidence/parser fixtures, not formal Admin import sources.
 - Treat customer instructions such as no-charge items, special prices, added surcharges, or one-line rule overrides as quote-specific adjustments saved on workbook lines; do not mutate formal source tables or material rules from chat alone.
 - For customer order parsing, AI is expected to infer likely specs because every customer's order shape can differ; backend code should constrain that inference into canonical candidate fields, confidence, source refs, and manual-review/clarification paths instead of treating the AI guess as a confirmed fact.
-- When AI is uncertain about a Steel spec or repository lookup returns multiple plausible options, the quote flow must ask the user to confirm before pricing; present bounded candidate options instead of silently selecting one.
-- In `產品價格.xlsx`, a `0` price means no price. A zero cutting/hole/processing charge becomes true zero only when a separate selected calculation rule or reviewed business rule confirms the free charge.
-- Do not hard-code C-type steel calculation behavior directly in pricing/calculator code. The AI should select the applicable quote default, reviewed rule, or formula, and backend code should validate that selected rule before allowing true-zero charges or skipping remainder calculation.
+- When AI is uncertain about a Steel spec or repository lookup returns multiple plausible options, the quote flow must ask the user to confirm before confirmed pricing. A provisional quote may still use the highest-confidence source-backed approximate candidate when the user asks for a quick price, as long as all bounded alternatives are shown.
+- In `產品價格.xlsx`, a `0` material/product price means no price. For C 型鋼 specifically, the business default is that cutting and hole charges are free/no-charge; model it as reviewed quote-default behavior, not as a source-price zero.
+- Do not hard-code C-type steel calculation behavior directly in pricing/calculator code. The AI/runtime should retrieve or apply the C 型鋼 quote default, and backend code should validate the selected default path instead of requiring the user to reconfirm free cutting/hole charges every time.
 - Steel quote defaults define default behavior and formula selection, not rigid numeric logic. User-provided numbers or prices in the conversation can override adjustable parameters; keep the formula identity fixed while making numeric parameters explicit, sourced, and validated.
 - Do not let Steel chat save customer defaults directly into quote defaults. Conversation adjustments become quote-specific overrides first; reusable customer defaults require a structured rule proposal, Admin approval, reviewed database facts, and only then generated task-scoped quote defaults.
 - Steel AI should obtain quote defaults through `lookup_defaults` using interpreted customer/item/charge/formula context and typed filters. Do not dump all defaults into prompts; return bounded reviewed candidates with origin refs and revalidate the selected origin before pricing.
@@ -132,6 +134,9 @@
   ranking, calculator primitives, and workbook-read helpers are backend
   internal capabilities or future extensions unless a later slice proves they
   need to be AI-callable.
+- When MVP docs demote a Steel tool to backend-internal, remove it from the
+  executable AI tool schema, registry, and executor branch. Do not leave old
+  low-level tools callable as "legacy" aliases.
 - Treat `docs/reference/instruction.txt` as a seed source for reviewed,
   task-scoped Steel Instruction Packets, not as a monolithic prompt pasted into
   every run. AI may use `lookup_instructions` before candidate generation for
@@ -181,3 +186,11 @@
   should return the related price, formula, cutting, hole, workbook, and
   confirmation packets for the detected steel context together; do not force AI
   to query each detail rule separately.
+- Keep runtime Instruction Packet bodies focused on quote behavior and reviewed
+  data requirements. Do not inject Codex/backend implementation rules such as
+  "do not hard-code this in backend calculators" into assistant-facing runtime
+  instructions; put those engineering constraints in docs, lessons, tests, or
+  implementation plans instead.
+- Do not make a Steel Instruction Packet body self-reference its own rule name,
+  such as "依【C 型鋼專用計價規則】處理". The packet content is the runtime rule;
+  state the actionable behavior directly.

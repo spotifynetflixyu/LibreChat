@@ -103,6 +103,78 @@ until the user explicitly reopens UI scope.
 - [x] Verify the Instruction Packet group/bundle correction with Prettier,
       required group/bundle grep, stale fragmented-query grep, and
       `git diff --check`.
+- [x] Runtime test slice: add a C 型鋼 batched `lookup_instructions` test case
+      that returns the `c-type-quote-core` packet group in one tool call,
+      including C-type pricing, formula, drawing/hole, and source-priority
+      instruction packets.
+- [x] Verify the C 型鋼 runtime test slice with RED/GREEN focused Jest,
+      registry/executor Jest, Prettier, build/typecheck, and `git diff --check`.
+- [x] Active runtime correction: remove Codex/backend implementation wording from
+      runtime Instruction Packet bodies. Runtime instructions should describe
+      quote behavior, confirmation, and reviewed-data requirements, not tell
+      backend calculators how to be implemented.
+- [x] Active runtime test slice: add a multi-material batched
+      `lookup_instructions` case for one order containing `亞L30x30` and
+      C 型鋼, proving one tool call returns both angle/zinc and C-type rule
+      groups.
+- [x] Active runtime contract slice: make `lookup_defaults` and `lookup_formula`
+      accept batch material contexts so one call can retrieve defaults/formulas
+      for multiple steel materials.
+- [x] Verify the multi-material instruction/default/formula slice with RED/GREEN
+      focused Jest, registry/executor Jest, Prettier, build/typecheck, and
+      `git diff --check`.
+- [x] Active runtime slice: move `lookup_defaults` from seed-backed runtime
+      fallback to repository-backed `steel.quote_defaults` retrieval. Keep the
+      existing Supabase table schema intact unless a real missing column or
+      index is proven; add only the reviewed C 型鋼 default seed data needed for
+      runtime retrieval.
+- [x] Active runtime correction: model C 型鋼 cutting/hole as a free/no-charge
+      business default. Do not require repeated user confirmation for the
+      default free charge; keep product/material price zero-as-missing unchanged.
+- [x] Add RED tests for DB-backed quote defaults lookup, including a multi-
+      material request where only the matching C 型鋼 default is returned from
+      reviewed active rows.
+- [x] Implement the `quote_defaults` repository mapper/query and wire
+      `lookup_defaults` through the Steel tool executor.
+- [x] Verify the DB-backed `lookup_defaults` slice with focused RED/GREEN Jest,
+      repository/tool specs, Prettier, schema/migration hygiene checks,
+      build/typecheck, and `git diff --check`.
+- [x] Active runtime cleanup: delete old AI-executable low-level Steel tools
+      from registry/schema/executor where the MVP docs already demoted them to
+      backend-internal capabilities. Keep repository/internal helpers available
+      for backend validation and calculators.
+- [x] Add RED tests proving the executable tool registry only exposes
+      `lookup_instructions`, `search_customers`, `search_price_candidates`,
+      `lookup_defaults`, and `lookup_formula`, and that legacy tool names return
+      `unknown_tool` without SQL.
+- [x] Remove legacy tool schemas and executor branches for direct spec/weight/
+      cutting/hole/processing/material-rule/formula-version/order/source-chunk
+      lookup and exact-customer alias lookup.
+- [x] Verify the tool-surface cleanup with focused RED/GREEN Jest, full Steel
+      Jest, Prettier, stale-tool greps, build/typecheck, and `git diff --check`.
+- [x] Active web-test slice: connect the five AI-callable Steel business tools
+      to `/steel/oauth-chat` provider execution so the UI can test AI-led
+      material/spec inference, reviewed lookup, bounded options, and workbook
+      preview output.
+- [x] Add RED provider/handler tests proving `/steel/oauth-chat` can execute a
+      Steel business tool call and continue to the final assistant response
+      while keeping `patch_workbook` as the validated workbook output tool.
+- [x] Implement the provider tool-call loop and tool schema conversion using
+      the existing Steel tool registry/executor.
+- [x] Verify the web-test slice with focused Jest, full Steel Jest, build/type
+      checks, and a browser smoke run at `/steel/oauth-chat`.
+- [x] Active runtime correction: quick material-price prompts such as
+      `亞L30x30 一支多少` must not stop at clarification when bounded
+      AI-derived candidate price queries can be formed. AI should search
+      reviewed price rows first, lead with the highest-confidence positive
+      source-backed approximate candidate as a provisional quote, list other
+      plausible options, and keep the customer-facing total unconfirmed until
+      user confirmation.
+- [x] Update Agent Instruction, Phase 4 tool contract, and provider prompt
+      regression so missing length/thickness/customer/tier does not block
+      reviewed lookup when bounded candidate queries exist.
+- [x] Verify the quick-price correction with RED/GREEN provider Jest, full Steel
+      Jest, build/type checks, and `/steel/oauth-chat` smoke.
 - [ ] Run baseline verification for the already-landed Phase 2/4B slices:
       repository/tool/rule-proposal tests, schema grep, builds, and diff hygiene.
 - [ ] Produce a checkpoint gap matrix for
@@ -110,7 +182,7 @@ until the user explicitly reopens UI scope.
       implementation starts from proven gaps, not assumptions.
 - [ ] Implement source-schema mapping as code in
       `packages/api/src/steel/schema/mapping.ts` with prompt-serializer tests.
-- [ ] Connect the provider-neutral Steel business tool executor to
+- [x] Connect the provider-neutral Steel business tool executor to
       `/steel/oauth-chat` and `openai_oauth_responses`, keeping `patch_workbook`
       as a validated workbook-output tool.
 - [ ] Implement the C-type quote vertical slice from
@@ -145,6 +217,25 @@ until the user explicitly reopens UI scope.
       workbook latest-version behavior.
 - [ ] After the queue is approved, move the active slice into a detailed
       `docs/plans/YYYY-MM-DD-...md` implementation plan before code changes.
+
+## Review - Steel Quick Price Correction
+
+- Root cause: real model calls included size-only `specKey` values such as
+  `30x30`, which the repository treated as exact `spec_key = '30x30'` and
+  filtered out reviewed rows such as `angle_L30x30x2.5x6M`.
+- Added provider guardrails so material price prompts require Steel tool calls
+  until `search_price_candidates` has executed; premature clarification text is
+  retried with an internal reminder and then rejected if lookup never occurs.
+- Added normalization/tool guards so AI-derived size-only `specKey` values are
+  downgraded to partial spec lookup, and derived candidate searches keep
+  bounded tier options instead of over-filtering arbitrary tier IDs.
+- Seeded reviewed angle candidates from `docs/reference/產品價格.xlsx` so
+  `亞L30x30 一支多少` can return source-backed approximate options.
+- Verification: focused RED/GREEN specs, full `packages/api/src/steel` Jest,
+  `npm run build:api`, direct real provider wrapper, and `/steel/oauth-chat`
+  smoke all pass. UI smoke returned `錏成型角鐵 L30x30x2.5t x 6M` with
+  `售價A 194.3`, `售價B 201`, `售價C 190.95`, `售價F 180.9`, plus
+  熱浸鍍鋅/黑角鐵 alternatives for user confirmation.
 
 ## Review
 
@@ -357,6 +448,125 @@ until the user explicitly reopens UI scope.
 - Verification passed for the Instruction Packet group/bundle correction:
   touched-doc Prettier check, required grep for packet groups, `packetGroupHints`
   and seeded group keys, fragmented-query guard grep, and `git diff --check`.
+- Runtime implementation slice started from a C 型鋼 RED test:
+  `lookup_instructions` initially returned `ok: false` because the executable
+  runtime tool did not exist.
+- Added seed-backed runtime support for `lookup_instructions` in the Steel tool
+  registry/executor. The first implemented group is `c-type-quote-core`, which
+  returns `c-type-basic-quote-zh-v1`, `price-source-priority-zh-v1`,
+  `formula-code-selection-zh-v1`, and `drawing-processing-detection-zh-v1` in
+  one batched call without SQL.
+- The C 型鋼 runtime test verifies one request with `packetGroupHints:
+["c-type-quote-core"]` returns the related price/formula/hole instruction
+  packet group, includes C 型鋼專用孔費 wording, includes table-priority hole
+  wording, and does not return unrelated H 型鋼 or angle packets.
+- Verification passed for the C 型鋼 runtime test slice: the focused RED run
+  failed because `lookup_instructions` was not yet executable; the GREEN run
+  passed after adding the runtime catalog; `execute.spec.ts` and
+  `registry.spec.ts` passed with 12 tests; touched-file Prettier check passed;
+  `npm run build:api` exited 0 with only the existing non-Steel Redis type
+  warning in `src/cache/cacheFactory.ts`; `git diff --check` passed.
+- User correction captured: runtime Instruction Packet bodies must not contain
+  Codex/backend implementation instructions. C 型鋼切工與孔費免費是業務預設，
+  可透過 quote default 列為 true-zero/no-charge；此預設不代表材料單價、
+  特殊加工或非 C 型鋼加工免費。
+- Added one-call multi-material `lookup_instructions` runtime coverage for an
+  order containing `亞L30x30` and C 型鋼. The test proves one tool call returns
+  both `angle-zinc-quote-core` and `c-type-quote-core`, including angle oral/
+  surface rules and C 型鋼 price/formula/hole rules, without returning unrelated
+  H 型鋼 packets.
+- Added batch-capable `lookup_formula` and `lookup_defaults` executable tool
+  contracts. `lookup_formula` accepts multiple material contexts and retrieves
+  formula rows for all supplied formula candidates in one tool call;
+  `lookup_defaults` accepts multiple material contexts and returns the matching
+  C 型鋼 quote default without SQL while DB-backed defaults remain a later slice.
+- Verification passed for the multi-material instruction/default/formula slice:
+  RED focused tests failed for implementation wording, missing angle group, and
+  missing `lookup_formula` / `lookup_defaults`; GREEN focused tests passed;
+  `execute.spec.ts` and `registry.spec.ts` passed with 15 tests; touched-file
+  Prettier check passed; runtime-facing stale wording grep returned no matches;
+  `npm run build:api` exited 0 with only the existing non-Steel Redis type
+  warning in `src/cache/cacheFactory.ts`; `git diff --check` passed.
+- User correction captured: C 型鋼的預設邏輯是切工/孔費免費，不是每次都要求使用者
+  重新確認 true-zero。Runtime packet、Instruction Packet docs、lessons and
+  checkpoints now model this as a quote-default true-zero/no-charge behavior
+  while preserving product/material price zero-as-missing.
+- Added repository-backed `lookup_defaults`: `searchSteelQuoteDefaults` reads
+  reviewed active rows from `steel.quote_defaults` using one batched material/
+  charge/formula query, and tool output maps returned defaults back to matching
+  order line refs.
+- Added idempotent data migration
+  `supabase/migration/20260603091515_seed_c_type_quote_defaults.sql` to seed the
+  reviewed C 型鋼 cutting/hole no-charge quote default. No table schema change was
+  needed because `steel.quote_defaults` already existed.
+- Verification passed for the DB-backed `lookup_defaults` slice: RED tests
+  failed first because the repository did not exist and the executor did not run
+  SQL; GREEN focused tests passed; `npx jest src/steel --runInBand` passed with
+  101 tests; touched-file Prettier check passed; stale runtime wording grep
+  returned no non-test matches; migration file content checks passed;
+  `git diff --check` passed; `npm run build:api` exited 0 with only the existing
+  non-Steel Redis type warning in `src/cache/cacheFactory.ts`.
+- `npx supabase migration list --local` could not run because this checkout has
+  no local Supabase Postgres listening on `127.0.0.1:54322`; this matches the
+  project cloud-only Supabase setup, so local migration-list verification was
+  replaced by file/content checks.
+- User correction captured: C 型鋼 runtime packet body should state the rule
+  directly and not say `依【C 型鋼專用計價規則】處理`, because the packet content
+  itself is the C 型鋼專用規則. Runtime and docs now say C 型鋼切工/孔費預設免費
+  directly.
+- Deleted old AI-executable low-level Steel tools from schema, registry, and
+  executor branches. The executable runtime surface is now only
+  `lookup_instructions`, `search_customers`, `search_price_candidates`,
+  `lookup_defaults`, and `lookup_formula`; direct customer/spec/weight/cutting/
+  hole/processing/material-rule/formula-version/order/source-chunk lookups are
+  backend-internal capabilities.
+- Provider runtime policy now lists the same five AI-callable Steel tools plus
+  workbook patch output, and tells AI to rely on backend internal validation for
+  unit-weight, cutting, processing, material-rule, and formula-version details.
+- Verification passed for the tool-surface cleanup: RED registry/executor tests
+  failed while legacy tools were still callable; GREEN focused tests passed;
+  `npx jest src/steel --runInBand` passed with 99 tests; Prettier write/check
+  passed; stale executable-tool grep returned no non-test source matches; C 型鋼
+  self-reference grep has no runtime/docs matches except the lesson's banned
+  example.
+- Connected `/steel/oauth-chat` provider execution to the AI-callable Steel
+  business tool surface. The provider now exposes the five registry tools as AI
+  SDK function tools, executes Steel business tool calls through the existing
+  tool executor, feeds results back as `role: tool` messages, aggregates
+  multi-round usage/warnings, and keeps `patch_workbook` as a validated workbook
+  output proposal.
+- Added RED/GREEN provider coverage for the runtime loop: the RED test first
+  proved only one provider generation happened; the GREEN test proves
+  `lookup_instructions` is executed, its JSON result is returned to the model,
+  and the final assistant answer/usage comes from the follow-up generation. A
+  second regression test proves backend tool execution failures are returned to
+  the model as `repository_error` tool results instead of being mislabeled as
+  JSON argument errors.
+- Browser smoke passed on `http://localhost:3090/steel/oauth-chat` with backend
+  `http://localhost:3080`: login succeeded, workbook v1 initialized, and the
+  prompt `亞L30x30 一支多少` returned AI-derived candidates (`錏角鐵 30x30`,
+  `錏成型角鐵 30x30`, `鍍鋅角鐵 30x30`, `角鐵 30x30`, `L30x30`) before reporting
+  no reviewed price match and asking the user to confirm surface, thickness, and
+  length. No confirmed workbook total was written.
+- Verification passed for the web-test slice: focused provider Jest passed;
+- User correction captured: for `亞L30x30 一支多少`, AI should not stop before
+  lookup just because length, thickness, customer, or tier is missing. If
+  reviewed lookup finds positive source-backed approximate candidates, the
+  response should lead with the highest-confidence provisional quote and then
+  list other plausible specs/options for confirmation.
+- Live smoke gap found: `steel.price_items` had no reviewed product-price rows,
+  so `/steel/oauth-chat` could not produce a source-backed provisional quote.
+  Added a minimal reviewed seed from `docs/reference/產品價格.xlsx` for
+  `錏成型角鐵30*2.5*6M`, `熱浸鍍鋅角鐵30*3.0`, and comparable black angle 30
+  candidates.
+- Tool lookup correction: AI may pass oral candidates such as `錏角鐵`; backend
+  price search now uses bounded token matching for those AI-derived candidates
+  while still rejecting raw typo strings such as `亞L30x30`.
+  `npx jest src/steel/ai/provider.spec.ts --runInBand` passed with 7 tests;
+  `npx jest src/steel --runInBand` passed with 101 tests; `npm run build:api`
+  exited `0` with the existing Redis type warning plus non-blocking
+  `zod-to-json-schema` circular dependency warnings; touched-file Prettier
+  passed after formatting; `git diff --check` passed.
 - Updated core docs to point at the new baseline:
   `CONTEXT.md`, v8.3 primary spec, v8.3 Phase 2 data tools, v8.3 Phase 5 Admin
   source management, Steel data-rules README, and Phase 4 tool-calling. The new

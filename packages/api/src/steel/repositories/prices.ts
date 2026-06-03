@@ -65,6 +65,33 @@ export interface SearchSteelPriceItemsInput {
   limit?: number;
 }
 
+interface SteelProductNameSearch {
+  productNameTerms: string[];
+  specKeyContains?: string;
+}
+
+function normalizeSpecSize(value: string): string {
+  return value
+    .replace(/\s+/g, '')
+    .replace(/[＊*×]/g, 'x')
+    .replace(/^l/i, '');
+}
+
+function getProductNameSearch(productName: string): SteelProductNameSearch {
+  const value = productName.trim();
+  const sizeMatch = value.match(/\bL?\s*\d+(?:\.\d+)?\s*[xX*＊×]\s*\d+(?:\.\d+)?\b/u);
+  const productNameOnly = sizeMatch ? value.replace(sizeMatch[0], '').trim() || value : value;
+  const oralAngleProductTerms: Record<string, string[]> = {
+    錏角鐵: ['錏', '角鐵'],
+    鍍鋅角鐵: ['鍍鋅', '角鐵'],
+  };
+
+  return {
+    productNameTerms: oralAngleProductTerms[productNameOnly] ?? [productNameOnly],
+    ...(sizeMatch ? { specKeyContains: normalizeSpecSize(sizeMatch[0]) } : {}),
+  };
+}
+
 function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
   return {
     id: parseRequiredNumber(row.id),
@@ -92,6 +119,7 @@ export async function searchSteelPriceItems(
 ): Promise<SteelPriceItem[]> {
   const where = ['review_state = $1'];
   const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
+  const productNameSearch = input.productName ? getProductNameSearch(input.productName) : undefined;
 
   if (!input.includeInactive) {
     where.push('active = true');
@@ -102,14 +130,17 @@ export async function searchSteelPriceItems(
     where.push(`spec_key = $${values.length}`);
   }
 
-  if (input.specKeyContains) {
-    values.push(`%${input.specKeyContains}%`);
+  const specKeyContains = input.specKeyContains ?? productNameSearch?.specKeyContains;
+  if (specKeyContains) {
+    values.push(`%${specKeyContains}%`);
     where.push(`spec_key ILIKE $${values.length}`);
   }
 
-  if (input.productName) {
-    values.push(`%${input.productName}%`);
-    where.push(`product_name ILIKE $${values.length}`);
+  if (productNameSearch) {
+    for (const productNameTerm of productNameSearch.productNameTerms) {
+      values.push(`%${productNameTerm}%`);
+      where.push(`product_name ILIKE $${values.length}`);
+    }
   }
 
   if (input.customerTierId !== undefined) {
