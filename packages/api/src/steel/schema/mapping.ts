@@ -73,7 +73,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     target: 'steel.price_items.product_price_unit_weight',
     allowedFor: ['admin_import', 'calculator_context', 'price_lookup'],
     valueType: 'number',
-    note: 'Reviewed product price unit weight is preferred quote weight evidence.',
+    note: 'Reviewed product price unit weight is preferred quote weight evidence; when this column is 0, importer may use a validated product-name parenthetical weight such as 白鐵平鐵 50 *8.0( 19.7).',
   },
   {
     sourceFile: '系統訂單.xlsx',

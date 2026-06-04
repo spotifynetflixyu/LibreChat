@@ -16,6 +16,12 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     argsSchema: steelToolArgsSchemas.lookup_instructions,
   },
   {
+    name: 'lookup_quote_rules',
+    description:
+      'Retrieve reviewed Steel instruction packets and quote defaults for a batched interpreted order context.',
+    argsSchema: steelToolArgsSchemas.lookup_quote_rules,
+  },
+  {
     name: 'lookup_catalog_families',
     description:
       'Retrieve reviewed catalog-family vocabulary candidates for AI selection; does not resolve oral wording to a single key.',

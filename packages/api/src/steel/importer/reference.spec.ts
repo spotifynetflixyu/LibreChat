@@ -48,18 +48,153 @@ describe('Steel reference data importer', () => {
     const cTypeItem = plan.priceItems.find((item) => item.erpItemCode === 'CCG10023');
     const cTypeFamily = plan.catalogFamilies.find((family) => family.key === 'c_type');
     const angleItem = plan.priceItems.find((item) => item.erpItemCode === 'ELD12025');
+    const fixedLengthAngleItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'ELB0100750709' && item.customerTierCode === 'A',
+    );
+    const stainlessFlatBarFromParentheses = plan.priceItems.find(
+      (item) => item.erpItemCode === 'EIS20080' && item.customerTierCode === 'A',
+    );
+    const stainlessFlatBarFromColumn = plan.priceItems.find(
+      (item) => item.erpItemCode === 'EIS10050' && item.customerTierCode === 'A',
+    );
+    const lightHBeamItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'EHC150706' && item.customerTierCode === 'A',
+    );
+    const railItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'ERB06060' && item.customerTierCode === 'A',
+    );
+    const proportionalRailItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'ERB09060' && item.customerTierCode === 'A',
+    );
+    const fallbackSpringItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'AVA0414' && item.customerTierCode === 'A',
+    );
+    const stainlessPlateItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'BNA0054019' && item.customerTierCode === 'A',
+    );
+    const hairlinePlateItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'BNH0054020' && item.customerTierCode === 'A',
+    );
+    const otPatternPlateItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'BXB030408' && item.customerTierCode === 'A',
+    );
+    const galvanizedPatternPlateItem = plan.priceItems.find(
+      (item) => item.erpItemCode === 'BXH030408' && item.customerTierCode === 'A',
+    );
     const hBeamDefault = plan.quoteDefaults.find(
       (defaultRow) => defaultRow.originId === 'h-type-non-standard-length-surcharge-v1',
     );
 
     expect(hBeamItem?.catalogFamily).toBe('h_beam');
     expect(cTypeItem?.catalogFamily).toBe('c_type');
+    expect(cTypeItem).toMatchObject({
+      unit: 'kg',
+      productPriceUnitWeight: 4,
+      productPriceUnitWeightUnit: 'kg_per_m',
+    });
     expect(cTypeFamily?.metadata).toEqual(
       expect.objectContaining({
         searchHints: expect.arrayContaining(['白鐵輕型鋼', '錏輕型鋼', '黑鐵輕型鋼', '100x2.3']),
       }),
     );
     expect(angleItem?.catalogFamily).toBe('angle');
+    expect(fixedLengthAngleItem).toMatchObject({
+      productName: '不等邊黑角鐵100*75*7.0*9M(84)',
+      unit: 'kg',
+      productPriceUnitWeight: 84,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+    });
+    expect(stainlessFlatBarFromParentheses).toMatchObject({
+      productName: '白鐵平鐵 50 *8.0( 19.7)',
+      unit: 'piece',
+      unitPrice: 2107.9,
+      productPriceUnitWeight: 19.7,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+      metadata: expect.objectContaining({
+        sourceRatio: 107,
+        sourcePriceUnitBasis: 'per_piece_total',
+        sourceUnitWeightColumn: 0,
+        sourceUnitWeightOrigin: 'product_name_parentheses',
+        sourceParentheticalUnitWeight: 19.7,
+      }),
+    });
+    expect(stainlessFlatBarFromParentheses?.sourceRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          factType: 'product_price_unit_weight',
+          extractedLabel: '品名括號單位重',
+          canonicalKey: 'product_price_unit_weight',
+        }),
+      ]),
+    );
+    expect(stainlessFlatBarFromColumn).toMatchObject({
+      productName: '白鐵平鐵 25 *5.0 (5.95)',
+      unit: 'piece',
+      unitPrice: 624.75,
+      productPriceUnitWeight: 5.95,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+      metadata: expect.objectContaining({
+        sourceRatio: 105,
+        sourcePriceUnitBasis: 'per_piece_total',
+        sourceUnitWeightOrigin: 'unit_weight_column',
+        sourceParentheticalUnitWeight: 5.95,
+      }),
+    });
+    expect(lightHBeamItem).toMatchObject({
+      catalogFamily: 'h_beam',
+      productName: '輕量H150*75*3.2/4.5*6M(53)',
+      productPriceUnitWeight: 53,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+    });
+    expect(railItem).toMatchObject({
+      catalogFamily: 'rail',
+      productName: '6K鐵軌 6M(38)(件55支)凸面22.0非25.4',
+      unit: 'piece',
+      unitPrice: 2090,
+      productPriceUnitWeight: 36,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+      metadata: expect.objectContaining({
+        sourcePriceUnitBasis: 'per_piece_total',
+        sourceUnitWeightOrigin: 'unit_weight_column',
+        sourceParentheticalUnitWeight: 38,
+      }),
+    });
+    expect(proportionalRailItem).toMatchObject({
+      catalogFamily: 'rail',
+      productName: '9K鐵軌 6M(54)',
+      productPriceUnitWeight: 54,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+      metadata: expect.objectContaining({
+        sourceUnitWeightOrigin: 'unit_weight_column',
+      }),
+    });
+    expect(stainlessPlateItem).toMatchObject({
+      catalogFamily: 'plate',
+      productName: "STBA 0.5*4'*1M9(9.3)",
+      unit: 'piece',
+      productPriceUnitWeight: 9.3,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+    });
+    expect(hairlinePlateItem).toMatchObject({
+      catalogFamily: 'plate',
+      productName: "STHL 0.5*4'*2M(9.79)",
+      productPriceUnitWeight: 9.79,
+      productPriceUnitWeightUnit: 'kg_per_piece',
+    });
+    expect(otPatternPlateItem?.catalogFamily).toBe('ot_plate');
+    expect(galvanizedPatternPlateItem?.catalogFamily).toBe('galvanized_plate');
+    expect(fallbackSpringItem).toMatchObject({
+      catalogFamily: 'erp_ava',
+      productName: '彈簧4#14 (4.18)',
+      unit: 'piece',
+      productPriceUnitWeight: null,
+      productPriceUnitWeightUnit: null,
+      metadata: expect.objectContaining({
+        sourcePriceUnitBasis: 'per_piece_or_unit',
+        sourceUnitWeightOrigin: null,
+        sourceParentheticalUnitWeight: null,
+      }),
+    });
     expect(hBeamDefault?.catalogFamily).toBe('h_beam');
   });
 

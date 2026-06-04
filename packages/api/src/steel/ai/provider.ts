@@ -5,6 +5,7 @@ import type {
   LanguageModelV3ToolCall,
   LanguageModelV3Message,
   LanguageModelV3Prompt,
+  LanguageModelV3ToolChoice,
   SharedV3Warning,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
@@ -182,7 +183,7 @@ function getSteelRuntimePolicyInstruction(): string {
   return [
     'AI owns Steel tool orchestration.',
     '統一用繁體中文回覆。',
-    'Interpret the user request, normalize ambiguous material/specification text, and choose among the AI-callable Steel tools: lookup_instructions, lookup_catalog_families, search_customers, search_price_candidates, lookup_defaults, lookup_formula, and workbook patch output.',
+    'Interpret the user request, normalize ambiguous material/specification text, and choose among the AI-callable Steel tools: lookup_quote_rules, lookup_instructions, lookup_catalog_families, search_customers, search_price_candidates, lookup_defaults, lookup_formula, and workbook patch output.',
     'Generate material/specification candidates in reasoning; do not call a backend tool only to normalize raw wording or create search terms.',
     'Use backend internal validation/calculation for unit-weight, cutting, processing, material-rule, and formula-version details; do not call separate low-level lookup tools for those details.',
     'Call backend tools when you need reviewed rows, scoped quote-default candidates, formula candidates, deterministic calculation, or validated workbook output.',
@@ -190,8 +191,8 @@ function getSteelRuntimePolicyInstruction(): string {
     'Do not treat raw customer text such as `亞L30x30` as a confirmed product-price key.',
     'When catalog family wording is unclear, call lookup_catalog_families for reviewed vocabulary candidates, then choose catalogFamilies yourself or ask the user to confirm.',
     'Backend does not decide oral wording to catalog_family mappings; backend returns catalog vocabulary candidates and validates explicit keys selected by AI.',
-    'Use canonical catalog family keys such as h_beam, c_type, and angle when calling lookup_instructions, search_price_candidates, lookup_defaults, or lookup_formula.',
-    'For oral orders, first infer product/category candidates and choose the catalog key yourself; after choosing a catalog/category key, call lookup_instructions with the interpreted order context before category-dependent lookups such as search_price_candidates, lookup_defaults, or lookup_formula.',
+    'Use canonical catalog family keys such as h_beam, c_type, and angle when calling lookup_quote_rules, lookup_instructions, search_price_candidates, lookup_defaults, or lookup_formula.',
+    'For oral orders, first infer product/category candidates and choose the catalog key yourself; after choosing a catalog/category key, call lookup_quote_rules with the interpreted order context before category-dependent lookups such as search_price_candidates, lookup_defaults, or lookup_formula. lookup_instructions is legacy-compatible and should only be used when an instruction-only subset is needed.',
     'First derive candidate material and specification fields, then generate candidate material and specification queries such as 錏角鐵 30x30, 錏成型角鐵 30x30, 鍍鋅角鐵 30x30, 角鐵 30x30, or L30x30 before searching reviewed price rows.',
     'For material price questions like `一支多少`, search reviewed price rows with derived candidates.',
     'If instruction packets provide processing price candidate names or ERP item codes, call search_price_candidates for the reviewed processing rows before quoting those processing charges; do not quote processing prices solely from instruction packet text.',
@@ -199,6 +200,17 @@ function getSteelRuntimePolicyInstruction(): string {
     'Do not stop before reviewed price lookup merely because length, thickness, customer, or tier is missing when bounded derived price queries can still be formed.',
     'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before, unless no bounded derived price query can be formed.',
     'Do not pass customerTierId to search_price_candidates unless the user gave a customer/tier or search_customers returned a selected customer/tier; when tier is unknown, omit customerTierId so reviewed candidates can include all applicable tiers.',
+    'When customer/tier is unknown, lookup_quote_rules may set customerContext.tierKnown=false, but must not invent customerId or customerTierId values such as 1 or 2. Unknown customer/tier context is represented by omitted IDs plus tierKnown=false.',
+    'When customer/tier is not known, set customerContext.tierKnown=false in lookup_quote_rules and omit customerTierId from price lookup. If reviewed lookup returns tiered prices, use customerTierCode B as the primary provisional/default price, while still listing returned A/B/C/F tier options and asking the user to confirm customer tier when needed.',
+    'For C 型鋼 / c_type with unspecified material or surface, AI may use productName 錏輕型鋼 as the usual high-confidence provisional candidate, but the first reply must also show same-spec reviewed alternatives such as 白鐵輕型鋼 or 黑鐵輕型鋼 when returned. In follow-up turns, if the user does not specify another material/surface after those options were shown, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.',
+    'For product-price rows, interpret unitPrice together with unit, productPriceUnitWeight, and productPriceUnitWeightUnit. If unit = kg, unitPrice is a per-kg price; convert length/piece weight into kg before multiplying unitPrice. If unit = piece, unitPrice is already a per-piece/per-unit total.',
+    'For product-price rows with productPriceUnitWeightUnit = kg_per_m and unit = kg, calculate provisional piece amount from kg_per_m * requested meters * unitPrice; do not answer as if unitPrice were per-piece.',
+    'For product-price rows whose product name/spec contains a fixed length in meters and productPriceUnitWeightUnit = kg_per_piece with unit = kg, price a whole source piece as pieceWeightKg * unitPrice. If unit = piece, price the whole source piece by unitPrice. Offcut/remnant is charged by default unless the user explicitly says remnants are not charged.',
+    'If product-price row metadata says sourceUnitWeightOrigin = product_name_parentheses, treat the parenthesized product-name number as reviewed weight evidence and mention it when explaining the source.',
+    'Apply product-price unit-weight calculation only to steel/material stock catalog families such as h_beam including 輕量H, c_type, angle, channel, flat_bar, rail, pipe, plate, mesh, grating, and floor deck. Do not apply this steel material rule to non-material product/accessory rows such as springs, screws, locks, wheels, windows, resin panels, doors, gates, or tools unless a reviewed rule explicitly says so.',
+    'When a positive productPriceUnitWeight comes from the reviewed unit-weight column, it has priority over product-name parentheses. Parentheses are fallback-only for missing or zero unit-weight columns.',
+    'For fixed-length material rows with a positive ratio/sourceRatio and a piece-total unitPrice, do not reinterpret that unitPrice as per-kg merely because the parenthetical weight conflicts with the reviewed unit-weight column. Keep the unitPrice as a piece total and flag the weight conflict for confirmation.',
+    'When any unit-weight source is missing or contradictory, use related same-series/same-spec reviewed material rows, different-length rows, or comparable material rows to derive proportional inferred evidence if possible, but label that value as inferred/low-confidence or confirmation-needed and do not silently overwrite reviewed source values.',
     'For quick price questions like `一支多少`, if reviewed lookup returns one or more positive approximate candidates, lead with the highest-confidence source-backed candidate as a provisional quote or estimate, then list the other plausible candidates/specs/options for the user to confirm.',
     'If reviewed facts are missing, zero-valued, ambiguous, or only approximate, present bounded options with source differences and ask the user to confirm before treating the result as final; no confirmed customer-facing total is allowed before confirmation.',
     'If reviewed lookup returns no positive source-backed price candidates, do not invent a quote; explain the attempted candidate queries and ask for the missing detail or a user-supplied price.',
@@ -335,7 +347,7 @@ function createInstructionLookupRequiredResult(call: LanguageModelV3ToolCall): S
     toolName: call.toolName,
     errorCategory: 'invalid_arguments',
     errorSummary:
-      'lookup_instructions is required before category-dependent Steel lookups. When AI has selected a catalog/category key from oral order evidence, first call lookup_instructions with the interpreted order context, then call search_price_candidates, lookup_defaults, or lookup_formula.',
+      'lookup_quote_rules is required before category-dependent Steel lookups. When AI has selected a catalog/category key from oral order evidence, first call lookup_quote_rules with the interpreted order context, then call search_price_candidates, lookup_defaults, or lookup_formula. lookup_instructions is accepted only as a legacy instruction-only compatibility path.',
     durationMs: 0,
     redactionVersion: 1,
   };
@@ -408,6 +420,30 @@ function isCategoryDependentLookup(call: SteelBusinessToolCall, input: unknown):
   }
 }
 
+function hasCustomerTierFilter(input: unknown): boolean {
+  return isJsonObject(input) && typeof input.customerTierId === 'number';
+}
+
+function hasUnknownCustomerTierContext(input: unknown): boolean {
+  if (!isJsonObject(input)) {
+    return false;
+  }
+
+  const customerContext = input.customerContext;
+  return isJsonObject(customerContext) && customerContext.tierKnown === false;
+}
+
+function omitCustomerTierFilter(input: unknown): unknown {
+  if (!isJsonObject(input)) {
+    return input;
+  }
+
+  const { customerTierId, ...sanitizedInput } = input;
+  void customerTierId;
+
+  return sanitizedInput;
+}
+
 interface ExecutedSteelToolCall {
   call: SteelBusinessToolCall;
   input: unknown;
@@ -422,11 +458,13 @@ interface ParsedWorkbookPatchToolCall {
 async function executeSteelBusinessToolCalls({
   calls,
   executeSteelToolCall,
+  allowCustomerTierFilter,
   hasInstructionLookupResult,
   runState,
 }: {
   calls: SteelBusinessToolCall[];
   executeSteelToolCall: SteelProviderToolExecutor;
+  allowCustomerTierFilter: boolean;
   hasInstructionLookupResult: boolean;
   runState: SteelToolRunState;
 }): Promise<ExecutedSteelToolCall[]> {
@@ -458,10 +496,17 @@ async function executeSteelBusinessToolCalls({
       continue;
     }
 
+    const executionInput =
+      call.toolName === 'search_price_candidates' &&
+      !allowCustomerTierFilter &&
+      hasCustomerTierFilter(input)
+        ? omitCustomerTierFilter(input)
+        : input;
+
     try {
       result = await executeSteelToolCall({
         toolName: call.toolName,
-        arguments: input,
+        arguments: executionInput,
         providerToolCallId: call.toolCallId,
         runState,
       });
@@ -471,7 +516,7 @@ async function executeSteelBusinessToolCalls({
 
     executedCalls.push({
       call,
-      input,
+      input: executionInput,
       result,
     });
   }
@@ -545,7 +590,7 @@ function getRequiredPriceLookupReminderMessage(): LanguageModelV3Message {
   return {
     role: 'system',
     content:
-      'This Steel price request still requires reviewed lookup. If you have selected a catalog/category key and lookup_instructions has not completed for this interpreted order context, call lookup_instructions first; otherwise call search_price_candidates with AI-derived candidate queries before answering.',
+      'This Steel price request still requires reviewed lookup. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. For C 型鋼/c_type such as C100x50x20x2.3t, use catalogFamilies [c_type], a compact price-table spec fragment such as 100x2.3, and productName 錏輕型鋼 when material is unspecified; omit customerTierId when tier is unknown so returned reviewed tiers can include the B default price and other A/B/C/F options.',
   };
 }
 
@@ -613,6 +658,38 @@ function getWarningText(warning: SharedV3Warning): string {
   }
 
   return warning.details ? `${warning.feature}: ${warning.details}` : warning.feature;
+}
+
+function getSteelToolChoice({
+  hasReviewedPriceResult,
+  mustGetReviewedPriceResult,
+}: {
+  hasReviewedPriceResult: boolean;
+  mustGetReviewedPriceResult: boolean;
+}): LanguageModelV3ToolChoice {
+  if (!mustGetReviewedPriceResult || hasReviewedPriceResult) {
+    return { type: 'auto' };
+  }
+
+  return { type: 'required' };
+}
+
+function getSteelToolsForRound({
+  hasInstructionLookupResult,
+  hasReviewedPriceResult,
+  mustGetReviewedPriceResult,
+  tools,
+}: {
+  hasInstructionLookupResult: boolean;
+  hasReviewedPriceResult: boolean;
+  mustGetReviewedPriceResult: boolean;
+  tools: LanguageModelV3FunctionTool[];
+}): LanguageModelV3FunctionTool[] {
+  if (mustGetReviewedPriceResult && hasInstructionLookupResult && !hasReviewedPriceResult) {
+    return tools.filter((tool) => tool.name === 'search_price_candidates');
+  }
+
+  return tools;
 }
 
 function sumTokenTotals(
@@ -690,19 +767,30 @@ export async function sendSteelOAuthChat({
   let hasReviewedPriceResult = false;
   let hasInstructionLookupResult = false;
   let hasPositiveReviewedPriceCandidate = false;
+  let allowCustomerTierFilter = true;
   let hasWorkbookPatch = false;
   const workbookPatchOperations: WorkbookPatchOperation[] = [];
 
   for (let round = 0; round <= steelToolMaxCalls; round += 1) {
     const forceToolCall = mustGetReviewedPriceResult && !hasReviewedPriceResult;
+    const toolChoice = getSteelToolChoice({
+      hasReviewedPriceResult,
+      mustGetReviewedPriceResult,
+    });
+    const roundTools = getSteelToolsForRound({
+      hasInstructionLookupResult,
+      hasReviewedPriceResult,
+      mustGetReviewedPriceResult,
+      tools,
+    });
     const result = await openai(model).doGenerate({
       abortSignal,
       prompt,
       maxOutputTokens,
-      ...(tools.length > 0
+      ...(roundTools.length > 0
         ? {
-            tools,
-            toolChoice: { type: forceToolCall ? 'required' : 'auto' },
+            tools: roundTools,
+            toolChoice,
           }
         : {}),
       providerOptions: {
@@ -756,15 +844,26 @@ export async function sendSteelOAuthChat({
     const executedCalls = await executeSteelBusinessToolCalls({
       calls: steelBusinessToolCalls,
       executeSteelToolCall,
+      allowCustomerTierFilter,
       hasInstructionLookupResult,
       runState,
     });
     if (
       executedCalls.some(
-        ({ call, result: toolResult }) => call.toolName === 'lookup_instructions' && toolResult.ok,
+        ({ call, result: toolResult }) =>
+          (call.toolName === 'lookup_quote_rules' || call.toolName === 'lookup_instructions') &&
+          toolResult.ok,
       )
     ) {
       hasInstructionLookupResult = true;
+    }
+    const customerTierContextCalls = executedCalls.filter(
+      ({ call, result: toolResult }) =>
+        (call.toolName === 'lookup_quote_rules' || call.toolName === 'lookup_instructions') &&
+        toolResult.ok,
+    );
+    if (customerTierContextCalls.some(({ input }) => hasUnknownCustomerTierContext(input))) {
+      allowCustomerTierFilter = false;
     }
     const priceLookupCalls = executedCalls.filter(
       ({ call }) => call.toolName === 'search_price_candidates',
@@ -778,11 +877,15 @@ export async function sendSteelOAuthChat({
         priceLookupCalls.some(({ result: toolResult }) => hasPositivePriceCandidate(toolResult));
     }
 
-    prompt = [
+    const nextPrompt = [
       ...prompt,
       toAssistantToolCallMessage(executedCalls, parsedWorkbookPatchCalls),
       toToolResultMessage(executedCalls, parsedWorkbookPatchCalls),
     ];
+    prompt =
+      mustGetReviewedPriceResult && !hasReviewedPriceResult
+        ? [...nextPrompt, getRequiredPriceLookupReminderMessage()]
+        : nextPrompt;
   }
 
   if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {

@@ -2221,3 +2221,202 @@ Review evidence:
 - Root cause: `/api/balance` existed, but it only read the user's balance record. Existing users could get `404 Balance not found` after balance was enabled because initialization only ran during auth flows.
 - Added the existing `createSetBalanceConfig` middleware to `/api/balance` before the balance controller, so a missing record can be initialized on first balance read when balance is enabled and `startBalance` is configured.
 - `cd api && npx jest server/routes/__tests__/balance.spec.js --runInBand` passes.
+
+# Steel OAuth Chat UI Live Smoke
+
+- [x] Confirm local backend and frontend dev ports are available.
+- [x] Start `npm run backend:dev` and verify `http://localhost:3080/api/config`.
+- [x] Start `npm run frontend:dev` and verify `http://localhost:3090/api/config`.
+- [ ] Open `http://localhost:3090/steel/oauth-chat` in a browser session.
+- [ ] Submit `亞L30x30 一支多少？` and check for bounded options plus a highest-confidence provisional quote.
+- [ ] Submit the follow-up `先用錏成型角鐵30*2.5*6M，第1級價格。` and check that the same conversation updates the selected candidate.
+- [ ] Submit the H 型鋼 cutting/slotting/hole prompt and check the processing quote explanation.
+
+## Review
+
+- User interrupted the automated browser smoke before Playwright execution.
+- Backend `npm run backend:dev` and frontend `npm run frontend:dev` were stopped with SIGINT.
+- Shutdown verification passed: `lsof` found no listeners on ports `3080` or `3090`, and the residual process check found no `nodemon`, `vite`, Playwright, or headless Chrome process.
+
+# Steel DB-Backed Quote Rules and Merged Lookup Tool
+
+- [x] Update docs before implementation: design `steel.instruction_packets`, `lookup_quote_rules`, and Admin-updatable rule boundaries.
+- [x] Add a lesson that editable Steel quoting rules must not stay hard-coded in provider/tool code.
+- [x] Write RED repository/tool tests for DB-backed instruction packets and merged instructions/defaults lookup.
+- [x] Generate a Supabase migration with `npx supabase migration new`.
+- [x] Update `supabase/schema.sql` and the new migration together.
+- [x] Seed current reviewed instruction packets from the existing static runtime packets into SQL.
+- [x] Implement `steel.instruction_packets` repository retrieval.
+- [x] Implement `lookup_quote_rules` and route legacy `lookup_instructions` through the DB-backed repository.
+- [x] Update provider instructions to prefer `lookup_quote_rules` before category-dependent lookup.
+- [x] Verify focused Jest, `packages/api` build, Prettier check, and `git diff --check`.
+
+## Review
+
+- RED evidence: focused Jest initially failed because `./instructions` repository was missing and `lookup_quote_rules` was not implemented.
+- GREEN evidence so far: focused repository/tool Jest passed 25/25; provider policy/tool-loop Jest passed 12/12.
+- Implemented `steel.instruction_packets` as Admin-editable DB rows, with idempotent SQL seed for 10 reviewed active packets. Applied the migration SQL to the configured Steel Postgres from `.env`; live DB verification returned 10 reviewed active packet slugs.
+- Live DB group-order verification: `c-type-quote-core` returns `c-type-basic-quote-zh-v1`, `price-source-priority-zh-v1`, `formula-code-selection-zh-v1`, `drawing-processing-detection-zh-v1`; `h-type-quote-core` returns `h-type-length-surcharge-zh-v1`, `h-and-i-beam-cutting-price-zh-v1`, `cut-count-and-trim-detection-zh-v1`.
+- Final verification: focused repository/tool/provider Jest passed 37/37; full `packages/api/src/steel` Jest passed 30 suites / 142 tests; `npm run build:api` exited 0 with only existing non-Steel Rollup TypeScript warnings; touched-file Prettier check passed; `git diff --check` passed.
+- Follow-up live smoke: updated `provider.catalog-oral.manual.spec.ts` so the C/H/angle oral quote smoke cases require `lookup_quote_rules` instead of legacy `lookup_instructions`. Real OAuth C 型鋼 smoke passed with `STEEL_OPENAI_OAUTH_C_TYPE_ORAL_TEST=true`: true `gpt-5.5` called `lookup_quote_rules` before `search_price_candidates`, lookup arguments included `c_type`, and the successful positive price lookup arguments included `c_type`, `100x2.3`, and `錏輕型鋼`.
+
+# Steel Product Price Unit Weight Calculation Rule
+
+- [x] Capture user corrections in `tasks/lessons.md`, including C 型鋼
+      `kg_per_m` pricing and product-name parenthetical weight fallback.
+- [x] Update agent/runtime instructions so AI treats product-price unit price,
+      price `unit`, and unit weight correctly.
+- [x] Update instruction packet docs with product-price unit weight calculation
+      rules.
+- [x] Add a follow-up Supabase migration to update reviewed
+      `steel.instruction_packets` and existing `steel.price_items` unit
+      semantics.
+- [x] Apply the migration to the configured Steel Postgres and verify returned
+      C 型鋼/H 型鋼/白鐵平鐵 rows include the corrected rule semantics.
+- [x] Add deterministic tests so `lookup_quote_rules` returns the new rule for
+      C 型鋼 and provider policy mentions the calculation boundary.
+- [x] Run focused Jest, full Steel Jest, importer dry-run, API build, Prettier,
+      and `git diff --check`.
+
+## Review
+
+- Added migration `20260604140123_steel_product_price_unit_weight_rules.sql`.
+  It fixes existing `steel.price_items` by separating `unit` from
+  `product_price_unit_weight_unit`, imports validated product-name parentheses
+  as weight-per-piece evidence, and upserts
+  `product-price-unit-weight-calculation-zh-v1`.
+- Updated the reference importer so future `產品價格.xlsx` updates recalculate
+  the same semantics. Verified fixtures:
+  `CCG10023` -> `unit=kg`, `kg_per_m`, `4kg/m`; `EHS121206` ->
+  `unit=kg`, `kg_per_piece`, `142kg/支`; `EIS20080` -> `unit=piece`,
+  `kg_per_piece`, `19.7kg/支`, source origin `product_name_parentheses`.
+- Live DB verification matched those three rows and confirmed the instruction
+  packet contains both the C 型鋼 `NT$600-643.2` example and the
+  `白鐵平鐵 50 *8.0( 19.7)` bracket-weight example.
+- Live C 型鋼 OAuth smoke initially caught a real search-normalization
+  regression: AI supplied `specKeyContains=100x2.3`, but backend normalization
+  replaced it with full-section `100x50x20x2.3`. Added a regression so compact
+  C 型鋼 fragments win over full-section `specKey`; the live smoke then passed
+  with real `openai_oauth_responses` and real Steel DB.
+- Verification passed: focused Jest 4 suites / 50 tests, full Steel Jest 30
+  suites / 143 tests, opt-in C 型鋼 OAuth smoke 1 passed / 4 skipped,
+  `npm run steel:import-reference-data -- --dry-run`, `npm run build:api` exit
+  0 with existing non-Steel Rollup TypeScript warnings, Prettier write, and
+  `git diff --check`.
+
+## Follow-up Audit
+
+- [x] Compare `docs/reference/產品價格.xlsx` expected steel row semantics against
+      live `steel.price_items`.
+- [x] Confirm non-steel rows are not treated as steel price-calculation rows.
+- [x] Confirm agent/runtime instructions contain the unified price calculation
+      logic.
+- [x] Confirm live `steel.instruction_packets` has the latest reviewed rule.
+- [x] Confirm docs contain the same rule and source examples.
+
+### Review
+
+- Reapplied the current reference importer to Supabase from
+  `docs/reference/產品價格.xlsx`. Apply verification returned 27,024
+  `price_items`, 6,756 product codes, 2,256 customers, 238 cutting prices, 31
+  formula versions, and 29 quote defaults.
+- Reapplied migration
+  `20260604142955_steel_product_price_weight_rule_scope.sql` after importer
+  apply so live `steel.instruction_packets` and existing price rows use the
+  final scope/weight rules.
+- Live DB audit after importer + migration: 0 null `catalog_family` rows, 0
+  null `category_id` rows, 198 catalog families used by product-price rows,
+  2,912 steel/material product codes, 1,339 steel/material product codes with
+  usable weight evidence, 0 non-material product codes with steel weight
+  semantics, and 0 material/non-material scope misses.
+- Sample rows verified: `CCG10023` C 型鋼 is `c_type`, `unit=kg`,
+  `4kg/m`; `EHC150706` 輕量H is `h_beam`, `53kg/支`; `BNH0054020` is
+  `plate`, `9.79kg/支`; `ERB06060` 6K鐵軌 is `rail`, `unit=piece`,
+  `36kg/支`, with parenthetical `38` preserved only as contradiction metadata;
+  `AVA0414` 彈簧 and `HNU0846` 消光 remain non-material scope with no steel
+  unit-weight semantics.
+- Live instruction packet `product-price-unit-weight-calculation-zh-v1` now
+  includes non-material scope, 輕量H, BNH, 6K鐵軌/2090 piece-total guard,
+  related-material proportional inference, and selectors for
+  `metadata.sourceParentheticalUnitWeight`.
+- Verification passed after formatting: full `packages/api/src/steel` Jest 30
+  suites / 143 tests; `npm run steel:import-reference-data -- --dry-run`;
+  `npm run steel:import-reference-data -- --apply`; `npm run build:api` exit 0
+  with existing non-Steel Rollup TypeScript warnings.
+
+# Steel C 型鋼 6M Live Price Smoke
+
+- [x] Query live `steel.price_items` for `C型鋼 C100x50x20x2.3t 6M`.
+- [x] Run a real `gpt-5.5` OAuth provider/tool-loop smoke for the same prompt.
+- [x] Fix c_type compact-spec guard when AI labels include both `100x2.3` and
+      the full section text.
+- [x] Correct the C 型鋼 example arithmetic from `NT$150-160.8` to
+      `NT$600-643.2`.
+- [x] Reapply the DB instruction correction migration.
+- [x] Re-run the real OAuth provider/tool-loop smoke.
+- [x] Run full Steel Jest, API build, and diff checks.
+
+## Review
+
+- Initial DB query returned the correct reviewed rows: `CCG10023 錏輕型鋼
+100*2.3`, `unit=kg`, `unitPrice=25-26.8`, `productPriceUnitWeight=4kg/m`.
+  Therefore `4kg/m * 6M = 24kg`, and the 6M piece amount is
+  `NT$600-643.2`.
+- Initial real OAuth smoke failed: `gpt-5.5` called `lookup_quote_rules`, but
+  `search_price_candidates` validation rejected the useful `100x2.3` candidate
+  after extracting a false expected fragment `100x50` from a mixed label.
+- Fix: `getExpectedCTypeCompactSpec` now extracts numbers only from the matched
+  full-section substring, so a mixed label like `錏輕型鋼 100x2.3 /
+C100x50x20x2.3` no longer creates a false `100x50` requirement.
+- Reapplied migration `20260604145800_steel_c_type_price_math_correction.sql`.
+  Live DB verification: instruction packet has `NT$600-643.2` and no
+  `NT$150-160.8`.
+- Re-run real OAuth smoke passed: first tool was `lookup_quote_rules`; a
+  subsequent positive `search_price_candidates` call returned reviewed
+  `CCG10023 錏輕型鋼 100*2.3`, `unit=kg`, `unitPrice=25-26.8`, `4kg/m`; final
+  response said `4 * 6 = 24kg`, A/B/C/F amounts `624 / 643.2 / 612 / 600`
+  TWD/支, and did not mention the old `150-160.8` amount.
+- Verification after the fix: focused `execute.spec.ts` / live-smoke fixture
+  Jest passed 24/24, full `packages/api/src/steel` Jest passed 30 suites / 143
+  tests, `npm run build:api` exited 0 with existing non-Steel Rollup TypeScript
+  warnings, and `git diff --check` passed.
+
+# Steel C 型鋼 Default Tier And Material Follow-Up
+
+- [x] Capture correction: missing customer/tier must not filter by A/tier 1,
+      but provisional response should lead with B price when returned tiers
+      include A/B/C/F.
+- [x] Capture correction: first C 型鋼 material-unknown reply must show
+      same-spec material options, and a later follow-up with no alternate
+      material should confirm the default 錏輕型鋼 assumption.
+- [x] Update runtime policy, instruction-packet fixture, docs, and lessons.
+- [x] Add Supabase data migration for the reviewed C 型鋼 instruction packet.
+- [x] Apply the migration to Steel Postgres and verify live
+      `lookup_quote_rules`.
+- [x] Re-run focused Jest, full Steel Jest/build checks, and live OAuth smoke.
+
+## Review
+
+- Live DB verification after
+  `20260604152413_steel_c_type_b_tier_material_followup.sql` confirmed
+  `c-type-basic-quote-zh-v1` contains B-price default wording, unknown-tier
+  lookup without `customerTierId`, same-spec material alternatives, and
+  second-turn default-material confirmation.
+- Runtime policy now says price-type oral orders must follow
+  `category key -> lookup_quote_rules -> search_price_candidates -> answer`.
+  It also tells AI not to invent `customerId` / `customerTierId` when
+  `tierKnown=false`.
+- Provider runtime now restricts the post-rule price round to
+  `search_price_candidates` only, and strips model-supplied `customerTierId`
+  from price lookup when the previous quote-rule context marked tier unknown.
+  This prevents repeated A/tier-1 bias loops while still letting reviewed lookup
+  return all tiers.
+- Real OAuth smoke passed for `C100x50x20x2.3t 6M 一支多少？` using live
+  `gpt-5.5` and live Steel DB. The smoke verified `lookup_quote_rules` happens
+  before positive `search_price_candidates`, the positive lookup includes
+  `c_type`, `100x2.3`, and `錏輕型鋼`, and the final response contains 24kg
+  math, B/default pricing, and material alternatives.
+- Verification passed: focused provider Jest 14/14, full Steel Jest 30 suites /
+  145 tests, opt-in C 型鋼 OAuth smoke 1 passed / 4 skipped,
+  `npm run build:api` exit 0 with existing non-Steel Rollup TypeScript warnings,
+  and `git diff --check` passed.

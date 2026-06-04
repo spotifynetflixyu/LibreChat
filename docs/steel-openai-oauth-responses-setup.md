@@ -189,8 +189,10 @@ npm --workspace packages/api exec -- \
 
 Run the catalog oral-order smoke when validating AI judgment/tool sequence rather
 than provider plumbing. This test uses the real OAuth Responses API and real
-Steel DB tools, and verifies `lookup_instructions` happens before category
-price lookup. Enable exactly the catalog case you want to smoke:
+Steel DB tools, and verifies the rule lookup happens before category price
+lookup. The required runtime rule tool for this smoke is `lookup_quote_rules`;
+`lookup_instructions` remains a compatibility wrapper, but it is not sufficient
+evidence for this live smoke. Enable exactly the catalog case you want to smoke:
 
 ```bash
 DOTENV_CONFIG_PATH=../../.env \
@@ -206,7 +208,7 @@ npm --workspace packages/api exec -- \
 ```
 
 Use `STEEL_OPENAI_OAUTH_H_BEAM_ORAL_TEST=true` for the H 型鋼 case. The H case
-also asserts that `lookup_instructions` returns the H 型鋼 rule values:
+also asserts that rule lookup returns the H 型鋼 rule values:
 常規米數 `6M/9M/10M/12M`, 非常規米數 `7M/8M/11M/13M/14M/15M`, and
 非常規米數 `+0.3 元/kg`. The rule must also state that exact reviewed
 non-standard length product-price rows already include this adjustment and must
@@ -227,11 +229,11 @@ selection must resolve to the selected reviewed candidate and tier.
 
 Use `STEEL_OPENAI_OAUTH_H_BEAM_PROCESSING_TEST=true` for H 型鋼 processing
 behavior. This smoke verifies H 型鋼 material lookup plus processing interpretation
-for cutting, slotting, and holes: `lookup_instructions` must happen first,
-the returned instruction/default rules must cover processing confirmation, and
+for cutting, slotting, and holes: `lookup_quote_rules` must happen first, the
+returned instruction/default rules must cover processing confirmation, and
 processing price lookup must include reviewed candidates such as `開槽加工` /
-`KZZB10` and `沖孔加工` / `KZZB11`. If `lookup_defaults` is called, its reviewed
-processing/default notes are also verified.
+`KZZB10` and `沖孔加工` / `KZZB11`. If `lookup_defaults` is called separately,
+its reviewed processing/default notes are also verified.
 
 Mocked provider unit tests only verify adapter serialization and tool-loop
 control contracts. Do not cite them as proof that the AI will choose a category,

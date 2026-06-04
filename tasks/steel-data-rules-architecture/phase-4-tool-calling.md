@@ -126,6 +126,7 @@ canonical API/schema keys can remain English.
 
 ### Instruction Tools
 
+- `lookup_quote_rules`
 - `lookup_instructions`
 
 Outputs:
@@ -149,7 +150,7 @@ Rules:
   price-before-weight, oral material aliases, surface treatment clues, C-type
   behavior, long-material cutting, hole/slot/bending interpretation, missing
   price handling, and workbook output requirements.
-- `lookup_instructions` should be one batched full-facet lookup per interpreted
+- `lookup_quote_rules` should be one batched full-facet lookup per interpreted
   order context. AI sends all detected material families, task types, processing
   types, formula candidates, customer/tier/project context, and low-confidence
   facets together instead of querying packets one-by-one for hole count, cut
@@ -173,6 +174,9 @@ Rules:
     applicable
   - `priority`, `reviewState`, `active`, `effectiveAt`, `supersedesId`, and
     `sourceRefs`
+- `lookup_instructions` remains as an instruction-only compatibility wrapper
+  over the same DB-backed packet storage. New runtime prompt policy should
+  prefer `lookup_quote_rules` when defaults may also apply.
 - Instruction packets are not source facts. They can guide AI interpretation,
   but reviewed price/default/formula/customer lookup results and backend
   validation still decide confirmed values.
@@ -216,8 +220,9 @@ Rules:
 - AI may infer likely specs from customer-specific order formats, uploaded evidence, and chat text.
 - AI-inferred specs are candidates until reviewed lookup results, deterministic validation, or user confirmation supports them.
 - AI owns tool orchestration after candidate reasoning. In the MVP it chooses
-  among the small reviewed lookup surface: instruction lookup, customer search,
-  product-price candidate search, quote-default lookup, and formula lookup.
+  among the small reviewed lookup surface: merged quote-rule lookup, customer
+  search, product-price candidate search, quote-default compatibility lookup,
+  and formula lookup.
   Weight, cutting, processing, material-rule, ranking, and calculation details
   remain backend internal validation/calculation capabilities unless a later
   slice explicitly exposes them.
@@ -228,12 +233,14 @@ Rules:
 - If AI confidence is not high, the assistant response must ask the user to confirm before confirmed pricing.
 - If multiple plausible candidates exist, the assistant response or reviewed lookup result must present bounded options and wait for user confirmation.
 - Missing canonical fields such as length, thickness, customer, or tier do not block reviewed price lookup when bounded derived candidate queries can still be formed. For quick price requests such as `一支多少`, AI searches first, leads with the highest-confidence positive source-backed approximate candidate as a provisional quote when one exists, then asks the user to confirm missing fields and listed alternatives before any confirmed customer-facing total.
-- If customer or tier is not explicit and `search_customers` has not returned a selected customer/tier, `search_price_candidates` must omit `customerTierId`; it must not default unknown tier to A/tier 1. The response should list returned tier candidates and ask the user to confirm the applicable customer/tier.
+- If customer or tier is not explicit and `search_customers` has not returned a selected customer/tier, `search_price_candidates` must omit `customerTierId`; it must not default unknown tier to A/tier 1. The response should list returned tier candidates, use B as the primary provisional/default display price, and ask the user to confirm the applicable customer/tier.
+- For C 型鋼 / `c_type` with unspecified material or surface, first-turn responses may lead with the usual 錏輕型鋼 candidate but must show same-spec material alternatives returned by reviewed lookup. In a follow-up turn, if the user does not specify another material/surface, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.
 - Missing or low-confidence cutting/head-tail, hole-count, or slotting-path evidence produces a targeted clarification question before confirmed fee calculation.
 
 ### Allowed MVP Reviewed Lookup Tools
 
 - `lookup_instructions`
+- `lookup_quote_rules`
 - `search_customers`
 - `search_price_candidates`
 - `lookup_defaults`
@@ -241,13 +248,16 @@ Rules:
 
 Rules:
 
-- `lookup_instructions` returns reviewed task-scoped instruction packets before
-  or during candidate generation. It must not return the full
-  `docs/reference/instruction.txt` body for every task.
+- `lookup_quote_rules` returns reviewed task-scoped instruction packets and
+  reviewed quote defaults before or during candidate/default generation. It must
+  not return the full `docs/reference/instruction.txt` body for every task, and
+  it must not return price rows or final calculations.
+- `lookup_instructions` remains an instruction-only compatibility wrapper over
+  DB-backed `steel.instruction_packets`.
 - The request is batched by interpreted order context. For one order/workbook
   turn, AI includes all detected material families, task types, processing
   types, formula candidates, customer/tier/project context, and low-confidence
-  facets in one `lookup_instructions` call. Do not split packet lookups by
+  facets in one `lookup_quote_rules` call. Do not split packet/default lookups by
   individual details such as hole count, cut count, slotting path, bending,
   formula, or one material line unless later user input materially changes the
   context.
@@ -267,7 +277,8 @@ Rules:
   confirmation policy is backend internal validation plus AI explanation.
 - `lookup_defaults`
   retrieves scoped reviewed quote-default candidates for customer, material/
-  product family, charge type, formula code, and default-parameter context.
+  product family, charge type, formula code, and default-parameter context when
+  a defaults-only compatibility call is needed.
 - `lookup_formula` returns reviewed active formula candidates and version/source
   refs. Do not expose storage-oriented `lookup_formula_version` naming as the
   MVP AI contract.
@@ -283,7 +294,10 @@ Rules:
   inactive, unreviewed, or selector-incompatible formula/rule origins.
 - Quote defaults provide default behavior and default parameters. User-provided conversation numbers, counts, rates, or money amounts become `parameterOverrides` only when explicit and high confidence.
 - Formula selection is fixed by `formulaCode`; numbers remain adjustable through `defaultParameters` and `parameterOverrides`.
-- AI retrieves quote defaults through `lookup_defaults` using normalized customer/item/charge context. The tool returns bounded reviewed candidates with origin refs; it does not dump all defaults into the prompt.
+- AI retrieves quote defaults through `lookup_quote_rules` when instruction
+  packets are also needed, or `lookup_defaults` when a defaults-only
+  compatibility call is enough. The tool returns bounded reviewed candidates
+  with origin refs; it does not dump all defaults into the prompt.
 - Steel Admin-reviewed quote defaults and LibreChat user memory are separate retrieval layers. Admin-reviewed quote defaults are the site-managed default layer generated from reviewed Steel facts; LibreChat user memory is the current user's custom memory layer.
 - LibreChat user memory can override the priority of matching Admin-reviewed defaults for the current user/account, but it must not mutate reviewed Steel facts or published Admin-reviewed quote defaults.
 - Future user-memory adapters must keep `defaultCandidates` and `userMemoryCandidates` separately labeled through ranking and validation.

@@ -87,6 +87,15 @@ function normalizeSpecKeyContains(value: string | undefined): string | undefined
   return normalizeComparableText(value).replace(/(\d)\/(?=\d)/g, '$1_');
 }
 
+function getExplicitSpecKeyContains(value: string | undefined): string | undefined {
+  const normalized = normalizeSpecKeyContains(value);
+  if (!normalized || !/[x_]/iu.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
 function hasRawUserTextQuery(originalText: string, candidate: SteelPriceSearchQueryText): boolean {
   const normalizedOriginal = normalizeComparableText(originalText);
   const queryTexts = [candidate.productName, candidate.specKey, candidate.specKeyContains].filter(
@@ -148,6 +157,7 @@ export interface SteelPriceSearchTermsResult {
 function normalizeCandidateQuery(candidate: SteelPriceSearchCandidate): SteelPriceSearchCandidate {
   const specKeyContains =
     (candidate.specKey ? getSizeOnlySpecKeyContains(candidate.specKey) : undefined) ??
+    getExplicitSpecKeyContains(candidate.specKeyContains) ??
     getStructuredSpecKeyContains(candidate.specKey) ??
     normalizeSpecKeyContains(candidate.specKeyContains);
   if (!specKeyContains) {

@@ -58,7 +58,7 @@ export interface SteelPriceItemImportRow {
   unit: string;
   unitPrice: number | null;
   productPriceUnitWeight: number | null;
-  productPriceUnitWeightUnit: 'kg_per_piece' | null;
+  productPriceUnitWeightUnit: 'kg_per_m' | 'kg_per_piece' | null;
   currency: 'TWD';
   active: boolean;
   valueState: SteelImportValueState;
@@ -189,6 +189,134 @@ const priceTierCodes = ['A', 'B', 'C', 'F'] as const;
 const fuzzyNotePattern = /另計|需人工|人工確認|疑似|未確認|不清|量少|加價|不切|修頭尾|特短/u;
 const catalogFamilyImportLogId = 'docs-reference-catalog-families-v1';
 const priceCategoryImportLogId = 'docs-reference-price-categories-v1';
+
+type ProductPriceUnitWeightOrigin = 'unit_weight_column' | 'product_name_parentheses' | null;
+type ProductPriceUnitBasis = 'per_kg' | 'per_piece_total' | 'per_piece_or_unit';
+
+interface ProductPriceTierSource {
+  unitPrice: number | null;
+  priceRatio: number | null;
+}
+
+interface ProductPriceUnitWeightInfo {
+  value: number | null;
+  origin: ProductPriceUnitWeightOrigin;
+  parentheticalValue: number | null;
+}
+
+const fixedLengthMeterPattern = /\d+(?:\.\d+)?\s*[mMＭ](?:$|[^/a-zA-ZｍＭmM])/u;
+const parenthesizedNumberAtEndPattern = /\(\s*(\d+(?:\.\d+)?)\s*\)\s*$/u;
+
+function numbersAreClose(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 0.05;
+}
+
+function getParentheticalUnitWeightCandidate(productName: string): number | null {
+  const fixedLengthMatch = productName.match(/\d+(?:\.\d+)?\s*[mMＭ]\s*\(\s*(\d+(?:\.\d+)?)\s*\)/u);
+  if (fixedLengthMatch?.[1]) {
+    return parseNumber(fixedLengthMatch[1]);
+  }
+
+  const match = productName.match(parenthesizedNumberAtEndPattern);
+  return match?.[1] ? parseNumber(match[1]) : null;
+}
+
+function hasPieceTotalPriceEvidence(
+  unitWeight: number | null,
+  tierSources: ProductPriceTierSource[],
+): boolean {
+  if (!unitWeight || unitWeight <= 0) {
+    return false;
+  }
+
+  return tierSources.some(({ unitPrice, priceRatio }) =>
+    Boolean(
+      unitPrice &&
+        unitPrice > 0 &&
+        priceRatio &&
+        priceRatio > 0 &&
+        numbersAreClose(unitPrice, unitWeight * priceRatio),
+    ),
+  );
+}
+
+function getProductPriceUnitWeightInfo(
+  productName: string,
+  sourceUnitWeight: number | null,
+  tierSources: ProductPriceTierSource[],
+): ProductPriceUnitWeightInfo {
+  const parentheticalValue = getParentheticalUnitWeightCandidate(productName);
+
+  if (sourceUnitWeight && sourceUnitWeight > 0) {
+    return {
+      value: sourceUnitWeight,
+      origin: 'unit_weight_column',
+      parentheticalValue,
+    };
+  }
+
+  if (parentheticalValue && hasPieceTotalPriceEvidence(parentheticalValue, tierSources)) {
+    return {
+      value: parentheticalValue,
+      origin: 'product_name_parentheses',
+      parentheticalValue,
+    };
+  }
+
+  return {
+    value: null,
+    origin: null,
+    parentheticalValue,
+  };
+}
+
+function getProductPriceUnitBasis(
+  productName: string,
+  unitWeight: number | null,
+  tierSources: ProductPriceTierSource[],
+): ProductPriceUnitBasis {
+  if (hasPieceTotalPriceEvidence(unitWeight, tierSources)) {
+    return 'per_piece_total';
+  }
+
+  if (
+    fixedLengthMeterPattern.test(productName) &&
+    tierSources.some(({ unitPrice, priceRatio }) =>
+      Boolean(unitPrice && unitPrice > 0 && priceRatio && priceRatio > 0),
+    )
+  ) {
+    return 'per_piece_total';
+  }
+
+  return unitWeight && unitWeight > 0 ? 'per_kg' : 'per_piece_or_unit';
+}
+
+function getProductPriceUnitWeightUnit(
+  productName: string,
+  unitWeight: number | null,
+  priceUnitBasis: ProductPriceUnitBasis,
+): SteelPriceItemImportRow['productPriceUnitWeightUnit'] {
+  if (!unitWeight || unitWeight <= 0) {
+    return null;
+  }
+
+  if (priceUnitBasis === 'per_piece_total' || fixedLengthMeterPattern.test(productName)) {
+    return 'kg_per_piece';
+  }
+
+  return 'kg_per_m';
+}
+
+function getProductPriceUnit(
+  weightUnit: SteelPriceItemImportRow['productPriceUnitWeightUnit'],
+  priceUnitBasis: ProductPriceUnitBasis,
+) {
+  if (!weightUnit) {
+    return 'piece';
+  }
+
+  return priceUnitBasis === 'per_piece_total' ? 'piece' : 'kg';
+}
 
 interface CatalogFamilySeed {
   key: string;
@@ -369,15 +497,15 @@ const catalogFamilySeeds: CatalogFamilySeed[] = [
     key: 'galvanized_plate',
     displayNameZh: '錏板',
     aliases: ['錏板', '鍍鋅板'],
-    productPatterns: [/錏板/u, /鍍鋅板/u],
-    erpCodePatterns: [/^BNG/u],
+    productPatterns: [/錏板/u, /鍍鋅板/u, /錏花板/u],
+    erpCodePatterns: [/^BNG/u, /^BXH/u],
   },
   {
     key: 'ot_plate',
     displayNameZh: 'OT板',
-    aliases: ['OT板'],
-    productPatterns: [/OT板/u],
-    erpCodePatterns: [/^BNB/u],
+    aliases: ['OT板', 'OT花板'],
+    productPatterns: [/OT板/u, /OT花板/u],
+    erpCodePatterns: [/^BNB/u, /^BXB/u],
   },
   {
     key: 'black_plate',
@@ -404,8 +532,8 @@ const catalogFamilySeeds: CatalogFamilySeed[] = [
     key: 'h_beam',
     displayNameZh: 'H型鋼',
     aliases: ['H型鋼', 'H鋼', 'H 型鋼', 'H-BEAM', 'H型'],
-    productPatterns: [/H\s*型鋼/u],
-    erpCodePatterns: [/^EHS/u],
+    productPatterns: [/H\s*型鋼/u, /輕量H/u],
+    erpCodePatterns: [/^EHS/u, /^EHC/u],
   },
   {
     key: 'c_type',
@@ -452,6 +580,13 @@ const catalogFamilySeeds: CatalogFamilySeed[] = [
     erpCodePatterns: [/^EI[BGS]/u],
   },
   {
+    key: 'rail',
+    displayNameZh: '鐵軌',
+    aliases: ['鐵軌', '軌道鋼', '鋼軌'],
+    productPatterns: [/鐵軌/u],
+    erpCodePatterns: [/^ERB/u],
+  },
+  {
     key: 'rectangular_pipe',
     displayNameZh: '扁方管',
     aliases: ['扁方管', '矩形管', '矩形鋼管', '黑鐵扁方管', '錏扁方管', '白鐵扁方管'],
@@ -493,12 +628,45 @@ const catalogFamilySeeds: CatalogFamilySeed[] = [
   {
     key: 'plate',
     displayNameZh: '板材',
-    aliases: ['板材', '鐵板', '鋼板', '黑鐵板', '白鐵板'],
-    productPatterns: [/鐵板/u, /鋼板/u],
-    erpCodePatterns: [/^DNB/u],
+    aliases: ['板材', '鐵板', '鋼板', '黑鐵板', '白鐵板', 'ST板', '2B板', 'HL板', 'NO1板'],
+    productPatterns: [/鐵板/u, /鋼板/u, /^ST(?:BA|2B|HL|NO1)?/u, /^2B/u, /^HL/u],
+    erpCodePatterns: [/^DNB/u, /^BN[ASHOT]/u, /^BXS/u],
     excludeProductPatterns: [/專用/u, /釘/u, /螺絲/u, /壁板/u, /浪板/u, /清板/u],
   },
 ];
+
+const productPriceWeightRuleCatalogFamilies = new Set([
+  'b_pipe',
+  'a_pipe',
+  'p_pipe',
+  'steel_pipe',
+  'piping',
+  'i_beam',
+  'round_bar',
+  'square_bar',
+  'galvanized_plate',
+  'ot_plate',
+  'black_plate',
+  'grating',
+  'floor_deck',
+  'h_beam',
+  'c_type',
+  'wire_mesh',
+  'expanded_metal',
+  'angle',
+  'channel',
+  'flat_bar',
+  'rail',
+  'rectangular_pipe',
+  'round_pipe',
+  'square_pipe',
+  'corrugated_panel',
+  'plate',
+]);
+
+function shouldApplyProductPriceWeightRule(catalogFamily: string): boolean {
+  return productPriceWeightRuleCatalogFamilies.has(catalogFamily);
+}
 
 function sourcePath(referenceDir: string, sourceFile: string): string {
   return path.join(referenceDir, sourceFile);
@@ -917,15 +1085,34 @@ function parseProductPrices(referenceDir: string): {
       continue;
     }
 
-    const unitWeight = parseNumber(row[12]);
     const productRow = sourceRowsByRowNumber.get(rowNumber);
     if (!productRow) {
       continue;
     }
 
+    const tierSources = priceTierCodes.map((_, tierOffset) => ({
+      unitPrice: parseNumber(row[4 + tierOffset]),
+      priceRatio: parseNumber(row[8 + tierOffset]),
+    }));
+    const sourceUnitWeight = parseNumber(row[12]);
+    const applyWeightRule = shouldApplyProductPriceWeightRule(productRow.catalogFamily);
+    const unitWeightInfo = applyWeightRule
+      ? getProductPriceUnitWeightInfo(productName, sourceUnitWeight, tierSources)
+      : {
+          value: null,
+          origin: null,
+          parentheticalValue: getParentheticalUnitWeightCandidate(productName),
+        };
+    const priceUnitBasis = getProductPriceUnitBasis(productName, unitWeightInfo.value, tierSources);
+    const productPriceUnitWeightUnit = getProductPriceUnitWeightUnit(
+      productName,
+      unitWeightInfo.value,
+      priceUnitBasis,
+    );
+
     for (const [tierOffset, customerTierCode] of priceTierCodes.entries()) {
-      const priceColumnIndex = 4 + tierOffset;
-      const price = classifyPrice(parseNumber(row[priceColumnIndex]));
+      const tierSource = tierSources[tierOffset];
+      const price = classifyPrice(tierSource?.unitPrice ?? null);
       priceItems.push({
         erpItemCode,
         customerTierCode,
@@ -934,10 +1121,10 @@ function parseProductPrices(referenceDir: string): {
         productName,
         catalogFamily: productRow.catalogFamily,
         materialGrade: null,
-        unit: 'piece',
+        unit: getProductPriceUnit(productPriceUnitWeightUnit, priceUnitBasis),
         unitPrice: price.unitPrice,
-        productPriceUnitWeight: unitWeight && unitWeight > 0 ? unitWeight : null,
-        productPriceUnitWeightUnit: unitWeight && unitWeight > 0 ? 'kg_per_piece' : null,
+        productPriceUnitWeight: unitWeightInfo.value,
+        productPriceUnitWeightUnit,
         currency: 'TWD',
         active: true,
         valueState: price.valueState,
@@ -945,7 +1132,13 @@ function parseProductPrices(referenceDir: string): {
         metadata: {
           sourceProductName: productName,
           sourceTierCode: customerTierCode,
-          sourceRatio: parseNumber(row[8 + tierOffset]),
+          sourceRatio: tierSource?.priceRatio ?? null,
+          sourcePriceUnitBasis: priceUnitBasis,
+          sourceUnitWeightColumn: sourceUnitWeight,
+          sourceUnitWeightOrigin: unitWeightInfo.origin,
+          sourceParentheticalUnitWeight: unitWeightInfo.value
+            ? unitWeightInfo.parentheticalValue
+            : null,
           catalogFamilyMatch: {
             key: productRow.catalogFamily,
             matchedBy: productRow.catalogFamilyMatchedBy,
@@ -962,6 +1155,23 @@ function parseProductPrices(referenceDir: string): {
             extractedLabel: `售價${customerTierCode}`,
             canonicalKey: `unit_price_by_tier.${customerTierCode}`,
           }),
+          ...(unitWeightInfo.value
+            ? [
+                sourceRef({
+                  sourceFile: '產品價格.xlsx',
+                  factType: 'product_price_unit_weight',
+                  sheet: 'Sheet1',
+                  row: rowNumber,
+                  confidence:
+                    unitWeightInfo.origin === 'product_name_parentheses' ? 'medium' : 'high',
+                  extractedLabel:
+                    unitWeightInfo.origin === 'product_name_parentheses'
+                      ? '品名括號單位重'
+                      : '單位重',
+                  canonicalKey: 'product_price_unit_weight',
+                }),
+              ]
+            : []),
         ],
       });
     }

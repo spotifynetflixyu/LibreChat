@@ -11,7 +11,7 @@
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
 - When a customer asks price for an incomplete steel spec with multiple matches, first run reviewed lookup from bounded AI-derived candidates when possible. For quick `一支多少` requests, lead with the highest-confidence source-backed approximate candidate as a provisional quote, then list the other plausible specs/options for confirmation.
 - For Steel price lookup, backend may apply bounded token matching to AI-derived oral product candidates such as `錏角鐵` -> product rows containing `錏` and `角鐵`. This is different from accepting raw typo strings like `亞L30x30` as product-price keys, which remains forbidden.
-- For Steel quick-price lookup, do not default missing customer/tier to A or tier 1. If the user did not provide customer/tier and no `search_customers` result selected one, omit `customerTierId` so reviewed lookup can return all applicable tier candidates.
+- For Steel quick-price lookup, do not default missing customer/tier to A or tier 1 as a DB filter. If the user did not provide customer/tier and no `search_customers` result selected one, omit `customerTierId` so reviewed lookup can return all applicable tier candidates; when presenting a provisional/default price from returned tiers, lead with B price and still list A/B/C/F options.
 - For local `pg` connections to Supabase, prefer the Supavisor session pooler URL when the direct `db.<project>.supabase.co` host does not resolve or the environment lacks IPv6 support.
 - Keep Steel changes isolated from upstream LibreChat hot files where possible; avoid premature root exports or core entrypoint edits until a route actually needs them.
 - Every wrap-up response should include explicit next tasks so the user knows what to do next.
@@ -83,6 +83,7 @@
 - For C 型鋼 oral-price flow, do not rely on a permanent runtime system prompt rule as the main mechanism. The AI should first identify the C 型鋼 / `c_type` candidate, call `lookup_instructions`, then use the returned C 型鋼 instruction packet to form bounded price queries.
 - When AI has judged a Steel product/category/catalog candidate, the next reviewed lookup step should be `lookup_instructions` before category-dependent tools such as `search_price_candidates`, `lookup_defaults`, or `lookup_formula`. Do not let a direct price search become the first category-specific tool call.
 - For C 型鋼 price lookup with unknown surface/material, `錏輕型鋼` may be used as the usual high-confidence provisional `productName` candidate. Still show bounded alternatives such as 白鐵輕型鋼 / 黑鐵輕型鋼 when relevant, and keep the quote provisional until the user confirms material/surface.
+- For C 型鋼 follow-up turns after alternatives were shown, if the user does not specify a different material/surface, treat the default 錏輕型鋼 assumption as confirmed for that continuing quote context instead of asking the same material question again.
 - Mocked OpenAI/provider tests must not be used to prove AI judgment or oral-normalization behavior. Keep mocks only for deterministic adapter/control-loop contracts; any claim that the model chooses a tool sequence or candidate query must be verified with real `openai_oauth_responses` smoke.
 - H-type non-standard-length surcharge automatically applies to normalized H-type lengths outside 6M, 9M, 10M, and 12M; it changes material unit price only, while cutting remains priced from cutting-price data.
 - Treat `docs/reference/切工價錢.xlsx` as a formal cutting-price source, with later Admin/backend maintenance, not as prompt-only guidance.
@@ -249,3 +250,37 @@
   row for `7M/8M/11M/13M/14M/15M`, do not add `+0.3/kg` again. Use the
   surcharge rule only as a provisional/default derivation when an exact reviewed
   non-standard length price row is missing.
+- Steel `lookup_instructions` content is Admin-editable business policy, not
+  provider/tool implementation code. Runtime should read reviewed instruction
+  packets from database-backed storage and prefer a merged rule lookup when
+  instructions and defaults are both needed; static code packets are only seed
+  material or compatibility fixtures.
+- In `產品價格.xlsx`, `unit_price` must not be treated as per-piece just because
+  the user asks `一支多少`. For common steel rows with `product_price_unit_weight`
+  in `kg_per_m`, calculate piece price from requested length: weight =
+  kg/m _ meters _ quantity, then amount = weight \* unit_price. For C 型鋼
+  `100x2.3`, a 6M piece at 4kg/m is 24kg, so `25-26.8` is TWD/kg and the
+  provisional 6M piece amount is about `600-643.2`, not `25-26.8` per piece.
+- Arithmetic-check every quote example after applying the written rule. Do not
+  preserve a user-facing example merely because the wording around it is right;
+  if the formula says `4kg/m * 6M * 25-26.8/kg`, the amount must be
+  `600-643.2 TWD`.
+- In `產品價格.xlsx`, when the `單位重` column is zero but the product name ends
+  with a parenthesized weight that is validated by `售價 = 括號重量 * 比率`,
+  import that parenthesized value as reviewed weight-per-piece. Example:
+  `白鐵平鐵 50 *8.0( 19.7)` has `單位重=0`, but `19.7 * 107 = 2107.9`, so
+  `19.7` is valid unit-weight evidence and the row price is a piece total.
+- Treat `輕量H` rows such as `輕量H150*75*3.2/4.5*6M(53)` as H 型鋼
+  material rows, not fallback ERP-family products. They should inherit the same
+  reviewed H-beam unit-weight/price calculation semantics.
+- Treat `BNH` product-price rows as steel/material plate rows. They must not
+  remain fallback `erp_bnh` rows when applying product-price unit-weight and
+  price-unit rules.
+- When `產品價格.xlsx` has a positive `單位重` column, that column wins over any
+  product-name parenthetical number. Parentheses are fallback-only. Example:
+  `6K鐵軌 6M(38)` has `單位重=36`, and `9K鐵軌 6M(54)` supports the proportional
+  correction, so use 36 for 6K; do not override it with `(38)`.
+- When product-price unit weight is missing or contradictory, AI/backend may
+  look up related same-series/same-spec materials and derive a weight by length
+  or proportional comparison, but it must mark the result as inferred evidence
+  needing confirmation rather than silently overwriting reviewed source values.

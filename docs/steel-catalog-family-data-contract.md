@@ -30,15 +30,16 @@ current schemas reject that old request shape.
 
 ## Source Roles
 
-| Source                                                         | Role                                                                                                 | Import behavior                                                                          |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `docs/reference/產品價格.xlsx`                                 | Primary product catalog, tier prices, product unit weight, reviewed catalog keys, ERP prefix groups. | Imported into `catalog_families`, `price_categories`, and `price_items`.                 |
-| `docs/reference/客戶資料.xlsx`                                 | Customer list and customer tier codes.                                                               | Imported into `customers` and `customer_tiers`.                                          |
-| `docs/reference/切工價錢.xlsx`                                 | Cutting prices and fuzzy cutting notes.                                                              | Imported into `cutting_prices`; fuzzy notes become `quote_defaults` for AI confirmation. |
-| `docs/reference/公式編號.xlsx`                                 | Fixed formula source.                                                                                | Imported into `formula_versions`.                                                        |
-| `docs/reference/H型鋼.txt`                                     | H 型鋼 regular/non-standard length surcharge default.                                                | Imported into `quote_defaults` scoped by `catalog_family = h_beam`.                      |
-| `docs/reference/訂單參考.xlsx`, `docs/reference/系統訂單.xlsx` | Workbook and ERP input references.                                                                   | Classified as workbook-only; not imported as formal DB facts.                            |
-| `docs/reference/龍頂鋼鐵手冊__文字版.docx`                     | Secondary weight/spec/alias evidence.                                                                | Use for missing weights or future reviewed aliases; do not override product-price facts. |
+| Source                                                         | Role                                                                                                 | Import behavior                                                                               |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `docs/reference/產品價格.xlsx`                                 | Primary product catalog, tier prices, product unit weight, reviewed catalog keys, ERP prefix groups. | Imported into `catalog_families`, `price_categories`, and `price_items`.                      |
+| `docs/reference/客戶資料.xlsx`                                 | Customer list and customer tier codes.                                                               | Imported into `customers` and `customer_tiers`.                                               |
+| `docs/reference/切工價錢.xlsx`                                 | Cutting prices and fuzzy cutting notes.                                                              | Imported into `cutting_prices`; fuzzy notes become `quote_defaults` for AI confirmation.      |
+| `docs/reference/公式編號.xlsx`                                 | Fixed formula source.                                                                                | Imported into `formula_versions`.                                                             |
+| `docs/reference/H型鋼.txt`                                     | H 型鋼 regular/non-standard length surcharge default.                                                | Imported into `quote_defaults` scoped by `catalog_family = h_beam`.                           |
+| `docs/reference/訂單參考.xlsx`, `docs/reference/系統訂單.xlsx` | Workbook and ERP input references.                                                                   | Classified as workbook-only; not imported as formal DB facts.                                 |
+| `docs/reference/龍頂鋼鐵手冊__文字版.docx`                     | Secondary weight/spec/alias evidence.                                                                | Use for missing weights or future reviewed aliases; do not override product-price facts.      |
+| Admin-reviewed instruction packets                             | Editable AI quote-rule prompts such as oral aliases, C 型鋼 strategy, and H 型鋼 processing rules.   | Stored in `instruction_packets`; retrieved with `lookup_quote_rules` / `lookup_instructions`. |
 
 ## Database Contract
 
@@ -62,6 +63,14 @@ steel.price_items
 steel.quote_defaults
   scope_type          may use catalog_family
   catalog_family      optional scoped key for defaults
+
+steel.instruction_packets
+  packet_groups       stable rule bundle keys, e.g. c-type-quote-core
+  selectors           catalog/task/processing/formula/customer facets
+  instruction         reviewed Traditional Chinese instruction body
+  user_visible_notes  assumptions/defaults AI may show in replies
+  confirmation_questions
+                      user-confirmation prompts for ambiguous defaults
 
 steel.material_rules / steel.bending_prices / steel.calculation_rule_defaults
   catalog_family      optional scoped key where the table uses product family facets
@@ -153,6 +162,59 @@ The importer uses two levels:
   should stay separate facets unless a reviewed rule says they define a
   different catalog family.
 
+## Product Price Amount Calculation
+
+`產品價格.xlsx` 的售價欄必須搭配產品列的價格單位與單位重語意解讀。AI 與
+backend 不可只因使用者問「一支多少」就把 `unitPrice` 當成每支總價。
+
+`unit` 是售價欄單位；`product_price_unit_weight_unit` 是重量欄語意。兩者要一起
+判讀：
+
+- 此規則只套用在鋼材/材料 stock catalog families，例如 `h_beam`（含 `輕量H`）、
+  `c_type`、`angle`、`channel`、`flat_bar`、`rail`、pipe families、plate
+  families、mesh、grating、floor deck。非鋼材或非材料產品/accessory rows，例如
+  彈簧、螺絲、門鎖、角輪、鋁窗、樹脂、鐵門、伸縮門、量尺等，不套用這套
+  kg/m、kg/支換算規則；除非有另外 reviewed rule，否則按該 row 的 `unitPrice`
+  直接作件/組/支價或 manual review。
+- 普遍鋼材的 `product_price_unit_weight_unit` 是 `kg_per_m`。此時
+  `product_price_unit_weight` 是 kg/m。若 `unit=kg`，售價欄是每 kg 售價，計算金額
+  時先用 `kg/m * lengthM * quantity` 換算重量，再乘以售價。
+- 品名或規格明確帶固定長度 `M` 時，`product_price_unit_weight_unit` 是
+  `kg_per_piece`，單位重代表重量/支。若 `unit=kg`，整支金額是
+  `重量/支 * unitPrice`；若 `unit=piece`，`unitPrice` 已是整支金額。預設整支
+  計價，即使切料後有餘料也計價。只有使用者明確說餘料不計價時，才把重量/支除以來源
+  長度得到 kg/m，再乘以實際切料長度換算。
+- 若 `單位重` 欄位是 0，但品名最後括號內有數字，且 reviewed row 可用
+  `售價 = 括號重量 * 比率` 驗證，括號數字就是重量/支補漏來源。匯入時
+  `product_price_unit_weight_unit=kg_per_piece`、`unit=piece`，metadata 記錄
+  `sourceUnitWeightOrigin=product_name_parentheses`。Example:
+  `白鐵平鐵 50 *8.0( 19.7)` 的 A 價 `2107.90`、比率 `107.00`，所以
+  `19.7 * 107 = 2107.9`，`19.7` 是 reviewed 重量/支。
+- 若 `單位重` 欄位已有正值，欄位值優先於品名括號；括號只能作補漏來源，不能覆蓋
+  reviewed 欄位值。Example: `6K鐵軌 6M(38)` 的 `單位重=36`，且
+  `9K鐵軌 6M(54)` 可佐證比例，因此 6K 鐵軌採 `36kg/支`，不可採括號 `(38)`。
+- 固定長度材料 row 若有正值 `比率` 欄且 `售價` 欄為整支價，即使該整支價看起來是
+  用錯誤括號重量算出，也不可把 `售價` 當每 kg 單價。Example:
+  `6K鐵軌 6M(38)` 的 A 價 `2090` 與比率 `55` 對應錯誤括號 38，但重量仍採
+  `單位重=36`；報價可先把 `2090` 視為整支價，並把重量矛盾標示為待確認/推論。
+- 若單位重缺失或來源互相矛盾，可以查相同系列、相同規格、不同長度或相近材料的
+  reviewed rows，用長度比例或規格比例換算作推論 evidence。這類結果必須標示
+  inferred/low confidence 或待確認，不可靜默覆蓋 reviewed 欄位值。
+- 若固定長度品名的單位重為 0 或缺失，應查相同規格、不同長度但有 reviewed 單位重
+  的 row，推回 kg/m 後再依本次長度計算；找不到可驗證重量時標示 low confidence 或
+  manual review。
+
+Example: `C型鋼 C100x50x20x2.3t 6M 一支多少？` 若 reviewed row 是
+`錏輕型鋼 100x2.3`、售價 `NT$25-26.8/kg`、單位重 `4kg/m`，則一支 6M 是
+`24kg`，暫估材料價約 `NT$600-643.2`。不可回覆 `NT$25-26.8/支`。
+
+Catalog mapping notes:
+
+- `輕量H` rows such as `輕量H150*75*3.2/4.5*6M(53)` are H 型鋼 material
+  rows and use `h_beam` semantics.
+- `BNH` rows are steel/material plate rows and must not remain fallback
+  `erp_bnh` rows for price-unit calculations.
+
 ## AI Normalization Flow
 
 1. Extract product words, shape, surface, size, quantity, and uncertain notes
@@ -173,8 +235,15 @@ The importer uses two levels:
      `productName: 錏輕型鋼` as the usual high-confidence provisional candidate,
      while still showing bounded alternatives such as 白鐵輕型鋼 and 黑鐵輕型鋼
      for confirmation.
-5. Query `lookup_defaults` with `catalogContexts` when cutting, hole, slotting,
-   formula, or customer-rule defaults may apply.
+   - When customer/tier is not specified, AI must omit `customerTierId` from the
+     lookup so all reviewed tiers can return. The response primary/default
+     provisional price is B, while returned A/B/C/F options remain visible.
+   - In a follow-up turn after material alternatives were shown, if the user
+     does not specify another C 型鋼 material/surface, AI treats the default
+     錏輕型鋼 assumption as confirmed for the continuing quote context.
+5. Query `lookup_quote_rules` with batched `catalogContexts` when instruction
+   packets and quote defaults are needed together. Use `lookup_defaults` only
+   for defaults-only compatibility flows.
 6. If multiple reviewed candidates remain plausible, ask the user to confirm.
    For quick approximate quotes, show the selected assumption and alternatives.
 

@@ -2,6 +2,7 @@ import {
   findSteelFormulaVersion,
   lookupSteelCatalogFamilies,
   searchSteelCustomers,
+  searchSteelInstructionPackets,
   searchSteelPriceItems,
   searchSteelQuoteDefaults,
 } from '../repositories';
@@ -9,7 +10,12 @@ import { getSteelToolDefinition, isSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas, type SteelToolName } from './schemas';
 import { generateSteelPriceSearchTerms } from '../normalization';
-import { lookupSteelInstructions } from './instructions';
+import {
+  getQuoteRulesDefaultsInput,
+  getSteelInstructionPacketSearchInput,
+  lookupSteelInstructions,
+  lookupSteelQuoteRules,
+} from './instructions';
 import { getSteelQuoteDefaultSearchInput, lookupSteelDefaults } from './defaults';
 
 import type {
@@ -20,7 +26,7 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelPriceItem } from '../repositories';
-import type { LookupFormulaInput } from './schemas';
+import type { LookupFormulaInput, LookupInstructionsInput, LookupQuoteRulesInput } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchPriceCandidatesInput = ReturnType<
@@ -103,9 +109,12 @@ function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSo
 function summarizeOutput(data: SteelToolJsonObject): string {
   const summaryKeys = [
     'packets',
+    'instructionPackets',
     'packetGroups',
+    'instructionPacketGroups',
     'catalogFamilyCandidates',
     'defaultCandidates',
+    'quoteDefaults',
     'formulaCandidates',
     'customers',
     'priceCandidates',
@@ -220,6 +229,19 @@ async function searchPriceCandidates(
   };
 }
 
+async function lookupInstructionPackets(
+  client: SteelRepositoryClient,
+  input: LookupInstructionsInput | LookupQuoteRulesInput,
+) {
+  const searchInput = getSteelInstructionPacketSearchInput(input);
+
+  if (!searchInput.packetGroups || searchInput.packetGroups.length === 0) {
+    return [];
+  }
+
+  return searchSteelInstructionPackets(client, searchInput);
+}
+
 async function emitLog(
   options: ExecuteSteelToolOptions,
   status: 'success' | 'error',
@@ -270,8 +292,19 @@ async function dispatchSteelTool(
   switch (toolName) {
     case 'lookup_instructions': {
       const input = steelToolArgsSchemas.lookup_instructions.parse(args);
+      const instructionPackets = await lookupInstructionPackets(client, input);
 
-      return lookupSteelInstructions(input);
+      return lookupSteelInstructions(input, instructionPackets);
+    }
+    case 'lookup_quote_rules': {
+      const input = steelToolArgsSchemas.lookup_quote_rules.parse(args);
+      const instructionPackets = await lookupInstructionPackets(client, input);
+      const quoteDefaults = await searchSteelQuoteDefaults(
+        client,
+        getSteelQuoteDefaultSearchInput(getQuoteRulesDefaultsInput(input)),
+      );
+
+      return lookupSteelQuoteRules(input, instructionPackets, quoteDefaults);
     }
     case 'lookup_catalog_families': {
       const input = steelToolArgsSchemas.lookup_catalog_families.parse(args);

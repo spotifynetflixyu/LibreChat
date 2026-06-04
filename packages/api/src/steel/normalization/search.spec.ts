@@ -147,6 +147,30 @@ describe('generateSteelPriceSearchTerms', () => {
     expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
   });
 
+  it('preserves explicit compact C-type contains fragments over full section specKey', () => {
+    const result = generateSteelPriceSearchTerms({
+      originalText: 'C型鋼 100x50x20 2.3t 一支多少',
+      candidates: [
+        {
+          queryId: 'c-type-full-section-with-compact-fragment',
+          productName: '錏輕型鋼',
+          specKey: '100x50x20x2.3',
+          specKeyContains: '100x2.3',
+          confidence: 'high',
+          reason:
+            'AI included full C section as specKey and the reviewed price-table fragment as contains',
+        },
+      ],
+    });
+
+    expect(result.candidateQueries[0]).toMatchObject({
+      queryId: 'c-type-full-section-with-compact-fragment',
+      productName: '錏輕型鋼',
+      specKeyContains: '100x2.3',
+    });
+    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
+  });
+
   it('normalizes H-beam slash thickness fragments to price-table spec key fragments', () => {
     const result = generateSteelPriceSearchTerms({
       originalText: 'H型鋼 100x50x5/7x6M 一支多少',

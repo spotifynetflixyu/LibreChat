@@ -4,6 +4,11 @@ import { createSteelPostgresPool } from '../postgres';
 import { executeSteelTool } from '../tools/execute';
 
 import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3GenerateResult,
+} from '@ai-sdk/provider';
+import type {
   SteelOAuthChatMessage,
   SteelProviderChatResponse,
   SteelProviderExecuteToolCallOptions,
@@ -27,6 +32,12 @@ interface LiveSteelChatRun {
   capturedCalls: CapturedSteelToolCall[];
 }
 
+interface CapturedGenerateRound {
+  toolChoice: LanguageModelV3CallOptions['toolChoice'];
+  tools: string[];
+  content: LanguageModelV3GenerateResult['content'];
+}
+
 interface OralQuoteSmokeCase {
   envFlag: string;
   key: string;
@@ -36,6 +47,7 @@ interface OralQuoteSmokeCase {
   lookupArgumentContains: string[];
   priceArgumentContains: string[];
   priceArgumentPatterns?: RegExp[];
+  responseTextPatterns?: RegExp[];
 }
 
 function stringify(value: unknown): string {
@@ -99,13 +111,35 @@ async function runLiveSteelChat(
   const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
   const client = createSteelPostgresPool();
   const capturedCalls: CapturedSteelToolCall[] = [];
+  const capturedGenerateRounds: CapturedGenerateRound[] = [];
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), caseTimeoutMs);
+  const { createOpenAIOAuth } = await import('openai-oauth-provider');
 
   try {
     const response = await sendSteelOAuthChat({
       abortSignal: abortController.signal,
       authFilePath,
+      createOpenAIOAuth: (options) => {
+        const provider = createOpenAIOAuth(options);
+
+        return ((selectedModel: string) => {
+          const languageModel = provider(selectedModel);
+
+          return {
+            ...languageModel,
+            doGenerate: async (callOptions: LanguageModelV3CallOptions) => {
+              const result = await languageModel.doGenerate(callOptions);
+              capturedGenerateRounds.push({
+                toolChoice: callOptions.toolChoice,
+                tools: callOptions.tools?.map((tool) => tool.name) ?? [],
+                content: result.content,
+              });
+              return result;
+            },
+          } satisfies LanguageModelV3;
+        }) as ReturnType<typeof createOpenAIOAuth>;
+      },
       ensureFresh: false,
       executeSteelToolCall: async (options: SteelProviderExecuteToolCallOptions) => {
         const result = await executeSteelTool({
@@ -130,6 +164,15 @@ async function runLiveSteelChat(
     });
 
     return { response, capturedCalls };
+  } catch (error) {
+    const details = [
+      `Captured calls before failure: ${stringify(summarizeCapturedCalls(capturedCalls))}`,
+      `Captured model rounds before failure: ${stringify(capturedGenerateRounds)}`,
+    ].join('\n');
+    if (error instanceof Error) {
+      throw new Error(`${error.message}\n${details}`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
     await client.end();
@@ -140,10 +183,16 @@ const smokeCases: OralQuoteSmokeCase[] = [
   {
     envFlag: 'STEEL_OPENAI_OAUTH_C_TYPE_ORAL_TEST',
     key: 'c-type',
-    name: 'uses lookup_instructions before c_type price lookup and derives the 100x2.3 candidate',
-    prompt: 'C型鋼 100x50x20 2.3t 一支多少？',
+    name: 'uses lookup_quote_rules before c_type price lookup and derives the 100x2.3 candidate',
+    prompt: 'C100x50x20x2.3t 6M 一支多少？',
     lookupArgumentContains: ['c_type'],
     priceArgumentContains: ['c_type', '100x2.3', '錏輕型鋼'],
+    responseTextPatterns: [
+      /24\s*(?:kg|公斤)/u,
+      /B\s*(?:價|級)[\s\S]*(?:26\.8|643\.2)|(?:預設|主價格)[\s\S]*B/u,
+      /600\s*[～~-]\s*643\.2|624(?:\.0)?|643\.2/u,
+      /白鐵輕型鋼|黑鐵輕型鋼/u,
+    ],
   },
   {
     envFlag: 'STEEL_OPENAI_OAUTH_H_BEAM_ORAL_TEST',
@@ -161,7 +210,7 @@ const smokeCases: OralQuoteSmokeCase[] = [
       '15M',
       '+0.3 元/kg',
     ],
-    name: 'uses lookup_instructions before h_beam price lookup and derives the H 100x50 candidate',
+    name: 'uses lookup_quote_rules before h_beam price lookup and derives the H 100x50 candidate',
     prompt: 'H型鋼 100x50x5/7x6M 一支多少？',
     lookupArgumentContains: ['h_beam'],
     priceArgumentContains: ['h_beam'],
@@ -170,7 +219,7 @@ const smokeCases: OralQuoteSmokeCase[] = [
   {
     envFlag: 'STEEL_OPENAI_OAUTH_ANGLE_ORAL_TEST',
     key: 'angle',
-    name: 'uses lookup_instructions before angle price lookup and derives the 30x2.5 candidate',
+    name: 'uses lookup_quote_rules before angle price lookup and derives the 30x2.5 candidate',
     prompt: '錏成型角鐵30*2.5*6M 一支多少？',
     lookupArgumentContains: ['angle'],
     priceArgumentContains: ['angle'],
@@ -188,7 +237,7 @@ describe('Steel OpenAI OAuth oral quote smoke', () => {
         const { response, capturedCalls } = await runLiveSteelChat([
           { role: 'user', content: smokeCase.prompt },
         ]);
-        const lookupIndex = getToolCallIndex(capturedCalls, 'lookup_instructions');
+        const lookupIndex = getToolCallIndex(capturedCalls, 'lookup_quote_rules');
         const priceIndex = getToolCallIndex(capturedCalls, 'search_price_candidates');
         const successfulPriceCall = capturedCalls.find(
           (call) =>
@@ -220,6 +269,9 @@ describe('Steel OpenAI OAuth oral quote smoke', () => {
         for (const expectedPattern of smokeCase.priceArgumentPatterns ?? []) {
           expect(priceArguments).toMatch(expectedPattern);
         }
+        for (const expectedPattern of smokeCase.responseTextPatterns ?? []) {
+          expect(response.text).toMatch(expectedPattern);
+        }
         expect(serializedResult).not.toMatch(/access_token|authorization|Bearer|authFile/i);
       },
       caseTimeoutMs + 10000,
@@ -236,7 +288,7 @@ describeAngleBoundedOral('Steel OpenAI OAuth 亞L30x30 bounded-options smoke', (
     async () => {
       const firstPrompt = '亞L30x30 一支多少？';
       const firstRun = await runLiveSteelChat([{ role: 'user', content: firstPrompt }], 2200);
-      const firstLookupIndex = getToolCallIndex(firstRun.capturedCalls, 'lookup_instructions');
+      const firstLookupIndex = getToolCallIndex(firstRun.capturedCalls, 'lookup_quote_rules');
       const firstPriceIndex = getToolCallIndex(firstRun.capturedCalls, 'search_price_candidates');
       const firstSuccessfulPriceCall = firstRun.capturedCalls.find(
         (call) =>
@@ -312,7 +364,7 @@ describeHBeamProcessing('Steel OpenAI OAuth H 型鋼 processing smoke', () => {
         ],
         2400,
       );
-      const lookupIndex = getToolCallIndex(run.capturedCalls, 'lookup_instructions');
+      const lookupIndex = getToolCallIndex(run.capturedCalls, 'lookup_quote_rules');
       const priceIndex = getToolCallIndex(run.capturedCalls, 'search_price_candidates');
       const defaultsIndex = getToolCallIndex(run.capturedCalls, 'lookup_defaults');
       const lookupResult = stringify(run.capturedCalls[lookupIndex]?.result);

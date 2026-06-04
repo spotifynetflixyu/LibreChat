@@ -47,11 +47,12 @@ function extractNumbers(value: string): string[] {
 function getExpectedCTypeCompactSpec(value: string): string | undefined {
   const fullSectionPattern =
     /\d+(?:\.\d+)?\s*[xX*＊×]\s*\d+(?:\.\d+)?\s*[xX*＊×]\s*\d+(?:\.\d+)?(?:\s*[xX*＊×]\s*|\s+)\d+(?:\.\d+)?\s*t?/u;
-  if (!fullSectionPattern.test(value)) {
+  const match = value.match(fullSectionPattern);
+  if (!match?.[0]) {
     return undefined;
   }
 
-  const numbers = extractNumbers(value);
+  const numbers = extractNumbers(match[0]);
   if (numbers.length < 4) {
     return undefined;
   }
@@ -131,7 +132,20 @@ const lookupInstructionsSchema = z.object({
       tierKnown: z.boolean().optional(),
     })
     .optional(),
+  reviewState: reviewStateSchema,
+  includeInactive: z.boolean().optional(),
   limit: limitSchema,
+});
+
+const lookupQuoteRulesSchema = lookupInstructionsSchema.extend({
+  customerContext: z
+    .object({
+      customerId: z.number().int().positive().optional(),
+      customerTierId: z.number().int().positive().optional(),
+      customerName: nonEmptyString.optional(),
+      tierKnown: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 const lookupCatalogFamiliesSchema = z
@@ -228,6 +242,7 @@ const searchPriceCandidatesSchema = z
 
 export const steelToolArgsSchemas = {
   lookup_instructions: lookupInstructionsSchema,
+  lookup_quote_rules: lookupQuoteRulesSchema,
   lookup_catalog_families: lookupCatalogFamiliesSchema,
   lookup_defaults: z.object({
     catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
@@ -260,3 +275,4 @@ export type LookupDefaultsInput = z.infer<typeof steelToolArgsSchemas.lookup_def
 export type LookupCatalogFamiliesInput = z.infer<typeof lookupCatalogFamiliesSchema>;
 export type LookupFormulaInput = z.infer<typeof steelToolArgsSchemas.lookup_formula>;
 export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
+export type LookupQuoteRulesInput = z.infer<typeof lookupQuoteRulesSchema>;

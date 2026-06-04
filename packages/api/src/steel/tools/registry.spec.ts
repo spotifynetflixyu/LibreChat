@@ -6,6 +6,7 @@ describe('Steel tool registry', () => {
 
     expect(toolNames).toEqual([
       'lookup_instructions',
+      'lookup_quote_rules',
       'lookup_catalog_families',
       'lookup_defaults',
       'lookup_formula',

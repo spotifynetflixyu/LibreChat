@@ -2,6 +2,7 @@ export * from './customers';
 export * from './defaults';
 export * from './families';
 export * from './formulas';
+export * from './instructions';
 export * from './orders';
 export * from './prices';
 export * from './processing';

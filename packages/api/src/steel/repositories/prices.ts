@@ -22,6 +22,8 @@ interface SteelPriceItemRow {
   erp_item_code: string | null;
   category_id: string | number | null;
   customer_tier_id: string | number | null;
+  customer_tier_code: string | null;
+  customer_tier_name: string | null;
   spec_key: string;
   product_name: string;
   catalog_family: string | null;
@@ -42,6 +44,8 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   erpItemCode?: string;
   categoryId: number | null;
   customerTierId: number | null;
+  customerTierCode?: string;
+  customerTierName?: string;
   specKey: string;
   productName: string;
   catalogFamily?: string;
@@ -125,6 +129,8 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     erpItemCode: parseNullableString(row.erp_item_code),
     categoryId: parseNullableNumber(row.category_id),
     customerTierId: parseNullableNumber(row.customer_tier_id),
+    customerTierCode: parseNullableString(row.customer_tier_code),
+    customerTierName: parseNullableString(row.customer_tier_name),
     specKey: row.spec_key,
     productName: row.product_name,
     catalogFamily: parseNullableString(row.catalog_family),
@@ -187,6 +193,8 @@ SELECT
   erp_item_code,
   category_id,
   customer_tier_id,
+  customer_tier_code,
+  customer_tier_name,
   spec_key,
   product_name,
   catalog_family,
@@ -200,7 +208,14 @@ SELECT
   review_state,
   active,
   source_refs
-FROM steel.price_items
+FROM (
+  SELECT
+    price_item.*,
+    tier.code AS customer_tier_code,
+    tier.name AS customer_tier_name
+  FROM steel.price_items AS price_item
+  LEFT JOIN steel.customer_tiers AS tier ON tier.id = price_item.customer_tier_id
+) AS price_item
 WHERE ${where.join('\n  AND ')}
 ORDER BY
   CASE WHEN customer_tier_id IS NULL THEN 1 ELSE 0 END,

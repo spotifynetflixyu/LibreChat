@@ -1,7 +1,7 @@
 # Instruction Packets
 
 Goal: design task-scoped `steel.instruction_packets` records retrieved by
-`lookup_instructions`.
+`lookup_quote_rules` and the legacy-compatible `lookup_instructions`.
 
 This document owns only Instruction Packet design and seed packet text. The
 default every-turn Agent Instruction lives in
@@ -17,27 +17,32 @@ Instruction Packets are reviewed, task-scoped instructions:
 
 1. AI starts every Steel quote turn with the active Agent Instruction already
    injected.
-2. AI calls `lookup_instructions` only when the current task needs scoped rules
-   such as alias expansion, C-type behavior, cutting policy, drawing
-   interpretation, workbook output, or confirmation policy.
-3. `lookup_instructions` returns bounded reviewed active packets, not the whole
-   instruction corpus and not raw source chunks.
-4. Each `lookup_instructions` call is batched by interpreted order context. AI
-   sends all detected material families, task types, processing types, formula
+2. AI calls `lookup_quote_rules` when the current task needs scoped rules such
+   as alias expansion, C-type behavior, cutting policy, drawing interpretation,
+   workbook output, defaults, or confirmation policy.
+3. `lookup_quote_rules` returns bounded reviewed active instruction packets plus
+   reviewed quote defaults. It does not return the whole instruction corpus, raw
+   source chunks, price rows, or final calculations.
+4. Each `lookup_quote_rules` call is batched by interpreted order context. AI
+   sends all detected catalog families, task types, processing types, formula
    candidates, customer/tier context, and low-confidence facets together instead
    of separate lookups for each small detail.
-5. AI uses returned packet bodies to generate material/spec candidates and
+5. `lookup_instructions` remains as a compatibility tool that returns only the
+   instruction-packet subset from the same DB-backed storage.
+6. `lookup_defaults` remains as a compatibility tool that returns only quote
+   defaults from `steel.quote_defaults`.
+7. AI uses returned packet/default bodies to generate material/spec candidates and
    decide which reviewed lookup tool to call next.
-6. Packets guide interpretation; they do not confirm source facts, prices,
-   formulas, customer tiers, true-zero charges, or totals.
-7. Reviewed data lookup and backend validation still decide confirmed values.
+8. Packets and defaults guide interpretation; they do not confirm source facts,
+   prices, formulas, customer tiers, true-zero charges, or totals.
+9. Reviewed data lookup and backend validation still decide confirmed values.
 
 ## Injection Language Rule
 
 Instruction Packet bodies injected into AI prompts must be Traditional Chinese.
 
 Canonical API/schema keys can remain English, for example `taskTypes`,
-`materialFamilies`, `requiredLookups`, and `blockingRules`. User-facing or
+`catalogFamilies`, `requiredLookups`, and `blockingRules`. User-facing or
 AI-instruction body text should be Traditional Chinese so runtime prompt
 injection is consistent across Agent Instruction and Instruction Packets.
 
@@ -93,8 +98,14 @@ Conceptual fields:
   review notes
 - `createdBy`, `reviewedBy`, `createdAt`, `updatedAt`, `reviewedAt`
 
-Implementation can store selectors/body as JSONB, but runtime APIs should expose
-typed DTOs with canonical English keys.
+Implementation stores selectors/body as JSONB where that keeps Admin editing
+flexible, but runtime APIs expose typed DTOs with canonical English keys.
+
+As of the DB-backed runtime slice, this table is no longer only planned:
+`lookup_quote_rules` and `lookup_instructions` must read active reviewed records
+from `steel.instruction_packets`. Static code packets may be used only as seed
+material, migration fixtures, or tests; they must not be the normal runtime
+source of Admin-editable quote rules.
 
 ## Selector Model
 
@@ -109,9 +120,16 @@ Recommended selector keys:
   `formula_selection`, `default_selection`, `drawing_interpretation`,
   `processing_detection`, `workbook_output`, `confirmation_policy`,
   `ocr_file_interpretation`
-- `materialFamilies`: `c_type`, `h_type`, `angle`, `channel`, `flat_bar`,
-  `round_bar`, `square_bar`, `round_pipe`, `square_pipe`, `plate`, `stainless`,
-  `galvanized`, `misc`
+- `catalogFamilies`: `h_beam`, `c_type`, `angle`, `channel`, `flat_bar`,
+  `rail`, `b_pipe`, `a_pipe`, `p_pipe`, `steel_pipe`, `piping`, `i_beam`,
+  `round_bar`, `square_bar`, `rectangular_pipe`, `round_pipe`, `square_pipe`,
+  `plate`, `galvanized_plate`, `ot_plate`, `black_plate`, `grating`,
+  `wire_mesh`, `expanded_metal`, `floor_deck`, `corrugated_panel`
+- `priceFields`: `unit`, `unitPrice`, `productPriceUnitWeight`,
+  `productPriceUnitWeightUnit`, `metadata.sourceRatio`,
+  `metadata.sourcePriceUnitBasis`, `metadata.sourceUnitWeightColumn`,
+  `metadata.sourceUnitWeightOrigin`, `metadata.sourceParentheticalUnitWeight`,
+  `metadata.productPriceWeightRuleScope`
 - `productFamilies`: source/product-level categories when known
 - `surfaceTreatments`: `black`, `stainless`, `galvanized`, `zinc_plated`,
   `aluminum_zinc`, `painted`, `hot_dip_galvanized`, `unknown`
@@ -136,7 +154,7 @@ Conflict policy:
 ## Packet Group Model
 
 Instruction Packets should be organized into related rule bundles so one batched
-`lookup_instructions` request can return every rule needed for the detected
+`lookup_quote_rules` request can return every rule needed for the detected
 material/task/process context.
 
 Grouping policy:
@@ -146,7 +164,7 @@ Grouping policy:
 - Related material packets should sit in the same group or list each other in
   `relatedPacketSlugs`; do not leave hole, cut, formula, price, and workbook
   rules as isolated fragments that require separate tool calls.
-- `lookup_instructions` should expand matching groups. If the request includes
+- `lookup_quote_rules` and legacy `lookup_instructions` should expand matching groups. If the request includes
   H 型鋼 with cutting and holes, return the H 型鋼 group plus shared cut/drawing/
   workbook packets in the same response.
 - Global packets can belong to `global-quote-core` and also be returned as
@@ -157,24 +175,24 @@ Grouping policy:
 
 Seed group map:
 
-| Packet group                       | Purpose                          | Packets usually returned together                                                                                                                                              |
-| ---------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `global-quote-core`                | 通用候選、價格來源、公式、確認   | `price-source-priority-zh-v1`, `oral-material-candidate-generation-zh-v1`, `formula-code-selection-zh-v1`, `workbook-provisional-confirmed-zh-v1`                              |
-| `angle-zinc-quote-core`            | 角鐵 / 錏 / 鍍鋅角鐵候選與切工   | `angle-surface-oral-zh-v1`, `price-source-priority-zh-v1`, `oral-material-candidate-generation-zh-v1`, `black-steel-cutting-price-zh-v1`, `cut-count-and-trim-detection-zh-v1` |
-| `c-type-quote-core`                | C 型鋼專用材料、公式與孔洞處理   | `c-type-basic-quote-zh-v1`, `price-source-priority-zh-v1`, `formula-code-selection-zh-v1`, `drawing-processing-detection-zh-v1`                                                |
-| `h-type-quote-core`                | H 型鋼米數、加價、切工與加工另計 | `h-type-length-surcharge-zh-v1`, `h-and-i-beam-cutting-price-zh-v1`, `formula-code-selection-zh-v1`, `cut-count-and-trim-detection-zh-v1`                                      |
-| `black-long-material-cutting-core` | 黑鐵管/角/槽/平鐵等長條切工      | `black-steel-cutting-price-zh-v1`, `cut-count-and-trim-detection-zh-v1`, `price-source-priority-zh-v1`                                                                         |
-| `plate-processing-core`            | 板材孔洞、開槽、折工與公式候選   | `drawing-processing-detection-zh-v1`, `formula-code-selection-zh-v1`, `price-source-priority-zh-v1`                                                                            |
-| `workbook-output-core`             | workbook provisional/confirmed   | `workbook-provisional-confirmed-zh-v1`, `workbook-output-columns-zh-v1`                                                                                                        |
+| Packet group                       | Purpose                          | Packets usually returned together                                                                                                                                                                                             |
+| ---------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `global-quote-core`                | 通用候選、價格來源、公式、確認   | `price-source-priority-zh-v1`, `product-price-unit-weight-calculation-zh-v1`, `oral-material-candidate-generation-zh-v1`, `formula-code-selection-zh-v1`, `workbook-provisional-confirmed-zh-v1`                              |
+| `angle-zinc-quote-core`            | 角鐵 / 錏 / 鍍鋅角鐵候選與切工   | `angle-surface-oral-zh-v1`, `price-source-priority-zh-v1`, `product-price-unit-weight-calculation-zh-v1`, `oral-material-candidate-generation-zh-v1`, `black-steel-cutting-price-zh-v1`, `cut-count-and-trim-detection-zh-v1` |
+| `c-type-quote-core`                | C 型鋼專用材料、公式與孔洞處理   | `c-type-basic-quote-zh-v1`, `price-source-priority-zh-v1`, `product-price-unit-weight-calculation-zh-v1`, `formula-code-selection-zh-v1`, `drawing-processing-detection-zh-v1`                                                |
+| `h-type-quote-core`                | H 型鋼米數、加價、切工與加工另計 | `h-type-length-surcharge-zh-v1`, `h-and-i-beam-cutting-price-zh-v1`, `product-price-unit-weight-calculation-zh-v1`, `formula-code-selection-zh-v1`, `cut-count-and-trim-detection-zh-v1`                                      |
+| `black-long-material-cutting-core` | 黑鐵管/角/槽/平鐵等長條切工      | `black-steel-cutting-price-zh-v1`, `cut-count-and-trim-detection-zh-v1`, `price-source-priority-zh-v1`, `product-price-unit-weight-calculation-zh-v1`                                                                         |
+| `plate-processing-core`            | 板材孔洞、開槽、折工與公式候選   | `drawing-processing-detection-zh-v1`, `formula-code-selection-zh-v1`, `price-source-priority-zh-v1`, `product-price-unit-weight-calculation-zh-v1`                                                                            |
+| `workbook-output-core`             | workbook provisional/confirmed   | `workbook-provisional-confirmed-zh-v1`, `workbook-output-columns-zh-v1`                                                                                                                                                       |
 
-## `lookup_instructions` Contract
+## `lookup_quote_rules` Contract
 
 Input should be compact and task-scoped. Do not send full source files.
 
 AI should batch the lookup by interpreted order context. A single order can
 contain multiple steel material families and multiple processing needs; the
 request should include all detected material, task, processing, formula, and
-customer/tier facets together. Do not call `lookup_instructions` separately for
+customer/tier facets together. Do not call `lookup_quote_rules` separately for
 each small detail such as hole count, cut count, slotting path, or each single
 line item when those details belong to the same interpreted order context.
 The request may include `packetGroupHints`; the tool should use them to expand
@@ -249,6 +267,36 @@ Example request:
   "limit": 12
 }
 ```
+
+Expected response groups:
+
+- `instructionPacketGroups`: packet-group summary and returned slugs.
+- `instructionPackets`: reviewed packets with body, blocking rules, required
+  lookups, matched facets, and source refs.
+- `quoteDefaults`: reviewed defaults matched by catalog/customer/charge/formula
+  facets.
+- `requiredLookups`: deduped follow-up tools the AI should consider, such as
+  `search_price_candidates`, `lookup_formula`, or processing price lookup.
+- `userVisibleNotes`: concise assumptions/defaults AI may show to the user.
+- `confirmationQuestions`: concise user-confirmation prompts.
+- `conflicts`: conflicting packets/defaults that require manual review or user
+  confirmation.
+
+## Legacy Tool Compatibility
+
+`lookup_instructions` remains callable for existing prompts and tests. It uses
+the same `steel.instruction_packets` repository but returns only:
+
+- `packetGroups`
+- `packets`
+- `notReturnedReason`
+- `conflicts`
+
+`lookup_defaults` remains callable for targeted defaults retrieval from
+`steel.quote_defaults`.
+
+New runtime instructions should prefer `lookup_quote_rules` when AI needs both
+task-scoped interpretation rules and defaults in the same turn.
 
 Response should be bounded and source-backed:
 
@@ -376,7 +424,7 @@ Selectors:
 
 - `taskTypes`: `formula_selection`, `default_selection`,
   `material_price_lookup`, `processing_detection`, `confirmation_policy`
-- `materialFamilies`: `c_type`
+- `catalogFamilies`: `c_type`
 - `processingTypes`: `cutting`, `holes`, `none`
 
 Body:
@@ -387,6 +435,10 @@ Body:
   `100x2.3` 等尺寸/厚度片段查價。
 - 材質不明時，AI 可以先塞 `productName: 錏輕型鋼` 作為通常情況的高信心
   候選，同時列出白鐵輕型鋼、黑鐵輕型鋼等 bounded alternatives 並請確認。
+- 第一輪若材質/表面不明，回覆必須列出同規格、不同材質的 reviewed bounded
+  options；第二輪若使用者沒有指定其他材質/表面，視為確認預設錏輕型鋼。
+- 未指定客戶或分級時，查價不可帶 `customerTierId`；回覆主價格預設用 B 價，
+  仍列出 A/B/C/F 等 returned tiers。
 - C 型鋼通常是成品長度鋼捲抽料 / 成型下料，不套一般 6M 素材配料邏輯。
 - C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。
 - C 型鋼切工/孔費免費不代表材料單價、特殊加工、非 C 型鋼加工或其他 charge 免費。
@@ -397,6 +449,9 @@ Blocking rules:
 
 - 不要把 `C型鋼` 當作 `productName` filter 卡死價格查詢；已選 `c_type`
   時，優先用尺寸/厚度 spec fragments 查 reviewed price rows。
+- 不要在 customer/tier 未知時把 `customerTierId` 設為 A/tier 1；查價省略
+  `customerTierId`，回覆主價格才用 B 價。
+- 不要在材質不明的第一輪只顯示錏輕型鋼，省略同規格其他材質候選。
 - 不要只用 `100x50x20 2.3t` 這類完整斷面字串查 C 型鋼價格；產品價格表以
   `100x2.3` 這類寬度/厚度片段命中。
 - 不要把 C 型鋼切工/孔費免費規則套用到材料單價、特殊加工或非 C 型鋼品項。
@@ -477,6 +532,91 @@ Blocking rules:
 - 不要把 blank / `0` product price 當作免費或 true-zero。
 - 不要將 kg 價、支價、片價、孔價、刀價、M 價互相轉換，除非 reviewed formula /
   backend validation 明確支持。
+
+### `product-price-unit-weight-calculation-zh-v1`
+
+Packet groups:
+
+- `global-quote-core`
+- `angle-zinc-quote-core`
+- `c-type-quote-core`
+- `h-type-quote-core`
+- `black-long-material-cutting-core`
+- `plate-processing-core`
+
+Source refs:
+
+- `docs/reference/產品價格.xlsx`: 售價欄、產品品名/規格、單位重。
+- User correction: product-price unit weight and sale-price calculation rules.
+
+Selectors:
+
+- `taskTypes`: `material_price_lookup`, `formula_selection`,
+  `confirmation_policy`
+- `catalogFamilies`: `c_type`, `h_beam`, `angle`, `channel`, `flat_bar`,
+  `round_bar`, `square_bar`, `round_pipe`, `square_pipe`, `plate`, `stainless`,
+  `galvanized`, `misc`
+
+Body:
+
+- `產品價格.xlsx` 的 `unitPrice` 必須搭配 `productPriceUnitWeight` 與
+  `productPriceUnitWeightUnit`、以及 reviewed row 的 `unit` 解讀，不可只因
+  使用者問 `一支多少` 就把 `unitPrice` 當作每支總價。
+- `unit` 表示售價欄單位；`productPriceUnitWeightUnit` 表示重量欄語意。
+- 此規則只套用在鋼材/材料 stock catalog families，例如 `h_beam`（含
+  `輕量H`）、`c_type`、`angle`、`channel`、`flat_bar`、`rail`、pipe
+  families、plate families、mesh、grating、floor deck。非鋼材或非材料產品/
+  accessory rows，例如彈簧、螺絲、門鎖、角輪、鋁窗、樹脂、鐵門、伸縮門、量尺等，
+  不套用這套 kg/m、kg/支換算規則；除非有另外 reviewed rule，否則按該 row 的
+  `unitPrice` 直接作件/組/支價或 manual review。
+- 普遍鋼材的 `productPriceUnitWeightUnit = kg_per_m`。此時
+  `productPriceUnitWeight` 是 kg/m。若 `unit=kg`，`unitPrice` 是每 kg 售價。
+  計算材料金額：`weightKg = kgPerM * lengthM * quantity`，
+  `amount = weightKg * unitPrice`。
+- 例：`C型鋼 C100x50x20x2.3t 6M 一支多少`。若 reviewed row 是
+  `錏輕型鋼 100x2.3`、`unit=kg`、`unitPrice = 25-26.8`、
+  `productPriceUnitWeight = 4kg/m`，則一支 6M 是 24kg，暫估材料價約
+  `NT$600-643.2`。不可回答 `NT$25-26.8/支`。
+- 品名或規格有固定長度 `M` 且 `productPriceUnitWeightUnit = kg_per_piece`
+  時，`productPriceUnitWeight` 是重量/支。若 `unit=kg`，整支金額為
+  `pieceWeightKg * quantityPieces * unitPrice`；若 `unit=piece`，`unitPrice`
+  已是整支金額，整支計價為 `quantityPieces * unitPrice`。
+- 只有使用者明確說餘料不計價時，才可把重量/支除以來源長度得到 kg/m，再乘以
+  實際切料長度與 `unitPrice` 計算本次材料金額。
+- 若 `單位重` 欄位是 0，但品名最後括號內有數字，且 reviewed row 可用
+  `售價 = 括號重量 * 比率` 驗證，括號數字就是重量/支補漏來源。例：
+  `白鐵平鐵 50 *8.0( 19.7)` 的 A 價 `2107.90`、比率 `107.00`，所以
+  `19.7 * 107 = 2107.9`；此 row 應以 `19.7kg/支`、`unit=piece` 判讀。
+- 若 `單位重` 欄位已有正值，欄位值優先於品名括號；括號只能作補漏來源，不能覆蓋
+  reviewed 欄位值。例：`6K鐵軌 6M(38)` 的 `單位重=36`，且
+  `9K鐵軌 6M(54)` 可佐證比例，因此 6K 鐵軌採 `36kg/支`，不可採括號 `(38)`。
+- 固定長度材料 row 若有正值 `比率` 欄且 `售價` 欄為整支價，即使該整支價看起來是
+  用錯誤括號重量算出，也不可把 `售價` 當每 kg 單價。例：`6K鐵軌 6M(38)`
+  的 A 價 `2090` 與比率 `55` 對應錯誤括號 38，但重量仍採 `單位重=36`；報價可先把
+  `2090` 視為整支價，並把重量矛盾標示為待確認/推論。
+- 若單位重缺失或來源互相矛盾，可以查相同系列、相同規格、不同長度或相近材料的
+  reviewed rows，用長度比例或規格比例換算作推論 evidence。這類結果必須標示
+  inferred/low confidence 或待確認，不可靜默覆蓋 reviewed 欄位值。
+- 若固定長度品名的單位重為 0 或缺失，應查相同規格、不同長度且有 reviewed 單位重
+  的 row，先推回 kg/m，再依本次長度換算。找不到可驗證重量時，標示
+  missing/low confidence 並請使用者確認。
+- `輕量H` 例如 `輕量H150*75*3.2/4.5*6M(53)` 屬於 H 型鋼材料；`BNH`
+  屬於鋼材/板材材料。這兩類不可留在 fallback ERP family 後跳過材料計價規則。
+
+Blocking rules:
+
+- 不要把 `productPriceUnitWeightUnit = kg_per_m` 的 `unitPrice` 當成
+  per-piece price。
+- 不要只看 `productPriceUnitWeightUnit` 就決定售價單位；必須同時看 reviewed
+  row 的 `unit`。
+- 不要把非鋼材或非材料產品/accessory row 套用鋼材 kg/m、kg/支計算規則。
+- 不要用品名括號覆蓋正值 `單位重` 欄位；括號只在欄位為 0/缺失且可驗證時補漏。
+- 不要把固定長度材料 row 的整支 `售價` 誤當每 kg 單價。
+- 不要把相近材料比例推論當成 reviewed 欄位值；推論值必須標示 inferred/low
+  confidence 或待確認。
+- 不要因 source row 的 `unit` 顯示支/件，就忽略 `productPriceUnitWeightUnit`
+  所代表的 kg/m 或 kg/支計算語意。
+- 不要用 0 或空白單位重計算材料金額。
 
 ### `oral-material-candidate-generation-zh-v1`
 
