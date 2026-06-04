@@ -121,7 +121,7 @@ describe('Steel processing repositories', () => {
           {
             id: '5',
             bend_type: 'single',
-            material_family: '板材',
+            catalog_family: '板材',
             thickness_min_mm: '1.000',
             thickness_max_mm: '6.000',
             unit: 'bend',
@@ -223,7 +223,7 @@ describe('Steel processing repositories', () => {
           rule_type: 'material_surcharge',
           rule_body: { surcharge_per_kg: 0.3 },
           priority: 10,
-          material_family: 'H型鋼',
+          catalog_family: 'H型鋼',
           condition_type: 'length_not_in',
           active: true,
           review_state: 'reviewed',
@@ -233,7 +233,7 @@ describe('Steel processing repositories', () => {
     });
 
     const result = await searchSteelMaterialRules({ query } as SteelRepositoryClient, {
-      materialFamily: 'H型鋼',
+      catalogFamily: 'H型鋼',
       ruleType: 'material_surcharge',
     });
 

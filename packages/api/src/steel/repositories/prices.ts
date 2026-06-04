@@ -24,6 +24,7 @@ interface SteelPriceItemRow {
   customer_tier_id: string | number | null;
   spec_key: string;
   product_name: string;
+  catalog_family: string | null;
   material_grade: string | null;
   unit: string;
   unit_price: string | number | null;
@@ -43,6 +44,7 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   customerTierId: number | null;
   specKey: string;
   productName: string;
+  catalogFamily?: string;
   materialGrade?: string;
   unit: string;
   unitPrice: number | null;
@@ -59,6 +61,7 @@ export interface SearchSteelPriceItemsInput {
   specKey?: string;
   specKeyContains?: string;
   productName?: string;
+  catalogFamilies?: readonly string[];
   customerTierId?: number;
   reviewState?: SteelReviewState;
   includeInactive?: boolean;
@@ -75,6 +78,30 @@ function normalizeSpecSize(value: string): string {
     .replace(/\s+/g, '')
     .replace(/[＊*×]/g, 'x')
     .replace(/^l/i, '');
+}
+
+function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).filter((value) => value.trim() !== ''))];
+}
+
+function addTextFacetFilter(
+  where: string[],
+  values: SteelSqlParameter[],
+  column: string,
+  matches: readonly string[] | undefined,
+) {
+  const uniqueMatches = uniqueNonEmpty(matches);
+
+  if (uniqueMatches.length === 0) {
+    return;
+  }
+
+  const placeholders = uniqueMatches.map((match) => {
+    values.push(match);
+    return `$${values.length}`;
+  });
+
+  where.push(`${column} IN (${placeholders.join(', ')})`);
 }
 
 function getProductNameSearch(productName: string): SteelProductNameSearch {
@@ -100,6 +127,7 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     customerTierId: parseNullableNumber(row.customer_tier_id),
     specKey: row.spec_key,
     productName: row.product_name,
+    catalogFamily: parseNullableString(row.catalog_family),
     materialGrade: parseNullableString(row.material_grade),
     unit: row.unit,
     unitPrice: parseNullableNumber(row.unit_price),
@@ -143,6 +171,8 @@ export async function searchSteelPriceItems(
     }
   }
 
+  addTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
+
   if (input.customerTierId !== undefined) {
     values.push(input.customerTierId);
     where.push(`(customer_tier_id = $${values.length} OR customer_tier_id IS NULL)`);
@@ -159,6 +189,7 @@ SELECT
   customer_tier_id,
   spec_key,
   product_name,
+  catalog_family,
   material_grade,
   unit,
   unit_price,

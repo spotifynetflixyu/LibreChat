@@ -10,6 +10,7 @@ export * from './normalization';
 export * from './pricing';
 export * from './repositories';
 export * from './rules';
+export * from './schema/mapping';
 export * from './tools';
 export * from './workbook/repository';
 export * from './workbook/service';

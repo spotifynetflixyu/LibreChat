@@ -91,7 +91,7 @@ interface SlottingPriceRow {
 interface BendingPriceRow {
   id: string | number;
   bend_type: string;
-  material_family: string | null;
+  catalog_family: string | null;
   thickness_min_mm: string | number | null;
   thickness_max_mm: string | number | null;
   unit: string;
@@ -110,7 +110,7 @@ interface MaterialRuleRow {
   rule_type: string;
   rule_body: SteelJsonValue | null;
   priority: string | number;
-  material_family: string | null;
+  catalog_family: string | null;
   condition_type: string | null;
   active: boolean;
   review_state: string;
@@ -161,7 +161,7 @@ export interface SteelSlottingPrice extends SteelChargeRow {
 
 export interface SteelBendingPrice extends SteelChargeRow {
   bendType: string;
-  materialFamily?: string;
+  catalogFamily?: string;
   thicknessMinMm: number | null;
   thicknessMaxMm: number | null;
 }
@@ -173,7 +173,7 @@ export interface SteelMaterialRule extends SteelSourceBackedRecord {
   ruleType: string;
   ruleBody: SteelJsonValue;
   priority: number;
-  materialFamily?: string;
+  catalogFamily?: string;
   conditionType?: string;
   active: boolean;
   reviewState: SteelReviewState;
@@ -206,11 +206,11 @@ interface SearchSteelSlottingPricesInput extends SearchStateInput {
 
 interface SearchSteelBendingPricesInput extends SearchStateInput {
   bendType?: string;
-  materialFamily?: string;
+  catalogFamily?: string;
 }
 
 interface SearchSteelMaterialRulesInput extends SearchStateInput {
-  materialFamily?: string;
+  catalogFamily?: string;
   ruleType?: string;
   conditionType?: string;
 }
@@ -473,7 +473,7 @@ export async function searchSteelBendingPrices(
   const values: SteelSqlParameter[] = [];
   addDefaultStateFilters(where, values, input);
   addOptionalFilter(where, values, 'bend_type', input.bendType);
-  addOptionalFilter(where, values, 'material_family', input.materialFamily);
+  addOptionalFilter(where, values, 'catalog_family', input.catalogFamily);
   values.push(getLimit(input.limit));
 
   const result = await client.query<BendingPriceRow>(
@@ -481,7 +481,7 @@ export async function searchSteelBendingPrices(
 SELECT
   id,
   bend_type,
-  material_family,
+  catalog_family,
   thickness_min_mm,
   thickness_max_mm,
   unit,
@@ -493,7 +493,7 @@ SELECT
   source_refs
 FROM steel.bending_prices
 WHERE ${where.join('\n  AND ')}
-ORDER BY bend_type ASC, material_family ASC NULLS LAST, id ASC
+ORDER BY bend_type ASC, catalog_family ASC NULLS LAST, id ASC
 LIMIT $${values.length}
 `,
     values,
@@ -502,7 +502,7 @@ LIMIT $${values.length}
   return result.rows.map((row) => ({
     ...mapCharge(row),
     bendType: row.bend_type,
-    materialFamily: parseNullableString(row.material_family),
+    catalogFamily: parseNullableString(row.catalog_family),
     thicknessMinMm: parseNullableNumber(row.thickness_min_mm),
     thicknessMaxMm: parseNullableNumber(row.thickness_max_mm),
   }));
@@ -515,7 +515,7 @@ export async function searchSteelMaterialRules(
   const where: string[] = [];
   const values: SteelSqlParameter[] = [];
   addDefaultStateFilters(where, values, input);
-  addOptionalFilter(where, values, 'material_family', input.materialFamily);
+  addOptionalFilter(where, values, 'catalog_family', input.catalogFamily);
   addOptionalFilter(where, values, 'rule_type', input.ruleType);
   addOptionalFilter(where, values, 'condition_type', input.conditionType);
   values.push(getLimit(input.limit));
@@ -529,7 +529,7 @@ SELECT
   rule_type,
   rule_body,
   priority,
-  material_family,
+  catalog_family,
   condition_type,
   active,
   review_state,
@@ -549,7 +549,7 @@ LIMIT $${values.length}
     ruleType: row.rule_type,
     ruleBody: parseJsonObject(row.rule_body),
     priority: parseRequiredNumber(row.priority),
-    materialFamily: parseNullableString(row.material_family),
+    catalogFamily: parseNullableString(row.catalog_family),
     conditionType: parseNullableString(row.condition_type),
     active: row.active,
     reviewState: parseReviewState(row.review_state),

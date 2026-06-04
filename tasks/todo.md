@@ -6,6 +6,226 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+- [x] Active quote-runtime slice: make catalog-family selection AI-owned. Expose
+      reviewed `steel.catalog_families` vocabulary/context to the AI so it can
+      judge oral product wording and choose a stable `catalogFamilies` key;
+      backend price tools should only validate/query explicit keys and must not
+      contain a separate oral-alias matcher.
+
+Review evidence:
+
+- Updated plan
+  `docs/plans/2026-06-04-steel-catalog-family-normalization.md` after the user
+  corrected the boundary: AI decides oral wording -> key; code does not.
+- Removed the started backend alias-matching repository/tests and restored
+  `search_price_candidates` to query only explicit AI-provided
+  `catalogFamilies`.
+- Verification after correction: focused `packages/api` executor Jest passed
+  15/15, touched-file Prettier check passed, code grep found no matcher
+  implementation residue, and targeted `git diff --check` passed.
+- Implementation direction for this slice: add a data-only
+  `lookup_catalog_families` tool that returns reviewed vocabulary candidates and
+  source refs for AI judgment; do not return a backend-selected or
+  backend-resolved key.
+- Implemented `lookup_catalog_families` as an AI-visible, data-only tool backed
+  by `steel.catalog_families`; provider instructions now tell AI to call it for
+  reviewed vocabulary candidates when catalog wording is unclear, then pass
+  explicit `catalogFamilies` to price/default/formula tools.
+- Verification after implementation: RED tests failed for missing repository,
+  registry/executor tool exposure, and provider prompt/tool-list updates; GREEN
+  focused tests passed; full `packages/api` Steel Jest passed 29 suites / 128
+  tests; `npm run build:api` exited 0 with existing Rollup TypeScript warnings;
+  live Supabase sample verified `a_pipe` and `h_beam` aliases; touched-file
+  Prettier check, production-code residue grep, and targeted `git diff --check`
+  passed.
+- C 型鋼 live smoke: `lookup_catalog_families(searchText='C型鋼')` returned
+  `c_type` with aliases `C型鋼`, `C鋼`, `C 型鋼`, `C型`, `輕型鋼`, and `型鋼`;
+  `search_price_candidates` with AI-selected `catalogFamilies: ['c_type']` and
+  derived `specKeyContains: '100x2.3'` returned 8 confirmed price candidates,
+  including `白鐵輕型鋼 100*2.3(定尺-3元)` and `錏輕型鋼 100*2.3`; `lookup_formula`
+  returned formula `C`.
+- User correction captured: do not add a mocked AI response test to prove AI
+  will generate `c_type + 100x2.3`; mocked provider tests only prove backend
+  prompt/tool plumbing. AI behavior must be verified by live AI API smoke or
+  reported as unverified.
+- C 型鋼 prompt-rule update: added task-scoped instruction text telling AI not
+  to use `productName: C型鋼` as a narrow price filter after selecting `c_type`;
+  it should query by size/thickness fragments such as `100x2.3` and present
+  白鐵/錏/黑鐵輕型鋼 options when material/surface is ambiguous. Also added
+  `c_type.metadata.searchHints` in `steel.catalog_families`.
+- Live AI API smoke after the task-scoped prompt rule still failed the desired
+  behavior: real `gpt-5.5` selected `catalogFamilies: ['c_type']` but also
+  sent `productName: C型鋼` / `productName: C型鋼 100x50x20 2.3t` and
+  `specKeyContains: 100x50x20`, so reviewed lookup returned zero candidates.
+  This confirmed the user correction: mocked AI response tests would not prove
+  the C 型鋼 oral-input behavior.
+- Follow-up guardrail: `search_price_candidates` now rejects
+  `catalogFamilies: ['c_type']` searches that still use `C型鋼`/`C鋼` as a
+  `productName` filter, provider runtime policy includes the C 型鋼
+  `c_type + 100x2.3` strategy up front, and invalid-argument price lookup
+  results no longer count as completed reviewed price lookup.
+- Live AI API smoke after the guardrail passed the target behavior. Real
+  `gpt-5.5` first sent the bad `productName: C型鋼` / full-section query and
+  received `invalid_arguments`; the forced second tool call used
+  `catalogFamilies: ['c_type']`, `productName: 錏輕型鋼`, and
+  `specKeyContains: 100x2.3`. Real Supabase returned 4 reviewed
+  `錏輕型鋼 100*2.3` price candidates for customer tiers 1-4
+  (`26`, `26.8`, `25.5`, `25` TWD / 支).
+- User correction captured: oral order flow is AI judges category/catalog key
+  first, then `lookup_instructions`, then category-dependent tools such as
+  `search_price_candidates`, `lookup_defaults`, or `lookup_formula`. Provider
+  runtime now gates direct category-dependent lookups until
+  `lookup_instructions` succeeds for the interpreted context.
+- User correction captured: C 型鋼材質不明時，AI 可以先塞
+  `productName: 錏輕型鋼` as the usual high-confidence provisional material,
+  while still keeping the quote provisional and surfacing bounded alternatives
+  such as 白鐵輕型鋼 / 黑鐵輕型鋼 when relevant.
+- Added gated live AI behavior smoke
+  `packages/api/src/steel/ai/provider.catalog-oral.manual.spec.ts`, enabled by
+  catalog-specific env flags such as `STEEL_OPENAI_OAUTH_C_TYPE_ORAL_TEST=true`.
+  Mocked provider unit tests remain
+  limited to adapter/tool-loop contracts and should not be cited as evidence of
+  AI judgment.
+- Live OAuth C 型鋼 smoke passed with real `openai_oauth_responses` and real
+  Supabase tools. Evidence: actual executed tool sequence included
+  `lookup_instructions` before `search_price_candidates`; the price call
+  derived `catalogFamilies: ['c_type']`, `productName: 錏輕型鋼`, and
+  `100x2.3`, then returned a positive reviewed candidate.
+- Follow-up deterministic fix from live smoke: when AI sends both
+  `specKey: 100x2.3` and malformed `specKeyContains: 100 2.3`, normalization
+  now prefers `100x2.3`; when AI sends a full-section `specKey` together with
+  `specKeyContains`, price lookup uses the partial fragment instead of
+  over-constraining SQL with an exact full-section spec.
+- [x] Follow-up live-smoke slice: extend the same `lookup_instructions` first
+      runtime proof beyond C 型鋼 to H 型鋼 and angle/角鐵 oral requests.
+      Deterministic coverage must prove H 型鋼 expands `h-type-quote-core`
+      instruction packets; gated OAuth smoke must prove real
+      `openai_oauth_responses` calls `lookup_instructions` before positive
+      `search_price_candidates` lookups for H 型鋼 and angle/角鐵.
+- H 型鋼 deterministic coverage now asserts the returned `lookup_instructions`
+  packet content includes常規米數 `6M/9M/10M/12M`, 非常規米數
+  `7M/8M/11M/13M/14M/15M`, and 非常規米數 `+0.3 元/kg`, not just the packet
+  slug. Follow-up user correction recorded that exact reviewed 非常規米數
+  product-price rows in `產品價格.xlsx` already include the `+0.3/kg`
+  adjustment, so AI must not add `+0.3/kg` again after finding those rows; the
+  surcharge rule is only a provisional/default derivation when no exact reviewed
+  non-standard length row exists.
+- [x] Follow-up live-smoke slice: add real OAuth behavior checks for
+      `亞L30x30` bounded-option quoting and H 型鋼 processing interpretation.
+      The `亞L30x30` smoke must prove no exact canonical row is required for AI
+      to provide a highest-confidence provisional reviewed candidate, list
+      bounded alternatives, and accept a later user selection in a multi-turn
+      follow-up. The H 型鋼 smoke must prove AI calls `lookup_instructions` before
+      processing-dependent lookups for cutting, slotting, and holes, then uses
+      reviewed defaults/rules instead of inventing processing prices.
+- Live OAuth `亞L30x30` bounded-options smoke passed with real
+  `openai_oauth_responses` and real Supabase tools. It ran a two-turn
+  conversation: first response found the highest-confidence reviewed
+  `錏成型角鐵30*2.5*6M` candidate at `194.3` TWD / 支 while keeping the quote
+  provisional and asking for confirmation; follow-up user selection
+  `錏成型角鐵30*2.5*6M，第1級價格` resolved to the selected reviewed candidate.
+  The live follow-up exposed malformed AI `specKeyContains: 30 2.5 6M`;
+  normalization now prefers structured `specKey: 30x2.5x6M` and searches the
+  imported `30x2.5x6M` price-table fragment instead of `302.56m`.
+- Live OAuth H 型鋼 processing smoke passed with real `openai_oauth_responses`
+  and real Supabase tools. It verified `lookup_instructions` before processing
+  lookups, reviewed H 型鋼 processing instruction/default rules, material
+  `h_beam` price lookup, and reviewed processing price candidates including
+  `開槽加工` / `KZZB10` and `沖孔加工` / `KZZB11`; the response kept cutting,
+  slotting, and hole fees as provisional/confirmation-needed processing items.
+  Runtime policy now tells AI that when instruction packets name processing
+  price candidates or ERP item codes, it must call `search_price_candidates` for
+  reviewed processing rows instead of quoting processing prices only from
+  instruction packet text.
+- Live OAuth H 型鋼 smoke passed with real `openai_oauth_responses` and real
+  Supabase tools. The first executed tool was `lookup_instructions`; the
+  returned instruction content included the H 型鋼米數/加價規則; the subsequent
+  price lookup returned a positive reviewed `h_beam` candidate. A deterministic
+  normalization regression now converts AI's `100x50x5/7` fragment to the
+  imported price-table fragment `100x50x5_7`.
+- Live OAuth angle smoke passed with real `openai_oauth_responses` and real
+  Supabase tools after the angle instruction packet was updated to tell AI that
+  reviewed rows such as `錏成型角鐵30*2.5*6M` require `30x2.5x6M` /
+  `30x2.5` spec candidates in addition to equal-angle `30x30` candidates.
+  `亞L30x30` remains an oral candidate/confirmation rule rather than a guaranteed
+  positive exact price-row smoke fixture.
+
+- [x] Active data/schema slice: replace the steel-only family vocabulary
+      vocabulary surface with a generic `catalog_family` lookup key for
+      `docs/reference/產品價格.xlsx`; import every product catalog family into
+      Supabase, link every imported price row to a catalog family/category,
+      remove old `materialFamilies` runtime input logic instead of keeping a
+      compatibility alias, and update docs/tests so AI can query product catalog
+      terms such as 鋼管, 配管, 壁板, 樹脂, 鋁窗, 擋水板, 鐵門, 棚架,
+      方管連料, 伸縮大門, B管, A管, 尺, 紗網, 門花, P型管, 螺絲, 角輪,
+      門鎖, I字鐵, 圓鐵, 圓條, 方鐵, 錏板, OT板, 黑板, and 鐵格板.
+
+Review evidence:
+
+- Created plan `docs/plans/2026-06-04-steel-catalog-family-import.md` and
+  source-of-truth doc `docs/steel-catalog-family-data-contract.md`.
+- Replaced runtime/search/default/rule-proposal paths with
+  `catalogFamilies` / `catalogFamily` / `catalog_family`. Old
+  `materialFamilies` and `materialFamily` request shapes are rejected by tests.
+- Added migration `supabase/migration/20260604071700_steel_catalog_families.sql`
+  and synchronized `supabase/schema.sql`. Cloud DB now has
+  `steel.catalog_families`; no `steel.material_families` table and no
+  `steel.*.material_family` columns remain.
+- Updated the reference importer so every `產品價格.xlsx` row receives a
+  `categoryCode` and non-empty `catalogFamily`; uncurated rows fall back to
+  ERP-prefix keys such as `erp_ax`.
+- Reapplied the importer to Supabase. Verification counts: 210 catalog
+  families, 277 price categories, 2256 customers, 27024 price rows, 238 cutting
+  rows, 31 formulas, and 29 quote defaults.
+- Direct SQL verified `price_items` imported from `產品價格.xlsx` have zero null
+  `catalog_family` rows and zero null `category_id` rows.
+- Direct SQL sample checks passed: `GOB0004` -> `a_pipe`, `GOS0215` ->
+  `piping`, `HSA12215` -> `aluminum_window`, `HSS0001` -> `iron_door`,
+  `FTB0311` -> `screw`, `FFP00020` -> `corner_wheel`, `FFL0001` ->
+  `door_lock`, `EZB070709` -> `i_beam`, `EQA0030` -> `round_bar`,
+  `EDA0063` -> `square_bar`, `BNG008408` -> `galvanized_plate`,
+  `BNB012408` -> `ot_plate`, `DNB160408` -> `black_plate`, and `ANB3410` ->
+  `grating`.
+- Corrected `telescopic_gate` mapping so the whole `AX` ERP prefix is not
+  classified as 伸縮大門. Current DB counts: `telescopic_gate`=59,
+  `screen_mesh`=31, `measuring_tool`=18, and fallback `erp_ax`=24.
+- Documented that `龍頂鋼鐵手冊__文字版.docx` remains a secondary
+  weight/spec/alias reference and must not override reviewed
+  `產品價格.xlsx` product-price facts.
+- Verification commands passed: focused API Jest for importer/repositories/
+  tools/provider/rules/handlers, data-provider rule contract Jest,
+  data-schemas Steel schema Jest, `packages/data-provider` build,
+  `packages/data-schemas` build, `npm run build:api`, importer dry-run,
+  importer apply, direct cloud SQL checks, Prettier for touched TS/JS/MD files,
+  and `git diff --check`.
+- [x] Active data slice: implement an executable Steel reference-data importer
+      that reads `客戶資料.xlsx`, `產品價格.xlsx`, `切工價錢.xlsx`,
+      `公式編號.xlsx`, and `H型鋼.txt`; writes reviewed/updateable facts and
+      defaults into Supabase through `STEEL_POSTGRES_URL`; excludes
+      `訂單參考.xlsx`, `系統訂單.xlsx`, and quote/order fixtures from formal DB
+      fact imports; and proves the applied row counts with SQL verification.
+
+Review evidence:
+
+- Added importer plan `docs/plans/2026-06-04-steel-reference-data-importer.md`,
+  parser module `packages/api/src/steel/importer/reference.ts`, executable CLI
+  `packages/api/scripts/import-steel-reference-data.cjs`, and npm script
+  `steel:import-reference-data`.
+- Dry-run summary: 6 customer tiers, 2256 customers, 27024 tiered price rows,
+  238 cutting-price rows, 31 formula rows, and 29 quote-default rows.
+- Supabase apply initially rolled back because cloud schema was missing
+  `steel.quote_defaults`; applied existing migration
+  `supabase/migration/20260602035007_phase4a_quote_defaults.sql`, verified the
+  table exists, then reran the import successfully.
+- Applied Supabase verification counts matched dry-run: 2256 customers, 27024
+  price rows, 238 cutting rows, 31 formulas, and 29 quote defaults.
+- Direct SQL edge checks passed: `產品價格.xlsx` zero rows stay
+  `value_state='unknown'` with `unit_price IS NULL`; formula `C` exists; H 型鋼
+  default exists; `訂單參考.xlsx` and `系統訂單.xlsx` have zero imported
+  `price_items` source refs.
+- Verification commands run: focused importer Jest, dry-run CLI, apply CLI,
+  direct SQL check, `npm run build:api`, Prettier, and targeted
+  `git diff --check`.
 - [x] Record the corrected scope boundary: Admin review UI paused only; other
       implementation work remains sequenced.
 - [x] Active slice: reviewed fact price decisions return bounded user-choice
@@ -175,12 +395,27 @@ until the user explicitly reopens UI scope.
       reviewed lookup when bounded candidate queries exist.
 - [x] Verify the quick-price correction with RED/GREEN provider Jest, full Steel
       Jest, build/type checks, and `/steel/oauth-chat` smoke.
-- [ ] Run baseline verification for the already-landed Phase 2/4B slices:
+- [x] Create implementation plan
+      `docs/plans/2026-06-03-steel-next-tasks.md` for the four approved next
+      tasks.
+- [x] Active runtime slice: make quick-price provisional estimates write a
+      workbook preview row through `patch_workbook`, including provisional
+      source/confidence notes while leaving confirmed totals blank.
+- [x] Active verification slice: run Phase 2/4B baseline checks across
+      repository/tool/rule-proposal tests, schema/migration grep, builds, and
+      diff hygiene; record pass/fail gaps.
+- [x] Active C 型鋼 vertical slice: prove one order context retrieves C 型鋼
+      instruction packets, quote defaults, and formula candidates, and applies
+      free/no-charge cutting and hole defaults without confirming material price
+      from missing/zero rows.
+- [x] Active source-schema slice: implement tested Chinese reference label to
+      backend canonical-key mapping under `packages/api/src/steel/schema`.
+- [x] Run baseline verification for the already-landed Phase 2/4B slices:
       repository/tool/rule-proposal tests, schema grep, builds, and diff hygiene.
-- [ ] Produce a checkpoint gap matrix for
+- [x] Produce a checkpoint gap matrix for
       `tasks/steel-data-rules-architecture/checkpoints.md` A-E so the next
       implementation starts from proven gaps, not assumptions.
-- [ ] Implement source-schema mapping as code in
+- [x] Implement source-schema mapping as code in
       `packages/api/src/steel/schema/mapping.ts` with prompt-serializer tests.
 - [x] Connect the provider-neutral Steel business tool executor to
       `/steel/oauth-chat` and `openai_oauth_responses`, keeping `patch_workbook`
@@ -217,6 +452,37 @@ until the user explicitly reopens UI scope.
       workbook latest-version behavior.
 - [ ] After the queue is approved, move the active slice into a detailed
       `docs/plans/YYYY-MM-DD-...md` implementation plan before code changes.
+
+## Review - Steel Next Tasks 2026-06-03
+
+- Provisional workbook patch: `sendSteelOAuthChat` now requires positive quick
+  price lookups with workbook context to patch provisional `quote_details`,
+  `price_sources`, and `interpretation_notes`, then continue one more model turn
+  for a Traditional Chinese user-facing quote/options/confirmation answer.
+- C 型鋼 vertical lookup: added one runtime spec covering
+  `lookup_instructions` -> `search_price_candidates` -> `lookup_defaults` ->
+  `lookup_formula` in one order context. The test preserves unknown material
+  price as `null` while accepting only cutting/hole as `true_zero_rule`.
+- Source-schema mapping: added `packages/api/src/steel/schema/mapping.ts` and
+  prompt-context tests for `產品價格.xlsx`, `系統訂單.xlsx`, `公式編號.xlsx`,
+  `切工價錢.xlsx`, and `客戶資料.xlsx` Chinese headers to backend canonical keys.
+- Phase 2/4B baseline evidence: focused repository/tool/rule-proposal suites
+  passed, full `packages/api` Steel Jest passed, schema/migration greps found
+  `source_refs`, `product_price_unit_weight`, `value_state`, `review_state`,
+  `formula_versions`, `calculation_rule_defaults`, and `quote_defaults`; stale
+  tool greps only found docs/test banned-name references, not executable tool
+  exposure.
+- Checkpoint gap matrix: A/B/D have documented/schema/runtime evidence for the
+  current MVP surface; D2 has needs-review proposal/backend tests but Admin
+  approve/reject/publish remains deferred; C/E still need deterministic
+  calculation primitives, calculation audit persistence, full C/H/cutting/hole/
+  slotting manual scenario coverage, and multi-material audit aggregation.
+- Verification: `npx jest src/steel --runInBand` passed 27 suites / 112 tests;
+  `npm run build:api` passed with only the existing Redis/Keyv warning;
+  `git diff --check` passed; `/steel/oauth-chat` smoke for
+  `亞L30x30 一支多少` returned `NT$194.3 / 支` provisional quote, alternatives,
+  confirmation prompts, and workbook cells including
+  `quote_details.material_unit_price=194.3`.
 
 ## Review - Steel Quick Price Correction
 
@@ -412,7 +678,7 @@ until the user explicitly reopens UI scope.
   fragments do not become separate `lookup_instructions` tool calls.
 - Verification passed for the batched full-facet `lookup_instructions`
   correction: touched-doc Prettier check, required-term grep for batched/
-  full-facet/materialContexts wording, stale request-shape grep confirming no
+  full-facet/catalogContexts wording, stale request-shape grep confirming no
   `matchedSelectors` or old `limit: 5` example remains, and `git diff --check`.
 - User correction captured: hole count follows table count first, with drawing
   hole positions used for cross-check. If table count and drawing positions

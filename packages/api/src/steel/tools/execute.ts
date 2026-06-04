@@ -1,5 +1,6 @@
 import {
   findSteelFormulaVersion,
+  lookupSteelCatalogFamilies,
   searchSteelCustomers,
   searchSteelPriceItems,
   searchSteelQuoteDefaults,
@@ -103,6 +104,7 @@ function summarizeOutput(data: SteelToolJsonObject): string {
   const summaryKeys = [
     'packets',
     'packetGroups',
+    'catalogFamilyCandidates',
     'defaultCandidates',
     'formulaCandidates',
     'customers',
@@ -140,14 +142,12 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function getFormulaCodes(input: LookupFormulaInput): string[] {
-  return uniqueStrings(
-    input.materialContexts.flatMap((context) => context.formulaCandidates ?? []),
-  );
+  return uniqueStrings(input.catalogContexts.flatMap((context) => context.formulaCandidates ?? []));
 }
 
 function getFormulaLineRefs(input: LookupFormulaInput, code: string): string[] {
   return uniqueStrings(
-    input.materialContexts
+    input.catalogContexts
       .filter((context) => (context.formulaCandidates ?? []).includes(code))
       .flatMap((context) => context.lineRefs ?? []),
   );
@@ -201,9 +201,10 @@ async function searchPriceCandidates(
 
   for (const query of searchTerms.candidateQueries) {
     const candidates = await searchSteelPriceItems(client, {
-      specKey: query.specKey,
+      specKey: query.specKeyContains ? undefined : query.specKey,
       specKeyContains: query.specKeyContains,
       productName: query.productName,
+      catalogFamilies: input.catalogFamilies,
       reviewState: input.reviewState,
       includeInactive: input.includeInactive,
       limit: input.limit,
@@ -271,6 +272,16 @@ async function dispatchSteelTool(
       const input = steelToolArgsSchemas.lookup_instructions.parse(args);
 
       return lookupSteelInstructions(input);
+    }
+    case 'lookup_catalog_families': {
+      const input = steelToolArgsSchemas.lookup_catalog_families.parse(args);
+      const catalogFamilyCandidates = await lookupSteelCatalogFamilies(client, input);
+
+      return {
+        catalogFamilyCandidates,
+        selectionPolicy:
+          'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
+      };
     }
     case 'lookup_defaults': {
       const input = steelToolArgsSchemas.lookup_defaults.parse(args);

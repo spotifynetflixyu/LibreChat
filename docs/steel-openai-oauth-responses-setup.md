@@ -187,6 +187,56 @@ npm --workspace packages/api exec -- \
   --testPathIgnorePatterns='\.integration\.|\.helper\.|__tests__/helpers/'
 ```
 
+Run the catalog oral-order smoke when validating AI judgment/tool sequence rather
+than provider plumbing. This test uses the real OAuth Responses API and real
+Steel DB tools, and verifies `lookup_instructions` happens before category
+price lookup. Enable exactly the catalog case you want to smoke:
+
+```bash
+DOTENV_CONFIG_PATH=../../.env \
+STEEL_OPENAI_OAUTH_C_TYPE_ORAL_TEST=true \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5 \
+NODE_OPTIONS='-r dotenv/config --experimental-vm-modules' \
+npm --workspace packages/api exec -- \
+  jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts \
+  --coverage=false \
+  --ci \
+  --forceExit \
+  --testPathIgnorePatterns='\.integration\.|\.helper\.|__tests__/helpers/'
+```
+
+Use `STEEL_OPENAI_OAUTH_H_BEAM_ORAL_TEST=true` for the H 型鋼 case. The H case
+also asserts that `lookup_instructions` returns the H 型鋼 rule values:
+常規米數 `6M/9M/10M/12M`, 非常規米數 `7M/8M/11M/13M/14M/15M`, and
+非常規米數 `+0.3 元/kg`. The rule must also state that exact reviewed
+non-standard length product-price rows already include this adjustment and must
+not receive another `+0.3/kg`.
+
+Use `STEEL_OPENAI_OAUTH_ANGLE_ORAL_TEST=true` for the angle/角鐵 case. The
+positive-price smoke uses a reviewed price-table row such as
+`錏成型角鐵30*2.5*6M`; oral inputs such as `亞L30x30` remain covered by
+instruction/candidate-generation assertions because they may require bounded
+options rather than a single positive exact price row.
+
+Use `STEEL_OPENAI_OAUTH_ANGLE_BOUNDED_ORAL_TEST=true` for the `亞L30x30`
+bounded-options case. This smoke runs a real two-turn conversation: first the AI
+must quote the highest-confidence provisional reviewed candidate such as
+`錏成型角鐵30*2.5*6M` / `194.3`, list bounded options or confirmation wording,
+and avoid treating `亞L30x30` as an exact product key; then a follow-up user
+selection must resolve to the selected reviewed candidate and tier.
+
+Use `STEEL_OPENAI_OAUTH_H_BEAM_PROCESSING_TEST=true` for H 型鋼 processing
+behavior. This smoke verifies H 型鋼 material lookup plus processing interpretation
+for cutting, slotting, and holes: `lookup_instructions` must happen first,
+the returned instruction/default rules must cover processing confirmation, and
+processing price lookup must include reviewed candidates such as `開槽加工` /
+`KZZB10` and `沖孔加工` / `KZZB11`. If `lookup_defaults` is called, its reviewed
+processing/default notes are also verified.
+
+Mocked provider unit tests only verify adapter serialization and tool-loop
+control contracts. Do not cite them as proof that the AI will choose a category,
+instruction lookup, or price-search candidate.
+
 ## Expected Evidence
 
 Each successful or failed provider smoke should record:

@@ -3,7 +3,7 @@ import { searchSteelQuoteDefaults } from './defaults';
 import type { SteelRepositoryClient } from './types';
 
 describe('Steel quote default repositories', () => {
-  it('searches reviewed active quote defaults by batched material, charge, and formula facets', async () => {
+  it('searches reviewed active quote defaults by batched catalog, charge, and formula facets', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         {
@@ -12,14 +12,14 @@ describe('Steel quote default repositories', () => {
           origin_table: 'tasks/steel-data-rules-architecture/instruction-packets.md',
           origin_id: 'c-type-free-cutting-hole-v1',
           origin_revision: '1',
-          scope_type: 'material_family',
+          scope_type: 'catalog_family',
           customer_id: null,
           customer_tier_id: null,
-          material_family: 'c_type',
+          catalog_family: 'c_type',
           product_family: null,
           charge_type: null,
           formula_code: 'C',
-          selector: { materialFamily: 'c_type', chargeTypes: ['cutting', 'hole'] },
+          selector: { catalogFamily: 'c_type', chargeTypes: ['cutting', 'hole'] },
           effect: 'true_zero_rule',
           default_parameters: [
             {
@@ -45,7 +45,7 @@ describe('Steel quote default repositories', () => {
     });
 
     const result = await searchSteelQuoteDefaults({ query } as SteelRepositoryClient, {
-      materialFamilies: ['angle', 'c_type'],
+      catalogFamilies: ['angle', 'c_type'],
       chargeTypes: ['cutting', 'hole'],
       formulaCodes: ['C'],
       limit: 10,
@@ -68,14 +68,14 @@ describe('Steel quote default repositories', () => {
         originTable: 'tasks/steel-data-rules-architecture/instruction-packets.md',
         originId: 'c-type-free-cutting-hole-v1',
         originRevision: '1',
-        scopeType: 'material_family',
+        scopeType: 'catalog_family',
         customerId: null,
         customerTierId: null,
-        materialFamily: 'c_type',
+        catalogFamily: 'c_type',
         productFamily: undefined,
         chargeType: undefined,
         formulaCode: 'C',
-        selector: { materialFamily: 'c_type', chargeTypes: ['cutting', 'hole'] },
+        selector: { catalogFamily: 'c_type', chargeTypes: ['cutting', 'hole'] },
         effect: 'true_zero_rule',
         defaultParameters: [
           {

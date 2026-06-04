@@ -15,12 +15,12 @@ describe('Steel rule proposal public contracts', () => {
       proposalType: 'customer_default',
       scopeType: 'customer',
       customerId: 'cust_1',
-      materialFamily: 'c_channel',
+      catalogFamily: 'c_channel',
       productFamily: 'c_type_steel',
       chargeType: 'cutting',
       formulaCode: 'C_TYPE_FINISHED_LENGTH',
       selector: {
-        materialFamily: 'c_channel',
+        catalogFamily: 'c_channel',
         productFamily: 'c_type_steel',
         specification: 'C100x50',
         workType: 'cutting',
@@ -55,11 +55,29 @@ describe('Steel rule proposal public contracts', () => {
         scopeType: 'customer',
         chargeType: 'cutting',
         formulaCode: 'C_TYPE_FINISHED_LENGTH',
-        selector: { materialFamily: 'c_channel' },
+        selector: { catalogFamily: 'c_channel' },
         proposedDefaultParameters: [],
         sourceRefs: [],
         createdFromConversationId: 'steel_meta_1',
         reason: 'missing required evidence',
+        confidence: 'high',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects old materialFamily selectors instead of keeping compatibility', () => {
+    expect(() =>
+      steelRuleProposalCreateRequestSchema.parse({
+        proposalType: 'customer_default',
+        scopeType: 'catalog_family',
+        materialFamily: 'c_channel',
+        chargeType: 'cutting',
+        formulaCode: 'C_TYPE_FINISHED_LENGTH',
+        selector: { materialFamily: 'c_channel' },
+        proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
+        sourceRefs: [sourceRef],
+        createdFromConversationId: 'steel_meta_1',
+        reason: 'old family key should not be accepted',
         confidence: 'high',
       }),
     ).toThrow();
@@ -73,7 +91,7 @@ describe('Steel rule proposal public contracts', () => {
         customerId: 'cust_1',
         chargeType: 'cutting',
         formulaCode: 'C_TYPE_FINISHED_LENGTH',
-        selector: { materialFamily: 'c_channel' },
+        selector: { catalogFamily: 'c_channel' },
         proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
         sourceRefs: [sourceRef],
         createdFromConversationId: 'steel_meta_1',
@@ -93,7 +111,7 @@ describe('Steel rule proposal public contracts', () => {
       customerId: 'cust_1',
       chargeType: 'cutting',
       formulaCode: 'C_TYPE_FINISHED_LENGTH',
-      selector: { materialFamily: 'c_channel' },
+      selector: { catalogFamily: 'c_channel' },
       proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
       sourceRefs: [sourceRef],
       createdFromConversationId: 'steel_meta_1',

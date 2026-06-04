@@ -347,6 +347,10 @@ Body:
   - `鍍鋅角鐵 30x30`
   - `角鐵 30x30`
   - `L30x30`
+- 若使用者或價格表品名已明確給出 `錏成型角鐵30*2.5*6M`、
+  `熱浸鍍鋅角鐵30*3.0` 這類單邊尺寸/厚度/長度規格，不能只查等邊
+  `30x30`。必須同時產生 `30x2.5x6M`、`30x2.5`、`30x3.0` 等價格表
+  `specKeyContains` 候選，再用 reviewed price rows 驗證。
 - 若 `search_price_candidates` 回傳多個厚度或品名，必須列出所有 bounded
   options，包含產品、規格、厚度、tier price、unit 與 source context。
 - 對 `一支多少` 這類快速報價，若回傳一個或多個 reviewed positive approximate
@@ -378,6 +382,11 @@ Selectors:
 Body:
 
 - C 型鋼仍必須先查 reviewed product-price rows，不可只用重量推價。
+- C 型鋼口語品名通常對應產品價格列的輕型鋼品名；例如
+  `C型鋼 100x50x20 2.3t` 應以 `catalogFamilies: ['c_type']` 搭配
+  `100x2.3` 等尺寸/厚度片段查價。
+- 材質不明時，AI 可以先塞 `productName: 錏輕型鋼` 作為通常情況的高信心
+  候選，同時列出白鐵輕型鋼、黑鐵輕型鋼等 bounded alternatives 並請確認。
 - C 型鋼通常是成品長度鋼捲抽料 / 成型下料，不套一般 6M 素材配料邏輯。
 - C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。
 - C 型鋼切工/孔費免費不代表材料單價、特殊加工、非 C 型鋼加工或其他 charge 免費。
@@ -386,6 +395,10 @@ Body:
 
 Blocking rules:
 
+- 不要把 `C型鋼` 當作 `productName` filter 卡死價格查詢；已選 `c_type`
+  時，優先用尺寸/厚度 spec fragments 查 reviewed price rows。
+- 不要只用 `100x50x20 2.3t` 這類完整斷面字串查 C 型鋼價格；產品價格表以
+  `100x2.3` 這類寬度/厚度片段命中。
 - 不要把 C 型鋼切工/孔費免費規則套用到材料單價、特殊加工或非 C 型鋼品項。
 - 不要把 C 型鋼套用一般長條料 6M 配料、餘料與一般切工邏輯。
 
@@ -574,8 +587,14 @@ Body:
 
 - H 型鋼常規米數為 `6M`、`9M`、`10M`、`12M`。
 - H 型鋼非常規米數為 `7M`、`8M`、`11M`、`13M`、`14M`、`15M`。
-- 使用非常規米數時，材料單價為一般米數單價 `+0.3 元/kg`。此加價調整材料
-  kg 單價，不代表切工免費或切工已含。
+- 非常規米數理論上比一般米數材料 kg 單價 `+0.3 元/kg`。
+- `產品價格.xlsx` 的 H 型鋼 exact reviewed 非常規米數列已含非常規
+  `+0.3 元/kg`。例如 `125*125*6.5/9*6M(142)` 與 `7M(165)` 的價格表列
+  已反映 7M 比 6M 多 `0.3/kg`。查到 `7M`、`8M`、`11M`、`13M`、`14M`、
+  `15M` exact reviewed price row 時，不可再加一次。
+- 只有缺 exact reviewed 非常規米數價格列、需要從常規米數 kg 單價推估時，才可把
+  `+0.3 元/kg` 當 provisional/default derivation，並要求使用者確認。
+- 此加價調整材料 kg 單價，不代表切工免費或切工已含。
 - H 型鋼總重仍依 reviewed formula / weight data 計算；切工費要依切工 packet
   或 reviewed cutting rows 另算。
 - 如果長度不在常規或非常規列表，必須標 low confidence，列出目前可識別長度並請
@@ -584,6 +603,7 @@ Body:
 Blocking rules:
 
 - 不要把非常規 `+0.3/kg` 套到非 H 型鋼。
+- 不要在 exact reviewed 非常規米數產品價格列上重複加 `+0.3/kg`。
 - 不要因非常規加價而省略切工判斷。
 
 ### `h-and-i-beam-cutting-price-zh-v1`
@@ -601,7 +621,7 @@ Source refs:
 Selectors:
 
 - `taskTypes`: `processing_detection`, `default_selection`,
-  `confirmation_policy`
+  `confirmation_policy`, `material_price_lookup`
 - `materialFamilies`: `h_type`
 - `productFamilies`: `i_beam`, `steel_beam`
 - `processingTypes`: `cutting`, `head_tail_trim`, `slotting`, `holes`
@@ -624,6 +644,10 @@ Body:
 - H 14m/m 以上的開槽、沖孔、倒角另計；整理列提供 `開槽 KZZB10 140/150`、
   `沖孔 KZZB11 16/17`、`倒角 KZZB12 140/150`。使用前仍要確認加工需求與
   是否匹配產品價格明確加工品項。
+- 需要開槽、沖孔、倒角加工時，先用 `search_price_candidates` 查 reviewed
+  processing price rows，例如 `productName: 開槽加工` / `沖孔加工` / `倒角加工`
+  或 `specKeyContains: KZZB10` / `KZZB11` / `KZZB12`，再標示仍需確認加工
+  數量、路徑、孔數與是否適用 H 型鋼厚度。
 - 斜切加價：切平行斜刀為原切工單價 `X2 - 10`；切梯形斜刀為 `X2`；
   翼板切斜為 `X2 + 50`，但翼板備註信心為中。
 - 手寫備註如量多另計、疑似鋼材刀價等信心低，必須列人工複核，不可進 confirmed

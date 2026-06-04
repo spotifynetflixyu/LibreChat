@@ -163,6 +163,89 @@ describe('Steel price repositories', () => {
     ]);
   });
 
+  it('searches reviewed price candidates by normalized catalog family keys', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          id: '31',
+          erp_item_code: 'EHS100506',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'EHS100506_H型鋼100x50x5_7x6M_56_進口',
+          product_name: 'H型鋼100*50*5/7*6M(56)進口',
+          catalog_family: 'h_beam',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '1800.0000',
+          product_price_unit_weight: '56.00000',
+          product_price_unit_weight_unit: 'kg_per_piece',
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    });
+
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      catalogFamilies: ['h_beam'],
+      customerTierId: 1,
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('catalog_family IN ($2)'), [
+      'reviewed',
+      'h_beam',
+      1,
+      5,
+    ]);
+    expect(result[0]?.catalogFamily).toBe('h_beam');
+  });
+
+  it('searches reviewed price candidates by generic catalog family keys', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          id: '41',
+          erp_item_code: 'FTB0311',
+          category_id: '9',
+          customer_tier_id: '1',
+          spec_key: 'FTB0311_磁鋼板專用小六角釘子_黑_電白_5_8_1000支',
+          product_name: '磁鋼板專用小六角釘子(黑/電白)5/8 (1000支)',
+          catalog_family: 'screw',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '300.0000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    });
+
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      catalogFamilies: ['screw'],
+      customerTierId: 1,
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('catalog_family IN ($2)'), [
+      'reviewed',
+      'screw',
+      1,
+      5,
+    ]);
+    expect(result[0]).toMatchObject({
+      catalogFamily: 'screw',
+      productName: '磁鋼板專用小六角釘子(黑/電白)5/8 (1000支)',
+    });
+  });
+
   it('splits size text out of derived product-name candidates', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 

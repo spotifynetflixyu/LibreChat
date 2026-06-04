@@ -14,7 +14,7 @@ const steelRuleProposalStatuses = ['needs_review', 'reviewed', 'rejected'];
 const steelRuleProposalScopeTypes = [
   'customer',
   'customer_tier',
-  'material_family',
+  'catalog_family',
   'product_family',
   'company',
 ];
@@ -48,7 +48,7 @@ const steelRuleProposalSelectorEntrySchema = new Schema(
 
 const steelRuleProposalSelectorSchema = new Schema(
   {
-    materialFamily: { type: String },
+    catalogFamily: { type: String },
     productFamily: { type: String },
     specification: { type: String },
     workType: { type: String },
@@ -120,7 +120,7 @@ const steelMemoryCandidateSchema = new Schema<ISteelMemoryCandidate>(
     },
     customerId: { type: String, index: true },
     customerTierId: { type: String, index: true },
-    materialFamily: { type: String, index: true },
+    catalogFamily: { type: String, index: true },
     productFamily: { type: String, index: true },
     chargeType: {
       type: String,
@@ -180,7 +180,7 @@ steelMemoryCandidateSchema.index({ status: 1, createdAt: -1 });
 steelMemoryCandidateSchema.index({ createdByUserId: 1, status: 1, updatedAt: -1 });
 steelMemoryCandidateSchema.index({ scopeType: 1, customerId: 1, chargeType: 1, status: 1 });
 steelMemoryCandidateSchema.index({
-  materialFamily: 1,
+  catalogFamily: 1,
   productFamily: 1,
   chargeType: 1,
   status: 1,

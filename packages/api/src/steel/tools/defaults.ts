@@ -3,11 +3,11 @@ import type { SteelToolJsonObject, SteelToolJsonValue } from './results';
 import type { LookupDefaultsInput } from './schemas';
 import type { SearchSteelQuoteDefaultsInput } from '../repositories';
 
-type MaterialContext = LookupDefaultsInput['materialContexts'][number];
+type CatalogContext = LookupDefaultsInput['catalogContexts'][number];
 
 interface MatchedDefaultContext {
   lineRefs: string[];
-  materialFamilies: string[];
+  catalogFamilies: string[];
   formulaCodes: string[];
   chargeTypes: string[];
 }
@@ -38,7 +38,7 @@ function toChargeType(processingType: string): string | null {
   return null;
 }
 
-function getContextChargeTypes(context: MaterialContext): string[] {
+function getContextChargeTypes(context: CatalogContext): string[] {
   return unique(
     (context.processingTypes ?? [])
       .map(toChargeType)
@@ -47,15 +47,15 @@ function getContextChargeTypes(context: MaterialContext): string[] {
 }
 
 function getLookupChargeTypes(input: LookupDefaultsInput): string[] {
-  return unique(input.materialContexts.flatMap(getContextChargeTypes));
+  return unique(input.catalogContexts.flatMap(getContextChargeTypes));
 }
 
-function getLookupMaterialFamilies(input: LookupDefaultsInput): string[] {
-  return unique(input.materialContexts.flatMap((context) => context.materialCandidates ?? []));
+function getLookupCatalogFamilies(input: LookupDefaultsInput): string[] {
+  return unique(input.catalogContexts.flatMap((context) => context.catalogCandidates ?? []));
 }
 
 function getLookupFormulaCodes(input: LookupDefaultsInput): string[] {
-  return unique(input.materialContexts.flatMap((context) => context.formulaCandidates ?? []));
+  return unique(input.catalogContexts.flatMap((context) => context.formulaCandidates ?? []));
 }
 
 export function getSteelQuoteDefaultSearchInput(
@@ -64,7 +64,7 @@ export function getSteelQuoteDefaultSearchInput(
   return {
     customerId: input.customerContext?.customerId,
     customerTierId: input.customerContext?.customerTierId,
-    materialFamilies: getLookupMaterialFamilies(input),
+    catalogFamilies: getLookupCatalogFamilies(input),
     chargeTypes: getLookupChargeTypes(input),
     formulaCodes: getLookupFormulaCodes(input),
     reviewState: input.reviewState,
@@ -73,10 +73,10 @@ export function getSteelQuoteDefaultSearchInput(
   };
 }
 
-function contextMatchesDefault(context: MaterialContext, quoteDefault: SteelQuoteDefault): boolean {
+function contextMatchesDefault(context: CatalogContext, quoteDefault: SteelQuoteDefault): boolean {
   if (
-    quoteDefault.materialFamily &&
-    !(context.materialCandidates ?? []).includes(quoteDefault.materialFamily)
+    quoteDefault.catalogFamily &&
+    !(context.catalogCandidates ?? []).includes(quoteDefault.catalogFamily)
   ) {
     return false;
   }
@@ -101,8 +101,8 @@ function contextMatchesDefault(context: MaterialContext, quoteDefault: SteelQuot
 function getMatchedContexts(
   input: LookupDefaultsInput,
   quoteDefault: SteelQuoteDefault,
-): MaterialContext[] {
-  return input.materialContexts.filter((context) => contextMatchesDefault(context, quoteDefault));
+): CatalogContext[] {
+  return input.catalogContexts.filter((context) => contextMatchesDefault(context, quoteDefault));
 }
 
 function readStringArrayField(value: SteelJsonValue, key: string): string[] {
@@ -119,10 +119,10 @@ function readStringArrayField(value: SteelJsonValue, key: string): string[] {
   return field.filter((entry): entry is string => typeof entry === 'string');
 }
 
-function getMatchedContextFacets(contexts: readonly MaterialContext[]): MatchedDefaultContext {
+function getMatchedContextFacets(contexts: readonly CatalogContext[]): MatchedDefaultContext {
   return {
     lineRefs: unique(contexts.flatMap((context) => context.lineRefs ?? [])),
-    materialFamilies: unique(contexts.flatMap((context) => context.materialCandidates ?? [])),
+    catalogFamilies: unique(contexts.flatMap((context) => context.catalogCandidates ?? [])),
     formulaCodes: unique(contexts.flatMap((context) => context.formulaCandidates ?? [])),
     chargeTypes: unique(contexts.flatMap(getContextChargeTypes)),
   };
@@ -220,9 +220,9 @@ function toDefaultCandidate(
     customerId: quoteDefault.customerId,
     customerTierId: quoteDefault.customerTierId,
     lineRefs: matchedContext.lineRefs,
-    materialFamilies: quoteDefault.materialFamily
-      ? [quoteDefault.materialFamily]
-      : matchedContext.materialFamilies,
+    catalogFamilies: quoteDefault.catalogFamily
+      ? [quoteDefault.catalogFamily]
+      : matchedContext.catalogFamilies,
     productFamilies: quoteDefault.productFamily ? [quoteDefault.productFamily] : [],
     chargeTypes: getDefaultChargeTypes(quoteDefault, matchedContext),
     formulaCodes: quoteDefault.formulaCode

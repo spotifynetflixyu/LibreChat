@@ -25,7 +25,7 @@ function toRecord(document: SteelRuleProposalDocument): SteelRuleProposalRecord 
     scopeType: document.scopeType,
     customerId: document.customerId,
     customerTierId: document.customerTierId,
-    materialFamily: document.materialFamily,
+    catalogFamily: document.catalogFamily,
     productFamily: document.productFamily,
     chargeType: document.chargeType,
     formulaCode: document.formulaCode,

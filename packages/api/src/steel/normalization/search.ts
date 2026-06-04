@@ -58,6 +58,35 @@ function getSizeOnlySpecKeyContains(specKey: string): string | undefined {
   return normalized.replace(/^l/i, '');
 }
 
+function getStructuredSpecKeyContains(specKey: string | undefined): string | undefined {
+  if (specKey === undefined) {
+    return undefined;
+  }
+  if (/\d\s+\d/u.test(specKey)) {
+    return undefined;
+  }
+
+  const normalized = normalizeComparableText(specKey)
+    .replace(/^l/i, '')
+    .replace(/(\d)\/(?=\d)/g, '$1_');
+  if (!/^\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?[a-z]?|_\d+(?:\.\d+)?[a-z]?)+$/i.test(normalized)) {
+    return undefined;
+  }
+  if (/_\d+(?:\.\d+)?m$/i.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function normalizeSpecKeyContains(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizeComparableText(value).replace(/(\d)\/(?=\d)/g, '$1_');
+}
+
 function hasRawUserTextQuery(originalText: string, candidate: SteelPriceSearchQueryText): boolean {
   const normalizedOriginal = normalizeComparableText(originalText);
   const queryTexts = [candidate.productName, candidate.specKey, candidate.specKeyContains].filter(
@@ -117,9 +146,10 @@ export interface SteelPriceSearchTermsResult {
 }
 
 function normalizeCandidateQuery(candidate: SteelPriceSearchCandidate): SteelPriceSearchCandidate {
-  const specKeyContains = candidate.specKey
-    ? getSizeOnlySpecKeyContains(candidate.specKey)
-    : undefined;
+  const specKeyContains =
+    (candidate.specKey ? getSizeOnlySpecKeyContains(candidate.specKey) : undefined) ??
+    getStructuredSpecKeyContains(candidate.specKey) ??
+    normalizeSpecKeyContains(candidate.specKeyContains);
   if (!specKeyContains) {
     return candidate;
   }
@@ -127,7 +157,7 @@ function normalizeCandidateQuery(candidate: SteelPriceSearchCandidate): SteelPri
   const { specKey: _specKey, ...candidateWithoutExactSpecKey } = candidate;
   return {
     ...candidateWithoutExactSpecKey,
-    specKeyContains: candidate.specKeyContains ?? specKeyContains,
+    specKeyContains,
   };
 }
 

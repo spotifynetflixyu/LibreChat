@@ -12,7 +12,7 @@ export const steelRuleProposalStatuses = ['needs_review', 'reviewed', 'rejected'
 export const steelRuleProposalScopeTypes = [
   'customer',
   'customer_tier',
-  'material_family',
+  'catalog_family',
   'product_family',
   'company',
 ] as const;
@@ -84,7 +84,7 @@ export type SteelRuleProposalSelectorEntry = z.infer<typeof steelRuleProposalSel
 
 export const steelRuleProposalSelectorSchema = z
   .object({
-    materialFamily: z.string().min(1).optional(),
+    catalogFamily: z.string().min(1).optional(),
     productFamily: z.string().min(1).optional(),
     specification: z.string().min(1).optional(),
     workType: z.string().min(1).optional(),
@@ -95,7 +95,7 @@ export const steelRuleProposalSelectorSchema = z
   .strict()
   .superRefine((selector, ctx) => {
     const hasNamedSelector =
-      selector.materialFamily !== undefined ||
+      selector.catalogFamily !== undefined ||
       selector.productFamily !== undefined ||
       selector.specification !== undefined ||
       selector.workType !== undefined ||
@@ -148,18 +148,18 @@ interface ScopeCheckInput {
   scopeType: z.infer<typeof steelRuleProposalScopeTypeSchema>;
   customerId?: string;
   customerTierId?: string;
-  materialFamily?: string;
+  catalogFamily?: string;
   productFamily?: string;
 }
 
 function validateScopeSelectors(value: ScopeCheckInput, ctx: z.RefinementCtx) {
   const scopeRequirements: Array<{
     scopeType: ScopeCheckInput['scopeType'];
-    field: 'customerId' | 'customerTierId' | 'materialFamily' | 'productFamily';
+    field: 'customerId' | 'customerTierId' | 'catalogFamily' | 'productFamily';
   }> = [
     { scopeType: 'customer', field: 'customerId' },
     { scopeType: 'customer_tier', field: 'customerTierId' },
-    { scopeType: 'material_family', field: 'materialFamily' },
+    { scopeType: 'catalog_family', field: 'catalogFamily' },
     { scopeType: 'product_family', field: 'productFamily' },
   ];
 
@@ -180,7 +180,7 @@ const steelRuleProposalBaseSchema = z
     scopeType: steelRuleProposalScopeTypeSchema,
     customerId: z.string().min(1).optional(),
     customerTierId: z.string().min(1).optional(),
-    materialFamily: z.string().min(1).optional(),
+    catalogFamily: z.string().min(1).optional(),
     productFamily: z.string().min(1).optional(),
     chargeType: steelRuleProposalChargeTypeSchema,
     formulaCode: z.string().min(1),

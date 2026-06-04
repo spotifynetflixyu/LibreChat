@@ -29,7 +29,7 @@ export type SteelRuleProposalStatus = 'needs_review' | 'reviewed' | 'rejected';
 export type SteelRuleProposalScopeType =
   | 'customer'
   | 'customer_tier'
-  | 'material_family'
+  | 'catalog_family'
   | 'product_family'
   | 'company';
 export type SteelRuleProposalChargeType =
@@ -49,7 +49,7 @@ export interface SteelRuleProposalSelectorEntry {
 }
 
 export interface SteelRuleProposalSelector {
-  materialFamily?: string;
+  catalogFamily?: string;
   productFamily?: string;
   specification?: string;
   workType?: string;
@@ -257,7 +257,7 @@ export interface ISteelMemoryCandidate extends Document {
   scopeType: SteelRuleProposalScopeType;
   customerId?: string;
   customerTierId?: string;
-  materialFamily?: string;
+  catalogFamily?: string;
   productFamily?: string;
   chargeType: SteelRuleProposalChargeType;
   formulaCode: string;

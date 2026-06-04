@@ -77,7 +77,13 @@
 - Steel v8.3 supports `gpt-5.5` for the OAuth Responses path; do not keep `gpt-5.4` or lower models in the active allowlist.
 - Steel v8.3 supports one company only; preserve per-account privacy with owner/user and guest-token access checks, not tenant or organization scoping.
 - When reviewed product price data carries unit weight, treat product-price unit weight as the main quote weight for that matched priced item; keep handbook weight as separate general spec/weight evidence, not a replacement source.
+- When refining Steel `catalog_family` keys, inspect `產品價格.xlsx` product rows before treating handbook terms as only candidates. Product-price-confirmed rows such as `點焊網`, `樓層板`, `網板`, `扁方管`, `浪板`, and `收邊` can promote active keys, but keyword false positives like `免收邊鋁窗`, `浪板機`, and `鋼板專用小六角釘子` must stay outside the wrong curated key unless an ERP code group or reviewed rule confirms them.
+- For `產品價格.xlsx`, do not keep expanding the name `material_family` as a generic product catalog key. The workbook contains steel materials, fabricated products, accessories, tools, services, and non-steel goods, so the canonical AI/DB/tool lookup surface should move directly to a generic name such as `catalog_family` / `catalogFamilies`; do not keep old `materialFamilies` compatibility logic unless the user explicitly asks for a staged migration.
 - Material-specific rules must be task-scoped for AI: only provide the C-type steel rule when the order has a C-type item or strong candidate, instead of dumping all company rules into every prompt.
+- For C 型鋼 oral-price flow, do not rely on a permanent runtime system prompt rule as the main mechanism. The AI should first identify the C 型鋼 / `c_type` candidate, call `lookup_instructions`, then use the returned C 型鋼 instruction packet to form bounded price queries.
+- When AI has judged a Steel product/category/catalog candidate, the next reviewed lookup step should be `lookup_instructions` before category-dependent tools such as `search_price_candidates`, `lookup_defaults`, or `lookup_formula`. Do not let a direct price search become the first category-specific tool call.
+- For C 型鋼 price lookup with unknown surface/material, `錏輕型鋼` may be used as the usual high-confidence provisional `productName` candidate. Still show bounded alternatives such as 白鐵輕型鋼 / 黑鐵輕型鋼 when relevant, and keep the quote provisional until the user confirms material/surface.
+- Mocked OpenAI/provider tests must not be used to prove AI judgment or oral-normalization behavior. Keep mocks only for deterministic adapter/control-loop contracts; any claim that the model chooses a tool sequence or candidate query must be verified with real `openai_oauth_responses` smoke.
 - H-type non-standard-length surcharge automatically applies to normalized H-type lengths outside 6M, 9M, 10M, and 12M; it changes material unit price only, while cutting remains priced from cutting-price data.
 - Treat `docs/reference/切工價錢.xlsx` as a formal cutting-price source, with later Admin/backend maintenance, not as prompt-only guidance.
 - Treat customer inquiry files such as RTF, handwriting, PDF, image, photo, and chat text as quote request evidence/parser fixtures, not formal Admin import sources.
@@ -108,7 +114,7 @@
 - If an exact Steel material price is missing but there is exactly one nearest reviewed positive candidate, the AI may use that candidate for a preview estimate; it must disclose the assumption and ask the user to confirm or provide the exact price.
 - For incomplete Steel specs with multiple plausible reviewed candidates, such as `全華興 / 亞L30x30`, list all bounded candidate options with product name, spec, tier price, unit, and source context; do not show only the highest approximate match or make the user open source files to decide.
 - When an Admin-reviewed customer-scoped rule/default is applied through `lookup_defaults`, Steel AI should explicitly tell the user the customer rule was applied, for example that this customer's H-type cutting/hole charges are not counted.
-- C-type cutting/hole no-charge behavior must exist as a configured quote default or reviewed rule and be selected by AI; neither backend calculators nor pricing code may infer it only from `material_family = C-type`.
+- C-type cutting/hole no-charge behavior must exist as a configured quote default or reviewed rule and be selected by AI; neither backend calculators nor pricing code may infer it only from `catalog_family = c_type`.
 - For any material that can carry a cutting price and needs cutting, Steel AI must ask about head/tail trimming when not already explicit; if remainder logic omits tail trim, assistant text and workbook notes must say tail trim is not counted, and no-cut lines must still record zero cutting in the workbook.
 - Treat OpenAI Code Interpreter / AI-written Python as optional calculation evidence, not the trusted Steel quote calculator. Backend-owned deterministic calculation must still recompute and validate formula/rule/source inputs before any workbook patch is accepted.
 - When AI Python and backend recalculation differ but backend calculation succeeds, Steel workbook patching should use the backend-confirmed number as highest confidence and include the AI/backend difference in audit notes instead of blocking the preview patch.
@@ -119,7 +125,7 @@
 - In wrap-up `Next Tasks`, describe both the implementation item and the logic behind it; do not list short labels without explaining what will be built or why.
 - Do not imply visually different Chinese typo/alias matches such as `亞` to `錏` are automatic fuzzy text matches. Candidate generation must come from a reviewed alias/normalization rule or an explicitly low-confidence AI-proposed search expansion that is revalidated against reviewed source rows before being shown for confirmation.
 - For typo/incomplete material text such as `亞L30x30`, AI should first propose possible steel material/spec candidates, then query reviewed tables with those normalized candidates. Do not query source tables with nonexistent raw user text as if it were a canonical product/spec key.
-- When correcting typo/incomplete Steel price lookup, fix the process order, not only the alias list: raw customer text is evidence for AI/normalization, while `search_price_candidates` should receive derived product/spec query candidates such as material family, surface wording, and size terms.
+- When correcting typo/incomplete Steel price lookup, fix the process order, not only the alias list: raw customer text is evidence for AI/normalization, while `search_price_candidates` should receive derived product/spec query candidates such as catalog family, surface wording, and size terms.
 - Steel AI, not hardcoded backend routing, should decide which business lookup tool to use after normalization. Backend tools provide validated table-specific capabilities and guardrails; they should reject unsafe raw typo lookups but should not silently choose the domain tool path for the AI.
 - For examples like `亞L30x30 一支多少`, model the full runtime chain: AI identifies typo/incomplete spec, proposes approximate material/spec candidates, chooses and calls the relevant reviewed-data tools, continues lookup/ranking, writes a provisional workbook update with source/confidence notes, and asks the user to confirm from bounded options.
 - Treat AI-led tool orchestration as the core Steel quote runtime framework in docs and implementation plans. Future designs should start from AI choosing the business tool path from normalized context, with backend providing validated tools, guardrails, source-backed results, deterministic calculation, and audit.
@@ -154,6 +160,8 @@
   currently produced through the provider-facing `patch_workbook` output tool
   and then validated/applied by backend workbook services; do not classify
   `patch_workbook` as a reviewed lookup tool.
+- Steel Agent Instruction must explicitly say `統一用繁體中文回覆`; do not rely only
+  on adjacent Traditional Chinese storage/schema notes or workbook label rules.
 - When the user asks to confirm Agent Instruction content before framework or
   schema design, first record database-ready seed text with the actual quote
   behavior rules. Only then design `instruction_packets`, storage, or Admin
@@ -194,3 +202,50 @@
 - Do not make a Steel Instruction Packet body self-reference its own rule name,
   such as "依【C 型鋼專用計價規則】處理". The packet content is the runtime rule;
   state the actionable behavior directly.
+- Treat order files under `docs/reference` as test fixtures unless the user
+  explicitly reclassifies them. They may validate parsing, quote inference, and
+  workbook output, but they must not be imported into formal customer, product,
+  price, rule, or order database tables.
+- Steel prices and material-specific cutting, hole, slotting, or surcharge
+  rules must be data-updated from reviewed XLSX/script/Admin import paths, not
+  changed through code constants. Fuzzy or conditional notes such as "小於多少另計"
+  should become reviewed lookup/default rows that AI can cite and ask the user
+  to confirm when needed.
+- For Steel source imports, classify reference files by update behavior:
+  `客戶資料.xlsx`, `產品價格.xlsx`, and `切工價錢.xlsx` have fixed columns but
+  updateable values; `公式編號.xlsx` has fixed values; `訂單參考.xlsx` is the
+  workbook reference; `系統訂單.xlsx` is one workbook reference sheet for ERP
+  input/output fields; `龍頂鋼鐵手冊__文字版.docx` fills missing unit weights;
+  `H型鋼.txt` and note-like rules from other sources seed reviewed defaults for
+  AI confirmation, not code constants. Put fuzzy notes in defaults.
+- Treat `docs/reference/產品價格.xlsx` as the reviewed source for canonical Steel
+  catalog-family vocabulary. AI-facing and DB lookup paths should normalize
+  aliases such as `H鋼`, `H型鋼`, `H-BEAM`, `C型鋼`, and `輕型鋼` into fixed keys
+  such as `h_beam` and `c_type`; do not model each steel family as a separate
+  table or let reusable defaults keep drifting between Chinese free-text labels
+  and canonical keys.
+- For Steel orders, normalize raw customer product wording into reviewed
+  `catalog_family` keys before database lookup. AI may interpret口語名稱,
+  typos, surface words, and size clues, but tools should query stable keys such
+  as `h_beam`, `c_type`, and `angle`; ambiguous or low-confidence mappings must
+  return bounded options for user confirmation instead of silently querying raw
+  order text.
+- Do not implement oral product wording to `catalog_family` resolution as
+  backend alias-matching code. The AI should judge口語名稱 from reviewed
+  catalog-family context, aliases, defaults, and source refs, then pass an
+  explicit key such as `h_beam` to backend tools; backend code should validate
+  and query that key, not silently decide it.
+- Do not claim AI prompt behavior is proven by a mocked model response. Mocked
+  provider tests can verify backend prompt text, tool schemas, and tool-result
+  plumbing, but whether AI actually follows a query strategy such as C 型鋼
+  `c_type + 100x2.3` must be verified with a live AI API smoke or explicitly
+  reported as unverified.
+- When adding Steel `lookup_instructions` coverage, assert the returned packet
+  content includes the actual business rule values users care about, not only
+  the packet slug. For H 型鋼 this includes常規米數 `6M/9M/10M/12M`,
+  非常規米數 `7M/8M/11M/13M/14M/15M`, and 非常規米數 `+0.3 元/kg`.
+- H 型鋼非常規米數 product-price rows in `產品價格.xlsx` already include the
+  `+0.3/kg` adjustment. If `search_price_candidates` returns an exact reviewed
+  row for `7M/8M/11M/13M/14M/15M`, do not add `+0.3/kg` again. Use the
+  surcharge rule only as a provisional/default derivation when an exact reviewed
+  non-standard length price row is missing.

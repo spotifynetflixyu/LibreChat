@@ -26,7 +26,7 @@ interface SteelQuoteDefaultRow {
   scope_type: string;
   customer_id: string | number | null;
   customer_tier_id: string | number | null;
-  material_family: string | null;
+  catalog_family: string | null;
   product_family: string | null;
   charge_type: string | null;
   formula_code: string | null;
@@ -49,7 +49,7 @@ export interface SteelQuoteDefault extends SteelSourceBackedRecord {
   scopeType: string;
   customerId: number | null;
   customerTierId: number | null;
-  materialFamily?: string;
+  catalogFamily?: string;
   productFamily?: string;
   chargeType?: string;
   formulaCode?: string;
@@ -66,7 +66,7 @@ export interface SteelQuoteDefault extends SteelSourceBackedRecord {
 export interface SearchSteelQuoteDefaultsInput {
   customerId?: number;
   customerTierId?: number;
-  materialFamilies?: readonly string[];
+  catalogFamilies?: readonly string[];
   productFamilies?: readonly string[];
   chargeTypes?: readonly string[];
   formulaCodes?: readonly string[];
@@ -84,7 +84,7 @@ function addScopeFilters(
   values: SteelSqlParameter[],
   input: SearchSteelQuoteDefaultsInput,
 ) {
-  const scopeFilters = ["scope_type IN ('company', 'material_family', 'product_family')"];
+  const scopeFilters = ["scope_type IN ('company', 'catalog_family', 'product_family')"];
 
   if (input.customerId !== undefined) {
     values.push(input.customerId);
@@ -129,7 +129,7 @@ function toQuoteDefault(row: SteelQuoteDefaultRow): SteelQuoteDefault {
     scopeType: row.scope_type,
     customerId: parseNullableNumber(row.customer_id),
     customerTierId: parseNullableNumber(row.customer_tier_id),
-    materialFamily: parseNullableString(row.material_family),
+    catalogFamily: parseNullableString(row.catalog_family),
     productFamily: parseNullableString(row.product_family),
     chargeType: parseNullableString(row.charge_type),
     formulaCode: parseNullableString(row.formula_code),
@@ -156,7 +156,7 @@ export async function searchSteelQuoteDefaults(
   }
 
   addScopeFilters(where, values, input);
-  addNullableTextFacetFilter(where, values, 'material_family', input.materialFamilies);
+  addNullableTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
   addNullableTextFacetFilter(where, values, 'product_family', input.productFamilies);
   addNullableTextFacetFilter(where, values, 'charge_type', input.chargeTypes);
   addNullableTextFacetFilter(where, values, 'formula_code', input.formulaCodes);
@@ -173,7 +173,7 @@ SELECT
   scope_type,
   customer_id,
   customer_tier_id,
-  material_family,
+  catalog_family,
   product_family,
   charge_type,
   formula_code,
@@ -191,7 +191,7 @@ ORDER BY
   CASE scope_type
     WHEN 'customer' THEN 0
     WHEN 'customer_tier' THEN 1
-    WHEN 'material_family' THEN 2
+    WHEN 'catalog_family' THEN 2
     WHEN 'product_family' THEN 3
     ELSE 4
   END ASC,

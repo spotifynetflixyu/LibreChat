@@ -32,6 +32,8 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
 
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelToolName };
+type WorkbookPatchToolCall = LanguageModelV3ToolCall & { toolName: 'patch_workbook' };
+type WorkbookPatchOperation = SteelProviderWorkbookPatchProposal['operations'][number];
 
 export interface SteelProviderExecuteToolCallOptions {
   toolName: string;
@@ -179,14 +181,20 @@ function toPrompt(messages: SteelOAuthChatMessage[]): LanguageModelV3Prompt {
 function getSteelRuntimePolicyInstruction(): string {
   return [
     'AI owns Steel tool orchestration.',
-    'Interpret the user request, normalize ambiguous material/specification text, and choose among the AI-callable Steel tools: lookup_instructions, search_customers, search_price_candidates, lookup_defaults, lookup_formula, and workbook patch output.',
+    '統一用繁體中文回覆。',
+    'Interpret the user request, normalize ambiguous material/specification text, and choose among the AI-callable Steel tools: lookup_instructions, lookup_catalog_families, search_customers, search_price_candidates, lookup_defaults, lookup_formula, and workbook patch output.',
     'Generate material/specification candidates in reasoning; do not call a backend tool only to normalize raw wording or create search terms.',
     'Use backend internal validation/calculation for unit-weight, cutting, processing, material-rule, and formula-version details; do not call separate low-level lookup tools for those details.',
     'Call backend tools when you need reviewed rows, scoped quote-default candidates, formula candidates, deterministic calculation, or validated workbook output.',
     'Backend validates structured inputs, searches reviewed source rows, applies bounded safety policy, and performs deterministic calculations; do not invent source facts or silently accept unchecked assumptions.',
     'Do not treat raw customer text such as `亞L30x30` as a confirmed product-price key.',
+    'When catalog family wording is unclear, call lookup_catalog_families for reviewed vocabulary candidates, then choose catalogFamilies yourself or ask the user to confirm.',
+    'Backend does not decide oral wording to catalog_family mappings; backend returns catalog vocabulary candidates and validates explicit keys selected by AI.',
+    'Use canonical catalog family keys such as h_beam, c_type, and angle when calling lookup_instructions, search_price_candidates, lookup_defaults, or lookup_formula.',
+    'For oral orders, first infer product/category candidates and choose the catalog key yourself; after choosing a catalog/category key, call lookup_instructions with the interpreted order context before category-dependent lookups such as search_price_candidates, lookup_defaults, or lookup_formula.',
     'First derive candidate material and specification fields, then generate candidate material and specification queries such as 錏角鐵 30x30, 錏成型角鐵 30x30, 鍍鋅角鐵 30x30, 角鐵 30x30, or L30x30 before searching reviewed price rows.',
     'For material price questions like `一支多少`, search reviewed price rows with derived candidates.',
+    'If instruction packets provide processing price candidate names or ERP item codes, call search_price_candidates for the reviewed processing rows before quoting those processing charges; do not quote processing prices solely from instruction packet text.',
     '遇到鋼材價格問題時，未取得 search_price_candidates tool result 前，不可回答查不到、不可宣稱已查表、不可要求使用者先補長度/客戶/厚度/分級。',
     'Do not stop before reviewed price lookup merely because length, thickness, customer, or tier is missing when bounded derived price queries can still be formed.',
     'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before, unless no bounded derived price query can be formed.',
@@ -202,6 +210,9 @@ function getWorkbookPatchInstruction(workbookContextText?: string): string {
   const instruction = [
     'You can update the visible Steel workbook by calling the patch_workbook tool.',
     'Use the tool when the user asks to set or update an explicit workbook cell.',
+    'For quick Steel price estimates with reviewed positive candidate prices, write provisional workbook preview rows with patch_workbook.',
+    'For provisional price previews, update quote_details, price_sources, and interpretation_notes fields that describe the candidate, source, confidence, and confirmation needed.',
+    'Do not write confirmed totals, summary total amount, customer_quote subtotal, quote_details subtotal, material_fee, or any customer-facing confirmed total before the user confirms the selected item, thickness, length, customer, and tier.',
     'Use workbook structure context to resolve visible sheet, row, and column labels into internal sheetId, rowId, and columnKey values.',
     'Do not ask the user for internal workbook ids or keys when the target can be resolved from context.',
     'If the target sheet, row, column, or value is still ambiguous after checking context, ask a short clarification instead of calling the tool.',
@@ -318,6 +329,18 @@ function createInvalidToolInputResult(call: LanguageModelV3ToolCall): SteelToolR
   };
 }
 
+function createInstructionLookupRequiredResult(call: LanguageModelV3ToolCall): SteelToolResult {
+  return {
+    ok: false,
+    toolName: call.toolName,
+    errorCategory: 'invalid_arguments',
+    errorSummary:
+      'lookup_instructions is required before category-dependent Steel lookups. When AI has selected a catalog/category key from oral order evidence, first call lookup_instructions with the interpreted order context, then call search_price_candidates, lookup_defaults, or lookup_formula.',
+    durationMs: 0,
+    redactionVersion: 1,
+  };
+}
+
 function createToolExecutionErrorResult(
   call: LanguageModelV3ToolCall,
   error: unknown,
@@ -341,19 +364,70 @@ function toJsonValue(value: unknown): JSONValue {
   return JSON.parse(serialized) as JSONValue;
 }
 
+function getStringArrayProperty(value: unknown, key: string): string[] {
+  if (!isJsonObject(value)) {
+    return [];
+  }
+
+  const property = value[key];
+  if (!Array.isArray(property)) {
+    return [];
+  }
+
+  return property.filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim() !== '',
+  );
+}
+
+function hasCatalogContext(input: unknown): boolean {
+  if (!isJsonObject(input)) {
+    return false;
+  }
+
+  const contexts = input.catalogContexts;
+  if (!Array.isArray(contexts)) {
+    return false;
+  }
+
+  return contexts.some(
+    (context) =>
+      getStringArrayProperty(context, 'catalogCandidates').length > 0 ||
+      getStringArrayProperty(context, 'packetGroupHints').length > 0,
+  );
+}
+
+function isCategoryDependentLookup(call: SteelBusinessToolCall, input: unknown): boolean {
+  switch (call.toolName) {
+    case 'search_price_candidates':
+      return getStringArrayProperty(input, 'catalogFamilies').length > 0;
+    case 'lookup_defaults':
+    case 'lookup_formula':
+      return hasCatalogContext(input);
+    default:
+      return false;
+  }
+}
+
 interface ExecutedSteelToolCall {
   call: SteelBusinessToolCall;
   input: unknown;
   result: SteelToolResult;
 }
 
+interface ParsedWorkbookPatchToolCall {
+  call: WorkbookPatchToolCall;
+  input: SteelProviderWorkbookPatchProposal;
+}
+
 async function executeSteelBusinessToolCalls({
   calls,
   executeSteelToolCall,
+  hasInstructionLookupResult,
   runState,
 }: {
   calls: SteelBusinessToolCall[];
   executeSteelToolCall: SteelProviderToolExecutor;
+  hasInstructionLookupResult: boolean;
   runState: SteelToolRunState;
 }): Promise<ExecutedSteelToolCall[]> {
   const executedCalls: ExecutedSteelToolCall[] = [];
@@ -366,6 +440,16 @@ async function executeSteelBusinessToolCalls({
     } catch {
       input = {};
       result = createInvalidToolInputResult(call);
+      executedCalls.push({
+        call,
+        input,
+        result,
+      });
+      continue;
+    }
+
+    if (!hasInstructionLookupResult && isCategoryDependentLookup(call, input)) {
+      result = createInstructionLookupRequiredResult(call);
       executedCalls.push({
         call,
         input,
@@ -397,30 +481,63 @@ async function executeSteelBusinessToolCalls({
 
 function toAssistantToolCallMessage(
   executedCalls: ExecutedSteelToolCall[],
+  workbookPatchCalls: ParsedWorkbookPatchToolCall[] = [],
 ): LanguageModelV3Message {
   return {
     role: 'assistant',
-    content: executedCalls.map(({ call, input }) => ({
-      type: 'tool-call' as const,
-      toolCallId: call.toolCallId,
-      toolName: call.toolName,
-      input,
-    })),
+    content: [
+      ...executedCalls.map(({ call, input }) => ({
+        type: 'tool-call' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input,
+      })),
+      ...workbookPatchCalls.map(({ call, input }) => ({
+        type: 'tool-call' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input,
+      })),
+    ],
   };
 }
 
-function toToolResultMessage(executedCalls: ExecutedSteelToolCall[]): LanguageModelV3Message {
+function toWorkbookPatchToolResultValue(input: SteelProviderWorkbookPatchProposal): JSONValue {
+  return toJsonValue({
+    ok: true,
+    toolName: 'patch_workbook',
+    operationCount: input.operations.length,
+    instruction:
+      'Workbook patch captured for backend validation and application. Now answer the user in Traditional Chinese with the provisional quote, bounded options, source differences, and confirmation needed. Do not call patch_workbook again unless another workbook update is needed.',
+  });
+}
+
+function toToolResultMessage(
+  executedCalls: ExecutedSteelToolCall[],
+  workbookPatchCalls: ParsedWorkbookPatchToolCall[] = [],
+): LanguageModelV3Message {
   return {
     role: 'tool',
-    content: executedCalls.map(({ call, result }) => ({
-      type: 'tool-result' as const,
-      toolCallId: call.toolCallId,
-      toolName: call.toolName,
-      output: {
-        type: 'json' as const,
-        value: toJsonValue(result),
-      },
-    })),
+    content: [
+      ...executedCalls.map(({ call, result }) => ({
+        type: 'tool-result' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: {
+          type: 'json' as const,
+          value: toJsonValue(result),
+        },
+      })),
+      ...workbookPatchCalls.map(({ call, input }) => ({
+        type: 'tool-result' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: {
+          type: 'json' as const,
+          value: toWorkbookPatchToolResultValue(input),
+        },
+      })),
+    ],
   };
 }
 
@@ -428,22 +545,65 @@ function getRequiredPriceLookupReminderMessage(): LanguageModelV3Message {
   return {
     role: 'system',
     content:
-      'This Steel price request still requires reviewed price lookup. Call search_price_candidates with AI-derived candidate queries before answering.',
+      'This Steel price request still requires reviewed lookup. If you have selected a catalog/category key and lookup_instructions has not completed for this interpreted order context, call lookup_instructions first; otherwise call search_price_candidates with AI-derived candidate queries before answering.',
   };
 }
 
-function getWorkbookPatch(
-  result: LanguageModelV3GenerateResult,
-): SteelProviderWorkbookPatchProposal | undefined {
-  const operations = result.content.flatMap((part) => {
-    if (part.type !== 'tool-call' || part.toolName !== 'patch_workbook') {
-      return [];
-    }
+function getProvisionalWorkbookPatchReminderMessage(): LanguageModelV3Message {
+  return {
+    role: 'system',
+    content:
+      'This positive Steel price lookup still requires a provisional workbook preview. Call patch_workbook to update quote_details, price_sources, and interpretation_notes with provisional candidate/source/confidence notes. Do not write confirmed totals, summary total amount, customer_quote subtotal, quote_details subtotal, or material_fee before user confirmation.',
+  };
+}
 
-    const parsed = steelProviderWorkbookPatchProposalSchema.parse(JSON.parse(part.input));
-    return parsed.operations;
+function isJsonObject(value: unknown): value is { [key: string]: unknown } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasPositivePriceCandidate(result: SteelToolResult): boolean {
+  if (!result.ok) {
+    return false;
+  }
+
+  const priceCandidates = result.data.priceCandidates;
+  if (!Array.isArray(priceCandidates)) {
+    return false;
+  }
+
+  return priceCandidates.some((candidate) => {
+    return (
+      isJsonObject(candidate) && typeof candidate.unitPrice === 'number' && candidate.unitPrice > 0
+    );
   });
+}
 
+function isCompletedPriceLookup(result: SteelToolResult): boolean {
+  return result.ok || result.errorCategory !== 'invalid_arguments';
+}
+
+function isWorkbookPatchToolCall(
+  part: LanguageModelV3GenerateResult['content'][number],
+): part is WorkbookPatchToolCall {
+  return part.type === 'tool-call' && part.toolName === 'patch_workbook';
+}
+
+function getWorkbookPatchToolCalls(result: LanguageModelV3GenerateResult): WorkbookPatchToolCall[] {
+  return result.content.filter(isWorkbookPatchToolCall);
+}
+
+function parseWorkbookPatchToolCalls(
+  calls: WorkbookPatchToolCall[],
+): ParsedWorkbookPatchToolCall[] {
+  return calls.map((call) => ({
+    call,
+    input: steelProviderWorkbookPatchProposalSchema.parse(JSON.parse(call.input)),
+  }));
+}
+
+function getWorkbookPatchFromOperations(
+  operations: WorkbookPatchOperation[],
+): SteelProviderWorkbookPatchProposal | undefined {
   return operations.length > 0 ? { operations } : undefined;
 }
 
@@ -526,7 +686,12 @@ export async function sendSteelOAuthChat({
   const generationResults: LanguageModelV3GenerateResult[] = [];
   const mustGetReviewedPriceResult =
     steelRuntimePolicy === true && requiresReviewedPriceLookup(messages);
+  const mustGetProvisionalWorkbookPatch = mustGetReviewedPriceResult && workbookPatchTool === true;
   let hasReviewedPriceResult = false;
+  let hasInstructionLookupResult = false;
+  let hasPositiveReviewedPriceCandidate = false;
+  let hasWorkbookPatch = false;
+  const workbookPatchOperations: WorkbookPatchOperation[] = [];
 
   for (let round = 0; round <= steelToolMaxCalls; round += 1) {
     const forceToolCall = mustGetReviewedPriceResult && !hasReviewedPriceResult;
@@ -549,11 +714,39 @@ export async function sendSteelOAuthChat({
     });
 
     generationResults.push(result);
+    const workbookPatchCalls = workbookPatchTool ? getWorkbookPatchToolCalls(result) : [];
+    const parsedWorkbookPatchCalls = parseWorkbookPatchToolCalls(workbookPatchCalls);
+    workbookPatchOperations.push(
+      ...parsedWorkbookPatchCalls.flatMap(({ input }) => input.operations),
+    );
+    hasWorkbookPatch = workbookPatchOperations.length > 0;
 
     const steelBusinessToolCalls = steelRuntimePolicy ? getSteelBusinessToolCalls(result) : [];
     if (steelBusinessToolCalls.length === 0) {
       if (forceToolCall) {
         prompt = [...prompt, getRequiredPriceLookupReminderMessage()];
+        continue;
+      }
+
+      if (
+        mustGetProvisionalWorkbookPatch &&
+        hasPositiveReviewedPriceCandidate &&
+        !hasWorkbookPatch
+      ) {
+        prompt = [...prompt, getProvisionalWorkbookPatchReminderMessage()];
+        continue;
+      }
+
+      if (
+        parsedWorkbookPatchCalls.length > 0 &&
+        mustGetProvisionalWorkbookPatch &&
+        hasPositiveReviewedPriceCandidate
+      ) {
+        prompt = [
+          ...prompt,
+          toAssistantToolCallMessage([], parsedWorkbookPatchCalls),
+          toToolResultMessage([], parsedWorkbookPatchCalls),
+        ];
         continue;
       }
 
@@ -563,16 +756,32 @@ export async function sendSteelOAuthChat({
     const executedCalls = await executeSteelBusinessToolCalls({
       calls: steelBusinessToolCalls,
       executeSteelToolCall,
+      hasInstructionLookupResult,
       runState,
     });
-    if (executedCalls.some(({ call }) => call.toolName === 'search_price_candidates')) {
-      hasReviewedPriceResult = true;
+    if (
+      executedCalls.some(
+        ({ call, result: toolResult }) => call.toolName === 'lookup_instructions' && toolResult.ok,
+      )
+    ) {
+      hasInstructionLookupResult = true;
+    }
+    const priceLookupCalls = executedCalls.filter(
+      ({ call }) => call.toolName === 'search_price_candidates',
+    );
+    if (priceLookupCalls.length > 0) {
+      hasReviewedPriceResult =
+        hasReviewedPriceResult ||
+        priceLookupCalls.some(({ result: toolResult }) => isCompletedPriceLookup(toolResult));
+      hasPositiveReviewedPriceCandidate =
+        hasPositiveReviewedPriceCandidate ||
+        priceLookupCalls.some(({ result: toolResult }) => hasPositivePriceCandidate(toolResult));
     }
 
     prompt = [
       ...prompt,
-      toAssistantToolCallMessage(executedCalls),
-      toToolResultMessage(executedCalls),
+      toAssistantToolCallMessage(executedCalls, parsedWorkbookPatchCalls),
+      toToolResultMessage(executedCalls, parsedWorkbookPatchCalls),
     ];
   }
 
@@ -582,12 +791,18 @@ export async function sendSteelOAuthChat({
     );
   }
 
+  if (mustGetProvisionalWorkbookPatch && hasPositiveReviewedPriceCandidate && !hasWorkbookPatch) {
+    throw new Error(
+      'patch_workbook was required before answering this provisional Steel price request.',
+    );
+  }
+
   const result = generationResults[generationResults.length - 1];
   if (!result) {
     throw new Error('OpenAI OAuth provider did not return a Steel chat result.');
   }
 
-  const workbookPatch = getWorkbookPatch(result);
+  const workbookPatch = getWorkbookPatchFromOperations(workbookPatchOperations);
 
   return {
     provider: 'openai_oauth_responses',
