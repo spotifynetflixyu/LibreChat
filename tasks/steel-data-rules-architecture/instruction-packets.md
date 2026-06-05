@@ -437,8 +437,13 @@ Body:
   候選，同時列出白鐵輕型鋼、黑鐵輕型鋼等 bounded alternatives 並請確認。
 - 第一輪若材質/表面不明，回覆必須列出同規格、不同材質的 reviewed bounded
   options；第二輪若使用者沒有指定其他材質/表面，視為確認預設錏輕型鋼。
-- 未指定客戶或分級時，查價不可帶 `customerTierId`；回覆主價格預設用 B 價，
-  仍列出 A/B/C/F 等 returned tiers。
+- 未指定客戶或找不到客戶價格等級時，查價使用全域預設 B 價分級
+  `customerTierId: 2`；回覆必須簡短提醒目前用價格B，例如
+  `目前用 價格B：26.8 元/kg`，若提供客戶名稱可再查該客戶報價；不要加最高/最貴說明。
+- 對使用者顯示價格 bullet 時，用 `價格：<單價>`，不要寫
+  `reviewed 價格：<單價>`；reviewed/source 狀態放在來源或備註即可。
+- 快速報價若已顯示整支總重，例如 `6M 一支重量：4 × 6 = 24 kg`，不要再另列
+  `單位重` bullet；有總重即可，接著列單價與報價金額。
 - C 型鋼通常是成品長度鋼捲抽料 / 成型下料，不套一般 6M 素材配料邏輯。
 - C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。
 - C 型鋼切工/孔費免費不代表材料單價、特殊加工、非 C 型鋼加工或其他 charge 免費。
@@ -449,8 +454,10 @@ Blocking rules:
 
 - 不要把 `C型鋼` 當作 `productName` filter 卡死價格查詢；已選 `c_type`
   時，優先用尺寸/厚度 spec fragments 查 reviewed price rows。
-- 不要在 customer/tier 未知時把 `customerTierId` 設為 A/tier 1；查價省略
-  `customerTierId`，回覆主價格才用 B 價。
+- 不要在 customer/tier 未知時把 `customerTierId` 設為 A/tier 1；查價必須使用
+  B 價分級 `customerTierId: 2`。
+- 不要在已經由 `search_customers` 找到可用客戶分級時，仍用 B 預設價覆蓋該客戶
+  分級。
 - 不要在材質不明的第一輪只顯示錏輕型鋼，省略同規格其他材質候選。
 - 不要只用 `100x50x20 2.3t` 這類完整斷面字串查 C 型鋼價格；產品價格表以
   `100x2.3` 這類寬度/厚度片段命中。
@@ -476,11 +483,14 @@ Body:
 - workbook notes 應包含 candidate options、source refs、confidence、adopted
   assumption 與 required user confirmation。
 - workbook context 存在時，才可透過 `patch_workbook` typed operations 寫入。
+- `patch_workbook` 成功後，chat 回覆只需簡短說明訂單資訊與 workbook 改動重點；
+  不可列逐欄 diff、長搜尋關鍵字或長候選品項，也不可只回 `已更新 workbook：N 個欄位`。
 
 Blocking rules:
 
 - 不要要求使用者提供 workbook internal IDs。
 - 不要在缺價或歧義未確認時寫 confirmed total。
+- 不要只回 workbook 更新欄位數而不說明更新了哪些資訊。
 
 ## Reference-Derived Seed Packet Additions
 
@@ -951,7 +961,8 @@ Body:
 - 若要產出 workbook，至少要能支援報價明細、總結、人工複核清單、價格來源、
   判讀備註、系統訂單等資訊；實際 visible sheet order 仍依目前 workbook contract。
 - 報價明細要保留材料、尺寸、數量、素材/成品長度、重量、單價、計價單位、
-  切工、孔洞、開槽、折工、其他費、小計、信心、低信心原因、判斷依據與建議複核。
+  材料費、切工、孔洞、開槽、折工、其他費、小計、信心、低信心原因、判斷依據與建議複核；
+  報價金額統一使用 `小計`，不要另加與 `小計` 重複的可見 `報價` 欄位。
 - 價格來源要保留客戶、分級、原始品名、標準化品名、搜尋關鍵字、候選品項、
   採用品項、採用單價、單價欄位、單位、來源檔案/工作表/列號或頁碼、匹配程度、
   未採用原因、差異與備註。

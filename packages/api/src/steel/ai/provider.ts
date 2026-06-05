@@ -36,6 +36,9 @@ type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelToolName
 type WorkbookPatchToolCall = LanguageModelV3ToolCall & { toolName: 'patch_workbook' };
 type WorkbookPatchOperation = SteelProviderWorkbookPatchProposal['operations'][number];
 
+const defaultCustomerTierId = 2;
+const defaultCustomerTierCode = 'B';
+
 export interface SteelProviderExecuteToolCallOptions {
   toolName: string;
   arguments: unknown;
@@ -199,12 +202,14 @@ function getSteelRuntimePolicyInstruction(): string {
     '遇到鋼材價格問題時，未取得 search_price_candidates tool result 前，不可回答查不到、不可宣稱已查表、不可要求使用者先補長度/客戶/厚度/分級。',
     'Do not stop before reviewed price lookup merely because length, thickness, customer, or tier is missing when bounded derived price queries can still be formed.',
     'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before, unless no bounded derived price query can be formed.',
-    'Do not pass customerTierId to search_price_candidates unless the user gave a customer/tier or search_customers returned a selected customer/tier; when tier is unknown, omit customerTierId so reviewed candidates can include all applicable tiers.',
-    'When customer/tier is unknown, lookup_quote_rules may set customerContext.tierKnown=false, but must not invent customerId or customerTierId values such as 1 or 2. Unknown customer/tier context is represented by omitted IDs plus tierKnown=false.',
-    'When customer/tier is not known, set customerContext.tierKnown=false in lookup_quote_rules and omit customerTierId from price lookup. If reviewed lookup returns tiered prices, use customerTierCode B as the primary provisional/default price, while still listing returned A/B/C/F tier options and asking the user to confirm customer tier when needed.',
+    'When customer/tier is unknown, lookup_quote_rules may set customerContext.tierKnown=false, but must not invent customerId. Unknown customer context is represented by omitted customerId plus tierKnown=false.',
+    'When the user did not provide a customer, or search_customers cannot find a usable customer price tier, use the default price B tier for any product family. Pass customerTierId 2 to search_price_candidates. In the response, keep the notice short, for example `目前用 價格B：26.8 元/kg`, and say separately that a customer name can be used to look up that customer quote price. Do not add highest/most-expensive wording to the B price notice.',
+    'When search_customers returns a usable customerTier.id for the selected customer, pass that customerTierId to search_price_candidates instead of the default B tier.',
+    'When presenting a user-facing price bullet in Traditional Chinese, label it `價格`, not `reviewed 價格`; keep reviewed/source status in the source or note text instead.',
     'For C 型鋼 / c_type with unspecified material or surface, AI may use productName 錏輕型鋼 as the usual high-confidence provisional candidate, but the first reply must also show same-spec reviewed alternatives such as 白鐵輕型鋼 or 黑鐵輕型鋼 when returned. In follow-up turns, if the user does not specify another material/surface after those options were shown, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.',
     'For product-price rows, interpret unitPrice together with unit, productPriceUnitWeight, and productPriceUnitWeightUnit. If unit = kg, unitPrice is a per-kg price; convert length/piece weight into kg before multiplying unitPrice. If unit = piece, unitPrice is already a per-piece/per-unit total.',
     'For product-price rows with productPriceUnitWeightUnit = kg_per_m and unit = kg, calculate provisional piece amount from kg_per_m * requested meters * unitPrice; do not answer as if unitPrice were per-piece.',
+    'For concise quick-price replies, if you show the total piece weight calculation, do not list unit weight as a separate bullet. Prefer one line such as `6M 一支重量：4 × 6 = 24 kg`, then the B/customer unit price and quote amount.',
     'For product-price rows whose product name/spec contains a fixed length in meters and productPriceUnitWeightUnit = kg_per_piece with unit = kg, price a whole source piece as pieceWeightKg * unitPrice. If unit = piece, price the whole source piece by unitPrice. Offcut/remnant is charged by default unless the user explicitly says remnants are not charged.',
     'If product-price row metadata says sourceUnitWeightOrigin = product_name_parentheses, treat the parenthesized product-name number as reviewed weight evidence and mention it when explaining the source.',
     'Apply product-price unit-weight calculation only to steel/material stock catalog families such as h_beam including 輕量H, c_type, angle, channel, flat_bar, rail, pipe, plate, mesh, grating, and floor deck. Do not apply this steel material rule to non-material product/accessory rows such as springs, screws, locks, wheels, windows, resin panels, doors, gates, or tools unless a reviewed rule explicitly says so.',
@@ -214,7 +219,7 @@ function getSteelRuntimePolicyInstruction(): string {
     'For quick price questions like `一支多少`, if reviewed lookup returns one or more positive approximate candidates, lead with the highest-confidence source-backed candidate as a provisional quote or estimate, then list the other plausible candidates/specs/options for the user to confirm.',
     'If reviewed facts are missing, zero-valued, ambiguous, or only approximate, present bounded options with source differences and ask the user to confirm before treating the result as final; no confirmed customer-facing total is allowed before confirmation.',
     'If reviewed lookup returns no positive source-backed price candidates, do not invent a quote; explain the attempted candidate queries and ask for the missing detail or a user-supplied price.',
-    'When workbook context is available and a candidate price is usable only as a preview, write provisional workbook updates with confidence, source, and option notes instead of confirmed totals.',
+    'When workbook context is available and a candidate price is usable only as a preview, write provisional workbook updates with confidence, source, option notes, and the provisional `小計` amount when calculable instead of confirmed customer-facing totals.',
   ].join(' ');
 }
 
@@ -223,12 +228,14 @@ function getWorkbookPatchInstruction(workbookContextText?: string): string {
     'You can update the visible Steel workbook by calling the patch_workbook tool.',
     'Use the tool when the user asks to set or update an explicit workbook cell.',
     'For quick Steel price estimates with reviewed positive candidate prices, write provisional workbook preview rows with patch_workbook.',
-    'For provisional price previews, update quote_details, price_sources, and interpretation_notes fields that describe the candidate, source, confidence, and confirmation needed.',
-    'Do not write confirmed totals, summary total amount, customer_quote subtotal, quote_details subtotal, material_fee, or any customer-facing confirmed total before the user confirms the selected item, thickness, length, customer, and tier.',
+    'For provisional price previews, update quote_details, price_sources, and interpretation_notes fields that describe the candidate, source, confidence, confirmation needed, and the provisional quote amount.',
+    'In quote_details, update the `小計` column using internal key `subtotal` when a reviewed candidate and calculable amount exist. Do not add or use a separate visible `報價` column.',
+    'Do not write confirmed totals, summary total amount, customer_quote subtotal, or any customer-facing confirmed total before the user confirms the selected item, thickness, length, customer, and tier.',
     'Use workbook structure context to resolve visible sheet, row, and column labels into internal sheetId, rowId, and columnKey values.',
     'Do not ask the user for internal workbook ids or keys when the target can be resolved from context.',
     'If the target sheet, row, column, or value is still ambiguous after checking context, ask a short clarification instead of calling the tool.',
     'Do not only describe a workbook update when the update should be applied.',
+    'After patch_workbook succeeds, answer with a concise Traditional Chinese summary of the interpreted order information and key workbook changes. Do not list a per-field diff. Do not answer only with a field count such as `已更新 workbook：16 個欄位`.',
   ].join(' ');
 
   return workbookContextText
@@ -420,10 +427,6 @@ function isCategoryDependentLookup(call: SteelBusinessToolCall, input: unknown):
   }
 }
 
-function hasCustomerTierFilter(input: unknown): boolean {
-  return isJsonObject(input) && typeof input.customerTierId === 'number';
-}
-
 function hasUnknownCustomerTierContext(input: unknown): boolean {
   if (!isJsonObject(input)) {
     return false;
@@ -433,15 +436,69 @@ function hasUnknownCustomerTierContext(input: unknown): boolean {
   return isJsonObject(customerContext) && customerContext.tierKnown === false;
 }
 
-function omitCustomerTierFilter(input: unknown): unknown {
+function getKnownCustomerTierIdFromContext(input: unknown): number | undefined {
+  if (!isJsonObject(input)) {
+    return undefined;
+  }
+
+  const customerContext = input.customerContext;
+  if (!isJsonObject(customerContext) || customerContext.tierKnown !== true) {
+    return undefined;
+  }
+
+  return typeof customerContext.customerTierId === 'number'
+    ? customerContext.customerTierId
+    : undefined;
+}
+
+function getSingleCustomerSearchTierId(result: SteelToolResult): number | undefined {
+  if (!result.ok || !Array.isArray(result.data.customers)) {
+    return undefined;
+  }
+
+  const tierIds = new Set<number>();
+  for (const customer of result.data.customers) {
+    if (!isJsonObject(customer) || !isJsonObject(customer.customerTier)) {
+      continue;
+    }
+
+    const tierId = customer.customerTier.id;
+    if (typeof tierId === 'number') {
+      tierIds.add(tierId);
+    }
+  }
+
+  return tierIds.size === 1 ? [...tierIds][0] : undefined;
+}
+
+function withDefaultCustomerTierFilter({
+  forceDefaultCustomerTier,
+  input,
+  selectedCustomerTierId,
+}: {
+  forceDefaultCustomerTier: boolean;
+  input: unknown;
+  selectedCustomerTierId?: number;
+}): unknown {
   if (!isJsonObject(input)) {
     return input;
   }
 
-  const { customerTierId, ...sanitizedInput } = input;
-  void customerTierId;
+  if (!forceDefaultCustomerTier && typeof input.customerTierId === 'number') {
+    return input;
+  }
 
-  return sanitizedInput;
+  if (!forceDefaultCustomerTier && selectedCustomerTierId !== undefined) {
+    return {
+      ...input,
+      customerTierId: selectedCustomerTierId,
+    };
+  }
+
+  return {
+    ...input,
+    customerTierId: defaultCustomerTierId,
+  };
 }
 
 interface ExecutedSteelToolCall {
@@ -458,15 +515,17 @@ interface ParsedWorkbookPatchToolCall {
 async function executeSteelBusinessToolCalls({
   calls,
   executeSteelToolCall,
-  allowCustomerTierFilter,
+  forceDefaultCustomerTier,
   hasInstructionLookupResult,
   runState,
+  selectedCustomerTierId,
 }: {
   calls: SteelBusinessToolCall[];
   executeSteelToolCall: SteelProviderToolExecutor;
-  allowCustomerTierFilter: boolean;
+  forceDefaultCustomerTier: boolean;
   hasInstructionLookupResult: boolean;
   runState: SteelToolRunState;
+  selectedCustomerTierId?: number;
 }): Promise<ExecutedSteelToolCall[]> {
   const executedCalls: ExecutedSteelToolCall[] = [];
 
@@ -497,10 +556,12 @@ async function executeSteelBusinessToolCalls({
     }
 
     const executionInput =
-      call.toolName === 'search_price_candidates' &&
-      !allowCustomerTierFilter &&
-      hasCustomerTierFilter(input)
-        ? omitCustomerTierFilter(input)
+      call.toolName === 'search_price_candidates'
+        ? withDefaultCustomerTierFilter({
+            forceDefaultCustomerTier,
+            input,
+            selectedCustomerTierId,
+          })
         : input;
 
     try {
@@ -553,7 +614,7 @@ function toWorkbookPatchToolResultValue(input: SteelProviderWorkbookPatchProposa
     toolName: 'patch_workbook',
     operationCount: input.operations.length,
     instruction:
-      'Workbook patch captured for backend validation and application. Now answer the user in Traditional Chinese with the provisional quote, bounded options, source differences, and confirmation needed. Do not call patch_workbook again unless another workbook update is needed.',
+      'Workbook patch captured for backend validation and application. Now answer the user in Traditional Chinese with only the interpreted order information, new 小計 amount when updated, and key workbook changes. Do not list a per-field diff or long search/candidate fields. Do not answer only with a field count such as 已更新 workbook：N 個欄位. Do not call patch_workbook again unless another workbook update is needed.',
   });
 }
 
@@ -589,8 +650,7 @@ function toToolResultMessage(
 function getRequiredPriceLookupReminderMessage(): LanguageModelV3Message {
   return {
     role: 'system',
-    content:
-      'This Steel price request still requires reviewed lookup. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. For C 型鋼/c_type such as C100x50x20x2.3t, use catalogFamilies [c_type], a compact price-table spec fragment such as 100x2.3, and productName 錏輕型鋼 when material is unspecified; omit customerTierId when tier is unknown so returned reviewed tiers can include the B default price and other A/B/C/F options.',
+    content: `This Steel price request still requires reviewed lookup. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. For C 型鋼/c_type such as C100x50x20x2.3t, use catalogFamilies [c_type], a compact price-table spec fragment such as 100x2.3, and productName 錏輕型鋼 when material is unspecified. When the user did not provide a customer or customer tier is unknown/not found, use default price ${defaultCustomerTierCode} by passing customerTierId ${defaultCustomerTierId}; keep the notice short, for example 目前用 價格B：26.8 元/kg, and say separately that a customer name can be used to look up that customer's quote price. Do not add highest/most-expensive wording.`,
   };
 }
 
@@ -598,7 +658,7 @@ function getProvisionalWorkbookPatchReminderMessage(): LanguageModelV3Message {
   return {
     role: 'system',
     content:
-      'This positive Steel price lookup still requires a provisional workbook preview. Call patch_workbook to update quote_details, price_sources, and interpretation_notes with provisional candidate/source/confidence notes. Do not write confirmed totals, summary total amount, customer_quote subtotal, quote_details subtotal, or material_fee before user confirmation.',
+      'This positive Steel price lookup still requires a provisional workbook preview. Call patch_workbook to update quote_details, price_sources, and interpretation_notes with provisional candidate/source/confidence notes and the quote_details `小計` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible `報價` column. Do not write confirmed totals, summary total amount, customer_quote subtotal, or customer-facing confirmed totals before user confirmation. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.',
   };
 }
 
@@ -767,7 +827,8 @@ export async function sendSteelOAuthChat({
   let hasReviewedPriceResult = false;
   let hasInstructionLookupResult = false;
   let hasPositiveReviewedPriceCandidate = false;
-  let allowCustomerTierFilter = true;
+  let forceDefaultCustomerTier = true;
+  let selectedCustomerTierId: number | undefined;
   let hasWorkbookPatch = false;
   const workbookPatchOperations: WorkbookPatchOperation[] = [];
 
@@ -844,9 +905,10 @@ export async function sendSteelOAuthChat({
     const executedCalls = await executeSteelBusinessToolCalls({
       calls: steelBusinessToolCalls,
       executeSteelToolCall,
-      allowCustomerTierFilter,
+      forceDefaultCustomerTier,
       hasInstructionLookupResult,
       runState,
+      selectedCustomerTierId,
     });
     if (
       executedCalls.some(
@@ -862,8 +924,20 @@ export async function sendSteelOAuthChat({
         (call.toolName === 'lookup_quote_rules' || call.toolName === 'lookup_instructions') &&
         toolResult.ok,
     );
-    if (customerTierContextCalls.some(({ input }) => hasUnknownCustomerTierContext(input))) {
-      allowCustomerTierFilter = false;
+    const knownCustomerTierId = customerTierContextCalls
+      .map(({ input }) => getKnownCustomerTierIdFromContext(input))
+      .find((tierId) => tierId !== undefined);
+    const searchedCustomerTierId = executedCalls
+      .filter(({ call }) => call.toolName === 'search_customers')
+      .map(({ result: toolResult }) => getSingleCustomerSearchTierId(toolResult))
+      .find((tierId) => tierId !== undefined);
+    const nextSelectedCustomerTierId =
+      knownCustomerTierId ?? searchedCustomerTierId ?? selectedCustomerTierId;
+    if (nextSelectedCustomerTierId !== undefined) {
+      selectedCustomerTierId = nextSelectedCustomerTierId;
+      forceDefaultCustomerTier = false;
+    } else if (customerTierContextCalls.some(({ input }) => hasUnknownCustomerTierContext(input))) {
+      forceDefaultCustomerTier = true;
     }
     const priceLookupCalls = executedCalls.filter(
       ({ call }) => call.toolName === 'search_price_candidates',

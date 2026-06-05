@@ -2383,9 +2383,9 @@ C100x50x20x2.3` no longer creates a false `100x50` requirement.
 
 # Steel C 型鋼 Default Tier And Material Follow-Up
 
-- [x] Capture correction: missing customer/tier must not filter by A/tier 1,
-      but provisional response should lead with B price when returned tiers
-      include A/B/C/F.
+- [x] Capture correction at that time: missing customer/tier must not filter by
+      A/tier 1. This has since been superseded by the next section's global
+      B-tier lookup rule.
 - [x] Capture correction: first C 型鋼 material-unknown reply must show
       same-spec material options, and a later follow-up with no alternate
       material should confirm the default 錏輕型鋼 assumption.
@@ -2399,18 +2399,16 @@ C100x50x20x2.3` no longer creates a false `100x50` requirement.
 
 - Live DB verification after
   `20260604152413_steel_c_type_b_tier_material_followup.sql` confirmed
-  `c-type-basic-quote-zh-v1` contains B-price default wording, unknown-tier
-  lookup without `customerTierId`, same-spec material alternatives, and
-  second-turn default-material confirmation.
+  `c-type-basic-quote-zh-v1` contained the then-current B-price/default-material
+  wording. The unknown-tier lookup behavior from this review is superseded by
+  the next section's global B-tier lookup rule.
 - Runtime policy now says price-type oral orders must follow
   `category key -> lookup_quote_rules -> search_price_candidates -> answer`.
   It also tells AI not to invent `customerId` / `customerTierId` when
   `tierKnown=false`.
-- Provider runtime now restricts the post-rule price round to
-  `search_price_candidates` only, and strips model-supplied `customerTierId`
-  from price lookup when the previous quote-rule context marked tier unknown.
-  This prevents repeated A/tier-1 bias loops while still letting reviewed lookup
-  return all tiers.
+- Provider runtime at that time restricted the post-rule price round to
+  `search_price_candidates` only and prevented repeated A/tier-1 bias loops.
+  The customer-tier handling is superseded by the next section.
 - Real OAuth smoke passed for `C100x50x20x2.3t 6M 一支多少？` using live
   `gpt-5.5` and live Steel DB. The smoke verified `lookup_quote_rules` happens
   before positive `search_price_candidates`, the positive lookup includes
@@ -2420,3 +2418,217 @@ C100x50x20x2.3` no longer creates a false `100x50` requirement.
   145 tests, opt-in C 型鋼 OAuth smoke 1 passed / 4 skipped,
   `npm run build:api` exit 0 with existing non-Steel Rollup TypeScript warnings,
   and `git diff --check` passed.
+
+# Steel Global Default B Customer Tier
+
+- [x] Confirm live Steel tier ids: B price is `customerTierId = 2`.
+- [x] Capture correction: unknown/default customer tier must directly use
+      B price lookup, not omit `customerTierId` and let the model choose.
+- [x] Update runtime policy, provider guardrail tests, docs, and lessons.
+- [x] Add and apply a follow-up Supabase data migration for reviewed
+      instruction packet text.
+- [x] Re-run focused Jest, full Steel Jest/build checks, and live OAuth smoke.
+
+## Review
+
+- Live DB confirmed customer tier `B` is `steel.customer_tiers.id = 2`
+  (`code = B`, `name = B級`).
+- Runtime policy now treats missing customer/tier as unknown customer context
+  plus default B price lookup. It still forbids inventing `customerId`, but
+  forces `search_price_candidates` to use `customerTierId: 2` until a user
+  message or selected customer/tier explicitly overrides it.
+- Follow-up migration
+  `20260605020554_steel_default_b_customer_tier_instruction.sql` was applied to
+  live Steel Postgres. Verification query confirmed
+  `c-type-basic-quote-zh-v1` contains `customerTierId 2` and no longer contains
+  old omit-tier wording.
+- Live DB currently has `steel.instruction_packets` but not
+  `steel.agent_instructions`; the every-turn default rule is therefore active
+  in provider runtime policy/docs now, and should be moved into
+  `steel.agent_instructions` when that Admin-managed table is implemented.
+- Updated agent/runtime docs, instruction packet docs, catalog-family data
+  contract, tests, and lessons so the rule applies to all products, not just
+  C 型鋼.
+- Live C 型鋼 OAuth smoke now asserts the positive `search_price_candidates`
+  call includes `"customerTierId":2` in addition to `c_type`, `100x2.3`, and
+  `錏輕型鋼`.
+- Verification passed: focused provider/executor Jest 38/38, full Steel Jest
+  30 suites / 145 tests, `npm run build:api` exit 0 with existing non-Steel
+  Rollup TypeScript warnings, opt-in C 型鋼 OAuth smoke 1 passed / 4 skipped,
+  and `git diff --check` passed.
+
+# Steel Default B Customer Notice
+
+- [x] Capture correction: if the user did not provide a customer, or no usable
+      customer price tier can be found, quote with B by default.
+- [x] Capture correction: response must remind the user that 價格B is the
+      current default quote price and that a customer name can be used to look
+      up that customer's quote price. Superseded by the later concise-response
+      correction: current replies should not add highest/most-expensive wording.
+- [x] Capture correction: when `search_customers` finds a usable customer tier,
+      use that tier instead of overriding it with B.
+- [x] Update runtime policy, provider guardrail tests, docs, and lessons.
+- [x] Add and apply a follow-up Supabase data migration for reviewed
+      instruction packet text.
+- [x] Re-run focused Jest, full Steel Jest/build checks, and live OAuth smoke.
+
+## Review
+
+- Runtime policy now distinguishes fallback B from found customer tiers. If the
+  user provides no customer or `search_customers` cannot find a usable tier,
+  price lookup uses `customerTierId: 2`; if `search_customers` finds one usable
+  customer tier, that tier is carried into price lookup instead of being
+  overwritten by B.
+- Provider guardrail tests cover both branches: unknown customer/tier defaults
+  to B, and a found customer A-tier lookup stays A instead of becoming B.
+- Follow-up migration
+  `20260605021828_steel_default_b_customer_notice.sql` was applied to live
+  Steel Postgres. Verification query confirmed live
+  `c-type-basic-quote-zh-v1` had the B default and customer-name follow-up
+  notice. The later concise-response migration supersedes the highest/most
+  wording and makes current replies name `價格B` only.
+- Verification passed: focused provider/executor Jest 39/39, full Steel Jest
+  30 suites / 146 tests, `npm run build:api` exit 0 with existing non-Steel
+  Rollup TypeScript warnings, opt-in C 型鋼 OAuth smoke 1 passed / 4 skipped,
+  and the live smoke checked `價格B`, customer reminder, and `customerTierId: 2`.
+
+# Steel Concise Quote And Workbook Summary
+
+- [x] Capture correction: first quick-price response should be shorter. For B
+      default, say `目前用 價格B：26.8 元/kg`; do not add highest/most-expensive
+      wording.
+- [x] Capture correction: do not list `單位重` as a separate bullet when the
+      response already shows total piece weight, e.g.
+      `6M 一支重量：4 × 6 = 24 kg`.
+- [x] Capture correction: after a later workbook update such as
+      `客戶是龍頂`, the assistant must explain the new information and changed
+      workbook fields, not only say `已更新 workbook：N 個欄位`.
+- [x] Update runtime policy, workbook patch instruction, docs, tests, and
+      lessons.
+- [x] Add and apply a follow-up Supabase data migration for reviewed
+      instruction packet text.
+- [x] Re-run focused Jest, full Steel Jest/build checks, and live OAuth smoke.
+
+## Review
+
+- Runtime policy now tells the model to write the fallback B notice as
+  `目前用 價格B：26.8 元/kg`, mention customer-name lookup separately, and avoid
+  highest/most-expensive wording unless the user explicitly asks for ranking.
+- Quick-price formatting now avoids a separate `單位重` bullet when the same
+  response already shows total piece weight. The preferred shape is
+  `6M 一支重量：4 × 6 = 24 kg`, followed by B unit price and line subtotal.
+- Workbook patch guidance now requires a short Traditional Chinese summary of
+  newly interpreted information and workbook fields changed after
+  `patch_workbook` succeeds; field-count-only replies such as
+  `已更新 workbook：16 個欄位` are explicitly blocked.
+- Follow-up migration
+  `20260605025616_steel_concise_quote_workbook_summary.sql` was applied to live
+  Steel Postgres. Verification query confirmed live `c-type-basic-quote-zh-v1`
+  contains the short B notice, the no-highest/most rule, the no-separate-unit-
+  weight rule, and the workbook-summary rule.
+- Live C 型鋼 OAuth smoke with real `openai_oauth_responses` and real Supabase
+  passed after updating the assertion to accept `價格B`: the model responded
+  with `目前用 價格B：26.8 元/kg`, `6M 一支重量：4 × 6 = 24 kg`, no `最高` /
+  `最貴`, and no separate `單位重` bullet.
+- Verification passed: focused provider/executor Jest 39/39, full Steel Jest
+  30 suites / 146 tests, `npm run build:api` exit 0 with existing non-Steel
+  Rollup TypeScript warnings, and opt-in C 型鋼 OAuth smoke 1 passed /
+  4 skipped.
+
+# Steel Response Wording And Provider Progress Research
+
+- [x] Capture correction: change response wording from
+      `reviewed 價格：26.8 元/kg` to `價格：26.8 元/kg`.
+- [x] Reproduce and fix the workbook follow-up bug where `客戶是龍頂` only
+      returns `已更新 workbook：N 個欄位`.
+- [x] Research official OpenAI Responses API streaming/progress surfaces to
+      determine whether the UI can show model reasoning/progress beyond
+      `Waiting for provider`.
+- [x] Update runtime/docs/tests/lessons and reviewed instruction packet data
+      where needed.
+- [x] Run focused tests, Steel tests, live smoke or endpoint repro, and diff
+      hygiene before reporting results.
+
+## Review
+
+- Reproduced the workbook bug with a failing handler regression: when provider
+  text is only `已更新 workbook：19 個欄位`, the handler previously returned that
+  field-count-only text even though `changedFieldSummary` contained customer,
+  tier, and price changes.
+- Fixed the handler fallback so field-count-only workbook replies are replaced
+  with a concise summary containing `本輪新增資訊` and `主要改動`, sourced from
+  backend-applied `changedFieldSummary`.
+- Runtime policy and live smoke now reject `reviewed 價格` as a user-facing
+  price bullet label. Current rule is to show `價格：<單價>` and move
+  reviewed/source status into source or note text.
+- Added migration
+  `20260605031930_steel_price_label_and_workbook_summary.sql` and applied it
+  to live Steel Postgres. Verification query confirmed the reviewed
+  `c-type-basic-quote-zh-v1` packet has the price-label rule, the
+  `reviewed 價格` blocking rule, and the workbook-summary rule.
+- OpenAI Responses API research: official docs say raw reasoning tokens are not
+  exposed, but reasoning summaries can be opted in. Streaming Responses API
+  events can expose progress such as response lifecycle, output text deltas,
+  function-call argument deltas, code interpreter/file search progress, and
+  reasoning summary deltas when summaries are enabled.
+- Current `/steel/oauth-chat` uses a plain Axios POST to `/api/steel/ai/chat`;
+  the backend provider adapter calls `doGenerate`, which aggregates the internal
+  stream before returning. Progress UI therefore needs a new streaming endpoint
+  and client path; the current UI can only show `Waiting for provider`.
+- Verification passed: RED handler regression failed on the exact
+  field-count-only response; GREEN handler regression passed; focused
+  handler/provider/executor Jest passed 58/58; full Steel Jest passed
+  30 suites / 147 tests; `npm run build:api` exited 0 with existing non-Steel
+  Rollup TypeScript warnings; opt-in C 型鋼 OAuth smoke passed 1 enabled case /
+  4 skipped and rejects `最高|最貴`, `單位重`, and `reviewed 價格`.
+- Follow-up screenshot diagnosis: the source and `packages/api/dist/index.js`
+  already contained the workbook-summary fallback, but the running backend on
+  port 3080 had started before the rebuild and still held the old handler in
+  memory. Restarted backend dev server so `/steel/oauth-chat` now loads the
+  updated dist.
+
+# Steel Workbook Patch Concise Summary
+
+- [x] Capture correction: workbook patch fallback should not show a detailed
+      diff list. It should only report interpreted order information and a key
+      change summary.
+- [x] Update handler fallback and regression tests so long fields such as search
+      keywords and candidate item lists do not appear in chat.
+- [x] Update lessons and rerun focused/backend verification before restarting
+      the backend for manual retest.
+
+## Review
+
+- Handler fallback now emits a concise workbook reply with interpreted order
+  information and a key-change summary, without per-field diffs, long search
+  keywords, or long candidate item lists.
+- Provider prompts, tool-result guidance, docs, and the reviewed C 型鋼
+  instruction packet now all state that successful `patch_workbook` replies
+  should summarize only order information and key workbook changes.
+- Applied migration
+  `supabase/migration/20260605034146_steel_workbook_patch_concise_summary.sql`
+  to the live Steel Supabase database; SQL verification confirmed the
+  instruction packet includes the concise summary rule and blocks per-field
+  diff / long candidate text.
+- Verification before backend restart: focused handler/provider Jest passed
+  34/34; full `packages/api/src/steel` Jest passed 30 suites / 147 tests;
+  `npm run build:api` exited 0 with existing non-Steel Rollup TypeScript
+  warnings.
+- Final local verification: Prettier completed for touched files;
+  `git diff --check` and untracked migration whitespace checks passed; restarted
+  the backend dev server so port 3080 loads the rebuilt `@librechat/api` dist;
+  `GET /api/config` on 3080 and `/steel/oauth-chat` on 3090 both returned 200.
+
+# Steel Quote Field And Requote Summary
+
+- [ ] Capture correction: `報價明細` should use `小計` as the unified quote
+      amount field. Do not add a separate duplicate `報價` column; keep
+      `材料費` as a material-cost component when needed.
+- [ ] Ensure customer/tier follow-up workbook updates also update and report
+      the new quote amount, not only customer/tier/unit-price fields.
+- [ ] Update provider/tool guidance, docs, lessons, and tests; then rerun
+      focused/full verification and restart the backend dev server.
+
+## Review
+
+- Pending verification.

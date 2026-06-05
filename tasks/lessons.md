@@ -3,6 +3,7 @@
 - Treat `npm run frontend:dev` startup separately from LibreChat app readiness. Vite can start on port 3090 while `/api/*` still fails if the backend is not running on port 3080.
 - For LibreChat local dev, verify the backend path too: backend startup requires `client/dist/index.html`, so `npm run build:client` may be needed even when using the Vite dev frontend.
 - When diagnosing Vite proxy errors, hit both `http://localhost:3080/api/config` and `http://localhost:3090/api/config` to distinguish backend startup failures from proxy configuration issues.
+- After rebuilding `packages/api`, restart the running backend dev process before asking the user to retest `/steel/oauth-chat`; `api/server/index.js` imports the built `@librechat/api` dist at process startup, so an already-running 3080 process can keep old handler behavior in memory.
 - When the user asks to write docs, create or update a real project docs file under `docs/` instead of only adding operational notes to agent-facing files.
 - For the steel setup, do not assume Docker services are part of local development; the user uses cloud MongoDB and Supabase Postgres through `.env`.
 - Do not add root `npm run supabase:*` scripts or `supabase/config.toml` for Steel unless the user explicitly asks for a local Docker-backed Supabase stack; Steel database development uses Supabase cloud through `.env` `STEEL_POSTGRES_URL`.
@@ -11,7 +12,8 @@
 - Do not hard-code default steel product choices as static DB fields such as `is_default`; admin-taught defaults should be modeled as flexible preference rules/memory and applied during disambiguation.
 - When a customer asks price for an incomplete steel spec with multiple matches, first run reviewed lookup from bounded AI-derived candidates when possible. For quick `一支多少` requests, lead with the highest-confidence source-backed approximate candidate as a provisional quote, then list the other plausible specs/options for confirmation.
 - For Steel price lookup, backend may apply bounded token matching to AI-derived oral product candidates such as `錏角鐵` -> product rows containing `錏` and `角鐵`. This is different from accepting raw typo strings like `亞L30x30` as product-price keys, which remains forbidden.
-- For Steel quick-price lookup, do not default missing customer/tier to A or tier 1 as a DB filter. If the user did not provide customer/tier and no `search_customers` result selected one, omit `customerTierId` so reviewed lookup can return all applicable tier candidates; when presenting a provisional/default price from returned tiers, lead with B price and still list A/B/C/F options.
+- For Steel quick-price lookup, do not default missing customer/tier to A or tier 1. If the user did not provide a customer, or `search_customers` cannot find a usable customer price tier, use the global default B tier in price lookup: `customerTierId: 2`. Keep the response concise: say `目前用 價格B：<unit price>` and separately remind that providing a customer name allows lookup of that customer's quote price. Do not add highest/most-expensive wording unless the user asks. If `search_customers` finds a usable customer tier, use that tier instead of B.
+- For Steel quick-price response formatting, if total piece weight is already shown, do not list unit weight as a separate bullet. Prefer one line such as `6M 一支重量：4 × 6 = 24 kg`, then unit price and subtotal.
 - For local `pg` connections to Supabase, prefer the Supavisor session pooler URL when the direct `db.<project>.supabase.co` host does not resolve or the environment lacks IPv6 support.
 - Keep Steel changes isolated from upstream LibreChat hot files where possible; avoid premature root exports or core entrypoint edits until a route actually needs them.
 - Every wrap-up response should include explicit next tasks so the user knows what to do next.
@@ -30,7 +32,9 @@
 - Latest-update workbook highlights should persist until the next accepted workbook patch and then be replaced, not auto-timeout or accumulate.
 - Failed or rejected workbook patches must not highlight fields or clear the previous accepted-patch highlight; explain the non-update in chat.
 - Do not add an explicit Undo button to Phase 3 workbook editing; users ask AI in chat to revert/change data, and the result must go through the validated patch service.
-- Successful AI workbook patches should reply with a concise changed-field summary in chat; avoid full diff tables in the Phase 3 chat flow.
+- Successful AI workbook patches should reply with only a concise order-information and key-change summary in chat; avoid per-field diffs, long search keywords, long candidate item lists, and field-count-only text like `已更新 workbook：16 個欄位`.
+- In Steel `報價明細`, the user-facing quote amount column should be `小計`; do not add a duplicate `報價` column. Keep `材料費` as a material-cost component when needed, and when a customer/tier or unit price follow-up changes the amount, update and summarize the new `小計`, not only the workbook field changes.
+- User-facing Steel price bullets should be terse: use `價格：<單價>`, not `reviewed 價格：<單價>`. Put reviewed/source status in source lines or notes instead of the bullet label.
 - Keep Steel workbook contract ownership split: public DTOs in `packages/data-provider/src/steel/workbooks.ts`, canonical Zod/runtime validation in `packages/api/src/steel/workbook/schema.ts`, and no frontend-owned workbook validation schema.
 - Keep Steel API mock data in one shared folder, `packages/data-provider/src/steel/mock/`, so frontend fixtures and backend mock endpoints do not drift.
 - Keep Steel mock fixtures behind explicit mock imports; do not re-export them from the production Steel data-provider `index.ts` barrel.

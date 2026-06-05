@@ -233,7 +233,8 @@ Rules:
 - If AI confidence is not high, the assistant response must ask the user to confirm before confirmed pricing.
 - If multiple plausible candidates exist, the assistant response or reviewed lookup result must present bounded options and wait for user confirmation.
 - Missing canonical fields such as length, thickness, customer, or tier do not block reviewed price lookup when bounded derived candidate queries can still be formed. For quick price requests such as `一支多少`, AI searches first, leads with the highest-confidence positive source-backed approximate candidate as a provisional quote when one exists, then asks the user to confirm missing fields and listed alternatives before any confirmed customer-facing total.
-- If customer or tier is not explicit and `search_customers` has not returned a selected customer/tier, `search_price_candidates` must omit `customerTierId`; it must not default unknown tier to A/tier 1. The response should list returned tier candidates, use B as the primary provisional/default display price, and ask the user to confirm the applicable customer/tier.
+- If the user did not provide a customer, or `search_customers` cannot find a usable customer price tier, `search_price_candidates` must use the global default B tier, `customerTierId: 2`. It must not default unknown tier to A/tier 1. The response should keep the B notice short, for example `目前用 價格B：<unit price>`, and separately say that providing a customer name allows the system to look up that customer's quote price. Do not add highest/most-expensive wording unless the user asks. If `search_customers` returns a usable customer tier, use that tier instead of the B default.
+- If total piece weight is already shown, do not list unit weight as a separate bullet; prefer one line such as `6M 一支重量：4 × 6 = 24 kg`.
 - For C 型鋼 / `c_type` with unspecified material or surface, first-turn responses may lead with the usual 錏輕型鋼 candidate but must show same-spec material alternatives returned by reviewed lookup. In a follow-up turn, if the user does not specify another material/surface, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.
 - Missing or low-confidence cutting/head-tail, hole-count, or slotting-path evidence produces a targeted clarification question before confirmed fee calculation.
 
@@ -325,6 +326,16 @@ Current `/steel/oauth-chat` behavior:
 - The backend parses the provider tool call, validates it against workbook
   schemas, applies it through the workbook service, and returns the persisted
   patch result to the UI.
+- After an accepted `patch_workbook` result, the assistant response must briefly
+  summarize the interpreted order information, the new quote amount when the
+  `報價` field changed, and key workbook changes. It must not list a per-field
+  diff, long search keywords, or long candidate item lists, and must not answer
+  only with an operation or field count such as
+  `已更新 workbook：16 個欄位`.
+- `報價明細` uses the visible field `小計` for the quote amount; do not add or
+  use a duplicate visible `報價` field in that sheet.
+- User-facing price bullets should use `價格`, not `reviewed 價格`; keep
+  reviewed/source status in source rows or note text.
 - `patch_workbook` is allowed for provisional workbook notes and candidate
   estimates, but confirmed customer-facing totals still require reviewed facts
   or explicit user confirmation.

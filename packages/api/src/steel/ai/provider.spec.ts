@@ -313,10 +313,15 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before',
     );
     expect(systemPrompt.content).toContain(
-      'Do not pass customerTierId to search_price_candidates unless the user gave a customer/tier',
+      'search_customers cannot find a usable customer price tier',
     );
-    expect(systemPrompt.content).toContain('must not invent customerId or customerTierId');
-    expect(systemPrompt.content).toContain('use customerTierCode B as the primary provisional');
+    expect(systemPrompt.content).toContain('must not invent customerId');
+    expect(systemPrompt.content).toContain('Pass customerTierId 2 to search_price_candidates');
+    expect(systemPrompt.content).toContain('目前用 價格B：26.8 元/kg');
+    expect(systemPrompt.content).toContain('Do not add highest/most-expensive wording');
+    expect(systemPrompt.content).toContain('do not list unit weight as a separate bullet');
+    expect(systemPrompt.content).toContain('label it `價格`, not `reviewed 價格`');
+    expect(systemPrompt.content).toContain('customer name can be used');
     expect(systemPrompt.content).toContain(
       'the first reply must also show same-spec reviewed alternatives',
     );
@@ -884,7 +889,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(response.text).toBe('依 C 型鋼 instruction 查到候選。');
   });
 
-  it('strips customerTierId price filters after quote rules mark the tier unknown', async () => {
+  it('defaults unknown customer tier price filters to B customerTierId after quote rules mark the tier unknown', async () => {
     const doGenerate = jest
       .fn()
       .mockResolvedValueOnce({
@@ -965,7 +970,12 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         warnings: [],
       })
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '未指定分級時，主價格用 B 價並列出 A/B/C/F。' }],
+        content: [
+          {
+            type: 'text',
+            text: '未提供客戶或找不到客戶分級時，目前用價格B：26.8 元/kg；提供客戶名稱後可再查該客戶報價。',
+          },
+        ],
         finishReason: { unified: 'stop', raw: 'stop' },
         usage: {
           inputTokens: {
@@ -1043,14 +1053,211 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       'search_price_candidates',
     ]);
     expect(executeSteelToolCall.mock.calls[1]?.[0].arguments).toEqual(
-      expect.not.objectContaining({ customerTierId: expect.any(Number) }),
+      expect.objectContaining({ customerTierId: 2 }),
     );
     expect(doGenerate).toHaveBeenCalledTimes(3);
     const finalPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
     const serializedFinalPrompt = JSON.stringify(finalPrompt);
     expect(serializedFinalPrompt).toContain('"toolName":"search_price_candidates"');
+    expect(serializedFinalPrompt).toContain('"customerTierId":2');
     expect(serializedFinalPrompt).toContain('"customerTierCode":"B"');
-    expect(response.text).toBe('未指定分級時，主價格用 B 價並列出 A/B/C/F。');
+    expect(response.text).toBe(
+      '未提供客戶或找不到客戶分級時，目前用價格B：26.8 元/kg；提供客戶名稱後可再查該客戶報價。',
+    );
+  });
+
+  it('uses a customer lookup tier instead of the B default when a customer tier is found', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_quote_rules_unknown_customer',
+            toolName: 'lookup_quote_rules',
+            input: JSON.stringify({
+              taskTypes: ['candidate_generation', 'material_price_lookup'],
+              evidenceSummary: '龍頂 C型鋼 100x50x20 2.3t 一支多少',
+              customerContext: {
+                customerName: '龍頂',
+                tierKnown: false,
+              },
+              catalogContexts: [
+                {
+                  catalogCandidates: ['c_type'],
+                  packetGroupHints: ['c-type-quote-core'],
+                },
+              ],
+            }),
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_customer_lookup',
+            toolName: 'search_customers',
+            input: JSON.stringify({
+              searchText: '龍頂',
+              limit: 3,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 30,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 9,
+            text: 9,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_quote_rules_customer_lookup' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_price_customer_tier',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({
+              originalText: '龍頂 C型鋼 100x50x20 2.3t 一支多少？',
+              catalogFamilies: ['c_type'],
+              customerTierId: 1,
+              candidateQueries: [
+                {
+                  queryId: 'c-type-100x23',
+                  specKeyContains: '100x2.3',
+                  confidence: 'high',
+                  reason: 'Use customer tier from search_customers',
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 35,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_price_customer_tier' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已依龍頂客戶分級報價。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 55,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 9,
+            text: 9,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_final_customer_tier' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true as const,
+        toolName: 'lookup_quote_rules' as const,
+        data: {
+          instructionPackets: [
+            {
+              slug: 'c-type-basic-quote-zh-v1',
+              packetGroups: ['c-type-quote-core'],
+            },
+          ],
+        },
+        sourceRefs: [],
+        durationMs: 1,
+        redactionVersion: 1 as const,
+      })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        toolName: 'search_customers' as const,
+        data: {
+          customers: [
+            {
+              id: 10,
+              displayName: '龍頂',
+              customerTier: {
+                id: 1,
+                code: 'A',
+                name: 'A級',
+              },
+            },
+          ],
+        },
+        sourceRefs: [],
+        durationMs: 1,
+        redactionVersion: 1 as const,
+      })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        toolName: 'search_price_candidates' as const,
+        data: {
+          priceCandidates: [
+            {
+              productName: '錏輕型鋼',
+              specKey: '100x2.3',
+              customerTierCode: 'A',
+              unitPrice: 26,
+            },
+          ],
+        },
+        sourceRefs: [],
+        durationMs: 1,
+        redactionVersion: 1 as const,
+      });
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '龍頂 C型鋼 100x50x20 2.3t 一支多少？' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
+      'lookup_quote_rules',
+      'search_customers',
+      'search_price_candidates',
+    ]);
+    expect(executeSteelToolCall.mock.calls[2]?.[0].arguments).toEqual(
+      expect.objectContaining({ customerTierId: 1 }),
+    );
+    expect(response.text).toBe('已依龍頂客戶分級報價。');
   });
 
   it('adds a specific price lookup reminder after quote rules when reviewed price lookup is still missing', async () => {
@@ -1133,7 +1340,12 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         warnings: [],
       })
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '已用 B 價作主價格並列出材質選項。' }],
+        content: [
+          {
+            type: 'text',
+            text: '目前用價格B：26.8 元/kg，並列出材質選項；提供客戶名稱後可再查該客戶報價。',
+          },
+        ],
         finishReason: { unified: 'stop', raw: 'stop' },
         usage: {
           inputTokens: {
@@ -1221,8 +1433,13 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(serializedSecondPrompt).toContain('call search_price_candidates');
     expect(serializedSecondPrompt).toContain('100x2.3');
     expect(serializedSecondPrompt).toContain('productName 錏輕型鋼');
-    expect(serializedSecondPrompt).toContain('omit customerTierId');
-    expect(response.text).toBe('已用 B 價作主價格並列出材質選項。');
+    expect(serializedSecondPrompt).toContain('customerTierId 2');
+    expect(serializedSecondPrompt).toContain('價格B');
+    expect(serializedSecondPrompt).toContain('Do not add highest/most-expensive wording');
+    expect(serializedSecondPrompt).toContain('do not list unit weight as a separate bullet');
+    expect(response.text).toBe(
+      '目前用價格B：26.8 元/kg，並列出材質選項；提供客戶名稱後可再查該客戶報價。',
+    );
   });
 
   it('does not treat invalid search_price_candidates arguments as a completed price lookup', async () => {
@@ -1597,14 +1814,19 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       steelRuntimePolicy: true,
       workbookPatchTool: true,
       workbookContextText:
-        'sheet id="quote_details" label="報價明細"\ncolumn label="材料單價" key="material_unit_price"\ncolumn label="小計" key="subtotal"\nrow id="line_1" cells: line_no=1 material_unit_price=null',
+        'sheet id="quote_details" label="報價明細"\ncolumn label="材料單價" key="material_unit_price"\ncolumn label="小計" key="subtotal"\nrow id="line_1" cells: line_no=1 material_unit_price=null subtotal=null',
     });
 
     expect(doGenerate).toHaveBeenCalledTimes(4);
     const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
     const firstSystemPrompt = firstOptions.prompt[0] as { role: 'system'; content: string };
     expect(firstSystemPrompt.content).toContain('write provisional workbook preview rows');
+    expect(firstSystemPrompt.content).toContain('update the `小計` column');
     expect(firstSystemPrompt.content).toContain('Do not write confirmed totals');
+    expect(firstSystemPrompt.content).not.toContain('quote_details subtotal');
+    expect(firstSystemPrompt.content).toContain('interpreted order information');
+    expect(firstSystemPrompt.content).toContain('Do not list a per-field diff');
+    expect(firstSystemPrompt.content).toContain('Do not answer only with a field count');
     const thirdPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
     expect(
       thirdPrompt.some(
@@ -1627,6 +1849,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                 value: expect.objectContaining({
                   ok: true,
                   operationCount: 2,
+                  instruction: expect.stringContaining('interpreted order information'),
                 }),
               },
             }),
@@ -1915,6 +2138,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
     expect(systemPrompt.content).toContain('column label="值" key="value"');
     expect(systemPrompt.content).toContain('Do not ask the user for internal workbook ids or keys');
+    expect(systemPrompt.content).toContain('Do not list a per-field diff');
+    expect(systemPrompt.content).toContain('Do not answer only with a field count');
     expect(doGenerate).toHaveBeenCalledWith(
       expect.objectContaining({
         toolChoice: { type: 'auto' },

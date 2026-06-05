@@ -46,6 +46,7 @@ import type { Request, Response } from 'express';
 import type { z } from 'zod';
 import type {
   SteelWorkbook,
+  SteelChangedFieldSummary,
   SteelWorkbookCellValue,
   SteelProviderWorkbookPatchProposal,
   SteelWorkbookPatchResponse,
@@ -465,24 +466,129 @@ function rejectedWorkbookPatch(reason: string): SteelWorkbookPatchResponse {
   };
 }
 
+function formatWorkbookPatchValue(value: SteelWorkbookCellValue | undefined): string {
+  if (value === undefined || value === null || value === '') {
+    return '空白';
+  }
+
+  return String(value);
+}
+
+function formatWorkbookPatchSummaryValue(value: SteelWorkbookCellValue | undefined): string {
+  return formatWorkbookPatchValue(value).replace(/\s+/g, ' ').trim();
+}
+
+function truncateWorkbookPatchSummaryValue(value: string, maxLength = 48): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}...`;
+}
+
+function findWorkbookPatchChange(
+  changes: SteelChangedFieldSummary[],
+  columnKey: string,
+): SteelChangedFieldSummary | undefined {
+  return changes.find((change) => change.columnKey === columnKey);
+}
+
+function getWorkbookPatchNextValue(
+  changes: SteelChangedFieldSummary[],
+  columnKey: string,
+): string | undefined {
+  const change = findWorkbookPatchChange(changes, columnKey);
+  if (!change) {
+    return undefined;
+  }
+
+  const value = formatWorkbookPatchSummaryValue(change.nextValue);
+  return value === '空白' ? undefined : truncateWorkbookPatchSummaryValue(value);
+}
+
+function getWorkbookPatchChangedLabels(changes: SteelChangedFieldSummary[]): string[] {
+  const priorityLabels = [
+    '客戶',
+    '分級',
+    '材料單價',
+    '小計',
+    '採用產品價格品項',
+    '標準化品名',
+    '價格來源',
+    '判讀備註',
+  ];
+  const changedLabels = changes.map((change) => change.label);
+  const labels = priorityLabels.filter((label) => changedLabels.includes(label));
+
+  if (labels.length > 0) {
+    return labels.slice(0, 4);
+  }
+
+  return changedLabels.slice(0, 4);
+}
+
+function isWorkbookFieldCountOnlyText(text: string): boolean {
+  const normalized = text.trim();
+
+  return (
+    normalized === '已更新 workbook。' ||
+    /^已更新\s*workbook\s*[：:]\s*\d+\s*個欄位[。.]?$/.test(normalized)
+  );
+}
+
+function getWorkbookPatchFallbackSummary(patch: SteelWorkbookPatchResponse): string {
+  const changes = patch.changedFieldSummary;
+  if (changes.length === 0) {
+    return '已更新 workbook，本輪新增資訊已套用。';
+  }
+
+  const orderInfo = [
+    getWorkbookPatchNextValue(changes, 'customer_original_item_name'),
+    getWorkbookPatchNextValue(changes, 'normalized_item_name'),
+    getWorkbookPatchNextValue(changes, 'adopted_product_price_item'),
+  ]
+    .filter((value) => value !== undefined)
+    .join('；');
+  const customer = getWorkbookPatchNextValue(changes, 'customer');
+  const customerTier = getWorkbookPatchNextValue(changes, 'customer_tier');
+  const price = getWorkbookPatchNextValue(changes, 'material_unit_price');
+  const subtotal = getWorkbookPatchNextValue(changes, 'subtotal');
+  const orderInfoParts = [
+    orderInfo.length > 0 ? orderInfo : undefined,
+    customer ? `客戶：${customer}` : undefined,
+    customerTier ? `分級：${customerTier}` : undefined,
+    price ? `價格：${price}` : undefined,
+    subtotal ? `小計：${subtotal}` : undefined,
+  ].filter((value) => value !== undefined);
+  const changedLabels = getWorkbookPatchChangedLabels(changes);
+  const changedLabelText = changedLabels.length > 0 ? changedLabels.join('、') : 'workbook 欄位';
+
+  return [
+    `已更新 workbook。`,
+    `訂單資訊：${orderInfoParts.length > 0 ? orderInfoParts.join('；') : '本輪資訊已套用'}。`,
+    `改動重點：已更新${changedLabelText}等 ${changes.length} 個欄位。`,
+  ].join('\n');
+}
+
 function getWorkbookPatchSummaryText(
   responseText: string,
   patch: SteelWorkbookPatchResponse,
 ): string {
-  if (responseText.trim().length > 0) {
-    return responseText;
+  const trimmedResponseText = responseText.trim();
+  if (trimmedResponseText.length > 0 && !isWorkbookFieldCountOnlyText(trimmedResponseText)) {
+    return trimmedResponseText;
   }
 
   const [firstChange] = patch.changedFieldSummary;
   if (!firstChange) {
-    return '已更新 workbook。';
+    return getWorkbookPatchFallbackSummary(patch);
   }
 
   if (patch.changedFieldSummary.length === 1) {
     return `已更新 workbook：${firstChange.label} -> ${String(firstChange.nextValue)}`;
   }
 
-  return `已更新 workbook：${patch.changedFieldSummary.length} 個欄位`;
+  return getWorkbookPatchFallbackSummary(patch);
 }
 
 async function applyChatWorkbookPatch(

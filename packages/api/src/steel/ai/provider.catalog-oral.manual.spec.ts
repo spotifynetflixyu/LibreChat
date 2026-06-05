@@ -48,6 +48,7 @@ interface OralQuoteSmokeCase {
   priceArgumentContains: string[];
   priceArgumentPatterns?: RegExp[];
   responseTextPatterns?: RegExp[];
+  responseTextRejectPatterns?: RegExp[];
 }
 
 function stringify(value: unknown): string {
@@ -186,13 +187,16 @@ const smokeCases: OralQuoteSmokeCase[] = [
     name: 'uses lookup_quote_rules before c_type price lookup and derives the 100x2.3 candidate',
     prompt: 'C100x50x20x2.3t 6M 一支多少？',
     lookupArgumentContains: ['c_type'],
-    priceArgumentContains: ['c_type', '100x2.3', '錏輕型鋼'],
+    priceArgumentContains: ['c_type', '100x2.3', '錏輕型鋼', '"customerTierId":2'],
     responseTextPatterns: [
       /24\s*(?:kg|公斤)/u,
-      /B\s*(?:價|級)[\s\S]*(?:26\.8|643\.2)|(?:預設|主價格)[\s\S]*B/u,
+      /(?:價格\s*B|B\s*(?:價|級))[\s\S]*(?:26\.8|643\.2)|(?:預設|主價格)[\s\S]*B/u,
+      /價格\s*B|B\s*價/u,
+      /客戶名稱|客戶/u,
       /600\s*[～~-]\s*643\.2|624(?:\.0)?|643\.2/u,
       /白鐵輕型鋼|黑鐵輕型鋼/u,
     ],
+    responseTextRejectPatterns: [/最高|最貴/u, /單位重/u, /reviewed\s*價格/i],
   },
   {
     envFlag: 'STEEL_OPENAI_OAUTH_H_BEAM_ORAL_TEST',
@@ -271,6 +275,9 @@ describe('Steel OpenAI OAuth oral quote smoke', () => {
         }
         for (const expectedPattern of smokeCase.responseTextPatterns ?? []) {
           expect(response.text).toMatch(expectedPattern);
+        }
+        for (const rejectedPattern of smokeCase.responseTextRejectPatterns ?? []) {
+          expect(response.text).not.toMatch(rejectedPattern);
         }
         expect(serializedResult).not.toMatch(/access_token|authorization|Bearer|authFile/i);
       },

@@ -67,17 +67,17 @@ const instructionPacketFixtures: { [slug: string]: object } = {
     packet_groups: ['c-type-quote-core'],
     selectors: { catalogFamilies: ['c_type'], formulaCodes: ['C'] },
     instruction:
-      'C 型鋼仍必須先查 reviewed product-price rows。材質不明時，AI 可以先塞 productName: 錏輕型鋼 作為通常情況的高信心候選；第一輪回覆必須列出同規格不同材質的 reviewed bounded options（例如白鐵輕型鋼、黑鐵輕型鋼）供確認，第二輪若用戶未指定其他材質/表面，視為確認預設錏輕型鋼。未指定客戶/分級時，查價不可帶 customerTierId；回覆主價格預設用 B 價，仍列出 A/B/C/F 等 returned tiers。C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。',
+      'C 型鋼仍必須先查 reviewed product-price rows。材質不明時，AI 可以先塞 productName: 錏輕型鋼 作為通常情況的高信心候選；第一輪回覆必須列出同規格不同材質的 reviewed bounded options（例如白鐵輕型鋼、黑鐵輕型鋼）供確認，第二輪若用戶未指定其他材質/表面，視為確認預設錏輕型鋼。未指定客戶或找不到客戶價格等級時，查價自動使用 B 價分級 customerTierId 2；回覆提醒目前用價格B，若提供客戶名稱可再查該客戶報價，不要加最高/最貴說明。價格 bullet 用價格，不要寫 reviewed 價格。快速報價已有總重時，不要再另外列單位重。C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。',
     blocking_rules: [
       '不要把 C型鋼 當作 productName filter 卡死價格查詢。',
-      '不要在 customer/tier 未知時把 customerTierId 設為 A/tier 1；查價省略 customerTierId，回覆主價格才用 B 價。',
+      '不要在 customer/tier 未知時把 customerTierId 設為 A/tier 1；查價必須使用 B 價分級 customerTierId 2。',
       '不要在材質不明的第一輪只顯示錏輕型鋼，省略同規格其他材質候選。',
       '不要把 C 型鋼切工/孔費免費規則套用到材料單價、特殊加工或非 C 型鋼品項。',
     ],
     required_lookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
     user_visible_notes: [
       '材質不明時，錏輕型鋼可作高信心暫估候選；第一輪需列出同規格其他材質選項。',
-      '未指定分級時，主價格預設用 B 價，仍列出 returned tiers。',
+      '未指定客戶或找不到客戶價格等級時，查價使用 B 價 customerTierId 2；回覆提醒目前用價格B，提供客戶名稱後可再查該客戶報價，不要加最高/最貴說明；價格 bullet 用價格，不要寫 reviewed 價格。',
     ],
     confirmation_questions: [
       '請確認材質是否為錏輕型鋼；若下一輪未指定其他材質，視為確認預設錏輕型鋼。',
@@ -1468,7 +1468,7 @@ describe('executeSteelTool', () => {
           }),
           userVisibleNotes: [
             '材質不明時，錏輕型鋼可作高信心暫估候選；第一輪需列出同規格其他材質選項。',
-            '未指定分級時，主價格預設用 B 價，仍列出 returned tiers。',
+            '未指定客戶或找不到客戶價格等級時，查價使用 B 價 customerTierId 2；回覆提醒目前用價格B，提供客戶名稱後可再查該客戶報價，不要加最高/最貴說明；價格 bullet 用價格，不要寫 reviewed 價格。',
           ],
           confirmationQuestions: [
             '請確認材質是否為錏輕型鋼；若下一輪未指定其他材質，視為確認預設錏輕型鋼。',
@@ -1494,7 +1494,7 @@ describe('executeSteelTool', () => {
     expect(result.data.userVisibleNotes).toEqual(
       expect.arrayContaining([
         '材質不明時，錏輕型鋼可作高信心暫估候選；第一輪需列出同規格其他材質選項。',
-        '未指定分級時，主價格預設用 B 價，仍列出 returned tiers。',
+        '未指定客戶或找不到客戶價格等級時，查價使用 B 價 customerTierId 2；回覆提醒目前用價格B，提供客戶名稱後可再查該客戶報價，不要加最高/最貴說明；價格 bullet 用價格，不要寫 reviewed 價格。',
         '產品價格列若是 kg_per_m，售價是每 kg，必須先依長度換算重量再乘售價。',
         'C 型鋼切工與孔費目前採 reviewed true-zero 預設。',
       ]),

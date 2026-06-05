@@ -216,6 +216,145 @@ describe('createSteelHandlers', () => {
     });
   });
 
+  it('replaces field-count-only workbook text with a concise order and change summary', async () => {
+    const operations = [
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'customer',
+        value: '龍頂',
+      },
+    ];
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '已更新 workbook：19 個欄位',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: { operations },
+    }));
+    const workbookPatch = {
+      workbook: { id: 'wb_1', version: 2, sheets: [] },
+      changedPaths: [
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'customer_original_item_name',
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'normalized_item_name',
+        },
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'search_keywords' },
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'customer' },
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'customer_tier' },
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'material_unit_price' },
+        { sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'subtotal' },
+      ],
+      changedFieldSummary: [
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'customer_original_item_name',
+          label: '客戶原始品名',
+          previousValue: null,
+          nextValue: 'C100x50x20x2.3t 6M',
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'normalized_item_name',
+          label: '標準化品名',
+          previousValue: null,
+          nextValue: '錏輕型鋼 C100x50x20x2.3t 6M',
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'search_keywords',
+          label: '搜尋關鍵字',
+          previousValue: null,
+          nextValue: '錏輕型鋼 100x2.3; 鍍鋅輕型鋼 100x2.3; 白鐵輕型鋼 100x2.3; 黑鐵輕型鋼 100x2.3',
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'customer',
+          label: '客戶',
+          previousValue: null,
+          nextValue: '龍頂',
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'customer_tier',
+          label: '分級',
+          previousValue: 'B',
+          nextValue: 'A',
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          label: '材料單價',
+          previousValue: 26.8,
+          nextValue: 26,
+        },
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          label: '小計',
+          previousValue: 643.2,
+          nextValue: 624,
+        },
+      ],
+    };
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: { id: 'wb_1', version: 1, sheets: [] },
+      })),
+      patch: jest.fn(async () => workbookPatch),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: '客戶是龍頂' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('訂單資訊'),
+        workbookPatch,
+      }),
+    );
+    const responseText = res.json.mock.calls[0]?.[0]?.text as string;
+    expect(responseText).toContain('訂單資訊：C100x50x20x2.3t 6M；錏輕型鋼');
+    expect(responseText).toContain('客戶：龍頂');
+    expect(responseText).toContain('小計：624');
+    expect(responseText).toContain('改動重點：已更新客戶、分級、材料單價、小計');
+    expect(responseText).toContain('7 個欄位');
+    expect(responseText).not.toContain('空白 ->');
+    expect(responseText).not.toContain('搜尋關鍵字');
+    expect(responseText).not.toContain('鍍鋅輕型鋼 100x2.3');
+    expect(responseText).not.toBe('已更新 workbook：19 個欄位');
+  });
+
   it('sends workbook structure context so AI resolves visible summary labels to internal patch targets', async () => {
     const operations = [
       {

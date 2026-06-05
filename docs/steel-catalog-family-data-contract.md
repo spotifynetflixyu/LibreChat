@@ -235,9 +235,19 @@ Catalog mapping notes:
      `productName: 錏輕型鋼` as the usual high-confidence provisional candidate,
      while still showing bounded alternatives such as 白鐵輕型鋼 and 黑鐵輕型鋼
      for confirmation.
-   - When customer/tier is not specified, AI must omit `customerTierId` from the
-     lookup so all reviewed tiers can return. The response primary/default
-     provisional price is B, while returned A/B/C/F options remain visible.
+   - When customer/tier is not specified, or customer lookup cannot find a usable
+     customer price tier, AI must use the global default B tier by passing
+     `customerTierId: 2` to price lookup. The response should keep this concise,
+     for example `目前用 價格B：26.8 元/kg`, and separately mention that providing
+     a customer name allows a customer quote price lookup. Do not add
+     highest/most-expensive wording unless the user asks. If customer lookup
+     returns a usable tier, AI must use that customer tier instead of the B
+     default.
+   - User-facing price bullets should use `價格`, not `reviewed 價格`.
+     Reviewed/source status belongs in the source line or note text.
+   - In quick price responses, if total piece weight is shown, do not also list
+     unit weight as a separate bullet. Prefer one compact line such as
+     `6M 一支重量：4 × 6 = 24 kg`.
    - In a follow-up turn after material alternatives were shown, if the user
      does not specify another C 型鋼 material/surface, AI treats the default
      錏輕型鋼 assumption as confirmed for the continuing quote context.
