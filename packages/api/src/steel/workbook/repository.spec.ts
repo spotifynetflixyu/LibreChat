@@ -34,18 +34,13 @@ describe('createMongooseSteelWorkbookRepository', () => {
     expect(created.workbook.id).toBe('wb_real_schema_1');
     expect(read.workbook.sheets.map((sheet) => sheet.label)).toEqual([
       '系統訂單',
+      '報價明細',
       '總結',
       '人工複核',
-      '報價明細',
       '價格來源',
       '判讀備註',
-      '給客戶',
+      '給客戶用',
     ]);
-    expect(
-      read.workbook.sheets.find((sheet) => sheet.id === 'quote_details')?.rows[0]?.cells,
-    ).toMatchObject({
-      line_no: 1,
-      material_unit_price: null,
-    });
+    expect(read.workbook.sheets.every((sheet) => sheet.rows.length === 0)).toBe(true);
   });
 });

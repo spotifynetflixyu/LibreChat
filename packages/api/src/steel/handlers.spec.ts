@@ -1,8 +1,39 @@
 import { createSteelAdminHandlers, createSteelHandlers } from './handlers';
 import { logger } from '@librechat/data-schemas';
 import { SteelConversationAccessError } from './conversations/service';
+import { createSteelWorkbookService } from './workbook/service';
 
 import type { Request, Response } from 'express';
+import type {
+  SteelWorkbookCreateRecord,
+  SteelWorkbookPatchRecord,
+  SteelWorkbookRecord,
+  SteelWorkbookRepository,
+} from './workbook/service';
+
+class MemorySteelWorkbookRepository implements SteelWorkbookRepository {
+  readonly workbooks = new Map<string, SteelWorkbookRecord>();
+  readonly patches: SteelWorkbookPatchRecord[] = [];
+
+  async create(record: SteelWorkbookCreateRecord): Promise<SteelWorkbookRecord> {
+    this.workbooks.set(record.workbookId, record);
+    return record;
+  }
+
+  async findByWorkbookId(workbookId: string): Promise<SteelWorkbookRecord | null> {
+    return this.workbooks.get(workbookId) ?? null;
+  }
+
+  async update(record: SteelWorkbookRecord): Promise<SteelWorkbookRecord> {
+    this.workbooks.set(record.workbookId, record);
+    return record;
+  }
+
+  async createPatch(record: SteelWorkbookPatchRecord): Promise<SteelWorkbookPatchRecord> {
+    this.patches.push(record);
+    return record;
+  }
+}
 
 function createResponse() {
   const res = {
@@ -13,6 +44,38 @@ function createResponse() {
     status: jest.Mock;
     json: jest.Mock;
   };
+}
+
+function createStreamResponse() {
+  const chunks: string[] = [];
+  const res = {
+    status: jest.fn().mockReturnThis(),
+    setHeader: jest.fn().mockReturnThis(),
+    write: jest.fn((chunk: string) => {
+      chunks.push(chunk);
+      return true;
+    }),
+    end: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+  };
+  return {
+    chunks,
+    res: res as unknown as Response & {
+      status: jest.Mock;
+      setHeader: jest.Mock;
+      write: jest.Mock;
+      end: jest.Mock;
+      json: jest.Mock;
+    },
+  };
+}
+
+function parseStreamChunks(chunks: readonly string[]) {
+  return chunks
+    .join('')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as unknown);
 }
 
 describe('createSteelHandlers', () => {
@@ -53,6 +116,180 @@ describe('createSteelHandlers', () => {
       unsupportedSettings: [],
       warnings: [],
     });
+  });
+
+  it('streams Steel chat progress, lookup/tool status, text, and final response as NDJSON', async () => {
+    const executeToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'lookup_quote_rules',
+      data: { ruleSummary: 'C 型鋼 lookup rules' },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const sendChat = jest.fn(async (options) => {
+      options.onReasoningSummary?.('先查 catalog key，再查報價規則。');
+      await options.executeSteelToolCall?.({
+        toolName: 'lookup_quote_rules',
+        arguments: { catalogFamilies: ['c_type'] },
+        providerToolCallId: 'call_lookup_1',
+        runState: { maxCalls: 8, callsUsed: 0 },
+      });
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '小計：643.2',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch: {
+          operations: [
+            {
+              op: 'set_cell' as const,
+              sheetId: 'quote_details' as const,
+              rowId: 'line_1',
+              columnKey: 'subtotal',
+              value: 643.2,
+            },
+          ],
+        },
+      };
+    });
+    const workbookPatch = {
+      workbook: { id: 'wb_1', version: 2, sheets: [] },
+      changedPaths: [{ sheetId: 'quote_details' as const, rowId: 'line_1', columnKey: 'subtotal' }],
+      changedFieldSummary: [
+        {
+          sheetId: 'quote_details' as const,
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          label: '小計',
+          previousValue: null,
+          nextValue: 643.2,
+        },
+      ],
+    };
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: { id: 'wb_1', version: 1, sheets: [] },
+      })),
+      patch: jest.fn(async () => workbookPatch),
+    };
+    const handlers = createSteelHandlers({
+      executeToolCall,
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: 'wb_1',
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: 'C型鋼 C100 6M 一支多少' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/x-ndjson');
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'progress', stage: 'request_validated' }),
+        expect.objectContaining({
+          type: 'reasoning',
+          summary: '先查 catalog key，再查報價規則。',
+        }),
+        expect.objectContaining({
+          type: 'lookup',
+          status: 'started',
+          toolName: 'lookup_quote_rules',
+        }),
+        expect.objectContaining({
+          type: 'lookup',
+          status: 'completed',
+          toolName: 'lookup_quote_rules',
+          ok: true,
+        }),
+        expect.objectContaining({
+          type: 'tool',
+          status: 'completed',
+          toolName: 'patch_workbook',
+          ok: true,
+        }),
+        expect.objectContaining({ type: 'text', delta: '小計：643.2' }),
+        expect.objectContaining({
+          type: 'done',
+          response: expect.objectContaining({
+            text: '小計：643.2',
+            workbookPatch,
+          }),
+        }),
+      ]),
+    );
+    expect(executeToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'lookup_quote_rules',
+      }),
+    );
+    expect(res.end).toHaveBeenCalled();
+  });
+
+  it('streams a fatal Steel tool error without hiding the tool failure summary', async () => {
+    const executeToolCall = jest.fn(async (options) => ({
+      ok: false as const,
+      toolName: options.toolName,
+      errorCategory: 'repository_error' as const,
+      errorSummary: 'Connection terminated due to connection timeout',
+      durationMs: 5000,
+      redactionVersion: 1 as const,
+    }));
+    const sendChat = jest.fn(async (options) => {
+      await options.executeSteelToolCall?.({
+        toolName: 'lookup_quote_rules',
+        arguments: { catalogFamilies: ['c_type'] },
+        providerToolCallId: 'call_lookup_1',
+        runState: { maxCalls: 8, callsUsed: 0 },
+      });
+      throw new Error(
+        'Steel tool lookup_quote_rules failed: Connection terminated due to connection timeout',
+      );
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall,
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: 'C型鋼 C100 6M 一支多少' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'lookup',
+          status: 'failed',
+          toolName: 'lookup_quote_rules',
+          message: 'lookup_quote_rules failed: Connection terminated due to connection timeout',
+          ok: false,
+        }),
+        expect.objectContaining({
+          type: 'error',
+          errorSummary:
+            'Steel tool lookup_quote_rules failed: Connection terminated due to connection timeout',
+        }),
+      ]),
+    );
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
+    expect(res.end).toHaveBeenCalled();
   });
 
   it('applies provider workbook patch operations before returning the OAuth chat response', async () => {
@@ -353,6 +590,648 @@ describe('createSteelHandlers', () => {
     expect(responseText).not.toContain('搜尋關鍵字');
     expect(responseText).not.toContain('鍍鋅輕型鋼 100x2.3');
     expect(responseText).not.toBe('已更新 workbook：19 個欄位');
+  });
+
+  it('returns subtotal info and applies AI workbook patch data to matching fields', async () => {
+    const repository = new MemorySteelWorkbookRepository();
+    const workbookService = createSteelWorkbookService({
+      id: () => 'wb_real_patch_1',
+      now: () => new Date('2026-06-05T00:00:00.000Z'),
+      repository,
+    });
+    const created = await workbookService.create({ conversationMetaId: 'steel_meta_1' });
+    const operations = [
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'line_no',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'customer_original_item_name',
+        value: 'C100x50x20x2.3t 6M',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'normalized_item_name',
+        value: '錏輕型鋼 100*2.3',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'adopted_product_price_item',
+        value: 'CCG10023 錏輕型鋼 100*2.3',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'material_category',
+        value: 'c_type',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'spec',
+        value: 'C100x50x20x2.3t',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'finished_length_m',
+        value: 6,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'quantity',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'unit',
+        value: '支',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'unit_weight_kg_per_m',
+        value: 4,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'unit_weight_kg',
+        value: 24,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'total_weight_kg',
+        value: 24,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'weight_algorithm',
+        value: '4 kg/m × 6M = 24 kg',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'customer',
+        value: '龍頂',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'customer_tier',
+        value: 'A級',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'material_unit_price',
+        value: 26,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'material_unit_price_field',
+        value: '售價A',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'material_pricing_unit',
+        value: 'Kg',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'billable_quantity',
+        value: 24,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'subtotal',
+        value: 624,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'confidence',
+        value: '中',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'low_confidence_reason',
+        value: '需確認龍頂客戶全名與材質是否為錏輕型鋼',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'decision_evidence',
+        value: '產品價格.xlsx CCG10023；龍頂客戶候選皆A級',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'quote_details' as const,
+        rowId: 'line_1',
+        columnKey: 'suggested_review',
+        value: '確認客戶全名與材質後轉正式報價',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'customer',
+        value: '龍頂',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'customer_tier',
+        value: 'A級',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'customer_original_item_name',
+        value: 'C100x50x20x2.3t 6M',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'normalized_item_name',
+        value: '錏輕型鋼 100*2.3',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'adopted_product_price_item',
+        value: 'CCG10023 錏輕型鋼 100*2.3',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'adopted_unit_price',
+        value: 26,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'unit_price_field',
+        value: '售價A',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'source_file',
+        value: '產品價格.xlsx',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'price_sources' as const,
+        rowId: 'source_1',
+        columnKey: 'confidence',
+        value: '中',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'interpretation_notes' as const,
+        rowId: 'note_1',
+        columnKey: 'item',
+        value: 'C型鋼報價',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'interpretation_notes' as const,
+        rowId: 'note_1',
+        columnKey: 'content',
+        value: 'C100 先採錏輕型鋼 100*2.3；6M 重量 24kg；小計 624。',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'interpretation_notes' as const,
+        rowId: 'note_1',
+        columnKey: 'confidence',
+        value: '中',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'line_no',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'item_spec',
+        value: '錏輕型鋼 100*2.3',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'unit',
+        value: '支',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'quantity',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'unit_weight',
+        value: 24,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'total_quantity',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'unit_price',
+        value: 624,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'pricing_basis',
+        value: '暫估報價',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'length',
+        value: 6000,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'category',
+        value: 'c_type',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
+        columnKey: 'note',
+        value: '暫估；需確認龍頂客戶全名與材質是否為錏輕型鋼；待確認後轉正式訂單',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_customer',
+        columnKey: 'item',
+        value: '客戶',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_customer',
+        columnKey: 'value',
+        value: '龍頂',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_customer',
+        columnKey: 'note',
+        value: '暫估；確認客戶後可重算',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_customer_tier',
+        columnKey: 'item',
+        value: '分級',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_customer_tier',
+        columnKey: 'value',
+        value: 'A級',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_customer_tier',
+        columnKey: 'note',
+        value: '暫估；確認客戶價格等級後可重算',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_total_amount',
+        columnKey: 'item',
+        value: '暫估小計',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_total_amount',
+        columnKey: 'value',
+        value: 624,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'summary' as const,
+        rowId: 'summary_total_amount',
+        columnKey: 'note',
+        value: '待確認材質、客戶與分級後轉正式報價',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'line_no',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'issue_type',
+        value: '暫估報價確認',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'estimated_value',
+        value: '小計 624',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'low_confidence_reason',
+        value: '需確認龍頂客戶全名與材質是否為錏輕型鋼',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'inferred_evidence',
+        value: '產品價格.xlsx CCG10023；龍頂客戶候選皆A級',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'confirmation_needed',
+        value: '確認客戶全名與材質後轉正式報價',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'amount_impact',
+        value: 624,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'manual_review' as const,
+        rowId: 'review_1',
+        columnKey: 'suggested_action',
+        value: '確認後更新正式報價',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'line_no',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'item_spec',
+        value: '錏輕型鋼 100*2.3',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'quantity',
+        value: 1,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'unit',
+        value: '支',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'unit_price',
+        value: 624,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'subtotal',
+        value: 624,
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'customer_quote' as const,
+        rowId: 'customer_1',
+        columnKey: 'note',
+        value: '暫估；需確認龍頂客戶全名與材質是否為錏輕型鋼',
+      },
+    ];
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '已更新 workbook：22 個欄位',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: { operations },
+    }));
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: created.workbook.id,
+        workbookVersion: created.workbook.version,
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: '客戶是龍頂，C100 用A價重算' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const response = res.json.mock.calls[0]?.[0];
+    expect(response.text).toContain('小計：624');
+    expect(response.text).toContain('改動重點：已更新客戶、分級、材料單價、小計');
+    const quoteDetails = response.workbookPatch.workbook.sheets.find(
+      (sheet) => sheet.id === 'quote_details',
+    );
+    const priceSources = response.workbookPatch.workbook.sheets.find(
+      (sheet) => sheet.id === 'price_sources',
+    );
+    const systemOrder = response.workbookPatch.workbook.sheets.find(
+      (sheet) => sheet.id === 'system_order',
+    );
+    const summary = response.workbookPatch.workbook.sheets.find((sheet) => sheet.id === 'summary');
+    const manualReview = response.workbookPatch.workbook.sheets.find(
+      (sheet) => sheet.id === 'manual_review',
+    );
+    const interpretationNotes = response.workbookPatch.workbook.sheets.find(
+      (sheet) => sheet.id === 'interpretation_notes',
+    );
+    const customerQuote = response.workbookPatch.workbook.sheets.find(
+      (sheet) => sheet.id === 'customer_quote',
+    );
+
+    expect(quoteDetails.rows.find((row) => row.id === 'line_1')?.cells).toMatchObject({
+      line_no: 1,
+      customer_original_item_name: 'C100x50x20x2.3t 6M',
+      normalized_item_name: '錏輕型鋼 100*2.3',
+      adopted_product_price_item: 'CCG10023 錏輕型鋼 100*2.3',
+      material_category: 'c_type',
+      spec: 'C100x50x20x2.3t',
+      finished_length_m: 6,
+      quantity: 1,
+      unit: '支',
+      unit_weight_kg_per_m: 4,
+      unit_weight_kg: 24,
+      total_weight_kg: 24,
+      customer: '龍頂',
+      customer_tier: 'A級',
+      material_unit_price: 26,
+      material_unit_price_field: '售價A',
+      material_pricing_unit: 'Kg',
+      billable_quantity: 24,
+      subtotal: 624,
+    });
+    expect(priceSources.rows.find((row) => row.id === 'source_1')?.cells).toMatchObject({
+      customer: '龍頂',
+      customer_tier: 'A級',
+      customer_original_item_name: 'C100x50x20x2.3t 6M',
+      normalized_item_name: '錏輕型鋼 100*2.3',
+      adopted_product_price_item: 'CCG10023 錏輕型鋼 100*2.3',
+      adopted_unit_price: 26,
+      unit_price_field: '售價A',
+      source_file: '產品價格.xlsx',
+      confidence: '中',
+    });
+    expect(systemOrder.rows.find((row) => row.id === 'order_1')?.cells).toMatchObject({
+      line_no: 1,
+      item_spec: '錏輕型鋼 100*2.3',
+      unit: '支',
+      quantity: 1,
+      unit_weight: 24,
+      total_quantity: 1,
+      unit_price: 624,
+      pricing_basis: '暫估報價',
+      length: 6000,
+      category: 'c_type',
+      note: expect.stringContaining('待確認'),
+    });
+    expect(summary.rows.find((row) => row.id === 'summary_customer')?.cells).toMatchObject({
+      item: '客戶',
+      value: '龍頂',
+      note: expect.stringContaining('暫估'),
+    });
+    expect(summary.rows.find((row) => row.id === 'summary_customer_tier')?.cells).toMatchObject({
+      item: '分級',
+      value: 'A級',
+      note: expect.stringContaining('暫估'),
+    });
+    expect(summary.rows.find((row) => row.id === 'summary_total_amount')?.cells).toMatchObject({
+      item: '暫估小計',
+      value: 624,
+      note: expect.stringContaining('待確認'),
+    });
+    expect(manualReview.rows.find((row) => row.id === 'review_1')?.cells).toMatchObject({
+      line_no: 1,
+      issue_type: '暫估報價確認',
+      estimated_value: '小計 624',
+      low_confidence_reason: '需確認龍頂客戶全名與材質是否為錏輕型鋼',
+      inferred_evidence: '產品價格.xlsx CCG10023；龍頂客戶候選皆A級',
+      confirmation_needed: '確認客戶全名與材質後轉正式報價',
+      amount_impact: 624,
+      suggested_action: '確認後更新正式報價',
+    });
+    expect(interpretationNotes.rows.find((row) => row.id === 'note_1')?.cells).toMatchObject({
+      item: 'C型鋼報價',
+      content: 'C100 先採錏輕型鋼 100*2.3；6M 重量 24kg；小計 624。',
+      confidence: '中',
+    });
+    expect(customerQuote.rows.find((row) => row.id === 'customer_1')?.cells).toMatchObject({
+      line_no: 1,
+      item_spec: '錏輕型鋼 100*2.3',
+      quantity: 1,
+      unit: '支',
+      unit_price: 624,
+      subtotal: 624,
+      note: expect.stringContaining('暫估'),
+    });
   });
 
   it('sends workbook structure context so AI resolves visible summary labels to internal patch targets', async () => {

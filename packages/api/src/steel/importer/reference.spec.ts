@@ -18,9 +18,9 @@ describe('Steel reference data importer', () => {
       ]),
     );
     expect(plan.workbookOnlySources).toEqual(
-      expect.arrayContaining(['訂單參考.xlsx', '系統訂單.xlsx']),
+      expect.arrayContaining(['訂單參考.xlsm', '系統訂單.xlsx']),
     );
-    expect(plan.factSources).not.toContain('訂單參考.xlsx');
+    expect(plan.factSources).not.toContain('訂單參考.xlsm');
     expect(plan.factSources).not.toContain('系統訂單.xlsx');
   });
 

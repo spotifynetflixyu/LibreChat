@@ -180,7 +180,7 @@ const factSources = [
   '公式編號.xlsx',
   'H型鋼.txt',
 ];
-const workbookOnlySources = ['訂單參考.xlsx', '系統訂單.xlsx'];
+const workbookOnlySources = ['訂單參考.xlsm', '系統訂單.xlsx'];
 const customerImportLogId = 'docs-reference-customers-v1';
 const priceImportLogId = 'docs-reference-product-prices-v1';
 const cuttingImportLogId = 'docs-reference-cutting-prices-v1';

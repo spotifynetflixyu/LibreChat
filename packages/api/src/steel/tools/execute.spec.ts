@@ -1507,6 +1507,141 @@ describe('executeSteelTool', () => {
     );
   });
 
+  it('returns quote defaults for multiple catalog keys even when contexts have no row refs', async () => {
+    const client = createClient([
+      instructionRows(['c-type-basic-quote-zh-v1', 'h-type-length-surcharge-zh-v1']),
+      [
+        {
+          id: '55',
+          default_type: 'true_zero_rule',
+          origin_table: 'tasks/steel-data-rules-architecture/instruction-packets.md',
+          origin_id: 'c-type-free-cutting-hole-v1',
+          origin_revision: '1',
+          scope_type: 'catalog_family',
+          customer_id: null,
+          customer_tier_id: null,
+          catalog_family: 'c_type',
+          product_family: null,
+          charge_type: null,
+          formula_code: 'C',
+          selector: { catalogFamily: 'c_type', chargeTypes: ['cutting', 'hole'] },
+          effect: 'true_zero_rule',
+          default_parameters: [
+            {
+              parameterKey: 'instruction',
+              value: 'C 型鋼切工與孔費預設免費',
+            },
+          ],
+          priority: '10',
+          confidence: 'high',
+          active: true,
+          review_state: 'reviewed',
+          source_refs: [
+            {
+              channel: 'repo_docs',
+              factType: 'quote_default',
+              sourceFile: 'tasks/steel-data-rules-architecture/instruction-packets.md',
+              locator: 'c-type-basic-quote-zh-v1',
+              canonicalKey: 'c_type_free_cutting_hole',
+            },
+          ],
+        },
+        {
+          id: '56',
+          default_type: 'price_adjustment_rule',
+          origin_table: 'tasks/steel-data-rules-architecture/instruction-packets.md',
+          origin_id: 'h-type-length-surcharge-v1',
+          origin_revision: '1',
+          scope_type: 'catalog_family',
+          customer_id: null,
+          customer_tier_id: null,
+          catalog_family: 'h_beam',
+          product_family: null,
+          charge_type: null,
+          formula_code: 'H',
+          selector: { catalogFamily: 'h_beam', nonStandardLengthsM: [7, 8, 11, 13, 14, 15] },
+          effect: 'material_surcharge',
+          default_parameters: [
+            {
+              parameterKey: 'instruction',
+              value: 'H 型鋼非常規米數若無 exact reviewed row 才加 0.3 元/kg',
+            },
+          ],
+          priority: '20',
+          confidence: 'high',
+          active: true,
+          review_state: 'reviewed',
+          source_refs: [
+            {
+              channel: 'repo_docs',
+              factType: 'quote_default',
+              sourceFile: 'tasks/steel-data-rules-architecture/instruction-packets.md',
+              locator: 'h-type-length-surcharge-zh-v1',
+              canonicalKey: 'h_beam_non_standard_length_surcharge',
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'lookup_quote_rules',
+      arguments: {
+        taskTypes: ['material_price_lookup', 'default_selection'],
+        evidenceSummary: '同一張訂單同時有 C 型鋼與 H 型鋼',
+        catalogContexts: [
+          {
+            packetGroupHints: ['c-type-quote-core'],
+            catalogCandidates: ['c_type'],
+            formulaCandidates: ['C'],
+            processingTypes: ['cutting', 'holes'],
+          },
+          {
+            packetGroupHints: ['h-type-quote-core'],
+            catalogCandidates: ['h_beam'],
+            formulaCandidates: ['H'],
+            processingTypes: ['material'],
+          },
+        ],
+        limit: 10,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls).toHaveLength(2);
+    expect(client.calls[1]?.values).toEqual([
+      'reviewed',
+      'c_type',
+      'h_beam',
+      'cutting',
+      'hole',
+      'material',
+      'C',
+      'H',
+      10,
+    ]);
+    expect(result.data.quoteDefaults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          defaultId: 'quote_default:55',
+          catalogFamilies: ['c_type'],
+          formulaCodes: ['C'],
+          instruction: 'C 型鋼切工與孔費預設免費',
+        }),
+        expect.objectContaining({
+          defaultId: 'quote_default:56',
+          catalogFamilies: ['h_beam'],
+          formulaCodes: ['H'],
+          instruction: 'H 型鋼非常規米數若無 exact reviewed row 才加 0.3 元/kg',
+        }),
+      ]),
+    );
+  });
+
   it('runs a C-type order context through instructions, price, defaults, and formula lookups', async () => {
     const client = createClient([
       instructionRows(['c-type-basic-quote-zh-v1']),

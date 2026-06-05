@@ -22,7 +22,9 @@
 1. Write failing parser tests using current `docs/reference` files.
 2. Assert these source classifications:
    - DB fact sources: `客戶資料.xlsx`, `產品價格.xlsx`, `切工價錢.xlsx`, `公式編號.xlsx`, `H型鋼.txt`.
-   - Workbook-only references: `訂單參考.xlsx`, `系統訂單.xlsx`.
+   - Workbook-only references: `訂單參考.xlsm`, `系統訂單.xlsx`. `訂單參考.xlsm`
+     is a development reference for the code-owned workbook template; it is not
+     imported into DB facts or read by runtime workbook initialization.
 3. Assert counts are non-trivial: customer rows, tiered price rows, cutting rows, formula rows, and defaults.
 4. Assert `0.00` prices become `valueState: "unknown"` and `reviewState: "needs_review"`, not true zero.
 5. Implement the minimal parser.

@@ -18,7 +18,7 @@ const steelToolDefinitions: SteelToolDefinition[] = [
   {
     name: 'lookup_quote_rules',
     description:
-      'Retrieve reviewed Steel instruction packets and quote defaults for a batched interpreted order context.',
+      'Retrieve reviewed Steel instruction packets plus quote defaults for one batched interpreted order context; supports multiple catalog/material keys in catalogContexts.',
     argsSchema: steelToolArgsSchemas.lookup_quote_rules,
   },
   {

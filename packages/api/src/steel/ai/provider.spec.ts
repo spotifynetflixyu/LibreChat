@@ -89,6 +89,64 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(JSON.stringify(response)).not.toMatch(/authFile|authorization|access_token/i);
   });
 
+  it('requests provider reasoning summaries when a stream summary callback is present', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [
+        { type: 'reasoning' as const, text: '先辨識 catalog key，再查 reviewed rules。' },
+        { type: 'text' as const, text: 'ok' },
+      ],
+      finishReason: { unified: 'stop' as const, raw: 'stop' },
+      usage: {
+        inputTokens: {
+          total: 5,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 3,
+          text: 3,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_steel_reasoning_summary' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const onReasoningSummary = jest.fn();
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'C型鋼一支多少？' }],
+      onReasoningSummary,
+      reasoningEffort: 'medium',
+    });
+
+    expect(doGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerOptions: {
+          openai: {
+            reasoningEffort: 'medium',
+            reasoningSummary: 'auto',
+          },
+        },
+      }),
+    );
+    expect(onReasoningSummary).toHaveBeenCalledWith('先辨識 catalog key，再查 reviewed rules。');
+    expect(response.text).toBe('ok');
+  });
+
   it('serializes user file attachments as provider file parts', async () => {
     const fileData = new TextEncoder().encode('TXT_SENTINEL_7F3A 中文 12345');
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
@@ -346,11 +404,26 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       'Use canonical catalog family keys such as h_beam, c_type, and angle',
     );
     expect(systemPrompt.content).toContain(
-      'after choosing a catalog/category key, call lookup_quote_rules',
+      'After choosing a catalog/category key, call lookup_quote_rules',
+    );
+    expect(systemPrompt.content).toContain(
+      'lookup_quote_rules returns both reviewed instruction packets and reviewed quote defaults',
+    );
+    expect(systemPrompt.content).toContain(
+      'include all detected materials/catalog keys in one catalogContexts array',
+    );
+    expect(systemPrompt.content).toContain(
+      'call search_customers in the initial lookup round when available',
+    );
+    expect(systemPrompt.content).toContain(
+      'customerContext to lookup_quote_rules before price lookup',
+    );
+    expect(systemPrompt.content).toContain(
+      'lookup_defaults is only for legacy/defaults-only follow-up cases',
     );
     expect(systemPrompt.content).toContain('lookup_instructions is legacy-compatible');
     expect(systemPrompt.content).toContain(
-      'When catalog family wording is unclear, call lookup_catalog_families for reviewed vocabulary candidates',
+      'For oral material/category price, formula, or rules requests, call lookup_catalog_families before lookup_quote_rules',
     );
     expect(systemPrompt.content).toContain(
       'Backend does not decide oral wording to catalog_family mappings',
@@ -365,6 +438,209 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       role: 'user',
       content: [{ type: 'text', text: '請說明亞L30x30的推論流程' }],
     });
+  });
+
+  it('requires catalog-family lookup before quote rules and price lookup for oral material price requests', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_catalog_lookup',
+            toolName: 'lookup_catalog_families',
+            input: JSON.stringify({
+              searchText: 'C型鋼',
+              limit: 5,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 20,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 5,
+            text: 5,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_catalog_lookup' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_quote_rules_after_catalog',
+            toolName: 'lookup_quote_rules',
+            input: JSON.stringify({
+              taskTypes: ['candidate_generation', 'material_price_lookup'],
+              evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
+              catalogContexts: [
+                {
+                  catalogCandidates: ['c_type'],
+                  packetGroupHints: ['c-type-quote-core'],
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 30,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 6,
+            text: 6,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_quote_rules_after_catalog' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_price_after_rules',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({
+              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
+              catalogFamilies: ['c_type'],
+              candidateQueries: [
+                {
+                  queryId: 'c-type-100x23',
+                  specKeyContains: '100x2.3',
+                  confidence: 'high',
+                  reason: 'Use selected c_type catalog key after reviewed rules lookup',
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 40,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 7,
+            text: 7,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_price_after_rules' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '依 C 型鋼 catalog key 與規則查到候選。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 9,
+            text: 9,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_catalog_sequence_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
+      ok: true as const,
+      toolName: toolName as
+        | 'lookup_catalog_families'
+        | 'lookup_quote_rules'
+        | 'search_price_candidates',
+      data:
+        toolName === 'lookup_catalog_families'
+          ? {
+              catalogFamilyCandidates: [
+                {
+                  key: 'c_type',
+                  displayName: 'C 型鋼',
+                  aliases: ['C型鋼', 'C鋼', '輕型鋼'],
+                },
+              ],
+            }
+          : toolName === 'search_price_candidates'
+            ? {
+                priceCandidates: [
+                  {
+                    productName: '錏輕型鋼',
+                    specKey: '100x2.3',
+                    unitPrice: 26.8,
+                  },
+                ],
+              }
+            : {
+                instructionPackets: [
+                  {
+                    slug: 'c-type-basic-quote-zh-v1',
+                    packetGroups: ['c-type-quote-core'],
+                  },
+                ],
+              },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    expect(
+      (doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
+    ).toEqual(['lookup_catalog_families', 'search_customers']);
+    expect((doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
+      type: 'required',
+    });
+    expect(
+      (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
+    ).toEqual(['lookup_quote_rules']);
+    expect(
+      (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
+    ).toEqual(['search_price_candidates']);
+    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
+      'lookup_catalog_families',
+      'lookup_quote_rules',
+      'search_price_candidates',
+    ]);
+    expect(response.text).toBe('依 C 型鋼 catalog key 與規則查到候選。');
   });
 
   it('executes AI-callable Steel business tools and continues with tool results', async () => {
@@ -1066,28 +1342,18 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('uses a customer lookup tier instead of the B default when a customer tier is found', async () => {
+  it('uses a first-round customer lookup tier in quote rules and price lookup', async () => {
     const doGenerate = jest
       .fn()
       .mockResolvedValueOnce({
         content: [
           {
             type: 'tool-call',
-            toolCallId: 'steel_quote_rules_unknown_customer',
-            toolName: 'lookup_quote_rules',
+            toolCallId: 'steel_catalog_lookup',
+            toolName: 'lookup_catalog_families',
             input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: '龍頂 C型鋼 100x50x20 2.3t 一支多少',
-              customerContext: {
-                customerName: '龍頂',
-                tierKnown: false,
-              },
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
+              searchText: 'C型鋼',
+              limit: 5,
             }),
           },
           {
@@ -1114,7 +1380,48 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             reasoning: undefined,
           },
         },
-        response: { id: 'resp_quote_rules_customer_lookup' },
+        response: { id: 'resp_catalog_customer_lookup' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_quote_rules_customer',
+            toolName: 'lookup_quote_rules',
+            input: JSON.stringify({
+              taskTypes: ['candidate_generation', 'material_price_lookup'],
+              evidenceSummary: '龍頂 C型鋼 100x50x20 2.3t 一支多少',
+              customerContext: {
+                customerId: 10,
+                customerName: '龍頂',
+                customerTierId: 1,
+                tierKnown: true,
+              },
+              catalogContexts: [
+                {
+                  catalogCandidates: ['c_type'],
+                  packetGroupHints: ['c-type-quote-core'],
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 35,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_quote_rules_customer' },
         warnings: [],
       })
       .mockResolvedValueOnce({
@@ -1141,7 +1448,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
         usage: {
           inputTokens: {
-            total: 35,
+            total: 40,
             noCache: undefined,
             cacheRead: undefined,
             cacheWrite: undefined,
@@ -1188,12 +1495,13 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true as const,
-        toolName: 'lookup_quote_rules' as const,
+        toolName: 'lookup_catalog_families' as const,
         data: {
-          instructionPackets: [
+          catalogFamilyCandidates: [
             {
-              slug: 'c-type-basic-quote-zh-v1',
-              packetGroups: ['c-type-quote-core'],
+              key: 'c_type',
+              displayName: 'C 型鋼',
+              aliases: ['C型鋼', 'C鋼', '輕型鋼'],
             },
           ],
         },
@@ -1214,6 +1522,21 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                 code: 'A',
                 name: 'A級',
               },
+            },
+          ],
+        },
+        sourceRefs: [],
+        durationMs: 1,
+        redactionVersion: 1 as const,
+      })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        toolName: 'lookup_quote_rules' as const,
+        data: {
+          instructionPackets: [
+            {
+              slug: 'c-type-basic-quote-zh-v1',
+              packetGroups: ['c-type-quote-core'],
             },
           ],
         },
@@ -1250,11 +1573,27 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     });
 
     expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_quote_rules',
+      'lookup_catalog_families',
       'search_customers',
+      'lookup_quote_rules',
       'search_price_candidates',
     ]);
+    expect(
+      (doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
+    ).toEqual(['lookup_catalog_families', 'search_customers']);
+    expect(
+      (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
+    ).toEqual(['lookup_quote_rules']);
     expect(executeSteelToolCall.mock.calls[2]?.[0].arguments).toEqual(
+      expect.objectContaining({
+        customerContext: expect.objectContaining({
+          customerId: 10,
+          customerTierId: 1,
+          tierKnown: true,
+        }),
+      }),
+    );
+    expect(executeSteelToolCall.mock.calls[3]?.[0].arguments).toEqual(
       expect.objectContaining({ customerTierId: 1 }),
     );
     expect(response.text).toBe('已依龍頂客戶分級報價。');
@@ -1647,6 +1986,270 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(response.text).toBe('找到 C 型鋼 100x2.3 的候選價格。');
   });
 
+  it('requires lookup_formula before final answer when reviewed rules require formula rows', async () => {
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_catalog_lookup',
+            toolName: 'lookup_catalog_families',
+            input: JSON.stringify({
+              searchText: 'C型鋼',
+              limit: 5,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 20,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 5,
+            text: 5,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_formula_catalog' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_quote_rules',
+            toolName: 'lookup_quote_rules',
+            input: JSON.stringify({
+              taskTypes: ['candidate_generation', 'material_price_lookup'],
+              evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
+              catalogContexts: [
+                {
+                  catalogCandidates: ['c_type'],
+                  formulaCandidates: ['C'],
+                  packetGroupHints: ['c-type-quote-core'],
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 30,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 6,
+            text: 6,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_formula_rules' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_price',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({
+              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
+              catalogFamilies: ['c_type'],
+              candidateQueries: [
+                {
+                  queryId: 'c-type-100x23',
+                  productName: '錏輕型鋼',
+                  specKeyContains: '100x2.3',
+                  confidence: 'high',
+                  reason: 'Use selected c_type catalog key and reviewed C 型鋼 rules',
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 40,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 7,
+            text: 7,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_formula_price' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '沒有查公式也先回答。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_formula_premature_text' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'steel_formula',
+            toolName: 'lookup_formula',
+            input: JSON.stringify({
+              catalogContexts: [
+                {
+                  lineRefs: ['line_1'],
+                  catalogCandidates: ['c_type'],
+                  formulaCandidates: ['C'],
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 55,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 6,
+            text: 6,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_formula_lookup' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '查過公式 C 後再回答 C 型鋼報價。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 65,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 9,
+            text: 9,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_formula_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
+      ok: true as const,
+      toolName: toolName as
+        | 'lookup_catalog_families'
+        | 'lookup_quote_rules'
+        | 'search_price_candidates'
+        | 'lookup_formula',
+      data:
+        toolName === 'lookup_catalog_families'
+          ? {
+              catalogFamilyCandidates: [
+                {
+                  key: 'c_type',
+                  displayName: 'C 型鋼',
+                  aliases: ['C型鋼', 'C鋼', '輕型鋼'],
+                },
+              ],
+            }
+          : toolName === 'lookup_quote_rules'
+            ? {
+                instructionPackets: [
+                  {
+                    slug: 'c-type-basic-quote-zh-v1',
+                    requiredLookups: ['search_price_candidates', 'lookup_formula'],
+                  },
+                ],
+                requiredLookups: ['search_price_candidates', 'lookup_formula'],
+              }
+            : toolName === 'lookup_formula'
+              ? {
+                  formulaCandidates: [
+                    {
+                      formulaCode: 'C',
+                      displayName: 'C 型鋼公式',
+                    },
+                  ],
+                }
+              : {
+                  priceCandidates: [
+                    {
+                      productName: '錏輕型鋼',
+                      specKey: '100x2.3',
+                      unitPrice: 26.8,
+                    },
+                  ],
+                },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
+      'lookup_catalog_families',
+      'lookup_quote_rules',
+      'search_price_candidates',
+      'lookup_formula',
+    ]);
+    expect(
+      (doGenerate.mock.calls[4]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
+    ).toEqual(['lookup_formula']);
+    expect(
+      JSON.stringify((doGenerate.mock.calls[4]?.[0] as LanguageModelV3CallOptions).prompt),
+    ).toContain('lookup_formula');
+    expect(response.text).toBe('查過公式 C 後再回答 C 型鋼報價。');
+  });
+
   it('requires a provisional workbook patch after a positive quick-price lookup when workbook context exists', async () => {
     const doGenerate = jest
       .fn()
@@ -1727,6 +2330,15 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                   op: 'set_cell',
                   sheetId: 'quote_details',
                   rowId: 'line_1',
+                  columnKey: 'subtotal',
+                  value: 194.3,
+                  reason:
+                    'Provisional estimate subtotal from the reviewed positive price candidate.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'quote_details',
+                  rowId: 'line_1',
                   columnKey: 'confidence',
                   value: 'provisional',
                   reason: 'Thickness/customer tier still need confirmation.',
@@ -1750,6 +2362,110 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           },
         },
         response: { id: 'resp_patch_final' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: '補齊其他 workbook 分頁。' },
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_patch_2',
+            toolName: 'patch_workbook',
+            input: JSON.stringify({
+              operations: [
+                {
+                  op: 'set_cell',
+                  sheetId: 'system_order',
+                  rowId: 'order_1',
+                  columnKey: 'item_spec',
+                  value: '錏成型角鐵 30x30x2.5x6M',
+                  reason:
+                    'ERP preview item spec can be derived from the selected reviewed candidate.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'system_order',
+                  rowId: 'order_1',
+                  columnKey: 'unit_price',
+                  value: 194.3,
+                  reason:
+                    'ERP preview unit price can be derived from the provisional quote amount.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'summary',
+                  rowId: 'summary_total_amount',
+                  columnKey: 'value',
+                  value: 194.3,
+                  reason: 'Summary preview total can be derived from the provisional quote amount.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'manual_review',
+                  rowId: 'review_1',
+                  columnKey: 'confirmation_needed',
+                  value: '確認厚度、長度與客戶分級後轉正式報價',
+                  reason: 'The user provided an ambiguous oral material request.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'price_sources',
+                  rowId: 'source_1',
+                  columnKey: 'adopted_product_price_item',
+                  value: '錏成型角鐵 30x30x2.5x6M',
+                  reason: 'Reviewed positive candidate source used for the provisional estimate.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'interpretation_notes',
+                  rowId: 'note_1',
+                  columnKey: 'content',
+                  value: '亞L30x30 暫採錏成型角鐵候選；需確認厚度。',
+                  reason: 'Concise interpretation note for the ambiguous oral order.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'customer_quote',
+                  rowId: 'customer_1',
+                  columnKey: 'item_spec',
+                  value: '錏成型角鐵 30x30x2.5x6M',
+                  reason: 'Customer-facing preview item spec can be derived from the candidate.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'customer_quote',
+                  rowId: 'customer_1',
+                  columnKey: 'unit_price',
+                  value: 194.3,
+                  reason: 'Customer-facing preview unit price can be derived from the candidate.',
+                },
+                {
+                  op: 'set_cell',
+                  sheetId: 'customer_quote',
+                  rowId: 'customer_1',
+                  columnKey: 'subtotal',
+                  value: 194.3,
+                  reason: 'Provisional customer-facing preview subtotal.',
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 55,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_patch_completion' },
         warnings: [],
       })
       .mockResolvedValueOnce({
@@ -1817,11 +2533,20 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         'sheet id="quote_details" label="報價明細"\ncolumn label="材料單價" key="material_unit_price"\ncolumn label="小計" key="subtotal"\nrow id="line_1" cells: line_no=1 material_unit_price=null subtotal=null',
     });
 
-    expect(doGenerate).toHaveBeenCalledTimes(4);
+    expect(doGenerate).toHaveBeenCalledTimes(5);
     const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
     const firstSystemPrompt = firstOptions.prompt[0] as { role: 'system'; content: string };
     expect(firstSystemPrompt.content).toContain('write provisional workbook preview rows');
     expect(firstSystemPrompt.content).toContain('update the `小計` column');
+    expect(firstSystemPrompt.content).toContain(
+      'Fill blank workbook cells when the value can be derived',
+    );
+    expect(firstSystemPrompt.content).toContain(
+      'Leave a blank cell unchanged when material, customer, source, or calculation evidence is unavailable',
+    );
+    expect(firstSystemPrompt.content).toContain(
+      'record the missing evidence in manual_review or interpretation_notes',
+    );
     expect(firstSystemPrompt.content).toContain('Do not write confirmed totals');
     expect(firstSystemPrompt.content).not.toContain('quote_details subtotal');
     expect(firstSystemPrompt.content).toContain('interpreted order information');
@@ -1848,7 +2573,38 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                 type: 'json',
                 value: expect.objectContaining({
                   ok: true,
-                  operationCount: 2,
+                  operationCount: 3,
+                  complete: false,
+                  missingSheetIds: expect.arrayContaining([
+                    'system_order',
+                    'summary',
+                    'manual_review',
+                    'price_sources',
+                    'interpretation_notes',
+                    'customer_quote',
+                  ]),
+                  instruction: expect.stringContaining('Call patch_workbook again'),
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    const fifthPrompt = (doGenerate.mock.calls[4]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(fifthPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  ok: true,
+                  operationCount: 9,
+                  complete: true,
                   instruction: expect.stringContaining('interpreted order information'),
                 }),
               },
@@ -1873,12 +2629,680 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           op: 'set_cell',
           sheetId: 'quote_details',
           rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 194.3,
+          reason: 'Provisional estimate subtotal from the reviewed positive price candidate.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
           columnKey: 'confidence',
           value: 'provisional',
           reason: 'Thickness/customer tier still need confirmation.',
         },
+        {
+          op: 'set_cell',
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'item_spec',
+          value: '錏成型角鐵 30x30x2.5x6M',
+          reason: 'ERP preview item spec can be derived from the selected reviewed candidate.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'unit_price',
+          value: 194.3,
+          reason: 'ERP preview unit price can be derived from the provisional quote amount.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'summary',
+          rowId: 'summary_total_amount',
+          columnKey: 'value',
+          value: 194.3,
+          reason: 'Summary preview total can be derived from the provisional quote amount.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'manual_review',
+          rowId: 'review_1',
+          columnKey: 'confirmation_needed',
+          value: '確認厚度、長度與客戶分級後轉正式報價',
+          reason: 'The user provided an ambiguous oral material request.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'price_sources',
+          rowId: 'source_1',
+          columnKey: 'adopted_product_price_item',
+          value: '錏成型角鐵 30x30x2.5x6M',
+          reason: 'Reviewed positive candidate source used for the provisional estimate.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'interpretation_notes',
+          rowId: 'note_1',
+          columnKey: 'content',
+          value: '亞L30x30 暫採錏成型角鐵候選；需確認厚度。',
+          reason: 'Concise interpretation note for the ambiguous oral order.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'customer_quote',
+          rowId: 'customer_1',
+          columnKey: 'item_spec',
+          value: '錏成型角鐵 30x30x2.5x6M',
+          reason: 'Customer-facing preview item spec can be derived from the candidate.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'customer_quote',
+          rowId: 'customer_1',
+          columnKey: 'unit_price',
+          value: 194.3,
+          reason: 'Customer-facing preview unit price can be derived from the candidate.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'customer_quote',
+          rowId: 'customer_1',
+          columnKey: 'subtotal',
+          value: 194.3,
+          reason: 'Provisional customer-facing preview subtotal.',
+        },
       ],
     });
+  });
+
+  it('requires companion workbook sheet patches for quote follow-up updates', async () => {
+    const firstPatchOperations = [
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'customer',
+        value: '龍頂',
+        reason: 'User clarified the customer name for the existing quote line.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'customer_tier',
+        value: 'A級',
+        reason: 'Customer lookup indicates A tier candidates.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'material_unit_price',
+        value: 26,
+        reason: 'Reprice the existing C type line with the customer tier price.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'subtotal',
+        value: 624,
+        reason: 'Existing line weight 24kg times A tier price 26.',
+      },
+    ];
+    const completionPatchOperations = [
+      {
+        op: 'set_cell',
+        sheetId: 'system_order',
+        rowId: 'order_1',
+        columnKey: 'item_spec',
+        value: '錏輕型鋼 100*2.3，6M',
+        reason: 'ERP preview item spec follows the existing quote line.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'system_order',
+        rowId: 'order_1',
+        columnKey: 'unit_price',
+        value: 624,
+        reason: 'ERP preview price follows the repriced workbook line.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'summary',
+        rowId: 'summary_total_amount',
+        columnKey: 'value',
+        value: 624,
+        reason: 'Summary preview total follows the repriced line subtotal.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'manual_review',
+        rowId: 'review_1',
+        columnKey: 'confirmation_needed',
+        value: '確認龍頂客戶全名與材質後轉正式報價',
+        reason: 'There are multiple Dragon-top customer candidates.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'price_sources',
+        rowId: 'source_1',
+        columnKey: 'adopted_product_price_item',
+        value: '錏輕型鋼 100*2.3',
+        reason: 'Source sheet should record the adopted price item.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'price_sources',
+        rowId: 'source_1',
+        columnKey: 'customer_tier',
+        value: 'A級',
+        reason: 'Source sheet should record the selected customer tier.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'interpretation_notes',
+        rowId: 'note_1',
+        columnKey: 'content',
+        value: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
+        reason: 'Concise follow-up interpretation for the workbook.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'item_spec',
+        value: '錏輕型鋼 100*2.3，6M',
+        reason: 'Customer preview item spec follows the existing quote line.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'unit_price',
+        value: 26,
+        reason: 'Customer preview unit price follows the selected customer tier.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'subtotal',
+        value: 624,
+        reason: 'Customer preview follows the repriced line subtotal.',
+      },
+    ];
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_followup_patch_1',
+            toolName: 'patch_workbook',
+            input: JSON.stringify({ operations: firstPatchOperations }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_followup_patch_1' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_followup_patch_2',
+            toolName: 'patch_workbook',
+            input: JSON.stringify({ operations: completionPatchOperations }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 60,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 10,
+            text: 10,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_followup_patch_2' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已依龍頂A級更新：價格 26，小計 624。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 70,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_followup_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'C100x50x20x2.3t 6M 一支多少？' },
+        {
+          role: 'assistant',
+          content: '暫估錏輕型鋼 100*2.3，價格B 26.8，小計 643.2。',
+        },
+        { role: 'user', content: '客戶是龍頂' },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      workbookPatchTool: true,
+      workbookContextText:
+        'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(3);
+    const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(secondPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  complete: false,
+                  missingSheetIds: expect.arrayContaining([
+                    'system_order',
+                    'summary',
+                    'manual_review',
+                    'price_sources',
+                    'interpretation_notes',
+                    'customer_quote',
+                  ]),
+                  instruction: expect.stringContaining('Call patch_workbook again'),
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    const thirdPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(thirdPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  complete: true,
+                  missingSheetIds: [],
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    expect(response.text).toContain('小計 624');
+    expect(response.workbookPatch?.operations).toEqual([
+      ...firstPatchOperations,
+      ...completionPatchOperations,
+    ]);
+  });
+
+  it('requires workbook cell coverage when a patch only touches sheets with sparse cells', async () => {
+    const sparsePatchOperations = [
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'customer',
+        value: '龍頂',
+        reason: 'User clarified the customer name.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'material_unit_price',
+        value: 26,
+        reason: 'A tier price from the selected customer.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'subtotal',
+        value: 624,
+        reason: 'Existing 24kg quote repriced at 26.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'system_order',
+        rowId: 'order_1',
+        columnKey: 'line_no',
+        value: 10,
+        reason: 'Create ERP row shell.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'summary',
+        rowId: 'summary_total_amount',
+        columnKey: 'item',
+        value: '報價總額',
+        reason: 'Create summary row shell.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'manual_review',
+        rowId: 'review_1',
+        columnKey: 'line_no',
+        value: 1,
+        reason: 'Create review row shell.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'price_sources',
+        rowId: 'source_1',
+        columnKey: 'source_file',
+        value: '產品價格.xlsx',
+        reason: 'Create price source row shell.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'interpretation_notes',
+        rowId: 'note_1',
+        columnKey: 'item',
+        value: '客戶分級',
+        reason: 'Create interpretation note row shell.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'line_no',
+        value: 1,
+        reason: 'Create customer quote row shell.',
+      },
+    ];
+    const completionPatchOperations = [
+      {
+        op: 'set_cell',
+        sheetId: 'system_order',
+        rowId: 'order_1',
+        columnKey: 'item_spec',
+        value: '錏輕型鋼 100*2.3，6M',
+        reason: 'ERP row needs the quoted item/spec.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'system_order',
+        rowId: 'order_1',
+        columnKey: 'unit_price',
+        value: 624,
+        reason: 'ERP preview amount follows the repriced subtotal.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'summary',
+        rowId: 'summary_total_amount',
+        columnKey: 'value',
+        value: 624,
+        reason: 'Summary total follows the repriced quote line.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'manual_review',
+        rowId: 'review_1',
+        columnKey: 'confirmation_needed',
+        value: '確認龍頂客戶全名與材質',
+        reason: 'Multiple Dragon-top customer candidates may exist.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'price_sources',
+        rowId: 'source_1',
+        columnKey: 'adopted_product_price_item',
+        value: '錏輕型鋼 100*2.3',
+        reason: 'Record the adopted reviewed product price item.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'interpretation_notes',
+        rowId: 'note_1',
+        columnKey: 'content',
+        value: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
+        reason: 'Concise interpretation note for this update.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'item_spec',
+        value: '錏輕型鋼 100*2.3，6M',
+        reason: 'Customer quote row needs the visible item/spec.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'unit_price',
+        value: 26,
+        reason: 'Customer quote row needs the selected customer unit price.',
+      },
+      {
+        op: 'set_cell',
+        sheetId: 'customer_quote',
+        rowId: 'customer_1',
+        columnKey: 'subtotal',
+        value: 624,
+        reason: 'Customer-facing preview subtotal follows the repriced line.',
+      },
+    ];
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_sparse_patch_1',
+            toolName: 'patch_workbook',
+            input: JSON.stringify({ operations: sparsePatchOperations }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_sparse_patch_1' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_sparse_patch_2',
+            toolName: 'patch_workbook',
+            input: JSON.stringify({ operations: completionPatchOperations }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 60,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 10,
+            text: 10,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_sparse_patch_2' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已更新龍頂A級：小計 624。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 70,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_sparse_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'C100x50x20x2.3t 6M 一支多少？' },
+        {
+          role: 'assistant',
+          content: '暫估錏輕型鋼 100*2.3，價格B 26.8，小計 643.2。',
+        },
+        { role: 'user', content: '客戶是龍頂' },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      workbookPatchTool: true,
+      workbookContextText:
+        'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(3);
+    const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(secondPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  complete: false,
+                  missingCells: expect.arrayContaining([
+                    { sheetId: 'system_order', columnKey: 'item_spec' },
+                    { sheetId: 'system_order', columnKey: 'unit_price' },
+                    { sheetId: 'summary', columnKey: 'value' },
+                    { sheetId: 'manual_review', columnKey: 'confirmation_needed' },
+                    { sheetId: 'price_sources', columnKey: 'adopted_product_price_item' },
+                    { sheetId: 'interpretation_notes', columnKey: 'content' },
+                    { sheetId: 'customer_quote', columnKey: 'item_spec' },
+                    { sheetId: 'customer_quote', columnKey: 'unit_price' },
+                    { sheetId: 'customer_quote', columnKey: 'subtotal' },
+                  ]),
+                  instruction: expect.stringContaining('missing workbook cells'),
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    const thirdPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(thirdPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  complete: true,
+                  missingSheetIds: [],
+                  missingCells: [],
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    expect(response.text).toContain('小計 624');
+    expect(response.workbookPatch?.operations).toEqual([
+      ...sparsePatchOperations,
+      ...completionPatchOperations,
+    ]);
   });
 
   it('does not return text before a required price lookup has executed', async () => {
@@ -1960,64 +3384,50 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     ).toBe(true);
   });
 
-  it('returns Steel tool execution failures to the model as tool results', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_tool_call_error_1',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: '亞L30x30',
-              candidateQueries: [
-                {
-                  queryId: 'formed-angle-ya',
-                  productName: '錏成型角鐵',
-                  specKeyContains: '30x30',
-                  reason: 'AI interpreted L30x30 as angle steel and 亞 as possible 錏',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 20,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 5,
-            text: 5,
-            reasoning: undefined,
-          },
+  it('stops the provider loop when Steel tool execution throws a repository error', async () => {
+    const doGenerate = jest.fn().mockResolvedValueOnce({
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'steel_tool_call_error_1',
+          toolName: 'lookup_quote_rules',
+          input: JSON.stringify({
+            taskTypes: ['product_price'],
+            packetGroupHints: ['c_type'],
+            evidenceSummary: 'C100x50x20x2.3t 6M 一支多少',
+            catalogContexts: [
+              {
+                catalogCandidates: ['c_type'],
+                packetGroupHints: ['c_type'],
+                lineRefs: ['user: C100x50x20x2.3t 6M 一支多少'],
+              },
+            ],
+            customerContext: {
+              customerTierId: 2,
+              tierKnown: false,
+            },
+            reviewState: 'reviewed',
+            limit: 20,
+          }),
         },
-        response: { id: 'resp_steel_tool_error_first' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '目前查表工具不可用，請稍後再試。' }],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 30,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 7,
-            text: 7,
-            reasoning: undefined,
-          },
+      ],
+      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+      usage: {
+        inputTokens: {
+          total: 20,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
         },
-        response: { id: 'resp_steel_tool_error_final' },
-        warnings: [],
-      });
+        outputTokens: {
+          total: 5,
+          text: 5,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_steel_tool_error_first' },
+      warnings: [],
+    });
     const createOpenAIOAuth = jest.fn(() => {
       return (() =>
         ({
@@ -2032,37 +3442,102 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       throw new Error('STEEL_POSTGRES_URL is required for Steel Postgres access');
     });
 
-    await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-    });
-
-    const secondOptions = doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions;
-    expect(secondOptions.prompt).toEqual(
-      expect.arrayContaining([
-        {
-          role: 'tool',
-          content: [
-            expect.objectContaining({
-              output: {
-                type: 'json',
-                value: expect.objectContaining({
-                  ok: false,
-                  toolName: 'search_price_candidates',
-                  errorCategory: 'repository_error',
-                  errorSummary: 'STEEL_POSTGRES_URL is required for Steel Postgres access',
-                }),
-              },
-            }),
-          ],
-        },
-      ]),
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth,
+        ensureFresh: false,
+        executeSteelToolCall,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'C100x50x20x2.3t 6M 一支多少' }],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+      }),
+    ).rejects.toThrow(
+      'Steel tool lookup_quote_rules failed: STEEL_POSTGRES_URL is required for Steel Postgres access',
     );
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(1);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the provider loop on fatal Steel tool repository errors', async () => {
+    const doGenerate = jest.fn().mockResolvedValueOnce({
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'steel_lookup_repo_error_1',
+          toolName: 'lookup_quote_rules',
+          input: JSON.stringify({
+            taskTypes: ['product_price'],
+            packetGroupHints: ['c_type'],
+            evidenceSummary: 'C100x50x20x2.3t 6M 一支多少',
+            catalogContexts: [
+              {
+                catalogCandidates: ['c_type'],
+                packetGroupHints: ['c_type'],
+                lineRefs: ['user: C100x50x20x2.3t 6M 一支多少'],
+              },
+            ],
+            customerContext: {
+              customerTierId: 2,
+              tierKnown: false,
+            },
+            reviewState: 'reviewed',
+            limit: 20,
+          }),
+        },
+      ],
+      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+      usage: {
+        inputTokens: {
+          total: 20,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 5,
+          text: 5,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_steel_lookup_repo_error' },
+      warnings: [],
+    });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+    const executeSteelToolCall = jest.fn(async () => ({
+      ok: false as const,
+      toolName: 'lookup_quote_rules',
+      errorCategory: 'repository_error' as const,
+      errorSummary: 'Connection terminated due to connection timeout',
+      durationMs: 5000,
+      redactionVersion: 1 as const,
+    }));
+
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth,
+        ensureFresh: false,
+        executeSteelToolCall,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'C100x50x20x2.3t 6M 一支多少' }],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+      }),
+    ).rejects.toThrow(
+      'Steel tool lookup_quote_rules failed: Connection terminated due to connection timeout',
+    );
+
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(1);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
   it('enables the workbook patch tool and extracts model tool calls into patch operations', async () => {

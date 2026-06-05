@@ -1,5 +1,17 @@
 # Lessons
 
+- `/steel/oauth-chat` runtime workbook initialization must be empty of quote/order/customer
+  data. Keep sheet and column structure from the code-owned `訂單參考.xlsm` contract, but
+  do not seed reference workbook rows; the first AI/user patch may create rows such as
+  `line_1`, `source_1`, and `note_1`.
+- `lookup_quote_rules` is the preferred merged rule lookup for Steel quote runs: it must
+  return both instruction packets and quote defaults, support multiple catalog/material
+  keys in one `catalogContexts` call, and not require workbook `lineRefs` just to retrieve
+  material defaults. Keep `lookup_defaults` as compatibility/defaults-only fallback.
+- In `/steel/oauth-chat`, textarea Enter handling must respect IME/composition input
+  such as 注音. Pressing Enter to choose composition text must not submit the chat; submit
+  only after composition ends.
+- Before `/steel/oauth-chat` live tool-status smoke, verify the runtime cloud Supabase Postgres path with `.env` `STEEL_POSTGRES_URL`; the Steel backend must use the cloud Postgres pool, not local/Docker, and streaming tool execution should reuse the runtime pool instead of cold-connecting on every tool call.
 - Treat `npm run frontend:dev` startup separately from LibreChat app readiness. Vite can start on port 3090 while `/api/*` still fails if the backend is not running on port 3080.
 - For LibreChat local dev, verify the backend path too: backend startup requires `client/dist/index.html`, so `npm run build:client` may be needed even when using the Vite dev frontend.
 - When diagnosing Vite proxy errors, hit both `http://localhost:3080/api/config` and `http://localhost:3090/api/config` to distinguish backend startup failures from proxy configuration issues.
@@ -109,7 +121,7 @@
 - Steel workbook initialization in UI must always surface API failures with an explicit error and retry path; do not leave `workbook === null` as an indefinite loading state after `createSteelWorkbook` rejects.
 - Steel workbook persistence must have a real Mongoose repository regression test, not only a memory-repository service test; Mongoose subdocuments can lose getter-backed fields when spread directly.
 - Steel workbook visible headers are a canonical business contract. When the user corrects sheet headers, update the initial workbook definitions plus API/data-provider/client fixtures so stale internal keys such as old price-column names do not keep misleading later agents.
-- Steel workbook visible sheet order is also canonical. Keep `系統訂單` first, followed by `總結`, `人工複核`, `報價明細`, `價格來源`, `判讀備註`, and `給客戶`; preserve stable English sheet ids for API patches.
+- Steel workbook visible sheet order, labels, headers, and seed rows should follow `docs/reference/訂單參考.xlsm` as a development reference only: `系統訂單`, `報價明細`, `總結`, `人工複核清單`, `價格來源`, `判讀備註`, `給客戶用`. Runtime workbook initialization must use code constants, not read the `.xlsm`; preserve stable English sheet ids for API patches.
 - Keep `/steel/oauth-chat` as the full Steel quote/workbook flow validation surface until the user explicitly confirms it. Do not extract the workbook preview or quote workflow into the formal Steel Workspace or official chat route before that approval.
 - Do not implement workbook web testing by expanding natural-language user input into hidden dev commands. `/steel/oauth-chat` workbook updates should come from AI/tool-calling judgement that emits typed workbook patch operations, then backend validation applies them.
 - OpenAI workbook patch function-tool schemas must include explicit JSON Schema `type` keys even when using `const` or `enum`; real OAuth smoke should cover provider schema acceptance, not only mocked tool-call extraction.
@@ -218,9 +230,10 @@
   to confirm when needed.
 - For Steel source imports, classify reference files by update behavior:
   `客戶資料.xlsx`, `產品價格.xlsx`, and `切工價錢.xlsx` have fixed columns but
-  updateable values; `公式編號.xlsx` has fixed values; `訂單參考.xlsx` is the
-  workbook reference; `系統訂單.xlsx` is one workbook reference sheet for ERP
-  input/output fields; `龍頂鋼鐵手冊__文字版.docx` fills missing unit weights;
+  updateable values; `公式編號.xlsx` has fixed values; `訂單參考.xlsm` is the
+  workbook template development reference, but runtime initialization uses code
+  constants; `系統訂單.xlsx` is one workbook reference sheet for ERP input/output
+  fields; `龍頂鋼鐵手冊__文字版.docx` fills missing unit weights;
   `H型鋼.txt` and note-like rules from other sources seed reviewed defaults for
   AI confirmation, not code constants. Put fuzzy notes in defaults.
 - Treat `docs/reference/產品價格.xlsx` as the reviewed source for canonical Steel
@@ -288,3 +301,53 @@
   look up related same-series/same-spec materials and derive a weight by length
   or proportional comparison, but it must mark the result as inferred evidence
   needing confirmation rather than silently overwriting reviewed source values.
+- Steel oral material/category price flow must be catalog-first: for inputs like
+  `C型鋼`, `H型鋼`, or typo/incomplete material wording, the runtime should make
+  the model call `lookup_catalog_families` to retrieve reviewed vocabulary
+  candidates before `lookup_quote_rules`, `search_price_candidates`,
+  `lookup_defaults`, or `lookup_formula`.
+- `/steel/oauth-chat` stream status may show provider-visible reasoning
+  summaries when OpenAI/AI SDK returns them, plus tool/progress events. Do not
+  describe this as exposing the model's complete private chain-of-thought, and
+  do not invent reasoning text when no summary is returned.
+- `/steel/oauth-chat` manual smoke should reuse the fixed local test account
+  `steel-smoke@example.test` / `SteelSmoke123!`; create or repair it once in
+  Mongo when needed instead of registering random users for each smoke.
+- `/steel/oauth-chat` successful quick-price responses must end with a concise final answer as the visible conversation result; completed stream/tool status is supporting detail, not the final UI state.
+- Steel quick-price workbook patches must populate every user-relevant workbook sheet when data is available: `系統訂單`, `報價明細`, `總結`, `人工複核清單`, `價格來源`, `判讀備註`, and `給客戶用`; do not accept partial patches that only fill audit/source sheets.
+- `/steel/oauth-chat` should keep last-run thinking/tool status in the right
+  panel `Thinking` tab for development review, not as the completed main chat
+  result. Include errors in that last-run status, and overwrite it on each new
+  run instead of keeping a history.
+- In the `/steel/oauth-chat` workbook UI, show the manual review tab as
+  `人工複核` instead of the longer `人工複核清單`.
+- In Steel oral quick-price flow, `lookup_catalog_families` output must drive the
+  same selected catalog keys into `lookup_quote_rules`, `search_price_candidates`,
+  and `lookup_formula`; do not rely on a schema rejection from
+  `search_price_candidates` as the main guidance mechanism.
+- When a user provides a customer name in the same quote request, first-round
+  tools should allow `search_customers` alongside catalog lookup. The selected
+  customer id/tier/name must be passed as `customerContext` to
+  `lookup_quote_rules` before price lookup, so customer-scoped defaults/rules can
+  be returned.
+- If reviewed instruction/rule packets require `lookup_formula`, the provider
+  loop must not accept a final Steel price answer after price lookup alone;
+  retrieve reviewed formula rows first.
+- Steel workbook completeness for multi-material quote lists must be AI-led.
+  Backend code should not hard-code derived workbook rows for price sources,
+  interpretation notes, ERP preview fields, or customer-facing rows. Provider
+  orchestration may reject/remind incomplete patch_workbook calls, but the model
+  must generate explicit patch operations from workbook context and reviewed
+  tool results; unavailable material/customer/source facts should stay blank and
+  be explained in `manual_review` or `interpretation_notes`.
+- Steel workbook patch completeness must also apply to follow-up turns that
+  update an existing quote, such as `客戶是龍頂` or material confirmation. Do
+  not gate completeness only on the latest user message containing price words;
+  if AI patches quote/calculation cells, provider must still require explicit
+  companion patches for the relevant workbook sheets.
+- Steel workbook patch completeness must check per-turn sheet and minimum-cell
+  coverage, not only whether each sheet id was touched. A patch that creates
+  empty shell rows or updates only `報價明細` is incomplete if user-visible
+  tabs such as `系統訂單`, `總結`, `人工複核`, and `給客戶用` still lack derivable
+  values; provider should return `missingSheetIds`/`missingCells` to AI and let
+  AI either patch derivable values or record missing evidence in review/notes.

@@ -254,11 +254,13 @@ export function lookupSteelDefaults(
   const defaultCandidates = quoteDefaults
     .map((quoteDefault) => ({
       quoteDefault,
-      matchedContext: getMatchedContextFacets(getMatchedContexts(input, quoteDefault)),
+      matchedContexts: getMatchedContexts(input, quoteDefault),
     }))
-    .filter(({ matchedContext }) => matchedContext.lineRefs.length > 0)
+    .filter(({ matchedContexts }) => matchedContexts.length > 0)
     .slice(0, input.limit ?? 20)
-    .map(({ quoteDefault, matchedContext }) => toDefaultCandidate(quoteDefault, matchedContext));
+    .map(({ quoteDefault, matchedContexts }) =>
+      toDefaultCandidate(quoteDefault, getMatchedContextFacets(matchedContexts)),
+    );
 
   return {
     defaultCandidates,

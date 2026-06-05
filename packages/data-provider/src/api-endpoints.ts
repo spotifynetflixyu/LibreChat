@@ -273,6 +273,7 @@ export const activeJobs = () => `${BASE_URL}/api/agents/chat/active`;
 export const steelBase = () => `${BASE_URL}/api/steel`;
 export const steelModels = () => `${steelBase()}/ai/models`;
 export const steelChat = () => `${steelBase()}/ai/chat`;
+export const steelChatStream = () => `${steelChat()}/stream`;
 export const steelConversation = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}`;
 export const steelWorkbooks = () => `${steelBase()}/workbooks`;

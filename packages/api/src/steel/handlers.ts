@@ -39,14 +39,18 @@ import {
   type SendSteelOAuthChatOptions,
   type SteelOAuthChatFile,
   type SteelOAuthChatMessage,
+  type SteelProviderToolExecutor,
   type SteelProviderChatResponse as SteelOAuthProviderChatResponse,
 } from './ai/provider';
+import { createSteelPostgresPool } from './postgres';
+import { executeSteelTool } from './tools/execute';
 
 import type { Request, Response } from 'express';
 import type { z } from 'zod';
 import type {
   SteelWorkbook,
   SteelChangedFieldSummary,
+  SteelProviderChatStreamEvent,
   SteelWorkbookCellValue,
   SteelProviderWorkbookPatchProposal,
   SteelWorkbookPatchResponse,
@@ -87,6 +91,7 @@ interface SteelRequest extends Request {
 
 export interface SteelHandlersDeps {
   env?: SteelOpenAIConfigEnv;
+  executeToolCall?: SteelProviderToolExecutor;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelChatProviderResult>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
@@ -124,6 +129,7 @@ type SteelChatWorkbookContext = z.infer<typeof steelChatWorkbookContextSchema>;
 
 const maxWorkbookContextRowsPerSheet = 80;
 const maxWorkbookContextCellLength = 120;
+let defaultStreamToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -143,6 +149,51 @@ function createErrorResponse(
     warnings: [],
     errorCategory,
     errorSummary,
+  };
+}
+
+function isLookupStreamTool(toolName: string): boolean {
+  return toolName.startsWith('lookup_');
+}
+
+function getStreamToolEventType(toolName: string): 'lookup' | 'tool' {
+  return isLookupStreamTool(toolName) ? 'lookup' : 'tool';
+}
+
+function writeStreamEvent(res: Response, event: SteelProviderChatStreamEvent): void {
+  res.write(`${JSON.stringify(event)}\n`);
+}
+
+function setStreamHeaders(res: Response): void {
+  res.status(200);
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+}
+
+function getDefaultStreamToolClient() {
+  defaultStreamToolClient ??= createSteelPostgresPool();
+  return defaultStreamToolClient;
+}
+
+function createDefaultStreamToolExecutor(): {
+  executeToolCall: SteelProviderToolExecutor;
+  close: () => Promise<void>;
+} {
+  const client = getDefaultStreamToolClient();
+
+  return {
+    executeToolCall: (options) =>
+      executeSteelTool({
+        client,
+        toolName: options.toolName,
+        arguments: options.arguments,
+        providerToolCallId: options.providerToolCallId,
+        runState: options.runState,
+      }),
+    close: async () => {},
   };
 }
 
@@ -265,7 +316,12 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getProviderErrorCategory(error: unknown): SteelChatErrorResponse['errorCategory'] {
-  const message = getErrorMessage(error).toLowerCase();
+  const rawMessage = getErrorMessage(error);
+  if (rawMessage.startsWith('Steel tool ')) {
+    return 'unknown';
+  }
+
+  const message = rawMessage.toLowerCase();
   if (
     message.includes('access token') ||
     message.includes('account id') ||
@@ -287,6 +343,10 @@ function getProviderErrorSummary(error: unknown): string {
   }
   if (category === 'provider_timeout') {
     return 'OpenAI OAuth provider request timed out.';
+  }
+  const message = error instanceof Error ? error.message : '';
+  if (message.startsWith('Steel tool ')) {
+    return message;
   }
 
   return 'OpenAI OAuth provider request failed.';
@@ -639,6 +699,7 @@ async function applyChatWorkbookPatch(
 
 export function createSteelHandlers({
   env = process.env,
+  executeToolCall,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
   conversationService,
@@ -758,6 +819,185 @@ export function createSteelHandlers({
         }
 
         sendWorkbookError(res, error, env);
+      }
+    },
+
+    async streamChat(req: Request, res: Response) {
+      const config = parseSteelOpenAIConfig(env);
+      const body = isRecord(req.body) ? req.body : {};
+
+      let messages: SteelOAuthChatMessage[];
+      let model: string;
+      let maxOutputTokens: number | undefined;
+      let reasoningEffort: SteelOpenAIReasoningEffort;
+      let workbookContext: SteelChatWorkbookContext;
+      try {
+        messages = parseMessages(body.messages);
+        model = parseOptionalModel(body.model, config.model);
+        maxOutputTokens = parseOptionalMaxOutputTokens(body.maxOutputTokens);
+        reasoningEffort = parseOptionalReasoningEffort(
+          body.reasoningEffort,
+          config.reasoningEffort,
+        );
+        workbookContext = steelChatWorkbookContextSchema.parse(body);
+      } catch (error) {
+        res
+          .status(400)
+          .json(
+            createErrorResponse(
+              'openai_oauth_responses',
+              config.model,
+              'unknown',
+              getErrorMessage(error),
+            ),
+          );
+        return;
+      }
+
+      if (config.provider === 'API') {
+        res
+          .status(501)
+          .json(
+            createErrorResponse(
+              'openai_api',
+              model,
+              'unknown',
+              'STEEL_OPENAI_PROVIDER=API is reserved for the OpenAI API adapter, which is not implemented in this slice.',
+            ),
+          );
+        return;
+      }
+
+      const messagesWithInstructions = applyFileInstructionsToMessages(
+        messages,
+        (req as SteelRequest).config,
+      );
+
+      let workbookContextText: string | undefined;
+      try {
+        workbookContextText = await getChatWorkbookContextText(workbookContext, getWorkbookService);
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+        return;
+      }
+
+      setStreamHeaders(res);
+      writeStreamEvent(res, {
+        type: 'progress',
+        stage: 'request_validated',
+        message: 'Request validated',
+      });
+
+      const defaultToolExecutor = executeToolCall ? undefined : createDefaultStreamToolExecutor();
+      const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
+
+      try {
+        writeStreamEvent(res, {
+          type: 'progress',
+          stage: 'provider_request',
+          message: 'Waiting for provider',
+        });
+
+        const result = await sendChat({
+          authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
+          executeSteelToolCall: async (options) => {
+            const type = getStreamToolEventType(options.toolName);
+            writeStreamEvent(res, {
+              type,
+              status: 'started',
+              toolName: options.toolName,
+              message: `${options.toolName} started`,
+            });
+
+            try {
+              if (!baseExecuteToolCall) {
+                throw new Error('Steel stream tool executor is not available.');
+              }
+
+              const toolResult = await baseExecuteToolCall(options);
+              const failedToolMessage =
+                toolResult.ok === false
+                  ? `${options.toolName} failed: ${toolResult.errorSummary}`
+                  : undefined;
+              writeStreamEvent(res, {
+                type,
+                status: toolResult.ok ? 'completed' : 'failed',
+                toolName: options.toolName,
+                message: failedToolMessage ?? `${options.toolName} completed`,
+                ok: toolResult.ok,
+              });
+              return toolResult;
+            } catch (error) {
+              writeStreamEvent(res, {
+                type,
+                status: 'failed',
+                toolName: options.toolName,
+                message: getErrorMessage(error),
+                ok: false,
+              });
+              throw error;
+            }
+          },
+          maxOutputTokens,
+          messages: messagesWithInstructions,
+          model,
+          onReasoningSummary: (summary) => {
+            writeStreamEvent(res, {
+              type: 'reasoning',
+              summary,
+            });
+          },
+          ...(hasMessageFiles(messagesWithInstructions)
+            ? { passThroughUnsupportedFiles: true }
+            : {}),
+          reasoningEffort,
+          steelRuntimePolicy: true,
+          ...(workbookContext.workbookId && workbookContext.workbookVersion
+            ? { workbookContextText, workbookPatchTool: true }
+            : {}),
+        });
+
+        if (result.workbookPatch?.operations.length) {
+          writeStreamEvent(res, {
+            type: 'tool',
+            status: 'started',
+            toolName: 'patch_workbook',
+            message: 'patch_workbook started',
+          });
+        }
+
+        const response = await applyChatWorkbookPatch(result, workbookContext, getWorkbookService);
+
+        if (result.workbookPatch?.operations.length) {
+          writeStreamEvent(res, {
+            type: 'tool',
+            status: response.workbookPatch?.rejectedReason ? 'failed' : 'completed',
+            toolName: 'patch_workbook',
+            message: response.workbookPatch?.rejectedReason ?? 'patch_workbook completed',
+            ok: response.workbookPatch?.rejectedReason ? false : true,
+          });
+        }
+
+        if (response.text.length > 0) {
+          writeStreamEvent(res, {
+            type: 'text',
+            delta: response.text,
+          });
+        }
+
+        writeStreamEvent(res, {
+          type: 'done',
+          response,
+        });
+      } catch (error) {
+        writeStreamEvent(res, {
+          type: 'error',
+          errorCategory: getProviderErrorCategory(error),
+          errorSummary: getProviderErrorSummary(error),
+        });
+      } finally {
+        await defaultToolExecutor?.close();
+        res.end();
       }
     },
 

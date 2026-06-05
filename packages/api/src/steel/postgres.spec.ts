@@ -26,9 +26,12 @@ describe('Steel Postgres connection helpers', () => {
 
     expect(config).toEqual({
       connectionString: 'postgresql://user:pass@example.supabase.co:5432/postgres',
-      connectionTimeoutMillis: 5000,
-      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 15000,
+      idleTimeoutMillis: 30000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
       max: 5,
+      ssl: true,
     });
   });
 

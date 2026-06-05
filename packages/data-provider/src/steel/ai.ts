@@ -178,3 +178,71 @@ export const steelProviderChatResponseSchema = z.object({
 });
 
 export type SteelProviderChatResponse = z.infer<typeof steelProviderChatResponseSchema>;
+
+const steelProviderChatStreamToolStatusSchema = z.enum(['started', 'completed', 'failed']);
+
+const steelProviderChatStreamProgressEventSchema = z.object({
+  type: z.literal('progress'),
+  stage: z.string().min(1),
+  message: z.string().min(1),
+});
+
+const steelProviderChatStreamLookupEventSchema = z.object({
+  type: z.literal('lookup'),
+  status: steelProviderChatStreamToolStatusSchema,
+  toolName: z.string().min(1),
+  message: z.string().min(1),
+  ok: z.boolean().optional(),
+});
+
+const steelProviderChatStreamToolEventSchema = z.object({
+  type: z.literal('tool'),
+  status: steelProviderChatStreamToolStatusSchema,
+  toolName: z.string().min(1),
+  message: z.string().min(1),
+  ok: z.boolean().optional(),
+});
+
+const steelProviderChatStreamReasoningEventSchema = z.object({
+  type: z.literal('reasoning'),
+  summary: z.string().min(1),
+});
+
+const steelProviderChatStreamTextEventSchema = z.object({
+  type: z.literal('text'),
+  delta: z.string(),
+});
+
+const steelProviderChatStreamDoneEventSchema = z.object({
+  type: z.literal('done'),
+  response: steelProviderChatResponseSchema,
+});
+
+const steelProviderChatStreamErrorEventSchema = z.object({
+  type: z.literal('error'),
+  errorCategory: steelAIProviderErrorCategorySchema,
+  errorSummary: z.string().min(1),
+});
+
+export const steelProviderChatStreamEventSchema = z.discriminatedUnion('type', [
+  steelProviderChatStreamProgressEventSchema,
+  steelProviderChatStreamLookupEventSchema,
+  steelProviderChatStreamToolEventSchema,
+  steelProviderChatStreamReasoningEventSchema,
+  steelProviderChatStreamTextEventSchema,
+  steelProviderChatStreamDoneEventSchema,
+  steelProviderChatStreamErrorEventSchema,
+]);
+
+export type SteelProviderChatStreamEvent = z.infer<typeof steelProviderChatStreamEventSchema>;
+
+export function parseSteelProviderChatStreamLine(
+  line: string,
+): SteelProviderChatStreamEvent | undefined {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  return steelProviderChatStreamEventSchema.parse(JSON.parse(trimmed));
+}

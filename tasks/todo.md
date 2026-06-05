@@ -6,6 +6,77 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+- [x] Active runtime slice: stabilize `/steel/oauth-chat` cloud Supabase
+      Postgres tool lookup. Steel runtime must connect through `.env`
+      `STEEL_POSTGRES_URL` to cloud Supabase, reuse the runtime pool for
+      streaming tool execution, and surface fatal DB/tool errors once instead
+      of retrying the same failed lookup through the model loop.
+
+Review evidence:
+
+- Direct cloud `pg` ping against `.env` `STEEL_POSTGRES_URL` succeeded through
+  Supavisor 5432 and 6543 with `steel_schema_exists=true`.
+- Earlier `/steel/oauth-chat` live smoke reached true `openai_oauth_responses`
+  and called `lookup_quote_rules`, but `executeSteelTool` returned
+  `repository_error: Connection terminated due to connection timeout`; this
+  showed the model/tool routing was correct and the runtime blocker was the
+  cloud Postgres connection path.
+- Updated Steel Postgres runtime pool defaults to use a longer cloud-friendly
+  connection timeout and TCP keepalive, and changed the streaming tool executor
+  to reuse the runtime cloud Postgres pool instead of creating a new pool per
+  request.
+- Focused verification passed: `postgres.spec.ts`, `provider.spec.ts`, and
+  `handlers.spec.ts` all passed; `npm run build:api` rebuilt `packages/api/dist`
+  with existing unrelated Rollup TypeScript warnings.
+- Direct runtime tool lookup through cloud Supabase succeeded:
+  `lookup_quote_rules` returned reviewed instruction/default data and
+  `search_price_candidates` returned 4 C 型鋼 price candidates for
+  `錏輕型鋼 100x2.3`.
+- `/steel/oauth-chat` live smoke succeeded through the stream endpoint:
+  status order was `Request validated` -> `Waiting for provider` ->
+  `lookup_quote_rules started/completed` ->
+  `search_price_candidates started/completed`, and the AI returned
+  C 型鋼 6M 小計 `643.2 元/支`. This run did not call `patch_workbook`, so
+  workbook patch enforcement remains a separate AI behavior follow-up.
+
+## Steel Workbook Per-Turn Completion
+
+Goal: Every `/steel/oauth-chat` turn that updates workbook data should check
+whether the new information has been propagated to all relevant workbook sheets
+and cells. The backend must not hard-fill ERP/customer/summary rows; it should
+return missing sheet/cell guidance through the `patch_workbook` tool result so
+the AI can decide which values are derivable and which gaps belong in
+`人工複核` / `判讀備註`.
+
+- [x] Reproduce the bug with a provider regression where AI updates only
+      `報價明細` on a customer/tier repricing follow-up and leaves
+      `系統訂單`, `總結`, `人工複核`, and `給客戶用` blank.
+- [x] Generalize workbook completion from "required sheets touched" to
+      per-turn "required sheet and cell coverage" for workbook patches.
+- [x] Keep completion AI-led: tool results identify missing cells and
+      instructions, but backend does not synthesize workbook cell values.
+- [x] Update docs and lessons with the per-turn workbook completion rule.
+- [x] Verify focused provider/handler tests, API build, and diff hygiene.
+
+Review:
+
+- Root cause: workbook completion only checked required sheet ids. A model could
+  satisfy the gate by touching every sheet with sparse shell cells while leaving
+  user-visible workbook content blank.
+- Provider completion now returns both `missingSheetIds` and `missingCells` for
+  every Steel runtime workbook patch turn. Incomplete patches feed a
+  `patch_workbook` tool result back to the model and require another explicit
+  AI patch before the final answer.
+- The backend still does not synthesize companion workbook rows. It only reports
+  missing sheet/cell targets and tells AI to patch derivable values or record
+  unavailable evidence in `manual_review` / `interpretation_notes`.
+- Documentation and lessons now record the per-turn minimum-cell coverage rule.
+- Verification: RED provider regression first failed because sparse all-sheet
+  patches were accepted without `missingCells`; GREEN verification passed
+  `provider.spec.ts` 21 tests, `handlers.spec.ts` 22 tests,
+  `npm --workspace packages/api run build` with existing non-Steel Rollup
+  warnings, touched-file Prettier check, and `git diff --check`.
+
 - [x] Active quote-runtime slice: make catalog-family selection AI-owned. Expose
       reviewed `steel.catalog_families` vocabulary/context to the AI so it can
       judge oral product wording and choose a stable `catalogFamilies` key;
@@ -2632,3 +2703,435 @@ C100x50x20x2.3` no longer creates a false `100x50` requirement.
 ## Review
 
 - Pending verification.
+
+# Steel Workbook Xlsm Reference Template
+
+- [x] Inspect `docs/reference/訂單參考.xlsm` sheet order, labels, headers, and
+      populated reference rows.
+- [x] Add failing tests proving workbook initialization cannot use the old blank
+      seven-sheet template.
+- [x] Capture correction: `訂單參考.xlsm` is a development reference only; runtime
+      workbook initialization must use code constants and must not read the file.
+- [x] Update workbook initialization constants to mirror `訂單參考.xlsm` sheet
+      order, visible labels, headers, and seed rows while preserving stable
+      English sheet ids.
+- [x] Run focused/full verification, rebuild shared packages, and do not restart
+      the dev server in this pass.
+
+## Review
+
+- Implemented workbook initialization as a code-owned template in
+  `packages/api/src/steel/workbook/template.ts`; `docs/reference/訂單參考.xlsm`
+  remains a development reference only and is not read by runtime
+  initialization.
+- Verification: `packages/api npx jest src/steel/workbook/service.spec.ts
+--runInBand --coverage=false` passed 6 tests; `packages/api npx jest
+src/steel --runInBand --coverage=false` passed 30 suites / 149 tests;
+  `packages/data-provider npx jest src/steel/workbooks.spec.ts --runInBand
+--coverage=false` passed 5 tests; `client npx jest
+src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false` passed 8
+  tests; `npm run build:data-provider` passed; `npm run build:api` exited 0
+  with existing non-Steel Rollup/TypeScript warnings; `git diff --check`
+  passed.
+- No dev server was restarted in this pass.
+
+# Steel Ai Subtotal Workbook Patch Verification
+
+- [x] Verify AI/chat response behavior includes concise `小計` quote information
+      after workbook patch application.
+- [x] Verify workbook patch data lands in the expected visible sheets/columns,
+      including `報價明細.小計`, pricing source fields, and interpretation notes.
+- [x] Add or update regression coverage if existing tests only check field-count
+      summaries or incomplete workbook fields.
+- [x] Run focused verification without restarting the dev server.
+
+## Review
+
+- Added a handler regression using a real in-memory workbook service and a
+  simulated model `patch_workbook` tool call. The response fallback now has
+  test coverage for `小計：624`, and the returned workbook is asserted to contain
+  matching cells in `報價明細.line_1`, `價格來源.source_1`, and
+  `判讀備註.note_1`.
+- Verification: `packages/api npx jest src/steel/handlers.spec.ts --runInBand
+--coverage=false` passed 20 tests; `packages/api npx jest src/steel
+--runInBand --coverage=false` passed 30 suites / 150 tests; `npm run
+build:api` exited 0 with existing non-Steel Rollup/TypeScript warnings; `git
+diff --check` passed.
+- Live AI supplement: gated real OAuth C 型鋼 oral smoke passed with
+  `STEEL_OPENAI_OAUTH_C_TYPE_ORAL_TEST=true`, real `gpt-5.5`, and real Steel DB
+  tools. It verified `lookup_quote_rules` before c_type price lookup and the
+  `100x2.3` candidate path. This live smoke validates AI judgment/tool sequence;
+  workbook field application is covered by the handler regression above.
+- No dev server was restarted in this pass.
+
+# Steel Live Workbook Patch Manual Smoke
+
+- [x] Add a gated real OAuth manual smoke for `patch_workbook`.
+- [x] Verify the true model emits workbook patch operations for `報價明細`,
+      `價格來源`, and `判讀備註`.
+- [x] Verify the patch includes `報價明細.小計` for the provisional quote amount.
+- [x] Update the OAuth Responses runbook with the exact opt-in command and
+      expected evidence.
+- [x] Run focused manual smoke verification without restarting the dev server.
+
+## Review
+
+- RED evidence: running `provider.catalog-oral.manual.spec.ts` with
+  `STEEL_OPENAI_OAUTH_WORKBOOK_PATCH_TEST=true` initially failed because the
+  old oral helper returned no `response.workbookPatch.operations`.
+- Added a gated live workbook-patch smoke that uses real OAuth `gpt-5.5` and
+  the real provider loop, while supplying deterministic reviewed
+  `lookup_quote_rules` / `search_price_candidates` results inside the test.
+- The smoke verifies the sequence `lookup_quote_rules`, then
+  `search_price_candidates`, then `patch_workbook`, and asserts workbook
+  operations for `報價明細.line_1`, `價格來源.source_1`, `判讀備註.note_1`,
+  including `報價明細.小計` around `643.2`.
+- GREEN evidence: `STEEL_OPENAI_OAUTH_WORKBOOK_PATCH_TEST=true` live smoke
+  passed: 1 passed / 5 skipped in `provider.catalog-oral.manual.spec.ts`.
+- Focused default verification: running the same manual spec without opt-in
+  flags skipped all 6 tests, so routine runs do not call the live API.
+- No dev server was restarted in this pass.
+
+# Steel Streaming Chat Prototype
+
+- [x] Add a focused design for `POST /api/steel/ai/chat/stream` as an NDJSON
+      prototype scoped to `/steel/oauth-chat`.
+- [x] Add RED tests for stream event schemas, backend stream route behavior, and
+      UI progress rendering.
+- [x] Implement the backend stream handler and route shell without changing the
+      existing non-streaming chat route.
+- [x] Add data-provider endpoint/types/client helper for parsing stream events.
+- [x] Update `SteelOAuthChat` to show lookup/tool/progress states while the
+      provider is running.
+- [x] Run focused backend/data-provider/client verification and record the
+      results.
+
+## Design Check-In
+
+- Scope: prototype only for the Steel smoke route. Keep `/api/steel/ai/chat`
+  unchanged, and add `/api/steel/ai/chat/stream` for streaming diagnostics.
+- Wire format: `application/x-ndjson`; each line is one JSON event so `POST`
+  payloads work with `fetch` streaming.
+- Event contract: `progress` for coarse phases, `lookup` for lookup tools,
+  `tool` for non-lookup tool calls and workbook patch application, `text` for
+  assistant text, `done` for the final normalized chat response, and `error`
+  for provider/workbook failures after headers are open.
+- Backend behavior: parse and validate the same chat payload as the normal
+  route, write initial progress events, pass a wrapped `executeSteelToolCall`
+  into the provider so lookup/tool start and completion events reflect real
+  tool calls, apply workbook patches through the same backend validation, then
+  emit `text` and `done`.
+- UI behavior: keep the current chat layout, but replace the generic
+  `Waiting for provider` line with a compact status timeline showing the latest
+  progress, lookup, tool, and workbook-patch events. Fall back to the existing
+  non-stream request only if streaming is unavailable.
+
+## Review
+
+- Added `POST /api/steel/ai/chat/stream` as an authenticated NDJSON stream route
+  while keeping the existing `/api/steel/ai/chat` response route unchanged.
+- Added shared `SteelProviderChatStreamEvent` contract and
+  `dataService.streamSteelChat`, which reads one JSON event per line and returns
+  the final `done.response`.
+- Backend stream events now include request/provider progress, real
+  `executeSteelToolCall` lookup/tool start/completion events, backend
+  `patch_workbook` application status, text, done, and post-header error events.
+- `/steel/oauth-chat` now sends through `streamSteelChat` and keeps a compact
+  status timeline visible after completion until the next send/new chat.
+- RED evidence: focused tests first failed for missing
+  `steelProviderChatStreamEventSchema`, missing `handlers.streamChat`, router
+  404, and UI not calling/rendering stream statuses.
+- Verification passed: `packages/data-provider npx jest src/steel/ai.spec.ts
+--runInBand --coverage=false` passed 10 tests; `packages/api npx jest
+src/steel/handlers.spec.ts --runInBand --coverage=false` passed 21 tests;
+  `client npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand
+--coverage=false` passed 9 tests; `api npx jest
+server/routes/__tests__/steel.spec.js --runInBand --coverage=false` passed 10
+  tests; `npm run build:data-provider` passed; `npm run build:api` exited 0
+  with existing non-Steel TypeScript warnings; `git diff --check` passed.
+- `client npm run typecheck` still fails on existing broad repo errors such as
+  `src/a11y/LiveMessage.tsx`, Agents tests, ArtifactRouting tests, MCPBuilder,
+  Web citations, and other unrelated files. The output did not report a
+  `SteelOAuthChat.tsx` error.
+- No dev server was restarted in this pass.
+
+# Steel OAuth Chat Empty Workbook, Quote Rules Defaults, And IME Enter
+
+- [x] Verify why `/steel/oauth-chat` new workbook initializes with populated
+      quote data instead of an empty user-editable workbook.
+- [x] Add failing regression coverage that new runtime workbooks keep sheet
+      structure/headers but no quote/customer/material data rows.
+- [x] Extend `lookup_quote_rules` so one call can return instruction/default
+      data for one or more catalog/material keys, making `lookup_defaults`
+      unnecessary for this flow when rules are requested together.
+- [x] Add failing regression coverage for batched `lookup_quote_rules` returning
+      defaults for multiple material/catalog keys.
+- [x] Fix `/steel/oauth-chat` textarea Enter behavior so 注音/IME composition
+      confirmation does not submit the chat.
+- [x] Run focused backend/data-provider/client verification, rebuild affected
+      shared packages, and record evidence.
+
+## Review
+
+- Root cause: runtime workbook initialization reused code-owned reference rows
+  copied from `docs/reference/訂單參考.xlsm`; patch validation also required rows
+  to already exist, so a truly empty workbook needed row creation on accepted
+  patch. `lookup_quote_rules` already merged defaults structurally, but
+  `lookupSteelDefaults()` filtered out contexts without workbook `lineRefs`.
+  The textarea submitted because Enter handling ignored IME composition state.
+- Implementation: new workbooks now keep the seven sheet/column structure but
+  start with zero rows; validated workbook patches may create missing target
+  rows such as `line_1`; `lookup_quote_rules` returns quote defaults for
+  matched material/catalog contexts even when `lineRefs` are absent; runtime
+  prompt/tool descriptions prefer `lookup_quote_rules` for merged
+  instruction/default lookups; `/steel/oauth-chat` blocks Enter submit during
+  composition.
+- Verification: RED tests failed for populated initial rows, missing-row patch
+  rejection, no-rowRef quote defaults, and IME Enter submit. GREEN verification
+  passed: `packages/api jest` for `workbook/service.spec.ts`,
+  `tools/execute.spec.ts`, `ai/provider.spec.ts`, and `handlers.spec.ts`
+  passed 70 tests; `client jest src/routes/SteelOAuthChat.spec.tsx` passed 10
+  tests; `git diff --check` passed; `npm run build:api` exited 0 with existing
+  non-Steel TypeScript warnings.
+- Runtime smoke: backend `/api/steel/workbooks` returned version 1 with 0 rows
+  in all seven sheets. Live cloud Supabase `executeSteelTool(lookup_quote_rules)`
+  for `c_type` + `h_beam` returned instruction packets plus four quote defaults.
+  Headless `/steel/oauth-chat` smoke showed 0 rows on every tab and composition
+  Enter left textarea value unchanged with 0 stream requests.
+
+# Steel Catalog-Key Lookup Enforcement And Stream Reasoning UI
+
+- [x] Confirm whether current provider/tool guard allows oral material text to
+      skip `lookup_catalog_families` and jump directly to `lookup_quote_rules`.
+- [x] Add RED provider coverage that oral material/category price requests must
+      call `lookup_catalog_families` before `lookup_quote_rules`, then use the
+      selected catalog keys for rule/price/formula lookups.
+- [x] Add RED stream/UI coverage for reasoning summary events and a Codex-like
+      Steel stream status panel.
+- [x] Implement backend stream event contract for provider-visible reasoning
+      summaries when the model/provider returns them; do not expose or invent raw
+      chain-of-thought.
+- [x] Implement a compact Codex-like stream status UI that shows reasoning
+      summaries, tool lookups, progress, and errors in a readable timeline.
+- [x] Run focused API/data-provider/client verification, build affected shared
+      outputs, and record runtime smoke evidence if possible.
+
+## Review
+
+- Confirmed gap: the previous runtime could show
+  `lookup_quote_rules started/completed` before `lookup_catalog_families`; the
+  provider guard only enforced quote rules before category-dependent price
+  tools, not catalog vocabulary lookup before rules.
+- Implemented catalog-first runtime policy for reviewed quick-price requests:
+  the first required tool set is now restricted to `lookup_catalog_families`,
+  then the AI can select catalog keys and call `lookup_quote_rules`, followed by
+  `search_price_candidates`.
+- Added provider-visible reasoning summary streaming. The UI displays summaries
+  only when the model/provider returns them; it does not expose or invent raw
+  chain-of-thought.
+- Verification: data-provider stream contract Jest passed 10 tests;
+  API provider/handler Jest passed 40 tests; client `/steel/oauth-chat` Jest
+  passed 10 tests; `npm run build:data-provider` passed; `npm run build:api`
+  passed with existing non-Steel Rollup TypeScript warnings; `git diff
+--check` passed.
+- `npm --workspace client run typecheck` still fails on existing broad client
+  errors outside this slice. A filtered rerun found no `SteelOAuthChat`,
+  `steel/ai`, `SteelProviderChatStreamEvent`, or `streamSteelChat` matches in
+  the typecheck errors.
+- Live `/steel/oauth-chat` smoke was not rerun in this pass; the backend was not
+  restarted.
+
+# Steel OAuth Chat Live C-Type Smoke After Dev Restart
+
+- [x] Stop existing backend/frontend dev servers and verify ports 3080/3090 are clear.
+- [x] Restart backend and frontend dev servers from the current checkout.
+- [x] Open `/steel/oauth-chat`, send a C 型鋼 quick-price prompt, and verify the
+      live stream status includes `lookup_catalog_families` before
+      `lookup_quote_rules` and `search_price_candidates`.
+- [x] Record the AI reply and whether the quoted C 型鋼 subtotal is still
+      calculated from kg/m _ meters _ B/customer price.
+
+## Review
+
+- Created and verified reusable smoke login `steel-smoke@example.test` for
+  `/steel/oauth-chat`; use this account instead of registering random users for
+  manual smoke runs.
+- First smoke reproduced a real runtime blocker: the tool order correctly began
+  with `lookup_catalog_families`, but cloud Postgres failed with
+  `Connection terminated due to connection timeout`.
+- Root cause evidence: direct TCP to the configured Supabase pooler `5432`
+  timed out; `6543` was reachable, and read-only Postgres queries succeeded
+  when the runtime used the `6543` URL plus explicit `ssl: true`.
+- Updated the Steel Postgres pool config to pass explicit `ssl: true`; rebuilt
+  `packages/api/dist`; restarted backend with a `6543` Steel Postgres runtime
+  override. Read-only `steel.catalog_families` query returned 211 rows.
+- Live `/steel/oauth-chat` smoke using the fixed account completed. Status order
+  included `lookup_catalog_families completed` before `lookup_quote_rules`,
+  then `search_price_candidates`, `lookup_formula`, and `patch_workbook`.
+- AI response quoted the C 型鋼 subtotal correctly: 錏輕型鋼 `100*2.3`,
+  `4 kg/m * 6m = 24 kg`, `價格B 26.8 元/kg`, 小計 `NT$643.2/支`, with 白鐵
+  alternative `NT$2,400/支`.
+- Workbook v2 `報價明細` row was written with `材料類別 c_type / C型鋼`,
+  `材料單價 26.8`, `材料計價單位 kg`, `計價數量 24`, and `小計 643.2`.
+
+# Steel OAuth Chat Final Answer And Full Workbook Patch Fix
+
+- [x] Reproduce and trace why `/steel/oauth-chat` can show completed tool status without replacing the visible progress area with the final answer.
+- [x] Add failing UI coverage that final text is visible and completed stream status is not the primary visible result after a successful stream.
+- [x] Trace workbook patch behavior for quick-price C 型鋼 and identify why `系統訂單`, `總結`, `人工複核清單`, and `給客戶用` stay empty.
+- [x] Add failing workbook/handler coverage that a successful quick-price patch fills all required workbook sheets, not only `報價明細`, `價格來源`, and `判讀備註`.
+- [x] Implement the smallest code changes that satisfy those contracts.
+- [x] Run focused client/API/data-provider tests, rebuild shared packages if needed, and record verification evidence.
+
+## Review
+
+- Root cause: `/steel/oauth-chat` rendered the stream status panel whenever
+  `streamEvents.length > 0`, so a completed stream could leave tool status as
+  the visible final UI even after the assistant answer arrived.
+- Root cause: the provider workbook instructions still told the model to patch
+  only `報價明細`, `價格來源`, and `判讀備註` for provisional quick prices, so
+  empty workbooks could leave `系統訂單`, `總結`, `人工複核清單`, and
+  `給客戶用` blank.
+- Implemented UI completion behavior: stream status is visible only while a
+  request is sending; after `done`, the final assistant message replaces it.
+- Implemented handler-level workbook patch completion: when a quick quote patch
+  includes a calculable `報價明細/小計`, the handler derives missing preview rows
+  for `系統訂單`, `總結`, `人工複核清單`, and `給客戶用` without overwriting
+  model-provided cells.
+- Updated provider instructions/reminder so live AI should patch all seven
+  user-relevant workbook sheets for provisional price previews, while labeling
+  summary/customer quote totals as `暫估/待確認`.
+- Verification: client `SteelOAuthChat.spec.tsx` passed 10 tests; API
+  `handlers.spec.ts` passed 22 tests; `npm --workspace packages/api run build`
+  passed with existing non-Steel Rollup TypeScript warnings; `git diff --check`
+  passed.
+- `npm --workspace client run typecheck` still fails on existing broad client
+  type errors outside this Steel slice, including `LiveMessage.tsx`, Agents
+  tests, artifact attachment types, missing `react-zoom-pan-pinch`, and related
+  non-Steel files.
+
+# Steel OAuth Chat Right Panel Thinking Tab
+
+- [x] Add RED client coverage for right panel `Workbook / Thinking` tabs.
+- [x] Add RED client coverage that `Thinking` shows only the last run status,
+      including provider-visible reasoning summaries, tool events, and errors.
+- [x] Rename the workbook `manual_review` visible tab from `人工複核清單` to
+      `人工複核` in the workbook UI contract.
+- [x] Implement the right panel tab UI without reintroducing completed status
+      into the main chat result.
+- [x] Run focused client tests and diff checks, then record verification.
+
+## Review
+
+- Implemented right panel tabs named exactly `Workbook` and `Thinking`.
+- `Thinking` shows a `Last run` status panel for the latest run only; each new
+  submit resets the status list and replaces prior run entries.
+- The Thinking panel includes provider-visible reasoning summaries,
+  lookup/tool/progress events, and error events. If a request throws without a
+  streamed error event, the UI adds a synthetic `unknown` error event using the
+  visible error text.
+- The main chat still only shows stream status while a request is sending; once
+  the request completes, the conversation area shows the assistant answer/error
+  and the completed status remains available only in the right panel.
+- Renamed the workbook `manual_review` label to `人工複核` in the API workbook
+  template, and the frontend preview also maps any older persisted
+  `manual_review` sheet to the shorter label.
+- Verification: client `SteelOAuthChat.spec.tsx` passed 12 tests; API workbook
+  `service.spec.ts` and `repository.spec.ts` passed 8 tests; `npm --workspace
+packages/api run build` passed with existing non-Steel Rollup TypeScript
+  warnings; `git diff --check` passed.
+
+# Steel OAuth Catalog-Key Tool Flow And Formula Lookup
+
+- [x] Add RED provider coverage that oral catalog lookup results are used to
+      force `lookup_quote_rules` before `search_price_candidates`.
+- [x] Add RED provider coverage that instruction packets requiring
+      `lookup_formula` keep the tool loop open until formula rows are retrieved.
+- [x] Add RED provider coverage that a customer name in the first quote request
+      allows first-round `search_customers`, then feeds customer context into
+      `lookup_quote_rules` and price lookup.
+- [x] Update runtime agent instructions/tool gating so selected catalog keys
+      feed `lookup_quote_rules`, `search_price_candidates`, and
+      `lookup_formula`.
+- [x] Run focused provider/tool tests and record verification evidence.
+
+## Review
+
+- Root cause: provider tool gating allowed all Steel tools after
+  `lookup_catalog_families`, so a real model could jump directly to
+  `search_price_candidates` and reuse `C型鋼` as `productName` instead of first
+  using the selected `c_type` key in `lookup_quote_rules`.
+- Root cause: the provider only required `search_price_candidates` before a
+  quick-price answer. When reviewed rules required `lookup_formula`, a model
+  could answer after price lookup without retrieving reviewed formula rows.
+- Implemented first-round lookup tools as `lookup_catalog_families` plus
+  `search_customers`, so AI can search a provided customer name without code
+  deciding which raw words are customer names.
+- After catalog lookup, the next required tool set is narrowed to
+  `lookup_quote_rules`; after rules, price lookup is required; if returned
+  `requiredLookups` includes `lookup_formula`, the loop requires
+  `lookup_formula` before accepting the final answer.
+- Runtime instructions now tell AI to pass selected customer
+  `customerId/customerTierId/customerName` as `customerContext` to
+  `lookup_quote_rules`, so customer-scoped defaults/rules can be returned before
+  price lookup.
+- Updated `docs/steel-catalog-family-data-contract.md` to document the current
+  catalog/customer -> quote rules/defaults -> price/formula flow.
+- Verification: RED provider tests failed on the old open tool set and missing
+  formula completion gate; GREEN `npm --workspace packages/api test --
+--runInBand --watch=false src/steel/ai/provider.spec.ts` passed 19 tests.
+
+# Steel AI-Led Workbook Patch Completion
+
+- [x] Add RED provider coverage that workbook patch instructions tell AI to fill derivable blank workbook fields across all user-relevant sheets.
+- [x] Add RED provider coverage that a quote_details-only quick quote patch is treated as incomplete and the model must call patch_workbook again with explicit rows for the other user-relevant sheets.
+- [x] Implement prompt/runtime guidance so AI fills blank cells only when usable material/customer/source/calculation data exists, otherwise leaves cells blank and records the missing evidence in review/notes.
+- [x] Remove or narrow backend hard-fill behavior that conflicts with AI-owned multi-material workbook patching.
+- [x] Run focused provider/handler tests, build check, and diff check.
+
+## Review
+
+- Replanned after user correction: multi-material workbook lists need AI to
+  generate explicit patch rows from workbook context and tool results. Backend
+  should validate/apply/remind, not hard-code derived companion rows.
+- Provider prompt now tells AI to fill derivable blank workbook cells across all
+  user-relevant sheets, and to leave unavailable facts blank while recording
+  missing material/customer/source/calculation evidence in manual review or
+  interpretation notes.
+- Provider tool loop now marks provisional quick-price workbook patches as
+  incomplete when sheets are missing, returns `missingSheetIds`, and requires
+  another AI `patch_workbook` call before the final answer.
+- Handler no longer derives companion rows from `報價明細`; it validates and
+  applies explicit AI patch operations only.
+- Documentation updated in `docs/steel-catalog-family-data-contract.md` to make
+  workbook patch ownership AI-led and backend hard-fill out of bounds.
+- Verification: `provider.spec.ts` passed 19 tests; `handlers.spec.ts` passed
+  22 tests; `npm --workspace packages/api run build` passed with existing
+  non-Steel Rollup TypeScript warnings; `git diff --check` passed.
+
+# Steel Follow-Up Workbook Patch Completion
+
+- [x] Add RED provider coverage for a follow-up customer/material update that patches quote cells but initially omits companion workbook sheets.
+- [x] Extend workbook patch completeness detection so quote/calculation patch operations trigger the missing-sheet loop even when the latest user message is not a price question.
+- [x] Keep backend handler as validation/apply only; do not reintroduce hard-coded companion row generation.
+- [x] Run focused provider/handler tests, API build, and diff check.
+
+## Review
+
+- Root cause: workbook patch completeness was only required when the latest user
+  message looked like a price request. Follow-up updates such as `客戶是龍頂`
+  could patch `quote_details` price/customer fields and still end without
+  companion rows for `系統訂單`, `總結`, `人工複核`, `價格來源`, `判讀備註`,
+  or `給客戶用`.
+- Added provider coverage for this exact follow-up path. The RED test failed
+  because the model loop stopped after one partial `patch_workbook`; it now
+  continues with `missingSheetIds` and requires a second explicit AI patch.
+- Implemented a narrow quote-field trigger: in Steel runtime, if AI patches
+  quote/calculation fields in `quote_details`, provider applies the same
+  workbook completeness loop even when the latest user text is not a price
+  question.
+- Backend handler remains apply-only for AI operations; no hard-coded companion
+  row generation was reintroduced.
+- Verification: `provider.spec.ts` passed 20 tests; `handlers.spec.ts` passed
+  22 tests; `npm --workspace packages/api run build` passed with existing
+  non-Steel Rollup TypeScript warnings; `git diff --check` passed.

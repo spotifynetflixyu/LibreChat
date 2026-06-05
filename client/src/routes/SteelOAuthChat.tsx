@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Bot,
+  CheckCircle2,
   GripVertical,
   Loader2,
   MessageSquarePlus,
@@ -18,6 +19,7 @@ import type {
   SteelProviderChatMessage,
   SteelProviderReasoningEffort,
   SteelProviderChatResponse,
+  SteelProviderChatStreamEvent,
   SteelChangedPath,
   SteelWorkbook,
 } from 'librechat-data-provider';
@@ -33,15 +35,24 @@ type SelectedSteelFile = SteelProviderChatFile & {
   id: string;
 };
 
+type SteelRightPanelTab = 'workbook' | 'thinking';
+
 const steelModel = 'gpt-5.5';
 const workbookMinWidthPx = 100;
 const chatMinWidthPx = 200;
 const reasoningEffortOptions: SteelProviderReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
+const rightPanelTabs: Array<{ id: SteelRightPanelTab; label: string }> = [
+  { id: 'workbook', label: 'Workbook' },
+  { id: 'thinking', label: 'Thinking' },
+];
 const titleText = 'Steel OAuth Chat';
 const tokensLabel = 'tokens';
 const emptyStateText = 'Ready';
 const pendingText = 'Waiting for provider';
 const newChatText = 'New chat';
+const streamStatusLabel = 'Steel stream status';
+const thinkingStatusTitle = 'Last run';
+const noThinkingStatusText = 'No run status yet.';
 
 function createTurn(
   role: SteelProviderChatMessage['role'],
@@ -133,8 +144,123 @@ function clampWorkbookWidth(widthPx: number, layoutWidthPx: number): number {
   return Math.min(maxWorkbookWidthPx, Math.max(workbookMinWidthPx, Math.round(widthPx)));
 }
 
+function getStreamStatusMessage(event: SteelProviderChatStreamEvent): string | undefined {
+  if (event.type === 'progress' || event.type === 'lookup' || event.type === 'tool') {
+    return event.message;
+  }
+  if (event.type === 'reasoning') {
+    return event.summary;
+  }
+  if (event.type === 'error') {
+    return event.errorSummary;
+  }
+  return undefined;
+}
+
+function getStreamStatusLabel(event: SteelProviderChatStreamEvent): string {
+  if (event.type === 'progress') {
+    return event.stage.replace(/_/g, ' ');
+  }
+  if (event.type === 'reasoning') {
+    return 'reasoning summary';
+  }
+  if (event.type === 'lookup' || event.type === 'tool') {
+    return event.toolName;
+  }
+  if (event.type === 'error') {
+    return 'error';
+  }
+  return 'response';
+}
+
+function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
+  if (
+    event.type === 'error' ||
+    ((event.type === 'lookup' || event.type === 'tool') && event.status === 'failed')
+  ) {
+    return AlertCircle;
+  }
+  if (event.type === 'reasoning') {
+    return Bot;
+  }
+  if ((event.type === 'lookup' || event.type === 'tool') && event.status === 'completed') {
+    return CheckCircle2;
+  }
+  return Loader2;
+}
+
+function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent[] }) {
+  if (events.length === 0) {
+    return <p className="text-sm text-text-secondary">{noThinkingStatusText}</p>;
+  }
+
+  return (
+    <ol className="space-y-2">
+      {events.map((event, index) => {
+        const message = getStreamStatusMessage(event);
+        if (!message) {
+          return null;
+        }
+        const Icon = getStreamStatusIcon(event);
+        const isActive =
+          event.type === 'progress' ||
+          ((event.type === 'lookup' || event.type === 'tool') && event.status === 'started');
+        const isFailed =
+          event.type === 'error' ||
+          ((event.type === 'lookup' || event.type === 'tool') && event.status === 'failed');
+
+        return (
+          <li key={`${event.type}-${index}-${message}`} className="grid grid-cols-[1rem_1fr] gap-2">
+            <span
+              className={`mt-0.5 flex h-4 w-4 items-center justify-center ${
+                isFailed ? 'text-red-400' : 'text-text-secondary'
+              }`}
+            >
+              <Icon className={`h-3.5 w-3.5 ${isActive ? 'animate-spin' : ''}`} aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[11px] uppercase text-text-secondary">
+                {getStreamStatusLabel(event)}
+              </span>
+              <span className="block whitespace-pre-wrap break-words text-text-primary">
+                {message}
+              </span>
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function ThinkingStatusPanel({ events }: { events: SteelProviderChatStreamEvent[] }) {
+  return (
+    <section
+      aria-label="Thinking status panel"
+      className="flex h-full min-h-0 flex-col bg-surface-primary"
+    >
+      <header className="border-b border-border-light px-4 py-3">
+        <h2 className="truncate text-sm font-semibold text-text-primary">{thinkingStatusTitle}</h2>
+        <p className="mt-0.5 text-xs text-text-secondary">last run</p>
+      </header>
+      <div className="min-h-0 flex-1 overflow-auto p-4 text-xs text-text-secondary">
+        <StreamStatusTimeline events={events} />
+      </div>
+    </section>
+  );
+}
+
+function createStreamErrorEvent(error: unknown): SteelProviderChatStreamEvent {
+  return {
+    type: 'error',
+    errorCategory: 'unknown',
+    errorSummary: getErrorText(error),
+  };
+}
+
 export default function SteelOAuthChat() {
   const layoutRef = useRef<HTMLElement | null>(null);
+  const isComposingInputRef = useRef(false);
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<SteelProviderReasoningEffort>('medium');
   const [messages, setMessages] = useState<SteelChatTurn[]>([]);
@@ -144,11 +270,14 @@ export default function SteelOAuthChat() {
   const [isWorkbookLoading, setIsWorkbookLoading] = useState(true);
   const [workbookError, setWorkbookError] = useState<string | null>(null);
   const [isWorkbookPanelOpen, setIsWorkbookPanelOpen] = useState(true);
+  const [activeRightPanelTab, setActiveRightPanelTab] =
+    useState<SteelRightPanelTab>('workbook');
   const [isWorkbookResizing, setIsWorkbookResizing] = useState(false);
   const [workbookWidthPx, setWorkbookWidthPx] = useState<number | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isEncodingFiles, setIsEncodingFiles] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<SelectedSteelFile[]>([]);
+  const [streamEvents, setStreamEvents] = useState<SteelProviderChatStreamEvent[]>([]);
 
   const providerLabel = useMemo(
     () => lastResponse?.provider ?? 'openai_oauth_responses',
@@ -242,6 +371,7 @@ export default function SteelOAuthChat() {
     setLastResponse(null);
     setSelectedFiles([]);
     setChangedPaths([]);
+    setStreamEvents([]);
     setIsSending(false);
     setIsEncodingFiles(false);
     void initializeWorkbook();
@@ -271,10 +401,11 @@ export default function SteelOAuthChat() {
     setInput('');
     setSelectedFiles([]);
     setMessages(nextMessages);
+    setStreamEvents([]);
     setIsSending(true);
 
     try {
-      const response = await dataService.sendSteelChat({
+      const payload = {
         model: steelModel,
         reasoningEffort,
         ...(workbook
@@ -291,7 +422,18 @@ export default function SteelOAuthChat() {
             content,
             ...(files != null && files.length > 0 ? { files } : {}),
           })),
-      });
+      };
+      const response =
+        typeof dataService.streamSteelChat === 'function'
+          ? await dataService.streamSteelChat(payload, (event) => {
+              const message = getStreamStatusMessage(event);
+              if (!message) {
+                return;
+              }
+
+              setStreamEvents((current) => [...current, event].slice(-12));
+            })
+          : await dataService.sendSteelChat(payload);
       setLastResponse(response);
       if (response.workbookPatch?.workbook) {
         setWorkbook(response.workbookPatch.workbook);
@@ -299,10 +441,19 @@ export default function SteelOAuthChat() {
       }
       setMessages([...nextMessages, createTurn('assistant', response.text)]);
     } catch (error) {
+      const errorText = getErrorText(error);
+      const errorEvent = createStreamErrorEvent(error);
+      setStreamEvents((current) => {
+        const lastEvent = current[current.length - 1];
+        if (lastEvent?.type === 'error' && lastEvent.errorSummary === errorText) {
+          return current;
+        }
+        return [...current, errorEvent].slice(-12);
+      });
       setMessages([
         ...nextMessages,
         {
-          ...createTurn('assistant', getErrorText(error)),
+          ...createTurn('assistant', errorText),
           status: 'error',
         },
       ]);
@@ -440,7 +591,19 @@ export default function SteelOAuthChat() {
                   </article>
                 );
               })}
-              {isSending && (
+              {isSending && streamEvents.length > 0 && (
+                <div
+                  aria-label={streamStatusLabel}
+                  className="rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-xs text-text-secondary"
+                >
+                  <div className="mb-2 flex items-center gap-2 text-text-primary">
+                    <Bot className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span className="font-medium">{streamStatusLabel}</span>
+                  </div>
+                  <StreamStatusTimeline events={streamEvents} />
+                </div>
+              )}
+              {isSending && streamEvents.length === 0 && (
                 <div className="flex items-center gap-2 text-sm text-text-secondary">
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   {pendingText}
@@ -493,7 +656,17 @@ export default function SteelOAuthChat() {
               rows={2}
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onCompositionStart={() => {
+                isComposingInputRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposingInputRef.current = false;
+              }}
               onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && isComposingInputRef.current) {
+                  event.preventDefault();
+                  return;
+                }
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
@@ -531,15 +704,48 @@ export default function SteelOAuthChat() {
             className="min-h-0 border-t border-border-light lg:flex-shrink-0 lg:border-t-0"
             style={workbookPanelStyle}
           >
-            <SteelWorkbookPreview
-              workbook={workbook}
-              changedPaths={changedPaths}
-              error={workbookError}
-              isLoading={isWorkbookLoading}
-              onRetry={() => {
-                void initializeWorkbook();
-              }}
-            />
+            <div className="flex h-full min-h-0 flex-col bg-surface-primary">
+              <div
+                role="tablist"
+                aria-label="Steel right panel"
+                className="flex gap-1 border-b border-border-light px-3 py-2"
+              >
+                {rightPanelTabs.map((tab) => {
+                  const selected = activeRightPanelTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                        selected
+                          ? 'bg-surface-active-alt text-text-primary'
+                          : 'text-text-secondary hover:bg-surface-hover'
+                      }`}
+                      onClick={() => setActiveRightPanelTab(tab.id)}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="min-h-0 flex-1">
+                {activeRightPanelTab === 'workbook' ? (
+                  <SteelWorkbookPreview
+                    workbook={workbook}
+                    changedPaths={changedPaths}
+                    error={workbookError}
+                    isLoading={isWorkbookLoading}
+                    onRetry={() => {
+                      void initializeWorkbook();
+                    }}
+                  />
+                ) : (
+                  <ThinkingStatusPanel events={streamEvents} />
+                )}
+              </div>
+            </div>
           </aside>
         </>
       )}

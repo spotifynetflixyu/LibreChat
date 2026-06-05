@@ -13,14 +13,17 @@ import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
 import * as permissions from './accessPermissions';
+import { getTokenHeader } from './headers-helpers';
 import type {
   SteelProviderChatRequest,
   SteelProviderChatResponse,
+  SteelProviderChatStreamEvent,
   SteelWorkbookCreateRequest,
   SteelWorkbookPatchRequest,
   SteelWorkbookPatchResponse,
   SteelWorkbookReadResponse,
 } from './steel';
+import { parseSteelProviderChatStreamLine } from './steel/ai';
 
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
@@ -46,6 +49,73 @@ export function sendSteelChat(
   payload: SteelProviderChatRequest,
 ): Promise<SteelProviderChatResponse> {
   return request.post(endpoints.steelChat(), payload);
+}
+
+export async function streamSteelChat(
+  payload: SteelProviderChatRequest,
+  onEvent: (event: SteelProviderChatStreamEvent) => void,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<SteelProviderChatResponse> {
+  const authorization = getTokenHeader();
+  const response = await fetchImpl(endpoints.steelChatStream(), {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/x-ndjson',
+      'Content-Type': 'application/json',
+      ...(authorization ? { Authorization: authorization } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Steel chat stream failed with HTTP ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error('Steel chat stream response did not include a readable body.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResponse: SteelProviderChatResponse | undefined;
+
+  const consumeLine = (line: string) => {
+    const event = parseSteelProviderChatStreamLine(line);
+    if (!event) {
+      return;
+    }
+
+    onEvent(event);
+    if (event.type === 'done') {
+      finalResponse = event.response;
+      return;
+    }
+    if (event.type === 'error') {
+      throw new Error(event.errorSummary);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    lines.forEach(consumeLine);
+  }
+
+  buffer += decoder.decode();
+  consumeLine(buffer);
+
+  if (!finalResponse) {
+    throw new Error('Steel chat stream ended before a done event.');
+  }
+
+  return finalResponse;
 }
 
 export function createSteelWorkbook(

@@ -11,6 +11,22 @@ const mockChat = jest.fn((_req, res) =>
     warnings: [],
   }),
 );
+const mockStreamChat = jest.fn((_req, res) => {
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.write(
+    `${JSON.stringify({
+      type: 'done',
+      response: {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: 'steel-stream-ok',
+        unsupportedSettings: [],
+        warnings: [],
+      },
+    })}\n`,
+  );
+  res.end();
+});
 const mockCapabilitySmoke = jest.fn((_req, res) =>
   res.status(200).json({
     provider: 'openai_oauth_responses',
@@ -57,6 +73,7 @@ const mockCreateSteelHandlers = jest.fn(() => ({
   patchWorkbook: mockPatchWorkbook,
   readWorkbook: mockReadWorkbook,
   readConversation: mockReadConversation,
+  streamChat: mockStreamChat,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
   requestCapabilitySmoke: mockCapabilitySmoke,
@@ -131,6 +148,19 @@ describe('Steel route shells', () => {
       unsupportedSettings: [],
       warnings: [],
     });
+  });
+
+  it('registers authenticated Steel streaming chat under /api/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/steel/ai/chat/stream')
+      .send({ messages: [{ role: 'user', content: 'Say steel-stream-ok' }] });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/x-ndjson');
+    expect(res.text).toContain('"type":"done"');
+    expect(mockStreamChat).toHaveBeenCalledTimes(1);
   });
 
   it('registers authenticated Steel conversation creation under /api/steel', async () => {

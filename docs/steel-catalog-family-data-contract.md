@@ -30,16 +30,16 @@ current schemas reject that old request shape.
 
 ## Source Roles
 
-| Source                                                         | Role                                                                                                 | Import behavior                                                                               |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `docs/reference/產品價格.xlsx`                                 | Primary product catalog, tier prices, product unit weight, reviewed catalog keys, ERP prefix groups. | Imported into `catalog_families`, `price_categories`, and `price_items`.                      |
-| `docs/reference/客戶資料.xlsx`                                 | Customer list and customer tier codes.                                                               | Imported into `customers` and `customer_tiers`.                                               |
-| `docs/reference/切工價錢.xlsx`                                 | Cutting prices and fuzzy cutting notes.                                                              | Imported into `cutting_prices`; fuzzy notes become `quote_defaults` for AI confirmation.      |
-| `docs/reference/公式編號.xlsx`                                 | Fixed formula source.                                                                                | Imported into `formula_versions`.                                                             |
-| `docs/reference/H型鋼.txt`                                     | H 型鋼 regular/non-standard length surcharge default.                                                | Imported into `quote_defaults` scoped by `catalog_family = h_beam`.                           |
-| `docs/reference/訂單參考.xlsx`, `docs/reference/系統訂單.xlsx` | Workbook and ERP input references.                                                                   | Classified as workbook-only; not imported as formal DB facts.                                 |
-| `docs/reference/龍頂鋼鐵手冊__文字版.docx`                     | Secondary weight/spec/alias evidence.                                                                | Use for missing weights or future reviewed aliases; do not override product-price facts.      |
-| Admin-reviewed instruction packets                             | Editable AI quote-rule prompts such as oral aliases, C 型鋼 strategy, and H 型鋼 processing rules.   | Stored in `instruction_packets`; retrieved with `lookup_quote_rules` / `lookup_instructions`. |
+| Source                                                         | Role                                                                                                                                                                                                          | Import behavior                                                                               |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `docs/reference/產品價格.xlsx`                                 | Primary product catalog, tier prices, product unit weight, reviewed catalog keys, ERP prefix groups.                                                                                                          | Imported into `catalog_families`, `price_categories`, and `price_items`.                      |
+| `docs/reference/客戶資料.xlsx`                                 | Customer list and customer tier codes.                                                                                                                                                                        | Imported into `customers` and `customer_tiers`.                                               |
+| `docs/reference/切工價錢.xlsx`                                 | Cutting prices and fuzzy cutting notes.                                                                                                                                                                       | Imported into `cutting_prices`; fuzzy notes become `quote_defaults` for AI confirmation.      |
+| `docs/reference/公式編號.xlsx`                                 | Fixed formula source.                                                                                                                                                                                         | Imported into `formula_versions`.                                                             |
+| `docs/reference/H型鋼.txt`                                     | H 型鋼 regular/non-standard length surcharge default.                                                                                                                                                         | Imported into `quote_defaults` scoped by `catalog_family = h_beam`.                           |
+| `docs/reference/訂單參考.xlsm`, `docs/reference/系統訂單.xlsx` | Workbook and ERP input references. `訂單參考.xlsm` is the development reference for visible sheet order, labels, headers, and seed rows; runtime workbook initialization uses code constants derived from it. | Classified as workbook-only; not imported as formal DB facts and not read at runtime.         |
+| `docs/reference/龍頂鋼鐵手冊__文字版.docx`                     | Secondary weight/spec/alias evidence.                                                                                                                                                                         | Use for missing weights or future reviewed aliases; do not override product-price facts.      |
+| Admin-reviewed instruction packets                             | Editable AI quote-rule prompts such as oral aliases, C 型鋼 strategy, and H 型鋼 processing rules.                                                                                                            | Stored in `instruction_packets`; retrieved with `lookup_quote_rules` / `lookup_instructions`. |
 
 ## Database Contract
 
@@ -225,8 +225,18 @@ Catalog mapping notes:
    backend-resolved key.
 3. AI reviews the returned vocabulary/context and selects one or more
    `catalogFamily` candidates, or marks the mapping ambiguous.
-4. Query `search_price_candidates` with `catalogFamilies` plus bounded
-   product/spec candidate queries.
+4. If the user provided a customer name in the same quote request, call
+   `search_customers` in the initial lookup round when available. Use the
+   selected customer id/tier as `customerContext` in the following rule/default
+   lookup so customer-scoped defaults can be returned.
+5. Query `lookup_quote_rules` with batched `catalogContexts` before
+   category-dependent price/default/formula lookups. One call may include
+   multiple material/catalog keys such as `c_type` and `h_beam`; `lineRefs` help
+   attach rules to workbook rows but are not required just to retrieve material
+   defaults. Use `lookup_defaults` only for defaults-only compatibility flows.
+6. Query `search_price_candidates` with `catalogFamilies` plus bounded
+   product/spec candidate queries, using the same selected catalog keys from
+   `lookup_catalog_families` / `lookup_quote_rules`.
    - For `c_type`, product-price rows use width/thickness fragments such as
      `100x2.3`; full section text such as `100x50x20 2.3t` is not enough by
      itself. The price tool validates this so failed oral normalization loops
@@ -251,11 +261,38 @@ Catalog mapping notes:
    - In a follow-up turn after material alternatives were shown, if the user
      does not specify another C 型鋼 material/surface, AI treats the default
      錏輕型鋼 assumption as confirmed for the continuing quote context.
-5. Query `lookup_quote_rules` with batched `catalogContexts` when instruction
-   packets and quote defaults are needed together. Use `lookup_defaults` only
-   for defaults-only compatibility flows.
-6. If multiple reviewed candidates remain plausible, ask the user to confirm.
+7. If returned instruction packets require `lookup_formula`, call
+   `lookup_formula` with the same selected `catalogContexts` before the final
+   quote answer.
+8. If multiple reviewed candidates remain plausible, ask the user to confirm.
    For quick approximate quotes, show the selected assumption and alternatives.
+
+Workbook patch ownership:
+
+- For `/steel/oauth-chat`, AI owns workbook patch content. When workbook context
+  is available, the model must generate explicit `patch_workbook` operations for
+  every user-relevant sheet that has derivable data: `system_order`,
+  `quote_details`, `summary`, `manual_review`, `price_sources`,
+  `interpretation_notes`, and `customer_quote`.
+- Backend provider orchestration may reject or remind an incomplete provisional
+  price patch by returning missing sheet ids and missing workbook cell targets
+  to the model. Backend code should not hard-code derived companion rows for
+  multi-material quote lists because each line can have different material,
+  source, customer, confidence, and missing-field evidence.
+- Completion is checked per workbook update turn, not only by final field count
+  or by whether a sheet was touched. A sparse patch that only creates shell
+  rows such as `line_no`/`item` is incomplete when user-visible minimum cells
+  are still missing, for example ERP `item_spec`/`unit_price`, summary `value`,
+  review `confirmation_needed`, source `adopted_product_price_item`, note
+  `content`, and customer quote `item_spec`/`unit_price`/`subtotal`.
+- The same completeness rule applies to follow-up turns that update an existing
+  quote line, such as customer selection, customer tier changes, material
+  confirmation, or repricing. A follow-up patch that updates `quote_details`
+  quote/calculation fields must still include explicit companion patches for
+  the relevant workbook sheets.
+- If material, customer, reviewed source, or calculation evidence is unavailable,
+  AI leaves the target value blank and records the missing evidence in
+  `manual_review` or `interpretation_notes` instead of inventing a value.
 
 Examples:
 

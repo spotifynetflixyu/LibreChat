@@ -6,6 +6,7 @@ import {
   steelModelOptionSchema,
   steelProviderChatRequestSchema,
   steelProviderChatResponseSchema,
+  steelProviderChatStreamEventSchema,
   steelProviderWorkbookPatchProposalSchema,
 } from './ai';
 import { requiredSteelWorkbookSheetIds } from './workbooks';
@@ -275,5 +276,91 @@ describe('Steel AI public contracts', () => {
         ],
       }),
     ).toThrow();
+  });
+
+  it('validates Steel chat stream events for progress, tools, text, done, and errors', () => {
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'progress',
+        stage: 'provider_request',
+        message: '等待模型回覆',
+      }),
+    ).toEqual({
+      type: 'progress',
+      stage: 'provider_request',
+      message: '等待模型回覆',
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'lookup',
+        status: 'completed',
+        toolName: 'lookup_quote_rules',
+        message: 'lookup_quote_rules completed',
+        ok: true,
+      }),
+    ).toEqual({
+      type: 'lookup',
+      status: 'completed',
+      toolName: 'lookup_quote_rules',
+      message: 'lookup_quote_rules completed',
+      ok: true,
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'tool',
+        status: 'started',
+        toolName: 'patch_workbook',
+        message: 'Applying workbook patch',
+      }),
+    ).toEqual({
+      type: 'tool',
+      status: 'started',
+      toolName: 'patch_workbook',
+      message: 'Applying workbook patch',
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'reasoning',
+        summary: '先查 catalog key，再查規則與價格。',
+      }),
+    ).toEqual({
+      type: 'reasoning',
+      summary: '先查 catalog key，再查規則與價格。',
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({ type: 'text', delta: '小計：643.2' }),
+    ).toEqual({ type: 'text', delta: '小計：643.2' });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'done',
+        response: {
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '小計：643.2',
+          unsupportedSettings: [],
+          warnings: [],
+        },
+      }),
+    ).toEqual({
+      type: 'done',
+      response: {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '小計：643.2',
+        unsupportedSettings: [],
+        warnings: [],
+      },
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'error',
+        errorCategory: 'provider_timeout',
+        errorSummary: 'Provider timed out',
+      }),
+    ).toEqual({
+      type: 'error',
+      errorCategory: 'provider_timeout',
+      errorSummary: 'Provider timed out',
+    });
   });
 });

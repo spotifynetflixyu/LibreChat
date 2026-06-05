@@ -1,3 +1,5 @@
+import os from 'os';
+
 import {
   requiredSteelWorkbookSheetIds,
   type SteelWorkbookPatchRequest,
@@ -66,7 +68,6 @@ const expectedHeadersBySheet = {
     '材料單價欄位',
     '材料計價單位',
     '計價數量',
-    '材料費',
     '切工費',
     '孔費',
     '開槽費',
@@ -142,7 +143,7 @@ const expectedLabelsBySheet = {
   price_sources: '價格來源',
   interpretation_notes: '判讀備註',
   system_order: '系統訂單',
-  customer_quote: '給客戶',
+  customer_quote: '給客戶用',
 };
 
 describe('createSteelWorkbookService', () => {
@@ -166,7 +167,7 @@ describe('createSteelWorkbookService', () => {
     }
   });
 
-  it('seeds summary and customer-facing total rows for quote output', async () => {
+  it('starts new quote workbooks with headers only and no quote data rows', async () => {
     const repository = new MemorySteelWorkbookRepository();
     const service = createSteelWorkbookService({
       id: () => 'wb_1',
@@ -175,14 +176,127 @@ describe('createSteelWorkbookService', () => {
     });
 
     const result = await service.create({});
-    const summary = result.workbook.sheets.find((sheet) => sheet.id === 'summary');
-    const customerQuote = result.workbook.sheets.find((sheet) => sheet.id === 'customer_quote');
 
-    expect(summary?.rows.map((row) => row.cells.item)).toEqual(['總重量', '總額']);
-    expect(customerQuote?.rows).toEqual([
-      { id: 'customer_1', cells: { line_no: 1 } },
-      { id: 'customer_total', cells: { item_spec: '訂單總額', subtotal: null } },
+    expect(result.workbook.sheets.map((sheet) => sheet.id)).toEqual(requiredSteelWorkbookSheetIds);
+    expect(Object.fromEntries(result.workbook.sheets.map((sheet) => [sheet.id, sheet.rows]))).toEqual(
+      {
+        system_order: [],
+        quote_details: [],
+        summary: [],
+        manual_review: [],
+        price_sources: [],
+        interpretation_notes: [],
+        customer_quote: [],
+      },
+    );
+  });
+
+  it('creates the target row when a validated patch writes the first quote data', async () => {
+    const repository = new MemorySteelWorkbookRepository();
+    const service = createSteelWorkbookService({
+      id: () => 'wb_1',
+      now: () => new Date('2026-06-02T00:00:00.000Z'),
+      repository,
+    });
+    const created = await service.create({});
+
+    const result = await service.patch({
+      workbookId: created.workbook.id,
+      workbookVersion: created.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_new',
+          columnKey: 'subtotal',
+          value: 643.2,
+          reason: 'First provisional quote row from reviewed C-type candidate.',
+        },
+      ],
+    });
+
+    const quoteDetails = result.workbook?.sheets.find((sheet) => sheet.id === 'quote_details');
+    expect(quoteDetails?.rows).toEqual([
+      {
+        id: 'line_new',
+        cells: {
+          subtotal: 643.2,
+        },
+      },
     ]);
+    expect(result.changedFieldSummary).toEqual([
+      {
+        sheetId: 'quote_details',
+        rowId: 'line_new',
+        columnKey: 'subtotal',
+        label: '小計',
+        previousValue: null,
+        nextValue: 643.2,
+      },
+    ]);
+  });
+
+  it('keeps the reference workbook sheet and column structure without seeding reference rows', async () => {
+    const repository = new MemorySteelWorkbookRepository();
+    const service = createSteelWorkbookService({
+      id: () => 'wb_1',
+      now: () => new Date('2026-06-02T00:00:00.000Z'),
+      repository,
+    });
+
+    const result = await service.create({});
+    const rowCounts = Object.fromEntries(
+      result.workbook.sheets.map((sheet) => [sheet.id, sheet.rows.length]),
+    );
+    const quoteDetails = result.workbook.sheets.find((sheet) => sheet.id === 'quote_details');
+
+    expect(rowCounts).toEqual({
+      system_order: 0,
+      quote_details: 0,
+      summary: 0,
+      manual_review: 0,
+      price_sources: 0,
+      interpretation_notes: 0,
+      customer_quote: 0,
+    });
+    expect(quoteDetails?.columns).toHaveLength(39);
+  });
+
+  it('creates the workbook from code constants without reading the xlsm at runtime', async () => {
+    const previousCwd = process.cwd();
+    jest.resetModules();
+    process.chdir(os.tmpdir());
+
+    try {
+      const { createSteelWorkbookService: createWorkbookService } = await import('./service');
+      const repository = new MemorySteelWorkbookRepository();
+      const service = createWorkbookService({
+        id: () => 'wb_no_reference_file_runtime',
+        now: () => new Date('2026-06-02T00:00:00.000Z'),
+        repository,
+      });
+
+      const result = await service.create({});
+      const rowCounts = Object.fromEntries(
+        result.workbook.sheets.map((sheet) => [sheet.id, sheet.rows.length]),
+      );
+
+      expect(result.workbook.sheets.map((sheet) => sheet.id)).toEqual(
+        requiredSteelWorkbookSheetIds,
+      );
+      expect(rowCounts).toMatchObject({
+        system_order: 0,
+        quote_details: 0,
+        summary: 0,
+        manual_review: 0,
+        price_sources: 0,
+        interpretation_notes: 0,
+        customer_quote: 0,
+      });
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it('applies a multi-turn cell patch and increments workbook version', async () => {

@@ -9,9 +9,9 @@ describe('Steel workbook public contracts', () => {
   it('keeps the fixed seven-sheet workbook contract', () => {
     expect(requiredSteelWorkbookSheetIds).toEqual([
       'system_order',
+      'quote_details',
       'summary',
       'manual_review',
-      'quote_details',
       'price_sources',
       'interpretation_notes',
       'customer_quote',

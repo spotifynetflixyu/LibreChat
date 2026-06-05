@@ -235,6 +235,29 @@ processing price lookup must include reviewed candidates such as `開槽加工` 
 `KZZB10` and `沖孔加工` / `KZZB11`. If `lookup_defaults` is called separately,
 its reviewed processing/default notes are also verified.
 
+Use `STEEL_OPENAI_OAUTH_WORKBOOK_PATCH_TEST=true` for the live workbook-patch
+manual smoke. This smoke uses the real OAuth Responses model and the real Steel
+provider loop, but supplies deterministic reviewed `lookup_quote_rules` and
+`search_price_candidates` tool results inside the test so the result does not
+depend on current database contents. It verifies that the true model emits a
+typed `patch_workbook` proposal for `報價明細`, `價格來源`, and `判讀備註`,
+including `報價明細.小計` / internal key `subtotal` for the provisional quote.
+It does not persist a live workbook; handler/workbook-service regressions cover
+backend validation and Mongo workbook application.
+
+```bash
+DOTENV_CONFIG_PATH=../../.env \
+STEEL_OPENAI_OAUTH_WORKBOOK_PATCH_TEST=true \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5 \
+NODE_OPTIONS='-r dotenv/config --experimental-vm-modules' \
+npm --workspace packages/api exec -- \
+  jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts \
+  --coverage=false \
+  --ci \
+  --forceExit \
+  --testPathIgnorePatterns='\.integration\.|\.helper\.|__tests__/helpers/'
+```
+
 Mocked provider unit tests only verify adapter serialization and tool-loop
 control contracts. Do not cite them as proof that the AI will choose a category,
 instruction lookup, or price-search candidate.

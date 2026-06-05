@@ -70,12 +70,12 @@ These Chinese names are required output labels, not English database keys:
 
 | Chinese sheet name | Internal sheet id      | Rule                                                                 |
 | ------------------ | ---------------------- | -------------------------------------------------------------------- |
+| 系統訂單           | `system_order`         | Export/workbook sheet label must stay Chinese for ERP-facing output. |
 | 報價明細           | `quote_details`        | Export/workbook sheet label must stay Chinese.                       |
 | 總結               | `summary`              | Export/workbook sheet label must stay Chinese.                       |
 | 人工複核清單       | `manual_review`        | Export/workbook sheet label must stay Chinese.                       |
 | 價格來源           | `price_sources`        | Export/workbook sheet label must stay Chinese.                       |
 | 判讀備註           | `interpretation_notes` | Export/workbook sheet label must stay Chinese.                       |
-| 系統訂單           | `system_order`         | Export/workbook sheet label must stay Chinese for ERP-facing output. |
 | 給客戶用           | `customer_quote`       | Export/workbook sheet label must stay Chinese.                       |
 
 Do not add these rows to database schema mapping. They are workbook/export labels.

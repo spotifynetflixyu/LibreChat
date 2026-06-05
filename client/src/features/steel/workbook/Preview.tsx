@@ -33,6 +33,10 @@ function getActiveSheet(
   return workbook.sheets.find((sheet) => sheet.id === activeSheetId) ?? workbook.sheets[0] ?? null;
 }
 
+function getWorkbookSheetLabel(sheet: SteelWorkbookSheet): string {
+  return sheet.id === 'manual_review' ? '人工複核' : sheet.label;
+}
+
 const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
   workbook,
   changedPaths,
@@ -107,7 +111,7 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
                 : 'text-text-secondary hover:bg-surface-hover'
             }`}
           >
-            {sheet.label}
+            {getWorkbookSheetLabel(sheet)}
           </button>
         ))}
       </div>
