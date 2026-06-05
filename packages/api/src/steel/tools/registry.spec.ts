@@ -23,10 +23,24 @@ describe('Steel tool registry', () => {
   it('keeps Zod validation owned by the backend registry', () => {
     const definition = getSteelToolDefinition('search_price_candidates');
 
-    expect(definition.argsSchema.parse({ productName: 'C型鋼', limit: 2 })).toEqual({
-      productName: 'C型鋼',
+    expect(definition.argsSchema.parse({ productNames: ['C型鋼'], limit: 2 })).toEqual({
+      productNames: ['C型鋼'],
       limit: 2,
     });
+    expect(
+      definition.argsSchema.parse({
+        productNames: ['錏成型角鐵', '鍍鋅角鐵'],
+        specKeyContains: '30x30',
+        limit: 5,
+      }),
+    ).toEqual({
+      productNames: ['錏成型角鐵', '鍍鋅角鐵'],
+      specKeyContains: '30x30',
+      limit: 5,
+    });
+    expect(() => definition.argsSchema.parse({ productName: '錏成型角鐵', limit: 5 })).toThrow(
+      'Unrecognized key',
+    );
     expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow();
   });
 

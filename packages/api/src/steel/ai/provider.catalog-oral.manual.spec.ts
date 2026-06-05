@@ -179,7 +179,7 @@ function createWorkbookPatchSmokeToolResult(toolName: string): SteelToolResult {
       data: {
         catalogFamilyKey: 'c_type',
         ruleSummary:
-          'C 型鋼材質不明時，可先用 productName 錏輕型鋼；價格表 unit=kg 時必須用 kg/m * 長度 * 元/kg 算小計。',
+          'C 型鋼材質不明時，使用 productNames [錏輕型鋼]；價格表 unit=kg 時必須用 kg/m * 長度 * 元/kg 算小計。',
         customerContext: {
           tierKnown: false,
           defaultCustomerTierId: 2,
@@ -187,8 +187,8 @@ function createWorkbookPatchSmokeToolResult(toolName: string): SteelToolResult {
         },
         requiredLookups: ['search_price_candidates'],
         workbookRules: [
-          'positive reviewed price candidate exists and amount is calculable -> call patch_workbook',
-          'write quote_details, price_sources, interpretation_notes',
+          'positive reviewed price candidate exists and amount is calculable -> call patch_quote_workbook',
+          'write quote_details, price_sources, interpretation_notes, summary, manual_review, system_order, customer_quote',
           'quote_details 小計 uses internal key subtotal',
         ],
       },
@@ -652,14 +652,14 @@ const describeWorkbookPatch = runWorkbookPatch ? describe : describe.skip;
 
 describeWorkbookPatch('Steel OpenAI OAuth workbook patch smoke', () => {
   it(
-    'emits patch_workbook operations for quote details, price sources, notes, and subtotal',
+    'emits workbook patch operations for quote details, price sources, notes, and subtotal',
     async () => {
       const run = await runLiveWorkbookPatchChat(
         [
           {
             role: 'user',
             content:
-              'C型鋼 C100x50x20x2.3t 6M 一支多少？請先依序查 lookup_quote_rules 與 search_price_candidates，拿到 positive reviewed candidate 後再呼叫 patch_workbook，更新報價明細 line_1、價格來源 source_1、判讀備註 note_1，並回覆小計與改動重點。',
+              'C型鋼 C100x50x20x2.3t 6M 一支多少？請先依序查 lookup_quote_rules 與 search_price_candidates，拿到 positive reviewed candidate 後優先呼叫 patch_quote_workbook，更新報價明細、價格來源、判讀備註、總結、人工複核、系統訂單、給客戶用，並回覆小計與改動重點。',
           },
         ],
         2800,

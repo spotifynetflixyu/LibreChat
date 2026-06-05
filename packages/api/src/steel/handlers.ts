@@ -336,6 +336,17 @@ function getProviderErrorCategory(error: unknown): SteelChatErrorResponse['error
   return 'unknown';
 }
 
+function sanitizeProviderErrorSummary(message: string): string {
+  return message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/access_token\s*[:=]\s*["']?[^"',\s]+/gi, 'access_token=[REDACTED]')
+    .replace(/authorization\s*[:=]\s*["']?[^"',\n]+/gi, 'authorization=[REDACTED]')
+    .replace(/authFile(Path)?\s*[:=]\s*["']?[^"',\n]+/gi, 'authFile=[REDACTED]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 600);
+}
+
 function getProviderErrorSummary(error: unknown): string {
   const category = getProviderErrorCategory(error);
   if (category === 'auth') {
@@ -349,7 +360,8 @@ function getProviderErrorSummary(error: unknown): string {
     return message;
   }
 
-  return 'OpenAI OAuth provider request failed.';
+  const sanitizedMessage = sanitizeProviderErrorSummary(message);
+  return sanitizedMessage.length > 0 ? sanitizedMessage : 'OpenAI OAuth provider request failed.';
 }
 
 function getSteelRequestUser(req: SteelRequest) {
@@ -961,8 +973,8 @@ export function createSteelHandlers({
           writeStreamEvent(res, {
             type: 'tool',
             status: 'started',
-            toolName: 'patch_workbook',
-            message: 'patch_workbook started',
+            toolName: 'patch_quote_workbook',
+            message: 'patch_quote_workbook started',
           });
         }
 
@@ -972,8 +984,8 @@ export function createSteelHandlers({
           writeStreamEvent(res, {
             type: 'tool',
             status: response.workbookPatch?.rejectedReason ? 'failed' : 'completed',
-            toolName: 'patch_workbook',
-            message: response.workbookPatch?.rejectedReason ?? 'patch_workbook completed',
+            toolName: 'patch_quote_workbook',
+            message: response.workbookPatch?.rejectedReason ?? 'patch_quote_workbook completed',
             ok: response.workbookPatch?.rejectedReason ? false : true,
           });
         }

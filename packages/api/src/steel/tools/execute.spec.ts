@@ -67,9 +67,9 @@ const instructionPacketFixtures: { [slug: string]: object } = {
     packet_groups: ['c-type-quote-core'],
     selectors: { catalogFamilies: ['c_type'], formulaCodes: ['C'] },
     instruction:
-      'C 型鋼仍必須先查 reviewed product-price rows。材質不明時，AI 可以先塞 productName: 錏輕型鋼 作為通常情況的高信心候選；第一輪回覆必須列出同規格不同材質的 reviewed bounded options（例如白鐵輕型鋼、黑鐵輕型鋼）供確認，第二輪若用戶未指定其他材質/表面，視為確認預設錏輕型鋼。未指定客戶或找不到客戶價格等級時，查價自動使用 B 價分級 customerTierId 2；回覆提醒目前用價格B，若提供客戶名稱可再查該客戶報價，不要加最高/最貴說明。價格 bullet 用價格，不要寫 reviewed 價格。快速報價已有總重時，不要再另外列單位重。C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。',
+      'C 型鋼仍必須先查 reviewed product-price rows。材質不明時，AI 使用 productNames: [錏輕型鋼] 作為通常情況的高信心候選；第一輪回覆必須列出同規格不同材質的 reviewed bounded options（例如白鐵輕型鋼、黑鐵輕型鋼）供確認，第二輪若用戶未指定其他材質/表面，視為確認預設錏輕型鋼。未指定客戶或找不到客戶價格等級時，查價自動使用 B 價分級 customerTierId 2；回覆提醒目前用價格B，若提供客戶名稱可再查該客戶報價，不要加最高/最貴說明。價格 bullet 用價格，不要寫 reviewed 價格。快速報價已有總重時，不要再另外列單位重。C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。',
     blocking_rules: [
-      '不要把 C型鋼 當作 productName filter 卡死價格查詢。',
+      '不要把 C型鋼 當作 productNames 候選卡死價格查詢。',
       '不要在 customer/tier 未知時把 customerTierId 設為 A/tier 1；查價必須使用 B 價分級 customerTierId 2。',
       '不要在材質不明的第一輪只顯示錏輕型鋼，省略同規格其他材質候選。',
       '不要把 C 型鋼切工/孔費免費規則套用到材料單價、特殊加工或非 C 型鋼品項。',
@@ -529,7 +529,7 @@ describe('executeSteelTool', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        productName: 'H型鋼',
+        productNames: ['H型鋼'],
         materialFamilies: ['h_beam'],
         limit: 5,
       },
@@ -848,7 +848,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'formed-angle-ya',
-            productName: '錏成型角鐵',
+            productNames: ['錏成型角鐵'],
             specKey: '30x30',
             specKeyContains: '30x30',
             confidence: 'medium',
@@ -856,7 +856,7 @@ describe('executeSteelTool', () => {
           },
           {
             queryId: 'raw-user-text',
-            productName: '亞L30x30',
+            productNames: ['亞L30x30'],
             confidence: 'low',
             reason: 'raw user text must be filtered out',
           },
@@ -893,6 +893,101 @@ describe('executeSteelTool', () => {
         },
       ],
     });
+  });
+
+  it('searches prices from multiple inferred productNames candidates', async () => {
+    const client = createClient([
+      [
+        {
+          id: '31',
+          erp_item_code: 'A-L30-25',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'angle_L30x30x2.5x6M',
+          product_name: '錏成型角鐵',
+          catalog_family: 'angle',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '194.3000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+            },
+          ],
+        },
+      ],
+      [
+        {
+          id: '32',
+          erp_item_code: 'G-L30-25',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'angle_L30x30x2.5x6M',
+          product_name: '鍍鋅角鐵',
+          catalog_family: 'angle',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '205.0000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        productNames: ['錏成型角鐵', '鍍鋅角鐵'],
+        specKeyContains: '30x30',
+        catalogFamilies: ['angle'],
+        limit: 5,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls).toHaveLength(2);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%30x30%', '%錏成型角鐵%', 'angle', 5]);
+    expect(client.calls[1]?.values).toEqual([
+      'reviewed',
+      '%30x30%',
+      '%鍍鋅%',
+      '%角鐵%',
+      'angle',
+      5,
+    ]);
+    expect(result.data.priceCandidates).toEqual([
+      expect.objectContaining({
+        productName: '錏成型角鐵',
+        unitPrice: 194.3,
+      }),
+      expect.objectContaining({
+        productName: '鍍鋅角鐵',
+        unitPrice: 205,
+      }),
+    ]);
   });
 
   it('returns C-type instruction packet group from one batched lookup', async () => {
@@ -1771,7 +1866,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'c-type-c100',
-            productName: 'C型鋼',
+            productNames: ['C型鋼'],
             specKeyContains: 'C100',
             confidence: 'high',
             reason: 'AI interpreted C100x50x20x2.3 as C 型鋼 candidate',
@@ -1813,9 +1908,9 @@ describe('executeSteelTool', () => {
         expect.objectContaining({
           slug: 'c-type-basic-quote-zh-v1',
           requiredLookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
-          instruction: expect.stringContaining('材質不明時，AI 可以先塞 productName: 錏輕型鋼'),
+          instruction: expect.stringContaining('材質不明時，AI 使用 productNames: [錏輕型鋼]'),
           blockingRules: expect.arrayContaining([
-            expect.stringContaining('不要把 C型鋼 當作 productName filter'),
+            expect.stringContaining('不要把 C型鋼 當作 productNames 候選'),
           ]),
         }),
       ]),
@@ -1865,7 +1960,7 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         originalText: '亞L30x30',
-        productName: '亞L30x30',
+        productNames: ['亞L30x30'],
         limit: 5,
       },
     });
@@ -1878,7 +1973,7 @@ describe('executeSteelTool', () => {
     expect(client.calls).toHaveLength(0);
   });
 
-  it('rejects c_type price searches that still use C 型鋼 as a productName filter', async () => {
+  it('rejects c_type price searches that still use C 型鋼 as a productNames candidate', async () => {
     const client = createClient([]);
 
     const result = await executeSteelTool({
@@ -1890,7 +1985,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'c-type-family-label',
-            productName: 'C型鋼',
+            productNames: ['C型鋼'],
             specKeyContains: '100x50x20',
             confidence: 'high',
             reason: 'AI selected c_type but reused the family label as product_name',
@@ -1904,7 +1999,7 @@ describe('executeSteelTool', () => {
       ok: false,
       errorCategory: 'invalid_arguments',
       errorSummary: expect.stringContaining(
-        'Do not use C型鋼 as productName after selecting c_type',
+        'Do not use C型鋼 as productNames after selecting c_type',
       ),
     });
     expect(client.calls).toHaveLength(0);
@@ -1922,7 +2017,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'c-type-full-section',
-            productName: '錏輕型鋼',
+            productNames: ['錏輕型鋼'],
             specKeyContains: '100x50x20 2.3',
             confidence: 'medium',
             reason: 'AI used the full C 型鋼 section but omitted the price-table fragment',
@@ -1940,7 +2035,7 @@ describe('executeSteelTool', () => {
     expect(client.calls).toHaveLength(0);
   });
 
-  it('accepts c_type galvanized light-steel productName as the usual candidate when material is unknown', async () => {
+  it('accepts c_type galvanized light-steel productNames as the usual candidate when material is unknown', async () => {
     const client = createClient([
       [
         {
@@ -1975,7 +2070,7 @@ describe('executeSteelTool', () => {
           {
             queryId: 'c-type-assumed-galvanized',
             label: '錏輕型鋼 100x2.3（C100x50x20x2.3t 6M）',
-            productName: '錏輕型鋼',
+            productNames: ['錏輕型鋼'],
             specKeyContains: '100x2.3',
             confidence: 'high',
             reason: 'AI assumed the usual C 型鋼 material before reviewed lookup',
@@ -2031,7 +2126,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'c-type-full-and-compact',
-            productName: '錏輕型鋼',
+            productNames: ['錏輕型鋼'],
             specKey: '100x50x20 2.3t',
             specKeyContains: '100x2.3',
             confidence: 'high',
@@ -2054,7 +2149,7 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('accepts c_type width-thickness price fragments without productName when material is unknown', async () => {
+  it('accepts c_type width-thickness price fragments without productNames when material is unknown', async () => {
     const client = createClient([
       [
         {
@@ -2109,7 +2204,7 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('accepts c_type productName filters when the user specified the surface material', async () => {
+  it('accepts c_type productNames filters when the user specified the surface material', async () => {
     const client = createClient([[]]);
 
     const result = await executeSteelTool({
@@ -2121,7 +2216,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'c-type-explicit-galvanized',
-            productName: '錏輕型鋼',
+            productNames: ['錏輕型鋼'],
             specKeyContains: '100x2.3',
             confidence: 'high',
             reason: 'User specified 錏 material/surface',

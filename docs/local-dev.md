@@ -26,9 +26,12 @@ the Supabase Session pooler URL instead:
 STEEL_POSTGRES_URL=postgresql://postgres.<project-ref>:<password>@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require&uselibpqcompat=true
 ```
 
-This keeps local `pg` behavior compatible with libpq `sslmode=require`.
-Production should use CA-backed `verify-full` once the Supabase root
-certificate is configured.
+The Steel runtime also normalizes a URL that omits SSL query parameters by
+adding `sslmode=require&uselibpqcompat=true` before creating the `pg` pool. This
+keeps local `pg` behavior compatible with libpq `sslmode=require` and avoids
+Supabase pooler certificate-chain failures. Production should use CA-backed
+`verify-full` once the Supabase root certificate is configured; explicit
+`sslmode=verify-full` URLs are preserved.
 
 Use this sequence when starting the Vite frontend against the local backend:
 

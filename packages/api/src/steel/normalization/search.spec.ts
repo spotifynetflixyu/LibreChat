@@ -8,14 +8,14 @@ describe('generateSteelPriceSearchTerms', () => {
         {
           queryId: 'raw-user-text',
           label: '亞L30x30',
-          productName: '亞L30x30',
+          productNames: ['亞L30x30'],
           confidence: 'low',
           reason: 'raw user text should not be used directly',
         },
         {
           queryId: 'formed-angle-ya',
           label: '錏成型角鐵 30x30',
-          productName: '錏成型角鐵',
+          productNames: ['錏成型角鐵'],
           specKeyContains: '30x30',
           confidence: 'medium',
           reason: 'AI interpreted L30x30 as equal-angle steel and 亞 as possible 錏',
@@ -23,7 +23,7 @@ describe('generateSteelPriceSearchTerms', () => {
         {
           queryId: 'galvanized-angle',
           label: '鍍鋅角鐵 30x30',
-          productName: '鍍鋅角鐵',
+          productNames: ['鍍鋅角鐵'],
           specKeyContains: '30x30',
           confidence: 'low',
           reason: '錏 may point to galvanized surface-treatment wording',
@@ -31,7 +31,7 @@ describe('generateSteelPriceSearchTerms', () => {
         {
           queryId: 'angle-only',
           label: '角鐵 30x30',
-          productName: '角鐵',
+          productNames: ['角鐵'],
           specKeyContains: '30x30',
           confidence: 'medium',
           reason: 'L30x30 is a common equal-angle notation',
@@ -57,19 +57,19 @@ describe('generateSteelPriceSearchTerms', () => {
       candidateQueries: [
         {
           queryId: 'formed-angle-ya',
-          productName: '錏成型角鐵',
+          productNames: ['錏成型角鐵'],
           specKeyContains: '30x30',
           confidence: 'medium',
         },
         {
           queryId: 'galvanized-angle',
-          productName: '鍍鋅角鐵',
+          productNames: ['鍍鋅角鐵'],
           specKeyContains: '30x30',
           confidence: 'low',
         },
         {
           queryId: 'angle-only',
-          productName: '角鐵',
+          productNames: ['角鐵'],
           specKeyContains: '30x30',
           confidence: 'medium',
         },
@@ -91,7 +91,7 @@ describe('generateSteelPriceSearchTerms', () => {
           {
             queryId: 'raw-user-text',
             label: '亞L30x30',
-            productName: '亞L30x30',
+            productNames: ['亞L30x30'],
             confidence: 'low',
             reason: 'raw user text only',
           },
@@ -107,7 +107,7 @@ describe('generateSteelPriceSearchTerms', () => {
         {
           queryId: 'formed-angle-ya',
           label: '錏角鐵 30x30',
-          productName: '錏角鐵',
+          productNames: ['錏角鐵'],
           specKey: '30x30',
           specKeyContains: '30x30',
           confidence: 'high',
@@ -118,7 +118,7 @@ describe('generateSteelPriceSearchTerms', () => {
 
     expect(result.candidateQueries[0]).toMatchObject({
       queryId: 'formed-angle-ya',
-      productName: '錏角鐵',
+      productNames: ['錏角鐵'],
       specKeyContains: '30x30',
     });
     expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
@@ -130,7 +130,7 @@ describe('generateSteelPriceSearchTerms', () => {
       candidates: [
         {
           queryId: 'c-type-100x23',
-          productName: '錏輕型鋼',
+          productNames: ['錏輕型鋼'],
           specKey: '100x2.3',
           specKeyContains: '100 2.3',
           confidence: 'high',
@@ -141,7 +141,7 @@ describe('generateSteelPriceSearchTerms', () => {
 
     expect(result.candidateQueries[0]).toMatchObject({
       queryId: 'c-type-100x23',
-      productName: '錏輕型鋼',
+      productNames: ['錏輕型鋼'],
       specKeyContains: '100x2.3',
     });
     expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
@@ -153,7 +153,7 @@ describe('generateSteelPriceSearchTerms', () => {
       candidates: [
         {
           queryId: 'c-type-full-section-with-compact-fragment',
-          productName: '錏輕型鋼',
+          productNames: ['錏輕型鋼'],
           specKey: '100x50x20x2.3',
           specKeyContains: '100x2.3',
           confidence: 'high',
@@ -165,7 +165,7 @@ describe('generateSteelPriceSearchTerms', () => {
 
     expect(result.candidateQueries[0]).toMatchObject({
       queryId: 'c-type-full-section-with-compact-fragment',
-      productName: '錏輕型鋼',
+      productNames: ['錏輕型鋼'],
       specKeyContains: '100x2.3',
     });
     expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
@@ -177,7 +177,7 @@ describe('generateSteelPriceSearchTerms', () => {
       candidates: [
         {
           queryId: 'h-beam-100-50-5-7-6m',
-          productName: 'H型鋼',
+          productNames: ['H型鋼'],
           specKey: '100x50x5/7 6M',
           specKeyContains: '100x50x5/7',
           confidence: 'high',
@@ -188,7 +188,7 @@ describe('generateSteelPriceSearchTerms', () => {
 
     expect(result.candidateQueries[0]).toMatchObject({
       queryId: 'h-beam-100-50-5-7-6m',
-      productName: 'H型鋼',
+      productNames: ['H型鋼'],
       specKeyContains: '100x50x5_7',
     });
     expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
@@ -200,7 +200,7 @@ describe('generateSteelPriceSearchTerms', () => {
       candidates: [
         {
           queryId: 'angle-30-25-6m',
-          productName: '錏成型角鐵',
+          productNames: ['錏成型角鐵'],
           specKey: '30x2.5x6M',
           specKeyContains: '30 2.5 6M',
           confidence: 'high',
@@ -211,7 +211,7 @@ describe('generateSteelPriceSearchTerms', () => {
 
     expect(result.candidateQueries[0]).toMatchObject({
       queryId: 'angle-30-25-6m',
-      productName: '錏成型角鐵',
+      productNames: ['錏成型角鐵'],
       specKeyContains: '30x2.5x6m',
     });
     expect(result.candidateQueries[0]).not.toHaveProperty('specKey');

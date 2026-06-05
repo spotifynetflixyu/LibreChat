@@ -45,7 +45,7 @@ const steelToolDefinitions: SteelToolDefinition[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search reviewed product price candidates from normalized candidate queries without converting price units.',
+      'Search reviewed product price candidates from normalized candidate queries without converting price units. Use catalogFamilies for selected catalog/material keys; use productNames for reviewed product/source-name candidates. Never use oral/category/family label text as productNames.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
 ];

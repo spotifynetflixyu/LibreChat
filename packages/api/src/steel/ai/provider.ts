@@ -27,6 +27,10 @@ import {
 import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
 import type { SteelToolResult } from '../tools/results';
 import type { SteelToolName } from '../tools/schemas';
+import {
+  buildSemanticWorkbookPatchOperations,
+  steelSemanticWorkbookPatchSchema,
+} from '../workbook/semantic';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -34,7 +38,10 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
 
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelToolName };
-type WorkbookPatchToolCall = LanguageModelV3ToolCall & { toolName: 'patch_workbook' };
+type SemanticWorkbookPatchToolCall = LanguageModelV3ToolCall & {
+  toolName: 'patch_quote_workbook';
+};
+type WorkbookPatchToolCall = SemanticWorkbookPatchToolCall;
 type WorkbookPatchOperation = SteelProviderWorkbookPatchProposal['operations'][number];
 type WorkbookPatchMissingCell = {
   sheetId: SteelWorkbookSheetId;
@@ -55,6 +62,9 @@ const workbookPatchCompletionColumnKeysBySheet: Record<SteelWorkbookSheetId, rea
   interpretation_notes: ['content'],
   customer_quote: ['item_spec', 'unit_price', 'subtotal'],
 };
+
+const catalogFamilyPriceLookupInstruction =
+  'When calling search_price_candidates after selecting a catalog family, use catalogFamilies with the selected catalog key and do not send oral family/category labels as productNames. When no reliable catalog key is available after lookup_catalog_families, use productNames with one or more AI-derived reviewed product/source-name candidates; do not pass the raw full user text, and mark the result as provisional/low confidence when appropriate. For multiple inferred reviewed product-name candidates, use productNames or candidateQueries; use candidateQueries when each candidate needs its own confidence/reason, and put candidate product-name lists in candidateQueries.productNames. Example: for C 型鋼/c_type, use catalogFamilies [c_type] with compact price-table specKeyContains 100x2.3 derived from C100x50x20x2.3t; do not use productNames [C型鋼]. If C 型鋼 material is unspecified, productNames [錏輕型鋼] is the preferred provisional reviewed product-name candidate; also query or surface bounded alternatives such as 白鐵輕型鋼 and 黑鐵輕型鋼 when returned.';
 
 const defaultCustomerTierId = 2;
 const defaultCustomerTierCode = 'B';
@@ -229,7 +239,8 @@ function getSteelRuntimePolicyInstruction(): string {
     'When the user did not provide a customer, or search_customers cannot find a usable customer price tier, use the default price B tier for any product family. Pass customerTierId 2 to search_price_candidates. In the response, keep the notice short, for example `目前用 價格B：26.8 元/kg`, and say separately that a customer name can be used to look up that customer quote price. Do not add highest/most-expensive wording to the B price notice.',
     'When search_customers returns a usable customerTier.id for the selected customer, pass that customerTierId to search_price_candidates instead of the default B tier.',
     'When presenting a user-facing price bullet in Traditional Chinese, label it `價格`, not `reviewed 價格`; keep reviewed/source status in the source or note text instead.',
-    'For C 型鋼 / c_type with unspecified material or surface, AI may use productName 錏輕型鋼 as the usual high-confidence provisional candidate, but the first reply must also show same-spec reviewed alternatives such as 白鐵輕型鋼 or 黑鐵輕型鋼 when returned. In follow-up turns, if the user does not specify another material/surface after those options were shown, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.',
+    'For C 型鋼 / c_type with unspecified material or surface, AI may use productNames [錏輕型鋼] as the usual high-confidence provisional candidate list. The first reply must also show same-spec reviewed alternatives such as 白鐵輕型鋼 or 黑鐵輕型鋼 when returned. In follow-up turns, if the user does not specify another material/surface after those options were shown, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.',
+    catalogFamilyPriceLookupInstruction,
     'For product-price rows, interpret unitPrice together with unit, productPriceUnitWeight, and productPriceUnitWeightUnit. If unit = kg, unitPrice is a per-kg price; convert length/piece weight into kg before multiplying unitPrice. If unit = piece, unitPrice is already a per-piece/per-unit total.',
     'For product-price rows with productPriceUnitWeightUnit = kg_per_m and unit = kg, calculate provisional piece amount from kg_per_m * requested meters * unitPrice; do not answer as if unitPrice were per-piece.',
     'For concise quick-price replies, if you show the total piece weight calculation, do not list unit weight as a separate bullet. Prefer one line such as `6M 一支重量：4 × 6 = 24 kg`, then the B/customer unit price and quote amount.',
@@ -248,11 +259,23 @@ function getSteelRuntimePolicyInstruction(): string {
 
 function getWorkbookPatchInstruction(workbookContextText?: string): string {
   const instruction = [
-    'You can update the visible Steel workbook by calling the patch_workbook tool.',
-    'Use the tool when the user asks to set or update an explicit workbook cell.',
-    'For quick Steel price estimates with reviewed positive candidate prices, write provisional workbook preview rows with patch_workbook.',
+    'You can update the visible Steel workbook only by calling patch_quote_workbook.',
+    'Use patch_quote_workbook for all workbook changes: send compact semantic customer, quoteLines, source, review, note, and summary data, and backend will project it into the workbook sheets.',
+    'Do not hand-write workbook cell operations; backend projection owns cell operation generation.',
+    'For quick Steel price estimates with reviewed positive candidate prices, write provisional workbook preview rows with patch_quote_workbook.',
+    'When changing one quote value such as customer, tier, quantity, unit price, total weight, or subtotal, use patch_quote_workbook with the same lineId so related workbook cells are reprojected together across quote details, system order, summary, sources, review, notes, and customer quote.',
     'For provisional price previews, update every user-relevant workbook sheet when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote.',
     'Use system_order for ERP-style order fields, quote_details for calculation inputs and `小計`, summary for customer/tier/total preview, manual_review for confirmation risks, price_sources for reviewed source rows, interpretation_notes for concise reasoning notes, and customer_quote for provisional customer-facing line items.',
+    'Keep patch_quote_workbook compact: one semantic quote line should carry the order, pricing, source, review, note, summary, and customer-facing values needed for this turn.',
+    'Workbook fill contract follows docs/reference/訂單參考_轉檔.xlsx. 價格先於重量: material unit price and processing prices must come from reviewed backend tool results or an explicit user price; handbook/manual weights can support weight/spec evidence but cannot replace missing product prices.',
+    'Do not invent customer tier, product price, unit weight, formula, material/spec, or processing facts. 未確認單價或金額不可填 0; write the string 未確認 for unknown visible values and create manual_review rows when required evidence is missing or ambiguous.',
+    'Use calculation_results before resolved_quote_items when both are available. If calculation_results conflicts with interpreted quote items, patch workbook values from calculation_results and add a concise discrepancy note in interpretation_notes.',
+    '系統訂單分頁材料列與加工列分開; create ERP rows with item numbers such as 10, 20, 30. For C 型鋼 defaults, write a material row only and put holes/cuts in notes unless reviewed rules or user input require separate processing rows.',
+    '報價明細 小計 equals material fee plus cutting, hole, slotting, bending, and other fees. If any required unit price is 未確認, subtotal must be 未確認. Include search keywords, candidate summary, adopted product price item, exact-match status, differences, confidence, review notes, and stock/remnant fields when derivable.',
+    '總結 must include derivable rows for 客戶暫採, 客戶編號暫採, 分級暫採, 送貨地址, 聯繫人, 報價總額, 確定金額, 低信心暫估金額, 未確認項目數, 低信心項目數, 總重量kg, and processing totals. Do not mix 確定金額 with 低信心暫估金額.',
+    '價格來源 needs one source row for each material or processing quote line. If no price is found, set adopted price item to 未確認 and source to 未找到 or the actual searched source.',
+    '判讀備註 should record customer tier judgment, product price search strategy, oral name conversion, weight source, stock allocation rule, the no-zero unknown rule, OCR/drawing assumptions, and any approximate or substitute candidate use.',
+    '給客戶用 is customer-visible only: 不得出現客戶分級, 價格來源, 搜尋關鍵字, 候選品項, 未採用原因, AI判斷, source refs, internal cost, margin, or low-confidence internal reasons. Unknown unit price or subtotal must be 未確認.',
     'Fill blank workbook cells when the value can be derived from user text, workbook context, reviewed tool results, or quote calculation results.',
     'Leave a blank cell unchanged when material, customer, source, or calculation evidence is unavailable, and record the missing evidence in manual_review or interpretation_notes instead of inventing a value.',
     'In quote_details, update the `小計` column using internal key `subtotal` when a reviewed candidate and calculable amount exist. Do not add or use a separate visible `報價` column.',
@@ -263,7 +286,7 @@ function getWorkbookPatchInstruction(workbookContextText?: string): string {
     'If the target sheet, row, column, or value is still ambiguous after checking context, ask a short clarification instead of calling the tool.',
     'Do not write confirmed totals before the user confirms the selected item, thickness, length, customer, and tier.',
     'Do not only describe a workbook update when the update should be applied.',
-    'After patch_workbook succeeds, answer with a concise Traditional Chinese summary of the interpreted order information and key workbook changes. Do not list a per-field diff. Do not answer only with a field count such as `已更新 workbook：16 個欄位`.',
+    'After patch_quote_workbook succeeds, answer with a concise Traditional Chinese summary of the interpreted order information and key workbook changes. Do not list a per-field diff. Do not answer only with a field count such as `已更新 workbook：16 個欄位`.',
   ].join(' ');
 
   return workbookContextText
@@ -301,37 +324,14 @@ function getSystemInstruction({
   return instructions.length > 0 ? instructions.join('\n\n') : undefined;
 }
 
-const workbookPatchFunctionTool: LanguageModelV3FunctionTool = {
+const semanticWorkbookPatchFunctionTool: LanguageModelV3FunctionTool = {
   type: 'function',
-  name: 'patch_workbook',
+  name: 'patch_quote_workbook',
   description:
-    'Propose explicit workbook cell updates for the current Steel quote workbook. The backend validates and applies the operations.',
-  strict: true,
-  inputSchema: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['operations'],
-    properties: {
-      operations: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 100,
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['op', 'sheetId', 'rowId', 'columnKey', 'value', 'reason'],
-          properties: {
-            op: { type: 'string', const: 'set_cell' },
-            sheetId: { type: 'string', enum: [...requiredSteelWorkbookSheetIds] },
-            rowId: { type: 'string', minLength: 1 },
-            columnKey: { type: 'string', minLength: 1 },
-            value: { type: ['string', 'number', 'boolean', 'null'] },
-            reason: { type: 'string', minLength: 1 },
-          },
-        },
-      },
-    },
-  },
+    'Propose a compact semantic Steel quote workbook update. Use this for quote/order results; backend projects the semantic quote data into validated workbook cell updates across all relevant sheets.',
+  inputSchema: zodToJsonSchema(steelSemanticWorkbookPatchSchema, {
+    $refStrategy: 'none',
+  }) as LanguageModelV3FunctionTool['inputSchema'],
 };
 
 function getGeneratedText(result: LanguageModelV3GenerateResult): string {
@@ -583,7 +583,9 @@ interface ExecutedSteelToolCall {
 
 interface ParsedWorkbookPatchToolCall {
   call: WorkbookPatchToolCall;
-  input: SteelProviderWorkbookPatchProposal;
+  input: unknown;
+  patchProposal: SteelProviderWorkbookPatchProposal;
+  projectedFromSemantic: boolean;
 }
 
 async function executeSteelBusinessToolCalls({
@@ -753,29 +755,35 @@ function isWorkbookPatchCompletionComplete(completion?: WorkbookPatchCompletion)
 }
 
 function toWorkbookPatchToolResultValue(
-  input: SteelProviderWorkbookPatchProposal,
+  parsedCall: ParsedWorkbookPatchToolCall,
   completion?: WorkbookPatchCompletion,
 ): JSONValue {
+  const operationCount = parsedCall.patchProposal.operations.length;
+  const projectedFields = parsedCall.projectedFromSemantic
+    ? { projectedOperationCount: operationCount }
+    : {};
   if (completion?.required && !isWorkbookPatchCompletionComplete(completion)) {
     return toJsonValue({
       ok: true,
-      toolName: 'patch_workbook',
-      operationCount: input.operations.length,
+      toolName: parsedCall.call.toolName,
+      operationCount,
+      ...projectedFields,
       complete: false,
       missingSheetIds: completion.missingSheetIds,
       missingCells: completion.missingCells,
       instruction:
-        'Workbook patch captured but incomplete for this Steel quote update. Call patch_workbook again for the missing user-relevant sheets and missing workbook cells when values can be derived. If a value cannot be derived, leave that target cell blank and record the missing material/customer/source/calculation evidence in manual_review or interpretation_notes. Do not answer the user until the workbook patch is complete enough for this turn.',
+        'Semantic workbook patch projected but incomplete for this Steel quote update. Call patch_quote_workbook again with the same lineId and any derivable missing semantic fields. Do not hand-write workbook cell operations. If a value cannot be derived, leave that target cell blank and record the missing material/customer/source/calculation evidence in manual_review or interpretation_notes. Do not answer the user until the workbook patch is complete enough for this turn.',
     });
   }
 
   return toJsonValue({
     ok: true,
-    toolName: 'patch_workbook',
-    operationCount: input.operations.length,
+    toolName: parsedCall.call.toolName,
+    operationCount,
+    ...projectedFields,
     ...(completion?.required ? { complete: true, missingSheetIds: [], missingCells: [] } : {}),
     instruction:
-      'Workbook patch captured for backend validation and application. Now answer the user in Traditional Chinese with only the interpreted order information, new 小計 amount when updated, and key workbook changes. Do not list a per-field diff or long search/candidate fields. Do not answer only with a field count such as 已更新 workbook：N 個欄位. Do not call patch_workbook again unless another workbook update is needed.',
+      'Semantic workbook patch captured for backend validation and application. Now answer the user in Traditional Chinese with only the interpreted order information, new 小計 amount when updated, and key workbook changes. Do not list a per-field diff or long search/candidate fields. Do not answer only with a field count such as 已更新 workbook：N 個欄位. Do not call patch_quote_workbook again unless another workbook update is needed.',
   });
 }
 
@@ -796,13 +804,13 @@ function toToolResultMessage(
           value: toJsonValue(result),
         },
       })),
-      ...workbookPatchCalls.map(({ call, input }) => ({
+      ...workbookPatchCalls.map((parsedCall) => ({
         type: 'tool-result' as const,
-        toolCallId: call.toolCallId,
-        toolName: call.toolName,
+        toolCallId: parsedCall.call.toolCallId,
+        toolName: parsedCall.call.toolName,
         output: {
           type: 'json' as const,
-          value: toWorkbookPatchToolResultValue(input, workbookPatchCompletion),
+          value: toWorkbookPatchToolResultValue(parsedCall, workbookPatchCompletion),
         },
       })),
     ],
@@ -812,7 +820,7 @@ function toToolResultMessage(
 function getRequiredPriceLookupReminderMessage(): LanguageModelV3Message {
   return {
     role: 'system',
-    content: `This Steel price request still requires reviewed lookup. For oral material/category wording, call lookup_catalog_families first to retrieve reviewed catalog key candidates. If the user provided a customer name, call search_customers in the initial lookup round when available, then pass the selected customer context to lookup_quote_rules. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. For C 型鋼/c_type such as C100x50x20x2.3t, use catalogFamilies [c_type], a compact price-table spec fragment such as 100x2.3, and productName 錏輕型鋼 when material is unspecified. When the user did not provide a customer or customer tier is unknown/not found, use default price ${defaultCustomerTierCode} by passing customerTierId ${defaultCustomerTierId}; keep the notice short, for example 目前用 價格B：26.8 元/kg, and say separately that a customer name can be used to look up that customer's quote price. Do not add highest/most-expensive wording.`,
+    content: `This Steel price request still requires reviewed lookup. For oral material/category wording, call lookup_catalog_families first to retrieve reviewed catalog key candidates. If the user provided a customer name, call search_customers in the initial lookup round when available, then pass the selected customer context to lookup_quote_rules. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. ${catalogFamilyPriceLookupInstruction} When the user did not provide a customer or customer tier is unknown/not found, use default price ${defaultCustomerTierCode} by passing customerTierId ${defaultCustomerTierId}; keep the notice short, for example 目前用 價格B：26.8 元/kg, and say separately that a customer name can be used to look up that customer's quote price. Do not add highest/most-expensive wording.`,
   };
 }
 
@@ -831,7 +839,7 @@ function getProvisionalWorkbookPatchReminderMessage(
 
   return {
     role: 'system',
-    content: `This Steel quote update still requires a complete-enough workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_workbook to update all user-relevant sheets when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote. Fill blank workbook cells when derivable from user text, workbook context, reviewed tool results, or quote calculation results. Leave cells blank when material, customer, source, or calculation evidence is unavailable, and record the missing evidence in manual_review or interpretation_notes instead of inventing values. Include provisional candidate/source/confidence notes and the quote_details \`小計\` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible \`報價\` column. Summary/customer_quote totals must be labeled as 暫估/待確認 until the user confirms the selected item, thickness, length, customer, and tier. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
+    content: `This Steel quote update still requires a complete-enough semantic workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_quote_workbook to update all user-relevant sheets when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote. Do not hand-write workbook cell operations; backend projection owns cell operation generation. Fill semantic fields when derivable from user text, workbook context, reviewed tool results, or calculation_results. Use calculation_results before interpreted quote items when both exist. Leave missing semantic values blank when material, customer, source, or calculation evidence is unavailable, and record the missing evidence in manual_review or interpretation_notes instead of inventing values. 未確認單價或金額不可填 0; write 未確認 instead. Include provisional candidate/source/confidence notes and the quote_details \`小計\` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible \`報價\` column. Summary/customer_quote totals must be labeled as 暫估/待確認 until the user confirms the selected item, thickness, length, customer, and tier. 給客戶用 must not expose customer tier, source refs, search keywords, candidates, AI/internal notes, cost, or margin. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
   };
 }
 
@@ -875,7 +883,7 @@ function getReasoningSummaries(result: LanguageModelV3GenerateResult): string[] 
 function isWorkbookPatchToolCall(
   part: LanguageModelV3GenerateResult['content'][number],
 ): part is WorkbookPatchToolCall {
-  return part.type === 'tool-call' && part.toolName === 'patch_workbook';
+  return part.type === 'tool-call' && part.toolName === 'patch_quote_workbook';
 }
 
 function getWorkbookPatchToolCalls(result: LanguageModelV3GenerateResult): WorkbookPatchToolCall[] {
@@ -885,10 +893,20 @@ function getWorkbookPatchToolCalls(result: LanguageModelV3GenerateResult): Workb
 function parseWorkbookPatchToolCalls(
   calls: WorkbookPatchToolCall[],
 ): ParsedWorkbookPatchToolCall[] {
-  return calls.map((call) => ({
-    call,
-    input: steelProviderWorkbookPatchProposalSchema.parse(JSON.parse(call.input)),
-  }));
+  return calls.map((call) => {
+    const input = JSON.parse(call.input);
+    const semanticPatch = steelSemanticWorkbookPatchSchema.parse(input);
+    const patchProposal = steelProviderWorkbookPatchProposalSchema.parse({
+      operations: buildSemanticWorkbookPatchOperations(semanticPatch),
+    });
+
+    return {
+      call,
+      input: semanticPatch,
+      patchProposal,
+      projectedFromSemantic: true,
+    };
+  });
 }
 
 function getWorkbookPatchFromOperations(
@@ -1027,7 +1045,7 @@ export async function sendSteelOAuthChat({
   });
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
-    ...(workbookPatchTool ? [workbookPatchFunctionTool] : []),
+    ...(workbookPatchTool ? [semanticWorkbookPatchFunctionTool] : []),
   ];
   const runState = createSteelToolRunState(steelToolMaxCalls);
   let prompt = systemInstruction
@@ -1091,7 +1109,7 @@ export async function sendSteelOAuthChat({
     const workbookPatchCalls = workbookPatchTool ? getWorkbookPatchToolCalls(result) : [];
     const parsedWorkbookPatchCalls = parseWorkbookPatchToolCalls(workbookPatchCalls);
     workbookPatchOperations.push(
-      ...parsedWorkbookPatchCalls.flatMap(({ input }) => input.operations),
+      ...parsedWorkbookPatchCalls.flatMap(({ patchProposal }) => patchProposal.operations),
     );
     hasWorkbookPatch = workbookPatchOperations.length > 0;
     const requiresWorkbookPatchCompletion =
@@ -1256,7 +1274,7 @@ export async function sendSteelOAuthChat({
         .map(({ sheetId, columnKey }) => `${sheetId}.${columnKey}`)
         .join(', ') ?? '';
     throw new Error(
-      `complete patch_workbook was required before answering this Steel quote update. Missing sheets: ${missingSheetIds.join(', ')}. Missing cells: ${missingCells}`,
+      `complete patch_quote_workbook was required before answering this Steel quote update. Missing sheets: ${missingSheetIds.join(', ')}. Missing cells: ${missingCells}`,
     );
   }
 

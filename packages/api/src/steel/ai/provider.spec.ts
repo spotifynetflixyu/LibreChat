@@ -381,7 +381,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain('label it `價格`, not `reviewed 價格`');
     expect(systemPrompt.content).toContain('customer name can be used');
     expect(systemPrompt.content).toContain(
-      'the first reply must also show same-spec reviewed alternatives',
+      'The first reply must also show same-spec reviewed alternatives',
     );
     expect(systemPrompt.content).toContain(
       'if the user does not specify another material/surface after those options were shown',
@@ -434,6 +434,30 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain(
       'If instruction packets provide processing price candidate names or ERP item codes',
     );
+    expect(systemPrompt.content).toContain('When calling search_price_candidates after selecting');
+    expect(systemPrompt.content).toContain('use catalogFamilies with the selected catalog key');
+    expect(systemPrompt.content).toContain(
+      'do not send oral family/category labels as productNames',
+    );
+    expect(systemPrompt.content).toContain('When no reliable catalog key is available');
+    expect(systemPrompt.content).toContain(
+      'use productNames with one or more AI-derived reviewed product/source-name candidates',
+    );
+    expect(systemPrompt.content).toContain('candidateQueries.productNames');
+    expect(systemPrompt.content).toContain(
+      'For multiple inferred reviewed product-name candidates',
+    );
+    expect(systemPrompt.content).toContain('use productNames or candidateQueries');
+    expect(systemPrompt.content).toContain('specKeyContains 100x2.3');
+    expect(systemPrompt.content).toContain('productNames [錏輕型鋼]');
+    const searchPriceTool = generateOptions.tools?.find(
+      (tool) => tool.name === 'search_price_candidates',
+    );
+    const searchPriceToolSchema = JSON.stringify(searchPriceTool?.inputSchema);
+    expect(searchPriceToolSchema).toContain('Reviewed product/source name');
+    expect(searchPriceToolSchema).toContain('Multiple reviewed product/source name candidates');
+    expect(searchPriceToolSchema).toContain('not oral/category/family label');
+    expect(searchPriceToolSchema).toContain('catalogFamilies');
     expect(generateOptions.prompt[1]).toEqual({
       role: 'user',
       content: [{ type: 'text', text: '請說明亞L30x30的推論流程' }],
@@ -858,7 +882,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
               candidateQueries: [
                 {
                   queryId: 'formed-zinc-angle',
-                  productName: '錏角鐵 L30x30',
+                  productNames: ['錏角鐵 L30x30'],
                   confidence: 'medium',
                   reason: 'AI interpreted 亞 as possible 錏 and L30x30 as angle steel',
                 },
@@ -1652,7 +1676,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
               candidateQueries: [
                 {
                   queryId: 'c-type-100x23',
-                  productName: '錏輕型鋼',
+                  productNames: ['錏輕型鋼'],
                   specKeyContains: '100x2.3',
                   confidence: 'high',
                   reason: 'Use the C 型鋼 compact reviewed price fragment after quote rules',
@@ -1771,7 +1795,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     ).toEqual(['search_price_candidates']);
     expect(serializedSecondPrompt).toContain('call search_price_candidates');
     expect(serializedSecondPrompt).toContain('100x2.3');
-    expect(serializedSecondPrompt).toContain('productName 錏輕型鋼');
+    expect(serializedSecondPrompt).toContain('productNames [錏輕型鋼]');
+    expect(serializedSecondPrompt).toContain('candidateQueries.productNames');
     expect(serializedSecondPrompt).toContain('customerTierId 2');
     expect(serializedSecondPrompt).toContain('價格B');
     expect(serializedSecondPrompt).toContain('Do not add highest/most-expensive wording');
@@ -1831,7 +1856,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
               candidateQueries: [
                 {
                   queryId: 'c-type-bad-product-name',
-                  productName: 'C型鋼',
+                  productNames: ['C型鋼'],
                   specKeyContains: '100x50x20',
                   confidence: 'high',
                   reason: 'AI selected c_type but reused the family label',
@@ -1944,7 +1969,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         ok: false as const,
         toolName: 'search_price_candidates' as const,
         errorCategory: 'invalid_arguments' as const,
-        errorSummary: 'Do not use C型鋼 as productName after selecting c_type',
+        errorSummary: 'Do not use C型鋼 as productNames after selecting c_type',
         durationMs: 1,
         redactionVersion: 1 as const,
       })
@@ -1979,6 +2004,19 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect((doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
       type: 'required',
     });
+    const thirdPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
+    const serializedThirdPrompt = JSON.stringify(thirdPrompt);
+    expect(serializedThirdPrompt).toContain('use catalogFamilies with the selected catalog key');
+    expect(serializedThirdPrompt).toContain(
+      'do not send oral family/category labels as productNames',
+    );
+    expect(serializedThirdPrompt).toContain(
+      'use productNames with one or more AI-derived reviewed product/source-name candidates',
+    );
+    expect(serializedThirdPrompt).toContain('candidateQueries.productNames');
+    expect(serializedThirdPrompt).toContain('use productNames or candidateQueries');
+    expect(serializedThirdPrompt).toContain('specKeyContains 100x2.3');
+    expect(serializedThirdPrompt).toContain('productNames [錏輕型鋼]');
     expect(
       (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
     ).toEqual(['search_price_candidates']);
@@ -2066,7 +2104,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
               candidateQueries: [
                 {
                   queryId: 'c-type-100x23',
-                  productName: '錏輕型鋼',
+                  productNames: ['錏輕型鋼'],
                   specKeyContains: '100x2.3',
                   confidence: 'high',
                   reason: 'Use selected c_type catalog key and reviewed C 型鋼 rules',
@@ -2250,7 +2288,76 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(response.text).toBe('查過公式 C 後再回答 C 型鋼報價。');
   });
 
-  it('requires a provisional workbook patch after a positive quick-price lookup when workbook context exists', async () => {
+  it('requires a provisional semantic workbook patch after a positive quick-price lookup when workbook context exists', async () => {
+    const semanticPatch = {
+      customer: {
+        name: '未提供',
+        tier: 'B級',
+        note: '未提供客戶，暫用價格B',
+      },
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          customerOriginalItemName: '亞L30x30 一支多少',
+          normalizedItemName: '錏成型角鐵 30x30x2.5x6M',
+          searchKeywords: ['錏角鐵', '30x30'],
+          productPriceCandidateItems: '錏成型角鐵 30x30x2.5x6M 194.3元/支',
+          adoptedProductPriceItem: '錏成型角鐵 30x30x2.5x6M',
+          isExactMatch: false,
+          materialCategory: '角鐵',
+          material: '錏',
+          spec: 'L30x30',
+          quantity: 1,
+          unit: '支',
+          customerName: '未提供',
+          customerTier: 'B級',
+          materialUnitPrice: 194.3,
+          materialPricingUnit: '支',
+          billableQuantity: 1,
+          subtotal: 194.3,
+          confidence: '低',
+          lowConfidenceReason: '使用者未提供厚度，暫採 reviewed 候選',
+          suggestedReview: '確認厚度、長度與客戶分級',
+          systemOrder: {
+            itemSpec: '錏成型角鐵 30x30x2.5x6M',
+            unit: '支',
+            quantity: 1,
+            totalQuantity: 1,
+            unitPrice: 194.3,
+            pricingBasis: '價格B暫估',
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: '未確認',
+            differenceNote: '亞L30x30 口語輸入未指定厚度',
+          },
+          customerQuote: {
+            itemSpec: '錏成型角鐵 30x30x2.5x6M',
+            quantity: 1,
+            unit: '支',
+            unitPrice: 194.3,
+            subtotal: 194.3,
+            note: '暫估，待確認厚度與客戶',
+          },
+          manualReview: {
+            confirmationNeeded: '確認厚度、長度與客戶分級後轉正式報價',
+          },
+          interpretationNote: {
+            item: '口語品名轉換',
+            content: '亞L30x30 暫採錏成型角鐵候選；需確認厚度。',
+            confidence: '低',
+          },
+        },
+      ],
+      summary: {
+        totalAmount: 194.3,
+        lowConfidenceAmount: 194.3,
+        unconfirmedCount: 1,
+        lowConfidenceCount: 1,
+      },
+    };
     const doGenerate = jest
       .fn()
       .mockResolvedValueOnce({
@@ -2264,7 +2371,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
               candidateQueries: [
                 {
                   queryId: 'formed-zinc-angle',
-                  productName: '錏角鐵',
+                  productNames: ['錏角鐵'],
                   specKeyContains: '30x30',
                   confidence: 'medium',
                   reason: 'AI interpreted 亞 as possible 錏 and L30x30 as angle steel',
@@ -2314,141 +2421,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           { type: 'text', text: '已寫入 provisional workbook preview。' },
           {
             type: 'tool-call',
-            toolCallId: 'workbook_patch_1',
-            toolName: 'patch_workbook',
-            input: JSON.stringify({
-              operations: [
-                {
-                  op: 'set_cell',
-                  sheetId: 'quote_details',
-                  rowId: 'line_1',
-                  columnKey: 'material_unit_price',
-                  value: 194.3,
-                  reason: 'Provisional estimate from reviewed positive price candidate.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'quote_details',
-                  rowId: 'line_1',
-                  columnKey: 'subtotal',
-                  value: 194.3,
-                  reason:
-                    'Provisional estimate subtotal from the reviewed positive price candidate.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'quote_details',
-                  rowId: 'line_1',
-                  columnKey: 'confidence',
-                  value: 'provisional',
-                  reason: 'Thickness/customer tier still need confirmation.',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 50,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 10,
-            text: 10,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_patch_final' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          { type: 'text', text: '補齊其他 workbook 分頁。' },
-          {
-            type: 'tool-call',
-            toolCallId: 'workbook_patch_2',
-            toolName: 'patch_workbook',
-            input: JSON.stringify({
-              operations: [
-                {
-                  op: 'set_cell',
-                  sheetId: 'system_order',
-                  rowId: 'order_1',
-                  columnKey: 'item_spec',
-                  value: '錏成型角鐵 30x30x2.5x6M',
-                  reason:
-                    'ERP preview item spec can be derived from the selected reviewed candidate.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'system_order',
-                  rowId: 'order_1',
-                  columnKey: 'unit_price',
-                  value: 194.3,
-                  reason:
-                    'ERP preview unit price can be derived from the provisional quote amount.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'summary',
-                  rowId: 'summary_total_amount',
-                  columnKey: 'value',
-                  value: 194.3,
-                  reason: 'Summary preview total can be derived from the provisional quote amount.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'manual_review',
-                  rowId: 'review_1',
-                  columnKey: 'confirmation_needed',
-                  value: '確認厚度、長度與客戶分級後轉正式報價',
-                  reason: 'The user provided an ambiguous oral material request.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'price_sources',
-                  rowId: 'source_1',
-                  columnKey: 'adopted_product_price_item',
-                  value: '錏成型角鐵 30x30x2.5x6M',
-                  reason: 'Reviewed positive candidate source used for the provisional estimate.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'interpretation_notes',
-                  rowId: 'note_1',
-                  columnKey: 'content',
-                  value: '亞L30x30 暫採錏成型角鐵候選；需確認厚度。',
-                  reason: 'Concise interpretation note for the ambiguous oral order.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'customer_quote',
-                  rowId: 'customer_1',
-                  columnKey: 'item_spec',
-                  value: '錏成型角鐵 30x30x2.5x6M',
-                  reason: 'Customer-facing preview item spec can be derived from the candidate.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'customer_quote',
-                  rowId: 'customer_1',
-                  columnKey: 'unit_price',
-                  value: 194.3,
-                  reason: 'Customer-facing preview unit price can be derived from the candidate.',
-                },
-                {
-                  op: 'set_cell',
-                  sheetId: 'customer_quote',
-                  rowId: 'customer_1',
-                  columnKey: 'subtotal',
-                  value: 194.3,
-                  reason: 'Provisional customer-facing preview subtotal.',
-                },
-              ],
-            }),
+            toolCallId: 'semantic_workbook_patch_1',
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(semanticPatch),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -2465,7 +2440,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             reasoning: undefined,
           },
         },
-        response: { id: 'resp_patch_completion' },
+        response: { id: 'resp_patch_final' },
         warnings: [],
       })
       .mockResolvedValueOnce({
@@ -2533,9 +2508,10 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         'sheet id="quote_details" label="報價明細"\ncolumn label="材料單價" key="material_unit_price"\ncolumn label="小計" key="subtotal"\nrow id="line_1" cells: line_no=1 material_unit_price=null subtotal=null',
     });
 
-    expect(doGenerate).toHaveBeenCalledTimes(5);
+    expect(doGenerate).toHaveBeenCalledTimes(4);
     const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
     const firstSystemPrompt = firstOptions.prompt[0] as { role: 'system'; content: string };
+    expect(firstOptions.tools?.map((tool) => tool.name)).not.toContain('patch_workbook');
     expect(firstSystemPrompt.content).toContain('write provisional workbook preview rows');
     expect(firstSystemPrompt.content).toContain('update the `小計` column');
     expect(firstSystemPrompt.content).toContain(
@@ -2552,13 +2528,26 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(firstSystemPrompt.content).toContain('interpreted order information');
     expect(firstSystemPrompt.content).toContain('Do not list a per-field diff');
     expect(firstSystemPrompt.content).toContain('Do not answer only with a field count');
+    expect(firstSystemPrompt.content).toContain('價格先於重量');
+    expect(firstSystemPrompt.content).toContain('未確認單價或金額不可填 0');
+    expect(firstSystemPrompt.content).toContain('系統訂單分頁材料列與加工列分開');
+    expect(firstSystemPrompt.content).toContain('報價明細 小計');
+    expect(firstSystemPrompt.content).toContain('確定金額');
+    expect(firstSystemPrompt.content).toContain('低信心暫估金額');
+    expect(firstSystemPrompt.content).toContain('給客戶用');
+    expect(firstSystemPrompt.content).toContain('不得出現客戶分級');
+    expect(firstSystemPrompt.content).toContain('calculation_results');
+    expect(firstSystemPrompt.content).toContain('Keep patch_quote_workbook compact');
+    expect(firstSystemPrompt.content).toContain('Do not hand-write workbook cell operations');
+    expect(firstSystemPrompt.content).not.toContain('patch_workbook');
     const thirdPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
     expect(
       thirdPrompt.some(
         (message) =>
           message.role === 'system' &&
           typeof message.content === 'string' &&
-          message.content.includes('patch_workbook'),
+          message.content.includes('patch_quote_workbook') &&
+          !message.content.includes('patch_workbook'),
       ),
     ).toBe(true);
     const fourthPrompt = (doGenerate.mock.calls[3]?.[0] as LanguageModelV3CallOptions).prompt;
@@ -2568,42 +2557,12 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           role: 'tool',
           content: [
             expect.objectContaining({
-              toolName: 'patch_workbook',
+              toolName: 'patch_quote_workbook',
               output: {
                 type: 'json',
                 value: expect.objectContaining({
                   ok: true,
-                  operationCount: 3,
-                  complete: false,
-                  missingSheetIds: expect.arrayContaining([
-                    'system_order',
-                    'summary',
-                    'manual_review',
-                    'price_sources',
-                    'interpretation_notes',
-                    'customer_quote',
-                  ]),
-                  instruction: expect.stringContaining('Call patch_workbook again'),
-                }),
-              },
-            }),
-          ],
-        }),
-      ]),
-    );
-    const fifthPrompt = (doGenerate.mock.calls[4]?.[0] as LanguageModelV3CallOptions).prompt;
-    expect(fifthPrompt).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'tool',
-          content: [
-            expect.objectContaining({
-              toolName: 'patch_workbook',
-              output: {
-                type: 'json',
-                value: expect.objectContaining({
-                  ok: true,
-                  operationCount: 9,
+                  projectedOperationCount: expect.any(Number),
                   complete: true,
                   instruction: expect.stringContaining('interpreted order information'),
                 }),
@@ -2615,225 +2574,96 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
     expect(response.text).toContain('材料單價 194.3 元/支');
     expect(response.text).toContain('請確認厚度');
-    expect(response.workbookPatch).toEqual({
-      operations: [
-        {
-          op: 'set_cell',
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
           sheetId: 'quote_details',
           rowId: 'line_1',
           columnKey: 'material_unit_price',
           value: 194.3,
-          reason: 'Provisional estimate from reviewed positive price candidate.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'quote_details',
-          rowId: 'line_1',
-          columnKey: 'subtotal',
-          value: 194.3,
-          reason: 'Provisional estimate subtotal from the reviewed positive price candidate.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'quote_details',
-          rowId: 'line_1',
-          columnKey: 'confidence',
-          value: 'provisional',
-          reason: 'Thickness/customer tier still need confirmation.',
-        },
-        {
-          op: 'set_cell',
+        }),
+        expect.objectContaining({
           sheetId: 'system_order',
           rowId: 'order_1',
           columnKey: 'item_spec',
           value: '錏成型角鐵 30x30x2.5x6M',
-          reason: 'ERP preview item spec can be derived from the selected reviewed candidate.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'system_order',
-          rowId: 'order_1',
-          columnKey: 'unit_price',
-          value: 194.3,
-          reason: 'ERP preview unit price can be derived from the provisional quote amount.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'summary',
-          rowId: 'summary_total_amount',
-          columnKey: 'value',
-          value: 194.3,
-          reason: 'Summary preview total can be derived from the provisional quote amount.',
-        },
-        {
-          op: 'set_cell',
+        }),
+        expect.objectContaining({
           sheetId: 'manual_review',
           rowId: 'review_1',
           columnKey: 'confirmation_needed',
           value: '確認厚度、長度與客戶分級後轉正式報價',
-          reason: 'The user provided an ambiguous oral material request.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'price_sources',
-          rowId: 'source_1',
-          columnKey: 'adopted_product_price_item',
-          value: '錏成型角鐵 30x30x2.5x6M',
-          reason: 'Reviewed positive candidate source used for the provisional estimate.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'interpretation_notes',
-          rowId: 'note_1',
-          columnKey: 'content',
-          value: '亞L30x30 暫採錏成型角鐵候選；需確認厚度。',
-          reason: 'Concise interpretation note for the ambiguous oral order.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'customer_quote',
-          rowId: 'customer_1',
-          columnKey: 'item_spec',
-          value: '錏成型角鐵 30x30x2.5x6M',
-          reason: 'Customer-facing preview item spec can be derived from the candidate.',
-        },
-        {
-          op: 'set_cell',
-          sheetId: 'customer_quote',
-          rowId: 'customer_1',
-          columnKey: 'unit_price',
-          value: 194.3,
-          reason: 'Customer-facing preview unit price can be derived from the candidate.',
-        },
-        {
-          op: 'set_cell',
+        }),
+        expect.objectContaining({
           sheetId: 'customer_quote',
           rowId: 'customer_1',
           columnKey: 'subtotal',
           value: 194.3,
-          reason: 'Provisional customer-facing preview subtotal.',
-        },
-      ],
-    });
+        }),
+      ]),
+    );
   });
 
-  it('requires companion workbook sheet patches for quote follow-up updates', async () => {
-    const firstPatchOperations = [
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'customer',
-        value: '龍頂',
-        reason: 'User clarified the customer name for the existing quote line.',
+  it('reprojects companion workbook sheets through semantic quote patches for quote follow-up updates', async () => {
+    const semanticPatch = {
+      customer: {
+        name: '龍頂',
+        tier: 'A級',
       },
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'customer_tier',
-        value: 'A級',
-        reason: 'Customer lookup indicates A tier candidates.',
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          customerOriginalItemName: 'C100x50x20x2.3t 6M 一支',
+          normalizedItemName: '錏輕型鋼 100*2.3，6M',
+          adoptedProductPriceItem: '錏輕型鋼 100*2.3',
+          quantity: 1,
+          unit: '支',
+          totalWeightKg: 24,
+          customerName: '龍頂',
+          customerTier: 'A級',
+          materialUnitPrice: 26,
+          materialPricingUnit: 'Kg',
+          billableQuantity: 24,
+          subtotal: 624,
+          confidence: '中',
+          systemOrder: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            unit: 'Kg',
+            quantity: 24,
+            totalQuantity: 24,
+            unitPrice: 26,
+            pricingBasis: '龍頂A級',
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: '1560',
+          },
+          customerQuote: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            quantity: 1,
+            unit: '支',
+            unitPrice: 624,
+            subtotal: 624,
+            note: '暫估',
+          },
+          manualReview: {
+            confirmationNeeded: '確認龍頂客戶全名與材質後轉正式報價',
+          },
+          interpretationNote: {
+            item: '客戶分級',
+            content: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
+          },
+        },
+      ],
+      summary: {
+        totalAmount: 624,
+        lowConfidenceAmount: 624,
+        unconfirmedCount: 1,
+        totalWeightKg: 24,
       },
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'material_unit_price',
-        value: 26,
-        reason: 'Reprice the existing C type line with the customer tier price.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'subtotal',
-        value: 624,
-        reason: 'Existing line weight 24kg times A tier price 26.',
-      },
-    ];
-    const completionPatchOperations = [
-      {
-        op: 'set_cell',
-        sheetId: 'system_order',
-        rowId: 'order_1',
-        columnKey: 'item_spec',
-        value: '錏輕型鋼 100*2.3，6M',
-        reason: 'ERP preview item spec follows the existing quote line.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'system_order',
-        rowId: 'order_1',
-        columnKey: 'unit_price',
-        value: 624,
-        reason: 'ERP preview price follows the repriced workbook line.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'summary',
-        rowId: 'summary_total_amount',
-        columnKey: 'value',
-        value: 624,
-        reason: 'Summary preview total follows the repriced line subtotal.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'manual_review',
-        rowId: 'review_1',
-        columnKey: 'confirmation_needed',
-        value: '確認龍頂客戶全名與材質後轉正式報價',
-        reason: 'There are multiple Dragon-top customer candidates.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'price_sources',
-        rowId: 'source_1',
-        columnKey: 'adopted_product_price_item',
-        value: '錏輕型鋼 100*2.3',
-        reason: 'Source sheet should record the adopted price item.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'price_sources',
-        rowId: 'source_1',
-        columnKey: 'customer_tier',
-        value: 'A級',
-        reason: 'Source sheet should record the selected customer tier.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'interpretation_notes',
-        rowId: 'note_1',
-        columnKey: 'content',
-        value: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
-        reason: 'Concise follow-up interpretation for the workbook.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'item_spec',
-        value: '錏輕型鋼 100*2.3，6M',
-        reason: 'Customer preview item spec follows the existing quote line.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'unit_price',
-        value: 26,
-        reason: 'Customer preview unit price follows the selected customer tier.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'subtotal',
-        value: 624,
-        reason: 'Customer preview follows the repriced line subtotal.',
-      },
-    ];
+    };
     const doGenerate = jest
       .fn()
       .mockResolvedValueOnce({
@@ -2841,34 +2671,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           {
             type: 'tool-call',
             toolCallId: 'workbook_followup_patch_1',
-            toolName: 'patch_workbook',
-            input: JSON.stringify({ operations: firstPatchOperations }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 50,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_followup_patch_1' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'workbook_followup_patch_2',
-            toolName: 'patch_workbook',
-            input: JSON.stringify({ operations: completionPatchOperations }),
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(semanticPatch),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -2885,7 +2689,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             reasoning: undefined,
           },
         },
-        response: { id: 'resp_followup_patch_2' },
+        response: { id: 'resp_followup_patch_1' },
         warnings: [],
       })
       .mockResolvedValueOnce({
@@ -2937,7 +2741,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
     });
 
-    expect(doGenerate).toHaveBeenCalledTimes(3);
+    expect(doGenerate).toHaveBeenCalledTimes(2);
     const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
     expect(secondPrompt).toEqual(
       expect.arrayContaining([
@@ -2945,40 +2749,13 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           role: 'tool',
           content: [
             expect.objectContaining({
-              toolName: 'patch_workbook',
-              output: {
-                type: 'json',
-                value: expect.objectContaining({
-                  complete: false,
-                  missingSheetIds: expect.arrayContaining([
-                    'system_order',
-                    'summary',
-                    'manual_review',
-                    'price_sources',
-                    'interpretation_notes',
-                    'customer_quote',
-                  ]),
-                  instruction: expect.stringContaining('Call patch_workbook again'),
-                }),
-              },
-            }),
-          ],
-        }),
-      ]),
-    );
-    const thirdPrompt = (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).prompt;
-    expect(thirdPrompt).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'tool',
-          content: [
-            expect.objectContaining({
-              toolName: 'patch_workbook',
+              toolName: 'patch_quote_workbook',
               output: {
                 type: 'json',
                 value: expect.objectContaining({
                   complete: true,
                   missingSheetIds: [],
+                  missingCells: [],
                 }),
               },
             }),
@@ -2987,161 +2764,103 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ]),
     );
     expect(response.text).toContain('小計 624');
-    expect(response.workbookPatch?.operations).toEqual([
-      ...firstPatchOperations,
-      ...completionPatchOperations,
-    ]);
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          value: 26,
+        }),
+        expect.objectContaining({
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'unit_price',
+          value: 26,
+        }),
+        expect.objectContaining({
+          sheetId: 'summary',
+          rowId: 'summary_total_amount',
+          columnKey: 'value',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'customer_quote',
+          rowId: 'customer_1',
+          columnKey: 'subtotal',
+          value: 624,
+        }),
+      ]),
+    );
   });
 
-  it('requires workbook cell coverage when a patch only touches sheets with sparse cells', async () => {
-    const sparsePatchOperations = [
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'customer',
-        value: '龍頂',
-        reason: 'User clarified the customer name.',
+  it('requires semantic workbook coverage when a semantic patch omits required companion fields', async () => {
+    const sparseSemanticPatch = {
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          customerName: '龍頂',
+          customerTier: 'A級',
+          materialUnitPrice: 26,
+          subtotal: 624,
+        },
+      ],
+    };
+    const completionSemanticPatch = {
+      customer: {
+        name: '龍頂',
+        tier: 'A級',
       },
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'material_unit_price',
-        value: 26,
-        reason: 'A tier price from the selected customer.',
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          normalizedItemName: '錏輕型鋼 100*2.3，6M',
+          adoptedProductPriceItem: '錏輕型鋼 100*2.3',
+          quantity: 1,
+          unit: '支',
+          totalWeightKg: 24,
+          customerName: '龍頂',
+          customerTier: 'A級',
+          materialUnitPrice: 26,
+          materialPricingUnit: 'Kg',
+          billableQuantity: 24,
+          subtotal: 624,
+          systemOrder: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            unit: 'Kg',
+            quantity: 24,
+            totalQuantity: 24,
+            unitPrice: 26,
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: '1560',
+          },
+          customerQuote: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            quantity: 1,
+            unit: '支',
+            unitPrice: 624,
+            subtotal: 624,
+          },
+          manualReview: {
+            confirmationNeeded: '確認龍頂客戶全名與材質',
+          },
+          interpretationNote: {
+            item: '客戶分級',
+            content: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
+          },
+        },
+      ],
+      summary: {
+        totalAmount: 624,
+        lowConfidenceAmount: 624,
+        unconfirmedCount: 1,
       },
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'subtotal',
-        value: 624,
-        reason: 'Existing 24kg quote repriced at 26.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'system_order',
-        rowId: 'order_1',
-        columnKey: 'line_no',
-        value: 10,
-        reason: 'Create ERP row shell.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'summary',
-        rowId: 'summary_total_amount',
-        columnKey: 'item',
-        value: '報價總額',
-        reason: 'Create summary row shell.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'manual_review',
-        rowId: 'review_1',
-        columnKey: 'line_no',
-        value: 1,
-        reason: 'Create review row shell.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'price_sources',
-        rowId: 'source_1',
-        columnKey: 'source_file',
-        value: '產品價格.xlsx',
-        reason: 'Create price source row shell.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'interpretation_notes',
-        rowId: 'note_1',
-        columnKey: 'item',
-        value: '客戶分級',
-        reason: 'Create interpretation note row shell.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'line_no',
-        value: 1,
-        reason: 'Create customer quote row shell.',
-      },
-    ];
-    const completionPatchOperations = [
-      {
-        op: 'set_cell',
-        sheetId: 'system_order',
-        rowId: 'order_1',
-        columnKey: 'item_spec',
-        value: '錏輕型鋼 100*2.3，6M',
-        reason: 'ERP row needs the quoted item/spec.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'system_order',
-        rowId: 'order_1',
-        columnKey: 'unit_price',
-        value: 624,
-        reason: 'ERP preview amount follows the repriced subtotal.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'summary',
-        rowId: 'summary_total_amount',
-        columnKey: 'value',
-        value: 624,
-        reason: 'Summary total follows the repriced quote line.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'manual_review',
-        rowId: 'review_1',
-        columnKey: 'confirmation_needed',
-        value: '確認龍頂客戶全名與材質',
-        reason: 'Multiple Dragon-top customer candidates may exist.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'price_sources',
-        rowId: 'source_1',
-        columnKey: 'adopted_product_price_item',
-        value: '錏輕型鋼 100*2.3',
-        reason: 'Record the adopted reviewed product price item.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'interpretation_notes',
-        rowId: 'note_1',
-        columnKey: 'content',
-        value: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
-        reason: 'Concise interpretation note for this update.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'item_spec',
-        value: '錏輕型鋼 100*2.3，6M',
-        reason: 'Customer quote row needs the visible item/spec.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'unit_price',
-        value: 26,
-        reason: 'Customer quote row needs the selected customer unit price.',
-      },
-      {
-        op: 'set_cell',
-        sheetId: 'customer_quote',
-        rowId: 'customer_1',
-        columnKey: 'subtotal',
-        value: 624,
-        reason: 'Customer-facing preview subtotal follows the repriced line.',
-      },
-    ];
+    };
     const doGenerate = jest
       .fn()
       .mockResolvedValueOnce({
@@ -3149,8 +2868,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           {
             type: 'tool-call',
             toolCallId: 'workbook_sparse_patch_1',
-            toolName: 'patch_workbook',
-            input: JSON.stringify({ operations: sparsePatchOperations }),
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(sparseSemanticPatch),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -3175,8 +2894,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           {
             type: 'tool-call',
             toolCallId: 'workbook_sparse_patch_2',
-            toolName: 'patch_workbook',
-            input: JSON.stringify({ operations: completionPatchOperations }),
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(completionSemanticPatch),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -3253,23 +2972,13 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           role: 'tool',
           content: [
             expect.objectContaining({
-              toolName: 'patch_workbook',
+              toolName: 'patch_quote_workbook',
               output: {
                 type: 'json',
                 value: expect.objectContaining({
                   complete: false,
-                  missingCells: expect.arrayContaining([
-                    { sheetId: 'system_order', columnKey: 'item_spec' },
-                    { sheetId: 'system_order', columnKey: 'unit_price' },
-                    { sheetId: 'summary', columnKey: 'value' },
-                    { sheetId: 'manual_review', columnKey: 'confirmation_needed' },
-                    { sheetId: 'price_sources', columnKey: 'adopted_product_price_item' },
-                    { sheetId: 'interpretation_notes', columnKey: 'content' },
-                    { sheetId: 'customer_quote', columnKey: 'item_spec' },
-                    { sheetId: 'customer_quote', columnKey: 'unit_price' },
-                    { sheetId: 'customer_quote', columnKey: 'subtotal' },
-                  ]),
-                  instruction: expect.stringContaining('missing workbook cells'),
+                  missingCells: expect.any(Array),
+                  instruction: expect.stringContaining('Call patch_quote_workbook again'),
                 }),
               },
             }),
@@ -3284,7 +2993,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           role: 'tool',
           content: [
             expect.objectContaining({
-              toolName: 'patch_workbook',
+              toolName: 'patch_quote_workbook',
               output: {
                 type: 'json',
                 value: expect.objectContaining({
@@ -3299,10 +3008,245 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ]),
     );
     expect(response.text).toContain('小計 624');
-    expect(response.workbookPatch?.operations).toEqual([
-      ...sparsePatchOperations,
-      ...completionPatchOperations,
-    ]);
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'item_spec',
+          value: '錏輕型鋼 100*2.3，6M',
+        }),
+        expect.objectContaining({
+          sheetId: 'manual_review',
+          rowId: 'review_1',
+          columnKey: 'confirmation_needed',
+          value: '確認龍頂客戶全名與材質',
+        }),
+      ]),
+    );
+  });
+
+  it('projects semantic workbook patches into complete cell operations', async () => {
+    const semanticPatch = {
+      customer: {
+        name: '龍頂',
+        code: 'O-15',
+        tier: 'A級',
+      },
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          customerOriginalItemName: 'C100x50x20x2.3t 6M 一支',
+          normalizedItemName: '錏輕型鋼 100*2.3，6M',
+          searchKeywords: ['c_type', '錏輕型鋼', '100x2.3'],
+          productPriceCandidateItems: '錏輕型鋼 100*2.3 A價26元/kg；白鐵輕型鋼 100*2.3 A價97元/kg',
+          adoptedProductPriceItem: 'CCG10023 錏輕型鋼 100*2.3',
+          isExactMatch: false,
+          materialCategory: 'C型鋼',
+          material: '錏',
+          spec: 'C100x50x20x2.3t，6M',
+          quantity: 1,
+          unit: '支',
+          totalWeightKg: 24,
+          customerName: '龍頂',
+          customerTier: 'A級',
+          materialUnitPrice: 26,
+          materialUnitPriceField: '售價A',
+          materialPricingUnit: 'Kg',
+          billableQuantity: 24,
+          subtotal: 624,
+          confidence: '中',
+          lowConfidenceReason: '龍頂客戶仍有兩筆候選，需確認全名',
+          decisionEvidence: 'search_customers + 產品價格.xlsx reviewed candidate',
+          suggestedReview: '確認龍頂客戶全名與材質',
+          systemOrder: {
+            itemSpec: '錏C型鋼 C100x50x20x2.3 L=6000',
+            unit: 'Kg',
+            quantity: 24,
+            totalQuantity: 24,
+            unitPrice: 26,
+            pricingBasis: '龍頂A級',
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: '1560',
+          },
+          customerQuote: {
+            itemSpec: '錏C型鋼 C100x50x20x2.3 L=6000',
+            quantity: 1,
+            unit: '支',
+            unitPrice: 624,
+            subtotal: 624,
+            note: '暫估',
+          },
+          manualReview: {
+            confirmationNeeded: '確認龍頂客戶全名與材質',
+          },
+          interpretationNote: {
+            item: '客戶分級',
+            content: '客戶改為龍頂候選，C型鋼改用A級價格重算。',
+          },
+        },
+      ],
+    };
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'semantic_patch_1',
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(semanticPatch),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_semantic_patch' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已依龍頂A級更新：價格 26，小計 624。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 70,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_semantic_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請把這筆C型鋼資料整理到 workbook' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      workbookPatchTool: true,
+      workbookContextText:
+        'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+    const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    expect(firstOptions.tools?.map((tool) => tool.name)).toContain('patch_quote_workbook');
+    expect(firstOptions.tools?.map((tool) => tool.name)).not.toContain('patch_workbook');
+    const semanticTool = firstOptions.tools?.find((tool) => tool.name === 'patch_quote_workbook');
+    expect(JSON.stringify(semanticTool?.inputSchema)).toContain('quoteLines');
+    const firstSystemPrompt = firstOptions.prompt[0] as { role: 'system'; content: string };
+    expect(firstSystemPrompt.content).toContain('patch_quote_workbook');
+    expect(firstSystemPrompt.content).toContain('changing one quote value');
+
+    const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(secondPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_quote_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  ok: true,
+                  complete: true,
+                  projectedOperationCount: expect.any(Number),
+                  missingSheetIds: [],
+                  missingCells: [],
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    expect(response.text).toContain('小計 624');
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          value: 26,
+        }),
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'unit_price',
+          value: 26,
+        }),
+        expect.objectContaining({
+          sheetId: 'summary',
+          rowId: 'summary_total_amount',
+          columnKey: 'value',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'price_sources',
+          rowId: 'source_1',
+          columnKey: 'adopted_unit_price',
+          value: 26,
+        }),
+        expect.objectContaining({
+          sheetId: 'customer_quote',
+          rowId: 'customer_1',
+          columnKey: 'unit_price',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'customer_quote',
+          rowId: 'customer_1',
+          columnKey: 'subtotal',
+          value: 624,
+        }),
+      ]),
+    );
   });
 
   it('does not return text before a required price lookup has executed', async () => {
@@ -3540,26 +3484,28 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
-  it('enables the workbook patch tool and extracts model tool calls into patch operations', async () => {
+  it('enables only the semantic workbook patch tool and projects model tool calls into patch operations', async () => {
+    const semanticPatch = {
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          materialUnitPrice: 115,
+          interpretationNote: {
+            item: '手動更新',
+            content: 'User asked AI to update quote_details line_1 material_unit_price to 115.',
+          },
+        },
+      ],
+    };
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [
         { type: 'text', text: '已更新報價明細。' },
         {
           type: 'tool-call',
           toolCallId: 'tool_call_1',
-          toolName: 'patch_workbook',
-          input: JSON.stringify({
-            operations: [
-              {
-                op: 'set_cell',
-                sheetId: 'quote_details',
-                rowId: 'line_1',
-                columnKey: 'material_unit_price',
-                value: 115,
-                reason: 'User asked AI to update this workbook cell.',
-              },
-            ],
-          }),
+          toolName: 'patch_quote_workbook',
+          input: JSON.stringify(semanticPatch),
         },
       ],
       finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -3615,22 +3561,17 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain('Do not ask the user for internal workbook ids or keys');
     expect(systemPrompt.content).toContain('Do not list a per-field diff');
     expect(systemPrompt.content).toContain('Do not answer only with a field count');
+    expect(systemPrompt.content).toContain('Do not hand-write workbook cell operations');
     expect(doGenerate).toHaveBeenCalledWith(
       expect.objectContaining({
         toolChoice: { type: 'auto' },
         tools: [
           expect.objectContaining({
             type: 'function',
-            name: 'patch_workbook',
+            name: 'patch_quote_workbook',
             inputSchema: expect.objectContaining({
               properties: expect.objectContaining({
-                operations: expect.objectContaining({
-                  items: expect.objectContaining({
-                    properties: expect.objectContaining({
-                      op: { type: 'string', const: 'set_cell' },
-                    }),
-                  }),
-                }),
+                quoteLines: expect.any(Object),
               }),
             }),
           }),
@@ -3641,16 +3582,16 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       expect.objectContaining({
         text: '已更新報價明細。',
         workbookPatch: {
-          operations: [
-            {
+          operations: expect.arrayContaining([
+            expect.objectContaining({
               op: 'set_cell',
               sheetId: 'quote_details',
               rowId: 'line_1',
               columnKey: 'material_unit_price',
               value: 115,
-              reason: 'User asked AI to update this workbook cell.',
-            },
-          ],
+              reason: expect.any(String),
+            }),
+          ]),
         },
       }),
     );

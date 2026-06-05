@@ -12,6 +12,12 @@
   such as 注音. Pressing Enter to choose composition text must not submit the chat; submit
   only after composition ends.
 - Before `/steel/oauth-chat` live tool-status smoke, verify the runtime cloud Supabase Postgres path with `.env` `STEEL_POSTGRES_URL`; the Steel backend must use the cloud Postgres pool, not local/Docker, and streaming tool execution should reuse the runtime pool instead of cold-connecting on every tool call.
+- If Steel tool lookup fails with `self-signed certificate in certificate chain`,
+  reproduce with a direct sanitized `pg` probe and verify the runtime
+  `STEEL_POSTGRES_URL` path is normalized to libpq-compatible SSL. The helper
+  should add `sslmode=require&uselibpqcompat=true` when no SSL mode is provided,
+  while preserving explicit CA-backed `sslmode=verify-full` settings. Rebuild
+  `packages/api` and restart the backend after changing this helper.
 - Treat `npm run frontend:dev` startup separately from LibreChat app readiness. Vite can start on port 3090 while `/api/*` still fails if the backend is not running on port 3080.
 - For LibreChat local dev, verify the backend path too: backend startup requires `client/dist/index.html`, so `npm run build:client` may be needed even when using the Vite dev frontend.
 - When diagnosing Vite proxy errors, hit both `http://localhost:3080/api/config` and `http://localhost:3090/api/config` to distinguish backend startup failures from proxy configuration issues.
@@ -46,6 +52,26 @@
 - Do not add an explicit Undo button to Phase 3 workbook editing; users ask AI in chat to revert/change data, and the result must go through the validated patch service.
 - Successful AI workbook patches should reply with only a concise order-information and key-change summary in chat; avoid per-field diffs, long search keywords, long candidate item lists, and field-count-only text like `已更新 workbook：16 個欄位`.
 - In Steel `報價明細`, the user-facing quote amount column should be `小計`; do not add a duplicate `報價` column. Keep `材料費` as a material-cost component when needed, and when a customer/tier or unit price follow-up changes the amount, update and summarize the new `小計`, not only the workbook field changes.
+- When Steel tools return customer data, product-price candidates, formula rows,
+  quote rules/defaults, or deterministic `calculation_results`, the OpenAI
+  workbook patch prompt must tell AI how to map those results into the
+  `docs/reference/訂單參考_轉檔.xlsx` sheet contract. AI owns the workbook
+  companion rows; backend should validate/remind, not synthesize them. Missing
+  unit prices, amounts, formulas, weights, customer matches, or material matches
+  are `未確認` plus `人工複核`/`判讀備註`, never `0`; `給客戶用` must hide internal
+  customer tier, source refs, search keywords, candidates, AI/internal notes,
+  cost, and margin.
+- Steel quote workbook updates should support cascade projection: changing one
+  semantic quote value such as customer tier, material unit price, quantity,
+  weight, or subtotal usually requires synchronized cells across `報價明細`,
+  `系統訂單`, `總結`, `價格來源`, `人工複核`, `判讀備註`, and `給客戶用`. Prefer an
+  AI-authored semantic quote patch that backend projects into validated cell
+  operations over making the model manually enumerate every affected cell.
+- `/steel/oauth-chat` stream errors must preserve sanitized provider detail for
+  unknown OpenAI OAuth failures. If Steel lookup tools completed and the next
+  provider round fails, a generic `OpenAI OAuth provider request failed.` hides
+  the actionable cause such as context length, schema rejection, invalid
+  request, rate limit, or transient provider failure.
 - User-facing Steel price bullets should be terse: use `價格：<單價>`, not `reviewed 價格：<單價>`. Put reviewed/source status in source lines or notes instead of the bullet label.
 - Keep Steel workbook contract ownership split: public DTOs in `packages/data-provider/src/steel/workbooks.ts`, canonical Zod/runtime validation in `packages/api/src/steel/workbook/schema.ts`, and no frontend-owned workbook validation schema.
 - Keep Steel API mock data in one shared folder, `packages/data-provider/src/steel/mock/`, so frontend fixtures and backend mock endpoints do not drift.
@@ -98,7 +124,7 @@
 - Material-specific rules must be task-scoped for AI: only provide the C-type steel rule when the order has a C-type item or strong candidate, instead of dumping all company rules into every prompt.
 - For C 型鋼 oral-price flow, do not rely on a permanent runtime system prompt rule as the main mechanism. The AI should first identify the C 型鋼 / `c_type` candidate, call `lookup_instructions`, then use the returned C 型鋼 instruction packet to form bounded price queries.
 - When AI has judged a Steel product/category/catalog candidate, the next reviewed lookup step should be `lookup_instructions` before category-dependent tools such as `search_price_candidates`, `lookup_defaults`, or `lookup_formula`. Do not let a direct price search become the first category-specific tool call.
-- For C 型鋼 price lookup with unknown surface/material, `錏輕型鋼` may be used as the usual high-confidence provisional `productName` candidate. Still show bounded alternatives such as 白鐵輕型鋼 / 黑鐵輕型鋼 when relevant, and keep the quote provisional until the user confirms material/surface.
+- For C 型鋼 price lookup with unknown surface/material, `錏輕型鋼` may be used as the usual high-confidence provisional `productNames` candidate list. Still show bounded alternatives such as 白鐵輕型鋼 / 黑鐵輕型鋼 when relevant, and keep the quote provisional until the user confirms material/surface.
 - For C 型鋼 follow-up turns after alternatives were shown, if the user does not specify a different material/surface, treat the default 錏輕型鋼 assumption as confirmed for that continuing quote context instead of asking the same material question again.
 - Mocked OpenAI/provider tests must not be used to prove AI judgment or oral-normalization behavior. Keep mocks only for deterministic adapter/control-loop contracts; any claim that the model chooses a tool sequence or candidate query must be verified with real `openai_oauth_responses` smoke.
 - H-type non-standard-length surcharge automatically applies to normalized H-type lengths outside 6M, 9M, 10M, and 12M; it changes material unit price only, while cutting remains priced from cutting-price data.
@@ -173,10 +199,10 @@
   `steel.instruction_packets` rather than provider constants.
 - Steel Agent Instruction should include global order-inference sections for
   file/OCR rules, reviewed tool routing, order-line inference, workbook output
-  policy, confirmation behavior, and source validation. Workbook updates are
-  currently produced through the provider-facing `patch_workbook` output tool
-  and then validated/applied by backend workbook services; do not classify
-  `patch_workbook` as a reviewed lookup tool.
+  policy, confirmation behavior, and source validation. AI workbook updates
+  should use only provider-facing `patch_quote_workbook` semantic quote data;
+  backend projection then creates typed workbook operations for validation and
+  application. Do not classify workbook output as a reviewed lookup tool.
 - Steel Agent Instruction must explicitly say `統一用繁體中文回覆`; do not rely only
   on adjacent Traditional Chinese storage/schema notes or workbook label rules.
 - When the user asks to confirm Agent Instruction content before framework or
@@ -325,6 +351,16 @@
   same selected catalog keys into `lookup_quote_rules`, `search_price_candidates`,
   and `lookup_formula`; do not rely on a schema rejection from
   `search_price_candidates` as the main guidance mechanism.
+- For Steel `search_price_candidates`, selected catalog/material keys belong in
+  `catalogFamilies`; inferred reviewed product-name candidates should use
+  `productNames`. The AI-callable tool input must not expose `productName`;
+  keep `productName` only as an internal/source row field on returned price
+  candidates. Do not put oral family/category labels such as `C型鋼` in
+  `productNames` after a key was selected.
+- If AI has several inferred reviewed product-name candidates for the same
+  Steel price lookup, use `productNames` or `candidateQueries`.
+  `productNames` is for same-filter multi-name search; `candidateQueries` is for
+  per-candidate confidence/reason/spec fragments.
 - When a user provides a customer name in the same quote request, first-round
   tools should allow `search_customers` alongside catalog lookup. The selected
   customer id/tier/name must be passed as `customerContext` to
@@ -336,10 +372,10 @@
 - Steel workbook completeness for multi-material quote lists must be AI-led.
   Backend code should not hard-code derived workbook rows for price sources,
   interpretation notes, ERP preview fields, or customer-facing rows. Provider
-  orchestration may reject/remind incomplete patch_workbook calls, but the model
-  must generate explicit patch operations from workbook context and reviewed
-  tool results; unavailable material/customer/source facts should stay blank and
-  be explained in `manual_review` or `interpretation_notes`.
+  orchestration may reject/remind incomplete `patch_quote_workbook` calls, but
+  the model must generate semantic quote fields from workbook context and
+  reviewed tool results; unavailable material/customer/source facts should stay
+  blank and be explained in `manual_review` or `interpretation_notes`.
 - Steel workbook patch completeness must also apply to follow-up turns that
   update an existing quote, such as `客戶是龍頂` or material confirmation. Do
   not gate completeness only on the latest user message containing price words;
@@ -351,3 +387,7 @@
   tabs such as `系統訂單`, `總結`, `人工複核`, and `給客戶用` still lack derivable
   values; provider should return `missingSheetIds`/`missingCells` to AI and let
   AI either patch derivable values or record missing evidence in review/notes.
+- Steel AI workbook output should not expose direct `patch_workbook` operations.
+  Use `patch_quote_workbook` only, so the model sends compact semantic data and
+  backend projection handles synchronized cell operations without hitting the
+  100-operation input cap.

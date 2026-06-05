@@ -433,8 +433,8 @@ Body:
 - C 型鋼口語品名通常對應產品價格列的輕型鋼品名；例如
   `C型鋼 100x50x20 2.3t` 應以 `catalogFamilies: ['c_type']` 搭配
   `100x2.3` 等尺寸/厚度片段查價。
-- 材質不明時，AI 可以先塞 `productName: 錏輕型鋼` 作為通常情況的高信心
-  候選，同時列出白鐵輕型鋼、黑鐵輕型鋼等 bounded alternatives 並請確認。
+- 材質不明時，AI 使用 `productNames: [錏輕型鋼]` 作為通常情況的高信心
+  候選。同時列出白鐵輕型鋼、黑鐵輕型鋼等 bounded alternatives 並請確認。
 - 第一輪若材質/表面不明，回覆必須列出同規格、不同材質的 reviewed bounded
   options；第二輪若使用者沒有指定其他材質/表面，視為確認預設錏輕型鋼。
 - 未指定客戶或找不到客戶價格等級時，查價使用全域預設 B 價分級
@@ -452,7 +452,7 @@ Body:
 
 Blocking rules:
 
-- 不要把 `C型鋼` 當作 `productName` filter 卡死價格查詢；已選 `c_type`
+- 不要把 `C型鋼` 當作 `productNames` 候選卡死價格查詢；已選 `c_type`
   時，優先用尺寸/厚度 spec fragments 查 reviewed price rows。
 - 不要在 customer/tier 未知時把 `customerTierId` 設為 A/tier 1；查價必須使用
   B 價分級 `customerTierId: 2`。
@@ -482,8 +482,12 @@ Body:
 - unresolved ambiguity 不可寫 confirmed customer-facing totals。
 - workbook notes 應包含 candidate options、source refs、confidence、adopted
   assumption 與 required user confirmation。
-- workbook context 存在時，才可透過 `patch_workbook` typed operations 寫入。
-- `patch_workbook` 成功後，chat 回覆只需簡短說明訂單資訊與 workbook 改動重點；
+- workbook context 存在時，才可透過 provider-facing workbook output tool 寫入。
+  所有 AI workbook 更新統一用 `patch_quote_workbook` 輸出 semantic quote data；
+  backend 再投影成 typed workbook operations。
+- 同一筆 line 若改變客戶、分級、重量、單價、小計或數量，必須用相同 `lineId`
+  重新輸出 semantic quote patch，讓所有相關 workbook sheets 可同步投影更新。
+- workbook output tool 成功後，chat 回覆只需簡短說明訂單資訊與 workbook 改動重點；
   不可列逐欄 diff、長搜尋關鍵字或長候選品項，也不可只回 `已更新 workbook：N 個欄位`。
 
 Blocking rules:
@@ -795,7 +799,7 @@ Body:
   `沖孔 KZZB11 16/17`、`倒角 KZZB12 140/150`。使用前仍要確認加工需求與
   是否匹配產品價格明確加工品項。
 - 需要開槽、沖孔、倒角加工時，先用 `search_price_candidates` 查 reviewed
-  processing price rows，例如 `productName: 開槽加工` / `沖孔加工` / `倒角加工`
+  processing price rows，例如 `productNames: [開槽加工, 沖孔加工, 倒角加工]`
   或 `specKeyContains: KZZB10` / `KZZB11` / `KZZB12`，再標示仍需確認加工
   數量、路徑、孔數與是否適用 H 型鋼厚度。
 - 斜切加價：切平行斜刀為原切工單價 `X2 - 10`；切梯形斜刀為 `X2`；

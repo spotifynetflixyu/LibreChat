@@ -47,15 +47,15 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 
 ## Manual Workflow To System Mapping
 
-| Manual step                                                          | System owner                                                                                                   | AI access                                                                                                    |
-| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Receive customer inquiry with partial specs or oral material wording | Conversation files/messages and quote request evidence metadata                                                | Parse through file/text understanding; generate candidates in AI reasoning                                   |
-| Retrieve quoting interpretation/default rules                        | Reviewed instruction packets plus quote defaults from Admin-managed DB tables                                  | `lookup_quote_rules` returns task-scoped instruction packets/defaults before candidate expansion             |
-| Select customer and tier in ERP                                      | `steel.customers`, `steel.customer_aliases`, `steel.customer_tiers`                                            | `search_customers` returns exact and ambiguous customer matches                                              |
-| Search material/product in ERP                                       | `steel.price_items`, `steel.price_categories`, source aliases/search terms                                     | AI-generated `candidateQueries` -> `search_price_candidates`                                                 |
-| Enter quantity and calculate by formula/weight                       | `steel.formula_versions`, `steel.weight_specs`, material rules                                                 | `lookup_formula` and `lookup_defaults`; backend validation can use internal weight/rule repositories         |
-| Calculate cutting, holes, slotting, bending                          | `steel.cutting_prices`, `steel.hole_prices`, `steel.slotting_prices`, `steel.bending_prices`, processing rules | `lookup_defaults` and `lookup_formula`; backend validation/calculation uses internal processing repositories |
-| Output quote/order workbook                                          | Mongo Steel workbook state and Excel renderer                                                                  | `patch_workbook` output tool when workbook context exists; backend workbook service validates and applies    |
+| Manual step                                                          | System owner                                                                                                   | AI access                                                                                                                                                    |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Receive customer inquiry with partial specs or oral material wording | Conversation files/messages and quote request evidence metadata                                                | Parse through file/text understanding; generate candidates in AI reasoning                                                                                   |
+| Retrieve quoting interpretation/default rules                        | Reviewed instruction packets plus quote defaults from Admin-managed DB tables                                  | `lookup_quote_rules` returns task-scoped instruction packets/defaults before candidate expansion                                                             |
+| Select customer and tier in ERP                                      | `steel.customers`, `steel.customer_aliases`, `steel.customer_tiers`                                            | `search_customers` returns exact and ambiguous customer matches                                                                                              |
+| Search material/product in ERP                                       | `steel.price_items`, `steel.price_categories`, source aliases/search terms                                     | AI-generated `candidateQueries` -> `search_price_candidates`                                                                                                 |
+| Enter quantity and calculate by formula/weight                       | `steel.formula_versions`, `steel.weight_specs`, material rules                                                 | `lookup_formula` and `lookup_defaults`; backend validation can use internal weight/rule repositories                                                         |
+| Calculate cutting, holes, slotting, bending                          | `steel.cutting_prices`, `steel.hole_prices`, `steel.slotting_prices`, `steel.bending_prices`, processing rules | `lookup_defaults` and `lookup_formula`; backend validation/calculation uses internal processing repositories                                                 |
+| Output quote/order workbook                                          | Mongo Steel workbook state and Excel renderer                                                                  | `patch_quote_workbook` semantic output tool for all AI workbook updates; backend projection creates validated workbook cell operations for workbook services |
 
 ## Architecture Layers
 
@@ -96,9 +96,10 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
      Admin backend flows. The Agent Instruction is the default injected every
      turn; Instruction Packets are retrieved selectively.
    - Workbook updates use an output-tool boundary, not the reviewed lookup tool
-     boundary. Current `/steel/oauth-chat` exposes `patch_workbook` when workbook
-     context is present; AI proposes typed operations and backend workbook
-     services persist or reject them.
+     boundary. Current `/steel/oauth-chat` exposes only `patch_quote_workbook`
+     to AI for workbook updates. AI proposes the adopted semantic quote facts;
+     backend projection/validation turns them into workbook operations and
+     workbook services persist or reject them.
    - Instruction Packet classification is multi-axis: steel/material family is
      one selector, but task type, product family, surface treatment, processing
      type, formula code, customer/tier/project scope, priority, review state,

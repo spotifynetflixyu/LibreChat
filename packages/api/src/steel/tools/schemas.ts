@@ -25,13 +25,13 @@ function isCTypeFamilyLabelProductName(value: string): boolean {
 }
 
 function hasCTypeFamilyLabelProductName(input: {
-  productName?: string;
-  candidateQueries?: Array<{ productName?: string }>;
+  productNames?: string[];
+  candidateQueries?: Array<{ productNames?: string[] }>;
 }): boolean {
   const productNames = [
-    input.productName,
-    ...(input.candidateQueries ?? []).map((candidate) => candidate.productName),
-  ].filter((value): value is string => value !== undefined);
+    ...(input.productNames ?? []),
+    ...(input.candidateQueries ?? []).flatMap((candidate) => candidate.productNames ?? []),
+  ];
 
   return productNames.some(isCTypeFamilyLabelProductName);
 }
@@ -64,10 +64,10 @@ function getCTypeExpectedCompactSpecs(input: {
   originalText?: string;
   specKey?: string;
   specKeyContains?: string;
-  productName?: string;
+  productNames?: string[];
   candidateQueries?: Array<{
     label?: string;
-    productName?: string;
+    productNames?: string[];
     specKey?: string;
     specKeyContains?: string;
   }>;
@@ -76,10 +76,10 @@ function getCTypeExpectedCompactSpecs(input: {
     input.originalText,
     input.specKey,
     input.specKeyContains,
-    input.productName,
+    ...(input.productNames ?? []),
     ...(input.candidateQueries ?? []).flatMap((candidate) => [
       candidate.label,
-      candidate.productName,
+      ...(candidate.productNames ?? []),
       candidate.specKey,
       candidate.specKeyContains,
     ]),
@@ -173,8 +173,22 @@ const searchPriceCandidatesSchema = z
     originalText: nonEmptyString.optional(),
     specKey: nonEmptyString.optional(),
     specKeyContains: nonEmptyString.optional(),
-    productName: nonEmptyString.optional(),
-    catalogFamilies: z.array(nonEmptyString).min(1).max(20).optional(),
+    productNames: z
+      .array(nonEmptyString)
+      .min(1)
+      .max(10)
+      .describe(
+        'Multiple reviewed product/source name candidates or AI-derived reviewed product-name candidates to search with the same spec/catalog/tier filters. Use this for several inferred product names when per-candidate confidence/reason is not needed; use candidateQueries when each candidate needs its own reason.',
+      )
+      .optional(),
+    catalogFamilies: z
+      .array(nonEmptyString)
+      .min(1)
+      .max(20)
+      .describe(
+        'Canonical catalog family keys selected by AI, for example c_type, h_beam, or angle. Use this for material/category keys instead of putting family labels in productNames.',
+      )
+      .optional(),
     candidateQueries: z.array(steelPriceSearchCandidateSchema).max(10).optional(),
     customerTierId: z.number().int().positive().optional(),
     reviewState: reviewStateSchema,
@@ -186,7 +200,7 @@ const searchPriceCandidatesSchema = z
     const hasDirectFilter =
       input.specKey !== undefined ||
       input.specKeyContains !== undefined ||
-      input.productName !== undefined ||
+      input.productNames !== undefined ||
       input.catalogFamilies !== undefined;
     const hasCandidateQueries =
       input.candidateQueries !== undefined && input.candidateQueries.length > 0;
@@ -194,7 +208,8 @@ const searchPriceCandidatesSchema = z
     if (!hasDirectFilter && !hasCandidateQueries) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Provide specKey, specKeyContains, productName, or candidateQueries',
+        message:
+          'Provide specKey, specKeyContains, productNames, catalogFamilies, or candidateQueries',
       });
     }
 
@@ -216,11 +231,24 @@ const searchPriceCandidatesSchema = z
       });
     }
 
+    if (
+      input.originalText !== undefined &&
+      input.productNames?.some((productName) =>
+        isRawUserTextPriceSearchQuery(input.originalText!, { productNames: [productName] }),
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Do not search reviewed prices with raw user text in productNames',
+        path: ['productNames'],
+      });
+    }
+
     if (includesCatalogFamily(input, 'c_type') && hasCTypeFamilyLabelProductName(input)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'Do not use C型鋼 as productName after selecting c_type; use catalogFamilies: [c_type] plus specKeyContains such as 100x2.3, or reviewed product names such as 白鐵輕型鋼 / 錏輕型鋼 / 黑鐵輕型鋼.',
+          'Do not use C型鋼 as productNames after selecting c_type; use catalogFamilies: [c_type] plus specKeyContains such as 100x2.3, or reviewed product names such as 白鐵輕型鋼 / 錏輕型鋼 / 黑鐵輕型鋼.',
       });
     }
 

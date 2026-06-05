@@ -7,7 +7,14 @@ export const steelPriceSearchCandidateSchema = z
   .object({
     queryId: nonEmptyString,
     label: nonEmptyString.optional(),
-    productName: nonEmptyString.optional(),
+    productNames: z
+      .array(nonEmptyString)
+      .min(1)
+      .max(10)
+      .describe(
+        'Reviewed product/source names or AI-derived reviewed product-name candidates; not oral/category/family label text.',
+      )
+      .optional(),
     specKey: nonEmptyString.optional(),
     specKeyContains: nonEmptyString.optional(),
     confidence: confidenceSchema,
@@ -16,18 +23,18 @@ export const steelPriceSearchCandidateSchema = z
   })
   .refine(
     (candidate) =>
-      candidate.productName !== undefined ||
+      candidate.productNames !== undefined ||
       candidate.specKey !== undefined ||
       candidate.specKeyContains !== undefined,
     {
-      message: 'Provide productName, specKey, or specKeyContains',
+      message: 'Provide productNames, specKey, or specKeyContains',
     },
   );
 
 type SteelPriceSearchCandidateInput = z.input<typeof steelPriceSearchCandidateSchema>;
 
 interface SteelPriceSearchQueryText {
-  productName?: string;
+  productNames?: string[];
   specKey?: string;
   specKeyContains?: string;
 }
@@ -98,9 +105,11 @@ function getExplicitSpecKeyContains(value: string | undefined): string | undefin
 
 function hasRawUserTextQuery(originalText: string, candidate: SteelPriceSearchQueryText): boolean {
   const normalizedOriginal = normalizeComparableText(originalText);
-  const queryTexts = [candidate.productName, candidate.specKey, candidate.specKeyContains].filter(
-    (value): value is string => value !== undefined,
-  );
+  const queryTexts = [
+    ...(candidate.productNames ?? []),
+    candidate.specKey,
+    candidate.specKeyContains,
+  ].filter((value): value is string => value !== undefined);
 
   return queryTexts.some((queryText) => normalizeComparableText(queryText) === normalizedOriginal);
 }

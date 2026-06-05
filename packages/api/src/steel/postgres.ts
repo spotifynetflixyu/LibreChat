@@ -57,6 +57,28 @@ SELECT
   ) AS vector_extension_version
 `;
 
+function withSteelPostgresSslDefaults(connectionString: string) {
+  try {
+    const url = new URL(connectionString);
+    const sslmode = url.searchParams.get('sslmode');
+
+    if (!sslmode) {
+      url.searchParams.set('sslmode', 'require');
+      url.searchParams.set('uselibpqcompat', 'true');
+      return url.toString();
+    }
+
+    if (sslmode === 'require' && !url.searchParams.has('uselibpqcompat')) {
+      url.searchParams.set('uselibpqcompat', 'true');
+      return url.toString();
+    }
+
+    return connectionString;
+  } catch {
+    return connectionString;
+  }
+}
+
 export function getSteelPostgresConnectionString(env: SteelPostgresEnv = process.env) {
   const connectionString = env.STEEL_POSTGRES_URL?.trim();
 
@@ -64,7 +86,7 @@ export function getSteelPostgresConnectionString(env: SteelPostgresEnv = process
     throw new Error('STEEL_POSTGRES_URL is required for Steel Postgres access');
   }
 
-  return connectionString;
+  return withSteelPostgresSslDefaults(connectionString);
 }
 
 export function buildSteelPostgresConfig(env: SteelPostgresEnv = process.env): PoolConfig {

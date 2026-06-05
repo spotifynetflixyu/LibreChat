@@ -14,7 +14,11 @@ STEEL_POSTGRES_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co
 
 The direct database URL is the normal Steel runtime path. If local DNS or IPv6
 support blocks the direct URL, use the Supabase Session pooler URL documented in
-`docs/local-dev.md`.
+`docs/local-dev.md`. The Steel Postgres helper automatically adds
+`sslmode=require&uselibpqcompat=true` when `STEEL_POSTGRES_URL` does not specify
+an SSL mode, so local Supabase pooler connections do not fail with a
+certificate-chain error. Explicit CA-backed settings such as
+`sslmode=verify-full` are preserved.
 
 ## Migration Workflow
 

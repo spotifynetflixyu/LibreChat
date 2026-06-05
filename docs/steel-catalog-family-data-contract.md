@@ -237,14 +237,26 @@ Catalog mapping notes:
 6. Query `search_price_candidates` with `catalogFamilies` plus bounded
    product/spec candidate queries, using the same selected catalog keys from
    `lookup_catalog_families` / `lookup_quote_rules`.
+   - `catalogFamilies` is the field for selected catalog/material keys such as
+     `c_type`, `h_beam`, or `angle`.
+   - `productNames` is the only AI-callable field for reviewed or AI-inferred
+     product-name candidates with the same spec/catalog/tier filters. Use it
+     for one or many plausible names such as `錏成型角鐵` and `鍍鋅角鐵`.
+   - Use `candidateQueries` instead of `productNames` when each candidate needs
+     its own confidence, reason, or spec fragment; each candidate query uses
+     `productNames` for one or many reviewed product-name candidates.
+   - When no reliable catalog key is available after `lookup_catalog_families`,
+     AI may search with `productNames` using concise inferred product-name
+     candidates, not the full raw user sentence. The result stays provisional or
+     low confidence until reviewed candidates or the user confirm it.
    - For `c_type`, product-price rows use width/thickness fragments such as
      `100x2.3`; full section text such as `100x50x20 2.3t` is not enough by
      itself. The price tool validates this so failed oral normalization loops
      back to the AI instead of silently returning no candidates.
    - When C 型鋼 material/surface is not specified, AI may use
-     `productName: 錏輕型鋼` as the usual high-confidence provisional candidate,
-     while still showing bounded alternatives such as 白鐵輕型鋼 and 黑鐵輕型鋼
-     for confirmation.
+     `productNames: [錏輕型鋼]` as the usual high-confidence provisional
+     candidate list, while still showing bounded alternatives such as
+     白鐵輕型鋼 and 黑鐵輕型鋼 for confirmation.
    - When customer/tier is not specified, or customer lookup cannot find a usable
      customer price tier, AI must use the global default B tier by passing
      `customerTierId: 2` to price lookup. The response should keep this concise,
@@ -270,8 +282,8 @@ Catalog mapping notes:
 Workbook patch ownership:
 
 - For `/steel/oauth-chat`, AI owns workbook patch content. When workbook context
-  is available, the model must generate explicit `patch_workbook` operations for
-  every user-relevant sheet that has derivable data: `system_order`,
+  is available, the model must call `patch_quote_workbook` with semantic quote
+  data for every user-relevant sheet that has derivable data: `system_order`,
   `quote_details`, `summary`, `manual_review`, `price_sources`,
   `interpretation_notes`, and `customer_quote`.
 - Backend provider orchestration may reject or remind an incomplete provisional
@@ -287,24 +299,61 @@ Workbook patch ownership:
   `content`, and customer quote `item_spec`/`unit_price`/`subtotal`.
 - The same completeness rule applies to follow-up turns that update an existing
   quote line, such as customer selection, customer tier changes, material
-  confirmation, or repricing. A follow-up patch that updates `quote_details`
-  quote/calculation fields must still include explicit companion patches for
-  the relevant workbook sheets.
+  confirmation, or repricing. A follow-up semantic patch that updates
+  `quote_details` quote/calculation fields must still include companion semantic
+  fields for the relevant workbook sheets.
 - If material, customer, reviewed source, or calculation evidence is unavailable,
   AI leaves the target value blank and records the missing evidence in
   `manual_review` or `interpretation_notes` instead of inventing a value.
+- Do not expose direct workbook cell operations to AI. `patch_quote_workbook`
+  stays compact by sending semantic quote fields; backend projection creates the
+  synchronized workbook cell operations.
+
+Workbook fill contract from `docs/reference/訂單參考_轉檔.xlsx`:
+
+- `patch_quote_workbook` output is organized from app/backend tool results: customer
+  lookup, product-price lookup, quote rules/defaults, formula lookup, and
+  deterministic `calculation_results`. If `calculation_results` conflicts with
+  an interpreted quote item, the workbook uses `calculation_results` and records
+  a concise discrepancy note.
+- Price evidence has priority over weight evidence. Material unit prices and
+  processing prices must come from reviewed app/backend data or an explicit user
+  price. Handbook/manual weights can fill weight/spec evidence but cannot
+  replace missing product prices.
+- Unknown unit prices, unknown amounts, missing formulas, missing weights, and
+  ambiguous customer/material matches are written as `未確認`, never as `0`.
+  They also create `人工複核` rows when the gap can affect the quote.
+- `系統訂單` separates material rows from processing rows. C 型鋼 defaults create
+  a material row only unless reviewed rules or explicit user input require
+  separate cutting/hole rows.
+- `報價明細` owns the working calculation line. `小計` is the sum of material,
+  cutting, hole, slotting, bending, and other fees; if any required unit price is
+  unknown, `小計` is `未確認`.
+- `總結` separates confirmed amounts from low-confidence provisional estimates:
+  `確定金額` and `低信心暫估金額` must not be mixed.
+- `價格來源` records one source row for every material or processing line. A
+  no-price result still gets a source row with the adopted item as `未確認` and
+  source as `未找到` or the actual searched source.
+- `判讀備註` records only concise human-readable reasoning: customer/tier
+  judgment, price search strategy, oral name conversion, weight source, stock
+  allocation, no-zero unknown policy, OCR/drawing assumptions, and approximate
+  or substitute candidate use.
+- `給客戶用` is customer-visible only. It must not expose customer tier, source
+  refs, search keywords, candidate rows, rejected-candidate reasons, AI/internal
+  notes, cost, margin, or low-confidence internal reasons. Unknown unit price or
+  subtotal is shown as `未確認`.
 
 Examples:
 
-| Raw wording            | Expected key      | Notes                                                                                                       |
-| ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| `H鋼 100x100`          | `h_beam`          | Then query H price rows and H surcharge defaults.                                                           |
-| `C型鋼 100x50x20 2.3t` | `c_type`          | Query by `c_type` plus size/thickness fragments such as `100x2.3`; do not narrow with `productName: C型鋼`. |
-| `亞L30x30`             | candidate `angle` | `亞` is a low-confidence surface/typo clue; ask when needed.                                                |
-| `白鐵配管1/4`          | `piping`          | Query by piping key and spec/name candidates.                                                               |
-| `黑A鋼管`              | `a_pipe`          | Do not collapse into generic pipe when A管 is explicit.                                                     |
-| `磁鋼板專用小六角釘子` | `screw`           | Not `plate`.                                                                                                |
-| `1尺0 鐵格板`          | `grating`         | The `尺` token is a dimension, not `measuring_tool`.                                                        |
+| Raw wording            | Expected key      | Notes                                                                                                          |
+| ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `H鋼 100x100`          | `h_beam`          | Then query H price rows and H surcharge defaults.                                                              |
+| `C型鋼 100x50x20 2.3t` | `c_type`          | Query by `c_type` plus size/thickness fragments such as `100x2.3`; do not narrow with `productNames: [C型鋼]`. |
+| `亞L30x30`             | candidate `angle` | `亞` is a low-confidence surface/typo clue; ask when needed.                                                   |
+| `白鐵配管1/4`          | `piping`          | Query by piping key and spec/name candidates.                                                                  |
+| `黑A鋼管`              | `a_pipe`          | Do not collapse into generic pipe when A管 is explicit.                                                        |
+| `磁鋼板專用小六角釘子` | `screw`           | Not `plate`.                                                                                                   |
+| `1尺0 鐵格板`          | `grating`         | The `尺` token is a dimension, not `measuring_tool`.                                                           |
 
 ## Future Update Workflow
 

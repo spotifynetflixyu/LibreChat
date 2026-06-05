@@ -193,9 +193,26 @@ async function searchPriceCandidates(
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
   if (!input.candidateQueries || input.candidateQueries.length === 0) {
-    const priceCandidates = await searchSteelPriceItems(client, input);
+    const productNames = [...new Set(input.productNames ?? [])];
+    if (productNames.length <= 1) {
+      const priceCandidates = await searchSteelPriceItems(client, {
+        ...input,
+        productName: productNames[0],
+      });
 
-    return { priceCandidates };
+      return { priceCandidates };
+    }
+
+    const priceCandidates: SteelPriceItem[] = [];
+    for (const productName of productNames) {
+      const candidates = await searchSteelPriceItems(client, {
+        ...input,
+        productName,
+      });
+      priceCandidates.push(...candidates);
+    }
+
+    return { priceCandidates: dedupePriceCandidates(priceCandidates) };
   }
 
   if (input.originalText === undefined) {
@@ -209,17 +226,22 @@ async function searchPriceCandidates(
   const priceCandidates: SteelPriceItem[] = [];
 
   for (const query of searchTerms.candidateQueries) {
-    const candidates = await searchSteelPriceItems(client, {
-      specKey: query.specKeyContains ? undefined : query.specKey,
-      specKeyContains: query.specKeyContains,
-      productName: query.productName,
-      catalogFamilies: input.catalogFamilies,
-      reviewState: input.reviewState,
-      includeInactive: input.includeInactive,
-      limit: input.limit,
-    });
+    const productNames = [...new Set(query.productNames ?? [])];
+    const searchInputs = productNames.length === 0 ? [undefined] : productNames;
 
-    priceCandidates.push(...candidates);
+    for (const productName of searchInputs) {
+      const candidates = await searchSteelPriceItems(client, {
+        specKey: query.specKeyContains ? undefined : query.specKey,
+        specKeyContains: query.specKeyContains,
+        productName,
+        catalogFamilies: input.catalogFamilies,
+        reviewState: input.reviewState,
+        includeInactive: input.includeInactive,
+        limit: input.limit,
+      });
+
+      priceCandidates.push(...candidates);
+    }
   }
 
   return {

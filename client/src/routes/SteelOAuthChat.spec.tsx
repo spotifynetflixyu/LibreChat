@@ -103,8 +103,8 @@ describe('SteelOAuthChat', () => {
       onEvent({
         type: 'tool',
         status: 'completed',
-        toolName: 'patch_workbook',
-        message: 'patch_workbook completed',
+        toolName: 'patch_quote_workbook',
+        message: 'patch_quote_workbook completed',
         ok: true,
       });
       const response = {
@@ -204,8 +204,8 @@ describe('SteelOAuthChat', () => {
           onEvent({
             type: 'tool',
             status: 'completed',
-            toolName: 'patch_workbook',
-            message: 'patch_workbook completed',
+            toolName: 'patch_quote_workbook',
+            message: 'patch_quote_workbook completed',
             ok: true,
           });
           finishStream = () => {
@@ -228,7 +228,7 @@ describe('SteelOAuthChat', () => {
     await user.type(screen.getByPlaceholderText('Message Steel'), 'C型鋼 C100 6M 一支多少');
     await user.click(screen.getByLabelText('Send'));
 
-    await screen.findByText('patch_workbook completed');
+    await screen.findByText('patch_quote_workbook completed');
     expect(screen.getByLabelText('Steel stream status')).toBeInTheDocument();
     expect(screen.getByText('等待模型回覆')).toBeInTheDocument();
     expect(
@@ -238,7 +238,7 @@ describe('SteelOAuthChat', () => {
     expect(screen.getByText('lookup_catalog_families completed')).toBeInTheDocument();
     expect(screen.getByText('lookup_quote_rules started')).toBeInTheDocument();
     expect(screen.getByText('lookup_quote_rules completed')).toBeInTheDocument();
-    expect(screen.getByText('patch_workbook completed')).toBeInTheDocument();
+    expect(screen.getByText('patch_quote_workbook completed')).toBeInTheDocument();
     expect(mockStreamSteelChat).toHaveBeenCalledTimes(1);
     expect(mockSendSteelChat).not.toHaveBeenCalled();
 
@@ -368,10 +368,7 @@ describe('SteelOAuthChat', () => {
       'aria-selected',
       'true',
     );
-    expect(screen.getByRole('tab', { name: 'Thinking' })).toHaveAttribute(
-      'aria-selected',
-      'false',
-    );
+    expect(screen.getByRole('tab', { name: 'Thinking' })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('button', { name: '人工複核' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '人工複核清單' })).not.toBeInTheDocument();
 
@@ -455,7 +452,9 @@ describe('SteelOAuthChat', () => {
 
     expect(within(thinkingPanel).getByText('second run waiting')).toBeInTheDocument();
     expect(within(thinkingPanel).getByText('second run provider timeout')).toBeInTheDocument();
-    expect(within(thinkingPanel).queryByText('first run reasoning summary')).not.toBeInTheDocument();
+    expect(
+      within(thinkingPanel).queryByText('first run reasoning summary'),
+    ).not.toBeInTheDocument();
     expect(within(thinkingPanel).queryByText('first catalog completed')).not.toBeInTheDocument();
   });
 

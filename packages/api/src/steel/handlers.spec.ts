@@ -216,7 +216,7 @@ describe('createSteelHandlers', () => {
         expect.objectContaining({
           type: 'tool',
           status: 'completed',
-          toolName: 'patch_workbook',
+          toolName: 'patch_quote_workbook',
           ok: true,
         }),
         expect.objectContaining({ type: 'text', delta: '小計：643.2' }),
@@ -289,6 +289,40 @@ describe('createSteelHandlers', () => {
       ]),
     );
     expect(executeToolCall).toHaveBeenCalledTimes(1);
+    expect(res.end).toHaveBeenCalled();
+  });
+
+  it('streams sanitized provider error details for unknown provider failures', async () => {
+    const sendChat = jest.fn(async () => {
+      throw new Error(
+        'Provider invalid_request_error: context length exceeded while creating response',
+      );
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: 'C型鋼 C100 6M 一支多少' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'error',
+          errorCategory: 'unknown',
+          errorSummary:
+            'Provider invalid_request_error: context length exceeded while creating response',
+        }),
+      ]),
+    );
     expect(res.end).toHaveBeenCalled();
   });
 

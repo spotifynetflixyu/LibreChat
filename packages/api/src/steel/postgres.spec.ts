@@ -10,7 +10,31 @@ describe('Steel Postgres connection helpers', () => {
       STEEL_POSTGRES_URL: 'postgresql://user:pass@example.supabase.co:5432/postgres',
     });
 
-    expect(connectionString).toBe('postgresql://user:pass@example.supabase.co:5432/postgres');
+    expect(connectionString).toBe(
+      'postgresql://user:pass@example.supabase.co:5432/postgres?sslmode=require&uselibpqcompat=true',
+    );
+  });
+
+  it('preserves explicit libpq-compatible Steel Postgres SSL parameters', () => {
+    const connectionString = getSteelPostgresConnectionString({
+      STEEL_POSTGRES_URL:
+        'postgresql://user:pass@example.supabase.co:6543/postgres?sslmode=require&uselibpqcompat=true',
+    });
+
+    expect(connectionString).toBe(
+      'postgresql://user:pass@example.supabase.co:6543/postgres?sslmode=require&uselibpqcompat=true',
+    );
+  });
+
+  it('does not override explicit CA-backed verify-full settings', () => {
+    const connectionString = getSteelPostgresConnectionString({
+      STEEL_POSTGRES_URL:
+        'postgresql://user:pass@example.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=/certs/supabase.pem',
+    });
+
+    expect(connectionString).toBe(
+      'postgresql://user:pass@example.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=/certs/supabase.pem',
+    );
   });
 
   it('throws when STEEL_POSTGRES_URL is missing', () => {
@@ -25,7 +49,8 @@ describe('Steel Postgres connection helpers', () => {
     });
 
     expect(config).toEqual({
-      connectionString: 'postgresql://user:pass@example.supabase.co:5432/postgres',
+      connectionString:
+        'postgresql://user:pass@example.supabase.co:5432/postgres?sslmode=require&uselibpqcompat=true',
       connectionTimeoutMillis: 15000,
       idleTimeoutMillis: 30000,
       keepAlive: true,

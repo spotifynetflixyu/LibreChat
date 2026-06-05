@@ -6,6 +6,141 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Steel OAuth Stream Provider Error Diagnosis
+
+Goal: Fix the `/steel/oauth-chat` failure state where the Thinking tab only
+shows generic `OpenAI OAuth provider request failed.` after successful Steel
+lookups. The stream should preserve a sanitized provider error detail so we can
+distinguish context-length, schema, auth, rate-limit, and transient provider
+failures.
+
+- [x] Gather evidence from the user-visible stream sequence: provider failed
+      after `lookup_formula completed`, so Supabase lookup tools had succeeded.
+- [x] Reproduce a clean direct provider flow with workbook tools and C 型鋼
+      lookup; it succeeded with a workbook patch, so the failure is tied to the
+      actual UI payload/session state or a transient provider response, not a
+      stable schema or database failure.
+- [x] Add RED handler coverage for sanitized unknown provider errors.
+- [x] Implement provider-error summary sanitization for chat and stream routes.
+- [x] Verify focused handler/provider tests, API build, direct C 型鋼 provider
+      smoke, and backend readiness.
+
+Review evidence:
+
+- RED handler regression first failed because stream errors still returned only
+  `OpenAI OAuth provider request failed.` for an unknown provider exception.
+- Handler error summary now preserves sanitized unknown provider details while
+  keeping existing auth, timeout, and Steel tool error categories.
+- Clean direct provider smoke with workbook tools returned `ok`, proving
+  `patch_quote_workbook` schema is accepted when exposed.
+- Full direct C 型鋼 provider flow with real OAuth and cloud Steel tools
+  succeeded twice after the failure report, including workbook patch operations
+  and a `643` subtotal. This points the user-visible failure toward the
+  specific UI session payload/length or transient provider response rather than
+  a stable schema/database failure.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/workbook/semantic.spec.ts --runInBand`,
+  `npm --workspace packages/api run build` with existing non-Steel Rollup
+  TypeScript warnings, and direct C 型鋼 OAuth smoke with workbook patch.
+- Backend was restarted after the build; `http://localhost:3080/api/config` and
+  `http://localhost:3090/steel/oauth-chat` both return `HTTP/1.1 200 OK`.
+
+## Steel Semantic Workbook Patch
+
+Goal: Replace large AI-authored cell-by-cell quote workbook patches with a
+compact semantic quote patch tool. AI still decides customer/material/price/rule
+facts from reviewed tool results, while backend projection keeps all workbook
+sheets synchronized and supports cascade updates when one quote value changes.
+
+- [x] Write the implementation plan under
+      `docs/plans/2026-06-05-steel-semantic-workbook-patch.md`.
+- [x] Add RED projection tests that one semantic quote line fills the required
+      workbook sheets and that a repriced line re-emits all affected cells.
+- [x] Add RED provider tests that `patch_quote_workbook` is AI-callable,
+      projected into existing `set_cell` workbook patch operations, and avoids
+      incomplete multi-call workbook patch loops.
+- [x] Implement the semantic workbook projection helper and provider tool
+      parsing/tool-result flow.
+- [x] Verify focused workbook/provider tests, API build, diff hygiene, and
+      restart backend/frontend readiness for manual `/steel/oauth-chat` testing.
+
+Review evidence:
+
+- RED `semantic.spec.ts` first failed because `./semantic` did not exist; GREEN
+  helper tests now prove one semantic C 型鋼 quote line fills required workbook
+  sheets and a repriced same-`lineId` quote re-emits affected cells across
+  `報價明細`, `系統訂單`, `總結`, `價格來源`, and `給客戶用`.
+- RED provider test first failed because `patch_quote_workbook` was not parsed
+  as a workbook output tool; GREEN provider tests now expose only
+  `patch_quote_workbook` to AI, project semantic quote data into existing
+  `set_cell` operations internally, and return a complete workbook output tool
+  result before the final assistant text.
+- Documentation now records that all AI workbook updates should use semantic
+  `patch_quote_workbook`; direct workbook operations are backend projection
+  internals, not an AI-callable tool.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/workbook/semantic.spec.ts src/steel/ai/provider.spec.ts --runInBand`,
+  `npm --workspace packages/api run build` with existing non-Steel Rollup
+  TypeScript warnings, touched-file Prettier check, and `git diff --check`.
+- Backend watcher was restarted after the build. Readiness evidence:
+  `http://localhost:3080/api/config` returned `HTTP/1.1 200 OK` and
+  `http://localhost:3090/steel/oauth-chat` returned `HTTP/1.1 200 OK`.
+
+## Steel Catalog Price Tool Prompt And Semantic Workbook Output
+
+Goal: Make the runtime prompt teach the model exactly how to call
+`search_price_candidates` after selecting catalog family keys, with
+`productNames` as the only AI-callable reviewed product-name candidate field.
+Also prevent workbook completion from pushing the model into hand-written
+cell-operation patches by making `patch_quote_workbook` the only AI-callable
+workbook output tool.
+
+- [x] Add RED prompt/schema coverage that the first system prompt, retry
+      reminder, and tool schema teach generic catalog lookup semantics:
+      selected keys go in `catalogFamilies`, oral family/category labels do not
+      go in `productNames`, and inferred reviewed product-name candidates use
+      `productNames` or `candidateQueries.productNames`. The public tool input
+      rejects old `productName`; repository result/source rows may still return
+      `productName`.
+- [x] Add RED workbook prompt/reminder coverage that AI-visible workbook output
+      uses only `patch_quote_workbook`, including follow-up and incomplete
+      semantic patch reminders.
+- [x] Update provider runtime/workbook instructions, stream status, and
+      incomplete-patch tool result text.
+- [x] Update docs/lessons for the prompt and workbook-output corrections.
+- [x] Verify focused provider/handler/client tests, API build, formatting, diff checks, and
+      restart backend for manual testing.
+
+Review evidence for `productNames` cleanup:
+
+- RED focused registry/normalization tests failed while fixtures still sent old
+  `productName`; GREEN focused tests passed after the public
+  `search_price_candidates` schema accepted only `productNames` and
+  `candidateQueries.productNames`.
+- Focused verification passed after formatter: `provider.spec.ts`,
+  `execute.spec.ts`, `registry.spec.ts`, and `search.spec.ts` all passed
+  57 tests.
+- `npm --workspace packages/api run build` completed successfully with the
+  existing non-Steel Rollup TypeScript warnings.
+- Built `dist` smoke accepted `productNames` and rejected old `productName`;
+  direct cloud Supabase `executeSteelTool(search_price_candidates)` returned
+  C 型鋼 same-spec 錏/白鐵 candidates from `productNames`.
+- Cloud `steel.instruction_packets` C 型鋼 row was updated so runtime
+  `lookup_quote_rules` no longer returns the old `productName filter` or
+  mutual-exclusion wording.
+- `git diff --check` passed.
+- User correction applied: `patch_workbook` is no longer AI-callable. Provider
+  exposes only `patch_quote_workbook`; semantic tool calls are projected
+  internally to workbook `set_cell` operations.
+- Focused verification passed after the semantic-only workbook change:
+  `provider.spec.ts`, `handlers.spec.ts`, `semantic.spec.ts`,
+  `packages/data-provider/src/steel/ai.spec.ts`, and
+  `client/src/routes/SteelOAuthChat.spec.tsx`.
+- `npm --workspace packages/api run build` completed successfully with existing
+  non-Steel Rollup TypeScript warnings. Backend was restarted; both
+  `http://localhost:3080/api/config` and
+  `http://localhost:3090/steel/oauth-chat` returned `HTTP/1.1 200 OK`.
+
 - [x] Active runtime slice: stabilize `/steel/oauth-chat` cloud Supabase
       Postgres tool lookup. Steel runtime must connect through `.env`
       `STEEL_POSTGRES_URL` to cloud Supabase, reuse the runtime pool for
@@ -36,16 +171,82 @@ Review evidence:
   status order was `Request validated` -> `Waiting for provider` ->
   `lookup_quote_rules started/completed` ->
   `search_price_candidates started/completed`, and the AI returned
-  C 型鋼 6M 小計 `643.2 元/支`. This run did not call `patch_workbook`, so
-  workbook patch enforcement remains a separate AI behavior follow-up.
+  C 型鋼 6M 小計 `643.2 元/支`. Semantic workbook patch enforcement remained a
+  separate AI behavior follow-up at that point.
+
+## Steel Supabase SSL Runtime Fix
+
+Goal: Fix `/steel/oauth-chat` Steel tool failures where Supavisor Postgres
+lookup returns `self-signed certificate in certificate chain` when
+`STEEL_POSTGRES_URL` omits libpq-compatible SSL query parameters.
+
+- [x] Reproduce the error with a direct `pg` probe using the current `.env`
+      `STEEL_POSTGRES_URL`.
+- [x] Add RED coverage for automatic Steel Postgres URL SSL normalization.
+- [x] Normalize Steel Postgres URLs so absent SSL params use
+      `sslmode=require&uselibpqcompat=true` without printing or changing
+      secrets.
+- [x] Update lessons/docs for the runtime SSL behavior.
+- [x] Verify focused Postgres tests, API build, direct cloud query, formatting,
+      diff checks, and restart backend for manual testing.
+
+Review:
+
+- Direct sanitized `pg` probe reproduced the user-facing tool failure:
+  current `.env` pointed at Supavisor `6543` without SSL query parameters, and
+  `pg` returned `self-signed certificate in certificate chain`.
+- Steel Postgres helper now normalizes missing SSL parameters to
+  `sslmode=require&uselibpqcompat=true`. Explicit URLs, including
+  CA-backed `sslmode=verify-full`, are preserved.
+- Verification passed: RED `postgres.spec.ts` failed before the helper update;
+  GREEN `postgres.spec.ts` passed 6 tests; `packages/api` build passed with
+  existing non-Steel Rollup warnings; built helper direct cloud query returned
+  `steelSchemaExists=true`; direct `lookup_catalog_families` tool returned
+  `c_type`; Prettier and `git diff --check` passed.
+- Backend was rebuilt and nodemon restarted. `http://localhost:3080/api/config`
+  and `http://localhost:3090/steel/oauth-chat` both return 200.
+
+## Steel Workbook Fill Instruction From 訂單參考
+
+Goal: Teach the OpenAI Responses workbook patch agent how to organize tool
+results from customer lookup, product price lookup, formula lookup, and
+calculation results into the seven `訂單參考_轉檔.xlsx` workbook sheets without
+inventing missing price/customer/weight/formula facts.
+
+- [x] Write the implementation plan under `docs/plans/`.
+- [x] Add RED provider prompt coverage for the workbook fill contract:
+      price-before-weight, no zero for unknown, system/customer sheet separation,
+      calculation-result precedence, summary split totals, and customer-visible
+      field restrictions.
+- [x] Update provider workbook patch instructions with the compact workbook fill
+      contract.
+- [x] Update docs and lessons so future agents keep the same workbook-fill
+      behavior.
+- [x] Run focused provider tests, API build, formatting, and diff checks.
+
+Review:
+
+- RED verification first failed because the workbook patch system prompt did not
+  include the `價格先於重量`, no-zero unknown, sheet separation, summary split,
+  customer-visible restriction, or `calculation_results` precedence contract.
+- Provider workbook instructions now include the compact
+  `docs/reference/訂單參考_轉檔.xlsx` fill contract, while backend behavior stays
+  validation/reminder-only and does not synthesize companion workbook rows.
+- Documentation and lessons now record that AI maps reviewed tool results into
+  workbook sheets, writes unknowns as `未確認` instead of `0`, and keeps
+  `給客戶用` free of internal source/tier/candidate/audit data.
+- Verification passed:
+  `provider.spec.ts` targeted RED/GREEN test, full `provider.spec.ts` 21 tests,
+  `npm --workspace packages/api run build` with existing non-Steel Rollup
+  warnings, touched-file Prettier check, and `git diff --check`.
 
 ## Steel Workbook Per-Turn Completion
 
 Goal: Every `/steel/oauth-chat` turn that updates workbook data should check
 whether the new information has been propagated to all relevant workbook sheets
 and cells. The backend must not hard-fill ERP/customer/summary rows; it should
-return missing sheet/cell guidance through the `patch_workbook` tool result so
-the AI can decide which values are derivable and which gaps belong in
+return missing sheet/cell guidance through the `patch_quote_workbook` tool
+result so the AI can decide which values are derivable and which gaps belong in
 `人工複核` / `判讀備註`.
 
 - [x] Reproduce the bug with a provider regression where AI updates only
@@ -64,9 +265,9 @@ Review:
   satisfy the gate by touching every sheet with sparse shell cells while leaving
   user-visible workbook content blank.
 - Provider completion now returns both `missingSheetIds` and `missingCells` for
-  every Steel runtime workbook patch turn. Incomplete patches feed a
-  `patch_workbook` tool result back to the model and require another explicit
-  AI patch before the final answer.
+  every Steel runtime workbook patch turn. Incomplete semantic patches feed a
+  `patch_quote_workbook` tool result back to the model and require another
+  explicit AI patch before the final answer.
 - The backend still does not synthesize companion workbook rows. It only reports
   missing sheet/cell targets and tells AI to patch derivable values or record
   unavailable evidence in `manual_review` / `interpretation_notes`.

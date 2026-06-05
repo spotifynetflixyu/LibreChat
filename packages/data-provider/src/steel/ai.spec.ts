@@ -309,13 +309,13 @@ describe('Steel AI public contracts', () => {
       steelProviderChatStreamEventSchema.parse({
         type: 'tool',
         status: 'started',
-        toolName: 'patch_workbook',
+        toolName: 'patch_quote_workbook',
         message: 'Applying workbook patch',
       }),
     ).toEqual({
       type: 'tool',
       status: 'started',
-      toolName: 'patch_workbook',
+      toolName: 'patch_quote_workbook',
       message: 'Applying workbook patch',
     });
     expect(
