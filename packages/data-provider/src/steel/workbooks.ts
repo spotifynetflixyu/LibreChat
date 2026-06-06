@@ -119,7 +119,7 @@ export const steelWorkbookPatchRequestSchema = z.object({
   workbookId: z.string().min(1),
   workbookVersion: z.number().int().positive(),
   selectedWorkbookRefs: z.array(steelSelectedWorkbookRefSchema).default([]),
-  operations: z.array(steelWorkbookPatchOperationSchema).min(1).max(100),
+  operations: z.array(steelWorkbookPatchOperationSchema).min(1),
 });
 
 export type SteelWorkbookPatchRequest = z.infer<typeof steelWorkbookPatchRequestSchema>;

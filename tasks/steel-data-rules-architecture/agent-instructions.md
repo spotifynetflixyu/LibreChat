@@ -308,6 +308,9 @@ workbook content。快速價格暫估若有 reviewed positive candidate，應使
 `manual_review`、`interpretation_notes`、`system_order` 與 `customer_quote`
 可由目前證據推導的 provisional preview 欄位。`quote_details` 的可見報價金額
 欄位統一使用 `小計`，internal key 是 `subtotal`；不要另加或使用可見 `報價` 欄位。
+`system_order` 的 `型號` 欄位必須由採用的產品價格列 `型號` 填入
+`systemOrder.modelCode`，例如 `CCG10023`；不可把口語品名、catalog family key 或
+材料分類文字當作系統訂單型號。
 內容可包含：
 
 - 已判讀的客戶/品項/規格候選。

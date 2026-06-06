@@ -6,6 +6,47 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Active: Steel Workbook First-Load And System Model Fix
+
+Goal: Fix the `/steel/oauth-chat` workbook regressions reported by the user:
+`系統訂單`.`型號` should carry the adopted product-price model, the initial workbook
+load should not show latest-update cell highlights, and a newly loaded workbook
+should display `v1` instead of `v2`.
+
+- [x] Add RED regression coverage for `patch_quote_workbook` carrying the
+      product-price model into `系統訂單`.`型號`.
+- [x] Update the workbook prompt/tool instructions so AI knows
+      `systemOrder.modelCode` / `系統訂單`.`型號` must come from the adopted product
+      price row model.
+- [x] Add RED API/route coverage that the first workbook data load shows version
+      `v1` and does not mark cells as the latest update.
+- [x] Implement the narrow semantic schema/projection and first-load state fix.
+- [x] Update lessons for the workbook correction pattern.
+- [x] Run focused API/client tests, build changed packages, restart dev server,
+      and record review evidence here.
+
+Review evidence:
+
+- RED regressions first failed because semantic workbook projection did not emit
+  `system_order.model_code`, and the workbook service incremented the first data
+  patch to `v2` with highlight paths.
+- Semantic workbook projection now accepts `systemOrder.modelCode` and projects
+  it to `系統訂單`.`型號` / `model_code`; provider prompt explicitly tells AI to
+  source that value from the adopted product-price row `型號`.
+- Workbook service now treats the first accepted data patch into an empty
+  workbook as initial data load: the workbook remains `v1`, `changedPaths` is
+  empty, and `changedFieldSummary` is preserved for concise chat summaries.
+- Focused API verification passed:
+  `packages/api` `semantic.spec.ts`, `service.spec.ts`, `provider.spec.ts`, and
+  `handlers.spec.ts` passed 57 tests.
+- Focused UI verification passed:
+  `client/src/routes/SteelOAuthChat.spec.tsx` passed 12 tests.
+- `npm --workspace packages/api run build` completed successfully with existing
+  non-Steel Rollup TypeScript warnings.
+- Prettier check and `git diff --check` passed. Backend was restarted; both
+  `http://localhost:3080/api/config` and
+  `http://localhost:3090/steel/oauth-chat` returned `HTTP/1.1 200 OK`.
+
 ## Steel OAuth Stream Provider Error Diagnosis
 
 Goal: Fix the `/steel/oauth-chat` failure state where the Thinking tab only
@@ -107,6 +148,8 @@ workbook output tool.
       semantic patch reminders.
 - [x] Update provider runtime/workbook instructions, stream status, and
       incomplete-patch tool result text.
+- [x] Remove arbitrary workbook size caps from semantic quote lines and
+      internally projected workbook operations.
 - [x] Update docs/lessons for the prompt and workbook-output corrections.
 - [x] Verify focused provider/handler/client tests, API build, formatting, diff checks, and
       restart backend for manual testing.
@@ -132,6 +175,15 @@ Review evidence for `productNames` cleanup:
 - User correction applied: `patch_workbook` is no longer AI-callable. Provider
   exposes only `patch_quote_workbook`; semantic tool calls are projected
   internally to workbook `set_cell` operations.
+- User correction applied: workbook output must not have arbitrary size caps.
+  Removed `quoteLines` max limits and the internal 100-operation cap for
+  provider/workbook patch schemas.
+- Focused no-size-limit verification passed: `packages/api` semantic/provider/
+  handler tests pass 49 tests, including a `patch_quote_workbook` projection
+  that produces more than 100 workbook `set_cell` operations.
+- Shared contract verification passed: `packages/data-provider` AI/workbook
+  schema tests pass 17 tests, including 120-operation provider proposals and
+  workbook patch requests.
 - Focused verification passed after the semantic-only workbook change:
   `provider.spec.ts`, `handlers.spec.ts`, `semantic.spec.ts`,
   `packages/data-provider/src/steel/ai.spec.ts`, and

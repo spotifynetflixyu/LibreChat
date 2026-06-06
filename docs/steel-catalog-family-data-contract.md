@@ -326,6 +326,10 @@ Workbook fill contract from `docs/reference/訂單參考_轉檔.xlsx`:
 - `系統訂單` separates material rows from processing rows. C 型鋼 defaults create
   a material row only unless reviewed rules or explicit user input require
   separate cutting/hole rows.
+- `系統訂單`.`型號` is the adopted product-price row model/code from
+  `產品價格.xlsx` / `search_price_candidates`, carried in semantic
+  `systemOrder.modelCode`. It is not an oral product name, catalog family key,
+  or material category.
 - `報價明細` owns the working calculation line. `小計` is the sum of material,
   cutting, hole, slotting, bending, and other fees; if any required unit price is
   unknown, `小計` is `未確認`.
@@ -342,6 +346,18 @@ Workbook fill contract from `docs/reference/訂單參考_轉檔.xlsx`:
   refs, search keywords, candidate rows, rejected-candidate reasons, AI/internal
   notes, cost, margin, or low-confidence internal reasons. Unknown unit price or
   subtotal is shown as `未確認`.
+
+Workbook version/highlight behavior:
+
+- A new workbook starts at `v1` with sheet/column structure only and no data
+  rows.
+- The first accepted data patch into an empty workbook is treated as initial
+  data load: the workbook remains `v1` and `changedPaths` is empty so no cells
+  are highlighted as "updated". `changedFieldSummary` may still be returned for
+  concise chat summaries.
+- Later accepted patches against a workbook that already has data rows are
+  normal updates: they increment the workbook version and return `changedPaths`
+  for latest-update highlighting.
 
 Examples:
 

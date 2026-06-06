@@ -23,6 +23,8 @@ Add expectations to the workbook patch prompt coverage that the system prompt in
 - `價格先於重量`
 - unknown price/amount must be `未確認`, not `0`
 - `系統訂單` material and processing rows are separate
+- `系統訂單`.`型號` is filled through semantic `systemOrder.modelCode` from the
+  adopted `產品價格.xlsx` / `search_price_candidates` product-price row `型號`
 - `報價明細` `小計` is fee sum and becomes `未確認` if required prices are unknown
 - `總結` separates confirmed amount from low-confidence estimates
 - `給客戶用` excludes customer tier, source refs, search keywords, candidates, and AI/internal notes
@@ -47,6 +49,9 @@ Expected: FAIL on missing prompt substrings.
 **Step 1: Implement minimal prompt update**
 
 Add a compact workbook-fill paragraph to `getWorkbookPatchInstruction()` using the seven sheet names and fixed rules from `docs/reference/訂單參考_轉檔.xlsx`.
+Include the system-order model rule: the model must send
+`systemOrder.modelCode` from the adopted product-price row `型號`; oral material
+names and catalog keys are not valid `系統訂單`.`型號` values.
 
 **Step 2: Run GREEN**
 

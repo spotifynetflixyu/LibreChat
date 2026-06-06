@@ -116,4 +116,22 @@ describe('Steel workbook public contracts', () => {
       value: 115,
     });
   });
+
+  it('accepts workbook patch requests larger than 100 projected operations', () => {
+    const patch = steelWorkbookPatchRequestSchema.parse({
+      workbookId: 'wb_1',
+      workbookVersion: 2,
+      selectedWorkbookRefs: [],
+      operations: Array.from({ length: 120 }, (_, index) => ({
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: `line_${index + 1}`,
+        columnKey: 'material_unit_price',
+        value: 100 + index,
+        reason: 'Backend-projected semantic workbook operation.',
+      })),
+    });
+
+    expect(patch.operations).toHaveLength(120);
+  });
 });

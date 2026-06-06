@@ -241,6 +241,21 @@ describe('Steel AI public contracts', () => {
     ]);
   });
 
+  it('accepts internally projected workbook patch proposals larger than 100 operations', () => {
+    const parsed = steelProviderWorkbookPatchProposalSchema.parse({
+      operations: Array.from({ length: 120 }, (_, index) => ({
+        op: 'set_cell',
+        sheetId: 'quote_details',
+        rowId: `line_${index + 1}`,
+        columnKey: 'material_unit_price',
+        value: 100 + index,
+        reason: 'Backend-projected semantic workbook operation.',
+      })),
+    });
+
+    expect(parsed.operations).toHaveLength(120);
+  });
+
   it('validates browser-safe Steel provider chat file payloads', () => {
     const parsed = steelProviderChatRequestSchema.parse({
       messages: [

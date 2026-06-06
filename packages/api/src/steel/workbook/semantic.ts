@@ -17,6 +17,7 @@ type SemanticCustomer = {
 };
 
 type SemanticSystemOrderLine = {
+  modelCode?: SemanticCellValue;
   itemSpec?: SemanticCellValue;
   unit?: SemanticCellValue;
   quantity?: SemanticCellValue;
@@ -153,6 +154,7 @@ const semanticCustomerSchema = z
 
 const semanticSystemOrderLineSchema = z
   .object({
+    modelCode: optionalSemanticCellValueSchema,
     itemSpec: optionalSemanticCellValueSchema,
     unit: optionalSemanticCellValueSchema,
     quantity: optionalSemanticCellValueSchema,
@@ -285,7 +287,7 @@ const semanticSummarySchema = z
 export const steelSemanticWorkbookPatchSchema: z.ZodType<SteelSemanticWorkbookPatch> = z
   .object({
     customer: semanticCustomerSchema.optional(),
-    quoteLines: z.array(semanticQuoteLineSchema).min(1).max(10),
+    quoteLines: z.array(semanticQuoteLineSchema).min(1),
     summary: semanticSummarySchema.optional(),
   })
   .strict();
@@ -578,6 +580,7 @@ function addSystemOrderCells(
     reason: 'Project semantic quote line into ERP-style system order.',
     cells: {
       line_no: rowNumber * 10,
+      model_code: systemOrder.modelCode,
       item_spec: systemOrder.itemSpec ?? line.normalizedItemName,
       unit: systemOrder.unit ?? line.materialPricingUnit ?? line.unit,
       quantity: systemOrder.quantity ?? line.billableQuantity ?? line.quantity,

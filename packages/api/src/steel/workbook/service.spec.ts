@@ -178,17 +178,17 @@ describe('createSteelWorkbookService', () => {
     const result = await service.create({});
 
     expect(result.workbook.sheets.map((sheet) => sheet.id)).toEqual(requiredSteelWorkbookSheetIds);
-    expect(Object.fromEntries(result.workbook.sheets.map((sheet) => [sheet.id, sheet.rows]))).toEqual(
-      {
-        system_order: [],
-        quote_details: [],
-        summary: [],
-        manual_review: [],
-        price_sources: [],
-        interpretation_notes: [],
-        customer_quote: [],
-      },
-    );
+    expect(
+      Object.fromEntries(result.workbook.sheets.map((sheet) => [sheet.id, sheet.rows])),
+    ).toEqual({
+      system_order: [],
+      quote_details: [],
+      summary: [],
+      manual_review: [],
+      price_sources: [],
+      interpretation_notes: [],
+      customer_quote: [],
+    });
   });
 
   it('creates the target row when a validated patch writes the first quote data', async () => {
@@ -225,6 +225,8 @@ describe('createSteelWorkbookService', () => {
         },
       },
     ]);
+    expect(result.workbook.version).toBe(1);
+    expect(result.changedPaths).toEqual([]);
     expect(result.changedFieldSummary).toEqual([
       {
         sheetId: 'quote_details',
@@ -235,6 +237,69 @@ describe('createSteelWorkbookService', () => {
         nextValue: 643.2,
       },
     ]);
+  });
+
+  it('treats the first data patch on an empty workbook as initial load without highlights or version bump', async () => {
+    const repository = new MemorySteelWorkbookRepository();
+    const service = createSteelWorkbookService({
+      id: () => 'wb_1',
+      now: () => new Date('2026-06-02T00:00:00.000Z'),
+      repository,
+    });
+    const created = await service.create({});
+
+    const result = await service.patch({
+      workbookId: created.workbook.id,
+      workbookVersion: created.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'model_code',
+          value: 'CCG10023',
+          reason: 'First provisional quote row from reviewed C-type candidate.',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 643.2,
+          reason: 'First provisional quote row from reviewed C-type candidate.',
+        },
+      ],
+    });
+
+    expect(result.workbook.version).toBe(1);
+    expect(result.changedPaths).toEqual([]);
+    expect(result.changedFieldSummary).toEqual([
+      {
+        sheetId: 'system_order',
+        rowId: 'order_1',
+        columnKey: 'model_code',
+        label: '型號',
+        previousValue: null,
+        nextValue: 'CCG10023',
+      },
+      {
+        sheetId: 'quote_details',
+        rowId: 'line_1',
+        columnKey: 'subtotal',
+        label: '小計',
+        previousValue: null,
+        nextValue: 643.2,
+      },
+    ]);
+    expect(repository.patches[0]).toMatchObject({
+      workbookId: 'wb_1',
+      beforeVersion: 1,
+      afterVersion: 1,
+      changedPaths: [],
+      changedFieldSummary: result.changedFieldSummary,
+      status: 'accepted',
+    });
   });
 
   it('keeps the reference workbook sheet and column structure without seeding reference rows', async () => {
@@ -307,9 +372,24 @@ describe('createSteelWorkbookService', () => {
       repository,
     });
     const created = await service.create({});
-    const patch: SteelWorkbookPatchRequest = {
+    const initialLoad = await service.patch({
       workbookId: created.workbook.id,
       workbookVersion: created.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 643.2,
+          reason: 'Initial quote preview load.',
+        },
+      ],
+    });
+    const patch: SteelWorkbookPatchRequest = {
+      workbookId: created.workbook.id,
+      workbookVersion: initialLoad.workbook.version,
       selectedWorkbookRefs: [],
       operations: [
         {
@@ -325,6 +405,8 @@ describe('createSteelWorkbookService', () => {
 
     const result = await service.patch(patch);
 
+    expect(initialLoad.workbook.version).toBe(1);
+    expect(initialLoad.changedPaths).toEqual([]);
     expect(result.workbook?.version).toBe(2);
     expect(result.changedPaths).toEqual([
       { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
@@ -339,7 +421,7 @@ describe('createSteelWorkbookService', () => {
         nextValue: 115,
       },
     ]);
-    expect(repository.patches[0]).toMatchObject({
+    expect(repository.patches[1]).toMatchObject({
       workbookId: 'wb_1',
       beforeVersion: 1,
       afterVersion: 2,
@@ -355,9 +437,23 @@ describe('createSteelWorkbookService', () => {
       repository,
     });
     const created = await service.create({});
-    await service.patch({
+    const initialLoad = await service.patch({
       workbookId: created.workbook.id,
       workbookVersion: created.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 643.2,
+        },
+      ],
+    });
+    await service.patch({
+      workbookId: created.workbook.id,
+      workbookVersion: initialLoad.workbook.version,
       selectedWorkbookRefs: [],
       operations: [
         {

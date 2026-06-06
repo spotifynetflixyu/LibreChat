@@ -64,6 +64,7 @@ describe('Steel semantic workbook projection', () => {
           suggestedReview: '確認材質是否為錏輕型鋼；若提供客戶可改查客戶分級',
           note: 'C型鋼預設不列一般切工/孔費',
           systemOrder: {
+            modelCode: 'CCG10023',
             itemSpec: '錏C型鋼 C100x50x20x2.3 L=6000',
             unit: 'Kg',
             quantity: 24,
@@ -105,7 +106,6 @@ describe('Steel semantic workbook projection', () => {
       ],
     });
 
-    expect(operations.length).toBeLessThanOrEqual(100);
     expectOperation(operations, {
       sheetId: 'quote_details',
       rowId: 'line_1',
@@ -117,6 +117,12 @@ describe('Steel semantic workbook projection', () => {
       rowId: 'line_1',
       columnKey: 'subtotal',
       value: 643.2,
+    });
+    expectOperation(operations, {
+      sheetId: 'system_order',
+      rowId: 'order_1',
+      columnKey: 'model_code',
+      value: 'CCG10023',
     });
     expectOperation(operations, {
       sheetId: 'system_order',
@@ -274,6 +280,66 @@ describe('Steel semantic workbook projection', () => {
       rowId: 'customer_1',
       columnKey: 'subtotal',
       value: 624,
+    });
+  });
+
+  it('projects larger quote lists without arbitrary line or operation caps', () => {
+    const operations = buildSemanticWorkbookPatchOperations({
+      quoteLines: Array.from({ length: 12 }, (_, index) => {
+        const lineNo = index + 1;
+
+        return {
+          lineId: `line_${lineNo}`,
+          lineNo,
+          normalizedItemName: `測試材料 ${lineNo}`,
+          adoptedProductPriceItem: `測試品項 ${lineNo}`,
+          quantity: 1,
+          unit: '支',
+          materialUnitPrice: 100 + lineNo,
+          subtotal: 100 + lineNo,
+          confidence: '中',
+          systemOrder: {
+            itemSpec: `測試材料 ${lineNo}`,
+            unit: '支',
+            quantity: 1,
+            totalQuantity: 1,
+            unitPrice: 100 + lineNo,
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: String(1000 + lineNo),
+          },
+          customerQuote: {
+            itemSpec: `測試材料 ${lineNo}`,
+            quantity: 1,
+            unit: '支',
+            unitPrice: 100 + lineNo,
+            subtotal: 100 + lineNo,
+          },
+          manualReview: {
+            confirmationNeeded: `確認第 ${lineNo} 筆材料`,
+          },
+          interpretationNote: {
+            item: `第 ${lineNo} 筆`,
+            content: `第 ${lineNo} 筆報價投影`,
+          },
+        };
+      }),
+    });
+
+    expect(operations.length).toBeGreaterThan(100);
+    expectOperation(operations, {
+      sheetId: 'quote_details',
+      rowId: 'line_12',
+      columnKey: 'subtotal',
+      value: 112,
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_12',
+      columnKey: 'subtotal',
+      value: 112,
     });
   });
 });

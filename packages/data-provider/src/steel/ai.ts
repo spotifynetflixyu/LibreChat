@@ -157,7 +157,7 @@ export const steelProviderChatRequestSchema = z.object({
 export type SteelProviderChatRequest = z.input<typeof steelProviderChatRequestSchema>;
 
 export const steelProviderWorkbookPatchProposalSchema = z.object({
-  operations: z.array(steelWorkbookPatchOperationSchema).min(1).max(100),
+  operations: z.array(steelWorkbookPatchOperationSchema).min(1),
 });
 
 export type SteelProviderWorkbookPatchProposal = z.infer<

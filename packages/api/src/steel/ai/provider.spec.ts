@@ -2531,6 +2531,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(firstSystemPrompt.content).toContain('價格先於重量');
     expect(firstSystemPrompt.content).toContain('未確認單價或金額不可填 0');
     expect(firstSystemPrompt.content).toContain('系統訂單分頁材料列與加工列分開');
+    expect(firstSystemPrompt.content).toContain('systemOrder.modelCode');
+    expect(firstSystemPrompt.content).toContain('系統訂單.`型號`');
     expect(firstSystemPrompt.content).toContain('報價明細 小計');
     expect(firstSystemPrompt.content).toContain('確定金額');
     expect(firstSystemPrompt.content).toContain('低信心暫估金額');
@@ -3244,6 +3246,131 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           rowId: 'customer_1',
           columnKey: 'subtotal',
           value: 624,
+        }),
+      ]),
+    );
+  });
+
+  it('accepts semantic workbook patches that project beyond 100 cell operations', async () => {
+    const semanticPatch = {
+      quoteLines: Array.from({ length: 12 }, (_, index) => {
+        const lineNo = index + 1;
+
+        return {
+          lineId: `line_${lineNo}`,
+          lineNo,
+          normalizedItemName: `測試材料 ${lineNo}`,
+          adoptedProductPriceItem: `測試品項 ${lineNo}`,
+          quantity: 1,
+          unit: '支',
+          materialUnitPrice: 100 + lineNo,
+          subtotal: 100 + lineNo,
+          confidence: '中',
+          systemOrder: {
+            itemSpec: `測試材料 ${lineNo}`,
+            unit: '支',
+            quantity: 1,
+            totalQuantity: 1,
+            unitPrice: 100 + lineNo,
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: String(1000 + lineNo),
+          },
+          customerQuote: {
+            itemSpec: `測試材料 ${lineNo}`,
+            quantity: 1,
+            unit: '支',
+            unitPrice: 100 + lineNo,
+            subtotal: 100 + lineNo,
+          },
+          manualReview: {
+            confirmationNeeded: `確認第 ${lineNo} 筆材料`,
+          },
+          interpretationNote: {
+            item: `第 ${lineNo} 筆`,
+            content: `第 ${lineNo} 筆報價投影`,
+          },
+        };
+      }),
+    };
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'semantic_large_patch_1',
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(semanticPatch),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 8,
+            text: 8,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_semantic_large_patch' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已更新 12 筆 workbook 報價資料。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 70,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_semantic_large_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請把 12 筆材料整理到 workbook' }],
+      reasoningEffort: 'medium',
+      workbookPatchTool: true,
+      workbookContextText: 'sheet id="quote_details" label="報價明細"',
+    });
+
+    expect(response.workbookPatch?.operations.length).toBeGreaterThan(100);
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_12',
+          columnKey: 'subtotal',
+          value: 112,
         }),
       ]),
     );

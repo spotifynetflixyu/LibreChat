@@ -391,3 +391,16 @@
   Use `patch_quote_workbook` only, so the model sends compact semantic data and
   backend projection handles synchronized cell operations without hitting the
   100-operation input cap.
+- Do not add arbitrary size caps to Steel workbook output. `patch_quote_workbook`
+  semantic input and internally projected workbook operations may need to cover
+  long multi-material orders; validate shape and non-empty content, not a fixed
+  maximum line/operation count.
+- For Steel `系統訂單`, the visible `型號` field must be filled from the adopted
+  product-price row `型號` via semantic `systemOrder.modelCode`; do not leave it
+  blank when a reviewed product-price model exists, and do not use oral material
+  names or catalog family keys as the ERP model.
+- The first accepted data patch into an empty Steel workbook is initial data
+  load, not a user-visible update: keep workbook version `v1` and return empty
+  `changedPaths` so cells are not highlighted. Keep `changedFieldSummary`
+  available for concise chat summaries; subsequent patches against populated
+  workbooks increment the version and highlight changed cells.

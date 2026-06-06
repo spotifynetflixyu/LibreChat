@@ -162,6 +162,10 @@ function cloneSheets(sheets: SteelWorkbookSheet[]): SteelWorkbookSheet[] {
   }));
 }
 
+function isEmptyWorkbook(sheets: SteelWorkbookSheet[]): boolean {
+  return sheets.every((sheet) => sheet.rows.length === 0);
+}
+
 function createRejectedPatchRecord(
   request: SteelWorkbookPatchRequest,
   currentVersion: number,
@@ -239,6 +243,7 @@ export function createSteelWorkbookService({
       }
 
       const nextSheets = cloneSheets(current.sheets);
+      const isInitialDataLoad = isEmptyWorkbook(current.sheets);
       const changedPaths: SteelChangedPath[] = [];
       const changedFieldSummary: SteelChangedFieldSummary[] = [];
 
@@ -272,17 +277,18 @@ export function createSteelWorkbookService({
 
       const nextRecord = await repository.update({
         ...current,
-        version: current.version + 1,
+        version: isInitialDataLoad ? current.version : current.version + 1,
         sheets: nextSheets,
         updatedAt: timestamp,
       });
+      const publicChangedPaths = isInitialDataLoad ? [] : changedPaths;
       await repository.createPatch({
         workbookId: request.workbookId,
         beforeVersion: current.version,
         afterVersion: nextRecord.version,
         selectedWorkbookRefs: request.selectedWorkbookRefs,
         operations: request.operations,
-        changedPaths,
+        changedPaths: publicChangedPaths,
         changedFieldSummary,
         status: 'accepted',
         createdAt: timestamp,
@@ -291,7 +297,7 @@ export function createSteelWorkbookService({
 
       return steelWorkbookPatchResponseSchema.parse({
         workbook: toPublicWorkbook(nextRecord),
-        changedPaths,
+        changedPaths: publicChangedPaths,
         changedFieldSummary,
       });
     },

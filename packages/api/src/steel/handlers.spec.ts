@@ -898,6 +898,13 @@ describe('createSteelHandlers', () => {
         op: 'set_cell' as const,
         sheetId: 'system_order' as const,
         rowId: 'order_1',
+        columnKey: 'model_code',
+        value: 'CCG10023',
+      },
+      {
+        op: 'set_cell' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_1',
         columnKey: 'item_spec',
         value: '錏輕型鋼 100*2.3',
       },
@@ -1162,6 +1169,8 @@ describe('createSteelHandlers', () => {
     const response = res.json.mock.calls[0]?.[0];
     expect(response.text).toContain('小計：624');
     expect(response.text).toContain('改動重點：已更新客戶、分級、材料單價、小計');
+    expect(response.workbookPatch.workbook.version).toBe(1);
+    expect(response.workbookPatch.changedPaths).toEqual([]);
     const quoteDetails = response.workbookPatch.workbook.sheets.find(
       (sheet) => sheet.id === 'quote_details',
     );
@@ -1216,6 +1225,7 @@ describe('createSteelHandlers', () => {
     });
     expect(systemOrder.rows.find((row) => row.id === 'order_1')?.cells).toMatchObject({
       line_no: 1,
+      model_code: 'CCG10023',
       item_spec: '錏輕型鋼 100*2.3',
       unit: '支',
       quantity: 1,
