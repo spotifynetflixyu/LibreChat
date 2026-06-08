@@ -99,7 +99,7 @@ Required filters:
 - source type/category
 - guest/public access
 
-MVP note: Phase 3 can proceed with deterministic database tools even if full retrieval is deferred to Phase 6.
+MVP note: Phase 3 can proceed with reviewed database lookup tools even if full retrieval is deferred to Phase 6.
 
 ## D0.6 Customer Quote Sheet Mask
 
@@ -229,7 +229,8 @@ Rules:
 Exit criteria:
 
 - Eval harness includes price-first cases.
-- Calculator tests separate confirmed and low-confidence estimated totals.
+- Subtotal validator tests separate confirmed totals from low-confidence
+  estimated or unconfirmed totals.
 
 ## D0.12 Steel Eval Harness
 
@@ -239,12 +240,12 @@ Minimum evals:
 
 - Text order parsing.
 - Provider capability/fallback classification for unsupported tool, file, vision, and XLSX paths.
-- Customer tier resolver.
+- Customer search with customer-specific rules.
 - Multi-key price search.
-- Price candidate ranking.
+- AI price candidate selection from bounded options.
 - Price-before-weight.
-- Stock allocation.
-- Deterministic calculators.
+- Processing/cutting rule prompt application.
+- Workbook subtotal validator.
 - Admin upload policy rejecting files that are not ERP XLSX.
 - Admin preview validation.
 - Seven-sheet export.
@@ -344,7 +345,7 @@ Approved decisions:
 - Do not change Supabase schema in Phase 0. Phase 2 handbook/mapping work decides the minimal schema delta, and every schema change updates both `supabase/schema.sql` and one new migration.
 - Admin ERP Import MVP should start with either `price_items` or customers depending on ERP key reliability. Prefer `price_items` if ERP item code plus customer tier is stable enough, because it validates quote value fastest; otherwise start with customers/customer aliases/customer tiers.
 - Internal DB/DTO/tool keys remain English. Customer-facing and ERP-facing Excel sheet labels and headers use Chinese business wording.
-- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through deterministic tools using openai-oauth responses, and one equivalent API fallback smoke uses official OpenAI API. Both record requested provider, effective provider, model, provider IDs, fallback status, tool call IDs, and context refs.
+- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through reviewed lookup tools using openai-oauth responses, and one equivalent API fallback smoke uses official OpenAI API. Both record requested provider, effective provider, model, provider IDs, fallback status, tool call IDs, and context refs.
 - After Phase 0, plan Phase 1 and Phase 2 together, but implement Phase 1 contracts/routes/auth/audit first while a separate data/schema pass can extend Phase 2 mapping and schema design in parallel.
 
 Post-lock implementation clarifications:

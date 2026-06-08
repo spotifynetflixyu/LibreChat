@@ -6,6 +6,7 @@ export * from './instructions';
 export * from './orders';
 export * from './prices';
 export * from './processing';
+export * from './rules';
 export * from './sources';
 export * from './types';
 export * from './weights';

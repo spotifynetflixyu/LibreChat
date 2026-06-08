@@ -3,8 +3,166 @@ import { sendSteelOAuthChat } from './provider';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import type { OpenAIOAuthProviderSettings } from 'openai-oauth-provider';
 import type { LanguageModelV3, LanguageModelV3CallOptions } from '@ai-sdk/provider';
+import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories';
+
+interface QueryCall {
+  sql: string;
+  values?: readonly SteelSqlParameter[];
+}
+
+function createAgentRulesClient(rows: object[]): SteelRepositoryClient & { calls: QueryCall[] } {
+  const calls: QueryCall[] = [];
+
+  return {
+    calls,
+    query: async <Row extends object>(
+      sql: string,
+      values?: readonly SteelSqlParameter[],
+    ): Promise<{ rows: Row[] }> => {
+      calls.push({ sql, values });
+      return { rows: rows as Row[] };
+    },
+  };
+}
+
+function createAgentRuleRow(prompt: string) {
+  return {
+    id: '1',
+    slug: 'steel-default-agent-instruction',
+    version: '1',
+    rule_type: 'agent_instruction_rule',
+    title: 'Steel 預設 Agent Instruction',
+    locale: 'zh-TW',
+    rule_sections: ['agent_instruction', 'tool_flow', 'inference_order', 'confirmation_policy'],
+    sheet_id: null,
+    selectors: { appliesTo: ['steel_quote_runtime'], locale: 'zh-TW' },
+    prompt,
+    tool_policy: { availableTools: ['lookup_catalog_families', 'lookup_quote_rules'] },
+    output_policy: { answerLanguage: 'zh-TW' },
+    priority: '10',
+    confidence: 'high',
+    active: true,
+    review_state: 'reviewed',
+    source_refs: [
+      {
+        channel: 'admin_table_ui',
+        factType: 'agent_rule',
+        locator: 'steel.agent_rules:1',
+        canonicalKey: 'agent_default_instruction_zh_tw',
+      },
+    ],
+  };
+}
+
+const defaultAgentRulePrompt = [
+  '你是「鋼鐵公司小助手」，負責判讀鋼鐵材料、板材圖面、PDF、圖片、文字描述、口語品名與報價資料。',
+  '回答一律使用繁體中文。',
+  '不得把資料、單價、重量、客戶分級、公式或品類規則寫死在推論中。',
+  '需要 reviewed 事實時必須使用 Steel tools。',
+  'lookup_catalog_families 用於品名、口語品名、錯字、俗稱、相似品名或品類不確定。',
+  'search_customers 用於使用者提供客戶名稱、客戶代碼、案場名稱、歷史客戶別名或可能客戶。',
+  'lookup_quote_rules 用於取得品類、加工、公式、true zero、配料與系統訂單格式規則。',
+  'search_price_candidates 用於產品價格、材料價格、加工價格、切工價格、孔加工價格、開槽價格、折工價格或其他報價單價。',
+  'patch_quote_workbook 只送 semantic quote data；backend 會投影成 workbook cell operations。',
+  '價格先於重量。',
+  '單價不明、金額不明、price row 空白、price row 為 0、客戶分級價格缺漏時，不可填 0；應填「未確認」。',
+  '送出 workbook patch 或最終回答前，quote_details 每列 subtotal 與 summary.totalAmount / summary.confirmedAmount 必須一致。',
+  'C 型鋼預設不列一般切工，除非 C 型鋼專用規則的另計條件成立。',
+  '4-Ø22 通常表示每件 4 個 Ø22 孔。',
+  '圖面與表格不一致。',
+].join('\n');
+
+function createDefaultAgentRulesClient() {
+  return createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
+}
 
 describe('Steel OpenAI OAuth provider adapter', () => {
+  it('loads the Steel agent runtime prompt from reviewed agent_rules', async () => {
+    const dbPrompt =
+      'DB_AGENT_RULE_SENTINEL 你是「鋼鐵公司小助手」，不得把資料、單價、重量、客戶分級、公式或品類規則寫死在推論中。';
+    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(dbPrompt)]);
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: 'agent-rules-ok' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: {
+          total: 5,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 3,
+          text: 3,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_agent_rules_prompt' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請說明亞L30x30的推論流程' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
+      ...({ agentRulesClient } as { agentRulesClient: SteelRepositoryClient }),
+    });
+
+    expect(agentRulesClient.calls[0]?.sql).toContain('FROM steel.agent_rules');
+    expect(agentRulesClient.calls[0]?.values).toEqual([
+      'reviewed',
+      ['agent_instruction', 'tool_flow', 'inference_order', 'confirmation_policy'],
+      20,
+    ]);
+    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
+    expect(systemPrompt.content).toContain(dbPrompt);
+    expect(systemPrompt.content).not.toContain('AI owns Steel tool orchestration');
+  });
+
+  it('fails before calling the provider when reviewed agent_rules cannot be loaded', async () => {
+    const agentRulesClient = createAgentRulesClient([]);
+    const doGenerate = jest.fn();
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth,
+        ensureFresh: false,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: '請說明亞L30x30的推論流程' }],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        agentRulesClient: createDefaultAgentRulesClient(),
+        ...({ agentRulesClient } as { agentRulesClient: SteelRepositoryClient }),
+      }),
+    ).rejects.toThrow('steel.agent_rules did not return reviewed Agent Prompt rules');
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
   it('passes server-side OAuth settings and returns a sanitized provider response', async () => {
     const fetchResponses = jest.fn();
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
@@ -345,6 +503,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '請說明亞L30x30的推論流程' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
@@ -352,114 +511,21 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt).toEqual(
       expect.objectContaining({
         role: 'system',
-        content: expect.stringContaining('AI owns Steel tool orchestration'),
+        content: expect.stringContaining('你是「鋼鐵公司小助手」'),
       }),
     );
-    expect(systemPrompt.content).toContain('統一用繁體中文回覆');
-    expect(systemPrompt.content).toContain('Do not treat raw customer text such as `亞L30x30`');
-    expect(systemPrompt.content).toContain(
-      'Generate material/specification candidates in reasoning',
-    );
-    expect(systemPrompt.content).toContain('Call backend tools when you need reviewed rows');
-    expect(systemPrompt.content).toContain(
-      'AI owns quote arithmetic on the fixed OAuth/Codex path',
-    );
-    expect(systemPrompt.content).toContain(
-      'checks workbook summary totals against the sum of line subtotal values',
-    );
-    expect(systemPrompt.content).toContain('backend does not perform deterministic quote pricing');
-    expect(systemPrompt.content).toContain('summary totalAmount/confirmedAmount');
-    expect(systemPrompt.content).not.toContain('OpenAI code/Python');
-    expect(systemPrompt.content).not.toContain('code-execution evidence');
-    expect(systemPrompt.content).toContain(
-      'lookup_quote_rules = lookup_instructions + lookup_defaults',
-    );
+    expect(systemPrompt.content).toContain('回答一律使用繁體中文');
+    expect(systemPrompt.content).toContain('不得把資料、單價、重量、客戶分級、公式或品類規則寫死');
+    expect(systemPrompt.content).toContain('需要 reviewed 事實時必須使用 Steel tools');
     expect(systemPrompt.content).toContain('lookup_catalog_families');
-    expect(systemPrompt.content).not.toContain('lesson-memory');
-    expect(systemPrompt.content).toContain('generate candidate material and specification queries');
-    expect(systemPrompt.content).toContain('reviewed price rows');
-    expect(systemPrompt.content).toContain('bounded options');
-    expect(systemPrompt.content).toContain(
-      'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before',
-    );
-    expect(systemPrompt.content).toContain(
-      'search_customers cannot find a usable customer price tier',
-    );
-    expect(systemPrompt.content).toContain('must not invent customerId');
-    expect(systemPrompt.content).toContain('Pass customerTierId 2 to search_price_candidates');
-    expect(systemPrompt.content).toContain('目前用 價格B：26.8 元/kg');
-    expect(systemPrompt.content).toContain('Do not add highest/most-expensive wording');
-    expect(systemPrompt.content).toContain('do not list unit weight as a separate bullet');
-    expect(systemPrompt.content).toContain('label it `價格`, not `reviewed 價格`');
-    expect(systemPrompt.content).toContain('customer name can be used');
-    expect(systemPrompt.content).toContain(
-      'The first reply must also show same-spec reviewed alternatives',
-    );
-    expect(systemPrompt.content).toContain(
-      'if the user does not specify another material/surface after those options were shown',
-    );
-    expect(systemPrompt.content).toContain('If unit = kg, unitPrice is a per-kg price');
-    expect(systemPrompt.content).toContain('do not answer as if unitPrice were per-piece');
-    expect(systemPrompt.content).toContain('sourceUnitWeightOrigin = product_name_parentheses');
-    expect(systemPrompt.content).toContain('h_beam including 輕量H');
-    expect(systemPrompt.content).toContain(
-      'Do not apply this steel material rule to non-material product/accessory rows',
-    );
-    expect(systemPrompt.content).toContain(
-      'reviewed unit-weight column, it has priority over product-name parentheses',
-    );
-    expect(systemPrompt.content).toContain(
-      'fixed-length material rows with a positive ratio/sourceRatio',
-    );
-    expect(systemPrompt.content).toContain('related same-series/same-spec reviewed material rows');
-    expect(systemPrompt.content).toContain(
-      'Use canonical catalog family keys such as h_beam, c_type, and angle',
-    );
-    expect(systemPrompt.content).toContain(
-      'After choosing a catalog/category key, call lookup_quote_rules',
-    );
-    expect(systemPrompt.content).toContain(
-      'lookup_quote_rules returns both reviewed instruction packets and reviewed quote defaults',
-    );
-    expect(systemPrompt.content).toContain(
-      'include all detected materials/catalog keys in one catalogContexts array',
-    );
-    expect(systemPrompt.content).toContain(
-      'call search_customers in the initial lookup round when available',
-    );
-    expect(systemPrompt.content).toContain(
-      'customerContext to lookup_quote_rules before price lookup',
-    );
-    expect(systemPrompt.content).not.toMatch(/lookup_defaults.*legacy.*follow-up/i);
-    expect(systemPrompt.content).not.toMatch(/lookup_instructions.*legacy-compatible/i);
-    expect(systemPrompt.content).toContain(
-      'For oral material/category price, formula, or rules requests, call lookup_catalog_families before lookup_quote_rules',
-    );
-    expect(systemPrompt.content).toContain(
-      'Backend does not decide oral wording to catalog_family mappings',
-    );
-    expect(systemPrompt.content).toContain(
-      '未取得 search_price_candidates tool result 前，不可回答查不到',
-    );
-    expect(systemPrompt.content).toContain(
-      'If instruction packets provide processing price candidate names or ERP item codes',
-    );
-    expect(systemPrompt.content).toContain('When calling search_price_candidates after selecting');
-    expect(systemPrompt.content).toContain('use catalogFamilies with the selected catalog key');
-    expect(systemPrompt.content).toContain(
-      'do not send oral family/category labels as productNames',
-    );
-    expect(systemPrompt.content).toContain('When no reliable catalog key is available');
-    expect(systemPrompt.content).toContain(
-      'use productNames with one or more AI-derived reviewed product/source-name candidates',
-    );
-    expect(systemPrompt.content).toContain('candidateQueries.productNames');
-    expect(systemPrompt.content).toContain(
-      'For multiple inferred reviewed product-name candidates',
-    );
-    expect(systemPrompt.content).toContain('use productNames or candidateQueries');
-    expect(systemPrompt.content).toContain('specKeyContains 100x2.3');
-    expect(systemPrompt.content).toContain('productNames [錏輕型鋼]');
+    expect(systemPrompt.content).toContain('search_customers');
+    expect(systemPrompt.content).toContain('lookup_quote_rules');
+    expect(systemPrompt.content).toContain('search_price_candidates');
+    expect(systemPrompt.content).toContain('patch_quote_workbook');
+    expect(systemPrompt.content).toContain('價格先於重量');
+    expect(systemPrompt.content).toContain('不可填 0；應填「未確認」');
+    expect(systemPrompt.content).toContain('quote_details 每列 subtotal');
+    expect(systemPrompt.content).not.toContain('AI owns Steel tool orchestration');
     const searchPriceTool = generateOptions.tools?.find(
       (tool) => tool.name === 'search_price_candidates',
     );
@@ -655,6 +721,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(
@@ -775,6 +842,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '請查角鐵/錏材推論規則' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(doGenerate).toHaveBeenCalledTimes(2);
@@ -972,6 +1040,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(doGenerate).toHaveBeenCalledTimes(3);
@@ -1167,6 +1236,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
@@ -1354,6 +1424,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
@@ -1602,6 +1673,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '龍頂 C型鋼 100x50x20 2.3t 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
@@ -1787,6 +1859,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'C型鋼 C100x50x20x2.3t 6M 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
@@ -1808,7 +1881,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(serializedSecondPrompt).toContain('customerTierId 2');
     expect(serializedSecondPrompt).toContain('價格B');
     expect(serializedSecondPrompt).toContain('Do not add highest/most-expensive wording');
-    expect(serializedSecondPrompt).toContain('do not list unit weight as a separate bullet');
     expect(response.text).toBe(
       '目前用價格B：26.8 元/kg，並列出材質選項；提供客戶名稱後可再查該客戶報價。',
     );
@@ -2006,6 +2078,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(doGenerate).toHaveBeenCalledTimes(4);
@@ -2279,6 +2352,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
@@ -2511,6 +2585,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
       workbookPatchTool: true,
       workbookContextText:
         'sheet id="quote_details" label="報價明細"\ncolumn label="材料單價" key="material_unit_price"\ncolumn label="小計" key="subtotal"\nrow id="line_1" cells: line_no=1 material_unit_price=null subtotal=null',
@@ -2532,7 +2607,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       'record the missing context in manual_review or interpretation_notes',
     );
     expect(firstSystemPrompt.content).toContain('Do not write confirmed totals');
-    expect(firstSystemPrompt.content).toContain('quote_details subtotal values');
+    expect(firstSystemPrompt.content).toContain('line subtotal values and summary totals');
     expect(firstSystemPrompt.content).toContain('interpreted order information');
     expect(firstSystemPrompt.content).toContain('Do not list a per-field diff');
     expect(firstSystemPrompt.content).toContain('Do not answer only with a field count');
@@ -2746,6 +2821,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
       workbookPatchTool: true,
       workbookContextText:
         'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
@@ -2969,6 +3045,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
       workbookPatchTool: true,
       workbookContextText:
         'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
@@ -3172,6 +3249,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '請把這筆C型鋼資料整理到 workbook' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
       workbookPatchTool: true,
       workbookContextText:
         'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26.8 subtotal=643.2',
@@ -3444,6 +3522,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         messages: [{ role: 'user', content: '亞L30x30 一支多少' }],
         reasoningEffort: 'medium',
         steelRuntimePolicy: true,
+        agentRulesClient: createDefaultAgentRulesClient(),
         steelToolMaxCalls: 1,
       }),
     ).rejects.toThrow(
@@ -3530,6 +3609,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         messages: [{ role: 'user', content: 'C100x50x20x2.3t 6M 一支多少' }],
         reasoningEffort: 'medium',
         steelRuntimePolicy: true,
+        agentRulesClient: createDefaultAgentRulesClient(),
       }),
     ).rejects.toThrow(
       'Steel tool lookup_quote_rules failed: STEEL_POSTGRES_URL is required for Steel Postgres access',
@@ -3610,6 +3690,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         messages: [{ role: 'user', content: 'C100x50x20x2.3t 6M 一支多少' }],
         reasoningEffort: 'medium',
         steelRuntimePolicy: true,
+        agentRulesClient: createDefaultAgentRulesClient(),
       }),
     ).rejects.toThrow(
       'Steel tool lookup_quote_rules failed: Connection terminated due to connection timeout',
@@ -3770,6 +3851,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '請說明 subtotal validation 狀態' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
     });
 
     const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
@@ -3905,6 +3987,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
       workbookPatchTool: true,
       workbookContextText:
         'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26 subtotal=null',
@@ -4081,6 +4164,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '請把 C 型鋼 line_1 的總結金額改成 confirmed total' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
+      agentRulesClient: createDefaultAgentRulesClient(),
       workbookPatchTool: true,
       workbookContextText:
         'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26 subtotal=null',

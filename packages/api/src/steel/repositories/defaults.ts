@@ -84,7 +84,8 @@ function addScopeFilters(
   values: SteelSqlParameter[],
   input: SearchSteelQuoteDefaultsInput,
 ) {
-  const scopeFilters = ["scope_type IN ('company', 'catalog_family', 'product_family')"];
+  const baseScopes = ["'company'", "'catalog_family'", "'product_family'"];
+  const scopeFilters = [`scope_type IN (${baseScopes.join(', ')})`];
 
   if (input.customerId !== undefined) {
     values.push(input.customerId);
@@ -193,7 +194,7 @@ ORDER BY
     WHEN 'customer_tier' THEN 1
     WHEN 'catalog_family' THEN 2
     WHEN 'product_family' THEN 3
-    ELSE 4
+    ELSE 5
   END ASC,
   priority ASC,
   id ASC

@@ -121,7 +121,8 @@ Scope:
 Gate:
 
 - Memory cannot provide material prices, processing prices, customer tier prices, or override Supabase results.
-- Memory cannot override deterministic calculator results.
+- Memory cannot override accepted workbook state, reviewed source/rule context,
+  or subtotal consistency validation.
 - Scope is explicit: global, project, customer, or material type.
 - Conflicts are recorded and resolved before activation when overlap matters.
 

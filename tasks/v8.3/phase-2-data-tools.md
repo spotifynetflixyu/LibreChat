@@ -16,11 +16,14 @@ Detailed data/rule architecture for the company's manual quoting workflow lives 
 - Supabase read repositories for customers, aliases, tiers, prices, weight specs, processing/cutting/hole/slotting/bending prices, formulas, orders, and source chunks.
 - Use steel handbook DOCX contents to design and validate the real schema/data model shape, without implementing real handbook data SQL import yet.
 - Source schema mapping from Chinese `docs/reference` labels/headers/terms to English canonical schema keys used by spec, price, formula, processing-price, tool, AI API prompt context, and database query contracts.
-- AI-proposed material/spec candidate validation, alias/search-term generation, and raw typo lookup guardrails.
-- Customer tier resolver.
-- Product price candidate search and ranking.
-- Stock allocation rule/context retrieval for AI calculation.
-- AI calculation lane using reviewed formula/rule/source prompt context.
+- AI-led material/spec candidate generation. Backend provides guardrails and
+  `lookup_catalog_families` rule prompts when AI needs help with product/category
+  inference.
+- Customer search with tier context and customer-specific rules.
+- Product price candidate search; AI chooses/ranks returned options and asks the
+  user to confirm when candidates remain ambiguous.
+- AI calculation lane using reviewed formula/rule/source prompt context returned
+  by tools.
 - AI-selected formula/rule orchestration over reviewed backend data, with backend
   source/rule and subtotal/summary validation before accepting numeric workbook
   results.
@@ -108,97 +111,105 @@ Verification:
 rtk npm run build:api
 ```
 
-## Milestone 2.2: Material Normalization Dictionary
+## Milestone 2.2: AI-Led Catalog Family Rule Guidance
 
 Files:
 
-- Create `packages/api/src/steel/normalization/dictionary.ts`
-- Create `packages/api/src/steel/normalization/normalize.ts`
-- Create `packages/api/src/steel/normalization/terms.ts`
-- Add tests under `packages/api/src/steel/normalization/*.spec.ts`
+- Use existing `packages/api/src/steel/repositories/families.ts`
+- Use existing `packages/api/src/steel/tools/registry.ts`
+- Use existing `packages/api/src/steel/tools/execute.ts`
+- Add or update focused tests under `packages/api/src/steel/tools/*.spec.ts`
 
 Tasks:
 
 - Keep AI-led tool orchestration as the core framework. Backend tools expose
   table-specific capabilities and guardrails; they do not silently choose
   product-price, customer, quote-default, formula, or workbook output paths from
-  raw customer text. Weight, cutting, processing, material-rule, ranking, and
-  calculator details stay backend internal unless a later slice explicitly
-  exposes them.
-- Accept AI-proposed quote item candidates because customer order formats vary by customer, file, and message style.
-- Treat AI-proposed specs as candidates, not confirmed facts, until backend validation and ambiguity handling complete.
-- Return `ask_user` when AI confidence is not high or required fields are missing.
-- Return `confirm_candidates` when multiple plausible specs exist, with bounded options for the user to choose from before pricing.
-- Normalize full-width/half-width characters.
-- Normalize `x`, `X`, `*`, and multiplication separators.
-- Normalize mm/M/米/公尺/呎/尺/英吋.
-- Extract material category, material grade, surface treatment, dimensions, thickness, length, quantity, and processing notes.
-- Expand aliases and common conversions:
-  - 1 inch approximately 25mm.
-  - 1 1/2 / 1英半 approximately pipe outer diameter 48.3mm.
-  - C75 to C75x45x15 candidate.
-  - C100 to C100x50x20 candidate.
-  - L38 to 38x38 angle candidate.
-  - 黑圓管48.1 to 黑圓管 / 黑管 / 黑A / 黑B / 黑AB圓管 / 1 1/2 / 48.3.
+  raw customer text.
+- Do not build a backend material/spec parser, resolver, or normalization
+  dictionary as a Phase 2 implementation slice.
+- AI autonomously interprets quote evidence and proposes product/category/spec
+  candidates.
+- When AI inference is insufficient, it calls `lookup_catalog_families` to get
+  admin-supplied catalog-family/product-name inference rules and reviewed
+  vocabulary candidates.
+- `lookup_catalog_families` output must help AI choose catalog keys for later
+  `lookup_quote_rules`, `search_price_candidates`, and `lookup_formula` calls,
+  or ask the user for confirmation.
+- Backend still rejects unsafe raw typo table lookups; raw customer text remains
+  quote evidence, not a canonical product/spec key.
 
 Acceptance:
 
-- Alias conversion produces candidates, not exact-match claims.
+- AI-owned alias/spec interpretation produces candidates, not exact-match claims.
+- `lookup_catalog_families` can return admin-supplied inference rule prompts and
+  reviewed vocabulary candidates.
 - Unknown thickness/material/length/unit/surface treatment lowers confidence.
-- Uncertain AI interpretation never proceeds directly to pricing; it asks the user or returns options for confirmation.
-- Multiple plausible AI/spec candidates are presented for user confirmation instead of silently selecting one.
+- Uncertain AI interpretation asks the user or returns options for confirmation.
+- Multiple plausible AI/spec candidates are presented for user confirmation
+  instead of silently selecting one.
 
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/normalization/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(repositories|tools)/(families|execute|registry).*\\.spec\\.ts$"
 ```
 
-## Milestone 2.3: Customer Tier Resolver
+## Milestone 2.3: Customer Search And Customer-Specific Rules
 
 Files:
 
-- Create `packages/api/src/steel/quote/customer.ts`
-- Add tests under `packages/api/src/steel/quote/customer.spec.ts`
+- Use existing `packages/api/src/steel/repositories/customers.ts`
+- Use existing `packages/api/src/steel/tools/execute.ts`
+- Add or update focused customer tool tests under `packages/api/src/steel/tools/*.spec.ts`
 
 Tasks:
 
-- Match customers by display name, legal name, alias, and common project/site data.
-- Return tier from `steel.customers`, `steel.customer_aliases`, and `steel.customer_tiers`.
+- Match customers by display name, legal name, alias, and common project/site
+  data through `search_customers`.
+- Return tier from `steel.customers`, `steel.customer_aliases`, and
+  `steel.customer_tiers`.
+- Return customer-specific rules/defaults when a matched customer has reviewed
+  applicable quote rules.
 - Return candidates when multiple customers match.
-- Mark low confidence when customer or tier is unknown.
+- Do not create a separate backend customer resolver that chooses for AI.
 
 Acceptance:
 
 - Exact customer match returns tier.
 - Alias match records alias evidence.
+- Customer-specific rules/defaults are exposed as bounded reviewed tool output,
+  not as hidden backend behavior.
 - Multi-match returns candidates and does not guess.
 
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --runTestsByPath packages/api/src/steel/quote/customer.spec.ts
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(repositories|tools)/(customers|execute).*\\.spec\\.ts$"
 ```
 
-## Milestone 2.4: Price Candidate Search And Ranking
+## Milestone 2.4: Price Candidate Search
 
 Files:
 
-- Create `packages/api/src/steel/pricing/terms.ts`
-- Create `packages/api/src/steel/pricing/search.ts`
-- Create `packages/api/src/steel/pricing/rank.ts`
+- Use existing `packages/api/src/steel/repositories/prices.ts`
+- Use existing `packages/api/src/steel/tools/execute.ts`
 - Do not create backend canonical quote decision/calculation modules such as
   `packages/api/src/steel/pricing/decision.ts` for runtime arithmetic; if the
   existing module remains temporarily, quarantine it as superseded validation
   policy until removed.
-- Add tests under `packages/api/src/steel/pricing/*.spec.ts`
+- Add or update focused price-candidate tool tests under
+  `packages/api/src/steel/tools/*.spec.ts`
 
 Tasks:
 
-- Generate multiple search terms from normalized items.
+- Accept AI-generated candidate queries from interpreted quote evidence.
 - Search material and processing tables.
 - Support exact, major, alias, closest-estimate, and no-price result types.
-- Rank by category, material/surface, dimensions, thickness, length, unit, and customer tier.
+- Return bounded options with source refs, confidence, missing/zero markers, and
+  rejected reasons.
+- AI ranks/selects returned candidates and asks the user to confirm when
+  candidates remain ambiguous.
 - Preserve candidate differences and rejected reasons.
 - Enforce price-before-weight.
 - Use product-price unit weight as the main quote weight when reviewed product price data carries unit weight; keep handbook weight as separate evidence.
@@ -232,81 +243,68 @@ Acceptance:
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/pricing/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(repositories|tools)/(prices|execute).*\\.spec\\.ts$"
 ```
 
-## Milestone 2.5: Stock Allocation Rule Context
+## Milestone 2.5: Processing And Cutting Rule Prompts
 
 Files:
 
-- Create `packages/api/src/steel/allocation/context.ts`
-- Add tests under `packages/api/src/steel/allocation/context.spec.ts`
+- Use `lookup_quote_rules` instruction/default packets.
+- Use `search_price_candidates` for reviewed processing-price rows when needed.
+- Add or update focused tool/provider tests only if returned rule prompts are
+  missing or unclear.
 
 Tasks:
 
-- Return reviewed stock-length policy, sellable stock length candidates, default
-  behavior, source refs, confidence, and low-confidence reasons for AI
-  calculation.
-- Tell AI to apply "not selling exact cut length" unless the customer explicitly
-  allows exact finished-length pricing.
-- Tell AI that unknown stock length may default to 6M only as a low-confidence
-  assumption.
-- Do not implement stock-piece allocation as backend runtime arithmetic.
+- Do not create a standalone stock allocation or cut-allocation backend module in
+  Phase 2.
+- Provide cutting, stock-length, no-cut, head/tail, hole, slotting, and bending
+  rule prompts through `lookup_quote_rules` when relevant.
+- AI calculates cutting/allocation quantities from those rule prompts and
+  reviewed source rows.
+- Backend validates source/rule scope and workbook subtotal consistency only.
 
 Acceptance:
 
-- `鍍鋅L38*38*2.5mm*2000mm*26支` receives source-backed stock-length context so
-  AI can calculate 9 stock pieces with 6M stock, not 26 x 2m net-length pricing.
-- Low-confidence reason is present when stock length is assumed.
+- Relevant cutting/allocation rules are available through `lookup_quote_rules`
+  for the interpreted product/category context.
+- AI may calculate cut/allocation quantities, but confirmed workbook totals must
+  still pass source/rule validation and subtotal consistency.
+- Low-confidence reasons are present when AI uses an assumption such as unknown
+  stock length.
 
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/allocation/context\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/tools/execute\\.spec\\.ts$"
 ```
 
-## Milestone 2.6: AI Calculation Context And Subtotal Validator
+## Milestone 2.6: Workbook Subtotal Validator
 
 Files:
 
-- Create `packages/api/src/steel/calculation/context.ts`
 - Create `packages/api/src/steel/workbook/subtotals.ts`
-- Add tests under `packages/api/src/steel/calculation/context.spec.ts`
 - Add tests under `packages/api/src/steel/workbook/subtotals.spec.ts`
 
 Tasks:
 
-- Build bounded calculation prompt/context from selected reviewed formula/rule
-  refs, normalized variables, source refs, stock allocation context, processing
-  context, and explicit quote-specific adjustments.
-- Require AI to return `operationCutCount` for physical/system-order use and
-  `billableCutCount` for quote charging.
-- Tell AI to count head trim, tail trim, split/multi-piece separation cuts, and
-  remainder behavior from normalized evidence. If one stock piece produces `n`
-  finished pieces with no remainder and no tail trim, separation cuts are `n - 1`;
-  if a remainder exists, separation cuts are `n` because the last finished piece
-  must still be separated from the remainder.
-- Tell AI that "remainder omits tail trim" omits only the extra tail trim/finish
-  cut, not the separation cut between the last finished piece and the remainder.
+- Extract the existing provider subtotal/summary consistency check into a shared
+  workbook helper.
 - For every material that can carry cutting price, if cutting is needed and head/tail trimming is not explicit, the assistant must ask before confirmed cutting fee calculation.
 - If a remainder omits tail trim, assistant text and workbook notes must say `有餘料，切尾不計入`.
 - If cutting is not needed, workbook still records zero cutting count/fee with the no-cut reason.
-- Include structured hole groups in AI calculation context: hole type, round
-  diameter, non-round length/width or dimension label, count per piece, quantity
-  multiplier, source refs, and confidence.
 - Validate confirmed customer-facing totals by checking that
   `summary.totalAmount` and `summary.confirmedAmount` match the sum of line
   `subtotal` values after source/rule validation. Concise calculation/source
   summaries may appear in `價格來源` or `判讀備註`.
 - Support future Admin-reviewed prices for non-round hole types such as oval, long, rectangular, and custom holes even when the current source price row is `0` or missing during development.
-- Include structured slot paths in AI calculation context: path type, segment
-  lengths, path quantity, quantity multiplier, source refs, and confidence.
 - Separate confirmed totals from low-confidence estimated totals.
 - Use `未確認`, not `0`, for unknown unit price or amount.
 - Record formula code/version and calculation basis for workbook lines.
 - Validate and normalize explicit quote-specific adjustments after default
-  price/rule resolution. AI calculation context may consume the normalized
-  adjustment object, but Phase 2 does not persist workbook mutation.
+  price/rule resolution. AI may use explicit adjustments during calculation, but
+  Phase 2 does not persist workbook mutation beyond accepted workbook state.
 
 Canonical quote adjustment object:
 
@@ -352,7 +350,7 @@ Acceptance:
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/(calculation|workbook)/(context|subtotals)\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(ai|workbook)/(provider|subtotals).*\\.spec\\.ts$"
 ```
 
 ## Milestone 2.7: Tool Registry
@@ -368,6 +366,7 @@ Files:
 
 Allowed MVP runtime tools:
 
+- `lookup_catalog_families`
 - `lookup_quote_rules`
 - `search_customers`
 - `search_price_candidates`
@@ -378,12 +377,17 @@ MVP flow:
 1. AI starts from the Admin-managed Agent Instruction injected into every Steel
    quote turn, not from a code-hardcoded provider prompt. The Agent Instruction
    says raw customer text is evidence and tells AI when to call
-   `lookup_quote_rules` before applying detailed material/spec/process
-   inference or reviewed defaults.
+   `lookup_catalog_families` for unclear product/category inference and
+   `lookup_quote_rules` before applying detailed material/spec/process rules or
+   reviewed defaults.
 2. AI judges the order's steel category, likely material/product family,
    surface treatment, dimensions, quantity, and missing fields from quote
    evidence.
-3. AI calls `lookup_quote_rules` when it needs task-scoped quoting rules or
+3. AI calls `lookup_catalog_families` when product/category inference is
+   insufficient. The tool returns admin-supplied catalog-family/product-name
+   inference rules and reviewed vocabulary candidates so AI can pick catalog
+   keys for later tool calls or ask the user to confirm bounded options.
+4. AI calls `lookup_quote_rules` when it needs task-scoped quoting rules or
    reviewed quote defaults for candidate generation, such as
    `docs/reference/instruction.txt` derived price-before-weight policy, material
    alias expansion, C-type rules, long-material cutting behavior,
@@ -400,13 +404,14 @@ MVP flow:
    `c-type-quote-core`, `angle-zinc-quote-core`, `plate-processing-core`, and
    `workbook-output-core`, so one call returns the related price/formula/
    cutting/hole/workbook rules needed by the detected context.
-4. AI generates bounded product-price `candidateQueries`, such as
+5. AI generates bounded product-price `candidateQueries`, such as
    `錏成型角鐵 30x30`, `鍍鋅角鐵 30x30`, or `角鐵 30x30`, instead of passing raw
    typo text to backend lookup.
-5. Backend tools return reviewed instruction, customer, price, default, and
-   formula candidates with source refs, confidence, missing/zero markers, and
-   bounded alternatives.
-6. AI chooses the most credible calculation path from returned facts, explains
+6. Backend tools return reviewed catalog-family rules, quote rules/defaults,
+   customer candidates/customer-specific rules, price candidates, and formula
+   candidates with source refs, confidence, missing/zero markers, and bounded
+   alternatives.
+7. AI chooses the most credible calculation path from returned facts, explains
    assumptions/options, and produces a provisional workbook patch. Confirmed
    customer-facing totals require sufficient reviewed facts or user
    confirmation.
@@ -450,8 +455,8 @@ Agent Instruction content:
   source/evidence refs. This is Steel order interpretation policy; generic
   provider file handling still stays under `fileAnalysis.instructions` where
   applicable.
-- Tool rules cover `lookup_quote_rules`, `search_customers`,
-  `search_price_candidates`, `lookup_formula`, raw-typo
+- Tool rules cover `lookup_catalog_families`, `lookup_quote_rules`,
+  `search_customers`, `search_price_candidates`, `lookup_formula`, raw-typo
   guardrails, and when not to call a tool.
 - Workbook rules cover when AI may write provisional workbook notes/candidates,
   when confirmed totals are forbidden, and when to use the workbook output tool
@@ -459,10 +464,11 @@ Agent Instruction content:
 
 Workbook output tool:
 
-- `patch_workbook` is a provider-facing workbook output tool when workbook
+- `patch_quote_workbook` is a provider-facing workbook output tool when workbook
   context is present. It is not one of the reviewed lookup tools.
-- AI may call `patch_workbook` to propose typed workbook operations. Backend
-  workbook validation/service applies or rejects those operations.
+- AI may call `patch_quote_workbook` to propose compact semantic quote data.
+  Backend projection creates typed workbook operations, then workbook
+  validation/service applies or rejects those operations.
 - Keep `get_workbook` out of the MVP lookup tool list. Workbook structure
   context is provided by the quote runtime; a future explicit workbook-context
   tool can be added only if runtime context is insufficient.
@@ -470,7 +476,7 @@ Workbook output tool:
 Not exposed as MVP tools:
 
 - `lookup_customer`: redundant with `search_customers`, which can return exact
-  and ambiguous customer matches.
+  and ambiguous customer matches plus reviewed customer-specific rules.
 - `lookup_spec_price`: redundant with `search_price_candidates` exact or
   candidate-query modes.
 - `lookup_weight_spec`, `lookup_cutting_price`, `lookup_processing_price`, and
@@ -482,7 +488,8 @@ Not exposed as MVP tools:
   `lookup_formula` and lets backend return reviewed active formula candidates
   and version refs.
 - `select_calculation_rule`, ranking helpers, and calculation primitives:
-  backend internal validation/calculation policies, not AI-callable MVP tools.
+  not AI-callable MVP tools. AI owns final candidate selection and arithmetic;
+  backend validates source/rule scope, workbook shape, and subtotal consistency.
 - `get_workbook`: workbook context should be provided by the quote runtime or a
   later explicit workbook-context tool, not part of the reviewed-data MVP tool
   list.
@@ -498,6 +505,10 @@ Tasks:
   silently choose product-price, customer, default, formula, or workbook output
   paths from raw customer text.
 - Do not expose quote-item normalization, price-search-term generation, or price-ranking helpers as runtime tools. AI generates material/spec candidates and `candidateQueries` in reasoning; backend tools validate lookup inputs and source-backed outputs.
+- Add `lookup_catalog_families` for admin-supplied product/category inference
+  rules and reviewed vocabulary candidates. This tool helps AI choose catalog
+  keys for `lookup_quote_rules`, `search_price_candidates`, and
+  `lookup_formula`; it must not become a hidden backend resolver.
 - Add `lookup_quote_rules` as the merged instruction/default retrieval tool. It
   should return reviewed, task-scoped instruction packets seeded by sources such
   as `docs/reference/instruction.txt`, plus reviewed quote defaults from
@@ -508,6 +519,9 @@ Tasks:
   Task-scoped material/process/formula details should still be stored as
   reviewed instruction packets when selective retrieval is needed.
 - `search_price_candidates` queries reviewed price rows with confirmed normalized keys or derived `candidateQueries`, not with unnormalized customer evidence.
+- `search_customers` returns matched/ambiguous customers, tier context, and
+  reviewed customer-specific rules/defaults when available. It must not hide a
+  backend resolver decision from AI.
 - `lookup_quote_rules = lookup_instructions + lookup_defaults`; the latter names
   describe internal composition, not separate runtime tools. Quote defaults must
   use typed filters and return bounded reviewed candidates with origin refs, not
@@ -543,9 +557,15 @@ rtk npm run build:api
 
 Do not move to Phase 3 until:
 
-- Repository, normalization, pricing, allocation, calculator, and tool tests pass.
+- Repository, catalog-family, customer, price-candidate, quote-rule, formula,
+  workbook subtotal, and tool tests pass for the active implementation surface.
 - Tool result shapes are stable enough for prompt bundle.
 - Price-before-weight behavior is tested.
 - Missing price cannot render as `0`.
+- Confirmed workbook totals cannot pass when summary totals differ from line
+  subtotal sums.
 - Tool call logging and sanitizer exist.
+- No Phase 2 backend normalization boundary, customer resolver, candidate
+  ranking hardening, stock allocation module, or calculation context serializer
+  remains in the active implementation queue.
 - `tasks/todo.md` records which real data imports are still deferred, including handbook data SQL/import and Admin ERP XLSX flow.

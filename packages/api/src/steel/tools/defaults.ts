@@ -223,6 +223,7 @@ function toDefaultCandidate(
     catalogFamilies: quoteDefault.catalogFamily
       ? [quoteDefault.catalogFamily]
       : matchedContext.catalogFamilies,
+    productNames: [],
     productFamilies: quoteDefault.productFamily ? [quoteDefault.productFamily] : [],
     chargeTypes: getDefaultChargeTypes(quoteDefault, matchedContext),
     formulaCodes: quoteDefault.formulaCode

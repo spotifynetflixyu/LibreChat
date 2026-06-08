@@ -425,3 +425,45 @@
   `changedPaths` so cells are not highlighted. Keep `changedFieldSummary`
   available for concise chat summaries; subsequent patches against populated
   workbooks increment the version and highlight changed cells.
+- For Steel v8.3 Phase 2, do not schedule separate backend slices for material
+  normalization boundary, customer resolver, candidate ranking hardening, stock
+  allocation rule context, or calculation context serializer. AI owns
+  judgement, candidate selection, and arithmetic; backend tools provide bounded
+  reviewed rows/rule prompts and validate source scope, workbook shape, and
+  subtotal consistency.
+- `lookup_catalog_families` supplies admin-supplied product/category inference
+  rules and reviewed vocabulary candidates when AI cannot infer enough from
+  customer wording. It must guide AI toward catalog keys for later tools, not
+  become a hidden backend resolver.
+- `lookup_quote_rules` is the merged runtime tool for instruction packets plus
+  quote defaults. Keep `lookup_instructions` and `lookup_defaults` as internal
+  composition names only, not AI-callable runtime tools.
+- `search_customers` should return customer candidates, tier context, and
+  customer-specific reviewed rules/defaults. Backend should not hide a selected
+  customer resolver decision from AI.
+- For Steel tool rule responses, first implement database-backed read and
+  association logic only. Similar product-name supplements, catalog/category
+  rules, and customer-specific rules should be stored in DB-ready surfaces and
+  returned to AI as related `rules`; Admin UI for managing those rows is a
+  future planning slice.
+- Steel product-name-specific inference rules belong behind
+  `lookup_catalog_families`, not `lookup_quote_rules`. Database naming for
+  Steel rule storage should consistently end in `rules`, and context docs must
+  distinguish always-on Agent Instructions from retrieved task/customer/catalog
+  rules.
+- Steel Agent Instructions and workbook output policy rules share the same
+  database surface, `steel.agent_rules`. Do not create a separate
+  `workbook_rules` table; use `rule_type`, `rule_sections`, selectors, and
+  optional sheet scope to distinguish workbook-facing instructions.
+- Steel rule table semantics are: `steel.agent_rules` for process rules such as
+  the initial default Agent Instruction and workbook output flow;
+  `steel.catalog_family_rules` only for product-name/category inference;
+  `steel.quote_rules` for catalog/category order-format techniques, specific
+  calculation rules, and price calculation rules; `steel.customer_rules` for
+  customer-specific specs.
+- Before the Admin UI exists, Codex-driven Steel rule inserts/updates must
+  resolve related database associations automatically. Choose the correct
+  `*_rules` table by rule purpose, verify catalog/customer/tier/formula/sheet
+  references against existing rows or code-owned workbook sheet ids, and update
+  reviewed rows by inserting a superseding row plus invalidating the old row
+  instead of mutating semantics in place.

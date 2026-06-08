@@ -89,20 +89,31 @@ Required:
 - [ ] Supabase repositories use parameterized SQL.
 - [ ] Lookup tools validate with Zod.
 - [ ] No raw SQL/Mongo query tools exist.
-- [ ] Customer tier resolver returns candidates when ambiguous.
-- [ ] Normalization expands aliases and dimensions into multiple search terms.
+- [ ] `lookup_catalog_families` returns admin-supplied product/category
+      inference rules and reviewed vocabulary candidates when AI inference is
+      insufficient.
+- [ ] AI-led material/spec interpretation produces bounded candidates or asks
+      for confirmation; backend does not implement a Phase 2 normalization
+      boundary or hidden resolver.
+- [ ] `search_customers` returns matched/ambiguous customer candidates, tier
+      context, and reviewed customer-specific rules/defaults when available.
 - [ ] Price candidate search returns exact/major/alias/closest/no-price matches.
-- [ ] Price ranking never converts between incompatible pricing units.
+- [ ] AI ranks/selects price candidates and asks for confirmation when options
+      remain ambiguous; backend does not harden final quote ranking.
 - [ ] Missing prices are never represented as `0`.
-- [ ] Stock allocation prices long materials by sellable stock length, not net finished length.
-- [ ] Deterministic calculators own weight and processing calculations.
+- [ ] Cutting, stock-length, no-cut, head/tail, hole, slotting, and bending
+      rules are available as quote-rule prompts for AI calculation.
+- [ ] AI owns weight, processing, cutting/allocation, and line-total arithmetic;
+      backend validates source/rule scope and workbook subtotal consistency.
+- [ ] Confirmed workbook summary totals cannot pass when they differ from line
+      subtotal sums.
 - [ ] Tool calls are logged and sanitized before model use.
 - [ ] Tool definitions are provider-neutral; openai-oauth and OpenAI adapters only serialize them.
 
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/(repositories|tools|quote|normalization|pricing|allocation|calculators)/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(repositories|tools|ai|workbook)/.*\\.spec\\.ts$"
 rtk npm run build:api
 ```
 
@@ -110,7 +121,7 @@ Manual scenario:
 
 ```text
 Input: 黑圓管48.1 6米 20支
-Expected: search terms include 黑圓管, 黑管, 黑AB圓管, 1 1/2, 1英半, 48.3; no hard-coded exact match if thickness/unit is ambiguous.
+Expected: AI proposes reviewed vocabulary/product candidates such as 黑圓管, 黑管, 黑AB圓管, 1 1/2, 1英半, 48.3 through lookup_catalog_families or price candidate queries; no raw hard-coded exact match if thickness/unit is ambiguous.
 ```
 
 ## Checkpoint 3: Quote Workbook Vertical Slice

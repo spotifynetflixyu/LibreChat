@@ -1,7 +1,14 @@
 export type SteelValueState = 'unknown' | 'confirmed' | 'true_zero' | 'estimate';
 export type SteelReviewState = 'draft' | 'needs_review' | 'reviewed' | 'rejected';
 
-export type SteelSqlParameter = string | number | boolean | Date | null;
+export type SteelSqlParameter =
+  | string
+  | number
+  | boolean
+  | Date
+  | null
+  | readonly string[]
+  | readonly number[];
 
 export type SteelJsonValue =
   | string

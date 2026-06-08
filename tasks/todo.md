@@ -6,6 +6,126 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Active: Steel Rule Prompt Seed Data
+
+Goal: seed reviewed Traditional Chinese rule prompts into the cloud Supabase
+Steel rule tables so tools can return database-backed guidance for agent flow,
+catalog/product-name inference, quote/calculation rules, and customer-specific
+specs. This is data-only; no Steel schema shape changes are expected.
+
+- [x] Confirm cloud lookup associations for catalog families, formulas,
+      customer tiers, and the customer-specific rule target.
+- [x] Create a repeatable migration for Traditional Chinese rule prompt seeds.
+- [x] Apply the seed to cloud Supabase through `.env` `STEEL_POSTGRES_URL`.
+- [x] Verify current rule rows and record categorized report evidence.
+- [x] Replace the runtime Agent Prompt with the reviewed
+      `steel.agent_rules` row and fail fast when the database rule cannot be
+      loaded. Do not use a hard-coded Agent Prompt fallback.
+- [ ] Apply the full reviewed Agent Prompt seed to cloud Supabase once
+      `STEEL_POSTGRES_URL` pooler connectivity is available.
+
+Review evidence:
+
+- `npx supabase migration new steel_rule_prompt_seeds` failed on this
+  darwin-arm64 host because the npm package could not find a matching CLI
+  binary; fallback `supabase migration new steel_rule_prompt_seeds` succeeded
+  with installed CLI `2.103.0`.
+- Added data migration
+  `supabase/migration/20260608103730_steel_rule_prompt_seeds.sql` with
+  idempotent Traditional Chinese seed rules for `steel.agent_rules`,
+  `steel.catalog_family_rules`, `steel.quote_rules`, and
+  `steel.customer_rules`.
+- Applied the seed to cloud Supabase through `.env` `STEEL_POSTGRES_URL`;
+  active/reviewed counts are `agent_rules=4`, `catalog_family_rules=4`,
+  `quote_rules=8`, and `customer_rules=1`.
+- Re-ran the same migration against cloud Supabase; counts stayed unchanged,
+  proving the seed is idempotent and does not duplicate rows.
+- Association smoke queries matched the intended lookup filters:
+  `agent_sections=3`, `lookup_catalog_families:c_type=1`,
+  `lookup_quote_rules:c_type/material/C=3`, and
+  `search_customers:2269/h_beam/cutting=1`.
+- Started Agent Prompt DB-runtime conversion: `steelRuntimePolicy` now must load
+  reviewed `steel.agent_rules` before calling the provider; no DB rows or DB
+  errors should fail the request instead of falling back to code prompt text.
+- Confirmed `docs/reference/instruction.txt` already carries the reviewed Agent
+  Prompt version, and updated
+  `supabase/migration/20260608103730_steel_rule_prompt_seeds.sql` so
+  `steel-default-agent-instruction@1` seeds that full prompt with
+  `tool_policy.availableTools` / `preferredOrder`, not `requiredTools`.
+- Focused RED/GREEN evidence: `cd packages/api && npx jest
+  src/steel/ai/provider.spec.ts --runInBand -t "agent_rules|AI-led Steel
+  runtime policy"` first failed because provider did not query
+  `steel.agent_rules`, then passed after DB-backed loading and fail-fast
+  behavior were implemented.
+- Full provider spec passed: `cd packages/api && npx jest
+  src/steel/ai/provider.spec.ts --runInBand` passed 28 tests.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/config/cache/share files, but
+  exits `0`.
+- Hygiene passed: `git diff --check`.
+- Cloud DB apply is currently blocked: repeated TCP checks to
+  `aws-1-us-east-1.pooler.supabase.com:6543` timed out, and this repo has no
+  alternate Steel/Supabase DB URL key besides `STEEL_POSTGRES_URL`.
+
+## Active: Steel Tool Rule Response Unification
+
+Goal: implement the approved Tool output slice so all rule-bearing Steel lookup
+tools return a unified `rules: []` array. The array may contain multiple rule
+objects scoped to customer, catalog family, product/name, or company-level
+context. AI still owns selection and calculation; backend only returns bounded
+reviewed rule prompts/options.
+
+- [x] Add RED tests requiring `lookup_catalog_families`, `lookup_quote_rules`,
+      and `search_customers` to return `rules` arrays.
+- [x] Add Supabase schema/migration support for storing future Admin-managed
+      similar product-name inference rules, catalog/category rules, and
+      customer-specific rules; implement read/association logic only, not Admin
+      UI.
+- [x] Define a provider-safe rule object shape with `ruleType`, `scope`,
+      `prompt`, priority/confidence, matched facets, and source refs.
+- [x] Map catalog-family inference guidance, instruction packets, quote
+      defaults, and customer-specific defaults into the unified `rules` array
+      while preserving existing legacy fields for compatibility.
+- [ ] Verify focused Steel tool tests and diff hygiene. Do not run Prettier
+      during this slice.
+
+Review evidence:
+
+- Cloud Supabase schema updated through `.env` `STEEL_POSTGRES_URL` with
+  `supabase/migration/20260608173719_steel_tool_rule_response_support.sql`.
+- Verified cloud `steel` schema now has `agent_rules`,
+  `catalog_family_rules`, `quote_rules`, and `customer_rules`; no
+  `workbook_rules` table exists.
+- Verified old rejected draft surfaces are absent in cloud:
+  `steel.catalog_families.inference_rules = false` and
+  `steel.quote_defaults.product_name = false`.
+- Verified cloud table comments encode the intended ownership:
+  `agent_rules` for process/default Agent Instruction/workbook output flow,
+  `catalog_family_rules` for product-name inference,
+  `quote_rules` for category/order-format/calculation/price rules, and
+  `customer_rules` for customer-specific specs.
+- Fresh cloud read probe confirmed only these rule tables exist from this slice:
+  `agent_rules`, `catalog_family_rules`, `customer_rules`, and `quote_rules`;
+  `workbook_rules` is absent and rejected legacy columns remain absent.
+- Cloud `supabase_migrations` schema does not exist on this project, so no
+  Supabase CLI repair record was written; schema was applied directly through
+  the cloud Postgres URL.
+- Implemented DB-backed rule repositories and unified tool outputs:
+  `lookup_catalog_families` returns `catalog_family_rules` plus fallback
+  catalog-family inference prompts, `lookup_quote_rules` returns stored
+  `quote_rules` plus instruction/default rule objects, and `search_customers`
+  returns `customer_rules`.
+- Updated `CONTEXT.md` with rule purposes, database formats, AI tool retrieval
+  paths, and Codex pre-Admin-UI update association logic.
+- Focused tests passed:
+  `cd packages/api && npx jest src/steel/repositories/families.spec.ts
+  src/steel/repositories/defaults.spec.ts src/steel/repositories/rules.spec.ts
+  src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts --runInBand`.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in app/endpoint/cache/share files, but
+  exits `0`, and no warning remains in the new Steel rule repository code.
+- Hygiene passed: `git diff --check`.
+
 ## Active: Steel Subtotal Validation Docs Cleanup
 
 Goal: finish the architecture-doc rebaseline after removing the hidden
@@ -919,15 +1039,18 @@ Review evidence:
 - [x] Connect the provider-neutral Steel business tool executor to
       `/steel/oauth-chat` and `openai_oauth_responses`, keeping `patch_workbook`
       as a validated workbook-output tool.
-- [ ] Implement the C-type quote vertical slice from
-      `tasks/steel-data-rules-architecture/ai-rule-selection-scenarios.md`:
-      parse evidence, normalize quote items, retrieve reviewed customer/price/
-      rule/formula facts, ask for confirmation on ambiguity, and avoid confirmed
-      totals for missing or zero material prices.
-- [ ] Superseded by `Steel AI Subtotal Validation Boundary Rebaseline`: do not
-      implement backend deterministic quote calculation primitives. Backend
-      should provide reviewed rule/source context and verify workbook summary
-      totals against line `subtotal` sums.
+- [x] C-type quote vertical slice is already completed and manually smoke-tested:
+      AI retrieves reviewed customer/price/rule/formula facts, preserves
+      ambiguity, and avoids confirmed totals for missing or zero material
+      prices.
+- [ ] Active Phase 2 remaining slice: expose AI-facing rule prompts through the
+      existing business tools. `lookup_catalog_families` returns admin-supplied
+      product/category inference rules, `lookup_quote_rules` returns merged
+      instruction/default packets, and `search_customers` returns
+      customer-specific rules with customer/tier candidates.
+- [ ] Active subtotal validation slice: do not implement backend deterministic
+      quote calculation primitives. Backend should provide reviewed rule/source
+      context and verify workbook summary totals against line `subtotal` sums.
 - [ ] Persist accepted quote results into the workbook with source refs,
       confidence, manual-review reasons, latest-only workbook/calculation state,
       and concise audit notes.
@@ -936,23 +1059,43 @@ Review evidence:
       canonical-calculation tables. If audit storage is needed, keep it focused
       on current workbook state, reviewed source context, and prompt
       traceability.
-- [ ] Implement reviewed quote defaults retrieval as `lookup_defaults` against
-      `steel.quote_defaults`, with typed filters, bounded candidates,
-      selected-origin validation, and explicit user disclosure for applied
-      customer defaults. Keep LibreChat user-memory adapter as a later separate
-      layer.
+- [ ] Superseded as a runtime tool: do not expose `lookup_defaults` separately.
+      Its behavior is merged into `lookup_quote_rules`, which returns typed,
+      bounded quote-default candidates with origin refs and explicit user
+      disclosure for applied customer defaults. Keep LibreChat user-memory
+      adapter as a later separate layer.
 - [ ] Implement non-UI Admin rule review backend: list queues, approve, reject,
       keep-one-time, request-info, publish reviewed defaults, and exclude pending
       proposals from quote lookup until approved.
 - [ ] Implement non-UI Admin data maintenance backend/import services for ERP
       XLSX-backed product price, cutting price, formulas, and rules. Keep
       handbook DOCX real-data import deferred unless a later task opens it.
-- [ ] Prove manual scenario gate E: C-type sample, H-type surcharge/head-tail,
-      product-price unit weight conflict, missing/zero material price, no-cut,
-      non-round holes, slotting, approximate quote, multi-material audit, and
-      workbook latest-version behavior.
+- [ ] Record Phase 2 manual/eval evidence for the still-relevant scenarios:
+      H-type surcharge/head-tail, product-price unit weight conflict,
+      missing/zero material price, no-cut, non-round holes, slotting,
+      approximate quote, multi-material audit, and workbook latest-version
+      behavior. C-type and `/steel/oauth-chat` manual smokes are already done.
 - [ ] After the queue is approved, move the active slice into a detailed
       `docs/plans/YYYY-MM-DD-...md` implementation plan before code changes.
+
+## Review - Steel v8.3 AI-Led Phase 2 Rebaseline 2026-06-08
+
+- Rebased Phase 2 docs away from backend normalization/resolver/ranking/stock
+  allocation/calculation-context slices. The active implementation boundary is
+  now AI-led judgement/calculation with reviewed rule/tool outputs and workbook
+  subtotal validation.
+- Runtime lookup surface is `lookup_catalog_families`, `lookup_quote_rules`,
+  `search_customers`, `search_price_candidates`, and `lookup_formula`.
+  `lookup_instructions` / `lookup_defaults` remain only as internal composition
+  names under `lookup_quote_rules`.
+- Updated v8.3 checkpoints, README, phase 0/2/3/5/6 docs, source-schema mapping,
+  main v8.3 plan, `CONTEXT.md`, and `tasks/lessons.md` so the next slice starts
+  from catalog-family rules, customer-specific rules, AI candidate selection,
+  rule prompts, `patch_quote_workbook`, and subtotal consistency.
+- Verification: `rg` over `CONTEXT.md`, `tasks/v8.3`, and the main v8.3 spec
+  shows old runtime tool names only in explicit internal-composition text; old
+  backend calculator section names are gone from active quote docs. `git diff
+  --check` passed. Prettier was not run per user preference.
 
 ## Review - Steel Next Tasks 2026-06-03
 

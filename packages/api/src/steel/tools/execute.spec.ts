@@ -480,6 +480,33 @@ describe('executeSteelTool', () => {
           ],
         },
       ],
+      [
+        {
+          id: '81',
+          rule_type: 'customer_spec_rule',
+          customer_id: '10',
+          customer_tier_id: '2',
+          catalog_family: 'h_beam',
+          product_family: null,
+          charge_type: 'cutting',
+          formula_code: null,
+          selectors: null,
+          parameters: null,
+          prompt: '龍頂 H 型鋼切工不計價，仍需列入系統訂單備註。',
+          priority: '5',
+          confidence: 'high',
+          active: true,
+          review_state: 'reviewed',
+          source_refs: [
+            {
+              channel: 'admin_table_ui',
+              factType: 'customer_rule',
+              locator: 'steel.customer_rules:81',
+              canonicalKey: 'customer_h_beam_cutting_no_charge',
+            },
+          ],
+        },
+      ],
     ]);
     const logs: SteelToolLogEntry[] = [];
 
@@ -517,6 +544,32 @@ describe('executeSteelTool', () => {
           ],
         },
       ],
+      rules: [
+        {
+          id: 'customer_rule:81',
+          ruleType: 'customer_spec_rule',
+          scope: {
+            type: 'customer',
+            customerId: 10,
+            customerTierId: 2,
+            catalogFamilies: ['h_beam'],
+            productNames: [],
+            chargeTypes: ['cutting'],
+            formulaCodes: [],
+          },
+          prompt: '龍頂 H 型鋼切工不計價，仍需列入系統訂單備註。',
+          priority: 5,
+          confidence: 'high',
+          sourceRefs: [
+            {
+              channel: 'admin_table_ui',
+              factType: 'customer_rule',
+              locator: 'steel.customer_rules:81',
+              canonicalKey: 'customer_h_beam_cutting_no_charge',
+            },
+          ],
+        },
+      ],
     });
     expect(client.calls[0]?.values).toEqual(['龍頂', '%龍頂%', 3]);
     expect(logs).toHaveLength(1);
@@ -531,6 +584,12 @@ describe('executeSteelTool', () => {
           channel: 'admin_erp_xlsx',
           factType: 'customer',
           locator: 'sheet=客戶資料;row=2',
+        },
+        {
+          channel: 'admin_table_ui',
+          factType: 'customer_rule',
+          locator: 'steel.customer_rules:81',
+          canonicalKey: 'customer_h_beam_cutting_no_charge',
         },
       ],
       redactionVersion: 1,
@@ -645,6 +704,30 @@ describe('executeSteelTool', () => {
           source_refs: [],
         },
       ],
+      [
+        {
+          id: '17',
+          rule_type: 'similar_product_name_rule',
+          catalog_family: 'h_beam',
+          product_name: 'H型鋼',
+          product_names: ['H型鋼', 'H鋼', 'H-BEAM'],
+          aliases: ['H鋼', 'H-BEAM'],
+          selectors: null,
+          prompt: 'H鋼、H-BEAM、H 型鋼口語都可作 h_beam 候選，但仍需依尺寸確認。',
+          priority: '20',
+          confidence: 'high',
+          active: true,
+          review_state: 'reviewed',
+          source_refs: [
+            {
+              channel: 'admin_table_ui',
+              factType: 'catalog_family_rule',
+              locator: 'steel.catalog_family_rules:17',
+              canonicalKey: 'h_beam_similar_name_rule',
+            },
+          ],
+        },
+      ],
     ]);
 
     const result = await executeSteelTool({
@@ -658,7 +741,9 @@ describe('executeSteelTool', () => {
       throw new Error(result.errorSummary);
     }
     expect(client.calls[0]?.sql).toContain('FROM steel.catalog_families');
-    expect(result.data).toEqual({
+    expect(client.calls[1]?.sql).toContain('FROM steel.catalog_family_rules');
+    expect(result.data).toEqual(
+      expect.objectContaining({
       catalogFamilyCandidates: [
         expect.objectContaining({
           key: 'h_beam',
@@ -680,7 +765,56 @@ describe('executeSteelTool', () => {
       ],
       selectionPolicy:
         'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
-    });
+      }),
+    );
+    expect(result.data.rules).toEqual(
+      expect.arrayContaining([
+        {
+          id: 'catalog_family_rule:17',
+          ruleType: 'similar_product_name_rule',
+          scope: {
+            type: 'product_name',
+            catalogFamilies: ['h_beam'],
+            productNames: ['H型鋼', 'H鋼', 'H-BEAM'],
+            customerId: null,
+            customerTierId: null,
+            chargeTypes: [],
+            formulaCodes: [],
+          },
+          prompt: 'H鋼、H-BEAM、H 型鋼口語都可作 h_beam 候選，但仍需依尺寸確認。',
+          priority: 20,
+          confidence: 'high',
+          sourceRefs: [
+            {
+              channel: 'admin_table_ui',
+              factType: 'catalog_family_rule',
+              locator: 'steel.catalog_family_rules:17',
+              canonicalKey: 'h_beam_similar_name_rule',
+            },
+          ],
+          aliases: ['H鋼', 'H-BEAM'],
+        },
+        {
+          id: 'catalog_family:c_type',
+          ruleType: 'catalog_family_inference',
+          scope: {
+            type: 'catalog_family',
+            catalogFamilies: ['c_type'],
+            productNames: ['C型鋼', 'C鋼', '輕型鋼'],
+            customerId: null,
+            customerTierId: null,
+            chargeTypes: [],
+            formulaCodes: [],
+          },
+          prompt:
+            'Use reviewed catalog family c_type (C型鋼) as a candidate when customer wording matches aliases: C型鋼, C鋼, 輕型鋼. AI must choose this key for later tools only when the quote evidence supports it, otherwise ask the user to confirm.',
+          priority: 100,
+          confidence: 'high',
+          sourceRefs: [],
+        },
+      ]),
+    );
+    expect(result.data.rules).toHaveLength(3);
     expect(result.data).not.toHaveProperty('resolvedCatalogFamilies');
   });
 
@@ -1072,9 +1206,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
     expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
+    expect(client.calls[2]?.sql).toEqual(expect.stringContaining('FROM steel.quote_rules'));
     expect(client.calls[0]?.values).toEqual(['reviewed', 'c-type-quote-core', 10]);
     expect(result.data.instructionPacketGroups).toEqual([
       {
@@ -1194,9 +1329,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
     expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
+    expect(client.calls[2]?.sql).toEqual(expect.stringContaining('FROM steel.quote_rules'));
     expect(client.calls[0]?.values).toEqual([
       'reviewed',
       'angle-zinc-quote-core',
@@ -1291,9 +1427,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
     expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
+    expect(client.calls[2]?.sql).toEqual(expect.stringContaining('FROM steel.quote_rules'));
     expect(client.calls[0]?.values).toEqual(['reviewed', 'h-type-quote-core', 10]);
     expect(result.data.instructionPacketGroups).toEqual([
       {
@@ -1494,9 +1631,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
     expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
+    expect(client.calls[2]?.sql).toEqual(expect.stringContaining('FROM steel.quote_rules'));
     expect(client.calls[1]?.values).toEqual([
       'reviewed',
       'angle',
@@ -1528,6 +1666,128 @@ describe('executeSteelTool', () => {
         ],
       }),
     ]);
+    expect(result.data.rules).toEqual([
+      {
+        id: 'quote_default:55',
+        ruleType: 'quote_default',
+        scope: {
+          type: 'catalog_family',
+          customerId: null,
+          customerTierId: null,
+          catalogFamilies: ['c_type'],
+          productNames: [],
+          chargeTypes: ['cutting', 'hole'],
+          formulaCodes: ['C'],
+        },
+        prompt: 'C 型鋼切工與孔費預設免費',
+        priority: 10,
+        confidence: 'high',
+        matchedFacets: {
+          lineRefs: ['line-c-type'],
+          catalogFamilies: ['c_type'],
+          formulaCodes: ['C'],
+          chargeTypes: ['cutting', 'hole'],
+        },
+        sourceRefs: [
+          {
+            channel: 'repo_docs',
+            factType: 'quote_default',
+            sourceFile: 'tasks/steel-data-rules-architecture/instruction-packets.md',
+            locator: 'c-type-basic-quote-zh-v1',
+            canonicalKey: 'c_type_free_cutting_hole',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('returns product-name inference rules through catalog-family lookup', async () => {
+    const client = createClient([
+      [
+        {
+          key: 'grating',
+          display_name_zh: '鍍鋅格柵板',
+          aliases: ['格柵板', '鍍鋅柵板'],
+          metadata: { sourceKind: 'curated' },
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+      [
+        {
+          id: '91',
+          rule_type: 'similar_product_name_rule',
+          catalog_family: 'grating',
+          product_name: '鍍鋅格柵板',
+          product_names: ['鍍鋅格柵板', '格柵板', '鍍鋅柵板'],
+          aliases: ['格柵板', '鍍鋅柵板'],
+          selectors: null,
+          prompt: '格柵板、鍍鋅柵板可作鍍鋅格柵板候選；規格不明時列選項確認。',
+          priority: '15',
+          confidence: 'medium',
+          active: true,
+          review_state: 'reviewed',
+          source_refs: [
+            {
+              channel: 'admin_table_ui',
+              factType: 'catalog_family_rule',
+              locator: 'steel.catalog_family_rules:91',
+              canonicalKey: 'product_name_grating_alias_rule',
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'lookup_catalog_families',
+      arguments: { searchText: '格柵板', keys: ['grating'], limit: 10 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls.at(-1)?.values).toEqual([
+      'reviewed',
+      ['grating'],
+      ['鍍鋅格柵板', '格柵板', '鍍鋅柵板'],
+      '%格柵板%',
+      10,
+    ]);
+    expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.catalog_family_rules'));
+    expect(result.data.rules).toEqual(
+      expect.arrayContaining([
+      {
+        id: 'catalog_family_rule:91',
+        ruleType: 'similar_product_name_rule',
+        scope: {
+          type: 'product_name',
+          customerId: null,
+          customerTierId: null,
+          catalogFamilies: ['grating'],
+          productNames: ['鍍鋅格柵板', '格柵板', '鍍鋅柵板'],
+          chargeTypes: [],
+          formulaCodes: [],
+        },
+        prompt: '格柵板、鍍鋅柵板可作鍍鋅格柵板候選；規格不明時列選項確認。',
+        priority: 15,
+        confidence: 'medium',
+        sourceRefs: [
+          {
+            channel: 'admin_table_ui',
+            factType: 'catalog_family_rule',
+            locator: 'steel.catalog_family_rules:91',
+            canonicalKey: 'product_name_grating_alias_rule',
+          },
+        ],
+        aliases: ['格柵板', '鍍鋅柵板'],
+      },
+      ]),
+    );
+    expect(result.data.rules).toHaveLength(2);
   });
 
   it('returns instruction packets and quote defaults from one merged quote-rule lookup', async () => {
@@ -1600,9 +1860,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
     expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
+    expect(client.calls[2]?.sql).toEqual(expect.stringContaining('FROM steel.quote_rules'));
     expect(result.data.instructionPackets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1759,7 +2020,7 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(client.calls[1]?.values).toEqual([
       'reviewed',
       'c_type',
@@ -1771,6 +2032,7 @@ describe('executeSteelTool', () => {
       'H',
       10,
     ]);
+    expect(client.calls[2]?.sql).toEqual(expect.stringContaining('FROM steel.quote_rules'));
     expect(result.data.quoteDefaults).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1829,6 +2091,7 @@ describe('executeSteelTool', () => {
           ],
         },
       ],
+      [],
       [
         {
           id: '71',
@@ -1943,7 +2206,7 @@ describe('executeSteelTool', () => {
       throw new Error('C 型鋼 vertical lookup failed');
     }
 
-    expect(client.calls).toHaveLength(4);
+    expect(client.calls).toHaveLength(5);
     expect(runState.callsUsed).toBe(3);
     expect(quoteRulesResult.data.instructionPackets).toEqual(
       expect.arrayContaining([

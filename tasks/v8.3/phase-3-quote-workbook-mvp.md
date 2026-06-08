@@ -257,7 +257,7 @@ MVP behavior:
   available tools, structured schema, task-scoped source-schema mapping context,
   and task-scoped instruction context when already retrieved. When the AI needs
   quote interpretation rules that are not already in prompt context, it should
-  call `lookup_instructions` instead of receiving the whole
+  call `lookup_quote_rules` instead of receiving the whole
   `docs/reference/instruction.txt` file.
 - Keep image/PDF guidance under `fileAnalysis.instructions`, editable through `librechat.yaml` or Admin config override; do not hard-code rotated-image or Traditional Chinese guidance in the provider adapter.
 - Record empty arrays in `context_refs` for sources/instructions/memories until those modules exist.
@@ -266,9 +266,10 @@ MVP behavior:
 Workbook update path:
 
 - Current `/steel/oauth-chat` workbook updates use the provider-facing
-  `patch_workbook` function tool when workbook context is present.
-- `patch_workbook` is an output tool, not a reviewed lookup tool. AI proposes
-  typed operations; backend workbook validation and the workbook service apply
+  `patch_quote_workbook` function tool when workbook context is present.
+- `patch_quote_workbook` is an output tool, not a reviewed lookup tool. AI
+  proposes compact semantic quote data; backend projection creates typed
+  workbook operations, then workbook validation and the workbook service apply
   or reject them.
 - Workbook context is supplied by the quote runtime so AI can map visible sheet,
   row, and column labels to `sheetId`, `rowId`, and `columnKey`. The user should
@@ -282,13 +283,15 @@ Acceptance:
 - Current-turn user instruction has highest priority for quote-specific business
   intent, but cannot override the Steel Agent Instruction's tool, safety, or
   source-validation rules.
-- Memory cannot override current user instruction, Supabase price results, weight results, or backend calculations.
+- Memory cannot override current user instruction, Supabase price results,
+  reviewed weight/source context, accepted workbook state, or subtotal
+  consistency validation.
 - Prompt bundle tests assert ordering.
 - Mapping context is task-scoped; workbook patch prompts do not receive unrelated SQL/table mapping details.
 - Instruction context is task-scoped; workbook patch prompts do not receive the
   full `docs/reference/instruction.txt` file.
-- Workbook updates happen through `patch_workbook` plus backend workbook service
-  validation, not direct provider mutation.
+- Workbook updates happen through `patch_quote_workbook` plus backend projection
+  and workbook service validation, not direct provider mutation.
 
 Verification:
 

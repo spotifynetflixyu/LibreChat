@@ -19,6 +19,7 @@ type RuleLookupInput = LookupInstructionsInput | LookupQuoteRulesInput;
 interface InstructionContextMatch {
   lineRefs: string[];
   catalogFamilies: string[];
+  productNames: string[];
   formulaCodes: string[];
   processingTypes: string[];
 }
@@ -74,6 +75,7 @@ function getMatchForGroup(input: RuleLookupInput, group: string): InstructionCon
   return {
     lineRefs: unique(selectedContexts.flatMap((context) => context.lineRefs ?? [])),
     catalogFamilies: unique(selectedContexts.flatMap((context) => context.catalogCandidates ?? [])),
+    productNames: unique(selectedContexts.flatMap((context) => context.productNameCandidates ?? [])),
     formulaCodes: unique(selectedContexts.flatMap((context) => context.formulaCandidates ?? [])),
     processingTypes: unique(selectedContexts.flatMap((context) => context.processingTypes ?? [])),
   };
@@ -89,6 +91,7 @@ function toMatchedFacets(
     lineRefs: match.lineRefs,
     taskTypes: input.taskTypes,
     catalogFamilies: match.catalogFamilies,
+    productNames: match.productNames,
     formulaCodes: match.formulaCodes,
     processingTypes: match.processingTypes,
   };

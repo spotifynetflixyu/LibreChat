@@ -29,8 +29,8 @@ A deploy-time quote access mode where an unauthenticated customer can return to 
 _Avoid_: Admin access, public access to all quotes
 
 **Price Formula**:
-The approved calculation rule used to derive a workbook line's unit price and line total.
-_Avoid_: AI mental math, unstored calculation
+The approved calculation rule or prompt context the AI uses to derive a workbook line's unit price and line total, with backend validation of source scope and workbook subtotal consistency.
+_Avoid_: Backend-only calculator, unstored calculation, manually inconsistent total
 
 **Workbook Line**:
 A persisted quoted order item in the workbook, including its quantity, unit price, line total, formula, and adjustment state.
@@ -41,7 +41,7 @@ The unit price currently saved on a **Workbook Line**, defaulting from the datab
 _Avoid_: Always-current database price
 
 **Line Total**:
-The total price currently saved on a **Workbook Line**, calculated through the **Price Formula** from the quoted line inputs.
+The total price currently saved on a **Workbook Line**, calculated by AI through the **Price Formula** from the quoted line inputs and accepted only when workbook summary totals remain internally consistent.
 _Avoid_: Untraceable discount, manually inconsistent total
 
 **Customer Export**:
@@ -84,6 +84,18 @@ _Avoid_: Direct memory write, reviewed rule, automatic customer default
 A task-scoped AI retrieval item generated from reviewed database facts such as material rules, calculation defaults, or formula versions.
 _Avoid_: Source of truth, unreviewed chat memory, prompt-only business rule
 
+**Quote Rule**:
+An Admin-reviewed prompt rule stored in `steel.quote_rules` for category/order-format judgment, specific calculation behavior, or price-calculation guidance after AI has selected a catalog/product-family context.
+_Avoid_: Product-name alias rule, customer-specific specification, backend calculator
+
+**Catalog Family Rule**:
+An admin-supplied rule prompt stored in `steel.catalog_family_rules` that helps AI infer likely product/category keys and product-name candidates when customer wording, aliases, typos, or partial material descriptions are not enough.
+_Avoid_: Backend parser, final product selection, price source, calculation rule
+
+**Customer-Specific Rule**:
+An admin-reviewed rule stored in `steel.customer_rules`, tied to a matched customer or customer tier, and returned with customer search context for the AI to consider during quoting.
+_Avoid_: Global default, hidden resolver result, direct customer data mutation
+
 **LibreChat User Memory**:
 The user's custom memory layer from LibreChat, scoped to that user or account and separate from Steel Admin-reviewed facts.
 _Avoid_: Admin-reviewed rule, site-wide default, formal source-data update
@@ -101,15 +113,15 @@ keys can remain English.
 _Avoid_: Full instruction dump, raw source text search, hard-coded provider prompt rule
 
 **Agent Instruction**:
-The Admin-managed default instruction injected into every Steel quote turn before tool use. Planned storage is `steel.agent_instructions`. It tells AI the built-in order-inference workflow: file/OCR handling, raw customer text as evidence, reviewed lookup tool routing, workbook output behavior, confirmation policy, and avoiding raw typo table lookups. Detailed task-specific steel rules can still be retrieved through Instruction Packets.
+The Admin-managed default instruction injected into every Steel quote turn before tool use. Storage is `steel.agent_rules`; workbook output policy rules share this table and are distinguished by `rule_type`, `rule_sections`, selectors, and optional `sheet_id`. It tells AI the built-in order-inference workflow: file/OCR handling, raw customer text as evidence, reviewed lookup tool routing, workbook output behavior, confirmation policy, and avoiding raw typo table lookups. Detailed task-specific steel rules can still be retrieved through Instruction Packets or Quote Rules.
 The current seed/design baseline is
 `tasks/steel-data-rules-architecture/agent-instructions.md`. The prompt body
 injected into AI should be Traditional Chinese; canonical API/schema keys can
 remain English.
-_Avoid_: Code-hardcoded provider prompt, full instruction corpus, one-off task packet
+_Avoid_: Code-hardcoded provider prompt, full instruction corpus, one-off task packet, separate `workbook_rules` table
 
 **Workbook Output Tool**:
-A provider-facing function tool that lets AI propose structured workbook patch operations after it has enough reviewed or provisional quote facts. The current `/steel/oauth-chat` implementation uses `patch_workbook` when workbook context is present; backend validation and workbook services apply or reject the patch.
+A provider-facing function tool that lets AI propose semantic quote workbook data after it has enough reviewed or provisional quote facts. The current `/steel/oauth-chat` implementation uses `patch_quote_workbook` when workbook context is present; backend projection, validation, and workbook services apply or reject the patch.
 _Avoid_: Reviewed lookup tool, direct DB mutation, raw natural-language workbook edit
 
 **Product Price Unit Weight**:
@@ -188,16 +200,34 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - **AI Tool Orchestration** is the core Steel quote runtime framework: AI
   interprets quote evidence, derives steel category/surface/dimensions and
   price query candidates, then chooses among the MVP reviewed lookup tools:
-  `lookup_instructions`, `search_customers`, `search_price_candidates`,
-  `lookup_defaults`, and `lookup_formula`. Weight, cutting, processing,
-  material-rule, ranking, and calculation primitives are backend internal
-  validation/calculation capabilities unless a later slice explicitly exposes
-  them.
-- Before `lookup_instructions`, AI follows the Admin-managed
-  **Agent Instruction** that is injected into every Steel quote turn. It may
-  classify rough task facets and route tool use, then retrieve database-backed
-  **Instruction Packets** for detailed steel inference rules.
-- Backend tools validate the AI-chosen tool inputs, reject unsafe raw typo lookups, return reviewed source-backed candidates, and run deterministic calculators. Backend code must not silently choose the business lookup path from raw customer text.
+  catalog-family lookup, merged quote-rule lookup, customer search, product-price
+  candidate search, and formula lookup. AI chooses among returned options and
+  asks the customer to confirm when candidates remain ambiguous.
+- Catalog-family lookup returns **Catalog Family Rules** and reviewed vocabulary
+  candidates when AI needs help mapping unclear product wording to product,
+  product-name, or category keys. Product-name-specific rules belong here, not
+  in merged quote-rule lookup.
+- Merged quote-rule lookup returns **Instruction Packets**, **Quote Defaults**,
+  and **Quote Rules** for the AI-selected product/category context;
+  `lookup_instructions` and `lookup_defaults` are internal composition concepts,
+  not separate runtime tools.
+- Customer search returns customer candidates, tier context, and any
+  **Customer-Specific Rules** available for the matched customer.
+- Before the merged quote-rule lookup, AI follows the Admin-managed
+  **Agent Instruction** from `steel.agent_rules` that is injected into every
+  Steel quote turn. It may classify rough task facets and route tool use, then
+  retrieve database-backed **Catalog Family Rules**, **Instruction Packets**,
+  **Quote Defaults**, **Quote Rules**, and **Customer-Specific Rules** through
+  tools.
+- Workbook sheet ids, column ids, and visible workbook format stay code-owned in
+  the workbook template/service. AI output behavior for writing workbook content
+  belongs in `steel.agent_rules` as process/output rules, not in a separate
+  workbook table.
+- Backend tools validate the AI-chosen tool inputs, reject unsafe raw typo
+  lookups, return reviewed source-backed candidates and rule prompts, and
+  validate workbook patches and subtotal consistency. Backend code must not
+  silently choose the business lookup path, rank final quote candidates, or run a
+  parallel quote calculator from raw customer text.
 - A **Quote-Specific Adjustment** may override default database prices, material rules, or processing charges for the current **Workbook Line**, but it does not mutate formal source data.
 - **LibreChat User Memory** can override the priority of matching Admin-reviewed quote defaults for the current user's workflow, but it remains a user-scoped memory layer and does not mutate reviewed Steel facts.
 - **Default Lookup Packets** should keep Admin-reviewed quote-default candidates separate from **LibreChat User Memory** candidates so backend validation can enforce scope, origin, and formula compatibility.
@@ -219,6 +249,95 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - A chat message may include multiple **Selected Workbook Targets** when the user has written instructions for multiple marked cells or fields; backend workbook patching still validates each structured target.
 - Steel v8.3 is a single-company system. Use **Account Data Privacy** through `userId`, owner checks, admin role/capability checks, and guest-token hashes; do not add tenant or organization scoping.
 
+## Rule Storage And Association
+
+Steel reusable rule prompts are stored in reviewed `steel.*_rules` tables so AI
+can retrieve bounded, task-scoped rules through tools instead of receiving a
+full prompt dump.
+
+**`steel.agent_rules`** stores always-on process rules. Use it for the default
+Agent Instruction, tool-routing order, output policy, and workbook-output flow.
+Rows carry `slug`, `version`, `rule_type`, `rule_sections`, optional `sheet_id`,
+`selectors`, `prompt`, `tool_policy`, `output_policy`, `priority`,
+`confidence`, `source_refs`, lifecycle fields, and optional
+`supersedes_rule_id`. Workbook output policy uses this same table; workbook
+sheet/column format itself remains code-owned by the workbook template/service.
+
+**`steel.catalog_family_rules`** stores product-name/category inference rules
+for `lookup_catalog_families`. Use it for similar product names, aliases, typo
+normalization, and hints that help AI choose catalog family keys or product-name
+candidates. Rows carry optional `catalog_family`, optional `product_name`,
+`product_names`, `aliases`, `selectors`, `prompt`, priority/confidence,
+`source_refs`, lifecycle fields, and optional `supersedes_rule_id`.
+
+**`steel.quote_rules`** stores quoting rules for `lookup_quote_rules` after AI
+has chosen a catalog/product-family context. Use it for category/order-format
+techniques, specific calculation rules, cutting/hole/slot/bending prompts, price
+calculation rules, and formula-related quote behavior. Rows carry `scope_type`,
+optional `catalog_family`, optional `product_family`, optional `charge_type`,
+optional `formula_code`, `selectors`, `parameters`, `prompt`,
+priority/confidence, `source_refs`, lifecycle fields, and optional
+`supersedes_rule_id`. Do not put product-name alias rules here.
+
+**`steel.customer_rules`** stores customer-specific rules for `search_customers`
+after customer matching. Use it for customer/tier-specific specifications,
+no-charge behavior, special processing expectations, or customer quote-output
+notes. Rows carry optional `customer_id`, optional `customer_tier_id`, optional
+`catalog_family`, optional `product_family`, optional `charge_type`, optional
+`formula_code`, `selectors`, `parameters`, `prompt`, priority/confidence,
+`source_refs`, lifecycle fields, and optional `supersedes_rule_id`.
+
+When AI needs rules, the tool path is:
+
+- Use `lookup_catalog_families` for product/category inference and product-name
+  rules. The tool returns reviewed catalog candidates plus `rules[]`.
+- Use `search_customers` when customer wording is present. The tool returns
+  customer candidates, tier context, and customer `rules[]`.
+- Use `lookup_quote_rules` after AI chooses catalog/category facets. The tool
+  returns instruction packets, quote defaults, stored quote rules, and unified
+  `rules[]`.
+- AI reads each returned rule as reviewed prompt/context evidence, but AI still
+  selects the applicable option and asks for confirmation when ambiguity remains.
+
+Before an Admin UI exists, when Codex adds or updates rules it must handle
+associations automatically:
+
+- First choose the table by purpose: process/workbook flow to
+  `agent_rules`; product-name/category inference to `catalog_family_rules`;
+  category/order/calculation/price behavior to `quote_rules`; customer-specific
+  specs to `customer_rules`.
+- Resolve catalog associations against `steel.catalog_families.key`. If the
+  rule mentions a product name, alias, typo, or similar name, store it in
+  `catalog_family_rules` with `catalog_family` when known, `product_name` for
+  the primary name, `product_names` for candidate names, `aliases` for raw
+  customer/internal wording, and `selectors` for extra matching context.
+- Resolve quote-rule associations with canonical facets only:
+  `catalog_family`, `product_family`, `charge_type`, and `formula_code`.
+  Product-name filters are not valid quote-rule associations; add those to
+  `catalog_family_rules` instead.
+- Resolve customer associations by searching `steel.customers`,
+  `steel.customer_aliases`, and `steel.customer_tiers`. Store the strongest
+  confirmed association as `customer_id`; use `customer_tier_id` only for tier
+  rules that intentionally apply to a whole tier. Add optional catalog/charge/
+  formula facets only when the rule is scoped that narrowly.
+- Resolve agent/workbook-output associations with `slug`, incremented `version`,
+  `rule_sections`, `rule_type`, and optional `sheet_id`. `sheet_id` must match a
+  code-owned workbook sheet id such as `system_order`, `quote_details`,
+  `summary`, `manual_review`, `price_sources`, `interpretation_notes`, or
+  `customer_quote`.
+- Always write `prompt`, `priority`, `confidence`, `review_state`,
+  `source_refs`, and any structured `selectors`/`parameters` needed by AI. Use
+  `source_refs` to identify whether the rule came from Admin table maintenance,
+  repo docs, ERP workbook review, or another reviewed source.
+- For semantic updates, do not overwrite a reviewed active row in place. Insert
+  a replacement row, point `supersedes_rule_id` to the old row, and set the old
+  row `active = false` with `invalidated_at = now()`. For `agent_rules`, also
+  increment `version` for the same `slug`.
+- After writing, verify the association through the same repository/tool path
+  that AI will use, for example `lookup_catalog_families`,
+  `search_customers`, or `lookup_quote_rules`, and record the verification in
+  the task notes.
+
 ## Example dialogue
 
 > **Dev:** "If the customer asks for I 型鋼 200x200 and the database has H 型鋼 200x200 t8 and t12, should we mark one row as default?"
@@ -226,7 +345,7 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 >
 > **Customer:** "H 型鋼 200x200 多少錢?"
 > **AI:** "H 型鋼 200x200 是 t8 嗎？目前查到 t8 是 1000 元、t12 是 1200 元，幣別是 NTD。"
-> **Domain expert:** "The AI may show candidate prices while clarifying the missing thickness, but any leading candidate must come from a preference rule or deterministic ranking."
+> **Domain expert:** "The AI may show candidate prices while clarifying the missing thickness, but any leading candidate must come from reviewed candidates, rule prompts, or user confirmation."
 >
 > **Customer:** "亞L30x30 一支多少？"
 > **AI:** Treat `亞L30x30` as quote request evidence, identify possible typo and incomplete spec, propose angle/L steel 30x30 candidates, choose the product-price lookup path for the "一支多少" intent, query reviewed price rows with derived candidates, write only provisional workbook output, and ask the user to confirm from bounded options.

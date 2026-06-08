@@ -41,12 +41,13 @@ Tasks:
   activate/deactivate, and version it through backend/Admin flows.
 - Store Steel Instruction Packets in the database, not only in prompt files.
   `docs/reference/instruction.txt` can seed initial packets, but runtime
-  `lookup_instructions` reads reviewed active database rows.
+  `lookup_quote_rules` reads reviewed active database rows and returns the
+  matching packets/defaults.
 - Planned database surfaces:
   - `steel.agent_instructions`: one or more versioned default Agent Instruction
     records, with exactly one reviewed active default per scope.
   - `steel.instruction_packets`: task-scoped instruction packets returned by
-    `lookup_instructions`.
+    `lookup_quote_rules`.
 - `steel.agent_instructions` should support structured sections so Admin can
   update defaults without editing provider code:
   - `fileOcrRules`
@@ -87,10 +88,10 @@ Acceptance:
 - Source versions can represent ERP XLSX import metadata and review status.
 - Quote conversation PDF/image evidence cannot become a formal Admin import source version.
 - Future retrieval filters have enough metadata for project, source, version, chunk, category, and guest/public access.
-- `lookup_instructions` can retrieve bounded task-scoped reviewed packets by
+- `lookup_quote_rules` can retrieve bounded task-scoped reviewed packets by
   task type, material/product family, surface, processing type, formula code,
-  customer/tier/project scope, and priority without exposing the whole
-  instruction corpus.
+  customer/tier/project scope, and priority, plus matching reviewed quote
+  defaults, without exposing the whole instruction/default corpus.
 
 Verification:
 

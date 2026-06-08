@@ -115,6 +115,7 @@ const instructionCatalogContextSchema = z.object({
   lineRefs: z.array(nonEmptyString).min(1).max(20).optional(),
   packetGroupHints: z.array(nonEmptyString).min(1).max(20).optional(),
   catalogCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
+  productNameCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
   surfaceCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
   formulaCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
   processingTypes: z.array(nonEmptyString).min(1).max(20).optional(),

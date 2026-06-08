@@ -1,9 +1,12 @@
 import {
   findSteelFormulaVersion,
   lookupSteelCatalogFamilies,
+  searchSteelCatalogFamilyRules,
   searchSteelCustomers,
+  searchSteelCustomerRules,
   searchSteelInstructionPackets,
   searchSteelPriceItems,
+  searchSteelQuoteRules,
   searchSteelQuoteDefaults,
 } from '../repositories';
 import { getSteelToolDefinition, isSteelToolName } from './registry';
@@ -16,6 +19,11 @@ import {
   lookupSteelQuoteRules,
 } from './instructions';
 import { getSteelQuoteDefaultSearchInput } from './defaults';
+import {
+  toCatalogFamilyRules,
+  toCustomerRuleArray,
+  toQuoteRulesRuleArray,
+} from './rules';
 
 import type {
   SteelToolResult,
@@ -24,7 +32,7 @@ import type {
   SteelToolErrorCategory,
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
-import type { SteelPriceItem } from '../repositories';
+import type { SteelCustomer, SteelPriceItem } from '../repositories';
 import type { LookupFormulaInput, LookupQuoteRulesInput } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
@@ -250,6 +258,28 @@ async function searchPriceCandidates(
   };
 }
 
+async function lookupCustomerRules(
+  client: SteelRepositoryClient,
+  customers: readonly SteelCustomer[],
+): Promise<SteelRawToolOutput[]> {
+  const customerIds = customers.map((customer) => customer.id);
+  const customerTierIds = customers
+    .map((customer) => customer.customerTier?.id)
+    .filter((id): id is number => id !== undefined);
+
+  if (customerIds.length === 0 && customerTierIds.length === 0) {
+    return [];
+  }
+
+  return toCustomerRuleArray(
+    await searchSteelCustomerRules(client, {
+      customerIds,
+      customerTierIds,
+      limit: 20,
+    }),
+  );
+}
+
 async function lookupInstructionPackets(
   client: SteelRepositoryClient,
   input: LookupQuoteRulesInput,
@@ -261,6 +291,19 @@ async function lookupInstructionPackets(
   }
 
   return searchSteelInstructionPackets(client, searchInput);
+}
+
+function getQuoteRuleSearchInput(input: LookupQuoteRulesInput) {
+  const defaultSearchInput = getSteelQuoteDefaultSearchInput(getQuoteRulesDefaultsInput(input));
+
+  return {
+    catalogFamilies: defaultSearchInput.catalogFamilies,
+    chargeTypes: defaultSearchInput.chargeTypes,
+    formulaCodes: defaultSearchInput.formulaCodes,
+    reviewState: input.reviewState,
+    includeInactive: input.includeInactive,
+    limit: input.limit,
+  };
 }
 
 async function emitLog(
@@ -318,15 +361,54 @@ async function dispatchSteelTool(
         client,
         getSteelQuoteDefaultSearchInput(getQuoteRulesDefaultsInput(input)),
       );
+      const storedQuoteRules = await searchSteelQuoteRules(client, getQuoteRuleSearchInput(input));
 
-      return lookupSteelQuoteRules(input, instructionPackets, quoteDefaults);
+      const quoteRules = lookupSteelQuoteRules(input, instructionPackets, quoteDefaults);
+      const instructionRulePackets = Array.isArray(quoteRules.instructionPackets)
+        ? quoteRules.instructionPackets.filter(
+            (packet): packet is SteelToolJsonObject =>
+              typeof packet === 'object' && packet !== null && !Array.isArray(packet),
+          )
+        : [];
+      const quoteDefaultRules = Array.isArray(quoteRules.quoteDefaults)
+        ? quoteRules.quoteDefaults.filter(
+            (quoteDefault): quoteDefault is SteelToolJsonObject =>
+              typeof quoteDefault === 'object' &&
+              quoteDefault !== null &&
+              !Array.isArray(quoteDefault),
+          )
+        : [];
+
+      return {
+        ...quoteRules,
+        rules: toQuoteRulesRuleArray({
+          quoteRules: storedQuoteRules,
+          instructionPackets: instructionRulePackets,
+          quoteDefaults: quoteDefaultRules,
+        }),
+      };
     }
     case 'lookup_catalog_families': {
       const input = steelToolArgsSchemas.lookup_catalog_families.parse(args);
       const catalogFamilyCandidates = await lookupSteelCatalogFamilies(client, input);
+      const catalogFamilyRules = await searchSteelCatalogFamilyRules(client, {
+        searchText: input.searchText,
+        catalogFamilies: catalogFamilyCandidates.map((candidate) => candidate.key),
+        productNames: catalogFamilyCandidates.flatMap((candidate) => [
+          candidate.displayNameZh,
+          ...candidate.aliases,
+        ]),
+        reviewState: input.reviewState,
+        includeInactive: input.includeInactive,
+        limit: input.limit,
+      });
 
       return {
         catalogFamilyCandidates,
+        rules: toCatalogFamilyRules({
+          families: catalogFamilyCandidates,
+          rules: catalogFamilyRules,
+        }),
         selectionPolicy:
           'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
       };
@@ -340,7 +422,10 @@ async function dispatchSteelTool(
       const input = steelToolArgsSchemas.search_customers.parse(args);
       const customers = await searchSteelCustomers(client, input);
 
-      return { customers };
+      return {
+        customers,
+        rules: await lookupCustomerRules(client, customers),
+      };
     }
     case 'search_price_candidates': {
       const input = steelToolArgsSchemas.search_price_candidates.parse(args);

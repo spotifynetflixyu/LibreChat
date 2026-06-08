@@ -19,6 +19,7 @@ import {
   type SteelWorkbookSheetId,
 } from 'librechat-data-provider';
 import { createSteelPostgresPool } from '../postgres';
+import { searchSteelAgentRules } from '../repositories';
 import {
   createSteelToolRunState,
   executeSteelTool,
@@ -32,6 +33,7 @@ import {
   steelSemanticWorkbookPatchSchema,
   type SteelSemanticWorkbookPatch,
 } from '../workbook/semantic';
+import type { SteelRepositoryClient } from '../repositories';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -133,6 +135,7 @@ export interface SendSteelOAuthChatOptions {
   reasoningEffort: SteelOpenAIReasoningEffort;
   steelToolMaxCalls?: number;
   steelRuntimePolicy?: boolean;
+  agentRulesClient?: SteelRepositoryClient;
   workbookContextText?: string;
   workbookPatchTool?: boolean;
 }
@@ -220,49 +223,25 @@ function toPrompt(messages: SteelOAuthChatMessage[]): LanguageModelV3Prompt {
   return messages.map(toLanguageModelMessage);
 }
 
-function getSteelRuntimePolicyInstruction(): string {
-  return [
-    'AI owns Steel tool orchestration.',
-    '統一用繁體中文回覆。',
-    'Interpret the user request, normalize ambiguous material/specification text, and choose among the AI-callable Steel tools: lookup_quote_rules, lookup_catalog_families, search_customers, search_price_candidates, lookup_formula, and workbook patch output.',
-    'Generate material/specification candidates in reasoning; do not call a backend tool only to normalize raw wording or create search terms.',
-    'Use reviewed backend tools for unit-weight, cutting, processing, material-rule, and formula-version source context; do not call separate low-level lookup tools for those details.',
-    'Call backend tools when you need reviewed rows, scoped quote-default candidates, formula candidates, calculation source context, or validated workbook output.',
-    'AI owns quote arithmetic on the fixed OAuth/Codex path. Backend validates structured inputs, searches reviewed source rows, applies bounded safety policy, projects workbook patches, and checks workbook summary totals against the sum of line subtotal values; backend does not perform deterministic quote pricing.',
-    'For customer-facing quote numbers, ensure quote_details subtotal values and summary totalAmount/confirmedAmount are internally consistent. If a summary total is present, it must equal the sum of numeric line subtotal values before you answer.',
-    'Do not treat raw customer text such as `亞L30x30` as a confirmed product-price key.',
-    'For oral material/category price, formula, or rules requests, call lookup_catalog_families before lookup_quote_rules, search_price_candidates, or lookup_formula. Use it to retrieve reviewed vocabulary candidates, then choose catalogFamilies yourself or ask the user to confirm.',
-    'Backend does not decide oral wording to catalog_family mappings; backend returns catalog vocabulary candidates and validates explicit keys selected by AI.',
-    'Use canonical catalog family keys such as h_beam, c_type, and angle when calling lookup_quote_rules, search_price_candidates, or lookup_formula.',
-    'lookup_quote_rules returns both reviewed instruction packets and reviewed quote defaults; include all detected materials/catalog keys in one catalogContexts array when the order has multiple items.',
-    'If the user provided a customer name in the same quote request, call search_customers in the initial lookup round when available, then pass the selected customerId/customerTierId/customerName as customerContext to lookup_quote_rules before price lookup so customer-scoped defaults/rules can be returned.',
-    'For oral orders, first call lookup_catalog_families with the raw material/category wording, then infer product/category candidates and choose the catalog key yourself. After choosing a catalog/category key, call lookup_quote_rules with the interpreted order context before category-dependent lookups such as search_price_candidates or lookup_formula. lookup_quote_rules is the merged rule/default lookup surface: lookup_quote_rules = lookup_instructions + lookup_defaults.',
-    'First derive candidate material and specification fields, then generate candidate material and specification queries such as 錏角鐵 30x30, 錏成型角鐵 30x30, 鍍鋅角鐵 30x30, 角鐵 30x30, or L30x30 before searching reviewed price rows.',
-    'For material price questions like `一支多少`, search reviewed price rows with derived candidates.',
-    'If instruction packets provide processing price candidate names or ERP item codes, call search_price_candidates for the reviewed processing rows before quoting those processing charges; do not quote processing prices solely from instruction packet text.',
-    '遇到鋼材價格問題時，未取得 search_price_candidates tool result 前，不可回答查不到、不可宣稱已查表、不可要求使用者先補長度/客戶/厚度/分級。',
-    'Do not stop before reviewed price lookup merely because length, thickness, customer, or tier is missing when bounded derived price queries can still be formed.',
-    'Ask for missing length, thickness, customer, or tier after reviewed lookup, not before, unless no bounded derived price query can be formed.',
-    'When customer/tier is unknown, lookup_quote_rules may set customerContext.tierKnown=false, but must not invent customerId. Unknown customer context is represented by omitted customerId plus tierKnown=false.',
-    'When the user did not provide a customer, or search_customers cannot find a usable customer price tier, use the default price B tier for any product family. Pass customerTierId 2 to search_price_candidates. In the response, keep the notice short, for example `目前用 價格B：26.8 元/kg`, and say separately that a customer name can be used to look up that customer quote price. Do not add highest/most-expensive wording to the B price notice.',
-    'When search_customers returns a usable customerTier.id for the selected customer, pass that customerTierId to search_price_candidates instead of the default B tier.',
-    'When presenting a user-facing price bullet in Traditional Chinese, label it `價格`, not `reviewed 價格`; keep reviewed/source status in the source or note text instead.',
-    'For C 型鋼 / c_type with unspecified material or surface, AI may use productNames [錏輕型鋼] as the usual high-confidence provisional candidate list. The first reply must also show same-spec reviewed alternatives such as 白鐵輕型鋼 or 黑鐵輕型鋼 when returned. In follow-up turns, if the user does not specify another material/surface after those options were shown, treat the default 錏輕型鋼 assumption as confirmed for the continuing quote context.',
-    catalogFamilyPriceLookupInstruction,
-    'For product-price rows, interpret unitPrice together with unit, productPriceUnitWeight, and productPriceUnitWeightUnit. If unit = kg, unitPrice is a per-kg price; convert length/piece weight into kg before multiplying unitPrice. If unit = piece, unitPrice is already a per-piece/per-unit total.',
-    'For product-price rows with productPriceUnitWeightUnit = kg_per_m and unit = kg, calculate provisional piece amount from kg_per_m * requested meters * unitPrice; do not answer as if unitPrice were per-piece.',
-    'For concise quick-price replies, if you show the total piece weight calculation, do not list unit weight as a separate bullet. Prefer one line such as `6M 一支重量：4 × 6 = 24 kg`, then the B/customer unit price and quote amount.',
-    'For product-price rows whose product name/spec contains a fixed length in meters and productPriceUnitWeightUnit = kg_per_piece with unit = kg, price a whole source piece as pieceWeightKg * unitPrice. If unit = piece, price the whole source piece by unitPrice. Offcut/remnant is charged by default unless the user explicitly says remnants are not charged.',
-    'If product-price row metadata says sourceUnitWeightOrigin = product_name_parentheses, treat the parenthesized product-name number as reviewed weight evidence and mention it when explaining the source.',
-    'Apply product-price unit-weight calculation only to steel/material stock catalog families such as h_beam including 輕量H, c_type, angle, channel, flat_bar, rail, pipe, plate, mesh, grating, and floor deck. Do not apply this steel material rule to non-material product/accessory rows such as springs, screws, locks, wheels, windows, resin panels, doors, gates, or tools unless a reviewed rule explicitly says so.',
-    'When a positive productPriceUnitWeight comes from the reviewed unit-weight column, it has priority over product-name parentheses. Parentheses are fallback-only for missing or zero unit-weight columns.',
-    'For fixed-length material rows with a positive ratio/sourceRatio and a piece-total unitPrice, do not reinterpret that unitPrice as per-kg merely because the parenthetical weight conflicts with the reviewed unit-weight column. Keep the unitPrice as a piece total and flag the weight conflict for confirmation.',
-    'When any unit-weight source is missing or contradictory, use related same-series/same-spec reviewed material rows, different-length rows, or comparable material rows to derive proportional inferred evidence if possible, but label that value as inferred/low-confidence or confirmation-needed and do not silently overwrite reviewed source values.',
-    'For quick price questions like `一支多少`, if reviewed lookup returns one or more positive approximate candidates, lead with the highest-confidence source-backed candidate as a provisional quote or estimate, then list the other plausible candidates/specs/options for the user to confirm.',
-    'If reviewed facts are missing, zero-valued, ambiguous, or only approximate, present bounded options with source differences and ask the user to confirm before treating the result as final; no confirmed customer-facing total is allowed before confirmation.',
-    'If reviewed lookup returns no positive source-backed price candidates, do not invent a quote; explain the attempted candidate queries and ask for the missing detail or a user-supplied price.',
-    'When workbook context is available and a candidate price is usable only as a preview, write provisional workbook updates with confidence, source, option notes, and the provisional `小計` amount when calculable instead of confirmed customer-facing totals.',
-  ].join(' ');
+const steelAgentRuleSections = [
+  'agent_instruction',
+  'tool_flow',
+  'inference_order',
+  'confirmation_policy',
+] as const;
+
+async function getSteelRuntimePolicyInstruction(client: SteelRepositoryClient): Promise<string> {
+  const rules = await searchSteelAgentRules(client, {
+    ruleSections: steelAgentRuleSections,
+    limit: 20,
+  });
+  const prompts = rules.map((rule) => rule.prompt.trim()).filter(Boolean);
+
+  if (prompts.length === 0) {
+    throw new Error('steel.agent_rules did not return reviewed Agent Prompt rules.');
+  }
+
+  return prompts.join('\n\n');
 }
 
 function getWorkbookPatchInstruction(workbookContextText?: string): string {
@@ -316,17 +295,25 @@ function toPromptWithSystemInstruction(
   ];
 }
 
-function getSystemInstruction({
+async function getSystemInstruction({
+  agentRulesClient,
   steelRuntimePolicy,
   workbookContextText,
   workbookPatchTool,
 }: {
+  agentRulesClient?: SteelRepositoryClient;
   steelRuntimePolicy?: boolean;
   workbookContextText?: string;
   workbookPatchTool?: boolean;
-}): string | undefined {
+}): Promise<string | undefined> {
+  if (steelRuntimePolicy && !agentRulesClient) {
+    throw new Error('steel.agent_rules client is required for Steel runtime policy.');
+  }
+
   const instructions = [
-    ...(steelRuntimePolicy ? [getSteelRuntimePolicyInstruction()] : []),
+    ...(steelRuntimePolicy && agentRulesClient
+      ? [await getSteelRuntimePolicyInstruction(agentRulesClient)]
+      : []),
     ...(workbookPatchTool ? [getWorkbookPatchInstruction(workbookContextText)] : []),
   ];
 
@@ -1140,6 +1127,7 @@ function getWarnings(results: LanguageModelV3GenerateResult[]): string[] {
 
 export async function sendSteelOAuthChat({
   abortSignal,
+  agentRulesClient,
   authFilePath,
   createOpenAIOAuth: injectedCreateOpenAIOAuth,
   ensureFresh = true,
@@ -1156,18 +1144,18 @@ export async function sendSteelOAuthChat({
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
+  const systemInstruction = await getSystemInstruction({
+    agentRulesClient: steelRuntimePolicy ? agentRulesClient ?? getDefaultSteelToolClient() : undefined,
+    steelRuntimePolicy,
+    workbookContextText,
+    workbookPatchTool,
+  });
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({
     authFilePath,
     ensureFresh,
     fetch,
     responsesState: false,
-  });
-
-  const systemInstruction = getSystemInstruction({
-    steelRuntimePolicy,
-    workbookContextText,
-    workbookPatchTool,
   });
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
