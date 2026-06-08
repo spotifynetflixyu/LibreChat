@@ -217,6 +217,17 @@ function readUserVisibleNotes(defaultCandidate: SteelToolJsonObject): string[] {
   });
 }
 
+function filterMergedRequiredLookups(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values.filter(
+    (value): value is string =>
+      typeof value === 'string' && value !== 'lookup_instructions' && value !== 'lookup_defaults',
+  );
+}
+
 function toLookupDefaultsInput(input: LookupQuoteRulesInput): LookupDefaultsInput {
   return {
     catalogContexts: input.catalogContexts,
@@ -277,7 +288,10 @@ export function lookupSteelQuoteRules(
   const instructionResult = lookupSteelInstructions(input, instructionPackets);
   const defaultsResult = lookupSteelDefaults(toLookupDefaultsInput(input), quoteDefaults);
   const instructionPacketsOutput = Array.isArray(instructionResult.packets)
-    ? instructionResult.packets
+    ? instructionResult.packets.filter(isObject).map((packet) => ({
+        ...packet,
+        requiredLookups: filterMergedRequiredLookups(packet.requiredLookups),
+      }))
     : [];
   const quoteDefaultsOutput = Array.isArray(defaultsResult.defaultCandidates)
     ? defaultsResult.defaultCandidates.filter(isObject)
@@ -287,7 +301,11 @@ export function lookupSteelQuoteRules(
     instructionPacketGroups: instructionResult.packetGroups,
     instructionPackets: instructionPacketsOutput,
     quoteDefaults: quoteDefaultsOutput,
-    requiredLookups: unique(instructionPackets.flatMap((packet) => packet.requiredLookups)),
+    requiredLookups: unique(
+      instructionPacketsOutput.flatMap((packet) =>
+        filterMergedRequiredLookups(packet.requiredLookups),
+      ),
+    ),
     userVisibleNotes: unique([
       ...instructionPackets.flatMap((packet) => packet.userVisibleNotes),
       ...quoteDefaultsOutput.flatMap(readUserVisibleNotes),

@@ -361,7 +361,19 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       'Generate material/specification candidates in reasoning',
     );
     expect(systemPrompt.content).toContain('Call backend tools when you need reviewed rows');
-    expect(systemPrompt.content).toContain('lookup_defaults');
+    expect(systemPrompt.content).toContain(
+      'AI owns quote arithmetic on the fixed OAuth/Codex path',
+    );
+    expect(systemPrompt.content).toContain(
+      'checks workbook summary totals against the sum of line subtotal values',
+    );
+    expect(systemPrompt.content).toContain('backend does not perform deterministic quote pricing');
+    expect(systemPrompt.content).toContain('summary totalAmount/confirmedAmount');
+    expect(systemPrompt.content).not.toContain('OpenAI code/Python');
+    expect(systemPrompt.content).not.toContain('code-execution evidence');
+    expect(systemPrompt.content).toContain(
+      'lookup_quote_rules = lookup_instructions + lookup_defaults',
+    );
     expect(systemPrompt.content).toContain('lookup_catalog_families');
     expect(systemPrompt.content).not.toContain('lesson-memory');
     expect(systemPrompt.content).toContain('generate candidate material and specification queries');
@@ -418,10 +430,10 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain(
       'customerContext to lookup_quote_rules before price lookup',
     );
-    expect(systemPrompt.content).toContain(
+    expect(systemPrompt.content).not.toContain(
       'lookup_defaults is only for legacy/defaults-only follow-up cases',
     );
-    expect(systemPrompt.content).toContain('lookup_instructions is legacy-compatible');
+    expect(systemPrompt.content).not.toContain('lookup_instructions is legacy-compatible');
     expect(systemPrompt.content).toContain(
       'For oral material/category price, formula, or rules requests, call lookup_catalog_families before lookup_quote_rules',
     );
@@ -675,7 +687,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           {
             type: 'tool-call',
             toolCallId: 'steel_tool_call_1',
-            toolName: 'lookup_instructions',
+            toolName: 'lookup_quote_rules',
             input: JSON.stringify({
               taskTypes: ['quote_price'],
               evidenceSummary: 'user asked 亞L30x30 一支多少',
@@ -742,9 +754,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     }) as unknown as typeof createOpenAIOAuthType;
     const executeSteelToolCall = jest.fn(async () => ({
       ok: true as const,
-      toolName: 'lookup_instructions' as const,
+      toolName: 'lookup_quote_rules' as const,
       data: {
-        packetGroups: [
+        instructionPacketGroups: [
           {
             group: 'angle-zinc-quote-core',
             lineRefs: ['line_1'],
@@ -770,10 +782,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(doGenerate).toHaveBeenCalledTimes(2);
     const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
     expect(firstOptions.tools?.map((tool) => tool.name)).toEqual([
-      'lookup_instructions',
       'lookup_quote_rules',
       'lookup_catalog_families',
-      'lookup_defaults',
       'lookup_formula',
       'search_customers',
       'search_price_candidates',
@@ -781,7 +791,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(executeSteelToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         providerToolCallId: 'steel_tool_call_1',
-        toolName: 'lookup_instructions',
+        toolName: 'lookup_quote_rules',
         arguments: expect.objectContaining({
           evidenceSummary: 'user asked 亞L30x30 一支多少',
         }),
@@ -796,7 +806,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             {
               type: 'tool-call',
               toolCallId: 'steel_tool_call_1',
-              toolName: 'lookup_instructions',
+              toolName: 'lookup_quote_rules',
               input: expect.objectContaining({
                 evidenceSummary: 'user asked 亞L30x30 一支多少',
               }),
@@ -809,14 +819,14 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             {
               type: 'tool-result',
               toolCallId: 'steel_tool_call_1',
-              toolName: 'lookup_instructions',
+              toolName: 'lookup_quote_rules',
               output: {
                 type: 'json',
                 value: expect.objectContaining({
                   ok: true,
-                  toolName: 'lookup_instructions',
+                  toolName: 'lookup_quote_rules',
                   data: expect.objectContaining({
-                    packetGroups: expect.any(Array),
+                    instructionPacketGroups: expect.any(Array),
                   }),
                 }),
               },
@@ -846,7 +856,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           {
             type: 'tool-call',
             toolCallId: 'steel_lookup_1',
-            toolName: 'lookup_instructions',
+            toolName: 'lookup_quote_rules',
             input: JSON.stringify({
               taskTypes: ['material_price_lookup'],
               evidenceSummary: 'user asked 亞L30x30 一支多少',
@@ -938,7 +948,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     }) as unknown as typeof createOpenAIOAuthType;
     const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
       ok: true as const,
-      toolName: toolName as 'lookup_instructions' | 'search_price_candidates',
+      toolName: toolName as 'lookup_quote_rules' | 'search_price_candidates',
       data:
         toolName === 'search_price_candidates'
           ? {
@@ -950,7 +960,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                 },
               ],
             }
-          : { packetGroups: [] },
+          : { instructionPacketGroups: [] },
       sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1 as const,
@@ -1814,7 +1824,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           {
             type: 'tool-call',
             toolCallId: 'steel_instruction_first',
-            toolName: 'lookup_instructions',
+            toolName: 'lookup_quote_rules',
             input: JSON.stringify({
               taskTypes: ['candidate_generation', 'material_price_lookup'],
               evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
@@ -1952,9 +1962,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true as const,
-        toolName: 'lookup_instructions' as const,
+        toolName: 'lookup_quote_rules' as const,
         data: {
-          packets: [
+          instructionPackets: [
             {
               slug: 'c-type-basic-quote-zh-v1',
               packetGroups: ['c-type-quote-core'],
@@ -2518,13 +2528,13 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       'Fill blank workbook cells when the value can be derived',
     );
     expect(firstSystemPrompt.content).toContain(
-      'Leave a blank cell unchanged when material, customer, source, or calculation evidence is unavailable',
+      'Leave a blank cell unchanged when material, customer, source, or calculation context is unavailable',
     );
     expect(firstSystemPrompt.content).toContain(
-      'record the missing evidence in manual_review or interpretation_notes',
+      'record the missing context in manual_review or interpretation_notes',
     );
     expect(firstSystemPrompt.content).toContain('Do not write confirmed totals');
-    expect(firstSystemPrompt.content).not.toContain('quote_details subtotal');
+    expect(firstSystemPrompt.content).toContain('quote_details subtotal values');
     expect(firstSystemPrompt.content).toContain('interpreted order information');
     expect(firstSystemPrompt.content).toContain('Do not list a per-field diff');
     expect(firstSystemPrompt.content).toContain('Do not answer only with a field count');
@@ -3449,7 +3459,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         (message) =>
           message.role === 'system' &&
           typeof message.content === 'string' &&
-          message.content.includes('lookup_instructions') &&
+          message.content.includes('lookup_quote_rules') &&
           message.content.includes('search_price_candidates'),
       ),
     ).toBe(true);
@@ -3721,6 +3731,419 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           ]),
         },
       }),
+    );
+  });
+
+  it('keeps the fixed OAuth/Codex path free of registered code interpreter tools', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text' as const, text: 'oauth codex path only' }],
+      finishReason: { unified: 'stop' as const, raw: 'stop' },
+      usage: {
+        inputTokens: {
+          total: 20,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 5,
+          text: 5,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_oauth_codex_fixed_path' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請說明 subtotal validation 狀態' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+    });
+
+    const firstOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    expect(firstOptions.tools).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          type: 'provider',
+        }),
+      ]),
+    );
+  });
+
+  it('accepts confirmed workbook totals when summary values match line subtotals', async () => {
+    const semanticPatch = {
+      customer: {
+        name: '龍頂',
+        tier: 'A級',
+      },
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          normalizedItemName: '錏輕型鋼 100*2.3，6M',
+          adoptedProductPriceItem: '錏輕型鋼 100*2.3',
+          quantity: 1,
+          unit: '支',
+          totalWeightKg: 24,
+          customerName: '龍頂',
+          customerTier: 'A級',
+          materialUnitPrice: 26,
+          materialPricingUnit: 'Kg',
+          billableQuantity: 24,
+          subtotal: 624,
+          confidence: '中',
+          systemOrder: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            unit: 'Kg',
+            quantity: 24,
+            totalQuantity: 24,
+            unitPrice: 26,
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+            rowOrPage: '1560',
+          },
+          customerQuote: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            quantity: 1,
+            unit: '支',
+            unitPrice: 624,
+            subtotal: 624,
+          },
+          manualReview: {
+            confirmationNeeded: '確認龍頂客戶全名與材質',
+          },
+          interpretationNote: {
+            item: 'subtotal validation',
+            content: 'summary totals match line subtotal values.',
+          },
+        },
+      ],
+      summary: {
+        totalAmount: 624,
+        confirmedAmount: 624,
+        totalWeightKg: 24,
+      },
+    };
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_total_subtotal_match',
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(semanticPatch),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 10,
+            text: 10,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_total_subtotal_match' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已依 subtotal 檢查後更新：小計 624。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 60,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_subtotal_validated_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: '請把目前 C 型鋼 line_1 的小計整理成正式 workbook total' },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      workbookPatchTool: true,
+      workbookContextText:
+        'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26 subtotal=null',
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+    expect(response.text).toBe('已依 subtotal 檢查後更新：小計 624。');
+    expect(response).not.toHaveProperty('calculationEvidence');
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'summary',
+          rowId: 'summary_total_amount',
+          columnKey: 'value',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'summary',
+          rowId: 'summary_confirmed_amount',
+          columnKey: 'value',
+          value: 624,
+        }),
+      ]),
+    );
+  });
+
+  it('loops when workbook summary totals do not match line subtotals', async () => {
+    const wrongPatch = {
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          normalizedItemName: '錏輕型鋼 100*2.3，6M',
+          adoptedProductPriceItem: '錏輕型鋼 100*2.3',
+          customerName: '龍頂',
+          customerTier: 'A級',
+          materialUnitPrice: 26,
+          materialPricingUnit: 'Kg',
+          billableQuantity: 24,
+          subtotal: 624,
+          systemOrder: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            unit: 'Kg',
+            quantity: 24,
+            totalQuantity: 24,
+            unitPrice: 26,
+          },
+          priceSource: {
+            sourceFile: '產品價格.xlsx',
+            worksheet: 'Sheet1',
+          },
+          customerQuote: {
+            itemSpec: '錏輕型鋼 100*2.3，6M',
+            quantity: 1,
+            unit: '支',
+            unitPrice: 624,
+            subtotal: 624,
+          },
+          manualReview: {
+            confirmationNeeded: '確認龍頂客戶全名與材質',
+          },
+          interpretationNote: {
+            item: 'subtotal validation',
+            content: 'summary total must match line subtotal sum.',
+          },
+        },
+      ],
+      summary: {
+        totalAmount: 625,
+        confirmedAmount: 625,
+      },
+    };
+    const correctedPatch = {
+      ...wrongPatch,
+      summary: {
+        totalAmount: 624,
+        confirmedAmount: 624,
+      },
+    };
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_total_mismatch',
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(wrongPatch),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 50,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 10,
+            text: 10,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_total_mismatch' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'workbook_total_corrected',
+            toolName: 'patch_quote_workbook',
+            input: JSON.stringify(correctedPatch),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        usage: {
+          inputTokens: {
+            total: 60,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 12,
+            text: 12,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_total_corrected' },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '已修正總結金額：小計合計 624。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: {
+            total: 70,
+            noCache: undefined,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: 14,
+            text: 14,
+            reasoning: undefined,
+          },
+        },
+        response: { id: 'resp_total_corrected_final' },
+        warnings: [],
+      });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請把 C 型鋼 line_1 的總結金額改成 confirmed total' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      workbookPatchTool: true,
+      workbookContextText:
+        'sheet id="quote_details" label="報價明細"\nrow id="line_1" cells: normalized_item_name="錏輕型鋼 100*2.3" total_weight_kg=24 material_unit_price=26 subtotal=null',
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(3);
+    const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
+    expect(secondPrompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: [
+            expect.objectContaining({
+              toolName: 'patch_quote_workbook',
+              output: {
+                type: 'json',
+                value: expect.objectContaining({
+                  complete: false,
+                  subtotalMismatch: {
+                    expectedTotal: 624,
+                    mismatchedFields: ['summary.totalAmount', 'summary.confirmedAmount'],
+                    actualTotals: {
+                      'summary.confirmedAmount': 625,
+                      'summary.totalAmount': 625,
+                    },
+                  },
+                  instruction: expect.stringContaining('sum of line subtotal values'),
+                }),
+              },
+            }),
+          ],
+        }),
+      ]),
+    );
+    expect(response.text).toBe('已修正總結金額：小計合計 624。');
+    expect(response).not.toHaveProperty('calculationEvidence');
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 624,
+        }),
+        expect.objectContaining({
+          sheetId: 'summary',
+          rowId: 'summary_confirmed_amount',
+          columnKey: 'value',
+          value: 624,
+        }),
+      ]),
+    );
+    expect(response.workbookPatch?.operations).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'summary',
+          rowId: 'summary_total_amount',
+          columnKey: 'value',
+          value: 625,
+        }),
+      ]),
     );
   });
 });

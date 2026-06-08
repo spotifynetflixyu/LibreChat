@@ -7,7 +7,6 @@ export * from './conversations/repository';
 export * from './conversations/service';
 export * from './handlers';
 export * from './normalization';
-export * from './pricing';
 export * from './repositories';
 export * from './rules';
 export * from './schema/mapping';

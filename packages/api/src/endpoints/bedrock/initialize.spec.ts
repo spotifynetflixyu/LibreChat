@@ -301,31 +301,34 @@ describe('initializeBedrock', () => {
           trace: 'enabled_full',
         },
       },
-    ])('should resolve environment variables: $description', async ({ envVars, deleteEnvVars, input, expected }) => {
-      // Set up environment variables
-      Object.entries(envVars).forEach(([key, value]) => {
-        process.env[key] = value;
-      });
+    ])(
+      'should resolve environment variables: $description',
+      async ({ envVars, deleteEnvVars, input, expected }) => {
+        // Set up environment variables
+        Object.entries(envVars).forEach(([key, value]) => {
+          process.env[key] = value;
+        });
 
-      // Delete specified environment variables
-      deleteEnvVars?.forEach((key) => {
-        delete process.env[key];
-      });
+        // Delete specified environment variables
+        deleteEnvVars?.forEach((key) => {
+          delete process.env[key];
+        });
 
-      const params = createMockParams({
-        config: {
-          endpoints: {
-            [EModelEndpoint.bedrock]: {
-              guardrailConfig: input,
+        const params = createMockParams({
+          config: {
+            endpoints: {
+              [EModelEndpoint.bedrock]: {
+                guardrailConfig: input,
+              },
             },
           },
-        },
-      });
+        });
 
-      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+        const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
 
-      expect(result.llmConfig.guardrailConfig).toEqual(expected);
-    });
+        expect(result.llmConfig.guardrailConfig).toEqual(expected);
+      },
+    );
   });
 
   describe('Proxy Configuration', () => {

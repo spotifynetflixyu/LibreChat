@@ -1152,7 +1152,7 @@ export function createSteelAdminHandlers() {
           xls_input: 'passed',
           xlsx_input: 'passed',
           file_search: 'not_applicable',
-          code_interpreter: 'not_applicable',
+          code_interpreter: 'unverified',
           conversation_state: 'not_applicable',
         },
         model: 'gpt-5.5',

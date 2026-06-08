@@ -4,10 +4,16 @@
   data. Keep sheet and column structure from the code-owned `訂單參考.xlsm` contract, but
   do not seed reference workbook rows; the first AI/user patch may create rows such as
   `line_1`, `source_1`, and `note_1`.
-- `lookup_quote_rules` is the preferred merged rule lookup for Steel quote runs: it must
+- `lookup_quote_rules` is the merged AI-callable Steel quote-rule lookup: it must
   return both instruction packets and quote defaults, support multiple catalog/material
-  keys in one `catalogContexts` call, and not require workbook `lineRefs` just to retrieve
-  material defaults. Keep `lookup_defaults` as compatibility/defaults-only fallback.
+  keys in one `catalogContexts` call, and replace the old AI-callable
+  `lookup_instructions` / `lookup_defaults` surfaces in provider prompts and
+  `steelToolDefinitions`.
+- Steel quote calculation belongs to the AI lane on the fixed OAuth/Codex path,
+  not backend pricing/calculator modules. Backend should provide reviewed
+  calculation-rule prompts/source rows/workbook validation and validate that
+  workbook summary totals match the sum of line subtotals instead of trying to
+  prove hidden Code Interpreter execution.
 - In `/steel/oauth-chat`, textarea Enter handling must respect IME/composition input
   such as 注音. Pressing Enter to choose composition text must not submit the chat; submit
   only after composition ends.
@@ -53,8 +59,8 @@
 - Successful AI workbook patches should reply with only a concise order-information and key-change summary in chat; avoid per-field diffs, long search keywords, long candidate item lists, and field-count-only text like `已更新 workbook：16 個欄位`.
 - In Steel `報價明細`, the user-facing quote amount column should be `小計`; do not add a duplicate `報價` column. Keep `材料費` as a material-cost component when needed, and when a customer/tier or unit price follow-up changes the amount, update and summarize the new `小計`, not only the workbook field changes.
 - When Steel tools return customer data, product-price candidates, formula rows,
-  quote rules/defaults, or deterministic `calculation_results`, the OpenAI
-  workbook patch prompt must tell AI how to map those results into the
+  quote rules/defaults, or AI-code calculation results, the OpenAI workbook
+  patch prompt must tell AI how to map those results into the
   `docs/reference/訂單參考_轉檔.xlsx` sheet contract. AI owns the workbook
   companion rows; backend should validate/remind, not synthesize them. Missing
   unit prices, amounts, formulas, weights, customer matches, or material matches
@@ -152,17 +158,32 @@
 - Do not implement workbook web testing by expanding natural-language user input into hidden dev commands. `/steel/oauth-chat` workbook updates should come from AI/tool-calling judgement that emits typed workbook patch operations, then backend validation applies them.
 - OpenAI workbook patch function-tool schemas must include explicit JSON Schema `type` keys even when using `const` or `enum`; real OAuth smoke should cover provider schema acceptance, not only mocked tool-call extraction.
 - Do not ask users for Steel workbook internal `sheetId`, `rowId`, or `columnKey`. The backend should provide bounded workbook structure context so AI can resolve visible Chinese sheet/field wording such as `總結` and `總額` into stable internal ids before tool calling.
-- Steel quote AI should analyze natural-language specs, choose formula/rule/tool paths, and call backend tools; backend code should validate selected formula/rule/source and run deterministic calculators, not hard-code C-type free cutting/hole behavior by product family.
+- Steel quote AI should analyze natural-language specs, choose formula/rule/tool paths,
+  call backend tools for reviewed facts/rules, and calculate numeric quote amounts on
+  the OAuth/Codex path. Backend code validates selected sources/workbook patches and
+  subtotal/summary consistency; it should not run quote-pricing calculators or hard-code
+  C-type free cutting/hole behavior by product family.
 - When material price is unknown or `0`, Steel AI should present nearest reviewed price/spec candidates and ask for confirmation or a user-supplied unit price; workbook may record candidate/manual-review state, but no confirmed total should be patched before confirmation.
 - If an exact Steel material price is missing but there is exactly one nearest reviewed positive candidate, the AI may use that candidate for a preview estimate; it must disclose the assumption and ask the user to confirm or provide the exact price.
 - For incomplete Steel specs with multiple plausible reviewed candidates, such as `全華興 / 亞L30x30`, list all bounded candidate options with product name, spec, tier price, unit, and source context; do not show only the highest approximate match or make the user open source files to decide.
 - When an Admin-reviewed customer-scoped rule/default is applied through `lookup_defaults`, Steel AI should explicitly tell the user the customer rule was applied, for example that this customer's H-type cutting/hole charges are not counted.
 - C-type cutting/hole no-charge behavior must exist as a configured quote default or reviewed rule and be selected by AI; neither backend calculators nor pricing code may infer it only from `catalog_family = c_type`.
 - For any material that can carry a cutting price and needs cutting, Steel AI must ask about head/tail trimming when not already explicit; if remainder logic omits tail trim, assistant text and workbook notes must say tail trim is not counted, and no-cut lines must still record zero cutting in the workbook.
-- Treat OpenAI Code Interpreter / AI-written Python as optional calculation evidence, not the trusted Steel quote calculator. Backend-owned deterministic calculation must still recompute and validate formula/rule/source inputs before any workbook patch is accepted.
-- When AI Python and backend recalculation differ but backend calculation succeeds, Steel workbook patching should use the backend-confirmed number as highest confidence and include the AI/backend difference in audit notes instead of blocking the preview patch.
+- Treat AI on the fixed OAuth/Codex path as the Steel quote calculator. Backend must not
+  keep a parallel canonical pricing calculator; instead it should reject or loop when
+  workbook summary totals do not match the sum of line `subtotal` values.
+- Do not run Prettier repeatedly during Steel implementation turns when the user says commit
+  time is enough; keep formatting automation available for the final pre-commit pass.
+- Fixed `/steel/oauth-chat` provider path is OAuth/Codex. Do not add
+  `openai.code_interpreter` as a registered tool or gate workbook totals on hidden
+  hosted-tool evidence; validate AI-calculated totals through subtotal consistency.
+- Do not mark Steel `code_interpreter` capability as `not_applicable` merely
+  because hosted execution evidence is not disclosed. API code interpreter may
+  still be usable; backend just must not depend on disclosure as proof.
 - When a user explicitly asks for an approximate Steel quote, e.g. `一支多少` with `大約` quantity, AI may produce a medium-confidence estimate from the closest reviewed product-price candidate if it clearly states the assumed spec, low-confidence reason, and that missing dimensions can change the price.
-- Store AI Python code/output and verbose execution artifacts in backend-readable database audit fields, not visible workbook text sheets. `價格來源` and `判讀備註` may still contain concise human-readable AI/backend difference summaries.
+- Store concise calculation/source summaries in workbook-visible `價格來源` and
+  `判讀備註`; do not store or surface raw hidden-tool/code evidence for OAuth/Codex
+  because it is not a reliable exposed contract on this path.
 - When a Steel request has typos or incomplete specs but the user asks for a quick approximate preview, AI should return the highest-confidence source-backed candidate with assumptions and confidence, then let the user refine through later messages.
 - Steel workbook `version` is only a visible update counter / optimistic freshness marker. Database storage should keep only the latest workbook/calculation state and overwrite old data unless the user explicitly asks for historical snapshots.
 - In wrap-up `Next Tasks`, describe both the implementation item and the logic behind it; do not list short labels without explaining what will be built or why.
@@ -171,8 +192,8 @@
 - When correcting typo/incomplete Steel price lookup, fix the process order, not only the alias list: raw customer text is evidence for AI/normalization, while `search_price_candidates` should receive derived product/spec query candidates such as catalog family, surface wording, and size terms.
 - Steel AI, not hardcoded backend routing, should decide which business lookup tool to use after normalization. Backend tools provide validated table-specific capabilities and guardrails; they should reject unsafe raw typo lookups but should not silently choose the domain tool path for the AI.
 - For examples like `亞L30x30 一支多少`, model the full runtime chain: AI identifies typo/incomplete spec, proposes approximate material/spec candidates, chooses and calls the relevant reviewed-data tools, continues lookup/ranking, writes a provisional workbook update with source/confidence notes, and asks the user to confirm from bounded options.
-- Treat AI-led tool orchestration as the core Steel quote runtime framework in docs and implementation plans. Future designs should start from AI choosing the business tool path from normalized context, with backend providing validated tools, guardrails, source-backed results, deterministic calculation, and audit.
-- Do not expose AI reasoning helpers such as `normalize_quote_item`, `generate_price_search_terms`, or `rank_price_candidates` as Steel runtime tools. AI should generate material/spec candidates and price `candidateQueries` in reasoning; backend tools should focus on reviewed-row lookup, `lookup_defaults`, deterministic validation/calculation, and workbook output.
+- Treat AI-led tool orchestration as the core Steel quote runtime framework in docs and implementation plans. Future designs should start from AI choosing the business tool path from normalized context, with backend providing validated tools, guardrails, source-backed results, subtotal/summary consistency checks, and workbook validation.
+- Do not expose AI reasoning helpers such as `normalize_quote_item`, `generate_price_search_terms`, or `rank_price_candidates` as Steel runtime tools. AI should generate material/spec candidates and price `candidateQueries` in reasoning; backend tools should focus on reviewed-row lookup, `lookup_quote_rules`, source validation, subtotal/summary consistency checks, and workbook output validation.
 - Use the shorter quote-default naming for reusable reviewed Steel defaults: runtime tool `lookup_defaults`, Supabase table `steel.quote_defaults`, and selected rule source `quote_default`. Avoid reintroducing `lesson_memory` names except when explicitly discussing LibreChat user memory as a separate future adapter.
 - Do not let the Allowed MVP tool list grow from backend repository/module names.
   For the AI-led Steel quote MVP, expose only `search_customers`,

@@ -417,6 +417,46 @@ function instructionRows(slugs: string[]): object[] {
 }
 
 describe('executeSteelTool', () => {
+  it('rejects merged instruction/default compatibility tools as non-callable AI tools', async () => {
+    const client = createClient([]);
+
+    await expect(
+      executeSteelTool({
+        client,
+        toolName: 'lookup_instructions',
+        arguments: {
+          taskTypes: ['material_price_lookup'],
+          evidenceSummary: 'C 型鋼報價',
+          catalogContexts: [{ catalogCandidates: ['c_type'] }],
+        },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        toolName: 'lookup_instructions',
+        errorCategory: 'unknown_tool',
+        errorSummary: 'Unknown Steel tool: lookup_instructions',
+      }),
+    );
+    await expect(
+      executeSteelTool({
+        client,
+        toolName: 'lookup_defaults',
+        arguments: {
+          catalogContexts: [{ catalogCandidates: ['c_type'] }],
+        },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        toolName: 'lookup_defaults',
+        errorCategory: 'unknown_tool',
+        errorSummary: 'Unknown Steel tool: lookup_defaults',
+      }),
+    );
+    expect(client.calls).toHaveLength(0);
+  });
+
   it('executes repository-backed customer search and logs a bounded success summary', async () => {
     const client = createClient([
       [
@@ -1003,7 +1043,7 @@ describe('executeSteelTool', () => {
 
     const result = await executeSteelTool({
       client,
-      toolName: 'lookup_instructions',
+      toolName: 'lookup_quote_rules',
       arguments: {
         taskTypes: [
           'candidate_generation',
@@ -1032,10 +1072,11 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(1);
+    expect(client.calls).toHaveLength(2);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
+    expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
     expect(client.calls[0]?.values).toEqual(['reviewed', 'c-type-quote-core', 10]);
-    expect(result.data.packetGroups).toEqual([
+    expect(result.data.instructionPacketGroups).toEqual([
       {
         group: 'c-type-quote-core',
         lineRefs: ['line-1'],
@@ -1048,12 +1089,12 @@ describe('executeSteelTool', () => {
         ],
       },
     ]);
-    expect(result.data.packets).toEqual(
+    expect(result.data.instructionPackets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           slug: 'c-type-basic-quote-zh-v1',
           packetGroups: ['c-type-quote-core'],
-          requiredLookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
+          requiredLookups: ['search_price_candidates', 'lookup_formula'],
           matchedFacets: expect.objectContaining({
             lineRefs: ['line-1'],
             catalogFamilies: ['c_type'],
@@ -1086,12 +1127,16 @@ describe('executeSteelTool', () => {
         }),
       ]),
     );
-    expect(result.data.packets).not.toEqual(
+    expect(result.data.instructionPackets).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ slug: 'h-type-length-surcharge-zh-v1' }),
         expect.objectContaining({ slug: 'angle-surface-oral-zh-v1' }),
       ]),
     );
+    expect(result.data.requiredLookups).toEqual(
+      expect.arrayContaining(['search_price_candidates', 'lookup_formula']),
+    );
+    expect(result.data.requiredLookups).not.toContain('lookup_defaults');
     expect(JSON.stringify(result.data)).not.toMatch(/backend|codex|hard-code/i);
     expect(JSON.stringify(result.data)).not.toMatch(/不要只因品名.*confirmed true-zero/);
   });
@@ -1112,7 +1157,7 @@ describe('executeSteelTool', () => {
 
     const result = await executeSteelTool({
       client,
-      toolName: 'lookup_instructions',
+      toolName: 'lookup_quote_rules',
       arguments: {
         taskTypes: [
           'candidate_generation',
@@ -1149,15 +1194,16 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(1);
+    expect(client.calls).toHaveLength(2);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
+    expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
     expect(client.calls[0]?.values).toEqual([
       'reviewed',
       'angle-zinc-quote-core',
       'c-type-quote-core',
       12,
     ]);
-    expect(result.data.packetGroups).toEqual(
+    expect(result.data.instructionPacketGroups).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           group: 'angle-zinc-quote-core',
@@ -1178,7 +1224,7 @@ describe('executeSteelTool', () => {
         }),
       ]),
     );
-    expect(result.data.packets).toEqual(
+    expect(result.data.instructionPackets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           slug: 'angle-surface-oral-zh-v1',
@@ -1202,7 +1248,7 @@ describe('executeSteelTool', () => {
         }),
       ]),
     );
-    expect(result.data.packets).not.toEqual(
+    expect(result.data.instructionPackets).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ slug: 'h-type-length-surcharge-zh-v1' })]),
     );
   });
@@ -1218,7 +1264,7 @@ describe('executeSteelTool', () => {
 
     const result = await executeSteelTool({
       client,
-      toolName: 'lookup_instructions',
+      toolName: 'lookup_quote_rules',
       arguments: {
         taskTypes: [
           'candidate_generation',
@@ -1245,10 +1291,11 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(1);
+    expect(client.calls).toHaveLength(2);
     expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
+    expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
     expect(client.calls[0]?.values).toEqual(['reviewed', 'h-type-quote-core', 10]);
-    expect(result.data.packetGroups).toEqual([
+    expect(result.data.instructionPacketGroups).toEqual([
       {
         group: 'h-type-quote-core',
         lineRefs: ['line-h-beam'],
@@ -1259,12 +1306,12 @@ describe('executeSteelTool', () => {
         ],
       },
     ]);
-    expect(result.data.packets).toEqual(
+    expect(result.data.instructionPackets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           slug: 'h-type-length-surcharge-zh-v1',
           packetGroups: ['h-type-quote-core'],
-          requiredLookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
+          requiredLookups: ['search_price_candidates', 'lookup_formula'],
           matchedFacets: expect.objectContaining({
             lineRefs: ['line-h-beam'],
             catalogFamilies: ['h_beam'],
@@ -1275,7 +1322,7 @@ describe('executeSteelTool', () => {
         expect.objectContaining({
           slug: 'h-and-i-beam-cutting-price-zh-v1',
           packetGroups: ['h-type-quote-core'],
-          requiredLookups: ['lookup_defaults', 'search_price_candidates'],
+          requiredLookups: ['search_price_candidates'],
           instruction: expect.stringContaining('H 型鋼切工優先查 reviewed cutting rows'),
         }),
         expect.objectContaining({
@@ -1285,7 +1332,7 @@ describe('executeSteelTool', () => {
         }),
       ]),
     );
-    const serializedPackets = JSON.stringify(result.data.packets);
+    const serializedPackets = JSON.stringify(result.data.instructionPackets);
     expect(serializedPackets).toContain('6M');
     expect(serializedPackets).toContain('9M');
     expect(serializedPackets).toContain('10M');
@@ -1302,7 +1349,7 @@ describe('executeSteelTool', () => {
     expect(serializedPackets).toContain('開槽 KZZB10');
     expect(serializedPackets).toContain('沖孔 KZZB11');
     expect(serializedPackets).toContain('倒角 KZZB12');
-    expect(result.data.packets).not.toEqual(
+    expect(result.data.instructionPackets).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ slug: 'c-type-basic-quote-zh-v1' }),
         expect.objectContaining({ slug: 'angle-surface-oral-zh-v1' }),
@@ -1378,8 +1425,9 @@ describe('executeSteelTool', () => {
     ]);
   });
 
-  it('returns defaults for multiple material contexts in one tool call', async () => {
+  it('returns defaults through the merged quote-rule lookup', async () => {
     const client = createClient([
+      [],
       [
         {
           id: '55',
@@ -1421,8 +1469,10 @@ describe('executeSteelTool', () => {
 
     const result = await executeSteelTool({
       client,
-      toolName: 'lookup_defaults',
+      toolName: 'lookup_quote_rules',
       arguments: {
+        taskTypes: ['default_selection'],
+        evidenceSummary: '同一張單有角鐵和 C 型鋼，查可套用的 reviewed defaults',
         catalogContexts: [
           {
             lineRefs: ['line-angle'],
@@ -1444,9 +1494,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
-    expect(client.calls[0]?.values).toEqual([
+    expect(client.calls).toHaveLength(2);
+    expect(client.calls[0]?.sql).toEqual(expect.stringContaining('FROM steel.instruction_packets'));
+    expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.quote_defaults'));
+    expect(client.calls[1]?.values).toEqual([
       'reviewed',
       'angle',
       'c_type',
@@ -1455,7 +1506,8 @@ describe('executeSteelTool', () => {
       'C',
       10,
     ]);
-    expect(result.data.defaultCandidates).toEqual([
+    expect(result.data.instructionPackets).toEqual([]);
+    expect(result.data.quoteDefaults).toEqual([
       expect.objectContaining({
         defaultId: 'quote_default:55',
         defaultType: 'true_zero_rule',
@@ -1742,34 +1794,6 @@ describe('executeSteelTool', () => {
       instructionRows(['c-type-basic-quote-zh-v1']),
       [
         {
-          id: '71',
-          erp_item_code: 'P-C100',
-          category_id: null,
-          customer_tier_id: null,
-          spec_key: 'C100x50x20x2.3',
-          product_name: 'C型鋼',
-          catalog_family: 'c_type',
-          material_grade: null,
-          unit: 'kg',
-          unit_price: null,
-          product_price_unit_weight: '3.56000',
-          product_price_unit_weight_unit: 'kg_per_m',
-          currency: 'TWD',
-          value_state: 'unknown',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'product_price',
-              sourceFile: 'docs/reference/產品價格.xlsx',
-              canonicalKey: 'unit_price',
-            },
-          ],
-        },
-      ],
-      [
-        {
           id: '72',
           default_type: 'true_zero_rule',
           origin_table: 'tasks/steel-data-rules-architecture/instruction-packets.md',
@@ -1807,6 +1831,34 @@ describe('executeSteelTool', () => {
       ],
       [
         {
+          id: '71',
+          erp_item_code: 'P-C100',
+          category_id: null,
+          customer_tier_id: null,
+          spec_key: 'C100x50x20x2.3',
+          product_name: 'C型鋼',
+          catalog_family: 'c_type',
+          material_grade: null,
+          unit: 'kg',
+          unit_price: null,
+          product_price_unit_weight: '3.56000',
+          product_price_unit_weight_unit: 'kg_per_m',
+          currency: 'TWD',
+          value_state: 'unknown',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [
+            {
+              channel: 'admin_erp_xlsx',
+              factType: 'product_price',
+              sourceFile: 'docs/reference/產品價格.xlsx',
+              canonicalKey: 'unit_price',
+            },
+          ],
+        },
+      ],
+      [
+        {
           id: '73',
           code: 'C',
           version_seq: '1',
@@ -1828,7 +1880,7 @@ describe('executeSteelTool', () => {
         },
       ],
     ]);
-    const runState = createSteelToolRunState(4);
+    const runState = createSteelToolRunState(3);
     const catalogContexts = [
       {
         lineRefs: ['line-c-type'],
@@ -1840,10 +1892,10 @@ describe('executeSteelTool', () => {
       },
     ];
 
-    const instructionResult = await executeSteelTool({
+    const quoteRulesResult = await executeSteelTool({
       client,
       runState,
-      toolName: 'lookup_instructions',
+      toolName: 'lookup_quote_rules',
       arguments: {
         taskTypes: [
           'candidate_generation',
@@ -1875,15 +1927,6 @@ describe('executeSteelTool', () => {
         limit: 5,
       },
     });
-    const defaultsResult = await executeSteelTool({
-      client,
-      runState,
-      toolName: 'lookup_defaults',
-      arguments: {
-        catalogContexts,
-        limit: 10,
-      },
-    });
     const formulaResult = await executeSteelTool({
       client,
       runState,
@@ -1893,21 +1936,20 @@ describe('executeSteelTool', () => {
       },
     });
 
-    expect(instructionResult.ok).toBe(true);
+    expect(quoteRulesResult.ok).toBe(true);
     expect(priceResult.ok).toBe(true);
-    expect(defaultsResult.ok).toBe(true);
     expect(formulaResult.ok).toBe(true);
-    if (!instructionResult.ok || !priceResult.ok || !defaultsResult.ok || !formulaResult.ok) {
+    if (!quoteRulesResult.ok || !priceResult.ok || !formulaResult.ok) {
       throw new Error('C 型鋼 vertical lookup failed');
     }
 
     expect(client.calls).toHaveLength(4);
-    expect(runState.callsUsed).toBe(4);
-    expect(instructionResult.data.packets).toEqual(
+    expect(runState.callsUsed).toBe(3);
+    expect(quoteRulesResult.data.instructionPackets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           slug: 'c-type-basic-quote-zh-v1',
-          requiredLookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
+          requiredLookups: ['search_price_candidates', 'lookup_formula'],
           instruction: expect.stringContaining('材質不明時，AI 使用 productNames: [錏輕型鋼]'),
           blockingRules: expect.arrayContaining([
             expect.stringContaining('不要把 C型鋼 當作 productNames 候選'),
@@ -1923,7 +1965,7 @@ describe('executeSteelTool', () => {
         productPriceUnitWeight: 3.56,
       }),
     ]);
-    expect(defaultsResult.data.defaultCandidates).toEqual([
+    expect(quoteRulesResult.data.quoteDefaults).toEqual([
       expect.objectContaining({
         defaultType: 'true_zero_rule',
         effect: 'true_zero_rule',

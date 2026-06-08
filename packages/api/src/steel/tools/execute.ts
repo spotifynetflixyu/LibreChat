@@ -13,10 +13,9 @@ import { generateSteelPriceSearchTerms } from '../normalization';
 import {
   getQuoteRulesDefaultsInput,
   getSteelInstructionPacketSearchInput,
-  lookupSteelInstructions,
   lookupSteelQuoteRules,
 } from './instructions';
-import { getSteelQuoteDefaultSearchInput, lookupSteelDefaults } from './defaults';
+import { getSteelQuoteDefaultSearchInput } from './defaults';
 
 import type {
   SteelToolResult,
@@ -26,7 +25,7 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelPriceItem } from '../repositories';
-import type { LookupFormulaInput, LookupInstructionsInput, LookupQuoteRulesInput } from './schemas';
+import type { LookupFormulaInput, LookupQuoteRulesInput } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchPriceCandidatesInput = ReturnType<
@@ -253,7 +252,7 @@ async function searchPriceCandidates(
 
 async function lookupInstructionPackets(
   client: SteelRepositoryClient,
-  input: LookupInstructionsInput | LookupQuoteRulesInput,
+  input: LookupQuoteRulesInput,
 ) {
   const searchInput = getSteelInstructionPacketSearchInput(input);
 
@@ -312,12 +311,6 @@ async function dispatchSteelTool(
   args: unknown,
 ): Promise<SteelRawToolOutput> {
   switch (toolName) {
-    case 'lookup_instructions': {
-      const input = steelToolArgsSchemas.lookup_instructions.parse(args);
-      const instructionPackets = await lookupInstructionPackets(client, input);
-
-      return lookupSteelInstructions(input, instructionPackets);
-    }
     case 'lookup_quote_rules': {
       const input = steelToolArgsSchemas.lookup_quote_rules.parse(args);
       const instructionPackets = await lookupInstructionPackets(client, input);
@@ -337,15 +330,6 @@ async function dispatchSteelTool(
         selectionPolicy:
           'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
       };
-    }
-    case 'lookup_defaults': {
-      const input = steelToolArgsSchemas.lookup_defaults.parse(args);
-      const quoteDefaults = await searchSteelQuoteDefaults(
-        client,
-        getSteelQuoteDefaultSearchInput(input),
-      );
-
-      return lookupSteelDefaults(input, quoteDefaults);
     }
     case 'lookup_formula': {
       const input = steelToolArgsSchemas.lookup_formula.parse(args);

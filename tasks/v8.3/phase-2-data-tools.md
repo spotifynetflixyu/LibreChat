@@ -1,6 +1,13 @@
 # Phase 2: Quote Data And Tools
 
-Goal: make Steel backend business tools deterministic while preserving AI-led quote orchestration. AI chooses the business tool path from normalized quote context and user intent; backend tools query reviewed repositories, validate inputs, sanitize outputs, reject unsafe raw lookups, and handle ambiguity according to `CONTEXT.md` and `steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
+Goal: make Steel backend business tools source-backed while preserving AI-led
+quote orchestration and AI-code quote calculation. AI chooses the business tool
+path from normalized quote context and user intent, then performs numeric quote
+calculation through OpenAI Responses code/Python execution. Backend tools query
+reviewed repositories, validate inputs, sanitize outputs, reject unsafe raw
+lookups, verify code-execution evidence for numeric totals, and handle ambiguity
+according to `CONTEXT.md` and
+`steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
 
 Detailed data/rule architecture for the company's manual quoting workflow lives in [`../steel-data-rules-architecture/README.md`](../steel-data-rules-architecture/README.md). Treat that package as the Phase 2 companion plan for source priority, material-specific rules, source refs, tool-calling boundaries, and Admin maintenance scope.
 
@@ -13,10 +20,13 @@ Detailed data/rule architecture for the company's manual quoting workflow lives 
 - Customer tier resolver.
 - Product price candidate search and ranking.
 - Stock allocation engine.
-- Deterministic calculation engine.
-- AI-selected formula/rule orchestration over reviewed backend data, with backend validation before deterministic calculation.
-- Optional AI Python / Code Interpreter calculation audit comparison, where backend-confirmed results remain the highest-confidence numeric source when backend calculation succeeds.
-- Multi-item quote calculation audit storage: one current order/workbook-level calculation state and one current item/line audit record per steel material candidate or workbook row.
+- AI-code calculation lane using reviewed formula/rule/source prompt context.
+- AI-selected formula/rule orchestration over reviewed backend data, with backend
+  source/rule validation before accepting AI code numeric results.
+- Code/Python execution evidence checks so prose-only numeric quote output does
+  not become a confirmed workbook total.
+- No required `quote_calculation_state` or `quote_calculation_item_audits`
+  backend canonical-calculation tables.
 - Current-only workbook/calculation persistence: `version` is a visible update counter/freshness marker, while accepted updates overwrite latest database state instead of retaining historical workbook versions.
 - Quote-specific adjustment handling for customer-requested no-charge, special-price, surcharge, or one-line rule override instructions.
 - Tool registry with Zod-validated business tools for both `openai_oauth_responses` and explicitly selected `openai_api` driver runs.
@@ -176,7 +186,10 @@ Files:
 - Create `packages/api/src/steel/pricing/terms.ts`
 - Create `packages/api/src/steel/pricing/search.ts`
 - Create `packages/api/src/steel/pricing/rank.ts`
-- Create `packages/api/src/steel/pricing/decision.ts`
+- Do not create backend canonical quote decision/calculation modules such as
+  `packages/api/src/steel/pricing/decision.ts` for runtime arithmetic; if the
+  existing module remains temporarily, quarantine it as superseded validation
+  policy until removed.
 - Add tests under `packages/api/src/steel/pricing/*.spec.ts`
 
 Tasks:
@@ -268,7 +281,10 @@ Tasks:
 - If a remainder omits tail trim, assistant text and workbook notes must say `有餘料，切尾不計入`.
 - If cutting is not needed, workbook still records zero cutting count/fee with the no-cut reason.
 - Implement hole fee from structured hole groups: hole type, round diameter, non-round length/width or dimension label, count per piece, quantity multiplier, source refs, and confidence.
-- Compare optional AI Python / Code Interpreter calculation evidence with backend canonical calculation per item/line. If backend calculation succeeds, workbook numeric fields use backend-confirmed values; full Python code/output stays in current DB audit records, while concise AI/backend differences may appear in `價格來源` or `判讀備註`.
+- Require AI Python / Code Interpreter calculation evidence for confirmed
+  customer-facing totals. Workbook numeric fields use code-backed results when
+  source/rule validation passes; concise calculation/source summaries may appear
+  in `價格來源` or `判讀備註`.
 - Support future Admin-reviewed prices for non-round hole types such as oval, long, rectangular, and custom holes even when the current source price row is `0` or missing during development.
 - Implement slotting fee from structured slot paths: path type, segment lengths, path quantity, quantity multiplier, source refs, and confidence.
 - Separate confirmed totals from low-confidence estimated totals.

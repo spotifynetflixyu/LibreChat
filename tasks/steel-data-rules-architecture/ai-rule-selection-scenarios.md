@@ -20,21 +20,32 @@ Backend tools decide:
 - whether a normalized item is complete enough to price
 - whether a formula/rule/source is reviewed, active, and applicable
 - whether a zero charge is supported by selected rule, reviewed true-zero fact, or quote-specific override
-- deterministic weight, fee, and line-total calculation
-- whether AI Python / Code Interpreter calculation evidence matches backend canonical calculation
+- AI code/Python weight, fee, and line-total calculation
+- whether OpenAI Responses output includes code/Python execution evidence for
+  customer-facing numeric quote results
 - whether a workbook patch is valid and can be persisted
 
-Backend calculators must not implement product-family shortcuts such as `if C-type then cutting = 0`. They calculate from selected and validated formula/rule inputs.
+Backend code must not implement product-family shortcuts such as
+`if C-type then cutting = 0`, and must not keep a parallel canonical quote
+calculator. Reviewed defaults/rules become prompt/tool context for the AI code
+lane.
 
 C-type cutting/hole no-charge behavior must be configured as a site-managed quote default before it can be selected. AI retrieves and selects that default; backend validation accepts or rejects the selected origin. The calculator does not infer this behavior from C-type product family alone.
 
 For any material whose matched facts can include cutting price and whose order requires cutting, AI asks about head/tail trimming unless the evidence, selected rule, or user instruction already makes it explicit. If no cutting is needed, the workbook still records cutting as `0` with a reason such as `無需切料`. If a remainder exists and the selected rule omits tail trim, assistant text and workbook notes must explicitly say `有餘料，切尾不計入`.
 
-If AI Python and backend canonical calculation differ, backend-confirmed numbers have the highest confidence when backend calculation succeeds. The assistant should still generate a workbook preview patch using backend-confirmed numbers, store Python code/output in backend-readable calculation audit rows, then mark a concise AI/backend difference summary in `判讀備註`, `價格來源`, or manual-review fields so the user can inspect and revise through later turns.
+If AI produces numeric quote results without code/Python execution evidence, the
+assistant must not patch confirmed customer-facing totals. It should loop back to
+run the calculation through the code lane, or patch only interpretation/manual
+review state until code evidence is available.
 
 When the user explicitly asks for an approximate quote, such as `一支多少` or `大約100支`, AI may provide a preview estimate from the highest-confidence reviewed product-price candidate even when the request has typos or incomplete specs. It must state the assumed spec, confidence, and low-confidence reason. If multiple candidates are equally plausible or the price source is missing/zero, AI asks for confirmation instead of silently producing a confirmed quote.
 
-When a single order contains multiple steel materials, each normalized item/line gets its own current calculation plan, backend calculation, audit row, and workbook patch target. Order-level totals aggregate backend-confirmed item results only. Database storage keeps the latest workbook/calculation state only; accepted updates overwrite old state.
+When a single order contains multiple steel materials, each normalized item/line
+gets its own calculation prompt/source context, AI code result, confidence, and
+workbook patch target. Order-level totals aggregate code-backed item results
+only. Database storage keeps the latest workbook state only; accepted updates
+overwrite old state.
 
 ## Scenario 1: Clear C-Type Item, Default Free Cut/Hole Rule
 
@@ -262,7 +273,7 @@ Expected future applied-default assistant message:
 已套用此客戶預設規則：H 型鋼切工與孔工不計價。材料費仍依 H 型鋼規格、長度與單價計算。
 ```
 
-## Scenario 7: AI Python Differs But Backend Succeeds
+## Scenario 7: Prose Number Without Code Evidence
 
 User:
 
@@ -270,35 +281,39 @@ User:
 把這張估價算一下，先給我 workbook 預覽
 ```
 
-Tool/audit result:
+Provider/tool result:
 
 ```text
-AI Python result: line_total = 19,400
-Backend canonical result: line_total = 19,430
-Difference: AI rounded unit price before multiplying quantity; backend multiplies exact A-tier unit price 194.3 by 100.
+Assistant prose says: line_total = 19,400
+Code/Python execution evidence: missing
+Reviewed price source: A-tier unit price 194.3
 ```
 
 Expected AI logic:
 
-1. Preserve the AI Python code/output as database calculation audit evidence for the affected item line.
-2. Use the backend-confirmed result for workbook numeric fields because backend source/rule/formula validation and canonical calculation succeeded.
-3. Generate a workbook patch for preview instead of blocking the patch.
-4. Include a concise human-readable discrepancy in price source or interpretation notes.
-5. Tell the user which fields differ so they can continue with multi-round corrections.
+1. Do not accept the prose-only number as a confirmed workbook total.
+2. Prompt/loop the model to execute Python/code with the reviewed unit price,
+   quantity, weight, formula/rule refs, and assumptions.
+3. Patch confirmed numeric workbook fields only after code-execution evidence is
+   present and source/rule validation passes.
+4. If code execution is unavailable, patch only interpretation/manual-review
+   fields and mark the total as `未確認`.
 
 Expected assistant message:
 
 ```text
-我已用 backend 驗證後的數字更新 workbook 預覽。AI Python 先四捨五入單價再乘數量，得到 19,400；backend 依產品價格表 A級單價 194.3 先乘 100，得到 19,430，所以 workbook 採用 19,430。Python code/output 已存入計算稽核記錄，判讀備註只保留差異摘要。
+目前不能確認總額，因為這次回覆只有文字數字，沒有 code/Python 計算證據。我會先用 reviewed 單價與數量要求 AI 走 code 計算；拿到 code-backed result 後再更新 workbook 小計。
 ```
 
 Backend guard:
 
-- Backend-confirmed numeric fields are persisted when calculation succeeds.
-- AI Python code/output is stored in database audit rows, not visible workbook cells.
-- Workbook `價格來源` / `判讀備註` may contain concise AI/backend difference summaries, not raw Python or verbose output.
-- AI Python mismatch is not the authoritative total.
-- If backend calculation fails, no confirmed customer-facing total is patched.
+- Prose-only numeric fields are not persisted as confirmed customer-facing totals.
+- AI Python code/output or hosted-tool metadata is stored in backend-readable
+  audit/log fields when needed, not visible workbook cells.
+- Workbook `價格來源` / `判讀備註` may contain concise calculation/source summaries,
+  not raw Python or verbose output.
+- If code execution is unavailable or source/rule validation fails, no confirmed
+  customer-facing total is patched.
 
 ## Scenario 8: 全華興 亞L30x30 Approximate Quote
 
@@ -395,22 +410,24 @@ Expected AI logic:
 2. Upsert one current calculation state for the conversation/workbook.
 3. Upsert one current item calculation plan and audit row for the C-type line.
 4. Upsert a separate current item calculation plan and audit row for the angle line.
-5. Run backend canonical calculation separately per item.
-6. Patch workbook line fields separately, then aggregate summary totals from backend-confirmed item results.
+5. Run AI code calculation separately per item with line-specific reviewed source
+   and rule context.
+6. Patch workbook line fields separately, then aggregate summary totals from
+   code-backed item results.
 7. If one item is medium confidence and the other is high confidence, preserve confidence per item instead of lowering the whole order to one undifferentiated status.
 
-Expected audit storage:
+Expected evidence handling:
 
-- `quote_calculation_state`: one current row for the quote/workbook state.
-- `quote_calculation_item_audits`: one row for `C150*3.0 長度1200 10支`.
-- `quote_calculation_item_audits`: one row for `亞L30*30 大約100支`.
-- Each item audit row stores its own `calculation_plan`, Python code/output, AI result, backend result, comparison status, and difference summary.
-- Later accepted recalculations overwrite the current state and current item audit rows instead of creating retained historical versions.
+- Each item keeps its own calculation prompt/source context and code-execution
+  evidence.
+- AI code/output for one material line must not overwrite another line.
+- Later accepted workbook updates overwrite current workbook values instead of
+  creating retained historical versions.
 
 Backend guard:
 
-- AI Python code/output for one material line must not overwrite another line.
-- Workbook `報價明細` rows reference their own audit ids or row-level audit status.
-- `總結` aggregates backend-confirmed item results only.
+- Workbook `報價明細` rows reference their own row-level calculation/source status
+  when needed.
+- `總結` aggregates code-backed item results only.
 - Concise `價格來源` / `判讀備註` summaries stay line-specific so users can revise one material without corrupting another.
 - Workbook `version` only tells the user/UI that the latest state has updated; it does not mean old database rows are preserved for rollback.

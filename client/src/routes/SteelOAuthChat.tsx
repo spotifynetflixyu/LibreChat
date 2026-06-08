@@ -216,7 +216,10 @@ function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent
                 isFailed ? 'text-red-400' : 'text-text-secondary'
               }`}
             >
-              <Icon className={`h-3.5 w-3.5 ${isActive ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <Icon
+                className={`h-3.5 w-3.5 ${isActive ? 'animate-spin' : ''}`}
+                aria-hidden="true"
+              />
             </span>
             <span className="min-w-0">
               <span className="block text-[11px] uppercase text-text-secondary">
@@ -270,8 +273,7 @@ export default function SteelOAuthChat() {
   const [isWorkbookLoading, setIsWorkbookLoading] = useState(true);
   const [workbookError, setWorkbookError] = useState<string | null>(null);
   const [isWorkbookPanelOpen, setIsWorkbookPanelOpen] = useState(true);
-  const [activeRightPanelTab, setActiveRightPanelTab] =
-    useState<SteelRightPanelTab>('workbook');
+  const [activeRightPanelTab, setActiveRightPanelTab] = useState<SteelRightPanelTab>('workbook');
   const [isWorkbookResizing, setIsWorkbookResizing] = useState(false);
   const [workbookWidthPx, setWorkbookWidthPx] = useState<number | null>(null);
   const [isSending, setIsSending] = useState(false);

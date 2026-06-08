@@ -5,14 +5,14 @@ describe('Steel tool registry', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
 
     expect(toolNames).toEqual([
-      'lookup_instructions',
       'lookup_quote_rules',
       'lookup_catalog_families',
-      'lookup_defaults',
       'lookup_formula',
       'search_customers',
       'search_price_candidates',
     ]);
+    expect(toolNames).not.toContain('lookup_instructions');
+    expect(toolNames).not.toContain('lookup_defaults');
     expect(toolNames).not.toContain('normalize_quote_item');
     expect(toolNames).not.toContain('generate_price_search_terms');
     expect(toolNames).not.toContain('rank_price_candidates');

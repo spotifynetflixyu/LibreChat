@@ -355,7 +355,7 @@ STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5
 
 - LibreChat authentication / users / roles / conversations / files / admin shell。
 - Steel Quote Resolution Engine。
-- Steel deterministic calculators。
+- Steel AI code/Python calculation lane and code-execution evidence checks。
 - MongoDB / Supabase repository layer。
 - Workbook JSON / workbook patch validation。
 - Backend business tools 的實際執行端。
@@ -1052,10 +1052,10 @@ Workbook 目前透過 provider-facing `patch_workbook` output tool 更新。當 
 - `lookup_spec_price`：由 `search_price_candidates` exact/candidate-query 模式涵蓋。
 - `lookup_weight_spec`、`lookup_cutting_price`、`lookup_processing_price`、material-rule lookup：backend internal repository/validation 或 future extension，不從 MVP tool surface 暴露。
 - `lookup_formula_version`：改用 AI-facing `lookup_formula`，由 backend 回傳 reviewed active formula candidates 與 version/source refs。
-- `allocate_stock_lengths`、`calculate_plate_weight`、`calculate_bar_weight`、`calculate_cutting_fee`、`calculate_hole_fee`、`calculate_slotting_fee`、`calculate_bending_fee`、`calculate_line_total`：backend internal deterministic calculation/validation primitives，不是 MVP AI-callable tools。
+- `allocate_stock_lengths`、`calculate_plate_weight`、`calculate_bar_weight`、`calculate_cutting_fee`、`calculate_hole_fee`、`calculate_slotting_fee`、`calculate_bending_fee`、`calculate_line_total`：不作為 backend runtime calculator module，也不是 MVP AI-callable tools；這些算術應由 OpenAI code/Python lane 依 reviewed rules/source prompt context 執行，backend 只驗證來源、workbook patch、以及 code-execution evidence。
 - `get_workbook`：workbook context 由 quote runtime 提供，或等後續明確 workbook-context slice 再開。
 - `parse_xlsx_source`、`admin_import_generate_merge_table`、`admin_import_apply_merge_patch`：Admin/import pipeline，不是 quote runtime MVP tools。
-- `search_source_chunks`：對 MVP 推導流程太廣；instruction 推導應使用 `lookup_instructions` 取得 task-scoped reviewed packets，而不是搜尋任意 source text。
+- `search_source_chunks`：對 MVP 推導流程太廣；instruction/default 推導應使用 `lookup_quote_rules` 取得 task-scoped reviewed packets/defaults，而不是搜尋任意 source text。
 - `search_orders`、`get_order_detail`、`search_project_sources`、`search_relevant_memories`、`create_memory_candidate`、`update_memory_candidate`、`export_workbook`、`export_workbook_sheets`：future/adjacent surfaces，不能混入 MVP quote runtime tool list。
 
 每個 tool 必須：
@@ -1178,12 +1178,12 @@ packages/api/src/steel/calculators
 ```text
 AI interprets quote evidence
  -> Admin-managed Agent Instruction is already injected
- -> lookup_instructions for task-scoped interpretation rules when needed
+ -> lookup_quote_rules for merged task-scoped rules/defaults when needed
  -> AI derives customer/material/surface/dimension candidates
  -> AI generates bounded product-price candidateQueries
- -> search_customers / search_price_candidates / lookup_defaults / lookup_formula
- -> backend internal quote_price_decision and validation
- -> backend internal deterministic calculations when enough facts are reviewed
+ -> search_customers / search_price_candidates / lookup_formula
+ -> AI code/Python calculation from reviewed source/rule prompt context
+ -> backend validates source scope, workbook patch, and code-execution evidence
  -> quote_trace
  -> provisional or confirmed workbook_line
 ```

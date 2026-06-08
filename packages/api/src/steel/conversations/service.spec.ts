@@ -22,9 +22,7 @@ function createRecord(overrides: Partial<SteelConversationRecord> = {}): SteelCo
 
 function createDeps() {
   const repository = {
-    create: jest.fn(async (record: Omit<SteelConversationRecord, 'id'>) =>
-      createRecord(record),
-    ),
+    create: jest.fn(async (record: Omit<SteelConversationRecord, 'id'>) => createRecord(record)),
     findById: jest.fn(async () => createRecord()),
   };
   const audit = {

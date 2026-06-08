@@ -43,16 +43,26 @@ Goal: define the normalized database shape that AI tools can query without readi
 - Tier-specific values where the source has tier columns.
 - Adjustment rules and notes as structured rules where confirmed; unclear handwritten notes remain manual-review data.
 
-### Quote Calculation Audit Records
+### AI Code Calculation Evidence
 
-- Backend-readable calculation audit records are split into one current order/workbook-level state and item/line-level audit rows because one customer order can include multiple steel materials.
-- Database storage keeps only the latest workbook/calculation state. New accepted workbook patches or recalculations overwrite the previous current state instead of creating retained historical versions.
+- Quote arithmetic is performed by the OpenAI code/Python lane from reviewed
+  rule/source prompt context. Backend should not model a parallel canonical
+  calculation state.
+- Database storage keeps only the latest workbook state. New accepted workbook
+  patches overwrite previous current workbook values instead of creating retained
+  historical versions.
 - `workbook_version` is only a visible update counter and optimistic freshness marker. It is not a historical snapshot key and must not imply old workbook data is retained.
-- Each current item audit row links back to one material line with external references such as `conversation_id`, `workbook_id`, `workbook_version`, `sheet_id`, `row_id`, and `item_index`.
-- Item audit rows store `calculation_plan`, AI Python / Code Interpreter code, AI execution output, AI numeric result, backend canonical result, comparison status, and structured difference summary for that line.
-- Python code, raw stdout, container output, and long JSON artifacts stay in database audit records so workbook layout remains stable.
-- `價格來源` and `判讀備註` may still contain concise human-readable AI/backend difference summaries, source choices, and assumptions for the user.
-- Workbook rows may carry compact audit references/status; backend reads the current audit tables for detailed comparison and explanation, not for old-version replay.
+- If code-execution evidence needs to be retained, keep it as bounded
+  backend-readable response/tool-call audit or log data linked to the current
+  workbook/message/line context. Do not introduce `quote_calculation_state` or
+  `quote_calculation_item_audits` as required canonical-calculation tables.
+- Python code, raw stdout, container output, and long JSON artifacts must not be
+  written into visible workbook sheets.
+- `價格來源` and `判讀備註` may still contain concise human-readable calculation
+  summaries, source choices, and assumptions for the user.
+- Workbook rows may carry compact calculation/source status; backend reads
+  response/tool-call evidence when needed to verify that numbers came from code
+  execution, not prose-only generation.
 
 ## Accepted Schema Direction
 
@@ -88,9 +98,13 @@ Typed/indexed fields required before repositories:
 - Product price: `product_price_unit_weight`, `product_price_unit_weight_unit`, `value_state`, `review_state`, `source_refs`.
 - Cutting/processing/hole/slotting/bending prices: nullable price fields, `value_state`, `review_state`, `source_refs`.
 - Material rules: `priority`, lookup selector fields such as `material_family` or condition type, `source_refs`; keep `rule_body` JSONB validated by code per `rule_type`.
-- Formula versions: source expression, compiled safe AST/DSL, allowed variables, review state, `source_refs`; calculators execute only the compiled safe form.
-- Calculation state: `conversation_id`, `workbook_id`, `workbook_version`, `request_message_id`, provider/model refs, status, and source refs for the current quote state.
-- Calculation item audits: `calculation_state_id`, `item_index`, `workbook_id`, `row_id`, material/spec summary, `calculation_plan`, `ai_python_code`, `ai_python_output`, `ai_result`, `backend_result`, `comparison_status`, `difference_summary`, and `source_refs`.
+- Formula versions: source expression/prompt-safe formula text, allowed variables,
+  review state, and `source_refs`; the AI code lane executes the arithmetic from
+  reviewed formula/rule context.
+- Code-calculation evidence: provider/model refs, message/tool-call refs,
+  workbook/line refs, calculation prompt/source refs, code/Python execution
+  metadata, result summary, and evidence status when this is not already covered
+  by existing response/tool-call records.
 
 Use `metadata` only for non-query source notes, import details, or extra display/audit context.
 

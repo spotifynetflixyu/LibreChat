@@ -10,12 +10,6 @@ export interface SteelToolDefinition {
 
 const steelToolDefinitions: SteelToolDefinition[] = [
   {
-    name: 'lookup_instructions',
-    description:
-      'Retrieve reviewed Steel instruction packet groups for a batched interpreted order context.',
-    argsSchema: steelToolArgsSchemas.lookup_instructions,
-  },
-  {
     name: 'lookup_quote_rules',
     description:
       'Retrieve reviewed Steel instruction packets plus quote defaults for one batched interpreted order context; supports multiple catalog/material keys in catalogContexts.',
@@ -26,11 +20,6 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     description:
       'Retrieve reviewed catalog-family vocabulary candidates for AI selection; does not resolve oral wording to a single key.',
     argsSchema: steelToolArgsSchemas.lookup_catalog_families,
-  },
-  {
-    name: 'lookup_defaults',
-    description: 'Retrieve reviewed quote defaults for batched Steel material contexts.',
-    argsSchema: steelToolArgsSchemas.lookup_defaults,
   },
   {
     name: 'lookup_formula',

@@ -119,7 +119,9 @@ describe('Steel AI public contracts', () => {
       unsupportedSettings: ['previous_response_id'],
       warnings: ['stateful replay is not supported'],
     });
-    expect(JSON.stringify(parsed)).not.toMatch(/access_token|authorization|authFile|rawProvider/i);
+    expect(JSON.stringify(parsed)).not.toMatch(
+      /access_token|authorization|authFile|rawProvider|print\(|logs/i,
+    );
   });
 
   it('validates minimal Steel provider chat requests', () => {

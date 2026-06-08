@@ -37,9 +37,7 @@ function createAppConfigCache() {
   };
 }
 
-type ConfigPrincipals = NonNullable<
-  Parameters<AppConfigServiceDeps['getApplicableConfigs']>[0]
->;
+type ConfigPrincipals = NonNullable<Parameters<AppConfigServiceDeps['getApplicableConfigs']>[0]>;
 
 function createMockDeps(overrides: Partial<EndpointsConfigDeps> = {}): EndpointsConfigDeps {
   return {
@@ -213,9 +211,7 @@ describe('createEndpointsConfigService', () => {
       const deps = createMockDeps({ getAppConfig: mockGetAppConfig });
       const { getEndpointsConfig } = createEndpointsConfigService(deps);
 
-      await getEndpointsConfig(
-        fakeReq({ user: { id: 'u1', role: 'USER', tenantId: 'tenant-a' } }),
-      );
+      await getEndpointsConfig(fakeReq({ user: { id: 'u1', role: 'USER', tenantId: 'tenant-a' } }));
 
       expect(mockGetAppConfig).toHaveBeenCalledWith({
         role: 'USER',

@@ -1,8 +1,4 @@
-import {
-  canAccessSteelAdmin,
-  canAccessSteelQuote,
-  parseSteelGuestMode,
-} from './access';
+import { canAccessSteelAdmin, canAccessSteelQuote, parseSteelGuestMode } from './access';
 
 describe('Steel access policy', () => {
   it('fails closed unless STEEL_GUEST_MODE is explicitly true', () => {

@@ -26,8 +26,4 @@ export { default as memorySchema } from './memory';
 export { default as groupSchema } from './group';
 export { default as systemGrantSchema } from './systemGrant';
 export { default as configSchema } from './config';
-export {
-  steelAICapabilitySchema,
-  steelAIRunSchema,
-  steelConversationMetaSchema,
-} from './steel';
+export { steelAICapabilitySchema, steelAIRunSchema, steelConversationMetaSchema } from './steel';

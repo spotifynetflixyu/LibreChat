@@ -69,19 +69,23 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/(rules|allocation
 
 ## Checkpoint D: Tool-Calling Gate
 
-- [ ] AI tools expose normalized lookup/calculation contracts, not raw SQL/Mongo/file access.
-- [ ] Allowed MVP runtime lookup tools are limited to `lookup_instructions`,
-      `search_customers`, `search_price_candidates`, `lookup_defaults`, and
-      `lookup_formula`.
+- [ ] AI tools expose normalized lookup, code-calculation evidence, and workbook
+      output contracts, not raw SQL/Mongo/file access.
+- [ ] Allowed MVP runtime lookup tools are limited to `lookup_quote_rules`,
+      `lookup_catalog_families`, `search_customers`, `search_price_candidates`,
+      and `lookup_formula`.
 - [ ] Prompt bundles include task-scoped source-schema mapping and material rules only when relevant.
-- [ ] AI orchestrates business tool selection from normalized quote context and user intent, while backend tools validate the selected tool input, selected formula/rule/source, and deterministic calculation.
+- [ ] AI orchestrates business tool selection and numeric quote calculation from
+      normalized quote context and user intent, while backend tools validate the
+      selected tool input, selected formula/rule/source, workbook patch, and
+      evidence that numeric quote results came from OpenAI code/Python execution.
 - [ ] Backend code does not silently choose product-price, customer, default,
       formula, or workbook output paths from raw customer text.
 - [ ] Exact customer lookup, spec-price lookup, weight lookup, cutting/
       processing lookup, material-rule lookup, formula-version selection,
-      ranking helpers, arbitrary source-chunk search, calculation primitives,
-      and workbook-read helpers are backend internal capabilities or later
-      extension tools, not Allowed MVP runtime tools.
+      ranking helpers, arbitrary source-chunk search, backend calculation
+      primitives, and workbook-read helpers are backend internal capabilities or
+      later extension tools, not Allowed MVP runtime tools.
 - [ ] Typo/incomplete raw text such as `亞L30x30` is treated as quote evidence for AI candidate generation, not as a canonical table lookup key.
 - [ ] `search_price_candidates` rejects raw-only typo lookups and accepts confirmed normalized keys or AI-derived `candidateQueries`.
 - [ ] AI retrieves quote defaults through `lookup_defaults` using typed filters and bounded reviewed candidates, not by receiving all defaults in prompt context.
@@ -90,27 +94,34 @@ rtk npm run test:packages:api -- --testPathPatterns="src/steel/(rules|allocation
 - [ ] Explicit approximate quote requests can produce preview estimates from the highest-confidence reviewed price candidate, with assumed spec and low-confidence reason, even when the user input has typos or incomplete dimensions.
 - [ ] Provisional workbook patches can record candidate estimates, source refs, confidence, and missing fields, but confirmed customer-facing totals require user confirmation when candidate choice remains ambiguous.
 - [ ] Explicit customer quote-specific adjustments are represented separately from formal price/rule facts.
-- [ ] Backend internal cut-count validation records operation/billable counts
-      with adopted/rejected reasons before any cutting fee is accepted.
+- [ ] AI code calculation records operation/billable counts with adopted/rejected
+      reasons before any cutting fee is accepted; backend validates source/rule
+      scope and code-execution evidence.
 - [ ] All cuttable materials ask about head/tail trimming when cutting is needed and evidence is not explicit.
 - [ ] No-cut lines still patch workbook cutting fields as zero with a no-cut reason.
 - [ ] Remainder-tail paths explicitly say and record that tail trim is not counted.
-- [ ] Backend internal hole-fee calculation consumes structured hole groups,
-      including non-round dimensions when present, and item quantity instead of
-      raw OCR text.
-- [ ] Backend internal slotting-fee calculation consumes structured slot paths
-      and returns total slotting meters before pricing.
+- [ ] AI code calculation consumes structured hole groups, including non-round
+      dimensions when present, and item quantity instead of raw OCR text.
+- [ ] AI code calculation consumes structured slot paths and returns total
+      slotting meters before pricing.
 - [ ] "Save as customer default" creates a `needs_review` rule proposal only after required customer/material/charge/formula/parameter fields are known.
 - [ ] Reviewed customer/tier/company defaults persist in `steel.calculation_rule_defaults`, while published retrieval entries persist in `steel.quote_defaults`.
 - [ ] AI-selected `selectedCalculationRule` is rejected if its `quote_default` origin is stale, unreviewed, inactive, or out of scope.
 - [ ] Applied Admin-reviewed customer defaults are disclosed in assistant text, for example customer-scoped H-type cutting/hole no-charge rules.
 - [ ] Tool results include source refs, confidence, adopted/rejected candidates, and low-confidence reasons.
 - [ ] Tool-call logs store bounded summaries and sanitized output.
-- [ ] Optional AI Python / Code Interpreter calculation evidence is compared against backend canonical calculation per item/line, with backend-confirmed numbers used for preview patching when backend succeeds.
-- [ ] AI Python code/output and verbose execution artifacts are stored in DB calculation audit records, not visible workbook cells.
-- [ ] Concise AI/backend calculation differences may be preserved in `價格來源`, `判讀備註`, or manual-review fields instead of blocking preview patches by default.
-- [ ] Multi-item orders maintain one current calculation state and multiple current item/line audit records, one per material candidate or workbook line.
-- [ ] Accepted workbook/calculation updates overwrite latest database state; workbook `version` is only a visible update counter/freshness marker, not retained history.
+- [ ] OpenAI code/Python calculation evidence is required before accepting
+      customer-facing numeric totals; prose-only numeric output must loop or be
+      rejected.
+- [ ] AI Python code/output and concise execution evidence are stored in
+      backend-readable audit/log fields, not visible workbook cells.
+- [ ] Concise calculation/source summaries may be preserved in `價格來源`,
+      `判讀備註`, or manual-review fields.
+- [ ] Do not add `quote_calculation_state` or `quote_calculation_item_audits` as
+      required backend canonical-calculation tables.
+- [ ] Accepted workbook updates overwrite latest database state; workbook
+      `version` is only a visible update counter/freshness marker, not retained
+      history.
 
 Verification:
 
@@ -160,9 +171,13 @@ rtk npm run build:api
 - [ ] Slotting sample confirms straight, L, and U/ㄇ path length calculation with unclear paths sent to manual review.
 - [ ] Customer special-price/no-charge/surcharge sample records a quote-specific adjustment without changing formal source rows.
 - [ ] 全華興 / 亞L30x30 approximate quote sample proves the full AI-led chain: typo/incomplete-spec detection, material/spec candidate generation, AI-chosen product-price lookup path, reviewed price ranking, provisional workbook notes, bounded user options, and no confirmed total before user confirmation when candidates remain ambiguous.
-- [ ] AI Python/backend mismatch sample patches backend-confirmed numbers, stores full Python evidence in DB audit records, and records a concise difference summary for review.
-- [ ] Multi-material order sample proves C-type and angle lines have separate current audit rows and separate confidence states before order totals aggregate.
-- [ ] Workbook version sample proves the UI version increments while old workbook/calculation data is overwritten rather than retained.
+- [ ] Prose-only numeric result sample proves confirmed totals are rejected or
+      looped until OpenAI code/Python execution evidence exists.
+- [ ] Multi-material order sample proves C-type and angle lines have separate
+      code-backed calculation evidence and separate confidence states before
+      order totals aggregate.
+- [ ] Workbook version sample proves the UI version increments while old workbook
+      data is overwritten rather than retained.
 
 Verification:
 
