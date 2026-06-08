@@ -6,6 +6,87 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Active: Steel Subtotal Validation Docs Cleanup
+
+Goal: finish the architecture-doc rebaseline after removing the hidden
+code-evidence gate. AI on the fixed OAuth/Codex path owns quote arithmetic and
+may use provider-side code capability internally, but backend acceptance should
+validate source/rule scope, workbook patch shape, and subtotal/summary
+consistency instead of requiring disclosed Code Interpreter evidence.
+
+- [x] Remove remaining runtime acceptance wording that requires code/Python or
+      Code Interpreter evidence before confirmed workbook totals.
+- [x] Replace backend calculator / calculation-state wording with AI calculation
+      prompt/context plus backend subtotal validation.
+- [x] Sync `tasks/v8.3/phase-2-data-tools.md` so v8.3 can resume from the same
+      subtotal-consistency boundary.
+- [x] Run stale grep and diff hygiene checks.
+
+Review evidence:
+
+- Updated `tasks/steel-data-rules-architecture` README, schema/model, tool
+  calling, checkpoints, material-rule, source-inventory, and scenario docs so AI
+  owns calculation on OAuth/Codex and backend validates source/rule scope,
+  workbook patches, and subtotal/summary consistency.
+- Updated `tasks/v8.3/phase-2-data-tools.md` to replace stock/calculator engine
+  implementation milestones with AI calculation context and workbook subtotal
+  validator tasks.
+- Removed merged legacy tool names from the runtime `steelToolArgsSchemas` key
+  set while preserving internal merged-rule/default schemas for
+  `lookup_quote_rules`.
+- Updated focused tool/provider specs and manual smoke expectations so
+  `lookup_defaults` is not an optional runtime call.
+- Stale gate grep passed: no old code-evidence/calculator runtime terms remain
+  in the active data-rules/v8.3 docs and focused Steel tool/provider code.
+- Focused tests passed:
+  `cd packages/api && npx jest src/steel/tools/registry.spec.ts
+  src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts --runInBand`.
+- Manual smoke spec parse/skip check passed:
+  `cd packages/api && npx jest --runTestsByPath
+  src/steel/ai/provider.catalog-oral.manual.spec.ts
+  --testPathIgnorePatterns='/node_modules/' --runInBand` skipped 6 env-gated
+  live smokes.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/custom endpoint/redis/share
+  files, but exits `0`.
+- Hygiene passed: `git diff --check`.
+
+## Active: Steel Data-Rules Merged Rule Tool Docs Cleanup
+
+Goal: finish the data-rules architecture package cleanup so runtime docs no
+longer expose `lookup_instructions` or `lookup_defaults` as AI-callable MVP
+tools. The current runtime surface is the merged `lookup_quote_rules`
+contract, where `lookup_quote_rules = lookup_instructions + lookup_defaults`.
+
+- [x] Remove `lookup_instructions` / `lookup_defaults` from
+      `tasks/steel-data-rules-architecture` runtime tool lists, scenarios,
+      checkpoints, and Agent/Instruction Packet text.
+- [x] Update the corresponding `tasks/v8.3/phase-2-data-tools.md` references so
+      v8.3 can point back to the same merged lookup contract.
+- [x] Run stale grep proving the old names only remain as historical/internal
+      composition terms, not runtime tools.
+
+Review evidence:
+
+- Updated `agent-instructions.md`, `instruction-packets.md`,
+  `phase-3-material-rules.md`, `phase-4-tool-calling.md`,
+  `phase-4a-quote-defaults-architecture.md`,
+  `phase-4b-rule-proposal-backend.md`, `phase-6-verification.md`,
+  `ai-rule-selection-scenarios.md`, and `README.md` so AI-callable runtime docs
+  expose merged `lookup_quote_rules` instead of separate `lookup_instructions`
+  / `lookup_defaults`.
+- Updated `tasks/v8.3/phase-2-data-tools.md` to the same Allowed MVP runtime
+  tools: `lookup_quote_rules`, `search_customers`, `search_price_candidates`,
+  and `lookup_formula`.
+- Stale grep passed: no `Call lookup_instructions`, `Call lookup_defaults`,
+  `remains callable`, `compatibility tool`, or Allowed-list legacy-tool matches
+  remain in `tasks/steel-data-rules-architecture` or
+  `tasks/v8.3/phase-2-data-tools.md`.
+- Remaining `lookup_instructions` / `lookup_defaults` mentions are only the
+  explicit composition contract `lookup_quote_rules = lookup_instructions +
+  lookup_defaults` or internal facet wording.
+- Hygiene passed: `git diff --check`.
+
 ## Active: Steel AI Subtotal Validation Boundary Rebaseline
 
 Goal: supersede the older backend-canonical calculation and code-evidence gate
@@ -19,7 +100,7 @@ instead of trying to prove hosted Code Interpreter execution.
       `quote_calculation_item_audits` as required Steel runtime surfaces.
 - [x] Update provider/workbook prompt contract so AI calculates quote numbers on
       the OAuth/Codex path and backend validates workbook totals by subtotal
-      consistency, not code-execution evidence.
+      consistency, not hidden provider-tool disclosure.
 - [x] Remove `openai.code_interpreter` enablement, evidence parser, fallback,
       response `calculationEvidence`, and code-evidence loop guard.
 - [x] Add provider loop guard: when summary total / confirmed amount disagrees
@@ -750,7 +831,7 @@ Review evidence:
 - [x] Active runtime correction: remove Codex/backend implementation wording from
       runtime Instruction Packet bodies. Runtime instructions should describe
       quote behavior, confirmation, and reviewed-data requirements, not tell
-      backend calculators how to be implemented.
+      backend implementation modules how to be built.
 - [x] Active runtime test slice: add a multi-material batched
       `lookup_instructions` case for one order containing `亞L30x30` and
       C 型鋼, proving one tool call returns both angle/zinc and C-type rule
@@ -943,7 +1024,7 @@ Review evidence:
   `confirmationRequired: true`.
 - Superseding correction: `packages/api/src/steel/pricing/decision.ts` is no
   longer part of the current runtime architecture because numeric quote
-  decisions/calculation belong to the AI code/Python lane.
+  decisions/calculation belong to the AI-owned OAuth/Codex calculation lane.
 - Added the 全華興 / 亞L30x30 multi-candidate guard: incomplete angle quote
   requests now preserve all bounded approximate options with source refs, so AI
   can list product/spec/tier price/source choices for the user instead of
@@ -1279,20 +1360,29 @@ Review evidence:
   build still emits the existing non-Steel Redis type warning in
   `src/cache/cacheFactory.ts`, but exits `0`.
 
-# Steel AI Audit Storage And High-Confidence Preview Correction
+# Steel Historical Audit Storage And High-Confidence Preview Correction
 
-- [x] Move AI Python code/output storage from visible workbook notes to backend-readable DB audit schema design.
-- [x] Model calculation audit storage for multi-item orders with order/workbook-level current state and item/line-level audit records.
+- [x] Historical: moved raw calculation-tool output out of visible workbook notes.
+      Superseded: hidden provider code/tool disclosure is not a required backend
+      acceptance contract.
+- [x] Historical: modeled dedicated calculation audit storage for multi-item
+      orders. Superseded: do not add required backend canonical-calculation
+      tables.
 - [x] Correct workbook/calculation storage policy so database keeps only latest state; `version` is an update counter, not historical retention.
-- [x] Clarify workbook preview may show concise AI/backend difference summaries in `價格來源` or `判讀備註`, while Python code/output stays in DB audit records.
+- [x] Clarify workbook preview may show concise source/calculation summaries in
+      `價格來源` or `判讀備註`, while raw hidden-tool output stays out of visible
+      workbook cells.
 - [x] Reframe 全華興 / 亞L30x30 as a high-confidence best-effort preview from typo/incomplete specs, not a blocker scenario.
 - [x] Sync lessons and checkpoints for future implementation agents.
 - [x] Verify Markdown formatting and diff hygiene.
 
 ## Review
 
-- Corrected the AI Python audit storage boundary: Python code/output and verbose execution artifacts belong in backend-readable DB audit records, while `價格來源` and `判讀備註` may still show concise human-readable AI/backend difference summaries.
-- Updated schema planning to support multi-item orders with one current `quote_calculation_state` for order/workbook-level current data and `quote_calculation_item_audits` for each current material line or workbook row.
+- Historical correction: raw calculation-tool output and verbose execution
+  artifacts do not belong in visible workbook cells, while `價格來源` and
+  `判讀備註` may still show concise human-readable source/calculation summaries.
+- Historical schema planning for dedicated current calculation audit storage was
+  superseded by the later no-required-calculation-table decision.
 - Superseding correction: do not add `quote_calculation_state` or
   `quote_calculation_item_audits`; keep any future storage focused on current
   workbook state, reviewed source context, and prompt traceability.
@@ -1303,9 +1393,9 @@ Review evidence:
 
 # Steel AI Python Audit And Estimate Scenario Docs Sync
 
-- [x] Historical: clarified that AI Python/backend numeric mismatch did not block
+- [x] Historical: clarified that AI/backend numeric mismatch did not block
       workbook preview patching when backend calculation succeeded. Superseded:
-      AI code/Python is now the calculation lane and backend must not keep a
+      AI on the OAuth/Codex path is now the calculation lane and backend must not keep a
       parallel canonical calculator.
 - [x] Historical: documented backend-confirmed numbers as highest confidence.
       Superseded: confirmed totals now require workbook summary/subtotal
@@ -1318,7 +1408,7 @@ Review evidence:
 
 - Historical note: this section is superseded by the current subtotal validation
   boundary. Backend-confirmed calculator values are no longer the numeric source;
-  confirmed totals require workbook summary/subtotal consistency.
+  confirmed totals are accepted only with workbook summary/subtotal consistency.
 - Added a concrete 全華興 / 亞L30x30 approximate quote scenario: customer tier `A級`, highest-confidence reviewed product-price candidate `錏成型角鐵 30x30x2.5x6M`, A-tier price `194.3 元/支`, quantity about 100, medium overall confidence, and low-confidence reason for missing thickness.
 - Updated project lessons so future agents keep approximate estimates and backend-wins mismatch behavior.
 - Verification passed: Markdown Prettier, required-term grep, and `git diff --check`.
@@ -1552,7 +1642,9 @@ Review evidence:
 
 - Updated `tasks/steel-data-rules-architecture/phase-3-material-rules.md` with confirmed cut-count semantics, hole processing rules, and slotting path rules.
 - Expanded hole processing docs so future Admin-reviewed oval, long, rectangular, and custom non-round hole prices are supported by runtime lookup/calculators even when current source rows are missing or `0`.
-- Updated `tasks/steel-data-rules-architecture/phase-4-tool-calling.md` so AI produces structured cutting/hole/slotting candidates and backend calculators own deterministic computation.
+- Updated `tasks/steel-data-rules-architecture/phase-4-tool-calling.md` so AI
+  produces structured cutting/hole/slotting calculation context. Superseded
+  correction: backend does not own deterministic quote computation.
 - Updated `tasks/steel-data-rules-architecture/checkpoints.md` with rule/tool/manual scenario gates for cut count, holes, and slotting.
 - Synced `tasks/v8.3/phase-2-data-tools.md` and `docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md` so the implementation roadmap includes `calculate_cut_count`, hole groups, and slotting paths.
 - Verification passed: Markdown Prettier, `git diff --check`, and required-term grep for `calculate_cut_count`, `operationCutCount`, `billableCutCount`, hole groups, and slotting paths.

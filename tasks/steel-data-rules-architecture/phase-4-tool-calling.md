@@ -1,8 +1,8 @@
 # Phase 4: Tool-Calling Contract
 
 Goal: define how AI retrieves normalized facts/rules and performs quote
-calculation through OpenAI code/Python execution without reading raw source
-files or inventing prose-only numbers.
+calculation on the fixed OAuth/Codex path without reading raw source files or
+emitting workbook totals that fail subtotal validation.
 
 ## AI And Backend Responsibility Split
 
@@ -14,23 +14,24 @@ AI owns interpretation and orchestration:
 - present nearest reviewed price/spec candidates when the exact material price is unknown or zero, then wait for user confirmation or a supplied unit price before confirmed totals
 - choose a reviewed formula/rule path, such as C-type finished-length behavior, when tool results support it
 - disclose when an Admin-reviewed customer-scoped quote default is applied, so the user knows the quote used a saved customer rule
-- execute numeric quote calculation through OpenAI code/Python when the provider
-  supports it, including code, numeric steps, source refs, and low-confidence
-  assumptions
-- summarize code-calculation assumptions and source basis in the assistant
-  response and concise workbook notes
+- execute numeric quote calculation from reviewed formula/rule/source context.
+  The provider may use code/Python capability internally, but hidden tool
+  disclosure is not required for backend acceptance.
+- summarize calculation assumptions and source basis in the assistant response
+  and concise workbook notes
 - propose workbook patches from accepted tool results
 
-Backend tools own validation and evidence checks:
+Backend tools own validation checks:
 
 - validate tool arguments with canonical English keys
 - query reviewed database facts instead of raw source files
 - validate selected formula/rule origin, review state, active state, selector scope, and source refs
-- verify that customer-facing numeric quote results came from OpenAI code/Python
-  execution rather than prose-only generation
-- reject or loop when code-execution evidence is missing for a numeric total
-- store bounded AI Python code/output or hosted-tool metadata in
-  backend-readable audit/log fields, not visible workbook cells
+- verify that `summary.totalAmount` and `summary.confirmedAmount` match the sum
+  of numeric line `subtotal` values before accepting customer-facing totals
+- reject or loop when summary totals disagree with line subtotals
+- avoid treating hidden Code Interpreter / hosted-tool disclosure as a required
+  acceptance contract, and never write provider code/tool output into visible
+  workbook cells
 - write only concise human-readable calculation/source summaries to workbook
   text sheets such as `價格來源` or `判讀備註`
 - reject silent zero charges when no selected rule, reviewed true-zero fact, or quote-specific override supports them
@@ -39,38 +40,38 @@ Backend tools own validation and evidence checks:
 Backend code must not hard-code business behavior such as
 `if C-type then cutting/hole fee = 0`, and must not keep a parallel canonical
 quote calculator. Reviewed defaults/rules become prompt/tool context for the AI
-code lane.
+calculation lane.
 
 C-type cutting/hole no-charge behavior is a configured quote default or reviewed rule retrieved and selected by AI. It is not inferred by backend code from product family alone.
 
-## Code Calculation Evidence Lane
+## Subtotal Consistency Validation Lane
 
-The quote flow uses OpenAI Code Interpreter / AI-written Python as the
-calculation lane when the active provider/model capability supports it. This is
-the required proof that the AI generated code and numeric steps instead of only
-narrating a result.
+The quote flow uses AI as the calculation lane on the fixed OAuth/Codex path.
+OpenAI Code Interpreter / AI-written Python may be available inside the provider,
+but hosted execution disclosure is not a required or reliable acceptance signal
+for this route.
 
-The evidence captured for each calculated line can include:
+The calculation context for each quoted line should include:
 
 - selected formula code and calculation rule refs
 - normalized variables, units, quantities, and parameter overrides
 - selected price, weight, cutting, hole, slotting, and surcharge source refs
-- Python code or equivalent numeric trace
-- AI-computed intermediate values and final result
+- AI-computed intermediate values and final line `subtotal`
 - low-confidence assumptions
 
 Backend validation then:
 
 - validates the `calculationPlan` against reviewed database facts, selected formula/rule scope, quote-specific overrides, and workbook context
-- checks the provider response/tool metadata for code/Python execution evidence
 - checks that the calculation result references the reviewed source/rule context
   used in the turn
-- rejects/loops if the model produced only prose numbers
+- checks that summary totals equal the sum of line subtotals
+- rejects/loops if `summary.totalAmount` or `summary.confirmedAmount` disagrees
+  with line subtotals
 
-If code-execution evidence is present and source/rule validation succeeds, the
-AI code result is the numeric source used in the workbook patch. If evidence is
-missing or source/rule validation fails, the patch may only record
-interpretation/manual-review state and must not write a confirmed
+If source/rule validation succeeds and summary/subtotal consistency holds, the
+AI-calculated result is the numeric source used in the workbook patch. If
+source/rule validation fails or totals are internally inconsistent, the patch may
+only record interpretation/manual-review state and must not write a confirmed
 customer-facing total.
 
 Storage policy:
@@ -78,19 +79,21 @@ Storage policy:
 - Do not add `steel.quote_calculation_state` or
   `steel.quote_calculation_item_audits` as required backend canonical
   calculation tables.
-- Store code-execution evidence in bounded backend-readable audit/log fields or
-  existing response/tool-call records when needed; keep the schema focused on
-  evidence and source/prompt traceability, not backend-vs-AI comparison.
+- Store bounded source/prompt traceability, selected-assumption summaries,
+  workbook patch summaries, and subtotal-validation status in existing
+  response/tool-call records when needed; keep the schema focused on current
+  validation context, not backend-vs-AI comparison or hidden hosted-tool proof.
 - `workbook_version` is an update counter / freshness marker only; it is not a retained historical workbook version.
-- Workbook visible sheets do not store Python code, raw stdout, container logs, or verbose JSON.
+- Workbook visible sheets do not store Python code, raw stdout, container logs,
+  hidden-tool metadata, or verbose JSON.
 - `價格來源` and `判讀備註` may store concise human-readable summaries such as
-  "依 194.3 元/kg、100 kg，以 AI code 計算小計 19,430。"
+  "依 194.3 元/kg、100 kg，計算小計 19,430。"
 
 ## Tool Groups
 
 ### Agent Instruction
 
-Before the first `lookup_instructions` call, AI has the Admin-managed Agent
+Before the first `lookup_quote_rules` call, AI has the Admin-managed Agent
 Instruction. It is injected into every Steel quote turn as the built-in default
 instruction.
 
@@ -101,7 +104,8 @@ The Agent Instruction may tell AI to:
   drawing/table evidence separation, and low-confidence OCR handling
 - treat raw customer text as quote evidence, not reviewed fact
 - identify rough task facets
-- call `lookup_instructions` when detailed steel inference rules are needed
+- call `lookup_quote_rules` when detailed steel inference rules or reviewed
+  defaults are needed
 - avoid raw typo/incomplete table lookups before candidate generation
 - use reviewed lookup tools only after it has enough interpreted context
 - generate workbook output only as typed patch operations or validated
@@ -126,7 +130,7 @@ Suggested `steel.agent_instructions` sections:
 - `fileOcrRules`: image/PDF orientation, OCR confidence, Traditional Chinese,
   drawing-vs-table precedence, and evidence refs.
 - `toolRules`: allowed reviewed lookup tools, when to call
-  `lookup_instructions`, raw-typo guardrails, and when not to call tools.
+  `lookup_quote_rules`, raw-typo guardrails, and when not to call tools.
 - `orderInferenceRules`: how to split orders into lines, detect customer/tier,
   material family, surface treatment, dimensions, quantities, processing
   intents, missing fields, and confirmation needs.
@@ -145,7 +149,6 @@ canonical API/schema keys can remain English.
 ### Instruction Tools
 
 - `lookup_quote_rules`
-- `lookup_instructions`
 
 Outputs:
 
@@ -192,9 +195,8 @@ Rules:
     applicable
   - `priority`, `reviewState`, `active`, `effectiveAt`, `supersedesId`, and
     `sourceRefs`
-- `lookup_instructions` remains as an instruction-only compatibility wrapper
-  over the same DB-backed packet storage. New runtime prompt policy should
-  prefer `lookup_quote_rules` when defaults may also apply.
+- `lookup_quote_rules = lookup_instructions + lookup_defaults`: the old names
+  describe internal response composition, not separate runtime tools.
 - Instruction packets are not source facts. They can guide AI interpretation,
   but reviewed price/default/formula/customer lookup results and backend
   validation still decide confirmed values.
@@ -239,8 +241,7 @@ Rules:
 - AI-inferred specs are candidates until reviewed lookup results, deterministic validation, or user confirmation supports them.
 - AI owns tool orchestration after candidate reasoning. In the MVP it chooses
   among the small reviewed lookup surface: merged quote-rule lookup, customer
-  search, product-price candidate search, quote-default compatibility lookup,
-  and formula lookup.
+  search, product-price candidate search, and formula lookup.
   Weight, cutting, processing, material-rule, ranking, and calculation details
   remain backend internal validation/calculation capabilities unless a later
   slice explicitly exposes them.
@@ -258,11 +259,9 @@ Rules:
 
 ### Allowed MVP Reviewed Lookup Tools
 
-- `lookup_instructions`
 - `lookup_quote_rules`
 - `search_customers`
 - `search_price_candidates`
-- `lookup_defaults`
 - `lookup_formula`
 
 Rules:
@@ -271,8 +270,8 @@ Rules:
   reviewed quote defaults before or during candidate/default generation. It must
   not return the full `docs/reference/instruction.txt` body for every task, and
   it must not return price rows or final calculations.
-- `lookup_instructions` remains an instruction-only compatibility wrapper over
-  DB-backed `steel.instruction_packets`.
+- `lookup_quote_rules = lookup_instructions + lookup_defaults`; the latter names
+  are internal composition terms, not separate AI-callable runtime tools.
 - The request is batched by interpreted order context. For one order/workbook
   turn, AI includes all detected material families, task types, processing
   types, formula candidates, customer/tier/project context, and low-confidence
@@ -294,10 +293,9 @@ Rules:
   price, zero-as-missing, multiple candidates, or approximate estimate state. Do
   not expose a separate `rank_price_candidates` runtime tool; ranking/
   confirmation policy is backend internal validation plus AI explanation.
-- `lookup_defaults`
-  retrieves scoped reviewed quote-default candidates for customer, material/
-  product family, charge type, formula code, and default-parameter context when
-  a defaults-only compatibility call is needed.
+- The quote-default facet retrieves scoped reviewed candidates for customer,
+  material/product family, charge type, formula code, and default-parameter
+  context through `lookup_quote_rules`.
 - `lookup_formula` returns reviewed active formula candidates and version/source
   refs. Do not expose storage-oriented `lookup_formula_version` naming as the
   MVP AI contract.
@@ -313,10 +311,9 @@ Rules:
   inactive, unreviewed, or selector-incompatible formula/rule origins.
 - Quote defaults provide default behavior and default parameters. User-provided conversation numbers, counts, rates, or money amounts become `parameterOverrides` only when explicit and high confidence.
 - Formula selection is fixed by `formulaCode`; numbers remain adjustable through `defaultParameters` and `parameterOverrides`.
-- AI retrieves quote defaults through `lookup_quote_rules` when instruction
-  packets are also needed, or `lookup_defaults` when a defaults-only
-  compatibility call is enough. The tool returns bounded reviewed candidates
-  with origin refs; it does not dump all defaults into the prompt.
+- AI retrieves quote defaults through `lookup_quote_rules`. The tool returns
+  bounded reviewed candidates with origin refs; it does not dump all defaults
+  into the prompt.
 - Steel Admin-reviewed quote defaults and LibreChat user memory are separate retrieval layers. Admin-reviewed quote defaults are the site-managed default layer generated from reviewed Steel facts; LibreChat user memory is the current user's custom memory layer.
 - LibreChat user memory can override the priority of matching Admin-reviewed defaults for the current user/account, but it must not mutate reviewed Steel facts or published Admin-reviewed quote defaults.
 - Future user-memory adapters must keep `defaultCandidates` and `userMemoryCandidates` separately labeled through ranking and validation.
@@ -326,7 +323,7 @@ Rules:
 - AI-selected user memory must be validated again by backend for current user/account ownership, task scope, reviewed formula compatibility, and allowed parameter overrides before it becomes `selectedCalculationRule`.
 - "Save as this customer's default" is not a direct memory write. Tool orchestration may create only a structured rule proposal with `needs_review` status; Admin review must approve it before it becomes reviewed rule/default data and later published quote defaults.
 - Do not treat zero unit weight as true zero in Phase 2.
-- Include task-scoped material rules only through `lookup_defaults`,
+- Include task-scoped material rules only through `lookup_quote_rules`,
   `lookup_formula`, prompt context, or backend validation. Do not expose a
   separate `lookup_material_rules` MVP tool.
 
@@ -369,31 +366,31 @@ tools retrieve source-backed facts; workbook output tools propose typed workbook
 changes; backend workbook services are the authority that persists or rejects
 patches.
 
-### AI Code Calculation Capabilities
+### AI Calculation Capabilities
 
 The MVP does not expose calculator primitives as backend AI-callable tools and
 does not keep them as backend canonical calculators. Stock length allocation,
 formula execution, plate/bar weight, cut count, cutting fees, hole fees,
-slotting fees, bending fees, and line totals are performed by the OpenAI
-code/Python lane from reviewed rule/source prompt context.
+slotting fees, bending fees, and line totals are performed by AI from reviewed
+rule/source prompt context.
 
 Rules:
 
 - The calculation prompt/context carries normalized variables, selected
   formula/rule refs, source refs, parameter overrides, and quote-specific
   adjustments per item/line. It does not write workbook state.
-- AI code receives only normalized facts, reviewed rule outputs, and explicit
-  quote-specific adjustments.
-- AI code never searches raw source files.
-- AI code does not decide which material family gets special behavior during
-  arithmetic. It executes the formula/rule path selected during AI
+- AI calculation receives only normalized facts, reviewed rule outputs, and
+  explicit quote-specific adjustments.
+- AI calculation never searches raw source files.
+- AI calculation does not decide which material family gets special behavior
+  during arithmetic. It executes the formula/rule path selected during AI
   interpretation and grounded by reviewed lookup tools.
 - Confirmed totals and low-confidence estimates remain separate.
-- AI code output is used for persisted numeric workbook fields only when
-  code-execution evidence and source/rule validation are present; concise
+- AI-calculated output is used for persisted numeric workbook fields only when
+  source/rule validation and subtotal/summary consistency pass; concise
   calculation/source summaries may be written to workbook notes.
-- The AI code calculation returns both `operationCutCount` and `billableCutCount`,
-  plus adopted/rejected head trim, tail trim, remainder, and special-cut reasons.
+- The AI calculation returns both `operationCutCount` and `billableCutCount`, plus
+  adopted/rejected head trim, tail trim, remainder, and special-cut reasons.
 - Cutting-fee calculation consumes a reviewed cutting price, selected calculation
   rule/default, and quote-specific adjustments. It does not re-interpret raw text.
 - If any material can carry cutting price and the user says only "要切" or the quote evidence implies cutting, AI should ask about head trim, tail trim, no-head/no-tail, or split-only assumptions before confirmed cutting fee calculation.

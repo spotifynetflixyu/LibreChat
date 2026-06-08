@@ -11,7 +11,7 @@ Input: `docs/reference/客戶詢價.rtf`.
 Expected:
 
 - Retrieve only task-scoped Instruction Packets needed for C-type/material-price
-  interpretation from `lookup_instructions`; do not inject the full
+  interpretation from merged `lookup_quote_rules`; do not inject the full
   `docs/reference/instruction.txt` file.
 - Parse `C150*3.0` and line lengths/quantities as C-type quote items.
 - Retrieve C-type rule only for these items through canonical alias/family matching or a strong normalized C-type candidate.

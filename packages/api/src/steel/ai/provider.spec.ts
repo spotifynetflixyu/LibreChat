@@ -430,10 +430,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain(
       'customerContext to lookup_quote_rules before price lookup',
     );
-    expect(systemPrompt.content).not.toContain(
-      'lookup_defaults is only for legacy/defaults-only follow-up cases',
-    );
-    expect(systemPrompt.content).not.toContain('lookup_instructions is legacy-compatible');
+    expect(systemPrompt.content).not.toMatch(/lookup_defaults.*legacy.*follow-up/i);
+    expect(systemPrompt.content).not.toMatch(/lookup_instructions.*legacy-compatible/i);
     expect(systemPrompt.content).toContain(
       'For oral material/category price, formula, or rules requests, call lookup_catalog_families before lookup_quote_rules',
     );

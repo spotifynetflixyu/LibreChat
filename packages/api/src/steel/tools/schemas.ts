@@ -148,6 +148,21 @@ const lookupQuoteRulesSchema = lookupInstructionsSchema.extend({
     .optional(),
 });
 
+const lookupDefaultsSchema = z.object({
+  catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
+  customerContext: z
+    .object({
+      customerId: z.number().int().positive().optional(),
+      customerTierId: z.number().int().positive().optional(),
+      customerName: nonEmptyString.optional(),
+      tierKnown: z.boolean().optional(),
+    })
+    .optional(),
+  reviewState: reviewStateSchema,
+  includeInactive: z.boolean().optional(),
+  limit: limitSchema,
+});
+
 const lookupCatalogFamiliesSchema = z
   .object({
     searchText: nonEmptyString.optional(),
@@ -269,23 +284,8 @@ const searchPriceCandidatesSchema = z
   });
 
 export const steelToolArgsSchemas = {
-  lookup_instructions: lookupInstructionsSchema,
   lookup_quote_rules: lookupQuoteRulesSchema,
   lookup_catalog_families: lookupCatalogFamiliesSchema,
-  lookup_defaults: z.object({
-    catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
-    customerContext: z
-      .object({
-        customerId: z.number().int().positive().optional(),
-        customerTierId: z.number().int().positive().optional(),
-        customerName: nonEmptyString.optional(),
-        tierKnown: z.boolean().optional(),
-      })
-      .optional(),
-    reviewState: reviewStateSchema,
-    includeInactive: z.boolean().optional(),
-    limit: limitSchema,
-  }),
   lookup_formula: z.object({
     catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
     reviewState: reviewStateSchema,
@@ -299,7 +299,7 @@ export const steelToolArgsSchemas = {
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
-export type LookupDefaultsInput = z.infer<typeof steelToolArgsSchemas.lookup_defaults>;
+export type LookupDefaultsInput = z.infer<typeof lookupDefaultsSchema>;
 export type LookupCatalogFamiliesInput = z.infer<typeof lookupCatalogFamiliesSchema>;
 export type LookupFormulaInput = z.infer<typeof steelToolArgsSchemas.lookup_formula>;
 export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;

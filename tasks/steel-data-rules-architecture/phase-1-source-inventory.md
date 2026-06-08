@@ -96,7 +96,8 @@ Workbook lines should be able to carry multiple source refs: chosen price, chose
 - Workbook header row: 5. Useful formula candidates begin at row 19 in the current file.
 - Rows with code but no expression are not calculator-ready formulas.
 - The CSV currently has an encoding/readability caveat; it should not be the runtime parser source.
-- Runtime rule: calculators should use reviewed app-ready JSON or database rows, not direct CSV parsing at quote time.
+- Runtime rule: AI calculation prompt context should use reviewed app-ready JSON
+  or database rows, not direct CSV parsing at quote time.
 
 ### `龍頂鋼鐵手冊__文字版.docx`
 

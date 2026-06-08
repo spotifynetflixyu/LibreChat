@@ -300,7 +300,12 @@ ALTER TABLE steel.formula_versions
   ADD COLUMN source_refs JSONB NOT NULL DEFAULT '[]'::jsonb;
 ```
 
-Keep `formula_body JSONB NOT NULL` during this migration for backward compatibility and to avoid changing downstream code before formula repositories exist. Phase 2 formula implementation should write `source_expression`, `compiled_formula`, and `allowed_variables`; calculators must execute only `compiled_formula`.
+Keep `formula_body JSONB NOT NULL` during this migration for backward
+compatibility and to avoid changing downstream code before formula repositories
+exist. Phase 2 formula implementation should write `source_expression`,
+`compiled_formula`, and `allowed_variables`; AI calculation prompt context should
+use reviewed formula rows, while backend validates formula origin/scope rather
+than executing runtime pricing calculators.
 
 Add checks:
 
@@ -318,21 +323,25 @@ CREATE INDEX formula_versions_active_review_idx
 ON steel.formula_versions (code, active, review_state);
 ```
 
-### AI Code Calculation Evidence Storage
+### AI Calculation Context And Subtotal Validation
 
 Superseding direction:
 
 - Do not create `steel.quote_calculation_state` or
   `steel.quote_calculation_item_audits` as backend canonical-calculation tables.
-- Quote arithmetic is performed by OpenAI Responses code/Python execution from
-  reviewed rules/source prompt context.
-- Backend storage, if needed, should retain only bounded current evidence that a
-  numeric quote result came from code execution, plus source/prompt traceability.
-  Prefer existing response/tool-call logs before adding a dedicated schema.
+- Quote arithmetic is performed by AI on the fixed OAuth/Codex path from reviewed
+  rules/source prompt context. Provider-side code capability may be used
+  internally, but hidden tool disclosure is not a required backend contract.
+- Backend storage, if needed, should retain only bounded current source/prompt
+  traceability, selected-assumption summaries, workbook patch summaries, and
+  subtotal-validation status. Prefer existing response/tool-call logs before
+  adding a dedicated schema.
 - Visible workbook sheets must not store Python code, raw stdout, container logs,
-  or verbose JSON artifacts.
+  hidden-tool metadata, or verbose JSON artifacts.
 - `價格來源` and `判讀備註` may show concise human-readable calculation/source
-  summaries such as `依 194.3 元/kg、100 kg，以 AI code 計算小計 19,430`.
+  summaries such as `依 194.3 元/kg、100 kg，計算小計 19,430`.
+- Confirmed workbook totals are accepted only when summary total / confirmed
+  amount match the sum of line subtotals after source/rule/workbook validation.
 - Workbook `version` remains only a visible update counter/freshness marker.
   Old workbook data is overwritten unless the user explicitly opens a future
   history module.
@@ -369,8 +378,8 @@ After writing the migration, update `supabase/schema.sql` so it represents the p
 - Existing `unit_price` columns that can be unknown are nullable.
 - New check constraints and indexes are included.
 - Dedicated calculation audit tables do not appear by default; any future schema
-  should store AI code-execution evidence only, not backend canonical
-  calculation results.
+  should store bounded source/prompt/workbook validation summaries only, not
+  backend canonical calculation results or hidden hosted-tool proof.
 - Existing trigger and grant sections stay intact.
 
 ## Verification Plan

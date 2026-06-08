@@ -74,7 +74,7 @@ const instructionPacketFixtures: { [slug: string]: object } = {
       '不要在材質不明的第一輪只顯示錏輕型鋼，省略同規格其他材質候選。',
       '不要把 C 型鋼切工/孔費免費規則套用到材料單價、特殊加工或非 C 型鋼品項。',
     ],
-    required_lookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
+    required_lookups: ['search_price_candidates', 'lookup_formula'],
     user_visible_notes: [
       '材質不明時，錏輕型鋼可作高信心暫估候選；第一輪需列出同規格其他材質選項。',
       '未指定客戶或找不到客戶價格等級時，查價使用 B 價 customerTierId 2；回覆提醒目前用價格B，提供客戶名稱後可再查該客戶報價，不要加最高/最貴說明；價格 bullet 用價格，不要寫 reviewed 價格。',
@@ -220,7 +220,7 @@ const instructionPacketFixtures: { [slug: string]: object } = {
     instruction:
       'H 型鋼常規米數為 6M、9M、10M、12M。H 型鋼非常規米數為 7M、8M、11M、13M、14M、15M；非常規米數理論上比一般米數材料 kg 單價 +0.3 元/kg，但產品價格表的 exact reviewed 非常規米數列已含非常規 +0.3 元/kg，查到 exact reviewed price row 時不可再加一次。',
     blocking_rules: ['不要把非常規 +0.3/kg 套到非 H 型鋼。'],
-    required_lookups: ['search_price_candidates', 'lookup_formula', 'lookup_defaults'],
+    required_lookups: ['search_price_candidates', 'lookup_formula'],
     user_visible_notes: ['H 型鋼 exact reviewed 非常規米數列已含 +0.3/kg。'],
     confirmation_questions: ['請確認 H 型鋼長度是否為常規或非常規米數。'],
     priority: '85',
@@ -250,7 +250,7 @@ const instructionPacketFixtures: { [slug: string]: object } = {
       '不要把未確認切工價填 0。',
       '不要忽略斜切、修頭尾、特別加工造成的切工次數或加價。',
     ],
-    required_lookups: ['lookup_defaults', 'search_price_candidates'],
+    required_lookups: ['search_price_candidates'],
     user_visible_notes: ['H 型鋼切工、開槽、沖孔、倒角要查 reviewed rows。'],
     confirmation_questions: ['請確認 H 型鋼加工數量、孔數、開槽路徑或斜切。'],
     priority: '75',
@@ -303,7 +303,7 @@ const instructionPacketFixtures: { [slug: string]: object } = {
     instruction:
       '【孔洞】孔數依表格孔數優先、圖面孔位交叉確認。4-Ø22 = 每片 4 孔。C 型鋼孔費預設免費。',
     blocking_rules: ['不要只依 OCR 算孔洞、開槽、折工。'],
-    required_lookups: ['search_price_candidates', 'lookup_defaults'],
+    required_lookups: ['search_price_candidates'],
     user_visible_notes: ['孔洞、開槽、折工要依表格和圖面交叉確認。'],
     confirmation_questions: ['請確認孔洞數、開槽路徑、折工刀數。'],
     priority: '70',
@@ -356,7 +356,7 @@ const instructionPacketFixtures: { [slug: string]: object } = {
     instruction:
       '黑角鐵、黑槽鐵、黑平鐵、黑鐵管等長條材料需要切工時，應依 reviewed cutting/default data 判斷。',
     blocking_rules: ['不要將黑鐵類切工價自動套到白鐵、錏材或厚料而不加價/不另計。'],
-    required_lookups: ['lookup_defaults'],
+    required_lookups: ['search_price_candidates'],
     user_visible_notes: ['黑鐵類切工需要依 reviewed cutting/default data。'],
     confirmation_questions: ['請確認切工是否為黑鐵長條材料。'],
     priority: '60',
@@ -386,7 +386,7 @@ const instructionPacketFixtures: { [slug: string]: object } = {
     selectors: { processingTypes: ['cutting', 'head_tail_trim'] },
     instruction: '一個切口預設為 1 刀；修頭尾時需把頭修、中間切、尾修分開判斷。',
     blocking_rules: ['不要把「修頭尾」算成 1 刀。'],
-    required_lookups: ['lookup_defaults'],
+    required_lookups: [],
     user_visible_notes: ['一個切口預設 1 刀；修頭尾要分開算。'],
     confirmation_questions: ['請確認是否有修頭尾、斜切、翼板切斜或特殊角度。'],
     priority: '60',

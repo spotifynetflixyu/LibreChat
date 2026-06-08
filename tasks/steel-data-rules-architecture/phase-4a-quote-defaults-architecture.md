@@ -195,17 +195,20 @@ Backend validation after AI selection:
 - default parameters satisfy the formula's allowed variables
 - quote-specific overrides are explicit, sourced, and high confidence
 
-## Retrieval Tool Plan
+## Retrieval Facet Plan
 
 Future provider-neutral tools should keep quote defaults retrieval behind backend validation.
 
-Quote-facing MVP tool:
+Quote-facing MVP surface:
 
-- `lookup_defaults`: returns bounded reviewed candidates for normalized customer/item/charge context.
+- `lookup_quote_rules`: returns bounded reviewed quote-default candidates for
+  normalized customer/item/charge context in its `quoteDefaults` facet.
 
 Not exposed as MVP tools:
 
 - `lookup_user_memory`: future adapter that returns bounded LibreChat user custom memory candidates for the current user/account and normalized task context.
+- `lookup_defaults`: internal composition term for the quote-default facet of
+  `lookup_quote_rules`, not a separate runtime tool.
 - `rank_defaults`: internal validation/ranking policy for retrieved candidates when more than one applies.
 - `select_calculation_rule`: backend internal validation that converts an AI-selected candidate into `selectedCalculationRule` only after source scope, review state, and formula compatibility checks pass.
 

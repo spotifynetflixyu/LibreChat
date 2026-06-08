@@ -1,11 +1,11 @@
 # Phase 2: Quote Data And Tools
 
 Goal: make Steel backend business tools source-backed while preserving AI-led
-quote orchestration and AI-code quote calculation. AI chooses the business tool
+quote orchestration and AI-owned quote calculation. AI chooses the business tool
 path from normalized quote context and user intent, then performs numeric quote
-calculation through OpenAI Responses code/Python execution. Backend tools query
-reviewed repositories, validate inputs, sanitize outputs, reject unsafe raw
-lookups, verify code-execution evidence for numeric totals, and handle ambiguity
+calculation on the fixed OAuth/Codex path from reviewed prompt context. Backend
+tools query reviewed repositories, validate inputs, sanitize outputs, reject unsafe raw
+lookups, validate subtotal/summary consistency for numeric totals, and handle ambiguity
 according to `CONTEXT.md` and
 `steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`.
 
@@ -19,12 +19,13 @@ Detailed data/rule architecture for the company's manual quoting workflow lives 
 - AI-proposed material/spec candidate validation, alias/search-term generation, and raw typo lookup guardrails.
 - Customer tier resolver.
 - Product price candidate search and ranking.
-- Stock allocation engine.
-- AI-code calculation lane using reviewed formula/rule/source prompt context.
+- Stock allocation rule/context retrieval for AI calculation.
+- AI calculation lane using reviewed formula/rule/source prompt context.
 - AI-selected formula/rule orchestration over reviewed backend data, with backend
-  source/rule validation before accepting AI code numeric results.
-- Code/Python execution evidence checks so prose-only numeric quote output does
-  not become a confirmed workbook total.
+  source/rule and subtotal/summary validation before accepting numeric workbook
+  results.
+- Summary/subtotal consistency checks so internally inconsistent numeric quote
+  output does not become a confirmed workbook total.
 - No required `quote_calculation_state` or `quote_calculation_item_audits`
   backend canonical-calculation tables.
 - Current-only workbook/calculation persistence: `version` is a visible update counter/freshness marker, while accepted updates overwrite latest database state instead of retaining historical workbook versions.
@@ -207,7 +208,9 @@ Tasks:
 - The current C-type cutting/hole free-charge behavior is a selectable calculation rule/lesson; when selected with high confidence, it can mark the charge true zero and skip remainder calculation.
 - The C-type cutting/hole free-charge rule must be configured as a quote default or reviewed rule fixture before AI can select it; backend code must not create the no-charge behavior from C-type product family alone.
 - Formula selection starts from AI-normalized material/spec context and reviewed `steel.formula_versions` rows. For example, `docs/reference/公式編號.xlsx` maps formula code `C` to `C型鋼`, but runtime tools use reviewed database rows rather than reading the spreadsheet.
-- Backend pricing/calculator code validates AI-selected `formulaCode` and `selectedCalculationRule`; it does not hard-code C-type free cutting or hole behavior by product family.
+- Backend validation checks AI-selected `formulaCode` and
+  `selectedCalculationRule`; it does not hard-code C-type free cutting or hole
+  behavior by product family.
 - Treat quote defaults/admin rule parameters as defaults. User-provided conversation numbers or amounts can override adjustable parameters when the override is explicit and high confidence.
 - Keep formula identity fixed through `formulaCode`; keep numeric values adjustable through `defaultParameters` and `parameterOverrides`.
 - AI must retrieve matching quote defaults through backend tools using normalized customer/item/charge context. Retrieval returns bounded reviewed candidates with origin refs, not the whole memory corpus.
@@ -232,65 +235,78 @@ Verification:
 rtk npm run test:packages:api -- --testPathPatterns="src/steel/pricing/.*\\.spec\\.ts$"
 ```
 
-## Milestone 2.5: Stock Allocation Engine
+## Milestone 2.5: Stock Allocation Rule Context
 
 Files:
 
-- Create `packages/api/src/steel/allocation/lengths.ts`
-- Create `packages/api/src/steel/allocation/usage.ts`
-- Add tests under `packages/api/src/steel/allocation/*.spec.ts`
+- Create `packages/api/src/steel/allocation/context.ts`
+- Add tests under `packages/api/src/steel/allocation/context.spec.ts`
 
 Tasks:
 
-- Apply "not selling exact cut length" unless the customer explicitly allows exact finished-length pricing.
-- Allocate finished lengths against sellable stock length.
-- Default unknown stock length to 6M with low confidence.
-- Return stock length, stock pieces, pieces per stock, required finished pieces, remainder length/weight, algorithm, confidence, and low-confidence reason.
+- Return reviewed stock-length policy, sellable stock length candidates, default
+  behavior, source refs, confidence, and low-confidence reasons for AI
+  calculation.
+- Tell AI to apply "not selling exact cut length" unless the customer explicitly
+  allows exact finished-length pricing.
+- Tell AI that unknown stock length may default to 6M only as a low-confidence
+  assumption.
+- Do not implement stock-piece allocation as backend runtime arithmetic.
 
 Acceptance:
 
-- `鍍鋅L38*38*2.5mm*2000mm*26支` with 6M stock yields 9 stock pieces, not 26 x 2m net-length pricing.
+- `鍍鋅L38*38*2.5mm*2000mm*26支` receives source-backed stock-length context so
+  AI can calculate 9 stock pieces with 6M stock, not 26 x 2m net-length pricing.
 - Low-confidence reason is present when stock length is assumed.
 
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/allocation/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/allocation/context\\.spec\\.ts$"
 ```
 
-## Milestone 2.6: Deterministic Calculation Engine
+## Milestone 2.6: AI Calculation Context And Subtotal Validator
 
 Files:
 
-- Create `packages/api/src/steel/calculators/plate.ts`
-- Create `packages/api/src/steel/calculators/bar.ts`
-- Create `packages/api/src/steel/calculators/cutting.ts`
-- Create `packages/api/src/steel/calculators/holes.ts`
-- Create `packages/api/src/steel/calculators/slotting.ts`
-- Create `packages/api/src/steel/calculators/bending.ts`
-- Create `packages/api/src/steel/calculators/line.ts`
-- Add tests under `packages/api/src/steel/calculators/*.spec.ts`
+- Create `packages/api/src/steel/calculation/context.ts`
+- Create `packages/api/src/steel/workbook/subtotals.ts`
+- Add tests under `packages/api/src/steel/calculation/context.spec.ts`
+- Add tests under `packages/api/src/steel/workbook/subtotals.spec.ts`
 
 Tasks:
 
-- Implement plate, bar, cutting, hole, slotting, bending, and line-total calculators.
-- Implement cut count as a separate deterministic step inside the cutting calculator contract. It returns `operationCutCount` for physical/system-order use and `billableCutCount` for quote charging.
-- Count head trim, tail trim, split/multi-piece separation cuts, and remainder behavior from normalized evidence. If one stock piece produces `n` finished pieces with no remainder and no tail trim, separation cuts are `n - 1`; if a remainder exists, separation cuts are `n` because the last finished piece must still be separated from the remainder.
-- "Remainder omits tail trim" omits only the extra tail trim/finish cut, not the separation cut between the last finished piece and the remainder.
+- Build bounded calculation prompt/context from selected reviewed formula/rule
+  refs, normalized variables, source refs, stock allocation context, processing
+  context, and explicit quote-specific adjustments.
+- Require AI to return `operationCutCount` for physical/system-order use and
+  `billableCutCount` for quote charging.
+- Tell AI to count head trim, tail trim, split/multi-piece separation cuts, and
+  remainder behavior from normalized evidence. If one stock piece produces `n`
+  finished pieces with no remainder and no tail trim, separation cuts are `n - 1`;
+  if a remainder exists, separation cuts are `n` because the last finished piece
+  must still be separated from the remainder.
+- Tell AI that "remainder omits tail trim" omits only the extra tail trim/finish
+  cut, not the separation cut between the last finished piece and the remainder.
 - For every material that can carry cutting price, if cutting is needed and head/tail trimming is not explicit, the assistant must ask before confirmed cutting fee calculation.
 - If a remainder omits tail trim, assistant text and workbook notes must say `有餘料，切尾不計入`.
 - If cutting is not needed, workbook still records zero cutting count/fee with the no-cut reason.
-- Implement hole fee from structured hole groups: hole type, round diameter, non-round length/width or dimension label, count per piece, quantity multiplier, source refs, and confidence.
-- Require AI Python / Code Interpreter calculation evidence for confirmed
-  customer-facing totals. Workbook numeric fields use code-backed results when
-  source/rule validation passes; concise calculation/source summaries may appear
-  in `價格來源` or `判讀備註`.
+- Include structured hole groups in AI calculation context: hole type, round
+  diameter, non-round length/width or dimension label, count per piece, quantity
+  multiplier, source refs, and confidence.
+- Validate confirmed customer-facing totals by checking that
+  `summary.totalAmount` and `summary.confirmedAmount` match the sum of line
+  `subtotal` values after source/rule validation. Concise calculation/source
+  summaries may appear in `價格來源` or `判讀備註`.
 - Support future Admin-reviewed prices for non-round hole types such as oval, long, rectangular, and custom holes even when the current source price row is `0` or missing during development.
-- Implement slotting fee from structured slot paths: path type, segment lengths, path quantity, quantity multiplier, source refs, and confidence.
+- Include structured slot paths in AI calculation context: path type, segment
+  lengths, path quantity, quantity multiplier, source refs, and confidence.
 - Separate confirmed totals from low-confidence estimated totals.
 - Use `未確認`, not `0`, for unknown unit price or amount.
 - Record formula code/version and calculation basis for workbook lines.
-- Validate and normalize explicit quote-specific adjustments after default price/rule resolution. Calculators may consume the normalized adjustment object, but Phase 2 does not persist workbook mutation.
+- Validate and normalize explicit quote-specific adjustments after default
+  price/rule resolution. AI calculation context may consume the normalized
+  adjustment object, but Phase 2 does not persist workbook mutation.
 
 Canonical quote adjustment object:
 
@@ -336,7 +352,7 @@ Acceptance:
 Verification:
 
 ```bash
-rtk npm run test:packages:api -- --testPathPatterns="src/steel/calculators/.*\\.spec\\.ts$"
+rtk npm run test:packages:api -- --testPathPatterns="src/steel/(calculation|workbook)/(context|subtotals)\\.spec\\.ts$"
 ```
 
 ## Milestone 2.7: Tool Registry
@@ -352,10 +368,9 @@ Files:
 
 Allowed MVP runtime tools:
 
-- `lookup_instructions`
+- `lookup_quote_rules`
 - `search_customers`
 - `search_price_candidates`
-- `lookup_defaults`
 - `lookup_formula`
 
 MVP flow:
@@ -363,22 +378,24 @@ MVP flow:
 1. AI starts from the Admin-managed Agent Instruction injected into every Steel
    quote turn, not from a code-hardcoded provider prompt. The Agent Instruction
    says raw customer text is evidence and tells AI when to call
-   `lookup_instructions` before applying detailed material/spec/process
-   inference.
+   `lookup_quote_rules` before applying detailed material/spec/process
+   inference or reviewed defaults.
 2. AI judges the order's steel category, likely material/product family,
    surface treatment, dimensions, quantity, and missing fields from quote
    evidence.
-3. AI calls `lookup_instructions` when it needs task-scoped quoting rules for
-   candidate generation, such as `docs/reference/instruction.txt` derived
-   price-before-weight policy, material alias expansion, C-type rules,
-   long-material cutting behavior, hole/slot/bending interpretation, or workbook
-   output requirements. The tool returns bounded reviewed instruction packets,
-   not the full instruction source. The request is batched by interpreted order
-   context: include all detected material families, task types, processing
-   types, formula candidates, customer/tier/project context, and low-confidence
-   facets together. Do not query instruction packets separately for hole count,
-   cut count, slotting path, bending, formula, or each small material-line
-   detail unless later user input materially changes the context. The lookup
+3. AI calls `lookup_quote_rules` when it needs task-scoped quoting rules or
+   reviewed quote defaults for candidate generation, such as
+   `docs/reference/instruction.txt` derived price-before-weight policy, material
+   alias expansion, C-type rules, long-material cutting behavior,
+   hole/slot/bending interpretation, defaults, or workbook output requirements.
+   The tool returns bounded reviewed instruction packets plus quote defaults,
+   not the full instruction/default corpus. The request is batched by
+   interpreted order context: include all detected material families, task
+   types, processing types, formula candidates, customer/tier/project context,
+   and low-confidence facets together. Do not query rule/default packets
+   separately for hole count, cut count, slotting path, bending, formula, or each
+   small material-line detail unless later user input materially changes the
+   context. The lookup
    should expand matching packet groups, such as `h-type-quote-core`,
    `c-type-quote-core`, `angle-zinc-quote-core`, `plate-processing-core`, and
    `workbook-output-core`, so one call returns the related price/formula/
@@ -405,8 +422,8 @@ Instruction packet storage:
   status, version/supersession, and source refs.
 - Runtime lookup is batched by the interpreted order context, not by individual
   detail. A mixed order should send every detected material/task/process/formula
-  facet in one `lookup_instructions` request so returned packets can be applied
-  across all relevant lines.
+  facet in one `lookup_quote_rules` request so returned packets/defaults can be
+  applied across all relevant lines.
 - Related packets should be grouped by stable `packetGroup` / bundle keys. The
   tool should return grouped sibling packets together; it should not make the AI
   issue separate lookups for a material's formula, cutting, holes, workbook
@@ -433,8 +450,8 @@ Agent Instruction content:
   source/evidence refs. This is Steel order interpretation policy; generic
   provider file handling still stays under `fileAnalysis.instructions` where
   applicable.
-- Tool rules cover `lookup_instructions`, `search_customers`,
-  `search_price_candidates`, `lookup_defaults`, `lookup_formula`, raw-typo
+- Tool rules cover `lookup_quote_rules`, `search_customers`,
+  `search_price_candidates`, `lookup_formula`, raw-typo
   guardrails, and when not to call a tool.
 - Workbook rules cover when AI may write provisional workbook notes/candidates,
   when confirmed totals are forbidden, and when to use the workbook output tool
@@ -458,9 +475,9 @@ Not exposed as MVP tools:
   candidate-query modes.
 - `lookup_weight_spec`, `lookup_cutting_price`, `lookup_processing_price`, and
   `lookup_material_rules`: backend internal repositories or future extension
-  tools. The MVP lookup surface should use `search_price_candidates`,
-  `lookup_defaults`, and `lookup_formula` to return the facts AI needs for
-  quote reasoning.
+  tools. The MVP lookup surface should use `lookup_quote_rules`,
+  `search_price_candidates`, and `lookup_formula` to return the facts AI needs
+  for quote reasoning.
 - `lookup_formula_version`: storage-oriented naming; MVP exposes
   `lookup_formula` and lets backend return reviewed active formula candidates
   and version refs.
@@ -470,8 +487,8 @@ Not exposed as MVP tools:
   later explicit workbook-context tool, not part of the reviewed-data MVP tool
   list.
 - `search_source_chunks`: too broad for the MVP AI inference path. Use
-  `lookup_instructions` for reviewed task-scoped instruction packets instead of
-  arbitrary source text retrieval.
+  `lookup_quote_rules` for reviewed task-scoped instruction packets/defaults
+  instead of arbitrary source text retrieval.
 
 Tasks:
 
@@ -481,16 +498,20 @@ Tasks:
   silently choose product-price, customer, default, formula, or workbook output
   paths from raw customer text.
 - Do not expose quote-item normalization, price-search-term generation, or price-ranking helpers as runtime tools. AI generates material/spec candidates and `candidateQueries` in reasoning; backend tools validate lookup inputs and source-backed outputs.
-- Add `lookup_instructions` as the instruction retrieval tool. It should return
-  reviewed, task-scoped instruction packets seeded by sources such as
-  `docs/reference/instruction.txt`, with version/source refs and applicability
-  filters. It must not dump the entire instruction file into prompt context.
+- Add `lookup_quote_rules` as the merged instruction/default retrieval tool. It
+  should return reviewed, task-scoped instruction packets seeded by sources such
+  as `docs/reference/instruction.txt`, plus reviewed quote defaults from
+  `steel.quote_defaults`, with version/source refs and applicability filters.
+  It must not dump the entire instruction/default corpus into prompt context.
 - Keep the Agent Instruction Admin-managed and default-injected every turn. It
-  can define global workflow/tool rules and route to `lookup_instructions`.
+  can define global workflow/tool rules and route to `lookup_quote_rules`.
   Task-scoped material/process/formula details should still be stored as
   reviewed instruction packets when selective retrieval is needed.
 - `search_price_candidates` queries reviewed price rows with confirmed normalized keys or derived `candidateQueries`, not with unnormalized customer evidence.
-- Add `lookup_defaults` as the other core reviewed lookup tool when the AI needs global/site-managed material defaults, customer defaults, formula defaults, or no-charge defaults. It must use typed filters and return bounded reviewed candidates with origin refs, not dump all defaults into prompt context.
+- `lookup_quote_rules = lookup_instructions + lookup_defaults`; the latter names
+  describe internal composition, not separate runtime tools. Quote defaults must
+  use typed filters and return bounded reviewed candidates with origin refs, not
+  dump all defaults into prompt context.
 - Add `lookup_formula` as the formula retrieval tool. It should return reviewed
   active formula candidates and version/source refs without exposing
   storage-oriented version selection as a separate AI decision.

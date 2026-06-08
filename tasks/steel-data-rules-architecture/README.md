@@ -7,16 +7,17 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 ## Accepted Decisions
 
 - Core runtime framework: AI owns quote interpretation, business tool
-  orchestration, and numeric quote calculation through OpenAI Responses
-  code/Python execution. From quote request evidence, it reasons about
-  material/spec candidates and decides whether the current step needs reviewed
-  rules/defaults, customer, product-price, or formula lookup. The MVP
-  AI-callable reviewed rule lookup is `lookup_quote_rules`, which merges
+  orchestration, and numeric quote calculation on the fixed OAuth/Codex path.
+  The provider may use code/Python capability internally, but backend acceptance
+  does not depend on hidden hosted-tool disclosure. From quote request evidence,
+  AI reasons about material/spec candidates and decides whether the current step
+  needs reviewed rules/defaults, customer, product-price, or formula lookup. The
+  MVP AI-callable reviewed rule lookup is `lookup_quote_rules`, which merges
   DB-backed instruction packets and quote defaults for one batched interpreted
   context. Other reviewed lookup tools are `search_customers`,
   `search_price_candidates`, and `lookup_formula`; weight, cutting, processing,
   material-rule, ranking, and quote arithmetic are expressed as reviewed rules
-  and prompts for the AI code lane, not backend pricing/calculator modules.
+  and calculation prompt context for AI, not backend numeric modules.
   Backend code must not silently choose a business lookup path from raw customer
   text, and AI reasoning helpers such as quote-item normalization, search-term
   generation, or price ranking must not be exposed as required runtime tools.
@@ -49,10 +50,27 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 - Customer inquiry files such as `docs/reference/客戶詢價.rtf` are quote request evidence and parser fixtures. They are not formal Admin import sources because real inquiries may arrive as handwriting, PDF, image, photo, chat text, or mixed attachments.
 - Customer chat instructions can create quote-specific adjustments such as no-charge items, special prices, added surcharges, or one-line rule overrides. These adjustments apply to the current workbook line and do not mutate formal source data or material rules.
 - Blank or `0.00` price/charge source values are unknown unless Admin review explicitly marks them as true zero price facts. Zero unit weight remains invalid or unknown unless a later source-specific data task proves a legitimate zero-weight business concept.
-- Formula and rule selection starts from AI-normalized quote context, such as material family, product family, spec, dimensions, quantity, and processing intent. The AI chooses the reviewed formula/rule/tool path and executes numeric calculation through OpenAI code/Python. Backend tools validate selected reviewed facts/source scope, workbook patches, and code-execution evidence; they do not run a parallel canonical quote calculator.
-- C-type free cutting/hole behavior is not a backend product-family hard-code. It is an AI-selected reviewed quote default or explicit quote-specific override that is included in the calculation-rule prompt sent to the AI code lane.
-- OpenAI Code Interpreter / AI-written Python is the quote calculation lane. Backend must be able to tell that customer-facing numbers came from code execution rather than probabilistic prose; if code-execution evidence is missing, loop/reject before accepting confirmed totals.
-- Do not add `steel.quote_calculation_state` or `steel.quote_calculation_item_audits` as backend canonical-calculation tables. If audit storage is later needed, keep it focused on current AI code-execution evidence, source/prompt traceability, and concise human-readable workbook notes, not backend-vs-AI numeric comparison.
+- Formula and rule selection starts from AI-normalized quote context, such as
+  material family, product family, spec, dimensions, quantity, and processing
+  intent. The AI chooses the reviewed formula/rule/tool path and calculates quote
+  numbers on the OAuth/Codex path. Backend tools validate selected reviewed
+  facts/source scope, workbook patches, and subtotal/summary consistency; they do
+  not run a parallel canonical quote calculator.
+- C-type free cutting/hole behavior is not a backend product-family hard-code. It
+  is an AI-selected reviewed quote default or explicit quote-specific override
+  that is included in the calculation-rule prompt sent to the AI calculation
+  lane.
+- OpenAI Code Interpreter / AI-written Python may be available inside the
+  provider, but this path does not require the provider to disclose it as
+  workbook-total proof. If `summary.totalAmount` or `summary.confirmedAmount`
+  disagrees with the sum of line `subtotal` values, loop/reject before accepting
+  confirmed totals.
+- Do not add `steel.quote_calculation_state` or
+  `steel.quote_calculation_item_audits` as backend canonical-calculation tables.
+  If audit storage is later needed, keep it focused on current source/prompt
+  traceability, workbook patch summaries, subtotal validation status, and concise
+  human-readable workbook notes, not backend-vs-AI numeric comparison or hidden
+  hosted-tool proof.
 - Workbook `version` is only a visible update counter/freshness marker. Database storage keeps only the latest workbook state; old workbook/calculation data is overwritten unless a future history module is explicitly requested.
 - Explicit approximate quote requests can use the highest-confidence reviewed product-price candidate to produce a preview estimate even when the user has typos or incomplete specs, as long as assumptions, source refs, and confidence are shown.
 - Phase 2 source refs use one canonical `source_refs` JSONB array on quoteable fact rows. Each ref distinguishes source channel, fact category, locator, confidence, canonical key, and optional source version ID. Do not use a lone filename string as provenance.
@@ -66,8 +84,8 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 | Retrieve quoting interpretation/default rules                        | Reviewed instruction packets plus quote defaults from Admin-managed DB tables  | `lookup_quote_rules` returns task-scoped instruction packets/defaults before candidate expansion                                                             |
 | Select customer and tier in ERP                                      | `steel.customers`, `steel.customer_aliases`, `steel.customer_tiers`            | `search_customers` returns exact and ambiguous customer matches                                                                                              |
 | Search material/product in ERP                                       | `steel.price_items`, `steel.price_categories`, source aliases/search terms     | AI-generated `candidateQueries` -> `search_price_candidates`                                                                                                 |
-| Enter quantity and calculate by formula/weight                       | Reviewed rules/source rows plus OpenAI code/Python execution evidence          | `lookup_formula` and `lookup_quote_rules`; AI code lane performs arithmetic, backend validates evidence/source/workbook patch                                |
-| Calculate cutting, holes, slotting, bending                          | Reviewed processing price/rule rows plus OpenAI code/Python execution evidence | `lookup_quote_rules` and `lookup_formula`; AI code lane performs arithmetic, backend validates evidence/source/workbook patch                                |
+| Enter quantity and calculate by formula/weight                       | Reviewed rules/source rows plus AI calculation prompt context                  | `lookup_formula` and `lookup_quote_rules`; AI calculates, backend validates source scope, workbook patch, and subtotal/summary consistency                   |
+| Calculate cutting, holes, slotting, bending                          | Reviewed processing price/rule rows plus AI calculation prompt context         | `lookup_quote_rules` and `lookup_formula`; AI calculates, backend validates source scope, workbook patch, and subtotal/summary consistency                   |
 | Output quote/order workbook                                          | Mongo Steel workbook state and Excel renderer                                  | `patch_quote_workbook` semantic output tool for all AI workbook updates; backend projection creates validated workbook cell operations for workbook services |
 
 ## Architecture Layers
@@ -94,16 +112,21 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
 5. Tool execution layer
    - AI receives compact task-scoped prompt context and calls backend tools.
    - AI chooses the business tool path from its interpreted quote context and user intent; backend does not infer product-price vs weight vs cutting vs rule lookup from raw customer text.
-   - AI generates material/spec candidates and price query candidates itself. Runtime tools are for reviewed-row retrieval, scoped quote defaults retrieval, deterministic validation/calculation, and workbook output, not for making AI reasoning steps mandatory.
-   - AI may retrieve task-scoped Instruction Packets before candidate generation.
+   - AI generates material/spec candidates and price query candidates itself.
+     Runtime tools are for reviewed-row retrieval, scoped quote defaults
+     retrieval, source/workbook/subtotal validation, and workbook output, not for
+     making AI reasoning steps mandatory.
+   - AI may retrieve task-scoped Instruction Packets and reviewed quote defaults
+     before candidate generation through the merged `lookup_quote_rules` tool.
      Instruction Packets are reviewed rules such as price-before-weight,
      material alias expansion, C-type behavior, long-material cutting,
      hole/slot/bending interpretation, and workbook output requirements. They
-     are not raw source chunks or a full prompt dump. `lookup_instructions`
-     receives the full interpreted order context in one request; it is not a
-     per-hole, per-cut, per-slot, or per-line detail lookup loop. Matching
-     packet groups should expand together, so rules for the relevant steel
-     material are retrieved as one bundle.
+     are not raw source chunks or a full prompt dump. `lookup_quote_rules`
+     receives the full interpreted order context in one request and returns both
+     instruction packets and reviewed quote defaults; it is not a per-hole,
+     per-cut, per-slot, or per-line detail lookup loop. Matching packet groups
+     should expand together, so rules/defaults for the relevant steel material
+     are retrieved as one bundle.
    - The Agent Instruction and Instruction Packets are database records seeded
      from sources such as `docs/reference/instruction.txt` and updated through
      Admin backend flows. The Agent Instruction is the default injected every
@@ -118,12 +141,14 @@ It complements `tasks/v8.3/phase-2-data-tools.md`. The v8.3 Phase 2 plan remains
      type, formula code, customer/tier/project scope, priority, review state,
      active status, version/supersession, and source refs are also needed.
    - The MVP AI-callable reviewed lookup surface is intentionally small:
-     `lookup_instructions`, `search_customers`, `search_price_candidates`,
-     `lookup_defaults`, and `lookup_formula`. Exact-customer lookup, spec-price
-     lookup, weight lookup, cutting/processing lookup, material-rule lookup,
-     formula-version selection, arbitrary source-chunk search, calculation
-     primitives, and ranking helpers are backend internal capabilities or future
-     extension tools unless a later slice proves they must be exposed.
+     `lookup_quote_rules`, `search_customers`, `search_price_candidates`, and
+     `lookup_formula`. `lookup_quote_rules = lookup_instructions +
+     lookup_defaults`; the latter names describe internal composition, not
+     separate runtime tools. Exact-customer lookup, spec-price lookup, weight
+     lookup, cutting/processing lookup, material-rule lookup, formula-version
+     selection, arbitrary source-chunk search, calculation primitives, and
+     ranking helpers are backend internal capabilities or future extension tools
+     unless a later slice proves they must be exposed.
    - Tool schemas, repository filters, and calculator inputs use canonical English keys.
    - The backend remains authoritative for validation, source-backed lookup execution, deterministic ranking/calculation, confidence marking, audit, and rejection of unsafe raw typo lookups.
 

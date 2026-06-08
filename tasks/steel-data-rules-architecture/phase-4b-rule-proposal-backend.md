@@ -20,7 +20,8 @@ Deferred surface:
 - Admin approval/rejection API.
 - Promotion into `steel.calculation_rule_defaults`.
 - Global/site-managed quote defaults extension module, including publishing into `steel.quote_defaults`.
-- `lookup_defaults` retrieval tool for that extension module.
+- Published quote defaults returned through the `lookup_quote_rules`
+  `quoteDefaults` facet for that extension module.
 
 ## Data Contract
 

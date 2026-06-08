@@ -1,6 +1,8 @@
 # AI Rule Selection Scenarios
 
-Purpose: make the next quote vertical slice testable by describing how AI should reason about formula/rule/tool orchestration before backend calculators write workbook results.
+Purpose: make the next quote vertical slice testable by describing how AI should
+reason about formula/rule/tool orchestration before backend validates workbook
+results.
 
 These scenarios are not prompt text. They are expected behavior for `/steel/oauth-chat`, provider tool orchestration, backend tool validation, and workbook patching.
 
@@ -20,32 +22,31 @@ Backend tools decide:
 - whether a normalized item is complete enough to price
 - whether a formula/rule/source is reviewed, active, and applicable
 - whether a zero charge is supported by selected rule, reviewed true-zero fact, or quote-specific override
-- AI code/Python weight, fee, and line-total calculation
-- whether OpenAI Responses output includes code/Python execution evidence for
-  customer-facing numeric quote results
+- whether workbook summary totals match the sum of line subtotals
 - whether a workbook patch is valid and can be persisted
 
 Backend code must not implement product-family shortcuts such as
 `if C-type then cutting = 0`, and must not keep a parallel canonical quote
-calculator. Reviewed defaults/rules become prompt/tool context for the AI code
-lane.
+calculator. Reviewed defaults/rules become prompt/tool context for the AI
+calculation lane.
 
-C-type cutting/hole no-charge behavior must be configured as a site-managed quote default before it can be selected. AI retrieves and selects that default; backend validation accepts or rejects the selected origin. The calculator does not infer this behavior from C-type product family alone.
+C-type cutting/hole no-charge behavior must be configured as a site-managed quote default before it can be selected. AI retrieves and selects that default; backend validation accepts or rejects the selected origin. Backend code does not infer this behavior from C-type product family alone.
 
 For any material whose matched facts can include cutting price and whose order requires cutting, AI asks about head/tail trimming unless the evidence, selected rule, or user instruction already makes it explicit. If no cutting is needed, the workbook still records cutting as `0` with a reason such as `無需切料`. If a remainder exists and the selected rule omits tail trim, assistant text and workbook notes must explicitly say `有餘料，切尾不計入`.
 
-If AI produces numeric quote results without code/Python execution evidence, the
-assistant must not patch confirmed customer-facing totals. It should loop back to
-run the calculation through the code lane, or patch only interpretation/manual
-review state until code evidence is available.
+If AI produces numeric quote results whose summary total or confirmed amount does
+not match the sum of line subtotals, the assistant must not patch confirmed
+customer-facing totals. It should loop back to recalculate and emit a corrected
+workbook patch, or patch only interpretation/manual-review state until totals are
+internally consistent.
 
 When the user explicitly asks for an approximate quote, such as `一支多少` or `大約100支`, AI may provide a preview estimate from the highest-confidence reviewed product-price candidate even when the request has typos or incomplete specs. It must state the assumed spec, confidence, and low-confidence reason. If multiple candidates are equally plausible or the price source is missing/zero, AI asks for confirmation instead of silently producing a confirmed quote.
 
 When a single order contains multiple steel materials, each normalized item/line
-gets its own calculation prompt/source context, AI code result, confidence, and
-workbook patch target. Order-level totals aggregate code-backed item results
-only. Database storage keeps the latest workbook state only; accepted updates
-overwrite old state.
+gets its own calculation prompt/source context, AI-calculated result, confidence,
+and workbook patch target. Order-level totals aggregate line subtotals only.
+Database storage keeps the latest workbook state only; accepted updates overwrite
+old state.
 
 ## Scenario 1: Clear C-Type Item, Default Free Cut/Hole Rule
 
@@ -57,14 +58,14 @@ C150*3.0 長度 1200，數量 10支
 
 Expected AI logic:
 
-1. Call `lookup_instructions` for C-type/material-price interpretation policy seeded by `docs/reference/instruction.txt`, including price-before-weight and C-type finished-length/no-general-cutting behavior.
+1. Call `lookup_quote_rules` for C-type/material-price interpretation policy and reviewed quote defaults, including price-before-weight and C-type finished-length/no-general-cutting behavior.
 2. Propose normalized quote item: material family C-type, spec candidate `C150`, thickness `3.0`, length `1200mm`, quantity `10`.
 3. Call `search_customers` when customer context is present so tier and customer-scoped defaults can participate. Exact customer matches are returned by this tool, not by a separate `lookup_customer` MVP tool.
 4. Use AI reasoning plus the returned Instruction Packets to produce material/spec candidates; proceed only if the candidate is high confidence or user confirmed.
 5. Call `search_price_candidates` with confirmed normalized keys or AI-derived `candidateQueries`.
 6. Use reviewed product-price unit weight when the returned price row carries one; otherwise rely on backend internal validation or formula/default facts rather than an exposed `lookup_weight_spec` MVP tool.
 7. Call `lookup_formula` and select formula code `C` when returned as a reviewed C-type match.
-8. Call `lookup_defaults` for the preconfigured site-managed C-type quote default that says C-type cutting and hole charges are not counted. Material-rule lookup and selected-rule validation are backend internal policy, not separate MVP tools.
+8. Use the `quoteDefaults` returned by `lookup_quote_rules` for the preconfigured site-managed C-type quote default that says C-type cutting and hole charges are not counted. Material-rule lookup and selected-rule validation are backend internal policy, not separate MVP tools.
 9. Select the C-type finished-length rule.
 10. AI proposes the workbook calculation using material price, unit weight, length, quantity, formula code `C`, selected default/rule, and charge exclusions; backend validation/calculation confirms accepted numeric fields before they become confirmed totals.
 11. Propose workbook patch for quote details, price sources, interpretation notes, manual review if needed, summary, and customer quote.
@@ -273,7 +274,7 @@ Expected future applied-default assistant message:
 已套用此客戶預設規則：H 型鋼切工與孔工不計價。材料費仍依 H 型鋼規格、長度與單價計算。
 ```
 
-## Scenario 7: Prose Number Without Code Evidence
+## Scenario 7: Summary Total Does Not Match Line Subtotals
 
 User:
 
@@ -284,36 +285,36 @@ User:
 Provider/tool result:
 
 ```text
-Assistant prose says: line_total = 19,400
-Code/Python execution evidence: missing
+報價明細.line_1.subtotal = 19,430
+總結.summary.totalAmount = 19,400
+總結.summary.confirmedAmount = 19,400
 Reviewed price source: A-tier unit price 194.3
 ```
 
 Expected AI logic:
 
-1. Do not accept the prose-only number as a confirmed workbook total.
-2. Prompt/loop the model to execute Python/code with the reviewed unit price,
-   quantity, weight, formula/rule refs, and assumptions.
-3. Patch confirmed numeric workbook fields only after code-execution evidence is
-   present and source/rule validation passes.
-4. If code execution is unavailable, patch only interpretation/manual-review
-   fields and mark the total as `未確認`.
+1. Do not accept the mismatched summary values as confirmed workbook totals.
+2. Prompt/loop the model to recalculate from reviewed unit price, quantity,
+   weight, formula/rule refs, and assumptions.
+3. Patch confirmed numeric workbook fields only after source/rule validation and
+   subtotal/summary consistency pass.
+4. If the model cannot emit internally consistent totals, patch only
+   interpretation/manual-review fields and mark the total as `未確認`.
 
 Expected assistant message:
 
 ```text
-目前不能確認總額，因為這次回覆只有文字數字，沒有 code/Python 計算證據。我會先用 reviewed 單價與數量要求 AI 走 code 計算；拿到 code-backed result 後再更新 workbook 小計。
+目前不能確認總額，因為報價明細小計合計為 19,430，但總結寫成 19,400。我會依 reviewed 單價、數量、重量與公式重新計算，等總結與明細一致後再更新 workbook。
 ```
 
 Backend guard:
 
-- Prose-only numeric fields are not persisted as confirmed customer-facing totals.
-- AI Python code/output or hosted-tool metadata is stored in backend-readable
-  audit/log fields when needed, not visible workbook cells.
-- Workbook `價格來源` / `判讀備註` may contain concise calculation/source summaries,
-  not raw Python or verbose output.
-- If code execution is unavailable or source/rule validation fails, no confirmed
-  customer-facing total is patched.
+- Mismatched summary totals are not persisted as confirmed customer-facing totals.
+- Hidden provider code/tool output is not required as acceptance evidence and is
+  not visible workbook content.
+- Workbook `價格來源` / `判讀備註` may contain concise calculation/source summaries.
+- If source/rule validation fails or summary totals disagree with line subtotals,
+  no confirmed customer-facing total is patched.
 
 ## Scenario 8: 全華興 亞L30x30 Approximate Quote
 
@@ -325,7 +326,7 @@ User:
 
 Expected AI logic:
 
-1. Call `lookup_instructions` for material alias/surface-treatment/angle-steel price-search policy, especially oral conversion rules such as `L` as angle/L steel and `亞` as a low-confidence surface clue that must be validated against reviewed rows.
+1. Call `lookup_quote_rules` for material alias/surface-treatment/angle-steel price-search policy and reviewed quote defaults, especially oral conversion rules such as `L` as angle/L steel and `亞` as a low-confidence surface clue that must be validated against reviewed rows.
 2. Call `search_customers` and match `全華興` to tier `A級`.
 3. AI first reads the raw item text as evidence and identifies both issues: `亞` may be a typo/colloquial material clue, and `L30x30` is incomplete because thickness/length/surface variant are not confirmed.
 4. AI proposes possible material/spec candidates from the raw evidence and returned Instruction Packets, not a confirmed source fact. For `亞L30*30`, likely candidates include angle/L steel, equal angle `30x30`, and possible surface/product wording such as `錏`, `錏成型角鐵`, `鍍鋅角鐵`, or generic `角鐵`.
@@ -384,14 +385,16 @@ Backend guard:
 
 - Product-price table row wins over handbook weight for this piece-priced quote.
 - AI owns tool orchestration: after candidate reasoning it chooses among the MVP
-  reviewed lookup tools: `lookup_instructions`, `search_customers`,
-  `search_price_candidates`, `lookup_defaults`, and `lookup_formula`. Backend
+  reviewed lookup tools: `lookup_quote_rules`, `search_customers`,
+  `search_price_candidates`, and `lookup_formula`. Backend
   tools validate the chosen tool input and source facts, but do not silently
   choose the domain lookup path from raw text. Weight, cutting, processing,
   material-rule, ranking, and calculator details remain backend internal unless
   a later slice explicitly exposes them.
 - `search_price_candidates` must not use raw typo/incomplete source text such as `亞L30x30` as a canonical `product_name` or `spec_key`. It searches only derived `candidateQueries` or confirmed normalized keys.
-- Workbook generation may record provisional estimates and candidate/source context, but confirmed totals require user confirmation when spec or price candidate selection remains ambiguous.
+- Workbook generation may record provisional estimates and candidate/source
+  context, but confirmed totals need user confirmation when spec or price
+  candidate selection remains ambiguous.
 - The preview is allowed because the user asked approximately and the selected candidate is the highest-confidence source-backed match. Overall confidence remains medium when required dimensions are missing, and assistant text must ask the user to confirm the assumed candidate.
 - If multiple plausible reviewed candidates remain, tool output must include all bounded options with enough product/spec/price/source detail for the user to choose without opening the source files.
 - If the product price is `0`, missing, or tied across multiple plausible specs, no confirmed customer-facing total is patched before confirmation. A provisional/manual-review workbook note may record the candidates.
@@ -407,20 +410,21 @@ User:
 Expected AI logic:
 
 1. Normalize this as one quote/order request with two item candidates.
-2. Upsert one current calculation state for the conversation/workbook.
-3. Upsert one current item calculation plan and audit row for the C-type line.
-4. Upsert a separate current item calculation plan and audit row for the angle line.
-5. Run AI code calculation separately per item with line-specific reviewed source
-   and rule context.
-6. Patch workbook line fields separately, then aggregate summary totals from
-   code-backed item results.
+2. Keep one current workbook state for the conversation/workbook.
+3. Keep line-specific calculation/source context for the C-type line.
+4. Keep separate line-specific calculation/source context for the angle line.
+5. Run AI calculation separately per item with line-specific reviewed source and
+   rule context.
+6. Patch workbook line fields separately, then aggregate summary totals from line
+   subtotals.
 7. If one item is medium confidence and the other is high confidence, preserve confidence per item instead of lowering the whole order to one undifferentiated status.
 
 Expected evidence handling:
 
-- Each item keeps its own calculation prompt/source context and code-execution
-  evidence.
-- AI code/output for one material line must not overwrite another line.
+- Each item keeps its own calculation prompt/source context and validation
+  summary.
+- Calculation/source summaries for one material line must not overwrite another
+  line.
 - Later accepted workbook updates overwrite current workbook values instead of
   creating retained historical versions.
 
@@ -428,6 +432,6 @@ Backend guard:
 
 - Workbook `報價明細` rows reference their own row-level calculation/source status
   when needed.
-- `總結` aggregates code-backed item results only.
+- `總結` aggregates accepted line subtotals only.
 - Concise `價格來源` / `判讀備註` summaries stay line-specific so users can revise one material without corrupting another.
 - Workbook `version` only tells the user/UI that the latest state has updated; it does not mean old database rows are preserved for rollback.

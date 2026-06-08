@@ -43,26 +43,29 @@ Goal: define the normalized database shape that AI tools can query without readi
 - Tier-specific values where the source has tier columns.
 - Adjustment rules and notes as structured rules where confirmed; unclear handwritten notes remain manual-review data.
 
-### AI Code Calculation Evidence
+### AI Calculation Context And Subtotal Validation
 
-- Quote arithmetic is performed by the OpenAI code/Python lane from reviewed
-  rule/source prompt context. Backend should not model a parallel canonical
-  calculation state.
+- Quote arithmetic is performed by AI on the fixed OAuth/Codex path from
+  reviewed rule/source prompt context. Backend should not model a parallel
+  canonical calculation state.
 - Database storage keeps only the latest workbook state. New accepted workbook
   patches overwrite previous current workbook values instead of creating retained
   historical versions.
 - `workbook_version` is only a visible update counter and optimistic freshness marker. It is not a historical snapshot key and must not imply old workbook data is retained.
-- If code-execution evidence needs to be retained, keep it as bounded
-  backend-readable response/tool-call audit or log data linked to the current
+- Backend acceptance validates selected source/rule scope, workbook patch shape,
+  and that `summary.totalAmount` / `summary.confirmedAmount` match the sum of
+  numeric line `subtotal` values. It does not require hidden hosted-tool or Code
+  Interpreter disclosure as proof.
+- If additional audit detail needs to be retained, keep it as bounded
+  backend-readable response/tool-call summaries or log data linked to the current
   workbook/message/line context. Do not introduce `quote_calculation_state` or
   `quote_calculation_item_audits` as required canonical-calculation tables.
-- Python code, raw stdout, container output, and long JSON artifacts must not be
-  written into visible workbook sheets.
+- Python code, raw stdout, container output, hidden-tool metadata, and long JSON
+  artifacts must not be written into visible workbook sheets.
 - `價格來源` and `判讀備註` may still contain concise human-readable calculation
   summaries, source choices, and assumptions for the user.
 - Workbook rows may carry compact calculation/source status; backend reads
-  response/tool-call evidence when needed to verify that numbers came from code
-  execution, not prose-only generation.
+  workbook semantic patches when needed to verify subtotal/summary consistency.
 
 ## Accepted Schema Direction
 
@@ -98,13 +101,13 @@ Typed/indexed fields required before repositories:
 - Product price: `product_price_unit_weight`, `product_price_unit_weight_unit`, `value_state`, `review_state`, `source_refs`.
 - Cutting/processing/hole/slotting/bending prices: nullable price fields, `value_state`, `review_state`, `source_refs`.
 - Material rules: `priority`, lookup selector fields such as `material_family` or condition type, `source_refs`; keep `rule_body` JSONB validated by code per `rule_type`.
-- Formula versions: source expression/prompt-safe formula text, allowed variables,
-  review state, and `source_refs`; the AI code lane executes the arithmetic from
+- Formula versions: source expression/prompt-safe formula text, allowed
+  variables, review state, and `source_refs`; AI executes arithmetic from
   reviewed formula/rule context.
-- Code-calculation evidence: provider/model refs, message/tool-call refs,
-  workbook/line refs, calculation prompt/source refs, code/Python execution
-  metadata, result summary, and evidence status when this is not already covered
-  by existing response/tool-call records.
+- Calculation context and validation summary: provider/model refs,
+  message/tool-call refs, workbook/line refs, calculation prompt/source refs,
+  selected assumptions, result summary, and subtotal-validation status when this
+  is not already covered by existing response/tool-call records.
 
 Use `metadata` only for non-query source notes, import details, or extra display/audit context.
 

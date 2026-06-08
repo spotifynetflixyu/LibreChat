@@ -24,7 +24,7 @@ Material rules are company defaults. A customer can still request a quote-specif
 
 ## Formula And Rule Selection
 
-Formula/rule selection is an AI orchestration decision over reviewed backend data, not a product-family `if` statement inside calculators.
+Formula/rule selection is an AI orchestration decision over reviewed backend data, not a product-family `if` statement inside backend pricing/calculation code.
 
 The intended flow is:
 
@@ -32,10 +32,10 @@ The intended flow is:
 2. Backend tools validate the candidate shape and ambiguity state.
 3. AI uses normalized material family, product family, spec, dimensions, length, quantity, and processing intent to call formula/rule lookup tools.
 4. AI selects a reviewed `formulaCode` and `selectedCalculationRule` when the returned candidates support the item.
-5. Backend tools validate that selected formula/rule origin, review state, active state, material selector, formula compatibility, and source refs still match before calculating.
-6. Calculators execute the selected formula/rule with explicit numeric inputs and parameter overrides; they do not rediscover business rules from raw text.
+5. Backend tools validate that selected formula/rule origin, review state, active state, material selector, formula compatibility, and source refs still match before workbook totals are accepted.
+6. AI calculates with the selected formula/rule, explicit numeric inputs, and parameter overrides; it does not rediscover business rules from raw text during arithmetic.
 
-`docs/reference/公式編號.xlsx` is the source reference for formula meaning. For example, formula code `C` maps to `C型鋼` with the source expression `四捨五入(單位重*長度,2)/100`. Runtime calculators should use reviewed database formula rows derived from that source, not read the spreadsheet directly.
+`docs/reference/公式編號.xlsx` is the source reference for formula meaning. For example, formula code `C` maps to `C型鋼` with the source expression `四捨五入(單位重*長度,2)/100`. Runtime AI calculation prompt context should use reviewed database formula rows derived from that source, not read the spreadsheet directly.
 
 For C-type steel, AI may select the C-type finished-length calculation rule when the normalized quote item strongly matches C-type aliases/specs. Backend validation then allows that selected rule to:
 
@@ -46,7 +46,7 @@ For C-type steel, AI may select the C-type finished-length calculation rule when
 
 Backend code must reject a silent zero if AI sends `cutting = 0` or `hole = 0` without a selected rule, reviewed true-zero fact, or explicit quote-specific override.
 
-The C-type no-charge cutting/hole behavior must exist as a configured site-managed quote default or reviewed rule before quote runs can select it. This default can be seeded or Admin-reviewed, but it must be data/retrieval-owned. Backend pricing and calculator code must not create the behavior from product family alone.
+The C-type no-charge cutting/hole behavior must exist as a configured site-managed quote default or reviewed rule before quote runs can select it. This default can be seeded or Admin-reviewed, but it must be data/retrieval-owned. Backend code must not create the behavior from product family alone.
 
 ## MVP Rule Types
 
@@ -129,7 +129,7 @@ Behavior:
 
 - Product price explicit reviewed hole/punching item wins.
 - Otherwise use reviewed hole-processing data through processing-price lookup.
-- Runtime lookup and calculators must support future Admin-reviewed non-round hole prices even when the current source price row is `0` or missing.
+- Runtime lookup and AI calculation context must support future Admin-reviewed non-round hole prices even when the current source price row is `0` or missing.
 - C-type holes do not use the generic hole-fee path by default; they follow the selected C-type special pricing rule/default. Hole count can still be recorded in notes and system output.
 - Hole count follows table count first, with drawing hole positions used for cross-check.
 - Clear drawing/order table counts are high-confidence primary evidence for hole count. If `產品價格.xlsx` has a clear punching/hole-processing item for the requested work, that item wins over generic hole-fee lookup.
@@ -180,7 +180,7 @@ The prompt bundle should not include all material rules. It should include:
 ## Exit Criteria
 
 - AI can access relevant rules through task-scoped prompt context,
-  `lookup_instructions`, `lookup_defaults`, `lookup_formula`, or backend
+  `lookup_quote_rules`, `lookup_formula`, or backend
   validation without exposing a separate MVP `lookup_material_rules` tool.
 - Irrelevant rules are not injected into unrelated quote items.
 - Material rules are covered by unit tests and manual scenario tests.

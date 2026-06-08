@@ -614,15 +614,13 @@ describeHBeamProcessing('Steel OpenAI OAuth H 型鋼 processing smoke', () => {
       );
       const lookupIndex = getToolCallIndex(run.capturedCalls, 'lookup_quote_rules');
       const priceIndex = getToolCallIndex(run.capturedCalls, 'search_price_candidates');
-      const defaultsIndex = getToolCallIndex(run.capturedCalls, 'lookup_defaults');
       const lookupResult = stringify(run.capturedCalls[lookupIndex]?.result);
-      const defaultsPayload = stringify(getToolCalls(run.capturedCalls, 'lookup_defaults'));
       const pricePayload = stringify(getToolCalls(run.capturedCalls, 'search_price_candidates'));
       const serialized = stringify(run);
 
       expect(lookupIndex).toBeGreaterThanOrEqual(0);
       expect(priceIndex).toBeGreaterThan(lookupIndex);
-      expect(defaultsIndex === -1 || defaultsIndex > lookupIndex).toBe(true);
+      expect(getToolCallIndex(run.capturedCalls, 'lookup_defaults')).toBe(-1);
       expect(stringify(run.capturedCalls[lookupIndex]?.arguments)).toContain('h_beam');
       expect(stringify(run.capturedCalls[lookupIndex]?.arguments)).toMatch(/cutting|slotting|hole/);
       expect(lookupResult).toContain('H 型鋼切工');
@@ -632,11 +630,7 @@ describeHBeamProcessing('Steel OpenAI OAuth H 型鋼 processing smoke', () => {
       expect(pricePayload).toContain('開槽加工');
       expect(pricePayload).toContain('沖孔加工');
       expect(pricePayload).toContain('unitPrice');
-      if (defaultsIndex >= 0) {
-        expect(defaultsPayload).toMatch(/開槽|沖孔|另計|requiresConfirmation/);
-      } else {
-        expect(lookupResult).toMatch(/開槽|沖孔|另計/);
-      }
+      expect(lookupResult).toMatch(/開槽|沖孔|另計/);
       expect(run.response.text).toMatch(/切工|對半切/);
       expect(run.response.text).toMatch(/開槽|KZZB10/);
       expect(run.response.text).toMatch(/沖孔|KZZB11|4[-－]?Ø?22/i);

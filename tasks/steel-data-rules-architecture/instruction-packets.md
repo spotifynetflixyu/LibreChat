@@ -1,7 +1,7 @@
 # Instruction Packets
 
-Goal: design task-scoped `steel.instruction_packets` records retrieved by
-`lookup_quote_rules` and the legacy-compatible `lookup_instructions`.
+Goal: design task-scoped `steel.instruction_packets` records retrieved through
+the merged `lookup_quote_rules` runtime tool.
 
 This document owns only Instruction Packet design and seed packet text. The
 default every-turn Agent Instruction lives in
@@ -27,15 +27,14 @@ Instruction Packets are reviewed, task-scoped instructions:
    sends all detected catalog families, task types, processing types, formula
    candidates, customer/tier context, and low-confidence facets together instead
    of separate lookups for each small detail.
-5. `lookup_instructions` remains as a compatibility tool that returns only the
-   instruction-packet subset from the same DB-backed storage.
-6. `lookup_defaults` remains as a compatibility tool that returns only quote
-   defaults from `steel.quote_defaults`.
-7. AI uses returned packet/default bodies to generate material/spec candidates and
+5. `lookup_quote_rules = lookup_instructions + lookup_defaults`: the merged
+   runtime tool returns both the instruction-packet subset and reviewed quote
+   defaults in one bounded response.
+6. AI uses returned packet/default bodies to generate material/spec candidates and
    decide which reviewed lookup tool to call next.
-8. Packets and defaults guide interpretation; they do not confirm source facts,
+7. Packets and defaults guide interpretation; they do not confirm source facts,
    prices, formulas, customer tiers, true-zero charges, or totals.
-9. Reviewed data lookup and backend validation still decide confirmed values.
+8. Reviewed data lookup and backend validation still decide confirmed values.
 
 ## Injection Language Rule
 
@@ -62,8 +61,8 @@ Use Instruction Packets for rules that should not be injected into every turn:
 - 經審核的 customer / tier / project scoped 判讀規則。
 
 Instruction Packets 不可繞過 reviewed data lookup。Packet 只協助 AI 產生候選與
-選擇工具；`search_price_candidates`、`lookup_defaults`、`lookup_formula` 與
-backend validation 才能決定 confirmed facts。
+選擇工具；`lookup_quote_rules` 回傳的 defaults、`search_price_candidates`、
+`lookup_formula` 與 backend validation 才能決定 confirmed facts。
 
 ## Storage Shape
 
@@ -102,10 +101,10 @@ Implementation stores selectors/body as JSONB where that keeps Admin editing
 flexible, but runtime APIs expose typed DTOs with canonical English keys.
 
 As of the DB-backed runtime slice, this table is no longer only planned:
-`lookup_quote_rules` and `lookup_instructions` must read active reviewed records
-from `steel.instruction_packets`. Static code packets may be used only as seed
-material, migration fixtures, or tests; they must not be the normal runtime
-source of Admin-editable quote rules.
+`lookup_quote_rules` must read active reviewed records from
+`steel.instruction_packets` and reviewed defaults from `steel.quote_defaults`.
+Static code packets may be used only as seed material, migration fixtures, or
+tests; they must not be the normal runtime source of Admin-editable quote rules.
 
 ## Selector Model
 
@@ -164,7 +163,7 @@ Grouping policy:
 - Related material packets should sit in the same group or list each other in
   `relatedPacketSlugs`; do not leave hole, cut, formula, price, and workbook
   rules as isolated fragments that require separate tool calls.
-- `lookup_quote_rules` and legacy `lookup_instructions` should expand matching groups. If the request includes
+- `lookup_quote_rules` should expand matching groups. If the request includes
   H 型鋼 with cutting and holes, return the H 型鋼 group plus shared cut/drawing/
   workbook packets in the same response.
 - Global packets can belong to `global-quote-core` and also be returned as
@@ -282,21 +281,23 @@ Expected response groups:
 - `conflicts`: conflicting packets/defaults that require manual review or user
   confirmation.
 
-## Legacy Tool Compatibility
+## Merged Rule Response Composition
 
-`lookup_instructions` remains callable for existing prompts and tests. It uses
-the same `steel.instruction_packets` repository but returns only:
+`lookup_quote_rules = lookup_instructions + lookup_defaults`. The names
+`lookup_instructions` and `lookup_defaults` describe internal response facets,
+not separate AI-callable runtime tools. The instruction facet uses the same
+`steel.instruction_packets` repository and returns:
 
 - `packetGroups`
 - `packets`
 - `notReturnedReason`
 - `conflicts`
 
-`lookup_defaults` remains callable for targeted defaults retrieval from
+The defaults facet returns targeted reviewed quote defaults from
 `steel.quote_defaults`.
 
-New runtime instructions should prefer `lookup_quote_rules` when AI needs both
-task-scoped interpretation rules and defaults in the same turn.
+Runtime instructions should call `lookup_quote_rules` when AI needs
+task-scoped interpretation rules, defaults, or both in the same turn.
 
 Response should be bounded and source-backed:
 
@@ -345,7 +346,7 @@ Tool rules:
   規則包，而不是只回單一最高相似 packet；若因 limit 無法完整回傳，必須在
   `notReturnedReason` 或 group summary 標明哪些 sibling packets 被省略。
 - 不要要求 AI 針對孔洞、切刀數、開槽、折工、公式或單一材料行各自拆成多次
-  `lookup_instructions`。只有當使用者後續新增材料或改變加工需求時，才需要重新查。
+  `lookup_quote_rules`。只有當使用者後續新增材料或改變加工需求時，才需要重新查。
 - 回傳數量不得超過 requested limit，加上必要 conflict markers。
 - context refs 必須包含 `sourceRefs`、packet ID 與 version。
 - sanitize raw source excerpts，不可回傳 full instruction corpus。
@@ -358,7 +359,7 @@ Admin review UI is paused, but backend/Admin lifecycle should be planned now:
 
 1. 從 `docs/reference/instruction.txt` seed draft packets。
 2. Admin/backend review 後，packet 進入 `reviewed`。
-3. active reviewed packet 才可由 `lookup_instructions` 回傳。
+3. active reviewed packet 才可由 `lookup_quote_rules` 回傳。
 4. 編輯 packet 時建立新版本；舊 active rows 需 supersede 或 retire。
 5. Runtime 在 prompt context refs、tool logs、workbook source notes、calculation
    audit 記錄實際回傳且影響報價的 packet IDs/versions。
@@ -447,8 +448,8 @@ Body:
 - C 型鋼通常是成品長度鋼捲抽料 / 成型下料，不套一般 6M 素材配料邏輯。
 - C 型鋼切工與孔費預設免費，可列為 true-zero/no-charge。
 - C 型鋼切工/孔費免費不代表材料單價、特殊加工、非 C 型鋼加工或其他 charge 免費。
-- AI 應呼叫 `lookup_formula` 查 reviewed formula candidates，並呼叫
-  `lookup_defaults` 查 reviewed no-charge/default behavior 與適用範圍。
+- AI 應呼叫 `lookup_formula` 查 reviewed formula candidates，並透過
+  `lookup_quote_rules` 取得 reviewed no-charge/default behavior 與適用範圍。
 
 Blocking rules:
 
@@ -989,12 +990,11 @@ Blocking rules:
 
 No additional MVP query tool is needed for this design.
 
-`lookup_instructions` covers reviewed interpretation policy retrieval.
-`search_price_candidates`, `lookup_defaults`, `lookup_formula`, and
-`search_customers` cover reviewed data lookup. Backend internal repositories and
-calculators can still read price, weight, cutting, processing, formula, and
-workbook data during validation/execution without exposing them as AI-callable
-MVP tools.
+`lookup_quote_rules` covers reviewed interpretation policy and quote-default
+retrieval. `search_price_candidates`, `lookup_formula`, and `search_customers`
+cover reviewed data lookup. Backend internal repositories can still read price,
+weight, cutting, processing, formula, and workbook data during
+validation/execution without exposing them as AI-callable MVP tools.
 
 Keep `search_source_chunks` out of the MVP quote inference path. It is too broad
 for this flow and would make future agents reintroduce raw source-text search
