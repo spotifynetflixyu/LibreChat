@@ -7,6 +7,7 @@ import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
   LanguageModelV3GenerateResult,
+  LanguageModelV3ToolCall,
 } from '@ai-sdk/provider';
 import type {
   SteelOAuthChatMessage,
@@ -20,6 +21,9 @@ const caseTimeoutMs = Number(
     process.env.STEEL_OPENAI_OAUTH_C_TYPE_ORAL_TIMEOUT_MS ??
     150000,
 );
+const dynamicImportOpenAIOAuthProvider = new Function('specifier', 'return import(specifier)') as (
+  specifier: string,
+) => Promise<typeof import('openai-oauth-provider')>;
 
 interface CapturedSteelToolCall {
   toolName: string;
@@ -30,13 +34,13 @@ interface CapturedSteelToolCall {
 interface LiveSteelChatRun {
   response: SteelProviderChatResponse;
   capturedCalls: CapturedSteelToolCall[];
-}
-
-interface LiveWorkbookPatchRun extends LiveSteelChatRun {
   capturedGenerateRounds: CapturedGenerateRound[];
 }
 
+interface LiveWorkbookPatchRun extends LiveSteelChatRun {}
+
 interface CapturedGenerateRound {
+  promptText?: string;
   toolChoice: LanguageModelV3CallOptions['toolChoice'];
   tools: string[];
   content: LanguageModelV3GenerateResult['content'];
@@ -137,6 +141,120 @@ function operationValueNumber(value: unknown): number | undefined {
 
   const normalized = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/u)?.[0];
   return normalized === undefined ? undefined : Number(normalized);
+}
+
+function parseToolCallInput(call: LanguageModelV3ToolCall): unknown {
+  return JSON.parse(call.input);
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function readString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const parsed = Number(value.replace(/,/g, '').trim());
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getGeneratedToolCalls(
+  rounds: readonly CapturedGenerateRound[],
+  toolName: string,
+): LanguageModelV3ToolCall[] {
+  return rounds.flatMap((round) =>
+    round.content.filter(
+      (part): part is LanguageModelV3ToolCall =>
+        part.type === 'tool-call' && part.toolName === toolName,
+    ),
+  );
+}
+
+function getPromptText(callOptions: LanguageModelV3CallOptions): string {
+  return stringify(callOptions.prompt);
+}
+
+async function loadManualCreateOpenAIOAuth() {
+  const provider = await dynamicImportOpenAIOAuthProvider('openai-oauth-provider');
+  return provider.createOpenAIOAuth;
+}
+
+function getExpectedCTypeSubtotalFromPriceCall(call: CapturedSteelToolCall): number {
+  if (!call.result.ok) {
+    throw new Error('search_price_candidates did not return a successful result.');
+  }
+
+  const candidates = readArray(call.result.data.priceCandidates);
+  const selected = candidates.map(readRecord).find((candidate) => {
+    if (!candidate) {
+      return false;
+    }
+
+    const productName = readString(candidate.productName);
+    const specKey = readString(candidate.specKey);
+    const unitPrice = readNumber(candidate.unitPrice);
+    const customerTierId = readNumber(candidate.customerTierId);
+
+    return (
+      productName.includes('錏輕型鋼') &&
+      specKey.includes('100x2.3') &&
+      unitPrice !== undefined &&
+      unitPrice > 0 &&
+      customerTierId === 2
+    );
+  });
+
+  if (!selected) {
+    throw new Error(
+      `Missing expected C 型鋼 price candidate: ${stringify(candidates.slice(0, 5))}`,
+    );
+  }
+
+  const existingSubtotal = readNumber(selected.subtotal);
+  if (existingSubtotal !== undefined) {
+    return Number(existingSubtotal.toFixed(2));
+  }
+
+  const unitPrice = readNumber(selected.unitPrice);
+  const unitWeight = readNumber(selected.productPriceUnitWeight);
+  if (unitPrice === undefined || unitWeight === undefined) {
+    throw new Error(`C 型鋼 candidate cannot derive subtotal: ${stringify(selected)}`);
+  }
+
+  return Number((unitPrice * unitWeight * 6).toFixed(2));
+}
+
+function getFirstPatchInputNumber(
+  patchInput: unknown,
+  path: readonly string[],
+): number | undefined {
+  let current = patchInput;
+  for (const segment of path) {
+    if (/^\d+$/u.test(segment)) {
+      current = readArray(current)[Number(segment)];
+      continue;
+    }
+
+    current = readRecord(current)?.[segment];
+  }
+
+  return operationValueNumber(current);
 }
 
 function getWorkbookPatchContextText(): string {
@@ -281,15 +399,17 @@ async function runLiveWorkbookPatchChat(
 ): Promise<LiveWorkbookPatchRun> {
   const config = parseSteelOpenAIConfig(process.env);
   const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+  const client = createSteelPostgresPool();
   const capturedCalls: CapturedSteelToolCall[] = [];
   const capturedGenerateRounds: CapturedGenerateRound[] = [];
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), caseTimeoutMs);
-  const { createOpenAIOAuth } = await import('openai-oauth-provider');
+  const createOpenAIOAuth = await loadManualCreateOpenAIOAuth();
 
   try {
     const response = await sendSteelOAuthChat({
       abortSignal: abortController.signal,
+      agentRulesClient: client,
       authFilePath,
       createOpenAIOAuth: (options) => {
         const provider = createOpenAIOAuth(options);
@@ -302,6 +422,7 @@ async function runLiveWorkbookPatchChat(
             doGenerate: async (callOptions: LanguageModelV3CallOptions) => {
               const result = await languageModel.doGenerate(callOptions);
               capturedGenerateRounds.push({
+                promptText: getPromptText(callOptions),
                 toolChoice: callOptions.toolChoice,
                 tools: callOptions.tools?.map((tool) => tool.name) ?? [],
                 content: result.content,
@@ -342,6 +463,7 @@ async function runLiveWorkbookPatchChat(
     throw error;
   } finally {
     clearTimeout(timeout);
+    await client.end();
   }
 }
 
@@ -356,11 +478,12 @@ async function runLiveSteelChat(
   const capturedGenerateRounds: CapturedGenerateRound[] = [];
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), caseTimeoutMs);
-  const { createOpenAIOAuth } = await import('openai-oauth-provider');
+  const createOpenAIOAuth = await loadManualCreateOpenAIOAuth();
 
   try {
     const response = await sendSteelOAuthChat({
       abortSignal: abortController.signal,
+      agentRulesClient: client,
       authFilePath,
       createOpenAIOAuth: (options) => {
         const provider = createOpenAIOAuth(options);
@@ -373,6 +496,7 @@ async function runLiveSteelChat(
             doGenerate: async (callOptions: LanguageModelV3CallOptions) => {
               const result = await languageModel.doGenerate(callOptions);
               capturedGenerateRounds.push({
+                promptText: getPromptText(callOptions),
                 toolChoice: callOptions.toolChoice,
                 tools: callOptions.tools?.map((tool) => tool.name) ?? [],
                 content: result.content,
@@ -405,7 +529,87 @@ async function runLiveSteelChat(
       messages,
     });
 
-    return { response, capturedCalls };
+    return { response, capturedCalls, capturedGenerateRounds };
+  } catch (error) {
+    const details = [
+      `Captured calls before failure: ${stringify(summarizeCapturedCalls(capturedCalls))}`,
+      `Captured model rounds before failure: ${stringify(capturedGenerateRounds)}`,
+    ].join('\n');
+    if (error instanceof Error) {
+      throw new Error(`${error.message}\n${details}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    await client.end();
+  }
+}
+
+async function runLiveWorkbookPatchChatWithDatabaseTools(
+  messages: SteelOAuthChatMessage[],
+  maxOutputTokens = 3200,
+): Promise<LiveWorkbookPatchRun> {
+  const config = parseSteelOpenAIConfig(process.env);
+  const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+  const client = createSteelPostgresPool();
+  const capturedCalls: CapturedSteelToolCall[] = [];
+  const capturedGenerateRounds: CapturedGenerateRound[] = [];
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), caseTimeoutMs);
+  const createOpenAIOAuth = await loadManualCreateOpenAIOAuth();
+
+  try {
+    const response = await sendSteelOAuthChat({
+      abortSignal: abortController.signal,
+      agentRulesClient: client,
+      authFilePath,
+      createOpenAIOAuth: (options) => {
+        const provider = createOpenAIOAuth(options);
+
+        return ((selectedModel: string) => {
+          const languageModel = provider(selectedModel);
+
+          return {
+            ...languageModel,
+            doGenerate: async (callOptions: LanguageModelV3CallOptions) => {
+              const result = await languageModel.doGenerate(callOptions);
+              capturedGenerateRounds.push({
+                promptText: getPromptText(callOptions),
+                toolChoice: callOptions.toolChoice,
+                tools: callOptions.tools?.map((tool) => tool.name) ?? [],
+                content: result.content,
+              });
+              return result;
+            },
+          } satisfies LanguageModelV3;
+        }) as ReturnType<typeof createOpenAIOAuth>;
+      },
+      ensureFresh: false,
+      executeSteelToolCall: async (options: SteelProviderExecuteToolCallOptions) => {
+        const result = await executeSteelTool({
+          client,
+          toolName: options.toolName,
+          arguments: options.arguments,
+          providerToolCallId: options.providerToolCallId,
+          runState: options.runState,
+        });
+        capturedCalls.push({
+          toolName: options.toolName,
+          arguments: options.arguments,
+          result,
+        });
+        return result;
+      },
+      model: config.model,
+      reasoningEffort: 'none',
+      maxOutputTokens,
+      steelRuntimePolicy: true,
+      workbookPatchTool: true,
+      workbookContextText: getWorkbookPatchContextText(),
+      messages,
+    });
+
+    return { response, capturedCalls, capturedGenerateRounds };
   } catch (error) {
     const details = [
       `Captured calls before failure: ${stringify(summarizeCapturedCalls(capturedCalls))}`,
@@ -735,5 +939,233 @@ describeWorkbookPatch('Steel OpenAI OAuth workbook patch smoke', () => {
       expect(serialized).not.toMatch(/access_token|authorization|Bearer|authFile/i);
     },
     caseTimeoutMs + 30000,
+  );
+});
+
+const runWorkbookPatchNaturalCalc =
+  process.env.STEEL_OPENAI_OAUTH_WORKBOOK_NATURAL_CALC_TEST === 'true';
+const describeWorkbookPatchNaturalCalc = runWorkbookPatchNaturalCalc ? describe : describe.skip;
+
+describeWorkbookPatchNaturalCalc('Steel OpenAI OAuth natural workbook calculation smoke', () => {
+  it(
+    'naturally calculates the first workbook patch subtotal and summary total from DB price evidence',
+    async () => {
+      const run = await runLiveWorkbookPatchChatWithDatabaseTools(
+        [
+          {
+            role: 'user',
+            content: [
+              'C型鋼 C100x50x20x2.3t 6M 一支多少？',
+              '請依照 DB 規則與 reviewed price candidate 自行判斷品項、價格、重量與小計，並使用 patch_quote_workbook 更新 workbook。',
+              '不要先故意送錯誤 patch；如果可以計算，第一次 patch_quote_workbook 就直接填入小計與 summary total。',
+            ].join('\n'),
+          },
+        ],
+        3200,
+      );
+      const priceCall = run.capturedCalls.find(
+        (call) =>
+          call.toolName === 'search_price_candidates' && hasPositivePriceCandidate(call.result),
+      );
+      if (!priceCall) {
+        throw new Error(
+          `Missing positive C 型鋼 price lookup. Calls: ${stringify(
+            summarizeCapturedCalls(run.capturedCalls),
+          )}`,
+        );
+      }
+
+      const expectedSubtotal = getExpectedCTypeSubtotalFromPriceCall(priceCall);
+      const generatedWorkbookPatchCalls = getGeneratedToolCalls(
+        run.capturedGenerateRounds,
+        'patch_quote_workbook',
+      );
+      expect(generatedWorkbookPatchCalls.length).toBeGreaterThanOrEqual(1);
+      const firstPatchCall = generatedWorkbookPatchCalls[0];
+      if (!firstPatchCall) {
+        throw new Error('Missing first natural workbook patch call.');
+      }
+      const firstPatchInput = parseToolCallInput(firstPatchCall);
+      const firstSubtotal = getFirstPatchInputNumber(firstPatchInput, [
+        'quoteLines',
+        '0',
+        'subtotal',
+      ]);
+      const firstTotal = getFirstPatchInputNumber(firstPatchInput, ['summary', 'totalAmount']);
+      const serializedPrompts = run.capturedGenerateRounds
+        .map((round) => round.promptText ?? '')
+        .join('\n');
+      const quoteDetailsSubtotal = findWorkbookOperation(
+        run.response,
+        'quote_details',
+        'line_1',
+        'subtotal',
+      );
+      const summaryTotal = findWorkbookOperation(
+        run.response,
+        'summary',
+        'summary_total_amount',
+        'value',
+      );
+      const finalSubtotal = operationValueNumber(quoteDetailsSubtotal?.value);
+      const finalTotal = operationValueNumber(summaryTotal?.value);
+      const serialized = stringify({
+        response: run.response,
+        capturedCalls: run.capturedCalls,
+        capturedGenerateRounds: run.capturedGenerateRounds,
+      });
+
+      expect(serializedPrompts).not.toContain(
+        'Workbook confirmed totals cannot be numeric while any line subtotal is unknown',
+      );
+      expect(firstSubtotal).toBe(expectedSubtotal);
+      expect(firstTotal).toBe(expectedSubtotal);
+      expect(finalSubtotal).toBe(expectedSubtotal);
+      expect(finalTotal).toBe(expectedSubtotal);
+      expect(run.response.text).toMatch(/小計|總額|643(?:\.2|\.20)?/u);
+      expect(serialized).not.toMatch(/access_token|authorization|Bearer|authFile/i);
+    },
+    caseTimeoutMs + 60000,
+  );
+});
+
+const runWorkbookPatchDbSubtotalLoop =
+  process.env.STEEL_OPENAI_OAUTH_WORKBOOK_DB_SUBTOTAL_LOOP_TEST === 'true';
+const describeWorkbookPatchDbSubtotalLoop = runWorkbookPatchDbSubtotalLoop
+  ? describe
+  : describe.skip;
+
+describeWorkbookPatchDbSubtotalLoop('Steel OpenAI OAuth DB rules and subtotal loop smoke', () => {
+  it(
+    'loads DB rules, executes DB-backed tools, rejects an unknown-line confirmed total, and accepts a corrected workbook patch',
+    async () => {
+      const run = await runLiveWorkbookPatchChatWithDatabaseTools(
+        [
+          {
+            role: 'user',
+            content: [
+              'C型鋼 C100x50x20x2.3t 6M 一支多少？',
+              '請走真實 DB lookup_quote_rules 與 search_price_candidates。',
+              '拿到正數 reviewed price candidate 後，為了 live smoke 驗證 backend subtotal loop，請先呼叫一次 patch_quote_workbook，故意讓 quoteLines[0].subtotal = "未確認"，但 summary.totalAmount = 999 且 summary.confirmedAmount = 999。',
+              '收到 patch_quote_workbook 的 tool result 後，不要回答文字；請立刻再呼叫 patch_quote_workbook，用 reviewed price candidate 重算並修正：錏輕型鋼 100*2.3，價格B 26.8 元/kg，重量 4 kg/m * 6M = 24 kg，小計與 summary total/confirmed amount 都應為 643.2。',
+              '最後只用繁體中文回覆採用的品項、單價、重量、小計，以及 workbook 已更新。',
+            ].join('\n'),
+          },
+        ],
+        3600,
+      );
+      const firstPromptText = run.capturedGenerateRounds[0]?.promptText ?? '';
+      const lookupIndex = getToolCallIndex(run.capturedCalls, 'lookup_quote_rules');
+      const priceIndex = getToolCallIndex(run.capturedCalls, 'search_price_candidates');
+      const lookupResultText = stringify(run.capturedCalls[lookupIndex]?.result);
+      const generatedWorkbookPatchCalls = getGeneratedToolCalls(
+        run.capturedGenerateRounds,
+        'patch_quote_workbook',
+      );
+      const serializedPrompts = run.capturedGenerateRounds
+        .map((round) => round.promptText ?? '')
+        .join('\n');
+      const subtotalLoopFeedbackSeen = serializedPrompts.includes(
+        'Workbook confirmed totals cannot be numeric while any line subtotal is unknown',
+      );
+      const quoteDetailsSubtotal = findWorkbookOperation(
+        run.response,
+        'quote_details',
+        'line_1',
+        'subtotal',
+      );
+      const summaryTotal = findWorkbookOperation(
+        run.response,
+        'summary',
+        'summary_total_amount',
+        'value',
+      );
+      const summaryConfirmed = findWorkbookOperation(
+        run.response,
+        'summary',
+        'summary_confirmed_amount',
+        'value',
+      );
+      const subtotalValue = operationValueNumber(quoteDetailsSubtotal?.value);
+      const totalValue = operationValueNumber(summaryTotal?.value);
+      const confirmedValue = operationValueNumber(summaryConfirmed?.value);
+      const serialized = stringify({
+        response: run.response,
+        capturedCalls: run.capturedCalls,
+        capturedGenerateRounds: run.capturedGenerateRounds,
+      });
+
+      expect(firstPromptText).toContain('你是「鋼鐵公司小助手」');
+      expect(firstPromptText).toContain('你是「鋼鐵報價 Workbook 填寫代理」');
+      expect(firstPromptText).toContain('Workbook structure context');
+      expect(firstPromptText).toContain('lookup_quote_rules');
+      expect(lookupIndex).toBeGreaterThanOrEqual(0);
+      expect(priceIndex).toBeGreaterThan(lookupIndex);
+      expect(lookupResultText).toContain('"rules"');
+      expect(lookupResultText).toMatch(/C\s*型鋼|c_type/u);
+      expect(generatedWorkbookPatchCalls.length).toBeGreaterThanOrEqual(2);
+      expect(stringify(generatedWorkbookPatchCalls[0])).toContain('未確認');
+      expect(stringify(generatedWorkbookPatchCalls[0])).toContain('999');
+      expect(subtotalLoopFeedbackSeen).toBe(true);
+      expect(subtotalValue).toBeGreaterThanOrEqual(643);
+      expect(subtotalValue).toBeLessThanOrEqual(644);
+      expect(totalValue).toBe(subtotalValue);
+      expect(confirmedValue).toBe(subtotalValue);
+      expect(run.response.text).toMatch(/643(?:\.2|\.20)?|小計/u);
+      expect(serialized).not.toMatch(/access_token|authorization|Bearer|authFile/i);
+    },
+    caseTimeoutMs + 60000,
+  );
+});
+
+const runCustomerRulesSmoke = process.env.STEEL_OPENAI_OAUTH_CUSTOMER_RULES_TEST === 'true';
+const describeCustomerRulesSmoke = runCustomerRulesSmoke ? describe : describe.skip;
+
+describeCustomerRulesSmoke('Steel OpenAI OAuth customer rules smoke', () => {
+  it(
+    'injects customer-specific rules from search_customers into the live model tool loop',
+    async () => {
+      const run = await runLiveSteelChat(
+        [
+          {
+            role: 'user',
+            content:
+              '龍頂蓋廠房 H型鋼 100x50x5/7x6M 一支，對半切，請依客戶資料、客戶規則與 DB 價格回覆報價抓法。',
+          },
+        ],
+        2600,
+      );
+      const customerIndex = getToolCallIndex(run.capturedCalls, 'search_customers');
+      const lookupIndex = getToolCallIndex(run.capturedCalls, 'lookup_quote_rules');
+      const priceIndex = getToolCallIndex(run.capturedCalls, 'search_price_candidates');
+      const customerResultText = stringify(run.capturedCalls[customerIndex]?.result);
+      const serializedPrompts = run.capturedGenerateRounds
+        .map((round) => round.promptText ?? '')
+        .join('\n');
+      const priceArguments = stringify(
+        getToolCalls(run.capturedCalls, 'search_price_candidates').map((call) => call.arguments),
+      );
+      const serialized = stringify({
+        response: run.response,
+        capturedCalls: run.capturedCalls,
+        capturedGenerateRounds: run.capturedGenerateRounds,
+      });
+
+      expect(customerIndex).toBeGreaterThanOrEqual(0);
+      expect(lookupIndex).toBeGreaterThanOrEqual(0);
+      expect(priceIndex).toBeGreaterThanOrEqual(0);
+      expect(customerResultText).toContain('龍頂蓋廠房');
+      expect(customerResultText).toContain('"rules"');
+      expect(customerResultText).toContain('customer_2269_h_beam_cutting_no_charge');
+      expect(customerResultText).toContain('H 型鋼一般切工不另計價');
+      expect(serializedPrompts).toContain('龍頂蓋廠房的 H 型鋼一般切工不另計價');
+      expect(priceArguments).toContain('"customerTierId":1');
+      expect(run.response.text).toMatch(/龍頂|H型鋼|H\s*型鋼/u);
+      expect(run.response.text).toMatch(
+        /切工.*(?:未另計|不另計|不計價)|(?:未另計|不另計|不計價).*切工/u,
+      );
+      expect(serialized).not.toMatch(/access_token|authorization|Bearer|authFile/i);
+    },
+    caseTimeoutMs + 60000,
   );
 });

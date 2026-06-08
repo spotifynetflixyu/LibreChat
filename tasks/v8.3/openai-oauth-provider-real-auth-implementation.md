@@ -36,7 +36,7 @@
 
 - "through LibreChat" means a minimal authenticated Steel route/page inside the LibreChat web app is acceptable for this phase. It does not mean rewriting the existing core `/c/new` chat endpoint yet.
 - Real auth uses the local Codex auth file created by `npx @openai/codex login`, configurable through `STEEL_OPENAI_OAUTH_AUTH_FILE`.
-- Default live smoke model is controlled by `STEEL_OPENAI_DEFAULT_MODEL`, defaulting to `gpt-5.4`.
+- Default live smoke model is controlled by `STEEL_OPENAI_DEFAULT_MODEL`, defaulting to `gpt-5.5`.
 - `STEEL_OPENAI_PROVIDER=OAUTH` selects direct `openai-oauth-provider` first. `STEEL_OPENAI_PROVIDER=API` is reserved for the official OpenAI API path and must not silently call OAuth.
 - `STEEL_OPENAI_REASONING_EFFORT` is normalized to `none | minimal | low | medium | high | xhigh`, defaulting to `medium`.
 
@@ -91,10 +91,10 @@ Expected: one coherent AI SDK provider package set, with no duplicate provider i
 
 Add tests for:
 
-- Missing env defaults to `provider: 'OAUTH'`, `model: 'gpt-5.4'`, `reasoningEffort: 'medium'`.
+- Missing env defaults to `provider: 'OAUTH'`, `model: 'gpt-5.5'`, `reasoningEffort: 'medium'`.
 - `STEEL_OPENAI_PROVIDER=API` selects API provider.
 - Invalid provider/model/reasoning effort throws a typed configuration error.
-- `STEEL_OPENAI_DEFAULT_MODEL` accepts only `gpt-5.4` and `gpt-5.5`.
+- `STEEL_OPENAI_DEFAULT_MODEL` accepts only `gpt-5.5`.
 
 Run:
 
@@ -109,7 +109,7 @@ Expected: fail because `config.ts` does not exist.
 Create explicit union types for:
 
 - `SteelOpenAIProviderPreference = 'OAUTH' | 'API'`
-- `SteelOpenAIDefaultModel = 'gpt-5.4' | 'gpt-5.5'`
+- `SteelOpenAIDefaultModel = 'gpt-5.5'`
 - `SteelOpenAIReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'`
 
 **Step 3: Verify**
@@ -172,7 +172,7 @@ Test behavior:
 
 - Creates a temporary fake `auth.json`.
 - Injects mocked `fetch`.
-- Calls the provider with model `gpt-5.4` and message `Reply exactly: steel-provider-mock-ok`.
+- Calls the provider with model `gpt-5.5` and message `Reply exactly: steel-provider-mock-ok`.
 - Asserts the adapter returns `steel-provider-mock-ok`.
 - Asserts request headers were used internally but not exposed in the adapter return shape.
 - Asserts `responsesState: false` or equivalent stateless full-history setting is used.
@@ -200,7 +200,7 @@ Required implementation shape:
 - `createSteelOpenAIOAuthProvider({ authFilePath, fetch, ensureFresh })`
 - `sendSteelOAuthChat({ model, messages, requestedSettings })`
 - Default auth path: `STEEL_OPENAI_OAUTH_AUTH_FILE` or `${HOME}/.codex/auth.json`
-- Default model: parsed `STEEL_OPENAI_DEFAULT_MODEL` or `gpt-5.4`
+- Default model: parsed `STEEL_OPENAI_DEFAULT_MODEL` or `gpt-5.5`
 - Reasoning effort: parsed `STEEL_OPENAI_REASONING_EFFORT` or `medium`
 - Always pass full prompt/message context.
 - Do not pass `previous_response_id` or `item_reference`.
@@ -250,7 +250,7 @@ After `npx @openai/codex login` has created auth material, run:
 ```bash
 STEEL_OPENAI_OAUTH_AUTH_FILE="$HOME/.codex/auth.json" \
 STEEL_OPENAI_PROVIDER=OAUTH \
-STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4 \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5 \
 STEEL_OPENAI_REASONING_EFFORT=medium \
 rtk npm run test:packages:api -- --runTestsByPath src/steel/ai/provider.real-auth.manual.spec.ts
 ```
@@ -304,7 +304,7 @@ Expected request:
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "messages": [{ "role": "user", "content": "hello" }]
 }
 ```
@@ -314,7 +314,7 @@ Expected response:
 ```json
 {
   "provider": "openai_oauth_responses",
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "text": "...",
   "unsupportedSettings": []
 }
@@ -437,7 +437,7 @@ Backend:
 ```bash
 STEEL_OPENAI_OAUTH_AUTH_FILE="$HOME/.codex/auth.json" \
 STEEL_OPENAI_PROVIDER=OAUTH \
-STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4 \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5 \
 STEEL_OPENAI_REASONING_EFFORT=medium \
 rtk npm run backend:dev
 ```
@@ -499,7 +499,7 @@ Manual real-auth verification:
 STEEL_OPENAI_OAUTH_REAL_AUTH_TEST=true \
 STEEL_OPENAI_OAUTH_AUTH_FILE="$HOME/.codex/auth.json" \
 STEEL_OPENAI_PROVIDER=OAUTH \
-STEEL_OPENAI_DEFAULT_MODEL=gpt-5.4 \
+STEEL_OPENAI_DEFAULT_MODEL=gpt-5.5 \
 STEEL_OPENAI_REASONING_EFFORT=medium \
 rtk npm run test:packages:api -- --runTestsByPath src/steel/ai/provider.real-auth.manual.spec.ts
 ```

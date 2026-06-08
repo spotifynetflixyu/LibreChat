@@ -117,13 +117,7 @@ describe('Steel rule repositories', () => {
     });
 
     expect(client.calls[0]?.sql).toContain('FROM steel.catalog_family_rules');
-    expect(client.calls[0]?.values).toEqual([
-      'reviewed',
-      ['angle'],
-      ['錏角鐵'],
-      '%亞L30x30%',
-      10,
-    ]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', ['angle'], ['錏角鐵'], '%亞L30x30%', 10]);
     expect(result).toEqual([
       expect.objectContaining({
         id: 7,

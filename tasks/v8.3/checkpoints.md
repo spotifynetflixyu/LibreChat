@@ -24,7 +24,7 @@ Required:
 - [x] Workbook JSON requires seven fixed sheets.
 - [x] Customer quote sheet hides customer tier and internal fields.
 - [x] Price-before-weight rule is explicit.
-- [x] ExcelJS is the customer-facing XLSX renderer.
+- [x] ExcelJS is the staff workbook XLSX renderer.
 - [x] Old direct-connector, PDF-direct-import, and Admin PDF parser assumptions are absent.
 
 Verification:
@@ -38,31 +38,35 @@ rtk proxy rg -n "source schema mapping|canonical schema|中文來源|英文 cano
 
 ## Checkpoint 1: Foundation Gate
 
+Status: synced on 2026-06-08 for the implemented Steel foundation, direct
+`openai-oauth-provider` path, gpt-5.5-only allowlist, and split Steel Mongo
+schemas.
+
 Required:
 
-- [ ] Steel shared data-provider contracts build.
-- [ ] Steel Mongo schemas are created with `steel_` collection names.
-- [ ] Environment-gated Steel conversation routes are registered under `/api/steel`.
-- [ ] Steel route wrappers in `api/` are thin.
-- [ ] Access checks exist in service layer.
-- [ ] Route tests cover both `STEEL_GUEST_MODE=true` and `STEEL_GUEST_MODE=false`.
-- [ ] Audit primitive exists.
-- [ ] Steel AI driver enum, capability result shape, provider run metadata, typed provider error categories, and model option shape exist.
-- [ ] Model allowlist endpoint is backend-owned, does not expose raw provider secrets, and aligns with LibreChat `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior instead of inventing a parallel model system.
-- [ ] Admin route protection reuses existing LibreChat `ADMIN`/`USER` role and capability semantics before adding Steel-specific permission layering.
-- [ ] An early OpenAI OAuth provider test seam exists before full workbook orchestration, without requiring Phase 1 to complete the Phase 3 live workbook smoke.
-- [ ] `/steel/oauth-chat` file-support evidence is reused to justify the Phase 1 `openai_oauth_responses` capability baseline instead of duplicating a broad file smoke runner.
-- [ ] The active OAuth Responses allowlist is `gpt-5.5` only; `gpt-5.4` and lower models are not exposed as supported Steel models.
-- [ ] The first coded openai-oauth implementation path is direct `openai-oauth-provider`; the local HTTP `/v1` proxy remains manual diagnostics only.
-- [ ] Direct `openai-oauth-provider` package usage is allowed only after AI SDK versions are unified through package-manager overrides/resolutions, packaging verification passes, model discovery remains backend-owned, and auth material remains server-only.
-- [ ] `openai_oauth_responses` request serialization is stateless full-history and rejects `previous_response_id` / `item_reference`.
-- [ ] Adapter-dropped or unsupported LibreChat runtime settings are recorded in provider metadata instead of silently treated as applied.
-- [ ] `steel_ai_runs` can represent both openai-oauth responses trace metadata and OpenAI API fallback metadata.
-- [ ] Capability status vocabulary uses `unverified`, `passed`, `failed`, `disabled`, and `not_applicable`; stale `not_run` status is not used in new contracts.
-- [ ] Steel Mongo schemas are split by owner file rather than accumulated in one broad `steel.ts` file.
-- [ ] Durable audit writes go to `steel_audit_logs`.
-- [ ] Supabase schema/migration rule is preserved.
-- [ ] `steel_source_versions` metadata supports `.xlsx`, `.xls`, `.docx`, and `.doc` source artifacts with original/normalized format and conversion status. Server-side `.xls` / `.doc` conversion is only enabled after a development script proves it works; AI/provider handling of legacy files remains allowed.
+- [x] Steel shared data-provider contracts build.
+- [x] Steel Mongo schemas are created with `steel_` collection names.
+- [x] Environment-gated Steel conversation routes are registered under `/api/steel`.
+- [x] Steel route wrappers in `api/` are thin.
+- [x] Access checks exist in service layer.
+- [x] Route tests cover both `STEEL_GUEST_MODE=true` and `STEEL_GUEST_MODE=false`.
+- [x] Audit primitive exists.
+- [x] Steel AI driver enum, capability result shape, provider run metadata, typed provider error categories, and model option shape exist.
+- [x] Model allowlist endpoint is backend-owned, does not expose raw provider secrets, and aligns with LibreChat `/api/models`, `/api/endpoints`, `modelSpecs`, default preset, and default setting behavior instead of inventing a parallel model system.
+- [x] Admin route protection reuses existing LibreChat `ADMIN`/`USER` role and capability semantics before adding Steel-specific permission layering.
+- [x] An early OpenAI OAuth provider test seam exists before full workbook orchestration, without requiring Phase 1 to complete the Phase 3 live workbook smoke.
+- [x] `/steel/oauth-chat` file-support evidence is reused to justify the Phase 1 `openai_oauth_responses` capability baseline instead of duplicating a broad file smoke runner.
+- [x] The active OAuth Responses allowlist is `gpt-5.5` only; `gpt-5.4` and lower models are not exposed as supported Steel models.
+- [x] The first coded openai-oauth implementation path is direct `openai-oauth-provider`; the local HTTP `/v1` proxy remains manual diagnostics only.
+- [x] Direct `openai-oauth-provider` package usage is allowed only after AI SDK versions are unified through package-manager overrides/resolutions, packaging verification passes, model discovery remains backend-owned, and auth material remains server-only.
+- [x] `openai_oauth_responses` request serialization is stateless full-history and rejects `previous_response_id` / `item_reference`.
+- [x] Adapter-dropped or unsupported LibreChat runtime settings are recorded in provider metadata instead of silently treated as applied.
+- [x] `steel_ai_runs` can represent both openai-oauth responses trace metadata and OpenAI API fallback metadata.
+- [x] Capability status vocabulary uses `unverified`, `passed`, `failed`, `disabled`, and `not_applicable`; stale `not_run` status is not used in new contracts.
+- [x] Steel Mongo schemas are split by owner file rather than accumulated in one broad `steel.ts` file.
+- [x] Durable audit writes go to `steel_audit_logs`.
+- [x] Supabase schema/migration rule is preserved.
+- [x] `steel_source_versions` metadata supports `.xlsx`, `.xls`, `.docx`, and `.doc` source artifacts with original/normalized format and conversion status. Server-side `.xls` / `.doc` conversion is only enabled after a development script proves it works; AI/provider handling of legacy files remains allowed.
 
 Verification:
 
@@ -77,38 +81,43 @@ rtk npm run test:packages:api
 
 ## Checkpoint 2: Quote Data And Tools Gate
 
+Status: synced on 2026-06-08 for the AI-led data/tool boundary: reviewed DB
+rules are exposed through `lookup_catalog_families`, `lookup_quote_rules`,
+`search_customers`, and `search_price_candidates`; backend validates tool
+schemas, source scope, sanitized output, and workbook subtotal consistency.
+
 Required:
 
-- [ ] Handbook content has been reviewed for real schema/data-model implications.
-- [ ] Source schema mapping records DB-bound Chinese source label/header, English canonical key, target database surface, type/unit, normalizer, and source reference for spec, price, formula, and processing-price fields.
-- [ ] Source schema mapping does not require `review_status`, `corrected_text`, or a typo approval workflow.
-- [ ] Code-owned mapping design exists for `packages/api/src/steel/schema/mapping.ts`.
-- [ ] AI API prompt/tool context can use the mapping to resolve Chinese wording to existing canonical keys.
-- [ ] Repository filters, SQL columns, DTO keys, and tool arguments use English canonical keys.
-- [ ] Chinese labels, product names, aliases, ERP workbook sheet names, and source excerpts are stored only as values/display/source/search data, not code-owned query field names.
-- [ ] Supabase repositories use parameterized SQL.
-- [ ] Lookup tools validate with Zod.
-- [ ] No raw SQL/Mongo query tools exist.
-- [ ] `lookup_catalog_families` returns admin-supplied product/category
+- [x] Handbook content has been reviewed for real schema/data-model implications.
+- [x] Source schema mapping records DB-bound Chinese source label/header, English canonical key, target database surface, type/unit, normalizer, and source reference for spec, price, formula, and processing-price fields.
+- [x] Source schema mapping does not require `review_status`, `corrected_text`, or a typo approval workflow.
+- [x] Code-owned mapping design exists for `packages/api/src/steel/schema/mapping.ts`.
+- [x] AI API prompt/tool context can use the mapping to resolve Chinese wording to existing canonical keys.
+- [x] Repository filters, SQL columns, DTO keys, and tool arguments use English canonical keys.
+- [x] Chinese labels, product names, aliases, ERP workbook sheet names, and source excerpts are stored only as values/display/source/search data, not code-owned query field names.
+- [x] Supabase repositories use parameterized SQL.
+- [x] Lookup tools validate with Zod.
+- [x] No raw SQL/Mongo query tools exist.
+- [x] `lookup_catalog_families` returns admin-supplied product/category
       inference rules and reviewed vocabulary candidates when AI inference is
       insufficient.
-- [ ] AI-led material/spec interpretation produces bounded candidates or asks
+- [x] AI-led material/spec interpretation produces bounded candidates or asks
       for confirmation; backend does not implement a Phase 2 normalization
       boundary or hidden resolver.
-- [ ] `search_customers` returns matched/ambiguous customer candidates, tier
+- [x] `search_customers` returns matched/ambiguous customer candidates, tier
       context, and reviewed customer-specific rules/defaults when available.
-- [ ] Price candidate search returns exact/major/alias/closest/no-price matches.
-- [ ] AI ranks/selects price candidates and asks for confirmation when options
+- [x] Price candidate search returns exact/major/alias/closest/no-price matches.
+- [x] AI ranks/selects price candidates and asks for confirmation when options
       remain ambiguous; backend does not harden final quote ranking.
-- [ ] Missing prices are never represented as `0`.
-- [ ] Cutting, stock-length, no-cut, head/tail, hole, slotting, and bending
+- [x] Missing prices are never represented as `0`.
+- [x] Cutting, stock-length, no-cut, head/tail, hole, slotting, and bending
       rules are available as quote-rule prompts for AI calculation.
-- [ ] AI owns weight, processing, cutting/allocation, and line-total arithmetic;
+- [x] AI owns weight, processing, cutting/allocation, and line-total arithmetic;
       backend validates source/rule scope and workbook subtotal consistency.
-- [ ] Confirmed workbook summary totals cannot pass when they differ from line
+- [x] Confirmed workbook summary totals cannot pass when they differ from line
       subtotal sums.
-- [ ] Tool calls are logged and sanitized before model use.
-- [ ] Tool definitions are provider-neutral; openai-oauth and OpenAI adapters only serialize them.
+- [x] Tool calls are logged and sanitized before model use.
+- [x] Tool definitions are provider-neutral; openai-oauth and OpenAI adapters only serialize them.
 
 Verification:
 
@@ -126,12 +135,19 @@ Expected: AI proposes reviewed vocabulary/product candidates such as 黑圓管, 
 
 ## Checkpoint 3: Quote Workbook Vertical Slice
 
+Status: synced on 2026-06-08 for the current fixed OAuth/Codex
+`/steel/oauth-chat` workbook path. Backend/provider/workbook/live-smoke
+requirements below are checked where implementation evidence exists. Formal
+Steel Workspace UI expansion, selected-cell composer UX, and explicit
+`openai_api` fallback smoke remain unchecked and are not treated as blockers for
+starting Phase 4 after the fixed OAuth/Codex decision.
+
 Required:
 
-- [ ] Authenticated user can create Steel conversation meta.
-- [ ] User can send a Steel message with selected model.
-- [ ] Workbook JSON, patch request/response, selected refs, changed paths, and changed-field summary DTOs live in `packages/data-provider/src/steel/workbooks.ts`.
-- [ ] Conversation message request types reuse workbook DTOs instead of redefining selected-cell or patch metadata shapes.
+- [x] Authenticated user can create Steel conversation meta.
+- [x] User can send a Steel message with selected model.
+- [x] Workbook JSON, patch request/response, selected refs, changed paths, and changed-field summary DTOs live in `packages/data-provider/src/steel/workbooks.ts`.
+- [x] Conversation message request types reuse workbook DTOs instead of redefining selected-cell or patch metadata shapes.
 - [ ] Backend Zod validation in `packages/api/src/steel/workbook/schema.ts` is the canonical runtime validation authority.
 - [ ] Frontend code and tests consume shared workbook DTOs/API responses and do not define an independent workbook validation schema.
 - [ ] Workbook Preview, selected-target markers, changed-field summaries, and customer-facing workbook output render Traditional Chinese field labels derived from `docs/reference/*.xlsx` headers where available, while internal DTO keys and patch paths remain English.
@@ -139,17 +155,17 @@ Required:
 - [ ] Desktop and mobile Steel views share the same UX framework, API contracts, and mock data.
 - [ ] Mobile Workbook Preview opens as a full-view modal with a visible top-right close button.
 - [ ] Selecting workbook cells applies selected styling and adds field markers with clear sheet and field/cell positions to the bottom message input.
-- [ ] Message submit can send multiple structured `selected_workbook_refs` items; backend validation does not rely on marker text alone.
+- [x] Message submit can send multiple structured `selected_workbook_refs` items; backend validation does not rely on marker text alone.
 - [ ] When no user text has been entered, the next cell selection replaces the existing marker; after user text exists, the next cell selection inserts a new marker on a new line.
-- [ ] Multi-round conversations can keep modifying workbook data through subsequent patch requests.
-- [ ] Text-only requests can update multiple workbook fields only when each target is explicit and backend validation accepts every patch path.
-- [ ] AI workbook patches do not require a per-update preview/confirmation gate in Phase 3.
-- [ ] Latest accepted workbook patch fields are highlighted with a background color distinct from selected-cell styling until the next accepted workbook patch.
-- [ ] Failed or rejected patch attempts do not highlight workbook fields and do not replace the previous accepted-patch highlight set.
-- [ ] Phase 3 does not expose an explicit Undo button or version-control UI.
+- [x] Multi-round conversations can keep modifying workbook data through subsequent patch requests.
+- [x] Text-only requests can update multiple workbook fields only when each target is explicit and backend validation accepts every patch path.
+- [x] AI workbook patches do not require a per-update preview/confirmation gate in Phase 3.
+- [x] Latest accepted workbook patch fields are highlighted with a background color distinct from selected-cell styling until the next accepted workbook patch.
+- [x] Failed or rejected patch attempts do not highlight workbook fields and do not replace the previous accepted-patch highlight set.
+- [x] Phase 3 does not expose an explicit Undo button or version-control UI.
 - [ ] User-requested revert/change flows go through chat and produce validated workbook patches.
-- [ ] Successful AI workbook patches produce a concise chat summary of changed fields.
-- [ ] Chat does not render a full diff table for successful workbook patches.
+- [x] Successful AI workbook patches produce a concise chat summary of changed fields.
+- [x] Chat does not render a full diff table for successful workbook patches.
 - [ ] Chat Workspace can use API mock data from `packages/data-provider/src/steel/mock/`, shaped from `docs/reference` without importing real data.
 - [ ] Mock workbook fixtures derived from Chinese reference examples use English DTO/API keys and preserve Chinese only as display/source/alias data.
 - [ ] Mock workbook fixtures include Traditional Chinese display labels for visible workbook fields.
@@ -157,46 +173,46 @@ Required:
 - [ ] Frontend and backend tests do not define separate mock workbook datasets.
 - [ ] Mock workbook fixtures are imported through the explicit mock path and are not re-exported by the production Steel data-provider barrel.
 - [ ] Mock workbook fixtures are typed against shared workbook DTOs and pass backend workbook validation where required.
-- [ ] Workbook Preview renders all seven tabs from mock or real workbook API data.
+- [x] Workbook Preview renders all seven tabs from mock or real workbook API data.
 - [ ] `SteelAIProvider` interface exists with openai-oauth and OpenAI API fallback adapters.
-- [ ] openai-oauth adapter uses direct `openai-oauth-provider`, with fake auth and mocked `fetch` tests before live smoke.
-- [ ] openai-oauth adapter uses server-side/local encrypted token storage and never frontend localStorage.
+- [x] openai-oauth adapter uses direct `openai-oauth-provider`, with fake auth and mocked `fetch` tests before live smoke.
+- [x] openai-oauth adapter uses server-side/local encrypted token storage and never frontend localStorage.
 - [ ] OpenAI API adapter is Responses-first, uses official Responses `conversation` state, and does not mix `previousResponseId` into the same call.
-- [ ] openai-oauth provider state is recorded only as trace metadata.
-- [ ] openai-oauth adapter sends full reconstructed context on every run and never sends `previous_response_id` or `item_reference`.
-- [ ] openai-oauth adapter records unsupported or proxy-dropped settings such as stateful replay and output-token controls.
-- [ ] Direct `openai-oauth-provider` in-process usage is covered by tests with mocked fetch/fake auth and packaging verification; AI SDK 6 is not treated as a blocker, but package versions must be unified with overrides/resolutions.
-- [ ] LibreChat UI / preset / agent model parameters and default settings are converted to provider-neutral runtime options and are not silently ignored.
-- [ ] No per-capability `STEEL_FALLBACK_*` env matrix is active in v8.3.
-- [ ] Fallback means selecting or routing to the `openai_api` driver instead of the default OAuth driver; it is not model fallback.
-- [ ] `openai_api` is only used after its relevant capability is explicitly supported by backend policy/evidence.
-- [ ] Code-owned capability support records exist for text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and conversation/state behavior.
-- [ ] Backend model selector returns provider, smoke status, support flags, and enabled/disabled status.
-- [ ] Backend model selector preserves LibreChat UI / preset / default model settings as requested runtime options and reports unsupported Steel provider capabilities inline.
-- [ ] openai-oauth binding runbook has been completed before any live openai-oauth provider smoke or chat UI live test.
+- [x] openai-oauth provider state is recorded only as trace metadata.
+- [x] openai-oauth adapter sends full reconstructed context on every run and never sends `previous_response_id` or `item_reference`.
+- [x] openai-oauth adapter records unsupported or proxy-dropped settings such as stateful replay and output-token controls.
+- [x] Direct `openai-oauth-provider` in-process usage is covered by tests with mocked fetch/fake auth and packaging verification; AI SDK 6 is not treated as a blocker, but package versions must be unified with overrides/resolutions.
+- [x] LibreChat UI / preset / agent model parameters and default settings are converted to provider-neutral runtime options and are not silently ignored.
+- [x] No per-capability `STEEL_FALLBACK_*` env matrix is active in v8.3.
+- [x] Fallback means selecting or routing to the `openai_api` driver instead of the default OAuth driver; it is not model fallback.
+- [x] `openai_api` is only used after its relevant capability is explicitly supported by backend policy/evidence.
+- [x] Code-owned capability support records exist for text, streaming, tool calling, structured output, workbook patch, image, PDF, XLSX, File Search, Code Interpreter, and conversation/state behavior.
+- [x] Backend model selector returns provider, smoke status, support flags, and enabled/disabled status.
+- [x] Backend model selector preserves LibreChat UI / preset / default model settings as requested runtime options and reports unsupported Steel provider capabilities inline.
+- [x] openai-oauth binding runbook has been completed before any live openai-oauth provider smoke or chat UI live test.
 - [ ] Failed or unverified file/vision/XLSX/hosted-tool capabilities fallback to `openai_api` only when env-enabled, otherwise return typed low-confidence/manual-review errors.
 - [ ] Provider unsupported/fallback notices render inside the chat transcript as small warning text, not toast UI.
-- [ ] Typed provider errors include auth, subscription/rate, tool unsupported, file input unsupported, vision input unsupported, XLSX input unsupported, hosted tool unsupported, and invalid structured output.
+- [x] Typed provider errors include auth, subscription/rate, tool unsupported, file input unsupported, vision input unsupported, XLSX input unsupported, hosted tool unsupported, and invalid structured output.
 - [ ] Prompt bundle records context refs.
-- [ ] Image/PDF prompt guidance comes from `fileAnalysis.instructions`, is editable through Admin config override, and is not hard-coded in Steel provider adapters.
-- [ ] Tool-calling loop executes whitelisted tools only.
-- [ ] Structured output creates or patches Workbook JSON.
-- [ ] Workbook JSON contains all seven required sheet IDs.
-- [ ] Workbook JSON/display metadata exposes Traditional Chinese labels for visible fields without using those labels as patch keys.
-- [ ] Workbook line persists formula, default unit price, quoted unit price, line total, adjustment source, quote trace, and source refs.
-- [ ] Workbook patch writes `steel_workbook_patches`.
-- [ ] Selected-cell edit requests return workbook patches or refreshed workbook data that synchronizes the UI.
-- [ ] Patch responses include changed paths or equivalent metadata for latest-updated-field highlighting.
-- [ ] A new accepted patch replaces the previous latest-highlight set instead of accumulating old highlighted fields.
-- [ ] Failed/rejected patch responses include a user-facing reason and no changed paths.
-- [ ] No frontend-only undo path can mutate workbook JSON outside the patch service.
-- [ ] Patch responses include changed-field summary items for chat acknowledgement.
+- [x] Image/PDF prompt guidance comes from `fileAnalysis.instructions`, is editable through Admin config override, and is not hard-coded in Steel provider adapters.
+- [x] Tool-calling loop executes whitelisted tools only.
+- [x] Structured output creates or patches Workbook JSON.
+- [x] Workbook JSON contains all seven required sheet IDs.
+- [x] Workbook JSON/display metadata exposes Traditional Chinese labels for visible fields without using those labels as patch keys.
+- [x] Workbook line persists formula, default unit price, quoted unit price, line total, adjustment source, quote trace, and source refs.
+- [x] Workbook patch writes `steel_workbook_patches`.
+- [x] Selected-cell edit requests return workbook patches or refreshed workbook data that synchronizes the UI.
+- [x] Patch responses include changed paths or equivalent metadata for latest-updated-field highlighting.
+- [x] A new accepted patch replaces the previous latest-highlight set instead of accumulating old highlighted fields.
+- [x] Failed/rejected patch responses include a user-facing reason and no changed paths.
+- [x] No frontend-only undo path can mutate workbook JSON outside the patch service.
+- [x] Patch responses include changed-field summary items for chat acknowledgement.
 - [ ] Ambiguous multi-field edit requests ask for clarification or produce manual-review output instead of guessing patch targets.
-- [ ] Manual live openai-oauth responses smoke run creates or patches a customer-visible workbook before Phase 4.
-- [ ] Manual live openai-oauth smoke includes `/health`, `/v1/models`, a pure `/v1/responses` probe, and a stateless second-turn case.
+- [x] Manual live openai-oauth responses smoke run creates or patches a customer-visible workbook before Phase 4.
+- [x] Manual live openai-oauth smoke includes `/health`, `/v1/models`, a pure `/v1/responses` probe, and a stateless second-turn case.
 - [ ] Manual live OpenAI API fallback smoke run creates or patches a customer-visible workbook before Phase 4.
-- [ ] Manual provider smoke evidence records requested provider, effective provider, model, provider IDs when available, fallback or unsupported reason, tool call IDs, workbook ID/version, context refs, and typed error category when relevant.
-- [ ] Stale patch version returns `409`.
+- [x] Manual provider smoke evidence records requested provider, effective provider, model, provider IDs when available, fallback or unsupported reason, tool call IDs, workbook ID/version, context refs, and typed error category when relevant.
+- [x] Stale patch version returns `409`.
 
 Verification:
 
@@ -222,9 +238,8 @@ Required:
 - [ ] Full workbook export works.
 - [ ] Selected sheet export works.
 - [ ] Export includes all seven required sheets.
-- [ ] System order sheet uses fixed columns.
-- [ ] Customer quote sheet uses backend allowlist.
-- [ ] Customer quote sheet excludes customer tier, internal cost, source refs, admin notes, AI notes, margin, formula/debug fields, and internal low-confidence reasons.
+- [ ] Selected sheet export allows any workbook sheet combination without customer masking.
+- [ ] Export is generated in memory from the persisted workbook and streamed by the API.
 - [ ] Unconfirmed prices do not render as `0`.
 - [ ] Export is access checked and audited.
 
@@ -239,8 +254,10 @@ rtk npm run build:api
 Manual scenario:
 
 ```text
-Download customer quote sheet.
-Expected: customer-facing fields only; internal traceability appears only in internal workbook sheets.
+Download a selected sheet set from `/steel/oauth-chat`.
+Expected: generated XLSX contains exactly the selected workbook sheets, preserves
+staff-visible columns and values, renders missing prices as `未確認`, and does
+not refresh prices or call AI providers.
 ```
 
 ## Checkpoint 5: Admin Source Management Gate

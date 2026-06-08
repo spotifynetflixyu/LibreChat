@@ -1,5 +1,4 @@
 import {
-  findSteelFormulaVersion,
   lookupSteelCatalogFamilies,
   searchSteelCatalogFamilyRules,
   searchSteelCustomers,
@@ -19,11 +18,7 @@ import {
   lookupSteelQuoteRules,
 } from './instructions';
 import { getSteelQuoteDefaultSearchInput } from './defaults';
-import {
-  toCatalogFamilyRules,
-  toCustomerRuleArray,
-  toQuoteRulesRuleArray,
-} from './rules';
+import { toCatalogFamilyRules, toCustomerRuleArray, toQuoteRulesRuleArray } from './rules';
 
 import type {
   SteelToolResult,
@@ -33,7 +28,7 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelCustomer, SteelPriceItem } from '../repositories';
-import type { LookupFormulaInput, LookupQuoteRulesInput } from './schemas';
+import type { LookupQuoteRulesInput } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchPriceCandidatesInput = ReturnType<
@@ -151,48 +146,6 @@ function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
     seen.add(candidate.id);
     return true;
   });
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.trim() !== ''))];
-}
-
-function getFormulaCodes(input: LookupFormulaInput): string[] {
-  return uniqueStrings(input.catalogContexts.flatMap((context) => context.formulaCandidates ?? []));
-}
-
-function getFormulaLineRefs(input: LookupFormulaInput, code: string): string[] {
-  return uniqueStrings(
-    input.catalogContexts
-      .filter((context) => (context.formulaCandidates ?? []).includes(code))
-      .flatMap((context) => context.lineRefs ?? []),
-  );
-}
-
-async function lookupFormulaCandidates(
-  client: SteelRepositoryClient,
-  input: LookupFormulaInput,
-): Promise<SteelRawToolOutput> {
-  const formulaCandidates: SteelRawToolOutput[] = [];
-
-  for (const code of getFormulaCodes(input)) {
-    const formulaVersion = await findSteelFormulaVersion(client, {
-      code,
-      reviewState: input.reviewState,
-    });
-
-    if (!formulaVersion) {
-      continue;
-    }
-
-    formulaCandidates.push({
-      lineRefs: getFormulaLineRefs(input, code),
-      code,
-      formulaVersion,
-    });
-  }
-
-  return { formulaCandidates };
 }
 
 async function searchPriceCandidates(
@@ -412,11 +365,6 @@ async function dispatchSteelTool(
         selectionPolicy:
           'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
       };
-    }
-    case 'lookup_formula': {
-      const input = steelToolArgsSchemas.lookup_formula.parse(args);
-
-      return lookupFormulaCandidates(client, input);
     }
     case 'search_customers': {
       const input = steelToolArgsSchemas.search_customers.parse(args);

@@ -33,6 +33,10 @@ import {
   steelSemanticWorkbookPatchSchema,
   type SteelSemanticWorkbookPatch,
 } from '../workbook/semantic';
+import {
+  getFirstWorkbookSubtotalMismatch,
+  type WorkbookSubtotalMismatch,
+} from '../workbook/subtotals';
 import type { SteelRepositoryClient } from '../repositories';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
@@ -56,12 +60,6 @@ type WorkbookPatchCompletion = {
   missingSheetIds: readonly SteelWorkbookSheetId[];
   missingCells: readonly WorkbookPatchMissingCell[];
 };
-type WorkbookSubtotalMismatch = {
-  expectedTotal: number;
-  mismatchedFields: readonly string[];
-  actualTotals: Record<string, number>;
-};
-
 const workbookPatchCompletionColumnKeysBySheet: Record<SteelWorkbookSheetId, readonly string[]> = {
   system_order: ['item_spec', 'unit_price'],
   quote_details: ['material_unit_price', 'subtotal'],
@@ -229,6 +227,7 @@ const steelAgentRuleSections = [
   'inference_order',
   'confirmation_policy',
 ] as const;
+const steelWorkbookRuleTypes = ['workbook_output_rule'] as const;
 
 async function getSteelRuntimePolicyInstruction(client: SteelRepositoryClient): Promise<string> {
   const rules = await searchSteelAgentRules(client, {
@@ -244,38 +243,21 @@ async function getSteelRuntimePolicyInstruction(client: SteelRepositoryClient): 
   return prompts.join('\n\n');
 }
 
-function getWorkbookPatchInstruction(workbookContextText?: string): string {
-  const instruction = [
-    'You can update the visible Steel workbook only by calling patch_quote_workbook.',
-    'Use patch_quote_workbook for all workbook changes: send compact semantic customer, quoteLines, source, review, note, and summary data, and backend will project it into the workbook sheets.',
-    'Do not hand-write workbook cell operations; backend projection owns cell operation generation.',
-    'For quick Steel price estimates with reviewed positive candidate prices, write provisional workbook preview rows with patch_quote_workbook.',
-    'When changing one quote value such as customer, tier, quantity, unit price, total weight, or subtotal, use patch_quote_workbook with the same lineId so related workbook cells are reprojected together across quote details, system order, summary, sources, review, notes, and customer quote.',
-    'For provisional price previews, update every user-relevant workbook sheet when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote.',
-    'Use system_order for ERP-style order fields, quote_details for calculation inputs and `小計`, summary for customer/tier/total preview, manual_review for confirmation risks, price_sources for reviewed source rows, interpretation_notes for concise reasoning notes, and customer_quote for provisional customer-facing line items.',
-    'Keep patch_quote_workbook compact: one semantic quote line should carry the order, pricing, source, review, note, summary, and customer-facing values needed for this turn.',
-    'Workbook fill contract follows docs/reference/訂單參考_轉檔.xlsx. 價格先於重量: material unit price and processing prices must come from reviewed backend tool results or an explicit user price; handbook/manual weights can support weight/spec evidence but cannot replace missing product prices.',
-    'Do not invent customer tier, product price, unit weight, formula, material/spec, or processing facts. 未確認單價或金額不可填 0; write the string 未確認 for unknown visible values and create manual_review rows when required evidence is missing or ambiguous.',
-    'Use calculation_results before resolved_quote_items when both are available. Treat those numbers as customer-facing only when line subtotal values and summary totals are internally consistent.',
-    '系統訂單分頁材料列與加工列分開; create ERP rows with item numbers such as 10, 20, 30. For C 型鋼 defaults, write a material row only and put holes/cuts in notes unless reviewed rules or user input require separate processing rows.',
-    'For 系統訂單.`型號`, fill semantic `systemOrder.modelCode` from the adopted product-price row `型號` returned by search_price_candidates, such as CCG10023. Do not copy oral product names or catalog family keys into 系統訂單.`型號`.',
-    '報價明細 小計 equals material fee plus cutting, hole, slotting, bending, and other fees. If any required unit price is 未確認, subtotal must be 未確認. Include search keywords, candidate summary, adopted product price item, exact-match status, differences, confidence, review notes, and stock/remnant fields when derivable.',
-    '總結 must include derivable rows for 客戶暫採, 客戶編號暫採, 分級暫採, 送貨地址, 聯繫人, 報價總額, 確定金額, 低信心暫估金額, 未確認項目數, 低信心項目數, 總重量kg, and processing totals. Do not mix 確定金額 with 低信心暫估金額.',
-    '價格來源 needs one source row for each material or processing quote line. If no price is found, set adopted price item to 未確認 and source to 未找到 or the actual searched source.',
-    '判讀備註 should record customer tier judgment, product price search strategy, oral name conversion, weight source, stock allocation rule, the no-zero unknown rule, OCR/drawing assumptions, and any approximate or substitute candidate use.',
-    '給客戶用 is customer-visible only: 不得出現客戶分級, 價格來源, 搜尋關鍵字, 候選品項, 未採用原因, AI判斷, source refs, internal cost, margin, or low-confidence internal reasons. Unknown unit price or subtotal must be 未確認.',
-    'Fill blank workbook cells when the value can be derived from user text, workbook context, reviewed tool results, or quote calculation results.',
-    'Leave a blank cell unchanged when material, customer, source, or calculation context is unavailable, and record the missing context in manual_review or interpretation_notes instead of inventing a value.',
-    'In quote_details, update the `小計` column using internal key `subtotal` when a reviewed candidate and calculable amount exist. Do not add or use a separate visible `報價` column.',
-    'Summary and customer_quote totals may be written only as provisional `暫估/待確認` preview values before the user confirms the selected item, thickness, length, customer, and tier; do not label them as confirmed final totals.',
-    'Use workbook structure context to resolve visible sheet, row, and column labels into internal sheetId, rowId, and columnKey values.',
-    'If workbook context has columns but no rows yet, create first-row ids yourself with stable names: quote_details line_1, price_sources source_1, interpretation_notes note_1, manual_review review_1, system_order order_1, summary summary_1, and customer_quote customer_1.',
-    'Do not ask the user for internal workbook ids or keys when the target can be resolved from context.',
-    'If the target sheet, row, column, or value is still ambiguous after checking context, ask a short clarification instead of calling the tool.',
-    'Do not write confirmed totals before the user confirms the selected item, thickness, length, customer, and tier.',
-    'Do not only describe a workbook update when the update should be applied.',
-    'After patch_quote_workbook succeeds, answer with a concise Traditional Chinese summary of the interpreted order information and key workbook changes. Do not list a per-field diff. Do not answer only with a field count such as `已更新 workbook：16 個欄位`.',
-  ].join(' ');
+async function getSteelWorkbookOutputInstruction(
+  client: SteelRepositoryClient,
+  workbookContextText?: string,
+): Promise<string> {
+  const rules = await searchSteelAgentRules(client, {
+    ruleTypes: steelWorkbookRuleTypes,
+    limit: 20,
+  });
+  const prompts = rules.map((rule) => rule.prompt.trim()).filter(Boolean);
+
+  if (prompts.length === 0) {
+    throw new Error('steel.agent_rules did not return reviewed workbook output rules.');
+  }
+
+  const instruction = prompts.join('\n\n');
 
   return workbookContextText
     ? `${instruction}\n\nWorkbook structure context:\n${workbookContextText}`
@@ -306,15 +288,17 @@ async function getSystemInstruction({
   workbookContextText?: string;
   workbookPatchTool?: boolean;
 }): Promise<string | undefined> {
-  if (steelRuntimePolicy && !agentRulesClient) {
-    throw new Error('steel.agent_rules client is required for Steel runtime policy.');
+  if ((steelRuntimePolicy || workbookPatchTool) && !agentRulesClient) {
+    throw new Error('steel.agent_rules client is required for Steel runtime rules.');
   }
 
   const instructions = [
     ...(steelRuntimePolicy && agentRulesClient
       ? [await getSteelRuntimePolicyInstruction(agentRulesClient)]
       : []),
-    ...(workbookPatchTool ? [getWorkbookPatchInstruction(workbookContextText)] : []),
+    ...(workbookPatchTool && agentRulesClient
+      ? [await getSteelWorkbookOutputInstruction(agentRulesClient, workbookContextText)]
+      : []),
   ];
 
   return instructions.length > 0 ? instructions.join('\n\n') : undefined;
@@ -378,17 +362,9 @@ function createInstructionLookupRequiredResult(call: LanguageModelV3ToolCall): S
     toolName: call.toolName,
     errorCategory: 'invalid_arguments',
     errorSummary:
-      'lookup_quote_rules is required before category-dependent Steel lookups. When AI has selected a catalog/category key from oral order evidence, first call lookup_quote_rules with the interpreted order context, then call search_price_candidates or lookup_formula.',
+      'lookup_quote_rules is required before category-dependent Steel lookups. When AI has selected a catalog/category key from oral order evidence, first call lookup_quote_rules with the interpreted order context, then call search_price_candidates.',
     durationMs: 0,
     redactionVersion: 1,
-  };
-}
-
-function createRequiredFormulaLookupReminderMessage(): LanguageModelV3Message {
-  return {
-    role: 'system',
-    content:
-      'The reviewed quote rules for this Steel material require lookup_formula before the final answer. Call lookup_formula with the selected catalogContexts and formulaCandidates from lookup_quote_rules, then use the reviewed formula rows together with the price candidates for the quote calculation.',
   };
 }
 
@@ -442,29 +418,10 @@ function getStringArrayProperty(value: unknown, key: string): string[] {
   );
 }
 
-function hasCatalogContext(input: unknown): boolean {
-  if (!isJsonObject(input)) {
-    return false;
-  }
-
-  const contexts = input.catalogContexts;
-  if (!Array.isArray(contexts)) {
-    return false;
-  }
-
-  return contexts.some(
-    (context) =>
-      getStringArrayProperty(context, 'catalogCandidates').length > 0 ||
-      getStringArrayProperty(context, 'packetGroupHints').length > 0,
-  );
-}
-
 function isCategoryDependentLookup(call: SteelBusinessToolCall, input: unknown): boolean {
   switch (call.toolName) {
     case 'search_price_candidates':
       return getStringArrayProperty(input, 'catalogFamilies').length > 0;
-    case 'lookup_formula':
-      return hasCatalogContext(input);
     default:
       return false;
   }
@@ -512,32 +469,6 @@ function getSingleCustomerSearchTierId(result: SteelToolResult): number | undefi
   }
 
   return tierIds.size === 1 ? [...tierIds][0] : undefined;
-}
-
-function getRequiredLookupsFromResult(result: SteelToolResult): SteelToolName[] {
-  if (!result.ok) {
-    return [];
-  }
-
-  const directRequiredLookups = result.data.requiredLookups;
-  const packetRequiredLookups = result.data.instructionPackets;
-  const lookupNames = [
-    ...(Array.isArray(directRequiredLookups) ? directRequiredLookups : []),
-    ...(Array.isArray(packetRequiredLookups)
-      ? packetRequiredLookups.flatMap((packet) => {
-          if (!isJsonObject(packet) || !Array.isArray(packet.requiredLookups)) {
-            return [];
-          }
-
-          return packet.requiredLookups;
-        })
-      : []),
-  ];
-
-  return lookupNames.filter(
-    (lookupName): lookupName is SteelToolName =>
-      typeof lookupName === 'string' && isSteelToolName(lookupName),
-  );
 }
 
 function withDefaultCustomerTierFilter({
@@ -763,6 +694,10 @@ function toWorkbookPatchToolResultValue(
     ? { projectedOperationCount: operationCount }
     : {};
   if (subtotalMismatch) {
+    const instruction = subtotalMismatch.unknownSubtotalLineRefs
+      ? 'Workbook confirmed totals cannot be numeric while any line subtotal is unknown. Call patch_quote_workbook again with unknown totals set to 未確認 or provide reviewed/user-confirmed line subtotals before answering.'
+      : 'Workbook summary totals must equal the sum of line subtotal values. Call patch_quote_workbook again with corrected summary.totalAmount and summary.confirmedAmount values before answering.';
+
     return toJsonValue({
       ok: true,
       toolName: parsedCall.call.toolName,
@@ -770,8 +705,7 @@ function toWorkbookPatchToolResultValue(
       ...projectedFields,
       complete: false,
       subtotalMismatch,
-      instruction:
-        'Workbook summary totals must equal the sum of line subtotal values. Call patch_quote_workbook again with corrected summary.totalAmount and summary.confirmedAmount values before answering.',
+      instruction,
     });
   }
 
@@ -925,97 +859,6 @@ function parseWorkbookPatchToolCalls(
   });
 }
 
-function toRoundedWorkbookAmount(value: number): number {
-  return Number(value.toFixed(2));
-}
-
-function getNumericWorkbookAmount(value: unknown): number | undefined {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? toRoundedWorkbookAmount(value) : undefined;
-  }
-
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized.includes('未確認')) {
-    return undefined;
-  }
-
-  const numericText = normalized.replaceAll(',', '');
-  if (!/^-?\d+(?:\.\d+)?$/.test(numericText)) {
-    return undefined;
-  }
-
-  const amount = Number(numericText);
-  return Number.isFinite(amount) ? toRoundedWorkbookAmount(amount) : undefined;
-}
-
-function getWorkbookSubtotalTotal(input: SteelSemanticWorkbookPatch): number | undefined {
-  if (input.quoteLines.length === 0) {
-    return undefined;
-  }
-
-  let total = 0;
-  for (const line of input.quoteLines) {
-    const subtotal = getNumericWorkbookAmount(line.subtotal);
-    if (subtotal === undefined) {
-      return undefined;
-    }
-
-    total += subtotal;
-  }
-
-  return toRoundedWorkbookAmount(total);
-}
-
-function getWorkbookSubtotalMismatch(
-  input: SteelSemanticWorkbookPatch,
-): WorkbookSubtotalMismatch | undefined {
-  const expectedTotal = getWorkbookSubtotalTotal(input);
-  if (expectedTotal === undefined) {
-    return undefined;
-  }
-
-  const summaryTotals = [
-    ['summary.totalAmount', getNumericWorkbookAmount(input.summary?.totalAmount)],
-    ['summary.confirmedAmount', getNumericWorkbookAmount(input.summary?.confirmedAmount)],
-  ] as const;
-  const actualTotals: Record<string, number> = {};
-  const mismatchedFields: string[] = [];
-
-  for (const [field, actualTotal] of summaryTotals) {
-    if (actualTotal === undefined || actualTotal === expectedTotal) {
-      continue;
-    }
-
-    mismatchedFields.push(field);
-    actualTotals[field] = actualTotal;
-  }
-
-  return mismatchedFields.length > 0
-    ? {
-        expectedTotal,
-        mismatchedFields,
-        actualTotals,
-      }
-    : undefined;
-}
-
-function getFirstWorkbookSubtotalMismatch(
-  parsedCalls: readonly ParsedWorkbookPatchToolCall[],
-): WorkbookSubtotalMismatch | undefined {
-  for (const { input } of parsedCalls) {
-    const mismatch = getWorkbookSubtotalMismatch(input);
-    if (mismatch !== undefined) {
-      return mismatch;
-    }
-  }
-
-  return undefined;
-}
-
 function getWorkbookPatchFromOperations(
   operations: WorkbookPatchOperation[],
 ): SteelProviderWorkbookPatchProposal | undefined {
@@ -1031,68 +874,17 @@ function getWarningText(warning: SharedV3Warning): string {
 }
 
 function getSteelToolChoice({
-  hasRequiredFormulaResult,
   hasReviewedPriceResult,
-  mustGetRequiredFormulaResult,
   mustGetReviewedPriceResult,
 }: {
-  hasRequiredFormulaResult: boolean;
   hasReviewedPriceResult: boolean;
-  mustGetRequiredFormulaResult: boolean;
   mustGetReviewedPriceResult: boolean;
 }): LanguageModelV3ToolChoice {
-  if (
-    (!mustGetReviewedPriceResult || hasReviewedPriceResult) &&
-    (!mustGetRequiredFormulaResult || hasRequiredFormulaResult)
-  ) {
+  if (!mustGetReviewedPriceResult || hasReviewedPriceResult) {
     return { type: 'auto' };
   }
 
   return { type: 'required' };
-}
-
-function isFunctionToolWithName(tool: SteelRoundTool, name: string): boolean {
-  return tool.type === 'function' && tool.name === name;
-}
-
-function getSteelToolsForRound({
-  hasCatalogFamilyLookupResult,
-  hasInstructionLookupResult,
-  hasRequiredFormulaResult,
-  hasReviewedPriceResult,
-  mustGetRequiredFormulaResult,
-  mustGetReviewedPriceResult,
-  tools,
-}: {
-  hasCatalogFamilyLookupResult: boolean;
-  hasInstructionLookupResult: boolean;
-  hasRequiredFormulaResult: boolean;
-  hasReviewedPriceResult: boolean;
-  mustGetRequiredFormulaResult: boolean;
-  mustGetReviewedPriceResult: boolean;
-  tools: SteelRoundTool[];
-}): SteelRoundTool[] {
-  if (mustGetReviewedPriceResult && !hasCatalogFamilyLookupResult && !hasInstructionLookupResult) {
-    return tools.filter(
-      (tool) =>
-        isFunctionToolWithName(tool, 'lookup_catalog_families') ||
-        isFunctionToolWithName(tool, 'search_customers'),
-    );
-  }
-
-  if (mustGetReviewedPriceResult && hasCatalogFamilyLookupResult && !hasInstructionLookupResult) {
-    return tools.filter((tool) => isFunctionToolWithName(tool, 'lookup_quote_rules'));
-  }
-
-  if (mustGetReviewedPriceResult && hasInstructionLookupResult && !hasReviewedPriceResult) {
-    return tools.filter((tool) => isFunctionToolWithName(tool, 'search_price_candidates'));
-  }
-
-  if (mustGetRequiredFormulaResult && !hasRequiredFormulaResult) {
-    return tools.filter((tool) => isFunctionToolWithName(tool, 'lookup_formula'));
-  }
-
-  return tools;
 }
 
 function sumTokenTotals(
@@ -1144,8 +936,11 @@ export async function sendSteelOAuthChat({
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
+  const shouldLoadAgentRules = steelRuntimePolicy === true || workbookPatchTool === true;
   const systemInstruction = await getSystemInstruction({
-    agentRulesClient: steelRuntimePolicy ? agentRulesClient ?? getDefaultSteelToolClient() : undefined,
+    agentRulesClient: shouldLoadAgentRules
+      ? (agentRulesClient ?? getDefaultSteelToolClient())
+      : undefined,
     steelRuntimePolicy,
     workbookContextText,
     workbookPatchTool,
@@ -1170,40 +965,25 @@ export async function sendSteelOAuthChat({
     steelRuntimePolicy === true && requiresReviewedPriceLookup(messages);
   const mustGetProvisionalWorkbookPatch = mustGetReviewedPriceResult && workbookPatchTool === true;
   let hasReviewedPriceResult = false;
-  let hasCatalogFamilyLookupResult = false;
   let hasInstructionLookupResult = false;
-  let hasRequiredFormulaResult = false;
   let hasPositiveReviewedPriceCandidate = false;
-  const requiredSteelLookups = new Set<SteelToolName>();
   let forceDefaultCustomerTier = true;
   let selectedCustomerTierId: number | undefined;
   let hasWorkbookPatch = false;
   const workbookPatchOperations: WorkbookPatchOperation[] = [];
 
   for (let round = 0; round <= steelToolMaxCalls; round += 1) {
-    const mustGetRequiredFormulaResult = requiredSteelLookups.has('lookup_formula');
     const toolChoice = getSteelToolChoice({
-      hasRequiredFormulaResult,
       hasReviewedPriceResult,
-      mustGetRequiredFormulaResult,
       mustGetReviewedPriceResult,
-    });
-    const roundTools = getSteelToolsForRound({
-      hasCatalogFamilyLookupResult,
-      hasInstructionLookupResult,
-      hasRequiredFormulaResult,
-      hasReviewedPriceResult,
-      mustGetRequiredFormulaResult,
-      mustGetReviewedPriceResult,
-      tools,
     });
     const result = await openai(model).doGenerate({
       abortSignal,
       prompt,
       maxOutputTokens,
-      ...(roundTools.length > 0
+      ...(tools.length > 0
         ? {
-            tools: roundTools,
+            tools,
             toolChoice,
           }
         : {}),
@@ -1222,7 +1002,9 @@ export async function sendSteelOAuthChat({
     }
     const workbookPatchCalls = workbookPatchTool ? getWorkbookPatchToolCalls(result) : [];
     const parsedWorkbookPatchCalls = parseWorkbookPatchToolCalls(workbookPatchCalls);
-    const workbookSubtotalMismatch = getFirstWorkbookSubtotalMismatch(parsedWorkbookPatchCalls);
+    const workbookSubtotalMismatch = getFirstWorkbookSubtotalMismatch(
+      parsedWorkbookPatchCalls.map(({ input }) => input),
+    );
     const acceptedWorkbookPatchCalls = workbookSubtotalMismatch ? [] : parsedWorkbookPatchCalls;
     workbookPatchOperations.push(
       ...acceptedWorkbookPatchCalls.flatMap(({ patchProposal }) => patchProposal.operations),
@@ -1242,11 +1024,6 @@ export async function sendSteelOAuthChat({
     if (steelBusinessToolCalls.length === 0) {
       if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {
         prompt = [...prompt, getRequiredPriceLookupReminderMessage()];
-        continue;
-      }
-
-      if (mustGetRequiredFormulaResult && !hasRequiredFormulaResult) {
-        prompt = [...prompt, createRequiredFormulaLookupReminderMessage()];
         continue;
       }
 
@@ -1294,30 +1071,10 @@ export async function sendSteelOAuthChat({
     });
     if (
       executedCalls.some(
-        ({ call, result: toolResult }) =>
-          call.toolName === 'lookup_catalog_families' && toolResult.ok,
-      )
-    ) {
-      hasCatalogFamilyLookupResult = true;
-    }
-    if (
-      executedCalls.some(
         ({ call, result: toolResult }) => call.toolName === 'lookup_quote_rules' && toolResult.ok,
       )
     ) {
       hasInstructionLookupResult = true;
-    }
-    for (const requiredLookup of executedCalls.flatMap(({ result: toolResult }) =>
-      getRequiredLookupsFromResult(toolResult),
-    )) {
-      requiredSteelLookups.add(requiredLookup);
-    }
-    if (
-      executedCalls.some(
-        ({ call, result: toolResult }) => call.toolName === 'lookup_formula' && toolResult.ok,
-      )
-    ) {
-      hasRequiredFormulaResult = true;
     }
     const customerTierContextCalls = executedCalls.filter(
       ({ call, result: toolResult }) => call.toolName === 'lookup_quote_rules' && toolResult.ok,
@@ -1358,8 +1115,6 @@ export async function sendSteelOAuthChat({
     ];
     if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {
       prompt = [...nextPrompt, getRequiredPriceLookupReminderMessage()];
-    } else if (requiredSteelLookups.has('lookup_formula') && !hasRequiredFormulaResult) {
-      prompt = [...nextPrompt, createRequiredFormulaLookupReminderMessage()];
     } else if (workbookSubtotalMismatch) {
       prompt = nextPrompt;
     } else if (requiresWorkbookPatchCompletion && !hasCompleteWorkbookPatch) {
@@ -1379,10 +1134,6 @@ export async function sendSteelOAuthChat({
     throw new Error(
       'search_price_candidates was required before answering this Steel price request.',
     );
-  }
-
-  if (requiredSteelLookups.has('lookup_formula') && !hasRequiredFormulaResult) {
-    throw new Error('lookup_formula was required before answering this Steel price request.');
   }
 
   const finalWorkbookPatchCompletion =

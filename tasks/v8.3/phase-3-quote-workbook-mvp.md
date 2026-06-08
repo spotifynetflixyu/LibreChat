@@ -449,9 +449,24 @@ Required manual smoke cases:
 | OAUTH-03 | `openai_oauth_responses` | Structured workbook patch                   | Patch passes backend schema validation and updates workbook                                                                                          |
 | OAUTH-04 | `openai_oauth_responses` | Image/PDF/XLSX capability probe             | Passed capability is recorded, or typed unsupported error is returned when the workflow has not explicitly selected a passed `openai_api` capability |
 | OAUTH-05 | `openai_oauth_responses` | Stateless second turn                       | Steel sends full reconstructed context and does not send `previous_response_id` / `item_reference`                                                   |
+| OAUTH-06 | `openai_oauth_responses` | Natural workbook calculation                | Live model uses DB rule/price evidence and the first `patch_quote_workbook` call sets line subtotal and summary total consistently                   |
+| OAUTH-07 | `openai_oauth_responses` | Customer-specific rules injection           | `search_customers` returns customer `rules`, the next model prompt includes them, and the answer applies the customer-specific rule                   |
 | API-01   | `openai_api`             | Official Responses API conversation         | `conversation` pattern works and previous response ID is audit only                                                                                  |
 | API-02   | `openai_api`             | Customer-visible workbook from chat         | Creates or patches a seven-sheet workbook                                                                                                            |
 | API-03   | `openai_api`             | File/vision/XLSX explicit fallback          | Produces evidence or low-confidence/manual-review result without corrupting workbook                                                                 |
+
+Manual command pattern for the OAuth workbook/tool-loop smoke cases:
+
+```bash
+cd packages/api
+DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules <SMOKE_FLAG>=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'
+```
+
+Current smoke flags:
+
+- `STEEL_OPENAI_OAUTH_WORKBOOK_NATURAL_CALC_TEST=true`
+- `STEEL_OPENAI_OAUTH_WORKBOOK_DB_SUBTOTAL_LOOP_TEST=true`
+- `STEEL_OPENAI_OAUTH_CUSTOMER_RULES_TEST=true`
 
 Evidence to record in `tasks/todo.md` review:
 

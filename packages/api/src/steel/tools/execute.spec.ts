@@ -656,6 +656,7 @@ describe('executeSteelTool', () => {
       'lookup_hole_price',
       'lookup_processing_price',
       'lookup_material_rules',
+      'lookup_formula',
       'lookup_formula_version',
       'find_order_items',
       'search_source_chunks',
@@ -744,27 +745,27 @@ describe('executeSteelTool', () => {
     expect(client.calls[1]?.sql).toContain('FROM steel.catalog_family_rules');
     expect(result.data).toEqual(
       expect.objectContaining({
-      catalogFamilyCandidates: [
-        expect.objectContaining({
-          key: 'h_beam',
-          displayNameZh: 'H型鋼',
-          aliases: ['H型鋼', 'H鋼', 'H-BEAM'],
-          sourceRefs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'catalog_family',
-              sourceFile: 'docs/reference/產品價格.xlsx',
-              canonicalKey: 'catalog_family',
-            },
-          ],
-        }),
-        expect.objectContaining({
-          key: 'c_type',
-          displayNameZh: 'C型鋼',
-        }),
-      ],
-      selectionPolicy:
-        'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
+        catalogFamilyCandidates: [
+          expect.objectContaining({
+            key: 'h_beam',
+            displayNameZh: 'H型鋼',
+            aliases: ['H型鋼', 'H鋼', 'H-BEAM'],
+            sourceRefs: [
+              {
+                channel: 'admin_erp_xlsx',
+                factType: 'catalog_family',
+                sourceFile: 'docs/reference/產品價格.xlsx',
+                canonicalKey: 'catalog_family',
+              },
+            ],
+          }),
+          expect.objectContaining({
+            key: 'c_type',
+            displayNameZh: 'C型鋼',
+          }),
+        ],
+        selectionPolicy:
+          'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
       }),
     );
     expect(result.data.rules).toEqual(
@@ -1229,7 +1230,7 @@ describe('executeSteelTool', () => {
         expect.objectContaining({
           slug: 'c-type-basic-quote-zh-v1',
           packetGroups: ['c-type-quote-core'],
-          requiredLookups: ['search_price_candidates', 'lookup_formula'],
+          requiredLookups: ['search_price_candidates'],
           matchedFacets: expect.objectContaining({
             lineRefs: ['line-1'],
             catalogFamilies: ['c_type'],
@@ -1253,7 +1254,7 @@ describe('executeSteelTool', () => {
         expect.objectContaining({
           slug: 'formula-code-selection-zh-v1',
           packetGroups: expect.arrayContaining(['c-type-quote-core']),
-          requiredLookups: ['lookup_formula'],
+          requiredLookups: [],
         }),
         expect.objectContaining({
           slug: 'drawing-processing-detection-zh-v1',
@@ -1268,9 +1269,8 @@ describe('executeSteelTool', () => {
         expect.objectContaining({ slug: 'angle-surface-oral-zh-v1' }),
       ]),
     );
-    expect(result.data.requiredLookups).toEqual(
-      expect.arrayContaining(['search_price_candidates', 'lookup_formula']),
-    );
+    expect(result.data.requiredLookups).toEqual(['search_price_candidates']);
+    expect(JSON.stringify(result.data)).not.toContain('lookup_formula');
     expect(result.data.requiredLookups).not.toContain('lookup_defaults');
     expect(JSON.stringify(result.data)).not.toMatch(/backend|codex|hard-code/i);
     expect(JSON.stringify(result.data)).not.toMatch(/不要只因品名.*confirmed true-zero/);
@@ -1448,7 +1448,7 @@ describe('executeSteelTool', () => {
         expect.objectContaining({
           slug: 'h-type-length-surcharge-zh-v1',
           packetGroups: ['h-type-quote-core'],
-          requiredLookups: ['search_price_candidates', 'lookup_formula'],
+          requiredLookups: ['search_price_candidates'],
           matchedFacets: expect.objectContaining({
             lineRefs: ['line-h-beam'],
             catalogFamilies: ['h_beam'],
@@ -1494,30 +1494,8 @@ describe('executeSteelTool', () => {
     );
   });
 
-  it('looks up formulas for multiple material contexts in one tool call', async () => {
-    const client = createClient([
-      [
-        {
-          id: '15',
-          code: 'C',
-          version_seq: '1',
-          display_name: 'C型鋼',
-          source_expression: '四捨五入(單位重*長度,2)/100',
-          formula_body: { code: 'C' },
-          compiled_formula: { code: 'C' },
-          allowed_variables: ['unitWeight', 'lengthM'],
-          active: true,
-          review_state: 'reviewed',
-          source_refs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'formula',
-              sourceFile: 'docs/reference/公式編號.xlsx',
-            },
-          ],
-        },
-      ],
-    ]);
+  it('rejects formula lookup as an old executable runtime tool', async () => {
+    const client = createClient([]);
 
     const result = await executeSteelTool({
       client,
@@ -1537,29 +1515,12 @@ describe('executeSteelTool', () => {
       },
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['reviewed', 'C']);
-    expect(result.data.formulaCandidates).toEqual([
-      {
-        lineRefs: ['line-c-type'],
-        code: 'C',
-        formulaVersion: expect.objectContaining({
-          code: 'C',
-          displayName: 'C型鋼',
-          sourceRefs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'formula',
-              sourceFile: 'docs/reference/公式編號.xlsx',
-            },
-          ],
-        }),
-      },
-    ]);
+    expect(result).toMatchObject({
+      ok: false,
+      toolName: 'lookup_formula',
+      errorCategory: 'unknown_tool',
+    });
+    expect(client.calls).toHaveLength(0);
   });
 
   it('returns defaults through the merged quote-rule lookup', async () => {
@@ -1757,34 +1718,36 @@ describe('executeSteelTool', () => {
       '%格柵板%',
       10,
     ]);
-    expect(client.calls[1]?.sql).toEqual(expect.stringContaining('FROM steel.catalog_family_rules'));
+    expect(client.calls[1]?.sql).toEqual(
+      expect.stringContaining('FROM steel.catalog_family_rules'),
+    );
     expect(result.data.rules).toEqual(
       expect.arrayContaining([
-      {
-        id: 'catalog_family_rule:91',
-        ruleType: 'similar_product_name_rule',
-        scope: {
-          type: 'product_name',
-          customerId: null,
-          customerTierId: null,
-          catalogFamilies: ['grating'],
-          productNames: ['鍍鋅格柵板', '格柵板', '鍍鋅柵板'],
-          chargeTypes: [],
-          formulaCodes: [],
-        },
-        prompt: '格柵板、鍍鋅柵板可作鍍鋅格柵板候選；規格不明時列選項確認。',
-        priority: 15,
-        confidence: 'medium',
-        sourceRefs: [
-          {
-            channel: 'admin_table_ui',
-            factType: 'catalog_family_rule',
-            locator: 'steel.catalog_family_rules:91',
-            canonicalKey: 'product_name_grating_alias_rule',
+        {
+          id: 'catalog_family_rule:91',
+          ruleType: 'similar_product_name_rule',
+          scope: {
+            type: 'product_name',
+            customerId: null,
+            customerTierId: null,
+            catalogFamilies: ['grating'],
+            productNames: ['鍍鋅格柵板', '格柵板', '鍍鋅柵板'],
+            chargeTypes: [],
+            formulaCodes: [],
           },
-        ],
-        aliases: ['格柵板', '鍍鋅柵板'],
-      },
+          prompt: '格柵板、鍍鋅柵板可作鍍鋅格柵板候選；規格不明時列選項確認。',
+          priority: 15,
+          confidence: 'medium',
+          sourceRefs: [
+            {
+              channel: 'admin_table_ui',
+              factType: 'catalog_family_rule',
+              locator: 'steel.catalog_family_rules:91',
+              canonicalKey: 'product_name_grating_alias_rule',
+            },
+          ],
+          aliases: ['格柵板', '鍍鋅柵板'],
+        },
       ]),
     );
     expect(result.data.rules).toHaveLength(2);
@@ -1896,9 +1859,7 @@ describe('executeSteelTool', () => {
         instruction: 'C 型鋼切工與孔費預設免費',
       }),
     ]);
-    expect(result.data.requiredLookups).toEqual(
-      expect.arrayContaining(['search_price_candidates', 'lookup_formula']),
-    );
+    expect(result.data.requiredLookups).toEqual(['search_price_candidates']);
     expect(result.data.userVisibleNotes).toEqual(
       expect.arrayContaining([
         '材質不明時，錏輕型鋼可作高信心暫估候選；第一輪需列出同規格其他材質選項。',
@@ -2051,7 +2012,7 @@ describe('executeSteelTool', () => {
     );
   });
 
-  it('runs a C-type order context through instructions, price, defaults, and formula lookups', async () => {
+  it('runs a C-type order context through rules, price candidates, and defaults', async () => {
     const client = createClient([
       instructionRows(['c-type-basic-quote-zh-v1']),
       [
@@ -2120,28 +2081,6 @@ describe('executeSteelTool', () => {
           ],
         },
       ],
-      [
-        {
-          id: '73',
-          code: 'C',
-          version_seq: '1',
-          display_name: 'C型鋼',
-          source_expression: '四捨五入(單位重*長度,2)/100',
-          formula_body: { code: 'C' },
-          compiled_formula: { code: 'C' },
-          allowed_variables: ['unitWeight', 'lengthM'],
-          active: true,
-          review_state: 'reviewed',
-          source_refs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'formula',
-              sourceFile: 'docs/reference/公式編號.xlsx',
-              canonicalKey: 'formula_code',
-            },
-          ],
-        },
-      ],
     ]);
     const runState = createSteelToolRunState(3);
     const catalogContexts = [
@@ -2190,29 +2129,19 @@ describe('executeSteelTool', () => {
         limit: 5,
       },
     });
-    const formulaResult = await executeSteelTool({
-      client,
-      runState,
-      toolName: 'lookup_formula',
-      arguments: {
-        catalogContexts,
-      },
-    });
-
     expect(quoteRulesResult.ok).toBe(true);
     expect(priceResult.ok).toBe(true);
-    expect(formulaResult.ok).toBe(true);
-    if (!quoteRulesResult.ok || !priceResult.ok || !formulaResult.ok) {
+    if (!quoteRulesResult.ok || !priceResult.ok) {
       throw new Error('C 型鋼 vertical lookup failed');
     }
 
-    expect(client.calls).toHaveLength(5);
-    expect(runState.callsUsed).toBe(3);
+    expect(client.calls).toHaveLength(4);
+    expect(runState.callsUsed).toBe(2);
     expect(quoteRulesResult.data.instructionPackets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           slug: 'c-type-basic-quote-zh-v1',
-          requiredLookups: ['search_price_candidates', 'lookup_formula'],
+          requiredLookups: ['search_price_candidates'],
           instruction: expect.stringContaining('材質不明時，AI 使用 productNames: [錏輕型鋼]'),
           blockingRules: expect.arrayContaining([
             expect.stringContaining('不要把 C型鋼 當作 productNames 候選'),
@@ -2236,23 +2165,6 @@ describe('executeSteelTool', () => {
         formulaCodes: ['C'],
         chargeTypes: ['cutting', 'hole'],
         instruction: expect.stringContaining('C 型鋼切工與孔費預設免費'),
-      }),
-    ]);
-    expect(formulaResult.data.formulaCandidates).toEqual([
-      expect.objectContaining({
-        lineRefs: ['line-c-type'],
-        code: 'C',
-        formulaVersion: expect.objectContaining({
-          code: 'C',
-          sourceRefs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'formula',
-              sourceFile: 'docs/reference/公式編號.xlsx',
-              canonicalKey: 'formula_code',
-            },
-          ],
-        }),
       }),
     ]);
   });

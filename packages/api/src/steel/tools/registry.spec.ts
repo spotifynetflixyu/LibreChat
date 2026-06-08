@@ -7,10 +7,10 @@ describe('Steel tool registry', () => {
     expect(toolNames).toEqual([
       'lookup_quote_rules',
       'lookup_catalog_families',
-      'lookup_formula',
       'search_customers',
       'search_price_candidates',
     ]);
+    expect(toolNames).not.toContain('lookup_formula');
     expect(toolNames).not.toContain('lookup_instructions');
     expect(toolNames).not.toContain('lookup_defaults');
     expect(toolNames).not.toContain('normalize_quote_item');

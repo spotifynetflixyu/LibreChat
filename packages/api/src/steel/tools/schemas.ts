@@ -287,10 +287,6 @@ const searchPriceCandidatesSchema = z
 export const steelToolArgsSchemas = {
   lookup_quote_rules: lookupQuoteRulesSchema,
   lookup_catalog_families: lookupCatalogFamiliesSchema,
-  lookup_formula: z.object({
-    catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
-    reviewState: reviewStateSchema,
-  }),
   search_customers: z.object({
     searchText: nonEmptyString,
     includeInactive: z.boolean().optional(),
@@ -302,6 +298,5 @@ export const steelToolArgsSchemas = {
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
 export type LookupDefaultsInput = z.infer<typeof lookupDefaultsSchema>;
 export type LookupCatalogFamiliesInput = z.infer<typeof lookupCatalogFamiliesSchema>;
-export type LookupFormulaInput = z.infer<typeof steelToolArgsSchemas.lookup_formula>;
 export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
 export type LookupQuoteRulesInput = z.infer<typeof lookupQuoteRulesSchema>;

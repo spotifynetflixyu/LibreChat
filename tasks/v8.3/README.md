@@ -6,7 +6,7 @@ The plan assumes the current repository state:
 
 - `supabase/schema.sql` and `supabase/migration/202605230001_initial_steel_schema.sql` define the initial private `steel` schema.
 - `packages/api/src/steel/postgres.ts` provides the Steel Supabase connection helper and readiness query.
-- The repo currently declares `xlsx@0.20.3`; v8.3 export must add ExcelJS deliberately for customer-facing XLSX rendering.
+- The repo currently declares `xlsx@0.20.3`; v8.3 export must add ExcelJS deliberately for staff workbook XLSX rendering.
 - No Steel Mongo schemas, Steel HTTP routes, Steel data-provider types, client Steel UI, Steel AI provider adapter, orchestrator, workbook engine, Excel export, Admin import, memory, source management, eval harness, environment-gated guest access, or Steel retrieval implementation exists yet.
 - `CONTEXT.md` defines the business language for Steel quoting. Provider/driver details are implementation concepts, not domain glossary terms.
 
@@ -53,8 +53,10 @@ The v8.3 MVP is production-shaped and access is environment-gated:
   - 判讀備註
   - 系統訂單
   - 給客戶用
-- ExcelJS export for full workbook, system order, and customer quote sheets.
-- Customer quote sheet uses backend-owned allowlist and hides customer tier/internal fields.
+- ExcelJS export for the full workbook or any selected workbook sheets.
+- Phase 4 staff workbook export does not apply customer masking or dedicated
+  system-order export logic; future customer-specific workbook formats can add
+  those restrictions later.
 - Workbook Preview, changed-field summaries, selected-target markers, and Excel output use Traditional Chinese field labels while carrying English structured keys internally.
 - Chat Workspace and seven-tab Workbook Preview are part of the Phase 3 vertical slice, implemented as an independent Steel workspace under `client/src/features/steel`.
 - Desktop and mobile web UI share one Steel UX framework: same components, hooks, API contracts, and mock data, with responsive layout changes only.
@@ -64,7 +66,7 @@ The v8.3 MVP is production-shaped and access is environment-gated:
 - API mock data lives in one shared folder, `packages/data-provider/src/steel/mock/`; it can be shaped from `docs/reference` for UX development, but reference values are not imported into the database yet.
 - Handbook-informed real schema/data model for weight specs, standard dimensions, material rules, and source chunks; real handbook data SQL/import comes later.
 - Admin ERP XLSX import, Admin table maintenance, and Source management follow after the chat/workbook/export path.
-- Steel Eval Harness proves price-first behavior, seven-sheet export, customer mask, provider fallback gates, Admin upload policy, and no zero-filled unknown prices before broad beta.
+- Steel Eval Harness proves price-first behavior, seven-sheet export, provider fallback gates, Admin upload policy, and no zero-filled unknown prices before broad beta.
 
 Deferred until after the MVP:
 
@@ -81,7 +83,7 @@ Deferred until after the MVP:
 | 1     | [Platform Foundation](phase-1-platform-foundation.md)         | Contracts, schemas, routes, permissions, audit, provider-state metadata, and Supabase seams build                                                                                                               |
 | 2     | [Quote Data And Tools](phase-2-data-tools.md)                 | Repositories and business tools support price-first reviewed lookup, rule prompts, and workbook subtotal validation                                                                                              |
 | 3     | [Quote Workbook MVP](phase-3-quote-workbook-mvp.md)           | Chat UX sends messages and previews a seven-sheet workbook; openai-oauth binding is complete before live smoke; `openai_oauth_responses` and capability-gated `openai_api` fallback each have a live smoke case |
-| 4     | [Excel Export](phase-4-excel-export.md)                       | ExcelJS export works with seven fixed sheets, customer mask, and system order sheet                                                                                                                             |
+| 4     | [Excel Export](phase-4-excel-export.md)                       | ExcelJS export works with seven fixed sheets and arbitrary selected-sheet staff downloads                                                                                                                       |
 | 5     | [Admin Source Management](phase-5-admin-source-management.md) | ERP XLSX Admin Import, Admin table maintenance, and source management safely commit reviewed data                                                                                                               |
 | 6     | [Production Hardening](phase-6-production-hardening.md)       | Memory, retrieval, eval harness, async jobs, signed exports, and production hardening are beta-ready                                                                                                            |
 
@@ -112,8 +114,8 @@ Use [checkpoints.md](checkpoints.md) as the follow-up tracker during implementat
 | Workbook JSON Engine                                                              | Phase 3                                                                                                                      |
 | Fixed Seven-Sheet Workbook                                                        | Phase 3, Phase 4                                                                                                             |
 | ExcelJS Export Engine                                                             | Phase 4                                                                                                                      |
-| Customer Quote Sheet Mask                                                         | Phase 4                                                                                                                      |
-| System Order Export                                                               | Phase 4                                                                                                                      |
+| Customer-Specific Export Mask                                                     | Later customer workbook format                                                                                              |
+| System Order Dedicated Export                                                     | Deferred; selected-sheet export covers the Phase 4 need                                                                      |
 | Steel Handbook Schema Design Boundary                                             | Phase 2                                                                                                                      |
 | Admin ERP XLSX Source Parsing                                                     | Phase 5                                                                                                                      |
 | Admin ERP XLSX Import / AI Merge Table                                            | Phase 5                                                                                                                      |

@@ -6,6 +6,293 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Active: Steel v8.3 Phase 3 Checkpoint Sync And Phase 4 Grill
+
+Goal: close the completed v8.3 Phase 3 checkpoint evidence without overstating
+unfinished UI/API/export work, then pressure-test Phase 4 Excel Export before
+implementation starts.
+
+- [x] Sync `tasks/v8.3/checkpoints.md` for completed Phase 2/3 rule,
+      workbook, provider, and live-smoke evidence.
+- [x] Keep unchecked any Phase 3 UI/API/fallback/file/export items that are not
+      backed by current implementation evidence.
+- [x] Grill `tasks/v8.3/phase-4-excel-export.md` and batch every unresolved
+      export decision with recommended answers.
+- [x] Run document hygiene checks after the checkpoint sync.
+
+Review evidence:
+
+- Synced `tasks/v8.3/checkpoints.md` with 2026-06-08 status notes for
+  Checkpoint 1, Checkpoint 2, and the fixed OAuth/Codex `/steel/oauth-chat`
+  portion of Checkpoint 3.
+- Left unchecked the unsupported strict Phase 3 items: missing
+  `packages/api/src/steel/workbook/schema.ts`, formal Steel Workspace/mobile
+  selected-cell UI, explicit OpenAI API fallback smoke, prompt context-ref
+  persistence, and ambiguous multi-field clarification coverage.
+- Updated `.env.example` and
+  `tasks/v8.3/openai-oauth-provider-real-auth-implementation.md` so active
+  runtime examples use `gpt-5.5` instead of stale `gpt-5.4`.
+- Focused Jest passed: `cd packages/api && npx jest
+  src/steel/ai/config.spec.ts src/steel/models.spec.ts
+  src/steel/access.spec.ts src/steel/conversations/service.spec.ts
+  src/steel/tools/registry.spec.ts src/steel/workbook/subtotals.spec.ts
+  --runInBand` passed 25 tests.
+- Hygiene passed: `git diff --check`.
+- Phase 4 grill follow-up decisions synced after user correction:
+  `tasks/v8.3/phase-4-excel-export.md`, `tasks/v8.3/README.md`,
+  `tasks/v8.3/checkpoints.md`,
+  `tasks/v8.3/phase-0-decisions.md`,
+  `docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md`,
+  `CONTEXT.md`, and `tasks/lessons.md` now describe Phase 4 as staff workbook
+  export from `/steel/oauth-chat`.
+- Current Phase 4 export boundary: generate XLSX in memory and stream from the
+  API, allow arbitrary selected workbook sheets, do not store generated files in
+  Supabase Storage, do not write durable `steel_excel_exports`, do not implement
+  customer masking, and do not add a dedicated system-order export action.
+
+## Active: Steel Reference Prompt and Formula Tool Cleanup
+
+Goal: sync the reviewed reference prompts with the approved runtime boundary.
+Formula numbering guidance belongs in workbook instructions. Steel category,
+pricing, material, processing, allocation, and true-zero guidance belongs in
+`lookup_quote_rules` rule prompts. `lookup_formula` should no longer be an
+AI-callable runtime tool, and Agent rules should not route formula code lookup
+through `lookup_quote_rules`.
+
+- [x] Update `docs/reference/agent規則.txt` and
+      `docs/reference/workbook規則.txt` to reflect the current DB-backed
+      prompt/tool boundary.
+- [x] Remove `lookup_formula` from Steel runtime tool definitions, schemas,
+      executor dispatch, and provider loop gating.
+- [x] Update seed prompt/tool policy metadata so future DB prompt updates do
+      not reintroduce `lookup_formula`.
+- [x] Upsert current `docs/reference/agent規則.txt`,
+      `docs/reference/workbook規則.txt`, and `docs/reference/鋼材規則.txt`
+      prompts to cloud Supabase.
+- [ ] Add the missing `docs/reference/鋼材規則.txt` `lookup_quote_rules`
+      business rules after the user supplies the omitted rule text.
+- [x] Verify focused Steel tool/provider tests, API build, and diff hygiene.
+
+Review evidence:
+
+- Cloud Supabase upsert completed against `.env` `STEEL_POSTGRES_URL`.
+- `steel.agent_rules.slug = steel-default-agent-instruction` now matches
+  `docs/reference/agent規則.txt`; prompt length `5706`, sha256
+  `39a9f56bee90be34767e577fcf5ccb0a0dc3a6a042d9fc89197c086021f6bd6f`.
+- `steel.agent_rules.slug = steel-workbook-output-policy` now matches the
+  user-updated `docs/reference/workbook規則.txt`; prompt length `9566`,
+  sha256 `2d94f4ceba301fb4afe721e01a3811dfd5a46bc82372636ad1b1db1bb98435d4`.
+- `steel.quote_rules` company-level row with canonical key
+  `quote_reference_steel_rules` now matches `docs/reference/鋼材規則.txt`;
+  prompt length `2482`, sha256
+  `1c94f145908b3910c52ae77d715aa98b44da5eef1ef886cacbbf08e8ff1a7dc0`.
+- DB read-back hash check matched all three local files exactly and confirmed
+  none of the three DB prompts contains `lookup_formula`.
+- Focused tests passed: `cd packages/api && npx jest
+  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
+  src/steel/ai/provider.spec.ts --runInBand` passed 61 tests.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/config/cache/share files,
+  but exits `0`.
+- Hygiene passed: `git diff --check`.
+
+## Active: Steel Runtime Rule Injection
+
+Goal: every Steel AI round can load the applicable reviewed DB rules through
+tools, while mandatory Agent and workbook-output instructions are injected from
+`steel.agent_rules`. No code prompt fallback is allowed when required DB rules
+cannot be read.
+
+- [x] Confirm today's reviewed Agent/workbook/quote prompt rows are updated in
+      cloud Supabase and match local reference file hashes.
+- [x] Load mandatory Agent Prompt from `steel.agent_rules` for every Steel
+      runtime request.
+- [x] Load workbook-output rules from `steel.agent_rules` whenever
+      `patch_quote_workbook` is enabled; fail before provider generation if DB
+      rules are missing.
+- [x] Keep `lookup_catalog_families`, `search_customers`,
+      `lookup_quote_rules`, and `search_price_candidates` callable in every
+      Steel tool round so AI can fetch catalog, customer, quote, and price
+      rules as needed.
+- [x] Verify focused provider/tool tests, API build, Supabase read-back, and
+      diff hygiene.
+
+Review evidence:
+
+- Added provider RED/GREEN coverage for DB-backed workbook output rules and
+  fail-fast behavior when reviewed workbook rules cannot be loaded.
+- Provider now loads Agent Prompt rows by reviewed `rule_sections` and
+  workbook-output rows by reviewed `rule_type = workbook_output_rule`; no
+  static workbook prompt fallback remains in provider code.
+- Every Steel tool round now exposes the full business tool set:
+  `lookup_quote_rules`, `lookup_catalog_families`, `search_customers`, and
+  `search_price_candidates`; `toolChoice` and the quote-rule-before-price
+  execution guard still enforce required lookup progress.
+- Cloud Supabase read-back matched local reference prompts exactly:
+  `agent_rules:steel-default-agent-instruction` length `5706`, sha256
+  `39a9f56bee90be34767e577fcf5ccb0a0dc3a6a042d9fc89197c086021f6bd6f`;
+  `agent_rules:steel-workbook-output-policy` length `9566`, sha256
+  `2d94f4ceba301fb4afe721e01a3811dfd5a46bc82372636ad1b1db1bb98435d4`;
+  `quote_rules:quote_reference_steel_rules` length `2482`, sha256
+  `1c94f145908b3910c52ae77d715aa98b44da5eef1ef886cacbbf08e8ff1a7dc0`.
+  All three DB prompts have `containsLookupFormula=false`.
+- Reconfirmed `docs/reference/鋼材規則.txt` maps to exactly one reviewed
+  `steel.quote_rules` row: `id=9`, `rule_type=material_rule`,
+  `scope_type=company`, `source_refs[0].canonicalKey=quote_reference_steel_rules`.
+  Its `prompt` hash and `source_refs[0].sha256` now both equal
+  `1c94f145908b3910c52ae77d715aa98b44da5eef1ef886cacbbf08e8ff1a7dc0`.
+- Focused tests passed: `cd packages/api && npx jest
+  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
+  src/steel/ai/provider.spec.ts --runInBand` passed 61 tests.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/config/cache/share files,
+  but exits `0`.
+- Hygiene passed: `git diff --check`.
+
+## Active: Steel Workbook Subtotal Validator Extraction
+
+Goal: extract the existing provider subtotal/summary consistency check into a
+shared workbook helper for v8.3 Phase 2.6. AI still owns arithmetic; backend
+only validates confirmed workbook totals against line subtotals and unknown
+amount state.
+
+- [x] Add focused workbook subtotal validator tests.
+- [x] Create `packages/api/src/steel/workbook/subtotals.ts`.
+- [x] Reuse the shared helper from the Steel provider workbook patch loop.
+- [x] Verify provider subtotal mismatch behavior still loops before accepting a
+      confirmed workbook total.
+- [x] Run backend/app-level verification directly without browser UI smoke.
+
+Review evidence:
+
+- Added `packages/api/src/steel/workbook/subtotals.ts` and
+  `subtotals.spec.ts` for numeric amount parsing, summary/line subtotal
+  mismatch detection, first-mismatch lookup, and rejection of numeric
+  `summary.totalAmount` / `summary.confirmedAmount` when any line subtotal is
+  `未確認`.
+- Reused the shared subtotal helper from the provider workbook patch loop. The
+  provider now returns a tool result asking AI to resend `patch_quote_workbook`
+  with `未確認` totals when a line subtotal is unknown.
+- Added provider coverage for the unknown-subtotal confirmed-total loop.
+- Updated `tasks/v8.3/phase-2-data-tools.md` so Phase 2 no longer lists
+  `lookup_formula` as an AI-callable runtime tool.
+- Direct backend/app verification passed without browser UI smoke:
+  `cd packages/api && npx jest
+  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
+  src/steel/workbook/subtotals.spec.ts src/steel/workbook/semantic.spec.ts
+  src/steel/workbook/service.spec.ts src/steel/ai/provider.spec.ts
+  src/steel/handlers.spec.ts --runInBand` passed 102 tests, and
+  `cd api && npx jest server/routes/__tests__/steel.spec.js --runInBand`
+  passed 10 route-shell tests for `/api/steel`.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/config/cache/share files,
+  but no warning remains in the new subtotal helper.
+- Hygiene passed: `git diff --check`.
+
+## Active: Steel OAuth/Codex Live Smoke
+
+Goal: run a real `/steel/oauth-chat` provider smoke through the fixed
+OAuth/Codex path without browser UI, proving reviewed DB rule injection,
+database-backed quote lookup tools, workbook patching, and backend subtotal
+loop feedback all work with the live model.
+
+- [x] Add a focused manual smoke that uses the real OAuth provider and real
+      Supabase-backed Steel tools.
+- [x] Verify `steel.agent_rules` is loaded from DB before provider generation.
+- [x] Verify `lookup_quote_rules` and `search_price_candidates` execute against
+      cloud Supabase in the live run.
+- [x] Verify a workbook patch with numeric summary total and unknown line
+      subtotal is rejected by backend tool feedback, then corrected by the live
+      model.
+- [x] Run the live smoke and record evidence without exposing auth material.
+
+Review evidence:
+
+- Added manual smoke
+  `STEEL_OPENAI_OAUTH_WORKBOOK_DB_SUBTOTAL_LOOP_TEST=true` in
+  `packages/api/src/steel/ai/provider.catalog-oral.manual.spec.ts`.
+- Preflight confirmed `.env` provides Steel Postgres and OpenAI OAuth settings,
+  `$HOME/.codex/auth.json` exists, cloud Supabase is reachable, reviewed
+  `steel.agent_rules=4`, reviewed `steel.quote_rules=9`, active
+  `steel.price_items=27024`, and `c_type` quote rules are present.
+- The live smoke captures the first provider prompt and asserts it contains the
+  DB-loaded Agent Prompt text `你是「鋼鐵公司小助手」`, DB-loaded workbook rule text
+  `你是「鋼鐵報價 Workbook 填寫代理」`, workbook structure context, and
+  `lookup_quote_rules`.
+- The live smoke executes DB-backed `lookup_quote_rules` before
+  `search_price_candidates`, verifies the quote-rule result includes unified
+  `rules`, and verifies the returned rule context matches `C 型鋼` / `c_type`.
+- The live model generated an initial `patch_quote_workbook` with line subtotal
+  `未確認` and summary totals `999`; backend returned the subtotal loop feedback
+  `Workbook confirmed totals cannot be numeric while any line subtotal is
+  unknown`, then the live model sent a corrected patch accepted by backend.
+- Final accepted workbook patch asserted `quote_details.line_1.subtotal`,
+  `summary_total_amount`, and `summary_confirmed_amount` all match within the
+  643-644 expected range for `26.8 * 24 = 643.2`.
+- Live command passed:
+  `cd packages/api && DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_WORKBOOK_DB_SUBTOTAL_LOOP_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
+  passed 1 live test in `98.943 s` with 6 other manual cases skipped.
+- Regression passed: `cd packages/api && npx jest
+  src/steel/workbook/subtotals.spec.ts src/steel/ai/provider.spec.ts
+  --runInBand` passed 37 tests.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/config/cache/share files, but
+  exits `0`.
+- Hygiene passed: `git diff --check`.
+
+## Active: Steel Natural Calculation and Customer Rules Live Smoke
+
+Goal: extend the OAuth/Codex live smoke coverage to prove the live model can
+naturally calculate workbook subtotals without a forced bad patch, then prove
+`search_customers` injects `customer_rules` into the model loop for
+customer-specific quoting behavior.
+
+- [x] Add a natural workbook calculation live smoke that does not force an
+      incorrect first patch.
+- [x] Verify the first `patch_quote_workbook` call naturally sets line subtotal
+      and summary total from DB price evidence.
+- [x] Add a customer-rules live smoke for `search_customers`.
+- [x] Verify `search_customers` returns the `龍頂蓋廠房` customer rule and the
+      next provider prompt contains that rule.
+- [x] Verify the customer-specific H 型鋼 cutting rule affects the live answer.
+
+Review evidence:
+
+- Added `STEEL_OPENAI_OAUTH_WORKBOOK_NATURAL_CALC_TEST=true` in
+  `packages/api/src/steel/ai/provider.catalog-oral.manual.spec.ts`.
+  The smoke does not force a bad patch; it derives the expected subtotal from
+  the actual `search_price_candidates` result, then asserts the first generated
+  `patch_quote_workbook` call has matching `quoteLines[0].subtotal` and
+  `summary.totalAmount`.
+- Natural calculation live command passed:
+  `cd packages/api && DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_WORKBOOK_NATURAL_CALC_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
+  passed 1 live test in `98.974 s` with 8 other manual cases skipped.
+- The first natural calculation run showed the live model's first workbook patch
+  already had `subtotal=643.2` and `summary.totalAmount=643.2`; the original
+  assertion was narrowed because other non-price fields correctly contained
+  `未確認` for missing customer details.
+- Added `STEEL_OPENAI_OAUTH_CUSTOMER_RULES_TEST=true` in
+  `packages/api/src/steel/ai/provider.catalog-oral.manual.spec.ts`. The smoke
+  asserts `search_customers` returns unified `rules`, includes
+  `customer_2269_h_beam_cutting_no_charge`, injects that prompt into the next
+  provider round, and uses `customerTierId=1` for subsequent price lookup.
+- Customer-rules live command passed:
+  `cd packages/api && DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_CUSTOMER_RULES_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
+  passed 1 live test in `55.252 s` with 8 other manual cases skipped.
+- Updated `tasks/v8.3/phase-3-quote-workbook-mvp.md` with OAUTH-06 natural
+  workbook calculation, OAUTH-07 customer-specific rules injection, and the
+  manual command pattern for these OAuth smoke flags.
+- Manual spec default gate passed without live flags:
+  `cd packages/api && node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
+  skipped all 9 manual cases.
+- Regression passed: `cd packages/api && npx jest
+  src/steel/workbook/subtotals.spec.ts src/steel/ai/provider.spec.ts
+  src/steel/tools/execute.spec.ts --runInBand` passed 65 tests.
+- Build passed: `npm --workspace packages/api run build`; Rollup still reports
+  existing non-Steel TypeScript warnings in agents/config/cache/share files, but
+  exits `0`.
+- Hygiene passed: `git diff --check`.
+
 ## Active: Steel Rule Prompt Seed Data
 
 Goal: seed reviewed Traditional Chinese rule prompts into the cloud Supabase

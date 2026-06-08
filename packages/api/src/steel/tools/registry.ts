@@ -22,11 +22,6 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     argsSchema: steelToolArgsSchemas.lookup_catalog_families,
   },
   {
-    name: 'lookup_formula',
-    description: 'Retrieve reviewed formula candidates for batched Steel material contexts.',
-    argsSchema: steelToolArgsSchemas.lookup_formula,
-  },
-  {
     name: 'search_customers',
     description: 'Search Steel customers by ERP code, display name, legal name, or alias.',
     argsSchema: steelToolArgsSchemas.search_customers,

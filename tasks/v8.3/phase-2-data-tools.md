@@ -134,8 +134,8 @@ Tasks:
   admin-supplied catalog-family/product-name inference rules and reviewed
   vocabulary candidates.
 - `lookup_catalog_families` output must help AI choose catalog keys for later
-  `lookup_quote_rules`, `search_price_candidates`, and `lookup_formula` calls,
-  or ask the user for confirmation.
+  `lookup_quote_rules` and `search_price_candidates` calls, or ask the user for
+  confirmation.
 - Backend still rejects unsafe raw typo table lookups; raw customer text remains
   quote evidence, not a canonical product/spec key.
 
@@ -370,7 +370,6 @@ Allowed MVP runtime tools:
 - `lookup_quote_rules`
 - `search_customers`
 - `search_price_candidates`
-- `lookup_formula`
 
 MVP flow:
 
@@ -408,9 +407,8 @@ MVP flow:
    `錏成型角鐵 30x30`, `鍍鋅角鐵 30x30`, or `角鐵 30x30`, instead of passing raw
    typo text to backend lookup.
 6. Backend tools return reviewed catalog-family rules, quote rules/defaults,
-   customer candidates/customer-specific rules, price candidates, and formula
-   candidates with source refs, confidence, missing/zero markers, and bounded
-   alternatives.
+   customer candidates/customer-specific rules, and price candidates with
+   source refs, confidence, missing/zero markers, and bounded alternatives.
 7. AI chooses the most credible calculation path from returned facts, explains
    assumptions/options, and produces a provisional workbook patch. Confirmed
    customer-facing totals require sufficient reviewed facts or user
@@ -456,8 +454,8 @@ Agent Instruction content:
   provider file handling still stays under `fileAnalysis.instructions` where
   applicable.
 - Tool rules cover `lookup_catalog_families`, `lookup_quote_rules`,
-  `search_customers`, `search_price_candidates`, `lookup_formula`, raw-typo
-  guardrails, and when not to call a tool.
+  `search_customers`, `search_price_candidates`, raw-typo guardrails, and when
+  not to call a tool.
 - Workbook rules cover when AI may write provisional workbook notes/candidates,
   when confirmed totals are forbidden, and when to use the workbook output tool
   after reviewed facts or user confirmation are sufficient.
@@ -482,11 +480,11 @@ Not exposed as MVP tools:
 - `lookup_weight_spec`, `lookup_cutting_price`, `lookup_processing_price`, and
   `lookup_material_rules`: backend internal repositories or future extension
   tools. The MVP lookup surface should use `lookup_quote_rules`,
-  `search_price_candidates`, and `lookup_formula` to return the facts AI needs
-  for quote reasoning.
-- `lookup_formula_version`: storage-oriented naming; MVP exposes
-  `lookup_formula` and lets backend return reviewed active formula candidates
-  and version refs.
+  and `search_price_candidates` to return the facts AI needs for quote
+  reasoning.
+- `lookup_formula` / `lookup_formula_version`: formula code filling is governed
+  by workbook rules and semantic quote data, not by an AI-callable runtime
+  lookup tool.
 - `select_calculation_rule`, ranking helpers, and calculation primitives:
   not AI-callable MVP tools. AI owns final candidate selection and arithmetic;
   backend validates source/rule scope, workbook shape, and subtotal consistency.
@@ -507,8 +505,8 @@ Tasks:
 - Do not expose quote-item normalization, price-search-term generation, or price-ranking helpers as runtime tools. AI generates material/spec candidates and `candidateQueries` in reasoning; backend tools validate lookup inputs and source-backed outputs.
 - Add `lookup_catalog_families` for admin-supplied product/category inference
   rules and reviewed vocabulary candidates. This tool helps AI choose catalog
-  keys for `lookup_quote_rules`, `search_price_candidates`, and
-  `lookup_formula`; it must not become a hidden backend resolver.
+  keys for `lookup_quote_rules` and `search_price_candidates`; it must not
+  become a hidden backend resolver.
 - Add `lookup_quote_rules` as the merged instruction/default retrieval tool. It
   should return reviewed, task-scoped instruction packets seeded by sources such
   as `docs/reference/instruction.txt`, plus reviewed quote defaults from
@@ -526,9 +524,6 @@ Tasks:
   describe internal composition, not separate runtime tools. Quote defaults must
   use typed filters and return bounded reviewed candidates with origin refs, not
   dump all defaults into prompt context.
-- Add `lookup_formula` as the formula retrieval tool. It should return reviewed
-  active formula candidates and version/source refs without exposing
-  storage-oriented version selection as a separate AI decision.
 - Apply conversation access checks for scoped tools.
 - Apply per-run call limits.
 - Log every tool call with tool name, provider tool-call ID when available, input summary, result status, duration, source refs, error category, output summary, and redaction version.

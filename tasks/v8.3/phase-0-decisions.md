@@ -187,13 +187,17 @@ Rules:
 
 ## D0.9 Excel Rendering Library
 
-Decision: Use ExcelJS deliberately for customer-facing export rendering.
+Decision: Use ExcelJS deliberately for workbook export rendering.
 
 Rules:
 
 - Add ExcelJS intentionally to the backend package that owns export rendering.
-- Use ExcelJS for workbook sheets, formatting, filters, frozen headers, customer mask, system order sheet, and future streaming export.
+- Use ExcelJS for workbook sheets, formatting, filters, frozen headers, selected-sheet export, and future streaming export.
 - Keep `xlsx` for Admin import parsing and generated workbook read-back tests unless implementation proves consolidation is better.
+- Phase 4 is staff workbook export from `/steel/oauth-chat`: do not add customer
+  masking, customer/internal download splitting, or a dedicated system-order
+  export action. Customer-specific export restrictions belong to a future
+  customer workbook format.
 
 ## D0.10 Fixed Workbook Sheets
 
@@ -213,7 +217,8 @@ Exit criteria:
 
 - Workbook JSON schema requires these sheet IDs.
 - Excel export tests assert all seven sheets exist.
-- Customer quote sheet mask tests assert internal fields are absent.
+- Selected-sheet export tests assert arbitrary selected sheet sets can be
+  downloaded without special-case customer or system-order restrictions.
 
 ## D0.11 Price Before Weight
 
@@ -249,8 +254,7 @@ Minimum evals:
 - Admin upload policy rejecting files that are not ERP XLSX.
 - Admin preview validation.
 - Seven-sheet export.
-- Customer quote mask.
-- System order sheet.
+- Arbitrary selected-sheet export.
 
 Exit criteria:
 

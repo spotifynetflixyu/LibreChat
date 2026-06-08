@@ -44,9 +44,16 @@ _Avoid_: Always-current database price
 The total price currently saved on a **Workbook Line**, calculated by AI through the **Price Formula** from the quoted line inputs and accepted only when workbook summary totals remain internally consistent.
 _Avoid_: Untraceable discount, manually inconsistent total
 
+**Staff Workbook Export**:
+The current company-internal XLSX download of one or more workbook sheets from
+the quote workbook. It preserves the selected sheet columns and values for
+staff review and operational handoff.
+_Avoid_: Customer-specific mask, durable share link, formal Admin import
+
 **Customer Export**:
 The customer-facing workbook output that shows only quote fields approved for the customer.
-_Avoid_: Internal review sheet, admin export, source trace
+_Avoid_: Phase 4 staff workbook download, internal review sheet, admin export,
+source trace
 
 **Import Source Type**:
 The admin-selected dataset category that determines which database table an ERP export XLSX or table-maintenance workflow can update.
@@ -191,6 +198,12 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - The database unit price is the default input for a new **Quoted Unit Price**, but an explicit customer instruction can adjust either **Quoted Unit Price** or **Line Total**.
 - When **Quoted Unit Price** changes, **Line Total** is recalculated through the **Price Formula**; when **Line Total** changes, **Quoted Unit Price** is recalculated for that **Workbook Line**.
 - Existing **Workbook Line** prices and quantities remain unchanged across chat rounds unless the customer explicitly asks to update or recalculate that line.
+- A Phase 4 **Staff Workbook Export** may download any selected workbook sheets
+  for company staff. It does not apply customer-visible masking, customer
+  download permissions, or dedicated system-order export logic.
+- Phase 4 staff exports are generated from the persisted workbook on demand and
+  streamed by the API; a durable stored file or public/shareable export link is
+  a later requirement, not the default export source of truth.
 - A **Customer Export** may show the customer-visible **Quoted Unit Price** and **Line Total**, but not customer tier or internal calculation/debug fields.
 - An **Import Source Type** is chosen before an import/edit session and constrains parsing, merge rows, delete handling, and the final database API commit.
 - An **ERP Export XLSX** becomes formal database input only after parser preview, old-data matching, admin review, and a validated transaction commit.

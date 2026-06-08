@@ -1,5 +1,13 @@
 # Lessons
 
+- When syncing `docs/reference/鋼材規則.txt` into `steel.quote_rules`, update
+  both the reviewed row `prompt` and its `source_refs` metadata such as
+  `sha256`, `sourceFile`, `locator`, and `canonicalKey`; prompt hash equality
+  alone is not a complete DB source-sync check.
+- Steel workbook formula-code mapping is workbook-rule owned. Do not describe
+  formula code lookup as coming from `lookup_quote_rules` or Agent tool flow;
+  `lookup_quote_rules` may return pricing/category/material/processing rules,
+  while `docs/reference/workbook規則.txt` owns system-order formula code filling.
 - `/steel/oauth-chat` runtime workbook initialization must be empty of quote/order/customer
   data. Keep sheet and column structure from the code-owned `訂單參考.xlsm` contract, but
   do not seed reference workbook rows; the first AI/user patch may create rows such as
@@ -46,6 +54,12 @@
 - Steel workbook pricing must persist the accepted line calculation: formula, database default unit price, quoted unit price, line total, and explicit unit-price/total-price adjustments belong in the workbook, not only in chat text.
 - Never touch existing workbook prices, quantities, or totals just because a newer database price exists; only update them when the user explicitly requests a change or recalculation for that line.
 - Customer-facing Excel must hide `customer_tier` and internal/debug fields; export `quoted_unit_price` and `line_total` under customer-friendly price labels instead of exposing raw internal workbook field names.
+- Steel v8.3 Phase 4 is staff workbook export from `/steel/oauth-chat`, not the
+  future customer-specific export format. Do not add customer-visible masking,
+  customer/internal access splitting, or dedicated system-order export actions in
+  this phase; allow staff to download any selected workbook sheets. Generate the
+  XLSX in memory and stream it from the API unless a later durable-share/export
+  requirement explicitly selects Supabase Storage or another file store.
 - `docs/reference` files are generally AI/dev logic references. Steel handbook DOCX is a schema/data-model reference before chat UX work; ongoing formal data updates flow through ERP XLSX import or Admin table UI review, then API commit to the target database table.
 - For Steel MVP, prioritize the minimal chat UX and workbook preview with API mock data; real OpenAI smoke validates the vertical slice before moving on, but UX development does not wait for real data import.
 - Build Steel Chat UX as an independent Steel workspace first; avoid making core LibreChat chat-store/global-message-flow changes a Phase 3 dependency.
@@ -82,7 +96,9 @@
 - Keep Steel workbook contract ownership split: public DTOs in `packages/data-provider/src/steel/workbooks.ts`, canonical Zod/runtime validation in `packages/api/src/steel/workbook/schema.ts`, and no frontend-owned workbook validation schema.
 - Keep Steel API mock data in one shared folder, `packages/data-provider/src/steel/mock/`, so frontend fixtures and backend mock endpoints do not drift.
 - Keep Steel mock fixtures behind explicit mock imports; do not re-export them from the production Steel data-provider `index.ts` barrel.
-- Use ExcelJS deliberately for customer-facing Steel export rendering; keep parser/read-back concerns separate from the customer XLSX renderer unless implementation evidence supports consolidation.
+- Use ExcelJS deliberately for Steel workbook export rendering; keep
+  parser/read-back concerns separate from the XLSX renderer unless
+  implementation evidence supports consolidation.
 - When a Steel plan is version-bumped, update and rename the phase plan folder too; do not leave implementation tasks under the old version path after creating the new top-level spec.
 - Steel Admin data import must only accept ERP XLSX uploads for ongoing file import. Do not plan or implement an Admin DOCX/PDF parser or PDF transformation flow; PDF/image evidence can belong to quote conversations only, not formal Admin source import.
 - Keep Phase 0 as a decision-baseline/documentation gate. Live provider smoke tests and persisted runtime evidence belong to the implementation phase that owns the vertical slice.

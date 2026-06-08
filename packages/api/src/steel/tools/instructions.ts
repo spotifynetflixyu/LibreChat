@@ -75,7 +75,9 @@ function getMatchForGroup(input: RuleLookupInput, group: string): InstructionCon
   return {
     lineRefs: unique(selectedContexts.flatMap((context) => context.lineRefs ?? [])),
     catalogFamilies: unique(selectedContexts.flatMap((context) => context.catalogCandidates ?? [])),
-    productNames: unique(selectedContexts.flatMap((context) => context.productNameCandidates ?? [])),
+    productNames: unique(
+      selectedContexts.flatMap((context) => context.productNameCandidates ?? []),
+    ),
     formulaCodes: unique(selectedContexts.flatMap((context) => context.formulaCandidates ?? [])),
     processingTypes: unique(selectedContexts.flatMap((context) => context.processingTypes ?? [])),
   };
@@ -118,6 +120,23 @@ function toSourceRefOutput(sourceRef: SteelSourceRef): SteelToolJsonObject {
   };
 }
 
+function sanitizeLegacyRuntimeToolText(value: string): string {
+  return value
+    .replace(
+      /必須透過 lookup_formula 查 reviewed active formula rows/g,
+      '公式編號由 workbook 固定對照表與 semantic quote data 決定',
+    )
+    .replace(
+      /不要跳過 lookup_formula 或 reviewed formula validation/g,
+      '不要跳過 workbook 公式編號規則或 semantic quote validation',
+    )
+    .replace(/lookup_formula/g, 'workbook 公式編號規則');
+}
+
+function sanitizeLegacyRuntimeToolTexts(values: readonly string[]): string[] {
+  return values.map(sanitizeLegacyRuntimeToolText);
+}
+
 function toPacketOutput(
   packet: SteelInstructionPacket,
   group: string,
@@ -134,11 +153,11 @@ function toPacketOutput(
     packetGroup: group,
     packetGroups: packet.packetGroups,
     matchedFacets: toMatchedFacets(input, group),
-    instruction: packet.instruction,
+    instruction: sanitizeLegacyRuntimeToolText(packet.instruction),
     requiredLookups: packet.requiredLookups,
-    blockingRules: packet.blockingRules,
-    userVisibleNotes: packet.userVisibleNotes,
-    confirmationQuestions: packet.confirmationQuestions,
+    blockingRules: sanitizeLegacyRuntimeToolTexts(packet.blockingRules),
+    userVisibleNotes: sanitizeLegacyRuntimeToolTexts(packet.userVisibleNotes),
+    confirmationQuestions: sanitizeLegacyRuntimeToolTexts(packet.confirmationQuestions),
     sourceRefs: packet.sourceRefs.map(toSourceRefOutput),
   };
 }
@@ -227,7 +246,10 @@ function filterMergedRequiredLookups(values: unknown): string[] {
 
   return values.filter(
     (value): value is string =>
-      typeof value === 'string' && value !== 'lookup_instructions' && value !== 'lookup_defaults',
+      typeof value === 'string' &&
+      value !== 'lookup_instructions' &&
+      value !== 'lookup_defaults' &&
+      value !== 'lookup_formula',
   );
 }
 
