@@ -8,6 +8,7 @@ const mockSendSteelChat = jest.fn();
 const mockStreamSteelChat = jest.fn();
 const mockCreateSteelWorkbook = jest.fn();
 const mockExportSteelWorkbook = jest.fn();
+const mockPatchSteelFileAnalysisData = jest.fn();
 
 const sheetIds = [
   'system_order',
@@ -19,20 +20,19 @@ const sheetIds = [
   'customer_quote',
 ] as const;
 
+const sheetLabels = {
+  quote_details: '報價明細',
+  manual_review: '人工複核',
+  customer_quote: '給客戶用',
+} as const;
+
 function createWorkbook(version: number, materialUnitPrice: number | null = null) {
   return {
     id: 'wb_1',
     version,
     sheets: sheetIds.map((sheetId) => ({
       id: sheetId,
-      label:
-        sheetId === 'quote_details'
-          ? '報價明細'
-          : sheetId === 'manual_review'
-            ? '人工複核'
-            : sheetId === 'customer_quote'
-              ? '給客戶用'
-              : sheetId,
+      label: sheetLabels[sheetId as keyof typeof sheetLabels] ?? sheetId,
       columns: [
         { key: 'line_no', label: '項次', valueType: 'number', editable: false },
         { key: 'material_unit_price', label: '材料單價', valueType: 'currency', editable: true },
@@ -42,10 +42,84 @@ function createWorkbook(version: number, materialUnitPrice: number | null = null
   };
 }
 
+function createFileAnalysisData(version: number) {
+  return {
+    id: 'fad_1',
+    conversationId: 'wb_1',
+    workbookId: 'wb_1',
+    version,
+    status: 'draft',
+    sourceFiles: [
+      {
+        fileId: 'file_c_png',
+        filename: 'c.png',
+        mediaType: 'image/png',
+        pageCount: 1,
+      },
+    ],
+    sheets: {
+      file_analysis_data: {
+        columns: [
+          { key: 'source_file', label: '來源檔案', valueType: 'text' },
+          { key: 'part_no', label: '件號', valueType: 'text' },
+          { key: 'spec', label: '規格', valueType: 'text' },
+        ],
+        rows: [
+          {
+            id: 'row_pl1',
+            sourceRef: {
+              fileId: 'file_c_png',
+              filename: 'c.png',
+              mediaType: 'image/png',
+              page: 1,
+            },
+            cells: {
+              source_file: 'c.png p.1',
+              part_no: 'PL1',
+              spec: '367×323×12t',
+            },
+            confidence: 'medium',
+            reviewStatus: 'pending_review',
+            rowWarnings: [],
+          },
+        ],
+      },
+      manual_review: {
+        columns: [{ key: 'item', label: '人工複核項目', valueType: 'text' }],
+        rows: [
+          {
+            id: 'review_1',
+            cells: { item: '孔洞數需人工確認' },
+            confidence: 'low',
+            reviewStatus: 'pending_review',
+            rowWarnings: [],
+          },
+        ],
+      },
+      interpretation_notes: {
+        columns: [{ key: 'note', label: '判讀備註', valueType: 'text' }],
+        rows: [
+          {
+            id: 'note_1',
+            cells: { note: '以 OCR 規則保留原圖文字。' },
+            confidence: 'medium',
+          },
+        ],
+      },
+    },
+  };
+}
+
 jest.mock('librechat-data-provider', () => ({
+  requiredSteelFileAnalysisSheetIds: [
+    'file_analysis_data',
+    'manual_review',
+    'interpretation_notes',
+  ],
   dataService: {
     createSteelWorkbook: (...args: unknown[]) => mockCreateSteelWorkbook(...args),
     exportSteelWorkbook: (...args: unknown[]) => mockExportSteelWorkbook(...args),
+    patchSteelFileAnalysisData: (...args: unknown[]) => mockPatchSteelFileAnalysisData(...args),
     sendSteelChat: (...args: unknown[]) => mockSendSteelChat(...args),
     streamSteelChat: (...args: unknown[]) => mockStreamSteelChat(...args),
   },
@@ -59,6 +133,10 @@ describe('SteelOAuthChat', () => {
     });
     mockExportSteelWorkbook.mockReset();
     mockExportSteelWorkbook.mockResolvedValue(new ArrayBuffer(8));
+    mockPatchSteelFileAnalysisData.mockReset();
+    mockPatchSteelFileAnalysisData.mockResolvedValue({
+      fileAnalysisData: createFileAnalysisData(2),
+    });
     mockSendSteelChat.mockReset();
     mockSendSteelChat.mockResolvedValue({
       provider: 'openai_oauth_responses',
@@ -363,7 +441,7 @@ describe('SteelOAuthChat', () => {
     expect(screen.getByText('v1')).toBeInTheDocument();
   });
 
-  it('renders right panel Workbook and Thinking tabs with the shortened manual review label', async () => {
+  it('renders right panel Workbook, File Analysis, and Thinking tabs with sheet-table UX', async () => {
     const user = userEvent.setup();
 
     render(<SteelOAuthChat />);
@@ -372,9 +450,18 @@ describe('SteelOAuthChat', () => {
       'aria-selected',
       'true',
     );
+    expect(screen.getByRole('tab', { name: 'File Analysis' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
     expect(screen.getByRole('tab', { name: 'Thinking' })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('button', { name: '人工複核' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '人工複核清單' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'File Analysis' }));
+
+    expect(screen.getByText('No file analysis yet')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '報價明細' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('tab', { name: 'Thinking' }));
 
@@ -385,6 +472,295 @@ describe('SteelOAuthChat', () => {
     await user.click(screen.getByRole('tab', { name: 'Workbook' }));
 
     expect(screen.getByRole('button', { name: '報價明細' })).toBeInTheDocument();
+  });
+
+  it('renders returned file analysis data in a dedicated right-panel tab', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已建立圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisData: createFileAnalysisData(1),
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.type(screen.getByPlaceholderText('Message Steel'), '判讀 c.png');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已建立圖文判讀表格。');
+    await user.click(screen.getByRole('tab', { name: 'File Analysis' }));
+
+    expect(screen.getByText('File Analysis Data')).toBeInTheDocument();
+    expect(screen.getByText('v1')).toBeInTheDocument();
+    expect(screen.getByText('1 source file')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'file_analysis_data' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'manual_review' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'interpretation_notes' })).toBeInTheDocument();
+    expect(screen.getByText('來源檔案')).toBeInTheDocument();
+    expect(screen.getByText('PL1')).toBeInTheDocument();
+    expect(screen.getByText('367×323×12t')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'manual_review' }));
+
+    expect(screen.getByText('孔洞數需人工確認')).toBeInTheDocument();
+  });
+
+  it('lets users edit file_analysis_data cells and save manual patches', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已建立圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisData: createFileAnalysisData(1),
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+    mockPatchSteelFileAnalysisData.mockResolvedValueOnce({
+      fileAnalysisData: {
+        ...createFileAnalysisData(2),
+        sheets: {
+          ...createFileAnalysisData(2).sheets,
+          file_analysis_data: {
+            ...createFileAnalysisData(2).sheets.file_analysis_data,
+            rows: [
+              {
+                ...createFileAnalysisData(2).sheets.file_analysis_data.rows[0],
+                cells: {
+                  source_file: 'c.png p.1',
+                  part_no: 'PL7',
+                  spec: '367×323×12t',
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.type(screen.getByPlaceholderText('Message Steel'), '判讀 c.png');
+    await user.click(screen.getByLabelText('Send'));
+    await user.click(await screen.findByRole('tab', { name: 'File Analysis' }));
+
+    await user.dblClick(screen.getByText('PL1'));
+    const input = screen.getByDisplayValue('PL1');
+    await user.clear(input);
+    await user.type(input, 'PL7');
+    await user.keyboard('{Enter}');
+
+    expect(screen.getByText('draft · 1 unsaved change')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save file analysis changes' }));
+
+    expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith('fad_1', {
+      conversationId: 'wb_1',
+      workbookId: 'wb_1',
+      sourceFiles: [
+        { fileId: 'file_c_png', filename: 'c.png', mediaType: 'image/png', pageCount: 1 },
+      ],
+      patches: [
+        expect.objectContaining({
+          sheetId: 'file_analysis_data',
+          upsertRows: [
+            expect.objectContaining({
+              id: 'row_pl1',
+              cells: expect.objectContaining({ part_no: 'PL7' }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save file analysis changes' })).toBeDisabled();
+    });
+    expect(screen.getByText('v2')).toBeInTheDocument();
+  });
+
+  it('lets users add and delete file_analysis_data rows before saving', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已建立圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisData: createFileAnalysisData(1),
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.type(screen.getByPlaceholderText('Message Steel'), '判讀 c.png');
+    await user.click(screen.getByLabelText('Send'));
+    await user.click(await screen.findByRole('tab', { name: 'File Analysis' }));
+
+    await user.click(screen.getByRole('button', { name: 'Add file analysis row' }));
+    await user.click(screen.getByRole('button', { name: 'Delete file analysis row row_pl1' }));
+
+    expect(screen.getByText('draft · 2 unsaved changes')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save file analysis changes' }));
+
+    expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith(
+      'fad_1',
+      expect.objectContaining({
+        patches: [
+          expect.objectContaining({
+            sheetId: 'file_analysis_data',
+            deleteRowIds: ['row_pl1'],
+            upsertRows: [
+              expect.objectContaining({
+                id: expect.stringMatching(/^manual_row_/),
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('smokes image OCR to manual file_analysis_data correction to the next chat turn', async () => {
+    const user = userEvent.setup();
+    const imageFile = new File(['PNG_SENTINEL_FOR_OCR'], 'c.png', { type: 'image/png' });
+    const correctedFileAnalysisData = {
+      ...createFileAnalysisData(2),
+      sheets: {
+        ...createFileAnalysisData(2).sheets,
+        file_analysis_data: {
+          ...createFileAnalysisData(2).sheets.file_analysis_data,
+          rows: [
+            {
+              ...createFileAnalysisData(2).sheets.file_analysis_data.rows[0],
+              cells: {
+                source_file: 'c.png p.1',
+                part_no: 'PL7',
+                spec: '367×323×12t',
+              },
+            },
+          ],
+        },
+      },
+    };
+    mockStreamSteelChat
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        const response = {
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '已用 OCR 建立 c.png 圖文判讀表格。',
+          unsupportedSettings: [],
+          warnings: [],
+          fileAnalysisData: createFileAnalysisData(1),
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      })
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        const response = {
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '已依照最新修正後的 file_analysis_data 繼續判讀。',
+          unsupportedSettings: [],
+          warnings: [],
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      });
+    mockPatchSteelFileAnalysisData.mockResolvedValueOnce({
+      fileAnalysisData: correctedFileAnalysisData,
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.upload(screen.getByLabelText('Attach files'), imageFile);
+    await user.type(screen.getByPlaceholderText('Message Steel'), 'OCR 判讀 c.png');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已用 OCR 建立 c.png 圖文判讀表格。');
+    expect(mockStreamSteelChat).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        messages: [
+          {
+            role: 'user',
+            content: 'OCR 判讀 c.png',
+            files: [
+              {
+                filename: 'c.png',
+                mediaType: 'image/png',
+                dataBase64: 'UE5HX1NFTlRJTkVMX0ZPUl9PQ1I=',
+              },
+            ],
+          },
+        ],
+      }),
+      expect.any(Function),
+    );
+
+    await user.click(screen.getByRole('tab', { name: 'File Analysis' }));
+    await user.dblClick(screen.getByText('PL1'));
+    const input = screen.getByDisplayValue('PL1');
+    await user.clear(input);
+    await user.type(input, 'PL7');
+    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('button', { name: 'Save file analysis changes' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save file analysis changes' })).toBeDisabled();
+    });
+    expect(screen.getByText('PL7')).toBeInTheDocument();
+    expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith(
+      'fad_1',
+      expect.objectContaining({
+        conversationId: 'wb_1',
+        patches: [
+          expect.objectContaining({
+            sheetId: 'file_analysis_data',
+            upsertRows: [
+              expect.objectContaining({
+                id: 'row_pl1',
+                cells: expect.objectContaining({ part_no: 'PL7' }),
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '用修正後資料繼續判讀');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已依照最新修正後的 file_analysis_data 繼續判讀。');
+    expect(mockStreamSteelChat).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        conversationId: 'wb_1',
+        workbookId: 'wb_1',
+        messages: expect.arrayContaining([
+          {
+            role: 'user',
+            content: '用修正後資料繼續判讀',
+          },
+        ]),
+      }),
+      expect.any(Function),
+    );
   });
 
   it('keeps only the last run thinking status in the right panel and includes errors', async () => {

@@ -478,6 +478,102 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain('ocr-rule-sha256-sentinel');
   });
 
+  it('exposes patch_file_analysis_data for visual evidence and returns the patch proposal', async () => {
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow('OCR_RULE_SENTINEL 使用 patch_file_analysis_data 保存判讀結果。'),
+    ]);
+    const doGenerate = jest
+      .fn()
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_analysis_patch',
+            toolName: 'patch_file_analysis_data',
+            input: JSON.stringify({
+              sourceFiles: [{ fileId: 'file_1', filename: 'c.png', mediaType: 'image/png' }],
+              patches: [
+                {
+                  sheetId: 'file_analysis_data',
+                  upsertColumns: [{ key: 'partNo', label: '件號' }],
+                  upsertRows: [
+                    {
+                      sourceRef: {
+                        fileId: 'file_1',
+                        filename: 'c.png',
+                        mediaType: 'image/png',
+                        page: 1,
+                      },
+                      cells: { partNo: 'BP1' },
+                      confidence: 'medium',
+                    },
+                  ],
+                },
+              ],
+              summary: '新增 c.png 第 1 頁 BP1 判讀列。',
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_file_analysis_patch_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已更新圖文判讀資料：新增 c.png 第 1 頁 BP1。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_file_analysis_patch_2' },
+        warnings: [],
+      }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const result = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: '請判讀這張圖面。',
+          files: [
+            {
+              filename: 'c.png',
+              mediaType: 'image/png',
+              data: new Uint8Array(Buffer.from('PNG_SENTINEL', 'utf8')),
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+    });
+
+    const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    expect(
+      firstGenerateOptions.tools?.some((tool) => tool.name === 'patch_file_analysis_data'),
+    ).toBe(true);
+    const secondGenerateOptions = doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions;
+    expect(JSON.stringify(secondGenerateOptions.prompt)).toContain(
+      'patch_file_analysis_data 已收到',
+    );
+    expect(JSON.stringify(secondGenerateOptions.prompt)).toContain('繁體中文簡短摘要');
+    expect(result.fileAnalysisPatch?.patches[0]?.sheetId).toBe('file_analysis_data');
+    expect(result.fileAnalysisPatch?.summary).toBe('新增 c.png 第 1 頁 BP1 判讀列。');
+    expect(result.text).toContain('已更新圖文判讀資料');
+  });
+
   it('fails before provider generation when visual evidence has no reviewed OCR rules', async () => {
     const agentRulesClient = createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
     const doGenerate = jest.fn();

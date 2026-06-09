@@ -21,9 +21,12 @@ import type {
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
   SteelChangedPath,
+  SteelFileAnalysisData,
+  SteelFileAnalysisManualPatchRequest,
   SteelWorkbook,
   SteelWorkbookSheetId,
 } from 'librechat-data-provider';
+import SteelFileAnalysisPreview from '~/features/steel/fileAnalysis/Preview';
 import SteelWorkbookPreview from '~/features/steel/workbook/Preview';
 
 type SteelChatTurn = SteelProviderChatMessage & {
@@ -36,7 +39,7 @@ type SelectedSteelFile = SteelProviderChatFile & {
   id: string;
 };
 
-type SteelRightPanelTab = 'workbook' | 'thinking';
+type SteelRightPanelTab = 'workbook' | 'fileAnalysis' | 'thinking';
 
 const steelModel = 'gpt-5.5';
 const workbookMinWidthPx = 100;
@@ -44,6 +47,7 @@ const chatMinWidthPx = 200;
 const reasoningEffortOptions: SteelProviderReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 const rightPanelTabs: Array<{ id: SteelRightPanelTab; label: string }> = [
   { id: 'workbook', label: 'Workbook' },
+  { id: 'fileAnalysis', label: 'File Analysis' },
   { id: 'thinking', label: 'Thinking' },
 ];
 const titleText = 'Steel OAuth Chat';
@@ -53,6 +57,7 @@ const pendingText = 'Waiting for provider';
 const newChatText = 'New chat';
 const streamStatusLabel = 'Steel stream status';
 const thinkingStatusTitle = 'Last run';
+const thinkingStatusSubtitle = 'last run';
 const noThinkingStatusText = 'No run status yet.';
 const workbookExportContentType =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -251,7 +256,7 @@ function ThinkingStatusPanel({ events }: { events: SteelProviderChatStreamEvent[
     >
       <header className="border-b border-border-light px-4 py-3">
         <h2 className="truncate text-sm font-semibold text-text-primary">{thinkingStatusTitle}</h2>
-        <p className="mt-0.5 text-xs text-text-secondary">last run</p>
+        <p className="mt-0.5 text-xs text-text-secondary">{thinkingStatusSubtitle}</p>
       </header>
       <div className="min-h-0 flex-1 overflow-auto p-4 text-xs text-text-secondary">
         <StreamStatusTimeline events={events} />
@@ -276,6 +281,7 @@ export default function SteelOAuthChat() {
   const [messages, setMessages] = useState<SteelChatTurn[]>([]);
   const [lastResponse, setLastResponse] = useState<SteelProviderChatResponse | null>(null);
   const [workbook, setWorkbook] = useState<SteelWorkbook | null>(null);
+  const [fileAnalysisData, setFileAnalysisData] = useState<SteelFileAnalysisData | null>(null);
   const [changedPaths, setChangedPaths] = useState<SteelChangedPath[]>([]);
   const [workbookExportSheetIds, setWorkbookExportSheetIds] = useState<SteelWorkbookSheetId[]>([]);
   const [isWorkbookExporting, setIsWorkbookExporting] = useState(false);
@@ -385,6 +391,7 @@ export default function SteelOAuthChat() {
     setLastResponse(null);
     setSelectedFiles([]);
     setChangedPaths([]);
+    setFileAnalysisData(null);
     setWorkbookExportError(null);
     setStreamEvents([]);
     setIsSending(false);
@@ -426,6 +433,15 @@ export default function SteelOAuthChat() {
     }
   };
 
+  const handleSaveFileAnalysisData = async (
+    fileAnalysisDataId: string,
+    payload: SteelFileAnalysisManualPatchRequest,
+  ) => {
+    const response = await dataService.patchSteelFileAnalysisData(fileAnalysisDataId, payload);
+    setFileAnalysisData(response.fileAnalysisData);
+    return response.fileAnalysisData;
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canSend) {
@@ -459,6 +475,7 @@ export default function SteelOAuthChat() {
         reasoningEffort,
         ...(workbook
           ? {
+              conversationId: workbook.id,
               workbookId: workbook.id,
               workbookVersion: workbook.version,
               selectedWorkbookRefs: [],
@@ -488,6 +505,9 @@ export default function SteelOAuthChat() {
         setWorkbook(response.workbookPatch.workbook);
         setChangedPaths(response.workbookPatch.changedPaths);
       }
+      if (response.fileAnalysisData) {
+        setFileAnalysisData(response.fileAnalysisData);
+      }
       setMessages([...nextMessages, createTurn('assistant', response.text)]);
     } catch (error) {
       const errorText = getErrorText(error);
@@ -516,6 +536,36 @@ export default function SteelOAuthChat() {
   const workbookPanelStyle = {
     width: workbookWidthPx == null ? '50%' : `${workbookWidthPx}px`,
   };
+  let rightPanelContent;
+  if (activeRightPanelTab === 'workbook') {
+    rightPanelContent = (
+      <SteelWorkbookPreview
+        workbook={workbook}
+        changedPaths={changedPaths}
+        downloadError={workbookExportError}
+        error={workbookError}
+        exportSheetIds={workbookExportSheetIds}
+        isDownloading={isWorkbookExporting}
+        isLoading={isWorkbookLoading}
+        onDownload={() => {
+          void handleDownloadWorkbook();
+        }}
+        onRetry={() => {
+          void initializeWorkbook();
+        }}
+        onToggleExportSheet={handleToggleWorkbookExportSheet}
+      />
+    );
+  } else if (activeRightPanelTab === 'fileAnalysis') {
+    rightPanelContent = (
+      <SteelFileAnalysisPreview
+        fileAnalysisData={fileAnalysisData}
+        onSave={handleSaveFileAnalysisData}
+      />
+    );
+  } else {
+    rightPanelContent = <ThinkingStatusPanel events={streamEvents} />;
+  }
 
   return (
     <main
@@ -779,28 +829,7 @@ export default function SteelOAuthChat() {
                   );
                 })}
               </div>
-              <div className="min-h-0 flex-1">
-                {activeRightPanelTab === 'workbook' ? (
-                  <SteelWorkbookPreview
-                    workbook={workbook}
-                    changedPaths={changedPaths}
-                    downloadError={workbookExportError}
-                    error={workbookError}
-                    exportSheetIds={workbookExportSheetIds}
-                    isDownloading={isWorkbookExporting}
-                    isLoading={isWorkbookLoading}
-                    onDownload={() => {
-                      void handleDownloadWorkbook();
-                    }}
-                    onRetry={() => {
-                      void initializeWorkbook();
-                    }}
-                    onToggleExportSheet={handleToggleWorkbookExportSheet}
-                  />
-                ) : (
-                  <ThinkingStatusPanel events={streamEvents} />
-                )}
-              </div>
+              <div className="min-h-0 flex-1">{rightPanelContent}</div>
             </div>
           </aside>
         </>

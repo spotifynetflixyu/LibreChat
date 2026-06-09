@@ -11,6 +11,8 @@ export * from './repositories';
 export * from './rules';
 export * from './schema/mapping';
 export * from './tools';
+export * from './vision/analysis';
+export * from './vision/repository';
 export * from './vision/resolver';
 export * from './vision/service';
 export * from './workbook/repository';

@@ -64,6 +64,29 @@ create Admin import source versions or formal database writes.
 - [x] Apply user correction: one conversation/order has one
       `file_analysis_data` workspace, and multiple uploaded file rows are
       distinguished by source file/page/region metadata.
+- [x] Implement Phase 6C Task 5 foundation: shared flexible
+      `file_analysis_data` schemas, single-workspace patch service,
+      Mongo collection/repository, and `patch_file_analysis_data` provider tool.
+- [x] Implement Phase 6C Task 5b: persist provider `fileAnalysisPatch` in the
+      chat handler and return the updated conversation-scoped workspace.
+- [x] Implement Phase 6C Task 5c: add a right-panel File Analysis tab that
+      mirrors workbook sheet-tab table UX for `file_analysis_data`.
+- [x] Update `docs/reference/OCR規則.txt` so reviewed OCR rules instruct AI to
+      use `patch_file_analysis_data` for unconfirmed file/PDF/image
+      interpretation and summarize the current patch.
+- [x] Implement manual `file_analysis_data` correction flow: users can edit
+      cells, add rows, delete rows with a left-side small icon button, save
+      only the editable `file_analysis_data` sheet through a manual patch API,
+      and the next Steel chat turn receives the latest saved file analysis
+      workspace as AI context.
+- [x] Add an end-to-end smoke for image upload OCR flow: user uploads an image,
+      AI patches `file_analysis_data`, user manually corrects it, saves through
+      the manual patch API, and the next chat turn reads the corrected saved
+      file-analysis workspace.
+- [x] Add a gated live OAuth c.png OCR smoke that sends
+      `docs/reference/example/c.png` to the real `openai_oauth_responses`
+      provider, requires `patch_file_analysis_data`, checks Chinese names
+      `柱底板` / `連接板`, and verifies recognizable plate rows.
 
 Review:
 
@@ -91,6 +114,45 @@ Review:
   TypeScript warnings, but the new `src/steel/ai/provider.ts` warning was
   removed before checkpoint.
 - `git diff --check` passed.
+- `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --testNamePattern="smokes image OCR"`
+  passed for the UI smoke: upload `c.png` as `image/png`, receive AI
+  `fileAnalysisData`, manually correct `PL1` to `PL7`, save via
+  `patchSteelFileAnalysisData`, and submit the next chat turn.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="smokes image OCR"`
+  passed for the handler smoke: first provider response persists OCR
+  `fileAnalysisPatch`, manual endpoint saves corrected `PL7`, and the next
+  provider request receives the latest saved `file_analysis_data` context
+  without the stale `PL1` OCR value.
+- `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand` passed:
+  1 suite, 17 tests.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand` passed:
+  1 suite, 31 tests.
+- `npx eslint client/src/routes/SteelOAuthChat.tsx client/src/routes/SteelOAuthChat.spec.tsx packages/api/src/steel/handlers.spec.ts`
+  passed with no warnings after replacing an existing nested ternary in the
+  touched client spec helper.
+- `npx prettier --check client/src/routes/SteelOAuthChat.spec.tsx packages/api/src/steel/handlers.spec.ts tasks/todo.md`
+  passed, and `git diff --check` passed.
+- Added
+  `packages/api/src/steel/ai/provider.c-png-ocr.manual.spec.ts`, gated by
+  `STEEL_OPENAI_OAUTH_C_PNG_OCR_TEST=true`, for real OAuth c.png OCR. The smoke
+  uses the normal Steel OpenAI config for model/reasoning, sends the local image
+  bytes, requires `patch_file_analysis_data`, confirms Chinese row names
+  `柱底板` and `連接板`, and checks at least two recognizable plate rows.
+- Confirmed `imageDetail: high` is already applied to all Steel `image/*`
+  provider file parts in `packages/api/src/steel/ai/provider.ts`, and AI SDK's
+  OpenAI Responses converter maps `providerOptions.openai.imageDetail` to the
+  OpenAI input image `detail` field.
+- `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="image detail"`
+  passed: the provider prompt includes `providerOptions.openai.imageDetail =
+high` for image file parts.
+- `cd packages/api && npx jest src/steel/ai/provider.c-png-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers'`
+  passed as skipped by default: 1 skipped test, so normal focused verification
+  does not call live OAuth.
+- Live OAuth c.png OCR smoke passed with real provider:
+  `DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_C_PNG_OCR_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.c-png-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`.
+  Result: 1 passed in `309.628 s` using real `openai_oauth_responses`; the
+  smoke confirmed `fileAnalysisPatch`, Chinese names `柱底板` / `連接板`, and
+  at least two recognizable plate rows from `docs/reference/example/c.png`.
 - `cd packages/api && npx jest src/steel/vision/prompt.spec.ts --runInBand`
   passed after simplifying `buildDrawingEvidencePrompt` to DB OCR rules plus
   user request only: 5 tests.
@@ -103,6 +165,59 @@ Review:
 - `npm run build:api` exited `0` after Task 4; Rollup still prints existing
   non-Steel TypeScript warnings in agents/app/cache/endpoints/middleware files.
 - `git diff --check` passed after Task 4.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --apply` updated
+  `steel.agent_rules.slug = steel-drawing-ocr-policy` to local OCR rules sha256
+  `c5d34ee9c26497177265bb62d7bebc0e77acf6d848e34c8068e432a35c3c5b83`.
+- `cd packages/data-provider && npx jest src/steel/vision.spec.ts --runInBand`
+  passed for flexible file-analysis schemas and `patch_file_analysis_data`.
+- `cd packages/data-schemas && npx jest src/schema/steel.spec.ts --runInBand`
+  passed after adding `steel_file_analysis_data` with unique conversation
+  workspace indexing.
+- `cd packages/api && npx jest src/steel/vision/analysis.spec.ts --runInBand`
+  passed for one-workspace, multi-file row patching and row correction.
+- `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="patch_file_analysis_data"`
+  passed for visual evidence tool exposure, tool result summary instruction,
+  and returned `fileAnalysisPatch`.
+- `npm run build:data-schemas`, `npm run build:data-provider`, and
+  `npm run build:api` exited `0`; API build still prints existing non-Steel
+  warnings only.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/vision/analysis.spec.ts src/steel/ai/provider.spec.ts --runInBand`
+  passed after Task 5b: 3 suites, 66 tests. This covers provider
+  `fileAnalysisPatch` persistence, stream `patch_file_analysis_data` status
+  events, file-analysis patch service behavior, and provider tool exposure.
+- `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand`
+  passed after Task 5c: 14 tests. This covers the new File Analysis right-panel
+  tab, empty state, returned `fileAnalysisData` rendering, and existing workbook
+  UX regressions.
+- `cd packages/data-provider && npx jest src/steel/vision.spec.ts src/steel/ai.spec.ts --runInBand`
+  passed after adding `conversationId` and `fileAnalysisData` to the shared chat
+  contract: 2 suites, 14 tests.
+- `npx eslint client/src/routes/SteelOAuthChat.tsx client/src/features/steel/fileAnalysis/Preview.tsx`
+  passed for the touched UI files.
+- `npx prettier --check ...` passed for touched Task 5b/5c files, and
+  `git diff --check` passed.
+- `npm run build:data-provider && npm run build:api` exited `0`; API build still
+  prints the existing Redis `cacheFactory.ts` Rollup TypeScript warning.
+- `cd client && npm run typecheck` was attempted after package builds, but the
+  shell wrapper stayed running without producing output for several minutes; it
+  was stopped after confirming no `tsc --noEmit` child process was active.
+- `npx eslint client/src/routes/SteelOAuthChat.tsx client/src/features/steel/fileAnalysis/Preview.tsx`
+  passed after adding the editable File Analysis table UI.
+- `npx prettier --check client/src/features/steel/fileAnalysis/Preview.tsx client/src/routes/SteelOAuthChat.tsx client/src/routes/SteelOAuthChat.spec.tsx packages/api/src/steel/handlers.ts packages/api/src/steel/handlers.spec.ts packages/api/src/steel/vision/analysis.ts packages/data-provider/src/steel/vision.ts packages/data-provider/src/steel/vision.spec.ts packages/data-provider/src/api-endpoints.ts packages/data-provider/src/data-service.ts api/server/routes/steel/index.js tasks/lessons.md`
+  passed.
+- `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand` passed:
+  1 suite, 16 tests. This covers manual cell editing, add-row, left-side row
+  delete, unsaved state, and saving `file_analysis_data` patches.
+- `cd packages/data-provider && npx jest src/steel/vision.spec.ts src/steel/ai.spec.ts --runInBand`
+  passed: 2 suites, 15 tests. This covers shared manual patch schema and Steel
+  AI contract compatibility.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/vision/analysis.spec.ts src/steel/ai/provider.spec.ts --runInBand`
+  passed: 3 suites, 68 tests. This covers manual patch endpoint behavior,
+  one-workspace file-analysis persistence, provider tool exposure, and injecting
+  the latest saved `file_analysis_data` into the next provider request.
+- `npm run build:data-provider && npm run build:api` exited `0`; API build still
+  prints the existing Redis `cacheFactory.ts` Rollup TypeScript warning.
+- `git diff --check` passed.
 
 ## Skipped: Steel v8.3 Phase 5 Admin ERP XLSX Source Management Grill
 
@@ -135,7 +250,7 @@ quantity when the adopted row is kg-priced.
 Review evidence:
 
 - Supabase reviewed active `steel.agent_rules.slug =
-  steel-default-agent-instruction` now matches `docs/reference/agent規則.txt`
+steel-default-agent-instruction` now matches `docs/reference/agent規則.txt`
   sha256 `470146b0488410890e3d6cc3ff85e30324c24ffe101486421537f4e55cc59e61`.
 - Supabase reviewed active `steel.quote_rules.id = 9` now matches
   `docs/reference/鋼材規則.txt` sha256
@@ -284,10 +399,10 @@ Review evidence:
   `tasks/v8.3/openai-oauth-provider-real-auth-implementation.md` so active
   runtime examples use `gpt-5.5` instead of stale `gpt-5.4`.
 - Focused Jest passed: `cd packages/api && npx jest
-  src/steel/ai/config.spec.ts src/steel/models.spec.ts
-  src/steel/access.spec.ts src/steel/conversations/service.spec.ts
-  src/steel/tools/registry.spec.ts src/steel/workbook/subtotals.spec.ts
-  --runInBand` passed 25 tests.
+src/steel/ai/config.spec.ts src/steel/models.spec.ts
+src/steel/access.spec.ts src/steel/conversations/service.spec.ts
+src/steel/tools/registry.spec.ts src/steel/workbook/subtotals.spec.ts
+--runInBand` passed 25 tests.
 - Hygiene passed: `git diff --check`.
 - Phase 4 grill follow-up decisions synced after user correction:
   `tasks/v8.3/phase-4-excel-export.md`, `tasks/v8.3/README.md`,
@@ -340,8 +455,8 @@ Review evidence:
 - DB read-back hash check matched all three local files exactly and confirmed
   none of the three DB prompts contains `lookup_formula`.
 - Focused tests passed: `cd packages/api && npx jest
-  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
-  src/steel/ai/provider.spec.ts --runInBand` passed 61 tests.
+src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
+src/steel/ai/provider.spec.ts --runInBand` passed 61 tests.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in agents/config/cache/share files,
   but exits `0`.
@@ -393,8 +508,8 @@ Review evidence:
   Its `prompt` hash and `source_refs[0].sha256` now both equal
   `1c94f145908b3910c52ae77d715aa98b44da5eef1ef886cacbbf08e8ff1a7dc0`.
 - Focused tests passed: `cd packages/api && npx jest
-  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
-  src/steel/ai/provider.spec.ts --runInBand` passed 61 tests.
+src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
+src/steel/ai/provider.spec.ts --runInBand` passed 61 tests.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in agents/config/cache/share files,
   but exits `0`.
@@ -428,10 +543,10 @@ Review evidence:
   `lookup_formula` as an AI-callable runtime tool.
 - Direct backend/app verification passed without browser UI smoke:
   `cd packages/api && npx jest
-  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
-  src/steel/workbook/subtotals.spec.ts src/steel/workbook/semantic.spec.ts
-  src/steel/workbook/service.spec.ts src/steel/ai/provider.spec.ts
-  src/steel/handlers.spec.ts --runInBand` passed 102 tests, and
+src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts
+src/steel/workbook/subtotals.spec.ts src/steel/workbook/semantic.spec.ts
+src/steel/workbook/service.spec.ts src/steel/ai/provider.spec.ts
+src/steel/handlers.spec.ts --runInBand` passed 102 tests, and
   `cd api && npx jest server/routes/__tests__/steel.spec.js --runInBand`
   passed 10 route-shell tests for `/api/steel`.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
@@ -482,8 +597,8 @@ Review evidence:
   `cd packages/api && DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_WORKBOOK_DB_SUBTOTAL_LOOP_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
   passed 1 live test in `98.943 s` with 6 other manual cases skipped.
 - Regression passed: `cd packages/api && npx jest
-  src/steel/workbook/subtotals.spec.ts src/steel/ai/provider.spec.ts
-  --runInBand` passed 37 tests.
+src/steel/workbook/subtotals.spec.ts src/steel/ai/provider.spec.ts
+--runInBand` passed 37 tests.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in agents/config/cache/share files, but
   exits `0`.
@@ -535,8 +650,8 @@ Review evidence:
   `cd packages/api && node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
   skipped all 9 manual cases.
 - Regression passed: `cd packages/api && npx jest
-  src/steel/workbook/subtotals.spec.ts src/steel/ai/provider.spec.ts
-  src/steel/tools/execute.spec.ts --runInBand` passed 65 tests.
+src/steel/workbook/subtotals.spec.ts src/steel/ai/provider.spec.ts
+src/steel/tools/execute.spec.ts --runInBand` passed 65 tests.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in agents/config/cache/share files, but
   exits `0`.
@@ -589,12 +704,12 @@ Review evidence:
   `steel-default-agent-instruction@1` seeds that full prompt with
   `tool_policy.availableTools` / `preferredOrder`, not `requiredTools`.
 - Focused RED/GREEN evidence: `cd packages/api && npx jest
-  src/steel/ai/provider.spec.ts --runInBand -t "agent_rules|AI-led Steel
-  runtime policy"` first failed because provider did not query
+src/steel/ai/provider.spec.ts --runInBand -t "agent_rules|AI-led Steel
+runtime policy"` first failed because provider did not query
   `steel.agent_rules`, then passed after DB-backed loading and fail-fast
   behavior were implemented.
 - Full provider spec passed: `cd packages/api && npx jest
-  src/steel/ai/provider.spec.ts --runInBand` passed 28 tests.
+src/steel/ai/provider.spec.ts --runInBand` passed 28 tests.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in agents/config/cache/share files, but
   exits `0`.
@@ -655,8 +770,8 @@ Review evidence:
   paths, and Codex pre-Admin-UI update association logic.
 - Focused tests passed:
   `cd packages/api && npx jest src/steel/repositories/families.spec.ts
-  src/steel/repositories/defaults.spec.ts src/steel/repositories/rules.spec.ts
-  src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts --runInBand`.
+src/steel/repositories/defaults.spec.ts src/steel/repositories/rules.spec.ts
+src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts --runInBand`.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in app/endpoint/cache/share files, but
   exits `0`, and no warning remains in the new Steel rule repository code.
@@ -696,11 +811,11 @@ Review evidence:
   in the active data-rules/v8.3 docs and focused Steel tool/provider code.
 - Focused tests passed:
   `cd packages/api && npx jest src/steel/tools/registry.spec.ts
-  src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts --runInBand`.
+src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts --runInBand`.
 - Manual smoke spec parse/skip check passed:
   `cd packages/api && npx jest --runTestsByPath
-  src/steel/ai/provider.catalog-oral.manual.spec.ts
-  --testPathIgnorePatterns='/node_modules/' --runInBand` skipped 6 env-gated
+src/steel/ai/provider.catalog-oral.manual.spec.ts
+--testPathIgnorePatterns='/node_modules/' --runInBand` skipped 6 env-gated
   live smokes.
 - Build passed: `npm --workspace packages/api run build`; Rollup still reports
   existing non-Steel TypeScript warnings in agents/custom endpoint/redis/share
@@ -740,7 +855,7 @@ Review evidence:
   `tasks/v8.3/phase-2-data-tools.md`.
 - Remaining `lookup_instructions` / `lookup_defaults` mentions are only the
   explicit composition contract `lookup_quote_rules = lookup_instructions +
-  lookup_defaults` or internal facet wording.
+lookup_defaults` or internal facet wording.
 - Hygiene passed: `git diff --check`.
 
 ## Active: Steel AI Subtotal Validation Boundary Rebaseline
@@ -775,19 +890,19 @@ instead of trying to prove hosted Code Interpreter execution.
 Review evidence:
 
 - Focused provider RED evidence: `cd packages/api && npx jest
-  src/steel/ai/provider.spec.ts --runInBand` initially failed because
+src/steel/ai/provider.spec.ts --runInBand` initially failed because
   `openai.code_interpreter` was still registered and confirmed workbook totals
   still required code evidence.
 - Focused provider GREEN evidence: `cd packages/api && npx jest
-  src/steel/ai/provider.spec.ts --runInBand` passed 26 tests, including no
+src/steel/ai/provider.spec.ts --runInBand` passed 26 tests, including no
   registered provider tools, subtotal-consistent totals accepted, and
   subtotal-mismatched summary totals looped for correction.
 - Shared contract GREEN evidence: `cd packages/data-provider && npx jest
-  src/steel/ai.spec.ts --runInBand` passed 11 tests with no
+src/steel/ai.spec.ts --runInBand` passed 11 tests with no
   `calculationEvidence` response field.
 - Focused Steel suite GREEN evidence: `cd packages/api && npx jest
-  src/steel/ai/provider.spec.ts src/steel/models.spec.ts
-  src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand`
+src/steel/ai/provider.spec.ts src/steel/models.spec.ts
+src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand`
   passed 4 suites / 58 tests.
 - Build evidence: `npm run build:data-provider` passed, and
   `npm --workspace packages/api run build` created `dist`; Rollup still reports
@@ -1631,7 +1746,7 @@ Review evidence:
 - Verification: `rg` over `CONTEXT.md`, `tasks/v8.3`, and the main v8.3 spec
   shows old runtime tool names only in explicit internal-composition text; old
   backend calculator section names are gone from active quote docs. `git diff
-  --check` passed. Prettier was not run per user preference.
+--check` passed. Prettier was not run per user preference.
 
 ## Review - Steel Next Tasks 2026-06-03
 

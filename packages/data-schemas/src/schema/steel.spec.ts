@@ -5,6 +5,7 @@ import {
   createSteelAIRunModel,
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelFileAnalysisDataModel,
   createSteelMemoryCandidateModel,
   createSteelSourceVersionModel,
   createSteelWorkbookModel,
@@ -135,6 +136,19 @@ describe('Steel Mongo schemas', () => {
     expect(SteelWorkbookPatch.schema.indexes()).toContainEqual([
       { workbookId: 1, beforeVersion: 1 },
       expect.any(Object),
+    ]);
+  });
+
+  it('stores one Steel file analysis workspace per conversation', () => {
+    const SteelFileAnalysisData = createSteelFileAnalysisDataModel(mongoose);
+
+    expect(SteelFileAnalysisData.collection.name).toBe('steel_file_analysis_data');
+    expect(SteelFileAnalysisData.schema.path('sheets.file_analysis_data.rows')).toBeDefined();
+    expect(SteelFileAnalysisData.schema.path('sheets.manual_review.rows')).toBeDefined();
+    expect(SteelFileAnalysisData.schema.path('sheets.interpretation_notes.rows')).toBeDefined();
+    expect(SteelFileAnalysisData.schema.indexes()).toContainEqual([
+      { conversationId: 1 },
+      expect.objectContaining({ unique: true }),
     ]);
   });
 });

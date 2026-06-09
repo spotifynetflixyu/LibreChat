@@ -8,6 +8,7 @@ import {
   steelAuditLogSchema,
   steelConversationMetaSchema,
   steelExcelExportSchema,
+  steelFileAnalysisDataSchema,
   steelMemoryCandidateSchema,
   steelMemorySchema,
   steelProjectSchema,
@@ -93,6 +94,17 @@ export function createSteelWorkbookPatchModel(mongoose: Mongoose) {
       'SteelWorkbookPatch',
       steelWorkbookPatchSchema,
       'steel_workbook_patches',
+    )
+  );
+}
+
+export function createSteelFileAnalysisDataModel(mongoose: Mongoose) {
+  return (
+    mongoose.models.SteelFileAnalysisData ||
+    mongoose.model<t.ISteelFileAnalysisData>(
+      'SteelFileAnalysisData',
+      steelFileAnalysisDataSchema,
+      'steel_file_analysis_data',
     )
   );
 }

@@ -14,7 +14,9 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { SteelOpenAIReasoningEffort } from './config';
 import {
   requiredSteelWorkbookSheetIds,
+  patchFileAnalysisDataToolInputSchema,
   steelProviderWorkbookPatchProposalSchema,
+  type SteelProviderFileAnalysisPatchProposal,
   type SteelProviderWorkbookPatchProposal,
   type SteelWorkbookSheetId,
 } from 'librechat-data-provider';
@@ -49,6 +51,9 @@ type SemanticWorkbookPatchToolCall = LanguageModelV3ToolCall & {
   toolName: 'patch_quote_workbook';
 };
 type WorkbookPatchToolCall = SemanticWorkbookPatchToolCall;
+type FileAnalysisPatchToolCall = LanguageModelV3ToolCall & {
+  toolName: 'patch_file_analysis_data';
+};
 type SteelRoundTool = LanguageModelV3FunctionTool;
 type WorkbookPatchOperation = SteelProviderWorkbookPatchProposal['operations'][number];
 type WorkbookPatchMissingCell = {
@@ -116,6 +121,7 @@ export interface SteelProviderChatResponse {
   unsupportedSettings: string[];
   warnings: string[];
   workbookPatch?: SteelProviderWorkbookPatchProposal;
+  fileAnalysisPatch?: SteelProviderFileAnalysisPatchProposal;
 }
 
 export interface SendSteelOAuthChatOptions {
@@ -416,6 +422,16 @@ const semanticWorkbookPatchFunctionTool: LanguageModelV3FunctionTool = {
   }) as LanguageModelV3FunctionTool['inputSchema'],
 };
 
+const fileAnalysisPatchFunctionTool: LanguageModelV3FunctionTool = {
+  type: 'function',
+  name: 'patch_file_analysis_data',
+  description:
+    'Patch the single conversation-scoped Steel file_analysis_data workspace for unconfirmed PDF/image/drawing interpretation. Use flexible columns and rows, and include source file/page/region refs for rows when available. Do not use this for confirmed quote workbook rows.',
+  inputSchema: zodToJsonSchema(patchFileAnalysisDataToolInputSchema, {
+    $refStrategy: 'none',
+  }) as LanguageModelV3FunctionTool['inputSchema'],
+};
+
 function getGeneratedText(result: LanguageModelV3GenerateResult): string {
   return result.content.reduce((text, part) => {
     if (part.type !== 'text') {
@@ -616,6 +632,11 @@ interface ParsedWorkbookPatchToolCall {
   projectedFromSemantic: boolean;
 }
 
+interface ParsedFileAnalysisPatchToolCall {
+  call: FileAnalysisPatchToolCall;
+  input: SteelProviderFileAnalysisPatchProposal;
+}
+
 async function executeSteelBusinessToolCalls({
   calls,
   executeSteelToolCall,
@@ -701,6 +722,7 @@ async function executeSteelBusinessToolCalls({
 function toAssistantToolCallMessage(
   executedCalls: ExecutedSteelToolCall[],
   workbookPatchCalls: ParsedWorkbookPatchToolCall[] = [],
+  fileAnalysisPatchCalls: ParsedFileAnalysisPatchToolCall[] = [],
 ): LanguageModelV3Message {
   return {
     role: 'assistant',
@@ -712,6 +734,12 @@ function toAssistantToolCallMessage(
         input,
       })),
       ...workbookPatchCalls.map(({ call, input }) => ({
+        type: 'tool-call' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input,
+      })),
+      ...fileAnalysisPatchCalls.map(({ call, input }) => ({
         type: 'tool-call' as const,
         toolCallId: call.toolCallId,
         toolName: call.toolName,
@@ -836,6 +864,28 @@ function toWorkbookPatchToolResultValue(
   });
 }
 
+function toFileAnalysisPatchToolResultValue(parsedCall: ParsedFileAnalysisPatchToolCall): JSONValue {
+  const rowCount = parsedCall.input.patches.reduce(
+    (count, patch) => count + patch.upsertRows.length,
+    0,
+  );
+  const columnCount = parsedCall.input.patches.reduce(
+    (count, patch) => count + patch.upsertColumns.length,
+    0,
+  );
+
+  return toJsonValue({
+    ok: true,
+    toolName: parsedCall.call.toolName,
+    sheetIds: parsedCall.input.patches.map((patch) => patch.sheetId),
+    sourceFileCount: parsedCall.input.sourceFiles.length,
+    rowCount,
+    columnCount,
+    instruction:
+      'patch_file_analysis_data 已收到並會交由 backend 持久化。現在請用繁體中文簡短摘要本輪 patch 內容：來源檔案/頁碼、新增或更新的列、低信心/人工複核項目、以及用戶需要核對的位置。不要只回答已更新 N 個欄位。',
+  });
+}
+
 function toToolResultMessage(
   executedCalls: ExecutedSteelToolCall[],
   workbookPatchCalls: ParsedWorkbookPatchToolCall[] = [],
@@ -843,6 +893,7 @@ function toToolResultMessage(
   options: {
     subtotalMismatch?: WorkbookSubtotalMismatch;
   } = {},
+  fileAnalysisPatchCalls: ParsedFileAnalysisPatchToolCall[] = [],
 ): LanguageModelV3Message {
   return {
     role: 'tool',
@@ -863,6 +914,15 @@ function toToolResultMessage(
         output: {
           type: 'json' as const,
           value: toWorkbookPatchToolResultValue(parsedCall, workbookPatchCompletion, options),
+        },
+      })),
+      ...fileAnalysisPatchCalls.map((parsedCall) => ({
+        type: 'tool-result' as const,
+        toolCallId: parsedCall.call.toolCallId,
+        toolName: parsedCall.call.toolName,
+        output: {
+          type: 'json' as const,
+          value: toFileAnalysisPatchToolResultValue(parsedCall),
         },
       })),
     ],
@@ -942,6 +1002,18 @@ function getWorkbookPatchToolCalls(result: LanguageModelV3GenerateResult): Workb
   return result.content.filter(isWorkbookPatchToolCall);
 }
 
+function isFileAnalysisPatchToolCall(
+  part: LanguageModelV3GenerateResult['content'][number],
+): part is FileAnalysisPatchToolCall {
+  return part.type === 'tool-call' && part.toolName === 'patch_file_analysis_data';
+}
+
+function getFileAnalysisPatchToolCalls(
+  result: LanguageModelV3GenerateResult,
+): FileAnalysisPatchToolCall[] {
+  return result.content.filter(isFileAnalysisPatchToolCall);
+}
+
 function parseWorkbookPatchToolCalls(
   calls: WorkbookPatchToolCall[],
 ): ParsedWorkbookPatchToolCall[] {
@@ -957,6 +1029,19 @@ function parseWorkbookPatchToolCalls(
       input: semanticPatch,
       patchProposal,
       projectedFromSemantic: true,
+    };
+  });
+}
+
+function parseFileAnalysisPatchToolCalls(
+  calls: FileAnalysisPatchToolCall[],
+): ParsedFileAnalysisPatchToolCall[] {
+  return calls.map((call) => {
+    const input = patchFileAnalysisDataToolInputSchema.parse(JSON.parse(call.input));
+
+    return {
+      call,
+      input,
     };
   });
 }
@@ -1060,6 +1145,7 @@ export async function sendSteelOAuthChat({
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
     ...(workbookPatchTool ? [semanticWorkbookPatchFunctionTool] : []),
+    ...(ocrSourceKinds.length > 0 ? [fileAnalysisPatchFunctionTool] : []),
   ] satisfies SteelRoundTool[];
   const runState = createSteelToolRunState(steelToolMaxCalls);
   let prompt = systemInstruction
@@ -1076,6 +1162,7 @@ export async function sendSteelOAuthChat({
   let selectedCustomerTierId: number | undefined;
   let hasWorkbookPatch = false;
   const workbookPatchOperations: WorkbookPatchOperation[] = [];
+  let fileAnalysisPatch: SteelProviderFileAnalysisPatchProposal | undefined;
 
   for (let round = 0; round <= steelToolMaxCalls; round += 1) {
     const toolChoice = getSteelToolChoice({
@@ -1107,6 +1194,13 @@ export async function sendSteelOAuthChat({
     }
     const workbookPatchCalls = workbookPatchTool ? getWorkbookPatchToolCalls(result) : [];
     const parsedWorkbookPatchCalls = parseWorkbookPatchToolCalls(workbookPatchCalls);
+    const parsedFileAnalysisPatchCalls = parseFileAnalysisPatchToolCalls(
+      getFileAnalysisPatchToolCalls(result),
+    );
+    if (parsedFileAnalysisPatchCalls.length > 0) {
+      fileAnalysisPatch =
+        parsedFileAnalysisPatchCalls[parsedFileAnalysisPatchCalls.length - 1]?.input;
+    }
     const workbookSubtotalMismatch = getFirstWorkbookSubtotalMismatch(
       parsedWorkbookPatchCalls.map(({ input }) => input),
     );
@@ -1135,10 +1229,16 @@ export async function sendSteelOAuthChat({
       if (workbookSubtotalMismatch && parsedWorkbookPatchCalls.length > 0) {
         prompt = [
           ...prompt,
-          toAssistantToolCallMessage([], parsedWorkbookPatchCalls),
-          toToolResultMessage([], parsedWorkbookPatchCalls, workbookPatchCompletion, {
-            subtotalMismatch: workbookSubtotalMismatch,
-          }),
+          toAssistantToolCallMessage([], parsedWorkbookPatchCalls, parsedFileAnalysisPatchCalls),
+          toToolResultMessage(
+            [],
+            parsedWorkbookPatchCalls,
+            workbookPatchCompletion,
+            {
+              subtotalMismatch: workbookSubtotalMismatch,
+            },
+            parsedFileAnalysisPatchCalls,
+          ),
         ];
         continue;
       }
@@ -1146,8 +1246,23 @@ export async function sendSteelOAuthChat({
       if (parsedWorkbookPatchCalls.length > 0 && requiresWorkbookPatchCompletion) {
         prompt = [
           ...prompt,
-          toAssistantToolCallMessage([], parsedWorkbookPatchCalls),
-          toToolResultMessage([], parsedWorkbookPatchCalls, workbookPatchCompletion),
+          toAssistantToolCallMessage([], parsedWorkbookPatchCalls, parsedFileAnalysisPatchCalls),
+          toToolResultMessage(
+            [],
+            parsedWorkbookPatchCalls,
+            workbookPatchCompletion,
+            {},
+            parsedFileAnalysisPatchCalls,
+          ),
+        ];
+        continue;
+      }
+
+      if (parsedFileAnalysisPatchCalls.length > 0) {
+        prompt = [
+          ...prompt,
+          toAssistantToolCallMessage([], [], parsedFileAnalysisPatchCalls),
+          toToolResultMessage([], [], undefined, {}, parsedFileAnalysisPatchCalls),
         ];
         continue;
       }
@@ -1213,10 +1328,20 @@ export async function sendSteelOAuthChat({
 
     const nextPrompt = [
       ...prompt,
-      toAssistantToolCallMessage(executedCalls, parsedWorkbookPatchCalls),
-      toToolResultMessage(executedCalls, parsedWorkbookPatchCalls, workbookPatchCompletion, {
-        subtotalMismatch: workbookSubtotalMismatch,
-      }),
+      toAssistantToolCallMessage(
+        executedCalls,
+        parsedWorkbookPatchCalls,
+        parsedFileAnalysisPatchCalls,
+      ),
+      toToolResultMessage(
+        executedCalls,
+        parsedWorkbookPatchCalls,
+        workbookPatchCompletion,
+        {
+          subtotalMismatch: workbookSubtotalMismatch,
+        },
+        parsedFileAnalysisPatchCalls,
+      ),
     ];
     if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {
       prompt = [...nextPrompt, getRequiredPriceLookupReminderMessage()];
@@ -1277,5 +1402,6 @@ export async function sendSteelOAuthChat({
     unsupportedSettings: [],
     warnings: getWarnings(generationResults),
     ...(workbookPatch ? { workbookPatch } : {}),
+    ...(fileAnalysisPatch ? { fileAnalysisPatch } : {}),
   };
 }

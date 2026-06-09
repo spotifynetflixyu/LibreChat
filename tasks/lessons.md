@@ -559,3 +559,22 @@
   evidence files belong inside the same workspace, with each row carrying its
   source file/page/region metadata; the quote workbook remains a separate
   single order workbook.
+- Steel OCR rules must teach AI to use `patch_file_analysis_data` for
+  unconfirmed drawing/PDF/image interpretation, then summarize the patch in the
+  visible response. Do not rely on provider code prompts to introduce this tool
+  behavior; keep the instruction in the Supabase-backed OCR agent rule.
+- Steel `file_analysis_data` UI manual editing should stay narrow: only the
+  `file_analysis_data` sheet is user-editable, with cell edits, add row, and a
+  small left-side delete-row icon. Keep a top status bar with version, source
+  file count, draft/unsaved state such as `3 unsaved changes`, and Save/Saved
+  control. Do not add row action toolbars, review-state controls, or manual
+  editing for `manual_review` / `interpretation_notes`; those two sheets remain
+  AI-patchable context for later turns.
+- When reporting Steel OAuth verification, explicitly distinguish mocked Jest
+  wiring smokes from live OAuth provider smokes. Do not call a mocked provider
+  test "real OAuth"; live smokes must use a gated manual spec and call
+  `openai_oauth_responses` with local OAuth auth material.
+- Steel live drawing OCR smokes should keep image inputs at provider
+  `imageDetail: high`, which AI SDK maps to the OpenAI Responses image
+  `detail` field. Do not add separate OCR-effort env keys for this path;
+  reasoning should come from the normal Steel OpenAI config.

@@ -6,6 +6,7 @@ export { default as steelAdminMergeTableSchema } from './adminMergeTable';
 export { default as steelAuditLogSchema } from './auditLog';
 export { default as steelConversationMetaSchema } from './conversationMeta';
 export { default as steelExcelExportSchema } from './excelExport';
+export { default as steelFileAnalysisDataSchema } from './fileAnalysisData';
 export { default as steelMemoryCandidateSchema } from './memoryCandidate';
 export { default as steelMemorySchema } from './memory';
 export { default as steelProjectSchema } from './project';

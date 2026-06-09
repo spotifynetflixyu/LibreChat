@@ -18,6 +18,8 @@ import type {
   SteelProviderChatRequest,
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
+  SteelFileAnalysisManualPatchRequest,
+  SteelFileAnalysisManualPatchResponse,
   SteelWorkbookCreateRequest,
   SteelWorkbookExportRequest,
   SteelWorkbookPatchRequest,
@@ -140,6 +142,13 @@ export function exportSteelWorkbook(
   payload: SteelWorkbookExportRequest,
 ): Promise<ArrayBuffer> {
   return request.postArrayBuffer(endpoints.steelWorkbookExport(workbookId), payload);
+}
+
+export function patchSteelFileAnalysisData(
+  fileAnalysisDataId: string,
+  payload: SteelFileAnalysisManualPatchRequest,
+): Promise<SteelFileAnalysisManualPatchResponse> {
+  return request.patch(endpoints.steelFileAnalysisData(fileAnalysisDataId), payload);
 }
 
 /**

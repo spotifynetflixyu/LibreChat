@@ -14,6 +14,7 @@ export {
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
   createSteelExcelExportModel,
+  createSteelFileAnalysisDataModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
   createSteelProjectModel,

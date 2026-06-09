@@ -5,6 +5,7 @@ import {
   steelWorkbookPatchOperationSchema,
   steelWorkbookPatchResponseSchema,
 } from './workbooks';
+import { patchFileAnalysisDataToolInputSchema, steelFileAnalysisDataSchema } from './vision';
 
 export const steelAIDrivers = ['openai_oauth_responses', 'openai_api'] as const;
 
@@ -159,6 +160,7 @@ export const steelProviderReasoningEffortSchema = z.enum(steelProviderReasoningE
 export type SteelProviderReasoningEffort = z.infer<typeof steelProviderReasoningEffortSchema>;
 
 export const steelProviderChatRequestSchema = z.object({
+  conversationId: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   messages: z.array(steelProviderChatMessageSchema).min(1),
   workbookId: z.string().min(1).optional(),
@@ -178,6 +180,12 @@ export type SteelProviderWorkbookPatchProposal = z.infer<
   typeof steelProviderWorkbookPatchProposalSchema
 >;
 
+export const steelProviderFileAnalysisPatchProposalSchema = patchFileAnalysisDataToolInputSchema;
+
+export type SteelProviderFileAnalysisPatchProposal = z.infer<
+  typeof steelProviderFileAnalysisPatchProposalSchema
+>;
+
 export const steelProviderChatResponseSchema = z.object({
   provider: z.enum(steelAIDrivers),
   model: z.string().min(1),
@@ -189,6 +197,8 @@ export const steelProviderChatResponseSchema = z.object({
   errorCategory: steelAIProviderErrorCategorySchema.optional(),
   errorSummary: z.string().min(1).optional(),
   workbookPatch: steelWorkbookPatchResponseSchema.optional(),
+  fileAnalysisPatch: steelProviderFileAnalysisPatchProposalSchema.optional(),
+  fileAnalysisData: steelFileAnalysisDataSchema.optional(),
 });
 
 export type SteelProviderChatResponse = z.infer<typeof steelProviderChatResponseSchema>;

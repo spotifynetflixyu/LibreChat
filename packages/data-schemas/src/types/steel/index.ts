@@ -175,6 +175,43 @@ export interface ISteelWorkbookPatch extends Document {
   updatedAt?: Date;
 }
 
+export interface ISteelFileAnalysisData extends Document {
+  fileAnalysisDataId: string;
+  conversationId: string;
+  workbookId?: string;
+  version: number;
+  status: 'draft' | 'user_confirmed' | 'projected_to_workbook';
+  sourceFiles: Array<{
+    fileId: string;
+    filename?: string;
+    mediaType: string;
+    pageCount?: number;
+  }>;
+  sheets: {
+    file_analysis_data: {
+      columns: Array<{ key: string; label: string; valueType: string }>;
+      rows: Array<{
+        id: string;
+        sourceRef: Record<string, unknown>;
+        cells: Record<string, SteelWorkbookCellValue>;
+        confidence: 'high' | 'medium' | 'low';
+        reviewStatus: 'pending_review' | 'confirmed' | 'corrected';
+        rowWarnings: string[];
+      }>;
+    };
+    manual_review: {
+      columns: Array<{ key: string; label: string; valueType: string }>;
+      rows: Array<Record<string, unknown>>;
+    };
+    interpretation_notes: {
+      columns: Array<{ key: string; label: string; valueType: string }>;
+      rows: Array<Record<string, unknown>>;
+    };
+  };
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 export type SteelWorkbookSheetId =
   | 'quote_details'
   | 'summary'

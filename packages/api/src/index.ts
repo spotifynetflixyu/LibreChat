@@ -70,6 +70,8 @@ export * from './steel/normalization';
 export * from './steel/postgres';
 export * from './steel/repositories';
 export * from './steel/tools';
+export * from './steel/vision/analysis';
+export * from './steel/vision/repository';
 export * from './steel/vision/resolver';
 export * from './steel/vision/service';
 /* types */

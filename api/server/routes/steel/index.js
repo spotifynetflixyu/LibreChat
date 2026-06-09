@@ -1,5 +1,10 @@
 const express = require('express');
-const { createSteelHandlers, resolveEvidenceFileForProvider } = require('@librechat/api');
+const {
+  createMongooseSteelFileAnalysisRepository,
+  createSteelFileAnalysisService,
+  createSteelHandlers,
+  resolveEvidenceFileForProvider,
+} = require('@librechat/api');
 const { getFiles } = require('~/models');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -41,7 +46,11 @@ async function resolveEvidenceFile({ fileId, request, userId, conversationId }) 
   });
 }
 
-const handlers = createSteelHandlers({ getModelsConfig, resolveEvidenceFile });
+const fileAnalysisService = createSteelFileAnalysisService({
+  repository: createMongooseSteelFileAnalysisRepository(require('mongoose')),
+});
+
+const handlers = createSteelHandlers({ getModelsConfig, resolveEvidenceFile, fileAnalysisService });
 
 function requireJwtUnlessGuestToken(req, res, next) {
   if (req.headers['x-steel-guest-token']) {
@@ -70,6 +79,7 @@ router.post('/workbooks', requireJwtAuth, handlers.createWorkbook);
 router.get('/workbooks/:workbookId', requireJwtAuth, handlers.readWorkbook);
 router.patch('/workbooks/:workbookId', requireJwtAuth, handlers.patchWorkbook);
 router.post('/workbooks/:workbookId/export', requireJwtAuth, handlers.exportWorkbook);
+router.patch('/file-analysis/:fileAnalysisDataId', requireJwtAuth, handlers.patchFileAnalysisData);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 
 module.exports = router;

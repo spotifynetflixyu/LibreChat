@@ -2,8 +2,14 @@ import { createSteelAdminHandlers, createSteelHandlers } from './handlers';
 import { logger } from '@librechat/data-schemas';
 import { SteelConversationAccessError } from './conversations/service';
 import { createSteelWorkbookService } from './workbook/service';
+import { createSteelFileAnalysisService } from './vision/analysis';
 
 import type { Request, Response } from 'express';
+import type {
+  SteelFileAnalysisCreateRecord,
+  SteelFileAnalysisRecord,
+  SteelFileAnalysisRepository,
+} from './vision/analysis';
 import type {
   SteelWorkbookCreateRecord,
   SteelWorkbookPatchRecord,
@@ -31,6 +37,24 @@ class MemorySteelWorkbookRepository implements SteelWorkbookRepository {
 
   async createPatch(record: SteelWorkbookPatchRecord): Promise<SteelWorkbookPatchRecord> {
     this.patches.push(record);
+    return record;
+  }
+}
+
+class MemorySteelFileAnalysisRepository implements SteelFileAnalysisRepository {
+  readonly records = new Map<string, SteelFileAnalysisRecord>();
+
+  async create(record: SteelFileAnalysisCreateRecord): Promise<SteelFileAnalysisRecord> {
+    this.records.set(record.conversationId, record);
+    return record;
+  }
+
+  async findByConversationId(conversationId: string): Promise<SteelFileAnalysisRecord | null> {
+    return this.records.get(conversationId) ?? null;
+  }
+
+  async update(record: SteelFileAnalysisRecord): Promise<SteelFileAnalysisRecord> {
+    this.records.set(record.conversationId, record);
     return record;
   }
 }
@@ -250,6 +274,503 @@ describe('createSteelHandlers', () => {
       }),
     );
     expect(res.end).toHaveBeenCalled();
+  });
+
+  it('persists file analysis patch proposals and returns the updated workspace', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '已建立圖文判讀表格。',
+      unsupportedSettings: [],
+      warnings: [],
+      fileAnalysisPatch: {
+        sourceFiles: [
+          {
+            fileId: 'file_c_png',
+            filename: 'c.png',
+            mediaType: 'image/png',
+            pageCount: 1,
+          },
+        ],
+        patches: [
+          {
+            sheetId: 'file_analysis_data' as const,
+            upsertColumns: [
+              { key: 'part_no', label: '件號', valueType: 'text' as const },
+              { key: 'spec', label: '規格', valueType: 'text' as const },
+            ],
+            upsertRows: [
+              {
+                id: 'row_pl1',
+                sourceRef: {
+                  fileId: 'file_c_png',
+                  filename: 'c.png',
+                  mediaType: 'image/png',
+                  page: 1,
+                },
+                cells: { part_no: 'PL1', spec: '367×323×12t' },
+                confidence: 'medium' as const,
+                reviewStatus: 'pending_review' as const,
+              },
+            ],
+          },
+        ],
+        summary: '新增 c.png 圖面判讀資料。',
+      },
+    }));
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+      fileAnalysisService,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_1',
+        workbookId: 'wb_1',
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: 'Read c.png' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(repository.records.get('conversation_1')?.sourceFiles).toEqual([
+      {
+        fileId: 'file_c_png',
+        filename: 'c.png',
+        mediaType: 'image/png',
+        pageCount: 1,
+      },
+    ]);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '已建立圖文判讀表格。',
+        fileAnalysisData: expect.objectContaining({
+          id: 'fad_1',
+          conversationId: 'conversation_1',
+          workbookId: 'wb_1',
+          version: 1,
+          sheets: expect.objectContaining({
+            file_analysis_data: expect.objectContaining({
+              rows: [
+                expect.objectContaining({
+                  id: 'row_pl1',
+                  cells: { part_no: 'PL1', spec: '367×323×12t' },
+                }),
+              ],
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('streams file analysis patch persistence status before the final response', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '已建立圖文判讀表格。',
+      unsupportedSettings: [],
+      warnings: [],
+      fileAnalysisPatch: {
+        sourceFiles: [
+          {
+            fileId: 'file_c_png',
+            filename: 'c.png',
+            mediaType: 'image/png',
+          },
+        ],
+        patches: [
+          {
+            sheetId: 'manual_review' as const,
+            upsertColumns: [{ key: 'item', label: '項目', valueType: 'text' as const }],
+            upsertRows: [
+              {
+                id: 'review_1',
+                sourceRef: {
+                  fileId: 'file_c_png',
+                  filename: 'c.png',
+                  mediaType: 'image/png',
+                  page: 1,
+                },
+                cells: { item: '孔洞數需人工確認' },
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+      fileAnalysisService,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_1',
+        messages: [{ role: 'user', content: 'Read c.png' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'tool',
+          status: 'started',
+          toolName: 'patch_file_analysis_data',
+        }),
+        expect.objectContaining({
+          type: 'tool',
+          status: 'completed',
+          toolName: 'patch_file_analysis_data',
+          ok: true,
+        }),
+        expect.objectContaining({
+          type: 'done',
+          response: expect.objectContaining({
+            fileAnalysisData: expect.objectContaining({
+              id: 'fad_1',
+              conversationId: 'conversation_1',
+              sheets: expect.objectContaining({
+                manual_review: expect.objectContaining({
+                  rows: [
+                    expect.objectContaining({
+                      id: 'review_1',
+                      cells: { item: '孔洞數需人工確認' },
+                    }),
+                  ],
+                }),
+              }),
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('patches file_analysis_data manually through the handler endpoint', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      fileAnalysisService,
+    });
+    const req = {
+      params: { fileAnalysisDataId: 'fad_1' },
+      body: {
+        conversationId: 'conversation_1',
+        workbookId: 'wb_1',
+        sourceFiles: [{ fileId: 'file_c_png', filename: 'c.png', mediaType: 'image/png' }],
+        patches: [
+          {
+            sheetId: 'file_analysis_data',
+            upsertColumns: [{ key: 'part_no', label: '件號', valueType: 'text' }],
+            upsertRows: [
+              {
+                id: 'row_pl1',
+                sourceRef: {
+                  fileId: 'file_c_png',
+                  filename: 'c.png',
+                  mediaType: 'image/png',
+                  page: 1,
+                },
+                cells: { part_no: 'PL7' },
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.patchFileAnalysisData(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      fileAnalysisData: expect.objectContaining({
+        id: 'fad_1',
+        conversationId: 'conversation_1',
+        workbookId: 'wb_1',
+        sheets: expect.objectContaining({
+          file_analysis_data: expect.objectContaining({
+            rows: [
+              expect.objectContaining({
+                id: 'row_pl1',
+                cells: { part_no: 'PL7' },
+              }),
+            ],
+          }),
+        }),
+      }),
+    });
+  });
+
+  it('injects the latest saved file_analysis_data into the next provider request', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    await fileAnalysisService.patch({
+      conversationId: 'conversation_1',
+      workbookId: 'wb_1',
+      patch: {
+        sourceFiles: [{ fileId: 'file_c_png', filename: 'c.png', mediaType: 'image/png' }],
+        patches: [
+          {
+            sheetId: 'file_analysis_data',
+            upsertColumns: [{ key: 'part_no', label: '件號', valueType: 'text' }],
+            upsertRows: [
+              {
+                id: 'row_pl1',
+                sourceRef: {
+                  fileId: 'file_c_png',
+                  filename: 'c.png',
+                  mediaType: 'image/png',
+                  page: 1,
+                },
+                cells: { part_no: 'USER_CORRECTED_PL7' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: 'ok',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      fileAnalysisService,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_1',
+        messages: [{ role: 'user', content: '用最新表格繼續判讀' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'system',
+            content: expect.stringContaining('USER_CORRECTED_PL7'),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('smokes image OCR patch, manual correction, and next-turn file_analysis_data context', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const sendChat = jest
+      .fn()
+      .mockResolvedValueOnce({
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已用 OCR 建立 c.png 圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisPatch: {
+          sourceFiles: [
+            {
+              fileId: 'file_c_png',
+              filename: 'c.png',
+              mediaType: 'image/png',
+              pageCount: 1,
+            },
+          ],
+          patches: [
+            {
+              sheetId: 'file_analysis_data' as const,
+              upsertColumns: [
+                { key: 'part_no', label: '件號', valueType: 'text' as const },
+                { key: 'spec', label: '規格', valueType: 'text' as const },
+              ],
+              upsertRows: [
+                {
+                  id: 'row_pl1',
+                  sourceRef: {
+                    fileId: 'file_c_png',
+                    filename: 'c.png',
+                    mediaType: 'image/png',
+                    page: 1,
+                  },
+                  cells: { part_no: 'PL1', spec: '367×323×12t' },
+                },
+              ],
+            },
+          ],
+          summary: 'OCR 初判 c.png。',
+        },
+      })
+      .mockResolvedValueOnce({
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已依照修正後資料繼續判讀。',
+        unsupportedSettings: [],
+        warnings: [],
+      });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      fileAnalysisService,
+    });
+    const firstReq = {
+      body: {
+        conversationId: 'conversation_1',
+        workbookId: 'wb_1',
+        messages: [
+          {
+            role: 'user',
+            content: 'OCR 判讀 c.png',
+            files: [
+              {
+                filename: 'c.png',
+                mediaType: 'image/png',
+                dataBase64: Buffer.from('PNG_SENTINEL_FOR_OCR', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const firstRes = createResponse();
+
+    await handlers.chat(firstReq, firstRes);
+
+    expect(firstRes.status).toHaveBeenCalledWith(200);
+    expect(firstRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileAnalysisData: expect.objectContaining({
+          version: 1,
+          sheets: expect.objectContaining({
+            file_analysis_data: expect.objectContaining({
+              rows: [
+                expect.objectContaining({
+                  cells: { part_no: 'PL1', spec: '367×323×12t' },
+                }),
+              ],
+            }),
+          }),
+        }),
+      }),
+    );
+
+    const manualPatchReq = {
+      params: { fileAnalysisDataId: 'fad_1' },
+      body: {
+        conversationId: 'conversation_1',
+        workbookId: 'wb_1',
+        sourceFiles: [
+          {
+            fileId: 'file_c_png',
+            filename: 'c.png',
+            mediaType: 'image/png',
+            pageCount: 1,
+          },
+        ],
+        patches: [
+          {
+            sheetId: 'file_analysis_data',
+            upsertColumns: [
+              { key: 'part_no', label: '件號', valueType: 'text' },
+              { key: 'spec', label: '規格', valueType: 'text' },
+            ],
+            upsertRows: [
+              {
+                id: 'row_pl1',
+                sourceRef: {
+                  fileId: 'file_c_png',
+                  filename: 'c.png',
+                  mediaType: 'image/png',
+                  page: 1,
+                },
+                cells: { part_no: 'PL7', spec: '367×323×12t' },
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as Request;
+    const manualPatchRes = createResponse();
+
+    await handlers.patchFileAnalysisData(manualPatchReq, manualPatchRes);
+
+    expect(manualPatchRes.status).toHaveBeenCalledWith(200);
+    expect(manualPatchRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileAnalysisData: expect.objectContaining({
+          version: 2,
+        }),
+      }),
+    );
+
+    const secondReq = {
+      body: {
+        conversationId: 'conversation_1',
+        workbookId: 'wb_1',
+        messages: [{ role: 'user', content: '用修正後資料繼續判讀' }],
+      },
+    } as Request;
+    const secondRes = createResponse();
+
+    await handlers.chat(secondReq, secondRes);
+
+    const secondSendChatOptions = sendChat.mock.calls[1]?.[0];
+    expect(secondSendChatOptions.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'system',
+          content: expect.stringContaining('Latest saved file_analysis_data workspace'),
+        }),
+        expect.objectContaining({
+          role: 'system',
+          content: expect.stringContaining('PL7'),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(secondSendChatOptions.messages)).not.toContain('"part_no":"PL1"');
+    expect(secondRes.status).toHaveBeenCalledWith(200);
   });
 
   it('streams a fatal Steel tool error without hiding the tool failure summary', async () => {
