@@ -1,5 +1,6 @@
 import {
   requiredSteelWorkbookSheetIds,
+  steelWorkbookExportRequestSchema,
   steelWorkbookPatchRequestSchema,
   steelSelectedWorkbookRefSchema,
   steelWorkbookSchema,
@@ -133,5 +134,25 @@ describe('Steel workbook public contracts', () => {
     });
 
     expect(patch.operations).toHaveLength(120);
+  });
+
+  it('accepts staff XLSX export requests for arbitrary workbook sheet selections', () => {
+    const request = steelWorkbookExportRequestSchema.parse({
+      workbookVersion: 3,
+      sheetIds: ['quote_details', 'system_order'],
+    });
+
+    expect(request).toEqual({
+      workbookVersion: 3,
+      sheetIds: ['quote_details', 'system_order'],
+    });
+  });
+
+  it('exports all seven workbook sheets when staff does not specify sheetIds', () => {
+    const request = steelWorkbookExportRequestSchema.parse({
+      workbookVersion: 3,
+    });
+
+    expect(request.sheetIds).toEqual(requiredSteelWorkbookSheetIds);
   });
 });

@@ -19,6 +19,7 @@ import type {
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
   SteelWorkbookCreateRequest,
+  SteelWorkbookExportRequest,
   SteelWorkbookPatchRequest,
   SteelWorkbookPatchResponse,
   SteelWorkbookReadResponse,
@@ -132,6 +133,13 @@ export function patchSteelWorkbook(
   payload: SteelWorkbookPatchRequest,
 ): Promise<SteelWorkbookPatchResponse> {
   return request.patch(endpoints.steelWorkbook(payload.workbookId), payload);
+}
+
+export function exportSteelWorkbook(
+  workbookId: string,
+  payload: SteelWorkbookExportRequest,
+): Promise<ArrayBuffer> {
+  return request.postArrayBuffer(endpoints.steelWorkbookExport(workbookId), payload);
 }
 
 /**

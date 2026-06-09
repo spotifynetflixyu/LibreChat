@@ -4,6 +4,10 @@
   both the reviewed row `prompt` and its `source_refs` metadata such as
   `sha256`, `sourceFile`, `locator`, and `canonicalKey`; prompt hash equality
   alone is not a complete DB source-sync check.
+- Steel `source_refs` objects must always keep canonical provenance fields:
+  `channel` and `factType` are required by runtime parsers. When refreshing
+  `sha256` or `sourceFile`, merge into the existing source ref or rebuild the
+  full canonical object; never replace it with hash-only metadata.
 - Steel workbook formula-code mapping is workbook-rule owned. Do not describe
   formula code lookup as coming from `lookup_quote_rules` or Agent tool flow;
   `lookup_quote_rules` may return pricing/category/material/processing rules,
@@ -22,6 +26,26 @@
   calculation-rule prompts/source rows/workbook validation and validate that
   workbook summary totals match the sum of line subtotals instead of trying to
   prove hidden Code Interpreter execution.
+- Steel workbook summary total validation only checks `summary.totalAmount`
+  against the sum of `quoteLines[].subtotal`. Confidence and provisional status
+  belong in line/manual-review/notes fields, not separate summary amount rows.
+- Steel pricing unit data comes from `search_price_candidates` database price
+  rows. User words such as `一支` describe requested quantity or delivery unit;
+  they must not override the database price row pricing unit, and subtotal must
+  not be copied into unit price.
+- Steel workbook prompt must state that `quote_details`, `system_order`,
+  `price_sources`, and `customer_quote` share the adopted
+  `search_price_candidates` pricing unit. If the price row is kg-priced, visible
+  quote/customer sheets must use `Kg`; user delivery words like `一支` belong in
+  notes or length/quantity context, not the workbook pricing unit.
+- Steel `customer_quote` is customer-visible and must not leak internal pricing
+  segmentation. Notes may show the customer or project name, but not customer
+  tier, price A/B/C, customer price, tier price, cost, margin, or any wording
+  implying different customers have different prices.
+- Steel `customer_quote` total rows are AI-authored semantic data, not backend
+  auto-fill. Use top-level `customerQuoteTotal` for the bottom `報價總額` row;
+  backend projection only maps that explicit semantic target to
+  `customer_quote.customer_total`.
 - In `/steel/oauth-chat`, textarea Enter handling must respect IME/composition input
   such as 注音. Pressing Enter to choose composition text must not submit the chat; submit
   only after composition ends.

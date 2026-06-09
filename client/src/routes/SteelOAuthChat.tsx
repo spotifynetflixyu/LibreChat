@@ -22,6 +22,7 @@ import type {
   SteelProviderChatStreamEvent,
   SteelChangedPath,
   SteelWorkbook,
+  SteelWorkbookSheetId,
 } from 'librechat-data-provider';
 import SteelWorkbookPreview from '~/features/steel/workbook/Preview';
 
@@ -53,6 +54,8 @@ const newChatText = 'New chat';
 const streamStatusLabel = 'Steel stream status';
 const thinkingStatusTitle = 'Last run';
 const noThinkingStatusText = 'No run status yet.';
+const workbookExportContentType =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 function createTurn(
   role: SteelProviderChatMessage['role'],
@@ -173,6 +176,10 @@ function getStreamStatusLabel(event: SteelProviderChatStreamEvent): string {
   return 'response';
 }
 
+function getWorkbookSheetIds(workbook: SteelWorkbook): SteelWorkbookSheetId[] {
+  return workbook.sheets.map((sheet) => sheet.id);
+}
+
 function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
   if (
     event.type === 'error' ||
@@ -270,6 +277,9 @@ export default function SteelOAuthChat() {
   const [lastResponse, setLastResponse] = useState<SteelProviderChatResponse | null>(null);
   const [workbook, setWorkbook] = useState<SteelWorkbook | null>(null);
   const [changedPaths, setChangedPaths] = useState<SteelChangedPath[]>([]);
+  const [workbookExportSheetIds, setWorkbookExportSheetIds] = useState<SteelWorkbookSheetId[]>([]);
+  const [isWorkbookExporting, setIsWorkbookExporting] = useState(false);
+  const [workbookExportError, setWorkbookExportError] = useState<string | null>(null);
   const [isWorkbookLoading, setIsWorkbookLoading] = useState(true);
   const [workbookError, setWorkbookError] = useState<string | null>(null);
   const [isWorkbookPanelOpen, setIsWorkbookPanelOpen] = useState(true);
@@ -294,9 +304,11 @@ export default function SteelOAuthChat() {
     try {
       const result = await dataService.createSteelWorkbook({});
       setWorkbook(result.workbook);
+      setWorkbookExportSheetIds(getWorkbookSheetIds(result.workbook));
       setChangedPaths([]);
     } catch (error) {
       setWorkbook(null);
+      setWorkbookExportSheetIds([]);
       setChangedPaths([]);
       setWorkbookError(getErrorText(error));
     } finally {
@@ -373,10 +385,45 @@ export default function SteelOAuthChat() {
     setLastResponse(null);
     setSelectedFiles([]);
     setChangedPaths([]);
+    setWorkbookExportError(null);
     setStreamEvents([]);
     setIsSending(false);
     setIsEncodingFiles(false);
     void initializeWorkbook();
+  };
+
+  const handleToggleWorkbookExportSheet = (sheetId: SteelWorkbookSheetId) => {
+    setWorkbookExportSheetIds((current) =>
+      current.includes(sheetId)
+        ? current.filter((candidate) => candidate !== sheetId)
+        : [...current, sheetId],
+    );
+  };
+
+  const handleDownloadWorkbook = async () => {
+    if (!workbook || workbookExportSheetIds.length === 0) {
+      return;
+    }
+
+    setIsWorkbookExporting(true);
+    setWorkbookExportError(null);
+    try {
+      const arrayBuffer = await dataService.exportSteelWorkbook(workbook.id, {
+        workbookVersion: workbook.version,
+        sheetIds: workbookExportSheetIds,
+      });
+      const blob = new Blob([arrayBuffer], { type: workbookExportContentType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `steel-workbook-${workbook.id}-v${workbook.version}.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setWorkbookExportError(getErrorText(error));
+    } finally {
+      setIsWorkbookExporting(false);
+    }
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -737,11 +784,18 @@ export default function SteelOAuthChat() {
                   <SteelWorkbookPreview
                     workbook={workbook}
                     changedPaths={changedPaths}
+                    downloadError={workbookExportError}
                     error={workbookError}
+                    exportSheetIds={workbookExportSheetIds}
+                    isDownloading={isWorkbookExporting}
                     isLoading={isWorkbookLoading}
+                    onDownload={() => {
+                      void handleDownloadWorkbook();
+                    }}
                     onRetry={() => {
                       void initializeWorkbook();
                     }}
+                    onToggleExportSheet={handleToggleWorkbookExportSheet}
                   />
                 ) : (
                   <ThinkingStatusPanel events={streamEvents} />

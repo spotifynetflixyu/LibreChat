@@ -104,6 +104,11 @@ describe('Steel semantic workbook projection', () => {
           },
         },
       ],
+      customerQuoteTotal: {
+        itemSpec: '報價總額',
+        subtotal: 643.2,
+        note: '含暫估，待確認',
+      },
     });
 
     expectOperation(operations, {
@@ -172,6 +177,36 @@ describe('Steel semantic workbook projection', () => {
       columnKey: 'subtotal',
       value: 643.2,
     });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_total',
+      columnKey: 'item_spec',
+      value: '報價總額',
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_total',
+      columnKey: 'quantity',
+      value: null,
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_total',
+      columnKey: 'unit',
+      value: null,
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_total',
+      columnKey: 'unit_price',
+      value: null,
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_total',
+      columnKey: 'subtotal',
+      value: 643.2,
+    });
     expect(operations).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -237,6 +272,9 @@ describe('Steel semantic workbook projection', () => {
           },
         },
       ],
+      summary: {
+        totalAmount: 624,
+      },
     });
 
     expectOperation(operations, {
@@ -263,6 +301,16 @@ describe('Steel semantic workbook projection', () => {
       columnKey: 'value',
       value: 624,
     });
+    expect(
+      operations
+        .filter(
+          (operation) =>
+            operation.sheetId === 'summary' &&
+            operation.rowId.endsWith('_amount') &&
+            operation.columnKey === 'value',
+        )
+        .map((operation) => operation.rowId),
+    ).toEqual(['summary_total_amount']);
     expectOperation(operations, {
       sheetId: 'price_sources',
       rowId: 'source_1',

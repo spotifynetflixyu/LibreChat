@@ -1037,7 +1037,7 @@ const describeWorkbookPatchDbSubtotalLoop = runWorkbookPatchDbSubtotalLoop
 
 describeWorkbookPatchDbSubtotalLoop('Steel OpenAI OAuth DB rules and subtotal loop smoke', () => {
   it(
-    'loads DB rules, executes DB-backed tools, rejects an unknown-line confirmed total, and accepts a corrected workbook patch',
+    'loads DB rules, executes DB-backed tools, rejects an unknown-line totalAmount, and accepts a corrected workbook patch',
     async () => {
       const run = await runLiveWorkbookPatchChatWithDatabaseTools(
         [
@@ -1046,8 +1046,8 @@ describeWorkbookPatchDbSubtotalLoop('Steel OpenAI OAuth DB rules and subtotal lo
             content: [
               'C型鋼 C100x50x20x2.3t 6M 一支多少？',
               '請走真實 DB lookup_quote_rules 與 search_price_candidates。',
-              '拿到正數 reviewed price candidate 後，為了 live smoke 驗證 backend subtotal loop，請先呼叫一次 patch_quote_workbook，故意讓 quoteLines[0].subtotal = "未確認"，但 summary.totalAmount = 999 且 summary.confirmedAmount = 999。',
-              '收到 patch_quote_workbook 的 tool result 後，不要回答文字；請立刻再呼叫 patch_quote_workbook，用 reviewed price candidate 重算並修正：錏輕型鋼 100*2.3，價格B 26.8 元/kg，重量 4 kg/m * 6M = 24 kg，小計與 summary total/confirmed amount 都應為 643.2。',
+              '拿到正數 reviewed price candidate 後，為了 live smoke 驗證 backend subtotal loop，請先呼叫一次 patch_quote_workbook，故意讓 quoteLines[0].subtotal = "未確認"，但 summary.totalAmount = 999。',
+              '收到 patch_quote_workbook 的 tool result 後，不要回答文字；請立刻再呼叫 patch_quote_workbook，用 reviewed price candidate 重算並修正：錏輕型鋼 100*2.3，價格B 26.8 元/kg，重量 4 kg/m * 6M = 24 kg，小計與 summary.totalAmount 都應為 643.2。',
               '最後只用繁體中文回覆採用的品項、單價、重量、小計，以及 workbook 已更新。',
             ].join('\n'),
           },
@@ -1066,7 +1066,7 @@ describeWorkbookPatchDbSubtotalLoop('Steel OpenAI OAuth DB rules and subtotal lo
         .map((round) => round.promptText ?? '')
         .join('\n');
       const subtotalLoopFeedbackSeen = serializedPrompts.includes(
-        'Workbook confirmed totals cannot be numeric while any line subtotal is unknown',
+        'Workbook summary.totalAmount cannot be numeric while any line subtotal is unknown',
       );
       const quoteDetailsSubtotal = findWorkbookOperation(
         run.response,
@@ -1080,15 +1080,8 @@ describeWorkbookPatchDbSubtotalLoop('Steel OpenAI OAuth DB rules and subtotal lo
         'summary_total_amount',
         'value',
       );
-      const summaryConfirmed = findWorkbookOperation(
-        run.response,
-        'summary',
-        'summary_confirmed_amount',
-        'value',
-      );
       const subtotalValue = operationValueNumber(quoteDetailsSubtotal?.value);
       const totalValue = operationValueNumber(summaryTotal?.value);
-      const confirmedValue = operationValueNumber(summaryConfirmed?.value);
       const serialized = stringify({
         response: run.response,
         capturedCalls: run.capturedCalls,
@@ -1110,7 +1103,6 @@ describeWorkbookPatchDbSubtotalLoop('Steel OpenAI OAuth DB rules and subtotal lo
       expect(subtotalValue).toBeGreaterThanOrEqual(643);
       expect(subtotalValue).toBeLessThanOrEqual(644);
       expect(totalValue).toBe(subtotalValue);
-      expect(confirmedValue).toBe(subtotalValue);
       expect(run.response.text).toMatch(/643(?:\.2|\.20)?|小計/u);
       expect(serialized).not.toMatch(/access_token|authorization|Bearer|authFile/i);
     },

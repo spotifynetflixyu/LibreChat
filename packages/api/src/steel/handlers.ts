@@ -6,6 +6,7 @@ import {
   steelProviderChatRequestSchema,
   steelProviderWorkbookPatchProposalSchema,
   steelWorkbookCreateRequestSchema,
+  steelWorkbookExportRequestSchema,
 } from 'librechat-data-provider';
 import { ZodError } from 'zod';
 
@@ -28,6 +29,7 @@ import {
   SteelWorkbookValidationError,
   SteelWorkbookVersionConflictError,
 } from './workbook/service';
+import { exportSteelWorkbookXlsx } from './exports/service';
 import {
   parseSteelOpenAIConfig,
   resolveSteelOpenAIOAuthAuthFilePath,
@@ -1128,6 +1130,36 @@ export function createSteelHandlers({
           workbookId: req.params.workbookId,
         });
         res.status(200).json(result);
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+      }
+    },
+
+    async exportWorkbook(req: SteelRequest, res: Response) {
+      const parsed = steelWorkbookExportRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({
+          message: 'Invalid Steel workbook export request',
+          errorCategory: 'steel_workbook_export_invalid',
+        });
+        return;
+      }
+
+      try {
+        const { workbook } = await getWorkbookService().read({
+          workbookId: req.params.workbookId,
+        });
+        if (workbook.version !== parsed.data.workbookVersion) {
+          throw new SteelWorkbookVersionConflictError();
+        }
+
+        const result = await exportSteelWorkbookXlsx({
+          workbook,
+          sheetIds: parsed.data.sheetIds,
+        });
+        res.setHeader('Content-Type', result.contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+        res.send(result.buffer);
       } catch (error) {
         sendWorkbookError(res, error, env);
       }

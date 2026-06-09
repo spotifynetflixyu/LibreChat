@@ -294,12 +294,12 @@ Tasks:
 - For every material that can carry cutting price, if cutting is needed and head/tail trimming is not explicit, the assistant must ask before confirmed cutting fee calculation.
 - If a remainder omits tail trim, assistant text and workbook notes must say `有餘料，切尾不計入`.
 - If cutting is not needed, workbook still records zero cutting count/fee with the no-cut reason.
-- Validate confirmed customer-facing totals by checking that
-  `summary.totalAmount` and `summary.confirmedAmount` match the sum of line
-  `subtotal` values after source/rule validation. Concise calculation/source
-  summaries may appear in `價格來源` or `判讀備註`.
+- Validate workbook totals by checking that `summary.totalAmount` matches the
+  sum of line `subtotal` values after source/rule validation. Concise
+  calculation/source summaries may appear in `價格來源` or `判讀備註`.
 - Support future Admin-reviewed prices for non-round hole types such as oval, long, rectangular, and custom holes even when the current source price row is `0` or missing during development.
-- Separate confirmed totals from low-confidence estimated totals.
+- Keep confidence/provisional status on quote lines, review rows, notes, or
+  customer_quote notes instead of separate summary amount fields.
 - Use `未確認`, not `0`, for unknown unit price or amount.
 - Record formula code/version and calculation basis for workbook lines.
 - Validate and normalize explicit quote-specific adjustments after default

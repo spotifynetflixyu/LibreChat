@@ -6,6 +6,148 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Active: Steel C-Type Price Unit Rule Sync
+
+Goal: prevent C 型鋼口語「一支多少」 from overriding reviewed database price
+row units. `search_price_candidates` remains authoritative for productName,
+pricing unit, unit price, and unit weight; one piece is only the requested
+quantity when the adopted row is kg-priced.
+
+- [x] Add the lesson that user delivery units must not override database price
+      row pricing units.
+- [x] Update `docs/reference/agent規則.txt` so the mandatory Agent Prompt states
+      that `search_price_candidates` database price rows are authoritative.
+- [x] Update `docs/reference/鋼材規則.txt` with the C100x50x20x2.3t 6M kg-priced
+      C 型鋼 example and forbidden 支-price interpretation.
+- [x] Sync the reviewed active `steel.agent_rules` and `steel.quote_rules` rows
+      to cloud Supabase.
+- [x] Verify DB prompt contents and diff hygiene.
+
+Review evidence:
+
+- Supabase reviewed active `steel.agent_rules.slug =
+  steel-default-agent-instruction` now matches `docs/reference/agent規則.txt`
+  sha256 `470146b0488410890e3d6cc3ff85e30324c24ffe101486421537f4e55cc59e61`.
+- Supabase reviewed active `steel.quote_rules.id = 9` now matches
+  `docs/reference/鋼材規則.txt` sha256
+  `170be3c583a001edc06cfd04f695b06a4ddf86c1b6ff244aaded9e63ef0bd0f5`.
+- Supabase reviewed active C 型鋼 pricing rule `steel.quote_rules.id = 3`
+  now includes the kg-priced C100x50x20x2.3t 6M example, with
+  `單位 Kg`, `單價 26.8`, `小計 643.2`, and the forbidden `單位=支`
+  interpretation.
+- DB read-back confirmed agent prompt contains `search_price_candidates`,
+  `database price row`, and `不可把小計`; quote rules id 3/id 9 contain the
+  C 型鋼 kg example and forbidden 支-price case.
+- Follow-up fix: repaired hash-only `source_refs` created during prompt sync by
+  restoring canonical `channel` / `factType` provenance on
+  `steel-default-agent-instruction`, `quote_reference_steel_rules`, and
+  `quote_c_type_material_lookup_strategy`. A cloud DB read-back across active
+  reviewed `agent_rules`, `quote_rules`, `catalog_family_rules`, and
+  `customer_rules` returned `missingRequiredSourceRefFields = 0`.
+- Workbook prompt follow-up: `docs/reference/workbook規則.txt` now has a compact
+  `Workbook 單位判斷邏輯` section. All workbook material units in
+  `quote_details`, `system_order`, `price_sources`, and `customer_quote` must
+  match the adopted `search_price_candidates` price row unit; user delivery
+  words such as `一支` cannot override it. Supabase
+  `steel.agent_rules.slug = steel-workbook-output-policy` was updated to local
+  sha256 `36a674b7579276cf2794a5b2a3cf217962689b903024d4cebe774f4e80128616`,
+  and source-ref validation still returns `missingRequiredSourceRefFields = 0`.
+- Internal-server-error follow-up: source-level live OAuth/Codex natural
+  workbook calculation smoke passed after the DB rule updates, but the running
+  `/steel/oauth-chat` backend was still using the built `@librechat/api` dist
+  loaded at process start. Rebuilt `packages/api` and restarted
+  `npm run backend:dev`; 3080 is listening again with the refreshed dist.
+- Customer quote privacy follow-up: `docs/reference/workbook規則.txt` now states
+  that `customer_quote` must not reveal internal pricing logic, including
+  customer tier, price A/B/C, customer price, tier price, cost, margin, or
+  wording implying different customers have different prices. The bottom
+  `customer_quote` row is now `報價總額`, with quantity/unit/unit price blank and
+  the customer-facing total in subtotal. Supabase
+  `steel.agent_rules.slug = steel-workbook-output-policy` was updated to local
+  sha256 `64e5af6b1ff0b758bf756d8f0bc5705baec85914631578d27985f783092583b6`,
+  and source-ref validation still returns `missingRequiredSourceRefFields = 0`.
+- Customer quote total-row follow-up: added top-level semantic
+  `customerQuoteTotal` so AI can explicitly output the bottom `報價總額` row
+  without backend auto-filling it. Projection maps that semantic target to
+  `customer_quote.customer_total`, including blank quantity/unit/unit price
+  cells. Provider prompts now instruct AI to send `customerQuoteTotal` for the
+  customer-facing total row. Focused semantic/provider tests passed. Supabase
+  `steel.agent_rules.slug = steel-workbook-output-policy` was updated to local
+  sha256 `e7eab4a929bfe658df25450e2287b2b175ad6ff50961da1345cd7c9ec1170c8f`,
+  DB read-back confirmed the `customerQuoteTotal` guidance and
+  `missingRequiredSourceRefFields = 0`, `packages/api` build passed with
+  existing non-Steel TypeScript warnings, and backend dev server restarted on
+  3080 with refreshed dist.
+
+## Active: Steel Summary Total Contract Cleanup
+
+Goal: remove the conflicting summary confirmed/provisional amount contract.
+Workbook subtotal validation now only checks `summary.totalAmount` against the
+sum of numeric `quoteLines[].subtotal`; confidence/provisional status stays on
+quote lines, manual review, interpretation notes, or customer quote notes.
+
+- [x] Add RED tests showing old summary amount fields must not drive subtotal
+      validation or semantic summary projection.
+- [x] Remove summary confirmed/provisional amount fields from semantic schema,
+      projection, validator, provider feedback, and provider fixtures.
+- [x] Update `docs/reference/agent規則.txt` and
+      `docs/reference/workbook規則.txt` to the totalAmount-only contract.
+- [x] Sync reviewed active Supabase `steel.agent_rules` prompts and source hashes.
+- [x] Verify focused tests, API build, DB prompt contents, diff hygiene, and
+      restart the backend dev server.
+
+Review evidence:
+
+- RED tests failed because semantic projection still emitted separate summary
+  amount rows and subtotal validation still inspected more than totalAmount.
+- Green implementation now rejects only mismatched numeric `summary.totalAmount`;
+  semantic workbook projection no longer emits separate summary amount rows.
+- Provider subtotal-loop feedback now asks the model to correct only
+  `summary.totalAmount`, so it no longer conflicts with provisional/low
+  confidence guidance.
+- Supabase reviewed active `steel.agent_rules` rows
+  `steel-default-agent-instruction` and `steel-workbook-output-policy` were
+  updated from `docs/reference`, with refreshed SHA-256 source refs.
+- Verification: focused workbook/provider tests passed, API build passed with
+  existing non-Steel Rollup TypeScript warnings, DB prompt check returned no old
+  summary amount key/label strings, and backend dev server restarted on 3080.
+
+## Active: Steel Phase 4 Staff Workbook Export Implementation
+
+Goal: implement Phase 4 staff workbook export end to end so `/steel/oauth-chat`
+can download a persisted Steel workbook as XLSX. This phase streams generated
+ExcelJS bytes from memory, allows arbitrary selected workbook sheets, and does
+not apply customer masking, dedicated system-order export logic, Supabase
+Storage, or durable `steel_excel_exports` records.
+
+- [x] Add RED tests for Excel workbook rendering from persisted workbook JSON.
+- [x] Add RED tests for the workbook export API route/handler.
+- [x] Add RED tests for `/steel/oauth-chat` export UI wiring.
+- [x] Implement ExcelJS renderer/service in `packages/api/src/steel/exports`.
+- [x] Implement `POST /api/steel/workbooks/:workbookId/export`.
+- [x] Add data-provider/client export helper and `/steel/oauth-chat` download UI.
+- [x] Verify focused backend/client tests, API build, client build or targeted
+      typecheck, and diff hygiene.
+
+Review evidence:
+
+- Added `steelWorkbookExportRequestSchema`, data-provider endpoint/helper, and
+  arraybuffer POST support so `/steel/oauth-chat` can request XLSX bytes through
+  the normal authenticated client path.
+- Added ExcelJS renderer under `packages/api/src/steel/exports`; it streams
+  in-memory XLSX bytes from persisted workbook JSON, supports arbitrary selected
+  sheets, and renders missing currency values as `未確認` instead of `0`.
+- Added `POST /api/steel/workbooks/:workbookId/export`; it validates workbook
+  version before streaming and does not call AI, patch workbook data, refresh
+  prices, write Supabase Storage, or create durable export records.
+- `/steel/oauth-chat` workbook preview now has per-sheet export checkboxes and a
+  `Download XLSX` action using the current workbook version.
+- Verification: RED tests failed on missing schema/renderer/handler/UI; GREEN
+  focused tests passed for data-provider workbooks, API export/handlers, and
+  `SteelOAuthChat`; `npm run build --workspace packages/data-provider` passed;
+  `npm run build --workspace packages/api` passed with existing non-Steel
+  Rollup TypeScript warnings.
+
 ## Active: Steel v8.3 Phase 3 Checkpoint Sync And Phase 4 Grill
 
 Goal: close the completed v8.3 Phase 3 checkpoint evidence without overstating
@@ -168,12 +310,11 @@ Review evidence:
 - Added `packages/api/src/steel/workbook/subtotals.ts` and
   `subtotals.spec.ts` for numeric amount parsing, summary/line subtotal
   mismatch detection, first-mismatch lookup, and rejection of numeric
-  `summary.totalAmount` / `summary.confirmedAmount` when any line subtotal is
-  `未確認`.
+  `summary.totalAmount` when any line subtotal is `未確認`.
 - Reused the shared subtotal helper from the provider workbook patch loop. The
   provider now returns a tool result asking AI to resend `patch_quote_workbook`
   with `未確認` totals when a line subtotal is unknown.
-- Added provider coverage for the unknown-subtotal confirmed-total loop.
+- Added provider coverage for the unknown-subtotal totalAmount loop.
 - Updated `tasks/v8.3/phase-2-data-tools.md` so Phase 2 no longer lists
   `lookup_formula` as an AI-callable runtime tool.
 - Direct backend/app verification passed without browser UI smoke:
@@ -223,12 +364,11 @@ Review evidence:
   `search_price_candidates`, verifies the quote-rule result includes unified
   `rules`, and verifies the returned rule context matches `C 型鋼` / `c_type`.
 - The live model generated an initial `patch_quote_workbook` with line subtotal
-  `未確認` and summary totals `999`; backend returned the subtotal loop feedback
-  `Workbook confirmed totals cannot be numeric while any line subtotal is
-  unknown`, then the live model sent a corrected patch accepted by backend.
-- Final accepted workbook patch asserted `quote_details.line_1.subtotal`,
-  `summary_total_amount`, and `summary_confirmed_amount` all match within the
-  643-644 expected range for `26.8 * 24 = 643.2`.
+  `未確認` and summary total `999`; backend returned subtotal loop feedback, then
+  the live model sent a corrected patch accepted by backend.
+- Final accepted workbook patch asserted `quote_details.line_1.subtotal` and
+  `summary_total_amount` match within the 643-644 expected range for
+  `26.8 * 24 = 643.2`.
 - Live command passed:
   `cd packages/api && DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_WORKBOOK_DB_SUBTOTAL_LOOP_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.catalog-oral.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`
   passed 1 live test in `98.943 s` with 6 other manual cases skipped.

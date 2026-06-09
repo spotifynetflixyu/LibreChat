@@ -158,6 +158,7 @@
     "@ai-sdk/openai": "^3.0.65",
     "@ai-sdk/provider": "^3.0.10",
     "@ai-sdk/provider-utils": "^4.0.27",
+    "exceljs": "^4.4.0",
     "openai-oauth-provider": "^1.0.3"
   }
 }

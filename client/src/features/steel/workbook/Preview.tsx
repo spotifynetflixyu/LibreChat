@@ -1,14 +1,24 @@
 import { memo, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, Download, Loader2, RefreshCw } from 'lucide-react';
 
-import type { SteelChangedPath, SteelWorkbook, SteelWorkbookSheet } from 'librechat-data-provider';
+import type {
+  SteelChangedPath,
+  SteelWorkbook,
+  SteelWorkbookSheet,
+  SteelWorkbookSheetId,
+} from 'librechat-data-provider';
 
 interface SteelWorkbookPreviewProps {
   workbook: SteelWorkbook | null;
   changedPaths: SteelChangedPath[];
   error?: string | null;
+  exportSheetIds?: SteelWorkbookSheetId[];
   isLoading?: boolean;
+  isDownloading?: boolean;
+  downloadError?: string | null;
+  onDownload?: () => void;
   onRetry?: () => void;
+  onToggleExportSheet?: (sheetId: SteelWorkbookSheetId) => void;
 }
 
 function pathKey(path: SteelChangedPath): string {
@@ -41,8 +51,13 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
   workbook,
   changedPaths,
   error = null,
+  exportSheetIds = [],
   isLoading = false,
+  isDownloading = false,
+  downloadError = null,
+  onDownload,
   onRetry,
+  onToggleExportSheet,
 }: SteelWorkbookPreviewProps) {
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const changedKeys = useMemo(() => new Set(changedPaths.map(pathKey)), [changedPaths]);
@@ -97,22 +112,53 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
           <h2 className="truncate text-sm font-semibold text-text-primary">報價 Workbook</h2>
           <p className="mt-0.5 text-xs text-text-secondary">v{workbook.version}</p>
         </div>
+        {onDownload && (
+          <button
+            type="button"
+            aria-label="Download XLSX"
+            disabled={isDownloading || exportSheetIds.length === 0}
+            className="flex h-9 items-center gap-2 rounded border border-border-light px-3 text-sm text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={onDownload}
+          >
+            {isDownloading ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Download className="h-4 w-4" aria-hidden="true" />
+            )}
+            Download XLSX
+          </button>
+        )}
       </header>
+
+      {downloadError && (
+        <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-500">
+          {downloadError}
+        </div>
+      )}
 
       <div className="flex gap-1 overflow-x-auto border-b border-border-light px-3 py-2">
         {workbook.sheets.map((sheet) => (
-          <button
+          <div
             key={sheet.id}
-            type="button"
-            onClick={() => setActiveSheetId(sheet.id)}
-            className={`whitespace-nowrap rounded px-3 py-1.5 text-sm transition-colors ${
+            className={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-sm transition-colors ${
               activeSheet?.id === sheet.id
                 ? 'bg-surface-active-alt text-text-primary'
                 : 'text-text-secondary hover:bg-surface-hover'
             }`}
           >
-            {getWorkbookSheetLabel(sheet)}
-          </button>
+            {onToggleExportSheet && (
+              <input
+                type="checkbox"
+                aria-label={`Export ${sheet.id}`}
+                checked={exportSheetIds.includes(sheet.id)}
+                className="h-3.5 w-3.5"
+                onChange={() => onToggleExportSheet(sheet.id)}
+              />
+            )}
+            <button type="button" onClick={() => setActiveSheetId(sheet.id)}>
+              {getWorkbookSheetLabel(sheet)}
+            </button>
+          </div>
         ))}
       </div>
 

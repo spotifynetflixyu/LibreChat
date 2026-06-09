@@ -23,7 +23,6 @@ describe('Steel workbook subtotal validator', () => {
       ],
       summary: {
         totalAmount: '624',
-        confirmedAmount: 624,
       },
     };
 
@@ -35,21 +34,19 @@ describe('Steel workbook subtotal validator', () => {
       quoteLines: [{ lineId: 'line_1', subtotal: 624 }],
       summary: {
         totalAmount: 625,
-        confirmedAmount: '625',
       },
     };
 
     expect(getWorkbookSubtotalMismatch(patch)).toEqual({
       expectedTotal: 624,
-      mismatchedFields: ['summary.totalAmount', 'summary.confirmedAmount'],
+      mismatchedFields: ['summary.totalAmount'],
       actualTotals: {
         'summary.totalAmount': 625,
-        'summary.confirmedAmount': 625,
       },
     });
   });
 
-  it('rejects confirmed summary totals when any line subtotal is unknown', () => {
+  it('rejects summary totalAmount when any line subtotal is unknown', () => {
     const patch: SteelSemanticWorkbookPatch = {
       quoteLines: [
         { lineId: 'line_1', subtotal: '未確認' },
@@ -57,15 +54,13 @@ describe('Steel workbook subtotal validator', () => {
       ],
       summary: {
         totalAmount: 100,
-        confirmedAmount: 100,
       },
     };
 
     expect(getWorkbookSubtotalMismatch(patch)).toEqual({
-      mismatchedFields: ['summary.totalAmount', 'summary.confirmedAmount'],
+      mismatchedFields: ['summary.totalAmount'],
       actualTotals: {
         'summary.totalAmount': 100,
-        'summary.confirmedAmount': 100,
       },
       unknownSubtotalLineRefs: ['line_1'],
     });
@@ -76,7 +71,6 @@ describe('Steel workbook subtotal validator', () => {
       quoteLines: [{ lineNo: 1, subtotal: '未確認' }],
       summary: {
         totalAmount: '未確認',
-        confirmedAmount: '未確認',
       },
     };
 

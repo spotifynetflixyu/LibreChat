@@ -83,7 +83,6 @@ export function getWorkbookSubtotalMismatch(
   const subtotalState = getWorkbookSubtotalState(input);
   const summaryTotals = [
     ['summary.totalAmount', getNumericWorkbookAmount(input.summary?.totalAmount)],
-    ['summary.confirmedAmount', getNumericWorkbookAmount(input.summary?.confirmedAmount)],
   ] as const;
   const actualTotals: Record<string, number> = {};
   const mismatchedFields: string[] = [];

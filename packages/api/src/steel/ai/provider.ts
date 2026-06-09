@@ -695,8 +695,8 @@ function toWorkbookPatchToolResultValue(
     : {};
   if (subtotalMismatch) {
     const instruction = subtotalMismatch.unknownSubtotalLineRefs
-      ? 'Workbook confirmed totals cannot be numeric while any line subtotal is unknown. Call patch_quote_workbook again with unknown totals set to 未確認 or provide reviewed/user-confirmed line subtotals before answering.'
-      : 'Workbook summary totals must equal the sum of line subtotal values. Call patch_quote_workbook again with corrected summary.totalAmount and summary.confirmedAmount values before answering.';
+      ? 'Workbook summary.totalAmount cannot be numeric while any line subtotal is unknown. Call patch_quote_workbook again with summary.totalAmount set to 未確認 or provide reviewed/user-confirmed line subtotals before answering.'
+      : 'Workbook summary.totalAmount must equal the sum of line subtotal values. Call patch_quote_workbook again with corrected summary.totalAmount before answering.';
 
     return toJsonValue({
       ok: true,
@@ -719,7 +719,7 @@ function toWorkbookPatchToolResultValue(
       missingSheetIds: completion.missingSheetIds,
       missingCells: completion.missingCells,
       instruction:
-        'Semantic workbook patch projected but incomplete for this Steel quote update. Call patch_quote_workbook again with the same lineId and any derivable missing semantic fields. Do not hand-write workbook cell operations. If a value cannot be derived, leave that target cell blank and record the missing material/customer/source/calculation evidence in manual_review or interpretation_notes. Do not answer the user until the workbook patch is complete enough for this turn.',
+        'Semantic workbook patch projected but incomplete for this Steel quote update. Call patch_quote_workbook again with the same lineId and any derivable missing semantic fields. Include top-level customerQuoteTotal when customer_quote has a customer-facing total row. Do not hand-write workbook cell operations. If a value cannot be derived, leave that target cell blank and record the missing material/customer/source/calculation evidence in manual_review or interpretation_notes. Do not answer the user until the workbook patch is complete enough for this turn.',
     });
   }
 
@@ -789,7 +789,7 @@ function getProvisionalWorkbookPatchReminderMessage(
 
   return {
     role: 'system',
-    content: `This Steel quote update still requires a complete-enough semantic workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_quote_workbook to update all user-relevant sheets when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote. Do not hand-write workbook cell operations; backend projection owns cell operation generation. Fill semantic fields when derivable from user text, workbook context, reviewed tool results, or calculation_results. Use calculation_results before interpreted quote items when both exist. Leave missing semantic values blank when material, customer, source, or calculation context is unavailable, and record the missing context in manual_review or interpretation_notes instead of inventing values. 未確認單價或金額不可填 0; write 未確認 instead. Include provisional candidate/source/confidence notes and the quote_details \`小計\` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible \`報價\` column. Summary/customer_quote totals must be labeled as 暫估/待確認 until the user confirms the selected item, thickness, length, customer, and tier. 給客戶用 must not expose customer tier, source refs, search keywords, candidates, AI/internal notes, cost, or margin. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
+    content: `This Steel quote update still requires a complete-enough semantic workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_quote_workbook to update all user-relevant sheets when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote. Do not hand-write workbook cell operations; backend projection owns cell operation generation. Fill semantic fields when derivable from user text, workbook context, reviewed tool results, or calculation_results. Use calculation_results before interpreted quote items when both exist. Leave missing semantic values blank when material, customer, source, or calculation context is unavailable, and record the missing context in manual_review or interpretation_notes instead of inventing values. 未確認單價或金額不可填 0; write 未確認 instead. Include provisional candidate/source/confidence notes and the quote_details \`小計\` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible \`報價\` column. Summary/customer_quote totals must be labeled as 暫估/待確認 until the user confirms the selected item, thickness, length, customer, and tier. When customer_quote has a customer-facing total, provide top-level customerQuoteTotal with itemSpec 報價總額, blank quantity/unit/unitPrice, and customer-facing total in subtotal. 給客戶用 must not expose customer tier, source refs, search keywords, candidates, AI/internal notes, cost, or margin. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
   };
 }
 

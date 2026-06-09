@@ -70,6 +70,21 @@ function createStreamResponse() {
   };
 }
 
+function createBinaryResponse() {
+  const res = {
+    status: jest.fn().mockReturnThis(),
+    setHeader: jest.fn().mockReturnThis(),
+    send: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+  };
+  return res as unknown as Response & {
+    status: jest.Mock;
+    setHeader: jest.Mock;
+    send: jest.Mock;
+    json: jest.Mock;
+  };
+}
+
 function parseStreamChunks(chunks: readonly string[]) {
   return chunks
     .join('')
@@ -1853,6 +1868,114 @@ describe('createSteelHandlers', () => {
         ],
       }),
     );
+  });
+
+  it('exports the current workbook as streamed XLSX without recalculating workbook data', async () => {
+    const workbookService = {
+      create: jest.fn(),
+      patch: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: {
+          id: 'wb_1',
+          version: 2,
+          sheets: [
+            {
+              id: 'quote_details' as const,
+              label: '報價明細',
+              columns: [
+                { key: 'line_no', label: '項次', valueType: 'number' as const, editable: false },
+                {
+                  key: 'material_unit_price',
+                  label: '材料單價',
+                  valueType: 'currency' as const,
+                  editable: true,
+                },
+              ],
+              rows: [{ id: 'line_1', cells: { line_no: 1, material_unit_price: null } }],
+            },
+            ...[
+              'system_order',
+              'summary',
+              'manual_review',
+              'price_sources',
+              'interpretation_notes',
+              'customer_quote',
+            ].map((sheetId) => ({
+              id: sheetId as
+                | 'system_order'
+                | 'summary'
+                | 'manual_review'
+                | 'price_sources'
+                | 'interpretation_notes'
+                | 'customer_quote',
+              label: sheetId,
+              columns: [
+                { key: 'line_no', label: '項次', valueType: 'number' as const, editable: false },
+              ],
+              rows: [],
+            })),
+          ],
+        },
+      })),
+    };
+    const sendChat = jest.fn();
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: { workbookVersion: 2, sheetIds: ['quote_details'] },
+      params: { workbookId: 'wb_1' },
+    } as unknown as Request;
+    const res = createBinaryResponse();
+
+    await handlers.exportWorkbook(req, res);
+
+    expect(workbookService.read).toHaveBeenCalledWith({ workbookId: 'wb_1' });
+    expect(workbookService.patch).not.toHaveBeenCalled();
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'Content-Disposition',
+      expect.stringContaining('steel-workbook-wb_1-v2.xlsx'),
+    );
+    expect(Buffer.isBuffer(res.send.mock.calls[0]?.[0])).toBe(true);
+  });
+
+  it('rejects stale workbook export requests before streaming a file', async () => {
+    const workbookService = {
+      create: jest.fn(),
+      patch: jest.fn(),
+      read: jest.fn(async () => ({
+        workbook: {
+          id: 'wb_1',
+          version: 3,
+          sheets: [],
+        },
+      })),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      workbookService,
+    });
+    const req = {
+      body: { workbookVersion: 2, sheetIds: ['quote_details'] },
+      params: { workbookId: 'wb_1' },
+    } as unknown as Request;
+    const res = createBinaryResponse();
+
+    await handlers.exportWorkbook(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Steel workbook version conflict',
+      errorCategory: 'steel_workbook_version_conflict',
+    });
+    expect(res.send).not.toHaveBeenCalled();
   });
 });
 

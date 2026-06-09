@@ -32,6 +32,7 @@ router.post('/ai/chat/stream', requireJwtAuth, handlers.streamChat);
 router.post('/workbooks', requireJwtAuth, handlers.createWorkbook);
 router.get('/workbooks/:workbookId', requireJwtAuth, handlers.readWorkbook);
 router.patch('/workbooks/:workbookId', requireJwtAuth, handlers.patchWorkbook);
+router.post('/workbooks/:workbookId/export', requireJwtAuth, handlers.exportWorkbook);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 
 module.exports = router;

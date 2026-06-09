@@ -279,6 +279,7 @@ export const steelConversation = (conversationId: string) =>
 export const steelWorkbooks = () => `${steelBase()}/workbooks`;
 export const steelWorkbook = (workbookId: string) =>
   `${steelWorkbooks()}/${encodeURIComponent(workbookId)}`;
+export const steelWorkbookExport = (workbookId: string) => `${steelWorkbook(workbookId)}/export`;
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

@@ -118,10 +118,9 @@ export type SteelSemanticWorkbookQuoteLine = {
 export type SteelSemanticWorkbookPatch = {
   customer?: SemanticCustomer;
   quoteLines: SteelSemanticWorkbookQuoteLine[];
+  customerQuoteTotal?: SemanticCustomerQuoteLine;
   summary?: {
     totalAmount?: SemanticCellValue;
-    confirmedAmount?: SemanticCellValue;
-    lowConfidenceAmount?: SemanticCellValue;
     unconfirmedCount?: SemanticCellValue;
     lowConfidenceCount?: SemanticCellValue;
     totalWeightKg?: SemanticCellValue;
@@ -266,8 +265,6 @@ const semanticQuoteLineSchema: z.ZodType<SteelSemanticWorkbookQuoteLine> = z
 const semanticSummarySchema = z
   .object({
     totalAmount: optionalSemanticCellValueSchema,
-    confirmedAmount: optionalSemanticCellValueSchema,
-    lowConfidenceAmount: optionalSemanticCellValueSchema,
     unconfirmedCount: optionalSemanticCellValueSchema,
     lowConfidenceCount: optionalSemanticCellValueSchema,
     totalWeightKg: optionalSemanticCellValueSchema,
@@ -288,6 +285,7 @@ export const steelSemanticWorkbookPatchSchema: z.ZodType<SteelSemanticWorkbookPa
   .object({
     customer: semanticCustomerSchema.optional(),
     quoteLines: z.array(semanticQuoteLineSchema).min(1),
+    customerQuoteTotal: semanticCustomerQuoteLineSchema.optional(),
     summary: semanticSummarySchema.optional(),
   })
   .strict();
@@ -428,16 +426,6 @@ function addSummaryRows(
       item: '報價總額',
       value: totalAmount,
       note: '語意報價 patch 投影',
-    },
-    {
-      rowId: 'summary_confirmed_amount',
-      item: '確定金額',
-      value: input.summary?.confirmedAmount,
-    },
-    {
-      rowId: 'summary_low_confidence_amount',
-      item: '低信心暫估金額',
-      value: input.summary?.lowConfidenceAmount,
     },
     {
       rowId: 'summary_unconfirmed_count',
@@ -706,6 +694,37 @@ function addCustomerQuoteCells(
   });
 }
 
+function addCustomerQuoteTotalCells(
+  input: SteelSemanticWorkbookPatch,
+  operations: SteelWorkbookPatchOperation[],
+) {
+  const customerQuoteTotal = input.customerQuoteTotal;
+  if (!customerQuoteTotal) {
+    return;
+  }
+
+  const reason = 'Project AI-authored customer-visible quote total row.';
+  const totalCells: Record<string, SteelWorkbookCellValue> = {
+    item_spec: customerQuoteTotal.itemSpec ?? '報價總額',
+    quantity: customerQuoteTotal.quantity ?? null,
+    unit: customerQuoteTotal.unit ?? null,
+    unit_price: customerQuoteTotal.unitPrice ?? null,
+    subtotal: customerQuoteTotal.subtotal ?? input.summary?.totalAmount ?? null,
+    note: customerQuoteTotal.note ?? null,
+  };
+
+  for (const [columnKey, value] of Object.entries(totalCells)) {
+    operations.push({
+      op: 'set_cell',
+      sheetId: 'customer_quote',
+      rowId: 'customer_total',
+      columnKey,
+      value,
+      reason,
+    });
+  }
+}
+
 export function buildSemanticWorkbookPatchOperations(
   input: SteelSemanticWorkbookPatch,
 ): SteelWorkbookPatchOperation[] {
@@ -719,6 +738,7 @@ export function buildSemanticWorkbookPatchOperations(
     addInterpretationNoteCells(line, index, operations);
     addCustomerQuoteCells(line, index, operations);
   });
+  addCustomerQuoteTotalCells(input, operations);
   addSummaryRows(input, operations);
 
   return operations;

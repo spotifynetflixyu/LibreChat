@@ -7,6 +7,7 @@ import SteelOAuthChat from './SteelOAuthChat';
 const mockSendSteelChat = jest.fn();
 const mockStreamSteelChat = jest.fn();
 const mockCreateSteelWorkbook = jest.fn();
+const mockExportSteelWorkbook = jest.fn();
 
 const sheetIds = [
   'system_order',
@@ -44,6 +45,7 @@ function createWorkbook(version: number, materialUnitPrice: number | null = null
 jest.mock('librechat-data-provider', () => ({
   dataService: {
     createSteelWorkbook: (...args: unknown[]) => mockCreateSteelWorkbook(...args),
+    exportSteelWorkbook: (...args: unknown[]) => mockExportSteelWorkbook(...args),
     sendSteelChat: (...args: unknown[]) => mockSendSteelChat(...args),
     streamSteelChat: (...args: unknown[]) => mockStreamSteelChat(...args),
   },
@@ -55,6 +57,8 @@ describe('SteelOAuthChat', () => {
     mockCreateSteelWorkbook.mockResolvedValue({
       workbook: createWorkbook(1),
     });
+    mockExportSteelWorkbook.mockReset();
+    mockExportSteelWorkbook.mockResolvedValue(new ArrayBuffer(8));
     mockSendSteelChat.mockReset();
     mockSendSteelChat.mockResolvedValue({
       provider: 'openai_oauth_responses',
@@ -544,6 +548,52 @@ describe('SteelOAuthChat', () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it('downloads the current workbook as XLSX with arbitrary selected sheets', async () => {
+    const user = userEvent.setup();
+    const createObjectURL = jest.fn(() => 'blob:steel-workbook');
+    const revokeObjectURL = jest.fn();
+    const anchorClick = jest.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    const createElementSpy = jest.spyOn(document, 'createElement').mockImplementation((tagName) => {
+      const element = originalCreateElement(tagName);
+      if (tagName === 'a') {
+        element.click = anchorClick;
+      }
+      return element;
+    });
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('button', { name: '報價明細' });
+    await user.click(screen.getByRole('checkbox', { name: 'Export system_order' }));
+    await user.click(screen.getByRole('button', { name: 'Download XLSX' }));
+
+    expect(mockExportSteelWorkbook).toHaveBeenCalledWith('wb_1', {
+      workbookVersion: 1,
+      sheetIds: [
+        'quote_details',
+        'summary',
+        'manual_review',
+        'price_sources',
+        'interpretation_notes',
+        'customer_quote',
+      ],
+    });
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:steel-workbook');
+
+    createElementSpy.mockRestore();
   });
 
   it('shows a retryable workbook error instead of staying on loading', async () => {

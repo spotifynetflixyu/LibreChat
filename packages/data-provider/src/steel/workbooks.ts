@@ -130,6 +130,16 @@ export const steelWorkbookCreateRequestSchema = z.object({
 
 export type SteelWorkbookCreateRequest = z.infer<typeof steelWorkbookCreateRequestSchema>;
 
+export const steelWorkbookExportRequestSchema = z.object({
+  workbookVersion: z.number().int().positive(),
+  sheetIds: z
+    .array(steelWorkbookSheetIdSchema)
+    .min(1)
+    .default(() => [...requiredSteelWorkbookSheetIds]),
+});
+
+export type SteelWorkbookExportRequest = z.infer<typeof steelWorkbookExportRequestSchema>;
+
 export const steelWorkbookReadResponseSchema = z.object({
   workbook: steelWorkbookSchema,
 });

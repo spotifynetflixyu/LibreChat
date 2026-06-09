@@ -147,7 +147,7 @@ const defaultAgentRulePrompt = [
   'patch_quote_workbook 只送 semantic quote data；backend 會投影成 workbook cell operations。',
   '價格先於重量。',
   '單價不明、金額不明、price row 空白、price row 為 0、客戶分級價格缺漏時，不可填 0；應填「未確認」。',
-  '送出 workbook patch 或最終回答前，quote_details 每列 subtotal 與 summary.totalAmount / summary.confirmedAmount 必須一致。',
+  '送出 workbook patch 或最終回答前，summary.totalAmount 必須等於 quote_details 所有數字型 line subtotal 加總。',
   'C 型鋼預設不列一般切工，除非 C 型鋼專用規則的另計條件成立。',
   '4-Ø22 通常表示每件 4 個 Ø22 孔。',
   '圖面與表格不一致。',
@@ -166,8 +166,9 @@ const defaultWorkbookRulePrompt = [
   'After patch_quote_workbook succeeds, answer with interpreted order information, key workbook changes, Do not list a per-field diff, and Do not answer only with a field count.',
   '價格先於重量；未確認單價或金額不可填 0。',
   '系統訂單分頁材料列與加工列分開；use systemOrder.modelCode for 系統訂單.`型號`.',
-  '報價明細 小計、確定金額、低信心暫估金額 must follow subtotal validation.',
+  '報價明細 小計 and summary.totalAmount must follow subtotal validation.',
   '給客戶用 不得出現客戶分級、價格來源、搜尋關鍵字、候選品項、AI判斷或 internal source refs.',
+  'customer_quote 報價總額列必須用 top-level customerQuoteTotal 輸出。',
   'Keep patch_quote_workbook compact and Do not hand-write workbook cell operations.',
   'Do not ask the user for internal workbook ids or keys.',
 ].join('\n');
@@ -723,7 +724,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain('patch_quote_workbook');
     expect(systemPrompt.content).toContain('價格先於重量');
     expect(systemPrompt.content).toContain('不可填 0；應填「未確認」');
-    expect(systemPrompt.content).toContain('quote_details 每列 subtotal');
+    expect(systemPrompt.content).toContain('summary.totalAmount 必須等於 quote_details');
     expect(systemPrompt.content).not.toContain('AI owns Steel tool orchestration');
     const searchPriceTool = generateOptions.tools?.find(
       (tool) => tool.name === 'search_price_candidates',
@@ -2564,9 +2565,16 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       summary: {
         totalAmount: 194.3,
-        lowConfidenceAmount: 194.3,
         unconfirmedCount: 1,
         lowConfidenceCount: 1,
+      },
+      customerQuoteTotal: {
+        itemSpec: '報價總額',
+        quantity: null,
+        unit: null,
+        unitPrice: null,
+        subtotal: 194.3,
+        note: '含暫估，待確認',
       },
     };
     const doGenerate = jest
@@ -2746,9 +2754,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(firstSystemPrompt.content).toContain('systemOrder.modelCode');
     expect(firstSystemPrompt.content).toContain('系統訂單.`型號`');
     expect(firstSystemPrompt.content).toContain('報價明細 小計');
-    expect(firstSystemPrompt.content).toContain('確定金額');
-    expect(firstSystemPrompt.content).toContain('低信心暫估金額');
+    expect(firstSystemPrompt.content).toContain('summary.totalAmount');
     expect(firstSystemPrompt.content).toContain('給客戶用');
+    expect(firstSystemPrompt.content).toContain('customerQuoteTotal');
     expect(firstSystemPrompt.content).toContain('不得出現客戶分級');
     expect(firstSystemPrompt.content).toContain('calculation_results');
     expect(firstSystemPrompt.content).toContain('Keep patch_quote_workbook compact');
@@ -2814,6 +2822,24 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           columnKey: 'subtotal',
           value: 194.3,
         }),
+        expect.objectContaining({
+          sheetId: 'customer_quote',
+          rowId: 'customer_total',
+          columnKey: 'item_spec',
+          value: '報價總額',
+        }),
+        expect.objectContaining({
+          sheetId: 'customer_quote',
+          rowId: 'customer_total',
+          columnKey: 'unit_price',
+          value: null,
+        }),
+        expect.objectContaining({
+          sheetId: 'customer_quote',
+          rowId: 'customer_total',
+          columnKey: 'subtotal',
+          value: 194.3,
+        }),
       ]),
     );
   });
@@ -2873,7 +2899,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       summary: {
         totalAmount: 624,
-        lowConfidenceAmount: 624,
         unconfirmedCount: 1,
         totalWeightKg: 24,
       },
@@ -3072,7 +3097,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       summary: {
         totalAmount: 624,
-        lowConfidenceAmount: 624,
         unconfirmedCount: 1,
       },
     };
@@ -3995,7 +4019,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('accepts confirmed workbook totals when summary values match line subtotals', async () => {
+  it('accepts workbook totalAmount when it matches line subtotals', async () => {
     const semanticPatch = {
       customer: {
         name: '龍頂',
@@ -4047,7 +4071,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       summary: {
         totalAmount: 624,
-        confirmedAmount: 624,
         totalWeightKg: 24,
       },
     };
@@ -4113,9 +4136,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       model: 'gpt-5.5',
-      messages: [
-        { role: 'user', content: '請把目前 C 型鋼 line_1 的小計整理成正式 workbook total' },
-      ],
+      messages: [{ role: 'user', content: '請把目前 C 型鋼 line_1 的小計整理成 workbook total' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
       agentRulesClient: createDefaultAgentRulesClient(),
@@ -4138,12 +4159,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         expect.objectContaining({
           sheetId: 'summary',
           rowId: 'summary_total_amount',
-          columnKey: 'value',
-          value: 624,
-        }),
-        expect.objectContaining({
-          sheetId: 'summary',
-          rowId: 'summary_confirmed_amount',
           columnKey: 'value',
           value: 624,
         }),
@@ -4194,14 +4209,12 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       summary: {
         totalAmount: 625,
-        confirmedAmount: 625,
       },
     };
     const correctedPatch = {
       ...wrongPatch,
       summary: {
         totalAmount: 624,
-        confirmedAmount: 624,
       },
     };
     const doGenerate = jest
@@ -4292,7 +4305,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '請把 C 型鋼 line_1 的總結金額改成 confirmed total' }],
+      messages: [{ role: 'user', content: '請把 C 型鋼 line_1 的總結金額改成 totalAmount' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
       agentRulesClient: createDefaultAgentRulesClient(),
@@ -4316,9 +4329,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                   complete: false,
                   subtotalMismatch: {
                     expectedTotal: 624,
-                    mismatchedFields: ['summary.totalAmount', 'summary.confirmedAmount'],
+                    mismatchedFields: ['summary.totalAmount'],
                     actualTotals: {
-                      'summary.confirmedAmount': 625,
                       'summary.totalAmount': 625,
                     },
                   },
@@ -4340,12 +4352,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           columnKey: 'subtotal',
           value: 624,
         }),
-        expect.objectContaining({
-          sheetId: 'summary',
-          rowId: 'summary_confirmed_amount',
-          columnKey: 'value',
-          value: 624,
-        }),
       ]),
     );
     expect(response.workbookPatch?.operations).toEqual(
@@ -4360,7 +4366,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('loops when workbook confirmed totals are numeric but a line subtotal is unknown', async () => {
+  it('loops when workbook totalAmount is numeric but a line subtotal is unknown', async () => {
     const unknownPatch = {
       quoteLines: [
         {
@@ -4375,24 +4381,22 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           billableQuantity: 24,
           subtotal: '未確認',
           manualReview: {
-            confirmationNeeded: '缺 reviewed 單價，不能 confirmed total',
+            confirmationNeeded: '缺 reviewed 單價，不能寫總額',
           },
           interpretationNote: {
             item: 'subtotal validation',
-            content: 'line subtotal is unknown, so confirmed total is not allowed.',
+            content: 'line subtotal is unknown, so totalAmount is not allowed.',
           },
         },
       ],
       summary: {
         totalAmount: 624,
-        confirmedAmount: 624,
       },
     };
     const correctedPatch = {
       ...unknownPatch,
       summary: {
         totalAmount: '未確認',
-        confirmedAmount: '未確認',
       },
     };
     const doGenerate = jest
@@ -4483,7 +4487,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       createOpenAIOAuth,
       ensureFresh: false,
       model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '請把 line_1 的總結金額改成 confirmed total' }],
+      messages: [{ role: 'user', content: '請把 line_1 的總結金額改成 totalAmount' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
       agentRulesClient: createDefaultAgentRulesClient(),
@@ -4506,9 +4510,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
                 value: expect.objectContaining({
                   complete: false,
                   subtotalMismatch: {
-                    mismatchedFields: ['summary.totalAmount', 'summary.confirmedAmount'],
+                    mismatchedFields: ['summary.totalAmount'],
                     actualTotals: {
-                      'summary.confirmedAmount': 624,
                       'summary.totalAmount': 624,
                     },
                     unknownSubtotalLineRefs: ['line_1'],
@@ -4526,7 +4529,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       expect.not.arrayContaining([
         expect.objectContaining({
           sheetId: 'summary',
-          rowId: 'summary_confirmed_amount',
+          rowId: 'summary_total_amount',
           columnKey: 'value',
           value: 624,
         }),
