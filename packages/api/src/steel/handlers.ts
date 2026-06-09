@@ -96,6 +96,12 @@ export interface SteelHandlersDeps {
   executeToolCall?: SteelProviderToolExecutor;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelChatProviderResult>;
+  resolveEvidenceFile?: (input: {
+    fileId: string;
+    request: Request;
+    userId: string;
+    conversationId?: string;
+  }) => Promise<SteelOAuthChatFile>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
   workbookService?: ReturnType<typeof createSteelWorkbookService>;
@@ -217,7 +223,16 @@ function parseBase64FileData(value: unknown, index: number, fileIndex: number): 
   return new Uint8Array(data);
 }
 
-function parseMessageFiles(value: unknown, index: number): SteelOAuthChatFile[] | undefined {
+async function parseMessageFiles(
+  value: unknown,
+  index: number,
+  context: {
+    conversationId?: string;
+    resolveEvidenceFile?: SteelHandlersDeps['resolveEvidenceFile'];
+    request?: Request;
+    userId?: string;
+  },
+): Promise<SteelOAuthChatFile[] | undefined> {
   if (value === undefined) {
     return undefined;
   }
@@ -225,11 +240,14 @@ function parseMessageFiles(value: unknown, index: number): SteelOAuthChatFile[] 
     throw new Error(`messages[${index}].files must be a non-empty array when provided`);
   }
 
-  return value.map((file, fileIndex) => {
+  const files: SteelOAuthChatFile[] = [];
+
+  for (let fileIndex = 0; fileIndex < value.length; fileIndex += 1) {
+    const file = value[fileIndex];
     if (!isRecord(file)) {
       throw new Error(`messages[${index}].files[${fileIndex}] must be an object`);
     }
-    const { filename, mediaType, dataBase64 } = file;
+    const { fileId, filename, mediaType, dataBase64 } = file;
     if (filename !== undefined && (typeof filename !== 'string' || filename.length === 0)) {
       throw new Error(
         `messages[${index}].files[${fileIndex}].filename must be a non-empty string when provided`,
@@ -241,20 +259,60 @@ function parseMessageFiles(value: unknown, index: number): SteelOAuthChatFile[] 
       );
     }
 
-    return {
+    if (fileId !== undefined) {
+      if (typeof fileId !== 'string' || fileId.trim().length === 0) {
+        throw new Error(`messages[${index}].files[${fileIndex}].fileId must be a non-empty string`);
+      }
+      if (!context.userId) {
+        throw new Error(
+          `messages[${index}].files[${fileIndex}].fileId requires an authenticated user`,
+        );
+      }
+      if (!context.resolveEvidenceFile) {
+        throw new Error('Steel evidence file resolver is not configured');
+      }
+      if (!context.request) {
+        throw new Error('Steel evidence file resolver requires the original request');
+      }
+
+      files.push(
+        await context.resolveEvidenceFile({
+          fileId: fileId.trim(),
+          request: context.request,
+          userId: context.userId,
+          conversationId: context.conversationId,
+        }),
+      );
+      continue;
+    }
+
+    files.push({
       filename,
       mediaType,
       data: parseBase64FileData(dataBase64, index, fileIndex),
-    };
-  });
+    });
+  }
+
+  return files;
 }
 
-function parseMessages(value: unknown): SteelOAuthChatMessage[] {
+async function parseMessages(
+  value: unknown,
+  context: {
+    conversationId?: string;
+    resolveEvidenceFile?: SteelHandlersDeps['resolveEvidenceFile'];
+    request?: Request;
+    userId?: string;
+  } = {},
+): Promise<SteelOAuthChatMessage[]> {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error('messages must contain at least one chat message');
   }
 
-  return value.map((item, index) => {
+  const messages: SteelOAuthChatMessage[] = [];
+
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
     if (!isRecord(item)) {
       throw new Error(`messages[${index}] must be an object`);
     }
@@ -267,10 +325,16 @@ function parseMessages(value: unknown): SteelOAuthChatMessage[] {
       throw new Error(`messages[${index}].content must be a non-empty string`);
     }
 
-    const files = parseMessageFiles(item.files, index);
+    const files = await parseMessageFiles(item.files, index, context);
 
-    return files ? { role, content, files } : { role, content };
-  });
+    messages.push(files ? { role, content, files } : { role, content });
+  }
+
+  return messages;
+}
+
+function parseOptionalConversationId(value: unknown) {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function hasMessageFiles(messages: SteelOAuthChatMessage[]): boolean {
@@ -716,6 +780,7 @@ export function createSteelHandlers({
   executeToolCall,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
+  resolveEvidenceFile,
   conversationService,
   ruleProposalService,
   workbookService,
@@ -735,7 +800,12 @@ export function createSteelHandlers({
       let reasoningEffort: SteelOpenAIReasoningEffort;
       let workbookContext: SteelChatWorkbookContext;
       try {
-        messages = parseMessages(body.messages);
+        messages = await parseMessages(body.messages, {
+          conversationId: parseOptionalConversationId(body.conversationId),
+          resolveEvidenceFile,
+          request: req,
+          userId: (req as SteelRequest).user?.id,
+        });
         model = parseOptionalModel(body.model, config.model);
         maxOutputTokens = parseOptionalMaxOutputTokens(body.maxOutputTokens);
         reasoningEffort = parseOptionalReasoningEffort(
@@ -846,7 +916,12 @@ export function createSteelHandlers({
       let reasoningEffort: SteelOpenAIReasoningEffort;
       let workbookContext: SteelChatWorkbookContext;
       try {
-        messages = parseMessages(body.messages);
+        messages = await parseMessages(body.messages, {
+          conversationId: parseOptionalConversationId(body.conversationId),
+          resolveEvidenceFile,
+          request: req,
+          userId: (req as SteelRequest).user?.id,
+        });
         model = parseOptionalModel(body.model, config.model);
         maxOutputTokens = parseOptionalMaxOutputTokens(body.maxOutputTokens);
         reasoningEffort = parseOptionalReasoningEffort(

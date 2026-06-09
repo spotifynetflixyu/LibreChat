@@ -60,22 +60,35 @@ rtk npm run build:api
 
 Scope:
 
-- Production-grade file metadata, retention, and provider file refs.
+- Production-grade file metadata, retention, internal file refs, and provider
+  run refs.
 - AI-first orientation detection, PDF/image evidence, and drawing interpretation.
-- openai-oauth capability smoke for file, vision, spreadsheet, and hosted-tool workflows remains per driver/model; unsupported paths return typed errors unless the matching unified fallback key is enabled and the secondary capability has passed.
-- Official OpenAI API file/vision/XLSX/hosted-tool fallback paths for PDF page image, uploaded file input, spreadsheet evidence, File Search, and Code Interpreter when enabled.
+- One conversation/order-scoped file analysis workspace whose rows are marked
+  by source file/page/region for user verification before quote workbook
+  creation.
+- `openai_oauth_responses` capability smoke for file, vision, and spreadsheet
+  workflows remains per model; unsupported paths return typed errors or
+  manual-review output in this fixed-OAuth phase.
+- No official OpenAI Files API, official OpenAI `file_id`, or official
+  Responses state is used as durable retention for uploaded quote evidence.
 - Drawing interpretation schema for holes, bends, slots, cut marks, tables, and notes.
 - Marked image preview for quote user review.
 - Low-confidence drawing interpretations in workbook manual review and interpretation notes.
+- Original PDF/image refs remain available for later AI re-reading; previous
+  extraction results are not enough when the user requests re-interpretation.
 - Quote conversation PDF/image evidence remains separate from Admin data import.
 
 Gate:
 
 - OCR/vision output is evidence, not authoritative price/spec data.
-- Node/backend owns upload, file metadata, provider refs, ACL, audit, capability preflight, explicit provider fallback, and workbook validation.
+- Node/backend owns upload, file metadata, internal file refs, ACL, audit,
+  capability preflight, fixed OAuth provider serialization, and workbook
+  validation.
 - Formal ongoing Admin data import still requires Admin-uploaded ERP XLSX parsed data or validated table UI edits.
 - Holes, slots, bends, cut marks, and dimensions have source refs.
 - Ambiguous vision output cannot write confirmed workbook totals without low-confidence mark.
+- AI-read tables become verifiable file analysis data first; confirmed or
+  explicitly requested analysis can then create/update workbook rows.
 - PDF/image evidence cannot create Admin source versions, merge rows, or formal database writes.
 
 Verification:

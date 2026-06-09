@@ -90,6 +90,31 @@ Confirmed management contract:
 - The route is guarded by Admin access plus `manage:configs` or the section capability `manage:configs:fileAnalysis`; cache invalidation runs after mutations.
 - A dedicated Admin Panel textarea should write this same config field. Do not add `ocr.instructions`, Steel-only constants, or provider-adapter prompt strings.
 
+## Quote Evidence File Retention
+
+For Steel drawing/PDF/image evidence, keep the original file through the
+configured LibreChat file storage strategy and Mongo `File` record. Local
+development defaults to local storage; other deployments may use the existing
+LibreChat strategies such as S3, CloudFront, Azure Blob, Firebase, or local.
+With local storage, the persisted file is under `appConfig.paths.uploads` with a
+public metadata path like `/uploads/<userId>/<file_id>__<filename>`. The Mongo
+`File` record keeps `file_id`, `filename`, `filepath`, `source`, `storageKey`,
+`storageRegion`, owner, conversation/message refs, media type, bytes, and
+retention fields.
+Each conversation/order has one `file_analysis_data` workspace. It stores
+extracted/corrected rows from one or more uploaded files, and each row points
+back to its source file/page/region so users can compare AI output with the
+PDF/image before creating quote workbook rows.
+
+The `openai_oauth_responses` driver is configured as stateless full-history in
+this project, and `packages/api/src/steel/ai/provider.ts` passes
+`responsesState: false`. Do not depend on provider response state, previous
+response ids, OAuth provider cache, official OpenAI Files API, or official
+OpenAI `file_id`s as durable file retention. When a user asks AI to re-read a
+PDF/image, resolve the internal LibreChat/Steel file ref, read the bytes through
+the configured storage strategy, and send the file part to
+`openai_oauth_responses` again.
+
 Example global/base override payload, using the current `role/__base__` base-principal convention:
 
 ```json

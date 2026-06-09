@@ -34,6 +34,7 @@ export interface SteelSourceRef {
   confidence?: string;
   extractedLabel?: string;
   canonicalKey?: string;
+  sha256?: string;
 }
 
 export interface SteelSourceBackedRecord {
@@ -90,6 +91,7 @@ export function parseSteelSourceRefs(value: unknown): SteelSourceRef[] {
       confidence: readOptionalString(entry, 'confidence'),
       extractedLabel: readOptionalString(entry, 'extractedLabel'),
       canonicalKey: readOptionalString(entry, 'canonicalKey'),
+      sha256: readOptionalString(entry, 'sha256'),
     };
   });
 }

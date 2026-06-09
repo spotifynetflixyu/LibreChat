@@ -6,6 +6,115 @@ calculation, rule proposal review APIs, approval/publish flows, and reviewed
 quote defaults retrieval when each slice is ready. Do not build Admin screens
 until the user explicitly reopens UI scope.
 
+## Active: Steel v8.3 Phase 6C File/PDF/OCR/Drawing Evidence Flow Plan
+
+Goal: write an implementation and test plan for quote-conversation evidence
+attachments: PDF, images, scanned drawings, and spreadsheet evidence. The first
+OCR correctness fixture is `docs/reference/example/c.png`, with expected plate
+schedule rows captured as JSON for comparison. Evidence first becomes
+one conversation-scoped `file_analysis_data` workspace; rows are marked with
+source file/page/region so the user can verify or correct extracted tables
+against each PDF/image, then confirmed analysis can create rows in the single
+quote workbook plus `manual_review` and `interpretation_notes`. It must not
+create Admin import source versions or formal database writes.
+
+- [x] Inspect existing Phase 6C plan, file-analysis config boundary, Steel chat
+      attachment path, provider file serialization tests, and semantic workbook
+      projection.
+- [x] Save the detailed implementation plan under `docs/plans/`.
+- [x] Incorporate the OCR rules DB flow: `docs/reference/OCR規則.txt` syncs into
+      reviewed active `steel.agent_rules` and visual OCR turns load that rule
+      before provider generation.
+- [x] Incorporate the user-confirmed `file_analysis_data` flow: AI can create
+      a verifiable extracted table first, later turns can re-read original
+      files, and confirmed analysis can create/update quote workbook rows.
+- [x] Incorporate the fixed provider boundary: uploaded evidence is stored
+      through LibreChat file storage and Mongo `File` records, then resent as
+      bytes/file parts to `openai_oauth_responses`; no official OpenAI Files API
+      or provider-state retention is used for Phase 6C.
+- [x] Implement Phase 6C Task 0 first slice: sync `docs/reference/OCR規則.txt`
+      into `steel.agent_rules`, load reviewed OCR rules for visual
+      `openai_oauth_responses` turns, and fail before provider generation when
+      visual OCR lacks reviewed rules.
+- [x] Implement Phase 6C Task 1 first slice: add `c.png` expected JSON fixture,
+      drawing evidence Zod schema, normalized row comparison, field accuracy,
+      and mismatch reporting.
+- [x] Implement Phase 6C Task 2 first slice: add quote evidence attachment
+      classifier for image/PDF/spreadsheet/unsupported files and distinguish
+      durable Mongo `File` records from inline smoke/backcompat file payloads.
+- [x] Continue Phase 6C Task 2: add injected resolver for
+      `fileId -> Mongo File record -> storage bytes -> openai_oauth_responses`
+      file part, with owner/conversation access checks before storage reads.
+- [x] Wire durable `files[].fileId` through `/steel/oauth-chat`: handler accepts
+      persisted file refs, resolves them through the injected resolver, and the
+      `/api` route thin wrapper reads bytes through LibreChat `getFiles` plus
+      configured storage `getDownloadStream`.
+- [x] Apply user correction: remove Steel helper npm scripts from
+      `packages/api/package.json`; run one-off Steel scripts directly with
+      `node packages/api/scripts/<script>.cjs`.
+- [x] Verify touched-file hygiene with tracked `git diff --check` plus new-plan
+      trailing-whitespace/newline checks.
+- [x] Apply user correction: `buildDrawingEvidencePrompt` now treats Supabase
+      OCR rules as the source of truth and only composes DB-loaded rules plus
+      the current user request.
+- [x] Implement Phase 6C Task 4 provider extraction service: call AI with
+      original provider file parts and DB-loaded OCR rules, return an analysis
+      candidate only, and leave `file_analysis_data` persistence plus workbook
+      projection to later tasks.
+- [x] Apply user correction: one conversation/order has one
+      `file_analysis_data` workspace, and multiple uploaded file rows are
+      distinguished by source file/page/region metadata.
+
+Review:
+
+- `npm --workspace packages/api run steel:sync-ocr-rules -- --dry-run` passed
+  and computed sha256
+  `43215f55617de2f71aa8c1f87555d50823ead5c2cb27cdc6378c525246e6be74`.
+- `npm --workspace packages/api run steel:sync-ocr-rules -- --apply` passed and
+  read back active reviewed `steel.agent_rules` row
+  `steel-drawing-ocr-policy` version `1`.
+- `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/vision/compare.spec.ts src/steel/vision/attachments.spec.ts --runInBand`
+  passed: 4 suites, 67 tests.
+- `cd packages/api && npx jest src/steel/vision/resolver.spec.ts --runInBand`
+  passed: 1 suite, 4 tests.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --apply` passed and read
+  back the active reviewed OCR rule row; no npm script was used.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/vision/resolver.spec.ts src/steel/vision/attachments.spec.ts src/steel/vision/compare.spec.ts src/steel/ai/provider.spec.ts --runInBand`
+  passed after rebuilding data-provider: 5 suites, 72 tests.
+- `npm run build:data-provider` passed.
+- `npm run build:api` exited `0`; remaining Rollup TypeScript warnings are
+  existing non-Steel endpoint/cache/config warnings.
+- `node -c api/server/routes/steel/index.js` passed.
+- `rg 'steel:(export-oauth-fixtures|import-reference-data|sync-ocr-rules|prove-office-conversion)' packages/api/package.json package.json`
+  returned no matches.
+- `npm run build:api` exited `0`; Rollup still prints existing non-Steel
+  TypeScript warnings, but the new `src/steel/ai/provider.ts` warning was
+  removed before checkpoint.
+- `git diff --check` passed.
+- `cd packages/api && npx jest src/steel/vision/prompt.spec.ts --runInBand`
+  passed after simplifying `buildDrawingEvidencePrompt` to DB OCR rules plus
+  user request only: 5 tests.
+- `cd packages/api && npx jest src/steel/vision/service.spec.ts --runInBand`
+  passed for Task 4 provider extraction service: 5 tests.
+- `cd packages/api && npx jest src/steel/vision/prompt.spec.ts src/steel/vision/service.spec.ts --runInBand`
+  passed: 2 suites, 10 tests.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/vision/attachments.spec.ts src/steel/vision/resolver.spec.ts src/steel/vision/compare.spec.ts src/steel/vision/prompt.spec.ts src/steel/vision/service.spec.ts src/steel/ai/provider.spec.ts --runInBand`
+  passed after Task 4: 7 suites, 82 tests.
+- `npm run build:api` exited `0` after Task 4; Rollup still prints existing
+  non-Steel TypeScript warnings in agents/app/cache/endpoints/middleware files.
+- `git diff --check` passed after Task 4.
+
+## Skipped: Steel v8.3 Phase 5 Admin ERP XLSX Source Management Grill
+
+Goal: pressure-test Phase 5 before implementation. Scope is Admin ERP XLSX
+source management only: source metadata, ERP XLSX upload guard, parser preview,
+old-data matching, validation, merge review, commit, audit, and the first Admin
+table-maintenance path. Customer Export remains out of scope.
+
+- [x] Read Phase 5 plan, source-schema mapping, `CONTEXT.md`, existing Admin
+      route shell, current Steel schema, and import/mapping code.
+- [x] User explicitly skipped this section before decisions were locked.
+
 ## Active: Steel C-Type Price Unit Rule Sync
 
 Goal: prevent C 型鋼口語「一支多少」 from overriding reviewed database price

@@ -58,12 +58,15 @@ function createAgentRulesClient(
       }
 
       if (sql.includes('rule_type = ANY')) {
-        const ruleTypes = isStringArray(values?.[1]) ? values[1] : [];
+        const ruleTypes = values?.find(isStringArray) ?? [];
         filteredRows = filteredRows.filter((row) => ruleTypes.includes(row.rule_type));
       }
 
       if (sql.includes('rule_sections &&')) {
-        const ruleSections = isStringArray(values?.[1]) ? values[1] : [];
+        const stringArrayValues = values?.filter(isStringArray) ?? [];
+        const ruleSections = sql.includes('rule_type = ANY')
+          ? (stringArrayValues[1] ?? [])
+          : (stringArrayValues[0] ?? []);
         filteredRows = filteredRows.filter((row) =>
           row.rule_sections.some((section) => ruleSections.includes(section)),
         );
@@ -130,6 +133,46 @@ function createWorkbookRuleRow(prompt: string): AgentRuleRowFixture {
         factType: 'agent_rule',
         locator: 'steel.agent_rules:2',
         canonicalKey: 'workbook_output_policy_zh_tw',
+      },
+    ],
+  };
+}
+
+function createOcrRuleRow(prompt: string): AgentRuleRowFixture {
+  return {
+    id: '3',
+    slug: 'steel-drawing-ocr-policy',
+    version: '1',
+    rule_type: 'inference_order_rule',
+    title: '圖面表格局部判讀流程',
+    locale: 'zh-TW',
+    rule_sections: ['file_ocr', 'drawing_ocr', 'vision_evidence'],
+    sheet_id: null,
+    selectors: {
+      sourceKinds: ['image', 'pdf', 'scanned_pdf'],
+      requiresDrawingOcr: true,
+    },
+    prompt,
+    tool_policy: {
+      requiredBefore: ['drawing_evidence_extraction'],
+      mustMarkLowConfidence: true,
+    },
+    output_policy: {
+      targetSheets: ['manual_review', 'interpretation_notes'],
+      forbidFormalAdminImport: true,
+    },
+    priority: '35',
+    confidence: 'high',
+    active: true,
+    review_state: 'reviewed',
+    source_refs: [
+      {
+        channel: 'repo_docs',
+        factType: 'agent_rule',
+        sourceFile: 'docs/reference/OCR規則.txt',
+        locator: '圖面表格局部判讀流程',
+        canonicalKey: 'drawing_ocr_local_table_reading',
+        sha256: 'ocr-rule-sha256-sentinel',
       },
     ],
   };
@@ -361,6 +404,168 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       }),
     ).rejects.toThrow('steel.agent_rules did not return reviewed workbook output rules');
     expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('loads reviewed OCR rules for image and PDF evidence before provider generation', async () => {
+    const ocrPrompt = 'OCR_RULE_SENTINEL 先局部判讀表格，再標記孔洞、開槽、折彎與低信心欄位。';
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow(ocrPrompt),
+    ]);
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: 'ocr-rule-ok' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: {
+          total: 5,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 3,
+          text: 3,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_ocr_rules_prompt' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: '請判讀這張圖面的表格。',
+          files: [
+            {
+              filename: 'c.png',
+              mediaType: 'image/png',
+              data: new Uint8Array(Buffer.from('PNG_SENTINEL', 'utf8')),
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+    });
+
+    expect(agentRulesClient.calls[1]?.sql).toContain('FROM steel.agent_rules');
+    expect(agentRulesClient.calls[1]?.values).toEqual([
+      'reviewed',
+      ['inference_order_rule', 'tool_flow_rule', 'output_policy_rule'],
+      ['file_ocr', 'drawing_ocr', 'vision_evidence'],
+      20,
+    ]);
+    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
+    expect(systemPrompt.content).toContain(ocrPrompt);
+    expect(systemPrompt.content).toContain('docs/reference/OCR規則.txt');
+    expect(systemPrompt.content).toContain('ocr-rule-sha256-sentinel');
+  });
+
+  it('fails before provider generation when visual evidence has no reviewed OCR rules', async () => {
+    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
+    const doGenerate = jest.fn();
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth,
+        ensureFresh: false,
+        model: 'gpt-5.5',
+        messages: [
+          {
+            role: 'user',
+            content: '請重新判讀這份 PDF。',
+            files: [
+              {
+                filename: 'scan.pdf',
+                mediaType: 'application/pdf',
+                data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+              },
+            ],
+          },
+        ],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        agentRulesClient,
+      }),
+    ).rejects.toThrow('steel.agent_rules did not return reviewed OCR rules');
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('does not load OCR rules for non-visual turns', async () => {
+    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: 'text-only-ok' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: {
+          total: 5,
+          noCache: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 3,
+          text: 3,
+          reasoning: undefined,
+        },
+      },
+      response: { id: 'resp_no_ocr_rules_prompt' },
+      warnings: [],
+    }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '請說明目前判讀流程。' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+    });
+
+    expect(agentRulesClient.calls).toHaveLength(1);
+    expect(agentRulesClient.calls[0]?.values).toEqual([
+      'reviewed',
+      ['agent_instruction', 'tool_flow', 'inference_order', 'confirmation_policy'],
+      20,
+    ]);
   });
 
   it('passes server-side OAuth settings and returns a sanitized provider response', async () => {

@@ -1452,6 +1452,76 @@ describe('createSteelHandlers', () => {
     expect(res.status).toHaveBeenCalledWith(200);
   });
 
+  it('resolves persisted fileId chat file refs before calling the provider adapter', async () => {
+    const resolvedBytes = new Uint8Array(Buffer.from('PNG_SENTINEL', 'utf8'));
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: 'steel-file-ok',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const resolveEvidenceFile = jest.fn(async () => ({
+      filename: 'c.png',
+      mediaType: 'image/png',
+      data: resolvedBytes,
+    }));
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      resolveEvidenceFile,
+    });
+    const req = {
+      user: { id: 'user_1' },
+      body: {
+        conversationId: 'conversation_1',
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the persisted image again.',
+            files: [
+              {
+                fileId: 'file_123',
+                filename: 'c.png',
+                mediaType: 'image/png',
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(resolveEvidenceFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileId: 'file_123',
+        userId: 'user_1',
+        conversationId: 'conversation_1',
+      }),
+    );
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the persisted image again.',
+            files: [
+              {
+                filename: 'c.png',
+                mediaType: 'image/png',
+                data: resolvedBytes,
+              },
+            ],
+          },
+        ],
+        passThroughUnsupportedFiles: true,
+      }),
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
   it('injects configured file instructions for image and PDF file payloads', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,

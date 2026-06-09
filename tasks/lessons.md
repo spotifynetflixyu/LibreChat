@@ -84,6 +84,47 @@
   this phase; allow staff to download any selected workbook sheets. Generate the
   XLSX in memory and stream it from the API unless a later durable-share/export
   requirement explicitly selects Supabase Storage or another file store.
+- Even after `給客戶用` shows a bottom `報價總額` row and `/steel/oauth-chat`
+  can download XLSX, do not start `Customer Export` unless the user explicitly
+  opens that scope. Treat the immediate next step as Phase 4 checkpoint
+  close-out and verification, then move to the next approved v8.3 phase.
+- If the user skips Phase 5 and asks to plan Phase 6C file/PDF/OCR/drawing
+  evidence, do not keep Admin ERP XLSX import as a prerequisite. Quote
+  attachments are evidence for workbook `manual_review` and
+  `interpretation_notes`; they must not create Admin source versions, merge
+  rows, or formal database writes.
+- `docs/reference/OCR規則.txt` is a Steel Agent process / inference-order policy.
+  Sync it through `steel.agent_rules` with drawing/file OCR rule sections, not
+  `steel.instruction_packets` or `lookup_quote_rules`; `lookup_quote_rules`
+  remains for material, processing, price, formula, and quote-default rules.
+- Steel drawing/PDF/image OCR should first create `file_analysis_data`, a
+  user-verifiable extracted table grouped by source file/page/region. The user
+  can compare it with the PDF/image, correct it over multiple chat turns, and
+  only then ask to create or update quote workbook rows.
+- Phase 6C drawing prompt builder must use OCR rules already loaded from
+  `steel.agent_rules`; it must not read `docs/reference/OCR規則.txt` directly at
+  runtime. The AI should autonomously decide which fields exist in the
+  PDF/image, while the system fixes only the three review output pages:
+  `file_analysis_data`, `manual_review`, and `interpretation_notes`.
+- Do not force visual OCR into fixed structured JSON or fixed columns at this
+  stage. Prompt the AI to improve image/text accuracy, preserve source/page/
+  region evidence, and propose useful fields based on the uploaded file.
+- Phase 6C file/PDF/image evidence is fixed to `openai_oauth_responses`, not
+  official OpenAI API. Store user-uploaded evidence through LibreChat file
+  storage and Mongo `File` records, then resolve the internal `file_id` and
+  send bytes/file parts to OAuth on every AI read or re-read. Treat
+  `messages[].files[].dataBase64` as smoke/backcompat only, not durable storage.
+- If the user asks AI to re-read or re-interpret a PDF/image, resolve the
+  internal LibreChat/Steel file ref and send the original bytes again. Do not
+  rely on previous `file_analysis_data` alone, and do not depend on
+  `openai_oauth_responses` provider state as durable file retention.
+- For Phase 6C PDF/image/spreadsheet evidence, send supported files directly to
+  AI. Local OCR, PDF rasterization, or spreadsheet parsing is not the default
+  interpretation path; unsupported provider capability should produce typed
+  errors or manual-review output.
+- Do not add Steel helper commands to `packages/api/package.json` npm scripts.
+  Run one-off Steel scripts directly with `node packages/api/scripts/<script>.cjs`
+  so package scripts stay focused on stable project commands.
 - `docs/reference` files are generally AI/dev logic references. Steel handbook DOCX is a schema/data-model reference before chat UX work; ongoing formal data updates flow through ERP XLSX import or Admin table UI review, then API commit to the target database table.
 - For Steel MVP, prioritize the minimal chat UX and workbook preview with API mock data; real OpenAI smoke validates the vertical slice before moving on, but UX development does not wait for real data import.
 - Build Steel Chat UX as an independent Steel workspace first; avoid making core LibreChat chat-store/global-message-flow changes a Phase 3 dependency.
@@ -507,3 +548,14 @@
   references against existing rows or code-owned workbook sheet ids, and update
   reviewed rows by inserting a superseding row plus invalidating the old row
   instead of mutating semantics in place.
+- Steel drawing evidence prompt builders must not duplicate OCR interpretation
+  strategy or fixed output/boundary policy that already lives in reviewed
+  `steel.agent_rules` and existing provider context. Keep OCR accuracy and
+  output-surface rules in Supabase-backed agent rules; the drawing prompt
+  builder should only compose the DB-loaded OCR rules with the current user
+  request so prompts do not drift.
+- Steel quote conversations should have one `file_analysis_data` workspace per
+  conversation/order, not one dataset per uploaded PDF/image. Multiple uploaded
+  evidence files belong inside the same workspace, with each row carrying its
+  source file/page/region metadata; the quote workbook remains a separate
+  single order workbook.

@@ -19,7 +19,7 @@ import {
   type SteelWorkbookSheetId,
 } from 'librechat-data-provider';
 import { createSteelPostgresPool } from '../postgres';
-import { searchSteelAgentRules } from '../repositories';
+import { searchSteelAgentRules, type SteelAgentRule } from '../repositories';
 import {
   createSteelToolRunState,
   executeSteelTool,
@@ -228,6 +228,80 @@ const steelAgentRuleSections = [
   'confirmation_policy',
 ] as const;
 const steelWorkbookRuleTypes = ['workbook_output_rule'] as const;
+const steelOcrRuleSections = ['file_ocr', 'drawing_ocr', 'vision_evidence'] as const;
+const steelOcrRuleTypes = ['inference_order_rule', 'tool_flow_rule', 'output_policy_rule'] as const;
+
+type VisualEvidenceSourceKind = 'image' | 'pdf' | 'scanned_pdf';
+
+function getFileSourceKinds(file: SteelOAuthChatFile): VisualEvidenceSourceKind[] {
+  const mediaType = file.mediaType.trim().toLowerCase();
+
+  if (mediaType.startsWith('image/')) {
+    return ['image'];
+  }
+
+  if (mediaType === 'application/pdf') {
+    return ['pdf', 'scanned_pdf'];
+  }
+
+  return [];
+}
+
+function getVisualEvidenceSourceKinds(messages: readonly SteelOAuthChatMessage[]) {
+  const sourceKinds = new Set<VisualEvidenceSourceKind>();
+
+  for (const message of messages) {
+    for (const file of message.files ?? []) {
+      for (const sourceKind of getFileSourceKinds(file)) {
+        sourceKinds.add(sourceKind);
+      }
+    }
+  }
+
+  return [...sourceKinds];
+}
+
+function readSelectorStrings(rule: SteelAgentRule, key: string): string[] {
+  const selectors = rule.selectors;
+
+  if (typeof selectors !== 'object' || selectors === null || Array.isArray(selectors)) {
+    return [];
+  }
+
+  const value = selectors[key];
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '');
+}
+
+function matchesOcrSourceKind(rule: SteelAgentRule, sourceKinds: readonly string[]) {
+  const selectorSourceKinds = readSelectorStrings(rule, 'sourceKinds');
+
+  if (selectorSourceKinds.length === 0) {
+    return true;
+  }
+
+  return selectorSourceKinds.some((sourceKind) => sourceKinds.includes(sourceKind));
+}
+
+function formatOcrRuleInstruction(rule: SteelAgentRule) {
+  const source = rule.sourceRefs[0];
+  const provenance = [
+    source?.sourceFile ? `sourceFile=${source.sourceFile}` : undefined,
+    source?.locator ? `locator=${source.locator}` : undefined,
+    source?.canonicalKey ? `canonicalKey=${source.canonicalKey}` : undefined,
+    source?.sha256 ? `sha256=${source.sha256}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  return provenance
+    ? `${rule.prompt.trim()}\nOCR rule provenance: ${provenance}`
+    : rule.prompt.trim();
+}
 
 async function getSteelRuntimePolicyInstruction(client: SteelRepositoryClient): Promise<string> {
   const rules = await searchSteelAgentRules(client, {
@@ -264,6 +338,27 @@ async function getSteelWorkbookOutputInstruction(
     : instruction;
 }
 
+async function getSteelOcrInstruction(
+  client: SteelRepositoryClient,
+  sourceKinds: readonly VisualEvidenceSourceKind[],
+): Promise<string> {
+  const rules = await searchSteelAgentRules(client, {
+    ruleTypes: steelOcrRuleTypes,
+    ruleSections: steelOcrRuleSections,
+    limit: 20,
+  });
+  const prompts = rules
+    .filter((rule) => matchesOcrSourceKind(rule, sourceKinds))
+    .map(formatOcrRuleInstruction)
+    .filter(Boolean);
+
+  if (prompts.length === 0) {
+    throw new Error('steel.agent_rules did not return reviewed OCR rules.');
+  }
+
+  return prompts.join('\n\n');
+}
+
 function toPromptWithSystemInstruction(
   messages: SteelOAuthChatMessage[],
   systemInstruction: string,
@@ -282,19 +377,26 @@ async function getSystemInstruction({
   steelRuntimePolicy,
   workbookContextText,
   workbookPatchTool,
+  ocrSourceKinds,
 }: {
   agentRulesClient?: SteelRepositoryClient;
   steelRuntimePolicy?: boolean;
   workbookContextText?: string;
   workbookPatchTool?: boolean;
+  ocrSourceKinds?: readonly VisualEvidenceSourceKind[];
 }): Promise<string | undefined> {
-  if ((steelRuntimePolicy || workbookPatchTool) && !agentRulesClient) {
+  const hasOcrRules = (ocrSourceKinds?.length ?? 0) > 0;
+
+  if ((steelRuntimePolicy || workbookPatchTool || hasOcrRules) && !agentRulesClient) {
     throw new Error('steel.agent_rules client is required for Steel runtime rules.');
   }
 
   const instructions = [
     ...(steelRuntimePolicy && agentRulesClient
       ? [await getSteelRuntimePolicyInstruction(agentRulesClient)]
+      : []),
+    ...(hasOcrRules && agentRulesClient
+      ? [await getSteelOcrInstruction(agentRulesClient, ocrSourceKinds ?? [])]
       : []),
     ...(workbookPatchTool && agentRulesClient
       ? [await getSteelWorkbookOutputInstruction(agentRulesClient, workbookContextText)]
@@ -936,7 +1038,9 @@ export async function sendSteelOAuthChat({
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
-  const shouldLoadAgentRules = steelRuntimePolicy === true || workbookPatchTool === true;
+  const ocrSourceKinds = steelRuntimePolicy === true ? getVisualEvidenceSourceKinds(messages) : [];
+  const shouldLoadAgentRules =
+    steelRuntimePolicy === true || workbookPatchTool === true || ocrSourceKinds.length > 0;
   const systemInstruction = await getSystemInstruction({
     agentRulesClient: shouldLoadAgentRules
       ? (agentRulesClient ?? getDefaultSteelToolClient())
@@ -944,6 +1048,7 @@ export async function sendSteelOAuthChat({
     steelRuntimePolicy,
     workbookContextText,
     workbookPatchTool,
+    ocrSourceKinds,
   });
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({

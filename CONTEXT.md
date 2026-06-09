@@ -75,6 +75,20 @@ _Avoid_: Ongoing Admin upload format, reusable runtime parser, price source, dir
 Customer-supplied inquiry material used to understand the requested quote, such as chat text, handwritten notes, PDFs, images, photos, RTF samples, or mixed attachments.
 _Avoid_: Formal Admin import source, database source of truth, price source
 
+**Drawing Evidence**:
+AI-interpreted facts from quote request drawings, PDFs, images, scanned pages,
+and drawing tables, including part tables, dimensions, holes, slots, bends,
+cut marks, bolt sizes, and OCR uncertainty.
+_Avoid_: Formal source data, confirmed price/spec fact, provider-only memory
+
+**File Analysis Data**:
+A user-verifiable extraction workspace created once per quote conversation/order.
+It can contain rows from multiple quote request files; each row carries source
+file, page, and region metadata. It lets the user compare AI-read tables against
+the PDF/image, correct them across chat turns, and then explicitly request
+creation or update of quote workbook rows.
+_Avoid_: Quote workbook, Admin import source, raw OCR dump, hidden provider state
+
 **AI Tool Orchestration**:
 The AI-led process that interprets quote request evidence, proposes material/spec candidates, chooses the relevant backend business tools, compares reviewed results, proposes workbook updates, and asks for confirmation when confidence is not high enough.
 _Avoid_: Backend-hidden product/price/weight/cutting routing from raw customer text
@@ -210,6 +224,14 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - A **Legacy Office File** may be handled by the AI/provider; server-side conversion to `.xlsx` or `.docx` is only production behavior after a converter proof script succeeds.
 - A **Steel Handbook DOCX** is a one-time development schema-design reference, not an ongoing Admin web upload path, reusable product parser, or immediate production-data import.
 - **Quote Request Evidence** helps interpret the current order, but it does not update formal customer, product, price, weight, formula, or cutting-price tables by itself.
+- **Drawing Evidence** is created from **Quote Request Evidence** and may become
+  **File Analysis Data** for user review before it affects quote workbook rows.
+- **File Analysis Data** saves the user from manually retyping detected tables,
+  but it remains a review/edit dataset until the user confirms and requests
+  workbook creation or update.
+- If the user asks to re-read or re-interpret a file, AI must have access to the
+  original **Quote Request Evidence** again. Previous **File Analysis Data** is
+  a review result, not a substitute for the original PDF/image.
 - **AI Tool Orchestration** is the core Steel quote runtime framework: AI
   interprets quote evidence, derives steel category/surface/dimensions and
   price query candidates, then chooses among the MVP reviewed lookup tools:

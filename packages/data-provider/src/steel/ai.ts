@@ -119,14 +119,28 @@ export const steelProviderUsageSchema = z.object({
 
 export type SteelProviderUsage = z.infer<typeof steelProviderUsageSchema>;
 
-export const steelProviderChatFileSchema = z.object({
+const steelProviderChatFileBaseSchema = z.object({
   filename: z.string().min(1).optional(),
   mediaType: z.string().min(1),
-  dataBase64: z
-    .string()
-    .min(1)
-    .regex(/^[A-Za-z0-9+/]+={0,2}$/),
 });
+
+export const steelProviderChatFileSchema = z.union([
+  steelProviderChatFileBaseSchema.extend({
+    dataBase64: z
+      .string()
+      .min(1)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+    fileId: z.string().min(1).optional(),
+  }),
+  steelProviderChatFileBaseSchema.extend({
+    fileId: z.string().min(1),
+    dataBase64: z
+      .string()
+      .min(1)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/)
+      .optional(),
+  }),
+]);
 
 export type SteelProviderChatFile = z.infer<typeof steelProviderChatFileSchema>;
 
