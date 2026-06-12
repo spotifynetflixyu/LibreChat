@@ -23,6 +23,7 @@ describe('ErrorController', () => {
     } as Request;
     mockRes = {
       status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
       send: jest.fn(),
     } as unknown as Response;
     (logger.error as jest.Mock).mockClear();
@@ -230,6 +231,25 @@ describe('ErrorController', () => {
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockRes.send).toHaveBeenCalledWith('An unknown error occurred.');
       expect(logger.error).toHaveBeenCalledWith('ErrorController => error', genericError);
+    });
+
+    it('should return Steel JSON diagnostics for Steel stream route errors', () => {
+      mockReq.originalUrl = '/api/steel/ai/chat/stream';
+      const streamError = new Error('stream setup exploded');
+
+      ErrorController(streamError, mockReq, mockRes, mockNext);
+
+      expect(mockRes.status).toHaveBeenCalledWith(500);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        provider: 'openai_oauth_responses',
+        model: 'unknown',
+        text: '',
+        unsupportedSettings: [],
+        warnings: [],
+        errorCategory: 'unknown',
+        errorSummary: 'stream setup exploded',
+      });
+      expect(mockRes.send).not.toHaveBeenCalledWith('An unknown error occurred.');
     });
   });
 

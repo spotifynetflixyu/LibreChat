@@ -284,6 +284,63 @@ const searchPriceCandidatesSchema = z
     }
   });
 
+const runFileOcrSchema = z
+  .object({
+    filename: nonEmptyString.optional(),
+    fileIndex: z.number().int().min(0).optional(),
+    page: z.number().int().min(1).optional(),
+    imageIndex: z.number().int().min(1).optional(),
+    file_type: z.enum(['image', 'pdf']).optional(),
+    output_mode: z.enum(['markdown', 'detailed', 'json']).optional(),
+    dpi: z.number().int().min(150).max(600).optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.filename !== undefined || input.fileIndex !== undefined) {
+      return;
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Provide filename or fileIndex',
+    });
+  });
+
+const runVisualInspectionSchema = z
+  .object({
+    filename: nonEmptyString.optional(),
+    fileIndex: z.number().int().min(0).optional(),
+    page: z.number().int().min(1).optional(),
+    imageIndex: z.number().int().min(1).optional(),
+    inspection_types: z
+      .array(
+        z.enum([
+          'holes',
+          'slots',
+          'continuous_edges',
+          'bends',
+          'cut_corners',
+          'notches',
+          'geometry_consistency',
+        ]),
+      )
+      .min(1)
+      .max(10),
+    prompt: nonEmptyString,
+    dpi: z.number().int().min(150).max(600).optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.filename !== undefined || input.fileIndex !== undefined) {
+      return;
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Provide filename or fileIndex',
+    });
+  });
+
 export const steelToolArgsSchemas = {
   lookup_quote_rules: lookupQuoteRulesSchema,
   lookup_catalog_families: lookupCatalogFamiliesSchema,
@@ -293,10 +350,18 @@ export const steelToolArgsSchemas = {
     limit: limitSchema,
   }),
   search_price_candidates: searchPriceCandidatesSchema,
+  run_file_ocr: runFileOcrSchema,
+  run_visual_inspection: runVisualInspectionSchema,
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
+export type SteelBusinessToolName = Exclude<
+  SteelToolName,
+  'run_file_ocr' | 'run_visual_inspection'
+>;
 export type LookupDefaultsInput = z.infer<typeof lookupDefaultsSchema>;
 export type LookupCatalogFamiliesInput = z.infer<typeof lookupCatalogFamiliesSchema>;
 export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
 export type LookupQuoteRulesInput = z.infer<typeof lookupQuoteRulesSchema>;
+export type RunFileOcrInput = z.infer<typeof runFileOcrSchema>;
+export type RunVisualInspectionInput = z.infer<typeof runVisualInspectionSchema>;

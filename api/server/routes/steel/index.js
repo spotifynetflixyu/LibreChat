@@ -52,6 +52,40 @@ const fileAnalysisService = createSteelFileAnalysisService({
 
 const handlers = createSteelHandlers({ getModelsConfig, resolveEvidenceFile, fileAnalysisService });
 
+function getErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sendSteelRouteError(res, error) {
+  res.status(500).json({
+    provider: 'openai_oauth_responses',
+    model: process.env.STEEL_OPENAI_DEFAULT_MODEL || 'unknown',
+    text: '',
+    unsupportedSettings: [],
+    warnings: [],
+    errorCategory: 'unknown',
+    errorSummary:
+      process.env.NODE_ENV === 'production'
+        ? 'Steel stream request failed.'
+        : getErrorMessage(error),
+  });
+}
+
+function steelAsyncRoute(handler) {
+  return async (req, res, next) => {
+    try {
+      await handler(req, res, next);
+    } catch (error) {
+      if (res.headersSent) {
+        next(error);
+        return;
+      }
+
+      sendSteelRouteError(res, error);
+    }
+  };
+}
+
 function requireJwtUnlessGuestToken(req, res, next) {
   if (req.headers['x-steel-guest-token']) {
     next();
@@ -74,7 +108,7 @@ router.get(
 );
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.post('/ai/chat', requireJwtAuth, handlers.chat);
-router.post('/ai/chat/stream', requireJwtAuth, handlers.streamChat);
+router.post('/ai/chat/stream', requireJwtAuth, steelAsyncRoute(handlers.streamChat));
 router.post('/workbooks', requireJwtAuth, handlers.createWorkbook);
 router.get('/workbooks/:workbookId', requireJwtAuth, handlers.readWorkbook);
 router.patch('/workbooks/:workbookId', requireJwtAuth, handlers.patchWorkbook);

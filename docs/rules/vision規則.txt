@@ -1,0 +1,31 @@
+【Steel 圖像判斷 / run_visual_inspection 流程契約】
+
+一、用途邊界
+1. `run_visual_inspection` 只用於圖像幾何與非文字資訊判斷，不可用來 OCR、轉錄、補文字表格或推斷材料表文字。
+2. OCR 階段必須先完成：同一頁或同一張圖必須先呼叫 `run_file_ocr`，並把 OCR 結果 `patch_file_analysis_data` 後，才可呼叫 `run_visual_inspection`。
+3. 只有在 OCR 表格、圖面文字、既有 `file_analysis_data` 或使用者對話缺少必要幾何 / 加工資料時，才呼叫 `run_visual_inspection`；不得把 vision 當成每頁固定流程。
+4. 若 OCR / 表格已提供可核對且足以報價的孔數、孔徑、開槽連續邊長、折刀數、切角、缺口、R 角或輪廓資料，不要額外呼叫 `run_visual_inspection`。
+5. 若 OCR 判斷有開槽，但沒有可用的連續邊長數字或路徑長度，且該數值會影響報價，才主動呼叫 `run_visual_inspection` 判斷連續邊長；不得等用戶回報遺漏後才補做。
+6. `run_visual_inspection` 使用 OpenAI OAuth API 的內建 vision 能力；它不是 PaddleOCR MCP，也不是 OCR 替代品。
+
+二、必須主動判斷的圖像項目
+1. 孔洞：只有 OCR / 表格缺少孔數、孔徑或圖面孔位核對結果，且該資料會影響報價或人工複核時，才判斷孔洞。
+2. 開槽：只有 OCR / 表格缺少需要開槽的連續邊長或路徑長度時，才判斷連續邊長。開槽價錢依「需要開槽的連續邊長」計算，不看零件總長。
+3. 折線 / 折刀：只有 OCR / 表格缺少折刀數或折線判斷時，才看圖像方向變化判斷折刀數。
+4. 切角 / 缺口 / R 角：只有 OCR / 表格缺少加工輪廓判斷時，才看圖像輪廓與加工線判斷，尺寸線、中心線、孔線不可誤判為加工線。
+5. 幾何一致性：若 OCR 表格、尺寸標註與圖面輪廓明顯不一致，才補做圖像一致性檢查並寫入 `manual_review` 或 `interpretation_notes`。
+
+三、輸出與 patch 規則
+1. `run_visual_inspection` 回傳後，必須立即呼叫 `patch_file_analysis_data` 保存圖像判斷結果；不得只留在對話摘要。
+2. patch row 必須標記來源：`fileId`、`filename`、`mediaType`、`page` 或 `imageIndex`、`sourceKey`、`inspectionEngine`、`inspectionStatus`、`processedAt`。
+3. `inspectionEngine` 應標記為 `OpenAI OAuth vision`。
+4. `inspectionStatus` 可用：`pending`、`completed`、`failed`、`skipped`。
+5. 若圖像無法判斷連續邊長、孔數、折線或加工輪廓，必須在 `manual_review` 寫明需要人工核對的位置與原因。
+6. 若圖像判斷會補足報價必要資料，例如缺失的開槽連續邊長、孔加工數量、折刀數，必須保留信心等級與計算依據，後續報價 workbook 才可引用。
+
+四、開槽計價重點
+1. 開槽費用依需要開槽的連續邊長計算。
+2. L 型開槽以兩段連續邊長相加。
+3. U / ㄇ 型開槽以三段連續邊長相加。
+4. 多條不相連開槽路徑需分別判斷後加總。
+5. 路徑不明、比例不明、尺寸線遮蔽或圖像低解析時，不可填 0；必須標低信心並要求人工確認。

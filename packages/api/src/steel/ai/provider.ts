@@ -1,3 +1,7 @@
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+
 import type {
   JSONValue,
   LanguageModelV3FunctionTool,
@@ -29,7 +33,13 @@ import {
 } from '../tools/execute';
 import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
 import type { SteelToolResult } from '../tools/results';
-import type { SteelToolName } from '../tools/schemas';
+import {
+  steelToolArgsSchemas,
+  type RunFileOcrInput,
+  type RunVisualInspectionInput,
+  type SteelBusinessToolName,
+} from '../tools/schemas';
+import { prepareSteelImagePage, runSteelFileOcr } from '../vision/ocr';
 import {
   buildSemanticWorkbookPatchOperations,
   steelSemanticWorkbookPatchSchema,
@@ -40,13 +50,16 @@ import {
   type WorkbookSubtotalMismatch,
 } from '../workbook/subtotals';
 import type { SteelRepositoryClient } from '../repositories';
+import type { SteelFileOcrSourceFile, SteelFileOcrOptions } from '../vision/ocr';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<typeof import('openai-oauth-provider')>;
 
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
-type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelToolName };
+type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelBusinessToolName };
+type FileOcrToolCall = LanguageModelV3ToolCall & { toolName: 'run_file_ocr' };
+type VisualInspectionToolCall = LanguageModelV3ToolCall & { toolName: 'run_visual_inspection' };
 type SemanticWorkbookPatchToolCall = LanguageModelV3ToolCall & {
   toolName: 'patch_quote_workbook';
 };
@@ -92,6 +105,27 @@ export type SteelProviderToolExecutor = (
   options: SteelProviderExecuteToolCallOptions,
 ) => Promise<SteelToolResult>;
 
+export type SteelProviderFileOcrExecutor = (
+  options: SteelFileOcrOptions,
+) => Promise<SteelToolResult>;
+
+export interface SteelProviderVisualInspectionOptions {
+  arguments: RunVisualInspectionInput;
+  files: readonly SteelFileOcrSourceFile[];
+  providerToolCallId: string;
+}
+
+export type SteelProviderVisualInspectionExecutor = (
+  options: SteelProviderVisualInspectionOptions,
+) => Promise<SteelToolResult>;
+
+export type SteelProviderToolStatusCallback = (event: {
+  toolName: string;
+  status: 'started' | 'completed' | 'failed';
+  result?: SteelToolResult;
+  errorSummary?: string;
+}) => void;
+
 export type SteelOAuthChatMessageRole = 'system' | 'user' | 'assistant';
 
 export interface SteelOAuthChatFile {
@@ -129,12 +163,15 @@ export interface SendSteelOAuthChatOptions {
   authFilePath?: string;
   createOpenAIOAuth?: CreateOpenAIOAuth;
   ensureFresh?: boolean;
+  executeFileOcr?: SteelProviderFileOcrExecutor;
+  executeVisualInspection?: SteelProviderVisualInspectionExecutor;
   executeSteelToolCall?: SteelProviderToolExecutor;
   fetch?: FetchFunction;
   maxOutputTokens?: number;
   messages: SteelOAuthChatMessage[];
   model: string;
   onReasoningSummary?: (summary: string) => void;
+  onToolStatus?: SteelProviderToolStatusCallback;
   passThroughUnsupportedFiles?: boolean;
   reasoningEffort: SteelOpenAIReasoningEffort;
   steelToolMaxCalls?: number;
@@ -172,6 +209,93 @@ async function executeDefaultSteelToolCall({
   });
 }
 
+async function executeDefaultFileOcr(options: SteelFileOcrOptions): Promise<SteelToolResult> {
+  return runSteelFileOcr(options);
+}
+
+async function runOpenAIOAuthVisualInspection({
+  arguments: args,
+  files,
+  model,
+  openai,
+  providerToolCallId: _providerToolCallId,
+  visualInspectionInstruction,
+}: SteelProviderVisualInspectionOptions & {
+  model: string;
+  openai: ReturnType<CreateOpenAIOAuth>;
+  visualInspectionInstruction: string;
+}): Promise<SteelToolResult> {
+  const startTime = Date.now();
+  let tempDir: string | undefined;
+
+  try {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'steel-visual-inspection-'));
+    const image = await prepareSteelImagePage({
+      files,
+      input: args,
+      outputDir: tempDir,
+    });
+    const inspectionPrompt = [
+      visualInspectionInstruction,
+      `inspection_types=${args.inspection_types.join(', ')}`,
+      `user_prompt=${args.prompt}`,
+      `source filename=${image.filename}; page=${image.page ?? ''}; imageIndex=${image.imageIndex ?? ''}; dpi=${image.dpi ?? ''}`,
+    ].join('\n\n');
+    const result = await openai(model).doGenerate({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: inspectionPrompt },
+            {
+              type: 'file',
+              filename: `${image.filename}${image.page ? `.page-${image.page}` : ''}.png`,
+              mediaType: 'image/png',
+              data: Buffer.from(image.data).toString('base64'),
+              providerOptions: {
+                openai: {
+                  imageDetail: 'high',
+                },
+              },
+            },
+          ],
+        },
+      ],
+      providerOptions: {
+        openai: {
+          reasoningEffort: 'medium',
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      toolName: 'run_visual_inspection',
+      data: {
+        filename: image.filename,
+        mediaType: image.mediaType,
+        page: image.page ?? null,
+        imageIndex: image.imageIndex ?? null,
+        dpi: image.dpi ?? null,
+        width: image.width ?? null,
+        height: image.height ?? null,
+        inspectionEngine: 'OpenAI OAuth vision',
+        inspectionTypes: args.inspection_types,
+        text: getGeneratedText(result),
+      },
+      sourceRefs: [],
+      durationMs: Math.max(0, Date.now() - startTime),
+      redactionVersion: 1,
+    };
+  } catch (error) {
+    return createProviderToolErrorResult('run_visual_inspection', startTime, error);
+  } finally {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+}
+
 function getSteelBusinessFunctionTools(): LanguageModelV3FunctionTool[] {
   steelBusinessFunctionTools ??= getSteelToolDefinitions().map((definition) => ({
     type: 'function',
@@ -185,7 +309,37 @@ function getSteelBusinessFunctionTools(): LanguageModelV3FunctionTool[] {
   return steelBusinessFunctionTools;
 }
 
-function toLanguageModelMessage(message: SteelOAuthChatMessage): LanguageModelV3Message {
+function isVisualEvidenceFile(file: SteelOAuthChatFile): boolean {
+  return getFileSourceKinds(file).length > 0;
+}
+
+function getRunFileOcrInventoryText(
+  files: readonly SteelOAuthChatFile[],
+  fileIndexOffset: number,
+): string | undefined {
+  const entries = files
+    .map((file, index) =>
+      isVisualEvidenceFile(file)
+        ? `- fileIndex=${fileIndexOffset + index}; filename=${file.filename ?? '(unnamed)'}; mediaType=${file.mediaType}`
+        : undefined,
+    )
+    .filter((entry): entry is string => entry !== undefined);
+
+  return entries.length > 0
+    ? `run_file_ocr files available for server-side OCR:\n${entries.join('\n')}`
+    : undefined;
+}
+
+function toLanguageModelMessage(
+  message: SteelOAuthChatMessage,
+  {
+    omitVisualEvidenceFileParts = false,
+    visualFileIndexOffset = 0,
+  }: {
+    omitVisualEvidenceFileParts?: boolean;
+    visualFileIndexOffset?: number;
+  } = {},
+): LanguageModelV3Message {
   if (message.role === 'system') {
     return {
       role: 'system',
@@ -193,38 +347,62 @@ function toLanguageModelMessage(message: SteelOAuthChatMessage): LanguageModelV3
     };
   }
 
+  const files = message.files ?? [];
+  const inventoryText = omitVisualEvidenceFileParts
+    ? getRunFileOcrInventoryText(files, visualFileIndexOffset)
+    : undefined;
+
   return {
     role: message.role,
     content: [
       {
         type: 'text',
-        text: message.content,
+        text: inventoryText ? `${message.content}\n\n${inventoryText}` : message.content,
       },
-      ...(message.files ?? []).map((file) => {
-        const mediaType = file.mediaType.trim().toLowerCase();
+      ...files
+        .filter((file) => !omitVisualEvidenceFileParts || !isVisualEvidenceFile(file))
+        .map((file) => {
+          const mediaType = file.mediaType.trim().toLowerCase();
 
-        return {
-          type: 'file' as const,
-          filename: file.filename,
-          mediaType: file.mediaType,
-          data: file.data,
-          ...(mediaType.startsWith('image/')
-            ? {
-                providerOptions: {
-                  openai: {
-                    imageDetail: 'high',
+          return {
+            type: 'file' as const,
+            filename: file.filename,
+            mediaType: file.mediaType,
+            data: file.data,
+            ...(mediaType.startsWith('image/')
+              ? {
+                  providerOptions: {
+                    openai: {
+                      imageDetail: 'high',
+                    },
                   },
-                },
-              }
-            : {}),
-        };
-      }),
+                }
+              : {}),
+          };
+        }),
     ],
   };
 }
 
-function toPrompt(messages: SteelOAuthChatMessage[]): LanguageModelV3Prompt {
-  return messages.map(toLanguageModelMessage);
+function toPrompt(
+  messages: SteelOAuthChatMessage[],
+  {
+    omitVisualEvidenceFileParts = false,
+  }: {
+    omitVisualEvidenceFileParts?: boolean;
+  } = {},
+): LanguageModelV3Prompt {
+  let visualFileIndexOffset = 0;
+
+  return messages.map((message) => {
+    const promptMessage = toLanguageModelMessage(message, {
+      omitVisualEvidenceFileParts,
+      visualFileIndexOffset,
+    });
+    visualFileIndexOffset += (message.files ?? []).filter(isVisualEvidenceFile).length;
+
+    return promptMessage;
+  });
 }
 
 const steelAgentRuleSections = [
@@ -236,6 +414,12 @@ const steelAgentRuleSections = [
 const steelWorkbookRuleTypes = ['workbook_output_rule'] as const;
 const steelOcrRuleSections = ['file_ocr', 'drawing_ocr', 'vision_evidence'] as const;
 const steelOcrRuleTypes = ['inference_order_rule', 'tool_flow_rule', 'output_policy_rule'] as const;
+const steelVisualInspectionRuleSections = [
+  'visual_inspection',
+  'drawing_vision',
+  'tool_flow',
+] as const;
+const steelVisualInspectionRuleTypes = ['tool_flow_rule', 'output_policy_rule'] as const;
 
 type VisualEvidenceSourceKind = 'image' | 'pdf' | 'scanned_pdf';
 
@@ -265,6 +449,24 @@ function getVisualEvidenceSourceKinds(messages: readonly SteelOAuthChatMessage[]
   }
 
   return [...sourceKinds];
+}
+
+function getVisualEvidenceFiles(
+  messages: readonly SteelOAuthChatMessage[],
+): SteelFileOcrSourceFile[] {
+  const files: SteelFileOcrSourceFile[] = [];
+
+  for (const message of messages) {
+    for (const file of message.files ?? []) {
+      if (getFileSourceKinds(file).length === 0) {
+        continue;
+      }
+
+      files.push(file);
+    }
+  }
+
+  return files;
 }
 
 function readSelectorStrings(rule: SteelAgentRule, key: string): string[] {
@@ -365,16 +567,42 @@ async function getSteelOcrInstruction(
   return prompts.join('\n\n');
 }
 
+async function getSteelVisualInspectionInstruction(
+  client: SteelRepositoryClient,
+  sourceKinds: readonly VisualEvidenceSourceKind[],
+): Promise<string> {
+  const rules = await searchSteelAgentRules(client, {
+    ruleTypes: steelVisualInspectionRuleTypes,
+    ruleSections: steelVisualInspectionRuleSections,
+    limit: 20,
+  });
+  const prompts = rules
+    .filter((rule) => matchesOcrSourceKind(rule, sourceKinds))
+    .map(formatOcrRuleInstruction)
+    .filter(Boolean);
+
+  if (prompts.length === 0) {
+    throw new Error('steel.agent_rules did not return reviewed visual inspection rules.');
+  }
+
+  return prompts.join('\n\n');
+}
+
 function toPromptWithSystemInstruction(
   messages: SteelOAuthChatMessage[],
   systemInstruction: string,
+  {
+    omitVisualEvidenceFileParts = false,
+  }: {
+    omitVisualEvidenceFileParts?: boolean;
+  } = {},
 ): LanguageModelV3Prompt {
   return [
     {
       role: 'system',
       content: systemInstruction,
     },
-    ...toPrompt(messages),
+    ...toPrompt(messages, { omitVisualEvidenceFileParts }),
   ];
 }
 
@@ -404,6 +632,9 @@ async function getSystemInstruction({
     ...(hasOcrRules && agentRulesClient
       ? [await getSteelOcrInstruction(agentRulesClient, ocrSourceKinds ?? [])]
       : []),
+    ...(hasOcrRules && agentRulesClient
+      ? [await getSteelVisualInspectionInstruction(agentRulesClient, ocrSourceKinds ?? [])]
+      : []),
     ...(workbookPatchTool && agentRulesClient
       ? [await getSteelWorkbookOutputInstruction(agentRulesClient, workbookContextText)]
       : []),
@@ -428,6 +659,26 @@ const fileAnalysisPatchFunctionTool: LanguageModelV3FunctionTool = {
   description:
     'Patch the single conversation-scoped Steel file_analysis_data workspace for unconfirmed PDF/image/drawing interpretation. Process one page/image at a time, patch after each PaddleOCR MCP result, include sourceKey/page/imageIndex/ocrEngine/ocrStatus refs for rows, and reuse row ids or sourceKey when reprocessing. Do not use this for confirmed quote workbook rows.',
   inputSchema: zodToJsonSchema(patchFileAnalysisDataToolInputSchema, {
+    $refStrategy: 'none',
+  }) as LanguageModelV3FunctionTool['inputSchema'],
+};
+
+const fileOcrFunctionTool: LanguageModelV3FunctionTool = {
+  type: 'function',
+  name: 'run_file_ocr',
+  description:
+    'Run the configured Steel OCR engine on exactly one uploaded image or one PDF page. Use this before interpreting uploaded PDF/image/table/drawing content and before patch_file_analysis_data. For multi-page PDFs, call once per page with high DPI.',
+  inputSchema: zodToJsonSchema(steelToolArgsSchemas.run_file_ocr, {
+    $refStrategy: 'none',
+  }) as LanguageModelV3FunctionTool['inputSchema'],
+};
+
+const visualInspectionFunctionTool: LanguageModelV3FunctionTool = {
+  type: 'function',
+  name: 'run_visual_inspection',
+  description:
+    'Run visual-only inspection on exactly one uploaded image or rendered PDF page after OCR has been patched, only when OCR/table/user data is missing a required geometric value for review or pricing. Use this to fill missing holes, slots, continuous slotted-edge length, bends, cut corners, notches, or geometry consistency. Do not call it when OCR/table data already provides the needed value, and do not use it to OCR text or tables.',
+  inputSchema: zodToJsonSchema(steelToolArgsSchemas.run_visual_inspection, {
     $refStrategy: 'none',
   }) as LanguageModelV3FunctionTool['inputSchema'],
 };
@@ -496,6 +747,21 @@ function createToolExecutionErrorResult(
     errorCategory: 'repository_error',
     errorSummary: error instanceof Error ? error.message : 'Steel tool execution failed.',
     durationMs: 0,
+    redactionVersion: 1,
+  };
+}
+
+function createProviderToolErrorResult(
+  toolName: string,
+  startTime: number,
+  error: unknown,
+): SteelToolResult {
+  return {
+    ok: false,
+    toolName,
+    errorCategory: 'repository_error',
+    errorSummary: error instanceof Error ? error.message : `${toolName} execution failed.`,
+    durationMs: Math.max(0, Date.now() - startTime),
     redactionVersion: 1,
   };
 }
@@ -625,6 +891,18 @@ interface ExecutedSteelToolCall {
   result: SteelToolResult;
 }
 
+interface ExecutedFileOcrToolCall {
+  call: FileOcrToolCall;
+  input: RunFileOcrInput;
+  result: SteelToolResult;
+}
+
+interface ExecutedVisualInspectionToolCall {
+  call: VisualInspectionToolCall;
+  input: RunVisualInspectionInput;
+  result: SteelToolResult;
+}
+
 interface ParsedWorkbookPatchToolCall {
   call: WorkbookPatchToolCall;
   input: SteelSemanticWorkbookPatch;
@@ -635,6 +913,123 @@ interface ParsedWorkbookPatchToolCall {
 interface ParsedFileAnalysisPatchToolCall {
   call: FileAnalysisPatchToolCall;
   input: SteelProviderFileAnalysisPatchProposal;
+}
+
+interface FileAnalysisPdfPageProgress {
+  fileId: string;
+  filename?: string;
+  mediaType: string;
+  pageCount?: number;
+  completedPages: Set<number>;
+  failedPages: Set<number>;
+  skippedPages: Set<number>;
+}
+
+interface PendingFileAnalysisPdfPage {
+  fileId: string;
+  filename?: string;
+  page: number;
+  pageCount: number;
+}
+
+function isPdfMediaType(mediaType: string): boolean {
+  return mediaType.trim().toLowerCase().includes('pdf');
+}
+
+function getFileAnalysisOcrStatus(sourceRef: {
+  fileId: string;
+  ocrStatus?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
+}): 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | undefined {
+  return sourceRef.ocrStatus;
+}
+
+function getFileAnalysisProgress(
+  progressByFileId: Map<string, FileAnalysisPdfPageProgress>,
+  source: {
+    fileId: string;
+    filename?: string;
+    mediaType: string;
+    pageCount?: number;
+  },
+): FileAnalysisPdfPageProgress {
+  const current = progressByFileId.get(source.fileId);
+  if (current) {
+    current.filename = source.filename ?? current.filename;
+    current.mediaType = source.mediaType || current.mediaType;
+    current.pageCount = source.pageCount ?? current.pageCount;
+    return current;
+  }
+
+  const next = {
+    fileId: source.fileId,
+    filename: source.filename,
+    mediaType: source.mediaType,
+    pageCount: source.pageCount,
+    completedPages: new Set<number>(),
+    failedPages: new Set<number>(),
+    skippedPages: new Set<number>(),
+  };
+  progressByFileId.set(source.fileId, next);
+  return next;
+}
+
+function trackFileAnalysisPdfPageProgress(
+  progressByFileId: Map<string, FileAnalysisPdfPageProgress>,
+  parsedCalls: readonly ParsedFileAnalysisPatchToolCall[],
+): void {
+  for (const parsedCall of parsedCalls) {
+    for (const sourceFile of parsedCall.input.sourceFiles) {
+      if (isPdfMediaType(sourceFile.mediaType) && sourceFile.pageCount !== undefined) {
+        getFileAnalysisProgress(progressByFileId, sourceFile);
+      }
+    }
+
+    for (const patch of parsedCall.input.patches) {
+      for (const row of patch.upsertRows) {
+        const sourceRef = row.sourceRef;
+        if (!sourceRef?.page || !isPdfMediaType(sourceRef.mediaType)) {
+          continue;
+        }
+
+        const progress = getFileAnalysisProgress(progressByFileId, sourceRef);
+        const ocrStatus = getFileAnalysisOcrStatus(sourceRef);
+        if (ocrStatus === 'failed') {
+          progress.failedPages.add(sourceRef.page);
+        } else if (ocrStatus === 'skipped') {
+          progress.skippedPages.add(sourceRef.page);
+        } else if (ocrStatus === 'completed') {
+          progress.completedPages.add(sourceRef.page);
+        }
+      }
+    }
+  }
+}
+
+function getPendingFileAnalysisPdfPage(
+  progressByFileId: Map<string, FileAnalysisPdfPageProgress>,
+): PendingFileAnalysisPdfPage | undefined {
+  for (const progress of progressByFileId.values()) {
+    if (!isPdfMediaType(progress.mediaType) || !progress.pageCount || progress.pageCount <= 1) {
+      continue;
+    }
+
+    for (let page = 1; page <= progress.pageCount; page += 1) {
+      const pageDone =
+        progress.completedPages.has(page) ||
+        progress.failedPages.has(page) ||
+        progress.skippedPages.has(page);
+      if (!pageDone) {
+        return {
+          fileId: progress.fileId,
+          filename: progress.filename,
+          page,
+          pageCount: progress.pageCount,
+        };
+      }
+    }
+  }
+
+  return undefined;
 }
 
 async function executeSteelBusinessToolCalls({
@@ -719,14 +1114,119 @@ async function executeSteelBusinessToolCalls({
   return executedCalls;
 }
 
+async function executeFileOcrToolCalls({
+  calls,
+  executeFileOcr,
+  files,
+}: {
+  calls: FileOcrToolCall[];
+  executeFileOcr: SteelProviderFileOcrExecutor;
+  files: readonly SteelFileOcrSourceFile[];
+}): Promise<ExecutedFileOcrToolCall[]> {
+  const executedCalls: ExecutedFileOcrToolCall[] = [];
+
+  for (const call of calls) {
+    let input: RunFileOcrInput;
+    let result: SteelToolResult;
+    try {
+      input = steelToolArgsSchemas.run_file_ocr.parse(parseToolCallInput(call));
+    } catch {
+      input = { filename: call.toolCallId };
+      result = createInvalidToolInputResult(call);
+      executedCalls.push({ call, input, result });
+      continue;
+    }
+
+    result = await executeFileOcr({
+      arguments: input,
+      files,
+      providerToolCallId: call.toolCallId,
+    });
+    executedCalls.push({ call, input, result });
+  }
+
+  return executedCalls;
+}
+
+async function executeVisualInspectionToolCalls({
+  calls,
+  executeVisualInspection,
+  files,
+  onToolStatus,
+}: {
+  calls: VisualInspectionToolCall[];
+  executeVisualInspection: SteelProviderVisualInspectionExecutor;
+  files: readonly SteelFileOcrSourceFile[];
+  onToolStatus?: SteelProviderToolStatusCallback;
+}): Promise<ExecutedVisualInspectionToolCall[]> {
+  const executedCalls: ExecutedVisualInspectionToolCall[] = [];
+
+  for (const call of calls) {
+    let input: RunVisualInspectionInput;
+    let result: SteelToolResult;
+    try {
+      input = steelToolArgsSchemas.run_visual_inspection.parse(parseToolCallInput(call));
+    } catch {
+      input = {
+        filename: call.toolCallId,
+        inspection_types: ['geometry_consistency'],
+        prompt: 'Invalid visual inspection input.',
+      };
+      result = createInvalidToolInputResult(call);
+      executedCalls.push({ call, input, result });
+      continue;
+    }
+
+    onToolStatus?.({ toolName: call.toolName, status: 'started' });
+    try {
+      result = await executeVisualInspection({
+        arguments: input,
+        files,
+        providerToolCallId: call.toolCallId,
+      });
+      onToolStatus?.({
+        toolName: call.toolName,
+        status: result.ok ? 'completed' : 'failed',
+        result,
+        errorSummary: result.ok ? undefined : result.errorSummary,
+      });
+    } catch (error) {
+      const errorSummary = error instanceof Error ? error.message : `${call.toolName} failed.`;
+      onToolStatus?.({
+        toolName: call.toolName,
+        status: 'failed',
+        errorSummary,
+      });
+      throw error;
+    }
+    executedCalls.push({ call, input, result });
+  }
+
+  return executedCalls;
+}
+
 function toAssistantToolCallMessage(
   executedCalls: ExecutedSteelToolCall[],
   workbookPatchCalls: ParsedWorkbookPatchToolCall[] = [],
   fileAnalysisPatchCalls: ParsedFileAnalysisPatchToolCall[] = [],
+  fileOcrCalls: ExecutedFileOcrToolCall[] = [],
+  visualInspectionCalls: ExecutedVisualInspectionToolCall[] = [],
 ): LanguageModelV3Message {
   return {
     role: 'assistant',
     content: [
+      ...visualInspectionCalls.map(({ call, input }) => ({
+        type: 'tool-call' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input,
+      })),
+      ...fileOcrCalls.map(({ call, input }) => ({
+        type: 'tool-call' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input,
+      })),
       ...executedCalls.map(({ call, input }) => ({
         type: 'tool-call' as const,
         toolCallId: call.toolCallId,
@@ -884,7 +1384,7 @@ function toFileAnalysisPatchToolResultValue(
     rowCount,
     columnCount,
     instruction:
-      'patch_file_analysis_data 已收到並會交由 backend 持久化。現在請用繁體中文簡短摘要本輪 patch 內容：來源檔案/頁碼/圖片序號、新增或更新的列、ocrStatus、低信心/人工複核項目、以及用戶需要核對的位置。若還有待處理頁面或圖片，回報下一個來源後再繼續下一個 PaddleOCR MCP task。不要只回答已更新 N 個欄位。',
+      'patch_file_analysis_data 已收到並會交由 backend 持久化。現在請用繁體中文簡短摘要本輪 patch 內容：來源檔案/頁碼/圖片序號、新增或更新的列、ocrStatus、低信心/人工複核項目、以及用戶需要核對的位置。若同一 PDF、檔案批次或圖片批次還有待處理頁面或圖片，必須依 page/imageIndex 升冪自動接續下一個 run_file_ocr，不要停下來等待用戶輸入 go；只有用戶 stop/abort、中斷續跑、OCR 錯誤或規則要求人工停下時才停止。不要只回答已更新 N 個欄位。',
   });
 }
 
@@ -896,10 +1396,30 @@ function toToolResultMessage(
     subtotalMismatch?: WorkbookSubtotalMismatch;
   } = {},
   fileAnalysisPatchCalls: ParsedFileAnalysisPatchToolCall[] = [],
+  fileOcrCalls: ExecutedFileOcrToolCall[] = [],
+  visualInspectionCalls: ExecutedVisualInspectionToolCall[] = [],
 ): LanguageModelV3Message {
   return {
     role: 'tool',
     content: [
+      ...visualInspectionCalls.map(({ call, result }) => ({
+        type: 'tool-result' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: {
+          type: 'json' as const,
+          value: toJsonValue(result),
+        },
+      })),
+      ...fileOcrCalls.map(({ call, result }) => ({
+        type: 'tool-result' as const,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: {
+          type: 'json' as const,
+          value: toJsonValue(result),
+        },
+      })),
       ...executedCalls.map(({ call, result }) => ({
         type: 'tool-result' as const,
         toolCallId: call.toolCallId,
@@ -954,6 +1474,20 @@ function getProvisionalWorkbookPatchReminderMessage(
   return {
     role: 'system',
     content: `This Steel quote update still requires a complete-enough semantic workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_quote_workbook to update all user-relevant sheets when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote. Do not hand-write workbook cell operations; backend projection owns cell operation generation. Fill semantic fields when derivable from user text, workbook context, reviewed tool results, or calculation_results. Use calculation_results before interpreted quote items when both exist. Leave missing semantic values blank when material, customer, source, or calculation context is unavailable, and record the missing context in manual_review or interpretation_notes instead of inventing values. 未確認單價或金額不可填 0; write 未確認 instead. Include provisional candidate/source/confidence notes and the quote_details \`小計\` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible \`報價\` column. Summary/customer_quote totals must be labeled as 暫估/待確認 until the user confirms the selected item, thickness, length, customer, and tier. When customer_quote has a customer-facing total, provide top-level customerQuoteTotal with itemSpec 報價總額, blank quantity/unit/unitPrice, and customer-facing total in subtotal. 給客戶用 must not expose customer tier, source refs, search keywords, candidates, AI/internal notes, cost, or margin. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
+  };
+}
+
+function getPendingFileAnalysisPdfPageReminderMessage({
+  fileId,
+  filename,
+  page,
+  pageCount,
+}: PendingFileAnalysisPdfPage): LanguageModelV3Message {
+  const fileLabel = filename ? `${filename} (${fileId})` : fileId;
+
+  return {
+    role: 'system',
+    content: `The previous response tried to answer before finishing all PDF pages. ${fileLabel} has ${pageCount} pages, and page ${page} is still pending. Do not answer the user yet. Call run_file_ocr now for filename="${filename ?? fileId}", page=${page}, output_mode="markdown", dpi=400. After that OCR result, call patch_file_analysis_data for page ${page}, then continue the next page if any remain.`,
   };
 }
 
@@ -1014,6 +1548,28 @@ function getFileAnalysisPatchToolCalls(
   result: LanguageModelV3GenerateResult,
 ): FileAnalysisPatchToolCall[] {
   return result.content.filter(isFileAnalysisPatchToolCall);
+}
+
+function isFileOcrToolCall(
+  part: LanguageModelV3GenerateResult['content'][number],
+): part is FileOcrToolCall {
+  return part.type === 'tool-call' && part.toolName === 'run_file_ocr';
+}
+
+function getFileOcrToolCalls(result: LanguageModelV3GenerateResult): FileOcrToolCall[] {
+  return result.content.filter(isFileOcrToolCall);
+}
+
+function isVisualInspectionToolCall(
+  part: LanguageModelV3GenerateResult['content'][number],
+): part is VisualInspectionToolCall {
+  return part.type === 'tool-call' && part.toolName === 'run_visual_inspection';
+}
+
+function getVisualInspectionToolCalls(
+  result: LanguageModelV3GenerateResult,
+): VisualInspectionToolCall[] {
+  return result.content.filter(isVisualInspectionToolCall);
 }
 
 function parseWorkbookPatchToolCalls(
@@ -1112,20 +1668,24 @@ export async function sendSteelOAuthChat({
   authFilePath,
   createOpenAIOAuth: injectedCreateOpenAIOAuth,
   ensureFresh = true,
+  executeFileOcr = executeDefaultFileOcr,
+  executeVisualInspection,
   executeSteelToolCall = executeDefaultSteelToolCall,
   fetch,
   maxOutputTokens,
   messages,
   model,
   onReasoningSummary,
+  onToolStatus,
   passThroughUnsupportedFiles,
   reasoningEffort,
-  steelToolMaxCalls = 8,
+  steelToolMaxCalls,
   steelRuntimePolicy,
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
   const ocrSourceKinds = steelRuntimePolicy === true ? getVisualEvidenceSourceKinds(messages) : [];
+  const visualEvidenceFiles = steelRuntimePolicy === true ? getVisualEvidenceFiles(messages) : [];
   const shouldLoadAgentRules =
     steelRuntimePolicy === true || workbookPatchTool === true || ocrSourceKinds.length > 0;
   const systemInstruction = await getSystemInstruction({
@@ -1137,6 +1697,13 @@ export async function sendSteelOAuthChat({
     workbookPatchTool,
     ocrSourceKinds,
   });
+  const rulesClient = shouldLoadAgentRules
+    ? (agentRulesClient ?? getDefaultSteelToolClient())
+    : undefined;
+  const visualInspectionInstruction =
+    ocrSourceKinds.length > 0 && rulesClient
+      ? await getSteelVisualInspectionInstruction(rulesClient, ocrSourceKinds)
+      : '';
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({
     authFilePath,
@@ -1144,15 +1711,27 @@ export async function sendSteelOAuthChat({
     fetch,
     responsesState: false,
   });
+  const executeVisualInspectionTool =
+    executeVisualInspection ??
+    ((options: SteelProviderVisualInspectionOptions) =>
+      runOpenAIOAuthVisualInspection({
+        ...options,
+        model,
+        openai,
+        visualInspectionInstruction,
+      }));
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
     ...(workbookPatchTool ? [semanticWorkbookPatchFunctionTool] : []),
-    ...(ocrSourceKinds.length > 0 ? [fileAnalysisPatchFunctionTool] : []),
+    ...(visualEvidenceFiles.length > 0
+      ? [fileOcrFunctionTool, visualInspectionFunctionTool, fileAnalysisPatchFunctionTool]
+      : []),
   ] satisfies SteelRoundTool[];
-  const runState = createSteelToolRunState(steelToolMaxCalls);
+  const runState = createSteelToolRunState(steelToolMaxCalls ?? Number.MAX_SAFE_INTEGER);
+  const omitVisualEvidenceFileParts = visualEvidenceFiles.length > 0;
   let prompt = systemInstruction
-    ? toPromptWithSystemInstruction(messages, systemInstruction)
-    : toPrompt(messages);
+    ? toPromptWithSystemInstruction(messages, systemInstruction, { omitVisualEvidenceFileParts })
+    : toPrompt(messages, { omitVisualEvidenceFileParts });
   const generationResults: LanguageModelV3GenerateResult[] = [];
   const mustGetReviewedPriceResult =
     steelRuntimePolicy === true && requiresReviewedPriceLookup(messages);
@@ -1165,12 +1744,17 @@ export async function sendSteelOAuthChat({
   let hasWorkbookPatch = false;
   const workbookPatchOperations: WorkbookPatchOperation[] = [];
   let fileAnalysisPatch: SteelProviderFileAnalysisPatchProposal | undefined;
+  const fileAnalysisPdfPageProgress = new Map<string, FileAnalysisPdfPageProgress>();
+  let forcedFileOcrPage: PendingFileAnalysisPdfPage | undefined;
 
-  for (let round = 0; round <= steelToolMaxCalls; round += 1) {
-    const toolChoice = getSteelToolChoice({
-      hasReviewedPriceResult,
-      mustGetReviewedPriceResult,
-    });
+  for (let round = 0; steelToolMaxCalls === undefined || round <= steelToolMaxCalls; round += 1) {
+    const toolChoice: LanguageModelV3ToolChoice = forcedFileOcrPage
+      ? { type: 'tool', toolName: 'run_file_ocr' }
+      : getSteelToolChoice({
+          hasReviewedPriceResult,
+          mustGetReviewedPriceResult,
+        });
+    forcedFileOcrPage = undefined;
     const result = await openai(model).doGenerate({
       abortSignal,
       prompt,
@@ -1199,6 +1783,21 @@ export async function sendSteelOAuthChat({
     const parsedFileAnalysisPatchCalls = parseFileAnalysisPatchToolCalls(
       getFileAnalysisPatchToolCalls(result),
     );
+    trackFileAnalysisPdfPageProgress(fileAnalysisPdfPageProgress, parsedFileAnalysisPatchCalls);
+    const fileOcrToolCalls = visualEvidenceFiles.length > 0 ? getFileOcrToolCalls(result) : [];
+    const executedFileOcrCalls = await executeFileOcrToolCalls({
+      calls: fileOcrToolCalls,
+      executeFileOcr,
+      files: visualEvidenceFiles,
+    });
+    const visualInspectionToolCalls =
+      visualEvidenceFiles.length > 0 ? getVisualInspectionToolCalls(result) : [];
+    const executedVisualInspectionCalls = await executeVisualInspectionToolCalls({
+      calls: visualInspectionToolCalls,
+      executeVisualInspection: executeVisualInspectionTool,
+      files: visualEvidenceFiles,
+      onToolStatus,
+    });
     if (parsedFileAnalysisPatchCalls.length > 0) {
       fileAnalysisPatch =
         parsedFileAnalysisPatchCalls[parsedFileAnalysisPatchCalls.length - 1]?.input;
@@ -1223,6 +1822,29 @@ export async function sendSteelOAuthChat({
 
     const steelBusinessToolCalls = steelRuntimePolicy ? getSteelBusinessToolCalls(result) : [];
     if (steelBusinessToolCalls.length === 0) {
+      if (executedFileOcrCalls.length > 0 || executedVisualInspectionCalls.length > 0) {
+        prompt = [
+          ...prompt,
+          toAssistantToolCallMessage(
+            [],
+            [],
+            parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
+          ),
+          toToolResultMessage(
+            [],
+            [],
+            undefined,
+            {},
+            parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
+          ),
+        ];
+        continue;
+      }
+
       if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {
         prompt = [...prompt, getRequiredPriceLookupReminderMessage()];
         continue;
@@ -1231,7 +1853,13 @@ export async function sendSteelOAuthChat({
       if (workbookSubtotalMismatch && parsedWorkbookPatchCalls.length > 0) {
         prompt = [
           ...prompt,
-          toAssistantToolCallMessage([], parsedWorkbookPatchCalls, parsedFileAnalysisPatchCalls),
+          toAssistantToolCallMessage(
+            [],
+            parsedWorkbookPatchCalls,
+            parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
+          ),
           toToolResultMessage(
             [],
             parsedWorkbookPatchCalls,
@@ -1240,6 +1868,8 @@ export async function sendSteelOAuthChat({
               subtotalMismatch: workbookSubtotalMismatch,
             },
             parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
           ),
         ];
         continue;
@@ -1248,13 +1878,21 @@ export async function sendSteelOAuthChat({
       if (parsedWorkbookPatchCalls.length > 0 && requiresWorkbookPatchCompletion) {
         prompt = [
           ...prompt,
-          toAssistantToolCallMessage([], parsedWorkbookPatchCalls, parsedFileAnalysisPatchCalls),
+          toAssistantToolCallMessage(
+            [],
+            parsedWorkbookPatchCalls,
+            parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
+          ),
           toToolResultMessage(
             [],
             parsedWorkbookPatchCalls,
             workbookPatchCompletion,
             {},
             parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
           ),
         ];
         continue;
@@ -1263,8 +1901,22 @@ export async function sendSteelOAuthChat({
       if (parsedFileAnalysisPatchCalls.length > 0) {
         prompt = [
           ...prompt,
-          toAssistantToolCallMessage([], [], parsedFileAnalysisPatchCalls),
-          toToolResultMessage([], [], undefined, {}, parsedFileAnalysisPatchCalls),
+          toAssistantToolCallMessage(
+            [],
+            [],
+            parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
+          ),
+          toToolResultMessage(
+            [],
+            [],
+            undefined,
+            {},
+            parsedFileAnalysisPatchCalls,
+            executedFileOcrCalls,
+            executedVisualInspectionCalls,
+          ),
         ];
         continue;
       }
@@ -1276,6 +1928,19 @@ export async function sendSteelOAuthChat({
             workbookPatchCompletion?.missingSheetIds,
             workbookPatchCompletion?.missingCells,
           ),
+        ];
+        continue;
+      }
+
+      const pendingFileAnalysisPdfPage =
+        visualEvidenceFiles.length > 0
+          ? getPendingFileAnalysisPdfPage(fileAnalysisPdfPageProgress)
+          : undefined;
+      if (pendingFileAnalysisPdfPage) {
+        forcedFileOcrPage = pendingFileAnalysisPdfPage;
+        prompt = [
+          ...prompt,
+          getPendingFileAnalysisPdfPageReminderMessage(pendingFileAnalysisPdfPage),
         ];
         continue;
       }
@@ -1334,6 +1999,8 @@ export async function sendSteelOAuthChat({
         executedCalls,
         parsedWorkbookPatchCalls,
         parsedFileAnalysisPatchCalls,
+        executedFileOcrCalls,
+        executedVisualInspectionCalls,
       ),
       toToolResultMessage(
         executedCalls,
@@ -1343,6 +2010,8 @@ export async function sendSteelOAuthChat({
           subtotalMismatch: workbookSubtotalMismatch,
         },
         parsedFileAnalysisPatchCalls,
+        executedFileOcrCalls,
+        executedVisualInspectionCalls,
       ),
     ];
     if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {

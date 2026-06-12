@@ -1,23 +1,26 @@
 【Steel OCR / file_analysis_data 流程契約】
 
 一、OCR 引擎
-1. PDF、掃描圖、圖片、工程圖、材料表、零件表、螺栓表、切割表、手寫表格中的表格 OCR，統一使用 PaddleOCR MCP。
-2. PaddleOCR MCP server 固定使用 `PaddleOCR-VL-1.6`，工具固定使用 `paddleocr_vl`。
-3. PDF 頁面使用 PaddleOCR MCP 判讀時，應使用 `file_type = pdf`；圖片或 PDF 拆頁後的圖片使用 `file_type = image`。
+1. PDF、掃描圖、圖片、工程圖、材料表、零件表、螺栓表、切割表、手寫表格中的表格 OCR，統一呼叫 Steel tool `run_file_ocr`。
+2. `run_file_ocr` 是 AI 對話中可呼叫的通用 OCR tool；backend 內部固定使用 PaddleOCR MCP server `PaddleOCR-VL-1.6` 與 MCP tool `paddleocr_vl`。
+3. PDF 頁面使用 `run_file_ocr` 判讀時，backend 會拆成單頁圖片後送 PaddleOCR MCP；圖片或 PDF 拆頁後的圖片使用 `file_type = image`。
 4. 不得使用 OpenAI OAuth API 內建 OCR 作為表格 OCR 的主要來源，也不得把 `openai_oauth_responses` 對附件的原生判讀結果當成表格抽取基準。
 5. OpenAI OAuth / `openai_oauth_responses` 只能在已有 PaddleOCR MCP 輸出後，用於語意整理、人工複核說明、對話回覆、以及呼叫 `patch_file_analysis_data`；不可取代 PaddleOCR MCP 的表格 OCR。
-6. PaddleOCR MCP 失敗時必須回報錯誤，並把失敗來源、頁碼或圖片序號、錯誤原因寫入 `manual_review` 或 `interpretation_notes`；不得 fallback 使用 OpenAI OCR。
+6. `run_file_ocr` / PaddleOCR MCP 失敗時必須回報錯誤，並把失敗來源、頁碼或圖片序號、錯誤原因寫入 `manual_review` 或 `interpretation_notes`；不得 fallback 使用 OpenAI OCR。
 
 二、多檔案 / 多頁處理順序
 1. 若有多個檔案，或單一檔案有多個頁面 / 多張圖片，一次只處理一張圖或一頁。
-2. 多頁 PDF 必須先拆成單頁高解析圖片，再逐頁送 PaddleOCR MCP；不得把整份多頁 PDF 一次送進 PaddleOCR MCP。
-3. PDF 拆頁圖片解析度必須足夠，避免小字模糊；建議使用至少 300 DPI，若表格小字仍模糊，應提高到 400-600 DPI 或等效像素尺寸後再送 PaddleOCR MCP。
+2. 多頁 PDF 必須透過 `run_file_ocr` 先拆成單頁高解析圖片，再逐頁送 PaddleOCR MCP；不得把整份多頁 PDF 一次送進 PaddleOCR MCP。
+3. PDF 拆頁圖片解析度必須足夠，避免小字模糊；建議使用至少 300 DPI，預設 400 DPI；若表格小字仍模糊，應提高到 600 DPI 或等效像素尺寸後再送 PaddleOCR MCP。
 4. 若輸入圖片解析度不足、文字破碎、或放大後仍模糊，必須標記低信心並寫入 `manual_review`，不得用模糊圖片硬判讀成高信心資料。
-5. 每張圖或每頁完成 PaddleOCR MCP 後，必須立即呼叫 patch_file_analysis_data，保存該圖或該頁的判讀資料，再接續處理下一張圖或下一頁。
-6. 每次 patch 後，必須用繁體中文簡短回報進度，例如目前完成的來源檔案、page、imageIndex、主要新增/更新列數、低信心項目、下一個待處理來源。
+5. 每張圖或每頁完成 `run_file_ocr` / PaddleOCR MCP 後，必須立即呼叫 patch_file_analysis_data，保存該圖或該頁的判讀資料，再依 page / imageIndex 升冪自動接續處理下一張圖或下一頁。
+6. 每次 patch 後，必須用繁體中文簡短回報進度，例如目前完成的來源檔案、page、imageIndex、主要新增/更新列數、低信心項目、下一個待處理來源；回報後同一輪對話必須繼續下一個待處理 OCR task，不可停下來等待用戶輸入「go」或「繼續」。
 7. 不得等整份 PDF、整批圖片或多個檔案全部判讀完才一次 patch；避免 token 壓縮或對話中斷造成資料缺失。
-8. 用戶可以停止對話來停止工作。用戶下一輪說「接續處理」時，必須先讀取最新 `file_analysis_data` workspace，找到已完成與未完成來源，再從未完成來源繼續，不得重新處理已完成的 sourceKey。
-9. 用戶說「繼續」或「go」時，等同「接續處理」；除非用戶明確說「重新處理」，否則不得重新處理已完成的 sourceKey。
+8. 只有用戶按 stop button、對話被中斷、OCR 失敗、或明確需要人工複核停下時，才停止自動處理後續頁面 / 圖片。
+9. 用戶下一輪說「接續處理」、「繼續」或「go」時，等同從停止 / 中斷處續跑；必須先讀取最新 `file_analysis_data` workspace，找到已完成與未完成來源，再從未完成來源繼續，不得重新處理已完成的 sourceKey。
+10. 除非用戶明確說「重新處理」，否則不得重新處理已完成的 sourceKey。
+11. OCR 完成並 patch 後，只有在 OCR 表格、圖面文字、既有 `file_analysis_data` 或使用者對話缺少必要幾何 / 加工資料時，才接續呼叫 `run_visual_inspection`。若 OCR / 表格已提供可核對的孔數、開槽連續邊長、折刀數、切角或缺口資料，不要額外呼叫 vision。
+12. 例如 OCR 判斷有開槽，但沒有可用的連續邊長數字或路徑長度，且該數值會影響報價時，才呼叫 `run_visual_inspection` 判斷連續邊長；不得把 vision 當成每頁固定流程。
 
 三、source / progress 標記
 1. `patch_file_analysis_data` 的每列資料都必須盡量標記來源：`fileId`、`filename`、`mediaType`、`page` 或 `imageIndex`、`regionLabel`、`sourceKey`、`ocrEngine`、`ocrStatus`、`processedAt`。
@@ -25,6 +28,7 @@
 3. 同一圖片 / 頁面重新 PaddleOCR 時，若是在修正既有資料，必須使用既有 row id 或相同 `sourceKey` 更新既有 row；不要新增重複 row。
 4. 新上傳檔案、新圖片、新頁面或新增表格列，應使用新的 `sourceKey`，讓系統知道是新增資料。
 5. `ocrStatus` 可用：`pending`、`processing`、`completed`、`failed`、`skipped`。完成 PaddleOCR 並成功 patch 的來源標 `completed`；失敗來源標 `failed` 並保留錯誤原因。
+6. 若 OCR 後因缺少必要幾何 / 加工資料而需要圖像判斷，應在相關 row 或 `interpretation_notes` 標記 `visualInspectionStatus = pending`，等 `run_visual_inspection` 完成後再更新為 `completed` 或 `failed`；若 OCR / 表格資料已足夠，標記 `visualInspectionStatus = skipped` 或不建立該狀態。
 
 四、固定分頁，不固定欄位
 圖面、PDF、掃描圖或圖片判讀後，只固定建立三個資料分頁；每個分頁的欄位由 AI 依檔案內容自主決定，不可由系統預先固定欄位：
@@ -55,7 +59,7 @@
 1. 用戶說「重新處理某圖 / 某頁」時，必須重新送該圖或該頁給 PaddleOCR MCP，並用既有 row id 或相同 `sourceKey` 更新該來源的既有資料。
 2. 用戶上傳新圖片或新檔案時，應視為新增來源，使用新的 source file 與 `sourceKey`；不得覆蓋既有來源，除非用戶明確指定要取代。
 3. 用戶直接更改表格資料時，不需要重新執行 PaddleOCR MCP；應直接呼叫 `patch_file_analysis_data` 更新指定 row / cell，並標記 `reviewStatus = corrected`。
-4. 若用戶說「接續處理」、「繼續」或「go」，應找出 `ocrStatus` 不是 `completed` 的來源，或尚未出現在 workspace 的 page / imageIndex，從該處繼續。
+4. 若用戶說「接續處理」、「繼續」或「go」，表示先前處理曾被 stop button、中斷、失敗或人工停下；應找出 `ocrStatus` 不是 `completed` 的來源，或尚未出現在 workspace 的 page / imageIndex，從該處繼續。
 5. 若所有來源都已 `completed`，應回報已無待處理頁面 / 圖片，而不是重跑 OCR。
 
 七、資料完整性與低信心

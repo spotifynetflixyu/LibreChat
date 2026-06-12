@@ -504,9 +504,15 @@ export default function SteelOAuthChat() {
       if (response.workbookPatch?.workbook) {
         setWorkbook(response.workbookPatch.workbook);
         setChangedPaths(response.workbookPatch.changedPaths);
+        setActiveRightPanelTab('workbook');
+        setIsWorkbookPanelOpen(true);
       }
       if (response.fileAnalysisData) {
         setFileAnalysisData(response.fileAnalysisData);
+        if (!response.workbookPatch?.workbook) {
+          setActiveRightPanelTab('fileAnalysis');
+          setIsWorkbookPanelOpen(true);
+        }
       }
       setMessages([...nextMessages, createTurn('assistant', response.text)]);
     } catch (error) {

@@ -92,6 +92,8 @@ function buildOcrRule(repoRoot) {
     },
     prompt,
     toolPolicy: {
+      availableTools: ['run_file_ocr', 'patch_file_analysis_data'],
+      requiredToolOrder: ['run_file_ocr', 'patch_file_analysis_data'],
       requiredBefore: ['drawing_evidence_extraction'],
       mustMarkLowConfidence: true,
     },

@@ -4,6 +4,42 @@
   tests that assert rule text substrings. Verify rule work by syncing the
   intended rule source into Supabase reviewed rows and by testing downstream
   runtime behavior when behavior code changes.
+- Steel multi-page PDF/image OCR must auto-continue in the same chat turn:
+  after each page/image `run_file_ocr`, immediately `patch_file_analysis_data`,
+  report progress, then continue the next page/image in order. Treat `go` /
+  `繼續` only as resume after user stop, interruption, OCR failure, or an
+  explicit manual-review pause.
+- Steel drawing-derived plate parts such as 柱底板、連接板、加勁板、補強板、
+  端板、底板 and 蓋板 are plate products, not separate steel material
+  families. When dimensions and thickness are available but material is not
+  specified, quote with the most likely black iron plate / SS400 candidate and
+  mark the material assumption as provisional instead of blocking the price as
+  未確認.
+- Do not rely only on agent instructions for Steel multi-page PDF OCR
+  continuation. The provider must track patched PDF page progress and reject a
+  premature final assistant answer while `pageCount` still has unprocessed
+  pages; progress summaries belong in stream/tool status, not final text.
+- Steel `run_visual_inspection` sends the prepared page/image into a nested
+  OpenAI OAuth vision call. Keep that nested file data as a raw base64 string,
+  not a binary typed-array payload, so provider internals do not hit unsupported
+  object transfer errors.
+- Steel provider must not have a default tool-loop cap for OCR/PDF processing;
+  large PDFs can have hundreds of pages. Only apply `steelToolMaxCalls` when an
+  explicit caller/test passes it.
+- Steel `run_visual_inspection` is a gap-filling geometry tool, not a fixed
+  post-OCR step. Call it only when OCR/table/user data is missing a necessary
+  geometry or processing value, such as slot continuous edge length required for
+  pricing.
+- When Steel chat returns `fileAnalysisData`, automatically open/select the
+  File Analysis right-panel tab. A completed `patch_file_analysis_data` stream
+  event is not enough for users to see rows if the UI remains on Workbook.
+- When Steel chat returns both `workbookPatch.workbook` and `fileAnalysisData`,
+  prioritize the Workbook right-panel tab. File Analysis should auto-select
+  only for file-analysis-only OCR/review responses, not completed quote
+  workbook responses.
+- When Steel chat returns only `workbookPatch.workbook`, also open/select the
+  Workbook right-panel tab even if the user was previously viewing File
+  Analysis. Any accepted workbook patch is workbook-visible output.
 - Steel rule tests must not use `toContain`, `expect.stringContaining`, or
   `toMatch` to lock exact Agent/OCR/workbook/quote rule wording, even when the
   text came from Supabase fixtures. Assert source tables, reviewed rows,
@@ -11,6 +47,13 @@
 - Do not reintroduce tests that fail only because human-authored Steel rule
   wording changed. If a rule change needs verification, test sync/readback
   metadata and the downstream behavior produced by the rule.
+- Keep AI-facing Steel tool names stable and generic. Do not expose vendor/model
+  implementation names such as `paddleocr_vl` as the provider tool name; use a
+  generic wrapper such as `run_file_ocr` while the backend can still call the
+  configured PaddleOCR MCP implementation internally.
+- `run_file_ocr` is a Steel tool and belongs on the Steel AI tool surface, but
+  it is executed by the provider-local OCR executor. Do not route it through
+  the Supabase query executor used by `lookup_*` and `search_*`.
 - All Steel rule runtime tests should load or mock rules through Supabase-backed
   repositories such as `steel.agent_rules` or `steel.quote_rules`; do not read
   `docs/rules/*.txt` inside tests as the source of truth.
@@ -619,3 +662,18 @@
   behavior should use the reviewed Supabase `steel.agent_rules` row whenever
   they exercise runtime OCR behavior, not read a local docs file as if it were
   runtime state.
+- Steel OCR / vision business instructions must live in `docs/rules` and be
+  synced to Supabase `steel.agent_rules`. Runtime code may compose DB-loaded
+  rule text with current source metadata, but must not hard-code the OCR or
+  visual-inspection prompt contract in TypeScript.
+- Steel streaming route shells must not mount async handlers directly. Wrap
+  `/api/steel/ai/chat/stream` so setup-time rejections return Steel JSON with
+  `errorSummary`; otherwise Express falls through to the global
+  `An unknown error occurred.` response and hides the actionable failure.
+- Steel stream diagnostics must cover both the route shell and the final
+  `ErrorController`. Errors from auth, body parsing, or other middleware happen
+  before the Steel route wrapper and must still return Steel JSON
+  `errorSummary` for `/api/steel/ai/chat/stream`.
+- Local Steel `/steel/oauth-chat` currently sends attachment bytes in the chat
+  JSON payload, so the Express JSON/urlencoded parser limit must be at least
+  `50mb` until the UI is changed to upload files first and send only `fileId`.

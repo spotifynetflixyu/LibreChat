@@ -280,6 +280,102 @@ describe('createSteelHandlers', () => {
     expect(res.end).toHaveBeenCalled();
   });
 
+  it('streams run_file_ocr lifecycle events during visual evidence OCR', async () => {
+    const executeFileOcr = jest.fn(async () => ({
+      ok: true as const,
+      toolName: 'run_file_ocr' as const,
+      data: {
+        filename: 'd.pdf',
+        page: 1,
+        text: 'OCR_SENTINEL',
+      },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const sendChat = jest.fn(async (options) => {
+      await options.executeFileOcr?.({
+        arguments: {
+          filename: 'd.pdf',
+          page: 1,
+          file_type: 'pdf',
+          output_mode: 'detailed',
+          dpi: 400,
+        },
+        files: [
+          {
+            filename: 'd.pdf',
+            mediaType: 'application/pdf',
+            data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+          },
+        ],
+        providerToolCallId: 'call_ocr_1',
+      });
+
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已完成 d.pdf page 1 OCR。',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+    });
+    const handlers = createSteelHandlers({
+      executeFileOcr,
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_ocr_stream',
+        messages: [
+          {
+            role: 'user',
+            content: 'OCR d.pdf',
+            files: [
+              {
+                filename: 'd.pdf',
+                mediaType: 'application/pdf',
+                dataBase64: Buffer.from('PDF_SENTINEL', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'tool',
+          status: 'started',
+          toolName: 'run_file_ocr',
+          message: 'run_file_ocr started',
+        }),
+        expect.objectContaining({
+          type: 'tool',
+          status: 'completed',
+          toolName: 'run_file_ocr',
+          message: 'run_file_ocr completed',
+          ok: true,
+        }),
+      ]),
+    );
+    expect(executeFileOcr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          filename: 'd.pdf',
+          page: 1,
+        }),
+      }),
+    );
+  });
+
   it('persists file analysis patch proposals and returns the updated workspace', async () => {
     const repository = new MemorySteelFileAnalysisRepository();
     const fileAnalysisService = createSteelFileAnalysisService({

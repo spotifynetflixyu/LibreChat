@@ -126,6 +126,18 @@ create Admin import source versions or formal database writes.
       call.
 - [x] Update the OCR policy so user messages `繼續` and `go` both mean resume
       pending OCR work unless the user explicitly says to reprocess.
+- [x] Fix uploaded PDF/image OCR execution: expose `run_file_ocr` as a Steel
+      tool for visual evidence turns, execute it through the backend PaddleOCR
+      MCP wrapper against current uploaded file bytes, feed OCR results back
+      into the provider loop before `patch_file_analysis_data`, and sync the
+      updated agent/OCR rules into reviewed Supabase `steel.agent_rules`.
+- [x] Fix multi-page PDF OCR auto-continuation when the model tries to answer
+      after page 1 even though `file_analysis_data` source refs show more PDF
+      pages are pending.
+- [x] Update Steel rules so drawing-derived 柱底板 / 連接板 / 加勁板 default to
+      black iron plate pricing when dimensions and thickness are available,
+      using theoretical rectangular plate weight instead of blocking the quote
+      on material confirmation.
 
 Review:
 
@@ -195,6 +207,43 @@ Review:
 - Updated `sync-steel-rules.cjs` so `docs/rules/鋼材規則.txt` no longer creates
   a company/common quote rule. The sync now deletes removed quote rules for
   that source instead of merely setting them inactive.
+- User correction: after a user confirms `file_analysis_data` and asks for a
+  quote, a response that updates both `fileAnalysisData` and the workbook must
+  show the Workbook tab, not leave the right panel on File Analysis.
+- Added a focused Steel OAuth chat UI regression test for
+  `workbookPatch.workbook + fileAnalysisData` responses and updated
+  `/steel/oauth-chat` so workbook patches open/select Workbook while
+  file-analysis-only responses still open/select File Analysis.
+- Follow-up correction: `workbookPatch.workbook` alone must also open/select
+  Workbook. Added a focused regression where the user starts on File Analysis,
+  receives only a workbook patch, and the UI switches back to Workbook.
+- User correction: when `d.pdf` has two pages, page 1 `patch_file_analysis_data`
+  must not end the turn if the user did not press stop. Added provider
+  progress tracking for PDF `file_analysis_data` patches: completed/failed/
+  skipped page refs are accumulated per file, and a premature final answer is
+  rejected while `pageCount` still has pending pages. The next provider round
+  is forced to `run_file_ocr` for the pending page.
+- Verification for the multi-page continuation fix passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npm run build`; and `git diff --check`. The build still
+  reports the pre-existing Redis `cacheFactory.ts` type warning only. Backend
+  was restarted on port 3080 and `http://localhost:3080/api/config` returned
+  200.
+- User correction: when OCR/file_analysis_data produces 柱底板、連接板 or
+  加勁板 rows, material should default to the most likely black iron plate /
+  SS400 product for pricing if width, height, thickness, and quantity are
+  available. Updated `docs/rules/鋼材規則.txt` plate rules and
+  `docs/rules/agent規則.txt` core quote rules so material confirmation becomes
+  a provisional note/manual-review item, not a reason to leave the whole price
+  未確認.
+- Synced the updated rules into Supabase with
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`. Readback confirmed
+  `steel-default-agent-instruction` sha
+  `0aa5ce3306439c47d3c4100461f50f2acca7665928eeab111fab543058e6c4e3` and
+  reviewed active plate quote keys `steel_quote_rules_plate`,
+  `steel_quote_rules_black_plate`, `steel_quote_rules_galvanized_plate`, and
+  `steel_quote_rules_ot_plate` with sha
+  `58815b8cf50a503aff8184a46b8873d9460afc418004d70a57441b72df29929f`.
 - `node packages/api/scripts/sync-steel-rules.cjs --apply` passed after the
   deletion change. Direct Supabase readback for
   `sourceFile = docs/rules/鋼材規則.txt` returned 14 rows, all
@@ -253,6 +302,102 @@ Review:
   contains `quote_details`, `price_sources`, `summary`, and
   `interpretation_notes` rows derived from Supabase tool output, not local
   price fixtures.
+- User correction: normal multi-page PDF/image OCR must not pause after each
+  page waiting for `go`; after each page/image `run_file_ocr` and immediate
+  `patch_file_analysis_data`, the provider should auto-continue the next
+  page/image in order unless the user presses stop, the run is interrupted, OCR
+  fails, or manual review requires stopping.
+- Added provider behavior coverage proving a 5-page PDF sequence continues:
+  page 1 OCR -> page 1 patch -> page 2 OCR -> page 2 patch through page 5,
+  then final completion text. The test first failed at 9 provider generations
+  because the default Steel tool loop limit cut off the final completion round,
+  then passed after increasing the default loop budget.
+- Synced updated OCR/agent rule policy into Supabase reviewed active
+  `steel.agent_rules` with `node packages/api/scripts/sync-steel-rules.cjs
+  --apply`; readback showed updated sha values for
+  `steel-default-agent-instruction` and `steel-drawing-ocr-policy`.
+- User-reported live issue: `run_visual_inspection` failed with
+  `Cannot transfer object of unsupported type`, and the UI showed
+  `patch_file_analysis_data completed` without visible rows.
+- Hardened the nested OpenAI OAuth vision call so `run_visual_inspection`
+  sends prepared image bytes as raw base64 string data instead of a binary
+  typed-array payload.
+- Updated `/steel/oauth-chat` UI behavior so any chat response containing
+  `fileAnalysisData` opens the right panel and selects `File Analysis`
+  automatically; users no longer have to discover the tab after
+  `patch_file_analysis_data completed`.
+- Verification for this pass passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand
+  --testNamePattern="passes visual inspection images|loads reviewed OCR
+  rules|executes file OCR|continues multi-page PDF OCR|exposes
+  patch_file_analysis_data"`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand
+  --testNamePattern="streams file analysis patch persistence status|persists
+  file analysis patch proposals"`; and
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand
+  --testNamePattern="renders returned file analysis|selects File Analysis
+  automatically|smokes image OCR"`.
+- User correction: Steel provider must not have a default 60 tool-loop cap
+  because real PDFs may have hundreds of pages. `steelToolMaxCalls` is now only
+  a caller-provided explicit limit; default visual-evidence/OCR runs continue
+  until the provider returns a non-tool final answer or the user aborts/stops.
+- Added provider regression coverage with a 31-page PDF sequence requiring 63
+  provider generations. It failed under the former default 60 cap and now
+  passes without a default cap; the explicit `steelToolMaxCalls: 1` guard test
+  still passes.
+- User correction: `run_visual_inspection` should not be a fixed post-OCR step.
+  It is now described and synced as a gap-filling tool that runs only when OCR,
+  table rows, existing `file_analysis_data`, or user-provided data lacks a
+  necessary geometry/processing value such as slot continuous edge length needed
+  for pricing.
+- Synced the updated agent/OCR/vision rules into Supabase reviewed active
+  `steel.agent_rules` with `node packages/api/scripts/sync-steel-rules.cjs
+  --apply`; readback showed updated sha values for
+  `steel-default-agent-instruction`, `steel-drawing-ocr-policy`, and
+  `steel-visual-inspection-policy`.
+- Fixed the UI upload failure where `d.pdf` was treated as unreadable because
+  the model had only `patch_file_analysis_data` and no executable OCR Steel
+  tool. Visual PDF/image turns now expose `run_file_ocr` plus
+  `patch_file_analysis_data`; `run_file_ocr` is a generic Steel tool name, while
+  backend execution still calls PaddleOCR MCP `paddleocr_vl` internally.
+- Fixed the follow-up live UI failure where OpenAI rejected uploaded `d.pdf`
+  before OCR with `input[1].content[1].file_data` empty bytes. Visual evidence
+  turns now omit PDF/image file parts from the OpenAI provider prompt and pass a
+  text-only `run_file_ocr files` inventory instead; the actual file bytes stay
+  server-side for the `run_file_ocr` executor.
+- Fixed the UI observability gap where `run_file_ocr` execution was invisible
+  in the chat flow. Streaming chat now wraps the OCR executor and emits
+  `run_file_ocr started`, `run_file_ocr completed`, or `run_file_ocr failed`
+  events before the later `patch_file_analysis_data` events.
+- Added the second-stage visual inspection contract for geometry-only drawing
+  judgment. `run_visual_inspection` is now a Steel tool for OpenAI OAuth vision
+  after OCR has been patched; it is for holes, slots, continuous slotted-edge
+  length, bends, cut corners, notches, and geometry consistency, not OCR. The
+  visual inspection rules live in `docs/rules/vision規則.txt` and were synced
+  into reviewed Supabase `steel.agent_rules` as
+  `steel-visual-inspection-policy`.
+- User correction captured in rules: slot/open-groove pricing is based on the
+  continuous edge length that needs slotting, not the part's total length and
+  not OCR text alone. Ambiguous continuous edge length must be low confidence
+  with manual review.
+- Updated `docs/rules/agent規則.txt` and `docs/rules/OCR規則.txt`, then synced
+  them to Supabase. Readback confirmed reviewed active
+  `steel-default-agent-instruction.tool_policy.availableTools` includes
+  `run_file_ocr`, and `steel-drawing-ocr-policy.tool_policy.requiredToolOrder`
+  is `run_file_ocr` then `patch_file_analysis_data`.
+- Verification for the upload OCR fix passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="d.pdf upload interruption|injects the latest saved file_analysis_data|smokes image OCR"`;
+  `cd packages/api && npm run build`; and `git diff --check`. The build still
+  reports the pre-existing Redis `cacheFactory.ts` type warning, but no OCR
+  module warnings remain.
+- Follow-up stream visibility verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="streams run_file_ocr|d.pdf upload interruption|injects the latest saved file_analysis_data|smokes image OCR"`.
+- Supabase readback confirmed `steel-default-agent-instruction` includes
+  `run_visual_inspection`, `steel-drawing-ocr-policy` exposes
+  `run_file_ocr`, `run_visual_inspection`, and `patch_file_analysis_data`, and
+  `steel-visual-inspection-policy` has required order
+  `run_file_ocr -> patch_file_analysis_data -> run_visual_inspection -> patch_file_analysis_data`.
 - `cd packages/data-provider && npx jest src/steel/vision.spec.ts --runInBand`
   passed after extending `patch_file_analysis_data` schemas with
   `sourceKey`, `imageIndex`, `ocrEngine`, `ocrStatus`, `processedAt`, and
@@ -270,6 +415,45 @@ Review:
   `node packages/api/scripts/sync-steel-ocr-rules.cjs --apply` passed; active
   reviewed `steel.agent_rules.slug = steel-drawing-ocr-policy` now has sha256
   `8de5cd59d217aa5b76071b112d778724bc34b410451d312e6188423493549e1f`.
+- Fixed the remaining generic stream HTTP 500 diagnostic gap. Streaming chat
+  now catches context-preparation failures before opening the NDJSON stream and
+  returns a JSON `errorSummary` in development; the shared data-provider stream
+  client now reads non-OK response bodies so the UI shows the backend error
+  instead of only `Steel chat stream failed with HTTP 500`.
+- Verification for the latest stream 500 fix passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="streams run_file_ocr|d.pdf upload interruption|injects the latest saved file_analysis_data|smokes image OCR"`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts --runInBand`;
+  `npm run build:data-provider`; `cd packages/api && npm run build`; and
+  `git diff --check`. Backend was restarted on port 3080 and
+  `http://localhost:3080/api/config` returned 200.
+- Follow-up UI evidence showed the response was still
+  `Steel chat stream failed with HTTP 500: An unknown error occurred.`, which
+  means the request escaped the Steel stream handler and hit Express's global
+  ErrorController before any Steel JSON error boundary.
+- Added a route-shell guard around `/api/steel/ai/chat/stream` so setup-time
+  async rejections from `handlers.streamChat` return Steel JSON with
+  `errorSummary` instead of global plain-text unknown. Regression verification
+  passed: `cd api && npx jest server/routes/__tests__/steel.spec.js --runInBand`.
+- Follow-up evidence still showed the same global unknown response, so the
+  error is escaping before the route handler, likely in auth/body-parser or
+  another middleware. Added a Steel stream branch to the final
+  `ErrorController` so `/api/steel/ai/chat/stream` errors return Steel JSON
+  diagnostics even when they occur outside `handlers.streamChat`.
+- Verification passed:
+  `cd packages/api && npx jest src/middleware/error.spec.ts --runInBand`;
+  `cd api && npx jest server/routes/__tests__/steel.spec.js --runInBand`;
+  `cd packages/api && npm run build`; and `git diff --check`.
+- User chose the immediate 413 fix: raise Express JSON/urlencoded parser
+  limits from `3mb` to `50mb` for the main and experimental servers because
+  the current Steel UI still sends attachment base64 inside the chat JSON
+  payload. Longer-term cleanup remains to send only persisted `fileId` refs.
+- Verification for the 50mb limit change: `git diff --check` passed. After
+  backend restart, a 4,194,392-byte JSON POST to
+  `/api/steel/ai/chat/stream` returned `401 {"message":"No auth token"}`
+  instead of `413`, proving the request passed the JSON parser. The broader
+  `api/server/index.spec.js` run was stopped after hanging without output;
+  the runtime smoke covered this config change directly.
 - Historical note: the former rule-text policy test for PaddleOCR MCP config was
   deleted after the user clarified that `docs/rules/*.txt` content should not be
   tested directly. MCP config remains covered by config parsing and live

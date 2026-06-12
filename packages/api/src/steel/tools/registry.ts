@@ -1,9 +1,9 @@
-import { steelToolArgsSchemas, type SteelToolName } from './schemas';
+import { steelToolArgsSchemas, type SteelBusinessToolName } from './schemas';
 
 import type { ZodType } from 'zod';
 
 export interface SteelToolDefinition {
-  name: SteelToolName;
+  name: SteelBusinessToolName;
   description: string;
   argsSchema: ZodType;
 }
@@ -42,11 +42,11 @@ export function getSteelToolDefinitions(): SteelToolDefinition[] {
   return [...steelToolDefinitions];
 }
 
-export function isSteelToolName(value: string): value is SteelToolName {
-  return definitionsByName.has(value as SteelToolName);
+export function isSteelToolName(value: string): value is SteelBusinessToolName {
+  return definitionsByName.has(value as SteelBusinessToolName);
 }
 
-export function getSteelToolDefinition(name: SteelToolName): SteelToolDefinition {
+export function getSteelToolDefinition(name: SteelBusinessToolName): SteelToolDefinition {
   const definition = definitionsByName.get(name);
 
   if (!definition) {

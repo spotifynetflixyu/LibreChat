@@ -46,10 +46,12 @@ import {
   type SteelOAuthChatFile,
   type SteelOAuthChatMessage,
   type SteelProviderToolExecutor,
+  type SteelProviderFileOcrExecutor,
   type SteelProviderChatResponse as SteelOAuthProviderChatResponse,
 } from './ai/provider';
 import { createSteelPostgresPool } from './postgres';
 import { executeSteelTool } from './tools/execute';
+import { runSteelFileOcr } from './vision/ocr';
 
 import type { Request, Response } from 'express';
 import type { z } from 'zod';
@@ -100,6 +102,7 @@ interface SteelRequest extends Request {
 export interface SteelHandlersDeps {
   env?: SteelOpenAIConfigEnv;
   executeToolCall?: SteelProviderToolExecutor;
+  executeFileOcr?: SteelProviderFileOcrExecutor;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelChatProviderResult>;
   resolveEvidenceFile?: (input: {
@@ -922,6 +925,7 @@ async function applyChatFileAnalysisPatch(
 
 export function createSteelHandlers({
   env = process.env,
+  executeFileOcr,
   executeToolCall,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
@@ -990,16 +994,34 @@ export function createSteelHandlers({
         return;
       }
 
-      let messagesWithInstructions = applyFileInstructionsToMessages(
-        messages,
-        (req as SteelRequest).config,
-      );
-      if (fileAnalysisService) {
-        messagesWithInstructions = await addFileAnalysisContextToMessages(
-          messagesWithInstructions,
-          conversationId,
-          getFileAnalysisService,
+      let messagesWithInstructions: SteelOAuthChatMessage[];
+      try {
+        messagesWithInstructions = applyFileInstructionsToMessages(
+          messages,
+          (req as SteelRequest).config,
         );
+        if (fileAnalysisService) {
+          messagesWithInstructions = await addFileAnalysisContextToMessages(
+            messagesWithInstructions,
+            conversationId,
+            getFileAnalysisService,
+          );
+        }
+      } catch (error) {
+        logger.error('[steelStreamChat] context preparation failed:', error);
+        res
+          .status(500)
+          .json(
+            createErrorResponse(
+              'openai_oauth_responses',
+              model,
+              'unknown',
+              shouldExposeErrorSummary(env)
+                ? getErrorMessage(error)
+                : 'Steel stream context preparation failed.',
+            ),
+          );
+        return;
       }
 
       let workbookContextText: string | undefined;
@@ -1127,16 +1149,34 @@ export function createSteelHandlers({
         return;
       }
 
-      let messagesWithInstructions = applyFileInstructionsToMessages(
-        messages,
-        (req as SteelRequest).config,
-      );
-      if (fileAnalysisService) {
-        messagesWithInstructions = await addFileAnalysisContextToMessages(
-          messagesWithInstructions,
-          conversationId,
-          getFileAnalysisService,
+      let messagesWithInstructions: SteelOAuthChatMessage[];
+      try {
+        messagesWithInstructions = applyFileInstructionsToMessages(
+          messages,
+          (req as SteelRequest).config,
         );
+        if (fileAnalysisService) {
+          messagesWithInstructions = await addFileAnalysisContextToMessages(
+            messagesWithInstructions,
+            conversationId,
+            getFileAnalysisService,
+          );
+        }
+      } catch (error) {
+        logger.error('[steelStreamChat] context preparation failed:', error);
+        res
+          .status(500)
+          .json(
+            createErrorResponse(
+              'openai_oauth_responses',
+              model,
+              'unknown',
+              shouldExposeErrorSummary(env)
+                ? getErrorMessage(error)
+                : 'Steel stream context preparation failed.',
+            ),
+          );
+        return;
       }
 
       let workbookContextText: string | undefined;
@@ -1166,6 +1206,40 @@ export function createSteelHandlers({
 
         const result = await sendChat({
           authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
+          executeFileOcr: async (options) => {
+            writeStreamEvent(res, {
+              type: 'tool',
+              status: 'started',
+              toolName: 'run_file_ocr',
+              message: 'run_file_ocr started',
+            });
+
+            try {
+              const toolResult = await (executeFileOcr ?? runSteelFileOcr)(options);
+
+              const failedToolMessage =
+                toolResult.ok === false
+                  ? `run_file_ocr failed: ${toolResult.errorSummary}`
+                  : undefined;
+              writeStreamEvent(res, {
+                type: 'tool',
+                status: toolResult.ok ? 'completed' : 'failed',
+                toolName: 'run_file_ocr',
+                message: failedToolMessage ?? 'run_file_ocr completed',
+                ok: toolResult.ok,
+              });
+              return toolResult;
+            } catch (error) {
+              writeStreamEvent(res, {
+                type: 'tool',
+                status: 'failed',
+                toolName: 'run_file_ocr',
+                message: getErrorMessage(error),
+                ok: false,
+              });
+              throw error;
+            }
+          },
           executeSteelToolCall: async (options) => {
             const type = getStreamToolEventType(options.toolName);
             writeStreamEvent(res, {
@@ -1211,6 +1285,23 @@ export function createSteelHandlers({
             writeStreamEvent(res, {
               type: 'reasoning',
               summary,
+            });
+          },
+          onToolStatus: (event) => {
+            if (event.toolName !== 'run_visual_inspection') {
+              return;
+            }
+
+            writeStreamEvent(res, {
+              type: 'tool',
+              status: event.status,
+              toolName: event.toolName,
+              message:
+                event.errorSummary ??
+                (event.result?.ok === false
+                  ? `${event.toolName} failed: ${event.result.errorSummary}`
+                  : `${event.toolName} ${event.status}`),
+              ok: event.result?.ok,
             });
           },
           ...(hasMessageFiles(messagesWithInstructions)

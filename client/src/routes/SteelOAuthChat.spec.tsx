@@ -513,6 +513,130 @@ describe('SteelOAuthChat', () => {
     expect(screen.getByText('孔洞數需人工確認')).toBeInTheDocument();
   });
 
+  it('selects File Analysis automatically when a chat response returns file_analysis_data', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已建立圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisData: createFileAnalysisData(1),
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.type(screen.getByPlaceholderText('Message Steel'), '判讀 c.png');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已建立圖文判讀表格。');
+
+    expect(screen.getByRole('tab', { name: 'File Analysis' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByText('File Analysis Data')).toBeInTheDocument();
+    expect(screen.getByText('PL1')).toBeInTheDocument();
+  });
+
+  it('keeps Workbook selected when a chat response returns both workbook and file_analysis_data', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已依確認資料更新 workbook。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisData: createFileAnalysisData(2),
+        workbookPatch: {
+          workbook: createWorkbook(2, 115),
+          changedPaths: [
+            { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+          ],
+          changedFieldSummary: [
+            {
+              sheetId: 'quote_details',
+              rowId: 'line_1',
+              columnKey: 'material_unit_price',
+              label: '材料單價',
+              previousValue: null,
+              nextValue: 115,
+            },
+          ],
+        },
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.type(screen.getByPlaceholderText('Message Steel'), 'BP1 螺栓總數為 196，報價');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已依確認資料更新 workbook。');
+
+    expect(screen.getByRole('tab', { name: 'Workbook' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('v2')).toBeInTheDocument();
+    expect(screen.getByText('115')).toBeInTheDocument();
+  });
+
+  it('selects Workbook automatically when a chat response returns only a workbook patch', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已更新 workbook。',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch: {
+          workbook: createWorkbook(2, 115),
+          changedPaths: [
+            { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+          ],
+          changedFieldSummary: [
+            {
+              sheetId: 'quote_details',
+              rowId: 'line_1',
+              columnKey: 'material_unit_price',
+              label: '材料單價',
+              previousValue: null,
+              nextValue: 115,
+            },
+          ],
+        },
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await screen.findByRole('tab', { name: 'Workbook' });
+    await user.click(screen.getByRole('tab', { name: 'File Analysis' }));
+    expect(screen.getByRole('tab', { name: 'File Analysis' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '報價');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已更新 workbook。');
+
+    expect(screen.getByRole('tab', { name: 'Workbook' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('v2')).toBeInTheDocument();
+    expect(screen.getByText('115')).toBeInTheDocument();
+  });
+
   it('lets users edit file_analysis_data cells and save manual patches', async () => {
     const user = userEvent.setup();
     mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {

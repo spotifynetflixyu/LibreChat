@@ -143,6 +143,7 @@ function buildAgentRules(repoRoot) {
   const agent = readRulePrompt(repoRoot, 'docs/rules/agent規則.txt');
   const workbook = readRulePrompt(repoRoot, 'docs/rules/workbook規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/OCR規則.txt');
+  const vision = readRulePrompt(repoRoot, 'docs/rules/vision規則.txt');
 
   return [
     {
@@ -161,6 +162,8 @@ function buildAgentRules(repoRoot) {
           'search_customers',
           'lookup_quote_rules',
           'search_price_candidates',
+          'run_file_ocr',
+          'run_visual_inspection',
           'patch_quote_workbook',
           'patch_file_analysis_data',
         ],
@@ -232,6 +235,8 @@ function buildAgentRules(repoRoot) {
       },
       prompt: ocr.prompt,
       toolPolicy: {
+        availableTools: ['run_file_ocr', 'run_visual_inspection', 'patch_file_analysis_data'],
+        requiredToolOrder: ['run_file_ocr', 'patch_file_analysis_data'],
         requiredBefore: ['drawing_evidence_extraction'],
         mustMarkLowConfidence: true,
       },
@@ -250,6 +255,51 @@ function buildAgentRules(repoRoot) {
           '圖面表格局部判讀流程',
           'drawing_ocr_local_table_reading',
           ocr.sha256,
+        ),
+      ],
+    },
+    {
+      slug: 'steel-visual-inspection-policy',
+      version: 1,
+      ruleType: 'tool_flow_rule',
+      title: '圖像幾何判斷流程',
+      locale: 'zh-TW',
+      ruleSections: ['visual_inspection', 'drawing_vision', 'tool_flow'],
+      sheetId: null,
+      selectors: {
+        sourceKinds: ['image', 'pdf', 'scanned_pdf'],
+        requiresVisualInspection: true,
+        inspectionTypes: [
+          'holes',
+          'slots',
+          'continuous_edges',
+          'bends',
+          'cut_corners',
+          'notches',
+          'geometry_consistency',
+        ],
+      },
+      prompt: vision.prompt,
+      toolPolicy: {
+        availableTools: ['run_visual_inspection', 'patch_file_analysis_data'],
+        requiredToolOrder: ['run_file_ocr', 'patch_file_analysis_data', 'run_visual_inspection', 'patch_file_analysis_data'],
+        forbidOcrInVisualInspection: true,
+      },
+      outputPolicy: {
+        targetSheets: ['file_analysis_data', 'manual_review', 'interpretation_notes'],
+        requirePatchAfterInspection: true,
+        inspectionEngine: 'OpenAI OAuth vision',
+      },
+      priority: 36,
+      confidence: 'high',
+      active: true,
+      reviewState: 'reviewed',
+      sourceRefs: [
+        sourceRef(
+          'docs/rules/vision規則.txt',
+          '圖像幾何判斷流程',
+          'visual_inspection_policy',
+          vision.sha256,
         ),
       ],
     },

@@ -63,13 +63,24 @@ const mockPatchWorkbook = jest.fn((_req, res) =>
     changedFieldSummary: [],
   }),
 );
+const mockExportWorkbook = jest.fn((_req, res) =>
+  res
+    .status(200)
+    .set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    .send(Buffer.from('xlsx')),
+);
+const mockPatchFileAnalysisData = jest.fn((_req, res) =>
+  res.status(200).json({ fileAnalysisData: { id: 'fad_1', version: 2, sheets: [] } }),
+);
 const mockCreateSteelHandlers = jest.fn(() => ({
   chat: mockChat,
   createAuthenticatedConversation: mockCreateAuthenticatedConversation,
   createGuestConversation: mockCreateGuestConversation,
   createWorkbook: mockCreateWorkbook,
+  exportWorkbook: mockExportWorkbook,
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
+  patchFileAnalysisData: mockPatchFileAnalysisData,
   patchWorkbook: mockPatchWorkbook,
   readWorkbook: mockReadWorkbook,
   readConversation: mockReadConversation,
@@ -82,14 +93,25 @@ const mockRequireCapability = jest.fn(() => (_req, _res, next) => next());
 const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 
 jest.mock('@librechat/api', () => ({
+  createMongooseSteelFileAnalysisRepository: jest.fn(() => ({ kind: 'file-analysis-repository' })),
+  createSteelFileAnalysisService: jest.fn(() => ({ kind: 'file-analysis-service' })),
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
   createSteelHandlers: (...args) => mockCreateSteelHandlers(...args),
+  resolveEvidenceFileForProvider: jest.fn(),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
   SystemCapabilities: {
     ACCESS_ADMIN: 'ACCESS_ADMIN',
   },
+}));
+
+jest.mock('~/models', () => ({
+  getFiles: jest.fn(),
+}));
+
+jest.mock('~/server/services/Files/strategies', () => ({
+  getStrategyFunctions: jest.fn(() => ({})),
 }));
 
 jest.mock('~/server/middleware', () => ({
@@ -161,6 +183,25 @@ describe('Steel route shells', () => {
     expect(res.headers['content-type']).toContain('application/x-ndjson');
     expect(res.text).toContain('"type":"done"');
     expect(mockStreamChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns Steel JSON when the streaming handler rejects before writing headers', async () => {
+    mockStreamChat.mockRejectedValueOnce(new Error('stream setup exploded'));
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/steel/ai/chat/stream')
+      .send({ messages: [{ role: 'user', content: 'Say steel-stream-ok' }] });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      provider: 'openai_oauth_responses',
+      text: '',
+      unsupportedSettings: [],
+      warnings: [],
+      errorCategory: 'unknown',
+      errorSummary: 'stream setup exploded',
+    });
   });
 
   it('registers authenticated Steel conversation creation under /api/steel', async () => {

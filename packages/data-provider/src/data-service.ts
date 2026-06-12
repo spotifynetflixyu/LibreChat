@@ -72,7 +72,24 @@ export async function streamSteelChat(
   });
 
   if (!response.ok) {
-    throw new Error(`Steel chat stream failed with HTTP ${response.status}`);
+    const errorText = await response.text();
+    let errorSummary = errorText.trim();
+    try {
+      const parsed = JSON.parse(errorText) as { errorSummary?: unknown; message?: unknown };
+      errorSummary =
+        typeof parsed.errorSummary === 'string'
+          ? parsed.errorSummary
+          : typeof parsed.message === 'string'
+            ? parsed.message
+            : errorSummary;
+    } catch {
+      // Keep the raw response text when the server did not return JSON.
+    }
+    throw new Error(
+      errorSummary
+        ? `Steel chat stream failed with HTTP ${response.status}: ${errorSummary}`
+        : `Steel chat stream failed with HTTP ${response.status}`,
+    );
   }
   if (!response.body) {
     throw new Error('Steel chat stream response did not include a readable body.');

@@ -178,6 +178,44 @@ function createOcrRuleRow(prompt: string): AgentRuleRowFixture {
   };
 }
 
+function createVisionRuleRow(prompt: string): AgentRuleRowFixture {
+  return {
+    id: '4',
+    slug: 'steel-visual-inspection-policy',
+    version: '1',
+    rule_type: 'tool_flow_rule',
+    title: '圖像幾何判斷流程',
+    locale: 'zh-TW',
+    rule_sections: ['visual_inspection', 'drawing_vision', 'tool_flow'],
+    sheet_id: null,
+    selectors: {
+      sourceKinds: ['image', 'pdf', 'scanned_pdf'],
+      requiresVisualInspection: true,
+    },
+    prompt,
+    tool_policy: {
+      availableTools: ['run_visual_inspection', 'patch_file_analysis_data'],
+    },
+    output_policy: {
+      targetSheets: ['file_analysis_data', 'manual_review', 'interpretation_notes'],
+    },
+    priority: '36',
+    confidence: 'high',
+    active: true,
+    review_state: 'reviewed',
+    source_refs: [
+      {
+        channel: 'repo_docs',
+        factType: 'agent_rule',
+        sourceFile: 'steel.agent_rules',
+        locator: '圖像幾何判斷流程',
+        canonicalKey: 'visual_inspection_policy',
+        sha256: 'vision-rule-sha256-sentinel',
+      },
+    ],
+  };
+}
+
 const defaultAgentRulePrompt = [
   'DB_AGENT_RULE_SENTINEL',
   'fixture:agent-rule-line-1',
@@ -380,6 +418,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const agentRulesClient = createAgentRulesClient([
       createAgentRuleRow(defaultAgentRulePrompt),
       createOcrRuleRow(ocrPrompt),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:visual-rule-loaded'),
     ]);
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: 'ocr-rule-ok' }],
@@ -450,6 +489,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const agentRulesClient = createAgentRulesClient([
       createAgentRuleRow(defaultAgentRulePrompt),
       createOcrRuleRow('OCR_RULE_SENTINEL fixture:file-analysis-rule'),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:file-analysis-vision-rule'),
     ]);
     const doGenerate = jest
       .fn()
@@ -552,6 +592,664 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(result.fileAnalysisPatch?.patches[0]?.sheetId).toBe('file_analysis_data');
     expect(result.fileAnalysisPatch?.summary).toBe('新增 c.png 第 1 頁 BP1 判讀列。');
     expect(result.text).toContain('已更新圖文判讀資料');
+  });
+
+  it('executes file OCR for visual evidence before patching file_analysis_data', async () => {
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow('OCR_RULE_SENTINEL fixture:paddleocr-required'),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:paddleocr-vision-required'),
+    ]);
+    const executeFileOcr = jest.fn(async () => ({
+      ok: true,
+      toolName: 'run_file_ocr' as const,
+      data: {
+        filename: 'd.pdf',
+        page: 1,
+        fileType: 'image',
+        outputMode: 'markdown',
+        text: '| part_no | quantity |\n| C100 | 1 |',
+      },
+      durationMs: 10,
+      redactionVersion: 1,
+    }));
+    const doGenerate = jest
+      .fn()
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_ocr_page_1',
+            toolName: 'run_file_ocr',
+            input: JSON.stringify({
+              filename: 'd.pdf',
+              page: 1,
+              file_type: 'image',
+              output_mode: 'markdown',
+              dpi: 400,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_paddleocr_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (options: LanguageModelV3CallOptions) => {
+        expect(options.prompt).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: 'tool',
+              content: [
+                expect.objectContaining({
+                  toolName: 'run_file_ocr',
+                  output: {
+                    type: 'json',
+                    value: expect.objectContaining({
+                      ok: true,
+                      data: expect.objectContaining({
+                        text: expect.stringContaining('C100'),
+                      }),
+                    }),
+                  },
+                }),
+              ],
+            }),
+          ]),
+        );
+
+        return {
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call_file_analysis_patch',
+              toolName: 'patch_file_analysis_data',
+              input: JSON.stringify({
+                sourceFiles: [
+                  {
+                    fileId: 'file_d_pdf',
+                    filename: 'd.pdf',
+                    mediaType: 'application/pdf',
+                    pageCount: 1,
+                    ocrEngine: 'PaddleOCR MCP',
+                    ocrStatus: 'completed',
+                  },
+                ],
+                patches: [
+                  {
+                    sheetId: 'file_analysis_data',
+                    upsertColumns: [{ key: 'partNo', label: '件號' }],
+                    upsertRows: [
+                      {
+                        sourceRef: {
+                          fileId: 'file_d_pdf',
+                          filename: 'd.pdf',
+                          mediaType: 'application/pdf',
+                          sourceKey: 'file_d_pdf:page:1:row:C100',
+                          page: 1,
+                          ocrEngine: 'PaddleOCR MCP',
+                          ocrStatus: 'completed',
+                        },
+                        cells: { partNo: 'C100' },
+                        confidence: 'medium',
+                      },
+                    ],
+                  },
+                ],
+                summary: 'd.pdf page 1 PaddleOCR completed.',
+              }),
+            },
+          ],
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+          response: { id: 'resp_paddleocr_2' },
+          warnings: [],
+        };
+      })
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成 d.pdf page 1 OCR。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_paddleocr_3' },
+        warnings: [],
+      }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const result = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: 'OCR d.pdf',
+          files: [
+            {
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+      executeFileOcr,
+    });
+
+    const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    expect(firstGenerateOptions.tools?.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(['run_file_ocr', 'patch_file_analysis_data']),
+    );
+    expect(JSON.stringify(firstGenerateOptions.prompt)).not.toContain('"type":"file"');
+    expect(firstGenerateOptions.prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: [
+            expect.objectContaining({
+              type: 'text',
+              text: expect.stringContaining('run_file_ocr files'),
+            }),
+          ],
+        }),
+      ]),
+    );
+    expect(executeFileOcr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          filename: 'd.pdf',
+          page: 1,
+          dpi: 400,
+        }),
+      }),
+    );
+    expect(result.fileAnalysisPatch?.summary).toBe('d.pdf page 1 PaddleOCR completed.');
+  });
+
+  it('continues pending PDF pages when the model tries to answer after the first page patch', async () => {
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow('OCR_RULE_SENTINEL fixture:paddleocr-required'),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:paddleocr-vision-required'),
+    ]);
+    const executeFileOcr = jest.fn(async (options) => {
+      const page = options.arguments.page ?? 1;
+
+      return {
+        ok: true,
+        toolName: 'run_file_ocr' as const,
+        data: {
+          filename: 'd.pdf',
+          page,
+          fileType: 'image',
+          outputMode: 'markdown',
+          text: `| part_no | quantity |\n| P${page} | ${page} |`,
+        },
+        durationMs: 10,
+        redactionVersion: 1,
+      };
+    });
+    const doGenerate = jest
+      .fn()
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_ocr_page_1',
+            toolName: 'run_file_ocr',
+            input: JSON.stringify({
+              filename: 'd.pdf',
+              page: 1,
+              file_type: 'image',
+              output_mode: 'markdown',
+              dpi: 400,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_paddleocr_page_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_analysis_patch_page_1',
+            toolName: 'patch_file_analysis_data',
+            input: JSON.stringify({
+              sourceFiles: [
+                {
+                  fileId: 'file_d_pdf',
+                  filename: 'd.pdf',
+                  mediaType: 'application/pdf',
+                  pageCount: 2,
+                  ocrEngine: 'PaddleOCR MCP',
+                  ocrStatus: 'processing',
+                },
+              ],
+              patches: [
+                {
+                  sheetId: 'file_analysis_data',
+                  upsertColumns: [{ key: 'partNo', label: '件號' }],
+                  upsertRows: [
+                    {
+                      sourceRef: {
+                        fileId: 'file_d_pdf',
+                        filename: 'd.pdf',
+                        mediaType: 'application/pdf',
+                        sourceKey: 'file_d_pdf:page:1:row:P1',
+                        page: 1,
+                        ocrEngine: 'PaddleOCR MCP',
+                        ocrStatus: 'completed',
+                      },
+                      cells: { partNo: 'P1', quantity: 1 },
+                      confidence: 'medium',
+                    },
+                  ],
+                },
+              ],
+              summary: 'd.pdf page 1 PaddleOCR completed.',
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_patch_page_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成讀取附件 d.pdf 第 1 頁。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_wrong_final_after_page_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (options: LanguageModelV3CallOptions) => {
+        expect(JSON.stringify(options.prompt)).toContain('page 2');
+        expect(JSON.stringify(options.prompt)).toContain('run_file_ocr');
+
+        return {
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call_file_ocr_page_2',
+              toolName: 'run_file_ocr',
+              input: JSON.stringify({
+                filename: 'd.pdf',
+                page: 2,
+                file_type: 'image',
+                output_mode: 'markdown',
+                dpi: 400,
+              }),
+            },
+          ],
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+          response: { id: 'resp_paddleocr_page_2' },
+          warnings: [],
+        };
+      })
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_analysis_patch_page_2',
+            toolName: 'patch_file_analysis_data',
+            input: JSON.stringify({
+              sourceFiles: [
+                {
+                  fileId: 'file_d_pdf',
+                  filename: 'd.pdf',
+                  mediaType: 'application/pdf',
+                  pageCount: 2,
+                  ocrEngine: 'PaddleOCR MCP',
+                  ocrStatus: 'completed',
+                },
+              ],
+              patches: [
+                {
+                  sheetId: 'file_analysis_data',
+                  upsertColumns: [{ key: 'partNo', label: '件號' }],
+                  upsertRows: [
+                    {
+                      sourceRef: {
+                        fileId: 'file_d_pdf',
+                        filename: 'd.pdf',
+                        mediaType: 'application/pdf',
+                        sourceKey: 'file_d_pdf:page:2:row:P2',
+                        page: 2,
+                        ocrEngine: 'PaddleOCR MCP',
+                        ocrStatus: 'completed',
+                      },
+                      cells: { partNo: 'P2', quantity: 2 },
+                      confidence: 'medium',
+                    },
+                  ],
+                },
+              ],
+              summary: 'd.pdf page 2 PaddleOCR completed.',
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_patch_page_2' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成 d.pdf 全部 2 頁 OCR。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_final_all_pages' },
+        warnings: [],
+      }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const result = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: 'OCR d.pdf',
+          files: [
+            {
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+      executeFileOcr,
+    });
+
+    expect(executeFileOcr.mock.calls.map(([options]) => options.arguments.page)).toEqual([1, 2]);
+    expect(doGenerate).toHaveBeenCalledTimes(6);
+    expect(result.fileAnalysisPatch?.summary).toBe('d.pdf page 2 PaddleOCR completed.');
+    expect(result.text).toContain('已完成 d.pdf 全部 2 頁 OCR');
+  });
+
+  it('continues multi-page PDF OCR without a default tool-loop cap', async () => {
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow('OCR_RULE_SENTINEL fixture:paddleocr-required'),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:paddleocr-vision-required'),
+    ]);
+    const pages = Array.from({ length: 31 }, (_entry, index) => index + 1);
+    const executeFileOcr = jest.fn(async (options) => {
+      const page = options.arguments.page ?? 1;
+
+      return {
+        ok: true,
+        toolName: 'run_file_ocr' as const,
+        data: {
+          filename: 'd.pdf',
+          page,
+          fileType: 'image',
+          outputMode: 'markdown',
+          text: `| part_no | quantity |\n| C${page}00 | ${page} |`,
+        },
+        durationMs: 10,
+        redactionVersion: 1,
+      };
+    });
+    let step = 0;
+    const doGenerate = jest.fn(async (options: LanguageModelV3CallOptions) => {
+      const pageIndex = Math.floor(step / 2);
+      const isOcrStep = step % 2 === 0;
+
+      if (pageIndex < pages.length && isOcrStep) {
+        const page = pages[pageIndex];
+        step += 1;
+
+        return {
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: `call_file_ocr_page_${page}`,
+              toolName: 'run_file_ocr',
+              input: JSON.stringify({
+                filename: 'd.pdf',
+                page,
+                file_type: 'image',
+                output_mode: 'markdown',
+                dpi: 400,
+              }),
+            },
+          ],
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+          response: { id: `resp_paddleocr_${step}` },
+          warnings: [],
+        };
+      }
+
+      if (pageIndex < pages.length) {
+        const page = pages[pageIndex];
+        expect(JSON.stringify(options.prompt)).toContain(`C${page}00`);
+        step += 1;
+
+        return {
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: `call_file_analysis_patch_page_${page}`,
+              toolName: 'patch_file_analysis_data',
+              input: JSON.stringify({
+                sourceFiles: [
+                  {
+                    fileId: 'file_d_pdf',
+                    filename: 'd.pdf',
+                    mediaType: 'application/pdf',
+                    pageCount: pages.length,
+                    ocrEngine: 'PaddleOCR MCP',
+                    ocrStatus: page === pages.length ? 'completed' : 'processing',
+                  },
+                ],
+                patches: [
+                  {
+                    sheetId: 'file_analysis_data',
+                    upsertColumns: [{ key: 'partNo', label: '件號' }],
+                    upsertRows: [
+                      {
+                        sourceRef: {
+                          fileId: 'file_d_pdf',
+                          filename: 'd.pdf',
+                          mediaType: 'application/pdf',
+                          sourceKey: `file_d_pdf:page:${page}:row:C${page}00`,
+                          page,
+                          ocrEngine: 'PaddleOCR MCP',
+                          ocrStatus: 'completed',
+                        },
+                        cells: { partNo: `C${page}00`, quantity: page },
+                        confidence: 'medium',
+                      },
+                    ],
+                  },
+                ],
+                summary: `d.pdf page ${page} PaddleOCR completed.`,
+              }),
+            },
+          ],
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+          response: { id: `resp_patch_${step}` },
+          warnings: [],
+        };
+      }
+
+      step += 1;
+
+      return {
+        content: [{ type: 'text', text: '已完成 d.pdf 全部 31 頁 OCR。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_paddleocr_final' },
+        warnings: [],
+      };
+    });
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const result = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: 'OCR d.pdf',
+          files: [
+            {
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+      executeFileOcr,
+    });
+
+    expect(executeFileOcr.mock.calls.map(([options]) => options.arguments.page)).toEqual(pages);
+    expect(doGenerate).toHaveBeenCalledTimes(pages.length * 2 + 1);
+    expect(result.fileAnalysisPatch?.summary).toBe('d.pdf page 31 PaddleOCR completed.');
+    expect(result.text).toContain('已完成 d.pdf 全部 31 頁 OCR');
+  });
+
+  it('passes visual inspection images as base64 strings for provider transfer safety', async () => {
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow('OCR_RULE_SENTINEL fixture:paddleocr-required'),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:paddleocr-vision-required'),
+    ]);
+    const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    const doGenerate = jest
+      .fn()
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_visual_inspection_page_1',
+            toolName: 'run_visual_inspection',
+            input: JSON.stringify({
+              filename: 'c.png',
+              imageIndex: 1,
+              inspection_types: ['holes', 'continuous_edges'],
+              prompt: 'Inspect non-text geometry only.',
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_visual_outer' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (options: LanguageModelV3CallOptions) => {
+        const prompt = JSON.stringify(options.prompt);
+        expect(prompt).toContain('inspection_types=holes, continuous_edges');
+        const [message] = options.prompt;
+        const filePart =
+          message?.role === 'user'
+            ? message.content.find((part) => part.type === 'file')
+            : undefined;
+        expect(filePart).toEqual(
+          expect.objectContaining({
+            mediaType: 'image/png',
+            data: Buffer.from(imageBytes).toString('base64'),
+          }),
+        );
+        expect(filePart && filePart.type === 'file' ? filePart.data : undefined).not.toBeInstanceOf(
+          Uint8Array,
+        );
+
+        return {
+          content: [{ type: 'text', text: '{"findings":[],"confidence":"medium"}' }],
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: { total: 7 }, outputTokens: { total: 4 } },
+          response: { id: 'resp_visual_inner' },
+          warnings: [],
+        };
+      })
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成圖像幾何檢查。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_visual_final' },
+        warnings: [],
+      }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const result = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: 'Inspect c.png geometry',
+          files: [
+            {
+              filename: 'c.png',
+              mediaType: 'image/png',
+              data: imageBytes,
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+    });
+
+    expect(doGenerate).toHaveBeenCalledTimes(3);
+    expect(result.text).toContain('已完成圖像幾何檢查');
   });
 
   it('fails before provider generation when visual evidence has no reviewed OCR rules', async () => {
