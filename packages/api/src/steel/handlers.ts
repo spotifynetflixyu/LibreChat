@@ -552,16 +552,40 @@ function createWorkbookContextText(workbook: SteelWorkbook): string {
 }
 
 function createFileAnalysisContextText(fileAnalysisData: SteelFileAnalysisData): string {
-  const rows = fileAnalysisData.sheets.file_analysis_data.rows.slice(0, 80).map((row) => ({
+  const fileAnalysisRows = fileAnalysisData.sheets.file_analysis_data.rows
+    .slice(0, 80)
+    .map((row) => ({
+      id: row.id,
+      sourceRef: {
+        fileId: row.sourceRef.fileId,
+        filename: row.sourceRef.filename,
+        mediaType: row.sourceRef.mediaType,
+        sourceKey: row.sourceRef.sourceKey,
+        imageIndex: row.sourceRef.imageIndex,
+        page: row.sourceRef.page,
+        regionLabel: row.sourceRef.regionLabel,
+        ocrEngine: row.sourceRef.ocrEngine,
+        ocrStatus: row.sourceRef.ocrStatus,
+        processedAt: row.sourceRef.processedAt,
+      },
+      cells: row.cells,
+    }));
+  const manualReviewRows = fileAnalysisData.sheets.manual_review.rows.slice(0, 40).map((row) => ({
     id: row.id,
-    sourceRef: {
-      fileId: row.sourceRef.fileId,
-      filename: row.sourceRef.filename,
-      page: row.sourceRef.page,
-      regionLabel: row.sourceRef.regionLabel,
-    },
+    sourceRef: row.sourceRef,
     cells: row.cells,
+    confidence: row.confidence,
+    reviewStatus: row.reviewStatus,
+    rowWarnings: row.rowWarnings,
   }));
+  const interpretationNoteRows = fileAnalysisData.sheets.interpretation_notes.rows
+    .slice(0, 40)
+    .map((row) => ({
+      id: row.id,
+      sourceRef: row.sourceRef,
+      cells: row.cells,
+      confidence: row.confidence,
+    }));
 
   return [
     'Latest saved file_analysis_data workspace. Treat this as user-reviewed current data for this conversation and prefer it over older OCR guesses.',
@@ -573,7 +597,15 @@ function createFileAnalysisContextText(fileAnalysisData: SteelFileAnalysisData):
       sourceFiles: fileAnalysisData.sourceFiles,
       file_analysis_data: {
         columns: fileAnalysisData.sheets.file_analysis_data.columns,
-        rows,
+        rows: fileAnalysisRows,
+      },
+      manual_review: {
+        columns: fileAnalysisData.sheets.manual_review.columns,
+        rows: manualReviewRows,
+      },
+      interpretation_notes: {
+        columns: fileAnalysisData.sheets.interpretation_notes.columns,
+        rows: interpretationNoteRows,
       },
     }),
   ].join('\n');

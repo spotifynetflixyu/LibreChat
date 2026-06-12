@@ -27,6 +27,10 @@ function createClient(rows: object[]): SteelRepositoryClient & { calls: QueryCal
   };
 }
 
+function fixtureText(key: string) {
+  return `fixture:${key}`;
+}
+
 describe('Steel rule repositories', () => {
   it('searches process and workbook output rules from agent_rules', async () => {
     const client = createClient([
@@ -40,7 +44,7 @@ describe('Steel rule repositories', () => {
         rule_sections: ['tool_flow', 'workbook_output'],
         sheet_id: null,
         selectors: { route: '/steel/oauth-chat' },
-        prompt: '先判斷需求，再選 tool，輸出 workbook 時使用 patch_quote_workbook。',
+        prompt: fixtureText('agent-rule-prompt'),
         tool_policy: { firstLookup: 'lookup_catalog_families' },
         output_policy: { workbookTool: 'patch_quote_workbook' },
         priority: '5',
@@ -77,7 +81,7 @@ describe('Steel rule repositories', () => {
         ruleType: 'agent_instruction_rule',
         ruleSections: ['tool_flow', 'workbook_output'],
         sheetId: undefined,
-        prompt: '先判斷需求，再選 tool，輸出 workbook 時使用 patch_quote_workbook。',
+        prompt: fixtureText('agent-rule-prompt'),
         toolPolicy: { firstLookup: 'lookup_catalog_families' },
         outputPolicy: { workbookTool: 'patch_quote_workbook' },
       }),
@@ -94,7 +98,7 @@ describe('Steel rule repositories', () => {
         product_names: ['錏角鐵', '錏成型角鐵'],
         aliases: ['亞L30x30', 'L30x30'],
         selectors: { searchText: '亞L30x30' },
-        prompt: '亞可能是錏；先用錏角鐵與錏成型角鐵候選查價。',
+        prompt: fixtureText('catalog-family-rule-prompt'),
         priority: '10',
         confidence: 'medium',
         active: true,
@@ -126,7 +130,7 @@ describe('Steel rule repositories', () => {
         productName: '錏角鐵',
         productNames: ['錏角鐵', '錏成型角鐵'],
         aliases: ['亞L30x30', 'L30x30'],
-        prompt: '亞可能是錏；先用錏角鐵與錏成型角鐵候選查價。',
+        prompt: fixtureText('catalog-family-rule-prompt'),
       }),
     ]);
   });
@@ -143,7 +147,7 @@ describe('Steel rule repositories', () => {
         formula_code: 'C',
         selectors: { processingTypes: ['cutting', 'hole'] },
         parameters: [{ parameterKey: 'charge', value: 'free' }],
-        prompt: 'C 型鋼切工與孔費預設免費。',
+        prompt: fixtureText('quote-rule-prompt'),
         priority: '15',
         confidence: 'high',
         active: true,
@@ -181,7 +185,7 @@ describe('Steel rule repositories', () => {
         catalogFamily: 'c_type',
         chargeType: 'cutting',
         formulaCode: 'C',
-        prompt: 'C 型鋼切工與孔費預設免費。',
+        prompt: fixtureText('quote-rule-prompt'),
       }),
     ]);
   });
@@ -199,7 +203,7 @@ describe('Steel rule repositories', () => {
         formula_code: null,
         selectors: { spec: 'H 型鋼' },
         parameters: [],
-        prompt: '龍頂 H 型鋼切工不另計，但仍需列備註。',
+        prompt: fixtureText('customer-rule-prompt'),
         priority: '5',
         confidence: 'high',
         active: true,
@@ -230,7 +234,7 @@ describe('Steel rule repositories', () => {
         customerId: 10,
         customerTierId: 2,
         catalogFamily: 'h_beam',
-        prompt: '龍頂 H 型鋼切工不另計，但仍需列備註。',
+        prompt: fixtureText('customer-rule-prompt'),
       }),
     ]);
   });

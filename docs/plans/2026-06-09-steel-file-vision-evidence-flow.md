@@ -4,7 +4,7 @@
 
 **Goal:** Build and test the Steel quote-conversation evidence flow for PDF, image, scanned drawing, and spreadsheet attachments. Each conversation/order has one user-verifiable `file_analysis_data` workspace that can contain rows from multiple source files; each row records its file/page/region source so the user can compare extracted tables against the PDF/image, correct them across chat turns, and then explicitly create or update the single quote workbook.
 
-**Architecture:** Keep file/image/PDF/spreadsheet attachments as quote evidence, not formal Admin import data. Before any drawing OCR task, seed `docs/reference/OCR規則.txt` into reviewed `steel.agent_rules` as an `inference_order_rule` scoped to drawing/file OCR. When a turn includes image/PDF/scanned drawing evidence, the backend conditionally loads the active OCR agent rule from `steel.agent_rules` and appends it after `fileAnalysis.instructions` before provider generation; provider adapters must not hard-code OCR rules. The backend stores original attachments through the existing LibreChat file storage strategy, classifies and bounds the file refs, rebuilds `openai_oauth_responses` file parts from those stored files when AI needs to read them, and lets AI patch the single conversation-scoped `file_analysis_data` workspace through flexible columns and row-level source refs. When the user confirms the extracted table or asks to create the quote table, backend projects the reviewed `file_analysis_data` rows into the single quote workbook and writes low-confidence drawing facts to workbook `manual_review` and `interpretation_notes`. `docs/reference/example/c.png` becomes the first OCR correctness fixture with expected JSON and diffable field-accuracy reporting; the fixture schema is not the runtime `file_analysis_data` schema.
+**Architecture:** Keep file/image/PDF/spreadsheet attachments as quote evidence, not formal Admin import data. Before any drawing OCR task, seed `docs/rules/OCR規則.txt` into reviewed `steel.agent_rules` as an `inference_order_rule` scoped to drawing/file OCR. When a turn includes image/PDF/scanned drawing evidence, the backend conditionally loads the active OCR agent rule from `steel.agent_rules` and appends it after `fileAnalysis.instructions` before provider generation; provider adapters must not hard-code OCR rules. The backend stores original attachments through the existing LibreChat file storage strategy, classifies and bounds the file refs, and keeps original files available for visual/semantic cross-checks. Table OCR accuracy is validated through PaddleOCR MCP (`PaddleOCR-VL-1.6` / `paddleocr_vl`) rather than OpenAI OAuth built-in OCR. AI patches the single conversation-scoped `file_analysis_data` workspace through flexible columns and row-level source refs. When the user confirms the extracted table or asks to create the quote table, backend projects the reviewed `file_analysis_data` rows into the single quote workbook and writes low-confidence drawing facts to workbook `manual_review` and `interpretation_notes`. `docs/reference/example/c.pdf` is the current OCR correctness fixture with expected JSON and diffable field-accuracy reporting; the fixture schema is not the runtime `file_analysis_data` schema.
 
 **Tech Stack:** TypeScript, Jest, Zod, existing `openai-oauth-provider` Steel adapter, existing LibreChat file storage services, Mongo workbook repository, existing Steel `patch_quote_workbook` semantic projection. Do not add local OCR/raster/spreadsheet parsing dependencies in this slice unless a later correction strategy explicitly selects that fallback.
 
@@ -17,10 +17,11 @@ Build Phase 6C only:
 - Accept quote-conversation attachments for image, PDF, scanned drawing, and spreadsheet evidence.
 - Store original quote evidence files through the existing LibreChat file
   storage strategy and Mongo `File` record before AI analysis.
-- Seed reviewed OCR rules from `docs/reference/OCR規則.txt` into `steel.agent_rules` before live drawing OCR tests.
+- Seed reviewed OCR rules from `docs/rules/OCR規則.txt` into `steel.agent_rules` before live drawing OCR tests.
 - Require drawing OCR flows to load reviewed OCR agent rules from `steel.agent_rules` before extracting rows.
-- Send PDF/image evidence directly to AI for interpretation; do not implement a
-  local OCR engine or default PDF rasterization path in this slice.
+- Use PaddleOCR MCP as the primary table OCR engine for PDF/image table
+  extraction; OpenAI OAuth file analysis may assist with visual/semantic
+  cross-checks but must not be the primary OCR source.
 - Persist one `file_analysis_data` workspace per conversation/order. It can
   contain rows from many PDF/image files; each row carries source file/page/
   region metadata so users can compare AI-read tables with the original
@@ -33,7 +34,7 @@ Build Phase 6C only:
 - After user confirmation or explicit request to create quote rows, project
   `file_analysis_data` into quote workbook rows and write uncertain facts into
   `manual_review` and `interpretation_notes`.
-- Add an OCR correctness test fixture for `docs/reference/example/c.png`.
+- Add an OCR correctness test fixture for `docs/reference/example/c.pdf`.
 
 Non-goals:
 
@@ -56,7 +57,7 @@ Non-goals:
 - Existing LibreChat file storage: `api/server/services/Files/process.js`,
   `api/server/services/Files/Local/crud.js`, `api/server/services/Files/strategies.js`,
   and Mongo `File` records from `packages/data-schemas/src/schema/file.ts`
-- Reviewed OCR rule source: `docs/reference/OCR規則.txt`
+- Reviewed OCR rule source: `docs/rules/OCR規則.txt`
 - Agent rule storage and retrieval: `steel.agent_rules`,
   `packages/api/src/steel/repositories/rules.ts`, and existing runtime rule
   loading in `packages/api/src/steel/ai/provider.ts`
@@ -72,7 +73,7 @@ price, formula, and quote-default rules. Drawing OCR process policy belongs in
 `steel.agent_rules` with the same classification model as the default agent
 prompt, tool-flow, inference-order, output-policy, and workbook-output rules.
 
-Seed `docs/reference/OCR規則.txt` into `steel.agent_rules` before live OCR
+Seed `docs/rules/OCR規則.txt` into `steel.agent_rules` before live OCR
 validation:
 
 ```json
@@ -89,7 +90,7 @@ validation:
     "requiresDrawingOcr": true,
     "tableTypes": ["material_table", "part_table", "bolt_table", "cutting_table"]
   },
-  "prompt": "<contents of docs/reference/OCR規則.txt>",
+  "prompt": "<contents of docs/rules/OCR規則.txt>",
   "toolPolicy": {
     "requiredBefore": ["drawing_evidence_extraction"],
     "mustMarkLowConfidence": true
@@ -107,7 +108,7 @@ validation:
     {
       "channel": "repo_docs",
       "factType": "agent_rule",
-      "sourceFile": "docs/reference/OCR規則.txt",
+      "sourceFile": "docs/rules/OCR規則.txt",
       "locator": "圖面表格局部判讀流程",
       "canonicalKey": "drawing_ocr_local_table_reading",
       "sha256": "<local file sha256>"
@@ -142,34 +143,242 @@ Create `packages/api/src/steel/vision/fixtures/c.expected.json`:
 ```json
 {
   "fixtureId": "steel_drawing_c_plate_schedule_v1",
-  "sourceFile": "docs/reference/example/c.png",
+  "sourceFile": "docs/reference/example/c.pdf",
   "rows": [
-    { "name": "柱底板", "partNo": "BP1", "spec": "650×650×28t", "quantity": 14, "boltSize": "M30", "boltTotalExpression": "14×14=196", "boltTotal": 196 },
-    { "name": "柱底板", "partNo": "BP2", "spec": "500×500×20t", "quantity": 3, "boltSize": "M24", "boltTotalExpression": "3×12=36", "boltTotal": 36 },
-    { "name": "連接板", "partNo": "PL1", "spec": "367×323×12t", "quantity": 23, "boltSize": "M30", "boltTotalExpression": "23×6=138", "boltTotal": 138 },
-    { "name": "連接板", "partNo": "PL2", "spec": "230×175×12t", "quantity": 38, "boltSize": "M22", "boltTotalExpression": "38×6=228", "boltTotal": 228 },
-    { "name": "連接板", "partNo": "PL3", "spec": "362×358×10t", "quantity": 3, "boltSize": "M22", "boltTotalExpression": "3×6=18", "boltTotal": 18 },
-    { "name": "連接板", "partNo": "PL4", "spec": "230×175×10t", "quantity": 26, "boltSize": "M22", "boltTotalExpression": "26×6=156", "boltTotal": 156 },
-    { "name": "連接板", "partNo": "PL5", "spec": "362×354×10t", "quantity": 1, "boltSize": "M22", "boltTotalExpression": "1×6=6", "boltTotal": 6 },
-    { "name": "連接板", "partNo": "PL6", "spec": "362×324×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "連接板", "partNo": "PL7", "spec": "362×368×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "連接板", "partNo": "PL8", "spec": "382×419×16t", "quantity": 12, "boltSize": "M24", "boltTotalExpression": "12×8=96", "boltTotal": 96 },
-    { "name": "連接板", "partNo": "PL9", "spec": "363×358×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "連接板", "partNo": "PL10", "spec": "363×358×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "連接板", "partNo": "PL11", "spec": "382×401×16t", "quantity": 4, "boltSize": "M24", "boltTotalExpression": "4×8=32", "boltTotal": 32 },
-    { "name": "連接板", "partNo": "PL12", "spec": "362×354×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "連接板", "partNo": "PL13", "spec": "382×445×16t", "quantity": 1, "boltSize": "M24", "boltTotalExpression": "1×8=8", "boltTotal": 8 },
-    { "name": "連接板", "partNo": "PL14", "spec": "382×499×16t", "quantity": 1, "boltSize": "M24", "boltTotalExpression": "1×8=8", "boltTotal": 8 },
-    { "name": "連接板", "partNo": "PL15", "spec": "407×279×10t", "quantity": 4, "boltSize": "M22", "boltTotalExpression": "4×6=24", "boltTotal": 24 },
-    { "name": "連接板", "partNo": "PL16", "spec": "155×140×10t", "quantity": 6, "boltSize": "M20", "boltTotalExpression": "6×4=24", "boltTotal": 24 },
-    { "name": "連接板", "partNo": "PL17", "spec": "382×649×20t", "quantity": 1, "boltSize": "M24", "boltTotalExpression": "1×14=14", "boltTotal": 14 },
-    { "name": "連接板", "partNo": "PL18", "spec": "550×190×20t", "quantity": 1, "boltSize": "M24", "boltTotalExpression": "1×14=14", "boltTotal": 14 },
-    { "name": "連接板", "partNo": "PL19", "spec": "323×294×12t", "quantity": 10, "boltSize": "M22", "boltTotalExpression": "10×6=60", "boltTotal": 60 },
-    { "name": "連接板", "partNo": "PL20", "spec": "358×289×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "連接板", "partNo": "PL21", "spec": "358×289×10t", "quantity": 1, "boltSize": "M22", "boltTotalExpression": "1×6=6", "boltTotal": 6 },
-    { "name": "連接板", "partNo": "PL22", "spec": "358×289×10t", "quantity": 1, "boltSize": "M22", "boltTotalExpression": "1×6=6", "boltTotal": 6 },
-    { "name": "新增連接板", "partNo": "PL7A", "spec": "362×324×10t", "quantity": 2, "boltSize": "M22", "boltTotalExpression": "2×6=12", "boltTotal": 12 },
-    { "name": "新增連接板", "partNo": "PL14A", "spec": "382×445×16t", "quantity": 1, "boltSize": "M24", "boltTotalExpression": "1×8=8", "boltTotal": 8 }
+    {
+      "name": "柱底板",
+      "partNo": "BP1",
+      "spec": "650×650×28t",
+      "quantity": 14,
+      "boltSize": "M30",
+      "boltTotalExpression": "14×14=196",
+      "boltTotal": 196
+    },
+    {
+      "name": "柱底板",
+      "partNo": "BP2",
+      "spec": "500×500×20t",
+      "quantity": 3,
+      "boltSize": "M24",
+      "boltTotalExpression": "3×12=36",
+      "boltTotal": 36
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL1",
+      "spec": "367×323×12t",
+      "quantity": 23,
+      "boltSize": "M30",
+      "boltTotalExpression": "23×6=138",
+      "boltTotal": 138
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL2",
+      "spec": "230×175×12t",
+      "quantity": 38,
+      "boltSize": "M22",
+      "boltTotalExpression": "38×6=228",
+      "boltTotal": 228
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL3",
+      "spec": "362×358×10t",
+      "quantity": 3,
+      "boltSize": "M22",
+      "boltTotalExpression": "3×6=18",
+      "boltTotal": 18
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL4",
+      "spec": "230×175×10t",
+      "quantity": 26,
+      "boltSize": "M22",
+      "boltTotalExpression": "26×6=156",
+      "boltTotal": 156
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL5",
+      "spec": "362×354×10t",
+      "quantity": 1,
+      "boltSize": "M22",
+      "boltTotalExpression": "1×6=6",
+      "boltTotal": 6
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL6",
+      "spec": "362×324×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL7",
+      "spec": "362×368×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL8",
+      "spec": "382×419×16t",
+      "quantity": 12,
+      "boltSize": "M24",
+      "boltTotalExpression": "12×8=96",
+      "boltTotal": 96
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL9",
+      "spec": "363×358×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL10",
+      "spec": "363×358×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL11",
+      "spec": "382×401×16t",
+      "quantity": 4,
+      "boltSize": "M24",
+      "boltTotalExpression": "4×8=32",
+      "boltTotal": 32
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL12",
+      "spec": "362×354×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL13",
+      "spec": "382×445×16t",
+      "quantity": 1,
+      "boltSize": "M24",
+      "boltTotalExpression": "1×8=8",
+      "boltTotal": 8
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL14",
+      "spec": "382×499×16t",
+      "quantity": 1,
+      "boltSize": "M24",
+      "boltTotalExpression": "1×8=8",
+      "boltTotal": 8
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL15",
+      "spec": "407×279×10t",
+      "quantity": 4,
+      "boltSize": "M22",
+      "boltTotalExpression": "4×6=24",
+      "boltTotal": 24
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL16",
+      "spec": "155×140×10t",
+      "quantity": 6,
+      "boltSize": "M20",
+      "boltTotalExpression": "6×4=24",
+      "boltTotal": 24
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL17",
+      "spec": "382×649×20t",
+      "quantity": 1,
+      "boltSize": "M24",
+      "boltTotalExpression": "1×14=14",
+      "boltTotal": 14
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL18",
+      "spec": "550×190×20t",
+      "quantity": 1,
+      "boltSize": "M24",
+      "boltTotalExpression": "1×14=14",
+      "boltTotal": 14
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL19",
+      "spec": "323×294×12t",
+      "quantity": 10,
+      "boltSize": "M22",
+      "boltTotalExpression": "10×6=60",
+      "boltTotal": 60
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL20",
+      "spec": "358×289×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL21",
+      "spec": "358×289×10t",
+      "quantity": 1,
+      "boltSize": "M22",
+      "boltTotalExpression": "1×6=6",
+      "boltTotal": 6
+    },
+    {
+      "name": "連接板",
+      "partNo": "PL22",
+      "spec": "358×289×10t",
+      "quantity": 1,
+      "boltSize": "M22",
+      "boltTotalExpression": "1×6=6",
+      "boltTotal": 6
+    },
+    {
+      "name": "新增連接板",
+      "partNo": "PL7A",
+      "spec": "362×324×10t",
+      "quantity": 2,
+      "boltSize": "M22",
+      "boltTotalExpression": "2×6=12",
+      "boltTotal": 12
+    },
+    {
+      "name": "新增連接板",
+      "partNo": "PL14A",
+      "spec": "382×445×16t",
+      "quantity": 1,
+      "boltSize": "M24",
+      "boltTotalExpression": "1×8=8",
+      "boltTotal": 8
+    }
   ]
 }
 ```
@@ -234,7 +443,9 @@ export const steelFileAnalysisDataSchema = z.object({
           sourceRef: steelFileAnalysisSourceRefSchema,
           cells: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
           confidence: z.enum(['high', 'medium', 'low']).default('medium'),
-          reviewStatus: z.enum(['pending_review', 'confirmed', 'corrected']).default('pending_review'),
+          reviewStatus: z
+            .enum(['pending_review', 'confirmed', 'corrected'])
+            .default('pending_review'),
           rowWarnings: z.array(z.string()).default([]),
         }),
       ),
@@ -247,7 +458,9 @@ export const steelFileAnalysisDataSchema = z.object({
           sourceRef: steelFileAnalysisSourceRefSchema.optional(),
           cells: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
           confidence: z.enum(['high', 'medium', 'low']).default('low'),
-          reviewStatus: z.enum(['pending_review', 'confirmed', 'corrected']).default('pending_review'),
+          reviewStatus: z
+            .enum(['pending_review', 'confirmed', 'corrected'])
+            .default('pending_review'),
         }),
       ),
     }),
@@ -270,7 +483,7 @@ export const steelFileAnalysisDataSchema = z.object({
 ```
 
 `steelDrawingEvidenceResultSchema` remains a fixture/evaluation shape for
-`docs/reference/example/c.png`; it is not the runtime schema for AI extraction.
+`docs/reference/example/c.pdf`; it is not the runtime schema for AI extraction.
 Runtime analysis rows use flexible sheet columns and source refs.
 
 Export it from `packages/data-provider/src/steel/index.ts`.
@@ -326,7 +539,7 @@ Assert:
 
 **Step 2: Add the sync script**
 
-Create a DB sync command that reads `docs/reference/OCR規則.txt`, computes its
+Create a DB sync command that reads `docs/rules/OCR規則.txt`, computes its
 sha256, and upserts the active reviewed `steel.agent_rules` row:
 
 ```bash
@@ -384,13 +597,13 @@ import expected from './fixtures/c.expected.json';
 import { compareDrawingEvidenceRows } from './compare';
 import { steelDrawingEvidenceResultSchema } from './schema';
 
-it('validates the c.png expected drawing schedule fixture', () => {
+it('validates the c.pdf expected drawing schedule fixture', () => {
   const parsed = steelDrawingEvidenceResultSchema.parse(expected);
   expect(parsed.rows).toHaveLength(26);
   expect(new Set(parsed.rows.map((row) => row.partNo)).size).toBe(26);
 });
 
-it('compares extracted rows against the expected c.png fixture', () => {
+it('compares extracted rows against the expected c.pdf fixture', () => {
   const actual = steelDrawingEvidenceResultSchema.parse(expected);
   const result = compareDrawingEvidenceRows({ expected, actual });
   expect(result.fieldAccuracy).toBe(1);
@@ -846,7 +1059,8 @@ Spreadsheet:
 
 Use existing provider capability gates and bounded metadata helpers. Do not add a
 local OCR/rasterization/spreadsheet parser as the default interpretation path in
-this phase.
+this phase. Table OCR is verified through PaddleOCR MCP, not OpenAI OAuth
+built-in OCR.
 
 **Step 3: Verify**
 
@@ -858,30 +1072,27 @@ cd packages/api && npx jest src/steel/vision/pdf.spec.ts src/steel/vision/spread
 
 Expected: PASS.
 
-## Task 9: c.png OCR Correctness Manual Smoke
+## Task 9: PaddleOCR MCP c.pdf OCR Correctness Manual Smoke
 
 **Files:**
 
-- Create: `packages/api/src/steel/vision/c-ocr.manual.spec.ts`
-- Reuse: `docs/reference/example/c.png`
+- Create: `packages/api/src/steel/vision/paddleocr.c-pdf-ocr.manual.spec.ts`
+- Reuse: `docs/reference/example/c.pdf`
 - Reuse: `packages/api/src/steel/vision/fixtures/c.expected.json`
 
 **Step 1: Write manual live test**
 
 The test:
 
-- Loads `docs/reference/example/c.png`.
-- Reads back `steel.agent_rules.slug = 'steel-drawing-ocr-policy'` and verifies
-  its source-ref sha256 matches `docs/reference/OCR規則.txt`.
-- Sends it as `image/png` to the configured Steel provider with drawing evidence prompt.
-- Verifies the provider prompt includes the OCR rule source/ref and does not use
-  hard-coded provider-adapter OCR text.
-- For fixture scoring only, maps provider output into
-  `steelDrawingEvidenceResultSchema` before comparing expected rows.
-- Patches the single conversation `file_analysis_data` workspace with rows
-  tagged as source file `c.png`, page 1, and any detected region labels.
-- Compares normalized output to `c.expected.json`.
-- Prints row count, field accuracy, and mismatches.
+- Loads `docs/reference/example/c.pdf` by absolute path.
+- Starts project MCP server `PaddleOCR-VL-1.6` with `uvx --from paddleocr-mcp
+paddleocr_mcp` and `.env` key `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`.
+- Calls MCP tool `paddleocr_vl` with `file_type = pdf`, `output_mode =
+detailed`, and `return_images = false`.
+- Verifies the OCR table data is equivalent to `c.expected.json`; MCP Markdown
+  or JSON field names do not need to match internal fixture field names exactly.
+- Reports missing rows with candidate OCR segments for that part number.
+- Verifies no token material appears in the captured MCP response.
 
 Critical fields:
 
@@ -893,24 +1104,24 @@ Critical fields:
 
 Acceptance:
 
-- 26 rows extracted.
-- Critical fields exact after normalization.
-- `fieldAccuracy === 1` for the expected fixture before closing this feature.
-- If any field fails, record the mismatch report and stop for a correction
-  strategy discussion before changing thresholds.
+- Every expected row has an OCR segment containing the same part number, Chinese
+  name, spec, quantity, bolt size, and bolt total or formula after normalization.
+- The live test is gated by `STEEL_PADDLEOCR_MCP_C_PDF_OCR_TEST=true` and skips
+  by default in normal Jest runs.
+- If any field fails, record the PaddleOCR output mismatch report and stop for a
+  correction strategy discussion before changing thresholds.
 
 **Step 2: Run manual smoke**
 
-Run only after provider auth is available:
+Run only after PaddleOCR AI Studio auth is available:
 
 ```bash
-cd packages/api && npx jest src/steel/vision/c-ocr.manual.spec.ts --runInBand
+DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_PADDLEOCR_MCP_C_PDF_OCR_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/vision/paddleocr.c-pdf-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'
 ```
 
 Expected: PASS. If it fails, keep the report and discuss the correction
-strategy: prompt/OCR-rule refinement first, image quality/preprocessing second,
-model/provider capability last. Do not lower the `c.png` acceptance threshold to
-hide OCR errors.
+strategy from PaddleOCR output evidence. Do not lower the `c.pdf` acceptance
+threshold to hide OCR errors.
 
 ## Task 10: Frontend Upload UX Smoke
 
@@ -974,14 +1185,15 @@ Document:
   workbook creation.
 - Original LibreChat/Steel file refs must remain available when the user asks AI
   to re-read a PDF/image; previous extracted rows are not enough.
-- `docs/reference/OCR規則.txt` is synced into reviewed active
+- `docs/rules/OCR規則.txt` is synced into reviewed active
   `steel.agent_rules`, not `steel.instruction_packets`.
 - Visual OCR tasks must load OCR agent rules before provider generation.
-- `c.png` is the first OCR correctness fixture.
+- `c.pdf` is the active PaddleOCR MCP OCR correctness fixture.
 - Confirmed `file_analysis_data` can create quote workbook rows; uncertain OCR
   findings go to `manual_review` and `interpretation_notes`.
-- PDF/image/spreadsheet files are sent directly to AI when provider capability
-  is supported; local OCR/raster/spreadsheet parsing is not the default path.
+- PDF/image table OCR uses PaddleOCR MCP as the primary source. OpenAI OAuth
+  file handling remains visual/semantic assistance only, not the primary table
+  OCR path.
 - Unsupported capability paths return typed errors or manual-review output.
 - No Admin source/import mutation happens from quote attachments.
 
@@ -1035,7 +1247,7 @@ Recommended retention design:
 7. Task 6: Confirmed file analysis projection to quote workbook.
 8. Task 7: Chat route integration.
 9. Task 8: Direct PDF/image/spreadsheet provider evidence paths.
-10. Task 9: `c.png` manual OCR correctness smoke.
+10. Task 9: PaddleOCR MCP `c.pdf` manual OCR correctness smoke.
 11. Task 10: Frontend upload UX.
 12. Task 11: Docs and final gate.
 
@@ -1044,15 +1256,16 @@ confirmed workbook projection before broadening the UI.
 
 ## Completion Criteria
 
-- `docs/reference/OCR規則.txt` is synced to reviewed active
+- `docs/rules/OCR規則.txt` is synced to reviewed active
   `steel.agent_rules` with matching sha256 source refs.
 - Conditional loader tests prove visual OCR tasks include OCR agent rules and
   fail before provider generation when the reviewed rule is missing.
-- `docs/reference/example/c.png` expected JSON fixture exists and parses.
+- `docs/reference/example/c.pdf` expected JSON fixture exists and parses.
 - Mocked provider tests prove drawing evidence can patch the single
   conversation-scoped `file_analysis_data` workspace with row-level source
   file/page/region metadata.
-- Manual live provider test proves `c.png` extracts all 26 rows with exact critical fields.
+- Manual live PaddleOCR MCP test proves `c.pdf` extracts all 26 rows with exact
+  critical values after normalization.
 - OCR mismatch reports are kept and discussed before any threshold changes.
 - Confirmed `file_analysis_data` can create or update quote workbook rows, with
   low-confidence facts written to review/note sheets.

@@ -41,11 +41,21 @@ adds Data API grants and RLS policies.
 
 ## MCP
 
-The project-level `.mcp.json` configures the hosted Supabase MCP server:
+The project-level `.mcp.json` configures hosted Supabase MCP plus the Steel OCR
+MCP server:
 
 ```json
 {
   "mcpServers": {
+    "PaddleOCR-VL-1.6": {
+      "command": "uvx",
+      "args": ["--from", "paddleocr-mcp", "paddleocr_mcp"],
+      "env": {
+        "PADDLEOCR_MCP_MODEL": "PaddleOCR-VL-1.6",
+        "PADDLEOCR_MCP_PPOCR_SOURCE": "aistudio",
+        "PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN": "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"
+      }
+    },
     "supabase": {
       "type": "http",
       "url": "https://mcp.supabase.com/mcp?project_ref=iumtsqkuppgopxskuwns"
@@ -58,3 +68,7 @@ The `project_ref` scopes MCP access to the Steel development Supabase project
 and is derived from the `db.iumtsqkuppgopxskuwns.supabase.co` host. Authenticate
 through the MCP client flow when prompted. Do not commit access tokens,
 passwords, or local Supabase secrets.
+
+For PaddleOCR live OCR tests, put the AI Studio token in local `.env` as
+`PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`. The MCP config must keep only the
+`${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}` placeholder.

@@ -74,7 +74,16 @@ describe('Steel file analysis data schemas', () => {
 
   it('validates patch_file_analysis_data flexible columns and rows', () => {
     const input = patchFileAnalysisDataToolInputSchema.parse({
-      sourceFiles: [{ fileId: 'file_1', filename: 'c.png', mediaType: 'image/png' }],
+      sourceFiles: [
+        {
+          fileId: 'file_1',
+          filename: 'c.png',
+          mediaType: 'image/png',
+          pageCount: 1,
+          ocrEngine: 'PaddleOCR MCP',
+          ocrStatus: 'completed',
+        },
+      ],
       patches: [
         {
           sheetId: 'file_analysis_data',
@@ -85,7 +94,12 @@ describe('Steel file analysis data schemas', () => {
                 fileId: 'file_1',
                 filename: 'c.png',
                 mediaType: 'image/png',
+                sourceKey: 'file_1:image:1:table:bolt:row:BP1',
+                imageIndex: 1,
                 page: 1,
+                ocrEngine: 'PaddleOCR MCP',
+                ocrStatus: 'completed',
+                processedAt: '2026-06-12T08:00:00.000Z',
               },
               cells: { partNo: 'BP1', uncertain: false, quantity: 14 },
               confidence: 'medium',
@@ -98,6 +112,10 @@ describe('Steel file analysis data schemas', () => {
 
     expect(input.patches[0]?.sheetId).toBe('file_analysis_data');
     expect(input.patches[0]?.upsertRows[0]?.cells.quantity).toBe(14);
+    expect(input.patches[0]?.upsertRows[0]?.sourceRef?.sourceKey).toBe(
+      'file_1:image:1:table:bolt:row:BP1',
+    );
+    expect(input.sourceFiles[0]?.ocrStatus).toBe('completed');
   });
 
   it('rejects unknown sheet ids', () => {

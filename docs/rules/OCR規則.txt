@@ -1,0 +1,65 @@
+【Steel OCR / file_analysis_data 流程契約】
+
+一、OCR 引擎
+1. PDF、掃描圖、圖片、工程圖、材料表、零件表、螺栓表、切割表、手寫表格中的表格 OCR，統一使用 PaddleOCR MCP。
+2. PaddleOCR MCP server 固定使用 `PaddleOCR-VL-1.6`，工具固定使用 `paddleocr_vl`。
+3. PDF 頁面使用 PaddleOCR MCP 判讀時，應使用 `file_type = pdf`；圖片或 PDF 拆頁後的圖片使用 `file_type = image`。
+4. 不得使用 OpenAI OAuth API 內建 OCR 作為表格 OCR 的主要來源，也不得把 `openai_oauth_responses` 對附件的原生判讀結果當成表格抽取基準。
+5. OpenAI OAuth / `openai_oauth_responses` 只能在已有 PaddleOCR MCP 輸出後，用於語意整理、人工複核說明、對話回覆、以及呼叫 `patch_file_analysis_data`；不可取代 PaddleOCR MCP 的表格 OCR。
+6. PaddleOCR MCP 失敗時必須回報錯誤，並把失敗來源、頁碼或圖片序號、錯誤原因寫入 `manual_review` 或 `interpretation_notes`；不得 fallback 使用 OpenAI OCR。
+
+二、多檔案 / 多頁處理順序
+1. 若有多個檔案，或單一檔案有多個頁面 / 多張圖片，一次只處理一張圖或一頁。
+2. 多頁 PDF 必須先拆成單頁高解析圖片，再逐頁送 PaddleOCR MCP；不得把整份多頁 PDF 一次送進 PaddleOCR MCP。
+3. PDF 拆頁圖片解析度必須足夠，避免小字模糊；建議使用至少 300 DPI，若表格小字仍模糊，應提高到 400-600 DPI 或等效像素尺寸後再送 PaddleOCR MCP。
+4. 若輸入圖片解析度不足、文字破碎、或放大後仍模糊，必須標記低信心並寫入 `manual_review`，不得用模糊圖片硬判讀成高信心資料。
+5. 每張圖或每頁完成 PaddleOCR MCP 後，必須立即呼叫 patch_file_analysis_data，保存該圖或該頁的判讀資料，再接續處理下一張圖或下一頁。
+6. 每次 patch 後，必須用繁體中文簡短回報進度，例如目前完成的來源檔案、page、imageIndex、主要新增/更新列數、低信心項目、下一個待處理來源。
+7. 不得等整份 PDF、整批圖片或多個檔案全部判讀完才一次 patch；避免 token 壓縮或對話中斷造成資料缺失。
+8. 用戶可以停止對話來停止工作。用戶下一輪說「接續處理」時，必須先讀取最新 `file_analysis_data` workspace，找到已完成與未完成來源，再從未完成來源繼續，不得重新處理已完成的 sourceKey。
+9. 用戶說「繼續」或「go」時，等同「接續處理」；除非用戶明確說「重新處理」，否則不得重新處理已完成的 sourceKey。
+
+三、source / progress 標記
+1. `patch_file_analysis_data` 的每列資料都必須盡量標記來源：`fileId`、`filename`、`mediaType`、`page` 或 `imageIndex`、`regionLabel`、`sourceKey`、`ocrEngine`、`ocrStatus`、`processedAt`。
+2. `sourceKey` 是同一筆來源資料的穩定 upsert key。建議格式：`<fileId>:page:<page>:<region>:row:<row-key>` 或 `<fileId>:image:<imageIndex>:<region>:row:<row-key>`。
+3. 同一圖片 / 頁面重新 PaddleOCR 時，若是在修正既有資料，必須使用既有 row id 或相同 `sourceKey` 更新既有 row；不要新增重複 row。
+4. 新上傳檔案、新圖片、新頁面或新增表格列，應使用新的 `sourceKey`，讓系統知道是新增資料。
+5. `ocrStatus` 可用：`pending`、`processing`、`completed`、`failed`、`skipped`。完成 PaddleOCR 並成功 patch 的來源標 `completed`；失敗來源標 `failed` 並保留錯誤原因。
+
+四、固定分頁，不固定欄位
+圖面、PDF、掃描圖或圖片判讀後，只固定建立三個資料分頁；每個分頁的欄位由 AI 依檔案內容自主決定，不可由系統預先固定欄位：
+
+1. `file_analysis_data`
+   - 放主要圖文判讀資料、表格資料、圖面標註、尺寸、數量、孔洞、開槽、折彎、切割記號、備註等 AI 判斷有價值的資訊。
+   - 板件表、材料表、螺栓表、切割表等明細必須保存完整逐列資料；不可只 patch 代表列或摘要。
+   - 每列必須盡量保留來源檔案、頁碼 / 圖片序號、區域、OCR 引擎、OCR 狀態、信心、人工複核狀態等可核對資訊。
+
+2. `manual_review`
+   - 放需要人工複核、低信心、看不清楚、欄位對不齊、公式不一致、PaddleOCR MCP 失敗、或 AI 無法確認的項目。
+   - 必須說明原因與建議用戶核對的位置。
+
+3. `interpretation_notes`
+   - 放判讀備註、來源處理進度、PaddleOCR MCP 風險、未完成來源、跳過原因、錯誤摘要、以及 AI 自主判斷的限制。
+
+五、patch_file_analysis_data 使用規則
+1. 判讀 PDF、掃描圖、圖片、工程圖或表格附件後，若需要保存本輪圖文判讀結果，必須呼叫 `patch_file_analysis_data`；不要用 `patch_quote_workbook` 保存未確認的圖面判讀資料。
+2. 一個對話 / 訂單只維護一份 `file_analysis_data` workspace。多個檔案、多個頁面、多張圖片都寫入同一份 workspace，靠來源欄位與 `sourceKey` 區分。
+3. `patch_file_analysis_data` 固定只能 patch 三個分頁：`file_analysis_data`、`manual_review`、`interpretation_notes`。分頁名稱固定，但欄位由 AI 依檔案內容自主建立或更新。
+4. 每次呼叫 `patch_file_analysis_data` 時，應補上本輪需要的 `sourceFiles`、`upsertColumns` 與 `upsertRows`。欄位 key 應穩定、簡短、語意清楚；label 可使用原圖或原表格語言。
+5. 若本輪修正既有列，應使用既有 row id；若無法取得 row id，必須使用相同 `sourceKey` 讓 backend upsert 既有列。
+6. 若是使用者直接更正資料，row 應標記 `reviewStatus = corrected`；若是 PaddleOCR 尚未人工確認，保留 `pending_review`。
+7. 呼叫 `patch_file_analysis_data` 後，回覆用戶時必須用繁體中文簡短摘要本輪 patch 內容，例如新增/更新了哪些檔案、頁碼、圖片序號、主要列數、低信心項目與需要人工核對的位置；不要只說「已更新 N 個欄位」。
+8. 只有用戶確認要建立或更新正式報價表時，才可進入 quote workbook 投影流程；未確認的 OCR / 圖面判讀不可直接變成正式報價 workbook rows。
+
+六、重新處理、接續處理、手動更正
+1. 用戶說「重新處理某圖 / 某頁」時，必須重新送該圖或該頁給 PaddleOCR MCP，並用既有 row id 或相同 `sourceKey` 更新該來源的既有資料。
+2. 用戶上傳新圖片或新檔案時，應視為新增來源，使用新的 source file 與 `sourceKey`；不得覆蓋既有來源，除非用戶明確指定要取代。
+3. 用戶直接更改表格資料時，不需要重新執行 PaddleOCR MCP；應直接呼叫 `patch_file_analysis_data` 更新指定 row / cell，並標記 `reviewStatus = corrected`。
+4. 若用戶說「接續處理」、「繼續」或「go」，應找出 `ocrStatus` 不是 `completed` 的來源，或尚未出現在 workspace 的 page / imageIndex，從該處繼續。
+5. 若所有來源都已 `completed`，應回報已無待處理頁面 / 圖片，而不是重跑 OCR。
+
+七、資料完整性與低信心
+1. PaddleOCR MCP 輸出的欄位名稱、Markdown 表格格式或 JSON key 不必和內部 JSON fixture 完全相同；驗收重點是同一列表格資料能核對名稱、件號、規格、數量、螺栓尺寸、螺栓總數或公式等核心值。
+2. 若來源表格可辨識為 N 列，`file_analysis_data` 的主要資料列應對應 N 列；不得因 token、時間或版面複雜而少列。若真的無法讀完，必須在 `manual_review` 說明缺漏範圍。
+3. 若某欄看不清楚，仍需建立該資料 row，缺失欄位留空或標記低信心，並寫入 `manual_review`；不可自行猜規格、厚度、數量、孔數或價格。
+4. `file_analysis_data` rows 是驗收對象，不是摘要文字。摘要文字不能補足 rows 裡缺失的內容；若 row 無法單獨核對，該 row 視為未完成。

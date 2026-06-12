@@ -1,5 +1,22 @@
 # Lessons
 
+- Steel `docs/rules/*.txt` files are human-authored rule contracts; do not add
+  tests that assert rule text substrings. Verify rule work by syncing the
+  intended rule source into Supabase reviewed rows and by testing downstream
+  runtime behavior when behavior code changes.
+- Steel rule tests must not use `toContain`, `expect.stringContaining`, or
+  `toMatch` to lock exact Agent/OCR/workbook/quote rule wording, even when the
+  text came from Supabase fixtures. Assert source tables, reviewed rows,
+  canonical keys, slugs, source refs, tool calls, and runtime behavior instead.
+- Do not reintroduce tests that fail only because human-authored Steel rule
+  wording changed. If a rule change needs verification, test sync/readback
+  metadata and the downstream behavior produced by the rule.
+- All Steel rule runtime tests should load or mock rules through Supabase-backed
+  repositories such as `steel.agent_rules` or `steel.quote_rules`; do not read
+  `docs/rules/*.txt` inside tests as the source of truth.
+- Steel rules are Traditional Chinese only. Do not add locale suffixes such as
+  `_zh_tw` to rule canonical keys; use the DB `locale` field only where the
+  schema requires it.
 - When syncing `docs/reference/鋼材規則.txt` into `steel.quote_rules`, update
   both the reviewed row `prompt` and its `source_refs` metadata such as
   `sha256`, `sourceFile`, `locator`, and `canonicalKey`; prompt hash equality
@@ -93,7 +110,7 @@
   attachments are evidence for workbook `manual_review` and
   `interpretation_notes`; they must not create Admin source versions, merge
   rows, or formal database writes.
-- `docs/reference/OCR規則.txt` is a Steel Agent process / inference-order policy.
+- `docs/rules/OCR規則.txt` is a Steel Agent process / inference-order policy.
   Sync it through `steel.agent_rules` with drawing/file OCR rule sections, not
   `steel.instruction_packets` or `lookup_quote_rules`; `lookup_quote_rules`
   remains for material, processing, price, formula, and quote-default rules.
@@ -102,7 +119,7 @@
   can compare it with the PDF/image, correct it over multiple chat turns, and
   only then ask to create or update quote workbook rows.
 - Phase 6C drawing prompt builder must use OCR rules already loaded from
-  `steel.agent_rules`; it must not read `docs/reference/OCR規則.txt` directly at
+  `steel.agent_rules`; it must not read `docs/rules/OCR規則.txt` directly at
   runtime. The AI should autonomously decide which fields exist in the
   PDF/image, while the system fixes only the three review output pages:
   `file_analysis_data`, `manual_review`, and `interpretation_notes`.
@@ -255,9 +272,28 @@
   workbook summary totals do not match the sum of line `subtotal` values.
 - Do not run Prettier repeatedly during Steel implementation turns when the user says commit
   time is enough; keep formatting automation available for the final pre-commit pass.
+- Never run Prettier in this repo unless the user explicitly asks for it. Use
+  manual formatting, targeted edits, `git diff --check`, tests, and build/type
+  checks instead.
 - Fixed `/steel/oauth-chat` provider path is OAuth/Codex. Do not add
   `openai.code_interpreter` as a registered tool or gate workbook totals on hidden
   hosted-tool evidence; validate AI-calculated totals through subtotal consistency.
+- Live Steel OCR tests for `docs/reference/example/c.pdf` must validate the full
+  expected 26-row table, including Chinese names and row-level values, not only
+  smoke-level recognizable rows. If OpenAI OAuth built-in OCR fails, do not keep
+  tuning OAuth OCR prompts; switch the live fixture to PaddleOCR MCP and report
+  missing row/value evidence from the PaddleOCR output.
+- Steel table OCR is now PaddleOCR MCP owned. Use project MCP server
+  `PaddleOCR-VL-1.6` and tool `paddleocr_vl` for PDF/image/table OCR live
+  tests and OCR rules; do not use `openai_oauth_responses` / OpenAI OAuth API
+  built-in OCR as the primary OCR source for c.pdf-style table extraction.
+- Do not hard-code fixture-specific identifiers, expected counts, or row
+  sequences such as BP/PL examples into reusable Steel OCR rules. Keep
+  `docs/rules/OCR規則.txt` generic; test-specific expectations belong in
+  fixture JSON and test assertions only.
+- When a live OCR test fails, report the observed provider output and
+  recommendations before changing the test again. The user may want to compare
+  the extracted rows manually first.
 - Do not mark Steel `code_interpreter` capability as `not_applicable` merely
   because hosted execution evidence is not disclosed. API code interpreter may
   still be usable; backend just must not depend on disclosure as proof.
@@ -578,3 +614,8 @@
   `imageDetail: high`, which AI SDK maps to the OpenAI Responses image
   `detail` field. Do not add separate OCR-effort env keys for this path;
   reasoning should come from the normal Steel OpenAI config.
+- Steel OCR rule source files belong under `docs/rules`, not
+  `docs/reference`; `docs/reference` is for examples/source data. Tests for OCR
+  behavior should use the reviewed Supabase `steel.agent_rules` row whenever
+  they exercise runtime OCR behavior, not read a local docs file as if it were
+  runtime state.

@@ -10,7 +10,7 @@ until the user explicitly reopens UI scope.
 
 Goal: write an implementation and test plan for quote-conversation evidence
 attachments: PDF, images, scanned drawings, and spreadsheet evidence. The first
-OCR correctness fixture is `docs/reference/example/c.png`, with expected plate
+OCR correctness fixture is `docs/reference/example/c.pdf`, with expected plate
 schedule rows captured as JSON for comparison. Evidence first becomes
 one conversation-scoped `file_analysis_data` workspace; rows are marked with
 source file/page/region so the user can verify or correct extracted tables
@@ -18,11 +18,26 @@ against each PDF/image, then confirmed analysis can create rows in the single
 quote workbook plus `manual_review` and `interpretation_notes`. It must not
 create Admin import source versions or formal database writes.
 
+- [x] Strengthen Supabase workbook rules so quote workbook product rows must
+      record whether their order/source evidence came from `file_analysis_data`
+      or direct user conversation, including the source row id/sourceKey/page
+      when `file_analysis_data` exists.
+- [x] Sync the strengthened workbook rule into reviewed Supabase
+      `steel.agent_rules`.
+- [x] Add a unified Supabase sync path for every tracked Steel rule file under
+      `docs/rules`: agent, workbook, OCR, and quote-rule policy.
+- [x] Remove rule-text content tests so runtime tests use Supabase-backed rules
+      or Supabase-shaped fixtures instead of reading `docs/rules/*.txt`.
+- [x] Split `docs/rules/鋼材規則.txt` Supabase quote rules by catalog key so one
+      `lookup_quote_rules` call can return rules for multiple products.
+- [x] Delete the whole/company-level `docs/rules/鋼材規則.txt` quote rule so only
+      catalog-key-specific rules remain.
+
 - [x] Inspect existing Phase 6C plan, file-analysis config boundary, Steel chat
       attachment path, provider file serialization tests, and semantic workbook
       projection.
 - [x] Save the detailed implementation plan under `docs/plans/`.
-- [x] Incorporate the OCR rules DB flow: `docs/reference/OCR規則.txt` syncs into
+- [x] Incorporate the OCR rules DB flow: `docs/rules/OCR規則.txt` syncs into
       reviewed active `steel.agent_rules` and visual OCR turns load that rule
       before provider generation.
 - [x] Incorporate the user-confirmed `file_analysis_data` flow: AI can create
@@ -32,7 +47,7 @@ create Admin import source versions or formal database writes.
       through LibreChat file storage and Mongo `File` records, then resent as
       bytes/file parts to `openai_oauth_responses`; no official OpenAI Files API
       or provider-state retention is used for Phase 6C.
-- [x] Implement Phase 6C Task 0 first slice: sync `docs/reference/OCR規則.txt`
+- [x] Implement Phase 6C Task 0 first slice: sync `docs/rules/OCR規則.txt`
       into `steel.agent_rules`, load reviewed OCR rules for visual
       `openai_oauth_responses` turns, and fail before provider generation when
       visual OCR lacks reviewed rules.
@@ -71,7 +86,7 @@ create Admin import source versions or formal database writes.
       chat handler and return the updated conversation-scoped workspace.
 - [x] Implement Phase 6C Task 5c: add a right-panel File Analysis tab that
       mirrors workbook sheet-tab table UX for `file_analysis_data`.
-- [x] Update `docs/reference/OCR規則.txt` so reviewed OCR rules instruct AI to
+- [x] Update `docs/rules/OCR規則.txt` so reviewed OCR rules instruct AI to
       use `patch_file_analysis_data` for unconfirmed file/PDF/image
       interpretation and summarize the current patch.
 - [x] Implement manual `file_analysis_data` correction flow: users can edit
@@ -83,13 +98,208 @@ create Admin import source versions or formal database writes.
       AI patches `file_analysis_data`, user manually corrects it, saves through
       the manual patch API, and the next chat turn reads the corrected saved
       file-analysis workspace.
-- [x] Add a gated live OAuth c.png OCR smoke that sends
-      `docs/reference/example/c.png` to the real `openai_oauth_responses`
-      provider, requires `patch_file_analysis_data`, checks Chinese names
-      `柱底板` / `連接板`, and verifies recognizable plate rows.
+- [x] Record that the gated live OAuth c.pdf OCR full-accuracy attempt failed
+      against `docs/reference/example/c.pdf` and is superseded by the
+      PaddleOCR MCP c.pdf accuracy test.
+- [x] Switch Steel OCR policy to PaddleOCR MCP: update
+      `docs/rules/OCR規則.txt` to make PaddleOCR MCP the required OCR engine
+      for PDF/image/table OCR instead of OpenAI OAuth built-in OCR.
+- [x] Add project MCP configuration for `PaddleOCR-VL-1.6` using
+      `paddleocr-mcp` and `.env` key `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`.
+- [x] Replace the gated live c.pdf OCR accuracy test with a PaddleOCR MCP live
+      test that validates table row data against `c.expected.json`; matching
+      only requires equivalent OCR table values, not identical field names.
+- [x] Verify normal tests skip the live PaddleOCR call by default, and record
+      the exact live-test command/token prerequisite.
+- [x] Simplify `docs/rules/OCR規則.txt` into the approved PaddleOCR MCP
+      process contract: one image/page per task, patch after each page, report
+      progress, resume without reprocessing completed pages, no OpenAI OCR
+      fallback, and support manual table corrections without rerunning OCR.
+- [x] Strengthen `patch_file_analysis_data` data contracts so source/page/image
+      refs carry OCR engine/status/progress metadata and source-key upserts can
+      update a reprocessed page/image instead of duplicating rows.
+- [x] Verify the focused schema/service/provider behavior and sync the updated
+      OCR rule source to reviewed active `steel.agent_rules`.
+- [x] Add a gated PaddleOCR MCP multi-page PDF smoke for
+      `docs/reference/example/d.pdf` that rasterizes and processes one page at a
+      time, patching progress semantics instead of sending the full PDF in one
+      call.
+- [x] Update the OCR policy so user messages `繼續` and `go` both mean resume
+      pending OCR work unless the user explicitly says to reprocess.
 
 Review:
 
+- User correction: `docs/rules/*.txt` are already human-authored rule contracts,
+  so do not write tests that assert rule substrings. This pass removed the
+  transient workbook provenance policy spec and used Supabase sync/readback
+  verification instead.
+- Strengthened `docs/rules/workbook規則.txt` with the product-row provenance
+  contract: workbook product rows can only derive order evidence from
+  `file_analysis_data` or direct `user conversation`; when `file_analysis_data`
+  is present, generated quote lines must cite row id/sourceKey/file/page in
+  `quote_details.decision_evidence`, `price_sources.note`, or
+  `interpretation_notes.evidence`; `customer_quote` must not expose internal
+  source refs.
+- `node packages/api/scripts/sync-steel-workbook-rules.cjs --dry-run` passed
+  with source `docs/rules/workbook規則.txt`, slug
+  `steel-workbook-output-policy`, and sha256
+  `e4766f0ac8a47d5621b52233d9f2098e8a1fc97be2265030801b770058527f59`.
+- `node packages/api/scripts/sync-steel-workbook-rules.cjs --apply` passed and
+  read back active reviewed `steel.agent_rules.slug =
+  steel-workbook-output-policy`; `output_policy` now has
+  `requireProductRowEvidenceSource: true`,
+  `allowedOrderEvidenceSources: ["file_analysis_data", "user conversation"]`,
+  and evidence targets `quote_details.decision_evidence`,
+  `price_sources.note`, `interpretation_notes.evidence`.
+- User correction: all rules must be updated to Supabase, tests must use
+  Supabase rules, and rule text-content tests must be deleted.
+- Follow-up correction: "rule text-content tests" also includes `toContain`,
+  `expect.stringContaining`, and `toMatch` assertions against Supabase fixture
+  prompt text, provider system prompt wording, OCR rule text, workbook rule
+  text, and `lookup_quote_rules` returned rule bodies. Tests should assert
+  reviewed-row lookup, canonical keys/slugs/source refs, tool calls, schemas,
+  patch results, and visible runtime behavior instead.
+- Follow-up cleanup: repository and tool tests must also avoid carrying full
+  human-authored rule prompt/default text in fixtures. Use neutral sentinel
+  values such as `fixture:<key>` when the test is only verifying DB row mapping,
+  lookup facets, source refs, or tool result structure.
+- Added `node packages/api/scripts/sync-steel-rules.cjs` as the unified rule
+  sync. It syncs `docs/rules/agent規則.txt`,
+  `docs/rules/workbook規則.txt`, and `docs/rules/OCR規則.txt` into reviewed
+  `steel.agent_rules`, and `docs/rules/鋼材規則.txt` into reviewed
+  `steel.quote_rules` for `lookup_quote_rules`.
+- Deleted `packages/api/src/steel/vision/paddleocr.policy.spec.ts`, which was
+  asserting rule file text. Updated the OCR provider rule-loading test so it
+  only proves reviewed Supabase `steel.agent_rules` content is injected before
+  provider generation.
+- `node packages/api/scripts/sync-steel-rules.cjs --dry-run` passed and listed
+  all four rule sources with hashes. `node
+  packages/api/scripts/sync-steel-rules.cjs --apply` passed and read back
+  active reviewed rows:
+  `steel-default-agent-instruction`, `steel-workbook-output-policy`,
+  `steel-drawing-ocr-policy`, and quote rule canonical key
+  `steel_quote_rules_lookup_policy_zh_tw`.
+- Fresh verification for this rule cleanup passed:
+  `rg` found no `docs/rules` reads or direct rule-file content checks under
+  `packages/api/src` / `packages/data-provider/src` test files;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="loads reviewed OCR rules|loads workbook output rules"`
+  passed; `node -c packages/api/scripts/sync-steel-rules.cjs` passed; and
+  `git diff --check` passed.
+- User correction: rules are Traditional Chinese only, so rule canonical keys
+  should not carry extra `zh_tw` suffixes.
+- Superseded intermediate state: `sync-steel-rules.cjs` briefly synced one
+  common company rule plus catalog-scoped rules, then the user clarified that
+  the standalone whole Steel rule should be deleted.
+- User correction: delete the standalone whole Steel rule and keep only
+  catalog-key-specific `docs/rules/鋼材規則.txt` rules.
+- Updated `sync-steel-rules.cjs` so `docs/rules/鋼材規則.txt` no longer creates
+  a company/common quote rule. The sync now deletes removed quote rules for
+  that source instead of merely setting them inactive.
+- `node packages/api/scripts/sync-steel-rules.cjs --apply` passed after the
+  deletion change. Direct Supabase readback for
+  `sourceFile = docs/rules/鋼材規則.txt` returned 14 rows, all
+  `scope_type = catalog_family`, with no company-level row.
+- Live `executeSteelTool(lookup_quote_rules)` verification with one request for
+  `c_type`, `h_beam`, and `angle` still passed after deleting the whole rule:
+  returned `steel_quote_rules_c_type`, `steel_quote_rules_h_beam`, and
+  `steel_quote_rules_angle`; `hasWholeRule = false`.
+- User correction: OCR rule source moved from ignored `docs/reference` to
+  tracked `docs/rules/OCR規則.txt`; runtime OCR tests must use the reviewed
+  Supabase `steel.agent_rules` row, not local `docs/reference/OCR規則.txt`.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --dry-run` passed after
+  switching the sync source to `docs/rules/OCR規則.txt`; sha256
+  `2f31b445579261c8f47e70f61682e70ec7f23e55ae6aac322114e14536982610`.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --apply` passed and read
+  back active reviewed `steel.agent_rules.slug = steel-drawing-ocr-policy` with
+  `source_refs[0].sourceFile = docs/rules/OCR規則.txt` and the same sha256.
+- `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="loads reviewed OCR rules"`
+  passed, proving visual evidence turns load OCR rules through the Supabase
+  `steel.agent_rules` path before provider generation.
+- `cd packages/api && npx jest src/steel/vision/paddleocr.d-pdf-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns="node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers"`
+  passed as skipped by default, so normal verification does not call live
+  PaddleOCR MCP.
+- Live multi-page `d.pdf` PaddleOCR MCP smoke passed:
+  `DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_PADDLEOCR_MCP_D_PDF_OCR_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/vision/paddleocr.d-pdf-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns="[]"`.
+  Result: 1 passed in `225.167 s`; the test loaded the reviewed Supabase OCR
+  rule, rendered `docs/reference/example/d.pdf` into two 400 DPI page images
+  with minimum edge >= 2000 px, and called `paddleocr_vl` once per page with
+  `file_type = image`.
+- Actual handler chat-flow smoke passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="d.pdf upload interruption"`.
+  Flow: upload real `docs/reference/example/d.pdf` bytes, first provider turn
+  patches only page 1 OCR progress, the next user message is `go`, and the
+  handler injects saved `interpretation_notes` progress so provider can patch
+  page 2 without reprocessing page 1.
+- Fixed the resume context gap found by that smoke: the saved
+  `file_analysis_data` context injected into later chat turns now includes
+  `manual_review` and `interpretation_notes` rows plus source progress fields
+  such as `sourceKey`, `imageIndex`, `ocrEngine`, `ocrStatus`, and
+  `processedAt`, not only the `file_analysis_data` sheet rows.
+- `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="d.pdf upload interruption|injects the latest saved file_analysis_data|smokes image OCR"`
+  passed: 3 tests.
+- Live Supabase tool probe passed for a saved `file_analysis_data` C 型鋼 row:
+  `lookup_quote_rules` returned reviewed packets including
+  `c-type-basic-quote-zh-v1`, `product-price-unit-weight-calculation-zh-v1`,
+  `price-source-priority-zh-v1`, `formula-code-selection-zh-v1`, and
+  `drawing-processing-detection-zh-v1`; `search_price_candidates` returned 4
+  reviewed price candidates for `錏輕型鋼 100*2.3` / `CCG10023_錏輕型鋼100x2.3`,
+  including numeric unit prices `26`, `26.8`, and `25.5`.
+- Added a gated live workbook flow smoke:
+  `STEEL_FILE_ANALYSIS_WORKBOOK_LIVE_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/handlers.spec.ts --runInBand --testNamePattern="creates a workbook from file_analysis_data"`.
+  It passed in `2816 ms`: saved `file_analysis_data` was injected into
+  stream chat, the provider mock called only Supabase-backed
+  `lookup_quote_rules` and `search_price_candidates`, then generated a workbook
+  patch using the returned reviewed price candidate. The resulting workbook
+  contains `quote_details`, `price_sources`, `summary`, and
+  `interpretation_notes` rows derived from Supabase tool output, not local
+  price fixtures.
+- `cd packages/data-provider && npx jest src/steel/vision.spec.ts --runInBand`
+  passed after extending `patch_file_analysis_data` schemas with
+  `sourceKey`, `imageIndex`, `ocrEngine`, `ocrStatus`, `processedAt`, and
+  source-file OCR progress metadata.
+- `cd packages/api && npx jest src/steel/vision/analysis.spec.ts --runInBand`
+  passed after adding source-key upsert behavior.
+- `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="patch_file_analysis_data"`
+  passed for the provider tool loop after updating the
+  `patch_file_analysis_data` tool description and progress-summary instruction.
+- `npm run build:data-provider` passed and refreshed
+  `packages/data-provider/dist` for API imports.
+- `npm run build:api` exited `0`; Rollup still reports the existing non-Steel
+  Redis `cacheFactory.ts` type warning.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --dry-run` and
+  `node packages/api/scripts/sync-steel-ocr-rules.cjs --apply` passed; active
+  reviewed `steel.agent_rules.slug = steel-drawing-ocr-policy` now has sha256
+  `8de5cd59d217aa5b76071b112d778724bc34b410451d312e6188423493549e1f`.
+- Historical note: the former rule-text policy test for PaddleOCR MCP config was
+  deleted after the user clarified that `docs/rules/*.txt` content should not be
+  tested directly. MCP config remains covered by config parsing and live
+  PaddleOCR smoke paths when those are explicitly run.
+- `cd packages/api && npx jest src/steel/vision/paddleocr.c-pdf-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers'`
+  passed as skipped by default: 1 skipped test, so normal verification does not
+  call PaddleOCR MCP.
+- User correction: do not run Prettier in this repo unless explicitly asked.
+  Future verification should use manual formatting, `git diff --check`, tests,
+  and build/type checks instead.
+- Live PaddleOCR MCP c.pdf OCR passed with real `paddleocr_vl`:
+  `DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_PADDLEOCR_MCP_C_PDF_OCR_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/vision/paddleocr.c-pdf-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`.
+  Result: 1 passed in `110.641 s`; the test matched every expected
+  `docs/reference/example/c.pdf` row against `c.expected.json` without requiring
+  exact field names.
+- Local `.env` now contains `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`; the token
+  value was never printed.
+- Updated `docs/steel-supabase-development.md` so project MCP documentation now
+  includes both Supabase MCP and PaddleOCR MCP.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --dry-run` passed for the
+  PaddleOCR OCR rules and computed sha256
+  `49f180451660d5142d60ec3a4f5982675f2cc6d6bfbe633af0465f7ffe34a278`.
+- `node packages/api/scripts/sync-steel-ocr-rules.cjs --apply` passed and read
+  back active reviewed `steel.agent_rules.slug = steel-drawing-ocr-policy` with
+  the same sha256.
+- Final no-Prettier verification passed:
+  `cd packages/api && npx jest src/steel/vision/compare.spec.ts --runInBand`
+  passed, `cd packages/api && npx jest src/steel/vision/paddleocr.c-pdf-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers'`
+  passed as skipped by default, `.mcp.json` parsed with `node -e`, and
+  `git diff --check` passed.
 - `npm --workspace packages/api run steel:sync-ocr-rules -- --dry-run` passed
   and computed sha256
   `43215f55617de2f71aa8c1f87555d50823ead5c2cb27cdc6378c525246e6be74`.
@@ -132,12 +342,10 @@ Review:
   touched client spec helper.
 - `npx prettier --check client/src/routes/SteelOAuthChat.spec.tsx packages/api/src/steel/handlers.spec.ts tasks/todo.md`
   passed, and `git diff --check` passed.
-- Added
-  `packages/api/src/steel/ai/provider.c-png-ocr.manual.spec.ts`, gated by
-  `STEEL_OPENAI_OAUTH_C_PNG_OCR_TEST=true`, for real OAuth c.png OCR. The smoke
-  uses the normal Steel OpenAI config for model/reasoning, sends the local image
-  bytes, requires `patch_file_analysis_data`, confirms Chinese row names
-  `柱底板` and `連接板`, and checks at least two recognizable plate rows.
+- Historical OAuth attempt: a real OAuth c.pdf OCR manual test sent the local
+  PDF bytes through `openai_oauth_responses`, required
+  `patch_file_analysis_data`, and checked the full expected row fixture. That
+  test has now been removed and replaced by the PaddleOCR MCP c.pdf live test.
 - Confirmed `imageDetail: high` is already applied to all Steel `image/*`
   provider file parts in `packages/api/src/steel/ai/provider.ts`, and AI SDK's
   OpenAI Responses converter maps `providerOptions.openai.imageDetail` to the
@@ -145,14 +353,31 @@ Review:
 - `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="image detail"`
   passed: the provider prompt includes `providerOptions.openai.imageDetail =
 high` for image file parts.
-- `cd packages/api && npx jest src/steel/ai/provider.c-png-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers'`
-  passed as skipped by default: 1 skipped test, so normal focused verification
-  does not call live OAuth.
+- The old OAuth c.pdf manual test previously passed as skipped by default; that
+  skipped-test entry is no longer the current OCR validation path.
 - Live OAuth c.png OCR smoke passed with real provider:
   `DOTENV_CONFIG_PATH=../../.env NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_C_PNG_OCR_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/ai/provider.c-png-ocr.manual.spec.ts --runInBand --testPathIgnorePatterns='[]'`.
   Result: 1 passed in `309.628 s` using real `openai_oauth_responses`; the
   smoke confirmed `fileAnalysisPatch`, Chinese names `柱底板` / `連接板`, and
   at least two recognizable plate rows from `docs/reference/example/c.png`.
+- The current live full-accuracy fixture was changed from
+  `docs/reference/example/c.png` to the higher-resolution
+  `docs/reference/example/c.pdf`. Future failures should be reported with the
+  missing rows/candidate extracted cells and recommendations, without tuning OCR
+  rules unless the user explicitly reopens that scope.
+- Live OAuth c.pdf full-accuracy test failed with real provider:
+  `STEEL_C_PDF_OCR_TEST=true STEEL_OPENAI_REASONING_EFFORT=medium ...`.
+  Result: provider returned `fileAnalysisPatch` and `rowCount = 26`, but
+  `matchedPartNos = []`; extracted candidate rows looked like a different
+  BPL/PL schedule than the expected fixture. Duplicates detected by substring
+  scan were `PL1`, `PL2`, and `PL7`; no unmatched non-part rows were returned.
+  This is now the reason the active live OCR validation uses PaddleOCR MCP
+  instead of OpenAI OAuth built-in OCR.
+- Removed c.png fixture-specific hard-coded OCR rules from
+  `docs/rules/OCR規則.txt`, including BP/PL examples and fixed 26-row
+  wording. Supabase `steel.agent_rules.slug = steel-drawing-ocr-policy` was
+  synced with sha256
+  `6dda05693c2424d65efe1f642e4047b6f4c071ea07cb41c159383be21b188f8c`.
 - `cd packages/api && npx jest src/steel/vision/prompt.spec.ts --runInBand`
   passed after simplifying `buildDrawingEvidencePrompt` to DB OCR rules plus
   user request only: 5 tests.

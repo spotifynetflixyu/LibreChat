@@ -2,6 +2,10 @@ import { searchSteelQuoteDefaults } from './defaults';
 
 import type { SteelRepositoryClient } from './types';
 
+function fixtureText(key: string) {
+  return `fixture:${key}`;
+}
+
 describe('Steel quote default repositories', () => {
   it('searches reviewed active quote defaults by batched catalog, charge, and formula facets', async () => {
     const query = jest.fn().mockResolvedValue({
@@ -24,7 +28,7 @@ describe('Steel quote default repositories', () => {
           default_parameters: [
             {
               parameterKey: 'instruction',
-              value: 'C 型鋼切工與孔費預設免費',
+              value: fixtureText('quote-default-instruction'),
             },
           ],
           priority: '10',
@@ -80,7 +84,7 @@ describe('Steel quote default repositories', () => {
         defaultParameters: [
           {
             parameterKey: 'instruction',
-            value: 'C 型鋼切工與孔費預設免費',
+            value: fixtureText('quote-default-instruction'),
           },
         ],
         priority: 10,

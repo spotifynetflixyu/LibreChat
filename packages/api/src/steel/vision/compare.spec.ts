@@ -3,7 +3,7 @@ import { compareDrawingEvidenceRows } from './compare';
 import { steelDrawingEvidenceResultSchema } from './schema';
 
 describe('Steel drawing evidence comparison', () => {
-  it('validates the c.png expected drawing schedule fixture', () => {
+  it('validates the c.pdf expected drawing schedule fixture', () => {
     const parsed = steelDrawingEvidenceResultSchema.parse(expected);
 
     expect(parsed.rows).toHaveLength(26);
@@ -13,7 +13,7 @@ describe('Steel drawing evidence comparison', () => {
     );
   });
 
-  it('compares extracted rows against the expected c.png fixture', () => {
+  it('compares extracted rows against the expected c.pdf fixture', () => {
     const actual = steelDrawingEvidenceResultSchema.parse(expected);
     const result = compareDrawingEvidenceRows({ expected, actual });
 

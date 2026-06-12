@@ -37,16 +37,30 @@ export const steelFileAnalysisColumnSchema = z.object({
 
 export type SteelFileAnalysisColumn = z.infer<typeof steelFileAnalysisColumnSchema>;
 
+export const steelFileAnalysisOcrStatusSchema = z.enum([
+  'pending',
+  'processing',
+  'completed',
+  'failed',
+  'skipped',
+]);
+
 export const steelFileAnalysisSourceFileSchema = z.object({
   fileId: z.string().min(1),
   filename: z.string().min(1).optional(),
   mediaType: z.string().min(1),
   pageCount: z.number().int().positive().optional(),
+  ocrEngine: z.string().min(1).optional(),
+  ocrStatus: steelFileAnalysisOcrStatusSchema.optional(),
+  processedAt: z.string().datetime().optional(),
+  errorMessage: z.string().min(1).optional(),
 });
 
 export type SteelFileAnalysisSourceFile = z.infer<typeof steelFileAnalysisSourceFileSchema>;
 
 export const steelFileAnalysisSourceRefSchema = steelFileAnalysisSourceFileSchema.extend({
+  sourceKey: z.string().min(1).optional(),
+  imageIndex: z.number().int().positive().optional(),
   page: z.number().int().positive().optional(),
   regionLabel: z.string().min(1).optional(),
   orientation: z.enum(['0', '90', '180', '270']).optional(),

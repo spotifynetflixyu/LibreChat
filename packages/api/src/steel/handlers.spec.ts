@@ -1,8 +1,12 @@
 import { createSteelAdminHandlers, createSteelHandlers } from './handlers';
+import { readFile } from 'fs/promises';
+import path from 'path';
 import { logger } from '@librechat/data-schemas';
 import { SteelConversationAccessError } from './conversations/service';
 import { createSteelWorkbookService } from './workbook/service';
 import { createSteelFileAnalysisService } from './vision/analysis';
+import { createSteelPostgresPool } from './postgres';
+import { executeSteelTool } from './tools/execute';
 
 import type { Request, Response } from 'express';
 import type {
@@ -772,6 +776,616 @@ describe('createSteelHandlers', () => {
     expect(JSON.stringify(secondSendChatOptions.messages)).not.toContain('"part_no":"PL1"');
     expect(secondRes.status).toHaveBeenCalledWith(200);
   });
+
+  it('smokes d.pdf upload interruption and go resume through file_analysis_data context', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-12T00:00:00.000Z'),
+    });
+    const dPdf = await readFile(path.join(__dirname, '../../../../docs/reference/example/d.pdf'));
+    const sendChat = jest
+      .fn()
+      .mockResolvedValueOnce({
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已完成 d.pdf page 1，停止在 page 2 前，可輸入 go 接續。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisPatch: {
+          sourceFiles: [
+            {
+              fileId: 'file_d_pdf',
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              pageCount: 2,
+              ocrEngine: 'PaddleOCR MCP',
+              ocrStatus: 'completed' as const,
+            },
+          ],
+          patches: [
+            {
+              sheetId: 'interpretation_notes' as const,
+              upsertColumns: [
+                { key: 'note', label: '判讀備註', valueType: 'text' as const },
+                { key: 'ocr_status', label: 'OCR 狀態', valueType: 'status' as const },
+              ],
+              upsertRows: [
+                {
+                  id: 'd_pdf_page_1_progress',
+                  sourceRef: {
+                    fileId: 'file_d_pdf',
+                    filename: 'd.pdf',
+                    mediaType: 'application/pdf',
+                    sourceKey: 'file_d_pdf:page:1:ocr-progress',
+                    page: 1,
+                    ocrEngine: 'PaddleOCR MCP',
+                    ocrStatus: 'completed' as const,
+                    processedAt: '2026-06-12T00:00:00.000Z',
+                  },
+                  cells: {
+                    note: 'd.pdf page 1 已用 400 DPI 單頁圖片完成 PaddleOCR。',
+                    ocr_status: 'completed',
+                  },
+                  confidence: 'medium' as const,
+                },
+              ],
+            },
+          ],
+          summary: 'd.pdf page 1 completed; page 2 pending.',
+        },
+      })
+      .mockImplementationOnce(async (options) => {
+        const serializedMessages = JSON.stringify(options.messages);
+        expect(serializedMessages).toContain('file_d_pdf:page:1:ocr-progress');
+        expect(serializedMessages).toContain('d.pdf page 1 已用 400 DPI');
+        expect(serializedMessages).toContain('"content":"go"');
+
+        return {
+          provider: 'openai_oauth_responses' as const,
+          model: 'gpt-5.5',
+          text: 'go 已接續處理 d.pdf page 2。',
+          unsupportedSettings: [],
+          warnings: [],
+          fileAnalysisPatch: {
+            sourceFiles: [
+              {
+                fileId: 'file_d_pdf',
+                filename: 'd.pdf',
+                mediaType: 'application/pdf',
+                pageCount: 2,
+                ocrEngine: 'PaddleOCR MCP',
+                ocrStatus: 'completed' as const,
+              },
+            ],
+            patches: [
+              {
+                sheetId: 'interpretation_notes' as const,
+                upsertColumns: [
+                  { key: 'note', label: '判讀備註', valueType: 'text' as const },
+                  { key: 'ocr_status', label: 'OCR 狀態', valueType: 'status' as const },
+                ],
+                upsertRows: [
+                  {
+                    id: 'd_pdf_page_2_progress',
+                    sourceRef: {
+                      fileId: 'file_d_pdf',
+                      filename: 'd.pdf',
+                      mediaType: 'application/pdf',
+                      sourceKey: 'file_d_pdf:page:2:ocr-progress',
+                      page: 2,
+                      ocrEngine: 'PaddleOCR MCP',
+                      ocrStatus: 'completed' as const,
+                      processedAt: '2026-06-12T00:05:00.000Z',
+                    },
+                    cells: {
+                      note: 'd.pdf page 2 已用 400 DPI 單頁圖片完成 PaddleOCR。',
+                      ocr_status: 'completed',
+                    },
+                    confidence: 'medium' as const,
+                  },
+                ],
+              },
+            ],
+            summary: 'd.pdf page 2 completed after go resume.',
+          },
+        };
+      });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      fileAnalysisService,
+    });
+    const firstReq = {
+      body: {
+        conversationId: 'conversation_d_pdf',
+        workbookId: 'wb_1',
+        messages: [
+          {
+            role: 'user',
+            content: 'OCR d.pdf，先處理第一頁',
+            files: [
+              {
+                filename: 'd.pdf',
+                mediaType: 'application/pdf',
+                dataBase64: dPdf.toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const firstRes = createResponse();
+
+    await handlers.chat(firstReq, firstRes);
+
+    expect(firstRes.status).toHaveBeenCalledWith(200);
+    expect(firstRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileAnalysisData: expect.objectContaining({
+          version: 1,
+          sheets: expect.objectContaining({
+            interpretation_notes: expect.objectContaining({
+              rows: [
+                expect.objectContaining({
+                  sourceRef: expect.objectContaining({
+                    sourceKey: 'file_d_pdf:page:1:ocr-progress',
+                    page: 1,
+                    ocrStatus: 'completed',
+                  }),
+                }),
+              ],
+            }),
+          }),
+        }),
+      }),
+    );
+
+    const secondReq = {
+      body: {
+        conversationId: 'conversation_d_pdf',
+        workbookId: 'wb_1',
+        messages: [{ role: 'user', content: 'go' }],
+      },
+    } as Request;
+    const secondRes = createResponse();
+
+    await handlers.chat(secondReq, secondRes);
+
+    expect(secondRes.status).toHaveBeenCalledWith(200);
+    expect(secondRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'go 已接續處理 d.pdf page 2。',
+        fileAnalysisData: expect.objectContaining({
+          version: 2,
+          sheets: expect.objectContaining({
+            interpretation_notes: expect.objectContaining({
+              rows: expect.arrayContaining([
+                expect.objectContaining({
+                  sourceRef: expect.objectContaining({
+                    sourceKey: 'file_d_pdf:page:1:ocr-progress',
+                    page: 1,
+                  }),
+                }),
+                expect.objectContaining({
+                  sourceRef: expect.objectContaining({
+                    sourceKey: 'file_d_pdf:page:2:ocr-progress',
+                    page: 2,
+                    ocrStatus: 'completed',
+                  }),
+                }),
+              ]),
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(sendChat).toHaveBeenCalledTimes(2);
+  });
+
+  const itLiveFileAnalysisWorkbook =
+    process.env.STEEL_FILE_ANALYSIS_WORKBOOK_LIVE_TEST === 'true' ? it : it.skip;
+
+  itLiveFileAnalysisWorkbook(
+    'creates a workbook from file_analysis_data using only Supabase Steel rules and data',
+    async () => {
+      const fileAnalysisRepository = new MemorySteelFileAnalysisRepository();
+      const fileAnalysisService = createSteelFileAnalysisService({
+        repository: fileAnalysisRepository,
+        id: () => 'fad_live_workbook',
+        now: () => new Date('2026-06-12T00:00:00.000Z'),
+      });
+      await fileAnalysisService.patch({
+        conversationId: 'conversation_file_analysis_to_workbook',
+        workbookId: 'wb_live_file_analysis',
+        patch: {
+          sourceFiles: [
+            {
+              fileId: 'file_d_pdf',
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              pageCount: 2,
+              ocrEngine: 'PaddleOCR MCP',
+              ocrStatus: 'completed',
+            },
+          ],
+          patches: [
+            {
+              sheetId: 'file_analysis_data',
+              upsertColumns: [
+                { key: 'item_name', label: '品名', valueType: 'text' },
+                { key: 'spec', label: '規格', valueType: 'text' },
+                { key: 'length_m', label: '長度M', valueType: 'number' },
+                { key: 'quantity', label: '數量', valueType: 'number' },
+                { key: 'unit', label: '單位', valueType: 'text' },
+              ],
+              upsertRows: [
+                {
+                  id: 'ocr_line_c100',
+                  sourceRef: {
+                    fileId: 'file_d_pdf',
+                    filename: 'd.pdf',
+                    mediaType: 'application/pdf',
+                    sourceKey: 'file_d_pdf:page:1:table:main:row:C100',
+                    page: 1,
+                    ocrEngine: 'PaddleOCR MCP',
+                    ocrStatus: 'completed',
+                    processedAt: '2026-06-12T00:00:00.000Z',
+                  },
+                  cells: {
+                    item_name: 'C型鋼',
+                    spec: 'C100x50x20x2.3t',
+                    length_m: 6,
+                    quantity: 1,
+                    unit: '支',
+                  },
+                  confidence: 'medium',
+                  reviewStatus: 'pending_review',
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const workbookRepository = new MemorySteelWorkbookRepository();
+      const workbookService = createSteelWorkbookService({
+        repository: workbookRepository,
+        id: () => 'wb_live_file_analysis',
+        now: () => new Date('2026-06-12T00:00:00.000Z'),
+      });
+      const created = await workbookService.create({
+        conversationMetaId: 'conversation_file_analysis_to_workbook',
+      });
+      const pool = createSteelPostgresPool();
+      const executedToolNames: string[] = [];
+      const executeToolCall = jest.fn(async (options) => {
+        executedToolNames.push(options.toolName);
+        return executeSteelTool({
+          client: pool,
+          toolName: options.toolName,
+          arguments: options.arguments,
+          providerToolCallId: options.providerToolCallId,
+          runState: options.runState,
+        });
+      });
+      const sendChat = jest.fn(async (options) => {
+        const serializedMessages = JSON.stringify(options.messages);
+        expect(serializedMessages).toContain('Latest saved file_analysis_data workspace');
+        expect(serializedMessages).toContain('C100x50x20x2.3t');
+        expect(serializedMessages).toContain('file_d_pdf:page:1:table:main:row:C100');
+        expect(options.workbookPatchTool).toBe(true);
+
+        if (!options.executeSteelToolCall) {
+          throw new Error('Steel tool executor is required for workbook generation.');
+        }
+
+        const runState = { maxCalls: 8, callsUsed: 0 };
+        const rules = await options.executeSteelToolCall({
+          toolName: 'lookup_quote_rules',
+          arguments: {
+            taskTypes: ['candidate_generation', 'material_price_lookup', 'workbook_generation'],
+            evidenceSummary:
+              'file_analysis_data row: C100x50x20x2.3t length 6M quantity 1 source d.pdf page 1',
+            catalogContexts: [
+              {
+                catalogCandidates: ['c_type'],
+                packetGroupHints: ['c-type-quote-core'],
+              },
+            ],
+            customerContext: { tierKnown: false },
+            reviewState: 'reviewed',
+            limit: 10,
+          },
+          providerToolCallId: 'live_lookup_quote_rules',
+          runState,
+        });
+        const prices = await options.executeSteelToolCall({
+          toolName: 'search_price_candidates',
+          arguments: {
+            originalText: 'file_analysis_data: C100x50x20x2.3t 長度 6M 數量 1 支',
+            catalogFamilies: ['c_type'],
+            candidateQueries: [
+              {
+                queryId: 'file-analysis-c100x23',
+                productNames: ['錏輕型鋼'],
+                specKeyContains: '100x2.3',
+                confidence: 'high',
+                reason:
+                  'Derived from file_analysis_data C100x50x20x2.3t row and reviewed c_type rules',
+              },
+            ],
+            reviewState: 'reviewed',
+            limit: 5,
+          },
+          providerToolCallId: 'live_search_price_candidates',
+          runState,
+        });
+
+        if (!rules.ok) {
+          throw new Error(`lookup_quote_rules failed: ${rules.errorSummary}`);
+        }
+        if (!prices.ok) {
+          throw new Error(`search_price_candidates failed: ${prices.errorSummary}`);
+        }
+
+        const [priceCandidate] = prices.data.priceCandidates ?? [];
+        if (!priceCandidate || typeof priceCandidate.unitPrice !== 'number') {
+          throw new Error('Supabase search_price_candidates returned no numeric price candidate.');
+        }
+
+        const unitWeight = Number(priceCandidate.productPriceUnitWeight ?? 4);
+        const lengthM = 6;
+        const quantity = 1;
+        const totalWeight = unitWeight * lengthM * quantity;
+        const subtotal = Math.round(priceCandidate.unitPrice * totalWeight * 100) / 100;
+
+        return {
+          provider: 'openai_oauth_responses' as const,
+          model: 'gpt-5.5',
+          text: `已依 file_analysis_data 與 Supabase reviewed data 生成 workbook，小計：${subtotal}`,
+          unsupportedSettings: [],
+          warnings: [],
+          workbookPatch: {
+            operations: [
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'line_no',
+                value: 1,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'customer_original_item_name',
+                value: 'C100x50x20x2.3t',
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'normalized_item_name',
+                value: String(priceCandidate.productName),
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'adopted_product_price_item',
+                value: String(priceCandidate.specKey),
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'material_category',
+                value: 'c_type',
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'spec',
+                value: 'C100x50x20x2.3t',
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'finished_length_m',
+                value: lengthM,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'quantity',
+                value: quantity,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'unit',
+                value: '支',
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'unit_weight_kg_per_m',
+                value: unitWeight,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'total_weight_kg',
+                value: totalWeight,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'material_unit_price',
+                value: priceCandidate.unitPrice,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'material_pricing_unit',
+                value: 'Kg',
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'billable_quantity',
+                value: totalWeight,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'quote_details' as const,
+                rowId: 'line_1',
+                columnKey: 'subtotal',
+                value: subtotal,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'price_sources' as const,
+                rowId: 'source_1',
+                columnKey: 'adopted_product_price_item',
+                value: String(priceCandidate.specKey),
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'price_sources' as const,
+                rowId: 'source_1',
+                columnKey: 'adopted_unit_price',
+                value: priceCandidate.unitPrice,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'price_sources' as const,
+                rowId: 'source_1',
+                columnKey: 'source_file',
+                value: 'Supabase steel price_items',
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'summary' as const,
+                rowId: 'summary_total_amount',
+                columnKey: 'value',
+                value: subtotal,
+              },
+              {
+                op: 'set_cell' as const,
+                sheetId: 'interpretation_notes' as const,
+                rowId: 'note_1',
+                columnKey: 'content',
+                value:
+                  'Workbook generated from saved file_analysis_data after lookup_quote_rules and search_price_candidates returned reviewed Supabase data.',
+              },
+            ],
+          },
+        };
+      });
+      const handlers = createSteelHandlers({
+        executeToolCall,
+        getModelsConfig: jest.fn(),
+        sendChat,
+        workbookService,
+        fileAnalysisService,
+      });
+      const req = {
+        body: {
+          conversationId: 'conversation_file_analysis_to_workbook',
+          workbookId: created.workbook.id,
+          workbookVersion: created.workbook.version,
+          selectedWorkbookRefs: [],
+          messages: [{ role: 'user', content: '依照 file_analysis_data 生成報價 workbook' }],
+        },
+      } as Request;
+      const { chunks, res } = createStreamResponse();
+
+      try {
+        await handlers.streamChat(req, res);
+      } finally {
+        await pool.end();
+      }
+
+      const events = parseStreamChunks(chunks);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(executedToolNames).toEqual(['lookup_quote_rules', 'search_price_candidates']);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'lookup',
+            status: 'completed',
+            toolName: 'lookup_quote_rules',
+            ok: true,
+          }),
+          expect.objectContaining({
+            type: 'tool',
+            status: 'completed',
+            toolName: 'search_price_candidates',
+            ok: true,
+          }),
+          expect.objectContaining({
+            type: 'tool',
+            status: 'completed',
+            toolName: 'patch_quote_workbook',
+            ok: true,
+          }),
+        ]),
+      );
+      const doneEvent = events.find(
+        (event): event is { type: 'done'; response: Record<string, unknown> } =>
+          typeof event === 'object' &&
+          event !== null &&
+          (event as { type?: string }).type === 'done',
+      );
+      expect(doneEvent?.response).toEqual(
+        expect.objectContaining({
+          text: expect.stringContaining('Supabase reviewed data'),
+          workbookPatch: expect.objectContaining({
+            workbook: expect.objectContaining({
+              id: created.workbook.id,
+            }),
+          }),
+        }),
+      );
+      const workbook = (doneEvent?.response.workbookPatch as { workbook?: { sheets?: any[] } })
+        ?.workbook;
+      const quoteDetails = workbook?.sheets?.find((sheet) => sheet.id === 'quote_details');
+      const priceSources = workbook?.sheets?.find((sheet) => sheet.id === 'price_sources');
+      const summary = workbook?.sheets?.find((sheet) => sheet.id === 'summary');
+
+      expect(quoteDetails?.rows.find((row) => row.id === 'line_1')?.cells).toEqual(
+        expect.objectContaining({
+          customer_original_item_name: 'C100x50x20x2.3t',
+          material_category: 'c_type',
+          material_pricing_unit: 'Kg',
+          subtotal: expect.any(Number),
+        }),
+      );
+      expect(priceSources?.rows.find((row) => row.id === 'source_1')?.cells).toEqual(
+        expect.objectContaining({
+          source_file: 'Supabase steel price_items',
+          adopted_unit_price: expect.any(Number),
+        }),
+      );
+      expect(summary?.rows.find((row) => row.id === 'summary_total_amount')?.cells).toEqual(
+        expect.objectContaining({
+          value: expect.any(Number),
+        }),
+      );
+    },
+    60000,
+  );
 
   it('streams a fatal Steel tool error without hiding the tool failure summary', async () => {
     const executeToolCall = jest.fn(async (options) => ({

@@ -426,7 +426,7 @@ const fileAnalysisPatchFunctionTool: LanguageModelV3FunctionTool = {
   type: 'function',
   name: 'patch_file_analysis_data',
   description:
-    'Patch the single conversation-scoped Steel file_analysis_data workspace for unconfirmed PDF/image/drawing interpretation. Use flexible columns and rows, and include source file/page/region refs for rows when available. Do not use this for confirmed quote workbook rows.',
+    'Patch the single conversation-scoped Steel file_analysis_data workspace for unconfirmed PDF/image/drawing interpretation. Process one page/image at a time, patch after each PaddleOCR MCP result, include sourceKey/page/imageIndex/ocrEngine/ocrStatus refs for rows, and reuse row ids or sourceKey when reprocessing. Do not use this for confirmed quote workbook rows.',
   inputSchema: zodToJsonSchema(patchFileAnalysisDataToolInputSchema, {
     $refStrategy: 'none',
   }) as LanguageModelV3FunctionTool['inputSchema'],
@@ -864,7 +864,9 @@ function toWorkbookPatchToolResultValue(
   });
 }
 
-function toFileAnalysisPatchToolResultValue(parsedCall: ParsedFileAnalysisPatchToolCall): JSONValue {
+function toFileAnalysisPatchToolResultValue(
+  parsedCall: ParsedFileAnalysisPatchToolCall,
+): JSONValue {
   const rowCount = parsedCall.input.patches.reduce(
     (count, patch) => count + patch.upsertRows.length,
     0,
@@ -882,7 +884,7 @@ function toFileAnalysisPatchToolResultValue(parsedCall: ParsedFileAnalysisPatchT
     rowCount,
     columnCount,
     instruction:
-      'patch_file_analysis_data 已收到並會交由 backend 持久化。現在請用繁體中文簡短摘要本輪 patch 內容：來源檔案/頁碼、新增或更新的列、低信心/人工複核項目、以及用戶需要核對的位置。不要只回答已更新 N 個欄位。',
+      'patch_file_analysis_data 已收到並會交由 backend 持久化。現在請用繁體中文簡短摘要本輪 patch 內容：來源檔案/頁碼/圖片序號、新增或更新的列、ocrStatus、低信心/人工複核項目、以及用戶需要核對的位置。若還有待處理頁面或圖片，回報下一個來源後再繼續下一個 PaddleOCR MCP task。不要只回答已更新 N 個欄位。',
   });
 }
 

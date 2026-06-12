@@ -186,6 +186,10 @@ export interface ISteelFileAnalysisData extends Document {
     filename?: string;
     mediaType: string;
     pageCount?: number;
+    ocrEngine?: string;
+    ocrStatus?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
+    processedAt?: string;
+    errorMessage?: string;
   }>;
   sheets: {
     file_analysis_data: {

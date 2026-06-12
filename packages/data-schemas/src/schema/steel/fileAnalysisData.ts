@@ -8,6 +8,13 @@ const sourceFileSchema = new Schema(
     filename: { type: String },
     mediaType: { type: String, required: true },
     pageCount: { type: Number, min: 1 },
+    ocrEngine: { type: String },
+    ocrStatus: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'failed', 'skipped'],
+    },
+    processedAt: { type: String },
+    errorMessage: { type: String },
   },
   { _id: false },
 );
@@ -26,9 +33,18 @@ const sourceRefSchema = new Schema(
     fileId: { type: String, required: true },
     filename: { type: String },
     mediaType: { type: String, required: true },
+    sourceKey: { type: String },
+    imageIndex: { type: Number, min: 1 },
     page: { type: Number, min: 1 },
     regionLabel: { type: String },
     orientation: { type: String, enum: ['0', '90', '180', '270'] },
+    ocrEngine: { type: String },
+    ocrStatus: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'failed', 'skipped'],
+    },
+    processedAt: { type: String },
+    errorMessage: { type: String },
   },
   { _id: false },
 );

@@ -55,10 +55,10 @@ function parseArgs(argv) {
 
 function printUsage() {
   process.stdout.write(`Usage:
-  npm --workspace packages/api run steel:sync-ocr-rules -- --dry-run
-  npm --workspace packages/api run steel:sync-ocr-rules -- --apply
+  node packages/api/scripts/sync-steel-workbook-rules.cjs --dry-run
+  node packages/api/scripts/sync-steel-workbook-rules.cjs --apply
 
-Default mode is --dry-run. --apply upserts docs/rules/OCR規則.txt into
+Default mode is --dry-run. --apply upserts docs/rules/workbook規則.txt into
 steel.agent_rules using STEEL_POSTGRES_URL, then reads the row back.
 `);
 }
@@ -67,8 +67,8 @@ function toJson(value) {
   return JSON.stringify(value);
 }
 
-function buildOcrRule(repoRoot) {
-  const sourceFile = 'docs/rules/OCR規則.txt';
+function buildWorkbookRule(repoRoot) {
+  const sourceFile = 'docs/rules/workbook規則.txt';
   const sourcePath = path.join(repoRoot, sourceFile);
   const prompt = fs.readFileSync(sourcePath, 'utf8').trim();
   const sha256 = crypto.createHash('sha256').update(prompt, 'utf8').digest('hex');
@@ -78,29 +78,34 @@ function buildOcrRule(repoRoot) {
   }
 
   return {
-    slug: 'steel-drawing-ocr-policy',
+    slug: 'steel-workbook-output-policy',
     version: 1,
-    ruleType: 'inference_order_rule',
-    title: '圖面表格局部判讀流程',
+    ruleType: 'workbook_output_rule',
+    title: 'Steel Workbook Output Policy',
     locale: 'zh-TW',
-    ruleSections: ['file_ocr', 'drawing_ocr', 'vision_evidence'],
+    ruleSections: ['workbook_output', 'workbook_patch', 'system_order'],
     sheetId: null,
     selectors: {
-      sourceKinds: ['image', 'pdf', 'scanned_pdf'],
-      requiresDrawingOcr: true,
-      tableTypes: ['material_table', 'part_table', 'bolt_table', 'cutting_table'],
+      appliesTo: ['steel_quote_workbook'],
+      locale: 'zh-TW',
     },
     prompt,
     toolPolicy: {
-      requiredBefore: ['drawing_evidence_extraction'],
-      mustMarkLowConfidence: true,
+      availableTools: ['patch_quote_workbook'],
+      requiredTool: 'patch_quote_workbook',
     },
     outputPolicy: {
-      targetSheets: ['manual_review', 'interpretation_notes'],
-      forbidFormalAdminImport: true,
-      forbidConfirmedTotalsFromOcrOnly: true,
+      answerLanguage: 'zh-TW',
+      requireProductRowEvidenceSource: true,
+      allowedOrderEvidenceSources: ['file_analysis_data', 'user conversation'],
+      fileAnalysisEvidenceTargets: [
+        'quote_details.decision_evidence',
+        'price_sources.note',
+        'interpretation_notes.evidence',
+      ],
+      forbidCustomerQuoteInternalSourceRefs: true,
     },
-    priority: 35,
+    priority: 20,
     confidence: 'high',
     active: true,
     reviewState: 'reviewed',
@@ -109,15 +114,15 @@ function buildOcrRule(repoRoot) {
         channel: 'repo_docs',
         factType: 'agent_rule',
         sourceFile,
-        locator: '圖面表格局部判讀流程',
-        canonicalKey: 'drawing_ocr_local_table_reading',
+        locator: '產品 row 來源標註規則',
+        canonicalKey: 'workbook_output_policy',
         sha256,
       },
     ],
   };
 }
 
-async function upsertOcrRule(client, rule) {
+async function upsertWorkbookRule(client, rule) {
   await client.query(
     `
 INSERT INTO steel.agent_rules (
@@ -196,7 +201,7 @@ SET
   );
 }
 
-async function readBackOcrRule(client, rule) {
+async function readBackWorkbookRule(client, rule) {
   const result = await client.query(
     `
 SELECT
@@ -206,6 +211,7 @@ SELECT
   rule_sections,
   active,
   review_state,
+  output_policy,
   source_refs
 FROM steel.agent_rules
 WHERE slug = $1
@@ -227,7 +233,7 @@ async function main() {
 
   const repoRoot = findRepoRoot(path.resolve(__dirname, '..', '..', '..'));
   loadRootEnv(repoRoot);
-  const rule = buildOcrRule(repoRoot);
+  const rule = buildWorkbookRule(repoRoot);
   const summary = {
     slug: rule.slug,
     version: rule.version,
@@ -247,8 +253,8 @@ async function main() {
   const client = createSteelPostgresPool();
 
   try {
-    await upsertOcrRule(client, rule);
-    const row = await readBackOcrRule(client, rule);
+    await upsertWorkbookRule(client, rule);
+    const row = await readBackWorkbookRule(client, rule);
     process.stdout.write(`${JSON.stringify({ ...summary, row }, null, 2)}\n`);
   } finally {
     await client.end();

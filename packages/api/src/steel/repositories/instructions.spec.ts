@@ -2,6 +2,10 @@ import { searchSteelInstructionPackets } from './instructions';
 
 import type { SteelRepositoryClient } from './types';
 
+function fixtureText(key: string) {
+  return `fixture:${key}`;
+}
+
 describe('Steel instruction packet repositories', () => {
   it('searches reviewed active instruction packets by packet groups and maps Admin-editable rule fields', async () => {
     const query = jest.fn().mockResolvedValue({
@@ -17,11 +21,11 @@ describe('Steel instruction packet repositories', () => {
             catalogFamilies: ['c_type'],
             taskTypes: ['material_price_lookup'],
           },
-          instruction: 'C 型鋼仍必須先查 reviewed product-price rows。',
-          blocking_rules: ['不要把 C型鋼 當作 productName filter 卡死價格查詢。'],
+          instruction: fixtureText('instruction'),
+          blocking_rules: [fixtureText('blocking-rule')],
           required_lookups: ['search_price_candidates', 'lookup_formula'],
-          user_visible_notes: ['材質不明時，錏輕型鋼可作高信心暫估候選。'],
-          confirmation_questions: ['請確認材質是否為錏輕型鋼。'],
+          user_visible_notes: [fixtureText('user-visible-note')],
+          confirmation_questions: [fixtureText('confirmation-question')],
           priority: '90',
           confidence: 'high',
           active: true,
@@ -65,11 +69,11 @@ describe('Steel instruction packet repositories', () => {
           catalogFamilies: ['c_type'],
           taskTypes: ['material_price_lookup'],
         },
-        instruction: 'C 型鋼仍必須先查 reviewed product-price rows。',
-        blockingRules: ['不要把 C型鋼 當作 productName filter 卡死價格查詢。'],
+        instruction: fixtureText('instruction'),
+        blockingRules: [fixtureText('blocking-rule')],
         requiredLookups: ['search_price_candidates', 'lookup_formula'],
-        userVisibleNotes: ['材質不明時，錏輕型鋼可作高信心暫估候選。'],
-        confirmationQuestions: ['請確認材質是否為錏輕型鋼。'],
+        userVisibleNotes: [fixtureText('user-visible-note')],
+        confirmationQuestions: [fixtureText('confirmation-question')],
         priority: 90,
         confidence: 'high',
         active: true,

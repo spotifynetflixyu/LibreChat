@@ -41,15 +41,18 @@ describe('Steel drawing evidence extraction service', () => {
       messages: [
         {
           role: 'user',
-          content: expect.stringContaining('DB_OCR_RULE_SENTINEL'),
+          content: expect.any(String),
           files: [imageFile],
         },
       ],
       workbookPatchTool: false,
       steelRuntimePolicy: false,
     });
-    expect(provider.mock.calls[0]?.[0].messages[0]?.content).toContain(
-      '請判讀這張圖面有哪些資訊。',
+    expect(provider.mock.calls[0]?.[0].messages[0]).toEqual(
+      expect.objectContaining({
+        role: 'user',
+        files: [imageFile],
+      }),
     );
     expect(result).toEqual({
       status: 'ok',

@@ -114,6 +114,11 @@ function mergeColumns(
   return [...byKey.values()];
 }
 
+function getSourceKey(sourceRef?: { sourceKey?: string }) {
+  const sourceKey = sourceRef?.sourceKey?.trim();
+  return sourceKey && sourceKey.length > 0 ? sourceKey : undefined;
+}
+
 function mergeRows<Row extends AnyFileAnalysisRow>(
   existing: readonly Row[],
   upsertRows: readonly PartialFileAnalysisRow<Row>[],
@@ -122,9 +127,17 @@ function mergeRows<Row extends AnyFileAnalysisRow>(
 ) {
   const deleted = new Set(deleteRowIds);
   const byId = new Map(existing.filter((row) => !deleted.has(row.id)).map((row) => [row.id, row]));
+  const rowIdBySourceKey = new Map<string, string>();
+  for (const row of byId.values()) {
+    const sourceKey = getSourceKey(row.sourceRef);
+    if (sourceKey) {
+      rowIdBySourceKey.set(sourceKey, row.id);
+    }
+  }
 
   for (const row of upsertRows) {
-    const rowId = row.id ?? id();
+    const sourceKey = getSourceKey(row.sourceRef);
+    const rowId = row.id ?? (sourceKey ? rowIdBySourceKey.get(sourceKey) : undefined) ?? id();
     const previous = byId.get(rowId);
     const sourceRef = row.sourceRef ?? previous?.sourceRef;
     const previousWarnings =
@@ -144,6 +157,10 @@ function mergeRows<Row extends AnyFileAnalysisRow>(
     } as Row;
 
     byId.set(rowId, merged);
+    const mergedSourceKey = getSourceKey(merged.sourceRef);
+    if (mergedSourceKey) {
+      rowIdBySourceKey.set(mergedSourceKey, rowId);
+    }
   }
 
   return [...byId.values()];
