@@ -27,6 +27,14 @@ type PartialFileAnalysisRow<Row extends AnyFileAnalysisRow> = Partial<Row> & {
   rowWarnings?: string[];
 };
 
+const fixedFileAnalysisDataColumns: SteelFileAnalysisColumn[] = [
+  { key: 'source_filename', label: '檔案名', valueType: 'text' },
+  { key: 'source_page', label: '標記頁數', valueType: 'text' },
+];
+const fixedFileAnalysisDataColumnKeys = new Set(
+  fixedFileAnalysisDataColumns.map((column) => column.key),
+);
+
 export interface SteelFileAnalysisCreateRecord extends SteelFileAnalysisData {
   createdAt: Date;
   updatedAt: Date;
@@ -110,6 +118,15 @@ function mergeColumns(
   return [...byKey.values()];
 }
 
+function mergeFileAnalysisDataColumns(
+  existing: readonly SteelFileAnalysisColumn[],
+  next: readonly SteelFileAnalysisColumn[],
+) {
+  const merged = mergeColumns(existing, next);
+  const rest = merged.filter((column) => !fixedFileAnalysisDataColumnKeys.has(column.key));
+  return [...fixedFileAnalysisDataColumns, ...rest];
+}
+
 function getSourceKey(sourceRef?: { sourceKey?: string }) {
   const sourceKey = sourceRef?.sourceKey?.trim();
   return sourceKey && sourceKey.length > 0 ? sourceKey : undefined;
@@ -162,6 +179,29 @@ function mergeRows<Row extends AnyFileAnalysisRow>(
   return [...byId.values()];
 }
 
+function getSourcePageMarker(sourceRef: SteelFileAnalysisRow['sourceRef']): string {
+  if (sourceRef.page !== undefined) {
+    return `page ${sourceRef.page}`;
+  }
+
+  if (sourceRef.imageIndex !== undefined) {
+    return `image ${sourceRef.imageIndex}`;
+  }
+
+  return '';
+}
+
+function addFileAnalysisSourceCells(rows: readonly SteelFileAnalysisRow[]): SteelFileAnalysisRow[] {
+  return rows.map((row) => ({
+    ...row,
+    cells: {
+      ...row.cells,
+      source_filename: row.sourceRef.filename ?? row.sourceRef.fileId,
+      source_page: getSourcePageMarker(row.sourceRef),
+    },
+  }));
+}
+
 function patchSheet(
   workspace: SteelFileAnalysisRecord,
   patch: PatchFileAnalysisDataToolInput['patches'][number],
@@ -169,12 +209,14 @@ function patchSheet(
 ) {
   if (patch.sheetId === 'file_analysis_data') {
     const sheet: FileAnalysisSheet = workspace.sheets.file_analysis_data;
-    sheet.columns = mergeColumns(sheet.columns, patch.upsertColumns);
-    sheet.rows = mergeRows(
-      sheet.rows,
-      patch.upsertRows as Partial<SteelFileAnalysisRow>[],
-      patch.deleteRowIds,
-      id,
+    sheet.columns = mergeFileAnalysisDataColumns(sheet.columns, patch.upsertColumns);
+    sheet.rows = addFileAnalysisSourceCells(
+      mergeRows(
+        sheet.rows,
+        patch.upsertRows as Partial<SteelFileAnalysisRow>[],
+        patch.deleteRowIds,
+        id,
+      ),
     );
     return;
   }

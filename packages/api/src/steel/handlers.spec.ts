@@ -485,7 +485,12 @@ describe('createSteelHandlers', () => {
               rows: [
                 expect.objectContaining({
                   id: 'row_pl1',
-                  cells: { part_no: 'PL1', spec: '367×323×12t' },
+                  cells: expect.objectContaining({
+                    part_no: 'PL1',
+                    source_filename: 'c.png',
+                    source_page: 'page 1',
+                    spec: '367×323×12t',
+                  }),
                 }),
               ],
             }),
@@ -977,7 +982,11 @@ describe('createSteelHandlers', () => {
               rows: [
                 expect.objectContaining({
                   id: 'row_page_1',
-                  cells: { part_no: 'PL1' },
+                  cells: expect.objectContaining({
+                    part_no: 'PL1',
+                    source_filename: 'd.pdf',
+                    source_page: 'page 1',
+                  }),
                 }),
               ],
             }),
@@ -2141,6 +2150,38 @@ describe('createSteelHandlers', () => {
         }),
       ]),
     );
+    expect(res.end).toHaveBeenCalled();
+  });
+
+  it('streams an actionable provider termination reason instead of a bare terminated error', async () => {
+    const sendChat = jest.fn(async () => {
+      throw new Error('terminated');
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: '報價' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'error',
+          errorCategory: 'provider_terminated',
+          errorSummary: expect.stringMatching(/provider request terminated/i),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain('"errorSummary":"terminated"');
     expect(res.end).toHaveBeenCalled();
   });
 

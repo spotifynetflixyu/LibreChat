@@ -748,3 +748,18 @@
   not a generic post-patch continuation message. When completed/failed/skipped
   page progress covers the PDF `pageCount`, do not emit or force another OCR
   continuation; persist the patch and let AI produce the final summary.
+- Steel `file_analysis_data` source columns are backend-owned invariants:
+  always persist fixed `檔案名` / `標記頁數` cells from `sourceRef` before any
+  AI-defined material/spec/process columns. Do not rely only on OCR prompt text
+  for these table headers.
+- Steel stream errors must not expose a bare `terminated` summary. Classify
+  provider/network early termination separately and return an actionable
+  provider-termination explanation while preserving explicit `Steel tool ...`
+  fatal errors unchanged.
+- Steel OCR contract-only rule text updates do not need dedicated extra test
+  logic. Update the reviewed OCR rule source and sync it to `steel.agent_rules`;
+  use `git diff --check` for hygiene unless runtime code changes.
+- Delete existing Steel rules contract checks when they directly inspect
+  human-authored rule files or prompt wording. Keep tests for runtime behavior,
+  schemas, tool calls, database readback, and public API contracts, but do not
+  preserve wording-only rule contract specs.

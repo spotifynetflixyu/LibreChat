@@ -1,5 +1,97 @@
 # Steel Core Quote Runtime Implementation Queue
 
+## Active: Remove Rules Contract Tests
+
+Goal: remove tests that directly check human-authored Steel rules contract text
+or prompt wording.
+
+- [x] Find tests that inspect rule docs, rule prompt bodies, or wording-only
+      rule contracts.
+- [x] Delete those rules contract checks while keeping runtime/schema/tool-flow
+      tests.
+- [x] Run targeted tests and changed-file hygiene without Prettier.
+- [x] Update lessons for this correction.
+
+Review:
+
+- Deleted the direct OCR rule contract checks from
+  `packages/api/src/steel/vision/ocr.spec.ts`; the spec no longer reads
+  `docs/rules/OCR規則.txt` or asserts human-authored rule wording.
+- Searched Steel frontend/backend test files for `readOcrRules`,
+  `hasAnyConcept`, `hasAllConcepts`, `docs/rules`, `OCR規則`, `agent規則`,
+  `workbook規則`, and `鋼材規則`; no remaining direct rule-doc wording tests
+  were found.
+- Kept runtime/schema/tool-flow tests in place, including data-provider public
+  contracts and Supabase-backed runtime rule fixture paths.
+- Verification: `src/steel/vision/ocr.spec.ts` passed after the removal, and
+  changed-file `git diff --check` passed. No Prettier was run.
+
+## Active: Steel OCR Formula Mismatch Correction Rule
+
+Goal: add OCR correction guidance for inconsistent multiplication formulas so
+AI trusts the formula operands over the OCR-rendered result.
+
+- [x] Update `docs/rules/OCR規則.txt` so examples like `1×12=6` and `1×2=4`
+      are corrected to formula-derived results.
+- [x] Sync the updated OCR rule to Supabase `steel.agent_rules`.
+- [x] Run changed-file hygiene without Prettier.
+- [x] Record the result and update lessons for this correction.
+
+Review:
+
+- Updated `docs/rules/OCR規則.txt` to treat multiplication formula/result
+  mismatch as an OCR correction case: if OCR shows `1×12=6`, use the formula
+  operands and correct it to `1×12=12`; if OCR shows `1×2=4`, correct it to
+  `1×2=2`.
+- Removed the extra OCR contract spec added during the first pass after user
+  correction: OCR contract-only rule text updates should not add dedicated test
+  logic.
+- Synced the OCR rule to Supabase `steel.agent_rules`; readback hash:
+  `83d7f10f6ab44fddd972d3685cb3854ca802252bfcbcf7443413a137f8b3c5f8`.
+- Verification: `sync-steel-ocr-rules.cjs --dry-run` and `--apply` passed;
+  `git diff --check` passed for touched files. No Prettier and no extra OCR
+  contract tests were added.
+
+## Active: Steel OCR Rule Fixed Columns And Terminated Errors
+
+Goal: update OCR rules for `1/t` thickness corrections, guarantee
+`file_analysis_data` rows expose filename/page marker columns, and replace bare
+`terminated` stream errors with actionable provider-termination detail.
+
+- [x] Update OCR rule source for thickness-tail `1` versus `t`
+      disambiguation without dedicated OCR contract test logic.
+- [x] Add RED file-analysis service coverage that `file_analysis_data` patches
+      always include fixed filename and page marker columns/cells.
+- [x] Add RED stream coverage that a provider `terminated` error is summarized
+      with an explicit provider-termination reason, not just `terminated`.
+- [x] Update OCR rules and backend normalization with minimal blast radius.
+- [x] Run focused API/data-provider tests, build checks, and changed-file
+      hygiene without Prettier.
+- [x] Record review notes and lessons for this correction.
+
+Review:
+
+- Updated `docs/rules/OCR規則.txt` so thickness-like OCR tails such as
+  `341×500×101` are checked against surrounding material-table context and
+  corrected to `341×500×10t` when `t` is the likely thickness marker.
+- Changed `file_analysis_data` from fully AI-defined columns to fixed source
+  columns plus AI-defined material columns: `檔案名` and `標記頁數` are always
+  first, while spec/quantity/process/note columns remain AI-controlled.
+- Added backend normalization in the file-analysis service so persisted rows
+  receive `source_filename` and `source_page` cells from `sourceRef`, even when
+  AI omits those columns.
+- Added `provider_terminated` as a Steel provider error category. Bare
+  `terminated` stream failures now become an actionable provider-termination
+  summary instead of a one-word error.
+- Synced the OCR rule to Supabase `steel.agent_rules`; readback hash:
+  `ff7d8f342b05d8ecef0a7aba870735499a53835f70b2a3ce11fea8759f5b14b2`.
+- Verification: RED file-analysis fixed-column and provider-terminated tests
+  failed before implementation; GREEN file-analysis focused specs, handler
+  focused stream specs, and data-provider Steel AI spec passed;
+  `npm run build:data-provider` passed, and
+  `packages/api` build passed with the existing Redis `cacheFactory.ts` Rollup
+  TypeScript warning. `git diff --check` passed for touched files.
+
 ## Active: Steel OCR Patch Completion Status
 
 Goal: when `patch_file_analysis_data` progress reaches the PDF `pageCount`,

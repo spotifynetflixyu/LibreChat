@@ -89,6 +89,7 @@ describe('Steel AI public contracts', () => {
       'provider_hosted_tool_unsupported',
       'structured_output_invalid',
       'provider_timeout',
+      'provider_terminated',
       'unknown',
     ]);
 

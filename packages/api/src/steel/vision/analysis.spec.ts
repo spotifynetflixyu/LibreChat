@@ -94,6 +94,57 @@ describe('Steel file analysis data service', () => {
     expect('workbookId' in second).toBe(false);
   });
 
+  it('adds fixed filename and page marker cells to file analysis data rows', async () => {
+    const service = createSteelFileAnalysisService({
+      repository: createMemoryRepository(),
+      id: () => 'row_1',
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+    });
+
+    const workspace = await service.patch({
+      conversationId: 'conv_1',
+      patch: {
+        sourceFiles: [
+          {
+            fileId: 'file_d_pdf',
+            filename: 'd.pdf',
+            mediaType: 'application/pdf',
+            pageCount: 2,
+          },
+        ],
+        patches: [
+          {
+            sheetId: 'file_analysis_data',
+            upsertColumns: [{ key: 'spec', label: '規格' }],
+            upsertRows: [
+              {
+                sourceRef: {
+                  fileId: 'file_d_pdf',
+                  filename: 'd.pdf',
+                  mediaType: 'application/pdf',
+                  page: 2,
+                  sourceKey: 'file_d_pdf:page:2:table:main:row:PL1',
+                },
+                cells: { spec: '341×500×10t' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(
+      workspace.sheets.file_analysis_data.columns.map((column) => column.key).slice(0, 2),
+    ).toEqual(['source_filename', 'source_page']);
+    expect(workspace.sheets.file_analysis_data.rows[0]?.cells).toEqual(
+      expect.objectContaining({
+        source_filename: 'd.pdf',
+        source_page: 'page 2',
+        spec: '341×500×10t',
+      }),
+    );
+  });
+
   it('updates existing rows and preserves source refs', async () => {
     const service = createSteelFileAnalysisService({
       repository: createMemoryRepository(),
@@ -147,7 +198,14 @@ describe('Steel file analysis data service', () => {
       (candidate) => candidate.id === 'row_pl7a',
     );
     expect(row?.sourceRef.fileId).toBe('file_1');
-    expect(row?.cells).toEqual({ partNo: 'PL7A', spec: '362×324×10t' });
+    expect(row?.cells).toEqual(
+      expect.objectContaining({
+        partNo: 'PL7A',
+        source_filename: 'c.png',
+        source_page: 'page 1',
+        spec: '362×324×10t',
+      }),
+    );
     expect(row?.reviewStatus).toBe('corrected');
     expect(row?.rowWarnings).toEqual(['user corrected value']);
   });

@@ -156,7 +156,12 @@ interface SteelChatErrorResponse {
   text: '';
   unsupportedSettings: string[];
   warnings: string[];
-  errorCategory: 'auth' | 'provider_timeout' | 'structured_output_invalid' | 'unknown';
+  errorCategory:
+    | 'auth'
+    | 'provider_timeout'
+    | 'provider_terminated'
+    | 'structured_output_invalid'
+    | 'unknown';
   errorSummary: string;
 }
 
@@ -443,6 +448,9 @@ function getProviderErrorCategory(error: unknown): SteelChatErrorResponse['error
   if (message.includes('timeout') || message.includes('timed out')) {
     return 'provider_timeout';
   }
+  if (message === 'terminated' || message.includes('terminated')) {
+    return 'provider_terminated';
+  }
 
   return 'unknown';
 }
@@ -465,6 +473,9 @@ function getProviderErrorSummary(error: unknown): string {
   }
   if (category === 'provider_timeout') {
     return 'OpenAI OAuth provider request timed out.';
+  }
+  if (category === 'provider_terminated') {
+    return 'OpenAI OAuth provider request terminated before completion. The provider or network closed the connection without a detailed cause; check server/provider logs around this request and retry with a smaller context if it repeats.';
   }
   const message = error instanceof Error ? error.message : '';
   if (message.startsWith('Steel tool ')) {
