@@ -125,7 +125,6 @@ export const steelFileAnalysisNoteSheetSchema = z.object({
 export const steelFileAnalysisDataSchema = z.object({
   id: z.string().min(1),
   conversationId: z.string().min(1),
-  workbookId: z.string().min(1).optional(),
   version: z.number().int().positive(),
   status: z.enum(['draft', 'user_confirmed', 'projected_to_workbook']).default('draft'),
   sourceFiles: z.array(steelFileAnalysisSourceFileSchema).default([]),
@@ -137,6 +136,12 @@ export const steelFileAnalysisDataSchema = z.object({
 });
 
 export type SteelFileAnalysisData = z.infer<typeof steelFileAnalysisDataSchema>;
+
+export const steelFileAnalysisReadResponseSchema = z.object({
+  fileAnalysisData: steelFileAnalysisDataSchema.nullable(),
+});
+
+export type SteelFileAnalysisReadResponse = z.infer<typeof steelFileAnalysisReadResponseSchema>;
 
 const patchFileAnalysisRowSchema = z.object({
   id: z.string().min(1).optional(),
@@ -165,10 +170,6 @@ export type PatchFileAnalysisDataToolInput = z.infer<typeof patchFileAnalysisDat
 
 export const steelFileAnalysisManualPatchRequestSchema = patchFileAnalysisDataToolInputSchema
   .omit({ fileAnalysisDataId: true })
-  .extend({
-    conversationId: z.string().min(1),
-    workbookId: z.string().min(1).optional(),
-  })
   .refine((input) => input.patches.every((patch) => patch.sheetId === 'file_analysis_data'), {
     message: 'Manual file analysis patches may only update file_analysis_data.',
     path: ['patches'],

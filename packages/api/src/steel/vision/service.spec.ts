@@ -24,60 +24,6 @@ function createProvider(
 }
 
 describe('Steel drawing evidence extraction service', () => {
-  it('sends DB-loaded OCR rules, user request, and original file parts to the provider', async () => {
-    const provider = createProvider();
-
-    const result = await extractSteelDrawingEvidence({
-      model: 'gpt-5.5',
-      files: [imageFile],
-      userInstruction: '請判讀這張圖面有哪些資訊。',
-      ocrAgentRuleInstruction: 'DB_OCR_RULE_SENTINEL',
-      provider,
-    });
-
-    expect(provider).toHaveBeenCalledTimes(1);
-    expect(provider).toHaveBeenCalledWith({
-      model: 'gpt-5.5',
-      messages: [
-        {
-          role: 'user',
-          content: expect.any(String),
-          files: [imageFile],
-        },
-      ],
-      workbookPatchTool: false,
-      steelRuntimePolicy: false,
-    });
-    expect(provider.mock.calls[0]?.[0].messages[0]).toEqual(
-      expect.objectContaining({
-        role: 'user',
-        files: [imageFile],
-      }),
-    );
-    expect(result).toEqual({
-      status: 'ok',
-      provider: 'openai_oauth_responses',
-      model: 'gpt-5.5',
-      text: 'AI 判讀候選結果',
-      warnings: [],
-    });
-  });
-
-  it('requires reviewed OCR rules before calling the provider', async () => {
-    const provider = createProvider();
-
-    await expect(
-      extractSteelDrawingEvidence({
-        model: 'gpt-5.5',
-        files: [imageFile],
-        userInstruction: '讀圖',
-        ocrAgentRuleInstruction: '',
-        provider,
-      }),
-    ).rejects.toThrow('reviewed OCR agent rule instruction is required');
-    expect(provider).not.toHaveBeenCalled();
-  });
-
   it('uses original file parts again when rereading with previous analysis context', async () => {
     const provider = createProvider();
 

@@ -65,6 +65,7 @@ export interface SearchSteelPriceItemsInput {
   specKey?: string;
   specKeyContains?: string;
   productName?: string;
+  productNames?: readonly string[];
   catalogFamilies?: readonly string[];
   customerTierId?: number;
   reviewState?: SteelReviewState;
@@ -106,6 +107,40 @@ function addTextFacetFilter(
   });
 
   where.push(`${column} IN (${placeholders.join(', ')})`);
+}
+
+function getProductNameSearches(input: SearchSteelPriceItemsInput): SteelProductNameSearch[] {
+  return uniqueNonEmpty([
+    ...(input.productName ? [input.productName] : []),
+    ...(input.productNames ?? []),
+  ]).map(getProductNameSearch);
+}
+
+function addProductNameSearchFilter(
+  where: string[],
+  values: SteelSqlParameter[],
+  searches: readonly SteelProductNameSearch[],
+  includeDerivedSpecKey: boolean,
+) {
+  if (searches.length === 0) {
+    return;
+  }
+
+  const searchClauses = searches.map((search) => {
+    const termClauses = search.productNameTerms.map((productNameTerm) => {
+      values.push(`%${productNameTerm}%`);
+      return `product_name ILIKE $${values.length}`;
+    });
+
+    if (includeDerivedSpecKey && search.specKeyContains) {
+      values.push(`%${search.specKeyContains}%`);
+      termClauses.push(`spec_key ILIKE $${values.length}`);
+    }
+
+    return `(${termClauses.join(' AND ')})`;
+  });
+
+  where.push(`(${searchClauses.join(' OR ')})`);
 }
 
 function getProductNameSearch(productName: string): SteelProductNameSearch {
@@ -153,7 +188,7 @@ export async function searchSteelPriceItems(
 ): Promise<SteelPriceItem[]> {
   const where = ['review_state = $1'];
   const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
-  const productNameSearch = input.productName ? getProductNameSearch(input.productName) : undefined;
+  const productNameSearches = getProductNameSearches(input);
 
   if (!input.includeInactive) {
     where.push('active = true');
@@ -164,18 +199,17 @@ export async function searchSteelPriceItems(
     where.push(`spec_key = $${values.length}`);
   }
 
-  const specKeyContains = input.specKeyContains ?? productNameSearch?.specKeyContains;
-  if (specKeyContains) {
-    values.push(`%${specKeyContains}%`);
+  if (input.specKeyContains) {
+    values.push(`%${input.specKeyContains}%`);
     where.push(`spec_key ILIKE $${values.length}`);
   }
 
-  if (productNameSearch) {
-    for (const productNameTerm of productNameSearch.productNameTerms) {
-      values.push(`%${productNameTerm}%`);
-      where.push(`product_name ILIKE $${values.length}`);
-    }
-  }
+  addProductNameSearchFilter(
+    where,
+    values,
+    productNameSearches,
+    !input.specKey && !input.specKeyContains,
+  );
 
   addTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
 

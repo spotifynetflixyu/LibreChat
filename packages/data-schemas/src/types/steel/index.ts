@@ -178,7 +178,6 @@ export interface ISteelWorkbookPatch extends Document {
 export interface ISteelFileAnalysisData extends Document {
   fileAnalysisDataId: string;
   conversationId: string;
-  workbookId?: string;
   version: number;
   status: 'draft' | 'user_confirmed' | 'projected_to_workbook';
   sourceFiles: Array<{

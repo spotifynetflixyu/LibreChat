@@ -34,6 +34,15 @@ class MemorySteelWorkbookRepository implements SteelWorkbookRepository {
     return this.workbooks.get(workbookId) ?? null;
   }
 
+  async findByConversationMetaId(conversationMetaId: string): Promise<SteelWorkbookRecord | null> {
+    return (
+      Array.from(this.workbooks.values()).find(
+        (workbook) =>
+          workbook.conversationMetaId === conversationMetaId && workbook.status === 'active',
+      ) ?? null
+    );
+  }
+
   async update(record: SteelWorkbookRecord): Promise<SteelWorkbookRecord> {
     this.workbooks.set(record.workbookId, record);
     return record;
@@ -61,6 +70,14 @@ class MemorySteelFileAnalysisRepository implements SteelFileAnalysisRepository {
     this.records.set(record.conversationId, record);
     return record;
   }
+}
+
+function createMemoryWorkbookService(id = 'wb_1') {
+  return createSteelWorkbookService({
+    repository: new MemorySteelWorkbookRepository(),
+    id: () => id,
+    now: () => new Date('2026-06-09T00:00:00.000Z'),
+  });
 }
 
 function createResponse() {
@@ -143,14 +160,17 @@ describe('createSteelHandlers', () => {
 
     await handlers.chat(req, res);
 
-    expect(sendChat).toHaveBeenCalledWith({
-      authFilePath: undefined,
-      maxOutputTokens: undefined,
-      messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
-      model: 'gpt-5.5',
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-    });
+    expect(sendChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authFilePath: undefined,
+        maxOutputTokens: undefined,
+        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        model: 'gpt-5.5',
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        workbookPatchTool: true,
+      }),
+    );
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
       provider: 'openai_oauth_responses',
@@ -325,6 +345,7 @@ describe('createSteelHandlers', () => {
       executeToolCall: jest.fn(),
       getModelsConfig: jest.fn(),
       sendChat,
+      workbookService: createMemoryWorkbookService(),
     });
     const req = {
       body: {
@@ -428,6 +449,7 @@ describe('createSteelHandlers', () => {
       executeToolCall: jest.fn(),
       getModelsConfig: jest.fn(),
       sendChat,
+      workbookService: createMemoryWorkbookService(),
       fileAnalysisService,
     });
     const req = {
@@ -457,7 +479,6 @@ describe('createSteelHandlers', () => {
         fileAnalysisData: expect.objectContaining({
           id: 'fad_1',
           conversationId: 'conversation_1',
-          workbookId: 'wb_1',
           version: 1,
           sheets: expect.objectContaining({
             file_analysis_data: expect.objectContaining({
@@ -519,6 +540,7 @@ describe('createSteelHandlers', () => {
       executeToolCall: jest.fn(),
       getModelsConfig: jest.fn(),
       sendChat,
+      workbookService: createMemoryWorkbookService(),
       fileAnalysisService,
     });
     const req = {
@@ -568,7 +590,407 @@ describe('createSteelHandlers', () => {
     );
   });
 
-  it('patches file_analysis_data manually through the handler endpoint', async () => {
+  it('lazily creates one backend workspace for file analysis patches without frontend ids', async () => {
+    const fileAnalysisRepository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository: fileAnalysisRepository,
+      id: () => 'fad_lazy_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const workbookRepository = new MemorySteelWorkbookRepository();
+    const workbookService = createSteelWorkbookService({
+      repository: workbookRepository,
+      id: () => 'wb_lazy_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const sendChat = jest.fn(async (options) => {
+      expect(options.workbookPatchTool).toBe(true);
+      expect(options.workbookContextText).toContain('sheet id="quote_details"');
+
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已建立 d.pdf 圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisPatch: {
+          sourceFiles: [
+            {
+              fileId: 'file_d_pdf',
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              pageCount: 2,
+            },
+          ],
+          patches: [
+            {
+              sheetId: 'file_analysis_data' as const,
+              upsertColumns: [{ key: 'part_no', label: '件號', valueType: 'text' as const }],
+              upsertRows: [
+                {
+                  id: 'row_pl1',
+                  sourceRef: {
+                    fileId: 'file_d_pdf',
+                    filename: 'd.pdf',
+                    mediaType: 'application/pdf',
+                    page: 1,
+                  },
+                  cells: { part_no: 'PL1' },
+                },
+              ],
+            },
+          ],
+        },
+      };
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+      fileAnalysisService,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: 'OCR d.pdf' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    const doneEvent = events.find((event) => event.type === 'done');
+    const response = doneEvent?.response;
+    const conversationId = response?.fileAnalysisData?.conversationId;
+    expect(conversationId).toEqual(expect.stringMatching(/^steel-chat-/));
+    expect(response).toEqual(
+      expect.objectContaining({
+        conversationId,
+        workbookId: 'wb_lazy_1',
+        fileAnalysisData: expect.objectContaining({
+          id: 'fad_lazy_1',
+          conversationId,
+        }),
+      }),
+    );
+    expect(workbookRepository.workbooks.get('wb_lazy_1')?.conversationMetaId).toBe(conversationId);
+    expect(fileAnalysisRepository.records.get(conversationId)?.conversationId).toBe(conversationId);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'tool',
+          status: 'completed',
+          toolName: 'patch_file_analysis_data',
+          ok: true,
+        }),
+      ]),
+    );
+  });
+
+  it('resolves workbook patches from conversation id without frontend workbook ids', async () => {
+    const workbookRepository = new MemorySteelWorkbookRepository();
+    const workbookService = createSteelWorkbookService({
+      repository: workbookRepository,
+      id: () => 'wb_conversation_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    await workbookService.create({ conversationMetaId: 'conversation_1' });
+    const sendChat = jest.fn(async (options) => {
+      expect(options.workbookPatchTool).toBe(true);
+      expect(options.workbookContextText).toContain('sheet id="quote_details"');
+
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已更新 workbook。',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch: {
+          operations: [
+            {
+              op: 'set_cell' as const,
+              sheetId: 'quote_details' as const,
+              rowId: 'line_1',
+              columnKey: 'material_unit_price',
+              value: 115,
+            },
+          ],
+        },
+      };
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_1',
+        messages: [{ role: 'user', content: '把 line 1 材料單價改成 115' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'done',
+          response: expect.objectContaining({
+            conversationId: 'conversation_1',
+            workbookId: 'wb_conversation_1',
+            workbookPatch: expect.objectContaining({
+              workbook: expect.objectContaining({
+                id: 'wb_conversation_1',
+              }),
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(workbookRepository.workbooks.get('wb_conversation_1')?.version).toBe(1);
+  });
+
+  it('streams provider-side file analysis patch acknowledgement before persistence', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const sendChat = jest.fn(async (options) => {
+      options.onToolStatus?.({
+        toolName: 'patch_file_analysis_data',
+        status: 'started',
+        message: 'patch_file_analysis_data waiting for AI to convert OCR result',
+      });
+      options.onToolStatus?.({
+        toolName: 'patch_file_analysis_data',
+        status: 'completed',
+        message: 'patch_file_analysis_data received; preparing summary',
+      });
+
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已建立圖文判讀表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        fileAnalysisPatch: {
+          sourceFiles: [
+            {
+              fileId: 'file_c_png',
+              filename: 'c.png',
+              mediaType: 'image/png',
+            },
+          ],
+          patches: [
+            {
+              sheetId: 'manual_review' as const,
+              upsertColumns: [{ key: 'item', label: '項目', valueType: 'text' as const }],
+              upsertRows: [
+                {
+                  id: 'review_1',
+                  sourceRef: {
+                    fileId: 'file_c_png',
+                    filename: 'c.png',
+                    mediaType: 'image/png',
+                    page: 1,
+                  },
+                  cells: { item: '孔洞數需人工確認' },
+                },
+              ],
+            },
+          ],
+        },
+      };
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService: createMemoryWorkbookService(),
+      fileAnalysisService,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_1',
+        messages: [{ role: 'user', content: 'Read c.png' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    const providerWaitingIndex = events.findIndex(
+      (event) =>
+        event.type === 'tool' &&
+        event.toolName === 'patch_file_analysis_data' &&
+        event.message === 'patch_file_analysis_data waiting for AI to convert OCR result',
+    );
+    const providerAckIndex = events.findIndex(
+      (event) =>
+        event.type === 'tool' &&
+        event.toolName === 'patch_file_analysis_data' &&
+        event.message === 'patch_file_analysis_data received; preparing summary',
+    );
+    const persistenceStartIndex = events.findIndex(
+      (event) =>
+        event.type === 'tool' &&
+        event.toolName === 'patch_file_analysis_data' &&
+        event.message === 'patch_file_analysis_data started',
+    );
+    expect(providerWaitingIndex).toBeGreaterThan(-1);
+    expect(providerAckIndex).toBeGreaterThan(-1);
+    expect(providerAckIndex).toBeGreaterThan(providerWaitingIndex);
+    expect(persistenceStartIndex).toBeGreaterThan(providerAckIndex);
+  });
+
+  it('streams persisted file analysis data before continuing to the next OCR page', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const executeFileOcr = jest.fn(async () => ({
+      ok: true as const,
+      toolName: 'run_file_ocr' as const,
+      data: {
+        filename: 'd.pdf',
+        page: 2,
+        text: 'PAGE_2_OCR_SENTINEL',
+      },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const pageOnePatch = {
+      sourceFiles: [
+        {
+          fileId: 'file_d_pdf',
+          filename: 'd.pdf',
+          mediaType: 'application/pdf',
+          pageCount: 2,
+        },
+      ],
+      patches: [
+        {
+          sheetId: 'file_analysis_data' as const,
+          upsertColumns: [{ key: 'part_no', label: '件號', valueType: 'text' as const }],
+          upsertRows: [
+            {
+              id: 'row_page_1',
+              sourceRef: {
+                fileId: 'file_d_pdf',
+                filename: 'd.pdf',
+                mediaType: 'application/pdf',
+                page: 1,
+                pageCount: 2,
+                sourceKey: 'd.pdf:p1:row_page_1',
+                ocrEngine: 'PaddleOCR MCP',
+                ocrStatus: 'completed' as const,
+                ocrProgress: { current: 1, total: 2 },
+              },
+              cells: { part_no: 'PL1' },
+            },
+          ],
+        },
+      ],
+      summary: 'd.pdf page 1 PaddleOCR completed.',
+    };
+    const sendChat = jest.fn(async (options) => {
+      await options.onToolStatus?.({
+        toolName: 'patch_file_analysis_data',
+        status: 'completed',
+        message: 'patch_file_analysis_data received; preparing OCR continuation',
+        fileAnalysisPatch: pageOnePatch,
+      });
+      await options.executeFileOcr?.({
+        arguments: {
+          filename: 'd.pdf',
+          page: 2,
+          file_type: 'pdf',
+          output_mode: 'detailed',
+          dpi: 400,
+        },
+        files: [
+          {
+            filename: 'd.pdf',
+            mediaType: 'application/pdf',
+            data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+            pageCount: 2,
+          },
+        ],
+        providerToolCallId: 'call_ocr_page_2',
+      });
+
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已完成 d.pdf 第 1 頁 OCR，繼續第 2 頁。',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+    });
+    const handlers = createSteelHandlers({
+      executeFileOcr,
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService: createMemoryWorkbookService('wb_1'),
+      fileAnalysisService,
+    });
+    const req = {
+      body: {
+        conversationId: 'conversation_1',
+        messages: [{ role: 'user', content: 'OCR d.pdf' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    const fileAnalysisDataIndex = events.findIndex((event) => event.type === 'file_analysis_data');
+    const nextOcrStartedIndex = events.findIndex(
+      (event) =>
+        event.type === 'tool' &&
+        event.toolName === 'run_file_ocr' &&
+        event.message === 'run_file_ocr started',
+    );
+    expect(fileAnalysisDataIndex).toBeGreaterThan(-1);
+    expect(nextOcrStartedIndex).toBeGreaterThan(fileAnalysisDataIndex);
+    expect(events[fileAnalysisDataIndex]).toEqual(
+      expect.objectContaining({
+        type: 'file_analysis_data',
+        fileAnalysisData: expect.objectContaining({
+          id: 'fad_1',
+          conversationId: 'conversation_1',
+          sheets: expect.objectContaining({
+            file_analysis_data: expect.objectContaining({
+              rows: [
+                expect.objectContaining({
+                  id: 'row_page_1',
+                  cells: { part_no: 'PL1' },
+                }),
+              ],
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(repository.records.get('conversation_1')?.sheets.file_analysis_data.rows).toHaveLength(
+      1,
+    );
+  });
+
+  it('patches file_analysis_data manually through the conversation-scoped handler endpoint', async () => {
     const repository = new MemorySteelFileAnalysisRepository();
     const fileAnalysisService = createSteelFileAnalysisService({
       repository,
@@ -580,10 +1002,8 @@ describe('createSteelHandlers', () => {
       fileAnalysisService,
     });
     const req = {
-      params: { fileAnalysisDataId: 'fad_1' },
+      params: { conversationId: 'conversation_1' },
       body: {
-        conversationId: 'conversation_1',
-        workbookId: 'wb_1',
         sourceFiles: [{ fileId: 'file_c_png', filename: 'c.png', mediaType: 'image/png' }],
         patches: [
           {
@@ -607,14 +1027,13 @@ describe('createSteelHandlers', () => {
     } as unknown as Request;
     const res = createResponse();
 
-    await handlers.patchFileAnalysisData(req, res);
+    await handlers.patchFileAnalysisDataByConversation(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
       fileAnalysisData: expect.objectContaining({
         id: 'fad_1',
         conversationId: 'conversation_1',
-        workbookId: 'wb_1',
         sheets: expect.objectContaining({
           file_analysis_data: expect.objectContaining({
             rows: [
@@ -629,6 +1048,160 @@ describe('createSteelHandlers', () => {
     });
   });
 
+  it('rejects old id-based manual file_analysis_data patch routes', async () => {
+    const fileAnalysisService = {
+      patch: jest.fn(),
+      readByConversationId: jest.fn(),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      fileAnalysisService,
+    });
+    const req = {
+      params: { fileAnalysisDataId: 'fad_1' },
+      body: {
+        conversationId: 'conversation_1',
+        sourceFiles: [],
+        patches: [],
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.patchFileAnalysisData(req, res);
+
+    expect(fileAnalysisService.patch).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Steel file_analysis_data id-based patch routes are disabled',
+      errorCategory: 'steel_file_analysis_patch_route_disabled',
+    });
+  });
+
+  it('reads persisted file_analysis_data by conversation id for reopened Steel chats', async () => {
+    const repository = new MemorySteelFileAnalysisRepository();
+    const fileAnalysisService = createSteelFileAnalysisService({
+      repository,
+      id: () => 'fad_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    await fileAnalysisService.patch({
+      conversationId: 'conversation_1',
+      patch: {
+        sourceFiles: [
+          {
+            fileId: 'file_d_pdf',
+            filename: 'd.pdf',
+            mediaType: 'application/pdf',
+            pageCount: 2,
+          },
+        ],
+        patches: [
+          {
+            sheetId: 'file_analysis_data' as const,
+            upsertColumns: [{ key: 'part_no', label: '件號', valueType: 'text' as const }],
+            upsertRows: [
+              {
+                id: 'row_page_1',
+                sourceRef: {
+                  fileId: 'file_d_pdf',
+                  filename: 'd.pdf',
+                  mediaType: 'application/pdf',
+                  page: 1,
+                },
+                cells: { part_no: 'PL1' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      fileAnalysisService,
+    });
+    const req = {
+      params: { conversationId: 'conversation_1' },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.readFileAnalysisDataByConversation(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      fileAnalysisData: expect.objectContaining({
+        id: 'fad_1',
+        conversationId: 'conversation_1',
+        sheets: expect.objectContaining({
+          file_analysis_data: expect.objectContaining({
+            rows: [
+              expect.objectContaining({
+                id: 'row_page_1',
+                cells: { part_no: 'PL1' },
+              }),
+            ],
+          }),
+        }),
+      }),
+    });
+  });
+
+  it('reads persisted workbook by conversation id for reopened Steel chats', async () => {
+    const workbookRepository = new MemorySteelWorkbookRepository();
+    const workbookService = createSteelWorkbookService({
+      repository: workbookRepository,
+      id: () => 'wb_1',
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    });
+    const created = await workbookService.create({
+      conversationMetaId: 'conversation_1',
+    });
+    await workbookService.patch({
+      workbookId: created.workbook.id,
+      workbookVersion: created.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          value: 115,
+        },
+      ],
+    });
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      workbookService,
+    });
+    const req = {
+      params: { conversationId: 'conversation_1' },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.readWorkbookByConversation(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      workbook: expect.objectContaining({
+        id: 'wb_1',
+        version: 1,
+        sheets: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'quote_details',
+            rows: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'line_1',
+                cells: expect.objectContaining({ material_unit_price: 115 }),
+              }),
+            ]),
+          }),
+        ]),
+      }),
+    });
+  });
+
   it('injects the latest saved file_analysis_data into the next provider request', async () => {
     const repository = new MemorySteelFileAnalysisRepository();
     const fileAnalysisService = createSteelFileAnalysisService({
@@ -638,7 +1211,6 @@ describe('createSteelHandlers', () => {
     });
     await fileAnalysisService.patch({
       conversationId: 'conversation_1',
-      workbookId: 'wb_1',
       patch: {
         sourceFiles: [{ fileId: 'file_c_png', filename: 'c.png', mediaType: 'image/png' }],
         patches: [
@@ -671,6 +1243,7 @@ describe('createSteelHandlers', () => {
     const handlers = createSteelHandlers({
       getModelsConfig: jest.fn(),
       sendChat,
+      workbookService: createMemoryWorkbookService(),
       fileAnalysisService,
     });
     const req = {
@@ -753,6 +1326,7 @@ describe('createSteelHandlers', () => {
     const handlers = createSteelHandlers({
       getModelsConfig: jest.fn(),
       sendChat,
+      workbookService: createMemoryWorkbookService(),
       fileAnalysisService,
     });
     const firstReq = {
@@ -797,10 +1371,8 @@ describe('createSteelHandlers', () => {
     );
 
     const manualPatchReq = {
-      params: { fileAnalysisDataId: 'fad_1' },
+      params: { conversationId: 'conversation_1' },
       body: {
-        conversationId: 'conversation_1',
-        workbookId: 'wb_1',
         sourceFiles: [
           {
             fileId: 'file_c_png',
@@ -834,7 +1406,7 @@ describe('createSteelHandlers', () => {
     } as unknown as Request;
     const manualPatchRes = createResponse();
 
-    await handlers.patchFileAnalysisData(manualPatchReq, manualPatchRes);
+    await handlers.patchFileAnalysisDataByConversation(manualPatchReq, manualPatchRes);
 
     expect(manualPatchRes.status).toHaveBeenCalledWith(200);
     expect(manualPatchRes.json).toHaveBeenCalledWith(
@@ -991,6 +1563,7 @@ describe('createSteelHandlers', () => {
     const handlers = createSteelHandlers({
       getModelsConfig: jest.fn(),
       sendChat,
+      workbookService: createMemoryWorkbookService(),
       fileAnalysisService,
     });
     const firstReq = {
@@ -1094,7 +1667,6 @@ describe('createSteelHandlers', () => {
       });
       await fileAnalysisService.patch({
         conversationId: 'conversation_file_analysis_to_workbook',
-        workbookId: 'wb_live_file_analysis',
         patch: {
           sourceFiles: [
             {
@@ -1653,14 +2225,16 @@ describe('createSteelHandlers', () => {
       operations,
     });
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({
-      provider: 'openai_oauth_responses',
-      model: 'gpt-5.5',
-      text: '已更新報價明細。',
-      unsupportedSettings: [],
-      warnings: [],
-      workbookPatch,
-    });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已更新報價明細。',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch,
+      }),
+    );
   });
 
   it('returns a visible workbook update summary when the model only emits a patch tool call', async () => {
@@ -1723,14 +2297,16 @@ describe('createSteelHandlers', () => {
     await handlers.chat(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({
-      provider: 'openai_oauth_responses',
-      model: 'gpt-5.5',
-      text: '已更新 workbook：材料單價 -> 115',
-      unsupportedSettings: [],
-      warnings: [],
-      workbookPatch,
-    });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已更新 workbook：材料單價 -> 115',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch,
+      }),
+    );
   });
 
   it('replaces field-count-only workbook text with a concise order and change summary', async () => {
@@ -2619,14 +3195,16 @@ describe('createSteelHandlers', () => {
       operations,
     });
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({
-      provider: 'openai_oauth_responses',
-      model: 'gpt-5.5',
-      text: '已更新 workbook：值 -> 100',
-      unsupportedSettings: [],
-      warnings: [],
-      workbookPatch,
-    });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已更新 workbook：值 -> 100',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch,
+      }),
+    );
   });
 
   it('decodes browser-safe chat file payloads before calling the provider adapter', async () => {
@@ -2701,6 +3279,7 @@ describe('createSteelHandlers', () => {
       getModelsConfig: jest.fn(),
       sendChat,
       resolveEvidenceFile,
+      workbookService: createMemoryWorkbookService(),
     });
     const req = {
       user: { id: 'user_1' },
@@ -3003,59 +3582,6 @@ describe('createSteelHandlers', () => {
     });
   });
 
-  it('creates authenticated Steel rule proposals through the proposal service', async () => {
-    const ruleProposalService = {
-      create: jest.fn(async () => ({
-        id: 'proposal_1',
-        proposalType: 'customer_default',
-        status: 'needs_review',
-        scopeType: 'customer',
-        customerId: 'cust_1',
-        chargeType: 'cutting',
-        formulaCode: 'C_TYPE_FINISHED_LENGTH',
-        selector: { catalogFamily: 'c_channel' },
-        proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
-        sourceRefs: [{ channel: 'conversation', factType: 'quote_override' }],
-        createdFromConversationId: 'steel_meta_1',
-        createdByUserId: 'user_1',
-        reason: 'Pending Admin review.',
-        confidence: 'high',
-        createdAt: '2026-06-02T00:00:00.000Z',
-        updatedAt: '2026-06-02T00:00:00.000Z',
-      })),
-    };
-    const handlers = createSteelHandlers({
-      getModelsConfig: jest.fn(),
-      ruleProposalService,
-    });
-    const req = {
-      user: { id: 'user_1' },
-      body: {
-        proposalType: 'customer_default',
-        scopeType: 'customer',
-        customerId: 'cust_1',
-        chargeType: 'cutting',
-        formulaCode: 'C_TYPE_FINISHED_LENGTH',
-        selector: { catalogFamily: 'c_channel' },
-        proposedDefaultParameters: [{ key: 'unitPrice', value: 0, valueType: 'number' }],
-        sourceRefs: [{ channel: 'conversation', factType: 'quote_override' }],
-        createdFromConversationId: 'steel_meta_1',
-        reason: 'Pending Admin review.',
-        confidence: 'high',
-      },
-    } as unknown as Request;
-    const res = createResponse();
-
-    await handlers.createRuleProposal(req, res);
-
-    expect(ruleProposalService.create).toHaveBeenCalledWith({
-      body: req.body,
-      user: { id: 'user_1', role: undefined },
-    });
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'needs_review' }));
-  });
-
   it('creates Steel workbooks through the workbook service', async () => {
     const workbookService = {
       create: jest.fn(async () => ({
@@ -3114,11 +3640,11 @@ describe('createSteelHandlers', () => {
     });
   });
 
-  it('patches Steel workbooks through the workbook service', async () => {
+  it('patches Steel workbooks through the conversation-scoped workbook service', async () => {
     const workbookService = {
       create: jest.fn(),
       read: jest.fn(),
-      patch: jest.fn(async () => ({
+      patchByConversationMetaId: jest.fn(async () => ({
         changedPaths: [
           { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
         ],
@@ -3134,6 +3660,50 @@ describe('createSteelHandlers', () => {
         ],
         workbook: { id: 'wb_1', version: 2, sheets: [] },
       })),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookVersion: 1,
+        selectedWorkbookRefs: [],
+        operations: [
+          {
+            op: 'set_cell',
+            sheetId: 'quote_details',
+            rowId: 'line_1',
+            columnKey: 'material_unit_price',
+            value: 115,
+          },
+        ],
+      },
+      params: { conversationId: 'conversation_1' },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.patchWorkbookByConversation(req, res);
+
+    expect(workbookService.patchByConversationMetaId).toHaveBeenCalledWith({
+      conversationMetaId: 'conversation_1',
+      ...req.body,
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedPaths: [
+          { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+        ],
+      }),
+    );
+  });
+
+  it('rejects old id-based manual workbook patch routes', async () => {
+    const workbookService = {
+      create: jest.fn(),
+      read: jest.fn(),
+      patch: jest.fn(),
     };
     const handlers = createSteelHandlers({
       getModelsConfig: jest.fn(),
@@ -3160,15 +3730,12 @@ describe('createSteelHandlers', () => {
 
     await handlers.patchWorkbook(req, res);
 
-    expect(workbookService.patch).toHaveBeenCalledWith(req.body);
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        changedPaths: [
-          { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
-        ],
-      }),
-    );
+    expect(workbookService.patch).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Steel workbook id-based patch routes are disabled',
+      errorCategory: 'steel_workbook_patch_route_disabled',
+    });
   });
 
   it('exports the current workbook as streamed XLSX without recalculating workbook data', async () => {

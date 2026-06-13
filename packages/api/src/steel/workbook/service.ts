@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 
 import {
+  steelWorkbookInternalPatchRequestSchema,
   steelWorkbookPatchRequestSchema,
   steelWorkbookPatchResponseSchema,
   steelWorkbookReadResponseSchema,
@@ -9,6 +10,7 @@ import {
   type SteelWorkbook,
   type SteelWorkbookCellValue,
   type SteelWorkbookColumn,
+  type SteelWorkbookInternalPatchRequest,
   type SteelWorkbookPatchOperation,
   type SteelWorkbookPatchRequest,
   type SteelWorkbookPatchResponse,
@@ -51,6 +53,7 @@ export interface SteelWorkbookPatchRecord {
 export interface SteelWorkbookRepository {
   create(record: SteelWorkbookCreateRecord): Promise<SteelWorkbookRecord>;
   findByWorkbookId(workbookId: string): Promise<SteelWorkbookRecord | null>;
+  findByConversationMetaId(conversationMetaId: string): Promise<SteelWorkbookRecord | null>;
   update(record: SteelWorkbookRecord): Promise<SteelWorkbookRecord>;
   createPatch(record: SteelWorkbookPatchRecord): Promise<SteelWorkbookPatchRecord>;
 }
@@ -67,6 +70,14 @@ interface SteelWorkbookCreateInput {
 
 interface SteelWorkbookReadInput {
   workbookId: string;
+}
+
+interface SteelWorkbookConversationReadInput {
+  conversationMetaId: string;
+}
+
+interface SteelWorkbookConversationPatchInput extends SteelWorkbookPatchRequest {
+  conversationMetaId: string;
 }
 
 export class SteelWorkbookNotFoundError extends Error {
@@ -167,7 +178,7 @@ function isEmptyWorkbook(sheets: SteelWorkbookSheet[]): boolean {
 }
 
 function createRejectedPatchRecord(
-  request: SteelWorkbookPatchRequest,
+  request: SteelWorkbookInternalPatchRequest,
   currentVersion: number,
   reason: string,
   timestamp: Date,
@@ -187,23 +198,118 @@ function createRejectedPatchRecord(
   };
 }
 
+function createWorkbookRecord({
+  conversationMetaId,
+  id,
+  now,
+}: {
+  conversationMetaId?: string;
+  id: () => string;
+  now: () => Date;
+}): SteelWorkbookCreateRecord {
+  const timestamp = now();
+  return {
+    conversationMetaId,
+    workbookId: id(),
+    version: 1,
+    sheets: createInitialSheets(),
+    status: 'active',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 export function createSteelWorkbookService({
   repository,
   id = defaultId,
   now = () => new Date(),
 }: SteelWorkbookServiceDeps) {
+  async function applyPatch(
+    request: SteelWorkbookInternalPatchRequest,
+  ): Promise<SteelWorkbookPatchResponse> {
+    const current = await repository.findByWorkbookId(request.workbookId);
+    if (!current) {
+      throw new SteelWorkbookNotFoundError();
+    }
+
+    const timestamp = now();
+    if (current.version !== request.workbookVersion) {
+      await repository.createPatch(
+        createRejectedPatchRecord(
+          request,
+          current.version,
+          'Workbook version changed before this patch was applied.',
+          timestamp,
+        ),
+      );
+      throw new SteelWorkbookVersionConflictError();
+    }
+
+    const nextSheets = cloneSheets(current.sheets);
+    const isInitialDataLoad = isEmptyWorkbook(current.sheets);
+    const changedPaths: SteelChangedPath[] = [];
+    const changedFieldSummary: SteelChangedFieldSummary[] = [];
+
+    try {
+      for (const operation of request.operations) {
+        const { row, column } = getPatchTarget(nextSheets, operation);
+        const previousValue = getExistingCellValue(row.cells, operation.columnKey);
+        row.cells[operation.columnKey] = operation.value;
+        changedPaths.push({
+          sheetId: operation.sheetId,
+          rowId: operation.rowId,
+          columnKey: operation.columnKey,
+        });
+        changedFieldSummary.push({
+          sheetId: operation.sheetId,
+          rowId: operation.rowId,
+          columnKey: operation.columnKey,
+          label: column.label,
+          previousValue,
+          nextValue: operation.value,
+        });
+      }
+    } catch (error) {
+      if (error instanceof SteelWorkbookValidationError) {
+        await repository.createPatch(
+          createRejectedPatchRecord(request, current.version, error.message, timestamp),
+        );
+      }
+      throw error;
+    }
+
+    const nextRecord = await repository.update({
+      ...current,
+      version: isInitialDataLoad ? current.version : current.version + 1,
+      sheets: nextSheets,
+      updatedAt: timestamp,
+    });
+    const publicChangedPaths = isInitialDataLoad ? [] : changedPaths;
+    await repository.createPatch({
+      workbookId: request.workbookId,
+      beforeVersion: current.version,
+      afterVersion: nextRecord.version,
+      selectedWorkbookRefs: request.selectedWorkbookRefs,
+      operations: request.operations,
+      changedPaths: publicChangedPaths,
+      changedFieldSummary,
+      status: 'accepted',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    return steelWorkbookPatchResponseSchema.parse({
+      workbook: toPublicWorkbook(nextRecord),
+      changedPaths: publicChangedPaths,
+      changedFieldSummary,
+    });
+  }
+
   return {
     async create(input: SteelWorkbookCreateInput): Promise<SteelWorkbookReadResponse> {
-      const timestamp = now();
-      const record = await repository.create({
-        conversationMetaId: input.conversationMetaId,
-        workbookId: id(),
-        version: 1,
-        sheets: createInitialSheets(),
-        status: 'active',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+      const record = await repository.create(
+        createWorkbookRecord({ conversationMetaId: input.conversationMetaId, id, now }),
+      );
 
       return toReadResponse(record);
     },
@@ -217,89 +323,40 @@ export function createSteelWorkbookService({
       return toReadResponse(record);
     },
 
+    async readByConversationMetaId(
+      input: SteelWorkbookConversationReadInput,
+    ): Promise<SteelWorkbookReadResponse | null> {
+      const record = await repository.findByConversationMetaId(input.conversationMetaId);
+      return record ? toReadResponse(record) : null;
+    },
+
+    async patchByConversationMetaId(
+      input: SteelWorkbookConversationPatchInput,
+    ): Promise<SteelWorkbookPatchResponse> {
+      if (!input.conversationMetaId) {
+        throw new SteelWorkbookValidationError('conversationMetaId is required');
+      }
+
+      const request = steelWorkbookPatchRequestSchema.parse(input);
+      const current =
+        (await repository.findByConversationMetaId(input.conversationMetaId)) ??
+        (await repository.create(
+          createWorkbookRecord({ conversationMetaId: input.conversationMetaId, id, now }),
+        ));
+
+      return applyPatch({
+        ...request,
+        workbookId: current.workbookId,
+      });
+    },
+
     async patch(input: unknown): Promise<SteelWorkbookPatchResponse> {
-      const parsed = steelWorkbookPatchRequestSchema.safeParse(input);
+      const parsed = steelWorkbookInternalPatchRequestSchema.safeParse(input);
       if (!parsed.success) {
         throw new SteelWorkbookValidationError();
       }
 
-      const request = parsed.data;
-      const current = await repository.findByWorkbookId(request.workbookId);
-      if (!current) {
-        throw new SteelWorkbookNotFoundError();
-      }
-
-      const timestamp = now();
-      if (current.version !== request.workbookVersion) {
-        await repository.createPatch(
-          createRejectedPatchRecord(
-            request,
-            current.version,
-            'Workbook version changed before this patch was applied.',
-            timestamp,
-          ),
-        );
-        throw new SteelWorkbookVersionConflictError();
-      }
-
-      const nextSheets = cloneSheets(current.sheets);
-      const isInitialDataLoad = isEmptyWorkbook(current.sheets);
-      const changedPaths: SteelChangedPath[] = [];
-      const changedFieldSummary: SteelChangedFieldSummary[] = [];
-
-      try {
-        for (const operation of request.operations) {
-          const { row, column } = getPatchTarget(nextSheets, operation);
-          const previousValue = getExistingCellValue(row.cells, operation.columnKey);
-          row.cells[operation.columnKey] = operation.value;
-          changedPaths.push({
-            sheetId: operation.sheetId,
-            rowId: operation.rowId,
-            columnKey: operation.columnKey,
-          });
-          changedFieldSummary.push({
-            sheetId: operation.sheetId,
-            rowId: operation.rowId,
-            columnKey: operation.columnKey,
-            label: column.label,
-            previousValue,
-            nextValue: operation.value,
-          });
-        }
-      } catch (error) {
-        if (error instanceof SteelWorkbookValidationError) {
-          await repository.createPatch(
-            createRejectedPatchRecord(request, current.version, error.message, timestamp),
-          );
-        }
-        throw error;
-      }
-
-      const nextRecord = await repository.update({
-        ...current,
-        version: isInitialDataLoad ? current.version : current.version + 1,
-        sheets: nextSheets,
-        updatedAt: timestamp,
-      });
-      const publicChangedPaths = isInitialDataLoad ? [] : changedPaths;
-      await repository.createPatch({
-        workbookId: request.workbookId,
-        beforeVersion: current.version,
-        afterVersion: nextRecord.version,
-        selectedWorkbookRefs: request.selectedWorkbookRefs,
-        operations: request.operations,
-        changedPaths: publicChangedPaths,
-        changedFieldSummary,
-        status: 'accepted',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-
-      return steelWorkbookPatchResponseSchema.parse({
-        workbook: toPublicWorkbook(nextRecord),
-        changedPaths: publicChangedPaths,
-        changedFieldSummary,
-      });
+      return applyPatch(parsed.data);
     },
   };
 }

@@ -154,23 +154,10 @@ async function searchPriceCandidates(
 ): Promise<SteelRawToolOutput> {
   if (!input.candidateQueries || input.candidateQueries.length === 0) {
     const productNames = [...new Set(input.productNames ?? [])];
-    if (productNames.length <= 1) {
-      const priceCandidates = await searchSteelPriceItems(client, {
-        ...input,
-        productName: productNames[0],
-      });
-
-      return { priceCandidates };
-    }
-
-    const priceCandidates: SteelPriceItem[] = [];
-    for (const productName of productNames) {
-      const candidates = await searchSteelPriceItems(client, {
-        ...input,
-        productName,
-      });
-      priceCandidates.push(...candidates);
-    }
+    const priceCandidates = await searchSteelPriceItems(client, {
+      ...input,
+      productNames,
+    });
 
     return { priceCandidates: dedupePriceCandidates(priceCandidates) };
   }
@@ -183,26 +170,22 @@ async function searchPriceCandidates(
     originalText: input.originalText,
     candidates: input.candidateQueries,
   });
-  const priceCandidates: SteelPriceItem[] = [];
-
-  for (const query of searchTerms.candidateQueries) {
-    const productNames = [...new Set(query.productNames ?? [])];
-    const searchInputs = productNames.length === 0 ? [undefined] : productNames;
-
-    for (const productName of searchInputs) {
-      const candidates = await searchSteelPriceItems(client, {
+  const candidateLists = await Promise.all(
+    searchTerms.candidateQueries.map((query) => {
+      const productNames = [...new Set(query.productNames ?? [])];
+      return searchSteelPriceItems(client, {
         specKey: query.specKeyContains ? undefined : query.specKey,
         specKeyContains: query.specKeyContains,
-        productName,
+        productNames,
         catalogFamilies: input.catalogFamilies,
+        customerTierId: input.customerTierId,
         reviewState: input.reviewState,
         includeInactive: input.includeInactive,
         limit: input.limit,
       });
-
-      priceCandidates.push(...candidates);
-    }
-  }
+    }),
+  );
+  const priceCandidates = candidateLists.flat();
 
   return {
     priceCandidates: dedupePriceCandidates(priceCandidates),

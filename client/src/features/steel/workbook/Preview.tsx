@@ -100,7 +100,7 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
     return (
       <div className="flex h-full items-center justify-center text-sm text-text-secondary">
         {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-        Workbook loading
+        {isLoading ? 'Workbook loading' : 'No workbook yet'}
       </div>
     );
   }
@@ -170,10 +170,12 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
                 {activeSheet.columns.map((column) => (
                   <th
                     key={column.key}
-                    className="border-b border-border-light px-3 py-2 font-medium text-text-secondary"
+                    className="min-w-[9rem] max-w-[18rem] border-b border-border-light px-3 py-2 font-medium text-text-secondary"
                     style={column.widthPx ? { minWidth: column.widthPx } : undefined}
                   >
-                    {column.label}
+                    <span className="line-clamp-2 break-words" title={column.label}>
+                      {column.label}
+                    </span>
                   </th>
                 ))}
               </tr>
@@ -192,11 +194,16 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
                     return (
                       <td
                         key={column.key}
-                        className={`border-b border-border-light px-3 py-2 text-text-primary ${
+                        className={`max-w-[18rem] border-b border-border-light px-3 py-2 align-top text-text-primary ${
                           changed ? 'bg-yellow-200/50 dark:bg-yellow-500/20' : ''
                         }`}
                       >
-                        {cellText(row.cells[column.key])}
+                        <span
+                          className="line-clamp-2 break-words"
+                          title={cellText(row.cells[column.key])}
+                        >
+                          {cellText(row.cells[column.key])}
+                        </span>
                       </td>
                     );
                   })}

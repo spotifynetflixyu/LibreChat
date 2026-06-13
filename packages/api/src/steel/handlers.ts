@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { logger } from '@librechat/data-schemas';
 import {
@@ -9,6 +10,7 @@ import {
   steelProviderWorkbookPatchProposalSchema,
   steelWorkbookCreateRequestSchema,
   steelWorkbookExportRequestSchema,
+  steelWorkbookPatchRequestSchema,
 } from 'librechat-data-provider';
 import { ZodError } from 'zod';
 
@@ -32,6 +34,7 @@ import {
   SteelWorkbookValidationError,
   SteelWorkbookVersionConflictError,
 } from './workbook/service';
+import { createInitialSheets } from './workbook/template';
 import { createSteelFileAnalysisService } from './vision/analysis';
 import { exportSteelWorkbookXlsx } from './exports/service';
 import {
@@ -129,6 +132,8 @@ type SteelChatProviderResultWithFileAnalysis = Omit<
   SteelOAuthProviderChatResponse,
   'fileAnalysisPatch' | 'workbookPatch'
 > & {
+  conversationId?: string;
+  workbookId?: string;
   fileAnalysisData?: SteelFileAnalysisData;
   workbookPatch?: SteelProviderWorkbookPatchProposal;
 };
@@ -137,6 +142,8 @@ type SteelChatHandlerResult = Omit<
   SteelOAuthProviderChatResponse,
   'fileAnalysisPatch' | 'workbookPatch'
 > & {
+  conversationId?: string;
+  workbookId?: string;
   fileAnalysisData?: SteelFileAnalysisData;
   workbookPatch?: SteelWorkbookPatchResponse;
 };
@@ -160,6 +167,14 @@ const steelChatWorkbookContextSchema = steelProviderChatRequestSchema.pick({
 });
 
 type SteelChatWorkbookContext = z.infer<typeof steelChatWorkbookContextSchema>;
+
+interface SteelChatWorkspaceContext {
+  conversationId?: string;
+  workbookId?: string;
+  workbookVersion?: number;
+  selectedWorkbookRefs: SteelChatWorkbookContext['selectedWorkbookRefs'];
+  workbookContextText?: string;
+}
 
 const maxWorkbookContextRowsPerSheet = 80;
 const maxWorkbookContextCellLength = 120;
@@ -363,6 +378,10 @@ function parseOptionalConversationId(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function createSteelChatConversationId() {
+  return `steel-chat-${randomUUID()}`;
+}
+
 function hasMessageFiles(messages: SteelOAuthChatMessage[]): boolean {
   return messages.some((message) => (message.files?.length ?? 0) > 0);
 }
@@ -554,6 +573,14 @@ function createWorkbookContextText(workbook: SteelWorkbook): string {
     .join('\n\n');
 }
 
+function createInitialWorkbookContextText(): string {
+  return createWorkbookContextText({
+    id: 'pending',
+    version: 1,
+    sheets: createInitialSheets(),
+  });
+}
+
 function createFileAnalysisContextText(fileAnalysisData: SteelFileAnalysisData): string {
   const fileAnalysisRows = fileAnalysisData.sheets.file_analysis_data.rows
     .slice(0, 80)
@@ -595,7 +622,6 @@ function createFileAnalysisContextText(fileAnalysisData: SteelFileAnalysisData):
     JSON.stringify({
       id: fileAnalysisData.id,
       conversationId: fileAnalysisData.conversationId,
-      workbookId: fileAnalysisData.workbookId,
       version: fileAnalysisData.version,
       sourceFiles: fileAnalysisData.sourceFiles,
       file_analysis_data: {
@@ -639,14 +665,78 @@ async function addFileAnalysisContextToMessages(
 
 async function getChatWorkbookContextText(
   workbookContext: SteelChatWorkbookContext,
+  conversationId: string | undefined,
   getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
-): Promise<string | undefined> {
-  if (!workbookContext.workbookId || !workbookContext.workbookVersion) {
-    return undefined;
+): Promise<SteelChatWorkspaceContext> {
+  const selectedWorkbookRefs = workbookContext.selectedWorkbookRefs;
+
+  if (workbookContext.workbookId && workbookContext.workbookVersion) {
+    const readResult = await getWorkbookService().read({ workbookId: workbookContext.workbookId });
+    return {
+      conversationId,
+      workbookId: readResult.workbook.id,
+      workbookVersion: readResult.workbook.version,
+      selectedWorkbookRefs,
+      workbookContextText: createWorkbookContextText(readResult.workbook),
+    };
   }
 
-  const readResult = await getWorkbookService().read({ workbookId: workbookContext.workbookId });
-  return createWorkbookContextText(readResult.workbook);
+  if (conversationId) {
+    const readResult = await getWorkbookService().readByConversationMetaId({
+      conversationMetaId: conversationId,
+    });
+    if (readResult) {
+      return {
+        conversationId,
+        workbookId: readResult.workbook.id,
+        workbookVersion: readResult.workbook.version,
+        selectedWorkbookRefs,
+        workbookContextText: createWorkbookContextText(readResult.workbook),
+      };
+    }
+  }
+
+  return {
+    conversationId,
+    selectedWorkbookRefs,
+    workbookContextText: createInitialWorkbookContextText(),
+  };
+}
+
+async function ensureChatWorkspace(
+  context: SteelChatWorkspaceContext,
+  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
+): Promise<
+  Required<Pick<SteelChatWorkspaceContext, 'conversationId' | 'workbookId' | 'workbookVersion'>>
+> {
+  const conversationId = context.conversationId ?? createSteelChatConversationId();
+  if (context.workbookId && context.workbookVersion) {
+    return {
+      conversationId,
+      workbookId: context.workbookId,
+      workbookVersion: context.workbookVersion,
+    };
+  }
+
+  const existingWorkbook = await getWorkbookService().readByConversationMetaId({
+    conversationMetaId: conversationId,
+  });
+  if (existingWorkbook) {
+    return {
+      conversationId,
+      workbookId: existingWorkbook.workbook.id,
+      workbookVersion: existingWorkbook.workbook.version,
+    };
+  }
+
+  const createdWorkbook = await getWorkbookService().create({
+    conversationMetaId: conversationId,
+  });
+  return {
+    conversationId,
+    workbookId: createdWorkbook.workbook.id,
+    workbookVersion: createdWorkbook.workbook.version,
+  };
 }
 
 function sendConversationError(res: Response, error: unknown) {
@@ -846,7 +936,7 @@ function getWorkbookPatchSummaryText(
 
 async function applyChatWorkbookPatch(
   result: SteelChatProviderResultWithFileAnalysis,
-  workbookContext: SteelChatWorkbookContext,
+  workspaceContext: SteelChatWorkspaceContext,
   getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
 ): Promise<SteelChatHandlerResult> {
   const { workbookPatch, ...response } = result;
@@ -855,25 +945,20 @@ async function applyChatWorkbookPatch(
   }
 
   const proposal = steelProviderWorkbookPatchProposalSchema.parse(workbookPatch);
-  if (!workbookContext.workbookId || !workbookContext.workbookVersion) {
-    const rejectedReason = 'Workbook context is required to apply workbook patch operations.';
-    return {
-      ...response,
-      warnings: [...response.warnings, rejectedReason],
-      workbookPatch: rejectedWorkbookPatch(rejectedReason),
-    };
-  }
+  const ensuredWorkspace = await ensureChatWorkspace(workspaceContext, getWorkbookService);
 
   try {
     const appliedPatch = await getWorkbookService().patch({
-      workbookId: workbookContext.workbookId,
-      workbookVersion: workbookContext.workbookVersion,
-      selectedWorkbookRefs: workbookContext.selectedWorkbookRefs,
+      workbookId: ensuredWorkspace.workbookId,
+      workbookVersion: ensuredWorkspace.workbookVersion,
+      selectedWorkbookRefs: workspaceContext.selectedWorkbookRefs,
       operations: proposal.operations,
     });
 
     return {
       ...response,
+      conversationId: ensuredWorkspace.conversationId,
+      workbookId: ensuredWorkspace.workbookId,
       text: getWorkbookPatchSummaryText(response.text, appliedPatch),
       workbookPatch: appliedPatch,
     };
@@ -892,11 +977,9 @@ async function applyChatWorkbookPatch(
 
 async function applyChatFileAnalysisPatch(
   result: SteelChatProviderResult,
-  context: {
-    conversationId?: string;
-    workbookId?: string;
-  },
+  workspaceContext: SteelChatWorkspaceContext,
   getFileAnalysisService: () => ReturnType<typeof createSteelFileAnalysisService>,
+  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
 ): Promise<SteelChatProviderResultWithFileAnalysis> {
   const { fileAnalysisPatch, ...response } = result;
   if (!fileAnalysisPatch) {
@@ -904,21 +987,39 @@ async function applyChatFileAnalysisPatch(
   }
 
   const proposal = steelProviderFileAnalysisPatchProposalSchema.parse(fileAnalysisPatch);
-  if (!context.conversationId) {
-    return {
-      ...response,
-      warnings: [...response.warnings, 'conversationId is required to persist file_analysis_data.'],
-    };
-  }
+  const persisted = await persistChatFileAnalysisPatch(
+    proposal,
+    workspaceContext,
+    getFileAnalysisService,
+    getWorkbookService,
+  );
+
+  return {
+    ...response,
+    ...persisted,
+  };
+}
+
+async function persistChatFileAnalysisPatch(
+  proposal: SteelProviderFileAnalysisPatchProposal,
+  workspaceContext: SteelChatWorkspaceContext,
+  getFileAnalysisService: () => ReturnType<typeof createSteelFileAnalysisService>,
+  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
+): Promise<{
+  conversationId: string;
+  workbookId: string;
+  fileAnalysisData: SteelFileAnalysisData;
+}> {
+  const ensuredWorkspace = await ensureChatWorkspace(workspaceContext, getWorkbookService);
 
   const fileAnalysisData = await getFileAnalysisService().patch({
-    conversationId: context.conversationId,
-    workbookId: context.workbookId,
+    conversationId: ensuredWorkspace.conversationId,
     patch: proposal,
   });
 
   return {
-    ...response,
+    conversationId: ensuredWorkspace.conversationId,
+    workbookId: ensuredWorkspace.workbookId,
     fileAnalysisData,
   };
 }
@@ -1024,9 +1125,13 @@ export function createSteelHandlers({
         return;
       }
 
-      let workbookContextText: string | undefined;
+      let workspaceContext: SteelChatWorkspaceContext;
       try {
-        workbookContextText = await getChatWorkbookContextText(workbookContext, getWorkbookService);
+        workspaceContext = await getChatWorkbookContextText(
+          workbookContext,
+          conversationId,
+          getWorkbookService,
+        );
       } catch (error) {
         sendWorkbookError(res, error, env);
         return;
@@ -1044,9 +1149,8 @@ export function createSteelHandlers({
             : {}),
           reasoningEffort,
           steelRuntimePolicy: true,
-          ...(workbookContext.workbookId && workbookContext.workbookVersion
-            ? { workbookContextText, workbookPatchTool: true }
-            : {}),
+          workbookContextText: workspaceContext.workbookContextText,
+          workbookPatchTool: true,
         });
       } catch (error) {
         res
@@ -1065,15 +1169,18 @@ export function createSteelHandlers({
       try {
         const responseWithFileAnalysis = await applyChatFileAnalysisPatch(
           result,
-          {
-            conversationId,
-            workbookId: workbookContext.workbookId,
-          },
+          workspaceContext,
           getFileAnalysisService,
+          getWorkbookService,
         );
         const response = await applyChatWorkbookPatch(
           responseWithFileAnalysis,
-          workbookContext,
+          {
+            ...workspaceContext,
+            conversationId:
+              responseWithFileAnalysis.conversationId ?? workspaceContext.conversationId,
+            workbookId: responseWithFileAnalysis.workbookId ?? workspaceContext.workbookId,
+          },
           getWorkbookService,
         );
         res.status(200).json(response);
@@ -1179,9 +1286,13 @@ export function createSteelHandlers({
         return;
       }
 
-      let workbookContextText: string | undefined;
+      let workspaceContext: SteelChatWorkspaceContext;
       try {
-        workbookContextText = await getChatWorkbookContextText(workbookContext, getWorkbookService);
+        workspaceContext = await getChatWorkbookContextText(
+          workbookContext,
+          conversationId,
+          getWorkbookService,
+        );
       } catch (error) {
         sendWorkbookError(res, error, env);
         return;
@@ -1196,6 +1307,51 @@ export function createSteelHandlers({
 
       const defaultToolExecutor = executeToolCall ? undefined : createDefaultStreamToolExecutor();
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
+      let currentWorkspaceContext = workspaceContext;
+      let streamedFileAnalysisResult:
+        | {
+            conversationId: string;
+            workbookId: string;
+            fileAnalysisData: SteelFileAnalysisData;
+          }
+        | undefined;
+
+      const persistStreamFileAnalysisPatch = async (
+        fileAnalysisPatch: SteelProviderFileAnalysisPatchProposal,
+      ) => {
+        const proposal = steelProviderFileAnalysisPatchProposalSchema.parse(fileAnalysisPatch);
+        writeStreamEvent(res, {
+          type: 'tool',
+          status: 'started',
+          toolName: 'patch_file_analysis_data',
+          message: 'patch_file_analysis_data started',
+        });
+
+        const persisted = await persistChatFileAnalysisPatch(
+          proposal,
+          currentWorkspaceContext,
+          getFileAnalysisService,
+          getWorkbookService,
+        );
+        currentWorkspaceContext = {
+          ...currentWorkspaceContext,
+          conversationId: persisted.conversationId,
+          workbookId: persisted.workbookId,
+        };
+        streamedFileAnalysisResult = persisted;
+
+        writeStreamEvent(res, {
+          type: 'file_analysis_data',
+          fileAnalysisData: persisted.fileAnalysisData,
+        });
+        writeStreamEvent(res, {
+          type: 'tool',
+          status: 'completed',
+          toolName: 'patch_file_analysis_data',
+          message: 'patch_file_analysis_data completed',
+          ok: true,
+        });
+      };
 
       try {
         writeStreamEvent(res, {
@@ -1287,8 +1443,11 @@ export function createSteelHandlers({
               summary,
             });
           },
-          onToolStatus: (event) => {
-            if (event.toolName !== 'run_visual_inspection') {
+          onToolStatus: async (event) => {
+            if (
+              event.toolName !== 'run_visual_inspection' &&
+              event.toolName !== 'patch_file_analysis_data'
+            ) {
               return;
             }
 
@@ -1297,21 +1456,28 @@ export function createSteelHandlers({
               status: event.status,
               toolName: event.toolName,
               message:
+                event.message ??
                 event.errorSummary ??
                 (event.result?.ok === false
                   ? `${event.toolName} failed: ${event.result.errorSummary}`
                   : `${event.toolName} ${event.status}`),
               ok: event.result?.ok,
             });
+            if (
+              event.toolName === 'patch_file_analysis_data' &&
+              event.status === 'completed' &&
+              event.fileAnalysisPatch
+            ) {
+              await persistStreamFileAnalysisPatch(event.fileAnalysisPatch);
+            }
           },
           ...(hasMessageFiles(messagesWithInstructions)
             ? { passThroughUnsupportedFiles: true }
             : {}),
           reasoningEffort,
           steelRuntimePolicy: true,
-          ...(workbookContext.workbookId && workbookContext.workbookVersion
-            ? { workbookContextText, workbookPatchTool: true }
-            : {}),
+          workbookContextText: workspaceContext.workbookContextText,
+          workbookPatchTool: true,
         });
 
         if (result.workbookPatch?.operations.length) {
@@ -1323,7 +1489,7 @@ export function createSteelHandlers({
           });
         }
 
-        if (result.fileAnalysisPatch?.patches.length) {
+        if (!streamedFileAnalysisResult && result.fileAnalysisPatch?.patches.length) {
           writeStreamEvent(res, {
             type: 'tool',
             status: 'started',
@@ -1332,28 +1498,41 @@ export function createSteelHandlers({
           });
         }
 
-        const responseWithFileAnalysis = await applyChatFileAnalysisPatch(
-          result,
-          {
-            conversationId,
-            workbookId: workbookContext.workbookId,
-          },
-          getFileAnalysisService,
-        );
+        let responseWithFileAnalysis: SteelChatProviderResultWithFileAnalysis;
+        if (streamedFileAnalysisResult) {
+          const { fileAnalysisPatch: _fileAnalysisPatch, ...responseWithoutFileAnalysisPatch } =
+            result;
+          responseWithFileAnalysis = {
+            ...responseWithoutFileAnalysisPatch,
+            ...streamedFileAnalysisResult,
+          };
+        } else {
+          responseWithFileAnalysis = await applyChatFileAnalysisPatch(
+            result,
+            currentWorkspaceContext,
+            getFileAnalysisService,
+            getWorkbookService,
+          );
+        }
         const response = await applyChatWorkbookPatch(
           responseWithFileAnalysis,
-          workbookContext,
+          {
+            ...currentWorkspaceContext,
+            conversationId:
+              responseWithFileAnalysis.conversationId ?? currentWorkspaceContext.conversationId,
+            workbookId: responseWithFileAnalysis.workbookId ?? currentWorkspaceContext.workbookId,
+          },
           getWorkbookService,
         );
 
-        if (result.fileAnalysisPatch?.patches.length) {
+        if (!streamedFileAnalysisResult && result.fileAnalysisPatch?.patches.length) {
           writeStreamEvent(res, {
             type: 'tool',
             status: response.fileAnalysisData ? 'completed' : 'failed',
             toolName: 'patch_file_analysis_data',
             message: response.fileAnalysisData
               ? 'patch_file_analysis_data completed'
-              : 'conversationId is required to persist file_analysis_data.',
+              : 'patch_file_analysis_data failed',
             ok: Boolean(response.fileAnalysisData),
           });
         }
@@ -1489,21 +1668,56 @@ export function createSteelHandlers({
       }
     },
 
-    async patchWorkbook(req: SteelRequest, res: Response) {
-      const body = isRecord(req.body) ? req.body : {};
-      const bodyWorkbookId = body.workbookId;
-      if (bodyWorkbookId !== undefined && bodyWorkbookId !== req.params.workbookId) {
+    async readWorkbookByConversation(req: SteelRequest, res: Response) {
+      const conversationId = req.params.conversationId;
+      if (!conversationId) {
         res.status(400).json({
-          message: 'Steel workbook patch workbookId does not match route',
+          message: 'conversationId is required',
+          errorCategory: 'steel_workbook_request_invalid',
+        });
+        return;
+      }
+
+      try {
+        const result = await getWorkbookService().readByConversationMetaId({
+          conversationMetaId: conversationId,
+        });
+        res.status(200).json({ workbook: result?.workbook ?? null });
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+      }
+    },
+
+    async patchWorkbook(req: SteelRequest, res: Response) {
+      res.status(410).json({
+        message: 'Steel workbook id-based patch routes are disabled',
+        errorCategory: 'steel_workbook_patch_route_disabled',
+      });
+    },
+
+    async patchWorkbookByConversation(req: SteelRequest, res: Response) {
+      const conversationId = req.params.conversationId;
+      if (!conversationId) {
+        res.status(400).json({
+          message: 'conversationId is required',
+          errorCategory: 'steel_workbook_request_invalid',
+        });
+        return;
+      }
+
+      const parsed = steelWorkbookPatchRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({
+          message: 'Invalid Steel workbook patch request',
           errorCategory: 'steel_workbook_patch_invalid',
         });
         return;
       }
 
       try {
-        const result = await getWorkbookService().patch({
-          ...body,
-          workbookId: req.params.workbookId,
+        const result = await getWorkbookService().patchByConversationMetaId({
+          conversationMetaId: conversationId,
+          ...parsed.data,
         });
         res.status(200).json(result);
       } catch (error) {
@@ -1512,6 +1726,22 @@ export function createSteelHandlers({
     },
 
     async patchFileAnalysisData(req: SteelRequest, res: Response) {
+      res.status(410).json({
+        message: 'Steel file_analysis_data id-based patch routes are disabled',
+        errorCategory: 'steel_file_analysis_patch_route_disabled',
+      });
+    },
+
+    async patchFileAnalysisDataByConversation(req: SteelRequest, res: Response) {
+      const conversationId = req.params.conversationId;
+      if (!conversationId) {
+        res.status(400).json({
+          message: 'conversationId is required',
+          errorCategory: 'steel_file_analysis_request_invalid',
+        });
+        return;
+      }
+
       const parsed = steelFileAnalysisManualPatchRequestSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         res.status(400).json({
@@ -1523,15 +1753,32 @@ export function createSteelHandlers({
 
       try {
         const fileAnalysisData = await getFileAnalysisService().patch({
-          conversationId: parsed.data.conversationId,
-          workbookId: parsed.data.workbookId,
+          conversationId,
           patch: {
-            fileAnalysisDataId: req.params.fileAnalysisDataId,
             sourceFiles: parsed.data.sourceFiles,
             patches: parsed.data.patches,
             summary: parsed.data.summary,
           },
         });
+        res.status(200).json({ fileAnalysisData });
+      } catch (error) {
+        sendWorkbookError(res, error, env);
+      }
+    },
+
+    async readFileAnalysisDataByConversation(req: SteelRequest, res: Response) {
+      const conversationId = req.params.conversationId;
+      if (!conversationId) {
+        res.status(400).json({
+          message: 'conversationId is required',
+          errorCategory: 'steel_file_analysis_request_invalid',
+        });
+        return;
+      }
+
+      try {
+        const fileAnalysisData =
+          await getFileAnalysisService().readByConversationId(conversationId);
         res.status(200).json({ fileAnalysisData });
       } catch (error) {
         sendWorkbookError(res, error, env);

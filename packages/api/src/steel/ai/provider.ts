@@ -39,7 +39,7 @@ import {
   type RunVisualInspectionInput,
   type SteelBusinessToolName,
 } from '../tools/schemas';
-import { prepareSteelImagePage, runSteelFileOcr } from '../vision/ocr';
+import { getSteelPdfPageCount, prepareSteelImagePage, runSteelFileOcr } from '../vision/ocr';
 import {
   buildSemanticWorkbookPatchOperations,
   steelSemanticWorkbookPatchSchema,
@@ -122,9 +122,11 @@ export type SteelProviderVisualInspectionExecutor = (
 export type SteelProviderToolStatusCallback = (event: {
   toolName: string;
   status: 'started' | 'completed' | 'failed';
+  message?: string;
   result?: SteelToolResult;
   errorSummary?: string;
-}) => void;
+  fileAnalysisPatch?: SteelProviderFileAnalysisPatchProposal;
+}) => void | Promise<void>;
 
 export type SteelOAuthChatMessageRole = 'system' | 'user' | 'assistant';
 
@@ -132,6 +134,7 @@ export interface SteelOAuthChatFile {
   filename?: string;
   mediaType: string;
   data: Uint8Array | string | URL;
+  pageCount?: number;
 }
 
 export interface SteelOAuthChatMessage {
@@ -318,11 +321,18 @@ function getRunFileOcrInventoryText(
   fileIndexOffset: number,
 ): string | undefined {
   const entries = files
-    .map((file, index) =>
-      isVisualEvidenceFile(file)
-        ? `- fileIndex=${fileIndexOffset + index}; filename=${file.filename ?? '(unnamed)'}; mediaType=${file.mediaType}`
-        : undefined,
-    )
+    .map((file, index) => {
+      if (!isVisualEvidenceFile(file)) {
+        return undefined;
+      }
+
+      const pageCountText =
+        isPdfMediaType(file.mediaType) && file.pageCount !== undefined
+          ? `; pageCount=${file.pageCount}; pages=1-${file.pageCount}`
+          : '';
+
+      return `- fileIndex=${fileIndexOffset + index}; filename=${file.filename ?? '(unnamed)'}; mediaType=${file.mediaType}${pageCountText}`;
+    })
     .filter((entry): entry is string => entry !== undefined);
 
   return entries.length > 0
@@ -467,6 +477,45 @@ function getVisualEvidenceFiles(
   }
 
   return files;
+}
+
+async function getMessagesWithPdfPageCounts(
+  messages: readonly SteelOAuthChatMessage[],
+): Promise<SteelOAuthChatMessage[]> {
+  return Promise.all(
+    messages.map(async (message) => {
+      const files = message.files;
+      if (!files) {
+        return message;
+      }
+
+      const filesWithPageCounts = await Promise.all(
+        files.map(async (file) => {
+          if (!isPdfMediaType(file.mediaType) || file.pageCount !== undefined) {
+            return file;
+          }
+
+          try {
+            return {
+              ...file,
+              pageCount: await getSteelPdfPageCount(file),
+            };
+          } catch {
+            return file;
+          }
+        }),
+      );
+
+      if (filesWithPageCounts.every((file, index) => file === files[index])) {
+        return message;
+      }
+
+      return {
+        ...message,
+        files: filesWithPageCounts,
+      };
+    }),
+  );
 }
 
 function readSelectorStrings(rule: SteelAgentRule, key: string): string[] {
@@ -943,17 +992,33 @@ function getFileAnalysisOcrStatus(sourceRef: {
   return sourceRef.ocrStatus;
 }
 
+function getFileAnalysisProgressKey(source: { fileId?: string; filename?: string }) {
+  const filename = source.filename?.trim().toLowerCase();
+  if (filename) {
+    return `filename:${filename}`;
+  }
+
+  const fileId = source.fileId?.trim();
+  return fileId ? `fileId:${fileId}` : undefined;
+}
+
 function getFileAnalysisProgress(
   progressByFileId: Map<string, FileAnalysisPdfPageProgress>,
   source: {
-    fileId: string;
+    fileId?: string;
     filename?: string;
     mediaType: string;
     pageCount?: number;
   },
-): FileAnalysisPdfPageProgress {
-  const current = progressByFileId.get(source.fileId);
+): FileAnalysisPdfPageProgress | undefined {
+  const key = getFileAnalysisProgressKey(source);
+  if (!key) {
+    return undefined;
+  }
+
+  const current = progressByFileId.get(key);
   if (current) {
+    current.fileId = source.fileId ?? current.fileId;
     current.filename = source.filename ?? current.filename;
     current.mediaType = source.mediaType || current.mediaType;
     current.pageCount = source.pageCount ?? current.pageCount;
@@ -961,7 +1026,7 @@ function getFileAnalysisProgress(
   }
 
   const next = {
-    fileId: source.fileId,
+    fileId: source.fileId ?? source.filename ?? key,
     filename: source.filename,
     mediaType: source.mediaType,
     pageCount: source.pageCount,
@@ -969,7 +1034,7 @@ function getFileAnalysisProgress(
     failedPages: new Set<number>(),
     skippedPages: new Set<number>(),
   };
-  progressByFileId.set(source.fileId, next);
+  progressByFileId.set(key, next);
   return next;
 }
 
@@ -992,6 +1057,9 @@ function trackFileAnalysisPdfPageProgress(
         }
 
         const progress = getFileAnalysisProgress(progressByFileId, sourceRef);
+        if (!progress) {
+          continue;
+        }
         const ocrStatus = getFileAnalysisOcrStatus(sourceRef);
         if (ocrStatus === 'failed') {
           progress.failedPages.add(sourceRef.page);
@@ -1002,6 +1070,24 @@ function trackFileAnalysisPdfPageProgress(
         }
       }
     }
+  }
+}
+
+function trackVisualEvidencePdfPageProgress(
+  progressByFileId: Map<string, FileAnalysisPdfPageProgress>,
+  files: readonly SteelFileOcrSourceFile[],
+): void {
+  for (const file of files) {
+    if (!isPdfMediaType(file.mediaType) || file.pageCount === undefined) {
+      continue;
+    }
+
+    getFileAnalysisProgress(progressByFileId, {
+      fileId: file.filename,
+      filename: file.filename,
+      mediaType: file.mediaType,
+      pageCount: file.pageCount,
+    });
   }
 }
 
@@ -1030,6 +1116,18 @@ function getPendingFileAnalysisPdfPage(
   }
 
   return undefined;
+}
+
+function hasTrackedFileAnalysisPdf(
+  progressByFileId: Map<string, FileAnalysisPdfPageProgress>,
+): boolean {
+  for (const progress of progressByFileId.values()) {
+    if (isPdfMediaType(progress.mediaType)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function executeSteelBusinessToolCalls({
@@ -1177,14 +1275,14 @@ async function executeVisualInspectionToolCalls({
       continue;
     }
 
-    onToolStatus?.({ toolName: call.toolName, status: 'started' });
+    await onToolStatus?.({ toolName: call.toolName, status: 'started' });
     try {
       result = await executeVisualInspection({
         arguments: input,
         files,
         providerToolCallId: call.toolCallId,
       });
-      onToolStatus?.({
+      await onToolStatus?.({
         toolName: call.toolName,
         status: result.ok ? 'completed' : 'failed',
         result,
@@ -1192,7 +1290,7 @@ async function executeVisualInspectionToolCalls({
       });
     } catch (error) {
       const errorSummary = error instanceof Error ? error.message : `${call.toolName} failed.`;
-      onToolStatus?.({
+      await onToolStatus?.({
         toolName: call.toolName,
         status: 'failed',
         errorSummary,
@@ -1604,6 +1702,55 @@ function parseFileAnalysisPatchToolCalls(
   });
 }
 
+function getFileAnalysisSourceFileKey(sourceFile: {
+  fileId: string;
+  filename?: string;
+  mediaType: string;
+}): string {
+  return sourceFile.fileId || `${sourceFile.filename ?? ''}:${sourceFile.mediaType}`;
+}
+
+function mergeFileAnalysisPatchProposal(
+  current: SteelProviderFileAnalysisPatchProposal | undefined,
+  next: SteelProviderFileAnalysisPatchProposal,
+): SteelProviderFileAnalysisPatchProposal {
+  if (!current) {
+    return {
+      ...next,
+      sourceFiles: [...next.sourceFiles],
+      patches: [...next.patches],
+    };
+  }
+
+  const sourceFilesByKey = new Map(
+    current.sourceFiles.map((sourceFile) => [getFileAnalysisSourceFileKey(sourceFile), sourceFile]),
+  );
+  for (const sourceFile of next.sourceFiles) {
+    const key = getFileAnalysisSourceFileKey(sourceFile);
+    sourceFilesByKey.set(key, {
+      ...sourceFilesByKey.get(key),
+      ...sourceFile,
+    });
+  }
+
+  return {
+    fileAnalysisDataId: next.fileAnalysisDataId ?? current.fileAnalysisDataId,
+    sourceFiles: [...sourceFilesByKey.values()],
+    patches: [...current.patches, ...next.patches],
+    summary: next.summary ?? current.summary,
+  };
+}
+
+function mergeFileAnalysisPatchCalls(
+  current: SteelProviderFileAnalysisPatchProposal | undefined,
+  parsedCalls: readonly ParsedFileAnalysisPatchToolCall[],
+): SteelProviderFileAnalysisPatchProposal | undefined {
+  return parsedCalls.reduce(
+    (patch, parsedCall) => mergeFileAnalysisPatchProposal(patch, parsedCall.input),
+    current,
+  );
+}
+
 function getWorkbookPatchFromOperations(
   operations: WorkbookPatchOperation[],
 ): SteelProviderWorkbookPatchProposal | undefined {
@@ -1684,8 +1831,12 @@ export async function sendSteelOAuthChat({
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
-  const ocrSourceKinds = steelRuntimePolicy === true ? getVisualEvidenceSourceKinds(messages) : [];
-  const visualEvidenceFiles = steelRuntimePolicy === true ? getVisualEvidenceFiles(messages) : [];
+  const messagesWithPdfPageCounts =
+    steelRuntimePolicy === true ? await getMessagesWithPdfPageCounts(messages) : messages;
+  const ocrSourceKinds =
+    steelRuntimePolicy === true ? getVisualEvidenceSourceKinds(messagesWithPdfPageCounts) : [];
+  const visualEvidenceFiles =
+    steelRuntimePolicy === true ? getVisualEvidenceFiles(messagesWithPdfPageCounts) : [];
   const shouldLoadAgentRules =
     steelRuntimePolicy === true || workbookPatchTool === true || ocrSourceKinds.length > 0;
   const systemInstruction = await getSystemInstruction({
@@ -1730,8 +1881,10 @@ export async function sendSteelOAuthChat({
   const runState = createSteelToolRunState(steelToolMaxCalls ?? Number.MAX_SAFE_INTEGER);
   const omitVisualEvidenceFileParts = visualEvidenceFiles.length > 0;
   let prompt = systemInstruction
-    ? toPromptWithSystemInstruction(messages, systemInstruction, { omitVisualEvidenceFileParts })
-    : toPrompt(messages, { omitVisualEvidenceFileParts });
+    ? toPromptWithSystemInstruction(messagesWithPdfPageCounts, systemInstruction, {
+        omitVisualEvidenceFileParts,
+      })
+    : toPrompt(messagesWithPdfPageCounts, { omitVisualEvidenceFileParts });
   const generationResults: LanguageModelV3GenerateResult[] = [];
   const mustGetReviewedPriceResult =
     steelRuntimePolicy === true && requiresReviewedPriceLookup(messages);
@@ -1745,6 +1898,7 @@ export async function sendSteelOAuthChat({
   const workbookPatchOperations: WorkbookPatchOperation[] = [];
   let fileAnalysisPatch: SteelProviderFileAnalysisPatchProposal | undefined;
   const fileAnalysisPdfPageProgress = new Map<string, FileAnalysisPdfPageProgress>();
+  trackVisualEvidencePdfPageProgress(fileAnalysisPdfPageProgress, visualEvidenceFiles);
   let forcedFileOcrPage: PendingFileAnalysisPdfPage | undefined;
 
   for (let round = 0; steelToolMaxCalls === undefined || round <= steelToolMaxCalls; round += 1) {
@@ -1784,6 +1938,10 @@ export async function sendSteelOAuthChat({
       getFileAnalysisPatchToolCalls(result),
     );
     trackFileAnalysisPdfPageProgress(fileAnalysisPdfPageProgress, parsedFileAnalysisPatchCalls);
+    const pendingFileAnalysisPdfPageAfterPatch =
+      visualEvidenceFiles.length > 0
+        ? getPendingFileAnalysisPdfPage(fileAnalysisPdfPageProgress)
+        : undefined;
     const fileOcrToolCalls = visualEvidenceFiles.length > 0 ? getFileOcrToolCalls(result) : [];
     const executedFileOcrCalls = await executeFileOcrToolCalls({
       calls: fileOcrToolCalls,
@@ -1799,8 +1957,23 @@ export async function sendSteelOAuthChat({
       onToolStatus,
     });
     if (parsedFileAnalysisPatchCalls.length > 0) {
-      fileAnalysisPatch =
-        parsedFileAnalysisPatchCalls[parsedFileAnalysisPatchCalls.length - 1]?.input;
+      fileAnalysisPatch = mergeFileAnalysisPatchCalls(
+        fileAnalysisPatch,
+        parsedFileAnalysisPatchCalls,
+      );
+      const fileAnalysisPatchStatusMessage = pendingFileAnalysisPdfPageAfterPatch
+        ? 'patch_file_analysis_data received; preparing OCR continuation'
+        : hasTrackedFileAnalysisPdf(fileAnalysisPdfPageProgress)
+          ? 'patch_file_analysis_data received; OCR complete; preparing summary'
+          : 'patch_file_analysis_data received; preparing summary';
+      for (const parsedCall of parsedFileAnalysisPatchCalls) {
+        await onToolStatus?.({
+          toolName: parsedCall.call.toolName,
+          status: 'completed',
+          message: fileAnalysisPatchStatusMessage,
+          fileAnalysisPatch: parsedCall.input,
+        });
+      }
     }
     const workbookSubtotalMismatch = getFirstWorkbookSubtotalMismatch(
       parsedWorkbookPatchCalls.map(({ input }) => input),
@@ -1823,6 +1996,13 @@ export async function sendSteelOAuthChat({
     const steelBusinessToolCalls = steelRuntimePolicy ? getSteelBusinessToolCalls(result) : [];
     if (steelBusinessToolCalls.length === 0) {
       if (executedFileOcrCalls.length > 0 || executedVisualInspectionCalls.length > 0) {
+        if (executedFileOcrCalls.some(({ result: toolResult }) => toolResult.ok)) {
+          await onToolStatus?.({
+            toolName: 'patch_file_analysis_data',
+            status: 'started',
+            message: 'patch_file_analysis_data waiting for AI to convert OCR result',
+          });
+        }
         prompt = [
           ...prompt,
           toAssistantToolCallMessage(
@@ -1899,7 +2079,7 @@ export async function sendSteelOAuthChat({
       }
 
       if (parsedFileAnalysisPatchCalls.length > 0) {
-        prompt = [
+        const nextPrompt = [
           ...prompt,
           toAssistantToolCallMessage(
             [],
@@ -1918,6 +2098,16 @@ export async function sendSteelOAuthChat({
             executedVisualInspectionCalls,
           ),
         ];
+        const pendingFileAnalysisPdfPage = pendingFileAnalysisPdfPageAfterPatch;
+        if (pendingFileAnalysisPdfPage) {
+          forcedFileOcrPage = pendingFileAnalysisPdfPage;
+          prompt = [
+            ...nextPrompt,
+            getPendingFileAnalysisPdfPageReminderMessage(pendingFileAnalysisPdfPage),
+          ];
+        } else {
+          prompt = nextPrompt;
+        }
         continue;
       }
 

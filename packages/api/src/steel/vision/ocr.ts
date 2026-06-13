@@ -21,6 +21,7 @@ export interface SteelFileOcrSourceFile {
   filename?: string;
   mediaType: string;
   data: Uint8Array | string | URL;
+  pageCount?: number;
 }
 
 export interface SteelFileOcrOptions {
@@ -93,7 +94,7 @@ export function getSteelFileBytes(file: SteelFileOcrSourceFile): Uint8Array {
   }
 
   if (file.data instanceof Uint8Array) {
-    return file.data;
+    return new Uint8Array(file.data);
   }
 
   const data = file.data.trim();
@@ -172,6 +173,22 @@ async function renderPdfPageToPng({
     await writeFile(outputPath, canvas.toBuffer('image/png'));
 
     return { path: outputPath, width, height, dpi };
+  } finally {
+    await pdf.destroy();
+  }
+}
+
+export async function getSteelPdfPageCount(file: SteelFileOcrSourceFile): Promise<number> {
+  const { getDocument } = (await dynamicImport('pdfjs-dist/legacy/build/pdf.mjs')) as PdfJsModule;
+  const loadingTask = getDocument({
+    data: getSteelFileBytes(file),
+    disableFontFace: true,
+    isEvalSupported: false,
+  });
+  const pdf = await loadingTask.promise;
+
+  try {
+    return pdf.numPages;
   } finally {
     await pdf.destroy();
   }

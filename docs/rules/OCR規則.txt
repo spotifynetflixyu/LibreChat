@@ -34,7 +34,9 @@
 圖面、PDF、掃描圖或圖片判讀後，只固定建立三個資料分頁；每個分頁的欄位由 AI 依檔案內容自主決定，不可由系統預先固定欄位：
 
 1. `file_analysis_data`
-   - 放主要圖文判讀資料、表格資料、圖面標註、尺寸、數量、孔洞、開槽、折彎、切割記號、備註等 AI 判斷有價值的資訊。
+   - 只放材料、規格、尺寸、數量、孔洞、開槽、折彎、切割記號、加工備註、價格 / 報價判斷需要的資料。
+   - 不要保存專案名稱、工程名稱、日期、地點、人名、承辦、業主、地址、圖面行政資訊、事件敘述、或其他與報價無關的資料。
+   - cell 文字必須精簡；備註、說明、複核類 cell 用短句整理，不貼整段原文。
    - 板件表、材料表、螺栓表、切割表等明細必須保存完整逐列資料；不可只 patch 代表列或摘要。
    - 每列必須盡量保留來源檔案、頁碼 / 圖片序號、區域、OCR 引擎、OCR 狀態、信心、人工複核狀態等可核對資訊。
 
@@ -46,14 +48,14 @@
    - 放判讀備註、來源處理進度、PaddleOCR MCP 風險、未完成來源、跳過原因、錯誤摘要、以及 AI 自主判斷的限制。
 
 五、patch_file_analysis_data 使用規則
-1. 判讀 PDF、掃描圖、圖片、工程圖或表格附件後，若需要保存本輪圖文判讀結果，必須呼叫 `patch_file_analysis_data`；不要用 `patch_quote_workbook` 保存未確認的圖面判讀資料。
+1. 判讀 PDF、掃描圖、圖片、工程圖或表格附件後，若需要保存本輪圖文判讀結果，必須呼叫 `patch_file_analysis_data`。
 2. 一個對話 / 訂單只維護一份 `file_analysis_data` workspace。多個檔案、多個頁面、多張圖片都寫入同一份 workspace，靠來源欄位與 `sourceKey` 區分。
 3. `patch_file_analysis_data` 固定只能 patch 三個分頁：`file_analysis_data`、`manual_review`、`interpretation_notes`。分頁名稱固定，但欄位由 AI 依檔案內容自主建立或更新。
 4. 每次呼叫 `patch_file_analysis_data` 時，應補上本輪需要的 `sourceFiles`、`upsertColumns` 與 `upsertRows`。欄位 key 應穩定、簡短、語意清楚；label 可使用原圖或原表格語言。
 5. 若本輪修正既有列，應使用既有 row id；若無法取得 row id，必須使用相同 `sourceKey` 讓 backend upsert 既有列。
 6. 若是使用者直接更正資料，row 應標記 `reviewStatus = corrected`；若是 PaddleOCR 尚未人工確認，保留 `pending_review`。
 7. 呼叫 `patch_file_analysis_data` 後，回覆用戶時必須用繁體中文簡短摘要本輪 patch 內容，例如新增/更新了哪些檔案、頁碼、圖片序號、主要列數、低信心項目與需要人工核對的位置；不要只說「已更新 N 個欄位」。
-8. 只有用戶確認要建立或更新正式報價表時，才可進入 quote workbook 投影流程；未確認的 OCR / 圖面判讀不可直接變成正式報價 workbook rows。
+8. 本規則只負責保存未確認的 OCR / 圖面判讀資料；正式報價資料更新由後續已確認的報價流程處理。
 
 六、重新處理、接續處理、手動更正
 1. 用戶說「重新處理某圖 / 某頁」時，必須重新送該圖或該頁給 PaddleOCR MCP，並用既有 row id 或相同 `sourceKey` 更新該來源的既有資料。

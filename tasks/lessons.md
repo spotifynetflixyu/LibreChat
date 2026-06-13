@@ -1,9 +1,16 @@
 # Lessons
 
-- Steel `docs/rules/*.txt` files are human-authored rule contracts; do not add
-  tests that assert rule text substrings. Verify rule work by syncing the
-  intended rule source into Supabase reviewed rows and by testing downstream
-  runtime behavior when behavior code changes.
+- Steel rules are human-authored contracts; do not add or keep tests whose
+  primary subject is rule text, rule DTO/schema contracts, rule repositories,
+  rule services, or rule-loading prompts. Verify rule work by syncing the
+  intended source into Supabase reviewed rows, direct readback, and downstream
+  runtime behavior only when behavior code changes.
+- Steel Supabase lookup/search tool latency is dominated by cloud round trips,
+  not local SQL execution, once the query plan is healthy. Batch shared-filter
+  product candidates into one SQL query instead of looping one query per
+  product key, keep `%...%` search fields covered by trigram indexes, and live
+  measure before parallelizing because a cold pool can make parallel queries
+  slower by opening extra Supabase connections.
 - Steel multi-page PDF/image OCR must auto-continue in the same chat turn:
   after each page/image `run_file_ocr`, immediately `patch_file_analysis_data`,
   report progress, then continue the next page/image in order. Treat `go` /
@@ -12,17 +19,49 @@
 - Steel drawing-derived plate parts such as 柱底板、連接板、加勁板、補強板、
   端板、底板 and 蓋板 are plate products, not separate steel material
   families. When dimensions and thickness are available but material is not
-  specified, quote with the most likely black iron plate / SS400 candidate and
-  mark the material assumption as provisional instead of blocking the price as
-  未確認.
+  specified, quote with the reviewed 黑板 primary candidate, keep 黑鐵板 as a
+  valid reviewed secondary candidate, and mark the material assumption as
+  provisional instead of blocking the price as 未確認.
+- Steel plate price lookup must use reviewed product names only. Current valid
+  plate product names are 鐵板、槽型鐵板、ST 鐵板、2B 鐵板、ST 2B、ST HL、
+  黑鐵板、黑板、錏鐵板、錏板、白鐵板、白鐵. SS400 is only a material/spec note,
+  and 黑皮板 is not a product name.
+- Steel black iron plate theoretical rectangular weight must come from reviewed
+  rules, not model common knowledge: use density coefficient 7.850 and
+  calculate kg = length mm × width mm × thickness mm × 7.850 ÷ 1,000,000.
+- Steel density/theoretical-weight rules should stay concise. Keep the prompt
+  focused on the density table, four-sided theoretical weight formula, kg/m
+  conversion, and when kg price may be used; keep long extraction statistics
+  out of the rule text and in verification/source refs instead.
 - Do not rely only on agent instructions for Steel multi-page PDF OCR
   continuation. The provider must track patched PDF page progress and reject a
   premature final assistant answer while `pageCount` still has unprocessed
   pages; progress summaries belong in stream/tool status, not final text.
+- Steel PDF `pageCount` is attachment metadata, not OCR output. OCR is one page
+  per task, so provider page progress must initialize from the uploaded PDF
+  before OCR starts, or from already-known attachment metadata, then merge
+  later `patch_file_analysis_data` rows by source file/page.
+- Steel PDF page-count metadata must be prompt-visible, not only internal
+  provider state. After backend resolves a PDF `pageCount`, merge it back into
+  the OCR inventory text so the model cannot claim it does not know how many
+  pages to process.
+- Steel multi-page OCR in one chat turn must accumulate every
+  `patch_file_analysis_data` proposal before handler persistence. Do not keep
+  only the last page patch, and stream post-OCR waiting/received status so the
+  user is not left at `run_file_ocr completed` with no visible progress.
+- Steel stream status is not a substitute for persisted OCR data. When
+  `patch_file_analysis_data` is received during a multi-page OCR turn, persist
+  that page patch immediately, emit a data-bearing `file_analysis_data` stream
+  event before starting the next OCR page, and skip reapplying the same
+  cumulative patch at final `done`.
 - Steel `run_visual_inspection` sends the prepared page/image into a nested
   OpenAI OAuth vision call. Keep that nested file data as a raw base64 string,
   not a binary typed-array payload, so provider internals do not hit unsupported
   object transfer errors.
+- Steel PDF OCR must not pass the original uploaded `Uint8Array` directly into
+  pdfjs. pdfjs may transfer/detach its input data, so every page-count or page
+  render operation must receive a fresh byte copy; otherwise page 1 can succeed
+  and page 2 can fail with `Cannot transfer object of unsupported type`.
 - Steel provider must not have a default tool-loop cap for OCR/PDF processing;
   large PDFs can have hundreds of pages. Only apply `steelToolMaxCalls` when an
   explicit caller/test passes it.
@@ -33,6 +72,36 @@
 - When Steel chat returns `fileAnalysisData`, automatically open/select the
   File Analysis right-panel tab. A completed `patch_file_analysis_data` stream
   event is not enough for users to see rows if the UI remains on Workbook.
+- Steel chat workspace ids are backend-owned. The frontend may retain and
+  resend the returned `conversationId`, but it must not create empty workbooks
+  or `file_analysis_data` workspaces, and must not send `workbookId` /
+  `workbookVersion` as authoritative chat context. Handlers must resolve or
+  lazily create the conversation-bound workbook/file analysis only when a real
+  patch needs persistence.
+- Steel conversation workspace reload must treat workbook and
+  `file_analysis_data` as paired persisted state. Reopened Steel chats should
+  recover both by backend `conversationId`, while later AI turns send only that
+  conversation id so backend context loading can read the same workbook and
+  file analysis rows from DB.
+- Steel `file_analysis_data` must not persist `workbookId`. The canonical link
+  is `conversationId`: resolve the active workbook from the same conversation
+  when needed, keep file-analysis manual patches free of workbook ids, and make
+  Mongo indexes match that query path with unique `conversationId` and
+  `fileAnalysisDataId` indexes.
+- Steel save/update routes for workbook and `file_analysis_data` must be
+  conversation-scoped. Do not let frontend update payloads or URLs choose a
+  workspace by `workbookId` or `fileAnalysisDataId`; keep old id-based PATCH
+  routes disabled and resolve the unique backend-owned workspace from
+  `conversationId`.
+- For Steel OCR/file-analysis work, do not spend effort hand-fixing incidental
+  code snippet line-number output formatting or running Prettier; the user will
+  run `npm run format` manually. Use targeted edits, behavior tests, builds,
+  and `git diff --check`.
+- Steel OCR `patch_file_analysis_data` rules should store only
+  quote-relevant material facts: material/spec/size/quantity/process/price
+  context and concise notes or review items. Do not store project names,
+  engineering names, dates, places, people, owners, addresses, or other
+  non-quote metadata in cells.
 - When Steel chat returns both `workbookPatch.workbook` and `fileAnalysisData`,
   prioritize the Workbook right-panel tab. File Analysis should auto-select
   only for file-analysis-only OCR/review responses, not completed quote
@@ -40,13 +109,11 @@
 - When Steel chat returns only `workbookPatch.workbook`, also open/select the
   Workbook right-panel tab even if the user was previously viewing File
   Analysis. Any accepted workbook patch is workbook-visible output.
-- Steel rule tests must not use `toContain`, `expect.stringContaining`, or
-  `toMatch` to lock exact Agent/OCR/workbook/quote rule wording, even when the
-  text came from Supabase fixtures. Assert source tables, reviewed rows,
-  canonical keys, slugs, source refs, tool calls, and runtime behavior instead.
-- Do not reintroduce tests that fail only because human-authored Steel rule
-  wording changed. If a rule change needs verification, test sync/readback
-  metadata and the downstream behavior produced by the rule.
+- Do not reintroduce Steel rules tests. If a rule change needs verification,
+  use Supabase sync/readback metadata or a live/runtime smoke, not committed
+  tests around rule wording, rule repository rows, rule proposal schemas, or
+  prompt assembly. Runtime tests may mention `lookup_quote_rules` only when the
+  subject is an end-to-end chat/tool flow rather than the rule contract itself.
 - Keep AI-facing Steel tool names stable and generic. Do not expose vendor/model
   implementation names such as `paddleocr_vl` as the provider tool name; use a
   generic wrapper such as `run_file_ocr` while the backend can still call the
@@ -677,3 +744,7 @@
 - Local Steel `/steel/oauth-chat` currently sends attachment bytes in the chat
   JSON payload, so the Express JSON/urlencoded parser limit must be at least
   `50mb` until the UI is changed to upload files first and send only `fileId`.
+- Steel OCR patch completion status must be driven by backend page progress,
+  not a generic post-patch continuation message. When completed/failed/skipped
+  page progress covers the PDF `pageCount`, do not emit or force another OCR
+  continuation; persist the patch and let AI produce the final summary.

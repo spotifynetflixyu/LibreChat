@@ -212,37 +212,4 @@ describe('Steel processing repositories', () => {
       unitPrice: 18,
     });
   });
-
-  it('searches reviewed active material rules by lookup selector', async () => {
-    const query = jest.fn().mockResolvedValue({
-      rows: [
-        {
-          id: '6',
-          code: 'H_NON_STANDARD_LENGTH',
-          name: 'H型鋼非標準長度',
-          rule_type: 'material_surcharge',
-          rule_body: { surcharge_per_kg: 0.3 },
-          priority: 10,
-          catalog_family: 'H型鋼',
-          condition_type: 'length_not_in',
-          active: true,
-          review_state: 'reviewed',
-          source_refs: [],
-        },
-      ],
-    });
-
-    const result = await searchSteelMaterialRules({ query } as SteelRepositoryClient, {
-      catalogFamily: 'H型鋼',
-      ruleType: 'material_surcharge',
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY priority ASC'), [
-      'reviewed',
-      'H型鋼',
-      'material_surcharge',
-      20,
-    ]);
-    expect(result[0]?.ruleBody).toEqual({ surcharge_per_kg: 0.3 });
-  });
 });

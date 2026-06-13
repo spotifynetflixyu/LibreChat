@@ -8,6 +8,8 @@ const mockSendSteelChat = jest.fn();
 const mockStreamSteelChat = jest.fn();
 const mockCreateSteelWorkbook = jest.fn();
 const mockExportSteelWorkbook = jest.fn();
+const mockGetSteelFileAnalysisDataByConversation = jest.fn();
+const mockGetSteelWorkbookByConversation = jest.fn();
 const mockPatchSteelFileAnalysisData = jest.fn();
 
 const sheetIds = [
@@ -42,11 +44,17 @@ function createWorkbook(version: number, materialUnitPrice: number | null = null
   };
 }
 
+function createWorkbookWithLongCell() {
+  const workbook = createWorkbook(2, null);
+  workbook.sheets[0].rows[0].cells.material_unit_price =
+    '這是一段很長的報價備註文字，用來確認 workbook table cell 最多顯示兩行，不會把整列高度撐開導致右側面板版型跑掉。';
+  return workbook;
+}
+
 function createFileAnalysisData(version: number) {
   return {
     id: 'fad_1',
-    conversationId: 'wb_1',
-    workbookId: 'wb_1',
+    conversationId: 'steel-chat-1',
     version,
     status: 'draft',
     sourceFiles: [
@@ -110,6 +118,13 @@ function createFileAnalysisData(version: number) {
   };
 }
 
+function createFileAnalysisDataWithLongCell(version: number) {
+  const fileAnalysisData = createFileAnalysisData(version);
+  fileAnalysisData.sheets.file_analysis_data.rows[0].cells.spec =
+    '367×323×12t，孔洞與加工備註文字很長，用來確認 file_analysis_data table cell 最多顯示兩行，不會讓表格高度失控。';
+  return fileAnalysisData;
+}
+
 jest.mock('librechat-data-provider', () => ({
   requiredSteelFileAnalysisSheetIds: [
     'file_analysis_data',
@@ -119,6 +134,10 @@ jest.mock('librechat-data-provider', () => ({
   dataService: {
     createSteelWorkbook: (...args: unknown[]) => mockCreateSteelWorkbook(...args),
     exportSteelWorkbook: (...args: unknown[]) => mockExportSteelWorkbook(...args),
+    getSteelFileAnalysisDataByConversation: (...args: unknown[]) =>
+      mockGetSteelFileAnalysisDataByConversation(...args),
+    getSteelWorkbookByConversation: (...args: unknown[]) =>
+      mockGetSteelWorkbookByConversation(...args),
     patchSteelFileAnalysisData: (...args: unknown[]) => mockPatchSteelFileAnalysisData(...args),
     sendSteelChat: (...args: unknown[]) => mockSendSteelChat(...args),
     streamSteelChat: (...args: unknown[]) => mockStreamSteelChat(...args),
@@ -133,6 +152,14 @@ describe('SteelOAuthChat', () => {
     });
     mockExportSteelWorkbook.mockReset();
     mockExportSteelWorkbook.mockResolvedValue(new ArrayBuffer(8));
+    mockGetSteelFileAnalysisDataByConversation.mockReset();
+    mockGetSteelFileAnalysisDataByConversation.mockResolvedValue({
+      fileAnalysisData: null,
+    });
+    mockGetSteelWorkbookByConversation.mockReset();
+    mockGetSteelWorkbookByConversation.mockResolvedValue({
+      workbook: null,
+    });
     mockPatchSteelFileAnalysisData.mockReset();
     mockPatchSteelFileAnalysisData.mockResolvedValue({
       fileAnalysisData: createFileAnalysisData(2),
@@ -199,6 +226,7 @@ describe('SteelOAuthChat', () => {
       onEvent({ type: 'done', response });
       return response;
     });
+    window.history.replaceState(null, '', '/steel/oauth-chat');
   });
 
   it('sends selected files as browser-safe base64 payloads', async () => {
@@ -209,7 +237,7 @@ describe('SteelOAuthChat', () => {
 
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
     await user.upload(screen.getByLabelText('Attach files'), file);
     await user.type(screen.getByPlaceholderText('Message Steel'), 'Read the attachment.');
     await user.click(screen.getByLabelText('Send'));
@@ -221,8 +249,6 @@ describe('SteelOAuthChat', () => {
       expect.objectContaining({
         model: 'gpt-5.5',
         reasoningEffort: 'medium',
-        workbookId: 'wb_1',
-        workbookVersion: 1,
         messages: [
           {
             role: 'user',
@@ -239,6 +265,59 @@ describe('SteelOAuthChat', () => {
       }),
       expect.any(Function),
     );
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookId');
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookVersion');
+  });
+
+  it('reuses the backend returned conversation id without owning workbook ids', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        const response = {
+          conversationId: 'steel-chat-1',
+          workbookId: 'wb_1',
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '已建立圖文判讀表格。',
+          unsupportedSettings: [],
+          warnings: [],
+          fileAnalysisData: createFileAnalysisData(1),
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      })
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        const response = {
+          conversationId: 'steel-chat-1',
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '已沿用同一個對話 workspace。',
+          unsupportedSettings: [],
+          warnings: [],
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '判讀 d.pdf');
+    await user.click(screen.getByLabelText('Send'));
+    await screen.findByText('已建立圖文判讀表格。');
+    await user.type(screen.getByPlaceholderText('Message Steel'), '繼續');
+    await user.click(screen.getByLabelText('Send'));
+
+    await waitFor(() => {
+      expect(mockStreamSteelChat).toHaveBeenCalledTimes(2);
+    });
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('conversationId');
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookId');
+    expect(mockStreamSteelChat.mock.calls[1][0]).toEqual(
+      expect.objectContaining({
+        conversationId: 'steel-chat-1',
+      }),
+    );
+    expect(mockStreamSteelChat.mock.calls[1][0]).not.toHaveProperty('workbookId');
   });
 
   it('shows lookup/tool progress while streaming, then replaces it with the final answer', async () => {
@@ -306,7 +385,7 @@ describe('SteelOAuthChat', () => {
 
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
     await user.type(screen.getByPlaceholderText('Message Steel'), 'C型鋼 C100 6M 一支多少');
     await user.click(screen.getByLabelText('Send'));
 
@@ -354,7 +433,7 @@ describe('SteelOAuthChat', () => {
   it('uses gpt-5.5 without rendering a model selector', async () => {
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
 
     expect(screen.queryByLabelText('Model')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'gpt-5.4' })).not.toBeInTheDocument();
@@ -366,7 +445,7 @@ describe('SteelOAuthChat', () => {
 
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
     await user.click(screen.getByRole('button', { name: 'high' }));
     await user.type(screen.getByPlaceholderText('Message Steel'), 'Read carefully.');
     await user.click(screen.getByLabelText('Send'));
@@ -387,7 +466,7 @@ describe('SteelOAuthChat', () => {
 
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
     await user.click(screen.getByRole('button', { name: 'xhigh' }));
     await user.type(screen.getByPlaceholderText('Message Steel'), 'First message.');
     await user.click(screen.getByLabelText('Send'));
@@ -409,8 +488,6 @@ describe('SteelOAuthChat', () => {
       expect.objectContaining({
         model: 'gpt-5.5',
         reasoningEffort: 'xhigh',
-        workbookId: 'wb_1',
-        workbookVersion: 1,
         messages: [
           {
             role: 'user',
@@ -427,7 +504,7 @@ describe('SteelOAuthChat', () => {
 
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
     expect(screen.getByLabelText('Workbook panel')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Hide workbook' }));
@@ -437,8 +514,7 @@ describe('SteelOAuthChat', () => {
 
     await user.click(screen.getByRole('button', { name: 'Show workbook' }));
 
-    expect(await screen.findByRole('button', { name: '報價明細' })).toBeInTheDocument();
-    expect(screen.getByText('v1')).toBeInTheDocument();
+    expect(await screen.findByText('No workbook yet')).toBeInTheDocument();
   });
 
   it('renders right panel Workbook, File Analysis, and Thinking tabs with sheet-table UX', async () => {
@@ -455,8 +531,7 @@ describe('SteelOAuthChat', () => {
       'false',
     );
     expect(screen.getByRole('tab', { name: 'Thinking' })).toHaveAttribute('aria-selected', 'false');
-    expect(screen.getByRole('button', { name: '人工複核' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '人工複核清單' })).not.toBeInTheDocument();
+    expect(screen.getByText('No workbook yet')).toBeInTheDocument();
 
     await user.click(screen.getByRole('tab', { name: 'File Analysis' }));
 
@@ -471,7 +546,48 @@ describe('SteelOAuthChat', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Workbook' }));
 
-    expect(screen.getByRole('button', { name: '報價明細' })).toBeInTheDocument();
+    expect(screen.getByText('No workbook yet')).toBeInTheDocument();
+  });
+
+  it('clamps workbook and file analysis table cells to two display lines', async () => {
+    const user = userEvent.setup();
+    const workbook = createWorkbookWithLongCell();
+    const fileAnalysisData = createFileAnalysisDataWithLongCell(1);
+    const workbookText = String(workbook.sheets[0].rows[0].cells.material_unit_price);
+    const fileAnalysisText = String(fileAnalysisData.sheets.file_analysis_data.rows[0].cells.spec);
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        conversationId: 'steel-chat-1',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已更新表格。',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch: {
+          workbook,
+          changedPaths: [],
+          changedFieldSummary: [],
+        },
+        fileAnalysisData,
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '建立長文字表格');
+    await user.click(screen.getByLabelText('Send'));
+
+    const workbookCellText = await screen.findByText(workbookText);
+    expect(workbookCellText).toHaveClass('line-clamp-2');
+    expect(workbookCellText.closest('td')).toHaveClass('max-w-[18rem]');
+
+    await user.click(screen.getByRole('tab', { name: 'File Analysis' }));
+
+    const fileAnalysisCellText = await screen.findByText(fileAnalysisText);
+    expect(fileAnalysisCellText).toHaveClass('line-clamp-2');
+    expect(fileAnalysisCellText.closest('td')).toHaveClass('max-w-[18rem]');
   });
 
   it('renders returned file analysis data in a dedicated right-panel tab', async () => {
@@ -542,6 +658,119 @@ describe('SteelOAuthChat', () => {
     );
     expect(screen.getByText('File Analysis Data')).toBeInTheDocument();
     expect(screen.getByText('PL1')).toBeInTheDocument();
+  });
+
+  it('renders streamed file analysis data before the final chat response', async () => {
+    const user = userEvent.setup();
+    let finishStream: (() => void) | undefined;
+    mockStreamSteelChat.mockImplementationOnce(
+      async (_payload, onEvent) =>
+        new Promise((resolve) => {
+          onEvent({
+            type: 'file_analysis_data',
+            fileAnalysisData: createFileAnalysisData(1),
+          });
+          finishStream = () => {
+            const response = {
+              conversationId: 'steel-chat-1',
+              workbookId: 'wb_1',
+              provider: 'openai_oauth_responses',
+              model: 'gpt-5.5',
+              text: '已完成 d.pdf OCR。',
+              unsupportedSettings: [],
+              warnings: [],
+            };
+            onEvent({ type: 'done', response });
+            resolve(response);
+          };
+        }),
+    );
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), 'OCR d.pdf');
+    await user.click(screen.getByLabelText('Send'));
+
+    expect(await screen.findByText('File Analysis Data')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'File Analysis' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByText('PL1')).toBeInTheDocument();
+    expect(screen.queryByText('已完成 d.pdf OCR。')).not.toBeInTheDocument();
+    expect(window.location.search).toBe('?conversationId=steel-chat-1');
+
+    finishStream?.();
+
+    await screen.findByText('已完成 d.pdf OCR。');
+  });
+
+  it('loads persisted file analysis data from the conversation id and reuses it for the next AI turn', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/steel/oauth-chat?conversationId=steel-chat-1');
+    mockGetSteelFileAnalysisDataByConversation.mockResolvedValueOnce({
+      fileAnalysisData: createFileAnalysisData(2),
+    });
+
+    render(<SteelOAuthChat />);
+
+    expect(mockGetSteelFileAnalysisDataByConversation).toHaveBeenCalledWith('steel-chat-1');
+    expect(await screen.findByText('File Analysis Data')).toBeInTheDocument();
+    expect(screen.getByText('PL1')).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '接續處理 page 2');
+    await user.click(screen.getByLabelText('Send'));
+
+    await waitFor(() => {
+      expect(mockStreamSteelChat).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStreamSteelChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'steel-chat-1',
+        messages: expect.arrayContaining([
+          {
+            role: 'user',
+            content: '接續處理 page 2',
+          },
+        ]),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('loads persisted workbook from the conversation id and reuses it for the next AI turn', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/steel/oauth-chat?conversationId=steel-chat-1');
+    mockGetSteelWorkbookByConversation.mockResolvedValueOnce({
+      workbook: createWorkbook(2, 115),
+    });
+
+    render(<SteelOAuthChat />);
+
+    expect(mockGetSteelWorkbookByConversation).toHaveBeenCalledWith('steel-chat-1');
+    expect(await screen.findByText('115')).toBeInTheDocument();
+    expect(screen.getByText('v2')).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '接續報價');
+    await user.click(screen.getByLabelText('Send'));
+
+    await waitFor(() => {
+      expect(mockStreamSteelChat).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStreamSteelChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'steel-chat-1',
+        messages: expect.arrayContaining([
+          {
+            role: 'user',
+            content: '接續報價',
+          },
+        ]),
+      }),
+      expect.any(Function),
+    );
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookId');
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookVersion');
   });
 
   it('keeps Workbook selected when a chat response returns both workbook and file_analysis_data', async () => {
@@ -689,9 +918,7 @@ describe('SteelOAuthChat', () => {
     expect(screen.getByText('draft · 1 unsaved change')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Save file analysis changes' }));
 
-    expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith('fad_1', {
-      conversationId: 'wb_1',
-      workbookId: 'wb_1',
+    expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith('steel-chat-1', {
       sourceFiles: [
         { fileId: 'file_c_png', filename: 'c.png', mediaType: 'image/png', pageCount: 1 },
       ],
@@ -742,7 +969,7 @@ describe('SteelOAuthChat', () => {
     await user.click(screen.getByRole('button', { name: 'Save file analysis changes' }));
 
     expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith(
-      'fad_1',
+      'steel-chat-1',
       expect.objectContaining({
         patches: [
           expect.objectContaining({
@@ -850,9 +1077,8 @@ describe('SteelOAuthChat', () => {
     });
     expect(screen.getByText('PL7')).toBeInTheDocument();
     expect(mockPatchSteelFileAnalysisData).toHaveBeenCalledWith(
-      'fad_1',
+      'steel-chat-1',
       expect.objectContaining({
-        conversationId: 'wb_1',
         patches: [
           expect.objectContaining({
             sheetId: 'file_analysis_data',
@@ -874,8 +1100,7 @@ describe('SteelOAuthChat', () => {
     expect(mockStreamSteelChat).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        conversationId: 'wb_1',
-        workbookId: 'wb_1',
+        conversationId: 'steel-chat-1',
         messages: expect.arrayContaining([
           {
             role: 'user',
@@ -965,7 +1190,7 @@ describe('SteelOAuthChat', () => {
   it('resizes the workbook panel with the divider and clamps the approved width limits', async () => {
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
+    await screen.findByText('No workbook yet');
 
     const layout = screen.getByTestId('steel-workbook-layout');
     Object.defineProperty(layout, 'clientWidth', { configurable: true, value: 1000 });
@@ -1031,23 +1256,16 @@ describe('SteelOAuthChat', () => {
 
     render(<SteelOAuthChat />);
 
-    await screen.findByRole('button', { name: '報價明細' });
-    expect(screen.getByRole('button', { name: '給客戶用' })).toBeInTheDocument();
-    expect(screen.getByText('v1')).toBeInTheDocument();
-
     await user.type(screen.getByPlaceholderText('Message Steel'), '把 line 1 材料單價改成 115');
     await user.click(screen.getByLabelText('Send'));
 
     await screen.findByText('已更新：報價明細 line-1 材料單價 -> 115');
+    expect(screen.getByRole('button', { name: '報價明細' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '給客戶用' })).toBeInTheDocument();
     expect(await screen.findByText('115')).toBeInTheDocument();
     expect(screen.getByText('v2')).toBeInTheDocument();
-    expect(mockStreamSteelChat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workbookId: 'wb_1',
-        workbookVersion: 1,
-      }),
-      expect.any(Function),
-    );
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookId');
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookVersion');
   });
 
   it('downloads the current workbook as XLSX with arbitrary selected sheets', async () => {
@@ -1071,13 +1289,34 @@ describe('SteelOAuthChat', () => {
       configurable: true,
       value: revokeObjectURL,
     });
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已建立 workbook。',
+        unsupportedSettings: [],
+        warnings: [],
+        workbookPatch: {
+          workbook: createWorkbook(1),
+          changedPaths: [],
+          changedFieldSummary: [],
+        },
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
 
     render(<SteelOAuthChat />);
 
+    await screen.findByText('No workbook yet');
+    await user.type(screen.getByPlaceholderText('Message Steel'), '建立 workbook');
+    await user.click(screen.getByLabelText('Send'));
     await screen.findByRole('button', { name: '報價明細' });
     await user.click(screen.getByRole('checkbox', { name: 'Export system_order' }));
     await user.click(screen.getByRole('button', { name: 'Download XLSX' }));
 
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookId');
+    expect(mockStreamSteelChat.mock.calls[0][0]).not.toHaveProperty('workbookVersion');
     expect(mockExportSteelWorkbook).toHaveBeenCalledWith('wb_1', {
       workbookVersion: 1,
       sheetIds: [
@@ -1096,18 +1335,12 @@ describe('SteelOAuthChat', () => {
     createElementSpy.mockRestore();
   });
 
-  it('shows a retryable workbook error instead of staying on loading', async () => {
-    const user = userEvent.setup();
-    mockCreateSteelWorkbook.mockRejectedValueOnce(new Error('Workbook API down'));
-
+  it('does not create an empty workbook before a backend workbook patch', async () => {
     render(<SteelOAuthChat />);
 
-    expect(await screen.findByText('Workbook API down')).toBeInTheDocument();
+    expect(await screen.findByText('No workbook yet')).toBeInTheDocument();
     expect(screen.queryByText('Workbook loading')).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Retry workbook' }));
-
-    expect(mockCreateSteelWorkbook).toHaveBeenCalledTimes(2);
-    expect(await screen.findByRole('button', { name: '報價明細' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry workbook' })).not.toBeInTheDocument();
+    expect(mockCreateSteelWorkbook).not.toHaveBeenCalled();
   });
 });

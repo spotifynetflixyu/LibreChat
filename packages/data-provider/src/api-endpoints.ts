@@ -277,11 +277,13 @@ export const steelChatStream = () => `${steelChat()}/stream`;
 export const steelConversation = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}`;
 export const steelWorkbooks = () => `${steelBase()}/workbooks`;
+export const steelWorkbookByConversation = (conversationId: string) =>
+  `${steelWorkbooks()}/by-conversation/${encodeURIComponent(conversationId)}`;
 export const steelWorkbook = (workbookId: string) =>
   `${steelWorkbooks()}/${encodeURIComponent(workbookId)}`;
 export const steelWorkbookExport = (workbookId: string) => `${steelWorkbook(workbookId)}/export`;
-export const steelFileAnalysisData = (fileAnalysisDataId: string) =>
-  `${steelBase()}/file-analysis/${encodeURIComponent(fileAnalysisDataId)}`;
+export const steelFileAnalysisDataByConversation = (conversationId: string) =>
+  `${steelBase()}/file-analysis/by-conversation/${encodeURIComponent(conversationId)}`;
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

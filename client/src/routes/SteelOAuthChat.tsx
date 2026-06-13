@@ -147,6 +147,33 @@ function getErrorText(error: unknown): string {
   return 'Steel chat request failed.';
 }
 
+function getInitialSteelConversationId(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  return new URL(window.location.href).searchParams.get('conversationId');
+}
+
+function replaceSteelConversationIdInUrl(conversationId: string | null): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  const currentConversationId = url.searchParams.get('conversationId');
+  if (currentConversationId === conversationId) {
+    return;
+  }
+
+  if (conversationId) {
+    url.searchParams.set('conversationId', conversationId);
+  } else {
+    url.searchParams.delete('conversationId');
+  }
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
 function clampWorkbookWidth(widthPx: number, layoutWidthPx: number): number {
   const maxWorkbookWidthPx = Math.max(workbookMinWidthPx, layoutWidthPx - chatMinWidthPx);
   return Math.min(maxWorkbookWidthPx, Math.max(workbookMinWidthPx, Math.round(widthPx)));
@@ -280,14 +307,16 @@ export default function SteelOAuthChat() {
   const [reasoningEffort, setReasoningEffort] = useState<SteelProviderReasoningEffort>('medium');
   const [messages, setMessages] = useState<SteelChatTurn[]>([]);
   const [lastResponse, setLastResponse] = useState<SteelProviderChatResponse | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(
+    getInitialSteelConversationId,
+  );
   const [workbook, setWorkbook] = useState<SteelWorkbook | null>(null);
   const [fileAnalysisData, setFileAnalysisData] = useState<SteelFileAnalysisData | null>(null);
   const [changedPaths, setChangedPaths] = useState<SteelChangedPath[]>([]);
   const [workbookExportSheetIds, setWorkbookExportSheetIds] = useState<SteelWorkbookSheetId[]>([]);
   const [isWorkbookExporting, setIsWorkbookExporting] = useState(false);
   const [workbookExportError, setWorkbookExportError] = useState<string | null>(null);
-  const [isWorkbookLoading, setIsWorkbookLoading] = useState(true);
-  const [workbookError, setWorkbookError] = useState<string | null>(null);
+  const [isWorkbookLoading, setIsWorkbookLoading] = useState(false);
   const [isWorkbookPanelOpen, setIsWorkbookPanelOpen] = useState(true);
   const [activeRightPanelTab, setActiveRightPanelTab] = useState<SteelRightPanelTab>('workbook');
   const [isWorkbookResizing, setIsWorkbookResizing] = useState(false);
@@ -304,27 +333,68 @@ export default function SteelOAuthChat() {
   const canSend =
     (input.trim().length > 0 || selectedFiles.length > 0) && !isSending && !isEncodingFiles;
 
-  const initializeWorkbook = useCallback(async () => {
-    setIsWorkbookLoading(true);
-    setWorkbookError(null);
-    try {
-      const result = await dataService.createSteelWorkbook({});
-      setWorkbook(result.workbook);
-      setWorkbookExportSheetIds(getWorkbookSheetIds(result.workbook));
-      setChangedPaths([]);
-    } catch (error) {
-      setWorkbook(null);
-      setWorkbookExportSheetIds([]);
-      setChangedPaths([]);
-      setWorkbookError(getErrorText(error));
-    } finally {
-      setIsWorkbookLoading(false);
-    }
-  }, []);
+  useEffect(() => {
+    replaceSteelConversationIdInUrl(conversationId);
+  }, [conversationId]);
 
   useEffect(() => {
-    void initializeWorkbook();
-  }, [initializeWorkbook]);
+    if (!conversationId || workbook) {
+      return undefined;
+    }
+
+    let isActive = true;
+    setIsWorkbookLoading(true);
+    dataService
+      .getSteelWorkbookByConversation(conversationId)
+      .then((response) => {
+        if (!isActive || !response.workbook) {
+          return;
+        }
+
+        setWorkbook(response.workbook);
+        setWorkbookExportSheetIds(getWorkbookSheetIds(response.workbook));
+        setChangedPaths([]);
+        setIsWorkbookPanelOpen(true);
+      })
+      .catch(() => {
+        // Absence of a prior quote workbook should not block a resumed chat.
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsWorkbookLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [conversationId, workbook]);
+
+  useEffect(() => {
+    if (!conversationId || fileAnalysisData) {
+      return undefined;
+    }
+
+    let isActive = true;
+    dataService
+      .getSteelFileAnalysisDataByConversation(conversationId)
+      .then((response) => {
+        if (!isActive || !response.fileAnalysisData) {
+          return;
+        }
+
+        setFileAnalysisData(response.fileAnalysisData);
+        setActiveRightPanelTab('fileAnalysis');
+        setIsWorkbookPanelOpen(true);
+      })
+      .catch(() => {
+        // Absence of prior OCR analysis should not block a resumed chat.
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [conversationId, fileAnalysisData]);
 
   const resizeWorkbookPanel = useCallback((clientX: number) => {
     const layout = layoutRef.current;
@@ -389,14 +459,17 @@ export default function SteelOAuthChat() {
     setInput('');
     setMessages([]);
     setLastResponse(null);
+    setConversationId(null);
+    setWorkbook(null);
     setSelectedFiles([]);
     setChangedPaths([]);
     setFileAnalysisData(null);
+    setWorkbookExportSheetIds([]);
     setWorkbookExportError(null);
     setStreamEvents([]);
     setIsSending(false);
     setIsEncodingFiles(false);
-    void initializeWorkbook();
+    setIsWorkbookLoading(false);
   };
 
   const handleToggleWorkbookExportSheet = (sheetId: SteelWorkbookSheetId) => {
@@ -434,10 +507,10 @@ export default function SteelOAuthChat() {
   };
 
   const handleSaveFileAnalysisData = async (
-    fileAnalysisDataId: string,
+    conversationId: string,
     payload: SteelFileAnalysisManualPatchRequest,
   ) => {
-    const response = await dataService.patchSteelFileAnalysisData(fileAnalysisDataId, payload);
+    const response = await dataService.patchSteelFileAnalysisData(conversationId, payload);
     setFileAnalysisData(response.fileAnalysisData);
     return response.fileAnalysisData;
   };
@@ -473,14 +546,7 @@ export default function SteelOAuthChat() {
       const payload = {
         model: steelModel,
         reasoningEffort,
-        ...(workbook
-          ? {
-              conversationId: workbook.id,
-              workbookId: workbook.id,
-              workbookVersion: workbook.version,
-              selectedWorkbookRefs: [],
-            }
-          : {}),
+        ...(conversationId ? { conversationId } : {}),
         messages: nextMessages
           .filter((message) => message.status !== 'error')
           .map(({ role, content, files }) => ({
@@ -492,6 +558,12 @@ export default function SteelOAuthChat() {
       const response =
         typeof dataService.streamSteelChat === 'function'
           ? await dataService.streamSteelChat(payload, (event) => {
+              if (event.type === 'file_analysis_data') {
+                setFileAnalysisData(event.fileAnalysisData);
+                setConversationId(event.fileAnalysisData.conversationId);
+                setActiveRightPanelTab('fileAnalysis');
+                setIsWorkbookPanelOpen(true);
+              }
               const message = getStreamStatusMessage(event);
               if (!message) {
                 return;
@@ -501,8 +573,14 @@ export default function SteelOAuthChat() {
             })
           : await dataService.sendSteelChat(payload);
       setLastResponse(response);
+      const nextConversationId =
+        response.conversationId ?? response.fileAnalysisData?.conversationId;
+      if (nextConversationId) {
+        setConversationId(nextConversationId);
+      }
       if (response.workbookPatch?.workbook) {
         setWorkbook(response.workbookPatch.workbook);
+        setWorkbookExportSheetIds(getWorkbookSheetIds(response.workbookPatch.workbook));
         setChangedPaths(response.workbookPatch.changedPaths);
         setActiveRightPanelTab('workbook');
         setIsWorkbookPanelOpen(true);
@@ -549,15 +627,11 @@ export default function SteelOAuthChat() {
         workbook={workbook}
         changedPaths={changedPaths}
         downloadError={workbookExportError}
-        error={workbookError}
         exportSheetIds={workbookExportSheetIds}
         isDownloading={isWorkbookExporting}
         isLoading={isWorkbookLoading}
         onDownload={() => {
           void handleDownloadWorkbook();
-        }}
-        onRetry={() => {
-          void initializeWorkbook();
         }}
         onToggleExportSheet={handleToggleWorkbookExportSheet}
       />

@@ -1,5 +1,362 @@
 # Steel Core Quote Runtime Implementation Queue
 
+## Active: Steel OCR Patch Completion Status
+
+Goal: when `patch_file_analysis_data` progress reaches the PDF `pageCount`,
+stop reporting an OCR continuation and let the model produce the final summary.
+
+- [x] Add RED provider coverage that final-page file-analysis patch status is
+      not reported as `preparing OCR continuation`.
+- [x] Keep pending-page behavior unchanged: after page 1 of a multi-page PDF,
+      backend still forces the next `run_file_ocr`.
+- [x] Update provider status emission so continuation wording appears only when
+      `getPendingFileAnalysisPdfPage` finds another page.
+- [x] Run focused provider/handler tests and changed-file checks without
+      Prettier.
+- [x] Record the result and update lessons for this correction.
+
+Review:
+
+- Root cause: provider emitted `patch_file_analysis_data received; preparing
+  OCR continuation` for every accepted file-analysis patch, before separating
+  final-page completion from pending-page continuation.
+- Added RED provider coverage for a 2-page PDF: page 1 still reports
+  continuation and forces page 2, while page 2 reports OCR complete and prepares
+  the final summary instead of another continuation.
+- Updated provider status emission to reuse the tracked
+  `getPendingFileAnalysisPdfPage` result after patch progress is recorded.
+  Pending pages keep the continuation message; no pending PDF page now reports
+  `OCR complete; preparing summary`; non-PDF visual patches report
+  `preparing summary`.
+- Verification: RED focused provider test failed on the old final-page
+  continuation message; GREEN `src/steel/ai/provider.spec.ts` passed 27 tests;
+  handler file-analysis/OCR stream focused tests passed 6 tests;
+  `packages/api` build passed with the existing Redis `cacheFactory.ts` Rollup
+  TypeScript warning; `git diff --check` passed for touched files.
+
+## Active: Steel OCR Rule Scope And Table Cell Clamping
+
+Goal: narrow OCR `patch_file_analysis_data` rules to quote-relevant material
+data only, remove workbook guidance from OCR rules, and keep workbook /
+file-analysis table cells readable without long text stretching row height.
+
+- [x] Add failing regression coverage for OCR rule scope and table cell clamp
+      classes.
+- [x] Update `docs/rules/OCR規則.txt` so file analysis patches only store
+      material/spec/note/quote-relevant data and avoid project/person/date/place
+      metadata.
+- [x] Remove quote workbook instructions from OCR rules.
+- [x] Update workbook and file-analysis table cells to use stable column widths
+      and clamp display text to at most two lines.
+- [x] Update `tasks/lessons.md` with the new agent formatting and OCR scope
+      corrections.
+- [x] Run focused tests and changed-file checks without Prettier.
+
+Review:
+
+- Narrowed `docs/rules/OCR規則.txt` so `patch_file_analysis_data` stores only
+  quote-relevant material/spec/size/quantity/process/price data plus concise
+  notes/review items, and explicitly excludes project names, engineering names,
+  dates, places, people, owners, addresses, and other non-quote metadata.
+- Removed OCR-rule references to workbook patching and synced the updated
+  `steel-drawing-ocr-policy` row to `steel.agent_rules`; readback hash:
+  `c8cabab9631e450a6211ee354e177e91ce387261e957b6dcd6e0c6f09f9b7a10`.
+- Updated workbook and file-analysis table display cells to use stable max
+  widths and `line-clamp-2`, so long text is capped at two lines while hover
+  `title` preserves the full value.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/vision/ocr.spec.ts --runInBand --silent --no-coverage`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `npm run build:client`; and OCR rule sync dry-run/apply.
+  Client build still emits existing large chunk / PWA glob warnings.
+
+## Active: Steel Conversation-Scoped Update Routes
+
+Goal: make all Steel save/update payloads resolve the target workbook or
+`file_analysis_data` through backend-owned `conversationId`, and disable the
+old id-based update routes so the frontend cannot choose a different workspace.
+
+- [x] Add failing regression coverage for conversation-scoped workbook and
+      file-analysis manual patch routes.
+- [x] Disable old id-based workbook/file-analysis update routes.
+- [x] Update shared endpoints, request schemas, and data-service helpers to use
+      `conversationId` as the update key.
+- [x] Update backend handlers/services to resolve or create the unique
+      conversation-bound workbook/file analysis before patching.
+- [x] Update frontend manual save/update payloads to stop using workbook or
+      file-analysis ids as update keys.
+- [x] Run focused tests, builds, and changed-file hygiene checks.
+
+Review:
+
+- Disabled old id-based update handlers:
+  `PATCH /api/steel/workbooks/:workbookId` and
+  `PATCH /api/steel/file-analysis/:fileAnalysisDataId` now return `410`.
+- Added conversation-scoped update routes:
+  `PATCH /api/steel/workbooks/by-conversation/:conversationId` and
+  `PATCH /api/steel/file-analysis/by-conversation/:conversationId`.
+- Removed top-level `workbookId` from the public workbook patch request body and
+  removed body `conversationId` from manual file-analysis patch payloads; the
+  route conversation id is the update key.
+- Added `patchByConversationMetaId()` to the workbook service so the backend
+  resolves or creates the unique active workbook before applying a patch.
+- Frontend manual file-analysis saves now call the data-service with
+  `conversationId`, not `fileAnalysisData.id`, and no longer include body
+  `conversationId`.
+- Verification passed:
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts src/steel/vision.spec.ts src/steel/workbooks.spec.ts --runInBand --silent --no-coverage`;
+  `cd packages/api && npx jest src/steel/workbook/service.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/vision/analysis.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `npm run build:data-provider`; `cd packages/api && npm run build`; and
+  `npm run build:client`.
+  `packages/api` build still emits the pre-existing Redis `cacheFactory.ts`
+  type warning; client build still emits existing large chunk / PWA glob
+  warnings.
+
+## Active: Steel File Analysis Mongo Schema And Index Cleanup
+
+Goal: remove `file_analysis_data.workbookId` from the persisted data contract so
+file analysis is linked to the active workbook only through backend-owned
+`conversationId`, then verify Steel Mongo collections have indexes matching
+their repository query paths.
+
+- [x] Add failing regression coverage proving `file_analysis_data` no longer
+      exposes or persists `workbookId`.
+- [x] Remove `workbookId` from file-analysis shared schemas, Mongo schema,
+      service inputs, handler persistence, context payloads, and frontend manual
+      patch payloads.
+- [x] Audit Steel Mongo repository query paths against declared Mongoose
+      indexes.
+- [x] Add or adjust index tests for the query paths that should be indexed.
+- [x] Run focused tests, builds, and changed-file hygiene checks.
+
+Review:
+
+- Removed `workbookId` from the shared `SteelFileAnalysisData` and manual patch
+  schemas, the Mongo `steel_file_analysis_data` schema/document type, file
+  analysis service patch inputs, AI file-analysis context payloads, and the
+  frontend manual save payload.
+- Kept top-level chat/workbook `workbookId` behavior only as workspace
+  continuation metadata; it is no longer stored inside `file_analysis_data`.
+- Mongo repository query audit:
+  `steel_file_analysis_data` reads/upserts by `conversationId`;
+  `steel_workbooks` reads/upserts by `workbookId` and reads active workbooks by
+  `conversationMetaId + status`; `steel_workbook_patches` history reads are
+  covered by workbook/version compound indexes; current audit/rule proposal
+  repositories are append-only.
+- Live Mongo database `test` was checked and corrected:
+  12 `steel_file_analysis_data` documents had `workbookId` unset; unique
+  `fileAnalysisDataId_1` and `conversationId_1` indexes were created; missing
+  `steel_workbook_patches` compound indexes
+  `workbookId_1_afterVersion_-1` and `workbookId_1_beforeVersion_1` were
+  created. Follow-up readback confirmed `withWorkbookId: 0`.
+- Verification passed:
+  `cd packages/data-schemas && npx jest src/schema/steel.spec.ts --runInBand --silent --no-coverage`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts src/steel/vision.spec.ts src/steel/workbooks.spec.ts --runInBand --silent --no-coverage`;
+  `cd packages/api && npx jest src/steel/vision/analysis.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/workbook/service.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `npm run build:data-provider`; `cd packages/data-schemas && npm run build`;
+  `cd packages/api && npm run build`; and `npm run build:client`.
+  `packages/api` build still emits the pre-existing Redis `cacheFactory.ts`
+  type warning; client build still emits existing bundle/PWA/chunk warnings.
+
+## Active: Steel Workbook Reopen Context Fix
+
+Goal: ensure persisted Steel workbooks follow the same backend-owned
+`conversationId` workspace as `file_analysis_data`, so reopened chats can render
+the saved workbook and later AI turns can continue from the same DB state.
+
+- [x] Confirm backend AI context already resolves workbook data by
+      `conversationId` through `readByConversationMetaId()`.
+- [x] Add a read-by-conversation backend route for persisted workbooks.
+- [x] Add data-provider endpoint/service types for nullable workbook reload by
+      conversation id.
+- [x] Reload persisted workbook data on Steel OAuth Chat mount when the URL has
+      `conversationId`.
+- [x] Verify the next chat turn sends the same `conversationId` without
+      frontend-owned `workbookId` / `workbookVersion`.
+
+Review:
+
+- Backend AI context was already correct for workbook continuation:
+  `getChatWorkbookContextText()` reads the active workbook by
+  `conversationId -> conversationMetaId` when frontend workbook ids are absent.
+- Missing piece: reopened frontend sessions could reload `file_analysis_data`
+  but not the paired workbook, so the UI could look empty even though backend AI
+  context could still read DB workbook state.
+- Fixed by adding `GET /api/steel/workbooks/by-conversation/:conversationId`,
+  shared data-provider typing/service support, and a frontend mount-time reload
+  effect that restores the workbook only when a persisted conversation workspace
+  exists.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/workbook/service.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts src/steel/vision.spec.ts src/steel/workbooks.spec.ts --runInBand --silent --no-coverage`;
+  `npm run build:data-provider`; `cd packages/api && npm run build`;
+  `npm run build:client`; and changed-file `git diff --check`.
+  `packages/api` build still emits the pre-existing Redis `cacheFactory.ts`
+  type warning; client build still emits existing bundle/PWA/chunk warnings.
+
+## Active: Steel File Analysis Reopen Context Fix
+
+Goal: ensure persisted OCR `file_analysis_data` survives reopening a Steel chat
+and is loaded by the backend into the next AI request context.
+
+- [x] Add a read-by-conversation backend route for persisted
+      `file_analysis_data`.
+- [x] Add data-provider endpoint/service types for loading analysis by
+      conversation id.
+- [x] Make the Steel OAuth Chat URL carry the backend `conversationId` after a
+      real workspace exists, and reload persisted File Analysis data from that
+      id on mount.
+- [x] Verify the next chat turn sends the same `conversationId`, so backend
+      context injection can read DB state before calling AI.
+- [x] Run focused tests, builds, and changed-file hygiene checks.
+
+Review:
+
+- Database persistence was already handled by `fileAnalysisService.patch()` via
+  the Mongo repository during streamed and final patches.
+- Backend AI context injection was already present through
+  `addFileAnalysisContextToMessages()`, which reads
+  `fileAnalysisService.readByConversationId(conversationId)` and appends the
+  latest `file_analysis_data` as system context before provider generation.
+- Missing piece: after a browser reload, the frontend had no durable way to
+  recover the backend-created `conversationId`, so it could not request the
+  same workspace or send the same id on the next turn.
+- Fixed by adding `GET /api/steel/file-analysis/by-conversation/:conversationId`,
+  storing the backend conversation id in the Steel chat URL query, loading
+  persisted File Analysis data on mount, and verifying the next AI turn sends
+  that id for backend context loading.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/workbook/service.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts src/steel/vision.spec.ts --runInBand --silent --no-coverage`;
+  `npm run build:data-provider`; `cd packages/api && npm run build`;
+  `npm run build:client`; and changed-file `git diff --check`.
+  `packages/api` build still emits the pre-existing Redis `cacheFactory.ts`
+  type warning; client build still emits existing bundle/PWA glob warnings.
+
+## Active: Steel File Analysis Stream Visibility Fix
+
+Goal: fix multi-page OCR stream behavior where `patch_file_analysis_data
+received; preparing OCR continuation` appears, but the frontend still has no
+visible `file_analysis_data` until the whole AI turn finishes.
+
+- [x] Reproduce the missing data path with a stream handler regression: a
+      persisted `file_analysis_data` event must appear before the next
+      `run_file_ocr started` event.
+- [x] Add the public stream contract for a `file_analysis_data` NDJSON event.
+- [x] Persist streamed `patch_file_analysis_data` tool payloads immediately,
+      emit the updated workspace to the frontend, and avoid double-applying the
+      cumulative final patch.
+- [x] Update the frontend to render streamed file analysis data immediately
+      and select the File Analysis tab before final assistant text arrives.
+- [x] Run focused tests, builds, and changed-file hygiene checks.
+
+Review:
+
+- Root cause: `patch_file_analysis_data received; preparing OCR continuation`
+  was only provider-loop status. The handler did not persist the parsed patch
+  or emit a data-bearing event until `sendChat()` returned the final result, so
+  the model could continue to page 2 while the UI still had no rows.
+- Fixed by letting provider `onToolStatus` carry the parsed
+  `fileAnalysisPatch`, awaiting the stream handler's persistence callback
+  before OCR continuation, and emitting a first-class
+  `type: "file_analysis_data"` stream event with the updated workspace.
+- Frontend now treats `file_analysis_data` as state, not as timeline text:
+  it updates `fileAnalysisData`, keeps the returned conversation id, opens the
+  File Analysis tab, and still waits for the final `done` response for chat
+  text.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/workbook/service.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts --runInBand --silent --no-coverage`;
+  `npm run build:data-provider`; `cd packages/api && npm run build`;
+  `npm run build:client`; and changed-file `git diff --check`.
+  `packages/api` build still emits the pre-existing Redis `cacheFactory.ts`
+  type warning; client build still emits existing bundle/PWA glob warnings.
+
+## Active: Steel File Analysis Patch ConversationId Fix
+
+Goal: fix the `/steel/oauth-chat` stream path where `patch_file_analysis_data`
+is acknowledged by the provider but persistence fails with
+`conversationId is required to persist file_analysis_data`, leaving the File
+Analysis panel empty while OCR continues.
+
+- [x] Trace how `/steel/oauth-chat` creates/sends `conversationId` for stream
+      requests and how handlers persist `file_analysis_data`.
+- [x] Add failing regressions proving backend resolves workbook/file analysis
+      by conversation id, creates ids only on first real patch, and frontend
+      reuses the returned conversation id without owning workbook ids.
+- [x] Implement backend-owned conversation workspace resolution so OCR patches
+      and workbook patches update the same conversation-scoped workbook and
+      `file_analysis_data`.
+- [x] Verify File Analysis data is returned/streamed when
+      `patch_file_analysis_data` succeeds.
+- [x] Run focused tests, build/type checks, and changed-file hygiene checks.
+
+Review:
+
+- Root cause: stream persistence still required the request body to carry
+  `conversationId`; when the model produced `patch_file_analysis_data` before
+  the frontend had any workbook/context ids, handler persistence rejected the
+  patch and the File Analysis panel stayed empty.
+- Backend now owns the conversation workspace. A chat turn can start without
+  frontend workbook ids; the handler resolves an active workbook by
+  `conversationMetaId`, lazily creates one only when a real
+  `file_analysis_data` or workbook patch must persist, and returns the
+  backend-created `conversationId` / `workbookId`.
+- Frontend no longer creates an empty workbook on mount or new chat. It sends
+  no workbook ids on the first turn, stores only the returned conversation id,
+  and reuses that id on later turns while displaying workbook data only after a
+  backend workbook patch returns.
+- Verification passed:
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --silent --no-coverage`;
+  `cd packages/api && npx jest src/steel/workbook/service.spec.ts src/steel/handlers.spec.ts --runInBand`;
+  `npm run build:data-provider`; `npm run build:client`;
+  `cd packages/api && npm run build`; and changed-file `git diff --check`.
+  `packages/api` build still emits the pre-existing Redis `cacheFactory.ts`
+  type warning; client build still emits existing bundle/PWA glob warnings.
+
+## Active: Steel OCR PDF Page Count And Post-OCR Continuation Fix
+
+Goal: fix the observed `/steel/oauth-chat` OCR behavior where `d.pdf` is treated
+as one page because the model does not see backend PDF page-count metadata, and
+make the post-OCR continuation observable instead of appearing stuck after
+`run_file_ocr completed`.
+
+- [x] Add a focused provider regression test proving the first OCR prompt
+      includes backend-known PDF `pageCount` metadata.
+- [x] Add a focused provider regression test proving multi-page OCR patches
+      accumulate all page patches in one chat turn.
+- [x] Merge backend-resolved PDF page counts back into the prompt-visible
+      attachment inventory and continue pending pages from backend progress.
+- [x] Surface provider-side `patch_file_analysis_data` acknowledgement in the
+      stream so users see progress after OCR output returns.
+- [x] Run focused provider/handler/OCR tests plus changed-file hygiene checks.
+
+Review:
+
+- Root cause: provider resolved PDF page counts for internal progress tracking
+  but built the initial prompt from the original message files, so the model
+  saw only `filename` and `mediaType` and could claim it did not know total
+  pages.
+- Fixed prompt inventory so backend-known PDF metadata is visible as
+  `pageCount=<n>; pages=1-<n>`.
+- Fixed provider patch aggregation so multi-page OCR in one chat turn returns
+  all `patch_file_analysis_data` patches instead of only the last page patch.
+- Reduced the post-OCR silent gap by streaming
+  `patch_file_analysis_data waiting for AI to convert OCR result`, then
+  `patch_file_analysis_data received; preparing OCR continuation`, before the
+  later persistence status.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/vision/ocr.spec.ts --runInBand`;
+  `cd packages/api && npm run build`; and changed-file `git diff --check`.
+  Build exited 0 with the pre-existing Redis `cacheFactory.ts` type warning.
+
 Scope boundary: Admin review UI is paused. The pause applies to visible Admin
 screens only. Continue sequencing backend/data/tool work for quote runtime,
 calculation, rule proposal review APIs, approval/publish flows, and reviewed
@@ -138,9 +495,128 @@ create Admin import source versions or formal database writes.
       black iron plate pricing when dimensions and thickness are available,
       using theoretical rectangular plate weight instead of blocking the quote
       on material confirmation.
+- [x] Extract 鋼軌 / 方鋼 / 圓鋼 handbook rows from
+      `docs/reference/龍頂鋼鐵手冊__文字版.docx`, calculate density from
+      section area and kg/m, and record the reviewed density table in Steel
+      agent/quote rules.
+- [x] Sync the updated density and theoretical-weight rules into reviewed
+      Supabase Steel rules and read back the updated rows.
+- [x] Fix multi-page PDF OCR continuation when page 1 is patched without
+      `sourceFiles.pageCount`: provider must initialize page progress from PDF
+      attachment page count, not from single-page OCR output, so `d.pdf`
+      continues to page 2 automatically.
+- [x] Correct Steel plate default pricing wording: drawing-derived plate parts
+      must use 黑板 as the default `search_price_candidates` primary query and
+      adopted product candidate, not 黑鐵/黑鐵板.
+- [x] Correct Steel plate product-name rules: SS400 and 黑皮板 are not product
+      names; plate price lookup must use the reviewed product names provided by
+      the user, including 鐵板, 黑鐵板, 黑板, 錏鐵板/錏板, and 白鐵板/白鐵.
+- [x] Delete Steel rules tests: rules are text/database contracts and should be
+      verified by Supabase sync/readback or runtime smoke, not committed rule
+      specs.
+- [x] Diagnose and speed up Supabase-backed Steel lookup/search tools by
+      measuring query plans, query counts, indexes, and tool-loop batching.
+- [x] Fix `run_file_ocr` multi-page PDF failures where page 1 can succeed but
+      page 2 fails with `Cannot transfer object of unsupported type`.
 
 Review:
 
+- Active investigation: Steel lookup/search tools feel slow from the UI. Need
+  separate database query latency from AI tool-loop latency before changing
+  indexes or batching logic.
+- Root cause found: warm Supabase cloud round trips are roughly 240-300 ms per
+  query, while measured SQL execution for representative price lookups is
+  sub-3 ms after filtering. The visible slowness was mostly tool/repository
+  query count, especially `search_price_candidates` looping once per
+  `productName`, with missing trigram indexes as the scaling risk for
+  `%...%` searches.
+- Fixed `search_price_candidates` direct `productNames` lookup so shared
+  filters are sent as one SQL OR query instead of one query per product name.
+  The live plate lookup case dropped from the earlier 5 SQL calls / about
+  1467 ms to 1 SQL call / about 298 ms.
+- Fixed `candidateQueries` price lookup so each candidate query batches its
+  product-name alternatives into one SQL query and still carries
+  `customerTierId`; the live C-type candidate case now uses 1 SQL call / about
+  249 ms and returns only the requested tier/global candidates.
+- Preserved product-name-derived size filters while batching, so candidates
+  like `錏成型角鐵 L30x30` and `鍍鋅角鐵 L40x40` stay bounded by their own
+  `spec_key ILIKE` terms inside the OR branches.
+- Added and applied Supabase `pg_trgm` search support: `pg_trgm` extension plus
+  GIN trigram indexes on `steel.price_items.product_name`,
+  `steel.price_items.spec_key`, `steel.customers.display_name`,
+  `steel.customers.legal_name`, and `steel.customer_aliases.alias`; readback
+  confirmed all five indexes exist on the cloud database.
+- `EXPLAIN ANALYZE` evidence: batched plate price lookup executed in about
+  2.9 ms using the existing `price_items_catalog_family_lookup_idx`; C-type
+  `%100x2.3%` lookup executed in about 0.4 ms using
+  `price_items_spec_key_trgm_idx`.
+- Rejected a naive `lookup_quote_rules` parallel-query change after live
+  timing: it made the tool slower in this environment by opening cold extra
+  Supabase connections. Further lookup-rule acceleration should use a single
+  SQL/CTE shape or short-lived server cache, not blind `Promise.all`.
+- Remaining bottleneck: `lookup_catalog_families` still performs 2 Supabase
+  queries and measured about 512 ms for `白鐵`; this is expected from two cloud
+  round trips and is a good next target if UI still feels slow.
+- Verification passed: cloud index readback, live tool timing, `EXPLAIN
+  ANALYZE`, `packages/api` focused Jest for price repository/tool behavior,
+  `packages/api` build, `git diff --check`, backend restart, and
+  `localhost:3080/api/config` plus `localhost:3090/api/config` both returned
+  HTTP 200.
+- Root cause for latest `run_file_ocr` failure: pdfjs can transfer/detach the
+  `Uint8Array` passed into `getDocument`. The handler/provider reused the same
+  uploaded PDF bytes across page 1 and page 2, so page 1 OCR could complete and
+  page 2 immediately failed with `Cannot transfer object of unsupported type`.
+- Fixed `getSteelFileBytes` so OCR receives a fresh byte copy for every
+  page-count/page-render operation, preserving the original uploaded file bytes
+  for later pages and resume processing.
+- Live verification passed against `docs/reference/example/d.pdf`: direct
+  `runSteelFileOcr` processed page 1 and page 2 sequentially from the same
+  source bytes, both `ok: true`.
+- Regression verification passed: `ocr.spec.ts`, focused provider OCR
+  auto-continuation tests, `packages/api` build, `git diff --check`, backend
+  restart, and `localhost:3080/api/config` plus `localhost:3090/api/config`
+  both returned HTTP 200.
+- User correction: do not write or keep tests whose primary subject is Steel
+  rules. Deleted `packages/data-provider/src/steel/rules.spec.ts`,
+  `packages/api/src/steel/rules/service.spec.ts`,
+  `packages/api/src/steel/repositories/rules.spec.ts`,
+  `packages/api/src/steel/repositories/instructions.spec.ts`,
+  `packages/api/src/steel/vision/prompt.spec.ts`, rule-loading/prompt-only
+  cases from provider/vision specs, rule proposal handler coverage, material
+  rule repository coverage, and quote-rule lookup-only cases from
+  `packages/api/src/steel/tools/execute.spec.ts`.
+  Remaining `lookup_quote_rules` mentions are runtime/chat-flow fixtures or
+  stream status values, not tests whose primary subject is rules.
+- Latest correction supersedes earlier wording that treated SS400 or 黑皮板 as
+  plate product candidates. SS400 is now only a material/spec note, and 黑皮板
+  is not a product name.
+- Updated `docs/rules/agent規則.txt`, `docs/rules/鋼材規則.txt`, and
+  `docs/rules/workbook規則.txt` so plate lookup uses only reviewed product
+  names: 鐵板、槽型鐵板、ST 鐵板、2B 鐵板、ST 2B、ST HL、黑鐵板、黑板、
+  錏鐵板、錏板、白鐵板、白鐵.
+- Updated `packages/api/src/steel/importer/reference.ts` and current Supabase
+  `steel.catalog_families` rows so `lookup_catalog_families` can return those
+  plate aliases. `black_plate` aliases are 黑板/黑鐵板, `galvanized_plate`
+  aliases are 錏鐵板/錏板, and generic `plate` carries the full reviewed
+  plate product-name list.
+- Added exact alias ranking in `lookupSteelCatalogFamilies` so short searches
+  such as 白鐵 return `plate` within the default tool limit, while 黑鐵板 and
+  錏鐵板 prefer their specific families before generic `plate`.
+- `node packages/api/scripts/sync-steel-rules.cjs --apply` passed and read back
+  active reviewed rules with `steel-default-agent-instruction` sha
+  `2a99141fc78179871c30312a81c3300aac68902e4d7510fe3a655b3dcba7865f`,
+  `steel-workbook-output-policy` sha
+  `4dc2d5d809bf792f4f56b7570d4ebec6778411417e9a00d19ab58aafa81677a5`,
+  and `docs/rules/鋼材規則.txt` quote-rule sha
+  `9f238d4332186f1a098ee7a52a02af0347ffd740381a7d6a4158589186fa7897`.
+- Live `executeSteelTool(lookup_catalog_families)` readback passed: 黑鐵板
+  returns `black_plate, plate`; 錏鐵板 returns `galvanized_plate, plate`; 白鐵
+  returns `plate` within limit 5; SS400 and 黑皮板 return no catalog family.
+- Focused repository test passed:
+  `cd packages/api && npx jest src/steel/repositories/families.spec.ts --runInBand`.
+  The broader importer reference spec is still blocked by the pre-existing
+  missing fixture `docs/reference/H型鋼.txt`, so it was not usable as evidence
+  for this alias-only change.
 - User correction: `docs/rules/*.txt` are already human-authored rule contracts,
   so do not write tests that assert rule substrings. This pass removed the
   transient workbook provenance policy spec and used Supabase sync/readback
@@ -244,6 +720,39 @@ Review:
   `steel_quote_rules_black_plate`, `steel_quote_rules_galvanized_plate`, and
   `steel_quote_rules_ot_plate` with sha
   `58815b8cf50a503aff8184a46b8873d9460afc418004d70a57441b72df29929f`.
+- Follow-up correction: black iron plate density must be available from
+  reviewed rules instead of model common knowledge. Updated
+  `docs/rules/鋼材規則.txt` so 黑鐵板 / 黑板 / SS400 / 黑皮板 uses density
+  coefficient `7.850` and calculates theoretical rectangular weight as
+  `length mm × width mm × thickness mm × 7.850 ÷ 1,000,000` kg. Synced to
+  Supabase; plate quote rules now have sha
+  `b5b4bebc7b8d76dc0f5dcec4c56097d21a678cf23e5f04c3a3f1831082af6edf`.
+- Follow-up density-table update: extracted `docs/reference/龍頂鋼鐵手冊__文字版.docx`
+  Page 14 鋼軌、Page 21 方鋼、Page 22 圓鋼 rows, calculated density from
+  `kg/m × 10 ÷ 斷面積 cm2`, and kept the final rules concise. The reviewed
+  density coefficients now use 3 decimals: 黑板/黑鐵板/SS400/黑皮板 `7.850`,
+  鋼軌 `7.859`, 方鋼 `7.852`, 圓鋼/圓鐵/圓條 `7.851` g/cm3.
+- `node packages/api/scripts/sync-steel-rules.cjs --apply` synced the concise
+  density rules to Supabase. Readback showed `steel-default-agent-instruction`
+  sha `57c76c2d48a75739c7ccd4de2554323ec2bd1d40193fb6fe59de9f80f3c3d254`,
+  `docs/rules/鋼材規則.txt` quote-rule sha
+  `1a7923701f5edb11f72417e2f43e0c140f4cb2de34e8a0f596ec8af6c6b99382`,
+  and handbook source ref sha
+  `969743ba8db435097259c702d13dd5390f21ed190d73f1baa775072aaff707a1`.
+- Follow-up OCR continuation fix: page count is now obtained at PDF attachment
+  handoff before OCR page tasks, not from `run_file_ocr` output. Provider
+  initializes PDF page progress from attachment `pageCount` or by reading the
+  uploaded PDF bytes, then merges later `patch_file_analysis_data` rows by
+  filename/source ref. Regression coverage proves page 2 is still forced when
+  the model patches page 1 without `sourceFiles.pageCount`.
+- Follow-up correction: drawing-derived plate parts default to 黑板, not 黑鐵.
+  Updated `docs/rules/agent規則.txt` and `docs/rules/鋼材規則.txt` so the first
+  `search_price_candidates` query and provisional adopted product candidate use
+  黑板. SS400、黑皮板、黑鐵板 remain secondary aliases/material wording only.
+  Synced to Supabase; readback confirmed `steel-default-agent-instruction` sha
+  `4fd9653fceb929c37fd838e4f38ce402be8b68d63800f594bc0547c6fbc7fb0b` and
+  `steel_quote_rules_plate` / `steel_quote_rules_black_plate` sha
+  `f6f03b674c2ae4c1f0a2f7778624b21602c0791ddf4389933e85547d211e2998`.
 - `node packages/api/scripts/sync-steel-rules.cjs --apply` passed after the
   deletion change. Direct Supabase readback for
   `sourceFile = docs/rules/鋼材規則.txt` returned 14 rows, all

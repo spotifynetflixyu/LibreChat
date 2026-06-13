@@ -349,6 +349,37 @@ describe('Steel AI public contracts', () => {
     ).toEqual({ type: 'text', delta: '小計：643.2' });
     expect(
       steelProviderChatStreamEventSchema.parse({
+        type: 'file_analysis_data',
+        fileAnalysisData: {
+          id: 'fad_1',
+          conversationId: 'steel-chat-1',
+          version: 1,
+          status: 'draft',
+          sourceFiles: [],
+          sheets: {
+            file_analysis_data: { columns: [], rows: [] },
+            manual_review: { columns: [], rows: [] },
+            interpretation_notes: { columns: [], rows: [] },
+          },
+        },
+      }),
+    ).toEqual({
+      type: 'file_analysis_data',
+      fileAnalysisData: {
+        id: 'fad_1',
+        conversationId: 'steel-chat-1',
+        version: 1,
+        status: 'draft',
+        sourceFiles: [],
+        sheets: {
+          file_analysis_data: { columns: [], rows: [] },
+          manual_review: { columns: [], rows: [] },
+          interpretation_notes: { columns: [], rows: [] },
+        },
+      },
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
         type: 'done',
         response: {
           provider: 'openai_oauth_responses',

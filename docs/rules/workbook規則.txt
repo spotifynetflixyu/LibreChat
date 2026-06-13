@@ -151,7 +151,7 @@ system_order 的「公式編號」填 semantic systemOrder.formulaCode。
 - BDH：厚板切割方形黑鐵
 - BDS：厚板切割方形白鐵
 - BF：黑花板、花紋鋼板
-- BH：黑鐵板、鐵板、黑皮板、碳鋼板
+- BH：黑鐵板、鐵板、黑板、碳鋼板
 - BR：鋁板
 - BS0：不鏽鋼 430 板
 - BS4：不鏽鋼 304 板

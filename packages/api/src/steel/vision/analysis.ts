@@ -48,7 +48,6 @@ interface SteelFileAnalysisServiceDeps {
 
 interface PatchSteelFileAnalysisInput {
   conversationId: string;
-  workbookId?: string;
   patch: PatchFileAnalysisDataToolInput;
 }
 
@@ -58,12 +57,10 @@ function defaultId() {
 
 function createEmptyWorkspace({
   conversationId,
-  workbookId,
   id,
   now,
 }: {
   conversationId: string;
-  workbookId?: string;
   id: () => string;
   now: () => Date;
 }): SteelFileAnalysisCreateRecord {
@@ -72,7 +69,6 @@ function createEmptyWorkspace({
   const workspace = steelFileAnalysisDataSchema.parse({
     id: id(),
     conversationId,
-    workbookId,
     version: 1,
     status: 'draft',
     sourceFiles: [],
@@ -252,16 +248,13 @@ export function createSteelFileAnalysisService({
 
     async patch({
       conversationId,
-      workbookId,
       patch,
     }: PatchSteelFileAnalysisInput): Promise<SteelFileAnalysisRecord> {
       const parsedPatch = patchFileAnalysisDataToolInputSchema.parse(patch);
       const existing = await repository.findByConversationId(conversationId);
       const workspace = existing
         ? cloneWorkspace(existing)
-        : await repository.create(createEmptyWorkspace({ conversationId, workbookId, id, now }));
-
-      workspace.workbookId = workspace.workbookId ?? workbookId;
+        : await repository.create(createEmptyWorkspace({ conversationId, id, now }));
       workspace.sourceFiles = mergeSourceFiles(workspace.sourceFiles, parsedPatch.sourceFiles);
       for (const sheetPatch of parsedPatch.patches) {
         patchSheet(workspace, sheetPatch, id);

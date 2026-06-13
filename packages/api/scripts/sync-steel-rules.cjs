@@ -79,6 +79,13 @@ function readRulePrompt(repoRoot, sourceFile) {
   };
 }
 
+function readFileSha(repoRoot, sourceFile) {
+  return crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(path.join(repoRoot, sourceFile)))
+    .digest('hex');
+}
+
 function sourceRef(sourceFile, locator, canonicalKey, sha256, factType = 'agent_rule') {
   return {
     channel: 'repo_docs',
@@ -108,6 +115,7 @@ function quoteRule({
   sha256,
   priority,
   selectors = {},
+  extraSourceRefs = [],
 }) {
   return {
     canonicalKey,
@@ -135,6 +143,7 @@ function quoteRule({
         sha256,
         'quote_rule',
       ),
+      ...extraSourceRefs,
     ],
   };
 }
@@ -144,6 +153,7 @@ function buildAgentRules(repoRoot) {
   const workbook = readRulePrompt(repoRoot, 'docs/rules/workbook規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/OCR規則.txt');
   const vision = readRulePrompt(repoRoot, 'docs/rules/vision規則.txt');
+  const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
 
   return [
     {
@@ -179,6 +189,13 @@ function buildAgentRules(repoRoot) {
           'Steel 預設 Agent Instruction',
           'agent_default_instruction',
           agent.sha256,
+        ),
+        sourceRef(
+          'docs/reference/龍頂鋼鐵手冊__文字版.docx',
+          'Page 14 鋼軌表；Page 21 方鋼表；Page 22 圓鋼表',
+          'steel_density_table_handbook',
+          handbookSha,
+          'reference_handbook',
         ),
       ],
     },
@@ -308,11 +325,13 @@ function buildAgentRules(repoRoot) {
 
 function buildQuoteRules(repoRoot) {
   const steel = readRulePrompt(repoRoot, 'docs/rules/鋼材規則.txt');
+  const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
   const cTypePrompt = getPromptSection(steel.prompt, 'C 型鋼專用規則', '----------------------------------------------------------------------');
   const hBeamPrompt = getPromptSection(steel.prompt, 'H 型鋼規則', '----------------------------------------------------------------------');
   const barPrompt = getPromptSection(steel.prompt, '長條料配料規則', '----------------------------------------------------------------------');
   const platePrompt = getPromptSection(steel.prompt, '板材重量與加工規則', undefined);
   const barCatalogFamilies = [
+    'rail',
     'angle',
     'channel',
     'flat_bar',
@@ -352,6 +371,15 @@ function buildQuoteRules(repoRoot) {
         sha256: steel.sha256,
         priority: 25,
         selectors: { ruleSection: 'bar_allocation' },
+        extraSourceRefs: [
+          sourceRef(
+            'docs/reference/龍頂鋼鐵手冊__文字版.docx',
+            'Page 14 鋼軌表；Page 21 方鋼表；Page 22 圓鋼表',
+            'steel_density_table_handbook',
+            handbookSha,
+            'reference_handbook',
+          ),
+        ],
       }),
     ),
     ...plateCatalogFamilies.map((catalogFamily) =>

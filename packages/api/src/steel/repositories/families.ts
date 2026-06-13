@@ -81,6 +81,32 @@ function addSearchTextFilter(
   return `(key ILIKE ${placeholder} OR display_name_zh ILIKE ${placeholder} OR aliases::text ILIKE ${placeholder})`;
 }
 
+function getCatalogFamilyOrderBy(
+  values: SteelSqlParameter[],
+  searchText: string | undefined,
+): string {
+  const trimmedSearchText = searchText?.trim();
+  if (!trimmedSearchText) {
+    return 'display_name_zh ASC, key ASC';
+  }
+
+  values.push(trimmedSearchText);
+  const exactPlaceholder = `$${values.length}`;
+  values.push(JSON.stringify([trimmedSearchText]));
+  const exactAliasPlaceholder = `$${values.length}`;
+
+  return `
+CASE
+  WHEN key = ${exactPlaceholder} THEN 0
+  WHEN display_name_zh = ${exactPlaceholder} THEN 1
+  WHEN aliases @> ${exactAliasPlaceholder}::jsonb THEN 2
+  ELSE 3
+END ASC,
+CASE WHEN key = 'plate' THEN 1 ELSE 0 END ASC,
+display_name_zh ASC,
+key ASC`;
+}
+
 function toCatalogFamily(row: SteelCatalogFamilyRow): SteelCatalogFamily {
   return {
     key: row.key,
@@ -113,6 +139,7 @@ export async function lookupSteelCatalogFamilies(
     where.push(`(${filters.join(' OR ')})`);
   }
 
+  const orderBy = getCatalogFamilyOrderBy(values, input.searchText);
   values.push(getLimit(input.limit));
 
   const result = await client.query<SteelCatalogFamilyRow>(
@@ -127,7 +154,7 @@ SELECT
   source_refs
 FROM steel.catalog_families
 WHERE ${where.join('\n  AND ')}
-ORDER BY display_name_zh ASC, key ASC
+ORDER BY ${orderBy}
 LIMIT $${values.length}
 `,
     values,

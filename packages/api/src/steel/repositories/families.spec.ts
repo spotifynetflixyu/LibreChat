@@ -58,7 +58,7 @@ describe('lookupSteelCatalogFamilies', () => {
     });
 
     expect(client.calls[0]?.sql).toContain('FROM steel.catalog_families');
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%H鋼%', 10]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%H鋼%', 'H鋼', '["H鋼"]', 10]);
     expect(result).toEqual([
       expect.objectContaining({
         key: 'h_beam',

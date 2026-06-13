@@ -99,6 +99,14 @@ export function createMongooseSteelWorkbookRepository(mongoose: Mongoose): Steel
       return document ? toRecord(document) : null;
     },
 
+    async findByConversationMetaId(conversationMetaId: string) {
+      const document = await SteelWorkbook.findOne({
+        conversationMetaId,
+        status: 'active',
+      }).lean<SteelWorkbookDocument>();
+      return document ? toRecord(document) : null;
+    },
+
     async update(record: SteelWorkbookRecord) {
       const document = await SteelWorkbook.findOneAndUpdate(
         { workbookId: record.workbookId },

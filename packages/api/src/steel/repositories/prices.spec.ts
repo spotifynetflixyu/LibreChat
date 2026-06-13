@@ -173,6 +173,29 @@ describe('Steel price repositories', () => {
     ]);
   });
 
+  it('batches multiple product-name candidates without dropping derived size filters', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      productNames: ['錏成型角鐵 L30x30', '鍍鋅角鐵 L40x40'],
+      catalogFamilies: ['angle'],
+      customerTierId: 1,
+      limit: 5,
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining(' OR '), [
+      'reviewed',
+      '%錏成型角鐵%',
+      '%30x30%',
+      '%鍍鋅%',
+      '%角鐵%',
+      '%40x40%',
+      'angle',
+      1,
+      5,
+    ]);
+  });
+
   it('searches reviewed price candidates by normalized catalog family keys', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
@@ -264,10 +287,10 @@ describe('Steel price repositories', () => {
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE $2'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
-      '%30x30%',
       '%錏成型角鐵%',
+      '%30x30%',
       5,
     ]);
   });
@@ -280,11 +303,11 @@ describe('Steel price repositories', () => {
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE $2'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
-      '%30x30%',
       '%錏%',
       '%角鐵%',
+      '%30x30%',
       5,
     ]);
   });

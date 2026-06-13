@@ -187,6 +187,8 @@ export type SteelProviderFileAnalysisPatchProposal = z.infer<
 >;
 
 export const steelProviderChatResponseSchema = z.object({
+  conversationId: z.string().min(1).optional(),
+  workbookId: z.string().min(1).optional(),
   provider: z.enum(steelAIDrivers),
   model: z.string().min(1),
   text: z.string(),
@@ -237,6 +239,11 @@ const steelProviderChatStreamTextEventSchema = z.object({
   delta: z.string(),
 });
 
+const steelProviderChatStreamFileAnalysisDataEventSchema = z.object({
+  type: z.literal('file_analysis_data'),
+  fileAnalysisData: steelFileAnalysisDataSchema,
+});
+
 const steelProviderChatStreamDoneEventSchema = z.object({
   type: z.literal('done'),
   response: steelProviderChatResponseSchema,
@@ -254,6 +261,7 @@ export const steelProviderChatStreamEventSchema = z.discriminatedUnion('type', [
   steelProviderChatStreamToolEventSchema,
   steelProviderChatStreamReasoningEventSchema,
   steelProviderChatStreamTextEventSchema,
+  steelProviderChatStreamFileAnalysisDataEventSchema,
   steelProviderChatStreamDoneEventSchema,
   steelProviderChatStreamErrorEventSchema,
 ]);

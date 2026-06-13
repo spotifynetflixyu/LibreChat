@@ -40,7 +40,6 @@ describe('Steel file analysis data service', () => {
 
     const first = await service.patch({
       conversationId: 'conv_1',
-      workbookId: 'workbook_1',
       patch: {
         sourceFiles: [{ fileId: 'file_1', filename: 'c.png', mediaType: 'image/png' }],
         patches: [
@@ -65,7 +64,6 @@ describe('Steel file analysis data service', () => {
 
     const second = await service.patch({
       conversationId: 'conv_1',
-      workbookId: 'workbook_1',
       patch: {
         sourceFiles: [{ fileId: 'file_2', filename: 'detail.pdf', mediaType: 'application/pdf' }],
         patches: [
@@ -93,6 +91,7 @@ describe('Steel file analysis data service', () => {
     expect(second.sourceFiles.map((file) => file.fileId)).toEqual(['file_1', 'file_2']);
     expect(second.sheets.file_analysis_data.rows).toHaveLength(2);
     expect(second.sheets.file_analysis_data.rows[1]?.sourceRef.fileId).toBe('file_2');
+    expect('workbookId' in second).toBe(false);
   });
 
   it('updates existing rows and preserves source refs', async () => {

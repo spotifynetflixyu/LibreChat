@@ -2,7 +2,7 @@ import os from 'os';
 
 import {
   requiredSteelWorkbookSheetIds,
-  type SteelWorkbookPatchRequest,
+  type SteelWorkbookInternalPatchRequest,
 } from 'librechat-data-provider';
 
 import {
@@ -25,6 +25,15 @@ class MemorySteelWorkbookRepository implements SteelWorkbookRepository {
 
   async findByWorkbookId(workbookId: string): Promise<SteelWorkbookRecord | null> {
     return this.workbooks.get(workbookId) ?? null;
+  }
+
+  async findByConversationMetaId(conversationMetaId: string): Promise<SteelWorkbookRecord | null> {
+    return (
+      Array.from(this.workbooks.values()).find(
+        (workbook) =>
+          workbook.conversationMetaId === conversationMetaId && workbook.status === 'active',
+      ) ?? null
+    );
   }
 
   async update(record: SteelWorkbookRecord): Promise<SteelWorkbookRecord> {
@@ -189,6 +198,74 @@ describe('createSteelWorkbookService', () => {
       interpretation_notes: [],
       customer_quote: [],
     });
+  });
+
+  it('reads the active workbook bound to a conversation meta id', async () => {
+    const repository = new MemorySteelWorkbookRepository();
+    const service = createSteelWorkbookService({
+      id: () => 'wb_1',
+      now: () => new Date('2026-06-02T00:00:00.000Z'),
+      repository,
+    });
+
+    await service.create({ conversationMetaId: 'steel_meta_1' });
+
+    await expect(
+      service.readByConversationMetaId({ conversationMetaId: 'steel_meta_1' }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        workbook: expect.objectContaining({ id: 'wb_1' }),
+      }),
+    );
+    await expect(
+      service.readByConversationMetaId({ conversationMetaId: 'steel_meta_missing' }),
+    ).resolves.toBeNull();
+  });
+
+  it('patches the unique workbook bound to a conversation meta id', async () => {
+    const repository = new MemorySteelWorkbookRepository();
+    const service = createSteelWorkbookService({
+      id: () => 'wb_1',
+      now: () => new Date('2026-06-02T00:00:00.000Z'),
+      repository,
+    });
+
+    const first = await service.patchByConversationMetaId({
+      conversationMetaId: 'steel_meta_1',
+      workbookVersion: 1,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'subtotal',
+          value: 643.2,
+        },
+      ],
+    });
+    const second = await service.patchByConversationMetaId({
+      conversationMetaId: 'steel_meta_1',
+      workbookVersion: first.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'quote_details',
+          rowId: 'line_1',
+          columnKey: 'material_unit_price',
+          value: 115,
+        },
+      ],
+    });
+
+    expect(repository.workbooks.size).toBe(1);
+    expect([...repository.workbooks.values()][0]).toMatchObject({
+      workbookId: 'wb_1',
+      conversationMetaId: 'steel_meta_1',
+    });
+    expect(second.workbook.id).toBe('wb_1');
+    expect(second.workbook.version).toBe(2);
   });
 
   it('creates the target row when a validated patch writes the first quote data', async () => {
@@ -387,7 +464,7 @@ describe('createSteelWorkbookService', () => {
         },
       ],
     });
-    const patch: SteelWorkbookPatchRequest = {
+    const patch: SteelWorkbookInternalPatchRequest = {
       workbookId: created.workbook.id,
       workbookVersion: initialLoad.workbook.version,
       selectedWorkbookRefs: [],

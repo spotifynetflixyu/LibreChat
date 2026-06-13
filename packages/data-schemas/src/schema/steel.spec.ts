@@ -128,6 +128,10 @@ describe('Steel Mongo schemas', () => {
       { conversationMetaId: 1, status: 1, updatedAt: -1 },
       expect.any(Object),
     ]);
+    expect(SteelWorkbook.schema.indexes()).toContainEqual([
+      { workbookId: 1 },
+      expect.objectContaining({ unique: true }),
+    ]);
 
     expect(SteelWorkbookPatch.collection.name).toBe('steel_workbook_patches');
     expect(SteelWorkbookPatch.schema.path('operations')).toBeDefined();
@@ -135,6 +139,10 @@ describe('Steel Mongo schemas', () => {
     expect(SteelWorkbookPatch.schema.path('changedFieldSummary')).toBeDefined();
     expect(SteelWorkbookPatch.schema.indexes()).toContainEqual([
       { workbookId: 1, beforeVersion: 1 },
+      expect.any(Object),
+    ]);
+    expect(SteelWorkbookPatch.schema.indexes()).toContainEqual([
+      { workbookId: 1, afterVersion: -1 },
       expect.any(Object),
     ]);
   });
@@ -146,9 +154,18 @@ describe('Steel Mongo schemas', () => {
     expect(SteelFileAnalysisData.schema.path('sheets.file_analysis_data.rows')).toBeDefined();
     expect(SteelFileAnalysisData.schema.path('sheets.manual_review.rows')).toBeDefined();
     expect(SteelFileAnalysisData.schema.path('sheets.interpretation_notes.rows')).toBeDefined();
+    expect(SteelFileAnalysisData.schema.path('workbookId')).toBeUndefined();
     expect(SteelFileAnalysisData.schema.indexes()).toContainEqual([
       { conversationId: 1 },
       expect.objectContaining({ unique: true }),
+    ]);
+    expect(SteelFileAnalysisData.schema.indexes()).toContainEqual([
+      { fileAnalysisDataId: 1 },
+      expect.objectContaining({ unique: true }),
+    ]);
+    expect(SteelFileAnalysisData.schema.indexes()).not.toContainEqual([
+      { workbookId: 1, updatedAt: -1 },
+      expect.any(Object),
     ]);
   });
 });

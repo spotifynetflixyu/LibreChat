@@ -116,13 +116,20 @@ export const steelWorkbookPatchOperationSchema = z.object({
 export type SteelWorkbookPatchOperation = z.infer<typeof steelWorkbookPatchOperationSchema>;
 
 export const steelWorkbookPatchRequestSchema = z.object({
-  workbookId: z.string().min(1),
   workbookVersion: z.number().int().positive(),
   selectedWorkbookRefs: z.array(steelSelectedWorkbookRefSchema).default([]),
   operations: z.array(steelWorkbookPatchOperationSchema).min(1),
 });
 
 export type SteelWorkbookPatchRequest = z.infer<typeof steelWorkbookPatchRequestSchema>;
+
+export const steelWorkbookInternalPatchRequestSchema = steelWorkbookPatchRequestSchema.extend({
+  workbookId: z.string().min(1),
+});
+
+export type SteelWorkbookInternalPatchRequest = z.infer<
+  typeof steelWorkbookInternalPatchRequestSchema
+>;
 
 export const steelWorkbookCreateRequestSchema = z.object({
   conversationMetaId: z.string().min(1).optional(),
@@ -145,6 +152,14 @@ export const steelWorkbookReadResponseSchema = z.object({
 });
 
 export type SteelWorkbookReadResponse = z.infer<typeof steelWorkbookReadResponseSchema>;
+
+export const steelWorkbookConversationReadResponseSchema = z.object({
+  workbook: steelWorkbookSchema.nullable(),
+});
+
+export type SteelWorkbookConversationReadResponse = z.infer<
+  typeof steelWorkbookConversationReadResponseSchema
+>;
 
 export const steelWorkbookPatchResponseSchema = z.object({
   workbook: steelWorkbookSchema.optional(),

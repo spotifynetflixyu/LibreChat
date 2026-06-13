@@ -70,6 +70,7 @@ describe('Steel file analysis data schemas', () => {
     expect(workspace.sourceFiles).toHaveLength(2);
     expect(workspace.sheets.file_analysis_data.rows).toHaveLength(2);
     expect(workspace.sheets.file_analysis_data.rows[1]?.sourceRef.fileId).toBe('file_2');
+    expect('workbookId' in workspace).toBe(false);
   });
 
   it('validates patch_file_analysis_data flexible columns and rows', () => {
@@ -128,7 +129,6 @@ describe('Steel file analysis data schemas', () => {
 
   it('validates manual file_analysis_data patch requests and responses', () => {
     const request = steelFileAnalysisManualPatchRequestSchema.parse({
-      conversationId: 'conv_1',
       workbookId: 'workbook_1',
       sourceFiles: [{ fileId: 'file_1', filename: 'c.png', mediaType: 'image/png' }],
       patches: [
@@ -154,9 +154,10 @@ describe('Steel file analysis data schemas', () => {
 
     expect(request.patches[0]?.sheetId).toBe('file_analysis_data');
     expect(request.patches[0]?.deleteRowIds).toEqual(['row_2']);
+    expect('conversationId' in request).toBe(false);
+    expect('workbookId' in request).toBe(false);
     expect(() =>
       steelFileAnalysisManualPatchRequestSchema.parse({
-        conversationId: 'conv_1',
         patches: [{ sheetId: 'manual_review', upsertRows: [] }],
       }),
     ).toThrow();

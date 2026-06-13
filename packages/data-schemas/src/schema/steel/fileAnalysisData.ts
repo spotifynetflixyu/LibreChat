@@ -95,7 +95,6 @@ const fileAnalysisDataSchema = new Schema<ISteelFileAnalysisData>(
   {
     fileAnalysisDataId: { type: String, required: true, unique: true },
     conversationId: { type: String, required: true, unique: true },
-    workbookId: { type: String },
     version: { type: Number, min: 1, default: 1, required: true },
     status: {
       type: String,
@@ -121,7 +120,5 @@ const fileAnalysisDataSchema = new Schema<ISteelFileAnalysisData>(
   },
   { timestamps: true },
 );
-
-fileAnalysisDataSchema.index({ workbookId: 1, updatedAt: -1 });
 
 export default fileAnalysisDataSchema;

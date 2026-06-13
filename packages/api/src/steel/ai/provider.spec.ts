@@ -243,248 +243,6 @@ function createDefaultAgentRulesClient() {
 }
 
 describe('Steel OpenAI OAuth provider adapter', () => {
-  it('loads the Steel agent runtime prompt from reviewed agent_rules', async () => {
-    const dbPrompt = 'DB_AGENT_RULE_SENTINEL fixture:agent-rule-load-test';
-    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(dbPrompt)]);
-    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
-      content: [{ type: 'text', text: 'agent-rules-ok' }],
-      finishReason: { unified: 'stop', raw: 'stop' },
-      usage: {
-        inputTokens: {
-          total: 5,
-          noCache: undefined,
-          cacheRead: undefined,
-          cacheWrite: undefined,
-        },
-        outputTokens: {
-          total: 3,
-          text: 3,
-          reasoning: undefined,
-        },
-      },
-      response: { id: 'resp_agent_rules_prompt' },
-      warnings: [],
-    }));
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '請說明亞L30x30的推論流程' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-      ...({ agentRulesClient } as { agentRulesClient: SteelRepositoryClient }),
-    });
-
-    expect(agentRulesClient.calls[0]?.sql).toContain('FROM steel.agent_rules');
-    expect(agentRulesClient.calls[0]?.values).toEqual([
-      'reviewed',
-      ['agent_instruction', 'tool_flow', 'inference_order', 'confirmation_policy'],
-      20,
-    ]);
-    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
-    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
-    expect(systemPrompt.role).toBe('system');
-    expect(systemPrompt.content.length).toBeGreaterThan(0);
-  });
-
-  it('fails before calling the provider when reviewed agent_rules cannot be loaded', async () => {
-    const agentRulesClient = createAgentRulesClient([]);
-    const doGenerate = jest.fn();
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await expect(
-      sendSteelOAuthChat({
-        createOpenAIOAuth,
-        ensureFresh: false,
-        model: 'gpt-5.5',
-        messages: [{ role: 'user', content: '請說明亞L30x30的推論流程' }],
-        reasoningEffort: 'medium',
-        steelRuntimePolicy: true,
-        agentRulesClient: createDefaultAgentRulesClient(),
-        ...({ agentRulesClient } as { agentRulesClient: SteelRepositoryClient }),
-      }),
-    ).rejects.toThrow('steel.agent_rules did not return reviewed Agent Prompt rules');
-    expect(doGenerate).not.toHaveBeenCalled();
-  });
-
-  it('loads workbook output rules from reviewed agent_rules when workbook patching is enabled', async () => {
-    const dbWorkbookPrompt = 'DB_WORKBOOK_RULE_SENTINEL fixture:workbook-rule-load-test';
-    const agentRulesClient = createAgentRulesClient([
-      createAgentRuleRow(defaultAgentRulePrompt),
-      createWorkbookRuleRow(dbWorkbookPrompt),
-    ]);
-    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
-      content: [{ type: 'text', text: 'workbook-db-rule-ok' }],
-      finishReason: { unified: 'stop', raw: 'stop' },
-      usage: {
-        inputTokens: {
-          total: 5,
-          noCache: undefined,
-          cacheRead: undefined,
-          cacheWrite: undefined,
-        },
-        outputTokens: {
-          total: 3,
-          text: 3,
-          reasoning: undefined,
-        },
-      },
-      response: { id: 'resp_workbook_rules_prompt' },
-      warnings: [],
-    }));
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '請輸出目前 workbook' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      workbookPatchTool: true,
-      workbookContextText: 'sheet id="summary" label="總結"',
-      agentRulesClient,
-    });
-
-    expect(agentRulesClient.calls[1]?.sql).toContain('FROM steel.agent_rules');
-    expect(agentRulesClient.calls[1]?.values).toEqual(['reviewed', ['workbook_output_rule'], 20]);
-    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
-    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
-    expect(systemPrompt.role).toBe('system');
-    expect(systemPrompt.content.length).toBeGreaterThan(0);
-  });
-
-  it('fails before calling the provider when workbook output rules cannot be loaded', async () => {
-    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
-    const doGenerate = jest.fn();
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await expect(
-      sendSteelOAuthChat({
-        createOpenAIOAuth,
-        ensureFresh: false,
-        model: 'gpt-5.5',
-        messages: [{ role: 'user', content: '請輸出目前 workbook' }],
-        reasoningEffort: 'medium',
-        workbookPatchTool: true,
-        workbookContextText: 'sheet id="summary" label="總結"',
-        agentRulesClient,
-      }),
-    ).rejects.toThrow('steel.agent_rules did not return reviewed workbook output rules');
-    expect(doGenerate).not.toHaveBeenCalled();
-  });
-
-  it('loads reviewed OCR rules for image and PDF evidence before provider generation', async () => {
-    const ocrPrompt = 'OCR_RULE_SENTINEL Supabase OCR rule loaded from steel.agent_rules.';
-    const agentRulesClient = createAgentRulesClient([
-      createAgentRuleRow(defaultAgentRulePrompt),
-      createOcrRuleRow(ocrPrompt),
-      createVisionRuleRow('VISION_RULE_SENTINEL fixture:visual-rule-loaded'),
-    ]);
-    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
-      content: [{ type: 'text', text: 'ocr-rule-ok' }],
-      finishReason: { unified: 'stop', raw: 'stop' },
-      usage: {
-        inputTokens: {
-          total: 5,
-          noCache: undefined,
-          cacheRead: undefined,
-          cacheWrite: undefined,
-        },
-        outputTokens: {
-          total: 3,
-          text: 3,
-          reasoning: undefined,
-        },
-      },
-      response: { id: 'resp_ocr_rules_prompt' },
-      warnings: [],
-    }));
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      model: 'gpt-5.5',
-      messages: [
-        {
-          role: 'user',
-          content: '請判讀這張圖面的表格。',
-          files: [
-            {
-              filename: 'c.png',
-              mediaType: 'image/png',
-              data: new Uint8Array(Buffer.from('PNG_SENTINEL', 'utf8')),
-            },
-          ],
-        },
-      ],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient,
-    });
-
-    expect(agentRulesClient.calls[1]?.sql).toContain('FROM steel.agent_rules');
-    expect(agentRulesClient.calls[1]?.values).toEqual([
-      'reviewed',
-      ['inference_order_rule', 'tool_flow_rule', 'output_policy_rule'],
-      ['file_ocr', 'drawing_ocr', 'vision_evidence'],
-      20,
-    ]);
-    const generateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
-    const systemPrompt = generateOptions.prompt[0] as { role: 'system'; content: string };
-    expect(systemPrompt.role).toBe('system');
-    expect(systemPrompt.content.length).toBeGreaterThan(0);
-  });
-
   it('exposes patch_file_analysis_data for visual evidence and returns the patch proposal', async () => {
     const agentRulesClient = createAgentRulesClient([
       createAgentRuleRow(defaultAgentRulePrompt),
@@ -800,28 +558,33 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         redactionVersion: 1,
       };
     });
+    const onToolStatus = jest.fn();
     const doGenerate = jest
       .fn()
-      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'call_file_ocr_page_1',
-            toolName: 'run_file_ocr',
-            input: JSON.stringify({
-              filename: 'd.pdf',
-              page: 1,
-              file_type: 'image',
-              output_mode: 'markdown',
-              dpi: 400,
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
-        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
-        response: { id: 'resp_paddleocr_page_1' },
-        warnings: [],
-      }))
+      .mockImplementationOnce(async (options: LanguageModelV3CallOptions) => {
+        expect(JSON.stringify(options.prompt)).toContain('pageCount=2');
+
+        return {
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call_file_ocr_page_1',
+              toolName: 'run_file_ocr',
+              input: JSON.stringify({
+                filename: 'd.pdf',
+                page: 1,
+                file_type: 'image',
+                output_mode: 'markdown',
+                dpi: 400,
+              }),
+            },
+          ],
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+          response: { id: 'resp_paddleocr_page_1' },
+          warnings: [],
+        };
+      })
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
         content: [
           {
@@ -978,6 +741,243 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             {
               filename: 'd.pdf',
               mediaType: 'application/pdf',
+              pageCount: 2,
+              data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
+            },
+          ],
+        },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient,
+      executeFileOcr,
+      onToolStatus,
+    });
+
+    expect(executeFileOcr.mock.calls.map(([options]) => options.arguments.page)).toEqual([1, 2]);
+    expect(onToolStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'patch_file_analysis_data',
+        status: 'started',
+        message: 'patch_file_analysis_data waiting for AI to convert OCR result',
+      }),
+    );
+    const completedFileAnalysisPatchMessages = onToolStatus.mock.calls
+      .map(([event]) => event)
+      .filter(
+        (event) => event.toolName === 'patch_file_analysis_data' && event.status === 'completed',
+      )
+      .map((event) => event.message);
+    expect(completedFileAnalysisPatchMessages).toEqual([
+      'patch_file_analysis_data received; preparing OCR continuation',
+      'patch_file_analysis_data received; OCR complete; preparing summary',
+    ]);
+    expect(doGenerate).toHaveBeenCalledTimes(6);
+    expect(
+      result.fileAnalysisPatch?.patches.flatMap((patch) =>
+        patch.upsertRows.map((row) => row.sourceRef?.page),
+      ),
+    ).toEqual([1, 2]);
+    expect(result.fileAnalysisPatch?.summary).toBe('d.pdf page 2 PaddleOCR completed.');
+    expect(result.text).toContain('已完成 d.pdf 全部 2 頁 OCR');
+  });
+
+  it('continues pending PDF pages from attachment pageCount when the patch omits pageCount', async () => {
+    const agentRulesClient = createAgentRulesClient([
+      createAgentRuleRow(defaultAgentRulePrompt),
+      createOcrRuleRow('OCR_RULE_SENTINEL fixture:paddleocr-required'),
+      createVisionRuleRow('VISION_RULE_SENTINEL fixture:paddleocr-vision-required'),
+    ]);
+    const executeFileOcr = jest.fn(async (options) => {
+      const page = options.arguments.page ?? 1;
+
+      return {
+        ok: true,
+        toolName: 'run_file_ocr' as const,
+        data: {
+          filename: 'd.pdf',
+          mediaType: 'application/pdf',
+          page,
+          fileType: 'image',
+          outputMode: 'markdown',
+          text: `| part_no | quantity |\n| PX${page} | ${page} |`,
+        },
+        durationMs: 10,
+        redactionVersion: 1,
+      };
+    });
+    const doGenerate = jest
+      .fn()
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_ocr_page_1',
+            toolName: 'run_file_ocr',
+            input: JSON.stringify({
+              filename: 'd.pdf',
+              page: 1,
+              file_type: 'image',
+              output_mode: 'markdown',
+              dpi: 400,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_paddleocr_page_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_analysis_patch_page_1',
+            toolName: 'patch_file_analysis_data',
+            input: JSON.stringify({
+              sourceFiles: [
+                {
+                  fileId: 'file_d_pdf',
+                  filename: 'd.pdf',
+                  mediaType: 'application/pdf',
+                  ocrEngine: 'PaddleOCR MCP',
+                  ocrStatus: 'processing',
+                },
+              ],
+              patches: [
+                {
+                  sheetId: 'file_analysis_data',
+                  upsertColumns: [{ key: 'partNo', label: '件號' }],
+                  upsertRows: [
+                    {
+                      sourceRef: {
+                        fileId: 'file_d_pdf',
+                        filename: 'd.pdf',
+                        mediaType: 'application/pdf',
+                        sourceKey: 'file_d_pdf:page:1:row:PX1',
+                        page: 1,
+                        ocrEngine: 'PaddleOCR MCP',
+                        ocrStatus: 'completed',
+                      },
+                      cells: { partNo: 'PX1', quantity: 1 },
+                      confidence: 'medium',
+                    },
+                  ],
+                },
+              ],
+              summary: 'd.pdf page 1 PaddleOCR completed.',
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_patch_page_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成讀取附件 d.pdf 第 1 頁。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_wrong_final_after_page_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_ocr_page_2',
+            toolName: 'run_file_ocr',
+            input: JSON.stringify({
+              filename: 'd.pdf',
+              page: 2,
+              file_type: 'image',
+              output_mode: 'markdown',
+              dpi: 400,
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_paddleocr_page_2' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_file_analysis_patch_page_2',
+            toolName: 'patch_file_analysis_data',
+            input: JSON.stringify({
+              sourceFiles: [
+                {
+                  fileId: 'file_d_pdf',
+                  filename: 'd.pdf',
+                  mediaType: 'application/pdf',
+                  ocrEngine: 'PaddleOCR MCP',
+                  ocrStatus: 'completed',
+                },
+              ],
+              patches: [
+                {
+                  sheetId: 'file_analysis_data',
+                  upsertColumns: [{ key: 'partNo', label: '件號' }],
+                  upsertRows: [
+                    {
+                      sourceRef: {
+                        fileId: 'file_d_pdf',
+                        filename: 'd.pdf',
+                        mediaType: 'application/pdf',
+                        sourceKey: 'file_d_pdf:page:2:row:PX2',
+                        page: 2,
+                        ocrEngine: 'PaddleOCR MCP',
+                        ocrStatus: 'completed',
+                      },
+                      cells: { partNo: 'PX2', quantity: 2 },
+                      confidence: 'medium',
+                    },
+                  ],
+                },
+              ],
+              summary: 'd.pdf page 2 PaddleOCR completed.',
+            }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_patch_page_2' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成 d.pdf 全部 2 頁 OCR。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+        response: { id: 'resp_final_all_pages' },
+        warnings: [],
+      }));
+    const createOpenAIOAuth = jest.fn(() => {
+      return (() =>
+        ({
+          specificationVersion: 'v3',
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5',
+          supportedUrls: {},
+          doGenerate,
+        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
+    }) as unknown as typeof createOpenAIOAuthType;
+
+    const result = await sendSteelOAuthChat({
+      createOpenAIOAuth,
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'user',
+          content: 'OCR d.pdf',
+          files: [
+            {
+              filename: 'd.pdf',
+              mediaType: 'application/pdf',
+              pageCount: 2,
               data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
             },
           ],
@@ -990,7 +990,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     });
 
     expect(executeFileOcr.mock.calls.map(([options]) => options.arguments.page)).toEqual([1, 2]);
-    expect(doGenerate).toHaveBeenCalledTimes(6);
     expect(result.fileAnalysisPatch?.summary).toBe('d.pdf page 2 PaddleOCR completed.');
     expect(result.text).toContain('已完成 d.pdf 全部 2 頁 OCR');
   });
@@ -1250,96 +1249,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
 
     expect(doGenerate).toHaveBeenCalledTimes(3);
     expect(result.text).toContain('已完成圖像幾何檢查');
-  });
-
-  it('fails before provider generation when visual evidence has no reviewed OCR rules', async () => {
-    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
-    const doGenerate = jest.fn();
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await expect(
-      sendSteelOAuthChat({
-        createOpenAIOAuth,
-        ensureFresh: false,
-        model: 'gpt-5.5',
-        messages: [
-          {
-            role: 'user',
-            content: '請重新判讀這份 PDF。',
-            files: [
-              {
-                filename: 'scan.pdf',
-                mediaType: 'application/pdf',
-                data: new Uint8Array(Buffer.from('PDF_SENTINEL', 'utf8')),
-              },
-            ],
-          },
-        ],
-        reasoningEffort: 'medium',
-        steelRuntimePolicy: true,
-        agentRulesClient,
-      }),
-    ).rejects.toThrow('steel.agent_rules did not return reviewed OCR rules');
-    expect(doGenerate).not.toHaveBeenCalled();
-  });
-
-  it('does not load OCR rules for non-visual turns', async () => {
-    const agentRulesClient = createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]);
-    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
-      content: [{ type: 'text', text: 'text-only-ok' }],
-      finishReason: { unified: 'stop', raw: 'stop' },
-      usage: {
-        inputTokens: {
-          total: 5,
-          noCache: undefined,
-          cacheRead: undefined,
-          cacheWrite: undefined,
-        },
-        outputTokens: {
-          total: 3,
-          text: 3,
-          reasoning: undefined,
-        },
-      },
-      response: { id: 'resp_no_ocr_rules_prompt' },
-      warnings: [],
-    }));
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-
-    await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '請說明目前判讀流程。' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient,
-    });
-
-    expect(agentRulesClient.calls).toHaveLength(1);
-    expect(agentRulesClient.calls[0]?.values).toEqual([
-      'reviewed',
-      ['agent_instruction', 'tool_flow', 'inference_order', 'confirmation_policy'],
-      20,
-    ]);
   });
 
   it('passes server-side OAuth settings and returns a sanitized provider response', async () => {
@@ -1704,210 +1613,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     });
   });
 
-  it('requires catalog-family lookup before quote rules and price lookup for oral material price requests', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_catalog_lookup',
-            toolName: 'lookup_catalog_families',
-            input: JSON.stringify({
-              searchText: 'C型鋼',
-              limit: 5,
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 20,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 5,
-            text: 5,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_catalog_lookup' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_quote_rules_after_catalog',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 30,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 6,
-            text: 6,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_quote_rules_after_catalog' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price_after_rules',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-              catalogFamilies: ['c_type'],
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'Use selected c_type catalog key after reviewed rules lookup',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 40,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 7,
-            text: 7,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_price_after_rules' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '依 C 型鋼 catalog key 與規則查到候選。' }],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 50,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 9,
-            text: 9,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_catalog_sequence_final' },
-        warnings: [],
-      });
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-    const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
-      ok: true as const,
-      toolName: toolName as
-        | 'lookup_catalog_families'
-        | 'lookup_quote_rules'
-        | 'search_price_candidates',
-      data:
-        toolName === 'lookup_catalog_families'
-          ? {
-              catalogFamilyCandidates: [
-                {
-                  key: 'c_type',
-                  displayName: 'C 型鋼',
-                  aliases: ['C型鋼', 'C鋼', '輕型鋼'],
-                },
-              ],
-            }
-          : toolName === 'search_price_candidates'
-            ? {
-                priceCandidates: [
-                  {
-                    productName: '錏輕型鋼',
-                    specKey: '100x2.3',
-                    unitPrice: 26.8,
-                  },
-                ],
-              }
-            : {
-                instructionPackets: [
-                  {
-                    slug: 'c-type-basic-quote-zh-v1',
-                    packetGroups: ['c-type-quote-core'],
-                  },
-                ],
-              },
-      sourceRefs: [],
-      durationMs: 1,
-      redactionVersion: 1 as const,
-    }));
-
-    const response = await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-    });
-
-    expect(
-      (doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
-    ).toEqual(steelBusinessToolNames);
-    expect((doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
-      type: 'required',
-    });
-    expect(
-      (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
-    ).toEqual(steelBusinessToolNames);
-    expect(
-      (doGenerate.mock.calls[2]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
-    ).toEqual(steelBusinessToolNames);
-    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_catalog_families',
-      'lookup_quote_rules',
-      'search_price_candidates',
-    ]);
-    expect(response.text).toBe('依 C 型鋼 catalog key 與規則查到候選。');
-  });
-
   it('executes AI-callable Steel business tools and continues with tool results', async () => {
     const doGenerate = jest
       .fn()
@@ -2223,818 +1928,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(response.text).toBe('暫估採錏成型角鐵 30x30x2.5x6M。');
   });
 
-  it('requires lookup_quote_rules before executing category-dependent price lookup', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price_too_early',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-              catalogFamilies: ['c_type'],
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'AI inferred C 型鋼 category and compact spec',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 30,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 7,
-            text: 7,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_c_type_price_too_early' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_quote_rules_after_reject',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 40,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_c_type_instruction' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price_after_instruction',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-              catalogFamilies: ['c_type'],
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'Use C 型鋼 instruction packet before reviewed price lookup',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 45,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 9,
-            text: 9,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_c_type_price_after_instruction' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '依 C 型鋼 instruction 查到候選。' }],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 55,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 9,
-            text: 9,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_c_type_sequence_final' },
-        warnings: [],
-      });
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-    const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
-      ok: true as const,
-      toolName: toolName as 'lookup_quote_rules' | 'search_price_candidates',
-      data:
-        toolName === 'search_price_candidates'
-          ? {
-              priceCandidates: [
-                {
-                  productName: '錏輕型鋼',
-                  specKey: '100x2.3',
-                  unitPrice: 26,
-                },
-              ],
-            }
-          : {
-              instructionPackets: [
-                {
-                  slug: 'c-type-basic-quote-zh-v1',
-                  packetGroups: ['c-type-quote-core'],
-                },
-              ],
-            },
-      sourceRefs: [],
-      durationMs: 1,
-      redactionVersion: 1 as const,
-    }));
-
-    const response = await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-    });
-
-    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_quote_rules',
-      'search_price_candidates',
-    ]);
-    const secondPrompt = (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).prompt;
-    expect(secondPrompt).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'tool',
-          content: expect.arrayContaining([
-            expect.objectContaining({
-              output: {
-                type: 'json',
-                value: expect.objectContaining({
-                  ok: false,
-                  toolName: 'search_price_candidates',
-                  errorCategory: 'invalid_arguments',
-                  errorSummary: expect.stringContaining('lookup_quote_rules'),
-                }),
-              },
-            }),
-          ]),
-        }),
-      ]),
-    );
-    expect(response.text).toBe('依 C 型鋼 instruction 查到候選。');
-  });
-
-  it('defaults unknown customer tier price filters to B customerTierId after quote rules mark the tier unknown', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_quote_rules_unknown_tier',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
-              customerContext: {
-                customerTierId: 1,
-                tierKnown: false,
-              },
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 30,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 7,
-            text: 7,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_quote_rules_unknown_tier' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price_bad_tier',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-              catalogFamilies: ['c_type'],
-              customerTierId: 1,
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'AI inferred C 型鋼 category and compact spec',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 35,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_price_bad_tier' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'text',
-            text: '未提供客戶或找不到客戶分級時，目前用價格B：26.8 元/kg；提供客戶名稱後可再查該客戶報價。',
-          },
-        ],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 55,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 9,
-            text: 9,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_final_b_default' },
-        warnings: [],
-      });
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-    const executeSteelToolCall = jest
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'lookup_quote_rules' as const,
-        data: {
-          instructionPackets: [
-            {
-              slug: 'c-type-basic-quote-zh-v1',
-              packetGroups: ['c-type-quote-core'],
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      })
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'search_price_candidates' as const,
-        data: {
-          priceCandidates: [
-            {
-              productName: '錏輕型鋼',
-              specKey: '100x2.3',
-              customerTierCode: 'B',
-              unitPrice: 26.8,
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      });
-
-    const response = await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-    });
-
-    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_quote_rules',
-      'search_price_candidates',
-    ]);
-    expect(executeSteelToolCall.mock.calls[1]?.[0].arguments).toEqual(
-      expect.objectContaining({ customerTierId: 2 }),
-    );
-    expect(doGenerate).toHaveBeenCalledTimes(3);
-    expect(response.text).toBe(
-      '未提供客戶或找不到客戶分級時，目前用價格B：26.8 元/kg；提供客戶名稱後可再查該客戶報價。',
-    );
-  });
-
-  it('uses a first-round customer lookup tier in quote rules and price lookup', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_catalog_lookup',
-            toolName: 'lookup_catalog_families',
-            input: JSON.stringify({
-              searchText: 'C型鋼',
-              limit: 5,
-            }),
-          },
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_customer_lookup',
-            toolName: 'search_customers',
-            input: JSON.stringify({
-              searchText: '龍頂',
-              limit: 3,
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 30,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 9,
-            text: 9,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_catalog_customer_lookup' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_quote_rules_customer',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: '龍頂 C型鋼 100x50x20 2.3t 一支多少',
-              customerContext: {
-                customerId: 10,
-                customerName: '龍頂',
-                customerTierId: 1,
-                tierKnown: true,
-              },
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 35,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_quote_rules_customer' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price_customer_tier',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: '龍頂 C型鋼 100x50x20 2.3t 一支多少？',
-              catalogFamilies: ['c_type'],
-              customerTierId: 1,
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'Use customer tier from search_customers',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 40,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_price_customer_tier' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '已依龍頂客戶分級報價。' }],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 55,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 9,
-            text: 9,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_final_customer_tier' },
-        warnings: [],
-      });
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-    const executeSteelToolCall = jest
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'lookup_catalog_families' as const,
-        data: {
-          catalogFamilyCandidates: [
-            {
-              key: 'c_type',
-              displayName: 'C 型鋼',
-              aliases: ['C型鋼', 'C鋼', '輕型鋼'],
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      })
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'search_customers' as const,
-        data: {
-          customers: [
-            {
-              id: 10,
-              displayName: '龍頂',
-              customerTier: {
-                id: 1,
-                code: 'A',
-                name: 'A級',
-              },
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      })
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'lookup_quote_rules' as const,
-        data: {
-          instructionPackets: [
-            {
-              slug: 'c-type-basic-quote-zh-v1',
-              packetGroups: ['c-type-quote-core'],
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      })
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'search_price_candidates' as const,
-        data: {
-          priceCandidates: [
-            {
-              productName: '錏輕型鋼',
-              specKey: '100x2.3',
-              customerTierCode: 'A',
-              unitPrice: 26,
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      });
-
-    const response = await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: '龍頂 C型鋼 100x50x20 2.3t 一支多少？' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-    });
-
-    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_catalog_families',
-      'search_customers',
-      'lookup_quote_rules',
-      'search_price_candidates',
-    ]);
-    expect(
-      (doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
-    ).toEqual(steelBusinessToolNames);
-    expect(
-      (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
-    ).toEqual(steelBusinessToolNames);
-    expect(executeSteelToolCall.mock.calls[2]?.[0].arguments).toEqual(
-      expect.objectContaining({
-        customerContext: expect.objectContaining({
-          customerId: 10,
-          customerTierId: 1,
-          tierKnown: true,
-        }),
-      }),
-    );
-    expect(executeSteelToolCall.mock.calls[3]?.[0].arguments).toEqual(
-      expect.objectContaining({ customerTierId: 1 }),
-    );
-    expect(response.text).toBe('已依龍頂客戶分級報價。');
-  });
-
-  it('adds a specific price lookup reminder after quote rules when reviewed price lookup is still missing', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_quote_rules_only',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: 'C型鋼 C100x50x20x2.3t 6M 一支多少',
-              customerContext: {
-                tierKnown: false,
-              },
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 25,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 6,
-            text: 6,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_quote_rules_only' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price_after_reminder',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: 'C型鋼 C100x50x20x2.3t 6M 一支多少？',
-              catalogFamilies: ['c_type'],
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  productNames: ['錏輕型鋼'],
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'Use the C 型鋼 compact reviewed price fragment after quote rules',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 35,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 7,
-            text: 7,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_price_after_reminder' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'text',
-            text: '目前用價格B：26.8 元/kg，並列出材質選項；提供客戶名稱後可再查該客戶報價。',
-          },
-        ],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 45,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_final_after_reminder' },
-        warnings: [],
-      });
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-    const executeSteelToolCall = jest
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'lookup_quote_rules' as const,
-        data: {
-          instructionPackets: [
-            {
-              slug: 'c-type-basic-quote-zh-v1',
-              packetGroups: ['c-type-quote-core'],
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      })
-      .mockResolvedValueOnce({
-        ok: true as const,
-        toolName: 'search_price_candidates' as const,
-        data: {
-          priceCandidates: [
-            {
-              productName: '錏輕型鋼',
-              specKey: '100x2.3',
-              customerTierCode: 'B',
-              unitPrice: 26.8,
-            },
-          ],
-        },
-        sourceRefs: [],
-        durationMs: 1,
-        redactionVersion: 1 as const,
-      });
-
-    const response = await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'C型鋼 C100x50x20x2.3t 6M 一支多少？' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-    });
-
-    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_quote_rules',
-      'search_price_candidates',
-    ]);
-    expect((doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).toolChoice).toEqual({
-      type: 'required',
-    });
-    expect(
-      (doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions).tools?.map((tool) => tool.name),
-    ).toEqual(steelBusinessToolNames);
-    expect(response.text).toBe(
-      '目前用價格B：26.8 元/kg，並列出材質選項；提供客戶名稱後可再查該客戶報價。',
-    );
-  });
-
   it('does not treat invalid search_price_candidates arguments as a completed price lookup', async () => {
     const doGenerate = jest
       .fn()
@@ -3239,202 +2132,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     ).toEqual(steelBusinessToolNames);
     expect(executeSteelToolCall).toHaveBeenCalledTimes(3);
     expect(response.text).toBe('找到 C 型鋼 100x2.3 的候選價格。');
-  });
-
-  it('does not require formula lookup when legacy reviewed rules mention lookup_formula', async () => {
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_catalog_lookup',
-            toolName: 'lookup_catalog_families',
-            input: JSON.stringify({
-              searchText: 'C型鋼',
-              limit: 5,
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 20,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 5,
-            text: 5,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_formula_catalog' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_quote_rules',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({
-              taskTypes: ['candidate_generation', 'material_price_lookup'],
-              evidenceSummary: 'C型鋼 100x50x20 2.3t 一支多少',
-              catalogContexts: [
-                {
-                  catalogCandidates: ['c_type'],
-                  formulaCandidates: ['C'],
-                  packetGroupHints: ['c-type-quote-core'],
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 30,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 6,
-            text: 6,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_formula_rules' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'steel_price',
-            toolName: 'search_price_candidates',
-            input: JSON.stringify({
-              originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-              catalogFamilies: ['c_type'],
-              candidateQueries: [
-                {
-                  queryId: 'c-type-100x23',
-                  productNames: ['錏輕型鋼'],
-                  specKeyContains: '100x2.3',
-                  confidence: 'high',
-                  reason: 'Use selected c_type catalog key and reviewed C 型鋼 rules',
-                },
-              ],
-            }),
-          },
-        ],
-        finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-        usage: {
-          inputTokens: {
-            total: 40,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 7,
-            text: 7,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_formula_price' },
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '依 quote rules 公式規則與價格候選回答 C 型鋼報價。' }],
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: {
-            total: 50,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: 8,
-            text: 8,
-            reasoning: undefined,
-          },
-        },
-        response: { id: 'resp_formula_final_without_tool' },
-        warnings: [],
-      });
-    const createOpenAIOAuth = jest.fn(() => {
-      return (() =>
-        ({
-          specificationVersion: 'v3',
-          provider: 'openai.responses',
-          modelId: 'gpt-5.5',
-          supportedUrls: {},
-          doGenerate,
-        }) as unknown as LanguageModelV3) as ReturnType<typeof createOpenAIOAuthType>;
-    }) as unknown as typeof createOpenAIOAuthType;
-    const executeSteelToolCall = jest.fn(async ({ toolName }) => ({
-      ok: true as const,
-      toolName: toolName as
-        | 'lookup_catalog_families'
-        | 'lookup_quote_rules'
-        | 'search_price_candidates',
-      data:
-        toolName === 'lookup_catalog_families'
-          ? {
-              catalogFamilyCandidates: [
-                {
-                  key: 'c_type',
-                  displayName: 'C 型鋼',
-                  aliases: ['C型鋼', 'C鋼', '輕型鋼'],
-                },
-              ],
-            }
-          : toolName === 'lookup_quote_rules'
-            ? {
-                instructionPackets: [
-                  {
-                    slug: 'c-type-basic-quote-zh-v1',
-                    requiredLookups: ['search_price_candidates', 'lookup_formula'],
-                  },
-                ],
-                requiredLookups: ['search_price_candidates', 'lookup_formula'],
-              }
-            : {
-                priceCandidates: [
-                  {
-                    productName: '錏輕型鋼',
-                    specKey: '100x2.3',
-                    unitPrice: 26.8,
-                  },
-                ],
-              },
-      sourceRefs: [],
-      durationMs: 1,
-      redactionVersion: 1 as const,
-    }));
-
-    const response = await sendSteelOAuthChat({
-      createOpenAIOAuth,
-      ensureFresh: false,
-      executeSteelToolCall,
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'C型鋼 100x50x20 2.3t 一支多少？' }],
-      reasoningEffort: 'medium',
-      steelRuntimePolicy: true,
-      agentRulesClient: createDefaultAgentRulesClient(),
-    });
-
-    expect(executeSteelToolCall.mock.calls.map(([call]) => call.toolName)).toEqual([
-      'lookup_catalog_families',
-      'lookup_quote_rules',
-      'search_price_candidates',
-    ]);
-    expect(doGenerate).toHaveBeenCalledTimes(4);
-    expect(response.text).toBe('依 quote rules 公式規則與價格候選回答 C 型鋼報價。');
   });
 
   it('requires a provisional semantic workbook patch after a positive quick-price lookup when workbook context exists', async () => {

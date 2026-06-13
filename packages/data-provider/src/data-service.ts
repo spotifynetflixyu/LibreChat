@@ -18,6 +18,7 @@ import type {
   SteelProviderChatRequest,
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
+  SteelFileAnalysisReadResponse,
   SteelFileAnalysisManualPatchRequest,
   SteelFileAnalysisManualPatchResponse,
   SteelWorkbookCreateRequest,
@@ -25,6 +26,7 @@ import type {
   SteelWorkbookPatchRequest,
   SteelWorkbookPatchResponse,
   SteelWorkbookReadResponse,
+  SteelWorkbookConversationReadResponse,
 } from './steel';
 import { parseSteelProviderChatStreamLine } from './steel/ai';
 
@@ -148,10 +150,17 @@ export function getSteelWorkbook(workbookId: string): Promise<SteelWorkbookReadR
   return request.get(endpoints.steelWorkbook(workbookId));
 }
 
+export function getSteelWorkbookByConversation(
+  conversationId: string,
+): Promise<SteelWorkbookConversationReadResponse> {
+  return request.get(endpoints.steelWorkbookByConversation(conversationId));
+}
+
 export function patchSteelWorkbook(
+  conversationId: string,
   payload: SteelWorkbookPatchRequest,
 ): Promise<SteelWorkbookPatchResponse> {
-  return request.patch(endpoints.steelWorkbook(payload.workbookId), payload);
+  return request.patch(endpoints.steelWorkbookByConversation(conversationId), payload);
 }
 
 export function exportSteelWorkbook(
@@ -161,11 +170,17 @@ export function exportSteelWorkbook(
   return request.postArrayBuffer(endpoints.steelWorkbookExport(workbookId), payload);
 }
 
+export function getSteelFileAnalysisDataByConversation(
+  conversationId: string,
+): Promise<SteelFileAnalysisReadResponse> {
+  return request.get(endpoints.steelFileAnalysisDataByConversation(conversationId));
+}
+
 export function patchSteelFileAnalysisData(
-  fileAnalysisDataId: string,
+  conversationId: string,
   payload: SteelFileAnalysisManualPatchRequest,
 ): Promise<SteelFileAnalysisManualPatchResponse> {
-  return request.patch(endpoints.steelFileAnalysisData(fileAnalysisDataId), payload);
+  return request.patch(endpoints.steelFileAnalysisDataByConversation(conversationId), payload);
 }
 
 /**

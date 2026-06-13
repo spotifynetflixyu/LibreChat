@@ -15,7 +15,7 @@ import type {
 interface SteelFileAnalysisPreviewProps {
   fileAnalysisData: SteelFileAnalysisData | null;
   onSave?: (
-    fileAnalysisDataId: string,
+    conversationId: string,
     payload: SteelFileAnalysisManualPatchRequest,
   ) => Promise<SteelFileAnalysisData>;
 }
@@ -275,9 +275,7 @@ const SteelFileAnalysisPreview = memo(function SteelFileAnalysisPreview({
 
     setIsSaving(true);
     try {
-      const saved = await onSave(draftData.id, {
-        conversationId: draftData.conversationId,
-        workbookId: draftData.workbookId,
+      const saved = await onSave(draftData.conversationId, {
         sourceFiles: draftData.sourceFiles,
         patches: [
           {
@@ -351,9 +349,11 @@ const SteelFileAnalysisPreview = memo(function SteelFileAnalysisPreview({
                 {activeSheet.columns.map((column) => (
                   <th
                     key={column.key}
-                    className="border-b border-border-light px-3 py-2 font-medium text-text-secondary"
+                    className="min-w-[9rem] max-w-[18rem] border-b border-border-light px-3 py-2 font-medium text-text-secondary"
                   >
-                    {column.label}
+                    <span className="line-clamp-2 break-words" title={column.label}>
+                      {column.label}
+                    </span>
                   </th>
                 ))}
               </tr>
@@ -376,7 +376,7 @@ const SteelFileAnalysisPreview = memo(function SteelFileAnalysisPreview({
                   {activeSheet.columns.map((column) => (
                     <td
                       key={column.key}
-                      className="border-b border-border-light px-3 py-2 text-text-primary"
+                      className="max-w-[18rem] border-b border-border-light px-3 py-2 align-top text-text-primary"
                       onDoubleClick={() => {
                         if (canEditActiveSheet) {
                           setEditingCell({ rowId: row.id, columnKey: column.key });
@@ -403,7 +403,12 @@ const SteelFileAnalysisPreview = memo(function SteelFileAnalysisPreview({
                           }}
                         />
                       ) : (
-                        cellText(row.cells[column.key])
+                        <span
+                          className="line-clamp-2 break-words"
+                          title={cellText(row.cells[column.key])}
+                        >
+                          {cellText(row.cells[column.key])}
+                        </span>
                       )}
                     </td>
                   ))}

@@ -85,7 +85,6 @@ describe('Steel workbook public contracts', () => {
 
   it('accepts explicit patch operations for multi-turn workbook updates', () => {
     const patch = steelWorkbookPatchRequestSchema.parse({
-      workbookId: 'wb_1',
       workbookVersion: 2,
       selectedWorkbookRefs: [
         {
@@ -109,6 +108,7 @@ describe('Steel workbook public contracts', () => {
     });
 
     expect(patch.operations).toHaveLength(1);
+    expect('workbookId' in patch).toBe(false);
     expect(patch.operations[0]).toMatchObject({
       op: 'set_cell',
       sheetId: 'quote_details',
@@ -120,7 +120,6 @@ describe('Steel workbook public contracts', () => {
 
   it('accepts workbook patch requests larger than 100 projected operations', () => {
     const patch = steelWorkbookPatchRequestSchema.parse({
-      workbookId: 'wb_1',
       workbookVersion: 2,
       selectedWorkbookRefs: [],
       operations: Array.from({ length: 120 }, (_, index) => ({
