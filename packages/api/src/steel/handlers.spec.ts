@@ -192,6 +192,12 @@ describe('createSteelHandlers', () => {
     }));
     const sendChat = jest.fn(async (options) => {
       options.onReasoningSummary?.('先查 catalog key，再查報價規則。');
+      options.onToolStatus?.({
+        toolName: 'patch_quote_workbook',
+        status: 'started',
+        message:
+          'patch_quote_workbook workbook completion: missing system_order.item_spec; asking AI to fill derivable workbook fields',
+      });
       await options.executeSteelToolCall?.({
         toolName: 'lookup_quote_rules',
         arguments: { catalogFamilies: ['c_type'] },
@@ -275,6 +281,12 @@ describe('createSteelHandlers', () => {
           status: 'completed',
           toolName: 'lookup_quote_rules',
           ok: true,
+        }),
+        expect.objectContaining({
+          type: 'tool',
+          status: 'started',
+          toolName: 'patch_quote_workbook',
+          message: expect.stringContaining('workbook completion'),
         }),
         expect.objectContaining({
           type: 'tool',
@@ -1048,7 +1060,7 @@ describe('createSteelHandlers', () => {
             rows: [
               expect.objectContaining({
                 id: 'row_pl1',
-                cells: { part_no: 'PL7' },
+                cells: expect.objectContaining({ part_no: 'PL7' }),
               }),
             ],
           }),
@@ -1146,7 +1158,7 @@ describe('createSteelHandlers', () => {
             rows: [
               expect.objectContaining({
                 id: 'row_page_1',
-                cells: { part_no: 'PL1' },
+                cells: expect.objectContaining({ part_no: 'PL1' }),
               }),
             ],
           }),
@@ -1370,7 +1382,7 @@ describe('createSteelHandlers', () => {
             file_analysis_data: expect.objectContaining({
               rows: [
                 expect.objectContaining({
-                  cells: { part_no: 'PL1', spec: '367×323×12t' },
+                  cells: expect.objectContaining({ part_no: 'PL1', spec: '367×323×12t' }),
                 }),
               ],
             }),
@@ -1781,12 +1793,10 @@ describe('createSteelHandlers', () => {
           toolName: 'search_price_candidates',
           arguments: {
             originalText: 'file_analysis_data: C100x50x20x2.3t 長度 6M 數量 1 支',
-            catalogFamilies: ['c_type'],
             candidateQueries: [
               {
                 queryId: 'file-analysis-c100x23',
-                productNames: ['錏輕型鋼'],
-                specKeyContains: '100x2.3',
+                productNames: ['錏輕型鋼', '100*2.3'],
                 confidence: 'high',
                 reason:
                   'Derived from file_analysis_data C100x50x20x2.3t row and reviewed c_type rules',
@@ -2276,6 +2286,78 @@ describe('createSteelHandlers', () => {
         workbookPatch,
       }),
     );
+  });
+
+  it('applies provider delete_row workbook patch operations before returning the chat response', async () => {
+    const workbookService = createMemoryWorkbookService('wb_delete_rows');
+    const created = await workbookService.create({});
+    const seeded = await workbookService.patch({
+      workbookId: created.workbook.id,
+      workbookVersion: created.workbook.version,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'set_cell',
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'item_spec',
+          value: '錏輕型鋼 75*2.3',
+        },
+        {
+          op: 'set_cell',
+          sheetId: 'system_order',
+          rowId: 'order_2',
+          columnKey: 'item_spec',
+          value: '未確認 鍍鋅方管',
+        },
+      ],
+    });
+    const operations = [
+      {
+        op: 'delete_row' as const,
+        sheetId: 'system_order' as const,
+        rowId: 'order_2',
+        reason: 'User requested keeping only confirmed C75 system-order rows.',
+      },
+    ];
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '系統訂單已只保留錏輕型鋼。',
+      unsupportedSettings: [],
+      warnings: [],
+      workbookPatch: { operations },
+    }));
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+      workbookService,
+    });
+    const req = {
+      body: {
+        workbookId: created.workbook.id,
+        workbookVersion: seeded.workbook.version,
+        selectedWorkbookRefs: [],
+        messages: [{ role: 'user', content: '系統訂單只留 錏輕型鋼，其他型號未確認都刪除' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const response = res.json.mock.calls[0]?.[0];
+    const systemOrder = response.workbookPatch.workbook.sheets.find(
+      (sheet: { id: string }) => sheet.id === 'system_order',
+    );
+    expect(systemOrder.rows).toEqual([
+      {
+        id: 'order_1',
+        cells: {
+          item_spec: '錏輕型鋼 75*2.3',
+        },
+      },
+    ]);
   });
 
   it('returns a visible workbook update summary when the model only emits a patch tool call', async () => {

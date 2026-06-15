@@ -273,6 +273,18 @@ const workbookTemplateSheets: SteelWorkbookSheet[] = [
     ],
   },
   {
+    id: 'customer_data',
+    label: '客戶資料',
+    columns: [
+      column('customer_code', '客戶編號', 'text', true, 120),
+      column('vendor_name', '廠商名稱', 'text', true, 220),
+      column('price_tier', '等級', 'text', true, 120),
+      column('confirmation_status', '確認狀態', 'status', true, 140),
+      column('note', '備註', 'text', true, 260),
+    ],
+    rows: [],
+  },
+  {
     id: 'quote_details',
     label: '報價明細',
     columns: quoteDetailColumns,
@@ -1133,7 +1145,7 @@ const workbookTemplateSheets: SteelWorkbookSheet[] = [
   },
   {
     id: 'customer_quote',
-    label: '給客戶用',
+    label: '報價單',
     columns: [
       column('line_no', '項次', 'number', true, 72),
       column('item_spec', '品名規格', 'text', true, 260),

@@ -173,6 +173,39 @@ function readNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function getCandidateText(candidate: unknown): string {
+  const record = readRecord(candidate);
+  if (!record) {
+    return '';
+  }
+
+  return [
+    readString(record.erpItemCode),
+    readString(record.itemCode),
+    readString(record.productName),
+    readString(record.displayName),
+  ].join(' ');
+}
+
+function getAllPriceCandidates(calls: readonly CapturedSteelToolCall[]): unknown[] {
+  return getToolCalls(calls, 'search_price_candidates').flatMap((call) => {
+    if (!call.result.ok) {
+      return [];
+    }
+
+    return readArray(call.result.data.priceCandidates);
+  });
+}
+
+function hasCandidateMatching(
+  calls: readonly CapturedSteelToolCall[],
+  matcher: (candidateText: string, candidate: unknown) => boolean,
+): boolean {
+  return getAllPriceCandidates(calls).some((candidate) =>
+    matcher(getCandidateText(candidate), candidate),
+  );
+}
+
 function getGeneratedToolCalls(
   rounds: readonly CapturedGenerateRound[],
   toolName: string,
@@ -712,6 +745,86 @@ describe('Steel OpenAI OAuth oral quote smoke', () => {
   }
 });
 
+const runMixedOralMaterials =
+  process.env.STEEL_OPENAI_OAUTH_MIXED_ORAL_MATERIALS_TEST === 'true';
+const describeMixedOralMaterials = runMixedOralMaterials ? describe : describe.skip;
+
+describeMixedOralMaterials('Steel OpenAI OAuth mixed oral materials smoke', () => {
+  it(
+    'finds square-pipe and round-iron price rows while marking PVC elbow as no-data',
+    async () => {
+      const run = await runLiveSteelChat(
+        [
+          {
+            role: 'user',
+            content: [
+              '3*3鍍鋅方管',
+              '1740*250支',
+              '6000*50支',
+              '3分圓鐵2820*500支',
+              'C75*3630mm*76隻',
+              '',
+              'PVC90度彎頭*100個',
+            ].join('\n'),
+          },
+        ],
+        3600,
+      );
+      const priceCalls = getToolCalls(run.capturedCalls, 'search_price_candidates');
+      const priceArguments = stringify(priceCalls.map((call) => call.arguments));
+      const priceResults = stringify(priceCalls.map((call) => call.result));
+      const serialized = stringify({
+        response: run.response,
+        capturedCalls: run.capturedCalls,
+        capturedGenerateRounds: run.capturedGenerateRounds,
+      });
+      const hasSquarePipe = hasCandidateMatching(
+        run.capturedCalls,
+        (text) => text.includes('GDH3020') && text.includes('錏方管 75*2.0'),
+      );
+      const hasRoundIron = hasCandidateMatching(
+        run.capturedCalls,
+        (text) => text.includes('EQB0090') && text.includes('圓鐵 9m/m(3/8)(3.3)'),
+      );
+      const hasPvcCandidate = hasCandidateMatching(run.capturedCalls, (text) =>
+        /PVC|ＰＶＣ/u.test(text),
+      );
+
+      if (priceCalls.length === 0) {
+        throw new Error(
+          `Missing search_price_candidates calls. Run: ${stringify({
+            response: run.response,
+            capturedCalls: summarizeCapturedCalls(run.capturedCalls),
+          })}`,
+        );
+      }
+      if (!hasSquarePipe) {
+        throw new Error(
+          `Missing expected GDH3020 錏方管 75*2.0 candidate. Calls: ${stringify(
+            summarizeCapturedCalls(run.capturedCalls),
+          )}`,
+        );
+      }
+      if (!hasRoundIron) {
+        throw new Error(
+          `Missing expected EQB0090 圓鐵 9m/m(3/8)(3.3) candidate. Calls: ${stringify(
+            summarizeCapturedCalls(run.capturedCalls),
+          )}`,
+        );
+      }
+
+      expect(priceArguments).toMatch(/productNames|erpItemCodes|candidateQueries/u);
+      expect(priceArguments).not.toMatch(/specKeyContains|specKey|catalogFamilies/u);
+      expect(priceResults).toContain('GDH3020');
+      expect(priceResults).toContain('EQB0090');
+      expect(hasPvcCandidate).toBe(false);
+      expect(run.response.text).toMatch(/PVC[\s\S]*(?:未找到|無資料|未確認|查無)/u);
+      expect(serialized).not.toMatch(/access_token|authorization|Bearer|authFile/i);
+    },
+    caseTimeoutMs + 90000,
+  );
+});
+
 const runAngleBoundedOral = process.env.STEEL_OPENAI_OAUTH_ANGLE_BOUNDED_ORAL_TEST === 'true';
 const describeAngleBoundedOral = runAngleBoundedOral ? describe : describe.skip;
 
@@ -833,7 +946,7 @@ describeWorkbookPatch('Steel OpenAI OAuth workbook patch smoke', () => {
           {
             role: 'user',
             content:
-              'C型鋼 C100x50x20x2.3t 6M 一支多少？請先依序查 lookup_quote_rules 與 search_price_candidates，拿到 positive reviewed candidate 後優先呼叫 patch_quote_workbook，更新報價明細、價格來源、判讀備註、總結、人工複核、系統訂單、給客戶用，並回覆小計與改動重點。',
+              'C型鋼 C100x50x20x2.3t 6M 一支多少？請先依序查 lookup_quote_rules 與 search_price_candidates，拿到 positive reviewed candidate 後優先呼叫 patch_quote_workbook，更新系統訂單、人工複核、報價單，並回覆小計與改動重點。',
           },
         ],
         2800,

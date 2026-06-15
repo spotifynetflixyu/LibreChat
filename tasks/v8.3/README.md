@@ -52,7 +52,10 @@ The v8.3 MVP is production-shaped and access is environment-gated:
   - 價格來源
   - 判讀備註
   - 系統訂單
-  - 給客戶用
+  - 報價單
+- Current AI-facing `patch_quote_workbook` completion is intentionally narrower
+  than the public workbook shape: it targets `系統訂單`, `人工複核`, and `報價單`
+  only.
 - ExcelJS export for the full workbook or any selected workbook sheets.
 - Phase 4 staff workbook export does not apply customer masking or dedicated
   system-order export logic; future customer-specific workbook formats can add
@@ -82,7 +85,7 @@ Deferred until after the MVP:
 | 0     | [Decision Baseline](phase-0-decisions.md)                     | openai-oauth-responses-primary v8.3 decisions are locked and stale OpenAI-only assumptions removed                                                                                                              |
 | 1     | [Platform Foundation](phase-1-platform-foundation.md)         | Contracts, schemas, routes, permissions, audit, provider-state metadata, and Supabase seams build                                                                                                               |
 | 2     | [Quote Data And Tools](phase-2-data-tools.md)                 | Repositories and business tools support price-first reviewed lookup, rule prompts, and workbook subtotal validation                                                                                              |
-| 3     | [Quote Workbook MVP](phase-3-quote-workbook-mvp.md)           | Chat UX sends messages and previews a seven-sheet workbook; openai-oauth binding is complete before live smoke; `openai_oauth_responses` and capability-gated `openai_api` fallback each have a live smoke case |
+| 3     | [Quote Workbook MVP](phase-3-quote-workbook-mvp.md)           | Chat UX sends messages and previews a seven-sheet public workbook; AI patch completion targets `系統訂單`, `人工複核`, and `報價單`; openai-oauth binding is complete before live smoke; `openai_oauth_responses` and capability-gated `openai_api` fallback each have a live smoke case |
 | 4     | [Excel Export](phase-4-excel-export.md)                       | ExcelJS export works with seven fixed sheets and arbitrary selected-sheet staff downloads                                                                                                                       |
 | 5     | [Admin Source Management](phase-5-admin-source-management.md) | ERP XLSX Admin Import, Admin table maintenance, and source management safely commit reviewed data                                                                                                               |
 | 6     | [Production Hardening](phase-6-production-hardening.md)       | Memory, retrieval, eval harness, async jobs, signed exports, and production hardening are beta-ready                                                                                                            |

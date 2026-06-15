@@ -9,6 +9,7 @@ const steelWorkbookSheetIdEnum = [
   'price_sources',
   'interpretation_notes',
   'system_order',
+  'customer_data',
   'customer_quote',
 ];
 
@@ -47,7 +48,7 @@ const steelWorkbookPatchOperationSchema = new Schema(
   {
     op: {
       type: String,
-      enum: ['set_cell'],
+      enum: ['set_cell', 'delete_row'],
       required: true,
     },
     sheetId: {
@@ -56,7 +57,12 @@ const steelWorkbookPatchOperationSchema = new Schema(
       required: true,
     },
     rowId: { type: String, required: true },
-    columnKey: { type: String, required: true },
+    columnKey: {
+      type: String,
+      required(this: { op?: string }) {
+        return this.op === 'set_cell';
+      },
+    },
     value: { type: steelWorkbookCellValue },
     reason: { type: String },
   },

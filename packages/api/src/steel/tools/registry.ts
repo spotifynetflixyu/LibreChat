@@ -29,7 +29,7 @@ const steelToolDefinitions: SteelToolDefinition[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search reviewed product price candidates from normalized candidate queries without converting price units. Use catalogFamilies for selected catalog/material keys; use productNames for reviewed product/source-name candidates. Never use oral/category/family label text as productNames.',
+      'Search reviewed product price candidates from AI-derived product-name text and ERP item code prefixes without converting price units. Batch related product names, specification fragments, and code prefixes into one call with productNames, erpItemCodes, or candidateQueries; do not call once per keyword. productNames searches price-row product names; erpItemCodes searches exact item codes or prefixes.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
 ];

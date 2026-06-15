@@ -844,7 +844,7 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { specKey: 'C150', customerTierId: 1 },
+      arguments: { erpItemCodes: ['P-C150'], customerTierId: 1 },
     });
 
     expect(result.ok).toBe(true);
@@ -858,7 +858,7 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('searches price candidates by normalized catalog family keys', async () => {
+  it('searches price candidates by product-name spec fragments', async () => {
     const client = createClient([
       [
         {
@@ -887,7 +887,7 @@ describe('executeSteelTool', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        catalogFamilies: ['h_beam'],
+        productNames: ['H型鋼100*50*5/7*6M'],
         customerTierId: 1,
         limit: 5,
       },
@@ -897,14 +897,174 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls[0]?.values).toEqual(['reviewed', 'h_beam', 1, 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%H型鋼100*50*5/7*6M%', 1, 5]);
     expect(result.data.priceCandidates[0]).toMatchObject({
       catalogFamily: 'h_beam',
       productName: 'H型鋼100*50*5/7*6M(56)進口',
     });
   });
 
-  it('searches price candidates by generic catalog family keys', async () => {
+  it('expands PL oral plate specs to OT laser-cut product-name searches', async () => {
+    const client = createClient([
+      [
+        {
+          id: '61',
+          erp_item_code: 'OTL160',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'OTL160_16.0mm_OT_laser',
+          product_name: '16.0m/mOT板雷射切割',
+          catalog_family: 'ot_plate',
+          material_grade: null,
+          unit: 'kg',
+          unit_price: '35.5000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        originalText: 'PL16*96',
+        candidateQueries: [
+          {
+            queryId: 'raw-pl-plate',
+            label: 'PL16*96',
+            productNames: ['PL16*96'],
+            confidence: 'low',
+            reason: 'raw PL oral plate spec',
+          },
+        ],
+        customerTierId: 1,
+        limit: 5,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls[0]?.values).toEqual(
+      expect.arrayContaining([
+        'reviewed',
+        '%16.0m/mOT板雷射切割%',
+        '%OT板雷射切割%',
+        '%黑鐵板 雷射切割%',
+        1,
+        5,
+      ]),
+    );
+    expect(JSON.stringify(client.calls[0]?.values)).not.toContain('四方切');
+    expect(JSON.stringify(client.calls[0]?.values)).not.toContain('PL16*96');
+    expect(result.data.searchQueries).toEqual([
+      expect.objectContaining({
+        queryId: 'raw-pl-plate:ot-laser',
+        productNames: ['16.0m/mOT板雷射切割', 'OT板雷射切割', '黑鐵板 雷射切割'],
+      }),
+    ]);
+    expect(result.data.priceCandidates[0]).toMatchObject({
+      productName: '16.0m/mOT板雷射切割',
+      unit: 'kg',
+      unitPrice: 35.5,
+    });
+  });
+
+  it('rejects square-cut plate price searches before table lookup', async () => {
+    const client = createClient([]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        originalText: 'PL6*80',
+        productNames: ['6.0m/mOT板四方切'],
+        limit: 5,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      toolName: 'search_price_candidates',
+      errorCategory: 'invalid_arguments',
+    });
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it('omits per-piece plate price candidates from laser-cut plate searches', async () => {
+    const client = createClient([
+      [
+        {
+          id: '62',
+          erp_item_code: 'OTL160P',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'OTL160_piece',
+          product_name: '16.0m/mOT板雷射切割',
+          catalog_family: 'ot_plate',
+          material_grade: null,
+          unit: 'piece',
+          unit_price: '1800.0000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+        {
+          id: '63',
+          erp_item_code: 'OTL160K',
+          category_id: null,
+          customer_tier_id: '1',
+          spec_key: 'OTL160_kg',
+          product_name: '16.0m/mOT板雷射切割',
+          catalog_family: 'ot_plate',
+          material_grade: null,
+          unit: 'kg',
+          unit_price: '35.5000',
+          product_price_unit_weight: null,
+          product_price_unit_weight_unit: null,
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        productNames: ['16.0m/mOT板雷射切割'],
+        customerTierId: 1,
+        limit: 5,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.priceCandidates).toHaveLength(1);
+    expect(result.data.priceCandidates[0]).toMatchObject({
+      productName: '16.0m/mOT板雷射切割',
+      unit: 'kg',
+      unitPrice: 35.5,
+    });
+  });
+
+  it('searches generic price candidates by product-name text', async () => {
     const client = createClient([
       [
         {
@@ -933,7 +1093,7 @@ describe('executeSteelTool', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        catalogFamilies: ['door_lock'],
+        productNames: ['鋁門鎖'],
         customerTierId: 1,
         limit: 5,
       },
@@ -943,7 +1103,7 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls[0]?.values).toEqual(['reviewed', 'door_lock', 1, 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%鋁門鎖%', 1, 5]);
     expect(result.data.priceCandidates[0]).toMatchObject({
       catalogFamily: 'door_lock',
       productName: '鋁門鎖-300H勾鎖(212H)',
@@ -1014,9 +1174,7 @@ describe('executeSteelTool', () => {
         candidateQueries: [
           {
             queryId: 'formed-angle-ya',
-            productNames: ['錏成型角鐵'],
-            specKey: '30x30',
-            specKeyContains: '30x30',
+            productNames: ['錏成型角鐵', '30x30'],
             confidence: 'medium',
             reason: 'AI interpreted L30x30 as angle steel and 亞 as possible 錏',
           },
@@ -1037,7 +1195,7 @@ describe('executeSteelTool', () => {
       throw new Error(result.errorSummary);
     }
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%30x30%', '%錏成型角鐵%', 1, 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%錏成型角鐵%', '%30x30%', 1, 5]);
     expect(JSON.stringify(client.calls[0])).not.toContain('亞L30x30');
     expect(result.data).toMatchObject({
       priceCandidates: [
@@ -1121,9 +1279,7 @@ describe('executeSteelTool', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        productNames: ['錏成型角鐵', '鍍鋅角鐵'],
-        specKeyContains: '30x30',
-        catalogFamilies: ['angle'],
+        productNames: ['錏成型角鐵', '鍍鋅角鐵', '30x30'],
         limit: 5,
       },
     });
@@ -1135,11 +1291,10 @@ describe('executeSteelTool', () => {
     expect(client.calls).toHaveLength(1);
     expect(client.calls[0]?.values).toEqual([
       'reviewed',
-      '%30x30%',
       '%錏成型角鐵%',
       '%鍍鋅%',
       '%角鐵%',
-      'angle',
+      '%30x30%',
       5,
     ]);
     expect(result.data.priceCandidates).toEqual([
@@ -1152,6 +1307,123 @@ describe('executeSteelTool', () => {
         unitPrice: 205,
       }),
     ]);
+  });
+
+  it('interleaves batched candidate query results before output sanitization caps arrays', async () => {
+    const priceRow = (id: string, erpItemCode: string, productName: string) => ({
+      id,
+      erp_item_code: erpItemCode,
+      category_id: null,
+      customer_tier_id: '2',
+      spec_key: `${erpItemCode}_${productName}`,
+      product_name: productName,
+      catalog_family: null,
+      material_grade: null,
+      unit: 'piece',
+      unit_price: '100.0000',
+      product_price_unit_weight: null,
+      product_price_unit_weight_unit: null,
+      currency: 'TWD',
+      value_state: 'confirmed',
+      review_state: 'reviewed',
+      active: true,
+      source_refs: [],
+    });
+    const client = createClient([
+      Array.from({ length: 20 }, (_, index) =>
+        priceRow(String(index + 1), `GDH${index + 1}`, `錏方管 ${index + 1}`),
+      ),
+      [priceRow('101', 'EQB0090', '圓鐵 9m/m(3/8)(3.3)')],
+      [priceRow('201', 'CCG07523', '錏輕型鋼 75*2.3')],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        originalText: '3*3鍍鋅方管 3分圓鐵 C75',
+        candidateQueries: [
+          {
+            queryId: 'square',
+            productNames: ['錏方管', '75*2.0'],
+            erpItemCodes: ['GDH'],
+            confidence: 'medium',
+            reason: 'square pipe candidate',
+          },
+          {
+            queryId: 'round',
+            productNames: ['圓鐵', '9m/m', '3/8'],
+            erpItemCodes: ['EQB'],
+            confidence: 'medium',
+            reason: 'round iron candidate',
+          },
+          {
+            queryId: 'c75',
+            productNames: ['錏輕型鋼', '75*2.3'],
+            erpItemCodes: ['CCG075'],
+            confidence: 'medium',
+            reason: 'C75 candidate',
+          },
+        ],
+        customerTierId: 2,
+        limit: 100,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls).toHaveLength(3);
+    expect(result.data.priceCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ erpItemCode: 'EQB0090' }),
+        expect.objectContaining({ erpItemCode: 'CCG07523' }),
+      ]),
+    );
+    expect(JSON.stringify(result.data.priceCandidates).indexOf('EQB0090')).toBeLessThan(
+      JSON.stringify(result.data.priceCandidates).indexOf('GDH2'),
+    );
+  });
+
+  it('keeps up to 100 price candidates in the AI-visible tool result', async () => {
+    const priceRow = (id: string) => ({
+      id,
+      erp_item_code: `GDH${id}`,
+      category_id: null,
+      customer_tier_id: '2',
+      spec_key: `GDH${id}_錏方管`,
+      product_name: `錏方管 ${id}`,
+      catalog_family: 'square_pipe',
+      material_grade: null,
+      unit: 'piece',
+      unit_price: '100.0000',
+      product_price_unit_weight: null,
+      product_price_unit_weight_unit: null,
+      currency: 'TWD',
+      value_state: 'confirmed',
+      review_state: 'reviewed',
+      active: true,
+      source_refs: [],
+    });
+    const client = createClient([Array.from({ length: 30 }, (_, index) => priceRow(String(index + 1)))]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        productNames: ['錏方管'],
+        customerTierId: 2,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls[0]?.values?.at(-1)).toBe(100);
+    expect(result.data.priceCandidates).toHaveLength(30);
+    expect(JSON.stringify(result.data.priceCandidates)).toContain('GDH30');
   });
 
   it('returns C-type instruction packet group from one batched lookup', async () => {
@@ -1640,36 +1912,65 @@ describe('executeSteelTool', () => {
     expect(client.calls).toHaveLength(0);
   });
 
-  it('rejects c_type price searches that still use C 型鋼 as a productNames candidate', async () => {
-    const client = createClient([]);
+  it('treats bare C productNames as recoverable alias terms instead of failing the whole search', async () => {
+    const client = createClient([
+      [
+        {
+          id: '75',
+          erp_item_code: 'CCG07523',
+          category_id: null,
+          customer_tier_id: '2',
+          customer_tier_code: 'B',
+          customer_tier_name: 'B級',
+          spec_key: '錏輕型鋼_75x2.3',
+          product_name: '錏輕型鋼 75*2.3',
+          catalog_family: 'c_type',
+          material_grade: null,
+          unit: 'Kg',
+          unit_price: '26.8000',
+          product_price_unit_weight: '3.25000',
+          product_price_unit_weight_unit: 'kg_per_m',
+          currency: 'TWD',
+          value_state: 'confirmed',
+          review_state: 'reviewed',
+          active: true,
+          source_refs: [],
+        },
+      ],
+    ]);
 
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-        catalogFamilies: ['c_type'],
+        originalText: 'C75 3630mm 76隻',
         candidateQueries: [
           {
             queryId: 'c-type-family-label',
-            productNames: ['C型鋼'],
-            specKeyContains: '100x50x20',
-            confidence: 'high',
-            reason: 'AI selected c_type but reused the family label as product_name',
+            productNames: ['C', '75*2.3'],
+            erpItemCodes: ['CCG075'],
+            confidence: 'medium',
+            reason: 'AI selected c_type and included a recoverable family label with usable facets',
           },
         ],
         limit: 5,
       },
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      errorCategory: 'invalid_arguments',
-      errorSummary: expect.stringContaining(
-        'Do not use C型鋼 as productNames after selecting c_type',
-      ),
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]?.sql).toEqual(expect.stringContaining('steel.product_name_aliases'));
+    expect(client.calls[0]?.values).toEqual(
+      expect.arrayContaining(['%C%', '%75*2.3%', '%CCG075%']),
+    );
+    expect(result.data.priceCandidates[0]).toMatchObject({
+      erpItemCode: 'CCG07523',
+      productName: '錏輕型鋼 75*2.3',
+      unitPrice: 26.8,
     });
-    expect(client.calls).toHaveLength(0);
   });
 
   it('rejects c_type full-section spec searches that omit the width-thickness price fragment', async () => {
@@ -1680,14 +1981,12 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-        catalogFamilies: ['c_type'],
         candidateQueries: [
           {
             queryId: 'c-type-full-section',
-            productNames: ['錏輕型鋼'],
-            specKeyContains: '100x50x20 2.3',
+            productNames: ['錏輕型鋼', '100x50x20x2.3'],
             confidence: 'medium',
-            reason: 'AI used the full C 型鋼 section but omitted the price-table fragment',
+            reason: 'AI used the full C 型鋼 section but omitted the product-name price fragment',
           },
         ],
         limit: 5,
@@ -1711,7 +2010,7 @@ describe('executeSteelTool', () => {
           category_id: null,
           customer_tier_id: null,
           spec_key: '錏輕型鋼_100x2.3',
-          product_name: '錏輕型鋼',
+          product_name: '錏輕型鋼 100*2.3',
           catalog_family: 'c_type',
           material_grade: null,
           unit: 'piece',
@@ -1732,13 +2031,11 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-        catalogFamilies: ['c_type'],
         candidateQueries: [
           {
             queryId: 'c-type-assumed-galvanized',
             label: '錏輕型鋼 100x2.3（C100x50x20x2.3t 6M）',
-            productNames: ['錏輕型鋼'],
-            specKeyContains: '100x2.3',
+            productNames: ['錏輕型鋼', '100*2.3'],
             confidence: 'high',
             reason: 'AI assumed the usual C 型鋼 material before reviewed lookup',
           },
@@ -1751,15 +2048,15 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%100x2.3%', '%錏輕型鋼%', 'c_type', 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%錏輕型鋼%', '%100*2.3%', 5]);
     expect(result.data.priceCandidates[0]).toMatchObject({
       catalogFamily: 'c_type',
-      productName: '錏輕型鋼',
+      productName: '錏輕型鋼 100*2.3',
       specKey: '錏輕型鋼_100x2.3',
     });
   });
 
-  it('prefers c_type partial spec lookup when AI also sends a full-section specKey', async () => {
+  it('accepts c_type product-name spec fragments when AI also explains the full section', async () => {
     const client = createClient([
       [
         {
@@ -1768,7 +2065,7 @@ describe('executeSteelTool', () => {
           category_id: null,
           customer_tier_id: null,
           spec_key: '錏輕型鋼_100x2.3',
-          product_name: '錏輕型鋼',
+          product_name: '錏輕型鋼 100*2.3',
           catalog_family: 'c_type',
           material_grade: null,
           unit: 'piece',
@@ -1789,15 +2086,12 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-        catalogFamilies: ['c_type'],
         candidateQueries: [
           {
             queryId: 'c-type-full-and-compact',
-            productNames: ['錏輕型鋼'],
-            specKey: '100x50x20 2.3t',
-            specKeyContains: '100x2.3',
+            productNames: ['錏輕型鋼', '100*2.3'],
             confidence: 'high',
-            reason: 'AI sent full section and compact price-table fragment',
+            reason: 'AI sent material and product-name spec fragment after reading the full section',
           },
         ],
         limit: 5,
@@ -1808,15 +2102,15 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%100x2.3%', '%錏輕型鋼%', 'c_type', 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%錏輕型鋼%', '%100*2.3%', 5]);
     expect(result.data.priceCandidates[0]).toMatchObject({
       catalogFamily: 'c_type',
-      productName: '錏輕型鋼',
+      productName: '錏輕型鋼 100*2.3',
       specKey: '錏輕型鋼_100x2.3',
     });
   });
 
-  it('accepts c_type width-thickness price fragments without productNames when material is unknown', async () => {
+  it('accepts c_type default galvanized product-name fragments when material is unknown', async () => {
     const client = createClient([
       [
         {
@@ -1825,7 +2119,7 @@ describe('executeSteelTool', () => {
           category_id: null,
           customer_tier_id: null,
           spec_key: '錏輕型鋼_100x2.3',
-          product_name: '錏輕型鋼',
+          product_name: '錏輕型鋼 100*2.3',
           catalog_family: 'c_type',
           material_grade: null,
           unit: 'piece',
@@ -1846,13 +2140,12 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         originalText: 'C型鋼 100x50x20 2.3t 一支多少？',
-        catalogFamilies: ['c_type'],
         candidateQueries: [
           {
             queryId: 'c-type-100x23',
-            specKeyContains: '100x2.3',
+            productNames: ['錏輕型鋼', '100*2.3'],
             confidence: 'high',
-            reason: 'AI derived the C 型鋼 price-table fragment from width and thickness',
+            reason: 'AI defaulted C 型鋼 to 錏輕型鋼 and derived width-thickness product-name text',
           },
         ],
         limit: 5,
@@ -1863,10 +2156,10 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%100x2.3%', 'c_type', 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%錏輕型鋼%', '%100*2.3%', 5]);
     expect(result.data.priceCandidates[0]).toMatchObject({
       catalogFamily: 'c_type',
-      productName: '錏輕型鋼',
+      productName: '錏輕型鋼 100*2.3',
       specKey: '錏輕型鋼_100x2.3',
     });
   });
@@ -1879,12 +2172,10 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         originalText: '錏C型鋼 100x50x20 2.3t 一支多少？',
-        catalogFamilies: ['c_type'],
         candidateQueries: [
           {
             queryId: 'c-type-explicit-galvanized',
-            productNames: ['錏輕型鋼'],
-            specKeyContains: '100x2.3',
+            productNames: ['錏輕型鋼', '100*2.3'],
             confidence: 'high',
             reason: 'User specified 錏 material/surface',
           },
@@ -1894,7 +2185,7 @@ describe('executeSteelTool', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%100x2.3%', '%錏輕型鋼%', 'c_type', 5]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%錏輕型鋼%', '%100*2.3%', 5]);
   });
 
   it('enforces per-run tool call limits before dispatching handlers', async () => {

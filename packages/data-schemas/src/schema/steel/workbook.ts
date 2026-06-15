@@ -19,6 +19,7 @@ const steelWorkbookSheetIdEnum = [
   'price_sources',
   'interpretation_notes',
   'system_order',
+  'customer_data',
   'customer_quote',
 ];
 

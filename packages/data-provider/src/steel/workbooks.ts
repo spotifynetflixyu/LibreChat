@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const requiredSteelWorkbookSheetIds = [
   'system_order',
+  'customer_data',
   'quote_details',
   'summary',
   'manual_review',
@@ -104,7 +105,7 @@ export const steelWorkbookSchema = z
 
 export type SteelWorkbook = z.infer<typeof steelWorkbookSchema>;
 
-export const steelWorkbookPatchOperationSchema = z.object({
+const steelWorkbookSetCellOperationSchema = z.object({
   op: z.literal('set_cell'),
   sheetId: steelWorkbookSheetIdSchema,
   rowId: z.string().min(1),
@@ -112,6 +113,18 @@ export const steelWorkbookPatchOperationSchema = z.object({
   value: steelWorkbookCellValueSchema,
   reason: z.string().min(1).optional(),
 });
+
+const steelWorkbookDeleteRowOperationSchema = z.object({
+  op: z.literal('delete_row'),
+  sheetId: steelWorkbookSheetIdSchema,
+  rowId: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+
+export const steelWorkbookPatchOperationSchema = z.discriminatedUnion('op', [
+  steelWorkbookSetCellOperationSchema,
+  steelWorkbookDeleteRowOperationSchema,
+]);
 
 export type SteelWorkbookPatchOperation = z.infer<typeof steelWorkbookPatchOperationSchema>;
 

@@ -293,19 +293,20 @@ customer-facing total。
 typed workbook operations，並由 workbook schemas 與 services 決定套用或拒絕。
 
 同一筆 line 後續若改變客戶、分級、數量、重量、單價或小計，必須用相同 `lineId`
-重新輸出 semantic quote patch，讓 `報價明細`、`系統訂單`、`總結`、`價格來源`、
-`人工複核`、`判讀備註` 與 `給客戶用` 可同步更新；不要只改單一 cell 而漏掉
-衍生欄位。
+重新輸出 semantic quote patch，讓 AI-facing target sheets `系統訂單`、`人工複核`
+與 `報價單` (`customer_quote`) 可同步更新；不要只改單一 cell 而漏掉衍生欄位。
+Public workbook 仍保留 `報價明細`、`總結`、`價格來源` 與 `判讀備註`，但它們不是
+目前 `patch_quote_workbook` completion gate。
 
 不要要求使用者提供內部 workbook IDs，例如 `sheetId`、`rowId` 或 `columnKey`。
 應根據 workbook context 與 typed patch paths 解析使用者看到的中文分頁/欄位。
 
 當報價已有有用的 source-backed candidates，但仍需要確認時，可寫入 provisional
 workbook content。快速價格暫估若有 reviewed positive candidate，應使用
-`patch_quote_workbook` 寫入 `quote_details`、`price_sources`、`summary`、
-`manual_review`、`interpretation_notes`、`system_order` 與 `customer_quote`
-可由目前證據推導的 provisional preview 欄位。`quote_details` 的可見報價金額
-欄位統一使用 `小計`，internal key 是 `subtotal`；不要另加或使用可見 `報價` 欄位。
+`patch_quote_workbook` 寫入 `system_order`、`manual_review` 與 `customer_quote`
+可由目前證據推導的 provisional preview 欄位。`customer_quote` 的可見報價金額
+欄位統一使用 `小計` / `報價總額` 的 AI semantic target；不要另加或使用可見
+`報價` 欄位。
 `system_order` 的 `型號` 欄位必須由採用的產品價格列 `型號` 填入
 `systemOrder.modelCode`，例如 `CCG10023`；不可把口語品名、catalog family key 或
 材料分類文字當作系統訂單型號。
@@ -319,8 +320,9 @@ workbook content。快速價格暫估若有 reviewed positive candidate，應使
 
 只有 reviewed facts、selected defaults/formulas 與必要使用者確認都足夠時，才可寫入
 confirmed totals。若材料、厚度、長度、單位、價格或公式路徑仍未確認，不可 patch
-`summary` 總額、`customer_quote` 小計或 confirmed customer-facing total；但可在
-`quote_details.subtotal` 寫入清楚標示為 provisional 的 `小計`。
+`customer_quote` confirmed 小計、`customerQuoteTotal` 或 confirmed
+customer-facing total；但可在 `customer_quote` 寫入 `未確認` 或清楚標示為
+provisional 的小計/報價總額。
 
 ### `responseRules`
 

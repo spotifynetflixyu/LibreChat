@@ -83,7 +83,7 @@ function isSourceRef(value: unknown): value is SteelSourceRef {
 }
 
 function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSourceRef[] {
-  if (refs.length >= 20 || value === null || value === undefined) {
+  if (refs.length >= 100 || value === null || value === undefined) {
     return refs;
   }
 
@@ -93,7 +93,7 @@ function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSo
   }
 
   if (Array.isArray(value)) {
-    value.slice(0, 20).forEach((entry) => collectSourceRefs(entry, refs));
+    value.slice(0, 100).forEach((entry) => collectSourceRefs(entry, refs));
     return refs;
   }
 
@@ -148,18 +148,70 @@ function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
   });
 }
 
+function normalizePriceSearchText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, '');
+}
+
+function isLaserCutPlateSearch(productNames: readonly string[]): boolean {
+  return productNames
+    .map(normalizePriceSearchText)
+    .some(
+      (productName) =>
+        productName.includes('ot板雷射切割') ||
+        productName.includes('黑鐵板雷射切割') ||
+        /m\/mot板雷射切割/u.test(productName),
+    );
+}
+
+function filterPlateLaserPriceCandidates(
+  candidates: SteelPriceItem[],
+  productNames: readonly string[],
+): SteelPriceItem[] {
+  if (!isLaserCutPlateSearch(productNames)) {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) => candidate.unit === 'kg');
+}
+
+function interleaveDedupePriceCandidateLists(candidateLists: SteelPriceItem[][]): SteelPriceItem[] {
+  const seen = new Set<number>();
+  const priceCandidates: SteelPriceItem[] = [];
+  const maxLength = Math.max(0, ...candidateLists.map((candidateList) => candidateList.length));
+
+  for (let index = 0; index < maxLength; index += 1) {
+    for (const candidateList of candidateLists) {
+      const candidate = candidateList[index];
+      if (!candidate || seen.has(candidate.id)) {
+        continue;
+      }
+
+      seen.add(candidate.id);
+      priceCandidates.push(candidate);
+    }
+  }
+
+  return priceCandidates;
+}
+
 async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
   if (!input.candidateQueries || input.candidateQueries.length === 0) {
     const productNames = [...new Set(input.productNames ?? [])];
+    const erpItemCodes = [...new Set(input.erpItemCodes ?? [])];
     const priceCandidates = await searchSteelPriceItems(client, {
       ...input,
       productNames,
+      erpItemCodes,
     });
 
-    return { priceCandidates: dedupePriceCandidates(priceCandidates) };
+    return {
+      priceCandidates: dedupePriceCandidates(
+        filterPlateLaserPriceCandidates(priceCandidates, productNames),
+      ),
+    };
   }
 
   if (input.originalText === undefined) {
@@ -173,22 +225,22 @@ async function searchPriceCandidates(
   const candidateLists = await Promise.all(
     searchTerms.candidateQueries.map((query) => {
       const productNames = [...new Set(query.productNames ?? [])];
+      const erpItemCodes = [...new Set(query.erpItemCodes ?? [])];
       return searchSteelPriceItems(client, {
-        specKey: query.specKeyContains ? undefined : query.specKey,
-        specKeyContains: query.specKeyContains,
         productNames,
-        catalogFamilies: input.catalogFamilies,
+        erpItemCodes,
         customerTierId: input.customerTierId,
         reviewState: input.reviewState,
         includeInactive: input.includeInactive,
         limit: input.limit,
-      });
+      }).then((priceCandidates) =>
+        filterPlateLaserPriceCandidates(priceCandidates, productNames),
+      );
     }),
   );
-  const priceCandidates = candidateLists.flat();
 
   return {
-    priceCandidates: dedupePriceCandidates(priceCandidates),
+    priceCandidates: interleaveDedupePriceCandidateLists(candidateLists),
     searchQueries: searchTerms.candidateQueries,
     rejectedSearchQueries: searchTerms.rejectedQueries,
   };
@@ -211,7 +263,7 @@ async function lookupCustomerRules(
     await searchSteelCustomerRules(client, {
       customerIds,
       customerTierIds,
-      limit: 20,
+      limit: 100,
     }),
   );
 }

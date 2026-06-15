@@ -7,9 +7,10 @@ import {
 } from './workbooks';
 
 describe('Steel workbook public contracts', () => {
-  it('keeps the fixed seven-sheet workbook contract', () => {
+  it('keeps the fixed eight-sheet workbook contract', () => {
     expect(requiredSteelWorkbookSheetIds).toEqual([
       'system_order',
+      'customer_data',
       'quote_details',
       'summary',
       'manual_review',
@@ -37,7 +38,7 @@ describe('Steel workbook public contracts', () => {
     });
   });
 
-  it('rejects workbook payloads missing one of the seven sheets', () => {
+  it('rejects workbook payloads missing one of the eight sheets', () => {
     const result = steelWorkbookSchema.safeParse({
       id: 'wb_1',
       version: 1,
@@ -118,6 +119,30 @@ describe('Steel workbook public contracts', () => {
     });
   });
 
+  it('accepts explicit delete_row operations for workbook row removal', () => {
+    const patch = steelWorkbookPatchRequestSchema.parse({
+      workbookVersion: 2,
+      selectedWorkbookRefs: [],
+      operations: [
+        {
+          op: 'delete_row',
+          sheetId: 'system_order',
+          rowId: 'order_2',
+          reason: 'User requested removing unconfirmed system-order rows.',
+        },
+      ],
+    });
+
+    expect(patch.operations).toEqual([
+      {
+        op: 'delete_row',
+        sheetId: 'system_order',
+        rowId: 'order_2',
+        reason: 'User requested removing unconfirmed system-order rows.',
+      },
+    ]);
+  });
+
   it('accepts workbook patch requests larger than 100 projected operations', () => {
     const patch = steelWorkbookPatchRequestSchema.parse({
       workbookVersion: 2,
@@ -147,7 +172,7 @@ describe('Steel workbook public contracts', () => {
     });
   });
 
-  it('exports all seven workbook sheets when staff does not specify sheetIds', () => {
+  it('exports all eight workbook sheets when staff does not specify sheetIds', () => {
     const request = steelWorkbookExportRequestSchema.parse({
       workbookVersion: 3,
     });

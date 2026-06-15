@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add a compact AI-callable workbook patch tool that accepts structured quote data and deterministically projects it into all Steel workbook sheets.
+**Goal:** Add a compact AI-callable workbook patch tool that accepts structured quote data and deterministically projects it into the current Steel quote output sheets.
 
-**Architecture:** AI still owns quote judgment: customer selection, product candidate adoption, formula/rule choice, price confidence, and missing-evidence notes. The backend owns workbook projection only: a semantic quote patch is expanded into existing validated `set_cell` operations for `系統訂單`, `報價明細`, `總結`, `人工複核`, `價格來源`, `判讀備註`, and `給客戶用`. Reusing the existing workbook patch service keeps persistence, validation, highlights, and UI behavior unchanged while avoiding large multi-call cell patches.
+**Architecture:** AI still owns quote judgment: customer selection, product candidate adoption, formula/rule choice, price confidence, and missing-evidence notes. The backend owns workbook projection only: a semantic quote patch is expanded into existing validated `set_cell` operations for the current AI-facing target sheets `系統訂單`, `人工複核`, and `報價單` (`customer_quote`). The public workbook schema still has seven fixed sheets for persistence/export compatibility, but `報價明細`, `總結`, `價格來源`, and `判讀備註` are no longer semantic patch completion gates. Reusing the existing workbook patch service keeps persistence, validation, highlights, and UI behavior unchanged while avoiding large multi-call cell patches.
 
 **Tech Stack:** TypeScript, Jest, AI SDK v3 provider tool loop, existing Steel workbook DTOs in `packages/data-provider`.
 
@@ -23,14 +23,9 @@ Add a test that sends one quote line with `lineId: "line_1"`, `itemSpec`, `unitP
 
 Expected generated operations include:
 
-- `quote_details.line_1.material_unit_price`
-- `quote_details.line_1.subtotal`
 - `system_order.order_1.item_spec`
 - `system_order.order_1.unit_price`
-- `summary.summary_total_amount.value`
 - `manual_review.review_1.confirmation_needed`
-- `price_sources.source_1.adopted_product_price_item`
-- `interpretation_notes.note_1.content`
 - `customer_quote.customer_1.item_spec`
 - `customer_quote.customer_1.unit_price`
 - `customer_quote.customer_1.subtotal`
@@ -80,7 +75,7 @@ Add coverage that:
 
 - The system prompt and tool list expose `patch_quote_workbook`.
 - A model `patch_quote_workbook` call is expanded to the same `response.workbookPatch.operations` shape handlers already consume.
-- A one-field repricing follow-up using `patch_quote_workbook` updates `報價明細`, `系統訂單`, `總結`, `價格來源`, and `給客戶用` in one tool call.
+- A one-field repricing follow-up using `patch_quote_workbook` updates `系統訂單`, `人工複核`, and `報價單` in one tool call.
 
 **Step 2: Run provider RED**
 
@@ -99,7 +94,7 @@ Update provider to:
 - Add `patch_quote_workbook` as the preferred quote-output tool for Steel quote turns.
 - Parse semantic tool calls, project them into cell operations, and return those projected operations as `workbookPatch`.
 - Return tool result text telling the model that the semantic patch was projected and it should answer with the quote/new `小計`, not call another workbook patch unless new information is needed.
-- Treat projected operations as satisfying existing workbook completion checks.
+- Treat projected operations as satisfying the three-sheet workbook completion checks.
 
 **Step 4: Run provider GREEN**
 

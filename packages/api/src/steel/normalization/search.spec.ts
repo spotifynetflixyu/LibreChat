@@ -1,77 +1,47 @@
 import { generateSteelPriceSearchTerms } from './search';
 
 describe('generateSteelPriceSearchTerms', () => {
-  it('turns AI-proposed material/spec candidates into bounded price-table queries', () => {
+  it('keeps AI-proposed product-name/spec text and ERP code prefix candidates', () => {
     const result = generateSteelPriceSearchTerms({
-      originalText: '亞L30x30',
+      originalText: 'C75*3630mm*76隻',
       candidates: [
         {
           queryId: 'raw-user-text',
-          label: '亞L30x30',
-          productNames: ['亞L30x30'],
+          label: 'C75*3630mm*76隻',
+          productNames: ['C75*3630mm*76隻'],
           confidence: 'low',
           reason: 'raw user text should not be used directly',
         },
         {
-          queryId: 'formed-angle-ya',
-          label: '錏成型角鐵 30x30',
-          productNames: ['錏成型角鐵'],
-          specKeyContains: '30x30',
-          confidence: 'medium',
-          reason: 'AI interpreted L30x30 as equal-angle steel and 亞 as possible 錏',
-        },
-        {
-          queryId: 'galvanized-angle',
-          label: '鍍鋅角鐵 30x30',
-          productNames: ['鍍鋅角鐵'],
-          specKeyContains: '30x30',
-          confidence: 'low',
-          reason: '錏 may point to galvanized surface-treatment wording',
-        },
-        {
-          queryId: 'angle-only',
-          label: '角鐵 30x30',
-          productNames: ['角鐵'],
-          specKeyContains: '30x30',
-          confidence: 'medium',
-          reason: 'L30x30 is a common equal-angle notation',
+          queryId: 'galvanized-c-type',
+          label: '錏輕型鋼 75*2.3',
+          productNames: ['錏輕型鋼', '75*2.3'],
+          erpItemCodes: ['CCG'],
+          confidence: 'high',
+          reason: 'C 型鋼 defaults to 錏輕型鋼 and price rows carry spec in product_name',
         },
       ],
       structuredFilters: {
-        categories: ['angle'],
-        surfaces: ['錏', '鍍鋅'],
-        sizeAMm: 30,
-        sizeBMm: 30,
+        categories: ['c_type'],
+        sizeAMm: 75,
+        thicknessMm: 2.3,
       },
     });
 
     expect(result).toMatchObject({
-      originalText: '亞L30x30',
+      originalText: 'C75*3630mm*76隻',
       rawTextSearchAllowed: false,
       structuredFilters: {
-        categories: ['angle'],
-        surfaces: ['錏', '鍍鋅'],
-        sizeAMm: 30,
-        sizeBMm: 30,
+        categories: ['c_type'],
+        sizeAMm: 75,
+        thicknessMm: 2.3,
       },
       candidateQueries: [
         {
-          queryId: 'formed-angle-ya',
-          productNames: ['錏成型角鐵'],
-          specKeyContains: '30x30',
-          confidence: 'medium',
-        },
-        {
-          queryId: 'galvanized-angle',
-          productNames: ['鍍鋅角鐵'],
-          specKeyContains: '30x30',
-          confidence: 'low',
-        },
-        {
-          queryId: 'angle-only',
-          productNames: ['角鐵'],
-          specKeyContains: '30x30',
-          confidence: 'medium',
+          queryId: 'galvanized-c-type',
+          productNames: ['錏輕型鋼', '75*2.3'],
+          erpItemCodes: ['CCG'],
+          confidence: 'high',
         },
       ],
       rejectedQueries: [
@@ -100,120 +70,67 @@ describe('generateSteelPriceSearchTerms', () => {
     ).toThrow('Provide at least one derived price search candidate');
   });
 
-  it('downgrades size-only specKey candidates to partial spec lookup', () => {
+  it('derives OT laser-cut plate product-name candidates from PL oral specs', () => {
     const result = generateSteelPriceSearchTerms({
-      originalText: '亞L30x30 一支多少',
+      originalText: 'PL6*80',
       candidates: [
         {
-          queryId: 'formed-angle-ya',
-          label: '錏角鐵 30x30',
-          productNames: ['錏角鐵'],
-          specKey: '30x30',
-          specKeyContains: '30x30',
-          confidence: 'high',
-          reason: 'AI interpreted L30x30 as angle steel 30x30',
+          queryId: 'raw-pl-plate',
+          label: 'PL6*80',
+          productNames: ['PL6*80'],
+          confidence: 'low',
+          reason: 'raw PL oral plate text needs reviewed product-price name expansion',
         },
       ],
     });
 
-    expect(result.candidateQueries[0]).toMatchObject({
-      queryId: 'formed-angle-ya',
-      productNames: ['錏角鐵'],
-      specKeyContains: '30x30',
-    });
-    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
+    expect(result.candidateQueries).toEqual([
+      expect.objectContaining({
+        queryId: 'raw-pl-plate:ot-laser',
+        productNames: ['6.0m/mOT板雷射切割', 'OT板雷射切割', '黑鐵板 雷射切割'],
+        confidence: 'high',
+      }),
+    ]);
+    expect(JSON.stringify(result.candidateQueries)).not.toContain('四方切');
   });
 
-  it('prefers normalized compact specKey fragments over malformed specKeyContains', () => {
+  it('caps candidate queries without rewriting product-name spec fragments', () => {
     const result = generateSteelPriceSearchTerms({
-      originalText: 'C型鋼 100x50x20 2.3t 一支多少',
+      originalText: '3*3鍍鋅方管',
+      maxQueries: 2,
       candidates: [
         {
-          queryId: 'c-type-100x23',
-          productNames: ['錏輕型鋼'],
-          specKey: '100x2.3',
-          specKeyContains: '100 2.3',
+          queryId: 'galvanized-square-pipe',
+          productNames: ['錏方管', '75*2.0'],
+          erpItemCodes: ['GDH'],
           confidence: 'high',
-          reason: 'AI derived the compact C 型鋼 price key but formatted contains badly',
+          reason: '3*3 maps to 75mm square tube candidates',
+        },
+        {
+          queryId: 'square-pipe',
+          productNames: ['方管', '75x75'],
+          confidence: 'medium',
+          reason: 'broader square tube fallback',
+        },
+        {
+          queryId: 'inch-square-pipe',
+          productNames: ['3寸', '方管'],
+          confidence: 'low',
+          reason: 'inch wording fallback',
         },
       ],
     });
 
-    expect(result.candidateQueries[0]).toMatchObject({
-      queryId: 'c-type-100x23',
-      productNames: ['錏輕型鋼'],
-      specKeyContains: '100x2.3',
-    });
-    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
-  });
-
-  it('preserves explicit compact C-type contains fragments over full section specKey', () => {
-    const result = generateSteelPriceSearchTerms({
-      originalText: 'C型鋼 100x50x20 2.3t 一支多少',
-      candidates: [
-        {
-          queryId: 'c-type-full-section-with-compact-fragment',
-          productNames: ['錏輕型鋼'],
-          specKey: '100x50x20x2.3',
-          specKeyContains: '100x2.3',
-          confidence: 'high',
-          reason:
-            'AI included full C section as specKey and the reviewed price-table fragment as contains',
-        },
-      ],
-    });
-
-    expect(result.candidateQueries[0]).toMatchObject({
-      queryId: 'c-type-full-section-with-compact-fragment',
-      productNames: ['錏輕型鋼'],
-      specKeyContains: '100x2.3',
-    });
-    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
-  });
-
-  it('normalizes H-beam slash thickness fragments to price-table spec key fragments', () => {
-    const result = generateSteelPriceSearchTerms({
-      originalText: 'H型鋼 100x50x5/7x6M 一支多少',
-      candidates: [
-        {
-          queryId: 'h-beam-100-50-5-7-6m',
-          productNames: ['H型鋼'],
-          specKey: '100x50x5/7 6M',
-          specKeyContains: '100x50x5/7',
-          confidence: 'high',
-          reason: 'AI derived H 型鋼 section and length from oral text',
-        },
-      ],
-    });
-
-    expect(result.candidateQueries[0]).toMatchObject({
-      queryId: 'h-beam-100-50-5-7-6m',
-      productNames: ['H型鋼'],
-      specKeyContains: '100x50x5_7',
-    });
-    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
-  });
-
-  it('prefers structured specKey over malformed whitespace-separated specKeyContains', () => {
-    const result = generateSteelPriceSearchTerms({
-      originalText: '錏成型角鐵30*2.5*6M，第1級價格',
-      candidates: [
-        {
-          queryId: 'angle-30-25-6m',
-          productNames: ['錏成型角鐵'],
-          specKey: '30x2.5x6M',
-          specKeyContains: '30 2.5 6M',
-          confidence: 'high',
-          reason: 'AI provided a structured specKey and a malformed contains fragment',
-        },
-      ],
-    });
-
-    expect(result.candidateQueries[0]).toMatchObject({
-      queryId: 'angle-30-25-6m',
-      productNames: ['錏成型角鐵'],
-      specKeyContains: '30x2.5x6m',
-    });
-    expect(result.candidateQueries[0]).not.toHaveProperty('specKey');
+    expect(result.candidateQueries).toEqual([
+      expect.objectContaining({
+        queryId: 'galvanized-square-pipe',
+        productNames: ['錏方管', '75*2.0'],
+        erpItemCodes: ['GDH'],
+      }),
+      expect.objectContaining({
+        queryId: 'square-pipe',
+        productNames: ['方管', '75x75'],
+      }),
+    ]);
   });
 });

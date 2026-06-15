@@ -12,22 +12,23 @@ export const steelPriceSearchCandidateSchema = z
       .min(1)
       .max(10)
       .describe(
-        'Reviewed product/source names or AI-derived reviewed product-name candidates; not oral/category/family label text.',
+        'Product-price product-name text candidates, including Chinese product names, formal product-name fragments, or specification text found inside product names.',
       )
       .optional(),
-    specKey: nonEmptyString.optional(),
-    specKeyContains: nonEmptyString.optional(),
+    erpItemCodes: z
+      .array(nonEmptyString)
+      .min(1)
+      .max(10)
+      .describe('ERP item codes or code prefixes to search in the price item code field.')
+      .optional(),
     confidence: confidenceSchema,
     reason: nonEmptyString,
     sourceCandidateId: nonEmptyString.optional(),
   })
   .refine(
-    (candidate) =>
-      candidate.productNames !== undefined ||
-      candidate.specKey !== undefined ||
-      candidate.specKeyContains !== undefined,
+    (candidate) => candidate.productNames !== undefined || candidate.erpItemCodes !== undefined,
     {
-      message: 'Provide productNames, specKey, or specKeyContains',
+      message: 'Provide productNames or erpItemCodes',
     },
   );
 
@@ -35,8 +36,7 @@ type SteelPriceSearchCandidateInput = z.input<typeof steelPriceSearchCandidateSc
 
 interface SteelPriceSearchQueryText {
   productNames?: string[];
-  specKey?: string;
-  specKeyContains?: string;
+  erpItemCodes?: string[];
 }
 
 const steelPriceStructuredFiltersSchema = z.object({
@@ -56,62 +56,58 @@ function normalizeComparableText(value: string): string {
     .trim();
 }
 
-function getSizeOnlySpecKeyContains(specKey: string): string | undefined {
-  const normalized = normalizeComparableText(specKey);
-  if (!/^l?\d+(?:\.\d+)?x\d+(?:\.\d+)?$/i.test(normalized)) {
-    return undefined;
-  }
-
-  return normalized.replace(/^l/i, '');
-}
-
-function getStructuredSpecKeyContains(specKey: string | undefined): string | undefined {
-  if (specKey === undefined) {
-    return undefined;
-  }
-  if (/\d\s+\d/u.test(specKey)) {
-    return undefined;
-  }
-
-  const normalized = normalizeComparableText(specKey)
-    .replace(/^l/i, '')
-    .replace(/(\d)\/(?=\d)/g, '$1_');
-  if (!/^\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?[a-z]?|_\d+(?:\.\d+)?[a-z]?)+$/i.test(normalized)) {
-    return undefined;
-  }
-  if (/_\d+(?:\.\d+)?m$/i.test(normalized)) {
-    return undefined;
-  }
-
-  return normalized;
-}
-
-function normalizeSpecKeyContains(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  return normalizeComparableText(value).replace(/(\d)\/(?=\d)/g, '$1_');
-}
-
-function getExplicitSpecKeyContains(value: string | undefined): string | undefined {
-  const normalized = normalizeSpecKeyContains(value);
-  if (!normalized || !/[x_]/iu.test(normalized)) {
-    return undefined;
-  }
-
-  return normalized;
-}
-
 function hasRawUserTextQuery(originalText: string, candidate: SteelPriceSearchQueryText): boolean {
   const normalizedOriginal = normalizeComparableText(originalText);
-  const queryTexts = [
-    ...(candidate.productNames ?? []),
-    candidate.specKey,
-    candidate.specKeyContains,
-  ].filter((value): value is string => value !== undefined);
+  const queryTexts = [...(candidate.productNames ?? []), ...(candidate.erpItemCodes ?? [])];
 
   return queryTexts.some((queryText) => normalizeComparableText(queryText) === normalizedOriginal);
+}
+
+function formatPlateThicknessMm(value: string): string {
+  return Number(value).toFixed(1);
+}
+
+function getOralPlateSpec(value: string): { thicknessMm: string } | undefined {
+  const match = value.match(/\bPL\s*(\d+(?:\.\d+)?)\s*[*＊×xX]\s*\d+(?:\.\d+)?\b/u);
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  return { thicknessMm: formatPlateThicknessMm(match[1]) };
+}
+
+function getOtLaserPlateProductNames(thicknessMm: string): string[] {
+  return [`${thicknessMm}m/mOT板雷射切割`, 'OT板雷射切割', '黑鐵板 雷射切割'];
+}
+
+function getOralPlateSpecCandidateValues(candidate: SteelPriceSearchCandidateInput): string[] {
+  return [candidate.label, ...(candidate.productNames ?? [])].filter(
+    (value): value is string => value !== undefined,
+  );
+}
+
+function getDerivedOralPlateCandidates(
+  input: SteelPriceSearchTermsRawInput,
+): SteelPriceSearchCandidateInput[] {
+  return input.candidates.flatMap((candidate) => {
+    const spec = [input.originalText, ...getOralPlateSpecCandidateValues(candidate)]
+      .map(getOralPlateSpec)
+      .find((entry) => entry !== undefined);
+    if (!spec) {
+      return [];
+    }
+
+    return [
+      {
+        queryId: `${candidate.queryId}:ot-laser`,
+        label: `${spec.thicknessMm}m/mOT板雷射切割`,
+        productNames: getOtLaserPlateProductNames(spec.thicknessMm),
+        confidence: 'high',
+        reason: 'PL oral plate spec uses OT black iron laser-cut plate price rows.',
+        sourceCandidateId: candidate.queryId,
+      },
+    ];
+  });
 }
 
 interface SteelPriceSearchTermsRawInput {
@@ -127,7 +123,10 @@ export function isRawUserTextPriceSearchQuery(
 }
 
 function hasDerivedCandidate(input: SteelPriceSearchTermsRawInput): boolean {
-  return input.candidates.some((candidate) => !hasRawUserTextQuery(input.originalText, candidate));
+  return (
+    input.candidates.some((candidate) => !hasRawUserTextQuery(input.originalText, candidate)) ||
+    getDerivedOralPlateCandidates(input).length > 0
+  );
 }
 
 export const steelPriceSearchTermsInputSchema = z
@@ -163,31 +162,14 @@ export interface SteelPriceSearchTermsResult {
   structuredFilters?: z.infer<typeof steelPriceStructuredFiltersSchema>;
 }
 
-function normalizeCandidateQuery(candidate: SteelPriceSearchCandidate): SteelPriceSearchCandidate {
-  const specKeyContains =
-    (candidate.specKey ? getSizeOnlySpecKeyContains(candidate.specKey) : undefined) ??
-    getExplicitSpecKeyContains(candidate.specKeyContains) ??
-    getStructuredSpecKeyContains(candidate.specKey) ??
-    normalizeSpecKeyContains(candidate.specKeyContains);
-  if (!specKeyContains) {
-    return candidate;
-  }
-
-  const { specKey: _specKey, ...candidateWithoutExactSpecKey } = candidate;
-  return {
-    ...candidateWithoutExactSpecKey,
-    specKeyContains,
-  };
-}
-
 export function generateSteelPriceSearchTerms(
   input: SteelPriceSearchTermsInput,
 ): SteelPriceSearchTermsResult {
   const parsed = steelPriceSearchTermsInputSchema.parse(input);
   const maxQueries = parsed.maxQueries ?? 10;
-  const candidateQueries = parsed.candidates
+  const derivedCandidates = getDerivedOralPlateCandidates(parsed);
+  const candidateQueries = [...derivedCandidates, ...parsed.candidates]
     .filter((candidate) => !hasRawUserTextQuery(parsed.originalText, candidate))
-    .map(normalizeCandidateQuery)
     .slice(0, maxQueries);
   const rejectedQueries = parsed.candidates
     .filter((candidate) => hasRawUserTextQuery(parsed.originalText, candidate))

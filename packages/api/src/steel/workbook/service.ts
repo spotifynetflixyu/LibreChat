@@ -23,6 +23,9 @@ import { createInitialSheets } from './template';
 
 type SteelWorkbookStatus = 'active' | 'archived';
 type SteelWorkbookPatchStatus = 'accepted' | 'rejected';
+const customerQuoteSheetId = 'customer_quote';
+const customerQuoteTotalRowId = 'customer_total';
+const customerQuoteTotalLabel = '報價總額';
 
 export interface SteelWorkbookCreateRecord {
   conversationMetaId?: string;
@@ -135,19 +138,27 @@ function getExistingCellValue(
   return Object.prototype.hasOwnProperty.call(cells, key) ? cells[key] : null;
 }
 
-function getPatchTarget(
+function getPatchSheet(
   sheets: SteelWorkbookSheet[],
   operation: SteelWorkbookPatchOperation,
-): {
-  sheet: SteelWorkbookSheet;
-  row: SteelWorkbookRow;
-  column: SteelWorkbookColumn;
-} {
+): SteelWorkbookSheet {
   const sheet = sheets.find((candidate) => candidate.id === operation.sheetId);
   if (!sheet) {
     throw new SteelWorkbookValidationError(`Unknown workbook sheet: ${operation.sheetId}`);
   }
 
+  return sheet;
+}
+
+function getSetCellPatchTarget(
+  sheets: SteelWorkbookSheet[],
+  operation: Extract<SteelWorkbookPatchOperation, { op: 'set_cell' }>,
+): {
+  sheet: SteelWorkbookSheet;
+  row: SteelWorkbookRow;
+  column: SteelWorkbookColumn;
+} {
+  const sheet = getPatchSheet(sheets, operation);
   const column = sheet.columns.find((candidate) => candidate.key === operation.columnKey);
   if (!column) {
     throw new SteelWorkbookValidationError(`Unknown workbook column: ${operation.columnKey}`);
@@ -160,6 +171,203 @@ function getPatchTarget(
   }
 
   return { sheet, row, column };
+}
+
+function applySetCellOperation({
+  changedFieldSummary,
+  changedPaths,
+  nextSheets,
+  operation,
+}: {
+  changedFieldSummary: SteelChangedFieldSummary[];
+  changedPaths: SteelChangedPath[];
+  nextSheets: SteelWorkbookSheet[];
+  operation: Extract<SteelWorkbookPatchOperation, { op: 'set_cell' }>;
+}) {
+  const { row, column } = getSetCellPatchTarget(nextSheets, operation);
+  const previousValue = getExistingCellValue(row.cells, operation.columnKey);
+  row.cells[operation.columnKey] = operation.value;
+  changedPaths.push({
+    sheetId: operation.sheetId,
+    rowId: operation.rowId,
+    columnKey: operation.columnKey,
+  });
+  changedFieldSummary.push({
+    sheetId: operation.sheetId,
+    rowId: operation.rowId,
+    columnKey: operation.columnKey,
+    label: column.label,
+    previousValue,
+    nextValue: operation.value,
+  });
+}
+
+function applyDeleteRowOperation({
+  changedFieldSummary,
+  changedPaths,
+  nextSheets,
+  operation,
+}: {
+  changedFieldSummary: SteelChangedFieldSummary[];
+  changedPaths: SteelChangedPath[];
+  nextSheets: SteelWorkbookSheet[];
+  operation: Extract<SteelWorkbookPatchOperation, { op: 'delete_row' }>;
+}) {
+  const sheet = getPatchSheet(nextSheets, operation);
+  const previousLength = sheet.rows.length;
+  sheet.rows = sheet.rows.filter((row) => row.id !== operation.rowId);
+  if (sheet.rows.length === previousLength) {
+    return;
+  }
+
+  changedPaths.push({
+    sheetId: operation.sheetId,
+    rowId: operation.rowId,
+    columnKey: '__row__',
+  });
+  changedFieldSummary.push({
+    sheetId: operation.sheetId,
+    rowId: operation.rowId,
+    columnKey: '__row__',
+    label: '列',
+    previousValue: '已存在',
+    nextValue: null,
+  });
+}
+
+function getColumnLabel(sheet: SteelWorkbookSheet, columnKey: string): string {
+  return sheet.columns.find((column) => column.key === columnKey)?.label ?? columnKey;
+}
+
+function valuesEqual(left: SteelWorkbookCellValue, right: SteelWorkbookCellValue): boolean {
+  return Object.is(left, right);
+}
+
+function setNormalizedCustomerQuoteCell({
+  changedFieldSummary,
+  changedPaths,
+  columnKey,
+  row,
+  sheet,
+  value,
+}: {
+  changedFieldSummary: SteelChangedFieldSummary[];
+  changedPaths: SteelChangedPath[];
+  columnKey: string;
+  row: SteelWorkbookRow;
+  sheet: SteelWorkbookSheet;
+  value: SteelWorkbookCellValue;
+}) {
+  const previousValue = getExistingCellValue(row.cells, columnKey);
+  if (valuesEqual(previousValue, value)) {
+    return;
+  }
+
+  row.cells[columnKey] = value;
+  changedPaths.push({
+    sheetId: customerQuoteSheetId,
+    rowId: row.id,
+    columnKey,
+  });
+  changedFieldSummary.push({
+    sheetId: customerQuoteSheetId,
+    rowId: row.id,
+    columnKey,
+    label: getColumnLabel(sheet, columnKey),
+    previousValue,
+    nextValue: value,
+  });
+}
+
+function isCustomerQuoteTotalRow(row: SteelWorkbookRow): boolean {
+  return (
+    row.id === customerQuoteTotalRowId ||
+    row.cells.item_spec === customerQuoteTotalLabel ||
+    row.cells.unit_price === customerQuoteTotalLabel
+  );
+}
+
+function toNumericSubtotal(value: SteelWorkbookCellValue): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.replace(/,/g, '').trim();
+  if (normalized === '') {
+    return undefined;
+  }
+
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function roundCurrency(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function getCustomerQuoteTotalSubtotal(lineRows: SteelWorkbookRow[]): SteelWorkbookCellValue {
+  if (lineRows.length === 0) {
+    return null;
+  }
+
+  let total = 0;
+  for (const row of lineRows) {
+    const numericSubtotal = toNumericSubtotal(getExistingCellValue(row.cells, 'subtotal'));
+    if (numericSubtotal === undefined) {
+      return '未確認';
+    }
+    total += numericSubtotal;
+  }
+
+  return roundCurrency(total);
+}
+
+function normalizeCustomerQuoteTotalRow({
+  changedFieldSummary,
+  changedPaths,
+  nextSheets,
+}: {
+  changedFieldSummary: SteelChangedFieldSummary[];
+  changedPaths: SteelChangedPath[];
+  nextSheets: SteelWorkbookSheet[];
+}) {
+  const sheet = nextSheets.find((candidate) => candidate.id === customerQuoteSheetId);
+  if (!sheet) {
+    return;
+  }
+
+  const totalRows = sheet.rows.filter(isCustomerQuoteTotalRow);
+  const totalRow = totalRows[0];
+  if (!totalRow) {
+    return;
+  }
+
+  const lineRows = sheet.rows.filter((row) => !isCustomerQuoteTotalRow(row));
+  setNormalizedCustomerQuoteCell({
+    changedFieldSummary,
+    changedPaths,
+    columnKey: 'item_spec',
+    row: totalRow,
+    sheet,
+    value: customerQuoteTotalLabel,
+  });
+  setNormalizedCustomerQuoteCell({
+    changedFieldSummary,
+    changedPaths,
+    columnKey: 'subtotal',
+    row: totalRow,
+    sheet,
+    value: getCustomerQuoteTotalSubtotal(lineRows),
+  });
+
+  sheet.rows = [
+    ...lineRows,
+    ...totalRows.filter((row) => row !== totalRow),
+    totalRow,
+  ];
 }
 
 function cloneSheets(sheets: SteelWorkbookSheet[]): SteelWorkbookSheet[] {
@@ -252,23 +460,28 @@ export function createSteelWorkbookService({
 
     try {
       for (const operation of request.operations) {
-        const { row, column } = getPatchTarget(nextSheets, operation);
-        const previousValue = getExistingCellValue(row.cells, operation.columnKey);
-        row.cells[operation.columnKey] = operation.value;
-        changedPaths.push({
-          sheetId: operation.sheetId,
-          rowId: operation.rowId,
-          columnKey: operation.columnKey,
-        });
-        changedFieldSummary.push({
-          sheetId: operation.sheetId,
-          rowId: operation.rowId,
-          columnKey: operation.columnKey,
-          label: column.label,
-          previousValue,
-          nextValue: operation.value,
+        if (operation.op === 'set_cell') {
+          applySetCellOperation({
+            changedFieldSummary,
+            changedPaths,
+            nextSheets,
+            operation,
+          });
+          continue;
+        }
+
+        applyDeleteRowOperation({
+          changedFieldSummary,
+          changedPaths,
+          nextSheets,
+          operation,
         });
       }
+      normalizeCustomerQuoteTotalRow({
+        changedFieldSummary,
+        changedPaths,
+        nextSheets,
+      });
     } catch (error) {
       if (error instanceof SteelWorkbookValidationError) {
         await repository.createPatch(

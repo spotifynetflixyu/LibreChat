@@ -30,7 +30,7 @@ Required:
 Verification:
 
 ```bash
-rtk proxy rg -n "報價明細|總結|人工複核清單|價格來源|判讀備註|系統訂單|給客戶用" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
+rtk proxy rg -n "報價明細|總結|人工複核清單|價格來源|判讀備註|系統訂單|報價單" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
 rtk proxy rg -n "SteelAIProvider|openai_oauth_responses|openai_api|capability smoke|fallback|SteelAIEvent" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
 rtk proxy rg -n "ERP XLSX|handbook DOCX|rejects PDF|拒絕 PDF|ExcelJS|Quote Resolution|Eval Harness" tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
 rtk proxy rg -n "source schema mapping|canonical schema|中文來源|英文 canonical" CONTEXT.md tasks/v8.3 docs/steel_librechat_plan_v8.3_openai_oauth_responses_primary.md
@@ -227,7 +227,7 @@ Manual scenario:
 
 ```text
 Authenticated user pastes a LINE order.
-Expected: DB lookup facts are used, the selected SteelAIProvider creates or patches a seven-sheet workbook, provider/fallback metadata is persisted, and context_refs/tool_call_ids are persisted.
+Expected: DB lookup facts are used, the selected SteelAIProvider creates or patches the persisted seven-sheet public workbook, AI-facing patch completion remains limited to `系統訂單`, `人工複核`, and `報價單`, provider/fallback metadata is persisted, and context_refs/tool_call_ids are persisted.
 ```
 
 ## Checkpoint 4: Export Gate

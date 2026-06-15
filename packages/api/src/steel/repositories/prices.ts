@@ -63,9 +63,9 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
 
 export interface SearchSteelPriceItemsInput {
   specKey?: string;
-  specKeyContains?: string;
   productName?: string;
   productNames?: readonly string[];
+  erpItemCodes?: readonly string[];
   catalogFamilies?: readonly string[];
   customerTierId?: number;
   reviewState?: SteelReviewState;
@@ -75,18 +75,33 @@ export interface SearchSteelPriceItemsInput {
 
 interface SteelProductNameSearch {
   productNameTerms: string[];
-  specKeyContains?: string;
-}
-
-function normalizeSpecSize(value: string): string {
-  return value
-    .replace(/\s+/g, '')
-    .replace(/[＊*×]/g, 'x')
-    .replace(/^l/i, '');
 }
 
 function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? []).filter((value) => value.trim() !== ''))];
+}
+
+function parseExplicitThicknessMm(value: string): number[] {
+  const thicknessMatches = [
+    ...value.matchAll(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*(?:t|T|mm|m\s*\/\s*m|m\/m)/g),
+    ...value.matchAll(/厚(?:度)?\s*(\d+(?:\.\d+)?)/g),
+    ...value.matchAll(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*[*＊×xX]\s*\d+(?:\.\d+)?\s*(?:'|尺)\s*[*＊×xX]\s*\d+(?:\.\d+)?\s*(?:'|尺)/g),
+  ];
+
+  return thicknessMatches
+    .map((match) => Number(match[1]))
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
+}
+
+function getProductNameAliasThicknessMm(input: SearchSteelPriceItemsInput): number | undefined {
+  const values = [
+    input.specKey,
+    input.productName,
+    ...(input.productNames ?? []),
+  ].filter((value): value is string => value !== undefined);
+  const thicknessValues = values.flatMap(parseExplicitThicknessMm);
+
+  return thicknessValues.length > 0 ? Math.max(...thicknessValues) : undefined;
 }
 
 function addTextFacetFilter(
@@ -116,45 +131,114 @@ function getProductNameSearches(input: SearchSteelPriceItemsInput): SteelProduct
   ]).map(getProductNameSearch);
 }
 
-function addProductNameSearchFilter(
+function getProductNameAliasThicknessPredicate(thicknessExpression: string): string {
+  return `(
+          product_name_alias.metadata->>'minThicknessMm' IS NULL
+          OR (
+            ${thicknessExpression} IS NOT NULL
+            AND product_name_alias.metadata->>'minThicknessMm' ~ '^[0-9]+(\\.[0-9]+)?$'
+            AND (product_name_alias.metadata->>'minThicknessMm')::numeric <= ${thicknessExpression}
+          )
+        )`;
+}
+
+function getProductNameAliasTargetPredicate(): string {
+  return `(
+          (
+            product_name_alias.metadata->>'matchKind' = 'surface_marker'
+            AND (
+              product_name ~* (
+                '(^|[^[:alnum:]])'
+                || product_name_alias.target_product_name
+                || '([^[:alnum:]]|$)|^[0-9.]+[[:space:]]*'
+                || product_name_alias.target_product_name
+              )
+              OR (
+                product_name_alias.target_product_name = 'NO1'
+                AND product_name ~* 'ST[[:space:]]*NO[[:space:]]*1|NO[[:space:]]*1'
+              )
+            )
+          )
+          OR (
+            COALESCE(product_name_alias.metadata->>'matchKind', '') <> 'surface_marker'
+            AND product_name ILIKE ('%' || product_name_alias.target_product_name || '%')
+          )
+        )`;
+}
+
+function getProductNameMatchExpression(
+  placeholder: string,
+  aliasThicknessExpression: string,
+): string {
+  return `(
+    product_name ILIKE ${placeholder}
+    OR EXISTS (
+      SELECT 1
+      FROM steel.product_name_aliases AS product_name_alias
+      WHERE product_name_alias.active = true
+        AND product_name_alias.review_state = 'reviewed'
+        AND lower(product_name_alias.source_product_name) = lower(trim(both '%' from ${placeholder}::text))
+        AND (
+          product_name_alias.catalog_family IS NULL
+          OR product_name_alias.catalog_family = price_item.catalog_family
+        )
+        AND ${getProductNameAliasThicknessPredicate(aliasThicknessExpression)}
+        AND ${getProductNameAliasTargetPredicate()}
+    )
+  )`;
+}
+
+function addDiscoverySearchFilter(
   where: string[],
   values: SteelSqlParameter[],
-  searches: readonly SteelProductNameSearch[],
-  includeDerivedSpecKey: boolean,
-) {
-  if (searches.length === 0) {
-    return;
-  }
+  input: SearchSteelPriceItemsInput,
+): string[] {
+  const clauses: string[] = [];
+  const scoreExpressions: string[] = [];
+  const productNameAliasThicknessMm = getProductNameAliasThicknessMm(input);
 
-  const searchClauses = searches.map((search) => {
+  getProductNameSearches(input).forEach((search) => {
     const termClauses = search.productNameTerms.map((productNameTerm) => {
       values.push(`%${productNameTerm}%`);
-      return `product_name ILIKE $${values.length}`;
+      const placeholder = `$${values.length}`;
+      const aliasThicknessExpression =
+        productNameAliasThicknessMm === undefined
+          ? 'NULL::numeric'
+          : `$${values.push(productNameAliasThicknessMm)}::numeric`;
+      const matchExpression = getProductNameMatchExpression(
+        placeholder,
+        aliasThicknessExpression,
+      );
+      scoreExpressions.push(`CASE WHEN ${matchExpression} THEN 0 ELSE 1 END`);
+      return matchExpression;
     });
 
-    if (includeDerivedSpecKey && search.specKeyContains) {
-      values.push(`%${search.specKeyContains}%`);
-      termClauses.push(`spec_key ILIKE $${values.length}`);
-    }
-
-    return `(${termClauses.join(' AND ')})`;
+    clauses.push(`(${termClauses.join(' AND ')})`);
   });
 
-  where.push(`(${searchClauses.join(' OR ')})`);
+  uniqueNonEmpty(input.erpItemCodes).forEach((erpItemCode) => {
+    values.push(`%${erpItemCode}%`);
+    const placeholder = `$${values.length}`;
+    scoreExpressions.push(`CASE WHEN erp_item_code ILIKE ${placeholder} THEN 0 ELSE 1 END`);
+    clauses.push(`erp_item_code ILIKE ${placeholder}`);
+  });
+
+  if (clauses.length > 0) {
+    where.push(`(${clauses.join(' OR ')})`);
+  }
+
+  return scoreExpressions;
 }
 
 function getProductNameSearch(productName: string): SteelProductNameSearch {
   const value = productName.trim();
-  const sizeMatch = value.match(/\bL?\s*\d+(?:\.\d+)?\s*[xX*＊×]\s*\d+(?:\.\d+)?\b/u);
-  const productNameOnly = sizeMatch ? value.replace(sizeMatch[0], '').trim() || value : value;
   const oralAngleProductTerms: Record<string, string[]> = {
     錏角鐵: ['錏', '角鐵'],
     鍍鋅角鐵: ['鍍鋅', '角鐵'],
   };
 
   return {
-    productNameTerms: oralAngleProductTerms[productNameOnly] ?? [productNameOnly],
-    ...(sizeMatch ? { specKeyContains: normalizeSpecSize(sizeMatch[0]) } : {}),
+    productNameTerms: oralAngleProductTerms[value] ?? [value],
   };
 }
 
@@ -188,7 +272,6 @@ export async function searchSteelPriceItems(
 ): Promise<SteelPriceItem[]> {
   const where = ['review_state = $1'];
   const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
-  const productNameSearches = getProductNameSearches(input);
 
   if (!input.includeInactive) {
     where.push('active = true');
@@ -199,17 +282,9 @@ export async function searchSteelPriceItems(
     where.push(`spec_key = $${values.length}`);
   }
 
-  if (input.specKeyContains) {
-    values.push(`%${input.specKeyContains}%`);
-    where.push(`spec_key ILIKE $${values.length}`);
-  }
-
-  addProductNameSearchFilter(
-    where,
-    values,
-    productNameSearches,
-    !input.specKey && !input.specKeyContains,
-  );
+  const discoveryScoreExpressions = addDiscoverySearchFilter(where, values, input);
+  const discoveryScore =
+    discoveryScoreExpressions.length > 0 ? discoveryScoreExpressions.join(' + ') : '0';
 
   addTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
 
@@ -218,7 +293,7 @@ export async function searchSteelPriceItems(
     where.push(`(customer_tier_id = $${values.length} OR customer_tier_id IS NULL)`);
   }
 
-  values.push(getLimit(input.limit));
+  values.push(getLimit(input.limit, 100));
 
   const result = await client.query<SteelPriceItemRow>(
     `
@@ -241,7 +316,8 @@ SELECT
   value_state,
   review_state,
   active,
-  source_refs
+  source_refs,
+  ${discoveryScore} AS discovery_match_score
 FROM (
   SELECT
     price_item.*,
@@ -252,6 +328,7 @@ FROM (
 ) AS price_item
 WHERE ${where.join('\n  AND ')}
 ORDER BY
+  discovery_match_score ASC,
   CASE WHEN customer_tier_id IS NULL THEN 1 ELSE 0 END,
   product_name ASC,
   id ASC

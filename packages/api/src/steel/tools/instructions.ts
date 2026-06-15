@@ -167,7 +167,7 @@ function selectPackets(
   instructionPackets: readonly SteelInstructionPacket[],
 ): Array<{ packet: SteelInstructionPacket; group: string }> {
   const requestedGroups = getRequestedGroups(input);
-  const limit = input.limit ?? 20;
+  const limit = input.limit ?? 100;
   const selectedPackets: Array<{ packet: SteelInstructionPacket; group: string }> = [];
   const seenSlugs = new Set<string>();
 

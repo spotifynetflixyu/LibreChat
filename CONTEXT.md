@@ -197,6 +197,10 @@ _Avoid_: Display name, legal name, guessed customer match
 The external ERP identifier used with customer tier to match an imported price item to an existing price record.
 _Avoid_: Product name, spec text alone, guessed item match
 
+**Price Code Prefix**:
+A short ERP-style price code prefix that groups related formal price rows before AI chooses a specific **Spec Candidate**.
+_Avoid_: Final adopted item code, product name, exact spec
+
 **Account Data Privacy**:
 The single-company access model where each authenticated account can only access its own Steel quotes/workbooks unless admin permissions apply, and guest access is scoped by conversation token.
 _Avoid_: Multi-company tenant model, organization/workspace scoping
@@ -276,6 +280,30 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - Admin ERP import accepts `.xlsx` uploads; legacy `.xls` is only accepted through a tested normalization path. PDF/image/text evidence is not a formal Import Source, and DOC/DOCX remains outside ongoing Admin web import unless a later data-import task approves it.
 - **ERP Customer Code** is the import upsert key for customers.
 - **ERP Item Code** plus customer tier is the import upsert key for price items.
+- A **Price Code Prefix** can lead to many related **ERP Item Codes** and
+  **Spec Candidates**; it helps AI inspect formal rows whose full product names
+  may include specifications instead of the Chinese family name.
+- **AI Tool Orchestration** may discover a **Price Code Prefix** from a Chinese
+  product-name search, then use that prefix to retrieve related formal
+  **Spec Candidates** before choosing the most likely quoted item.
+- A **Price Code Prefix** is optional discovery evidence. If a Chinese
+  product-name/spec search already returns a reviewed **Spec Candidate** that
+  matches the request, AI may quote from that row without a prefix expansion.
+- Product-price candidate search uses two broad search facets: product-name
+  text for the price row product name, and **ERP Item Code** text for exact item
+  codes or **Price Code Prefixes**. These facets are OR-style discovery inputs
+  so AI can judge candidate rows instead of receiving premature no-match
+  results.
+- Product-name text includes both Chinese family names and formal specification
+  fragments as they appear inside price row product names, such as `75*2.3`,
+  `1.2*4'*8'(28.5)`, `4.5*5尺*10尺 (46*101.6)`, or
+  `150*75*5/7*6M(84)`.
+- When customer wording says C 型鋼, C 鋼, or 輕型鋼 without a material/surface,
+  the default product-name candidate is 錏輕型鋼. 黑鐵輕型鋼 and 白鐵輕型鋼 are
+  alternatives only when evidence points there or the customer confirms them.
+- Missing product-price data is still quote evidence: AI should carry the
+  no-data result into the workbook or manual review with confidence and missing
+  data notes instead of silently dropping the requested item.
 - Chinese labels and headers from `docs/reference` map through **Source Schema Mapping** before they become schema, DTO, tool, or database-query concepts.
 - Programmatic lookup uses English **Canonical Schema Keys**; Chinese names, aliases, and original labels may remain as data values, display labels, search aliases, or source text.
 - AI API prompt/tool context uses **Source Schema Mapping** to resolve Chinese wording to existing **Canonical Schema Keys**; backend validation rejects unknown keys.

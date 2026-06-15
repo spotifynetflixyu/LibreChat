@@ -17,7 +17,6 @@ import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-pr
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { SteelOpenAIReasoningEffort } from './config';
 import {
-  requiredSteelWorkbookSheetIds,
   patchFileAnalysisDataToolInputSchema,
   steelProviderWorkbookPatchProposalSchema,
   type SteelProviderFileAnalysisPatchProposal,
@@ -58,6 +57,11 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
 
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelBusinessToolName };
+type SearchPriceCandidatesInput = ReturnType<
+  typeof steelToolArgsSchemas.search_price_candidates.parse
+>;
+type SearchPriceCandidateQuery =
+  NonNullable<SearchPriceCandidatesInput['candidateQueries']>[number];
 type FileOcrToolCall = LanguageModelV3ToolCall & { toolName: 'run_file_ocr' };
 type VisualInspectionToolCall = LanguageModelV3ToolCall & { toolName: 'run_visual_inspection' };
 type SemanticWorkbookPatchToolCall = LanguageModelV3ToolCall & {
@@ -78,18 +82,41 @@ type WorkbookPatchCompletion = {
   missingSheetIds: readonly SteelWorkbookSheetId[];
   missingCells: readonly WorkbookPatchMissingCell[];
 };
-const workbookPatchCompletionColumnKeysBySheet: Record<SteelWorkbookSheetId, readonly string[]> = {
-  system_order: ['item_spec', 'unit_price'],
-  quote_details: ['material_unit_price', 'subtotal'],
-  summary: ['value'],
-  manual_review: ['confirmation_needed'],
-  price_sources: ['adopted_product_price_item'],
-  interpretation_notes: ['content'],
-  customer_quote: ['item_spec', 'unit_price', 'subtotal'],
+type SteelProviderRoundTiming = {
+  round: number;
+  generationDurationMs: number;
+  toolDurationMs: number;
+  workbookCompletionDurationMs: number;
+  promptMessageCount: number;
+  generatedToolCallCount: number;
+  workbookPatchOperationCount: number;
+  workbookCompletionRequired: boolean;
+  workbookCompletionComplete?: boolean;
+  missingWorkbookSheetCount: number;
+  missingWorkbookCellCount: number;
 };
+type SteelProviderTimings = {
+  totalDurationMs: number;
+  generationDurationMs: number;
+  toolDurationMs: number;
+  workbookCompletionDurationMs: number;
+  roundCount: number;
+  rounds: SteelProviderRoundTiming[];
+};
+const workbookPatchCompletionSheetIds = [
+  'system_order',
+  'manual_review',
+  'customer_quote',
+] as const satisfies readonly SteelWorkbookSheetId[];
+type WorkbookPatchCompletionSheetId = (typeof workbookPatchCompletionSheetIds)[number];
+const workbookPatchCompletionColumnKeysBySheet = {
+  system_order: ['model_code', 'item_spec'],
+  manual_review: ['confirmation_needed'],
+  customer_quote: ['item_spec', 'subtotal'],
+} satisfies Record<WorkbookPatchCompletionSheetId, readonly string[]>;
 
 const catalogFamilyPriceLookupInstruction =
-  'When calling search_price_candidates after selecting a catalog family, use catalogFamilies with the selected catalog key and do not send oral family/category labels as productNames. When no reliable catalog key is available after lookup_catalog_families, use productNames with one or more AI-derived reviewed product/source-name candidates; do not pass the raw full user text, and mark the result as provisional/low confidence when appropriate. For multiple inferred reviewed product-name candidates, use productNames or candidateQueries; use candidateQueries when each candidate needs its own confidence/reason, and put candidate product-name lists in candidateQueries.productNames. Example: for C 型鋼/c_type, use catalogFamilies [c_type] with compact price-table specKeyContains 100x2.3 derived from C100x50x20x2.3t; do not use productNames [C型鋼]. If C 型鋼 material is unspecified, productNames [錏輕型鋼] is the preferred provisional reviewed product-name candidate; also query or surface bounded alternatives such as 白鐵輕型鋼 and 黑鐵輕型鋼 when returned.';
+  'When calling search_price_candidates, batch related product-name text, specification fragments, and ERP code prefixes into one search_price_candidates call using productNames, erpItemCodes, or candidateQueries; do not call the tool once per keyword, material alternative, or line when they can be represented together. Use productNames for Chinese names, material/surface words, oral product names, formal product-name text, and specification fragments such as 75*2.3, 3/8, 1.2*4\'*8\'(28.5), or 150*75*5/7*6M(84). For PL plate specs such as PL6*80 or PL16*96, derive OT black-iron laser-cut productNames such as 6.0m/mOT板雷射切割 or 16.0m/mOT板雷射切割; do not use square-cut plate productNames. Use erpItemCodes only for exact ERP item codes or code prefixes, which are normally made of English letters and digits, such as CCG, CCG07523, BNG, or DNB70. Do not put Chinese names or size/spec text in erpItemCodes, and do not put ERP codes in productNames. Do not pass the raw full user text as a candidate, and mark the result as provisional/low confidence when appropriate. For multiple inferred candidates, use productNames/erpItemCodes directly or candidateQueries when each candidate needs its own confidence/reason. Domain-specific code prefixes and material defaults belong to lookup_quote_rules / Steel material rules; use those reviewed rules before applying a prefix family.';
 
 const defaultCustomerTierId = 2;
 const defaultCustomerTierCode = 'B';
@@ -155,6 +182,7 @@ export interface SteelProviderChatResponse {
   text: string;
   responseId?: string;
   usage?: SteelProviderUsage;
+  timings?: SteelProviderTimings;
   unsupportedSettings: string[];
   warnings: string[];
   workbookPatch?: SteelProviderWorkbookPatchProposal;
@@ -344,9 +372,11 @@ function toLanguageModelMessage(
   message: SteelOAuthChatMessage,
   {
     omitVisualEvidenceFileParts = false,
+    ocrAvailableVisualEvidenceFiles,
     visualFileIndexOffset = 0,
   }: {
     omitVisualEvidenceFileParts?: boolean;
+    ocrAvailableVisualEvidenceFiles?: ReadonlySet<SteelOAuthChatFile>;
     visualFileIndexOffset?: number;
   } = {},
 ): LanguageModelV3Message {
@@ -358,8 +388,12 @@ function toLanguageModelMessage(
   }
 
   const files = message.files ?? [];
+  const ocrInventoryFiles =
+    ocrAvailableVisualEvidenceFiles === undefined
+      ? files
+      : files.filter((file) => ocrAvailableVisualEvidenceFiles.has(file));
   const inventoryText = omitVisualEvidenceFileParts
-    ? getRunFileOcrInventoryText(files, visualFileIndexOffset)
+    ? getRunFileOcrInventoryText(ocrInventoryFiles, visualFileIndexOffset)
     : undefined;
 
   return {
@@ -398,18 +432,31 @@ function toPrompt(
   messages: SteelOAuthChatMessage[],
   {
     omitVisualEvidenceFileParts = false,
+    ocrAvailableVisualEvidenceFiles,
   }: {
     omitVisualEvidenceFileParts?: boolean;
+    ocrAvailableVisualEvidenceFiles?: readonly SteelOAuthChatFile[];
   } = {},
 ): LanguageModelV3Prompt {
   let visualFileIndexOffset = 0;
+  const ocrAvailableVisualEvidenceFileSet =
+    ocrAvailableVisualEvidenceFiles !== undefined
+      ? new Set(ocrAvailableVisualEvidenceFiles)
+      : undefined;
 
   return messages.map((message) => {
     const promptMessage = toLanguageModelMessage(message, {
       omitVisualEvidenceFileParts,
+      ocrAvailableVisualEvidenceFiles: ocrAvailableVisualEvidenceFileSet,
       visualFileIndexOffset,
     });
-    visualFileIndexOffset += (message.files ?? []).filter(isVisualEvidenceFile).length;
+    visualFileIndexOffset += (message.files ?? []).filter((file) => {
+      return (
+        isVisualEvidenceFile(file) &&
+        (ocrAvailableVisualEvidenceFileSet === undefined ||
+          ocrAvailableVisualEvidenceFileSet.has(file))
+      );
+    }).length;
 
     return promptMessage;
   });
@@ -447,18 +494,35 @@ function getFileSourceKinds(file: SteelOAuthChatFile): VisualEvidenceSourceKind[
   return [];
 }
 
-function getVisualEvidenceSourceKinds(messages: readonly SteelOAuthChatMessage[]) {
+function getVisualEvidenceSourceKindsFromFiles(files: readonly SteelOAuthChatFile[]) {
   const sourceKinds = new Set<VisualEvidenceSourceKind>();
 
-  for (const message of messages) {
-    for (const file of message.files ?? []) {
-      for (const sourceKind of getFileSourceKinds(file)) {
-        sourceKinds.add(sourceKind);
-      }
+  for (const file of files) {
+    for (const sourceKind of getFileSourceKinds(file)) {
+      sourceKinds.add(sourceKind);
     }
   }
 
   return [...sourceKinds];
+}
+
+function getLatestUserMessage(
+  messages: readonly SteelOAuthChatMessage[],
+): SteelOAuthChatMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === 'user') {
+      return message;
+    }
+  }
+
+  return undefined;
+}
+
+function getVisualEvidenceFilesFromMessage(
+  message?: SteelOAuthChatMessage,
+): SteelFileOcrSourceFile[] {
+  return (message?.files ?? []).filter(isVisualEvidenceFile);
 }
 
 function getVisualEvidenceFiles(
@@ -477,6 +541,33 @@ function getVisualEvidenceFiles(
   }
 
   return files;
+}
+
+function hasSavedFileAnalysisContext(messages: readonly SteelOAuthChatMessage[]): boolean {
+  return messages.some((message) => {
+    return (
+      message.role === 'system' &&
+      message.content.includes('Latest saved file_analysis_data workspace')
+    );
+  });
+}
+
+function latestUserRequestsFileOcr(messages: readonly SteelOAuthChatMessage[]): boolean {
+  const latestUserMessage = getLatestUserMessage(messages);
+  const text = latestUserMessage?.content.trim() ?? '';
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /\b(?:go|continue|resume)\b/i.test(text) ||
+    /^(繼續|接續)$/.test(text) ||
+    /\bocr\b/i.test(text) ||
+    /(?:重新|重跑|重做|再跑)\s*(?:OCR|ocr|讀取|判讀|分析|辨識|掃描)/.test(text) ||
+    /(?:重讀|重看|重掃|重辨識)/.test(text) ||
+    /(?:re[-\s]?ocr|re[-\s]?read|re[-\s]?analy[sz]e|rerun)/i.test(text) ||
+    /繼續\s*(?:OCR|ocr|讀取檔案|處理.*(?:PDF|pdf|附件|頁))/.test(text)
+  );
 }
 
 async function getMessagesWithPdfPageCounts(
@@ -563,7 +654,7 @@ function formatOcrRuleInstruction(rule: SteelAgentRule) {
 async function getSteelRuntimePolicyInstruction(client: SteelRepositoryClient): Promise<string> {
   const rules = await searchSteelAgentRules(client, {
     ruleSections: steelAgentRuleSections,
-    limit: 20,
+    limit: 100,
   });
   const prompts = rules.map((rule) => rule.prompt.trim()).filter(Boolean);
 
@@ -580,7 +671,7 @@ async function getSteelWorkbookOutputInstruction(
 ): Promise<string> {
   const rules = await searchSteelAgentRules(client, {
     ruleTypes: steelWorkbookRuleTypes,
-    limit: 20,
+    limit: 100,
   });
   const prompts = rules.map((rule) => rule.prompt.trim()).filter(Boolean);
 
@@ -602,7 +693,7 @@ async function getSteelOcrInstruction(
   const rules = await searchSteelAgentRules(client, {
     ruleTypes: steelOcrRuleTypes,
     ruleSections: steelOcrRuleSections,
-    limit: 20,
+    limit: 100,
   });
   const prompts = rules
     .filter((rule) => matchesOcrSourceKind(rule, sourceKinds))
@@ -623,7 +714,7 @@ async function getSteelVisualInspectionInstruction(
   const rules = await searchSteelAgentRules(client, {
     ruleTypes: steelVisualInspectionRuleTypes,
     ruleSections: steelVisualInspectionRuleSections,
-    limit: 20,
+    limit: 100,
   });
   const prompts = rules
     .filter((rule) => matchesOcrSourceKind(rule, sourceKinds))
@@ -642,8 +733,10 @@ function toPromptWithSystemInstruction(
   systemInstruction: string,
   {
     omitVisualEvidenceFileParts = false,
+    ocrAvailableVisualEvidenceFiles,
   }: {
     omitVisualEvidenceFileParts?: boolean;
+    ocrAvailableVisualEvidenceFiles?: readonly SteelOAuthChatFile[];
   } = {},
 ): LanguageModelV3Prompt {
   return [
@@ -651,7 +744,7 @@ function toPromptWithSystemInstruction(
       role: 'system',
       content: systemInstruction,
     },
-    ...toPrompt(messages, { omitVisualEvidenceFileParts }),
+    ...toPrompt(messages, { omitVisualEvidenceFileParts, ocrAvailableVisualEvidenceFiles }),
   ];
 }
 
@@ -696,7 +789,7 @@ const semanticWorkbookPatchFunctionTool: LanguageModelV3FunctionTool = {
   type: 'function',
   name: 'patch_quote_workbook',
   description:
-    'Propose a compact semantic Steel quote workbook update. Use this for quote/order results; backend projects the semantic quote data into validated workbook cell updates across all relevant sheets.',
+    'Propose a compact semantic Steel quote workbook update. Use this for quote/order results; backend projects the semantic quote data into validated workbook cell updates across all relevant sheets. To remove existing workbook rows, send explicit deleteRows with sheetId and rowIds; omitting quoteLines never deletes rows.',
   inputSchema: zodToJsonSchema(steelSemanticWorkbookPatchSchema, {
     $refStrategy: 'none',
   }) as LanguageModelV3FunctionTool['inputSchema'],
@@ -836,30 +929,6 @@ function toJsonValue(value: unknown): JSONValue {
   return JSON.parse(serialized) as JSONValue;
 }
 
-function getStringArrayProperty(value: unknown, key: string): string[] {
-  if (!isJsonObject(value)) {
-    return [];
-  }
-
-  const property = value[key];
-  if (!Array.isArray(property)) {
-    return [];
-  }
-
-  return property.filter(
-    (entry): entry is string => typeof entry === 'string' && entry.trim() !== '',
-  );
-}
-
-function isCategoryDependentLookup(call: SteelBusinessToolCall, input: unknown): boolean {
-  switch (call.toolName) {
-    case 'search_price_candidates':
-      return getStringArrayProperty(input, 'catalogFamilies').length > 0;
-    default:
-      return false;
-  }
-}
-
 function hasUnknownCustomerTierContext(input: unknown): boolean {
   if (!isJsonObject(input)) {
     return false;
@@ -884,24 +953,35 @@ function getKnownCustomerTierIdFromContext(input: unknown): number | undefined {
     : undefined;
 }
 
-function getSingleCustomerSearchTierId(result: SteelToolResult): number | undefined {
+function getPreferredCustomerSearchTierId(result: SteelToolResult): number | undefined {
   if (!result.ok || !Array.isArray(result.data.customers)) {
     return undefined;
   }
 
   const tierIds = new Set<number>();
+  let bTierId: number | undefined;
   for (const customer of result.data.customers) {
     if (!isJsonObject(customer) || !isJsonObject(customer.customerTier)) {
       continue;
     }
 
-    const tierId = customer.customerTier.id;
+    const tier = customer.customerTier;
+    const tierId = tier.id;
     if (typeof tierId === 'number') {
       tierIds.add(tierId);
     }
+    const tierCode = typeof tier.code === 'string' ? tier.code.trim().toUpperCase() : '';
+    const tierName = typeof tier.name === 'string' ? tier.name.trim().toUpperCase() : '';
+    if (typeof tierId === 'number' && (tierCode === 'B' || tierName === 'B級')) {
+      bTierId = tierId;
+    }
   }
 
-  return tierIds.size === 1 ? [...tierIds][0] : undefined;
+  if (tierIds.size === 1) {
+    return [...tierIds][0];
+  }
+
+  return bTierId;
 }
 
 function withDefaultCustomerTierFilter({
@@ -932,6 +1012,95 @@ function withDefaultCustomerTierFilter({
     ...input,
     customerTierId: defaultCustomerTierId,
   };
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim() !== ''))];
+}
+
+function isSearchPriceCoalesceCompatible(
+  left: SearchPriceCandidatesInput,
+  right: SearchPriceCandidatesInput,
+): boolean {
+  return (
+    left.customerTierId === right.customerTierId &&
+    left.reviewState === right.reviewState &&
+    left.includeInactive === right.includeInactive &&
+    left.limit === right.limit
+  );
+}
+
+function toBatchedPriceCandidate(
+  input: SearchPriceCandidatesInput,
+  index: number,
+): SearchPriceCandidateQuery[] {
+  const directCandidate =
+    input.productNames !== undefined || input.erpItemCodes !== undefined
+      ? [
+          {
+            queryId: `batched_price_query_${index}`,
+            productNames: input.productNames,
+            erpItemCodes: input.erpItemCodes,
+            confidence: 'medium' as const,
+            reason: 'Batched from same provider-round search_price_candidates calls.',
+          },
+        ]
+      : [];
+
+  return [...directCandidate, ...(input.candidateQueries ?? [])];
+}
+
+function getBatchedSearchOriginalText(inputs: readonly SearchPriceCandidatesInput[]): string {
+  const originalTexts = uniqueStrings(
+    inputs
+      .map((input) => input.originalText)
+      .filter((value): value is string => value !== undefined),
+  );
+  if (originalTexts.length > 0) {
+    return originalTexts.join('；');
+  }
+
+  const derivedTexts = uniqueStrings(
+    inputs.flatMap((input) => [
+      ...(input.productNames ?? []),
+      ...(input.erpItemCodes ?? []),
+    ]).filter((value): value is string => value !== undefined),
+  );
+
+  return derivedTexts.length > 0 ? derivedTexts.join('；') : 'batched price candidate search';
+}
+
+function createBatchedSearchPriceInput(
+  inputs: readonly SearchPriceCandidatesInput[],
+): SearchPriceCandidatesInput | undefined {
+  if (inputs.length < 2) {
+    return undefined;
+  }
+
+  const [firstInput] = inputs;
+  if (!firstInput) {
+    return undefined;
+  }
+
+  if (!inputs.every((input) => isSearchPriceCoalesceCompatible(firstInput, input))) {
+    return undefined;
+  }
+
+  const candidateQueries = inputs.flatMap((input, index) => {
+    return toBatchedPriceCandidate(input, index + 1);
+  });
+  if (candidateQueries.length === 0 || candidateQueries.length > 10) {
+    return undefined;
+  }
+
+  return steelToolArgsSchemas.search_price_candidates.parse({
+    originalText: getBatchedSearchOriginalText(inputs),
+    candidateQueries,
+    customerTierId: firstInput.customerTierId,
+    reviewState: firstInput.reviewState,
+    includeInactive: firstInput.includeInactive,
+    limit: firstInput.limit,
+  });
 }
 
 interface ExecutedSteelToolCall {
@@ -1146,8 +1315,14 @@ async function executeSteelBusinessToolCalls({
   selectedCustomerTierId?: number;
 }): Promise<ExecutedSteelToolCall[]> {
   const executedCalls: ExecutedSteelToolCall[] = [];
+  const coalescedToolCallIds = new Set<string>();
 
-  for (const call of calls) {
+  for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+    const call = calls[callIndex];
+    if (!call || coalescedToolCallIds.has(call.toolCallId)) {
+      continue;
+    }
+
     let input: unknown;
     let result: SteelToolResult;
     try {
@@ -1163,14 +1338,80 @@ async function executeSteelBusinessToolCalls({
       continue;
     }
 
-    if (!hasInstructionLookupResult && isCategoryDependentLookup(call, input)) {
-      result = createInstructionLookupRequiredResult(call);
-      executedCalls.push({
-        call,
-        input,
-        result,
-      });
-      continue;
+    if (call.toolName === 'search_price_candidates') {
+      const parsedSearchInput = steelToolArgsSchemas.search_price_candidates.safeParse(input);
+      if (parsedSearchInput.success) {
+        const groupedCalls: Array<{
+          call: SteelBusinessToolCall;
+          input: unknown;
+          searchInput: SearchPriceCandidatesInput;
+        }> = [{ call, input, searchInput: parsedSearchInput.data }];
+
+        for (const siblingCall of calls.slice(callIndex + 1)) {
+          if (
+            siblingCall.toolName !== 'search_price_candidates' ||
+            coalescedToolCallIds.has(siblingCall.toolCallId)
+          ) {
+            continue;
+          }
+
+          let siblingInput: unknown;
+          try {
+            siblingInput = parseToolCallInput(siblingCall);
+          } catch {
+            continue;
+          }
+
+          const parsedSiblingSearchInput =
+            steelToolArgsSchemas.search_price_candidates.safeParse(siblingInput);
+          if (
+            parsedSiblingSearchInput.success &&
+            isSearchPriceCoalesceCompatible(parsedSearchInput.data, parsedSiblingSearchInput.data)
+          ) {
+            groupedCalls.push({
+              call: siblingCall,
+              input: siblingInput,
+              searchInput: parsedSiblingSearchInput.data,
+            });
+          }
+        }
+
+        const batchedInput = createBatchedSearchPriceInput(
+          groupedCalls.map(({ searchInput }) => searchInput),
+        );
+        if (batchedInput) {
+          const executionInput = withDefaultCustomerTierFilter({
+            forceDefaultCustomerTier,
+            input: batchedInput,
+            selectedCustomerTierId,
+          });
+
+          try {
+            result = await executeSteelToolCall({
+              toolName: call.toolName,
+              arguments: executionInput,
+              providerToolCallId: call.toolCallId,
+              runState,
+            });
+          } catch (error) {
+            result = createToolExecutionErrorResult(call, error);
+          }
+
+          for (const groupedCall of groupedCalls) {
+            coalescedToolCallIds.add(groupedCall.call.toolCallId);
+            executedCalls.push({
+              call: groupedCall.call,
+              input: groupedCall.input,
+              result,
+            });
+          }
+
+          if (isFatalSteelToolResult(result)) {
+            throw new Error(getFatalSteelToolErrorMessage(call, result));
+          }
+          continue;
+        }
+      }
     }
 
     const executionInput =
@@ -1351,7 +1592,7 @@ function getMissingProvisionalWorkbookPatchSheetIds(
   operations: readonly WorkbookPatchOperation[],
 ): SteelWorkbookSheetId[] {
   const touchedSheetIds = new Set(operations.map((operation) => operation.sheetId));
-  return requiredSteelWorkbookSheetIds.filter((sheetId) => !touchedSheetIds.has(sheetId));
+  return workbookPatchCompletionSheetIds.filter((sheetId) => !touchedSheetIds.has(sheetId));
 }
 
 function isMeaningfulWorkbookPatchValue(value: unknown): boolean {
@@ -1367,6 +1608,10 @@ function getPatchedWorkbookColumnKeysBySheet(
 ): Map<SteelWorkbookSheetId, Set<string>> {
   const columnKeysBySheet = new Map<SteelWorkbookSheetId, Set<string>>();
   for (const operation of operations) {
+    if (operation.op !== 'set_cell') {
+      continue;
+    }
+
     if (!isMeaningfulWorkbookPatchValue(operation.value)) {
       continue;
     }
@@ -1383,7 +1628,7 @@ function getMissingWorkbookPatchCells(
   operations: readonly WorkbookPatchOperation[],
 ): WorkbookPatchMissingCell[] {
   const columnKeysBySheet = getPatchedWorkbookColumnKeysBySheet(operations);
-  return requiredSteelWorkbookSheetIds.flatMap((sheetId) => {
+  return workbookPatchCompletionSheetIds.flatMap((sheetId) => {
     const patchedColumnKeys = columnKeysBySheet.get(sheetId);
     return workbookPatchCompletionColumnKeysBySheet[sheetId]
       .filter((columnKey) => !patchedColumnKeys?.has(columnKey))
@@ -1408,6 +1653,33 @@ function isWorkbookPatchCompletionComplete(completion?: WorkbookPatchCompletion)
   );
 }
 
+function getWorkbookPatchCompletionProgressMessage(
+  completion?: WorkbookPatchCompletion,
+): string {
+  const missingTargets = [
+    ...(completion?.missingSheetIds ?? []),
+    ...((completion?.missingCells ?? []).map(({ sheetId, columnKey }) => `${sheetId}.${columnKey}`)),
+  ];
+  const missingTargetText =
+    missingTargets.length > 0 ? ` missing ${missingTargets.join(', ')};` : '';
+
+  return `patch_quote_workbook workbook completion:${missingTargetText} asking AI to fill derivable workbook fields before final answer`;
+}
+
+async function emitWorkbookPatchCompletionProgress({
+  completion,
+  onToolStatus,
+}: {
+  completion?: WorkbookPatchCompletion;
+  onToolStatus?: SteelProviderToolStatusCallback;
+}): Promise<void> {
+  await onToolStatus?.({
+    toolName: 'patch_quote_workbook',
+    status: 'started',
+    message: getWorkbookPatchCompletionProgressMessage(completion),
+  });
+}
+
 function toWorkbookPatchToolResultValue(
   parsedCall: ParsedWorkbookPatchToolCall,
   completion?: WorkbookPatchCompletion,
@@ -1418,8 +1690,17 @@ function toWorkbookPatchToolResultValue(
   } = {},
 ): JSONValue {
   const operationCount = parsedCall.patchProposal.operations.length;
+  const deletedRowIds = parsedCall.patchProposal.operations
+    .filter((operation): operation is Extract<WorkbookPatchOperation, { op: 'delete_row' }> => {
+      return operation.op === 'delete_row';
+    })
+    .map((operation) => `${operation.sheetId}.${operation.rowId}`);
   const projectedFields = parsedCall.projectedFromSemantic
-    ? { projectedOperationCount: operationCount }
+    ? {
+        projectedOperationCount: operationCount,
+        projectedDeleteRowCount: deletedRowIds.length,
+        projectedDeletedRows: deletedRowIds,
+      }
     : {};
   if (subtotalMismatch) {
     const instruction = subtotalMismatch.unknownSubtotalLineRefs
@@ -1447,7 +1728,7 @@ function toWorkbookPatchToolResultValue(
       missingSheetIds: completion.missingSheetIds,
       missingCells: completion.missingCells,
       instruction:
-        'Semantic workbook patch projected but incomplete for this Steel quote update. Call patch_quote_workbook again with the same lineId and any derivable missing semantic fields. Include top-level customerQuoteTotal when customer_quote has a customer-facing total row. Do not hand-write workbook cell operations. If a value cannot be derived, leave that target cell blank and record the missing material/customer/source/calculation evidence in manual_review or interpretation_notes. Do not answer the user until the workbook patch is complete enough for this turn.',
+        'Semantic workbook patch projected but incomplete for this Steel quote update. Call patch_quote_workbook again with the same lineId and any derivable missing semantic fields for system_order, manual_review, and customer_quote. Include customerData when customer search candidates exist, and include top-level customerQuoteTotal when the customer-facing quote sheet has a total row. Do not hand-write workbook cell operations. If a value cannot be derived, leave that target cell blank and record the missing material/customer/source/calculation evidence in manual_review. Do not answer the user until the workbook patch is complete enough for this turn.',
     });
   }
 
@@ -1552,12 +1833,12 @@ function toToolResultMessage(
 function getRequiredPriceLookupReminderMessage(): LanguageModelV3Message {
   return {
     role: 'system',
-    content: `This Steel price request still requires reviewed lookup. For oral material/category wording, call lookup_catalog_families first to retrieve reviewed catalog key candidates. If the user provided a customer name, call search_customers in the initial lookup round when available, then pass the selected customer context to lookup_quote_rules. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. ${catalogFamilyPriceLookupInstruction} When the user did not provide a customer or customer tier is unknown/not found, use default price ${defaultCustomerTierCode} by passing customerTierId ${defaultCustomerTierId}; keep the notice short, for example 目前用 價格B：26.8 元/kg, and say separately that a customer name can be used to look up that customer's quote price. Do not add highest/most-expensive wording.`,
+    content: `This Steel price request still requires reviewed lookup. For oral material/category wording, call lookup_catalog_families first to retrieve reviewed catalog key candidates. If the user provided a customer name, call search_customers in the initial lookup round when available, then pass the selected customer context to lookup_quote_rules. If search_customers returns multiple customer/tier candidates and one candidate is B tier, use B tier first for provisional calculation and keep the candidates pending confirmation. If you have selected a catalog/category key and lookup_quote_rules has not completed for this interpreted order context, call lookup_quote_rules first; otherwise call search_price_candidates with AI-derived candidate queries before answering. ${catalogFamilyPriceLookupInstruction} When the user did not provide a customer or customer tier is unknown/not found, use default price ${defaultCustomerTierCode} by passing customerTierId ${defaultCustomerTierId}; keep the notice short, for example 目前用 價格B：26.8 元/kg, and say separately that a customer name can be used to look up that customer's quote price. Do not add highest/most-expensive wording.`,
   };
 }
 
 function getProvisionalWorkbookPatchReminderMessage(
-  missingSheetIds: readonly SteelWorkbookSheetId[] = requiredSteelWorkbookSheetIds,
+  missingSheetIds: readonly SteelWorkbookSheetId[] = workbookPatchCompletionSheetIds,
   missingCells: readonly WorkbookPatchMissingCell[] = [],
 ): LanguageModelV3Message {
   const missingSheetText =
@@ -1571,7 +1852,7 @@ function getProvisionalWorkbookPatchReminderMessage(
 
   return {
     role: 'system',
-    content: `This Steel quote update still requires a complete-enough semantic workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_quote_workbook to update all user-relevant sheets when values are available: system_order, quote_details, summary, manual_review, price_sources, interpretation_notes, and customer_quote. Do not hand-write workbook cell operations; backend projection owns cell operation generation. Fill semantic fields when derivable from user text, workbook context, reviewed tool results, or calculation_results. Use calculation_results before interpreted quote items when both exist. Leave missing semantic values blank when material, customer, source, or calculation context is unavailable, and record the missing context in manual_review or interpretation_notes instead of inventing values. 未確認單價或金額不可填 0; write 未確認 instead. Include provisional candidate/source/confidence notes and the quote_details \`小計\` column (internal key subtotal) when a quote amount is calculable. Do not add or use a separate visible \`報價\` column. Summary/customer_quote totals must be labeled as 暫估/待確認 until the user confirms the selected item, thickness, length, customer, and tier. When customer_quote has a customer-facing total, provide top-level customerQuoteTotal with itemSpec 報價總額, blank quantity/unit/unitPrice, and customer-facing total in subtotal. 給客戶用 must not expose customer tier, source refs, search keywords, candidates, AI/internal notes, cost, or margin. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
+    content: `This Steel quote update still requires a complete-enough semantic workbook patch for this turn.${missingSheetText}${missingCellText} Call patch_quote_workbook to update only the AI-facing quote sheets when values are available: system_order, manual_review, customer_quote (label 報價單), and customer_data (label 客戶資料) when customer search candidates exist. Do not hand-write workbook cell operations; backend projection owns cell operation generation. Fill semantic fields when derivable from user text, workbook context, reviewed tool results, or calculation_results. If the user provided a customer/vendor name and search_customers returned candidates, include semantic customerData rows with customerCode, vendorName, priceTier, confirmationStatus, and note. Use calculation_results before interpreted quote items when both exist. Leave missing semantic values blank when material, customer, source, or calculation context is unavailable, and record the missing context in manual_review instead of inventing values. 未確認單價或金額不可填 0; write 未確認 instead. customer_quote / 報價單 must not expose customer tier, source refs, search keywords, candidates, AI/internal notes, cost, or margin. After the patch result, summarize only the interpreted order information, new 小計 amount when updated, and key workbook changes; do not list a per-field diff or answer only with a field count.`,
   };
 }
 
@@ -1809,6 +2090,37 @@ function getWarnings(results: LanguageModelV3GenerateResult[]): string[] {
   return results.flatMap((result) => result.warnings.map(getWarningText));
 }
 
+function sumRoundTimings(
+  rounds: readonly SteelProviderRoundTiming[],
+  getDuration: (round: SteelProviderRoundTiming) => number,
+) {
+  return rounds.reduce((total, round) => total + getDuration(round), 0);
+}
+
+function getProviderTimings({
+  rounds,
+  startedAt,
+}: {
+  rounds: readonly SteelProviderRoundTiming[];
+  startedAt: number;
+}): SteelProviderTimings {
+  return {
+    totalDurationMs: Math.max(0, Date.now() - startedAt),
+    generationDurationMs: sumRoundTimings(rounds, (round) => round.generationDurationMs),
+    toolDurationMs: sumRoundTimings(rounds, (round) => round.toolDurationMs),
+    workbookCompletionDurationMs: sumRoundTimings(
+      rounds,
+      (round) => round.workbookCompletionDurationMs,
+    ),
+    roundCount: rounds.length,
+    rounds: [...rounds],
+  };
+}
+
+function countGeneratedToolCalls(result: LanguageModelV3GenerateResult): number {
+  return result.content.filter((part) => part.type === 'tool-call').length;
+}
+
 export async function sendSteelOAuthChat({
   abortSignal,
   agentRulesClient,
@@ -1831,12 +2143,27 @@ export async function sendSteelOAuthChat({
   workbookContextText,
   workbookPatchTool,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
+  const providerStartedAt = Date.now();
   const messagesWithPdfPageCounts =
     steelRuntimePolicy === true ? await getMessagesWithPdfPageCounts(messages) : messages;
-  const ocrSourceKinds =
-    steelRuntimePolicy === true ? getVisualEvidenceSourceKinds(messagesWithPdfPageCounts) : [];
-  const visualEvidenceFiles =
+  const allVisualEvidenceFiles =
     steelRuntimePolicy === true ? getVisualEvidenceFiles(messagesWithPdfPageCounts) : [];
+  const latestUserVisualEvidenceFiles =
+    steelRuntimePolicy === true
+      ? getVisualEvidenceFilesFromMessage(getLatestUserMessage(messagesWithPdfPageCounts))
+      : [];
+  const shouldEnableFileOcr =
+    latestUserVisualEvidenceFiles.length > 0 ||
+    (latestUserRequestsFileOcr(messagesWithPdfPageCounts) && allVisualEvidenceFiles.length > 0);
+  const visualEvidenceFiles = shouldEnableFileOcr
+    ? latestUserVisualEvidenceFiles.length > 0
+      ? latestUserVisualEvidenceFiles
+      : allVisualEvidenceFiles
+    : [];
+  const fileAnalysisPatchTool =
+    visualEvidenceFiles.length > 0 || hasSavedFileAnalysisContext(messagesWithPdfPageCounts);
+  const ocrSourceKinds =
+    steelRuntimePolicy === true ? getVisualEvidenceSourceKindsFromFiles(visualEvidenceFiles) : [];
   const shouldLoadAgentRules =
     steelRuntimePolicy === true || workbookPatchTool === true || ocrSourceKinds.length > 0;
   const systemInstruction = await getSystemInstruction({
@@ -1874,17 +2201,20 @@ export async function sendSteelOAuthChat({
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
     ...(workbookPatchTool ? [semanticWorkbookPatchFunctionTool] : []),
-    ...(visualEvidenceFiles.length > 0
-      ? [fileOcrFunctionTool, visualInspectionFunctionTool, fileAnalysisPatchFunctionTool]
-      : []),
+    ...(visualEvidenceFiles.length > 0 ? [fileOcrFunctionTool, visualInspectionFunctionTool] : []),
+    ...(fileAnalysisPatchTool ? [fileAnalysisPatchFunctionTool] : []),
   ] satisfies SteelRoundTool[];
   const runState = createSteelToolRunState(steelToolMaxCalls ?? Number.MAX_SAFE_INTEGER);
-  const omitVisualEvidenceFileParts = visualEvidenceFiles.length > 0;
+  const omitVisualEvidenceFileParts = allVisualEvidenceFiles.length > 0;
   let prompt = systemInstruction
     ? toPromptWithSystemInstruction(messagesWithPdfPageCounts, systemInstruction, {
         omitVisualEvidenceFileParts,
+        ocrAvailableVisualEvidenceFiles: visualEvidenceFiles,
       })
-    : toPrompt(messagesWithPdfPageCounts, { omitVisualEvidenceFileParts });
+    : toPrompt(messagesWithPdfPageCounts, {
+        omitVisualEvidenceFileParts,
+        ocrAvailableVisualEvidenceFiles: visualEvidenceFiles,
+      });
   const generationResults: LanguageModelV3GenerateResult[] = [];
   const mustGetReviewedPriceResult =
     steelRuntimePolicy === true && requiresReviewedPriceLookup(messages);
@@ -1900,6 +2230,7 @@ export async function sendSteelOAuthChat({
   const fileAnalysisPdfPageProgress = new Map<string, FileAnalysisPdfPageProgress>();
   trackVisualEvidencePdfPageProgress(fileAnalysisPdfPageProgress, visualEvidenceFiles);
   let forcedFileOcrPage: PendingFileAnalysisPdfPage | undefined;
+  const roundTimings: SteelProviderRoundTiming[] = [];
 
   for (let round = 0; steelToolMaxCalls === undefined || round <= steelToolMaxCalls; round += 1) {
     const toolChoice: LanguageModelV3ToolChoice = forcedFileOcrPage
@@ -1909,6 +2240,8 @@ export async function sendSteelOAuthChat({
           mustGetReviewedPriceResult,
         });
     forcedFileOcrPage = undefined;
+    const promptMessageCount = prompt.length;
+    const generationStartedAt = Date.now();
     const result = await openai(model).doGenerate({
       abortSignal,
       prompt,
@@ -1927,6 +2260,8 @@ export async function sendSteelOAuthChat({
         },
       },
     });
+    const generationDurationMs = Math.max(0, Date.now() - generationStartedAt);
+    let toolDurationMs = 0;
 
     generationResults.push(result);
     for (const summary of getReasoningSummaries(result)) {
@@ -1943,19 +2278,23 @@ export async function sendSteelOAuthChat({
         ? getPendingFileAnalysisPdfPage(fileAnalysisPdfPageProgress)
         : undefined;
     const fileOcrToolCalls = visualEvidenceFiles.length > 0 ? getFileOcrToolCalls(result) : [];
+    const fileOcrStartedAt = Date.now();
     const executedFileOcrCalls = await executeFileOcrToolCalls({
       calls: fileOcrToolCalls,
       executeFileOcr,
       files: visualEvidenceFiles,
     });
+    toolDurationMs += Math.max(0, Date.now() - fileOcrStartedAt);
     const visualInspectionToolCalls =
       visualEvidenceFiles.length > 0 ? getVisualInspectionToolCalls(result) : [];
+    const visualInspectionStartedAt = Date.now();
     const executedVisualInspectionCalls = await executeVisualInspectionToolCalls({
       calls: visualInspectionToolCalls,
       executeVisualInspection: executeVisualInspectionTool,
       files: visualEvidenceFiles,
       onToolStatus,
     });
+    toolDurationMs += Math.max(0, Date.now() - visualInspectionStartedAt);
     if (parsedFileAnalysisPatchCalls.length > 0) {
       fileAnalysisPatch = mergeFileAnalysisPatchCalls(
         fileAnalysisPatch,
@@ -1986,12 +2325,47 @@ export async function sendSteelOAuthChat({
     const requiresWorkbookPatchCompletion =
       (mustGetProvisionalWorkbookPatch && hasPositiveReviewedPriceCandidate) ||
       (steelRuntimePolicy === true && hasWorkbookPatch);
+    const workbookCompletionStartedAt = Date.now();
     const workbookPatchCompletion = requiresWorkbookPatchCompletion
       ? getWorkbookPatchCompletion(workbookPatchOperations)
       : undefined;
     const hasCompleteWorkbookPatch =
       workbookPatchCompletion === undefined ||
       (hasWorkbookPatch && isWorkbookPatchCompletionComplete(workbookPatchCompletion));
+    const workbookCompletionDurationMs = Math.max(0, Date.now() - workbookCompletionStartedAt);
+    let recordedRoundTiming = false;
+    const recordRoundTiming = () => {
+      if (recordedRoundTiming) {
+        return;
+      }
+
+      recordedRoundTiming = true;
+      roundTimings.push({
+        round,
+        generationDurationMs,
+        toolDurationMs,
+        workbookCompletionDurationMs,
+        promptMessageCount,
+        generatedToolCallCount: countGeneratedToolCalls(result),
+        workbookPatchOperationCount: acceptedWorkbookPatchCalls.reduce(
+          (count, parsedCall) => count + parsedCall.patchProposal.operations.length,
+          0,
+        ),
+        workbookCompletionRequired: requiresWorkbookPatchCompletion,
+        workbookCompletionComplete: requiresWorkbookPatchCompletion
+          ? hasCompleteWorkbookPatch
+          : undefined,
+        missingWorkbookSheetCount: workbookPatchCompletion?.missingSheetIds.length ?? 0,
+        missingWorkbookCellCount: workbookPatchCompletion?.missingCells.length ?? 0,
+      });
+    };
+
+    if (requiresWorkbookPatchCompletion && !hasCompleteWorkbookPatch) {
+      await emitWorkbookPatchCompletionProgress({
+        completion: workbookPatchCompletion,
+        onToolStatus,
+      });
+    }
 
     const steelBusinessToolCalls = steelRuntimePolicy ? getSteelBusinessToolCalls(result) : [];
     if (steelBusinessToolCalls.length === 0) {
@@ -2022,11 +2396,13 @@ export async function sendSteelOAuthChat({
             executedVisualInspectionCalls,
           ),
         ];
+        recordRoundTiming();
         continue;
       }
 
       if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {
         prompt = [...prompt, getRequiredPriceLookupReminderMessage()];
+        recordRoundTiming();
         continue;
       }
 
@@ -2052,6 +2428,7 @@ export async function sendSteelOAuthChat({
             executedVisualInspectionCalls,
           ),
         ];
+        recordRoundTiming();
         continue;
       }
 
@@ -2075,6 +2452,7 @@ export async function sendSteelOAuthChat({
             executedVisualInspectionCalls,
           ),
         ];
+        recordRoundTiming();
         continue;
       }
 
@@ -2108,6 +2486,7 @@ export async function sendSteelOAuthChat({
         } else {
           prompt = nextPrompt;
         }
+        recordRoundTiming();
         continue;
       }
 
@@ -2119,6 +2498,7 @@ export async function sendSteelOAuthChat({
             workbookPatchCompletion?.missingCells,
           ),
         ];
+        recordRoundTiming();
         continue;
       }
 
@@ -2132,12 +2512,15 @@ export async function sendSteelOAuthChat({
           ...prompt,
           getPendingFileAnalysisPdfPageReminderMessage(pendingFileAnalysisPdfPage),
         ];
+        recordRoundTiming();
         continue;
       }
 
+      recordRoundTiming();
       break;
     }
 
+    const steelBusinessToolsStartedAt = Date.now();
     const executedCalls = await executeSteelBusinessToolCalls({
       calls: steelBusinessToolCalls,
       executeSteelToolCall,
@@ -2146,6 +2529,7 @@ export async function sendSteelOAuthChat({
       runState,
       selectedCustomerTierId,
     });
+    toolDurationMs += Math.max(0, Date.now() - steelBusinessToolsStartedAt);
     if (
       executedCalls.some(
         ({ call, result: toolResult }) => call.toolName === 'lookup_quote_rules' && toolResult.ok,
@@ -2161,7 +2545,7 @@ export async function sendSteelOAuthChat({
       .find((tierId) => tierId !== undefined);
     const searchedCustomerTierId = executedCalls
       .filter(({ call }) => call.toolName === 'search_customers')
-      .map(({ result: toolResult }) => getSingleCustomerSearchTierId(toolResult))
+      .map(({ result: toolResult }) => getPreferredCustomerSearchTierId(toolResult))
       .find((tierId) => tierId !== undefined);
     const nextSelectedCustomerTierId =
       knownCustomerTierId ?? searchedCustomerTierId ?? selectedCustomerTierId;
@@ -2219,6 +2603,7 @@ export async function sendSteelOAuthChat({
     } else {
       prompt = nextPrompt;
     }
+    recordRoundTiming();
   }
 
   if (mustGetReviewedPriceResult && !hasReviewedPriceResult) {
@@ -2260,6 +2645,7 @@ export async function sendSteelOAuthChat({
     text: getGeneratedText(result),
     responseId: result.response?.id,
     usage: getUsage(generationResults),
+    timings: getProviderTimings({ rounds: roundTimings, startedAt: providerStartedAt }),
     unsupportedSettings: [],
     warnings: getWarnings(generationResults),
     ...(workbookPatch ? { workbookPatch } : {}),

@@ -64,7 +64,7 @@ Tasks:
   - 價格來源
   - 判讀備註
   - 系統訂單
-  - 給客戶用
+  - 報價單
 - Freeze header row and enable filters.
 - Format money as integers and weights with two decimals.
 - Never render unconfirmed or missing prices as `0`.
@@ -79,7 +79,7 @@ Acceptance:
   selected sheet sets, and formats.
 - Full export includes all seven fixed sheets in workbook order.
 - Selected-sheet export can include any sheet combination, including `系統訂單`
-  and `給客戶用`, without special-case restrictions.
+  and `報價單`, without special-case restrictions.
 - Missing price renders as `未確認`, not zero or blank money.
 - Export output is deterministic for the same workbook version.
 

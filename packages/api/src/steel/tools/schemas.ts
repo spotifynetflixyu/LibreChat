@@ -14,28 +14,6 @@ function normalizeCatalogFilterText(value: string): string {
     .trim();
 }
 
-function includesCatalogFamily(input: { catalogFamilies?: string[] }, familyKey: string): boolean {
-  return input.catalogFamilies?.some((family) => family.trim() === familyKey) ?? false;
-}
-
-function isCTypeFamilyLabelProductName(value: string): boolean {
-  const normalized = normalizeCatalogFilterText(value);
-
-  return normalized.includes('c型鋼') || normalized.includes('c鋼');
-}
-
-function hasCTypeFamilyLabelProductName(input: {
-  productNames?: string[];
-  candidateQueries?: Array<{ productNames?: string[] }>;
-}): boolean {
-  const productNames = [
-    ...(input.productNames ?? []),
-    ...(input.candidateQueries ?? []).flatMap((candidate) => candidate.productNames ?? []),
-  ];
-
-  return productNames.some(isCTypeFamilyLabelProductName);
-}
-
 function uniqueNonEmptyStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim() !== ''))];
 }
@@ -62,26 +40,18 @@ function getExpectedCTypeCompactSpec(value: string): string | undefined {
 
 function getCTypeExpectedCompactSpecs(input: {
   originalText?: string;
-  specKey?: string;
-  specKeyContains?: string;
   productNames?: string[];
   candidateQueries?: Array<{
     label?: string;
     productNames?: string[];
-    specKey?: string;
-    specKeyContains?: string;
   }>;
 }): string[] {
   const values = [
     input.originalText,
-    input.specKey,
-    input.specKeyContains,
     ...(input.productNames ?? []),
     ...(input.candidateQueries ?? []).flatMap((candidate) => [
       candidate.label,
       ...(candidate.productNames ?? []),
-      candidate.specKey,
-      candidate.specKeyContains,
     ]),
   ].filter((value): value is string => value !== undefined);
 
@@ -92,23 +62,57 @@ function getCTypeExpectedCompactSpecs(input: {
 
 function hasCTypeCompactSpecFragment(
   input: {
-    specKey?: string;
-    specKeyContains?: string;
-    candidateQueries?: Array<{ specKey?: string; specKeyContains?: string }>;
+    productNames?: string[];
+    candidateQueries?: Array<{ productNames?: string[] }>;
   },
   expectedSpec: string,
 ): boolean {
   const expected = normalizeCatalogFilterText(expectedSpec);
   const specValues = [
-    input.specKey,
-    input.specKeyContains,
-    ...(input.candidateQueries ?? []).flatMap((candidate) => [
-      candidate.specKey,
-      candidate.specKeyContains,
-    ]),
-  ].filter((value): value is string => value !== undefined);
+    ...(input.productNames ?? []),
+    ...(input.candidateQueries ?? []).flatMap((candidate) => candidate.productNames ?? []),
+  ];
 
   return specValues.some((value) => normalizeCatalogFilterText(value).includes(expected));
+}
+
+function getPriceSearchProductNames(input: {
+  productNames?: string[];
+  candidateQueries?: Array<{
+    label?: string;
+    productNames?: string[];
+  }>;
+}): string[] {
+  return [
+    ...(input.productNames ?? []),
+    ...(input.candidateQueries ?? []).flatMap((candidate) => candidate.productNames ?? []),
+  ];
+}
+
+function hasPlateSearchSignal(value: string): boolean {
+  return /(?:\bPL\s*\d|板|黑鐵|黑板|OT板)/iu.test(value);
+}
+
+function hasSquareCutPlateProductName(input: {
+  originalText?: string;
+  productNames?: string[];
+  candidateQueries?: Array<{
+    label?: string;
+    productNames?: string[];
+  }>;
+}): boolean {
+  const productNames = getPriceSearchProductNames(input);
+  const contextText = [
+    input.originalText,
+    ...productNames,
+    ...(input.candidateQueries ?? []).map((candidate) => candidate.label),
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(' ');
+
+  return productNames.some(
+    (productName) => productName.includes('四方切') && hasPlateSearchSignal(contextText),
+  );
 }
 
 const instructionCatalogContextSchema = z.object({
@@ -187,25 +191,29 @@ const lookupCatalogFamiliesSchema = z
 const searchPriceCandidatesSchema = z
   .object({
     originalText: nonEmptyString.optional(),
-    specKey: nonEmptyString.optional(),
-    specKeyContains: nonEmptyString.optional(),
     productNames: z
       .array(nonEmptyString)
       .min(1)
       .max(10)
       .describe(
-        'Multiple reviewed product/source name candidates or AI-derived reviewed product-name candidates to search with the same spec/catalog/tier filters. Use this for several inferred product names when per-candidate confidence/reason is not needed; use candidateQueries when each candidate needs its own reason.',
+        'Multiple product-price product-name text candidates to search in one tool call. Values may be Chinese product names, formal product-name fragments, or specification text as it appears inside product names, for example 錏輕型鋼 or 75*2.3.',
       )
       .optional(),
-    catalogFamilies: z
+    erpItemCodes: z
       .array(nonEmptyString)
       .min(1)
-      .max(20)
+      .max(10)
       .describe(
-        'Canonical catalog family keys selected by AI, for example c_type, h_beam, or angle. Use this for material/category keys instead of putting family labels in productNames.',
+        'ERP item codes or code prefixes to search in one tool call, for example CCG, CCG07523, BNG, or DNB70.',
       )
       .optional(),
-    candidateQueries: z.array(steelPriceSearchCandidateSchema).max(10).optional(),
+    candidateQueries: z
+      .array(steelPriceSearchCandidateSchema)
+      .max(10)
+      .describe(
+        'Batch multiple per-candidate product-name/spec text and ERP-code searches in one tool call. Use this instead of calling search_price_candidates once per keyword, material alternative, or line when they share compatible top-level filters.',
+      )
+      .optional(),
     customerTierId: z.number().int().positive().optional(),
     reviewState: reviewStateSchema,
     includeInactive: z.boolean().optional(),
@@ -214,18 +222,14 @@ const searchPriceCandidatesSchema = z
   .strict()
   .superRefine((input, ctx) => {
     const hasDirectFilter =
-      input.specKey !== undefined ||
-      input.specKeyContains !== undefined ||
-      input.productNames !== undefined ||
-      input.catalogFamilies !== undefined;
+      input.productNames !== undefined || input.erpItemCodes !== undefined;
     const hasCandidateQueries =
       input.candidateQueries !== undefined && input.candidateQueries.length > 0;
 
     if (!hasDirectFilter && !hasCandidateQueries) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message:
-          'Provide specKey, specKeyContains, productNames, catalogFamilies, or candidateQueries',
+        message: 'Provide productNames, erpItemCodes, or candidateQueries',
       });
     }
 
@@ -260,27 +264,25 @@ const searchPriceCandidatesSchema = z
       });
     }
 
-    if (includesCatalogFamily(input, 'c_type') && hasCTypeFamilyLabelProductName(input)) {
+    const expectedSpecs = getCTypeExpectedCompactSpecs(input);
+    const missingSpecs = expectedSpecs.filter(
+      (expectedSpec) => !hasCTypeCompactSpecFragment(input, expectedSpec),
+    );
+    if (missingSpecs.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message:
-          'Do not use C型鋼 as productNames after selecting c_type; use catalogFamilies: [c_type] plus specKeyContains such as 100x2.3, or reviewed product names such as 白鐵輕型鋼 / 錏輕型鋼 / 黑鐵輕型鋼.',
+        message: `For c_type price search, include productNames spec fragments like ${missingSpecs.join(
+          ' or ',
+        )} derived from width and thickness; do not only use the full section such as 100x50x20x2.3.`,
       });
     }
 
-    if (includesCatalogFamily(input, 'c_type')) {
-      const expectedSpecs = getCTypeExpectedCompactSpecs(input);
-      const missingSpecs = expectedSpecs.filter(
-        (expectedSpec) => !hasCTypeCompactSpecFragment(input, expectedSpec),
-      );
-      if (missingSpecs.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `For c_type price search, include specKeyContains like ${missingSpecs.join(
-            ' or ',
-          )} derived from width and thickness; do not only use the full section such as 100x50x20x2.3.`,
-        });
-      }
+    if (hasSquareCutPlateProductName(input)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'For plate price search, use laser-cut plate productNames instead of square-cut productNames.',
+        path: ['productNames'],
+      });
     }
   });
 

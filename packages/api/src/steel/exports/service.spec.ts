@@ -6,6 +6,7 @@ import type { SteelWorkbook } from 'librechat-data-provider';
 
 const requiredSheetIds = [
   'system_order',
+  'customer_data',
   'quote_details',
   'summary',
   'manual_review',
@@ -25,7 +26,9 @@ function createWorkbook(): SteelWorkbook {
           ? '報價明細'
           : sheetId === 'system_order'
             ? '系統訂單'
-            : sheetId,
+            : sheetId === 'customer_data'
+              ? '客戶資料'
+              : sheetId,
       columns: [
         { key: 'line_no', label: '項次', valueType: 'number', editable: false, widthPx: 80 },
         {
@@ -48,13 +51,14 @@ function createWorkbook(): SteelWorkbook {
 }
 
 describe('renderSteelWorkbookXlsx', () => {
-  it('renders all seven workbook sheets from persisted workbook JSON', async () => {
+  it('renders all eight workbook sheets from persisted workbook JSON', async () => {
     const buffer = await renderSteelWorkbookXlsx({ workbook: createWorkbook() });
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer);
 
     expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual([
       '系統訂單',
+      '客戶資料',
       '報價明細',
       'summary',
       'manual_review',

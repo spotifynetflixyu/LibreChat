@@ -21,7 +21,7 @@ describe('createMongooseSteelWorkbookRepository', () => {
     await mongoose.connection.dropDatabase();
   });
 
-  it('persists the initial seven-sheet workbook through the real Mongo schema', async () => {
+  it('persists the initial eight-sheet workbook through the real Mongo schema', async () => {
     const service = createSteelWorkbookService({
       id: () => 'wb_real_schema_1',
       now: () => new Date('2026-06-02T00:00:00.000Z'),
@@ -34,12 +34,13 @@ describe('createMongooseSteelWorkbookRepository', () => {
     expect(created.workbook.id).toBe('wb_real_schema_1');
     expect(read.workbook.sheets.map((sheet) => sheet.label)).toEqual([
       '系統訂單',
+      '客戶資料',
       '報價明細',
       '總結',
       '人工複核',
       '價格來源',
       '判讀備註',
-      '給客戶用',
+      '報價單',
     ]);
     expect(read.workbook.sheets.every((sheet) => sheet.rows.length === 0)).toBe(true);
   });

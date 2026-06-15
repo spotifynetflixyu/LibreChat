@@ -22,8 +22,222 @@ function expectOperation(
   );
 }
 
+function expectOnlyThreePatchSheets(
+  operations: ReturnType<typeof buildSemanticWorkbookPatchOperations>,
+) {
+  expect(new Set(operations.map((operation) => operation.sheetId))).toEqual(
+    new Set(['system_order', 'manual_review', 'customer_quote']),
+  );
+}
+
 describe('Steel semantic workbook projection', () => {
-  it('projects one semantic quote line into all workbook sheets', () => {
+  it('projects customer search candidates into the customer data sheet', () => {
+    const operations = buildSemanticWorkbookPatchOperations({
+      customerData: [
+        {
+          rowId: 'customer_data_1',
+          customerCode: 'C001',
+          vendorName: '龍頂鋼構',
+          priceTier: 'A級',
+          confirmationStatus: '待確認',
+          note: 'search_customers candidate 1',
+        },
+        {
+          rowId: 'customer_data_2',
+          customerCode: 'C002',
+          vendorName: '龍頂工程',
+          priceTier: 'B級',
+          confirmationStatus: '待確認；多候選先用B級暫估',
+          note: 'search_customers candidate 2',
+        },
+      ],
+      quoteLines: [],
+    });
+
+    expect(new Set(operations.map((operation) => operation.sheetId))).toEqual(
+      new Set(['customer_data']),
+    );
+    expectOperation(operations, {
+      sheetId: 'customer_data',
+      rowId: 'customer_data_1',
+      columnKey: 'customer_code',
+      value: 'C001',
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_data',
+      rowId: 'customer_data_2',
+      columnKey: 'vendor_name',
+      value: '龍頂工程',
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_data',
+      rowId: 'customer_data_2',
+      columnKey: 'price_tier',
+      value: 'B級',
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_data',
+      rowId: 'customer_data_2',
+      columnKey: 'confirmation_status',
+      value: '待確認；多候選先用B級暫估',
+    });
+  });
+
+  it('projects explicit row deletions without treating omitted quote lines as deletes', () => {
+    const patch = {
+      quoteLines: [],
+      deleteRows: [
+        {
+          sheetId: 'system_order',
+          rowIds: ['order_2', 'order_3'],
+          reason: 'User requested keeping only confirmed C75 system-order rows.',
+        },
+      ],
+    };
+    const operations = buildSemanticWorkbookPatchOperations(patch);
+
+    expect(operations).toEqual([
+      {
+        op: 'delete_row',
+        sheetId: 'system_order',
+        rowId: 'order_2',
+        reason: 'User requested keeping only confirmed C75 system-order rows.',
+      },
+      {
+        op: 'delete_row',
+        sheetId: 'system_order',
+        rowId: 'order_3',
+        reason: 'User requested keeping only confirmed C75 system-order rows.',
+      },
+    ]);
+  });
+
+  it('does not delete existing rows when a semantic patch merely omits them', () => {
+    const operations = buildSemanticWorkbookPatchOperations({
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          normalizedItemName: '錏輕型鋼 75*2.3',
+          systemOrder: {
+            modelCode: 'CCG07523',
+            itemSpec: '錏輕型鋼 75*2.3',
+          },
+        },
+      ],
+    });
+
+    expect(JSON.stringify(operations)).not.toContain('"delete_row"');
+  });
+
+  it('does not fill system order item spec from normalized names when adopted price row productName is missing', () => {
+    const operations = buildSemanticWorkbookPatchOperations({
+      quoteLines: [
+        {
+          lineId: 'line_1',
+          lineNo: 1,
+          normalizedItemName: '錏C型鋼 C100x50x20x2.3 L=6000',
+          adoptedProductPriceItem: 'CCG10023 錏輕型鋼 100*2.3',
+          systemOrder: {
+            modelCode: 'CCG10023',
+          },
+        },
+      ],
+    });
+
+    expect(operations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sheetId: 'system_order',
+          rowId: 'order_1',
+          columnKey: 'item_spec',
+        }),
+      ]),
+    );
+  });
+
+  it('projects a user-confirmed C75 adopted price row into workbook-visible sheets', () => {
+    const operations = buildSemanticWorkbookPatchOperations({
+      quoteLines: [
+        {
+          lineId: 'line_3',
+          lineNo: 3,
+          customerOriginalItemName: 'C75',
+          normalizedItemName: '錏輕型鋼 75*2.3',
+          adoptedProductPriceItem: 'CCG07523 錏輕型鋼 75*2.3',
+          materialCategory: 'C型鋼',
+          material: '錏',
+          spec: '75*2.3',
+          finishedLengthM: 1268.56,
+          quantity: 288,
+          unit: '隻',
+          unitWeightKgPerM: 3.25,
+          totalWeightKg: 4122.82,
+          materialUnitPrice: 26.8,
+          materialPricingUnit: 'Kg',
+          billableQuantity: 4122.82,
+          subtotal: 110491.58,
+          confidence: '中',
+          lowConfidenceReason: '使用者確認品名為錏輕型鋼，厚度仍需確認',
+          systemOrder: {
+            modelCode: 'CCG07523',
+            itemSpec: '錏輕型鋼 75*2.3',
+            unit: 'Kg',
+            quantity: 4122.82,
+            unitWeight: 3.25,
+            totalQuantity: 4122.82,
+            unitPrice: 26.8,
+            pricingBasis: '價格B暫估',
+            category: 'C型鋼',
+          },
+          customerQuote: {
+            itemSpec: 'C75 錏輕型鋼（暫採75*2.3）',
+            quantity: 288,
+            unit: '隻',
+            subtotal: 110491.58,
+            note: '暫估，待確認厚度',
+          },
+          manualReview: {
+            confirmationNeeded: '確認 C75 是否為 75*2.3 厚度',
+          },
+        },
+      ],
+    });
+
+    expectOnlyThreePatchSheets(operations);
+    expectOperation(operations, {
+      sheetId: 'system_order',
+      rowId: 'order_3',
+      columnKey: 'model_code',
+      value: 'CCG07523',
+    });
+    expectOperation(operations, {
+      sheetId: 'system_order',
+      rowId: 'order_3',
+      columnKey: 'item_spec',
+      value: '錏輕型鋼 75*2.3',
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_3',
+      columnKey: 'item_spec',
+      value: 'C75 錏輕型鋼（暫採75*2.3）',
+    });
+    expectOperation(operations, {
+      sheetId: 'customer_quote',
+      rowId: 'customer_3',
+      columnKey: 'subtotal',
+      value: 110491.58,
+    });
+    expectOperation(operations, {
+      sheetId: 'manual_review',
+      rowId: 'review_3',
+      columnKey: 'confirmation_needed',
+      value: '確認 C75 是否為 75*2.3 厚度',
+    });
+  });
+
+  it('projects one semantic quote line into the three workbook patch sheets', () => {
     const operations = buildSemanticWorkbookPatchOperations({
       customer: {
         name: '未提供',
@@ -65,7 +279,7 @@ describe('Steel semantic workbook projection', () => {
           note: 'C型鋼預設不列一般切工/孔費',
           systemOrder: {
             modelCode: 'CCG10023',
-            itemSpec: '錏C型鋼 C100x50x20x2.3 L=6000',
+            itemSpec: '錏輕型鋼 100*2.3',
             unit: 'Kg',
             quantity: 24,
             unitWeight: 4,
@@ -111,18 +325,7 @@ describe('Steel semantic workbook projection', () => {
       },
     });
 
-    expectOperation(operations, {
-      sheetId: 'quote_details',
-      rowId: 'line_1',
-      columnKey: 'material_unit_price',
-      value: 26.8,
-    });
-    expectOperation(operations, {
-      sheetId: 'quote_details',
-      rowId: 'line_1',
-      columnKey: 'subtotal',
-      value: 643.2,
-    });
+    expectOnlyThreePatchSheets(operations);
     expectOperation(operations, {
       sheetId: 'system_order',
       rowId: 'order_1',
@@ -133,7 +336,7 @@ describe('Steel semantic workbook projection', () => {
       sheetId: 'system_order',
       rowId: 'order_1',
       columnKey: 'item_spec',
-      value: '錏C型鋼 C100x50x20x2.3 L=6000',
+      value: '錏輕型鋼 100*2.3',
     });
     expectOperation(operations, {
       sheetId: 'system_order',
@@ -142,28 +345,10 @@ describe('Steel semantic workbook projection', () => {
       value: 26.8,
     });
     expectOperation(operations, {
-      sheetId: 'summary',
-      rowId: 'summary_total_amount',
-      columnKey: 'value',
-      value: 643.2,
-    });
-    expectOperation(operations, {
       sheetId: 'manual_review',
       rowId: 'review_1',
       columnKey: 'confirmation_needed',
       value: '確認材質是否為錏輕型鋼；提供客戶後可改查客戶分級',
-    });
-    expectOperation(operations, {
-      sheetId: 'price_sources',
-      rowId: 'source_1',
-      columnKey: 'adopted_product_price_item',
-      value: 'CCG10023 錏輕型鋼 100*2.3',
-    });
-    expectOperation(operations, {
-      sheetId: 'interpretation_notes',
-      rowId: 'note_1',
-      columnKey: 'content',
-      value: '未指定材質時暫採錏輕型鋼；同規格另有白鐵候選。',
     });
     expectOperation(operations, {
       sheetId: 'customer_quote',
@@ -217,7 +402,7 @@ describe('Steel semantic workbook projection', () => {
     );
   });
 
-  it('reprojects all affected cells when one quote value changes', () => {
+  it('reprojects affected cells in the three workbook patch sheets when one quote value changes', () => {
     const operations = buildSemanticWorkbookPatchOperations({
       customer: {
         name: '龍頂',
@@ -243,7 +428,8 @@ describe('Steel semantic workbook projection', () => {
           subtotal: 624,
           confidence: '中',
           systemOrder: {
-            itemSpec: '錏C型鋼 C100x50x20x2.3 L=6000',
+            modelCode: 'CCG10023',
+            itemSpec: '錏輕型鋼 100*2.3',
             unit: 'Kg',
             quantity: 24,
             totalQuantity: 24,
@@ -277,18 +463,7 @@ describe('Steel semantic workbook projection', () => {
       },
     });
 
-    expectOperation(operations, {
-      sheetId: 'quote_details',
-      rowId: 'line_1',
-      columnKey: 'material_unit_price',
-      value: 26,
-    });
-    expectOperation(operations, {
-      sheetId: 'quote_details',
-      rowId: 'line_1',
-      columnKey: 'subtotal',
-      value: 624,
-    });
+    expectOnlyThreePatchSheets(operations);
     expectOperation(operations, {
       sheetId: 'system_order',
       rowId: 'order_1',
@@ -296,26 +471,10 @@ describe('Steel semantic workbook projection', () => {
       value: 26,
     });
     expectOperation(operations, {
-      sheetId: 'summary',
-      rowId: 'summary_total_amount',
-      columnKey: 'value',
-      value: 624,
-    });
-    expect(
-      operations
-        .filter(
-          (operation) =>
-            operation.sheetId === 'summary' &&
-            operation.rowId.endsWith('_amount') &&
-            operation.columnKey === 'value',
-        )
-        .map((operation) => operation.rowId),
-    ).toEqual(['summary_total_amount']);
-    expectOperation(operations, {
-      sheetId: 'price_sources',
-      rowId: 'source_1',
-      columnKey: 'adopted_unit_price',
-      value: 26,
+      sheetId: 'manual_review',
+      rowId: 'review_1',
+      columnKey: 'confirmation_needed',
+      value: '確認龍頂客戶全名與材質',
     });
     expectOperation(operations, {
       sheetId: 'customer_quote',
@@ -376,13 +535,8 @@ describe('Steel semantic workbook projection', () => {
       }),
     });
 
+    expectOnlyThreePatchSheets(operations);
     expect(operations.length).toBeGreaterThan(100);
-    expectOperation(operations, {
-      sheetId: 'quote_details',
-      rowId: 'line_12',
-      columnKey: 'subtotal',
-      value: 112,
-    });
     expectOperation(operations, {
       sheetId: 'customer_quote',
       rowId: 'customer_12',

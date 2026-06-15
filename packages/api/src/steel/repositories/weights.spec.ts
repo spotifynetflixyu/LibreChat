@@ -39,7 +39,7 @@ describe('Steel weight repository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('review_state = $1'), [
       'reviewed',
       'H100x100',
-      20,
+      100,
     ]);
     expect(result[0]).toMatchObject({
       id: 5,

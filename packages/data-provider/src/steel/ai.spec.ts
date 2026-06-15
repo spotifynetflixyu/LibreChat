@@ -198,6 +198,7 @@ describe('Steel AI public contracts', () => {
         },
         changedPaths: [
           { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+          { sheetId: 'customer_data', rowId: 'candidate_1', columnKey: 'price_tier' },
         ],
         changedFieldSummary: [
           {
@@ -208,6 +209,13 @@ describe('Steel AI public contracts', () => {
             previousValue: 120,
             nextValue: 115,
           },
+          {
+            sheetId: 'customer_data',
+            rowId: 'candidate_1',
+            columnKey: 'price_tier',
+            label: '等級',
+            nextValue: 'B',
+          },
         ],
       },
     });
@@ -215,6 +223,7 @@ describe('Steel AI public contracts', () => {
     expect(parsed.workbookPatch?.workbook?.version).toBe(3);
     expect(parsed.workbookPatch?.changedPaths).toEqual([
       { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
+      { sheetId: 'customer_data', rowId: 'candidate_1', columnKey: 'price_tier' },
     ]);
   });
 

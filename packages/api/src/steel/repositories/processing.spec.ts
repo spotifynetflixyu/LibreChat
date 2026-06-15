@@ -39,7 +39,7 @@ describe('Steel processing repositories', () => {
       'reviewed',
       'drill',
       '板材',
-      20,
+      100,
     ]);
     expect(result[0]?.unitPrice).toBe(12);
   });
@@ -200,7 +200,7 @@ describe('Steel processing repositories', () => {
       'oval',
       30,
       15,
-      20,
+      100,
     ]);
     expect(result[0]).toMatchObject({
       id: 7,

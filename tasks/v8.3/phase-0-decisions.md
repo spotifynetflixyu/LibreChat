@@ -211,7 +211,7 @@ Required sheet IDs:
 - `price_sources` / 價格來源
 - `interpretation_notes` / 判讀備註
 - `system_order` / 系統訂單
-- `customer_quote` / 給客戶用
+- `customer_quote` / 報價單
 
 Exit criteria:
 
@@ -219,6 +219,9 @@ Exit criteria:
 - Excel export tests assert all seven sheets exist.
 - Selected-sheet export tests assert arbitrary selected sheet sets can be
   downloaded without special-case customer or system-order restrictions.
+- Current AI-facing `patch_quote_workbook` completion targets only
+  `system_order`, `manual_review`, and `customer_quote`; the other public sheets
+  are retained for workbook/export compatibility.
 
 ## D0.11 Price Before Weight
 
@@ -349,7 +352,7 @@ Approved decisions:
 - Do not change Supabase schema in Phase 0. Phase 2 handbook/mapping work decides the minimal schema delta, and every schema change updates both `supabase/schema.sql` and one new migration.
 - Admin ERP Import MVP should start with either `price_items` or customers depending on ERP key reliability. Prefer `price_items` if ERP item code plus customer tier is stable enough, because it validates quote value fastest; otherwise start with customers/customer aliases/customer tiers.
 - Internal DB/DTO/tool keys remain English. Customer-facing and ERP-facing Excel sheet labels and headers use Chinese business wording.
-- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches a seven-sheet workbook through reviewed lookup tools using openai-oauth responses, and one equivalent API fallback smoke uses official OpenAI API. Both record requested provider, effective provider, model, provider IDs, fallback status, tool call IDs, and context refs.
+- Phase 3 live provider smoke stays minimal: one authenticated LINE-style order creates or patches the persisted seven-sheet public workbook through reviewed lookup tools using openai-oauth responses, while AI-facing patch completion targets only `system_order`, `manual_review`, and `customer_quote`; one equivalent API fallback smoke uses official OpenAI API. Both record requested provider, effective provider, model, provider IDs, fallback status, tool call IDs, and context refs.
 - After Phase 0, plan Phase 1 and Phase 2 together, but implement Phase 1 contracts/routes/auth/audit first while a separate data/schema pass can extend Phase 2 mapping and schema design in parallel.
 
 Post-lock implementation clarifications:

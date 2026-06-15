@@ -15,11 +15,12 @@ import {
 } from 'lucide-react';
 import { dataService } from 'librechat-data-provider';
 import type {
-  SteelProviderChatFile,
   SteelProviderChatMessage,
+  SteelProviderChatRequest,
   SteelProviderReasoningEffort,
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
+  SteelProviderTimings,
   SteelChangedPath,
   SteelFileAnalysisData,
   SteelFileAnalysisManualPatchRequest,
@@ -27,7 +28,9 @@ import type {
   SteelWorkbookSheetId,
 } from 'librechat-data-provider';
 import SteelFileAnalysisPreview from '~/features/steel/fileAnalysis/Preview';
-import SteelWorkbookPreview from '~/features/steel/workbook/Preview';
+import SteelWorkbookPreview, {
+  getVisibleSteelWorkbookSheetIds,
+} from '~/features/steel/workbook/Preview';
 
 type SteelChatTurn = SteelProviderChatMessage & {
   id: string;
@@ -35,11 +38,14 @@ type SteelChatTurn = SteelProviderChatMessage & {
   attachmentNames?: string[];
 };
 
-type SelectedSteelFile = SteelProviderChatFile & {
+type SelectedSteelFile = {
   id: string;
+  filename?: string;
+  mediaType: string;
+  dataBase64: string;
 };
 
-type SteelRightPanelTab = 'workbook' | 'fileAnalysis' | 'thinking';
+type SteelRightPanelTab = 'workbook' | 'fileAnalysis' | 'activity';
 
 const steelModel = 'gpt-5.5';
 const workbookMinWidthPx = 100;
@@ -48,7 +54,7 @@ const reasoningEffortOptions: SteelProviderReasoningEffort[] = ['low', 'medium',
 const rightPanelTabs: Array<{ id: SteelRightPanelTab; label: string }> = [
   { id: 'workbook', label: 'Workbook' },
   { id: 'fileAnalysis', label: 'File Analysis' },
-  { id: 'thinking', label: 'Thinking' },
+  { id: 'activity', label: 'Activity' },
 ];
 const titleText = 'Steel OAuth Chat';
 const tokensLabel = 'tokens';
@@ -56,9 +62,11 @@ const emptyStateText = 'Ready';
 const pendingText = 'Waiting for provider';
 const newChatText = 'New chat';
 const streamStatusLabel = 'Steel stream status';
-const thinkingStatusTitle = 'Last run';
-const thinkingStatusSubtitle = 'last run';
-const noThinkingStatusText = 'No run status yet.';
+const activityPanelLabel = 'Activity panel';
+const activityStatusTitle = 'Activity';
+const activityStatusSubtitle = 'Public work log';
+const noActivityStatusText = 'No activity yet.';
+const providerTimingsTitle = 'Provider timings';
 const workbookExportContentType =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -208,8 +216,64 @@ function getStreamStatusLabel(event: SteelProviderChatStreamEvent): string {
   return 'response';
 }
 
-function getWorkbookSheetIds(workbook: SteelWorkbook): SteelWorkbookSheetId[] {
-  return workbook.sheets.map((sheet) => sheet.id);
+function getStreamActivityKindLabel(event: SteelProviderChatStreamEvent): string {
+  if (event.type === 'progress') {
+    return 'Progress';
+  }
+  if (event.type === 'reasoning') {
+    return 'Reasoning summary';
+  }
+  if (event.type === 'lookup') {
+    return 'Lookup';
+  }
+  if (event.type === 'tool') {
+    return 'Tool';
+  }
+  if (event.type === 'error') {
+    return 'Error';
+  }
+  return 'Activity';
+}
+
+function getStreamActivityStateLabel(event: SteelProviderChatStreamEvent): string {
+  if (event.type === 'progress') {
+    return 'Working';
+  }
+  if (event.type === 'reasoning') {
+    return 'Summary';
+  }
+  if (event.type === 'error') {
+    return 'Failed';
+  }
+  if (event.type === 'lookup' || event.type === 'tool') {
+    if (event.status === 'started') {
+      return 'Started';
+    }
+    if (event.status === 'completed') {
+      return 'Done';
+    }
+    return 'Failed';
+  }
+  return 'Updated';
+}
+
+function getStreamActivityStateClass(event: SteelProviderChatStreamEvent): string {
+  if (
+    event.type === 'error' ||
+    ((event.type === 'lookup' || event.type === 'tool') && event.status === 'failed')
+  ) {
+    return 'border-red-500/40 bg-red-500/10 text-red-400';
+  }
+  if ((event.type === 'lookup' || event.type === 'tool') && event.status === 'completed') {
+    return 'border-green-500/30 bg-green-500/10 text-green-400';
+  }
+  if (
+    event.type === 'progress' ||
+    ((event.type === 'lookup' || event.type === 'tool') && event.status === 'started')
+  ) {
+    return 'border-blue-500/30 bg-blue-500/10 text-blue-400';
+  }
+  return 'border-border-light bg-surface-primary text-text-secondary';
 }
 
 function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
@@ -228,13 +292,92 @@ function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
   return Loader2;
 }
 
+function formatTimingDurationMs(durationMs: number): string {
+  return `${Math.round(durationMs)} ms`;
+}
+
+function TimingMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="min-w-0 border-l border-border-light pl-2">
+      <dt className="truncate text-[11px] uppercase text-text-secondary">{label}</dt>
+      <dd className="mt-0.5 truncate font-medium text-text-primary">{value}</dd>
+    </div>
+  );
+}
+
+function ProviderTimingsPanel({ timings }: { timings: SteelProviderTimings }) {
+  return (
+    <section
+      aria-label={providerTimingsTitle}
+      className="mt-4 rounded border border-border-light bg-surface-secondary p-3"
+    >
+      <h3 className="text-xs font-semibold text-text-primary">{providerTimingsTitle}</h3>
+      <dl className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3">
+        <TimingMetric label="Total" value={formatTimingDurationMs(timings.totalDurationMs)} />
+        <TimingMetric
+          label="Generation"
+          value={formatTimingDurationMs(timings.generationDurationMs)}
+        />
+        <TimingMetric label="Tools" value={formatTimingDurationMs(timings.toolDurationMs)} />
+        <TimingMetric
+          label="Workbook completion"
+          value={formatTimingDurationMs(timings.workbookCompletionDurationMs)}
+        />
+        <TimingMetric label="Rounds" value={timings.roundCount} />
+      </dl>
+      {timings.rounds.length > 0 && (
+        <ol aria-label="Round timings" className="mt-3 space-y-2">
+          {timings.rounds.map((roundTiming) => (
+            <li
+              key={roundTiming.round}
+              className="rounded border border-border-light bg-surface-primary p-2"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold text-text-primary">
+                  Round {roundTiming.round}
+                </h4>
+                <span className="text-[11px] text-text-secondary">
+                  {roundTiming.generatedToolCallCount} tool calls /{' '}
+                  {roundTiming.workbookPatchOperationCount} workbook ops
+                </span>
+              </div>
+              <dl className="mt-2 grid grid-cols-2 gap-2">
+                <TimingMetric
+                  label="Generation"
+                  value={formatTimingDurationMs(roundTiming.generationDurationMs)}
+                />
+                <TimingMetric
+                  label="Tools"
+                  value={formatTimingDurationMs(roundTiming.toolDurationMs)}
+                />
+                <TimingMetric
+                  label="Workbook completion"
+                  value={formatTimingDurationMs(roundTiming.workbookCompletionDurationMs)}
+                />
+                <TimingMetric label="Prompt messages" value={roundTiming.promptMessageCount} />
+              </dl>
+              {roundTiming.workbookCompletionRequired && (
+                <p className="mt-2 text-[11px] text-text-secondary">
+                  workbook {roundTiming.workbookCompletionComplete ? 'complete' : 'incomplete'};
+                  missing {roundTiming.missingWorkbookSheetCount} sheets /{' '}
+                  {roundTiming.missingWorkbookCellCount} cells
+                </p>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent[] }) {
   if (events.length === 0) {
-    return <p className="text-sm text-text-secondary">{noThinkingStatusText}</p>;
+    return <p className="text-sm text-text-secondary">{noActivityStatusText}</p>;
   }
 
   return (
-    <ol className="space-y-2">
+    <ol aria-label={activityStatusSubtitle} className="space-y-2">
       {events.map((event, index) => {
         const message = getStreamStatusMessage(event);
         if (!message) {
@@ -249,25 +392,44 @@ function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent
           ((event.type === 'lookup' || event.type === 'tool') && event.status === 'failed');
 
         return (
-          <li key={`${event.type}-${index}-${message}`} className="grid grid-cols-[1rem_1fr] gap-2">
-            <span
-              className={`mt-0.5 flex h-4 w-4 items-center justify-center ${
-                isFailed ? 'text-red-400' : 'text-text-secondary'
-              }`}
-            >
-              <Icon
-                className={`h-3.5 w-3.5 ${isActive ? 'animate-spin' : ''}`}
-                aria-hidden="true"
-              />
-            </span>
-            <span className="min-w-0">
-              <span className="block text-[11px] uppercase text-text-secondary">
-                {getStreamStatusLabel(event)}
+          <li
+            key={`${event.type}-${index}-${message}`}
+            className="rounded border border-border-light bg-surface-secondary p-3"
+          >
+            <div className="flex min-w-0 gap-2">
+              <span
+                className={`mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border ${
+                  isFailed
+                    ? 'border-red-500/40 text-red-400'
+                    : 'border-border-light text-text-secondary'
+                }`}
+              >
+                <Icon
+                  className={`h-3.5 w-3.5 ${isActive ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
               </span>
-              <span className="block whitespace-pre-wrap break-words text-text-primary">
-                {message}
-              </span>
-            </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-[11px] uppercase text-text-secondary">
+                    {getStreamActivityKindLabel(event)}
+                  </span>
+                  <span
+                    className={`rounded border px-1.5 py-0.5 text-[11px] leading-none ${getStreamActivityStateClass(
+                      event,
+                    )}`}
+                  >
+                    {getStreamActivityStateLabel(event)}
+                  </span>
+                </div>
+                <span className="mt-1 block truncate text-xs font-medium text-text-primary">
+                  {getStreamStatusLabel(event)}
+                </span>
+                <span className="mt-1 block whitespace-pre-wrap break-words text-text-primary">
+                  {message}
+                </span>
+              </div>
+            </div>
           </li>
         );
       })}
@@ -275,18 +437,25 @@ function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent
   );
 }
 
-function ThinkingStatusPanel({ events }: { events: SteelProviderChatStreamEvent[] }) {
+function ActivityStatusPanel({
+  events,
+  timings,
+}: {
+  events: SteelProviderChatStreamEvent[];
+  timings?: SteelProviderTimings;
+}) {
   return (
     <section
-      aria-label="Thinking status panel"
+      aria-label={activityPanelLabel}
       className="flex h-full min-h-0 flex-col bg-surface-primary"
     >
       <header className="border-b border-border-light px-4 py-3">
-        <h2 className="truncate text-sm font-semibold text-text-primary">{thinkingStatusTitle}</h2>
-        <p className="mt-0.5 text-xs text-text-secondary">{thinkingStatusSubtitle}</p>
+        <h2 className="truncate text-sm font-semibold text-text-primary">{activityStatusTitle}</h2>
+        <p className="mt-0.5 text-xs text-text-secondary">{activityStatusSubtitle}</p>
       </header>
       <div className="min-h-0 flex-1 overflow-auto p-4 text-xs text-text-secondary">
         <StreamStatusTimeline events={events} />
+        {timings && <ProviderTimingsPanel timings={timings} />}
       </div>
     </section>
   );
@@ -352,7 +521,7 @@ export default function SteelOAuthChat() {
         }
 
         setWorkbook(response.workbook);
-        setWorkbookExportSheetIds(getWorkbookSheetIds(response.workbook));
+        setWorkbookExportSheetIds(getVisibleSteelWorkbookSheetIds(response.workbook));
         setChangedPaths([]);
         setIsWorkbookPanelOpen(true);
       })
@@ -540,10 +709,11 @@ export default function SteelOAuthChat() {
     setSelectedFiles([]);
     setMessages(nextMessages);
     setStreamEvents([]);
+    setLastResponse(null);
     setIsSending(true);
 
     try {
-      const payload = {
+      const payload: SteelProviderChatRequest = {
         model: steelModel,
         reasoningEffort,
         ...(conversationId ? { conversationId } : {}),
@@ -569,7 +739,7 @@ export default function SteelOAuthChat() {
                 return;
               }
 
-              setStreamEvents((current) => [...current, event].slice(-12));
+              setStreamEvents((current) => [...current, event]);
             })
           : await dataService.sendSteelChat(payload);
       setLastResponse(response);
@@ -580,7 +750,9 @@ export default function SteelOAuthChat() {
       }
       if (response.workbookPatch?.workbook) {
         setWorkbook(response.workbookPatch.workbook);
-        setWorkbookExportSheetIds(getWorkbookSheetIds(response.workbookPatch.workbook));
+        setWorkbookExportSheetIds(
+          getVisibleSteelWorkbookSheetIds(response.workbookPatch.workbook),
+        );
         setChangedPaths(response.workbookPatch.changedPaths);
         setActiveRightPanelTab('workbook');
         setIsWorkbookPanelOpen(true);
@@ -601,7 +773,7 @@ export default function SteelOAuthChat() {
         if (lastEvent?.type === 'error' && lastEvent.errorSummary === errorText) {
           return current;
         }
-        return [...current, errorEvent].slice(-12);
+        return [...current, errorEvent];
       });
       setMessages([
         ...nextMessages,
@@ -644,7 +816,9 @@ export default function SteelOAuthChat() {
       />
     );
   } else {
-    rightPanelContent = <ThinkingStatusPanel events={streamEvents} />;
+    rightPanelContent = (
+      <ActivityStatusPanel events={streamEvents} timings={lastResponse?.timings} />
+    );
   }
 
   return (

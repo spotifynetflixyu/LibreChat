@@ -222,6 +222,7 @@ export type SteelWorkbookSheetId =
   | 'price_sources'
   | 'interpretation_notes'
   | 'system_order'
+  | 'customer_data'
   | 'customer_quote';
 
 export type SteelWorkbookColumnValueType =
@@ -276,11 +277,22 @@ export interface SteelChangedFieldSummary extends SteelChangedPath {
   nextValue?: SteelWorkbookCellValue;
 }
 
-export interface SteelWorkbookPatchOperation extends SteelChangedPath {
+export interface SteelWorkbookSetCellOperation extends SteelChangedPath {
   op: 'set_cell';
   value: SteelWorkbookCellValue;
   reason?: string;
 }
+
+export interface SteelWorkbookDeleteRowOperation {
+  op: 'delete_row';
+  sheetId: SteelWorkbookSheetId;
+  rowId: string;
+  reason?: string;
+}
+
+export type SteelWorkbookPatchOperation =
+  | SteelWorkbookSetCellOperation
+  | SteelWorkbookDeleteRowOperation;
 
 export interface ISteelToolCall extends Document {
   conversationMetaId?: string;

@@ -1,5 +1,145 @@
 # Lessons
 
+- For Steel plate pricing, when the customer does not specify a plate material,
+  search and quote as black iron OT. PL oral specs use the number after `PL` as
+  thickness and the number after `*` as width, e.g. `PL6*80` should derive
+  `6.0m/mOT板雷射切割`; price plates only by square theoretical weight kg
+  (`volume * density`, density 7.850 for OT/black iron), and use laser-cut
+  product-price rows such as `黑鐵板 雷射切割` / `OT板雷射切割`, not `四方切`
+  or per-piece pricing.
+- Steel workbook UI now includes the internal `客戶資料` / `customer_data` tab
+  alongside `系統訂單`, `人工複核`, and `報價單`. When users provide a customer or
+  vendor name, `search_customers` candidates should be written to
+  `customer_data`; if multiple candidate tiers include B, use B first for
+  provisional quote calculation while keeping candidates pending confirmation.
+- In Steel workbook `customer_quote` / `報價單`, the `customer_total` /
+  `報價總額` row must always be normalized after line updates: keep it as the
+  final row and recompute its subtotal from current customer quote line
+  subtotals when lines are added or changed.
+- After Steel PDF/image data is already OCR'd into `file_analysis_data`, a
+  later user correction/confirmation turn should patch existing extracted data
+  and workbook rows directly. Do not call `run_file_ocr` again just because the
+  conversation still has a PDF attachment or OCR history; only re-OCR when the
+  user explicitly asks to OCR/re-read/re-analyze the file.
+- Steel OAuth Chat runs through the unofficial `openai-oauth-provider` /
+  ChatGPT OAuth provider path, not the official OpenAI API adapter. Do not
+  assume official Responses API parameters or stream events such as
+  `context_management.compact_threshold` are available unless the OAuth provider
+  exposes them in code; design status/telemetry from the provider events we
+  actually observe.
+- Steel chat progress UI should use short `Activity` wording and show the
+  public work log, not frame it as hidden chain-of-thought. Include streamed
+  progress, reasoning summaries, lookup/tool events, errors, provider timings,
+  and workbook-completion status so users see that a long provider call is not
+  stuck and developers can audit the expected AI workflow.
+- Steel `patch_quote_workbook` completion stays focused on `系統訂單`,
+  `人工複核`, and `報價單` (`customer_quote`), with `客戶資料` (`customer_data`)
+  projected when customer search candidates exist. Do not push the model
+  through all persisted workbook sheets for `報價明細`, `總結`, `價格來源`, or
+  `判讀備註`; keep those out of semantic patch completion/projection unless the
+  user explicitly re-expands the contract.
+- Steel workbook UI should stay limited to the four visible tabs: `系統訂單`,
+  `客戶資料`, `人工複核`, and `報價單`. Persisted workbook storage/export
+  compatibility may still carry additional sheets, but the right-panel preview
+  and UI-default export selection must filter out `報價明細`, `總結`,
+  `價格來源`, and `判讀備註`.
+- Steel provider latency debugging should surface structured `timings` in the
+  Activity panel, not rely on ad hoc assumptions. Keep total, generation, tool,
+  workbook-completion, per-round, and missing workbook target counts visible when
+  `SteelProviderChatResponse.timings` is present.
+- Steel workbook completion loops must be stream-visible before the next AI
+  round finishes. When `patch_quote_workbook` is incomplete, emit a
+  `patch_quote_workbook` status event with missing sheet/cell targets so the
+  Activity timeline shows that AI is filling `系統訂單`, `人工複核`, or `報價單`
+  instead of appearing stuck after one workbook patch.
+- When Steel AI emits multiple same-round `search_price_candidates` calls for
+  related product/spec keywords, do not rely on prompt wording alone. Coalesce
+  compatible sibling calls into one backend execution with batched
+  `candidateQueries`, preserving original tool-call ids in the next prompt.
+- Steel workbook row deletion must be explicit data, not inferred from omitted
+  semantic rows or assistant text. Use `patch_quote_workbook.deleteRows` to
+  project `delete_row` operations, persist them through the shared workbook
+  contract, and apply them in the workbook service before saying rows were
+  removed.
+- Do not add delete-only or `system_order` exceptions that skip the full Steel
+  quote-workbook completion loop based on perceived provider latency. Keep
+  workbook completion semantics uniform; make the next AI round receive
+  workbook/tool feedback promptly instead.
+- Steel oral-name price lookup must not stop at the customer's original wording
+  when product-price names differ. For inputs such as `3*3鍍鋅方管` or
+  `3分圓鐵`, search by bounded reviewed product-price names/specs such as
+  錏方管 + 75*2.0 and 圓鐵 + 9m/m(3/8)(3.3). Treat model codes such as GDH3020
+  and EQB0090 as adopted-row outputs for workbook/system-order fields, not as
+  primary search terms. Preserve those model codes and 6M stock/cutting
+  calculations in workbook-visible evidence after adoption.
+- Steel price search must support **Price Code Prefix** discovery: after an AI
+  product-name search finds a family-like code such as BNG, BNH, BKZA, CCS, or
+  DNB70, the next candidate search may use that prefix to retrieve related
+  formal `erp_item_code` rows. Use broad OR-style discovery so AI sees enough
+  rows to judge the requested spec; avoid overly strict AND filters that return
+  no data and cause premature "not found" answers.
+- The intended Steel price lookup reasoning flow is AI-led and two-stage:
+  search Chinese product-name data to discover related product families or
+  price code prefixes, then search those prefixes for formal specification rows,
+  then let AI judge which returned row best matches the customer's requested
+  product/spec before quoting.
+- Price code prefix expansion is optional discovery, not a required pre-quote
+  gate. If Chinese product-name/spec search already returns a reviewed row that
+  matches the customer's request, AI can quote directly without forcing a prefix
+  lookup.
+- `search_price_candidates` should be broad enough for AI-led discovery:
+  `productNames` searches product-name text and may contain product names or
+  partial spec text; `erpItemCodes` searches model/code text and may contain
+  exact item codes or prefixes. These fields should OR together to return
+  related reviewed rows. The AI then decides whether more prefix data is needed
+  and which row best matches the customer request.
+- Do not expose `catalogFamilies` on `search_price_candidates` for the new Steel
+  price-discovery path. Catalog-family keys belong to catalog/rule lookup; price
+  discovery should stay broad through `productNames` and `erpItemCodes` so it
+  does not AND filters into premature no-match results.
+- Remove `specKeyContains` from Steel price-discovery code when revising the
+  AI-facing search path. Formal price row product names often include the spec,
+  so AI should generate multiple product-name text forms such as `75*2.3`,
+  `1.2*4'*8'(28.5)`, `4.5*5尺*10尺 (46*101.6)`, or
+  `150*75*5/7*6M(84)` in `productNames`.
+- When the customer says C 型鋼 / C 鋼 / 輕型鋼 without material, default the
+  price candidate family to `錏輕型鋼`, not 黑鐵輕型鋼. Still mark low confidence
+  or ask when the customer's wording makes the material/surface genuinely
+  ambiguous.
+- Steel price search must not fail the whole `search_price_candidates` call just
+  because one `productNames` value is a family/oral label such as `C型鋼`. Treat
+  admin-maintained product-name aliases as extra reviewed search terms, keep OR
+  facets usable, and let no-result evidence flow into workbook/manual-review
+  output.
+- Steel product-name alias storage must be many-to-one: multiple source names
+  such as `C`, `C型鋼`, `C鋼`, and `輕型鋼` can all point at the same reviewed
+  target product name such as `錏輕型鋼`, and admins should be able to add or
+  update those source-target rows without code changes.
+- Steel oral material/surface aliases can target product-name markers such as
+  `ST`, `OT`, `HL`, `2B`, `BA`, and `NO1`. For `白鐵 -> NO1`, require explicit
+  thickness evidence of at least 3mm; do not only parse `t`, because real NO1
+  product names include forms such as `3.0m/mSTNO1雷射切割` and
+  `STNO1 3.0*4'*8'(73.5)`.
+- No-data search results are still quote evidence. If a requested item has no
+  returned price data, keep it in workbook/manual-review output with confidence
+  and missing-data notes instead of omitting the item.
+- Keep Steel agent rules/tool rules generic. `docs/rules/agent規則.txt` may say
+  product-name/spec text belongs in `productNames`, ERP code prefixes belong in
+  `erpItemCodes`, and invalid tool arguments should be corrected and retried;
+  product/category-specific productNames bans, default product-name candidates,
+  and examples such as C 型鋼 defaulting to `錏輕型鋼` belong in
+  `docs/rules/鋼材規則.txt` under the relevant family rule.
+- When diagnosing Steel price search truncation, distinguish three limits:
+  tool schema `limit` accepts up to 100, repositories default/max to 100/100,
+  internal rule/default selection defaults to 100, and
+  `sanitizeSteelToolOutput` caps arrays/source refs at 100 items before the
+  model sees the result.
+- Do not implement Steel oral-name candidate expansion or 6M long-material
+  stock/cutting calculations as deterministic backend logic unless the user
+  explicitly asks. The user wants ChatGPT-like AI reasoning here: runtime prompt
+  should make AI generate product-name/spec candidates and calculations, while
+  backend only enforces tool schemas, reviewed price row adoption, and workbook
+  validation.
 - Steel rules are human-authored contracts; do not add or keep tests whose
   primary subject is rule text, rule DTO/schema contracts, rule repositories,
   rule services, or rule-loading prompts. Verify rule work by syncing the
@@ -589,22 +729,20 @@
   Mongo when needed instead of registering random users for each smoke.
 - `/steel/oauth-chat` successful quick-price responses must end with a concise final answer as the visible conversation result; completed stream/tool status is supporting detail, not the final UI state.
 - Steel quick-price workbook patches must populate every user-relevant workbook sheet when data is available: `系統訂單`, `報價明細`, `總結`, `人工複核清單`, `價格來源`, `判讀備註`, and `給客戶用`; do not accept partial patches that only fill audit/source sheets.
-- `/steel/oauth-chat` should keep last-run thinking/tool status in the right
-  panel `Thinking` tab for development review, not as the completed main chat
+- `/steel/oauth-chat` should keep last-run public activity/tool status in the
+  right panel `Activity` tab for development review, not as the completed main chat
   result. Include errors in that last-run status, and overwrite it on each new
   run instead of keeping a history.
 - In the `/steel/oauth-chat` workbook UI, show the manual review tab as
   `人工複核` instead of the longer `人工複核清單`.
-- In Steel oral quick-price flow, `lookup_catalog_families` output must drive the
-  same selected catalog keys into `lookup_quote_rules`, `search_price_candidates`,
-  and `lookup_formula`; do not rely on a schema rejection from
-  `search_price_candidates` as the main guidance mechanism.
-- For Steel `search_price_candidates`, selected catalog/material keys belong in
-  `catalogFamilies`; inferred reviewed product-name candidates should use
-  `productNames`. The AI-callable tool input must not expose `productName`;
-  keep `productName` only as an internal/source row field on returned price
-  candidates. Do not put oral family/category labels such as `C型鋼` in
-  `productNames` after a key was selected.
+- In Steel oral quick-price flow, `lookup_catalog_families` output should drive
+  selected catalog keys into `lookup_quote_rules`; price discovery itself should
+  stay broad through `productNames` and `erpItemCodes`, not `catalogFamilies`.
+- For Steel `search_price_candidates`, inferred product-name/spec candidates use
+  `productNames`, and exact item codes or code prefixes use `erpItemCodes`. The
+  AI-callable tool input must not expose `productName`; keep `productName` only
+  as an internal/source row field on returned price candidates. Do not put oral
+  family/category labels such as `C型鋼` in `productNames`.
 - If AI has several inferred reviewed product-name candidates for the same
   Steel price lookup, use `productNames` or `candidateQueries`.
   `productNames` is for same-filter multi-name search; `candidateQueries` is for
@@ -643,10 +781,12 @@
   semantic input and internally projected workbook operations may need to cover
   long multi-material orders; validate shape and non-empty content, not a fixed
   maximum line/operation count.
-- For Steel `系統訂單`, the visible `型號` field must be filled from the adopted
-  product-price row `型號` via semantic `systemOrder.modelCode`; do not leave it
-  blank when a reviewed product-price model exists, and do not use oral material
-  names or catalog family keys as the ERP model.
+- For Steel `系統訂單`, visible `型號` and `品名規格` must both match the adopted
+  `search_price_candidates` price row: `systemOrder.modelCode` from
+  `erpItemCode` / source `型號`, and `systemOrder.itemSpec` from `productName` /
+  source `產品名稱`. Do not use oral material names, normalized names, catalog
+  family keys, full C-section descriptions, length, or piece-count text for
+  these two ERP fields.
 - The first accepted data patch into an empty Steel workbook is initial data
   load, not a user-visible update: keep workbook version `v1` and return empty
   `changedPaths` so cells are not highlighted. Keep `changedFieldSummary`

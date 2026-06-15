@@ -21,6 +21,27 @@ interface SteelWorkbookPreviewProps {
   onToggleExportSheet?: (sheetId: SteelWorkbookSheetId) => void;
 }
 
+export const visibleSteelWorkbookSheetIds = [
+  'system_order',
+  'customer_data',
+  'manual_review',
+  'customer_quote',
+] satisfies readonly SteelWorkbookSheetId[];
+
+const visibleSteelWorkbookSheetIdSet: ReadonlySet<SteelWorkbookSheetId> = new Set(
+  visibleSteelWorkbookSheetIds,
+);
+
+function isVisibleSteelWorkbookSheetId(sheetId: SteelWorkbookSheetId): boolean {
+  return visibleSteelWorkbookSheetIdSet.has(sheetId);
+}
+
+export function getVisibleSteelWorkbookSheetIds(workbook: SteelWorkbook): SteelWorkbookSheetId[] {
+  return workbook.sheets
+    .filter((sheet) => isVisibleSteelWorkbookSheetId(sheet.id))
+    .map((sheet) => sheet.id);
+}
+
 function pathKey(path: SteelChangedPath): string {
   return `${path.sheetId}:${path.rowId}:${path.columnKey}`;
 }
@@ -33,14 +54,10 @@ function cellText(value: string | number | boolean | null | undefined): string {
 }
 
 function getActiveSheet(
-  workbook: SteelWorkbook | null,
+  sheets: SteelWorkbookSheet[],
   activeSheetId: string | null,
 ): SteelWorkbookSheet | null {
-  if (!workbook) {
-    return null;
-  }
-
-  return workbook.sheets.find((sheet) => sheet.id === activeSheetId) ?? workbook.sheets[0] ?? null;
+  return sheets.find((sheet) => sheet.id === activeSheetId) ?? sheets[0] ?? null;
 }
 
 function getWorkbookSheetLabel(sheet: SteelWorkbookSheet): string {
@@ -61,17 +78,21 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
 }: SteelWorkbookPreviewProps) {
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const changedKeys = useMemo(() => new Set(changedPaths.map(pathKey)), [changedPaths]);
-  const activeSheet = getActiveSheet(workbook, activeSheetId);
+  const visibleSheets = useMemo(
+    () => workbook?.sheets.filter((sheet) => isVisibleSteelWorkbookSheetId(sheet.id)) ?? [],
+    [workbook],
+  );
+  const activeSheet = getActiveSheet(visibleSheets, activeSheetId);
 
   useEffect(() => {
     if (!workbook) {
       setActiveSheetId(null);
       return;
     }
-    if (!activeSheetId || !workbook.sheets.some((sheet) => sheet.id === activeSheetId)) {
-      setActiveSheetId(workbook.sheets[0]?.id ?? null);
+    if (!activeSheetId || !visibleSheets.some((sheet) => sheet.id === activeSheetId)) {
+      setActiveSheetId(visibleSheets[0]?.id ?? null);
     }
-  }, [activeSheetId, workbook]);
+  }, [activeSheetId, visibleSheets, workbook]);
 
   if (!workbook) {
     if (error) {
@@ -137,7 +158,7 @@ const SteelWorkbookPreview = memo(function SteelWorkbookPreview({
       )}
 
       <div className="flex gap-1 overflow-x-auto border-b border-border-light px-3 py-2">
-        {workbook.sheets.map((sheet) => (
+        {visibleSheets.map((sheet) => (
           <div
             key={sheet.id}
             className={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-sm transition-colors ${

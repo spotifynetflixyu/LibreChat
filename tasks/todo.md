@@ -1,4 +1,649 @@
+# Active: Steel Plate OT Laser Cutting Pricing Rules
+
+Goal: add Steel plate pricing rules so unspecified plate material defaults to
+OT black iron, plate pricing always uses square theoretical weight kg, and
+plate price lookup/adoption uses laser-cut product names rather than square-cut
+or piece pricing.
+
+- [x] Confirm rule design before implementation.
+- [x] Add RED coverage for PL oral specs such as `PL6*80` and `PL16*96`,
+      expecting OT laser-cut product-name candidates and kg theoretical-weight
+      pricing behavior.
+- [x] Update Steel rule docs and provider/tool guidance so generic plate names
+      default to OT, use `黑鐵板 雷射切割` / `OT板雷射切割`, and reject
+      `四方切` / `piece` pricing for plates.
+- [x] Sync reviewed Supabase Steel rules with dry-run and apply readback.
+- [x] Run focused provider/tool/workbook tests, builds where relevant, and
+      `git diff --check` without Prettier.
+
+Review:
+
+- Added `docs/plans/2026-06-15-steel-plate-ot-laser-pricing-rules.md` and
+  implemented the approved direct-execution option in this session.
+- Added RED/GREEN normalization coverage proving raw `PL6*80` derives
+  `6.0m/mOT板雷射切割`, `OT板雷射切割`, and `黑鐵板 雷射切割` candidates,
+  without `四方切`.
+- Added RED/GREEN tool execution coverage proving `PL16*96` candidate queries
+  search `16.0m/mOT板雷射切割` instead of raw PL text, reject square-cut plate
+  searches before SQL, and omit per-piece plate price rows from laser-cut plate
+  searches.
+- Implemented PL oral plate expansion in `generateSteelPriceSearchTerms` and
+  kg-only filtering for laser-cut OT / black-iron plate search results in
+  `search_price_candidates`.
+- Updated `docs/rules/鋼材規則.txt`, `docs/rules/agent規則.txt`, and the
+  provider price lookup instruction so unspecified plate material defaults to
+  OT, PL thickness maps to OT laser-cut productNames, and plate pricing uses
+  square theoretical weight kg rather than piece or square-cut rows.
+- Synced reviewed Supabase rules with `sync-steel-rules.cjs --dry-run` and
+  `--apply`. Readback confirmed agent SHA
+  `9b5da206681ef400dad2e7eee1965905246a46d8d3ada8ddfb4971dbadfc71c5` and
+  quote-rule SHA
+  `222bd0a47c516b0baa703c5bc62707a3ddf4c0faf393776f8df2f061689c7db6`.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/normalization/search.spec.ts src/steel/tools/execute.spec.ts src/steel/tools/registry.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `npm --workspace packages/api run build`;
+  `git diff --check`.
+- Build note: API build exits 0 and creates `dist`, while still printing the
+  existing unrelated Redis `src/cache/cacheFactory.ts` Rollup TypeScript
+  warning.
+
+# Active: Steel Surface Product Name Aliases
+
+Goal: add reviewed database aliases for oral Chinese steel material/surface
+names so `search_price_candidates` can expand them to product-name markers
+`ST`, `OT`, `HL`, `2B`, `BA`, and `NO1`, with `NO1` available for `白鐵`
+only when explicit thickness evidence is at least 3mm, including `3t`,
+`3.0m/m`, or plate-size product text such as `STNO1 3.0*4'*8'(73.5)`.
+
+- [x] Add RED repository coverage for surface-marker alias matching and
+      min-thickness alias gating.
+- [x] Add the reviewed `steel.product_name_aliases` migration rows for
+      白鐵/黑鐵/白鐵沙面/白鐵霧面/白鐵亮面.
+- [x] Update `search_price_candidates` repository matching so surface marker
+      aliases use token-style marker matching and `metadata.minThicknessMm`.
+- [x] Update Steel rule docs and sync reviewed Supabase rules.
+- [x] Apply/read back cloud Supabase aliases, run focused tests, live lookup
+      smoke, build/diff hygiene, and write review evidence.
+
+Review:
+
+- Added RED/GREEN repository coverage for surface-marker aliases, `NO1`
+  `metadata.minThicknessMm`, and user-corrected NO1 thickness evidence forms:
+  `3t`, `3.0m/mSTNO1雷射切割`, and `STNO1 3.0*4'*8'(73.5)`.
+- Added reviewed alias data migration
+  `supabase/migration/20260615084737_steel_surface_product_name_aliases.sql`
+  for 白鐵 -> ST, 黑鐵 -> OT, 白鐵沙面 -> HL, 白鐵霧面 -> 2B,
+  白鐵亮面 -> BA, and 白鐵 -> NO1 with `minThicknessMm = 3`.
+- Updated `searchSteelPriceItems` so surface-marker aliases use regex marker
+  matching instead of plain substring matching. `NO1` also matches `STNO1` /
+  `ST NO1`, and min-thickness alias rows are active only when parsed thickness
+  evidence meets the metadata threshold.
+- Updated `docs/rules/鋼材規則.txt` and synced reviewed Supabase rules with
+  `sync-steel-rules.cjs --dry-run` and `--apply`; `steel.quote_rules` readback
+  confirmed STNO1 examples and SHA
+  `168bf281aa1180736c967fdd43ca554f28dc4173c2e072d91d0649a738755189`.
+- Cloud Supabase readback confirmed 6 reviewed/active alias rows and the NO1
+  gate. Live repository smoke returned BA rows for `白鐵亮面`, STNO1 rows for
+  `白鐵 + 3.0m/mSTNO1雷射切割`, and no NO1 auto-expansion for `白鐵 + 2.0m/m`.
+- Verification: `jest src/steel/repositories/prices.spec.ts -- --runInBand`
+  passed 18/18; focused `execute.spec.ts` search-price tests passed 3/3;
+  `npm --workspace packages/api run build` exited 0 with existing unrelated TS
+  warnings, including active `customer_data` worktree warnings; `git diff
+  --check` passed.
+
+# Active: Steel Workbook Customer Data Tab And Search Record
+
+Goal: add an internal workbook/UI `客戶資料` tab and workbook patch rules so
+customer/vendor name searches are recorded in the workbook, while quote
+calculation uses B tier first when multiple candidate tiers include B.
+
+- [x] Locate current workbook sheet-id contracts, semantic patch projection,
+      provider completion targets, and UI visible/export sheet filters.
+- [x] Add RED coverage for the `客戶資料` sheet contract, UI visibility/export
+      defaults, and semantic customer-search record projection.
+- [x] Implement the smallest shared workbook/schema/template/UI change for a
+      `customer_data` sheet with 客戶編號、廠商名稱、等級、確認狀態、備註.
+- [x] Update workbook/provider rules so user-provided customer/vendor names
+      trigger customer search, write candidate records to `客戶資料`, and prefer
+      B tier for provisional calculations when B is one of multiple candidates.
+- [x] Run focused workbook/provider/frontend tests, build/type checks where
+      appropriate, and changed-file hygiene without Prettier.
+
+Review:
+
+- Added required workbook sheet `customer_data` / `客戶資料` across shared
+  data-provider contracts, Mongo schema enums, workbook template, semantic
+  workbook projection, and the Steel workbook UI/export visible-sheet filter.
+- `客戶資料` rows carry `客戶編號`, `廠商名稱`, `等級`, `確認狀態`, and `備註`.
+  Semantic workbook patches can now project `customerData` records generated
+  from customer/vendor search candidates.
+- Updated provider rules so customer/vendor names trigger `search_customers`
+  recording, and provisional quote calculation prefers B tier when multiple
+  customer/tier candidates include B while keeping all candidates pending
+  confirmation.
+- Updated `docs/rules/agent規則.txt` and `docs/rules/workbook規則.txt`, then
+  synced reviewed Supabase rule rows with `sync-steel-rules.cjs --dry-run` and
+  `--apply`. Readback confirmed agent SHA
+  `f406f98dcaa10772328129be20d641033a1684da776f93b3ed78a4c5a3c7ce99` and
+  workbook SHA
+  `c1f4ea1ce48bfd04b35ffbe57f3de12da7765fd502cdcd614f14b61b34a385c5`.
+- Fixed the shared `SteelProviderChatResponse` declaration so generated
+  `data-provider` `.d.ts` files use the same `customer_data`-aware workbook
+  patch response type as the runtime schema.
+- Verification passed:
+  `npm --workspace packages/data-provider exec jest src/steel/ai.spec.ts src/steel/workbooks.spec.ts -- --runInBand`;
+  `npm --workspace packages/data-provider run build`;
+  `cd packages/api && npx jest src/steel/workbook/semantic.spec.ts src/steel/workbook/service.spec.ts src/steel/workbook/repository.spec.ts src/steel/exports/service.spec.ts src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --runInBand`;
+  `npm --workspace packages/api run build`;
+  `npm --workspace packages/data-schemas exec jest src/schema/steel.spec.ts -- --runInBand`;
+  `npm --workspace packages/data-schemas run build`;
+  `npm --workspace client exec jest src/routes/SteelOAuthChat.spec.tsx -- --runInBand --coverage=false --testNamePattern="visible workbook tabs|downloads the current workbook"`;
+  `git diff --check`.
+- Build/typecheck notes: API build exits 0 and no longer prints the Steel
+  `customer_data` handler warning, but still prints existing unrelated
+  non-Steel Rollup TypeScript warnings. Full `npm --workspace client run
+  typecheck` still fails on existing non-Steel frontend errors; after fixing
+  this task's `Preview.tsx` issue, filtered typecheck output for
+  `src/features/steel` / `src/routes/SteelOAuthChat` is empty.
+
+# Active: Steel Customer Quote Total Row Must Stay Last
+
+Goal: when workbook `報價單` / `customer_quote` lines are added after a total
+row already exists, keep `報價總額` as the final table row and update its 小計
+to the correct sum of all quote line subtotals.
+
+- [x] Locate the projection/apply seam that lets new customer quote rows appear
+      after `customer_total`.
+- [x] Add RED regression coverage using the reported shape: rows 1, 2,
+      `報價總額`, then newly added row 3, expecting row 3 before `報價總額` and
+      total 137783.86.
+- [x] Implement the smallest workbook fix that preserves explicit
+      AI-authored `customerQuoteTotal` semantics while normalizing persisted row
+      order/value.
+- [x] Run focused workbook/provider tests and changed-file hygiene without
+      Prettier.
+
+Review:
+
+- Root cause: workbook patch apply creates missing rows with `sheet.rows.push`.
+  If `customer_total` already exists, a later `customer_3` row is appended after
+  the total row.
+- Added workbook service normalization after accepted patch operations. When a
+  `customer_total` / `報價總額` row exists, the service keeps it last and
+  recomputes its subtotal from current `customer_quote` line subtotals. If any
+  line subtotal is not numeric, the total becomes `未確認`.
+- Added RED/GREEN regression coverage for the reported PL rows: the initial
+  sheet has rows 1, 2, stale `customer_total`, then adding row 3 now persists
+  row order `customer_1`, `customer_2`, `customer_3`, `customer_total` and total
+  `137783.86`.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/workbook/service.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="applies provider workbook patch|provider delete_row workbook patch|returns subtotal info"`;
+  `git diff --check`;
+  `npm --workspace packages/api run build`.
+- Build note: package build exits 0 and creates `dist`, while still printing the
+  existing non-Steel Redis `cacheFactory.ts` Rollup TypeScript warning.
+
+# Active: Steel Correction Follow-Up Must Not Re-OCR Existing PDF
+
+Goal: when a user follows up with confirmed/corrected OCR facts for an already
+processed PDF, update `file_analysis_data` and workbook state from the user's
+message without calling `run_file_ocr` again unless the user explicitly asks to
+OCR/re-read the file.
+
+- [x] Locate the provider/tool-loop seam that allows or forces OCR after a
+      persisted `file_analysis_data` patch already exists.
+- [x] Add RED regression coverage for a second-turn correction such as
+      `S3 / C4 為 S3, PL15*277, 長度 5280, 更新資料` proving `run_file_ocr`
+      is not called.
+- [x] Implement the smallest guard that preserves first-turn/multi-page OCR
+      auto-continuation, but blocks implicit re-OCR on correction-only turns.
+- [x] Run focused Steel provider/handler tests and changed-file hygiene without
+      Prettier.
+
+Review:
+
+- Root cause: provider OCR gating used visual evidence files from all message
+  history, so a historical `PL.pdf` attachment still exposed `run_file_ocr` on a
+  later correction-only turn.
+- Provider now enables `run_file_ocr` only when the latest user turn contains a
+  new visual file or the latest user text explicitly requests OCR/re-read/resume.
+  Historical visual file parts are omitted from the provider prompt when OCR is
+  not enabled, while `patch_file_analysis_data` remains available when saved
+  `file_analysis_data` context exists.
+- Added provider regression coverage for `S3 / C4 為S3, PL15*277, 長度 5280,
+  更新資料`: `patch_file_analysis_data` remains available, `run_file_ocr` and
+  `run_visual_inspection` are not exposed, historical file parts are not sent,
+  and the OCR executor is not called.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="latest saved file_analysis_data|manual correction"`;
+  `git diff --check`;
+  `npm --workspace packages/api run build`.
+- Build note: package build exits 0 and creates `dist`, while still printing the
+  existing non-Steel Redis `cacheFactory.ts` Rollup TypeScript warning.
+
 # Steel Core Quote Runtime Implementation Queue
+
+## Active: Steel Price Search Product Name Alias And Workbook Adoption
+
+Goal: fix `search_price_candidates` so raw family wording like `C型鋼` never
+fails the whole tool call when other OR facets can still find reviewed price
+rows, and add admin-editable product-name alias rules so `C型鋼` can expand to
+reviewed names such as `錏輕型鋼` before database search.
+
+- [x] Add RED tool/repository coverage proving `C型鋼` productNames no longer
+      throws and still searches other product-name / ERP-code facets.
+- [x] Add RED workbook regression proving an AI-adopted C75 candidate
+      (`錏輕型鋼 75*2.3`) projects into workbook-visible sheets instead of
+      disappearing.
+- [x] Add a `steel.product_name_aliases` table for admin-maintained lookup
+      rewrites, update `supabase/schema.sql`, and create the migration with
+      Supabase CLI.
+- [x] Wire alias expansion into `search_price_candidates` without hard-coded
+      product-category bans in code.
+- [x] Run focused tests and changed-file hygiene without Prettier.
+
+Review:
+
+- Removed the schema-level hard rejection that failed
+  `search_price_candidates` when `productNames` included C 型鋼 family wording.
+- Added `steel.product_name_aliases` as an admin-maintained many-to-one alias
+  table. Seeded `C`, `C型鋼`, `C鋼`, and `輕型鋼` to target reviewed product
+  name `錏輕型鋼`.
+- Repository price discovery now treats each product-name term as direct
+  product-name text OR an active reviewed alias-table source, while preserving
+  ERP-code OR search.
+- Updated the C 型鋼 quote rule wording so `C` / `C型鋼` are recoverable alias
+  evidence, not invalid productNames.
+- Added workbook coverage proving a confirmed C75 `CCG07523 / 錏輕型鋼 75*2.3`
+  semantic line projects into `系統訂單`, `人工複核`, and `報價單`.
+- Added workbook service coverage proving those projected C75 operations create
+  missing rows (`order_3`, `customer_3`, `review_3`) instead of only updating
+  already-existing rows.
+- Applied the additive migration to cloud Supabase through `.env`
+  `STEEL_POSTGRES_URL`. Readback returned `c_type_alias_count = 4` with sources
+  `C`, `C型鋼`, `C鋼`, `輕型鋼`.
+- Target-synced only the C 型鋼 quote rule to cloud Supabase; readback confirmed
+  many-to-one wording and source-list wording.
+- Live cloud `search_price_candidates` smoke with `productNames: ["C", "75*2.3"]`
+  and `erpItemCodes: ["CCG075"]` returned `CCG07523 / 錏輕型鋼 75*2.3`,
+  `unit = kg`, `unitPrice = 26.8`, `productPriceUnitWeight = 3.25`.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/tools/execute.spec.ts src/steel/repositories/prices.spec.ts src/steel/tools/registry.spec.ts src/steel/normalization/search.spec.ts src/steel/workbook/semantic.spec.ts src/steel/ai/provider.spec.ts --runInBand --testNamePattern="C 型鋼|bare C|product-name aliases|OR discovery|invalid search_price_candidates|price request|workbook|semantic workbook"`;
+  `cd packages/api && npx jest src/steel/workbook/service.spec.ts --runInBand --testNamePattern="C75 semantic patch|creates the target row"`;
+  `git diff --check`;
+  `npm --workspace packages/api run build`.
+- Build note: package build exits 0 and creates `dist`, while still printing the
+  existing non-Steel Redis `cacheFactory.ts` Rollup TypeScript warning.
+
+## Active: Steel Workbook UI Three Visible Tabs
+
+Goal: keep the Steel workbook UI focused on the three user-facing tabs:
+`系統訂單`, `人工複核`, and `報價單`, even when the persisted workbook still
+contains seven sheets for backend/export compatibility.
+
+- [x] Add focused frontend coverage that a seven-sheet workbook renders only
+      the three visible UI tabs.
+- [x] Filter the workbook preview tabs/table/export-checkbox list to
+      `system_order`, `manual_review`, and `customer_quote`.
+- [x] Default UI-triggered workbook export sheet selection to the same three
+      visible sheets.
+- [x] Run focused Steel route tests and changed-file hygiene without Prettier.
+
+Review:
+
+- Added frontend coverage proving a persisted seven-sheet workbook renders only
+  `系統訂單`, `人工複核`, and `報價單` in the workbook UI.
+- `SteelWorkbookPreview` now filters visible tabs/tables/export checkboxes to
+  the three UI sheets while preserving the underlying workbook object.
+- `SteelOAuthChat` now initializes UI export selections from the same visible
+  sheet helper, so hidden workbook sheets are not selected by default from the
+  UI.
+- Verification passed:
+  `npm --workspace client exec jest src/routes/SteelOAuthChat.spec.tsx -- --runInBand --coverage=false`;
+  `git diff --check`.
+
+## Active: Steel Activity Public Work Log UI
+
+Goal: rename the Steel right-panel `Thinking` tab to short `Activity` wording and
+show the public work records already streamed by the Codex/OpenAI-style API so
+users can tell the provider is still working and developers can audit whether
+the AI followed the expected quote workflow.
+
+- [x] Add RED frontend coverage for the `Activity` tab name and Codex-style
+      public work log entries.
+- [x] Render all stream-visible public events as compact activity items:
+      progress, reasoning summaries, lookups, tools, and errors.
+- [x] Keep provider timing/workbook-completion measurements visible inside the
+      Activity panel.
+- [x] Run focused frontend tests and changed-file hygiene without Prettier.
+- [x] Record review notes and update lessons for Activity visibility.
+
+Review:
+
+- The Steel right-panel progress tab is now labeled `Activity` and the panel is
+  labeled `Activity panel` with `Public work log` copy, avoiding raw
+  chain-of-thought framing.
+- Stream-visible public events are rendered as compact activity items with
+  event kind and status: progress, reasoning summaries, lookup/tool status, and
+  errors. The current-run event list is no longer truncated to 12 items.
+- Provider timings remain visible in the Activity panel after the public work
+  log, including workbook-completion measurements from the latest response.
+- Verification passed:
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false --testNamePattern="Activity|provider timings|last run"`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  `git diff --check`.
+- `npm --workspace client run typecheck` still exits 2 on existing global client
+  type errors outside this Steel route, including a11y, Agents, Artifacts, Chat
+  attachment types, MCP, Sources, and utility tests.
+
+## Active: Steel Workbook Completion Progress Visibility
+
+Goal: make the quote-workbook completion loop visible in the Steel Thinking tab
+so users do not see only one `patch_quote_workbook completed` event and assume
+the AI is stuck while it is actually filling missing `系統訂單`, `人工複核`, or
+`報價單` fields.
+
+- [x] Add RED provider stream coverage proving an incomplete semantic workbook
+      patch emits workbook-completion progress before the next AI completion
+      round.
+- [x] Emit compact `patch_quote_workbook` status events from provider
+      workbook-completion checks using the existing stream event contract.
+- [x] Verify the existing Thinking timeline renders those status events without
+      adding a new UI schema.
+- [x] Run focused provider/frontend tests and changed-file hygiene without
+      Prettier.
+- [x] Record review notes and update lessons for completion-loop visibility.
+
+Review:
+
+- Provider now emits a `patch_quote_workbook` status event when workbook
+  completion is required but still incomplete. The message includes missing
+  sheet/cell targets and says the provider is asking AI to fill derivable
+  workbook fields before the final answer.
+- Stream handler now passes provider-side `patch_quote_workbook` status events
+  into NDJSON, so the existing Thinking timeline shows the completion loop
+  without a new frontend schema.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --testNamePattern="requires semantic workbook coverage"`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand --testNamePattern="streams Steel chat progress"`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false --testNamePattern="Thinking|progress|provider timings"`;
+  `git diff --check`.
+- `npm --workspace packages/api run build` printed the existing non-Steel Redis
+  Rollup TypeScript warning and `created dist`, but the Rollup process remained
+  alive with no further output and was interrupted instead of being counted as a
+  passing build.
+
+## Active: Steel Thinking Timings And Workbook Docs Cleanup
+
+Goal: expose provider timing measurements in the Steel Thinking tab and clean
+current docs so `patch_quote_workbook` is described as a three-sheet AI patch
+target: `系統訂單`, `人工複核`, and `報價單`.
+
+- [x] Add RED frontend coverage proving the Thinking tab renders provider
+      `timings` from the latest Steel response.
+- [x] Implement a compact Thinking timing summary for total, generation, tool,
+      workbook-completion, and per-round timing data.
+- [x] Rewrite current Steel docs that still describe semantic workbook patch
+      completion as seven sheets or label `customer_quote` as `給客戶用`.
+- [x] Run focused frontend tests and changed-file hygiene without Prettier.
+- [x] Record review notes and update lessons for timing visibility/docs cleanup.
+
+Review:
+
+- Steel Thinking now renders `lastResponse.timings` under `Provider timings`,
+  including total, generation, tool, workbook-completion, round count, per-round
+  durations, tool call counts, workbook operation counts, prompt message counts,
+  and missing workbook sheet/cell counts.
+- Added RED/GREEN coverage in `client/src/routes/SteelOAuthChat.spec.tsx`; the
+  focused Steel route spec passes with 26/26 tests.
+- Cleaned current Steel docs and v8.3 planning docs so the public workbook is
+  still seven sheets, while AI-facing `patch_quote_workbook` completion targets
+  only `系統訂單`, `人工複核`, and `報價單` (`customer_quote`). Stale `給客戶用`
+  wording is removed from the scoped docs.
+- Verification: `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx
+  --runInBand --coverage=false` passed, and `git diff --check` passed.
+  `npm --workspace client run typecheck` still exits 2 on existing non-Steel
+  type errors; rerun output has no `src/routes/SteelOAuthChat` hits after the
+  local file-type cleanup.
+
+## Active: Steel Three-Sheet Workbook Patch Completion
+
+Goal: make `patch_quote_workbook` faster by limiting its AI-facing workbook
+completion target to three sheets: `系統訂單`, `人工複核`, and `報價單`
+(`customer_quote`, formerly `給客戶用`), then measure provider round/tool timing
+so future delays are visible.
+
+- [x] Add RED provider coverage proving a complete semantic patch only needs the
+      three target sheets and no longer waits for `報價明細`, `總結`, `價格來源`,
+      or `判讀備註` completion cells.
+- [x] Add RED provider coverage that exposes per-round generation/tool timing for
+      workbook patch runs.
+- [x] Limit semantic workbook patch projection/completion feedback to the three
+      target sheets while keeping backend workbook validation/apply paths intact.
+- [x] Rename the `customer_quote` display label from `給客戶用` to `報價單`.
+- [x] Run focused provider/workbook tests, build checks, and diff hygiene without
+      Prettier.
+- [x] Record review notes and update lessons for the new three-sheet contract.
+
+Review:
+
+- `patch_quote_workbook` completion now targets only `system_order`,
+  `manual_review`, and `customer_quote` (`報價單`). It no longer asks AI to fill
+  `quote_details`, `summary`, `price_sources`, or `interpretation_notes` before
+  answering.
+- Semantic workbook projection now emits patch operations only for the three
+  target sheets plus explicit deletes. The public seven-sheet workbook schema is
+  unchanged, so existing workbook persistence/export shape remains compatible.
+- Provider responses now include structured `timings` with total/per-round
+  generation, tool, and workbook-completion durations plus missing sheet/cell
+  counts. This makes future quote-workbook latency visible without relying on
+  ad hoc logs.
+- `customer_quote` keeps its stable sheet id but displays as `報價單`.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/workbook/semantic.spec.ts src/steel/workbook/service.spec.ts src/steel/workbook/repository.spec.ts --runInBand`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts src/steel/workbooks.spec.ts --runInBand`;
+  `npm --workspace packages/api run build` with the existing non-Steel Redis
+  Rollup TypeScript warning; `npm run build:data-provider`; focused
+  `client/src/routes/SteelOAuthChat.spec.tsx` tests for workbook tabs/file
+  analysis/image OCR; and `git diff --check`.
+
+## Active: Steel Oral Alias And Cutting Reasoning Design
+
+Goal: make Steel quote flow handle colloquial names such as `3*3鍍鋅方管`
+and `3分圓鐵` more like the user's ChatGPT reference by improving the runtime
+prompt. The AI should autonomously derive product-name/spec candidates,
+preserve adopted model codes, and show traceable 6M stock/cutting
+calculations.
+
+- [x] Inspect current price-search, rule, and workbook semantic seams.
+- [x] Identify whether workbook schema can carry stock/cutting reasoning.
+- [x] Confirm implementation approach with the user before touching production
+      code.
+- [x] Update runtime prompt docs so AI, not backend deterministic logic,
+      generates product-name/spec candidates and 6M stock/cutting calculations.
+- [x] Sync reviewed Steel rules if rule text changes.
+- [x] Run focused rule sync and changed-file hygiene without Prettier.
+- [x] Record review notes and update lessons for this correction.
+- [x] Add `erp_item_code` prefix search support to `search_price_candidates`.
+- [x] Keep price search broad with OR-style matching across `productNames` and
+      `erpItemCodes` so AI can inspect related formal rows instead of receiving
+      an empty result too early.
+- [x] Keep new broad discovery fields limited to `productNames` and
+      `erpItemCodes`: `productNames` searches product-name text and may contain
+      product names or partial spec text; `erpItemCodes` searches model/code
+      text and may contain exact codes or prefixes.
+- [x] Delete `specKeyContains` from the AI price-discovery code path; AI should
+      generate multiple formal product-name search strings that include likely
+      spec formats inside `productNames`.
+- [x] Run live provider smoke for mixed square-pipe, round-iron, C75, and PVC
+      request; confirm 方管/圓鐵 have data while PVC is no-data.
+- [ ] Add focused workbook regression for no-data search results being represented
+      with confidence/missing-data notes instead of disappearing from the quote.
+
+Design notes:
+
+- Current gap: C 型鋼 already has strong oral-name and compact spec guidance,
+  but 方管 / 圓鐵 do not have equivalent bounded alias/spec rules. Search must
+  be driven by reviewed product-price product names and spec text such as
+  `錏方管` + `75*2.0` or `圓鐵` + `9m/m(3/8)(3.3)`; model codes such as
+  `GDH3020` and `EQB0090` are not product-name search terms, but exact codes or
+  code prefixes may be searched through `erpItemCodes`.
+- Workbook semantic fields already support the needed evidence:
+  `rawMaterialLength`, `rawMaterialPieceCount`,
+  `finishedCountPerRawMaterial`, `remainderLengthOrWeight`, `cuttingFee`,
+  `systemOrder.modelCode`, and source/interpretation/manual-review rows.
+- User correction: do not add a backend/rule-layer deterministic candidate
+  expansion or 6M cutting calculator. Put the behavior in runtime prompt
+  instructions. AI autonomously generates product-name/spec candidates such as
+  `錏方管` + `75*2.0` or `圓鐵` + `9m/m(3/8)(3.3)`, batches them through
+  `search_price_candidates`, then uses the adopted reviewed row for model code,
+  unit price, unit, source, and workbook/system-order output.
+- Runtime prompt update: `docs/rules/agent規則.txt` now tells AI to generate
+  product-name/spec candidates itself, batch them with `candidateQueries`, and
+  keep code/prefix lookup in `erpItemCodes` instead of `productNames`.
+  `docs/rules/鋼材規則.txt` now tells AI to calculate long-material 6M
+  allocation/cutting evidence itself and write the formula into workbook-visible
+  fields/notes.
+- Grill decision: **Price Code Prefix** / `價格代號前綴` is a domain term. After
+  AI finds a product-name candidate, `search_price_candidates` must also support
+  broader `erp_item_code` prefix lookup so rows such as `BNG008408`,
+  `BNH0054018`, `CCS07520`, `DNB70016`, or `DNB40120` can be returned for AI
+  spec judgment even when their formal product names do not repeat the Chinese
+  family name.
+- Search behavior should be OR-oriented for discovery: `productNames` may carry
+  product names and spec fragments, while `erpItemCodes` may carry exact codes
+  and price code prefixes. AI then judges which returned row actually matches
+  the requested specification.
+- Confirmed AI flow: use Chinese product-name data first to find related product
+  family rows and price code prefixes, then query related formal spec rows by
+  those prefixes, then let AI compare the customer's requested spec against the
+  returned formal product names/prices before quoting.
+- Boundary: price code prefix expansion is optional. Some product families have
+  no useful prefix or already return a matching reviewed row from Chinese
+  product-name/spec search, so AI may quote directly without forcing another
+  prefix lookup.
+- Confirmed tool behavior: keep `search_price_candidates` discovery inputs
+  simple. `productNames` means fields to search in product-name text, including
+  product names or partial spec text. `erpItemCodes` means fields to search in
+  model/code text, including exact item codes or prefixes. If both appear in one
+  tool call, backend lookup should OR across them to return all related reviewed
+  rows for AI judgment rather than over-filtering and returning no data.
+- Confirmed spec behavior: formal price row product names often include the
+  relevant spec, so `specKeyContains` should be removed from the AI discovery
+  path. AI should generate several likely product-name/spec text forms inside
+  `productNames`, for example `75*2.3`, `1.2*4'*10'(35.84)`,
+  `1.2*4'*8'(28.5)`, `4.5*5尺*10尺 (46*101.6)`, or
+  `150*75*5/7*6M(84)`.
+- Confirmed C 型鋼 default: when the customer says C 型鋼 / C 鋼 / 輕型鋼 without
+  material, AI should search and quote from `錏輕型鋼` candidates by default, not
+  黑鐵輕型鋼.
+- Confirmed quote behavior: final workbook/quote output must include the data
+  AI used, confidence level, and missing-data notes. If a requested item has no
+  returned data, it should still be represented as low-confidence / no-data
+  evidence or manual review rather than omitted.
+- Supabase sync applied through `packages/api/scripts/sync-steel-rules.cjs`:
+  `steel-default-agent-instruction` hash
+  `59be0121ab0d2d280d16b3241064ac691aa28f1c564b45a6c2ae2ca806c7c5be`;
+  `docs/rules/鋼材規則.txt` quote-rule hash
+  `782acbab6c54c84cfb791ec2b10a0a9a0a9afe810baf9d909acc5b33472a530f`.
+- Implementation update: `search_price_candidates` schema rejects `specKey` and
+  `specKeyContains`, rejects `catalogFamilies`, accepts `erpItemCodes`, coalesces
+  same-round direct calls into `candidateQueries`, and repository search ORs
+  product-name text with ERP item-code text.
+- Prompt update keeps the no-data quote policy: requested items with no returned
+  price data must still appear as low-confidence / no-data evidence or manual
+  review, but a focused workbook regression remains as follow-up.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/normalization/search.spec.ts src/steel/repositories/prices.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --runInBand`;
+  `cd packages/api && node scripts/sync-steel-rules.cjs --dry-run`;
+  `cd packages/api && node scripts/sync-steel-rules.cjs --apply`;
+  `npm --workspace packages/api run build` with the existing non-Steel Redis
+  TypeScript warning; `git diff --check`.
+- Live mixed oral materials smoke:
+  `STEEL_OPENAI_OAUTH_MIXED_ORAL_MATERIALS_TEST=true ... provider.catalog-oral.manual.spec.ts`
+  passed against real OpenAI OAuth provider and Supabase. The passing run
+  confirmed `GDH3020` / `錏方管 75*2.0` and `EQB0090` /
+  `圓鐵 9m/m(3/8)(3.3)` in `search_price_candidates` results, while the final
+  response marked `PVC90度彎頭` as no-data / unconfirmed.
+- Live smoke fixes made during verification: runtime prompt now keeps oral
+  square-pipe / round-iron lookup anchored on product-name/spec text and uses
+  `GDH` / `EQB` only as ERP-code prefixes; price repository ordering now ranks
+  rows matching more search facets first; batched candidate query results are
+  interleaved before tool-output sanitization so one broad line cannot consume
+  all 20 visible candidates.
+- Follow-up correction: `agent規則.txt` keeps only generic tool-facet guidance:
+  Chinese names and specification text go in `productNames`, while English /
+  numeric ERP codes and code prefixes go in `erpItemCodes`. Concrete Steel
+  material examples such as `GDH`, `EQB`, and C 型鋼 default 錏輕型鋼 now live in
+  `docs/rules/鋼材規則.txt`.
+- Search truncation note: the AI-facing schema allows `limit` up to 100,
+  repositories default/max to 100/100, internal rule/default selection defaults
+  to 100, and sanitized tool output caps arrays/source refs at 100 items before
+  entering model context. Candidate-query interleaving still keeps multiple
+  requested items visible inside that output cap.
+
+## Active: Steel Price Search Batching And Workbook Row Deletion
+
+Goal: make Steel runtime price lookup use one batched `search_price_candidates`
+call for related candidate keywords, and make workbook row deletion persist when
+the user asks to remove unconfirmed system-order rows.
+
+- [x] Add RED provider coverage for same-round `search_price_candidates`
+      calls being coalesced into one backend tool execution when filters are
+      compatible.
+- [x] Add RED workbook contract/service coverage for a `delete_row`
+      operation that removes an existing row and records the accepted patch.
+- [x] Add RED semantic workbook coverage that `patch_quote_workbook` can
+      project explicit `deleteRows`, while omitted quote lines do not imply
+      deletion.
+- [x] Implement compatible same-round price-search coalescing without changing
+      the reviewed Supabase search semantics.
+- [x] Add `delete_row` support through data-provider schemas, data-schemas
+      persistence types/schemas, semantic projection, and workbook service
+      application.
+- [x] Adjust provider tool descriptions/results so AI can request deletion and
+      sees projected delete counts/row ids.
+- [x] Run focused tests/build checks and changed-file hygiene without Prettier.
+- [x] Record review notes and update lessons for this correction.
+- [x] Remove the delete-only/system-order exception that skipped full workbook
+      completion after user correction, and verify the next AI round still gets
+      workbook completion feedback quickly.
+
+Review:
+
+- Root cause q1: `search_price_candidates` already accepted multiple
+  `productNames` / `candidateQueries`, but the provider executed sibling
+  same-round search calls one by one. Compatible sibling price searches now
+  coalesce into one backend executor call with batched `candidateQueries`.
+- Root cause q2: workbook patches only supported `set_cell`, so AI could claim
+  rows were deleted while backend had no row-delete operation to persist.
+  `delete_row` is now supported in shared workbook schemas, provider patch
+  proposals, Mongo patch history schema, semantic `deleteRows` projection, and
+  workbook service application.
+- Correction: delete-only/system-order workbook patches must still use the full
+  quote-workbook completion loop. Speed should come from the next AI round
+  receiving workbook/tool feedback promptly, not from accepting an incomplete
+  patch as final.
+- Correction verification: the new provider regression first failed because a
+  delete-only patch stopped after one model round; after removing the exception,
+  it passes and confirms the next round receives `complete: false` workbook
+  feedback before the final complete patch.
+- Verification passed:
+  `packages/data-provider` focused Jest
+  `src/steel/workbooks.spec.ts src/steel/ai.spec.ts`; `packages/api` focused
+  Jest
+  `src/steel/workbook/semantic.spec.ts src/steel/workbook/service.spec.ts src/steel/ai/provider.spec.ts`;
+  handler delete-row regression
+  `src/steel/handlers.spec.ts -t "applies provider delete_row"`;
+  `npm run build:data-provider`; `packages/data-schemas npm run build`;
+  `packages/api npm run build`; and `git diff --check`.
+- Caveat: full `packages/api/src/steel/handlers.spec.ts` still has unrelated
+  existing file-analysis expectation failures around fixed source columns; the
+  delete-row handler regression passes in isolation.
 
 ## Active: Remove Rules Contract Tests
 
@@ -5392,3 +6037,49 @@ packages/api run build` passed with existing non-Steel Rollup TypeScript
 - Verification: `provider.spec.ts` passed 20 tests; `handlers.spec.ts` passed
   22 tests; `npm --workspace packages/api run build` passed with existing
   non-Steel Rollup TypeScript warnings; `git diff --check` passed.
+
+# Steel C-Type Rule-Derived Price Lookup Prompt
+
+- [x] Add only generic rule-derived price lookup and invalid-argument retry guidance to `docs/rules/agent規則.txt`.
+- [x] Add C 型鋼-specific `productNames` restrictions and `錏輕型鋼` default candidate guidance to `docs/rules/鋼材規則.txt`.
+- [x] Sync reviewed Steel rules with dry-run then apply.
+- [x] Verify changed text, sync readback, and diff hygiene.
+
+## Review
+
+- Updated `docs/rules/agent規則.txt` with only generic rule-derived
+  `search_price_candidates` guidance: use product-name/spec fragments derived
+  from reviewed rules, and treat `invalid_arguments` as a parameter correction
+  path rather than no-data.
+- Updated `docs/rules/鋼材規則.txt` C 型鋼專用規則 with the C 型鋼 / C 鋼 /
+  輕型鋼 `productNames` ban and the existing `錏輕型鋼` default direction.
+- Synced reviewed Supabase rows with `node packages/api/scripts/sync-steel-rules.cjs --dry-run`
+  and `node packages/api/scripts/sync-steel-rules.cjs --apply`.
+- Readback confirmed `steel-default-agent-instruction` contains the retry and
+  rule-derived lookup text; `steel_quote_rules_c_type` contains the
+  productNames ban and `錏輕型鋼` default.
+- Tool smoke confirmed `search_price_candidates` rejects `productNames:
+  ['C型鋼']` with `invalid_arguments`, while `['錏輕型鋼', '100*2.3']`
+  returns reviewed candidates including `錏輕型鋼 100*2.3` at price B 26.8.
+- Live OAuth C 型鋼 smoke passed: tool order was
+  `lookup_catalog_families`, `search_customers`, `lookup_quote_rules`,
+  `search_price_candidates`; price args used `錏輕型鋼`, `100*2.3`, and
+  `100x2.3` instead of `"C型鋼"` productNames, and the final answer quoted
+  `錏輕型鋼 100*2.3` at price B 26.8 with 24 kg / 643.2 per 6M piece.
+- `git diff --check` passed.
+
+# Steel System Order Adopted Price Row Identity
+
+- [x] Add RED semantic projection coverage so `system_order.item_spec` is not filled from `normalizedItemName` when `systemOrder.itemSpec` is missing.
+- [x] Add RED provider completion coverage so `system_order.model_code` is required alongside `system_order.item_spec`.
+- [x] Update projection/completion logic and workbook rules so `系統訂單.型號` = adopted price row code and `系統訂單.品名規格` = adopted price row productName.
+- [x] Sync reviewed workbook rules.
+- [x] Run focused semantic/provider tests, sync readback, live/tool smoke as needed, and `git diff --check`.
+
+## Review
+
+- RED semantic test first failed because `system_order.item_spec` still fell back to `normalizedItemName`; after the projector change it passes and no fallback cell op is emitted when adopted price row `productName` is missing.
+- RED provider test first failed because workbook completion accepted patches without `system_order.model_code`; after the completion gate change it loops until model code is supplied.
+- `docs/rules/workbook規則.txt` now requires `systemOrder.modelCode` from adopted `search_price_candidates` `erpItemCode` / source `型號`, and `systemOrder.itemSpec` from adopted `productName` / source `產品名稱`.
+- Synced reviewed rule row `steel-workbook-output-policy`; readback confirmed both new prompt fragments and SHA-256 `a6b328c12b66124e96e8c4691d03a9ec33ef415cf74725c9403452d97e615b39`.
+- Verification: `jest src/steel/workbook/semantic.spec.ts -- --runInBand` passed 6/6, `jest src/steel/ai/provider.spec.ts -- --runInBand` passed 32/32, `jest src/steel/handlers.spec.ts -- --runInBand` passed 42/43 with 1 skipped, `npm --workspace packages/api run build` completed with exit 0 and an existing Redis type warning, and `git diff --check` passed.

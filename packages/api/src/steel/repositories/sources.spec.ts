@@ -28,7 +28,7 @@ describe('Steel source repository', () => {
       'active',
       'handbook',
       '%標準長度%',
-      20,
+      100,
     ]);
     expect(result[0]).toMatchObject({
       id: 11,

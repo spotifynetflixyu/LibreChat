@@ -61,6 +61,7 @@ import type { z } from 'zod';
 import type {
   SteelWorkbook,
   SteelChangedFieldSummary,
+  SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
   SteelWorkbookCellValue,
   SteelFileAnalysisData,
@@ -138,15 +139,7 @@ type SteelChatProviderResultWithFileAnalysis = Omit<
   workbookPatch?: SteelProviderWorkbookPatchProposal;
 };
 
-type SteelChatHandlerResult = Omit<
-  SteelOAuthProviderChatResponse,
-  'fileAnalysisPatch' | 'workbookPatch'
-> & {
-  conversationId?: string;
-  workbookId?: string;
-  fileAnalysisData?: SteelFileAnalysisData;
-  workbookPatch?: SteelWorkbookPatchResponse;
-};
+type SteelChatHandlerResult = SteelDataProviderChatResponse;
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
 
@@ -1457,6 +1450,7 @@ export function createSteelHandlers({
           onToolStatus: async (event) => {
             if (
               event.toolName !== 'run_visual_inspection' &&
+              event.toolName !== 'patch_quote_workbook' &&
               event.toolName !== 'patch_file_analysis_data'
             ) {
               return;

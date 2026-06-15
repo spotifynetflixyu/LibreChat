@@ -258,7 +258,7 @@ export function lookupSteelDefaults(
       matchedContexts: getMatchedContexts(input, quoteDefault),
     }))
     .filter(({ matchedContexts }) => matchedContexts.length > 0)
-    .slice(0, input.limit ?? 20)
+    .slice(0, input.limit ?? 100)
     .map(({ quoteDefault, matchedContexts }) =>
       toDefaultCandidate(quoteDefault, getMatchedContextFacets(matchedContexts)),
     );

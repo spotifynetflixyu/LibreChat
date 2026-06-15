@@ -283,9 +283,11 @@ Workbook patch ownership:
 
 - For `/steel/oauth-chat`, AI owns workbook patch content. When workbook context
   is available, the model must call `patch_quote_workbook` with semantic quote
-  data for every user-relevant sheet that has derivable data: `system_order`,
-  `quote_details`, `summary`, `manual_review`, `price_sources`,
-  `interpretation_notes`, and `customer_quote`.
+  data for the current AI-facing target sheets: `system_order`,
+  `manual_review`, and `customer_quote` (`報價單`). The public workbook still has
+  seven fixed sheets for storage/export compatibility, but `quote_details`,
+  `summary`, `price_sources`, and `interpretation_notes` are not workbook
+  completion gates for `patch_quote_workbook`.
 - Backend provider orchestration may reject or remind an incomplete provisional
   price patch by returning missing sheet ids and missing workbook cell targets
   to the model. Backend code should not hard-code derived companion rows for
@@ -294,14 +296,13 @@ Workbook patch ownership:
 - Completion is checked per workbook update turn, not only by final field count
   or by whether a sheet was touched. A sparse patch that only creates shell
   rows such as `line_no`/`item` is incomplete when user-visible minimum cells
-  are still missing, for example ERP `item_spec`/`unit_price`, summary `value`,
-  review `confirmation_needed`, source `adopted_product_price_item`, note
-  `content`, and customer quote `item_spec`/`unit_price`/`subtotal`.
+  are still missing, for example ERP `item_spec`/`unit_price`, review
+  `confirmation_needed`, and customer quote `item_spec`/`unit_price`/`subtotal`.
 - The same completeness rule applies to follow-up turns that update an existing
   quote line, such as customer selection, customer tier changes, material
   confirmation, or repricing. A follow-up semantic patch that updates
-  `quote_details` quote/calculation fields must still include companion semantic
-  fields for the relevant workbook sheets.
+  `system_order` or `customer_quote` quote/calculation fields must still include
+  companion semantic fields for the three AI-facing target sheets.
 - If material, customer, reviewed source, or calculation evidence is unavailable,
   AI leaves the target value blank and records the missing evidence in
   `manual_review` or `interpretation_notes` instead of inventing a value.
@@ -330,19 +331,10 @@ Workbook fill contract from `docs/reference/訂單參考_轉檔.xlsx`:
   `產品價格.xlsx` / `search_price_candidates`, carried in semantic
   `systemOrder.modelCode`. It is not an oral product name, catalog family key,
   or material category.
-- `報價明細` owns the working calculation line. `小計` is the sum of material,
-  cutting, hole, slotting, bending, and other fees; if any required unit price is
-  unknown, `小計` is `未確認`.
-- `總結` separates confirmed amounts from low-confidence provisional estimates:
-  `確定金額` and `低信心暫估金額` must not be mixed.
-- `價格來源` records one source row for every material or processing line. A
-  no-price result still gets a source row with the adopted item as `未確認` and
-  source as `未找到` or the actual searched source.
-- `判讀備註` records only concise human-readable reasoning: customer/tier
-  judgment, price search strategy, oral name conversion, weight source, stock
-  allocation, no-zero unknown policy, OCR/drawing assumptions, and approximate
-  or substitute candidate use.
-- `給客戶用` is customer-visible only. It must not expose customer tier, source
+- `報價明細`, `總結`, `價格來源`, and `判讀備註` remain public workbook/export
+  sheets, but they are not required `patch_quote_workbook` semantic completion
+  targets in the current runtime.
+- `報價單` is customer-visible only. It must not expose customer tier, source
   refs, search keywords, candidate rows, rejected-candidate reasons, AI/internal
   notes, cost, margin, or low-confidence internal reasons. Unknown unit price or
   subtotal is shown as `未確認`.

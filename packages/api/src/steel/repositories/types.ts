@@ -156,7 +156,7 @@ export function parseValueState(value: string): SteelValueState {
   throw new Error(`Unexpected Steel value_state: ${value}`);
 }
 
-export function getLimit(limit: number | undefined, defaultLimit = 20, maxLimit = 100): number {
+export function getLimit(limit: number | undefined, defaultLimit = 100, maxLimit = 100): number {
   if (limit === undefined) {
     return defaultLimit;
   }

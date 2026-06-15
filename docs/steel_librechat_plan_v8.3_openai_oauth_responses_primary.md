@@ -70,9 +70,13 @@
 4. 價格來源
 5. 判讀備註
 6. 系統訂單
-7. 給客戶用
+7. 報價單
 
-「給客戶用」分頁必須移除：
+目前 AI-facing `patch_quote_workbook` completion 只要求 `系統訂單`、`人工複核`
+與 `報價單`；其他四個 public workbook 分頁保留給 storage/export compatibility，
+不是 semantic patch completion gate。
+
+「報價單」分頁必須移除：
 
 - 內部資料
 - 客戶等級 / 客戶分級
@@ -1703,7 +1707,7 @@ Patch rules：
 4. 價格來源
 5. 判讀備註
 6. 系統訂單
-7. 給客戶用
+7. 報價單
 
 所有分頁格式：
 
@@ -1718,7 +1722,7 @@ Patch rules：
 
 - 完整 Workbook。
 - 指定分頁。
-- 給客戶用分頁。
+- 報價單分頁。
 - 系統訂單分頁。
 
 ---
@@ -1970,7 +1974,7 @@ Eval 類型：
 12. 折工計算測試。
 13. Excel 匯出測試。
 14. 系統訂單輸出測試。
-15. 給客戶用分頁遮罩測試。
+15. 報價單分頁遮罩測試。
 16. 回歸測試。
 
 Eval runner interface：
@@ -2016,7 +2020,7 @@ export interface SteelEvalReport {
 - 產品價格必須多關鍵字搜尋。
 - PDF/DOCX 不能進 ongoing Admin ERP Import；Admin 匯入以 ERP `.xlsx` normalized path 為準，legacy `.xls` 需先有 tested conversion。
 - Excel 必須含 7 個必要分頁。
-- 給客戶用不含客戶分級與內部資料。
+- 報價單不含客戶分級與內部資料。
 
 ---
 
@@ -2444,7 +2448,7 @@ export interface AdminPreviewPageData {
 - 低信心數量。
 - 下載完整 Excel。
 - 下載系統訂單。
-- 下載給客戶用。
+- 下載報價單。
 - 只看人工複核。
 
 Phase 3 先建立獨立 Steel workspace，重用 LibreChat auth、navigation、model selector 能力，但不要求改造 core LibreChat chat store / global message flow。手機版與桌面版共用同一套 Steel UX framework；手機版 Workbook Preview 以 full-view modal 開啟，右上角 X 關閉。點選 workbook cell 時，UI 以 selected style 標記該 cell，並在底部 message input 加入含分頁與欄位/位置的 marker；若尚未輸入文字，下一個 selection 覆蓋原 marker；若已有文字，下一個 selection 會換行新增 marker。送出時 request 可帶多個 structured selected workbook refs。AI 只能透過 workbook patch service 更新 workbook，成功後 workbook UI 依 patch 或 refetch 同步，不做每次 patch 前的 preview/diff confirmation，也不做 Undo button 或版本控制 UI。使用者可以透過多輪對話持續修改 workbook data、請 AI 還原剛才修改，或用文字描述多個明確位置要更改，讓 AI 產生多個後端驗證過的 patch ops。最新被接受 patch 更新過的欄位用背景色標示，且和 selected cell 樣式不同；背景色維持到下一次 accepted workbook patch，下一次 patch 會替換上一組 highlight。AI patch 成功時，chat 用短摘要列出已更新欄位，不顯示完整 diff table；AI patch 失敗或被後端拒絕時，不標示欄位、不清掉上一個 accepted patch highlight，chat 顯示未更新原因。不建立 mobile-only API 或 mobile-only data model。
@@ -2482,7 +2486,7 @@ Admin preview ERP XLSX parsed data、AI mapping、merge table、valid / invalid 
 - Admin 能透過 table UI preview/edit 既有資料。
 - Excel 有七個必要分頁。
 - 系統訂單分頁符合固定欄位。
-- 給客戶用分頁不含客戶等級與內部資料。
+- 報價單分頁不含客戶等級與內部資料。
 - 使用者指出錯誤時，能建立 memory candidate。
 - Guest user 可以建立報價並下載 Excel。
 - Admin import 需經 valid / invalid / needs_review 檢查後才能寫入資料庫。

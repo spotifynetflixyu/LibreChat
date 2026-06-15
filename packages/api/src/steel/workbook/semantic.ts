@@ -1,3 +1,4 @@
+import { steelWorkbookSheetIdSchema } from 'librechat-data-provider';
 import type {
   SteelWorkbookCellValue,
   SteelWorkbookPatchOperation,
@@ -14,6 +15,15 @@ type SemanticCustomer = {
   address?: SemanticCellValue;
   contact?: SemanticCellValue;
   note?: string;
+};
+
+type SemanticCustomerDataRecord = {
+  rowId?: string;
+  customerCode?: SemanticCellValue;
+  vendorName?: SemanticCellValue;
+  priceTier?: SemanticCellValue;
+  confirmationStatus?: SemanticCellValue;
+  note?: SemanticCellValue;
 };
 
 type SemanticSystemOrderLine = {
@@ -67,6 +77,12 @@ type SemanticInterpretationNote = {
   evidence?: SemanticCellValue;
 };
 
+type SemanticDeleteRows = {
+  sheetId: SteelWorkbookSheetId;
+  rowIds: string[];
+  reason?: string;
+};
+
 export type SteelSemanticWorkbookQuoteLine = {
   lineId?: string;
   lineNo?: number;
@@ -117,7 +133,9 @@ export type SteelSemanticWorkbookQuoteLine = {
 
 export type SteelSemanticWorkbookPatch = {
   customer?: SemanticCustomer;
+  customerData?: SemanticCustomerDataRecord[];
   quoteLines: SteelSemanticWorkbookQuoteLine[];
+  deleteRows?: SemanticDeleteRows[];
   customerQuoteTotal?: SemanticCustomerQuoteLine;
   summary?: {
     totalAmount?: SemanticCellValue;
@@ -148,6 +166,17 @@ const semanticCustomerSchema = z
     address: optionalSemanticCellValueSchema,
     contact: optionalSemanticCellValueSchema,
     note: z.string().optional(),
+  })
+  .strict();
+
+const semanticCustomerDataRecordSchema = z
+  .object({
+    rowId: z.string().min(1).optional(),
+    customerCode: optionalSemanticCellValueSchema,
+    vendorName: optionalSemanticCellValueSchema,
+    priceTier: optionalSemanticCellValueSchema,
+    confirmationStatus: optionalSemanticCellValueSchema,
+    note: optionalSemanticCellValueSchema,
   })
   .strict();
 
@@ -209,6 +238,14 @@ const semanticInterpretationNoteSchema = z
     content: optionalSemanticCellValueSchema,
     confidence: optionalSemanticCellValueSchema,
     evidence: optionalSemanticCellValueSchema,
+  })
+  .strict();
+
+const semanticDeleteRowsSchema = z
+  .object({
+    sheetId: steelWorkbookSheetIdSchema,
+    rowIds: z.array(z.string().min(1)).min(1).max(100),
+    reason: z.string().min(1).optional(),
   })
   .strict();
 
@@ -281,10 +318,16 @@ const semanticSummarySchema = z
   })
   .strict();
 
-export const steelSemanticWorkbookPatchSchema: z.ZodType<SteelSemanticWorkbookPatch> = z
+export const steelSemanticWorkbookPatchSchema: z.ZodType<
+  SteelSemanticWorkbookPatch,
+  z.ZodTypeDef,
+  unknown
+> = z
   .object({
     customer: semanticCustomerSchema.optional(),
-    quoteLines: z.array(semanticQuoteLineSchema).min(1),
+    customerData: z.array(semanticCustomerDataRecordSchema).max(100).optional(),
+    quoteLines: z.array(semanticQuoteLineSchema).default([]),
+    deleteRows: z.array(semanticDeleteRowsSchema).max(100).optional(),
     customerQuoteTotal: semanticCustomerQuoteLineSchema.optional(),
     summary: semanticSummarySchema.optional(),
   })
@@ -305,16 +348,8 @@ function rowIndexFromLine(line: SteelSemanticWorkbookQuoteLine, fallbackIndex: n
   return match ? Number(match[1]) : fallbackIndex + 1;
 }
 
-function lineRowId(line: SteelSemanticWorkbookQuoteLine, fallbackIndex: number): string {
-  return line.lineId?.trim() || `line_${rowIndexFromLine(line, fallbackIndex)}`;
-}
-
 function relatedRowId(prefix: string, line: SteelSemanticWorkbookQuoteLine, fallbackIndex: number) {
   return `${prefix}_${rowIndexFromLine(line, fallbackIndex)}`;
-}
-
-function searchKeywordsValue(value: SteelSemanticWorkbookQuoteLine['searchKeywords']) {
-  return Array.isArray(value) ? value.filter((entry) => entry.trim() !== '').join('、') : value;
 }
 
 function addCell({
@@ -371,189 +406,6 @@ function addCells({
   }
 }
 
-function sumNumeric(values: SemanticCellValue[]) {
-  const numericValues = values.filter(
-    (value): value is number => typeof value === 'number' && Number.isFinite(value),
-  );
-
-  return numericValues.length === values.length && numericValues.length > 0
-    ? Number(numericValues.reduce((sum, value) => sum + value, 0).toFixed(2))
-    : undefined;
-}
-
-function addSummaryRows(
-  input: SteelSemanticWorkbookPatch,
-  operations: SteelWorkbookPatchOperation[],
-) {
-  const lineSubtotals = input.quoteLines.map((line) => line.subtotal);
-  const lineWeights = input.quoteLines.map((line) => line.totalWeightKg);
-  const totalAmount = input.summary?.totalAmount ?? sumNumeric(lineSubtotals);
-  const totalWeight = input.summary?.totalWeightKg ?? sumNumeric(lineWeights);
-  const summaryRows: Array<{
-    rowId: string;
-    item: string;
-    value: SemanticCellValue;
-    note?: SemanticCellValue;
-  }> = [
-    {
-      rowId: 'summary_customer',
-      item: '客戶暫採',
-      value: input.customer?.name,
-      note: input.customer?.note,
-    },
-    {
-      rowId: 'summary_customer_code',
-      item: '客戶編號暫採',
-      value: input.customer?.code,
-    },
-    {
-      rowId: 'summary_customer_tier',
-      item: '分級暫採',
-      value: input.customer?.tier,
-    },
-    {
-      rowId: 'summary_delivery_address',
-      item: '送貨地址',
-      value: input.customer?.address,
-    },
-    {
-      rowId: 'summary_contact',
-      item: '聯繫人',
-      value: input.customer?.contact,
-    },
-    {
-      rowId: 'summary_total_amount',
-      item: '報價總額',
-      value: totalAmount,
-      note: '語意報價 patch 投影',
-    },
-    {
-      rowId: 'summary_unconfirmed_count',
-      item: '未確認項目數',
-      value: input.summary?.unconfirmedCount,
-    },
-    {
-      rowId: 'summary_low_confidence_count',
-      item: '低信心項目數',
-      value: input.summary?.lowConfidenceCount,
-    },
-    {
-      rowId: 'summary_total_weight',
-      item: '總重量kg',
-      value: totalWeight,
-    },
-    {
-      rowId: 'summary_raw_material_piece_count',
-      item: '素材支數',
-      value: input.summary?.rawMaterialPieceCount,
-    },
-    {
-      rowId: 'summary_remainder_weight',
-      item: '餘料重量kg',
-      value: input.summary?.remainderWeightKg,
-    },
-    {
-      rowId: 'summary_cutting_total',
-      item: '總切工次數/費',
-      value: input.summary?.cuttingCount,
-      note: input.summary?.cuttingFee,
-    },
-    {
-      rowId: 'summary_hole_total',
-      item: '總孔數/費',
-      value: input.summary?.holeCount,
-      note: input.summary?.holeFee,
-    },
-    {
-      rowId: 'summary_slotting_total',
-      item: '總開槽M/費',
-      value: input.summary?.slottingMeters,
-      note: input.summary?.slottingFee,
-    },
-    {
-      rowId: 'summary_bending_total',
-      item: '總折刀數/費',
-      value: input.summary?.bendingCount,
-      note: input.summary?.bendingFee,
-    },
-  ];
-
-  for (const row of summaryRows) {
-    if (!isPresent(row.value) && !isPresent(row.note)) {
-      continue;
-    }
-
-    addCells({
-      operations,
-      sheetId: 'summary',
-      rowId: row.rowId,
-      reason: 'Project semantic quote summary into the workbook summary sheet.',
-      cells: {
-        item: row.item,
-        value: row.value,
-        note: row.note,
-      },
-    });
-  }
-}
-
-function addQuoteLineCells(
-  line: SteelSemanticWorkbookQuoteLine,
-  fallbackIndex: number,
-  operations: SteelWorkbookPatchOperation[],
-) {
-  const rowId = lineRowId(line, fallbackIndex);
-  const rowNumber = rowIndexFromLine(line, fallbackIndex);
-  const searchKeywords = searchKeywordsValue(line.searchKeywords);
-  addCells({
-    operations,
-    sheetId: 'quote_details',
-    rowId,
-    reason: 'Project semantic quote line into quote details.',
-    cells: {
-      line_no: line.lineNo ?? rowNumber,
-      customer_original_item_name: line.customerOriginalItemName,
-      normalized_item_name: line.normalizedItemName,
-      search_keywords: searchKeywords,
-      product_price_candidate_items: line.productPriceCandidateItems,
-      adopted_product_price_item: line.adoptedProductPriceItem,
-      is_exact_match: line.isExactMatch,
-      rejected_candidate_reason: line.rejectedCandidateReason,
-      material_category: line.materialCategory,
-      material: line.material,
-      spec: line.spec,
-      finished_length_m: line.finishedLengthM,
-      quantity: line.quantity,
-      unit: line.unit,
-      raw_material_length: line.rawMaterialLength,
-      raw_material_piece_count: line.rawMaterialPieceCount,
-      finished_count_per_raw_material: line.finishedCountPerRawMaterial,
-      remainder_length_or_weight: line.remainderLengthOrWeight,
-      unit_weight_kg_per_m: line.unitWeightKgPerM,
-      unit_weight_kg: line.unitWeightKg,
-      total_weight_kg: line.totalWeightKg,
-      weight_algorithm: line.weightAlgorithm,
-      customer: line.customerName,
-      customer_tier: line.customerTier,
-      material_unit_price: line.materialUnitPrice,
-      material_unit_price_field: line.materialUnitPriceField,
-      material_pricing_unit: line.materialPricingUnit,
-      billable_quantity: line.billableQuantity,
-      cutting_fee: line.cuttingFee,
-      hole_fee: line.holeFee,
-      slotting_fee: line.slottingFee,
-      bending_fee: line.bendingFee,
-      other_fee: line.otherFee,
-      subtotal: line.subtotal,
-      confidence: line.confidence,
-      low_confidence_reason: line.lowConfidenceReason,
-      decision_evidence: line.decisionEvidence,
-      suggested_review: line.suggestedReview,
-      note: line.note,
-    },
-  });
-}
-
 function addSystemOrderCells(
   line: SteelSemanticWorkbookQuoteLine,
   fallbackIndex: number,
@@ -569,12 +421,12 @@ function addSystemOrderCells(
     cells: {
       line_no: rowNumber * 10,
       model_code: systemOrder.modelCode,
-      item_spec: systemOrder.itemSpec ?? line.normalizedItemName,
+      item_spec: systemOrder.itemSpec,
       unit: systemOrder.unit ?? line.materialPricingUnit ?? line.unit,
       quantity: systemOrder.quantity ?? line.billableQuantity ?? line.quantity,
       unit_weight: systemOrder.unitWeight ?? line.unitWeightKgPerM ?? line.unitWeightKg,
       total_quantity: systemOrder.totalQuantity ?? line.billableQuantity ?? line.totalWeightKg,
-      unit_price: systemOrder.unitPrice ?? line.materialUnitPrice,
+      unit_price: systemOrder.unitPrice ?? line.materialUnitPrice ?? line.subtotal,
       pricing_basis: systemOrder.pricingBasis ?? line.materialUnitPriceField,
       formula_code: systemOrder.formulaCode,
       thickness: systemOrder.thickness,
@@ -586,36 +438,24 @@ function addSystemOrderCells(
   });
 }
 
-function addPriceSourceCells(
-  line: SteelSemanticWorkbookQuoteLine,
-  fallbackIndex: number,
+function addCustomerDataCells(
+  input: SteelSemanticWorkbookPatch,
   operations: SteelWorkbookPatchOperation[],
 ) {
-  const source = line.priceSource ?? {};
-  addCells({
-    operations,
-    sheetId: 'price_sources',
-    rowId: relatedRowId('source', line, fallbackIndex),
-    reason: 'Project semantic quote source data into price sources.',
-    cells: {
-      customer: line.customerName,
-      customer_tier: line.customerTier,
-      customer_original_item_name: line.customerOriginalItemName,
-      normalized_item_name: line.normalizedItemName,
-      search_keywords: searchKeywordsValue(line.searchKeywords),
-      product_price_candidate_items: line.productPriceCandidateItems,
-      adopted_product_price_item: line.adoptedProductPriceItem,
-      adopted_unit_price: line.materialUnitPrice,
-      unit_price_field: line.materialUnitPriceField,
-      unit: line.materialPricingUnit ?? line.unit,
-      source_file: source.sourceFile,
-      worksheet: source.worksheet,
-      row_or_page: source.rowOrPage,
-      is_exact_match: line.isExactMatch,
-      difference_note: source.differenceNote ?? line.rejectedCandidateReason,
-      confidence: line.confidence,
-      note: source.note ?? line.suggestedReview,
-    },
+  input.customerData?.forEach((record, index) => {
+    addCells({
+      operations,
+      sheetId: 'customer_data',
+      rowId: record.rowId ?? `customer_data_${index + 1}`,
+      reason: 'Project customer search candidate into internal customer data sheet.',
+      cells: {
+        customer_code: record.customerCode,
+        vendor_name: record.vendorName,
+        price_tier: record.priceTier,
+        confirmation_status: record.confirmationStatus,
+        note: record.note,
+      },
+    });
   });
 }
 
@@ -640,33 +480,14 @@ function addManualReviewCells(
       estimated_value: review?.estimatedValue ?? line.adoptedProductPriceItem,
       low_confidence_reason: review?.lowConfidenceReason ?? line.lowConfidenceReason,
       inferred_evidence: review?.inferredEvidence ?? line.decisionEvidence,
-      confirmation_needed: review?.confirmationNeeded ?? line.suggestedReview,
+      confirmation_needed:
+        review?.confirmationNeeded ??
+        line.suggestedReview ??
+        line.lowConfidenceReason ??
+        line.decisionEvidence ??
+        line.note,
       amount_impact: review?.amountImpact ?? line.subtotal,
       suggested_action: review?.suggestedAction,
-    },
-  });
-}
-
-function addInterpretationNoteCells(
-  line: SteelSemanticWorkbookQuoteLine,
-  fallbackIndex: number,
-  operations: SteelWorkbookPatchOperation[],
-) {
-  const note = line.interpretationNote;
-  if (!note && !isPresent(line.decisionEvidence) && !isPresent(line.note)) {
-    return;
-  }
-
-  addCells({
-    operations,
-    sheetId: 'interpretation_notes',
-    rowId: relatedRowId('note', line, fallbackIndex),
-    reason: 'Project semantic quote interpretation into concise notes.',
-    cells: {
-      item: note?.item ?? line.materialCategory ?? line.normalizedItemName,
-      content: note?.content ?? line.decisionEvidence ?? line.note,
-      confidence: note?.confidence ?? line.confidence,
-      evidence: note?.evidence ?? line.decisionEvidence,
     },
   });
 }
@@ -725,21 +546,35 @@ function addCustomerQuoteTotalCells(
   }
 }
 
+function addDeleteRowOperations(
+  input: SteelSemanticWorkbookPatch,
+  operations: SteelWorkbookPatchOperation[],
+) {
+  for (const deleteRows of input.deleteRows ?? []) {
+    for (const rowId of deleteRows.rowIds) {
+      operations.push({
+        op: 'delete_row',
+        sheetId: deleteRows.sheetId,
+        rowId,
+        reason: deleteRows.reason ?? 'Project semantic workbook row deletion.',
+      });
+    }
+  }
+}
+
 export function buildSemanticWorkbookPatchOperations(
   input: SteelSemanticWorkbookPatch,
 ): SteelWorkbookPatchOperation[] {
   const operations: SteelWorkbookPatchOperation[] = [];
 
+  addDeleteRowOperations(input, operations);
+  addCustomerDataCells(input, operations);
   input.quoteLines.forEach((line, index) => {
-    addQuoteLineCells(line, index, operations);
     addSystemOrderCells(line, index, operations);
-    addPriceSourceCells(line, index, operations);
     addManualReviewCells(line, index, operations);
-    addInterpretationNoteCells(line, index, operations);
     addCustomerQuoteCells(line, index, operations);
   });
   addCustomerQuoteTotalCells(input, operations);
-  addSummaryRows(input, operations);
 
   return operations;
 }

@@ -3,7 +3,7 @@ import type { SteelToolJsonObject, SteelToolJsonValue } from './results';
 export const steelToolRedactionVersion = 1;
 
 const maxStringLength = 1200;
-const maxArrayItems = 20;
+const maxArrayItems = 100;
 const maxDepth = 8;
 
 const instructionLikePatterns = [
@@ -30,7 +30,10 @@ function isPlainObject(value: unknown): value is { [key: string]: unknown } {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sanitizeValue(value: unknown, depth: number): SteelToolJsonValue | undefined {
+function sanitizeValue(
+  value: unknown,
+  depth: number,
+): SteelToolJsonValue | undefined {
   if (depth > maxDepth) {
     return '[truncated]';
   }

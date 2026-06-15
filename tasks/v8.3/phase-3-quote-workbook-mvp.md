@@ -320,6 +320,10 @@ Required sheet IDs:
 - `system_order`
 - `customer_quote`
 
+Current `patch_quote_workbook` completion is narrower than this persisted
+workbook shape: AI-facing patch completion targets only `system_order`,
+`manual_review`, and `customer_quote`.
+
 Tasks:
 
 - Define workbook JSON v1 with stable sheet IDs.
@@ -452,7 +456,7 @@ Required manual smoke cases:
 | OAUTH-06 | `openai_oauth_responses` | Natural workbook calculation                | Live model uses DB rule/price evidence and the first `patch_quote_workbook` call sets line subtotal and summary total consistently                   |
 | OAUTH-07 | `openai_oauth_responses` | Customer-specific rules injection           | `search_customers` returns customer `rules`, the next model prompt includes them, and the answer applies the customer-specific rule                   |
 | API-01   | `openai_api`             | Official Responses API conversation         | `conversation` pattern works and previous response ID is audit only                                                                                  |
-| API-02   | `openai_api`             | Customer-visible workbook from chat         | Creates or patches a seven-sheet workbook                                                                                                            |
+| API-02   | `openai_api`             | Customer-visible workbook from chat         | Creates or patches the persisted seven-sheet public workbook while AI-facing patch completion remains limited to `system_order`, `manual_review`, and `customer_quote` |
 | API-03   | `openai_api`             | File/vision/XLSX explicit fallback          | Produces evidence or low-confidence/manual-review result without corrupting workbook                                                                 |
 
 Manual command pattern for the OAuth workbook/tool-loop smoke cases:

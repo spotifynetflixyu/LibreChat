@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make the Steel OpenAI Responses workbook patch prompt teach the model how to map reviewed tool results into the seven `訂單參考_轉檔.xlsx` sheets.
+**Goal:** Make the Steel OpenAI Responses workbook patch prompt teach the model how to map reviewed tool results into the current AI-facing workbook patch target while preserving the seven-sheet public workbook shape.
 
-**Architecture:** Keep workbook filling AI-led. Provider prompt supplies the workbook-fill contract and backend provider completion returns missing sheet/cell targets; backend code projects AI semantic quote data into workbook rows. Tests verify the system prompt contains the durable business rules that govern `patch_quote_workbook` output.
+**Architecture:** Keep workbook filling AI-led. Provider prompt supplies the workbook-fill contract and backend provider completion returns missing sheet/cell targets for `系統訂單`, `人工複核`, and `報價單`; backend code projects AI semantic quote data into workbook rows. The public workbook still keeps seven fixed sheets for export/storage compatibility, but the current `patch_quote_workbook` completion loop does not require `報價明細`, `總結`, `價格來源`, or `判讀備註`.
 
 **Tech Stack:** TypeScript provider prompt/tests in `packages/api`; Markdown docs under `docs/` and `tasks/`.
 
@@ -27,7 +27,7 @@ Add expectations to the workbook patch prompt coverage that the system prompt in
   adopted `產品價格.xlsx` / `search_price_candidates` product-price row `型號`
 - `報價明細` `小計` is fee sum and becomes `未確認` if required prices are unknown
 - `總結` separates confirmed amount from low-confidence estimates
-- `給客戶用` excludes customer tier, source refs, search keywords, candidates, and AI/internal notes
+- `報價單` excludes customer tier, source refs, search keywords, candidates, and AI/internal notes
 - `calculation_results` wins over quote item interpretation when present
 
 **Step 2: Run the test to verify RED**
@@ -48,7 +48,7 @@ Expected: FAIL on missing prompt substrings.
 
 **Step 1: Implement minimal prompt update**
 
-Add a compact workbook-fill paragraph to `getWorkbookPatchInstruction()` using the seven sheet names and fixed rules from `docs/reference/訂單參考_轉檔.xlsx`.
+Add a compact workbook-fill paragraph to `getWorkbookPatchInstruction()` using the three AI-facing sheet names and the public seven-sheet compatibility note from `docs/reference/訂單參考_轉檔.xlsx`.
 Include the system-order model rule: the model must send
 `systemOrder.modelCode` from the adopted product-price row `型號`; oral material
 names and catalog keys are not valid `系統訂單`.`型號` values.
@@ -73,7 +73,7 @@ Expected: PASS.
 
 **Step 1: Document the contract**
 
-Record that workbook filling is based on `訂單參考_轉檔.xlsx`, uses reviewed tool results, never invents missing facts, and keeps `給客戶用` free of internal data.
+Record that workbook filling is based on `訂單參考_轉檔.xlsx`, uses reviewed tool results, never invents missing facts, keeps `報價單` free of internal data, and does not re-expand the AI-facing patch completion loop to seven sheets.
 
 **Step 2: Verify**
 
