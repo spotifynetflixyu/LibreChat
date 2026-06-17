@@ -1,6 +1,4 @@
 import type {
-  SteelCatalogFamily,
-  SteelCatalogFamilyRule,
   SteelCustomerRule,
   SteelQuoteRule,
   SteelQuoteDefault,
@@ -162,56 +160,6 @@ function readQuoteDefaultPrompt(candidate: SteelToolJsonObject): string {
     readString(candidate.effect) ??
     'Apply this reviewed quote default when its scope and selector match the quote context.'
   );
-}
-
-export function toCatalogFamilyRule(family: SteelCatalogFamily): SteelToolJsonObject {
-  const productNames = unique([family.displayNameZh, ...family.aliases]);
-  const aliasesText = productNames.length > 0 ? productNames.join(', ') : family.displayNameZh;
-
-  return {
-    id: `catalog_family:${family.key}`,
-    ruleType: 'catalog_family_inference',
-    scope: toRuleScope({
-      type: 'catalog_family',
-      catalogFamilies: [family.key],
-      productNames,
-    }),
-    prompt: `Use reviewed catalog family ${family.key} (${family.displayNameZh}) as a candidate when customer wording matches aliases: ${aliasesText}. AI must choose this key for later tools only when the quote evidence supports it, otherwise ask the user to confirm.`,
-    priority: 100,
-    confidence: family.reviewState === 'reviewed' && family.active ? 'high' : 'medium',
-    sourceRefs: family.sourceRefs.map(toToolSourceRef),
-  };
-}
-
-export function toCatalogFamilyStoredRule(rule: SteelCatalogFamilyRule): SteelToolJsonObject {
-  const productNames = unique([
-    ...(rule.productName ? [rule.productName] : []),
-    ...rule.productNames,
-  ]);
-  const aliases = unique(rule.aliases);
-  const output: SteelToolJsonObject = {
-    id: `catalog_family_rule:${rule.id}`,
-    ruleType: rule.ruleType,
-    scope: toRuleScope({
-      type: productNames.length > 0 ? 'product_name' : 'catalog_family',
-      catalogFamilies: rule.catalogFamily ? [rule.catalogFamily] : [],
-      productNames,
-    }),
-    prompt: rule.prompt,
-    priority: rule.priority,
-    confidence: rule.confidence,
-    sourceRefs: rule.sourceRefs.map(toToolSourceRef),
-  };
-
-  if (aliases.length > 0) {
-    output.aliases = aliases;
-  }
-
-  if (isObject(rule.selectors)) {
-    output.selectors = toToolJsonValue(rule.selectors);
-  }
-
-  return output;
 }
 
 export function toInstructionPacketRule(packet: SteelToolJsonObject): SteelToolJsonObject {
@@ -382,16 +330,6 @@ export function toQuoteRulesRuleArray(input: {
     ...(input.quoteRules ?? []).map(toQuoteRule),
     ...input.instructionPackets.map(toInstructionPacketRule),
     ...input.quoteDefaults.map(toQuoteDefaultCandidateRule),
-  ];
-}
-
-export function toCatalogFamilyRules(input: {
-  families: readonly SteelCatalogFamily[];
-  rules: readonly SteelCatalogFamilyRule[];
-}): SteelToolJsonObject[] {
-  return [
-    ...input.rules.map(toCatalogFamilyStoredRule),
-    ...input.families.map(toCatalogFamilyRule),
   ];
 }
 

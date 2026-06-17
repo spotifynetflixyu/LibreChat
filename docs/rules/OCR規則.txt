@@ -1,78 +1,23 @@
-【Steel OCR / file_analysis_data 流程契約】
+【Steel OCR 流程契約】
 
-一、OCR 引擎
-1. PDF、掃描圖、圖片、工程圖、材料表、零件表、螺栓表、切割表、手寫表格中的表格 OCR，統一呼叫 Steel tool `run_file_ocr`。
-2. `run_file_ocr` 是 AI 對話中可呼叫的通用 OCR tool；backend 內部固定使用 PaddleOCR MCP server `PaddleOCR-VL-1.6` 與 MCP tool `paddleocr_vl`。
-3. PDF 頁面使用 `run_file_ocr` 判讀時，backend 會拆成單頁圖片後送 PaddleOCR MCP；圖片或 PDF 拆頁後的圖片使用 `file_type = image`。
-4. 不得使用 OpenAI OAuth API 內建 OCR 作為表格 OCR 的主要來源，也不得把 `openai_oauth_responses` 對附件的原生判讀結果當成表格抽取基準。
-5. OpenAI OAuth / `openai_oauth_responses` 只能在已有 PaddleOCR MCP 輸出後，用於語意整理、人工複核說明、對話回覆、以及呼叫 `patch_file_analysis_data`；不可取代 PaddleOCR MCP 的表格 OCR。
-6. `run_file_ocr` / PaddleOCR MCP 失敗時必須回報錯誤，並把失敗來源、頁碼或圖片序號、錯誤原因寫入 `manual_review` 或 `interpretation_notes`；不得 fallback 使用 OpenAI OCR。
+一、OCR 工具邊界
+1. PDF、掃描 PDF、圖片、拍照圖面、材料表截圖、手寫單、工程圖或任何 image/pdf 附件需要文字或表格資料時，AI 必須先呼叫 `run_file_ocr`。
+2. `run_file_ocr` 由 backend 透過 PaddleOCR MCP 執行；AI 不得把 OpenAI OAuth 對附件的原生文字解析當作正式 OCR 來源。
+3. PDF 必須一次以整份 PDF 呼叫 `run_file_ocr`，由 PaddleOCR MCP 回傳整份文件文字 / 表格結果；不得再用分頁 OCR 規則。
+4. 圖片也先呼叫 `run_file_ocr` 取得文字 / 表格內容。只有孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才交由 AI 直接視覺判斷並標示信心。
 
-二、多檔案 / 多頁處理順序
-1. 若有多個檔案，或單一檔案有多個頁面 / 多張圖片，一次只處理一張圖或一頁。
-2. 多頁 PDF 必須透過 `run_file_ocr` 先拆成單頁高解析圖片，再逐頁送 PaddleOCR MCP；不得把整份多頁 PDF 一次送進 PaddleOCR MCP。
-3. PDF 拆頁圖片解析度必須足夠，避免小字模糊；建議使用至少 300 DPI，預設 400 DPI；若表格小字仍模糊，應提高到 600 DPI 或等效像素尺寸後再送 PaddleOCR MCP。
-4. 若輸入圖片解析度不足、文字破碎、或放大後仍模糊，必須標記低信心並寫入 `manual_review`，不得用模糊圖片硬判讀成高信心資料。
-5. 每張圖或每頁完成 `run_file_ocr` / PaddleOCR MCP 後，必須立即呼叫 patch_file_analysis_data，保存該圖或該頁的判讀資料，再依 page / imageIndex 升冪自動接續處理下一張圖或下一頁。
-6. 每次 patch 後，必須用繁體中文簡短回報進度，例如目前完成的來源檔案、page、imageIndex、主要新增/更新列數、低信心項目、下一個待處理來源；回報後同一輪對話必須繼續下一個待處理 OCR task，不可停下來等待用戶輸入「go」或「繼續」。
-7. 不得等整份 PDF、整批圖片或多個檔案全部判讀完才一次 patch；避免 token 壓縮或對話中斷造成資料缺失。
-8. 只有用戶按 stop button、對話被中斷、OCR 失敗、或明確需要人工複核停下時，才停止自動處理後續頁面 / 圖片。
-9. 用戶下一輪說「接續處理」、「繼續」或「go」時，等同從停止 / 中斷處續跑；必須先讀取最新 `file_analysis_data` workspace，找到已完成與未完成來源，再從未完成來源繼續，不得重新處理已完成的 sourceKey。
-10. 除非用戶明確說「重新處理」，否則不得重新處理已完成的 sourceKey。
-11. OCR 完成並 patch 後，只有在 OCR 表格、圖面文字、既有 `file_analysis_data` 或使用者對話缺少必要幾何 / 加工資料時，才接續呼叫 `run_visual_inspection`。若 OCR / 表格已提供可核對的孔數、開槽連續邊長、折刀數、切角或缺口資料，不要額外呼叫 vision。
-12. 例如 OCR 判斷有開槽，但沒有可用的連續邊長數字或路徑長度，且該數值會影響報價時，才呼叫 `run_visual_inspection` 判斷連續邊長；不得把 vision 當成每頁固定流程。
+二、輸出格式
+1. OCR 結果不寫入 `file_analysis_data`、`manual_review`、`interpretation_notes` 或任何持久化 workspace。
+2. AI 回覆時直接用繁體中文與 Markdown 表格整理可報價資料、低信心項目、來源檔案與需要人工複核的欄位。
+3. 若 OCR 失敗，直接在回答中列出失敗來源、錯誤摘要與需要人工補資料的位置，不呼叫任何 patch tool。
+4. 使用者後續更正 OCR 表格資料時，AI 以最新使用者訊息為準重新整理 Markdown 表格；不要嘗試讀取或修補舊 file-analysis state。
 
-三、source / progress 標記
-1. `patch_file_analysis_data` 的每列資料都必須盡量標記來源：`fileId`、`filename`、`mediaType`、`page` 或 `imageIndex`、`regionLabel`、`sourceKey`、`ocrEngine`、`ocrStatus`、`processedAt`。
-2. `sourceKey` 是同一筆來源資料的穩定 upsert key。建議格式：`<fileId>:page:<page>:<region>:row:<row-key>` 或 `<fileId>:image:<imageIndex>:<region>:row:<row-key>`。
-3. 同一圖片 / 頁面重新 PaddleOCR 時，若是在修正既有資料，必須使用既有 row id 或相同 `sourceKey` 更新既有 row；不要新增重複 row。
-4. 新上傳檔案、新圖片、新頁面或新增表格列，應使用新的 `sourceKey`，讓系統知道是新增資料。
-5. `ocrStatus` 可用：`pending`、`processing`、`completed`、`failed`、`skipped`。完成 PaddleOCR 並成功 patch 的來源標 `completed`；失敗來源標 `failed` 並保留錯誤原因。
-6. 若 OCR 後因缺少必要幾何 / 加工資料而需要圖像判斷，應在相關 row 或 `interpretation_notes` 標記 `visualInspectionStatus = pending`，等 `run_visual_inspection` 完成後再更新為 `completed` 或 `failed`；若 OCR / 表格資料已足夠，標記 `visualInspectionStatus = skipped` 或不建立該狀態。
+三、資料完整性
+1. PaddleOCR MCP 輸出的欄位名稱、Markdown 表格格式或 JSON key 不必和內部 fixture 完全相同；驗收重點是同一列表格資料能核對名稱、件號、規格、數量、螺栓尺寸、螺栓總數或公式等核心值。
+2. 若來源表格可辨識為 N 列，Markdown 表格應盡量對應 N 列；無法讀完時必須列出缺漏範圍與人工複核原因。
+3. 若某欄看不清楚，仍需保留該資料列，缺失欄位填「未確認」或標低信心；不可自行猜規格、厚度、數量、孔數或價格。
 
-四、固定分頁與固定來源欄位，其餘欄位 AI 自主
-圖面、PDF、掃描圖或圖片判讀後，固定建立三個資料分頁。`file_analysis_data` 固定要有 `檔案名` 與 `標記頁數` 來源欄位；其他材料、規格、數量、加工、備註等欄位由 AI 依檔案內容自主決定：
-
-1. `file_analysis_data`
-   - 表格 head 固定保留來源欄位：`檔案名`、`標記頁數`。例：`d.pdf`、`page 1`、`page 2`。
-   - 只放材料、規格、尺寸、數量、孔洞、開槽、折彎、切割記號、加工備註、價格 / 報價判斷需要的資料。
-   - 不要保存專案名稱、工程名稱、日期、地點、人名、承辦、業主、地址、圖面行政資訊、事件敘述、或其他與報價無關的資料。
-   - cell 文字必須精簡；備註、說明、複核類 cell 用短句整理，不貼整段原文。
-   - 板件表、材料表、螺栓表、切割表等明細必須保存完整逐列資料；不可只 patch 代表列或摘要。
-   - 每列必須盡量保留來源檔案、頁碼 / 圖片序號、區域、OCR 引擎、OCR 狀態、信心、人工複核狀態等可核對資訊。
-
-2. `manual_review`
-   - 放需要人工複核、低信心、看不清楚、欄位對不齊、公式不一致、PaddleOCR MCP 失敗、或 AI 無法確認的項目。
-   - 必須說明原因與建議用戶核對的位置。
-
-3. `interpretation_notes`
-   - 放判讀備註、來源處理進度、PaddleOCR MCP 風險、未完成來源、跳過原因、錯誤摘要、以及 AI 自主判斷的限制。
-
-五、patch_file_analysis_data 使用規則
-1. 判讀 PDF、掃描圖、圖片、工程圖或表格附件後，若需要保存本輪圖文判讀結果，必須呼叫 `patch_file_analysis_data`。
-2. 一個對話 / 訂單只維護一份 `file_analysis_data` workspace。多個檔案、多個頁面、多張圖片都寫入同一份 workspace，靠來源欄位與 `sourceKey` 區分。
-3. `patch_file_analysis_data` 固定只能 patch 三個分頁：`file_analysis_data`、`manual_review`、`interpretation_notes`。分頁名稱固定；`file_analysis_data` 固定來源欄位為 `檔案名`、`標記頁數`，其他欄位由 AI 依檔案內容自主建立或更新。
-4. 每次呼叫 `patch_file_analysis_data` 時，應補上本輪需要的 `sourceFiles`、`upsertColumns` 與 `upsertRows`。欄位 key 應穩定、簡短、語意清楚；label 可使用原圖或原表格語言。
-5. 若本輪修正既有列，應使用既有 row id；若無法取得 row id，必須使用相同 `sourceKey` 讓 backend upsert 既有列。
-6. 若是使用者直接更正資料，row 應標記 `reviewStatus = corrected`；若是 PaddleOCR 尚未人工確認，保留 `pending_review`。
-7. 呼叫 `patch_file_analysis_data` 後，回覆用戶時必須用繁體中文簡短摘要本輪 patch 內容，例如新增/更新了哪些檔案、頁碼、圖片序號、主要列數、低信心項目與需要人工核對的位置；不要只說「已更新 N 個欄位」。
-8. 本規則只負責保存未確認的 OCR / 圖面判讀資料；正式報價資料更新由後續已確認的報價流程處理。
-
-六、重新處理、接續處理、手動更正
-1. 用戶說「重新處理某圖 / 某頁」時，必須重新送該圖或該頁給 PaddleOCR MCP，並用既有 row id 或相同 `sourceKey` 更新該來源的既有資料。
-2. 用戶上傳新圖片或新檔案時，應視為新增來源，使用新的 source file 與 `sourceKey`；不得覆蓋既有來源，除非用戶明確指定要取代。
-3. 用戶直接更改表格資料時，不需要重新執行 PaddleOCR MCP；應直接呼叫 `patch_file_analysis_data` 更新指定 row / cell，並標記 `reviewStatus = corrected`。
-4. 若用戶說「接續處理」、「繼續」或「go」，表示先前處理曾被 stop button、中斷、失敗或人工停下；應找出 `ocrStatus` 不是 `completed` 的來源，或尚未出現在 workspace 的 page / imageIndex，從該處繼續。
-5. 若所有來源都已 `completed`，應回報已無待處理頁面 / 圖片，而不是重跑 OCR。
-
-七、常見 OCR 誤判修正
-1. 鋼材規格尾端的 `t` 常代表厚度；PaddleOCR / OCR model 可能把 `t` 誤判成 `1`。
-2. 若規格資料看起來像 `341×500×101`，但同一欄位、同一材料表、上下文或相鄰列都是板厚 / 厚度格式，應判斷為 `341×500×10t`，並在低信心時寫入 `manual_review`。
-3. 鋼材規格尾數是 `1` 時，不可直接當作尺寸數字；必須用上下文判斷是否應為 `t`，尤其是板件、鋼板、連接板、底板、補強板等規格欄位。
-4. 若 OCR 顯示的乘法公式左右不一致，正確值以公式 operands 重新計算為主，不採用 OCR 顯示的錯誤等號右側結果。例如 `1×12=6` 應修正為 `1×12=12`；`1×2=4` 應修正為 `1×2=2`。若仍不確定來源數字，保留低信心並寫入 `manual_review`。
-
-八、資料完整性與低信心
-1. PaddleOCR MCP 輸出的欄位名稱、Markdown 表格格式或 JSON key 不必和內部 JSON fixture 完全相同；驗收重點是同一列表格資料能核對名稱、件號、規格、數量、螺栓尺寸、螺栓總數或公式等核心值。
-2. 若來源表格可辨識為 N 列，`file_analysis_data` 的主要資料列應對應 N 列；不得因 token、時間或版面複雜而少列。若真的無法讀完，必須在 `manual_review` 說明缺漏範圍。
-3. 若某欄看不清楚，仍需建立該資料 row，缺失欄位留空或標記低信心，並寫入 `manual_review`；不可自行猜規格、厚度、數量、孔數或價格。
-4. `file_analysis_data` rows 是驗收對象，不是摘要文字。摘要文字不能補足 rows 裡缺失的內容；若 row 無法單獨核對，該 row 視為未完成。
+四、常見 OCR 誤判修正
+1. 鋼材規格尾端的 `t` 常代表厚度；PaddleOCR 可能把 `t` 誤判成 `1`。
+2. 若規格資料看起來像 `341×500×101`，但同一欄位、同一材料表、上下文或相鄰列都是板厚 / 厚度格式，應判斷為 `341×500×10t`，並在低信心時標示人工複核。
+3. 若 OCR 顯示的乘法公式左右不一致，正確值以公式 operands 重新計算為主，不採用 OCR 顯示的錯誤等號右側結果。例如 `1×12=6` 應修正為 `1×12=12`；`1×2=4` 應修正為 `1×2=2`。若仍不確定來源數字，保留低信心。

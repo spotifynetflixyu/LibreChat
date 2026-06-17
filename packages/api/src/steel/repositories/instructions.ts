@@ -56,6 +56,7 @@ export interface SteelInstructionPacket extends SteelSourceBackedRecord {
 }
 
 export interface SearchSteelInstructionPacketsInput {
+  keywords?: readonly string[];
   packetGroups?: readonly string[];
   taskTypes?: readonly string[];
   catalogFamilies?: readonly string[];
@@ -103,6 +104,36 @@ function addPacketGroupFilter(
   where.push(`packet_groups && ARRAY[${placeholders.join(', ')}]::text[]`);
 }
 
+function addKeywordContainsFilter(
+  where: string[],
+  values: SteelSqlParameter[],
+  keywords: readonly string[] | undefined,
+) {
+  const uniqueKeywords = uniqueNonEmpty(keywords);
+  if (uniqueKeywords.length === 0) {
+    return;
+  }
+
+  const clauses = uniqueKeywords.map((keyword) => {
+    values.push(`%${keyword}%`);
+    const placeholder = `$${values.length}`;
+    return `(
+      slug ILIKE ${placeholder}
+      OR title ILIKE ${placeholder}
+      OR locale ILIKE ${placeholder}
+      OR packet_groups::text ILIKE ${placeholder}
+      OR selectors::text ILIKE ${placeholder}
+      OR instruction ILIKE ${placeholder}
+      OR blocking_rules::text ILIKE ${placeholder}
+      OR required_lookups::text ILIKE ${placeholder}
+      OR user_visible_notes::text ILIKE ${placeholder}
+      OR confirmation_questions::text ILIKE ${placeholder}
+    )`;
+  });
+
+  where.push(`(${clauses.join('\n  OR ')})`);
+}
+
 function toInstructionPacket(row: SteelInstructionPacketRow): SteelInstructionPacket {
   return {
     id: parseRequiredNumber(row.id),
@@ -129,15 +160,24 @@ export async function searchSteelInstructionPackets(
   client: SteelRepositoryClient,
   input: SearchSteelInstructionPacketsInput,
 ): Promise<SteelInstructionPacket[]> {
-  const where = ['review_state = $1'];
-  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
+  const keywords = uniqueNonEmpty(input.keywords);
+  const useKeywordSearch = keywords.length > 0;
+  const where: string[] = [];
+  const values: SteelSqlParameter[] = [];
 
-  if (!input.includeInactive) {
+  if (input.reviewState !== undefined || !useKeywordSearch) {
+    values.push(input.reviewState ?? 'reviewed');
+    where.push(`review_state = $${values.length}`);
+  }
+
+  if (input.includeInactive === false || (!useKeywordSearch && !input.includeInactive)) {
     where.push('active = true');
   }
 
+  addKeywordContainsFilter(where, values, keywords);
   addPacketGroupFilter(where, values, input.packetGroups);
   values.push(getLimit(input.limit));
+  const whereClause = where.length > 0 ? `WHERE ${where.join('\n  AND ')}` : '';
 
   const result = await client.query<SteelInstructionPacketRow>(
     `
@@ -160,7 +200,7 @@ SELECT
   review_state,
   source_refs
 FROM steel.instruction_packets
-WHERE ${where.join('\n  AND ')}
+${whereClause}
 ORDER BY priority ASC, id ASC
 LIMIT $${values.length}
 `,

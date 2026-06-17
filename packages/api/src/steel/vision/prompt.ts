@@ -14,7 +14,7 @@ export function buildDrawingEvidencePrompt({
   }
 
   return [
-    'Reviewed OCR rules loaded from steel.agent_rules:',
+    'OCR extraction instructions:',
     reviewedRule,
     '',
     'User request:',

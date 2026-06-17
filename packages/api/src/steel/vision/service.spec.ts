@@ -62,7 +62,9 @@ describe('Steel drawing evidence extraction service', () => {
 
     expect(provider).not.toHaveBeenCalled();
     expect(result.status).toBe('unsupported');
-    expect(result.errorCategory).toBe('provider_vision_input_unsupported');
+    if (result.status === 'unsupported') {
+      expect(result.errorCategory).toBe('provider_vision_input_unsupported');
+    }
   });
 
   it('wraps provider failures as extraction errors without workbook mutation data', async () => {

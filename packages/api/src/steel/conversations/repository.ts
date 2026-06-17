@@ -11,7 +11,6 @@ interface SteelConversationDocument {
   guestTokenHash?: string;
   createdFrom: 'authenticated' | 'guest';
   status: 'active' | 'archived';
-  workbookId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -27,7 +26,6 @@ function toRecord(document: SteelConversationDocument): SteelConversationRecord 
     guestTokenHash: document.guestTokenHash,
     createdFrom: document.createdFrom,
     status: document.status,
-    workbookId: document.workbookId,
     createdAt,
     updatedAt,
   };

@@ -14,15 +14,12 @@ export {
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
   createSteelExcelExportModel,
-  createSteelFileAnalysisDataModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
   createSteelProjectModel,
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,
   createSteelToolCallModel,
-  createSteelWorkbookModel,
-  createSteelWorkbookPatchModel,
 } from './models';
 export {
   createMethods,

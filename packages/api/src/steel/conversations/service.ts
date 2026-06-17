@@ -14,7 +14,6 @@ export interface SteelConversationRecord {
   guestTokenHash?: string;
   createdFrom: SteelConversationCreatedFrom;
   status: SteelConversationStatus;
-  workbookId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -27,7 +26,6 @@ export interface SteelConversationResponse {
   status: SteelConversationStatus;
   guestTokenIssued: boolean;
   guestToken?: string;
-  workbookId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -143,7 +141,6 @@ function toResponse(
     status: record.status,
     guestTokenIssued: record.createdFrom === 'guest',
     ...(guestToken ? { guestToken } : {}),
-    workbookId: record.workbookId,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
   };

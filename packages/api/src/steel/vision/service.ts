@@ -16,7 +16,6 @@ export type SteelDrawingEvidenceProviderResponse = Pick<
 export interface SteelDrawingEvidenceProviderInput {
   model: string;
   messages: SteelOAuthChatMessage[];
-  workbookPatchTool: false;
   steelRuntimePolicy: false;
 }
 
@@ -130,7 +129,6 @@ export async function extractSteelDrawingEvidence({
           files: [...files],
         },
       ],
-      workbookPatchTool: false,
       steelRuntimePolicy: false,
     });
 

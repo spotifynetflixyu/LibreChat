@@ -1,5 +1,36 @@
 # Lessons
 
+- Steel price lookup tier carryover should be enforced in provider/runtime
+  context, not only prompt wording. If `search_customers` returns one unique
+  customer tier and the next `search_price_candidates` call omits
+  `customerTierId`, enrich the tool arguments with that tier; use B tier only
+  when no tier is known.
+- Steel follow-up price lookup must preserve prior Markdown table items. When a
+  previous table has item code/model and product-name columns, normalize
+  `code + productName` into a spec-key-like `candidateQueries` anchor so the
+  next price lookup still searches the exact prior item through
+  `steel.price_items.spec_key`.
+- Steel `search_price_candidates` customer-tier defaults are an AI-visible
+  runtime contract. When changing the default, update both
+  `docs/rules/agent規則.txt` and the synced Supabase `steel.agent_rules` row, then
+  read the DB prompt/tool policy back directly instead of trusting local prompt
+  text alone.
+- Steel workbook/file-analysis removal must cover the whole persistence seam:
+  shared contracts, Mongo schemas/models, API repositories/services/exports,
+  client right-panel modules, REST/data-service helpers, rule-sync payloads, and
+  hidden prompt/schema vocabulary such as `workbook_patch`. Keep only OCR/file
+  runtime extraction and assistant Markdown-table output.
+- Steel `search_price_candidates` should remove unreliable unit/category/review/
+  active filters, but customer tier is the intentional exception: when AI does
+  not provide a known `customerTierId`, default to B tier so the same item does
+  not return multiple customer price levels and slow quoting.
+- Steel minimal orchestration should be AI-led: expose only keyword lookup
+  tools plus `run_file_ocr`, remove catalog-family/workbook/file-analysis
+  orchestration paths, do not inject price filters, and have final quote/file
+  analysis output rendered as Markdown tables. For PDFs and images that need
+  text/table extraction, the AI should call PaddleOCR MCP through
+  `run_file_ocr`; only treat holes, bends, cut shapes, and similar geometry as
+  separate visual-judgment work.
 - For Steel plate pricing, when the customer does not specify a plate material,
   search and quote as black iron OT. PL oral specs use the number after `PL` as
   thickness and the number after `*` as width, e.g. `PL6*80` should derive
@@ -903,3 +934,7 @@
   human-authored rule files or prompt wording. Keep tests for runtime behavior,
   schemas, tool calls, database readback, and public API contracts, but do not
   preserve wording-only rule contract specs.
+- Steel `search_price_candidates` must expose only `candidateQueries` as a
+  string array, never top-level or nested `productNames` / `erpItemCodes`.
+  Backend price discovery must run one unified lookup that matches every
+  candidate query string against `steel.price_items.spec_key`.

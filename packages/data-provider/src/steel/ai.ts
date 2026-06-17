@@ -1,15 +1,5 @@
 import { z } from 'zod';
 
-import {
-  steelSelectedWorkbookRefSchema,
-  steelWorkbookPatchOperationSchema,
-  steelWorkbookPatchResponseSchema,
-} from './workbooks';
-import { patchFileAnalysisDataToolInputSchema, steelFileAnalysisDataSchema } from './vision';
-
-import type { SteelFileAnalysisData } from './vision';
-import type { SteelWorkbookPatchOperation, SteelWorkbookPatchResponse } from './workbooks';
-
 export const steelAIDrivers = ['openai_oauth_responses', 'openai_api'] as const;
 
 export type SteelAIDriver = (typeof steelAIDrivers)[number];
@@ -23,7 +13,6 @@ export const steelCapabilityIds = [
   'streaming',
   'tool_calling',
   'structured_output',
-  'workbook_patch',
   'image_input',
   'pdf_input',
   'doc_input',
@@ -128,21 +117,14 @@ export const steelProviderRoundTimingSchema = z.object({
   round: z.number().int().nonnegative(),
   generationDurationMs: z.number().nonnegative(),
   toolDurationMs: z.number().nonnegative(),
-  workbookCompletionDurationMs: z.number().nonnegative(),
   promptMessageCount: z.number().int().nonnegative(),
   generatedToolCallCount: z.number().int().nonnegative(),
-  workbookPatchOperationCount: z.number().int().nonnegative(),
-  workbookCompletionRequired: z.boolean(),
-  workbookCompletionComplete: z.boolean().optional(),
-  missingWorkbookSheetCount: z.number().int().nonnegative(),
-  missingWorkbookCellCount: z.number().int().nonnegative(),
 });
 
 export const steelProviderTimingsSchema = z.object({
   totalDurationMs: z.number().nonnegative(),
   generationDurationMs: z.number().nonnegative(),
   toolDurationMs: z.number().nonnegative(),
-  workbookCompletionDurationMs: z.number().nonnegative(),
   roundCount: z.number().int().nonnegative(),
   rounds: z.array(steelProviderRoundTimingSchema),
 });
@@ -188,37 +170,20 @@ export const steelProviderReasoningEffortSchema = z.enum(steelProviderReasoningE
 
 export type SteelProviderReasoningEffort = z.infer<typeof steelProviderReasoningEffortSchema>;
 
-export const steelProviderChatRequestSchema = z.object({
-  conversationId: z.string().min(1).optional(),
-  model: z.string().min(1).optional(),
-  messages: z.array(steelProviderChatMessageSchema).min(1),
-  workbookId: z.string().min(1).optional(),
-  workbookVersion: z.number().int().positive().optional(),
-  selectedWorkbookRefs: z.array(steelSelectedWorkbookRefSchema).default([]),
-  maxOutputTokens: z.number().int().positive().optional(),
-  reasoningEffort: steelProviderReasoningEffortSchema.optional(),
-});
+export const steelProviderChatRequestSchema = z
+  .object({
+    conversationId: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    messages: z.array(steelProviderChatMessageSchema).min(1),
+    maxOutputTokens: z.number().int().positive().optional(),
+    reasoningEffort: steelProviderReasoningEffortSchema.optional(),
+  })
+  .strict();
 
 export type SteelProviderChatRequest = z.input<typeof steelProviderChatRequestSchema>;
 
-export interface SteelProviderWorkbookPatchProposal {
-  operations: SteelWorkbookPatchOperation[];
-}
-
-export const steelProviderWorkbookPatchProposalSchema: z.ZodType<SteelProviderWorkbookPatchProposal> =
-  z.object({
-    operations: z.array(steelWorkbookPatchOperationSchema).min(1),
-  });
-
-export const steelProviderFileAnalysisPatchProposalSchema = patchFileAnalysisDataToolInputSchema;
-
-export type SteelProviderFileAnalysisPatchProposal = z.infer<
-  typeof steelProviderFileAnalysisPatchProposalSchema
->;
-
 export interface SteelProviderChatResponse {
   conversationId?: string;
-  workbookId?: string;
   provider: SteelAIDriver;
   model: string;
   text: string;
@@ -229,9 +194,6 @@ export interface SteelProviderChatResponse {
   warnings: string[];
   errorCategory?: SteelAIProviderErrorCategory;
   errorSummary?: string;
-  workbookPatch?: SteelWorkbookPatchResponse;
-  fileAnalysisPatch?: SteelProviderFileAnalysisPatchProposal;
-  fileAnalysisData?: SteelFileAnalysisData;
 }
 
 export const steelProviderChatResponseSchema: z.ZodType<
@@ -240,7 +202,6 @@ export const steelProviderChatResponseSchema: z.ZodType<
   unknown
 > = z.object({
   conversationId: z.string().min(1).optional(),
-  workbookId: z.string().min(1).optional(),
   provider: z.enum(steelAIDrivers),
   model: z.string().min(1),
   text: z.string(),
@@ -251,9 +212,6 @@ export const steelProviderChatResponseSchema: z.ZodType<
   warnings: z.array(z.string().min(1)).default([]),
   errorCategory: steelAIProviderErrorCategorySchema.optional(),
   errorSummary: z.string().min(1).optional(),
-  workbookPatch: steelWorkbookPatchResponseSchema.optional(),
-  fileAnalysisPatch: steelProviderFileAnalysisPatchProposalSchema.optional(),
-  fileAnalysisData: steelFileAnalysisDataSchema.optional(),
 });
 
 const steelProviderChatStreamToolStatusSchema = z.enum(['started', 'completed', 'failed']);
@@ -290,11 +248,6 @@ const steelProviderChatStreamTextEventSchema = z.object({
   delta: z.string(),
 });
 
-const steelProviderChatStreamFileAnalysisDataEventSchema = z.object({
-  type: z.literal('file_analysis_data'),
-  fileAnalysisData: steelFileAnalysisDataSchema,
-});
-
 const steelProviderChatStreamDoneEventSchema = z.object({
   type: z.literal('done'),
   response: steelProviderChatResponseSchema,
@@ -312,7 +265,6 @@ export const steelProviderChatStreamEventSchema = z.discriminatedUnion('type', [
   steelProviderChatStreamToolEventSchema,
   steelProviderChatStreamReasoningEventSchema,
   steelProviderChatStreamTextEventSchema,
-  steelProviderChatStreamFileAnalysisDataEventSchema,
   steelProviderChatStreamDoneEventSchema,
   steelProviderChatStreamErrorEventSchema,
 ]);

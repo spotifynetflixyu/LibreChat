@@ -50,39 +50,12 @@ const mockReadConversation = jest.fn((_req, res) =>
 const mockCreateRuleProposal = jest.fn((_req, res) =>
   res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
-const mockCreateWorkbook = jest.fn((_req, res) =>
-  res.status(201).json({ workbook: { id: 'wb_1', version: 1, sheets: [] } }),
-);
-const mockReadWorkbook = jest.fn((_req, res) =>
-  res.status(200).json({ workbook: { id: 'wb_1', version: 1, sheets: [] } }),
-);
-const mockPatchWorkbook = jest.fn((_req, res) =>
-  res.status(200).json({
-    workbook: { id: 'wb_1', version: 2, sheets: [] },
-    changedPaths: [{ sheetId: 'quote_details', rowId: 'line_1', columnKey: 'quoted_unit_price' }],
-    changedFieldSummary: [],
-  }),
-);
-const mockExportWorkbook = jest.fn((_req, res) =>
-  res
-    .status(200)
-    .set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    .send(Buffer.from('xlsx')),
-);
-const mockPatchFileAnalysisData = jest.fn((_req, res) =>
-  res.status(200).json({ fileAnalysisData: { id: 'fad_1', version: 2, sheets: [] } }),
-);
 const mockCreateSteelHandlers = jest.fn(() => ({
   chat: mockChat,
   createAuthenticatedConversation: mockCreateAuthenticatedConversation,
   createGuestConversation: mockCreateGuestConversation,
-  createWorkbook: mockCreateWorkbook,
-  exportWorkbook: mockExportWorkbook,
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
-  patchFileAnalysisData: mockPatchFileAnalysisData,
-  patchWorkbook: mockPatchWorkbook,
-  readWorkbook: mockReadWorkbook,
   readConversation: mockReadConversation,
   streamChat: mockStreamChat,
 }));
@@ -93,8 +66,6 @@ const mockRequireCapability = jest.fn(() => (_req, _res, next) => next());
 const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 
 jest.mock('@librechat/api', () => ({
-  createMongooseSteelFileAnalysisRepository: jest.fn(() => ({ kind: 'file-analysis-repository' })),
-  createSteelFileAnalysisService: jest.fn(() => ({ kind: 'file-analysis-service' })),
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
   createSteelHandlers: (...args) => mockCreateSteelHandlers(...args),
   resolveEvidenceFileForProvider: jest.fn(),
@@ -269,7 +240,7 @@ describe('Steel route shells', () => {
     expect(mockRequireJwtAuth).toHaveBeenCalledTimes(1);
   });
 
-  it('registers Steel workbook create/read/patch routes under /api/steel', async () => {
+  it('does not register Steel workbook or file-analysis REST routes', async () => {
     const app = createApp();
 
     const createRes = await request(app)
@@ -278,27 +249,14 @@ describe('Steel route shells', () => {
     const readRes = await request(app).get('/api/steel/workbooks/wb_1');
     const patchRes = await request(app)
       .patch('/api/steel/workbooks/wb_1')
-      .send({
-        workbookId: 'wb_1',
-        workbookVersion: 1,
-        selectedWorkbookRefs: [],
-        operations: [
-          {
-            op: 'set_cell',
-            sheetId: 'quote_details',
-            rowId: 'line_1',
-            columnKey: 'quoted_unit_price',
-            value: 115,
-          },
-        ],
-      });
+      .send({ workbookVersion: 1, operations: [] });
+    const fileAnalysisRes = await request(app)
+      .get('/api/steel/file-analysis/by-conversation/steel_meta_1');
 
-    expect(createRes.status).toBe(201);
-    expect(readRes.status).toBe(200);
-    expect(patchRes.status).toBe(200);
-    expect(mockCreateWorkbook).toHaveBeenCalledTimes(1);
-    expect(mockReadWorkbook).toHaveBeenCalledTimes(1);
-    expect(mockPatchWorkbook).toHaveBeenCalledTimes(1);
+    expect(createRes.status).toBe(404);
+    expect(readRes.status).toBe(404);
+    expect(patchRes.status).toBe(404);
+    expect(fileAnalysisRes.status).toBe(404);
   });
 
   it('registers admin-only capability smoke under /api/admin/steel', async () => {

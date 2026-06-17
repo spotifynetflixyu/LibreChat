@@ -153,7 +153,6 @@ const steelMemoryCandidateSchema = new Schema<ISteelMemoryCandidate>(
       required: true,
       index: true,
     },
-    createdFromWorkbookLineId: { type: String },
     createdByUserId: {
       type: String,
       required: true,

@@ -189,7 +189,6 @@ const steelRuleProposalBaseSchema = z
     proposedDefaultParameters: z.array(steelRuleProposalDefaultParameterSchema).min(1),
     sourceRefs: z.array(steelRuleProposalSourceRefSchema).min(1),
     createdFromConversationId: z.string().min(1),
-    createdFromWorkbookLineId: z.string().min(1).optional(),
     reason: z.string().min(1),
     confidence: steelRuleProposalConfidenceSchema,
   })

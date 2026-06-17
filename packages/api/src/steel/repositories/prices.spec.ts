@@ -131,7 +131,7 @@ describe('Steel price repositories', () => {
     expect(result[0]?.valueState).toBe('unknown');
   });
 
-  it('searches product-name text and ERP item code text as OR discovery facets', async () => {
+  it('searches all price discovery text through spec_key only', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -147,11 +147,14 @@ describe('Steel price repositories', () => {
       '%CCG%',
       10,
     ]);
-    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('product_name ILIKE $2'));
-    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('erp_item_code ILIKE $4'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $2'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $3'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $4'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('product_name ILIKE'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('erp_item_code ILIKE'));
   });
 
-  it('expands many-to-one product-name aliases through reviewed lookup rows', async () => {
+  it('does not expand product-name aliases for price discovery terms', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -163,8 +166,8 @@ describe('Steel price repositories', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain('steel.product_name_aliases');
-    expect(sql).toContain('target_product_name');
+    expect(sql).not.toContain('steel.product_name_aliases');
+    expect(sql).not.toContain('target_product_name');
     expect(sql).toContain(' OR ');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
@@ -176,7 +179,7 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('matches surface product-name aliases as reviewed product markers', async () => {
+  it('treats surface marker text as spec_key discovery text only', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -186,8 +189,9 @@ describe('Steel price repositories', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain("product_name_alias.metadata->>'matchKind' = 'surface_marker'");
-    expect(sql).toContain('product_name ~*');
+    expect(sql).toContain('spec_key ILIKE $2');
+    expect(sql).not.toContain('product_name_alias');
+    expect(sql).not.toContain('product_name ~*');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵亮面%',
@@ -195,7 +199,7 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('does not use min-thickness surface aliases without qualifying thickness evidence', async () => {
+  it('does not add surface alias thickness predicates for broad text', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -205,8 +209,9 @@ describe('Steel price repositories', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain("product_name_alias.metadata->>'minThicknessMm' IS NULL");
-    expect(sql).toContain('NULL::numeric IS NOT NULL');
+    expect(sql).toContain('spec_key ILIKE $2');
+    expect(sql).not.toContain("product_name_alias.metadata->>'minThicknessMm'");
+    expect(sql).not.toContain('NULL::numeric IS NOT NULL');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵%',
@@ -214,7 +219,7 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('allows min-thickness surface aliases when product-name evidence includes at least 3t', async () => {
+  it('searches thickness evidence as another spec_key term', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -224,18 +229,18 @@ describe('Steel price repositories', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain("product_name_alias.metadata->>'minThicknessMm'");
+    expect(sql).toContain('spec_key ILIKE $2');
+    expect(sql).toContain('spec_key ILIKE $3');
+    expect(sql).not.toContain("product_name_alias.metadata->>'minThicknessMm'");
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵%',
-      3,
       '%3t%',
-      3,
       10,
     ]);
   });
 
-  it('allows NO1 aliases when product-name evidence includes m/m thickness', async () => {
+  it('searches NO1 product text directly through spec_key', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -245,18 +250,18 @@ describe('Steel price repositories', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain('ST[[:space:]]*NO[[:space:]]*1');
+    expect(sql).toContain('spec_key ILIKE $2');
+    expect(sql).toContain('spec_key ILIKE $3');
+    expect(sql).not.toContain('ST[[:space:]]*NO[[:space:]]*1');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵%',
-      3,
       '%3.0m/mSTNO1雷射切割%',
-      3,
       10,
     ]);
   });
 
-  it('allows NO1 aliases when product-name evidence includes plate-size thickness', async () => {
+  it('searches NO1 plate-size text directly through spec_key', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -267,9 +272,7 @@ describe('Steel price repositories', () => {
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵%',
-      3,
       "%STNO1 3.0*4'*8'(73.5)%",
-      3,
       10,
     ]);
   });
@@ -304,7 +307,7 @@ describe('Steel price repositories', () => {
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('product_name ILIKE'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
       '%錏成型角鐵%',
       1,
@@ -312,7 +315,7 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('matches oral zinc angle candidates with bounded product-name tokens', async () => {
+  it('matches oral zinc angle candidates as a single spec_key term', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -320,10 +323,9 @@ describe('Steel price repositories', () => {
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('product_name ILIKE $2'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE $2'), [
       'reviewed',
-      '%錏%',
-      '%角鐵%',
+      '%錏角鐵%',
       5,
     ]);
   });
@@ -363,7 +365,7 @@ describe('Steel price repositories', () => {
     expect(sql).toContain('discovery_match_score');
     expect(sql).toContain('ORDER BY');
     expect(sql).toContain('discovery_match_score ASC');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('erp_item_code ILIKE'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
       '%錏方管%',
       '%方管%',
@@ -465,14 +467,14 @@ describe('Steel price repositories', () => {
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('product_name ILIKE'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
       '%錏成型角鐵 30x30%',
       5,
     ]);
   });
 
-  it('does not derive spec-key filters from oral product-name candidates', async () => {
+  it('keeps oral product-name candidates as direct spec_key terms', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -480,7 +482,7 @@ describe('Steel price repositories', () => {
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('product_name ILIKE'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
       '%錏角鐵 L30x30%',
       5,

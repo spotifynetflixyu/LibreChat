@@ -92,13 +92,13 @@ function buildOcrRule(repoRoot) {
     },
     prompt,
     toolPolicy: {
-      availableTools: ['run_file_ocr', 'patch_file_analysis_data'],
-      requiredToolOrder: ['run_file_ocr', 'patch_file_analysis_data'],
+      availableTools: ['run_file_ocr'],
+      requiredToolOrder: ['run_file_ocr'],
       requiredBefore: ['drawing_evidence_extraction'],
       mustMarkLowConfidence: true,
     },
     outputPolicy: {
-      targetSheets: ['manual_review', 'interpretation_notes'],
+      outputFormat: 'markdown_tables',
       forbidFormalAdminImport: true,
       forbidConfirmedTotalsFromOcrOnly: true,
     },

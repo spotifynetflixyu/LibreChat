@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Bot,
   CheckCircle2,
-  GripVertical,
   Loader2,
   MessageSquarePlus,
   Paperclip,
@@ -21,16 +20,7 @@ import type {
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
   SteelProviderTimings,
-  SteelChangedPath,
-  SteelFileAnalysisData,
-  SteelFileAnalysisManualPatchRequest,
-  SteelWorkbook,
-  SteelWorkbookSheetId,
 } from 'librechat-data-provider';
-import SteelFileAnalysisPreview from '~/features/steel/fileAnalysis/Preview';
-import SteelWorkbookPreview, {
-  getVisibleSteelWorkbookSheetIds,
-} from '~/features/steel/workbook/Preview';
 
 type SteelChatTurn = SteelProviderChatMessage & {
   id: string;
@@ -45,17 +35,8 @@ type SelectedSteelFile = {
   dataBase64: string;
 };
 
-type SteelRightPanelTab = 'workbook' | 'fileAnalysis' | 'activity';
-
 const steelModel = 'gpt-5.5';
-const workbookMinWidthPx = 100;
-const chatMinWidthPx = 200;
 const reasoningEffortOptions: SteelProviderReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
-const rightPanelTabs: Array<{ id: SteelRightPanelTab; label: string }> = [
-  { id: 'workbook', label: 'Workbook' },
-  { id: 'fileAnalysis', label: 'File Analysis' },
-  { id: 'activity', label: 'Activity' },
-];
 const titleText = 'Steel OAuth Chat';
 const tokensLabel = 'tokens';
 const emptyStateText = 'Ready';
@@ -67,8 +48,6 @@ const activityStatusTitle = 'Activity';
 const activityStatusSubtitle = 'Public work log';
 const noActivityStatusText = 'No activity yet.';
 const providerTimingsTitle = 'Provider timings';
-const workbookExportContentType =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 function createTurn(
   role: SteelProviderChatMessage['role'],
@@ -180,11 +159,6 @@ function replaceSteelConversationIdInUrl(conversationId: string | null): void {
     url.searchParams.delete('conversationId');
   }
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
-}
-
-function clampWorkbookWidth(widthPx: number, layoutWidthPx: number): number {
-  const maxWorkbookWidthPx = Math.max(workbookMinWidthPx, layoutWidthPx - chatMinWidthPx);
-  return Math.min(maxWorkbookWidthPx, Math.max(workbookMinWidthPx, Math.round(widthPx)));
 }
 
 function getStreamStatusMessage(event: SteelProviderChatStreamEvent): string | undefined {
@@ -319,10 +293,6 @@ function ProviderTimingsPanel({ timings }: { timings: SteelProviderTimings }) {
           value={formatTimingDurationMs(timings.generationDurationMs)}
         />
         <TimingMetric label="Tools" value={formatTimingDurationMs(timings.toolDurationMs)} />
-        <TimingMetric
-          label="Workbook completion"
-          value={formatTimingDurationMs(timings.workbookCompletionDurationMs)}
-        />
         <TimingMetric label="Rounds" value={timings.roundCount} />
       </dl>
       {timings.rounds.length > 0 && (
@@ -337,8 +307,7 @@ function ProviderTimingsPanel({ timings }: { timings: SteelProviderTimings }) {
                   Round {roundTiming.round}
                 </h4>
                 <span className="text-[11px] text-text-secondary">
-                  {roundTiming.generatedToolCallCount} tool calls /{' '}
-                  {roundTiming.workbookPatchOperationCount} workbook ops
+                  {roundTiming.generatedToolCallCount} tool calls
                 </span>
               </div>
               <dl className="mt-2 grid grid-cols-2 gap-2">
@@ -350,19 +319,8 @@ function ProviderTimingsPanel({ timings }: { timings: SteelProviderTimings }) {
                   label="Tools"
                   value={formatTimingDurationMs(roundTiming.toolDurationMs)}
                 />
-                <TimingMetric
-                  label="Workbook completion"
-                  value={formatTimingDurationMs(roundTiming.workbookCompletionDurationMs)}
-                />
                 <TimingMetric label="Prompt messages" value={roundTiming.promptMessageCount} />
               </dl>
-              {roundTiming.workbookCompletionRequired && (
-                <p className="mt-2 text-[11px] text-text-secondary">
-                  workbook {roundTiming.workbookCompletionComplete ? 'complete' : 'incomplete'};
-                  missing {roundTiming.missingWorkbookSheetCount} sheets /{' '}
-                  {roundTiming.missingWorkbookCellCount} cells
-                </p>
-              )}
             </li>
           ))}
         </ol>
@@ -469,6 +427,99 @@ function createStreamErrorEvent(error: unknown): SteelProviderChatStreamEvent {
   };
 }
 
+function isMarkdownTableBlock(lines: string[]): boolean {
+  return (
+    lines.length >= 2 &&
+    /^\s*\|.+\|\s*$/.test(lines[0] ?? '') &&
+    /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[1] ?? '')
+  );
+}
+
+function renderMarkdownTable(lines: string[], key: string) {
+  const rows = lines.map((line) =>
+    line
+      .trim()
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map((cell) => cell.trim()),
+  );
+  const [headers = [], _divider, ...bodyRows] = rows;
+
+  return (
+    <div key={key} className="my-2 overflow-x-auto">
+      <table className="min-w-full border-collapse text-left text-sm">
+        <thead>
+          <tr>
+            {headers.map((header, index) => (
+              <th
+                key={`${key}-h-${index}`}
+                className="border border-border-light bg-surface-secondary px-2 py-1 font-semibold"
+              >
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {bodyRows.map((row, rowIndex) => (
+            <tr key={`${key}-r-${rowIndex}`}>
+              {headers.map((_header, cellIndex) => (
+                <td key={`${key}-c-${rowIndex}-${cellIndex}`} className="border border-border-light px-2 py-1">
+                  {row[cellIndex] ?? ''}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SteelMessageContent({ content }: { content: string }) {
+  const lines = content.split('\n');
+  const blocks: React.ReactNode[] = [];
+  let paragraph: string[] = [];
+  let index = 0;
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) {
+      return;
+    }
+    blocks.push(
+      <p key={`p-${blocks.length}`} className="whitespace-pre-wrap break-words">
+        {paragraph.join('\n')}
+      </p>,
+    );
+    paragraph = [];
+  };
+
+  while (index < lines.length) {
+    const candidate: string[] = [];
+    while (index + candidate.length < lines.length) {
+      const line = lines[index + candidate.length] ?? '';
+      if (!/^\s*\|.+\|\s*$/.test(line)) {
+        break;
+      }
+      candidate.push(line);
+    }
+
+    if (isMarkdownTableBlock(candidate)) {
+      flushParagraph();
+      blocks.push(renderMarkdownTable(candidate, `table-${blocks.length}`));
+      index += candidate.length;
+      continue;
+    }
+
+    paragraph.push(lines[index] ?? '');
+    index += 1;
+  }
+  flushParagraph();
+
+  return <>{blocks}</>;
+}
+
 export default function SteelOAuthChat() {
   const layoutRef = useRef<HTMLElement | null>(null);
   const isComposingInputRef = useRef(false);
@@ -479,17 +530,7 @@ export default function SteelOAuthChat() {
   const [conversationId, setConversationId] = useState<string | null>(
     getInitialSteelConversationId,
   );
-  const [workbook, setWorkbook] = useState<SteelWorkbook | null>(null);
-  const [fileAnalysisData, setFileAnalysisData] = useState<SteelFileAnalysisData | null>(null);
-  const [changedPaths, setChangedPaths] = useState<SteelChangedPath[]>([]);
-  const [workbookExportSheetIds, setWorkbookExportSheetIds] = useState<SteelWorkbookSheetId[]>([]);
-  const [isWorkbookExporting, setIsWorkbookExporting] = useState(false);
-  const [workbookExportError, setWorkbookExportError] = useState<string | null>(null);
-  const [isWorkbookLoading, setIsWorkbookLoading] = useState(false);
-  const [isWorkbookPanelOpen, setIsWorkbookPanelOpen] = useState(true);
-  const [activeRightPanelTab, setActiveRightPanelTab] = useState<SteelRightPanelTab>('workbook');
-  const [isWorkbookResizing, setIsWorkbookResizing] = useState(false);
-  const [workbookWidthPx, setWorkbookWidthPx] = useState<number | null>(null);
+  const [isActivityPanelOpen, setIsActivityPanelOpen] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isEncodingFiles, setIsEncodingFiles] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<SelectedSteelFile[]>([]);
@@ -505,104 +546,6 @@ export default function SteelOAuthChat() {
   useEffect(() => {
     replaceSteelConversationIdInUrl(conversationId);
   }, [conversationId]);
-
-  useEffect(() => {
-    if (!conversationId || workbook) {
-      return undefined;
-    }
-
-    let isActive = true;
-    setIsWorkbookLoading(true);
-    dataService
-      .getSteelWorkbookByConversation(conversationId)
-      .then((response) => {
-        if (!isActive || !response.workbook) {
-          return;
-        }
-
-        setWorkbook(response.workbook);
-        setWorkbookExportSheetIds(getVisibleSteelWorkbookSheetIds(response.workbook));
-        setChangedPaths([]);
-        setIsWorkbookPanelOpen(true);
-      })
-      .catch(() => {
-        // Absence of a prior quote workbook should not block a resumed chat.
-      })
-      .finally(() => {
-        if (isActive) {
-          setIsWorkbookLoading(false);
-        }
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [conversationId, workbook]);
-
-  useEffect(() => {
-    if (!conversationId || fileAnalysisData) {
-      return undefined;
-    }
-
-    let isActive = true;
-    dataService
-      .getSteelFileAnalysisDataByConversation(conversationId)
-      .then((response) => {
-        if (!isActive || !response.fileAnalysisData) {
-          return;
-        }
-
-        setFileAnalysisData(response.fileAnalysisData);
-        setActiveRightPanelTab('fileAnalysis');
-        setIsWorkbookPanelOpen(true);
-      })
-      .catch(() => {
-        // Absence of prior OCR analysis should not block a resumed chat.
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [conversationId, fileAnalysisData]);
-
-  const resizeWorkbookPanel = useCallback((clientX: number) => {
-    const layout = layoutRef.current;
-    if (!layout) {
-      return;
-    }
-
-    const rect = layout.getBoundingClientRect();
-    const layoutWidth = layout.clientWidth || rect.width;
-    if (layoutWidth <= 0) {
-      return;
-    }
-
-    setWorkbookWidthPx(clampWorkbookWidth(layoutWidth - (clientX - rect.left), layoutWidth));
-  }, []);
-
-  useEffect(() => {
-    if (!isWorkbookResizing) {
-      return undefined;
-    }
-
-    const handleMouseMove = (event: MouseEvent) => resizeWorkbookPanel(event.clientX);
-    const handleMouseUp = () => setIsWorkbookResizing(false);
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isWorkbookResizing, resizeWorkbookPanel]);
-
-  const handleWorkbookResizeStart = (event: React.MouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setIsWorkbookPanelOpen(true);
-    setIsWorkbookResizing(true);
-    resizeWorkbookPanel(event.clientX);
-  };
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -629,59 +572,10 @@ export default function SteelOAuthChat() {
     setMessages([]);
     setLastResponse(null);
     setConversationId(null);
-    setWorkbook(null);
     setSelectedFiles([]);
-    setChangedPaths([]);
-    setFileAnalysisData(null);
-    setWorkbookExportSheetIds([]);
-    setWorkbookExportError(null);
     setStreamEvents([]);
     setIsSending(false);
     setIsEncodingFiles(false);
-    setIsWorkbookLoading(false);
-  };
-
-  const handleToggleWorkbookExportSheet = (sheetId: SteelWorkbookSheetId) => {
-    setWorkbookExportSheetIds((current) =>
-      current.includes(sheetId)
-        ? current.filter((candidate) => candidate !== sheetId)
-        : [...current, sheetId],
-    );
-  };
-
-  const handleDownloadWorkbook = async () => {
-    if (!workbook || workbookExportSheetIds.length === 0) {
-      return;
-    }
-
-    setIsWorkbookExporting(true);
-    setWorkbookExportError(null);
-    try {
-      const arrayBuffer = await dataService.exportSteelWorkbook(workbook.id, {
-        workbookVersion: workbook.version,
-        sheetIds: workbookExportSheetIds,
-      });
-      const blob = new Blob([arrayBuffer], { type: workbookExportContentType });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `steel-workbook-${workbook.id}-v${workbook.version}.xlsx`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      setWorkbookExportError(getErrorText(error));
-    } finally {
-      setIsWorkbookExporting(false);
-    }
-  };
-
-  const handleSaveFileAnalysisData = async (
-    conversationId: string,
-    payload: SteelFileAnalysisManualPatchRequest,
-  ) => {
-    const response = await dataService.patchSteelFileAnalysisData(conversationId, payload);
-    setFileAnalysisData(response.fileAnalysisData);
-    return response.fileAnalysisData;
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -728,12 +622,6 @@ export default function SteelOAuthChat() {
       const response =
         typeof dataService.streamSteelChat === 'function'
           ? await dataService.streamSteelChat(payload, (event) => {
-              if (event.type === 'file_analysis_data') {
-                setFileAnalysisData(event.fileAnalysisData);
-                setConversationId(event.fileAnalysisData.conversationId);
-                setActiveRightPanelTab('fileAnalysis');
-                setIsWorkbookPanelOpen(true);
-              }
               const message = getStreamStatusMessage(event);
               if (!message) {
                 return;
@@ -743,26 +631,8 @@ export default function SteelOAuthChat() {
             })
           : await dataService.sendSteelChat(payload);
       setLastResponse(response);
-      const nextConversationId =
-        response.conversationId ?? response.fileAnalysisData?.conversationId;
-      if (nextConversationId) {
-        setConversationId(nextConversationId);
-      }
-      if (response.workbookPatch?.workbook) {
-        setWorkbook(response.workbookPatch.workbook);
-        setWorkbookExportSheetIds(
-          getVisibleSteelWorkbookSheetIds(response.workbookPatch.workbook),
-        );
-        setChangedPaths(response.workbookPatch.changedPaths);
-        setActiveRightPanelTab('workbook');
-        setIsWorkbookPanelOpen(true);
-      }
-      if (response.fileAnalysisData) {
-        setFileAnalysisData(response.fileAnalysisData);
-        if (!response.workbookPatch?.workbook) {
-          setActiveRightPanelTab('fileAnalysis');
-          setIsWorkbookPanelOpen(true);
-        }
+      if (response.conversationId) {
+        setConversationId(response.conversationId);
       }
       setMessages([...nextMessages, createTurn('assistant', response.text)]);
     } catch (error) {
@@ -787,44 +657,13 @@ export default function SteelOAuthChat() {
     }
   };
 
-  const workbookToggleLabel = isWorkbookPanelOpen ? 'Hide workbook' : 'Show workbook';
-  const WorkbookToggleIcon = isWorkbookPanelOpen ? PanelRightClose : PanelRightOpen;
-  const workbookPanelStyle = {
-    width: workbookWidthPx == null ? '50%' : `${workbookWidthPx}px`,
-  };
-  let rightPanelContent;
-  if (activeRightPanelTab === 'workbook') {
-    rightPanelContent = (
-      <SteelWorkbookPreview
-        workbook={workbook}
-        changedPaths={changedPaths}
-        downloadError={workbookExportError}
-        exportSheetIds={workbookExportSheetIds}
-        isDownloading={isWorkbookExporting}
-        isLoading={isWorkbookLoading}
-        onDownload={() => {
-          void handleDownloadWorkbook();
-        }}
-        onToggleExportSheet={handleToggleWorkbookExportSheet}
-      />
-    );
-  } else if (activeRightPanelTab === 'fileAnalysis') {
-    rightPanelContent = (
-      <SteelFileAnalysisPreview
-        fileAnalysisData={fileAnalysisData}
-        onSave={handleSaveFileAnalysisData}
-      />
-    );
-  } else {
-    rightPanelContent = (
-      <ActivityStatusPanel events={streamEvents} timings={lastResponse?.timings} />
-    );
-  }
+  const activityToggleLabel = isActivityPanelOpen ? 'Hide activity' : 'Show activity';
+  const ActivityToggleIcon = isActivityPanelOpen ? PanelRightClose : PanelRightOpen;
 
   return (
     <main
       ref={layoutRef}
-      data-testid="steel-workbook-layout"
+      data-testid="steel-chat-layout"
       className="flex h-full min-h-0 flex-col bg-surface-primary text-text-primary lg:flex-row"
     >
       <section className="flex h-full min-w-0 flex-1 flex-col px-4 py-4 md:px-6">
@@ -876,12 +715,12 @@ export default function SteelOAuthChat() {
             </div>
             <button
               type="button"
-              aria-label={workbookToggleLabel}
-              title={workbookToggleLabel}
+              aria-label={activityToggleLabel}
+              title={activityToggleLabel}
               className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-light text-text-primary hover:bg-surface-hover"
-              onClick={() => setIsWorkbookPanelOpen((current) => !current)}
+              onClick={() => setIsActivityPanelOpen((current) => !current)}
             >
-              <WorkbookToggleIcon className="h-4 w-4" aria-hidden="true" />
+              <ActivityToggleIcon className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </header>
@@ -918,11 +757,11 @@ export default function SteelOAuthChat() {
                       </div>
                     )}
                     <div
-                      className={`max-w-[min(42rem,85%)] whitespace-pre-wrap rounded-lg border px-4 py-3 text-sm leading-6 ${
+                      className={`max-w-[min(42rem,85%)] rounded-lg border px-4 py-3 text-sm leading-6 ${
                         bubbleClass
                       }`}
                     >
-                      {message.content}
+                      <SteelMessageContent content={message.content} />
                       {message.attachmentNames != null && message.attachmentNames.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {message.attachmentNames.map((name) => (
@@ -1041,52 +880,12 @@ export default function SteelOAuthChat() {
           </div>
         </form>
       </section>
-      {isWorkbookPanelOpen && (
-        <>
-          <div
-            role="separator"
-            aria-label="Resize workbook panel"
-            aria-orientation="vertical"
-            className="hidden w-2 cursor-col-resize items-center justify-center border-l border-border-light bg-surface-primary hover:bg-surface-hover lg:flex"
-            onMouseDown={handleWorkbookResizeStart}
-          >
-            <GripVertical className="h-4 w-4 text-text-secondary" aria-hidden="true" />
-          </div>
-          <aside
-            aria-label="Workbook panel"
-            className="min-h-0 border-t border-border-light lg:flex-shrink-0 lg:border-t-0"
-            style={workbookPanelStyle}
-          >
-            <div className="flex h-full min-h-0 flex-col bg-surface-primary">
-              <div
-                role="tablist"
-                aria-label="Steel right panel"
-                className="flex gap-1 border-b border-border-light px-3 py-2"
-              >
-                {rightPanelTabs.map((tab) => {
-                  const selected = activeRightPanelTab === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={selected}
-                      className={`rounded px-3 py-1.5 text-sm transition-colors ${
-                        selected
-                          ? 'bg-surface-active-alt text-text-primary'
-                          : 'text-text-secondary hover:bg-surface-hover'
-                      }`}
-                      onClick={() => setActiveRightPanelTab(tab.id)}
-                    >
-                      {tab.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="min-h-0 flex-1">{rightPanelContent}</div>
-            </div>
-          </aside>
-        </>
+      {isActivityPanelOpen && (
+        <aside
+          className="min-h-0 border-t border-border-light lg:w-[24rem] lg:flex-shrink-0 lg:border-l lg:border-t-0"
+        >
+          <ActivityStatusPanel events={streamEvents} timings={lastResponse?.timings} />
+        </aside>
       )}
     </main>
   );

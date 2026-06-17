@@ -2,8 +2,7 @@ export type SteelSourceSchemaUsage =
   | 'admin_import'
   | 'calculator_context'
   | 'customer_lookup'
-  | 'price_lookup'
-  | 'workbook_patch';
+  | 'price_lookup';
 
 export interface SteelSourceSchemaMappingEntry {
   sourceFile: string;
@@ -62,7 +61,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['品名規格', '品名', '產品名稱'],
     canonicalKey: 'product_name',
     target: 'steel.price_items.product_name',
-    allowedFor: ['admin_import', 'price_lookup', 'workbook_patch'],
+    allowedFor: ['admin_import', 'price_lookup'],
     valueType: 'string',
   },
   ...productPriceTierEntries,
@@ -80,7 +79,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['公司編號'],
     canonicalKey: 'company_code',
     target: 'steel.orders.metadata.company_code',
-    allowedFor: ['admin_import', 'workbook_patch'],
+    allowedFor: ['admin_import'],
     valueType: 'string',
   },
   {
@@ -88,7 +87,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['項次'],
     canonicalKey: 'line_no',
     target: 'steel.order_items.metadata.line_no',
-    allowedFor: ['admin_import', 'workbook_patch'],
+    allowedFor: ['admin_import'],
     valueType: 'number',
   },
   {
@@ -96,7 +95,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['倉庫編號'],
     canonicalKey: 'warehouse_code',
     target: 'steel.order_items.metadata.warehouse_code',
-    allowedFor: ['admin_import', 'workbook_patch'],
+    allowedFor: ['admin_import'],
     valueType: 'string',
   },
   {
@@ -104,7 +103,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['型號'],
     canonicalKey: 'erp_item_code',
     target: 'steel.order_items.erp_item_code',
-    allowedFor: ['admin_import', 'workbook_patch', 'price_lookup'],
+    allowedFor: ['admin_import', 'price_lookup'],
     valueType: 'string',
   },
   {
@@ -112,7 +111,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['品名規格'],
     canonicalKey: 'product_name',
     target: 'steel.order_items.product_name',
-    allowedFor: ['admin_import', 'workbook_patch', 'price_lookup'],
+    allowedFor: ['admin_import', 'price_lookup'],
     valueType: 'string',
   },
   {
@@ -120,7 +119,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['單位'],
     canonicalKey: 'unit',
     target: 'steel.order_items.unit',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'enum',
   },
   {
@@ -128,7 +127,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['數量'],
     canonicalKey: 'quantity',
     target: 'steel.order_items.quantity',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'number',
   },
   {
@@ -136,7 +135,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['單重'],
     canonicalKey: 'unit_weight',
     target: 'steel.order_items.metadata.unit_weight',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'number',
   },
   {
@@ -144,7 +143,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['總數'],
     canonicalKey: 'line_total_quantity',
     target: 'steel.order_items.metadata.line_total_quantity',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'number',
   },
   {
@@ -152,7 +151,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['單價'],
     canonicalKey: 'unit_price',
     target: 'steel.order_items.unit_price',
-    allowedFor: ['admin_import', 'workbook_patch', 'price_lookup'],
+    allowedFor: ['admin_import', 'price_lookup'],
     valueType: 'money',
   },
   {
@@ -160,7 +159,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['計價基準'],
     canonicalKey: 'pricing_basis',
     target: 'steel.order_items.metadata.pricing_basis',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'enum',
   },
   {
@@ -168,7 +167,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['公式編號'],
     canonicalKey: 'formula_code',
     target: 'steel.order_items.metadata.formula_code',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context', 'price_lookup'],
+    allowedFor: ['admin_import', 'calculator_context', 'price_lookup'],
     valueType: 'string',
   },
   {
@@ -176,7 +175,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['厚度'],
     canonicalKey: 'thickness_mm',
     target: 'steel.order_items.metadata.thickness_mm',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'number',
   },
   {
@@ -184,7 +183,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['寬度'],
     canonicalKey: 'width_mm',
     target: 'steel.order_items.metadata.width_mm',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'number',
   },
   {
@@ -192,7 +191,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['長度'],
     canonicalKey: 'length_mm',
     target: 'steel.order_items.metadata.length_mm',
-    allowedFor: ['admin_import', 'workbook_patch', 'calculator_context'],
+    allowedFor: ['admin_import', 'calculator_context'],
     valueType: 'number',
   },
   {
@@ -200,7 +199,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['交貨日期'],
     canonicalKey: 'delivery_date',
     target: 'steel.order_items.metadata.delivery_date',
-    allowedFor: ['admin_import', 'workbook_patch'],
+    allowedFor: ['admin_import'],
     valueType: 'date',
   },
   {
@@ -208,7 +207,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     sourceLabels: ['備註'],
     canonicalKey: 'line_note',
     target: 'steel.order_items.metadata.line_note',
-    allowedFor: ['admin_import', 'workbook_patch'],
+    allowedFor: ['admin_import'],
     valueType: 'string',
   },
   {

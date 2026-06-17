@@ -83,7 +83,6 @@ export interface ISteelConversationMeta extends Document {
   guestTokenHash?: string;
   createdFrom: SteelConversationCreatedFrom;
   status: SteelConversationStatus;
-  workbookId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -151,149 +150,6 @@ export interface ISteelSourceVersion extends Document {
   updatedAt?: Date;
 }
 
-export interface ISteelWorkbook extends Document {
-  conversationMetaId?: string;
-  workbookId: string;
-  version: number;
-  sheets: SteelWorkbookSheet[];
-  status: 'active' | 'archived';
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface ISteelWorkbookPatch extends Document {
-  workbookId: string;
-  beforeVersion: number;
-  afterVersion: number;
-  selectedWorkbookRefs?: SteelSelectedWorkbookRef[];
-  operations: SteelWorkbookPatchOperation[];
-  changedPaths: SteelChangedPath[];
-  changedFieldSummary: SteelChangedFieldSummary[];
-  status: 'accepted' | 'rejected';
-  rejectedReason?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface ISteelFileAnalysisData extends Document {
-  fileAnalysisDataId: string;
-  conversationId: string;
-  version: number;
-  status: 'draft' | 'user_confirmed' | 'projected_to_workbook';
-  sourceFiles: Array<{
-    fileId: string;
-    filename?: string;
-    mediaType: string;
-    pageCount?: number;
-    ocrEngine?: string;
-    ocrStatus?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
-    processedAt?: string;
-    errorMessage?: string;
-  }>;
-  sheets: {
-    file_analysis_data: {
-      columns: Array<{ key: string; label: string; valueType: string }>;
-      rows: Array<{
-        id: string;
-        sourceRef: Record<string, unknown>;
-        cells: Record<string, SteelWorkbookCellValue>;
-        confidence: 'high' | 'medium' | 'low';
-        reviewStatus: 'pending_review' | 'confirmed' | 'corrected';
-        rowWarnings: string[];
-      }>;
-    };
-    manual_review: {
-      columns: Array<{ key: string; label: string; valueType: string }>;
-      rows: Array<Record<string, unknown>>;
-    };
-    interpretation_notes: {
-      columns: Array<{ key: string; label: string; valueType: string }>;
-      rows: Array<Record<string, unknown>>;
-    };
-  };
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export type SteelWorkbookSheetId =
-  | 'quote_details'
-  | 'summary'
-  | 'manual_review'
-  | 'price_sources'
-  | 'interpretation_notes'
-  | 'system_order'
-  | 'customer_data'
-  | 'customer_quote';
-
-export type SteelWorkbookColumnValueType =
-  | 'text'
-  | 'number'
-  | 'currency'
-  | 'boolean'
-  | 'date'
-  | 'status'
-  | 'formula';
-
-export type SteelWorkbookCellValue = string | number | boolean | null;
-
-export interface SteelWorkbookColumn {
-  key: string;
-  label: string;
-  valueType: SteelWorkbookColumnValueType;
-  editable: boolean;
-  widthPx?: number;
-}
-
-export interface SteelWorkbookRow {
-  id: string;
-  cells: Record<string, SteelWorkbookCellValue>;
-}
-
-export interface SteelWorkbookSheet {
-  id: SteelWorkbookSheetId;
-  label: string;
-  columns: SteelWorkbookColumn[];
-  rows: SteelWorkbookRow[];
-}
-
-export interface SteelSelectedWorkbookRef {
-  workbookId: string;
-  workbookVersion: number;
-  sheetId: SteelWorkbookSheetId;
-  rowId: string;
-  columnKey: string;
-  displayLabel?: string;
-}
-
-export interface SteelChangedPath {
-  sheetId: SteelWorkbookSheetId;
-  rowId: string;
-  columnKey: string;
-}
-
-export interface SteelChangedFieldSummary extends SteelChangedPath {
-  label: string;
-  previousValue?: SteelWorkbookCellValue;
-  nextValue?: SteelWorkbookCellValue;
-}
-
-export interface SteelWorkbookSetCellOperation extends SteelChangedPath {
-  op: 'set_cell';
-  value: SteelWorkbookCellValue;
-  reason?: string;
-}
-
-export interface SteelWorkbookDeleteRowOperation {
-  op: 'delete_row';
-  sheetId: SteelWorkbookSheetId;
-  rowId: string;
-  reason?: string;
-}
-
-export type SteelWorkbookPatchOperation =
-  | SteelWorkbookSetCellOperation
-  | SteelWorkbookDeleteRowOperation;
-
 export interface ISteelToolCall extends Document {
   conversationMetaId?: string;
   aiRunId?: string;
@@ -318,7 +174,6 @@ export interface ISteelMemoryCandidate extends Document {
   proposedDefaultParameters: SteelRuleProposalDefaultParameter[];
   sourceRefs: SteelRuleProposalSourceRef[];
   createdFromConversationId: string;
-  createdFromWorkbookLineId?: string;
   createdByUserId: string;
   reviewedByUserId?: string;
   reviewedAt?: Date;

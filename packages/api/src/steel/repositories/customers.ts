@@ -6,7 +6,12 @@ import {
   parseSteelSourceRefs,
 } from './types';
 
-import type { SteelRepositoryClient, SteelSourceBackedRecord, SteelSourceRef } from './types';
+import type {
+  SteelRepositoryClient,
+  SteelSourceBackedRecord,
+  SteelSourceRef,
+  SteelSqlParameter,
+} from './types';
 
 interface SteelCustomerRow {
   id: string | number;
@@ -40,10 +45,13 @@ export interface SteelCustomer extends SteelSourceBackedRecord {
   sourceRefs: SteelSourceRef[];
 }
 
-interface SearchSteelCustomersInput {
-  searchText: string;
-  includeInactive?: boolean;
+export interface SearchSteelCustomersInput {
+  keywords: readonly string[];
   limit?: number;
+}
+
+function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 }
 
 function toCustomer(row: SteelCustomerRow): SteelCustomer {
@@ -74,20 +82,29 @@ export async function searchSteelCustomers(
   client: SteelRepositoryClient,
   input: SearchSteelCustomersInput,
 ): Promise<SteelCustomer[]> {
-  const where = [
-    `(
-      c.erp_customer_code = $1
-      OR c.display_name ILIKE $2
-      OR c.legal_name ILIKE $2
-      OR ca.alias ILIKE $2
-    )`,
-  ];
+  const keywords = uniqueNonEmpty(input.keywords);
+  const where: string[] = [];
+  const values: SteelSqlParameter[] = [];
+  const exactScoreExpressions: string[] = [];
 
-  if (!input.includeInactive) {
-    where.push(`c.status = 'active'`);
-  }
+  keywords.forEach((keyword) => {
+    values.push(keyword, `%${keyword}%`);
+    const exactPlaceholder = `$${values.length - 1}`;
+    const containsPlaceholder = `$${values.length}`;
+    exactScoreExpressions.push(`CASE WHEN c.erp_customer_code = ${exactPlaceholder} THEN 0 ELSE 1 END`);
+    where.push(`(
+      c.erp_customer_code = ${exactPlaceholder}
+      OR c.display_name ILIKE ${containsPlaceholder}
+      OR c.legal_name ILIKE ${containsPlaceholder}
+      OR c.tax_id ILIKE ${containsPlaceholder}
+      OR ca.alias ILIKE ${containsPlaceholder}
+    )`);
+  });
 
-  const values = [input.searchText, `%${input.searchText}%`, getLimit(input.limit)];
+  const scoreExpression =
+    exactScoreExpressions.length > 0 ? exactScoreExpressions.join(' + ') : '0';
+  values.push(getLimit(input.limit));
+  const whereClause = where.length > 0 ? `WHERE (${where.join('\n  OR ')})` : '';
 
   const result = await client.query<SteelCustomerRow>(
     `
@@ -106,17 +123,12 @@ SELECT
 FROM steel.customers c
 LEFT JOIN steel.customer_tiers ct ON ct.id = c.customer_tier_id
 LEFT JOIN steel.customer_aliases ca ON ca.customer_id = c.id
-WHERE ${where.join('\n  AND ')}
+${whereClause}
 ORDER BY
-  CASE
-    WHEN c.erp_customer_code = $1 THEN 0
-    WHEN c.display_name = $1 THEN 1
-    WHEN ca.alias = $1 THEN 2
-    ELSE 3
-  END,
+  ${scoreExpression},
   c.display_name ASC,
   c.id ASC
-LIMIT $3
+LIMIT $${values.length}
 `,
     values,
   );

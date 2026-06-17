@@ -34,7 +34,6 @@ function toRecord(document: SteelRuleProposalDocument): SteelRuleProposalRecord 
     proposedDefaultParameters: document.proposedDefaultParameters,
     sourceRefs: document.sourceRefs,
     createdFromConversationId: document.createdFromConversationId,
-    createdFromWorkbookLineId: document.createdFromWorkbookLineId,
     createdByUserId: document.createdByUserId,
     reviewedByUserId: document.reviewedByUserId,
     reviewedAt: document.reviewedAt,

@@ -1,10 +1,11 @@
 import { z } from 'zod';
 
-import { isRawUserTextPriceSearchQuery, steelPriceSearchCandidateSchema } from '../normalization';
+export const defaultSteelPriceCustomerTierId = 2;
 
 const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
+const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
 
 function normalizeCatalogFilterText(value: string): string {
   return value
@@ -40,20 +41,11 @@ function getExpectedCTypeCompactSpec(value: string): string | undefined {
 
 function getCTypeExpectedCompactSpecs(input: {
   originalText?: string;
-  productNames?: string[];
-  candidateQueries?: Array<{
-    label?: string;
-    productNames?: string[];
-  }>;
+  candidateQueries?: string[];
 }): string[] {
-  const values = [
-    input.originalText,
-    ...(input.productNames ?? []),
-    ...(input.candidateQueries ?? []).flatMap((candidate) => [
-      candidate.label,
-      ...(candidate.productNames ?? []),
-    ]),
-  ].filter((value): value is string => value !== undefined);
+  const values = [input.originalText, ...(input.candidateQueries ?? [])].filter(
+    (value): value is string => value !== undefined,
+  );
 
   return uniqueNonEmptyStrings(
     values.map(getExpectedCTypeCompactSpec).filter((value): value is string => value !== undefined),
@@ -62,31 +54,14 @@ function getCTypeExpectedCompactSpecs(input: {
 
 function hasCTypeCompactSpecFragment(
   input: {
-    productNames?: string[];
-    candidateQueries?: Array<{ productNames?: string[] }>;
+    candidateQueries?: string[];
   },
   expectedSpec: string,
 ): boolean {
   const expected = normalizeCatalogFilterText(expectedSpec);
-  const specValues = [
-    ...(input.productNames ?? []),
-    ...(input.candidateQueries ?? []).flatMap((candidate) => candidate.productNames ?? []),
-  ];
+  const specValues = input.candidateQueries ?? [];
 
   return specValues.some((value) => normalizeCatalogFilterText(value).includes(expected));
-}
-
-function getPriceSearchProductNames(input: {
-  productNames?: string[];
-  candidateQueries?: Array<{
-    label?: string;
-    productNames?: string[];
-  }>;
-}): string[] {
-  return [
-    ...(input.productNames ?? []),
-    ...(input.candidateQueries ?? []).flatMap((candidate) => candidate.productNames ?? []),
-  ];
 }
 
 function hasPlateSearchSignal(value: string): boolean {
@@ -95,24 +70,24 @@ function hasPlateSearchSignal(value: string): boolean {
 
 function hasSquareCutPlateProductName(input: {
   originalText?: string;
-  productNames?: string[];
-  candidateQueries?: Array<{
-    label?: string;
-    productNames?: string[];
-  }>;
+  candidateQueries?: string[];
 }): boolean {
-  const productNames = getPriceSearchProductNames(input);
-  const contextText = [
-    input.originalText,
-    ...productNames,
-    ...(input.candidateQueries ?? []).map((candidate) => candidate.label),
-  ]
+  const candidateQueries = input.candidateQueries ?? [];
+  const contextText = [input.originalText, ...candidateQueries]
     .filter((value): value is string => value !== undefined)
     .join(' ');
 
-  return productNames.some(
-    (productName) => productName.includes('四方切') && hasPlateSearchSignal(contextText),
+  return candidateQueries.some(
+    (candidateQuery) => candidateQuery.includes('四方切') && hasPlateSearchSignal(contextText),
   );
+}
+
+function normalizeComparableText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[＊*×]/g, 'x')
+    .trim();
 }
 
 const instructionCatalogContextSchema = z.object({
@@ -142,7 +117,7 @@ const lookupInstructionsSchema = z.object({
   limit: limitSchema,
 });
 
-const lookupQuoteRulesSchema = lookupInstructionsSchema.extend({
+const legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
   customerContext: z
     .object({
       customerId: z.number().int().positive().optional(),
@@ -152,6 +127,15 @@ const lookupQuoteRulesSchema = lookupInstructionsSchema.extend({
     })
     .optional(),
 });
+
+const lookupQuoteRulesSchema = z
+  .object({
+    keywords: keywordsSchema.describe(
+      'AI-selected Steel rule lookup keywords. Use product names, material words, processing terms, customer/rule hints, formula codes, or quote-context fragments as separate strings.',
+    ),
+    limit: limitSchema,
+  })
+  .strict();
 
 const lookupDefaultsSchema = z.object({
   catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
@@ -168,131 +152,31 @@ const lookupDefaultsSchema = z.object({
   limit: limitSchema,
 });
 
-const lookupCatalogFamiliesSchema = z
-  .object({
-    searchText: nonEmptyString.optional(),
-    keys: z.array(nonEmptyString).min(1).max(20).optional(),
-    reviewState: reviewStateSchema,
-    includeInactive: z.boolean().optional(),
-    limit: limitSchema,
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (input.searchText !== undefined || input.keys !== undefined) {
-      return;
-    }
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Provide searchText or keys',
-    });
-  });
-
 const searchPriceCandidatesSchema = z
   .object({
-    originalText: nonEmptyString.optional(),
-    productNames: z
-      .array(nonEmptyString)
-      .min(1)
-      .max(10)
-      .describe(
-        'Multiple product-price product-name text candidates to search in one tool call. Values may be Chinese product names, formal product-name fragments, or specification text as it appears inside product names, for example 錏輕型鋼 or 75*2.3.',
-      )
-      .optional(),
-    erpItemCodes: z
-      .array(nonEmptyString)
-      .min(1)
-      .max(10)
-      .describe(
-        'ERP item codes or code prefixes to search in one tool call, for example CCG, CCG07523, BNG, or DNB70.',
-      )
-      .optional(),
     candidateQueries: z
-      .array(steelPriceSearchCandidateSchema)
-      .max(10)
+      .array(nonEmptyString, { required_error: 'Provide candidateQueries' })
+      .min(1)
+      .max(20)
       .describe(
-        'Batch multiple per-candidate product-name/spec text and ERP-code searches in one tool call. Use this instead of calling search_price_candidates once per keyword, material alternative, or line when they share compatible top-level filters.',
-      )
-      .optional(),
-    customerTierId: z.number().int().positive().optional(),
-    reviewState: reviewStateSchema,
-    includeInactive: z.boolean().optional(),
+        'Required AI-selected price lookup keywords. Put each product name, spec fragment, ERP item code, code prefix, or prior-table code + product-name spec_key-like anchor in its own string; backend applies contains-style spec_key lookup without unit/category/review/active filters.',
+      ),
+    customerTierId: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Known Steel customer tier id from customer lookup or conversation context. If omitted, price lookup defaults to B tier.',
+      ),
     limit: limitSchema,
   })
-  .strict()
-  .superRefine((input, ctx) => {
-    const hasDirectFilter =
-      input.productNames !== undefined || input.erpItemCodes !== undefined;
-    const hasCandidateQueries =
-      input.candidateQueries !== undefined && input.candidateQueries.length > 0;
-
-    if (!hasDirectFilter && !hasCandidateQueries) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide productNames, erpItemCodes, or candidateQueries',
-      });
-    }
-
-    if (hasCandidateQueries && input.originalText === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide originalText with candidateQueries',
-        path: ['originalText'],
-      });
-    }
-
-    if (
-      input.originalText !== undefined &&
-      isRawUserTextPriceSearchQuery(input.originalText, input)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Do not search reviewed prices with raw user text',
-      });
-    }
-
-    if (
-      input.originalText !== undefined &&
-      input.productNames?.some((productName) =>
-        isRawUserTextPriceSearchQuery(input.originalText!, { productNames: [productName] }),
-      )
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Do not search reviewed prices with raw user text in productNames',
-        path: ['productNames'],
-      });
-    }
-
-    const expectedSpecs = getCTypeExpectedCompactSpecs(input);
-    const missingSpecs = expectedSpecs.filter(
-      (expectedSpec) => !hasCTypeCompactSpecFragment(input, expectedSpec),
-    );
-    if (missingSpecs.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `For c_type price search, include productNames spec fragments like ${missingSpecs.join(
-          ' or ',
-        )} derived from width and thickness; do not only use the full section such as 100x50x20x2.3.`,
-      });
-    }
-
-    if (hasSquareCutPlateProductName(input)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'For plate price search, use laser-cut plate productNames instead of square-cut productNames.',
-        path: ['productNames'],
-      });
-    }
-  });
+  .strict();
 
 const runFileOcrSchema = z
   .object({
     filename: nonEmptyString.optional(),
     fileIndex: z.number().int().min(0).optional(),
-    page: z.number().int().min(1).optional(),
-    imageIndex: z.number().int().min(1).optional(),
-    file_type: z.enum(['image', 'pdf']).optional(),
     output_mode: z.enum(['markdown', 'detailed', 'json']).optional(),
     dpi: z.number().int().min(150).max(600).optional(),
   })
@@ -345,25 +229,19 @@ const runVisualInspectionSchema = z
 
 export const steelToolArgsSchemas = {
   lookup_quote_rules: lookupQuoteRulesSchema,
-  lookup_catalog_families: lookupCatalogFamiliesSchema,
   search_customers: z.object({
-    searchText: nonEmptyString,
-    includeInactive: z.boolean().optional(),
+    keywords: keywordsSchema,
     limit: limitSchema,
   }),
   search_price_candidates: searchPriceCandidatesSchema,
   run_file_ocr: runFileOcrSchema,
-  run_visual_inspection: runVisualInspectionSchema,
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
-export type SteelBusinessToolName = Exclude<
-  SteelToolName,
-  'run_file_ocr' | 'run_visual_inspection'
->;
+export type SteelBusinessToolName = SteelToolName;
 export type LookupDefaultsInput = z.infer<typeof lookupDefaultsSchema>;
-export type LookupCatalogFamiliesInput = z.infer<typeof lookupCatalogFamiliesSchema>;
 export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
-export type LookupQuoteRulesInput = z.infer<typeof lookupQuoteRulesSchema>;
+export type LookupQuoteRulesInput = z.infer<typeof legacyLookupQuoteRulesSchema>;
+export type LookupQuoteRulesToolInput = z.infer<typeof lookupQuoteRulesSchema>;
 export type RunFileOcrInput = z.infer<typeof runFileOcrSchema>;
 export type RunVisualInspectionInput = z.infer<typeof runVisualInspectionSchema>;

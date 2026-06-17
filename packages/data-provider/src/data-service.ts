@@ -18,15 +18,6 @@ import type {
   SteelProviderChatRequest,
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
-  SteelFileAnalysisReadResponse,
-  SteelFileAnalysisManualPatchRequest,
-  SteelFileAnalysisManualPatchResponse,
-  SteelWorkbookCreateRequest,
-  SteelWorkbookExportRequest,
-  SteelWorkbookPatchRequest,
-  SteelWorkbookPatchResponse,
-  SteelWorkbookReadResponse,
-  SteelWorkbookConversationReadResponse,
 } from './steel';
 import { parseSteelProviderChatStreamLine } from './steel/ai';
 
@@ -138,49 +129,6 @@ export async function streamSteelChat(
   }
 
   return finalResponse;
-}
-
-export function createSteelWorkbook(
-  payload: SteelWorkbookCreateRequest,
-): Promise<SteelWorkbookReadResponse> {
-  return request.post(endpoints.steelWorkbooks(), payload);
-}
-
-export function getSteelWorkbook(workbookId: string): Promise<SteelWorkbookReadResponse> {
-  return request.get(endpoints.steelWorkbook(workbookId));
-}
-
-export function getSteelWorkbookByConversation(
-  conversationId: string,
-): Promise<SteelWorkbookConversationReadResponse> {
-  return request.get(endpoints.steelWorkbookByConversation(conversationId));
-}
-
-export function patchSteelWorkbook(
-  conversationId: string,
-  payload: SteelWorkbookPatchRequest,
-): Promise<SteelWorkbookPatchResponse> {
-  return request.patch(endpoints.steelWorkbookByConversation(conversationId), payload);
-}
-
-export function exportSteelWorkbook(
-  workbookId: string,
-  payload: SteelWorkbookExportRequest,
-): Promise<ArrayBuffer> {
-  return request.postArrayBuffer(endpoints.steelWorkbookExport(workbookId), payload);
-}
-
-export function getSteelFileAnalysisDataByConversation(
-  conversationId: string,
-): Promise<SteelFileAnalysisReadResponse> {
-  return request.get(endpoints.steelFileAnalysisDataByConversation(conversationId));
-}
-
-export function patchSteelFileAnalysisData(
-  conversationId: string,
-  payload: SteelFileAnalysisManualPatchRequest,
-): Promise<SteelFileAnalysisManualPatchResponse> {
-  return request.patch(endpoints.steelFileAnalysisDataByConversation(conversationId), payload);
 }
 
 /**

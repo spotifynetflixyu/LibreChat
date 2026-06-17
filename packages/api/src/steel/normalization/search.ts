@@ -12,14 +12,16 @@ export const steelPriceSearchCandidateSchema = z
       .min(1)
       .max(10)
       .describe(
-        'Product-price product-name text candidates, including Chinese product names, formal product-name fragments, or specification text found inside product names.',
+        'Product-price product-name/spec text candidates. The price lookup backend matches these values against steel.price_items.spec_key.',
       )
       .optional(),
     erpItemCodes: z
       .array(nonEmptyString)
       .min(1)
       .max(10)
-      .describe('ERP item codes or code prefixes to search in the price item code field.')
+      .describe(
+        'ERP item codes or code prefixes. The price lookup backend matches these values against steel.price_items.spec_key.',
+      )
       .optional(),
     confidence: confidenceSchema,
     reason: nonEmptyString,

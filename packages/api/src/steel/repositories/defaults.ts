@@ -64,6 +64,7 @@ export interface SteelQuoteDefault extends SteelSourceBackedRecord {
 }
 
 export interface SearchSteelQuoteDefaultsInput {
+  keywords?: readonly string[];
   customerId?: number;
   customerTierId?: number;
   catalogFamilies?: readonly string[];
@@ -120,6 +121,38 @@ function addNullableTextFacetFilter(
   where.push(`(${column} IS NULL OR ${column} IN (${placeholders.join(', ')}))`);
 }
 
+function addKeywordContainsFilter(
+  where: string[],
+  values: SteelSqlParameter[],
+  keywords: readonly string[] | undefined,
+) {
+  const uniqueKeywords = uniqueNonEmpty(keywords);
+  if (uniqueKeywords.length === 0) {
+    return;
+  }
+
+  const clauses = uniqueKeywords.map((keyword) => {
+    values.push(`%${keyword}%`);
+    const placeholder = `$${values.length}`;
+    return `(
+      default_type ILIKE ${placeholder}
+      OR origin_table ILIKE ${placeholder}
+      OR origin_id ILIKE ${placeholder}
+      OR origin_revision ILIKE ${placeholder}
+      OR scope_type ILIKE ${placeholder}
+      OR catalog_family ILIKE ${placeholder}
+      OR product_family ILIKE ${placeholder}
+      OR charge_type ILIKE ${placeholder}
+      OR formula_code ILIKE ${placeholder}
+      OR selector::text ILIKE ${placeholder}
+      OR effect ILIKE ${placeholder}
+      OR default_parameters::text ILIKE ${placeholder}
+    )`;
+  });
+
+  where.push(`(${clauses.join('\n  OR ')})`);
+}
+
 function toQuoteDefault(row: SteelQuoteDefaultRow): SteelQuoteDefault {
   return {
     id: parseRequiredNumber(row.id),
@@ -149,19 +182,30 @@ export async function searchSteelQuoteDefaults(
   client: SteelRepositoryClient,
   input: SearchSteelQuoteDefaultsInput,
 ): Promise<SteelQuoteDefault[]> {
-  const where = ['review_state = $1'];
-  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
+  const keywords = uniqueNonEmpty(input.keywords);
+  const useKeywordSearch = keywords.length > 0;
+  const where: string[] = [];
+  const values: SteelSqlParameter[] = [];
 
-  if (!input.includeInactive) {
+  if (input.reviewState !== undefined || !useKeywordSearch) {
+    values.push(input.reviewState ?? 'reviewed');
+    where.push(`review_state = $${values.length}`);
+  }
+
+  if (input.includeInactive === false || (!useKeywordSearch && !input.includeInactive)) {
     where.push('active = true');
   }
 
-  addScopeFilters(where, values, input);
+  if (!useKeywordSearch) {
+    addScopeFilters(where, values, input);
+  }
+  addKeywordContainsFilter(where, values, keywords);
   addNullableTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
   addNullableTextFacetFilter(where, values, 'product_family', input.productFamilies);
   addNullableTextFacetFilter(where, values, 'charge_type', input.chargeTypes);
   addNullableTextFacetFilter(where, values, 'formula_code', input.formulaCodes);
   values.push(getLimit(input.limit));
+  const whereClause = where.length > 0 ? `WHERE ${where.join('\n  AND ')}` : '';
 
   const result = await client.query<SteelQuoteDefaultRow>(
     `
@@ -187,7 +231,7 @@ SELECT
   review_state,
   source_refs
 FROM steel.quote_defaults
-WHERE ${where.join('\n  AND ')}
+${whereClause}
 ORDER BY
   CASE scope_type
     WHEN 'customer' THEN 0

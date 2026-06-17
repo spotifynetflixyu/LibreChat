@@ -37,22 +37,6 @@ interface SteelAgentRuleRow {
   source_refs: unknown;
 }
 
-interface SteelCatalogFamilyRuleRow {
-  id: string | number;
-  rule_type: string;
-  catalog_family: string | null;
-  product_name: string | null;
-  product_names: SteelJsonValue | null;
-  aliases: SteelJsonValue | null;
-  selectors: SteelJsonValue | null;
-  prompt: string;
-  priority: string | number;
-  confidence: string;
-  active: boolean;
-  review_state: string;
-  source_refs: unknown;
-}
-
 interface SteelQuoteRuleRow {
   id: string | number;
   rule_type: string;
@@ -110,22 +94,6 @@ export interface SteelAgentRule extends SteelSourceBackedRecord {
   sourceRefs: SteelSourceRef[];
 }
 
-export interface SteelCatalogFamilyRule extends SteelSourceBackedRecord {
-  id: number;
-  ruleType: string;
-  catalogFamily?: string;
-  productName?: string;
-  productNames: string[];
-  aliases: string[];
-  selectors: SteelJsonValue;
-  prompt: string;
-  priority: number;
-  confidence: string;
-  active: boolean;
-  reviewState: SteelReviewState;
-  sourceRefs: SteelSourceRef[];
-}
-
 export interface SteelQuoteRule extends SteelSourceBackedRecord {
   id: number;
   ruleType: string;
@@ -172,17 +140,8 @@ export interface SearchSteelAgentRulesInput {
   limit?: number;
 }
 
-export interface SearchSteelCatalogFamilyRulesInput {
-  searchText?: string;
-  catalogFamilies?: readonly string[];
-  productNames?: readonly string[];
-  ruleTypes?: readonly string[];
-  reviewState?: SteelReviewState;
-  includeInactive?: boolean;
-  limit?: number;
-}
-
 export interface SearchSteelQuoteRulesInput {
+  keywords?: readonly string[];
   catalogFamilies?: readonly string[];
   productFamilies?: readonly string[];
   chargeTypes?: readonly string[];
@@ -270,6 +229,35 @@ function addRuleTypesFilter(
   addTextArrayFilter(where, values, 'rule_type', ruleTypes);
 }
 
+function addKeywordContainsFilter(
+  where: string[],
+  values: SteelSqlParameter[],
+  keywords: readonly string[] | undefined,
+) {
+  const uniqueKeywords = uniqueNonEmpty(keywords);
+  if (uniqueKeywords.length === 0) {
+    return;
+  }
+
+  const clauses = uniqueKeywords.map((keyword) => {
+    values.push(`%${keyword}%`);
+    const placeholder = `$${values.length}`;
+    return `(
+      rule_type ILIKE ${placeholder}
+      OR scope_type ILIKE ${placeholder}
+      OR catalog_family ILIKE ${placeholder}
+      OR product_family ILIKE ${placeholder}
+      OR charge_type ILIKE ${placeholder}
+      OR formula_code ILIKE ${placeholder}
+      OR selectors::text ILIKE ${placeholder}
+      OR parameters::text ILIKE ${placeholder}
+      OR prompt ILIKE ${placeholder}
+    )`;
+  });
+
+  where.push(`(${clauses.join('\n  OR ')})`);
+}
+
 function addLimit(values: SteelSqlParameter[], limit: number | undefined): string {
   values.push(getLimit(limit));
   return `$${values.length}`;
@@ -289,24 +277,6 @@ function toAgentRule(row: SteelAgentRuleRow): SteelAgentRule {
     prompt: row.prompt,
     toolPolicy: parseJsonObject(row.tool_policy),
     outputPolicy: parseJsonObject(row.output_policy),
-    priority: parseRequiredNumber(row.priority),
-    confidence: row.confidence,
-    active: row.active,
-    reviewState: parseReviewState(row.review_state),
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
-  };
-}
-
-function toCatalogFamilyRule(row: SteelCatalogFamilyRuleRow): SteelCatalogFamilyRule {
-  return {
-    id: parseRequiredNumber(row.id),
-    ruleType: row.rule_type,
-    catalogFamily: parseNullableString(row.catalog_family),
-    productName: parseNullableString(row.product_name),
-    productNames: readStringArray(row.product_names),
-    aliases: readStringArray(row.aliases),
-    selectors: parseJsonObject(row.selectors),
-    prompt: row.prompt,
     priority: parseRequiredNumber(row.priority),
     confidence: row.confidence,
     active: row.active,
@@ -412,108 +382,46 @@ LIMIT ${addLimit(values, input.limit)}
   return result.rows.map(toAgentRule);
 }
 
-export async function searchSteelCatalogFamilyRules(
-  client: SteelRepositoryClient,
-  input: SearchSteelCatalogFamilyRulesInput,
-): Promise<SteelCatalogFamilyRule[]> {
-  const where = ['review_state = $1'];
-  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
-  const associationFilters: string[] = [];
-
-  if (!input.includeInactive) {
-    where.push('active = true');
-  }
-
-  addRuleTypesFilter(where, values, input.ruleTypes);
-
-  const catalogFamilies = uniqueNonEmpty(input.catalogFamilies);
-  if (catalogFamilies.length > 0) {
-    values.push(catalogFamilies);
-    associationFilters.push(`catalog_family = ANY($${values.length}::text[])`);
-  }
-
-  const productNames = uniqueNonEmpty(input.productNames);
-  if (productNames.length > 0) {
-    values.push(productNames);
-    associationFilters.push(`(
-      product_name = ANY($${values.length}::text[])
-      OR product_names ?| $${values.length}::text[]
-      OR aliases ?| $${values.length}::text[]
-    )`);
-  }
-
-  const searchText = input.searchText?.trim();
-  if (searchText) {
-    values.push(`%${searchText}%`);
-    associationFilters.push(`(
-      product_name ILIKE $${values.length}
-      OR product_names::text ILIKE $${values.length}
-      OR aliases::text ILIKE $${values.length}
-      OR selectors::text ILIKE $${values.length}
-      OR prompt ILIKE $${values.length}
-    )`);
-  }
-
-  if (associationFilters.length > 0) {
-    where.push(`(${associationFilters.join('\n  OR ')})`);
-  }
-
-  const result = await client.query<SteelCatalogFamilyRuleRow>(
-    `
-SELECT
-  id,
-  rule_type,
-  catalog_family,
-  product_name,
-  product_names,
-  aliases,
-  selectors,
-  prompt,
-  priority,
-  confidence,
-  active,
-  review_state,
-  source_refs
-FROM steel.catalog_family_rules
-WHERE ${where.join('\n  AND ')}
-ORDER BY priority ASC, id ASC
-LIMIT ${addLimit(values, input.limit)}
-`,
-    values,
-  );
-
-  return result.rows.map(toCatalogFamilyRule);
-}
-
 export async function searchSteelQuoteRules(
   client: SteelRepositoryClient,
   input: SearchSteelQuoteRulesInput,
 ): Promise<SteelQuoteRule[]> {
-  const where = ['review_state = $1'];
-  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
+  const keywords = uniqueNonEmpty(input.keywords);
+  const useKeywordSearch = keywords.length > 0;
+  const where: string[] = [];
+  const values: SteelSqlParameter[] = [];
   const scopeFilters = ["scope_type = 'company'"];
 
-  if (!input.includeInactive) {
+  if (input.reviewState !== undefined || !useKeywordSearch) {
+    values.push(input.reviewState ?? 'reviewed');
+    where.push(`review_state = $${values.length}`);
+  }
+
+  if (input.includeInactive === false || (!useKeywordSearch && !input.includeInactive)) {
     where.push('active = true');
   }
 
   addRuleTypesFilter(where, values, input.ruleTypes);
 
-  const catalogFamilies = uniqueNonEmpty(input.catalogFamilies);
-  if (catalogFamilies.length > 0) {
-    values.push(catalogFamilies);
-    scopeFilters.push(`catalog_family = ANY($${values.length}::text[])`);
-  }
+  if (useKeywordSearch) {
+    addKeywordContainsFilter(where, values, keywords);
+  } else {
+    const catalogFamilies = uniqueNonEmpty(input.catalogFamilies);
+    if (catalogFamilies.length > 0) {
+      values.push(catalogFamilies);
+      scopeFilters.push(`catalog_family = ANY($${values.length}::text[])`);
+    }
 
-  const productFamilies = uniqueNonEmpty(input.productFamilies);
-  if (productFamilies.length > 0) {
-    values.push(productFamilies);
-    scopeFilters.push(`product_family = ANY($${values.length}::text[])`);
-  }
+    const productFamilies = uniqueNonEmpty(input.productFamilies);
+    if (productFamilies.length > 0) {
+      values.push(productFamilies);
+      scopeFilters.push(`product_family = ANY($${values.length}::text[])`);
+    }
 
-  where.push(`(${scopeFilters.join(' OR ')})`);
-  addNullableTextArrayFilter(where, values, 'charge_type', input.chargeTypes);
-  addNullableTextArrayFilter(where, values, 'formula_code', input.formulaCodes);
+    where.push(`(${scopeFilters.join(' OR ')})`);
+    addNullableTextArrayFilter(where, values, 'charge_type', input.chargeTypes);
+    addNullableTextArrayFilter(where, values, 'formula_code', input.formulaCodes);
+  }
 
   const result = await client.query<SteelQuoteRuleRow>(
     `

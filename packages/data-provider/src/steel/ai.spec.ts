@@ -7,9 +7,7 @@ import {
   steelProviderChatRequestSchema,
   steelProviderChatResponseSchema,
   steelProviderChatStreamEventSchema,
-  steelProviderWorkbookPatchProposalSchema,
 } from './ai';
-import { requiredSteelWorkbookSheetIds } from './workbooks';
 
 describe('Steel AI public contracts', () => {
   it('keeps the v8.3 driver contract narrow', () => {
@@ -31,7 +29,6 @@ describe('Steel AI public contracts', () => {
       'streaming',
       'tool_calling',
       'structured_output',
-      'workbook_patch',
       'image_input',
       'pdf_input',
       'doc_input',
@@ -62,7 +59,6 @@ describe('Steel AI public contracts', () => {
         streaming: 'passed',
         tool_calling: 'passed',
         structured_output: 'passed',
-        workbook_patch: 'unverified',
         image_input: 'failed',
         pdf_input: 'unverified',
         doc_input: 'unverified',
@@ -130,37 +126,22 @@ describe('Steel AI public contracts', () => {
       steelProviderChatRequestSchema.parse({
         model: 'gpt-5.5',
         messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
-        workbookId: 'wb_1',
-        workbookVersion: 2,
-        selectedWorkbookRefs: [
-          {
-            workbookId: 'wb_1',
-            workbookVersion: 2,
-            sheetId: 'quote_details',
-            rowId: 'line_1',
-            columnKey: 'material_unit_price',
-          },
-        ],
         maxOutputTokens: 64,
         reasoningEffort: 'high',
       }),
     ).toEqual({
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
-      workbookId: 'wb_1',
-      workbookVersion: 2,
-      selectedWorkbookRefs: [
-        {
-          workbookId: 'wb_1',
-          workbookVersion: 2,
-          sheetId: 'quote_details',
-          rowId: 'line_1',
-          columnKey: 'material_unit_price',
-        },
-      ],
       maxOutputTokens: 64,
       reasoningEffort: 'high',
     });
+
+    expect(() =>
+      steelProviderChatRequestSchema.parse({
+        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        workbookId: 'wb_1',
+      }),
+    ).toThrow();
 
     expect(() =>
       steelProviderChatRequestSchema.parse({
@@ -175,97 +156,18 @@ describe('Steel AI public contracts', () => {
     ).toThrow();
   });
 
-  it('allows Steel chat responses to carry an accepted workbook patch for UI refresh', () => {
-    const sheets = requiredSteelWorkbookSheetIds.map((sheetId) => ({
-      id: sheetId,
-      label: sheetId,
-      columns: [
-        { key: 'material_unit_price', label: '材料單價', valueType: 'currency', editable: true },
-      ],
-      rows: [{ id: 'line_1', cells: { material_unit_price: 115 } }],
-    }));
+  it('does not expose chat-provider workbook or file-analysis patch payloads', () => {
     const parsed = steelProviderChatResponseSchema.parse({
       provider: 'openai_oauth_responses',
       model: 'gpt-5.5',
-      text: '已更新：報價明細 line-1 材料單價 120 -> 115',
+      text: '| 品名 | 小計 |\n| --- | --- |\n| C100 | 643.2 |',
       unsupportedSettings: [],
       warnings: [],
-      workbookPatch: {
-        workbook: {
-          id: 'wb_1',
-          version: 3,
-          sheets,
-        },
-        changedPaths: [
-          { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
-          { sheetId: 'customer_data', rowId: 'candidate_1', columnKey: 'price_tier' },
-        ],
-        changedFieldSummary: [
-          {
-            sheetId: 'quote_details',
-            rowId: 'line_1',
-            columnKey: 'material_unit_price',
-            label: '材料單價',
-            previousValue: 120,
-            nextValue: 115,
-          },
-          {
-            sheetId: 'customer_data',
-            rowId: 'candidate_1',
-            columnKey: 'price_tier',
-            label: '等級',
-            nextValue: 'B',
-          },
-        ],
-      },
     });
 
-    expect(parsed.workbookPatch?.workbook?.version).toBe(3);
-    expect(parsed.workbookPatch?.changedPaths).toEqual([
-      { sheetId: 'quote_details', rowId: 'line_1', columnKey: 'material_unit_price' },
-      { sheetId: 'customer_data', rowId: 'candidate_1', columnKey: 'price_tier' },
-    ]);
-  });
-
-  it('allows provider tool output to propose operations-only workbook patches', () => {
-    const parsed = steelProviderWorkbookPatchProposalSchema.parse({
-      operations: [
-        {
-          op: 'set_cell',
-          sheetId: 'quote_details',
-          rowId: 'line_1',
-          columnKey: 'material_unit_price',
-          value: 115,
-          reason: 'AI matched the reviewed C-type steel quote line.',
-        },
-      ],
-    });
-
-    expect(parsed.operations).toEqual([
-      {
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: 'line_1',
-        columnKey: 'material_unit_price',
-        value: 115,
-        reason: 'AI matched the reviewed C-type steel quote line.',
-      },
-    ]);
-  });
-
-  it('accepts internally projected workbook patch proposals larger than 100 operations', () => {
-    const parsed = steelProviderWorkbookPatchProposalSchema.parse({
-      operations: Array.from({ length: 120 }, (_, index) => ({
-        op: 'set_cell',
-        sheetId: 'quote_details',
-        rowId: `line_${index + 1}`,
-        columnKey: 'material_unit_price',
-        value: 100 + index,
-        reason: 'Backend-projected semantic workbook operation.',
-      })),
-    });
-
-    expect(parsed.operations).toHaveLength(120);
+    expect(parsed).not.toHaveProperty('workbookPatch');
+    expect(parsed).not.toHaveProperty('fileAnalysisPatch');
+    expect(parsed).not.toHaveProperty('fileAnalysisData');
   });
 
   it('validates browser-safe Steel provider chat file payloads', () => {
@@ -336,14 +238,14 @@ describe('Steel AI public contracts', () => {
       steelProviderChatStreamEventSchema.parse({
         type: 'tool',
         status: 'started',
-        toolName: 'patch_quote_workbook',
-        message: 'Applying workbook patch',
+        toolName: 'search_price_candidates',
+        message: 'search_price_candidates started',
       }),
     ).toEqual({
       type: 'tool',
       status: 'started',
-      toolName: 'patch_quote_workbook',
-      message: 'Applying workbook patch',
+      toolName: 'search_price_candidates',
+      message: 'search_price_candidates started',
     });
     expect(
       steelProviderChatStreamEventSchema.parse({
@@ -357,37 +259,12 @@ describe('Steel AI public contracts', () => {
     expect(
       steelProviderChatStreamEventSchema.parse({ type: 'text', delta: '小計：643.2' }),
     ).toEqual({ type: 'text', delta: '小計：643.2' });
-    expect(
+    expect(() =>
       steelProviderChatStreamEventSchema.parse({
         type: 'file_analysis_data',
-        fileAnalysisData: {
-          id: 'fad_1',
-          conversationId: 'steel-chat-1',
-          version: 1,
-          status: 'draft',
-          sourceFiles: [],
-          sheets: {
-            file_analysis_data: { columns: [], rows: [] },
-            manual_review: { columns: [], rows: [] },
-            interpretation_notes: { columns: [], rows: [] },
-          },
-        },
+        fileAnalysisData: {},
       }),
-    ).toEqual({
-      type: 'file_analysis_data',
-      fileAnalysisData: {
-        id: 'fad_1',
-        conversationId: 'steel-chat-1',
-        version: 1,
-        status: 'draft',
-        sourceFiles: [],
-        sheets: {
-          file_analysis_data: { columns: [], rows: [] },
-          manual_review: { columns: [], rows: [] },
-          interpretation_notes: { columns: [], rows: [] },
-        },
-      },
-    });
+    ).toThrow();
     expect(
       steelProviderChatStreamEventSchema.parse({
         type: 'done',

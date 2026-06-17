@@ -1,6 +1,4 @@
 import {
-  lookupSteelCatalogFamilies,
-  searchSteelCatalogFamilyRules,
   searchSteelCustomers,
   searchSteelCustomerRules,
   searchSteelInstructionPackets,
@@ -10,15 +8,8 @@ import {
 } from '../repositories';
 import { getSteelToolDefinition, isSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
-import { steelToolArgsSchemas, type SteelToolName } from './schemas';
-import { generateSteelPriceSearchTerms } from '../normalization';
-import {
-  getQuoteRulesDefaultsInput,
-  getSteelInstructionPacketSearchInput,
-  lookupSteelQuoteRules,
-} from './instructions';
-import { getSteelQuoteDefaultSearchInput } from './defaults';
-import { toCatalogFamilyRules, toCustomerRuleArray, toQuoteRulesRuleArray } from './rules';
+import { defaultSteelPriceCustomerTierId, steelToolArgsSchemas } from './schemas';
+import { toCustomerRuleArray, toQuoteRulesRuleArray } from './rules';
 
 import type {
   SteelToolResult,
@@ -28,7 +19,7 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelCustomer, SteelPriceItem } from '../repositories';
-import type { LookupQuoteRulesInput } from './schemas';
+import type { SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchPriceCandidatesInput = ReturnType<
@@ -148,101 +139,22 @@ function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
   });
 }
 
-function normalizePriceSearchText(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, '');
-}
-
-function isLaserCutPlateSearch(productNames: readonly string[]): boolean {
-  return productNames
-    .map(normalizePriceSearchText)
-    .some(
-      (productName) =>
-        productName.includes('ot板雷射切割') ||
-        productName.includes('黑鐵板雷射切割') ||
-        /m\/mot板雷射切割/u.test(productName),
-    );
-}
-
-function filterPlateLaserPriceCandidates(
-  candidates: SteelPriceItem[],
-  productNames: readonly string[],
-): SteelPriceItem[] {
-  if (!isLaserCutPlateSearch(productNames)) {
-    return candidates;
-  }
-
-  return candidates.filter((candidate) => candidate.unit === 'kg');
-}
-
-function interleaveDedupePriceCandidateLists(candidateLists: SteelPriceItem[][]): SteelPriceItem[] {
-  const seen = new Set<number>();
-  const priceCandidates: SteelPriceItem[] = [];
-  const maxLength = Math.max(0, ...candidateLists.map((candidateList) => candidateList.length));
-
-  for (let index = 0; index < maxLength; index += 1) {
-    for (const candidateList of candidateLists) {
-      const candidate = candidateList[index];
-      if (!candidate || seen.has(candidate.id)) {
-        continue;
-      }
-
-      seen.add(candidate.id);
-      priceCandidates.push(candidate);
-    }
-  }
-
-  return priceCandidates;
-}
-
 async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  if (!input.candidateQueries || input.candidateQueries.length === 0) {
-    const productNames = [...new Set(input.productNames ?? [])];
-    const erpItemCodes = [...new Set(input.erpItemCodes ?? [])];
-    const priceCandidates = await searchSteelPriceItems(client, {
-      ...input,
-      productNames,
-      erpItemCodes,
-    });
-
-    return {
-      priceCandidates: dedupePriceCandidates(
-        filterPlateLaserPriceCandidates(priceCandidates, productNames),
-      ),
-    };
-  }
-
-  if (input.originalText === undefined) {
-    throw new Error('originalText is required with candidateQueries');
-  }
-
-  const searchTerms = generateSteelPriceSearchTerms({
-    originalText: input.originalText,
-    candidates: input.candidateQueries,
+  const customerTierId = input.customerTierId ?? defaultSteelPriceCustomerTierId;
+  const priceCandidates = await searchSteelPriceItems(client, {
+    unfiltered: true,
+    customerTierId,
+    productNames: input.candidateQueries,
+    limit: input.limit,
   });
-  const candidateLists = await Promise.all(
-    searchTerms.candidateQueries.map((query) => {
-      const productNames = [...new Set(query.productNames ?? [])];
-      const erpItemCodes = [...new Set(query.erpItemCodes ?? [])];
-      return searchSteelPriceItems(client, {
-        productNames,
-        erpItemCodes,
-        customerTierId: input.customerTierId,
-        reviewState: input.reviewState,
-        includeInactive: input.includeInactive,
-        limit: input.limit,
-      }).then((priceCandidates) =>
-        filterPlateLaserPriceCandidates(priceCandidates, productNames),
-      );
-    }),
-  );
 
   return {
-    priceCandidates: interleaveDedupePriceCandidateLists(candidateLists),
-    searchQueries: searchTerms.candidateQueries,
-    rejectedSearchQueries: searchTerms.rejectedQueries,
+    customerTierId,
+    priceCandidates: dedupePriceCandidates(priceCandidates),
+    searchQueries: input.candidateQueries,
   };
 }
 
@@ -266,32 +178,6 @@ async function lookupCustomerRules(
       limit: 100,
     }),
   );
-}
-
-async function lookupInstructionPackets(
-  client: SteelRepositoryClient,
-  input: LookupQuoteRulesInput,
-) {
-  const searchInput = getSteelInstructionPacketSearchInput(input);
-
-  if (!searchInput.packetGroups || searchInput.packetGroups.length === 0) {
-    return [];
-  }
-
-  return searchSteelInstructionPackets(client, searchInput);
-}
-
-function getQuoteRuleSearchInput(input: LookupQuoteRulesInput) {
-  const defaultSearchInput = getSteelQuoteDefaultSearchInput(getQuoteRulesDefaultsInput(input));
-
-  return {
-    catalogFamilies: defaultSearchInput.catalogFamilies,
-    chargeTypes: defaultSearchInput.chargeTypes,
-    formulaCodes: defaultSearchInput.formulaCodes,
-    reviewState: input.reviewState,
-    includeInactive: input.includeInactive,
-    limit: input.limit,
-  };
 }
 
 async function emitLog(
@@ -344,61 +230,23 @@ async function dispatchSteelTool(
   switch (toolName) {
     case 'lookup_quote_rules': {
       const input = steelToolArgsSchemas.lookup_quote_rules.parse(args);
-      const instructionPackets = await lookupInstructionPackets(client, input);
-      const quoteDefaults = await searchSteelQuoteDefaults(
-        client,
-        getSteelQuoteDefaultSearchInput(getQuoteRulesDefaultsInput(input)),
-      );
-      const storedQuoteRules = await searchSteelQuoteRules(client, getQuoteRuleSearchInput(input));
-
-      const quoteRules = lookupSteelQuoteRules(input, instructionPackets, quoteDefaults);
-      const instructionRulePackets = Array.isArray(quoteRules.instructionPackets)
-        ? quoteRules.instructionPackets.filter(
-            (packet): packet is SteelToolJsonObject =>
-              typeof packet === 'object' && packet !== null && !Array.isArray(packet),
-          )
-        : [];
-      const quoteDefaultRules = Array.isArray(quoteRules.quoteDefaults)
-        ? quoteRules.quoteDefaults.filter(
-            (quoteDefault): quoteDefault is SteelToolJsonObject =>
-              typeof quoteDefault === 'object' &&
-              quoteDefault !== null &&
-              !Array.isArray(quoteDefault),
-          )
-        : [];
+      const searchInput = { keywords: input.keywords, limit: input.limit };
+      const [instructionPackets, quoteDefaults, storedQuoteRules] = await Promise.all([
+        searchSteelInstructionPackets(client, searchInput),
+        searchSteelQuoteDefaults(client, searchInput),
+        searchSteelQuoteRules(client, searchInput),
+      ]);
 
       return {
-        ...quoteRules,
+        keywords: input.keywords,
+        instructionPackets,
+        quoteDefaults,
+        quoteRules: storedQuoteRules,
         rules: toQuoteRulesRuleArray({
           quoteRules: storedQuoteRules,
-          instructionPackets: instructionRulePackets,
-          quoteDefaults: quoteDefaultRules,
+          instructionPackets: [],
+          quoteDefaults: [],
         }),
-      };
-    }
-    case 'lookup_catalog_families': {
-      const input = steelToolArgsSchemas.lookup_catalog_families.parse(args);
-      const catalogFamilyCandidates = await lookupSteelCatalogFamilies(client, input);
-      const catalogFamilyRules = await searchSteelCatalogFamilyRules(client, {
-        searchText: input.searchText,
-        catalogFamilies: catalogFamilyCandidates.map((candidate) => candidate.key),
-        productNames: catalogFamilyCandidates.flatMap((candidate) => [
-          candidate.displayNameZh,
-          ...candidate.aliases,
-        ]),
-        reviewState: input.reviewState,
-        includeInactive: input.includeInactive,
-        limit: input.limit,
-      });
-
-      return {
-        catalogFamilyCandidates,
-        rules: toCatalogFamilyRules({
-          families: catalogFamilyCandidates,
-          rules: catalogFamilyRules,
-        }),
-        selectionPolicy:
-          'AI must choose catalogFamilies from candidates or ask the user; backend returns vocabulary candidates only.',
       };
     }
     case 'search_customers': {

@@ -8,15 +8,12 @@ import {
   steelAuditLogSchema,
   steelConversationMetaSchema,
   steelExcelExportSchema,
-  steelFileAnalysisDataSchema,
   steelMemoryCandidateSchema,
   steelMemorySchema,
   steelProjectSchema,
   steelProjectSourceSchema,
   steelSourceVersionSchema,
   steelToolCallSchema,
-  steelWorkbookPatchSchema,
-  steelWorkbookSchema,
 } from '~/schema/steel';
 
 type Mongoose = typeof import('mongoose');
@@ -76,35 +73,6 @@ export function createSteelSourceVersionModel(mongoose: Mongoose) {
       'SteelSourceVersion',
       steelSourceVersionSchema,
       'steel_source_versions',
-    )
-  );
-}
-
-export function createSteelWorkbookModel(mongoose: Mongoose) {
-  return (
-    mongoose.models.SteelWorkbook ||
-    mongoose.model<t.ISteelWorkbook>('SteelWorkbook', steelWorkbookSchema, 'steel_workbooks')
-  );
-}
-
-export function createSteelWorkbookPatchModel(mongoose: Mongoose) {
-  return (
-    mongoose.models.SteelWorkbookPatch ||
-    mongoose.model<t.ISteelWorkbookPatch>(
-      'SteelWorkbookPatch',
-      steelWorkbookPatchSchema,
-      'steel_workbook_patches',
-    )
-  );
-}
-
-export function createSteelFileAnalysisDataModel(mongoose: Mongoose) {
-  return (
-    mongoose.models.SteelFileAnalysisData ||
-    mongoose.model<t.ISteelFileAnalysisData>(
-      'SteelFileAnalysisData',
-      steelFileAnalysisDataSchema,
-      'steel_file_analysis_data',
     )
   );
 }

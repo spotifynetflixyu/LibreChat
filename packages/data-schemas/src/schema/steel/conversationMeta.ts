@@ -30,7 +30,6 @@ const steelConversationMetaSchema = new Schema<ISteelConversationMeta>(
       default: 'active',
       index: true,
     },
-    workbookId: String,
   },
   { timestamps: true },
 );

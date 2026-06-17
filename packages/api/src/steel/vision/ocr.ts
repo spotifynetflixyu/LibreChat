@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -33,6 +33,7 @@ export interface SteelFileOcrOptions {
 export interface SteelPreparedImagePage {
   filename: string;
   mediaType: string;
+  fileType: 'image' | 'pdf';
   page?: number;
   imageIndex?: number;
   data: Uint8Array;
@@ -104,6 +105,11 @@ export function getSteelFileBytes(file: SteelFileOcrSourceFile): Uint8Array {
 
 function normalizeFilename(value: string | undefined): string {
   return value?.trim().toLowerCase() ?? '';
+}
+
+function sanitizeLocalFilename(value: string): string {
+  const basename = path.basename(value).replace(/[^\w.\-()\u4e00-\u9fff]+/gu, '_');
+  return basename.length > 0 ? basename : 'steel-ocr-input';
 }
 
 export function findSteelSourceFile(
@@ -275,33 +281,22 @@ export async function prepareSteelImagePage({
   const bytes = getSteelFileBytes(file);
   const mediaType = file.mediaType.trim().toLowerCase();
   const filename = file.filename ?? input.filename ?? `file-${input.fileIndex ?? 0}`;
-  const isPdf =
-    ('file_type' in input && input.file_type === 'pdf') || mediaType === 'application/pdf';
+  const isPdf = mediaType === 'application/pdf';
 
   if (isPdf) {
-    const page = input.page ?? 1;
-    const rendered = await renderPdfPageToPng({
-      bytes,
-      dpi: getDpi(input),
-      outputDir,
-      page,
-    });
-
     return {
       filename,
       mediaType,
-      page,
-      data: new Uint8Array(await readFile(rendered.path)),
-      dpi: rendered.dpi,
-      width: rendered.width,
-      height: rendered.height,
+      fileType: 'pdf',
+      data: bytes,
     };
   }
 
   return {
     filename,
     mediaType,
-    imageIndex: input.imageIndex ?? 1,
+    fileType: 'image',
+    imageIndex: 1,
     data: bytes,
   };
 }
@@ -319,12 +314,17 @@ export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<Ste
       outputDir: tempDir,
     });
 
-    if (prepared.page !== undefined) {
-      const imagePath = path.join(tempDir, `ocr-page-${prepared.page}.png`);
-      await writeFile(imagePath, prepared.data);
+    if (prepared.fileType === 'pdf') {
+      const pdfFilename = sanitizeLocalFilename(
+        prepared.filename.toLowerCase().endsWith('.pdf')
+          ? prepared.filename
+          : `${prepared.filename}.pdf`,
+      );
+      const pdfPath = path.join(tempDir, pdfFilename);
+      await writeFile(pdfPath, prepared.data);
       const text = await callPaddleOcr({
-        filePath: imagePath,
-        fileType: 'image',
+        filePath: pdfPath,
+        fileType: 'pdf',
         outputMode,
       });
 
@@ -334,14 +334,10 @@ export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<Ste
         data: {
           filename: prepared.filename,
           mediaType: prepared.mediaType,
-          page: prepared.page,
-          fileType: 'image',
+          fileType: 'pdf',
           outputMode,
           ocrEngine: 'PaddleOCR MCP',
           model: process.env.PADDLEOCR_MCP_MODEL ?? 'PaddleOCR-VL-1.6',
-          dpi: prepared.dpi ?? null,
-          width: prepared.width ?? null,
-          height: prepared.height ?? null,
           text,
         },
         sourceRefs: [],

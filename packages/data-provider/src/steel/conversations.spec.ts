@@ -1,5 +1,6 @@
 import {
   steelAuthenticatedConversationRequestSchema,
+  steelConversationMessageRequestSchema,
   steelConversationReadResponseSchema,
   steelGuestConversationRequestSchema,
 } from './conversations';
@@ -32,15 +33,42 @@ describe('Steel conversation public contracts', () => {
         status: 'active',
         guestTokenIssued: true,
         guestToken: 'raw-token-only-on-create',
+        workbookId: 'legacy_workbook_id',
         createdAt: '2026-05-28T00:00:00.000Z',
         updatedAt: '2026-05-28T00:00:00.000Z',
       }),
     ).toEqual(
-      expect.objectContaining({
+      {
+        id: 'steel_meta_1',
+        libreChatConversationId: 'lc_guest_1',
         createdFrom: 'guest',
         guestToken: 'raw-token-only-on-create',
         guestTokenIssued: true,
-      }),
+        status: 'active',
+        createdAt: '2026-05-28T00:00:00.000Z',
+        updatedAt: '2026-05-28T00:00:00.000Z',
+      },
     );
+  });
+
+  it('does not expose workbook refs in conversation message requests', () => {
+    expect(
+      steelConversationMessageRequestSchema.parse({
+        conversationId: 'steel_meta_1',
+        message: '請報價',
+        selectedWorkbookRefs: [
+          {
+            workbookId: 'wb_1',
+            workbookVersion: 1,
+            sheetId: 'system_order',
+            rowId: 'row_1',
+            columnKey: 'item',
+          },
+        ],
+      }),
+    ).toEqual({
+      conversationId: 'steel_meta_1',
+      message: '請報價',
+    });
   });
 });

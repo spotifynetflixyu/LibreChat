@@ -12,25 +12,26 @@ const steelToolDefinitions: SteelToolDefinition[] = [
   {
     name: 'lookup_quote_rules',
     description:
-      'Retrieve reviewed Steel instruction packets plus quote defaults for one batched interpreted order context; supports multiple catalog/material keys in catalogContexts.',
+      'Search Steel quote rules, instruction packets, and quote defaults using AI-selected keywords with contains-style database lookup.',
     argsSchema: steelToolArgsSchemas.lookup_quote_rules,
   },
   {
-    name: 'lookup_catalog_families',
-    description:
-      'Retrieve reviewed catalog-family vocabulary candidates for AI selection; does not resolve oral wording to a single key.',
-    argsSchema: steelToolArgsSchemas.lookup_catalog_families,
-  },
-  {
     name: 'search_customers',
-    description: 'Search Steel customers by ERP code, display name, legal name, or alias.',
+    description:
+      'Search Steel customers using AI-selected keywords across ERP code, display name, legal name, tax id, and aliases.',
     argsSchema: steelToolArgsSchemas.search_customers,
   },
   {
     name: 'search_price_candidates',
     description:
-      'Search reviewed product price candidates from AI-derived product-name text and ERP item code prefixes without converting price units. Batch related product names, specification fragments, and code prefixes into one call with productNames, erpItemCodes, or candidateQueries; do not call once per keyword. productNames searches price-row product names; erpItemCodes searches exact item codes or prefixes.',
+      'Search product price candidates from AI-derived candidateQueries only. The backend uses contains-style spec_key lookup, accepts an optional customerTierId, uses known customer tier pricing, defaults missing tier context to B tier, and does not apply unit/category/review/active filters.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
+  },
+  {
+    name: 'run_file_ocr',
+    description:
+      'Run PaddleOCR MCP on an uploaded image or whole PDF when the AI decides OCR is needed; PDFs are sent as one document, not page-by-page.',
+    argsSchema: steelToolArgsSchemas.run_file_ocr,
   },
 ];
 

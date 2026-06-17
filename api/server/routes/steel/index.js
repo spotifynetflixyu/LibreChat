@@ -1,7 +1,5 @@
 const express = require('express');
 const {
-  createMongooseSteelFileAnalysisRepository,
-  createSteelFileAnalysisService,
   createSteelHandlers,
   resolveEvidenceFileForProvider,
 } = require('@librechat/api');
@@ -46,11 +44,7 @@ async function resolveEvidenceFile({ fileId, request, userId, conversationId }) 
   });
 }
 
-const fileAnalysisService = createSteelFileAnalysisService({
-  repository: createMongooseSteelFileAnalysisRepository(require('mongoose')),
-});
-
-const handlers = createSteelHandlers({ getModelsConfig, resolveEvidenceFile, fileAnalysisService });
+const handlers = createSteelHandlers({ getModelsConfig, resolveEvidenceFile });
 
 function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -109,31 +103,6 @@ router.get(
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.post('/ai/chat', requireJwtAuth, handlers.chat);
 router.post('/ai/chat/stream', requireJwtAuth, steelAsyncRoute(handlers.streamChat));
-router.post('/workbooks', requireJwtAuth, handlers.createWorkbook);
-router.get(
-  '/workbooks/by-conversation/:conversationId',
-  requireJwtAuth,
-  handlers.readWorkbookByConversation,
-);
-router.patch(
-  '/workbooks/by-conversation/:conversationId',
-  requireJwtAuth,
-  handlers.patchWorkbookByConversation,
-);
-router.get('/workbooks/:workbookId', requireJwtAuth, handlers.readWorkbook);
-router.patch('/workbooks/:workbookId', requireJwtAuth, handlers.patchWorkbook);
-router.post('/workbooks/:workbookId/export', requireJwtAuth, handlers.exportWorkbook);
-router.get(
-  '/file-analysis/by-conversation/:conversationId',
-  requireJwtAuth,
-  handlers.readFileAnalysisDataByConversation,
-);
-router.patch(
-  '/file-analysis/by-conversation/:conversationId',
-  requireJwtAuth,
-  handlers.patchFileAnalysisDataByConversation,
-);
-router.patch('/file-analysis/:fileAnalysisDataId', requireJwtAuth, handlers.patchFileAnalysisData);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 
 module.exports = router;

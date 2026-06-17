@@ -5,11 +5,8 @@ import {
   createSteelAIRunModel,
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
-  createSteelFileAnalysisDataModel,
   createSteelMemoryCandidateModel,
   createSteelSourceVersionModel,
-  createSteelWorkbookModel,
-  createSteelWorkbookPatchModel,
 } from '../models/steel';
 
 describe('Steel Mongo schemas', () => {
@@ -116,56 +113,11 @@ describe('Steel Mongo schemas', () => {
     ]);
   });
 
-  it('stores renderable Steel workbook sheets and patch operations', () => {
-    const SteelWorkbook = createSteelWorkbookModel(mongoose);
-    const SteelWorkbookPatch = createSteelWorkbookPatchModel(mongoose);
+  it('does not expose legacy workbook or file-analysis Mongo persistence models', async () => {
+    const models = await import('../models/steel');
 
-    expect(SteelWorkbook.collection.name).toBe('steel_workbooks');
-    expect(SteelWorkbook.schema.path('sheets')).toBeDefined();
-    expect(SteelWorkbook.schema.path('sheets.0.columns')).toBeDefined();
-    expect(SteelWorkbook.schema.path('sheets.0.rows')).toBeDefined();
-    expect(SteelWorkbook.schema.indexes()).toContainEqual([
-      { conversationMetaId: 1, status: 1, updatedAt: -1 },
-      expect.any(Object),
-    ]);
-    expect(SteelWorkbook.schema.indexes()).toContainEqual([
-      { workbookId: 1 },
-      expect.objectContaining({ unique: true }),
-    ]);
-
-    expect(SteelWorkbookPatch.collection.name).toBe('steel_workbook_patches');
-    expect(SteelWorkbookPatch.schema.path('operations')).toBeDefined();
-    expect(SteelWorkbookPatch.schema.path('changedPaths')).toBeDefined();
-    expect(SteelWorkbookPatch.schema.path('changedFieldSummary')).toBeDefined();
-    expect(SteelWorkbookPatch.schema.indexes()).toContainEqual([
-      { workbookId: 1, beforeVersion: 1 },
-      expect.any(Object),
-    ]);
-    expect(SteelWorkbookPatch.schema.indexes()).toContainEqual([
-      { workbookId: 1, afterVersion: -1 },
-      expect.any(Object),
-    ]);
-  });
-
-  it('stores one Steel file analysis workspace per conversation', () => {
-    const SteelFileAnalysisData = createSteelFileAnalysisDataModel(mongoose);
-
-    expect(SteelFileAnalysisData.collection.name).toBe('steel_file_analysis_data');
-    expect(SteelFileAnalysisData.schema.path('sheets.file_analysis_data.rows')).toBeDefined();
-    expect(SteelFileAnalysisData.schema.path('sheets.manual_review.rows')).toBeDefined();
-    expect(SteelFileAnalysisData.schema.path('sheets.interpretation_notes.rows')).toBeDefined();
-    expect(SteelFileAnalysisData.schema.path('workbookId')).toBeUndefined();
-    expect(SteelFileAnalysisData.schema.indexes()).toContainEqual([
-      { conversationId: 1 },
-      expect.objectContaining({ unique: true }),
-    ]);
-    expect(SteelFileAnalysisData.schema.indexes()).toContainEqual([
-      { fileAnalysisDataId: 1 },
-      expect.objectContaining({ unique: true }),
-    ]);
-    expect(SteelFileAnalysisData.schema.indexes()).not.toContainEqual([
-      { workbookId: 1, updatedAt: -1 },
-      expect.any(Object),
-    ]);
+    expect('createSteelWorkbookModel' in models).toBe(false);
+    expect('createSteelWorkbookPatchModel' in models).toBe(false);
+    expect('createSteelFileAnalysisDataModel' in models).toBe(false);
   });
 });

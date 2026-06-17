@@ -101,4 +101,21 @@ describe('Steel source schema mapping', () => {
     expect(context).not.toContain('客戶資料.xlsx');
     expect(context).not.toContain('不存在欄位');
   });
+
+  it('does not expose workbook patch as a source mapping usage', () => {
+    const context = buildSourceSchemaMappingPromptContext();
+
+    expect(context).not.toContain('workbook_patch');
+    expect(
+      () =>
+        buildSourceSchemaMappingPromptContext({
+          allowedFor: 'workbook_patch' as never,
+        }),
+    ).not.toThrow();
+    expect(
+      buildSourceSchemaMappingPromptContext({
+        allowedFor: 'workbook_patch' as never,
+      }),
+    ).toBe('');
+  });
 });

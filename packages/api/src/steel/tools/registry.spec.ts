@@ -1,15 +1,16 @@
 import { getSteelToolDefinition, getSteelToolDefinitions } from './registry';
 
 describe('Steel tool registry', () => {
-  it('exposes only provider-neutral business tools', () => {
+  it('exposes only the minimal AI-led tool surface', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
 
     expect(toolNames).toEqual([
       'lookup_quote_rules',
-      'lookup_catalog_families',
       'search_customers',
       'search_price_candidates',
+      'run_file_ocr',
     ]);
+    expect(toolNames).not.toContain('lookup_catalog_families');
     expect(toolNames).not.toContain('lookup_formula');
     expect(toolNames).not.toContain('lookup_instructions');
     expect(toolNames).not.toContain('lookup_defaults');
@@ -23,24 +24,57 @@ describe('Steel tool registry', () => {
   it('keeps Zod validation owned by the backend registry', () => {
     const definition = getSteelToolDefinition('search_price_candidates');
 
-    expect(definition.argsSchema.parse({ productNames: ['錏輕型鋼'], limit: 2 })).toEqual({
-      productNames: ['錏輕型鋼'],
-      limit: 2,
-    });
     expect(
       definition.argsSchema.parse({
-        productNames: ['錏輕型鋼', '75*2.3'],
-        erpItemCodes: ['CCG'],
+        candidateQueries: ['錏輕型鋼', '75*2.3', 'CCG075'],
+        customerTierId: 5,
         limit: 5,
       }),
     ).toEqual({
-      productNames: ['錏輕型鋼', '75*2.3'],
-      erpItemCodes: ['CCG'],
+      candidateQueries: ['錏輕型鋼', '75*2.3', 'CCG075'],
+      customerTierId: 5,
       limit: 5,
     });
+    expect(() =>
+      definition.argsSchema.parse({
+        candidateQueries: [
+          {
+            queryId: 'c75',
+            productNames: ['錏輕型鋼', '75*2.3'],
+            erpItemCodes: ['CCG075'],
+            confidence: 'medium',
+            reason: 'old nested candidate shape',
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() => definition.argsSchema.parse({ productNames: ['錏輕型鋼'], limit: 2 })).toThrow(
+      'Unrecognized key',
+    );
+    expect(() => definition.argsSchema.parse({ erpItemCodes: ['CCG075'], limit: 2 })).toThrow(
+      'Unrecognized key',
+    );
     expect(() => definition.argsSchema.parse({ productName: '錏成型角鐵', limit: 5 })).toThrow(
       'Unrecognized key',
     );
+    expect(() =>
+      definition.argsSchema.parse({
+        candidateQueries: ['OT板雷射切割'],
+        customerTierId: 2,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        candidateQueries: ['OT板雷射切割'],
+        reviewState: 'reviewed',
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        candidateQueries: ['OT板雷射切割'],
+        includeInactive: true,
+      }),
+    ).toThrow('Unrecognized key');
     expect(() => definition.argsSchema.parse({ specKey: '30x30', limit: 5 })).toThrow(
       'Unrecognized key',
     );
@@ -50,19 +84,70 @@ describe('Steel tool registry', () => {
     expect(() => definition.argsSchema.parse({ catalogFamilies: ['c_type'], limit: 5 })).toThrow(
       'Unrecognized key',
     );
-    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow();
+    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow(
+      'Provide candidateQueries',
+    );
+    expect(definition.description).toContain('candidateQueries');
+    expect(definition.description).not.toContain('productNames');
+    expect(definition.description).not.toContain('erpItemCodes');
   });
 
-  it('requires a search text or explicit keys for catalog-family vocabulary lookup', () => {
-    const definition = getSteelToolDefinition('lookup_catalog_families');
+  it('uses AI-supplied keyword arrays for rule and customer lookups', () => {
+    expect(
+      getSteelToolDefinition('lookup_quote_rules').argsSchema.parse({
+        keywords: ['OT板雷射切割', 'PL6'],
+        limit: 20,
+      }),
+    ).toEqual({
+      keywords: ['OT板雷射切割', 'PL6'],
+      limit: 20,
+    });
+    expect(
+      getSteelToolDefinition('search_customers').argsSchema.parse({
+        keywords: ['大成', 'A001'],
+        limit: 10,
+      }),
+    ).toEqual({
+      keywords: ['大成', 'A001'],
+      limit: 10,
+    });
+    expect(() =>
+      getSteelToolDefinition('lookup_quote_rules').argsSchema.parse({ catalogContexts: [] }),
+    ).toThrow();
+    expect(() =>
+      getSteelToolDefinition('search_customers').argsSchema.parse({
+        searchText: '大成',
+      }),
+    ).toThrow();
+  });
 
-    expect(definition.argsSchema.parse({ searchText: 'H鋼', limit: 5 })).toEqual({
-      searchText: 'H鋼',
-      limit: 5,
+  it('lets AI trigger whole-file OCR without page-level arguments', () => {
+    const definition = getSteelToolDefinition('run_file_ocr');
+
+    expect(
+      definition.argsSchema.parse({
+        fileIndex: 0,
+        output_mode: 'markdown',
+      }),
+    ).toEqual({
+      fileIndex: 0,
+      output_mode: 'markdown',
     });
-    expect(definition.argsSchema.parse({ keys: ['h_beam'] })).toEqual({
-      keys: ['h_beam'],
-    });
-    expect(() => definition.argsSchema.parse({ limit: 5 })).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        fileIndex: 0,
+        page: 1,
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        fileIndex: 0,
+        imageIndex: 1,
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() => {
+      // @ts-expect-error exercising a removed public tool name.
+      getSteelToolDefinition('lookup_catalog_families');
+    }).toThrow('Unknown Steel tool');
   });
 });

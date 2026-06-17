@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-import { steelSelectedWorkbookRefSchema } from './workbooks';
-
 export const steelConversationCreatedFromSchema = z.enum(['authenticated', 'guest']);
 
 export const steelConversationStatusSchema = z.enum(['active', 'archived']);
@@ -28,7 +26,6 @@ export const steelConversationReadResponseSchema = z.object({
   status: steelConversationStatusSchema,
   guestTokenIssued: z.boolean(),
   guestToken: z.string().min(1).optional(),
-  workbookId: z.string().min(1).optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 });
@@ -40,7 +37,6 @@ export const steelConversationMessageRequestSchema = z.object({
   message: z.string().min(1),
   selectedProvider: z.string().min(1).optional(),
   selectedModel: z.string().min(1).optional(),
-  selectedWorkbookRefs: z.array(steelSelectedWorkbookRefSchema).default([]),
 });
 
 export type SteelConversationMessageRequest = z.infer<typeof steelConversationMessageRequestSchema>;
@@ -53,7 +49,6 @@ export interface SteelConversationMeta {
   createdFrom?: z.infer<typeof steelConversationCreatedFromSchema>;
   status?: z.infer<typeof steelConversationStatusSchema>;
   guestTokenIssued: boolean;
-  workbookId?: string;
   createdAt: string;
   updatedAt: string;
 }

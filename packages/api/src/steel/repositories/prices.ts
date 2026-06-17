@@ -62,6 +62,7 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
 }
 
 export interface SearchSteelPriceItemsInput {
+  unfiltered?: boolean;
   specKey?: string;
   productName?: string;
   productNames?: readonly string[];
@@ -73,35 +74,8 @@ export interface SearchSteelPriceItemsInput {
   limit?: number;
 }
 
-interface SteelProductNameSearch {
-  productNameTerms: string[];
-}
-
 function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? []).filter((value) => value.trim() !== ''))];
-}
-
-function parseExplicitThicknessMm(value: string): number[] {
-  const thicknessMatches = [
-    ...value.matchAll(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*(?:t|T|mm|m\s*\/\s*m|m\/m)/g),
-    ...value.matchAll(/厚(?:度)?\s*(\d+(?:\.\d+)?)/g),
-    ...value.matchAll(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*[*＊×xX]\s*\d+(?:\.\d+)?\s*(?:'|尺)\s*[*＊×xX]\s*\d+(?:\.\d+)?\s*(?:'|尺)/g),
-  ];
-
-  return thicknessMatches
-    .map((match) => Number(match[1]))
-    .filter((entry) => Number.isFinite(entry) && entry > 0);
-}
-
-function getProductNameAliasThicknessMm(input: SearchSteelPriceItemsInput): number | undefined {
-  const values = [
-    input.specKey,
-    input.productName,
-    ...(input.productNames ?? []),
-  ].filter((value): value is string => value !== undefined);
-  const thicknessValues = values.flatMap(parseExplicitThicknessMm);
-
-  return thicknessValues.length > 0 ? Math.max(...thicknessValues) : undefined;
 }
 
 function addTextFacetFilter(
@@ -124,68 +98,12 @@ function addTextFacetFilter(
   where.push(`${column} IN (${placeholders.join(', ')})`);
 }
 
-function getProductNameSearches(input: SearchSteelPriceItemsInput): SteelProductNameSearch[] {
+function getDiscoverySearchTerms(input: SearchSteelPriceItemsInput): string[] {
   return uniqueNonEmpty([
-    ...(input.productName ? [input.productName] : []),
+    input.productName,
     ...(input.productNames ?? []),
-  ]).map(getProductNameSearch);
-}
-
-function getProductNameAliasThicknessPredicate(thicknessExpression: string): string {
-  return `(
-          product_name_alias.metadata->>'minThicknessMm' IS NULL
-          OR (
-            ${thicknessExpression} IS NOT NULL
-            AND product_name_alias.metadata->>'minThicknessMm' ~ '^[0-9]+(\\.[0-9]+)?$'
-            AND (product_name_alias.metadata->>'minThicknessMm')::numeric <= ${thicknessExpression}
-          )
-        )`;
-}
-
-function getProductNameAliasTargetPredicate(): string {
-  return `(
-          (
-            product_name_alias.metadata->>'matchKind' = 'surface_marker'
-            AND (
-              product_name ~* (
-                '(^|[^[:alnum:]])'
-                || product_name_alias.target_product_name
-                || '([^[:alnum:]]|$)|^[0-9.]+[[:space:]]*'
-                || product_name_alias.target_product_name
-              )
-              OR (
-                product_name_alias.target_product_name = 'NO1'
-                AND product_name ~* 'ST[[:space:]]*NO[[:space:]]*1|NO[[:space:]]*1'
-              )
-            )
-          )
-          OR (
-            COALESCE(product_name_alias.metadata->>'matchKind', '') <> 'surface_marker'
-            AND product_name ILIKE ('%' || product_name_alias.target_product_name || '%')
-          )
-        )`;
-}
-
-function getProductNameMatchExpression(
-  placeholder: string,
-  aliasThicknessExpression: string,
-): string {
-  return `(
-    product_name ILIKE ${placeholder}
-    OR EXISTS (
-      SELECT 1
-      FROM steel.product_name_aliases AS product_name_alias
-      WHERE product_name_alias.active = true
-        AND product_name_alias.review_state = 'reviewed'
-        AND lower(product_name_alias.source_product_name) = lower(trim(both '%' from ${placeholder}::text))
-        AND (
-          product_name_alias.catalog_family IS NULL
-          OR product_name_alias.catalog_family = price_item.catalog_family
-        )
-        AND ${getProductNameAliasThicknessPredicate(aliasThicknessExpression)}
-        AND ${getProductNameAliasTargetPredicate()}
-    )
-  )`;
+    ...(input.erpItemCodes ?? []),
+  ].filter((value): value is string => value !== undefined));
 }
 
 function addDiscoverySearchFilter(
@@ -195,32 +113,13 @@ function addDiscoverySearchFilter(
 ): string[] {
   const clauses: string[] = [];
   const scoreExpressions: string[] = [];
-  const productNameAliasThicknessMm = getProductNameAliasThicknessMm(input);
 
-  getProductNameSearches(input).forEach((search) => {
-    const termClauses = search.productNameTerms.map((productNameTerm) => {
-      values.push(`%${productNameTerm}%`);
-      const placeholder = `$${values.length}`;
-      const aliasThicknessExpression =
-        productNameAliasThicknessMm === undefined
-          ? 'NULL::numeric'
-          : `$${values.push(productNameAliasThicknessMm)}::numeric`;
-      const matchExpression = getProductNameMatchExpression(
-        placeholder,
-        aliasThicknessExpression,
-      );
-      scoreExpressions.push(`CASE WHEN ${matchExpression} THEN 0 ELSE 1 END`);
-      return matchExpression;
-    });
-
-    clauses.push(`(${termClauses.join(' AND ')})`);
-  });
-
-  uniqueNonEmpty(input.erpItemCodes).forEach((erpItemCode) => {
-    values.push(`%${erpItemCode}%`);
+  getDiscoverySearchTerms(input).forEach((term) => {
+    values.push(`%${term}%`);
     const placeholder = `$${values.length}`;
-    scoreExpressions.push(`CASE WHEN erp_item_code ILIKE ${placeholder} THEN 0 ELSE 1 END`);
-    clauses.push(`erp_item_code ILIKE ${placeholder}`);
+    const matchExpression = `spec_key ILIKE ${placeholder}`;
+    scoreExpressions.push(`CASE WHEN ${matchExpression} THEN 0 ELSE 1 END`);
+    clauses.push(matchExpression);
   });
 
   if (clauses.length > 0) {
@@ -228,18 +127,6 @@ function addDiscoverySearchFilter(
   }
 
   return scoreExpressions;
-}
-
-function getProductNameSearch(productName: string): SteelProductNameSearch {
-  const value = productName.trim();
-  const oralAngleProductTerms: Record<string, string[]> = {
-    錏角鐵: ['錏', '角鐵'],
-    鍍鋅角鐵: ['鍍鋅', '角鐵'],
-  };
-
-  return {
-    productNameTerms: oralAngleProductTerms[value] ?? [value],
-  };
 }
 
 function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
@@ -270,10 +157,15 @@ export async function searchSteelPriceItems(
   client: SteelRepositoryClient,
   input: SearchSteelPriceItemsInput,
 ): Promise<SteelPriceItem[]> {
-  const where = ['review_state = $1'];
-  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
+  const where: string[] = [];
+  const values: SteelSqlParameter[] = [];
 
-  if (!input.includeInactive) {
+  if (!input.unfiltered || input.reviewState !== undefined) {
+    values.push(input.reviewState ?? 'reviewed');
+    where.push(`review_state = $${values.length}`);
+  }
+
+  if (input.includeInactive === false || (!input.unfiltered && !input.includeInactive)) {
     where.push('active = true');
   }
 
@@ -286,7 +178,9 @@ export async function searchSteelPriceItems(
   const discoveryScore =
     discoveryScoreExpressions.length > 0 ? discoveryScoreExpressions.join(' + ') : '0';
 
-  addTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
+  if (!input.unfiltered) {
+    addTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
+  }
 
   if (input.customerTierId !== undefined) {
     values.push(input.customerTierId);
@@ -294,6 +188,11 @@ export async function searchSteelPriceItems(
   }
 
   values.push(getLimit(input.limit, 100));
+  const whereClause = where.length > 0 ? `WHERE ${where.join('\n  AND ')}` : '';
+  const tierSort = input.customerTierId === undefined
+    ? ''
+    : `
+  CASE WHEN customer_tier_id IS NULL THEN 1 ELSE 0 END,`;
 
   const result = await client.query<SteelPriceItemRow>(
     `
@@ -326,10 +225,9 @@ FROM (
   FROM steel.price_items AS price_item
   LEFT JOIN steel.customer_tiers AS tier ON tier.id = price_item.customer_tier_id
 ) AS price_item
-WHERE ${where.join('\n  AND ')}
+${whereClause}
 ORDER BY
-  discovery_match_score ASC,
-  CASE WHEN customer_tier_id IS NULL THEN 1 ELSE 0 END,
+  discovery_match_score ASC,${tierSort}
   product_name ASC,
   id ASC
 LIMIT $${values.length}

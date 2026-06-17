@@ -1,3 +1,418 @@
+# Active: Steel Price Tier and Table Spec-Key Continuity
+
+Goal: make `search_price_candidates` preserve known customer tier pricing and
+carry prior Markdown table item anchors into spec-key lookup candidates.
+
+- [x] Add RED provider coverage proving a unique customer tier discovered by
+      `search_customers` is applied to later `search_price_candidates` calls
+      that omit `customerTierId`.
+- [x] Add RED provider coverage proving prior Markdown tables with item code
+      and product-name columns generate spec-key-like `candidateQueries`
+      anchors for subsequent price lookup.
+- [x] Implement the smallest provider-side runtime context to enrich price
+      lookup arguments before tool execution while preserving explicit AI
+      `customerTierId`.
+- [x] Update AI-facing rule text and Supabase rule sync so the model is told to
+      use known customer tier and table code/name anchors.
+- [x] Run focused provider/tool tests, rule sync dry-run/apply/readback,
+      package build checks as needed, and `git diff --check`.
+
+Review:
+
+- Added provider runtime context that records a unique tier id returned by
+  `search_customers`; later `search_price_candidates` calls that omit
+  `customerTierId` are enriched with that known tier, while explicit AI tier
+  arguments still win.
+- Added prior Markdown table anchoring: rows with code/model and product-name
+  headers produce normalized `code_productName` candidate queries so follow-up
+  price lookups continue to search the same table items through `spec_key`.
+- Updated provider/tool descriptions and `docs/rules/agent規則.txt`; synced
+  Supabase agent rules with `node packages/api/scripts/sync-steel-rules.cjs
+  --dry-run` and `--apply`. Direct DB readback confirmed known-tier policy,
+  table spec-key anchor policy, B-tier fallback, and the four-tool policy.
+- Verified with
+  `npx jest src/steel/ai/provider.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/repositories/prices.spec.ts --runInBand`.
+- `git diff --check` passed. `npx tsc -p tsconfig.build.json --noEmit
+  --pretty false --skipLibCheck` still reports only the existing Redis
+  `KeyvRedis` type mismatch in `src/cache/cacheFactory.ts:47`.
+
+# Active: Steel Workbook/File Analysis Persistence Removal
+
+Goal: remove the remaining legacy Steel workbook and file-analysis persistence
+layers after the chat flow moved to AI-produced Markdown tables.
+
+- [x] Add RED checks proving Steel shared exports no longer expose workbook or
+      file-analysis persistence contracts, and backend model exports no longer
+      expose workbook/file-analysis Mongo models.
+- [x] Remove workbook/file-analysis Mongo schemas, TypeScript document types,
+      repository/service modules, API data-service helpers, and stale tests.
+- [x] Keep non-persistence concepts that are still valid: chat file upload/OCR
+      runtime, admin `fileAnalysis.instructions`, and importer Excel reference
+      parsing.
+- [x] Run focused data-provider/data-schemas/API/client tests, shared package
+      builds, API build, and `git diff --check`.
+
+Review:
+
+- Removed legacy workbook/file-analysis persistence contracts from
+  data-provider exports and data-schemas Mongo models, including workbook patch,
+  selected workbook refs, file-analysis data, and workbook-derived memory
+  fields.
+- Removed API workbook/file-analysis repository/service/export modules, client
+  preview modules, route/data-service helpers, and stale rule sync payloads.
+  Steel chat now keeps OCR/runtime file handling but final quote/file-analysis
+  output is Markdown in the assistant response.
+- Removed hidden workbook orchestration vocabulary from source-schema mapping
+  usage and `lookup_quote_rules` legacy formula sanitization; remaining
+  `patch_quote_workbook`, `patch_file_analysis_data`,
+  `lookup_catalog_families`, and `workbook_patch` references are negative
+  tests or explicit rule guardrails.
+- Synced `docs/rules/agent規則.txt` / `docs/rules/OCR規則.txt` to Supabase with
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`; direct DB readback
+  confirmed `steel-default-agent-instruction` contains the B-tier default and
+  exposes only `search_customers`, `lookup_quote_rules`,
+  `search_price_candidates`, and `run_file_ocr`.
+- Verified focused API/data-provider/data-schemas/client Jest suites,
+  `packages/data-schemas` build, and `npm run build:data-provider`. API rollup
+  emitted `created dist` with only the known Redis `KeyvRedis` type warning but
+  did not return to the prompt, so it was interrupted; direct
+  `npx tsc -p tsconfig.build.json --noEmit --pretty false --skipLibCheck`
+  reports only that same pre-existing Redis type error.
+
+# Active: Steel `search_price_candidates` B-Tier Default
+
+Goal: keep Steel price lookup broad, but constrain customer price tiers so
+missing customer context defaults to B tier and does not return duplicate A/B/C/F
+price levels for the same item.
+
+- [x] Add RED registry/tool coverage proving `search_price_candidates` accepts
+      optional `customerTierId` and defaults missing tier context to B tier.
+- [x] Keep unit/category/review/active filters removed from price lookup SQL.
+- [x] Update the provider prompt and tool description so AI may pass a known
+      customer tier, while backend defaults unknown tier to B.
+- [x] Run focused tool/registry/provider checks and diff hygiene.
+
+Review:
+
+- `search_price_candidates` now accepts optional `customerTierId`; executor
+  defaults missing tier context to B tier id `2` before calling
+  `searchSteelPriceItems`.
+- Price SQL applies only the customer-tier scope `(customer_tier_id = ? OR
+  customer_tier_id IS NULL)` plus the AI keyword search and limit. It still
+  does not apply unit/category/review/active filters for this minimal
+  orchestration path.
+- Same-round provider batching now compares effective customer tier, so B-tier
+  default queries are not incorrectly merged with explicitly tiered queries.
+- Verified with
+  `npx jest src/steel/ai/provider.spec.ts src/steel/tools/execute.spec.ts src/steel/tools/registry.spec.ts src/steel/repositories/prices.spec.ts --runInBand`,
+  `npm run build:api`, and `git diff --check`. `build:api` still reports the
+  pre-existing Redis `KeyvRedis` type warning in `src/cache/cacheFactory.ts`.
+
+# Active: Steel Minimal AI-Led Orchestration
+
+Goal: reduce Steel `/steel/oauth-chat` to one AI-led tool loop where AI chooses
+when to OCR, lookup rules/customers/prices, and final output is Markdown tables
+instead of workbook/file-analysis state.
+
+- [x] Add RED provider/tool coverage proving the AI-visible tool surface is only
+      `run_file_ocr`, `lookup_quote_rules`, `search_customers`, and
+      `search_price_candidates`.
+- [x] Add RED OCR coverage proving `run_file_ocr` can OCR a whole PDF in one
+      PaddleOCR MCP call and no longer requires per-page OCR handling.
+- [x] Add RED registry/execute/repository coverage proving
+      `lookup_catalog_families` is unavailable and catalog-family modules are no
+      longer called.
+- [x] Add RED lookup coverage proving `lookup_quote_rules` and
+      `search_customers` use AI-provided keyword arrays / search text to perform
+      contains-style database lookup, matching the simplified
+      `search_price_candidates` contract.
+- [x] Add RED price coverage proving `search_price_candidates` returns database
+      candidates without unit-based, category-based, or post-query filters.
+- [x] Remove handler OCR pre-processing and let `run_file_ocr` be invoked by AI
+      inside the normal provider tool loop.
+- [x] Remove Workbook/File Analysis chat contracts, right-panel UI, client data
+      loading/saving, REST route registrations, and stale tests; keep only chat
+      plus Activity/thinking.
+- [x] Update prompt/rule wording to say AI should produce final Markdown tables
+      for quote and file-analysis output, and should use PaddleOCR MCP via
+      `run_file_ocr` when OCR is needed.
+- [x] Run focused provider/tool/repository/handler/client tests,
+      `npm run build:data-provider` if shared contracts change, and
+      `git diff --check`.
+
+Review:
+
+- Tool surface is now `lookup_quote_rules`, `search_customers`,
+  `search_price_candidates`, and `run_file_ocr`; `lookup_catalog_families`,
+  workbook patch, and file-analysis patch are no longer exposed through the
+  Steel chat provider loop. The runtime catalog-family repository/export/helper
+  module was removed; importer catalog-family source data remains for admin
+  data import only.
+- `run_file_ocr` sends PDFs to PaddleOCR MCP once as `file_type: pdf`; images
+  still use PaddleOCR for text/table extraction, with geometry-only judgments
+  left to visual reasoning.
+- `search_price_candidates` executes with AI-provided keywords and passes
+  `unfiltered: true`; customer tier is the exception and now defaults to B tier
+  when AI does not provide a known `customerTierId`.
+- Workbook/File Analysis right-panel UI, REST route registration, data-service
+  helpers, and chat request workbook fields were removed; the right panel is
+  now Activity only.
+- Verified with focused API/data-provider/client Jest tests,
+  `npm run build:data-provider`, `npm run build:api`, and `git diff --check`.
+  `build:api` still reports the pre-existing Redis `KeyvRedis` type warning in
+  `src/cache/cacheFactory.ts`.
+
+# Active: Steel `search_price_candidates` Spec-Key-Only Candidate Queries
+
+Goal: simplify Steel price lookup so `search_price_candidates` only accepts
+`candidateQueries`, and every candidate term from `productNames` or
+`erpItemCodes` is searched against `steel.price_items.spec_key`.
+
+- [x] Add RED schema/registry coverage proving top-level `productNames` and
+      `erpItemCodes` are rejected and `candidateQueries` is required.
+- [x] Add RED repository/tool coverage proving candidate `productNames` and
+      `erpItemCodes` both generate `spec_key ILIKE` predicates, not
+      `product_name` or `erp_item_code` predicates.
+- [x] Update schema descriptions, registry description, and validation messages
+      to explain the new spec-key-only contract.
+- [x] Remove direct top-level price search execution and unify execution around
+      `candidateQueries`.
+- [x] Update repository search input/SQL to treat discovery terms as spec-key
+      terms only.
+- [x] Update affected focused specs and run registry/repository/tool tests.
+
+Review:
+
+- `search_price_candidates` provider/tool schema now requires `candidateQueries`
+  and rejects top-level `productNames`, `erpItemCodes`, and legacy direct price
+  search keys.
+- Provider price instructions and same-round coalescing now only describe and
+  preserve `candidateQueries`; no compatibility wrapper promotes old top-level
+  fields into candidates.
+- Price repository discovery now sends every candidate product-name/spec term
+  and ERP code/prefix through `steel.price_items.spec_key ILIKE`; it no longer
+  emits `product_name ILIKE`, `erp_item_code ILIKE`, or
+  `steel.product_name_aliases` joins for reviewed price discovery.
+- Raw-only user text is still rejected before SQL, while mixed candidate lists
+  can retain derived terms and report rejected raw candidates.
+- Follow-up correction: AI-facing `search_price_candidates` now exposes
+  `candidateQueries` as a plain string array, not nested candidate objects.
+  Provider prompt, tool registry description, schema description, and runtime
+  rule files now say every candidate query string is matched against
+  `steel.price_items.spec_key` with contains semantics.
+- Follow-up correction: execution now performs one backend price lookup for all
+  candidate query strings instead of looping once per query string.
+- Synced runtime rules with
+  `rtk node packages/api/scripts/sync-steel-rules.cjs --dry-run` and
+  `rtk node packages/api/scripts/sync-steel-rules.cjs --apply`. Readback
+  confirmed `steel.agent_rules.slug = steel-default-agent-instruction`
+  `sha256 = 3f59d229233a7aa8cc67a47e80b50c0e79f3bde3a958e518c33ba41394fff0fc`
+  and `docs/rules/鋼材規則.txt` quote-rule
+  `sha256 = 9a9732289d6b7bcc738e6cf24286a48fc7611ccc252cca84963bf34ac0cd2b60`.
+- Verification:
+  `rtk npx jest src/steel/tools/execute.spec.ts --runInBand` passed;
+  `rtk npx jest src/steel/tools/registry.spec.ts src/steel/repositories/prices.spec.ts src/steel/normalization/search.spec.ts --runInBand` passed;
+  `rtk npx jest src/steel/ai/provider.spec.ts -t "search_price_candidates|price" --runInBand` passed.
+  Follow-up verification:
+  `rtk npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/repositories/prices.spec.ts src/steel/ai/provider.spec.ts --runInBand` passed.
+- Filtered touched-file typecheck:
+  `rtk npx tsc --noEmit --pretty false --skipLibCheck 2>&1 | rtk rg "packages/api/src/steel/(tools/(schemas|execute|registry)|repositories/prices|normalization/search|ai/provider)"`
+  produced no matching errors.
+
+# Active: Steel OAuth Chat Workbook/File Analysis Forced Loop Removal
+
+Goal: remove the high-latency `/steel/oauth-chat` forced loops by deleting
+`patch_quote_workbook`, deleting provider-facing `patch_file_analysis_data`,
+moving OCR/table extraction into pre-main-model context preparation, and
+removing the code-enforced reviewed-price lookup gate, while keeping the
+ordinary AI-led business tool loop available.
+
+- [x] Add RED coverage proving `/steel/oauth-chat` no longer registers
+      workbook/file-analysis patch function tools.
+- [x] Add RED coverage proving price requests are not forced through
+      `toolChoice: required`, required lookup reminders, or final hard-fail
+      checks before answering.
+- [x] Remove workbook patch and `patch_file_analysis_data` loops from the
+      provider and route handler chat path.
+- [x] Add or reuse a server-side OCR context-preparation seam so uploaded
+      visual evidence can be processed before the main model call and supplied
+      as text/Markdown context without `patch_file_analysis_data`.
+- [x] Keep optional business tool execution AI-led: if AI calls
+      `search_price_candidates`, execute it and return the data to AI without a
+      backend-enforced price-loop gate.
+- [x] Update shared/client contracts so chat responses no longer expect
+      workbook/file-analysis patch payloads from the chat provider and
+      assistant messages can render Markdown tables.
+- [x] Run focused provider/handler/client tests plus diff hygiene and record
+      review evidence.
+
+Review:
+
+- Removed provider-facing `patch_quote_workbook`, `patch_file_analysis_data`,
+  `run_file_ocr`, and `run_visual_inspection` tool-loop handling from
+  `packages/api/src/steel/ai/provider.ts`; provider now keeps only AI-led
+  Steel business tools.
+- Removed backend-enforced reviewed-price lookup gating: no required
+  `search_price_candidates` reminder, no `toolChoice: required`, and no final
+  hard fail when AI answers without that lookup.
+- Simplified `/steel/oauth-chat` handler paths so chat/stream responses return
+  provider text directly with `conversationId`; no chat-time workbook patch or
+  file-analysis patch persistence remains.
+- Added server-side OCR context preparation in the handler using the existing
+  drawing-evidence extraction service: attached visual evidence is first read
+  by a no-tool provider call, then supplied to the main Steel agent as text
+  context; if extraction fails, chat falls back to original files.
+- Updated shared chat response/stream schemas to remove chat-provider
+  `workbookPatch`, `fileAnalysisPatch`, `fileAnalysisData`, and
+  `file_analysis_data` stream events.
+- Updated the Steel chat UI so assistant Markdown tables render as actual
+  tables and chat responses no longer update workbook/file-analysis panels
+  from provider patch payloads.
+- Verification:
+  `rtk npx jest src/steel/ai/provider.spec.ts -t "answers price turns without workbook/file-analysis tools or required price-loop gating" --runInBand`
+  passed; `rtk npx jest src/steel/vision/service.spec.ts --runInBand`
+  passed; `rtk git diff --check -- ...` passed.
+- `rtk npx tsc --noEmit --pretty false --skipLibCheck` still fails broadly on
+  existing/now-stale Steel specs that assert removed workbook/file-analysis
+  patch behavior; filtered output showed no errors for the touched runtime
+  files after the fixes.
+- Follow-up cleanup removed stale workbook/file-analysis chat patch specs:
+  `provider.spec.ts`, `handlers.spec.ts`, `SteelOAuthChat.spec.tsx`, and
+  `packages/data-provider/src/steel/ai.spec.ts` now assert the new text/table
+  chat contract and the absence of provider-facing patch payloads.
+- Deleted obsolete `provider.catalog-oral.manual.spec.ts`, which was a manual
+  live smoke for the removed `patch_quote_workbook` workflow.
+- Removed workbook-specific timing fields from provider/shared/client
+  contracts: `workbookCompletionDurationMs`, `workbookPatchOperationCount`,
+  `workbookCompletionRequired`, `workbookCompletionComplete`,
+  `missingWorkbookSheetCount`, and `missingWorkbookCellCount`.
+- Rebuilt `packages/data-provider` so `packages/api` consumes the updated
+  shared timing/response types.
+- Follow-up verification:
+  `rtk npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/vision/service.spec.ts --runInBand`
+  passed; `rtk npx jest src/steel/ai.spec.ts --runInBand` passed;
+  `rtk npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand` passed;
+  `rtk npm run build:data-provider` passed.
+- Full `packages/api` typecheck still has unrelated pre-existing failures in
+  Redis cache typing, workbook/tool/vision specs, export spec Buffer typing,
+  and PaddleOCR manual specs. A filtered typecheck for the touched provider,
+  handler, service, and route spec files showed no remaining errors.
+
+# Active: Steel DNB Price Lookup Zero-Candidate Diagnosis
+
+Goal: explain why Round 2 `search_price_candidates` returned zero candidates
+for exact ERP codes such as `DNB70060` and `DNB70160`, even though the database
+contains those codes, and identify the smallest reliable fix path.
+
+- [x] Reproduce the Round 2 `search_price_candidates` call at the direct tool
+      seam without running the full OAuth chat loop.
+- [x] Query the live Steel Postgres price rows for `DNB70060` and `DNB70160`
+      and compare them against tool filters such as customer tier, review
+      state, active status, unit, and product names.
+- [x] Inspect how `candidateQueries`, top-level `erpItemCodes`, generated
+      search terms, and repository SQL interact.
+- [x] Report the direct failure cause, whether token compression is involved,
+      and concrete improvement options.
+
+Review:
+
+- Added a direct diagnosis harness at
+  `tmp/chat-round-test/price-search-dnb-diagnosis.ts` and captured evidence in
+  `tmp/chat-round-test/price-search-dnb-diagnosis.json`.
+- Live DB contains reviewed/active `DNB70060` and `DNB70160` rows for A/B/C/F
+  tiers. For B tier, `DNB70060` is `6.0m/mOT板雷射切割` at 38.5 and
+  `DNB70160` is `16.0m/mOT板雷射切割` at 37.5.
+- The rows are not filtered out by customer tier, review state, or active
+  status. Direct `search_price_candidates` with only exact
+  `erpItemCodes: ['DNB70060', 'DNB70160']`, `customerTierId: 2`,
+  `reviewState: reviewed`, and `includeInactive: false` returned 2 candidates
+  in 281ms.
+- Direct `search_price_candidates` with the broader Round 2 top-level DNB code
+  list returned 20 B-tier candidates in 334ms.
+- Direct repository product-name search for `6.0m/mOT板雷射切割` /
+  `16.0m/mOT板雷射切割` returns matching DNB rows, but all returned rows have
+  `unit: piece`.
+- Tool-level laser product-name search returns 0 candidates because
+  `filterPlateLaserPriceCandidates` treats OT / black-iron laser product names
+  as laser plate searches and keeps only `unit === 'kg'`.
+- Tool-level `candidateQueries` mode ignores top-level `productNames` and
+  `erpItemCodes`; it only searches the normalized per-candidate
+  `query.productNames` / `query.erpItemCodes`. Therefore Round 2's top-level
+  exact DNB codes did not rescue the candidate query search.
+- If exact DNB codes are placed inside `candidateQueries.erpItemCodes`, the
+  same tool path returns the expected 2 B-tier candidates, confirming the
+  database and exact-code SQL match are healthy.
+- No new evidence points to token compression or context loss. The DNB markers
+  were present in the previous live prompt captures; this failure is caused by
+  tool input handling and post-query filtering.
+
+# Active: Steel OAuth Chat Multi-Round Live Latency Diagnosis
+
+Goal: run a real multi-round `/steel/oauth-chat` test using
+`tmp/chat-round-test/round1.txt` and `tmp/chat-round-test/round2.txt`, identify
+why the visible chat can wait 2-10+ minutes or terminate even when individual
+tool execution is fast, and verify whether token/context compression causes
+missing data or failure.
+
+- [x] Confirm the live test entrypoint, auth prerequisites, provider/model
+      path, and existing timing instrumentation.
+- [x] Run round 1 and round 2 against the live local path with request timing,
+      stream/provider events, tool timings, and termination evidence captured.
+- [x] Compare tool execution time against total provider round time and
+      workbook-completion/tool-loop time.
+- [x] Inspect context/token compression behavior and whether compressed context
+      drops workbook/file-analysis/tool result data.
+- [x] Report the root cause, improvement options, and verification evidence.
+
+Review:
+
+- Added a debug harness at `tmp/chat-round-test/live-latency-diagnosis.ts`
+  and captured evidence in `tmp/chat-round-test/live-latency-events.jsonl` and
+  `tmp/chat-round-test/live-latency-summary.json`.
+- Live env path was `STEEL_OPENAI_PROVIDER=OAUTH`, model `gpt-5.5`,
+  `STEEL_OPENAI_REASONING_EFFORT=high`, with `STEEL_POSTGRES_URL` present.
+- Round 1 completed in 296.6s. Provider generation consumed 284.45s, tool
+  execution consumed 9.635s, workbook-completion checks consumed 1ms, and the
+  response reported 204,932 input tokens / 14,362 output tokens. The slowest
+  provider generation round took 191.24s after prompt growth to 150,924 chars.
+- Round 1 tool calls were fast: `lookup_catalog_families` 1.935s,
+  first `search_price_candidates` 2.801s, `lookup_quote_rules` 2.571s, second
+  `search_price_candidates` 2.324s. The long visible wait happened between
+  tool events while awaiting `openai(model).doGenerate(...)`.
+- Round 1 required extra workbook-completion provider turns because the first
+  accepted patch was missing `system_order`, `manual_review`, `customer_quote`,
+  `system_order.model_code`, `system_order.item_spec`,
+  `manual_review.confirmation_needed`, `customer_quote.item_spec`, and
+  `customer_quote.subtotal`. After that, AI produced a 59-operation workbook
+  patch and one final answer round.
+- Round 2 failed after the 720s harness timeout with
+  `AbortError: This operation was aborted`. It completed six provider
+  generation rounds before abort; two provider rounds alone took 342.95s and
+  301.063s, while all completed backend tools together took only 4.932s.
+- Round 2 marker checks stayed present in every captured prompt: `RBL1`,
+  `PA35`, `PB18`, `PC12`, `DNB70060`, `DNB70160`, `B1NB900016`,
+  `黑鐵板6.0m以上單價`, and `1,784`. No evidence points to token compression
+  dropping the supplied round1/round2 data.
+- Static inspection found no local Steel token/context compression path. The
+  OAuth provider is called with `responsesState: false`; Steel reconstructs
+  full prompt context and appends tool-call/tool-result messages each round.
+- The root cause is provider/tool-loop orchestration: `doGenerate` drains the
+  full provider response before returning; workbook-completion and required
+  reviewed-price lookup can force repeated provider rounds; prompt/tool-result
+  growth and high reasoning effort make individual model rounds take minutes.
+- Secondary root cause in round 2: after the user provided price rows, AI first
+  emitted a large `patch_quote_workbook` before required price lookup, then
+  searched with product names / ERP codes that returned zero candidates. The
+  required lookup loop continued and eventually hit the timeout.
+- Improvement targets: stream provider deltas or per-round progress instead of
+  waiting for final `doGenerate`; cap/timeout provider rounds with actionable
+  partial-state errors; reduce reasoning effort for lookup/workbook turns;
+  shrink prompt/tool-result context and avoid replaying full transcript when
+  workbook state already carries the facts; fix price search matching for
+  exact ERP codes such as `DNB70060` / `DNB70160` and no-result exit behavior;
+  expose per-round prompt size, generated tool names, and tool result counts in
+  Activity before final `done`.
+
 # Active: Steel Plate OT Laser Cutting Pricing Rules
 
 Goal: add Steel plate pricing rules so unspecified plate material defaults to

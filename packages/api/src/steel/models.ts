@@ -38,7 +38,6 @@ const defaultCapabilities: SteelCapabilityMap = {
   streaming: 'unverified',
   tool_calling: 'unverified',
   structured_output: 'unverified',
-  workbook_patch: 'unverified',
   image_input: 'unverified',
   pdf_input: 'unverified',
   doc_input: 'unverified',

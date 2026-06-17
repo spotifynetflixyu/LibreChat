@@ -4,23 +4,12 @@ import { logger } from '@librechat/data-schemas';
 import {
   steelAuthenticatedConversationRequestSchema,
   steelGuestConversationRequestSchema,
-  steelFileAnalysisManualPatchRequestSchema,
-  steelProviderChatRequestSchema,
-  steelProviderFileAnalysisPatchProposalSchema,
-  steelProviderWorkbookPatchProposalSchema,
-  steelWorkbookCreateRequestSchema,
-  steelWorkbookExportRequestSchema,
-  steelWorkbookPatchRequestSchema,
 } from 'librechat-data-provider';
-import { ZodError } from 'zod';
-
 import { buildSteelModelOptions } from './models';
 import { applyFileInstructionsToMessages, type FileInstructionConfig } from '../files/instructions';
 import { createMongooseSteelAuditRecorder } from './audit/service';
 import { createMongooseSteelConversationRepository } from './conversations/repository';
 import { createMongooseSteelRuleProposalRepository } from './rules/repository';
-import { createMongooseSteelWorkbookRepository } from './workbook/repository';
-import { createMongooseSteelFileAnalysisRepository } from './vision/repository';
 import {
   createSteelConversationService,
   SteelConversationAccessError,
@@ -28,15 +17,6 @@ import {
   SteelConversationUnauthenticatedError,
 } from './conversations/service';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
-import {
-  createSteelWorkbookService,
-  SteelWorkbookNotFoundError,
-  SteelWorkbookValidationError,
-  SteelWorkbookVersionConflictError,
-} from './workbook/service';
-import { createInitialSheets } from './workbook/template';
-import { createSteelFileAnalysisService } from './vision/analysis';
-import { exportSteelWorkbookXlsx } from './exports/service';
 import {
   parseSteelOpenAIConfig,
   resolveSteelOpenAIOAuthAuthFilePath,
@@ -49,25 +29,15 @@ import {
   type SteelOAuthChatFile,
   type SteelOAuthChatMessage,
   type SteelProviderToolExecutor,
-  type SteelProviderFileOcrExecutor,
   type SteelProviderChatResponse as SteelOAuthProviderChatResponse,
 } from './ai/provider';
 import { createSteelPostgresPool } from './postgres';
 import { executeSteelTool } from './tools/execute';
-import { runSteelFileOcr } from './vision/ocr';
 
 import type { Request, Response } from 'express';
-import type { z } from 'zod';
 import type {
-  SteelWorkbook,
-  SteelChangedFieldSummary,
   SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
-  SteelWorkbookCellValue,
-  SteelFileAnalysisData,
-  SteelProviderFileAnalysisPatchProposal,
-  SteelProviderWorkbookPatchProposal,
-  SteelWorkbookPatchResponse,
 } from 'librechat-data-provider';
 
 type ModelsConfig = Record<string, string[] | undefined>;
@@ -106,7 +76,6 @@ interface SteelRequest extends Request {
 export interface SteelHandlersDeps {
   env?: SteelOpenAIConfigEnv;
   executeToolCall?: SteelProviderToolExecutor;
-  executeFileOcr?: SteelProviderFileOcrExecutor;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelChatProviderResult>;
   resolveEvidenceFile?: (input: {
@@ -117,29 +86,9 @@ export interface SteelHandlersDeps {
   }) => Promise<SteelOAuthChatFile>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
-  workbookService?: ReturnType<typeof createSteelWorkbookService>;
-  fileAnalysisService?: ReturnType<typeof createSteelFileAnalysisService>;
 }
 
-type SteelChatProviderResult = Omit<
-  SteelOAuthProviderChatResponse,
-  'fileAnalysisPatch' | 'workbookPatch'
-> & {
-  fileAnalysisPatch?: SteelProviderFileAnalysisPatchProposal;
-  workbookPatch?: SteelProviderWorkbookPatchProposal;
-};
-
-type SteelChatProviderResultWithFileAnalysis = Omit<
-  SteelOAuthProviderChatResponse,
-  'fileAnalysisPatch' | 'workbookPatch'
-> & {
-  conversationId?: string;
-  workbookId?: string;
-  fileAnalysisData?: SteelFileAnalysisData;
-  workbookPatch?: SteelProviderWorkbookPatchProposal;
-};
-
-type SteelChatHandlerResult = SteelDataProviderChatResponse;
+type SteelChatProviderResult = SteelOAuthProviderChatResponse;
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
 
@@ -158,24 +107,6 @@ interface SteelChatErrorResponse {
   errorSummary: string;
 }
 
-const steelChatWorkbookContextSchema = steelProviderChatRequestSchema.pick({
-  workbookId: true,
-  workbookVersion: true,
-  selectedWorkbookRefs: true,
-});
-
-type SteelChatWorkbookContext = z.infer<typeof steelChatWorkbookContextSchema>;
-
-interface SteelChatWorkspaceContext {
-  conversationId?: string;
-  workbookId?: string;
-  workbookVersion?: number;
-  selectedWorkbookRefs: SteelChatWorkbookContext['selectedWorkbookRefs'];
-  workbookContextText?: string;
-}
-
-const maxWorkbookContextRowsPerSheet = 80;
-const maxWorkbookContextCellLength = 120;
 let defaultStreamToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -506,243 +437,6 @@ function createDefaultRuleProposalService() {
   });
 }
 
-function createDefaultWorkbookService() {
-  return createSteelWorkbookService({
-    repository: createMongooseSteelWorkbookRepository(mongoose),
-  });
-}
-
-function createDefaultFileAnalysisService() {
-  return createSteelFileAnalysisService({
-    repository: createMongooseSteelFileAnalysisRepository(mongoose),
-  });
-}
-
-function escapeWorkbookContextText(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maxWorkbookContextCellLength);
-}
-
-function formatWorkbookContextCellValue(value: SteelWorkbookCellValue): string {
-  if (value === null) {
-    return 'null';
-  }
-  if (typeof value === 'string') {
-    return `"${escapeWorkbookContextText(value)}"`;
-  }
-
-  return String(value);
-}
-
-function formatWorkbookContextCells(row: SteelWorkbook['sheets'][number]['rows'][number]): string {
-  const cells = Object.entries(row.cells).map(([key, value]) => {
-    return `${escapeWorkbookContextText(key)}=${formatWorkbookContextCellValue(value)}`;
-  });
-
-  return cells.length > 0 ? cells.join(' ') : '(empty)';
-}
-
-function createWorkbookContextText(workbook: SteelWorkbook): string {
-  return workbook.sheets
-    .map((sheet) => {
-      const columns = sheet.columns
-        .map((column) => {
-          return [
-            `column label="${escapeWorkbookContextText(column.label)}"`,
-            `key="${escapeWorkbookContextText(column.key)}"`,
-            `type="${column.valueType}"`,
-            `editable=${column.editable}`,
-          ].join(' ');
-        })
-        .join('\n');
-      const rows = sheet.rows
-        .slice(0, maxWorkbookContextRowsPerSheet)
-        .map((row) => {
-          return `row id="${escapeWorkbookContextText(row.id)}" cells: ${formatWorkbookContextCells(row)}`;
-        })
-        .join('\n');
-
-      return [
-        `sheet id="${sheet.id}" label="${escapeWorkbookContextText(sheet.label)}"`,
-        'columns:',
-        columns || '(no columns)',
-        'rows:',
-        rows || '(no rows)',
-      ].join('\n');
-    })
-    .join('\n\n');
-}
-
-function createInitialWorkbookContextText(): string {
-  return createWorkbookContextText({
-    id: 'pending',
-    version: 1,
-    sheets: createInitialSheets(),
-  });
-}
-
-function createFileAnalysisContextText(fileAnalysisData: SteelFileAnalysisData): string {
-  const fileAnalysisRows = fileAnalysisData.sheets.file_analysis_data.rows
-    .slice(0, 80)
-    .map((row) => ({
-      id: row.id,
-      sourceRef: {
-        fileId: row.sourceRef.fileId,
-        filename: row.sourceRef.filename,
-        mediaType: row.sourceRef.mediaType,
-        sourceKey: row.sourceRef.sourceKey,
-        imageIndex: row.sourceRef.imageIndex,
-        page: row.sourceRef.page,
-        regionLabel: row.sourceRef.regionLabel,
-        ocrEngine: row.sourceRef.ocrEngine,
-        ocrStatus: row.sourceRef.ocrStatus,
-        processedAt: row.sourceRef.processedAt,
-      },
-      cells: row.cells,
-    }));
-  const manualReviewRows = fileAnalysisData.sheets.manual_review.rows.slice(0, 40).map((row) => ({
-    id: row.id,
-    sourceRef: row.sourceRef,
-    cells: row.cells,
-    confidence: row.confidence,
-    reviewStatus: row.reviewStatus,
-    rowWarnings: row.rowWarnings,
-  }));
-  const interpretationNoteRows = fileAnalysisData.sheets.interpretation_notes.rows
-    .slice(0, 40)
-    .map((row) => ({
-      id: row.id,
-      sourceRef: row.sourceRef,
-      cells: row.cells,
-      confidence: row.confidence,
-    }));
-
-  return [
-    'Latest saved file_analysis_data workspace. Treat this as user-reviewed current data for this conversation and prefer it over older OCR guesses.',
-    JSON.stringify({
-      id: fileAnalysisData.id,
-      conversationId: fileAnalysisData.conversationId,
-      version: fileAnalysisData.version,
-      sourceFiles: fileAnalysisData.sourceFiles,
-      file_analysis_data: {
-        columns: fileAnalysisData.sheets.file_analysis_data.columns,
-        rows: fileAnalysisRows,
-      },
-      manual_review: {
-        columns: fileAnalysisData.sheets.manual_review.columns,
-        rows: manualReviewRows,
-      },
-      interpretation_notes: {
-        columns: fileAnalysisData.sheets.interpretation_notes.columns,
-        rows: interpretationNoteRows,
-      },
-    }),
-  ].join('\n');
-}
-
-async function addFileAnalysisContextToMessages(
-  messages: SteelOAuthChatMessage[],
-  conversationId: string | undefined,
-  getFileAnalysisService: () => ReturnType<typeof createSteelFileAnalysisService>,
-): Promise<SteelOAuthChatMessage[]> {
-  if (!conversationId) {
-    return messages;
-  }
-
-  const fileAnalysisData = await getFileAnalysisService().readByConversationId(conversationId);
-  if (!fileAnalysisData) {
-    return messages;
-  }
-
-  return [
-    ...messages,
-    {
-      role: 'system',
-      content: createFileAnalysisContextText(fileAnalysisData),
-    },
-  ];
-}
-
-async function getChatWorkbookContextText(
-  workbookContext: SteelChatWorkbookContext,
-  conversationId: string | undefined,
-  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
-): Promise<SteelChatWorkspaceContext> {
-  const selectedWorkbookRefs = workbookContext.selectedWorkbookRefs;
-
-  if (workbookContext.workbookId && workbookContext.workbookVersion) {
-    const readResult = await getWorkbookService().read({ workbookId: workbookContext.workbookId });
-    return {
-      conversationId,
-      workbookId: readResult.workbook.id,
-      workbookVersion: readResult.workbook.version,
-      selectedWorkbookRefs,
-      workbookContextText: createWorkbookContextText(readResult.workbook),
-    };
-  }
-
-  if (conversationId) {
-    const readResult = await getWorkbookService().readByConversationMetaId({
-      conversationMetaId: conversationId,
-    });
-    if (readResult) {
-      return {
-        conversationId,
-        workbookId: readResult.workbook.id,
-        workbookVersion: readResult.workbook.version,
-        selectedWorkbookRefs,
-        workbookContextText: createWorkbookContextText(readResult.workbook),
-      };
-    }
-  }
-
-  return {
-    conversationId,
-    selectedWorkbookRefs,
-    workbookContextText: createInitialWorkbookContextText(),
-  };
-}
-
-async function ensureChatWorkspace(
-  context: SteelChatWorkspaceContext,
-  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
-): Promise<
-  Required<Pick<SteelChatWorkspaceContext, 'conversationId' | 'workbookId' | 'workbookVersion'>>
-> {
-  const conversationId = context.conversationId ?? createSteelChatConversationId();
-  if (context.workbookId && context.workbookVersion) {
-    return {
-      conversationId,
-      workbookId: context.workbookId,
-      workbookVersion: context.workbookVersion,
-    };
-  }
-
-  const existingWorkbook = await getWorkbookService().readByConversationMetaId({
-    conversationMetaId: conversationId,
-  });
-  if (existingWorkbook) {
-    return {
-      conversationId,
-      workbookId: existingWorkbook.workbook.id,
-      workbookVersion: existingWorkbook.workbook.version,
-    };
-  }
-
-  const createdWorkbook = await getWorkbookService().create({
-    conversationMetaId: conversationId,
-  });
-  return {
-    conversationId,
-    workbookId: createdWorkbook.workbook.id,
-    workbookVersion: createdWorkbook.workbook.version,
-  };
-}
-
 function sendConversationError(res: Response, error: unknown) {
   if (
     error instanceof SteelConversationAccessError ||
@@ -772,278 +466,17 @@ function sendRuleProposalError(res: Response, error: unknown) {
   res.status(500).json({ message: 'Steel rule proposal request failed' });
 }
 
-function shouldExposeErrorSummary(env: SteelOpenAIConfigEnv): boolean {
-  return env['NODE_ENV'] !== 'production';
-}
-
-function sendWorkbookError(res: Response, error: unknown, env: SteelOpenAIConfigEnv) {
-  if (
-    error instanceof SteelWorkbookNotFoundError ||
-    error instanceof SteelWorkbookValidationError ||
-    error instanceof SteelWorkbookVersionConflictError
-  ) {
-    res.status(error.statusCode).json({
-      message: error.message,
-      errorCategory: error.errorCategory,
-    });
-    return;
-  }
-
-  logger.error('[steelWorkbook] request failed:', error);
-  res.status(500).json({
-    message: 'Steel workbook request failed',
-    errorCategory: 'steel_workbook_unknown',
-    ...(shouldExposeErrorSummary(env) ? { errorSummary: getErrorMessage(error) } : {}),
-  });
-}
-
-function isKnownWorkbookPatchError(error: unknown): error is Error {
-  return (
-    error instanceof SteelWorkbookNotFoundError ||
-    error instanceof SteelWorkbookValidationError ||
-    error instanceof SteelWorkbookVersionConflictError
-  );
-}
-
-function rejectedWorkbookPatch(reason: string): SteelWorkbookPatchResponse {
-  return {
-    changedPaths: [],
-    changedFieldSummary: [],
-    rejectedReason: reason,
-  };
-}
-
-function formatWorkbookPatchValue(value: SteelWorkbookCellValue | undefined): string {
-  if (value === undefined || value === null || value === '') {
-    return '空白';
-  }
-
-  return String(value);
-}
-
-function formatWorkbookPatchSummaryValue(value: SteelWorkbookCellValue | undefined): string {
-  return formatWorkbookPatchValue(value).replace(/\s+/g, ' ').trim();
-}
-
-function truncateWorkbookPatchSummaryValue(value: string, maxLength = 48): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  return `${value.slice(0, maxLength)}...`;
-}
-
-function findWorkbookPatchChange(
-  changes: SteelChangedFieldSummary[],
-  columnKey: string,
-): SteelChangedFieldSummary | undefined {
-  return changes.find((change) => change.columnKey === columnKey);
-}
-
-function getWorkbookPatchNextValue(
-  changes: SteelChangedFieldSummary[],
-  columnKey: string,
-): string | undefined {
-  const change = findWorkbookPatchChange(changes, columnKey);
-  if (!change) {
-    return undefined;
-  }
-
-  const value = formatWorkbookPatchSummaryValue(change.nextValue);
-  return value === '空白' ? undefined : truncateWorkbookPatchSummaryValue(value);
-}
-
-function getWorkbookPatchChangedLabels(changes: SteelChangedFieldSummary[]): string[] {
-  const priorityLabels = [
-    '客戶',
-    '分級',
-    '材料單價',
-    '小計',
-    '採用產品價格品項',
-    '標準化品名',
-    '價格來源',
-    '判讀備註',
-  ];
-  const changedLabels = changes.map((change) => change.label);
-  const labels = priorityLabels.filter((label) => changedLabels.includes(label));
-
-  if (labels.length > 0) {
-    return labels.slice(0, 4);
-  }
-
-  return changedLabels.slice(0, 4);
-}
-
-function isWorkbookFieldCountOnlyText(text: string): boolean {
-  const normalized = text.trim();
-
-  return (
-    normalized === '已更新 workbook。' ||
-    /^已更新\s*workbook\s*[：:]\s*\d+\s*個欄位[。.]?$/.test(normalized)
-  );
-}
-
-function getWorkbookPatchFallbackSummary(patch: SteelWorkbookPatchResponse): string {
-  const changes = patch.changedFieldSummary;
-  if (changes.length === 0) {
-    return '已更新 workbook，本輪新增資訊已套用。';
-  }
-
-  const orderInfo = [
-    getWorkbookPatchNextValue(changes, 'customer_original_item_name'),
-    getWorkbookPatchNextValue(changes, 'normalized_item_name'),
-    getWorkbookPatchNextValue(changes, 'adopted_product_price_item'),
-  ]
-    .filter((value) => value !== undefined)
-    .join('；');
-  const customer = getWorkbookPatchNextValue(changes, 'customer');
-  const customerTier = getWorkbookPatchNextValue(changes, 'customer_tier');
-  const price = getWorkbookPatchNextValue(changes, 'material_unit_price');
-  const subtotal = getWorkbookPatchNextValue(changes, 'subtotal');
-  const orderInfoParts = [
-    orderInfo.length > 0 ? orderInfo : undefined,
-    customer ? `客戶：${customer}` : undefined,
-    customerTier ? `分級：${customerTier}` : undefined,
-    price ? `價格：${price}` : undefined,
-    subtotal ? `小計：${subtotal}` : undefined,
-  ].filter((value) => value !== undefined);
-  const changedLabels = getWorkbookPatchChangedLabels(changes);
-  const changedLabelText = changedLabels.length > 0 ? changedLabels.join('、') : 'workbook 欄位';
-
-  return [
-    `已更新 workbook。`,
-    `訂單資訊：${orderInfoParts.length > 0 ? orderInfoParts.join('；') : '本輪資訊已套用'}。`,
-    `改動重點：已更新${changedLabelText}等 ${changes.length} 個欄位。`,
-  ].join('\n');
-}
-
-function getWorkbookPatchSummaryText(
-  responseText: string,
-  patch: SteelWorkbookPatchResponse,
-): string {
-  const trimmedResponseText = responseText.trim();
-  if (trimmedResponseText.length > 0 && !isWorkbookFieldCountOnlyText(trimmedResponseText)) {
-    return trimmedResponseText;
-  }
-
-  const [firstChange] = patch.changedFieldSummary;
-  if (!firstChange) {
-    return getWorkbookPatchFallbackSummary(patch);
-  }
-
-  if (patch.changedFieldSummary.length === 1) {
-    return `已更新 workbook：${firstChange.label} -> ${String(firstChange.nextValue)}`;
-  }
-
-  return getWorkbookPatchFallbackSummary(patch);
-}
-
-async function applyChatWorkbookPatch(
-  result: SteelChatProviderResultWithFileAnalysis,
-  workspaceContext: SteelChatWorkspaceContext,
-  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
-): Promise<SteelChatHandlerResult> {
-  const { workbookPatch, ...response } = result;
-  if (!workbookPatch) {
-    return response;
-  }
-
-  const proposal = steelProviderWorkbookPatchProposalSchema.parse(workbookPatch);
-  const ensuredWorkspace = await ensureChatWorkspace(workspaceContext, getWorkbookService);
-
-  try {
-    const appliedPatch = await getWorkbookService().patch({
-      workbookId: ensuredWorkspace.workbookId,
-      workbookVersion: ensuredWorkspace.workbookVersion,
-      selectedWorkbookRefs: workspaceContext.selectedWorkbookRefs,
-      operations: proposal.operations,
-    });
-
-    return {
-      ...response,
-      conversationId: ensuredWorkspace.conversationId,
-      workbookId: ensuredWorkspace.workbookId,
-      text: getWorkbookPatchSummaryText(response.text, appliedPatch),
-      workbookPatch: appliedPatch,
-    };
-  } catch (error) {
-    if (isKnownWorkbookPatchError(error)) {
-      return {
-        ...response,
-        warnings: [...response.warnings, error.message],
-        workbookPatch: rejectedWorkbookPatch(error.message),
-      };
-    }
-
-    throw error;
-  }
-}
-
-async function applyChatFileAnalysisPatch(
-  result: SteelChatProviderResult,
-  workspaceContext: SteelChatWorkspaceContext,
-  getFileAnalysisService: () => ReturnType<typeof createSteelFileAnalysisService>,
-  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
-): Promise<SteelChatProviderResultWithFileAnalysis> {
-  const { fileAnalysisPatch, ...response } = result;
-  if (!fileAnalysisPatch) {
-    return response;
-  }
-
-  const proposal = steelProviderFileAnalysisPatchProposalSchema.parse(fileAnalysisPatch);
-  const persisted = await persistChatFileAnalysisPatch(
-    proposal,
-    workspaceContext,
-    getFileAnalysisService,
-    getWorkbookService,
-  );
-
-  return {
-    ...response,
-    ...persisted,
-  };
-}
-
-async function persistChatFileAnalysisPatch(
-  proposal: SteelProviderFileAnalysisPatchProposal,
-  workspaceContext: SteelChatWorkspaceContext,
-  getFileAnalysisService: () => ReturnType<typeof createSteelFileAnalysisService>,
-  getWorkbookService: () => ReturnType<typeof createSteelWorkbookService>,
-): Promise<{
-  conversationId: string;
-  workbookId: string;
-  fileAnalysisData: SteelFileAnalysisData;
-}> {
-  const ensuredWorkspace = await ensureChatWorkspace(workspaceContext, getWorkbookService);
-
-  const fileAnalysisData = await getFileAnalysisService().patch({
-    conversationId: ensuredWorkspace.conversationId,
-    patch: proposal,
-  });
-
-  return {
-    conversationId: ensuredWorkspace.conversationId,
-    workbookId: ensuredWorkspace.workbookId,
-    fileAnalysisData,
-  };
-}
-
 export function createSteelHandlers({
   env = process.env,
-  executeFileOcr,
   executeToolCall,
   getModelsConfig,
   sendChat = sendSteelOAuthChat,
   resolveEvidenceFile,
   conversationService,
   ruleProposalService,
-  workbookService,
-  fileAnalysisService,
 }: SteelHandlersDeps) {
   const getConversationService = () => conversationService ?? createDefaultConversationService(env);
   const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
-  const getWorkbookService = () => workbookService ?? createDefaultWorkbookService();
-  const getFileAnalysisService = () => fileAnalysisService ?? createDefaultFileAnalysisService();
 
   return {
     async chat(req: Request, res: Response) {
@@ -1054,7 +487,6 @@ export function createSteelHandlers({
       let model: string;
       let maxOutputTokens: number | undefined;
       let reasoningEffort: SteelOpenAIReasoningEffort;
-      let workbookContext: SteelChatWorkbookContext;
       let conversationId: string | undefined;
       try {
         conversationId = parseOptionalConversationId(body.conversationId);
@@ -1070,7 +502,6 @@ export function createSteelHandlers({
           body.reasoningEffort,
           config.reasoningEffort,
         );
-        workbookContext = steelChatWorkbookContextSchema.parse(body);
       } catch (error) {
         res
           .status(400)
@@ -1099,47 +530,10 @@ export function createSteelHandlers({
         return;
       }
 
-      let messagesWithInstructions: SteelOAuthChatMessage[];
-      try {
-        messagesWithInstructions = applyFileInstructionsToMessages(
-          messages,
-          (req as SteelRequest).config,
-        );
-        if (fileAnalysisService) {
-          messagesWithInstructions = await addFileAnalysisContextToMessages(
-            messagesWithInstructions,
-            conversationId,
-            getFileAnalysisService,
-          );
-        }
-      } catch (error) {
-        logger.error('[steelStreamChat] context preparation failed:', error);
-        res
-          .status(500)
-          .json(
-            createErrorResponse(
-              'openai_oauth_responses',
-              model,
-              'unknown',
-              shouldExposeErrorSummary(env)
-                ? getErrorMessage(error)
-                : 'Steel stream context preparation failed.',
-            ),
-          );
-        return;
-      }
-
-      let workspaceContext: SteelChatWorkspaceContext;
-      try {
-        workspaceContext = await getChatWorkbookContextText(
-          workbookContext,
-          conversationId,
-          getWorkbookService,
-        );
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-        return;
-      }
+      const messagesWithInstructions = applyFileInstructionsToMessages(
+        messages,
+        (req as SteelRequest).config,
+      );
 
       let result: SteelChatProviderResult;
       try {
@@ -1153,8 +547,6 @@ export function createSteelHandlers({
             : {}),
           reasoningEffort,
           steelRuntimePolicy: true,
-          workbookContextText: workspaceContext.workbookContextText,
-          workbookPatchTool: true,
         });
       } catch (error) {
         res
@@ -1170,41 +562,10 @@ export function createSteelHandlers({
         return;
       }
 
-      try {
-        const responseWithFileAnalysis = await applyChatFileAnalysisPatch(
-          result,
-          workspaceContext,
-          getFileAnalysisService,
-          getWorkbookService,
-        );
-        const response = await applyChatWorkbookPatch(
-          responseWithFileAnalysis,
-          {
-            ...workspaceContext,
-            conversationId:
-              responseWithFileAnalysis.conversationId ?? workspaceContext.conversationId,
-            workbookId: responseWithFileAnalysis.workbookId ?? workspaceContext.workbookId,
-          },
-          getWorkbookService,
-        );
-        res.status(200).json(response);
-      } catch (error) {
-        if (error instanceof ZodError) {
-          res
-            .status(502)
-            .json(
-              createErrorResponse(
-                'openai_oauth_responses',
-                model,
-                'structured_output_invalid',
-                'OpenAI OAuth provider returned an invalid Steel structured patch.',
-              ),
-            );
-          return;
-        }
-
-        sendWorkbookError(res, error, env);
-      }
+      res.status(200).json({
+        ...result,
+        conversationId: conversationId ?? createSteelChatConversationId(),
+      });
     },
 
     async streamChat(req: Request, res: Response) {
@@ -1215,7 +576,6 @@ export function createSteelHandlers({
       let model: string;
       let maxOutputTokens: number | undefined;
       let reasoningEffort: SteelOpenAIReasoningEffort;
-      let workbookContext: SteelChatWorkbookContext;
       let conversationId: string | undefined;
       try {
         conversationId = parseOptionalConversationId(body.conversationId);
@@ -1231,7 +591,6 @@ export function createSteelHandlers({
           body.reasoningEffort,
           config.reasoningEffort,
         );
-        workbookContext = steelChatWorkbookContextSchema.parse(body);
       } catch (error) {
         res
           .status(400)
@@ -1260,47 +619,10 @@ export function createSteelHandlers({
         return;
       }
 
-      let messagesWithInstructions: SteelOAuthChatMessage[];
-      try {
-        messagesWithInstructions = applyFileInstructionsToMessages(
-          messages,
-          (req as SteelRequest).config,
-        );
-        if (fileAnalysisService) {
-          messagesWithInstructions = await addFileAnalysisContextToMessages(
-            messagesWithInstructions,
-            conversationId,
-            getFileAnalysisService,
-          );
-        }
-      } catch (error) {
-        logger.error('[steelStreamChat] context preparation failed:', error);
-        res
-          .status(500)
-          .json(
-            createErrorResponse(
-              'openai_oauth_responses',
-              model,
-              'unknown',
-              shouldExposeErrorSummary(env)
-                ? getErrorMessage(error)
-                : 'Steel stream context preparation failed.',
-            ),
-          );
-        return;
-      }
-
-      let workspaceContext: SteelChatWorkspaceContext;
-      try {
-        workspaceContext = await getChatWorkbookContextText(
-          workbookContext,
-          conversationId,
-          getWorkbookService,
-        );
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-        return;
-      }
+      const messagesWithInstructions = applyFileInstructionsToMessages(
+        messages,
+        (req as SteelRequest).config,
+      );
 
       setStreamHeaders(res);
       writeStreamEvent(res, {
@@ -1311,51 +633,6 @@ export function createSteelHandlers({
 
       const defaultToolExecutor = executeToolCall ? undefined : createDefaultStreamToolExecutor();
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
-      let currentWorkspaceContext = workspaceContext;
-      let streamedFileAnalysisResult:
-        | {
-            conversationId: string;
-            workbookId: string;
-            fileAnalysisData: SteelFileAnalysisData;
-          }
-        | undefined;
-
-      const persistStreamFileAnalysisPatch = async (
-        fileAnalysisPatch: SteelProviderFileAnalysisPatchProposal,
-      ) => {
-        const proposal = steelProviderFileAnalysisPatchProposalSchema.parse(fileAnalysisPatch);
-        writeStreamEvent(res, {
-          type: 'tool',
-          status: 'started',
-          toolName: 'patch_file_analysis_data',
-          message: 'patch_file_analysis_data started',
-        });
-
-        const persisted = await persistChatFileAnalysisPatch(
-          proposal,
-          currentWorkspaceContext,
-          getFileAnalysisService,
-          getWorkbookService,
-        );
-        currentWorkspaceContext = {
-          ...currentWorkspaceContext,
-          conversationId: persisted.conversationId,
-          workbookId: persisted.workbookId,
-        };
-        streamedFileAnalysisResult = persisted;
-
-        writeStreamEvent(res, {
-          type: 'file_analysis_data',
-          fileAnalysisData: persisted.fileAnalysisData,
-        });
-        writeStreamEvent(res, {
-          type: 'tool',
-          status: 'completed',
-          toolName: 'patch_file_analysis_data',
-          message: 'patch_file_analysis_data completed',
-          ok: true,
-        });
-      };
 
       try {
         writeStreamEvent(res, {
@@ -1366,40 +643,6 @@ export function createSteelHandlers({
 
         const result = await sendChat({
           authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
-          executeFileOcr: async (options) => {
-            writeStreamEvent(res, {
-              type: 'tool',
-              status: 'started',
-              toolName: 'run_file_ocr',
-              message: 'run_file_ocr started',
-            });
-
-            try {
-              const toolResult = await (executeFileOcr ?? runSteelFileOcr)(options);
-
-              const failedToolMessage =
-                toolResult.ok === false
-                  ? `run_file_ocr failed: ${toolResult.errorSummary}`
-                  : undefined;
-              writeStreamEvent(res, {
-                type: 'tool',
-                status: toolResult.ok ? 'completed' : 'failed',
-                toolName: 'run_file_ocr',
-                message: failedToolMessage ?? 'run_file_ocr completed',
-                ok: toolResult.ok,
-              });
-              return toolResult;
-            } catch (error) {
-              writeStreamEvent(res, {
-                type: 'tool',
-                status: 'failed',
-                toolName: 'run_file_ocr',
-                message: getErrorMessage(error),
-                ok: false,
-              });
-              throw error;
-            }
-          },
           executeSteelToolCall: async (options) => {
             const type = getStreamToolEventType(options.toolName);
             writeStreamEvent(res, {
@@ -1448,14 +691,6 @@ export function createSteelHandlers({
             });
           },
           onToolStatus: async (event) => {
-            if (
-              event.toolName !== 'run_visual_inspection' &&
-              event.toolName !== 'patch_quote_workbook' &&
-              event.toolName !== 'patch_file_analysis_data'
-            ) {
-              return;
-            }
-
             writeStreamEvent(res, {
               type: 'tool',
               status: event.status,
@@ -1468,89 +703,18 @@ export function createSteelHandlers({
                   : `${event.toolName} ${event.status}`),
               ok: event.result?.ok,
             });
-            if (
-              event.toolName === 'patch_file_analysis_data' &&
-              event.status === 'completed' &&
-              event.fileAnalysisPatch
-            ) {
-              await persistStreamFileAnalysisPatch(event.fileAnalysisPatch);
-            }
           },
           ...(hasMessageFiles(messagesWithInstructions)
             ? { passThroughUnsupportedFiles: true }
             : {}),
           reasoningEffort,
           steelRuntimePolicy: true,
-          workbookContextText: workspaceContext.workbookContextText,
-          workbookPatchTool: true,
         });
 
-        if (result.workbookPatch?.operations.length) {
-          writeStreamEvent(res, {
-            type: 'tool',
-            status: 'started',
-            toolName: 'patch_quote_workbook',
-            message: 'patch_quote_workbook started',
-          });
-        }
-
-        if (!streamedFileAnalysisResult && result.fileAnalysisPatch?.patches.length) {
-          writeStreamEvent(res, {
-            type: 'tool',
-            status: 'started',
-            toolName: 'patch_file_analysis_data',
-            message: 'patch_file_analysis_data started',
-          });
-        }
-
-        let responseWithFileAnalysis: SteelChatProviderResultWithFileAnalysis;
-        if (streamedFileAnalysisResult) {
-          const { fileAnalysisPatch: _fileAnalysisPatch, ...responseWithoutFileAnalysisPatch } =
-            result;
-          responseWithFileAnalysis = {
-            ...responseWithoutFileAnalysisPatch,
-            ...streamedFileAnalysisResult,
-          };
-        } else {
-          responseWithFileAnalysis = await applyChatFileAnalysisPatch(
-            result,
-            currentWorkspaceContext,
-            getFileAnalysisService,
-            getWorkbookService,
-          );
-        }
-        const response = await applyChatWorkbookPatch(
-          responseWithFileAnalysis,
-          {
-            ...currentWorkspaceContext,
-            conversationId:
-              responseWithFileAnalysis.conversationId ?? currentWorkspaceContext.conversationId,
-            workbookId: responseWithFileAnalysis.workbookId ?? currentWorkspaceContext.workbookId,
-          },
-          getWorkbookService,
-        );
-
-        if (!streamedFileAnalysisResult && result.fileAnalysisPatch?.patches.length) {
-          writeStreamEvent(res, {
-            type: 'tool',
-            status: response.fileAnalysisData ? 'completed' : 'failed',
-            toolName: 'patch_file_analysis_data',
-            message: response.fileAnalysisData
-              ? 'patch_file_analysis_data completed'
-              : 'patch_file_analysis_data failed',
-            ok: Boolean(response.fileAnalysisData),
-          });
-        }
-
-        if (result.workbookPatch?.operations.length) {
-          writeStreamEvent(res, {
-            type: 'tool',
-            status: response.workbookPatch?.rejectedReason ? 'failed' : 'completed',
-            toolName: 'patch_quote_workbook',
-            message: response.workbookPatch?.rejectedReason ?? 'patch_quote_workbook completed',
-            ok: response.workbookPatch?.rejectedReason ? false : true,
-          });
-        }
+        const response = {
+          ...result,
+          conversationId: conversationId ?? createSteelChatConversationId(),
+        };
 
         if (response.text.length > 0) {
           writeStreamEvent(res, {
@@ -1644,181 +808,6 @@ export function createSteelHandlers({
       }
     },
 
-    async createWorkbook(req: SteelRequest, res: Response) {
-      const parsed = steelWorkbookCreateRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        res.status(400).json({
-          message: 'Invalid Steel workbook create request',
-          errorCategory: 'steel_workbook_create_invalid',
-        });
-        return;
-      }
-
-      try {
-        const result = await getWorkbookService().create(parsed.data);
-        res.status(201).json(result);
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
-
-    async readWorkbook(req: SteelRequest, res: Response) {
-      try {
-        const result = await getWorkbookService().read({
-          workbookId: req.params.workbookId,
-        });
-        res.status(200).json(result);
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
-
-    async readWorkbookByConversation(req: SteelRequest, res: Response) {
-      const conversationId = req.params.conversationId;
-      if (!conversationId) {
-        res.status(400).json({
-          message: 'conversationId is required',
-          errorCategory: 'steel_workbook_request_invalid',
-        });
-        return;
-      }
-
-      try {
-        const result = await getWorkbookService().readByConversationMetaId({
-          conversationMetaId: conversationId,
-        });
-        res.status(200).json({ workbook: result?.workbook ?? null });
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
-
-    async patchWorkbook(req: SteelRequest, res: Response) {
-      res.status(410).json({
-        message: 'Steel workbook id-based patch routes are disabled',
-        errorCategory: 'steel_workbook_patch_route_disabled',
-      });
-    },
-
-    async patchWorkbookByConversation(req: SteelRequest, res: Response) {
-      const conversationId = req.params.conversationId;
-      if (!conversationId) {
-        res.status(400).json({
-          message: 'conversationId is required',
-          errorCategory: 'steel_workbook_request_invalid',
-        });
-        return;
-      }
-
-      const parsed = steelWorkbookPatchRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        res.status(400).json({
-          message: 'Invalid Steel workbook patch request',
-          errorCategory: 'steel_workbook_patch_invalid',
-        });
-        return;
-      }
-
-      try {
-        const result = await getWorkbookService().patchByConversationMetaId({
-          conversationMetaId: conversationId,
-          ...parsed.data,
-        });
-        res.status(200).json(result);
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
-
-    async patchFileAnalysisData(req: SteelRequest, res: Response) {
-      res.status(410).json({
-        message: 'Steel file_analysis_data id-based patch routes are disabled',
-        errorCategory: 'steel_file_analysis_patch_route_disabled',
-      });
-    },
-
-    async patchFileAnalysisDataByConversation(req: SteelRequest, res: Response) {
-      const conversationId = req.params.conversationId;
-      if (!conversationId) {
-        res.status(400).json({
-          message: 'conversationId is required',
-          errorCategory: 'steel_file_analysis_request_invalid',
-        });
-        return;
-      }
-
-      const parsed = steelFileAnalysisManualPatchRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        res.status(400).json({
-          message: 'Invalid Steel file analysis patch request',
-          errorCategory: 'steel_file_analysis_patch_invalid',
-        });
-        return;
-      }
-
-      try {
-        const fileAnalysisData = await getFileAnalysisService().patch({
-          conversationId,
-          patch: {
-            sourceFiles: parsed.data.sourceFiles,
-            patches: parsed.data.patches,
-            summary: parsed.data.summary,
-          },
-        });
-        res.status(200).json({ fileAnalysisData });
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
-
-    async readFileAnalysisDataByConversation(req: SteelRequest, res: Response) {
-      const conversationId = req.params.conversationId;
-      if (!conversationId) {
-        res.status(400).json({
-          message: 'conversationId is required',
-          errorCategory: 'steel_file_analysis_request_invalid',
-        });
-        return;
-      }
-
-      try {
-        const fileAnalysisData =
-          await getFileAnalysisService().readByConversationId(conversationId);
-        res.status(200).json({ fileAnalysisData });
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
-
-    async exportWorkbook(req: SteelRequest, res: Response) {
-      const parsed = steelWorkbookExportRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        res.status(400).json({
-          message: 'Invalid Steel workbook export request',
-          errorCategory: 'steel_workbook_export_invalid',
-        });
-        return;
-      }
-
-      try {
-        const { workbook } = await getWorkbookService().read({
-          workbookId: req.params.workbookId,
-        });
-        if (workbook.version !== parsed.data.workbookVersion) {
-          throw new SteelWorkbookVersionConflictError();
-        }
-
-        const result = await exportSteelWorkbookXlsx({
-          workbook,
-          sheetIds: parsed.data.sheetIds,
-        });
-        res.setHeader('Content-Type', result.contentType);
-        res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
-        res.send(result.buffer);
-      } catch (error) {
-        sendWorkbookError(res, error, env);
-      }
-    },
   };
 }
 
@@ -1831,7 +820,6 @@ export function createSteelAdminHandlers() {
           streaming: 'passed',
           tool_calling: 'passed',
           structured_output: 'passed',
-          workbook_patch: 'unverified',
           image_input: 'passed',
           pdf_input: 'passed',
           doc_input: 'passed',

@@ -150,9 +150,7 @@ function quoteRule({
 
 function buildAgentRules(repoRoot) {
   const agent = readRulePrompt(repoRoot, 'docs/rules/agent規則.txt');
-  const workbook = readRulePrompt(repoRoot, 'docs/rules/workbook規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/OCR規則.txt');
-  const vision = readRulePrompt(repoRoot, 'docs/rules/vision規則.txt');
   const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
 
   return [
@@ -168,14 +166,10 @@ function buildAgentRules(repoRoot) {
       prompt: agent.prompt,
       toolPolicy: {
         availableTools: [
-          'lookup_catalog_families',
           'search_customers',
           'lookup_quote_rules',
           'search_price_candidates',
           'run_file_ocr',
-          'run_visual_inspection',
-          'patch_quote_workbook',
-          'patch_file_analysis_data',
         ],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
@@ -200,44 +194,6 @@ function buildAgentRules(repoRoot) {
       ],
     },
     {
-      slug: 'steel-workbook-output-policy',
-      version: 1,
-      ruleType: 'workbook_output_rule',
-      title: 'Steel Workbook Output Policy',
-      locale: 'zh-TW',
-      ruleSections: ['workbook_output', 'workbook_patch', 'system_order'],
-      sheetId: null,
-      selectors: { appliesTo: ['steel_quote_workbook'], locale: 'zh-TW' },
-      prompt: workbook.prompt,
-      toolPolicy: {
-        availableTools: ['patch_quote_workbook'],
-        requiredTool: 'patch_quote_workbook',
-      },
-      outputPolicy: {
-        answerLanguage: 'zh-TW',
-        requireProductRowEvidenceSource: true,
-        allowedOrderEvidenceSources: ['file_analysis_data', 'user conversation'],
-        fileAnalysisEvidenceTargets: [
-          'quote_details.decision_evidence',
-          'price_sources.note',
-          'interpretation_notes.evidence',
-        ],
-        forbidCustomerQuoteInternalSourceRefs: true,
-      },
-      priority: 20,
-      confidence: 'high',
-      active: true,
-      reviewState: 'reviewed',
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/workbook規則.txt',
-          '產品 row 來源標註規則',
-          'workbook_output_policy',
-          workbook.sha256,
-        ),
-      ],
-    },
-    {
       slug: 'steel-drawing-ocr-policy',
       version: 1,
       ruleType: 'inference_order_rule',
@@ -252,13 +208,13 @@ function buildAgentRules(repoRoot) {
       },
       prompt: ocr.prompt,
       toolPolicy: {
-        availableTools: ['run_file_ocr', 'run_visual_inspection', 'patch_file_analysis_data'],
-        requiredToolOrder: ['run_file_ocr', 'patch_file_analysis_data'],
+        availableTools: ['run_file_ocr'],
+        requiredToolOrder: ['run_file_ocr'],
         requiredBefore: ['drawing_evidence_extraction'],
         mustMarkLowConfidence: true,
       },
       outputPolicy: {
-        targetSheets: ['manual_review', 'interpretation_notes'],
+        outputFormat: 'markdown_tables',
         forbidFormalAdminImport: true,
         forbidConfirmedTotalsFromOcrOnly: true,
       },
@@ -272,51 +228,6 @@ function buildAgentRules(repoRoot) {
           '圖面表格局部判讀流程',
           'drawing_ocr_local_table_reading',
           ocr.sha256,
-        ),
-      ],
-    },
-    {
-      slug: 'steel-visual-inspection-policy',
-      version: 1,
-      ruleType: 'tool_flow_rule',
-      title: '圖像幾何判斷流程',
-      locale: 'zh-TW',
-      ruleSections: ['visual_inspection', 'drawing_vision', 'tool_flow'],
-      sheetId: null,
-      selectors: {
-        sourceKinds: ['image', 'pdf', 'scanned_pdf'],
-        requiresVisualInspection: true,
-        inspectionTypes: [
-          'holes',
-          'slots',
-          'continuous_edges',
-          'bends',
-          'cut_corners',
-          'notches',
-          'geometry_consistency',
-        ],
-      },
-      prompt: vision.prompt,
-      toolPolicy: {
-        availableTools: ['run_visual_inspection', 'patch_file_analysis_data'],
-        requiredToolOrder: ['run_file_ocr', 'patch_file_analysis_data', 'run_visual_inspection', 'patch_file_analysis_data'],
-        forbidOcrInVisualInspection: true,
-      },
-      outputPolicy: {
-        targetSheets: ['file_analysis_data', 'manual_review', 'interpretation_notes'],
-        requirePatchAfterInspection: true,
-        inspectionEngine: 'OpenAI OAuth vision',
-      },
-      priority: 36,
-      confidence: 'high',
-      active: true,
-      reviewState: 'reviewed',
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/vision規則.txt',
-          '圖像幾何判斷流程',
-          'visual_inspection_policy',
-          vision.sha256,
         ),
       ],
     },
