@@ -5,6 +5,7 @@ import type {
   LanguageModelV3ToolCall,
   LanguageModelV3Message,
   LanguageModelV3Prompt,
+  LanguageModelV3StreamPart,
   SharedV3Warning,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
@@ -56,17 +57,6 @@ type SteelProviderTimings = {
   rounds: SteelProviderRoundTiming[];
 };
 
-const catalogFamilyPriceLookupInstruction =
-  'When calling search_price_candidates, send candidateQueries as a string array and include customerTierId whenever search_customers or conversation context has a known customer tier; if no customer tier is known, the backend defaults price lookup to B tier. Put every product name, spec fragment, ERP item code, code prefix, or prior-table code + product-name spec_key-like anchor as its own candidateQueries string; do not use unit/category/review/active price-query fields or nested candidate objects. The backend matches each candidateQueries string against steel.price_items.spec_key with contains semantics. Do not pass the raw full user text as a candidate, and mark the result as provisional/low confidence when appropriate. Domain-specific code prefixes and material defaults belong to lookup_quote_rules / Steel material rules; use those reviewed rules before applying a prefix family.';
-
-const steelMinimalOrchestrationInstruction = [
-  catalogFamilyPriceLookupInstruction,
-  'Use lookup_quote_rules and search_customers with AI-selected keywords. Do not wait for catalog-family lookup; that tool is not available.',
-  'When an uploaded PDF or image may contain text, tables, order labels, dimensions, quantities, or prices, call run_file_ocr first. For PDF files, call run_file_ocr once for the whole PDF instead of page-by-page.',
-  'Use non-OCR visual judgment only for geometry that OCR cannot decide, such as hole counts, bends, cut shapes, slots, notches, and continuous edges.',
-  'Final quote, OCR, and file-analysis outputs should be rendered directly as concise Markdown tables in the assistant response.',
-].join('\n');
-
 export interface SteelProviderExecuteToolCallOptions {
   toolName: string;
   arguments: unknown;
@@ -98,6 +88,7 @@ export interface SteelOAuthChatFile {
 export interface SteelOAuthChatMessage {
   role: SteelOAuthChatMessageRole;
   content: string;
+  messageId?: string;
   files?: SteelOAuthChatFile[];
 }
 
@@ -121,6 +112,7 @@ export interface SteelProviderChatResponse {
 export interface SendSteelOAuthChatOptions {
   abortSignal?: AbortSignal;
   authFilePath?: string;
+  conversationId?: string;
   createOpenAIOAuth?: CreateOpenAIOAuth;
   ensureFresh?: boolean;
   executeSteelToolCall?: SteelProviderToolExecutor;
@@ -129,12 +121,14 @@ export interface SendSteelOAuthChatOptions {
   messages: SteelOAuthChatMessage[];
   model: string;
   onReasoningSummary?: (summary: string) => void;
+  onTextDelta?: (delta: string) => void;
   onToolStatus?: SteelProviderToolStatusCallback;
   passThroughUnsupportedFiles?: boolean;
   reasoningEffort: SteelOpenAIReasoningEffort;
   steelToolMaxCalls?: number;
   steelRuntimePolicy?: boolean;
   agentRulesClient?: SteelRepositoryClient;
+  workingMemorySummary?: string;
 }
 
 async function loadCreateOpenAIOAuth(): Promise<typeof createOpenAIOAuthType> {
@@ -465,6 +459,25 @@ function toPromptWithSystemInstruction(
       content: systemInstruction,
     },
     ...toPrompt(messages, { omitVisualEvidenceFileParts, ocrAvailableVisualEvidenceFiles }),
+  ];
+}
+
+function getPromptMessages(
+  messages: SteelOAuthChatMessage[],
+  workingMemorySummary: string | undefined,
+): SteelOAuthChatMessage[] {
+  const summary = workingMemorySummary?.trim();
+
+  if (!summary) {
+    return messages;
+  }
+
+  return [
+    {
+      role: 'system',
+      content: summary,
+    },
+    ...messages,
   ];
 }
 
@@ -1122,6 +1135,107 @@ function countGeneratedToolCalls(result: LanguageModelV3GenerateResult): number 
   return result.content.filter((part) => part.type === 'tool-call').length;
 }
 
+function getDefaultFinishReason() {
+  return { unified: 'stop' as const, raw: 'stop' };
+}
+
+function getDefaultUsage(): LanguageModelV3GenerateResult['usage'] {
+  return {
+    inputTokens: {
+      total: 0,
+      noCache: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    outputTokens: {
+      total: 0,
+      text: 0,
+      reasoning: 0,
+    },
+  };
+}
+
+async function streamToGenerateResult({
+  stream,
+  onReasoningSummary,
+  onTextDelta,
+}: {
+  stream: ReadableStream<LanguageModelV3StreamPart>;
+  onReasoningSummary?: (summary: string) => void;
+  onTextDelta?: (delta: string) => void;
+}): Promise<LanguageModelV3GenerateResult> {
+  const content: LanguageModelV3GenerateResult['content'] = [];
+  const warnings: SharedV3Warning[] = [];
+  let response: LanguageModelV3GenerateResult['response'];
+  let usage: LanguageModelV3GenerateResult['usage'] = getDefaultUsage();
+  let finishReason: LanguageModelV3GenerateResult['finishReason'] = getDefaultFinishReason();
+  let currentText = '';
+
+  const flushText = () => {
+    if (currentText.length === 0) {
+      return;
+    }
+
+    content.push({ type: 'text', text: currentText });
+    currentText = '';
+  };
+
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+
+      const part = next.value;
+      switch (part.type) {
+        case 'stream-start':
+          warnings.push(...part.warnings);
+          break;
+        case 'response-metadata':
+          response = part;
+          break;
+        case 'text-delta':
+          currentText += part.delta;
+          onTextDelta?.(part.delta);
+          break;
+        case 'text-end':
+          flushText();
+          break;
+        case 'reasoning-delta':
+          onReasoningSummary?.(part.delta);
+          break;
+        case 'tool-call':
+          flushText();
+          content.push(part);
+          break;
+        case 'finish':
+          flushText();
+          usage = part.usage;
+          finishReason = part.finishReason;
+          break;
+        case 'error':
+          throw part.error instanceof Error ? part.error : new Error(String(part.error));
+        default:
+          break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  flushText();
+
+  return {
+    content,
+    finishReason,
+    usage,
+    response,
+    warnings,
+  };
+}
+
 export async function sendSteelOAuthChat({
   abortSignal,
   agentRulesClient,
@@ -1134,14 +1248,18 @@ export async function sendSteelOAuthChat({
   messages,
   model,
   onReasoningSummary,
+  onTextDelta,
   onToolStatus,
   passThroughUnsupportedFiles,
   reasoningEffort,
   steelToolMaxCalls,
   steelRuntimePolicy,
+  workingMemorySummary,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
   const providerStartedAt = Date.now();
-  const allVisualEvidenceFiles = steelRuntimePolicy === true ? getVisualEvidenceFiles(messages) : [];
+  const promptMessages = getPromptMessages(messages, workingMemorySummary);
+  const allVisualEvidenceFiles =
+    steelRuntimePolicy === true ? getVisualEvidenceFiles(promptMessages) : [];
   const shouldLoadAgentRules = steelRuntimePolicy === true;
   const databaseSystemInstruction = await getSystemInstruction({
     agentRulesClient: shouldLoadAgentRules
@@ -1150,12 +1268,7 @@ export async function sendSteelOAuthChat({
     steelRuntimePolicy,
     ocrSourceKinds: [],
   });
-  const systemInstruction =
-    steelRuntimePolicy === true
-      ? [databaseSystemInstruction, steelMinimalOrchestrationInstruction]
-          .filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
-          .join('\n\n')
-      : databaseSystemInstruction;
+  const systemInstruction = databaseSystemInstruction;
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({
     authFilePath,
@@ -1167,14 +1280,14 @@ export async function sendSteelOAuthChat({
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
   ] satisfies SteelRoundTool[];
   const runState = createSteelToolRunState(steelToolMaxCalls ?? Number.MAX_SAFE_INTEGER);
-  const priceLookupContext = createPriceLookupRuntimeContext(messages);
+  const priceLookupContext = createPriceLookupRuntimeContext(promptMessages);
   const omitVisualEvidenceFileParts = false;
   let prompt = systemInstruction
-    ? toPromptWithSystemInstruction(messages, systemInstruction, {
+    ? toPromptWithSystemInstruction(promptMessages, systemInstruction, {
         omitVisualEvidenceFileParts,
         ocrAvailableVisualEvidenceFiles: allVisualEvidenceFiles,
       })
-    : toPrompt(messages, {
+    : toPrompt(promptMessages, {
         omitVisualEvidenceFileParts,
         ocrAvailableVisualEvidenceFiles: allVisualEvidenceFiles,
       });
@@ -1184,14 +1297,15 @@ export async function sendSteelOAuthChat({
   for (let round = 0; steelToolMaxCalls === undefined || round <= steelToolMaxCalls; round += 1) {
     const promptMessageCount = prompt.length;
     const generationStartedAt = Date.now();
-    const result = await openai(model).doGenerate({
+    const languageModel = openai(model);
+    const callOptions = {
       abortSignal,
       prompt,
       maxOutputTokens,
       ...(tools.length > 0
         ? {
             tools,
-            toolChoice: { type: 'auto' },
+            toolChoice: { type: 'auto' as const },
           }
         : {}),
       providerOptions: {
@@ -1201,7 +1315,15 @@ export async function sendSteelOAuthChat({
           ...(onReasoningSummary ? { reasoningSummary: 'auto' as const } : {}),
         },
       },
-    });
+    };
+    const result =
+      onTextDelta && typeof languageModel.doStream === 'function'
+        ? await streamToGenerateResult({
+            ...(await languageModel.doStream(callOptions)),
+            onReasoningSummary,
+            onTextDelta,
+          })
+        : await languageModel.doGenerate(callOptions);
     const generationDurationMs = Math.max(0, Date.now() - generationStartedAt);
     let toolDurationMs = 0;
 

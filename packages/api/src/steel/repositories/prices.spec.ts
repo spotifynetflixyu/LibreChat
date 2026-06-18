@@ -131,7 +131,7 @@ describe('Steel price repositories', () => {
     expect(result[0]?.valueState).toBe('unknown');
   });
 
-  it('searches all price discovery text through spec_key only', async () => {
+  it('searches all price discovery keywords through spec_key contains', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
@@ -143,7 +143,7 @@ describe('Steel price repositories', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining(' OR '), [
       'reviewed',
       '%錏輕型鋼%',
-      '%75*2.3%',
+      '%75x2.3%',
       '%CCG%',
       10,
     ]);
@@ -152,6 +152,30 @@ describe('Steel price repositories', () => {
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $4'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('product_name ILIKE'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('erp_item_code ILIKE'));
+  });
+
+  it('normalizes product price keywords before spec_key contains search', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      productNames: ['6.0m/mOT板', '16.0m/mOT板'],
+      customerTierId: 2,
+      limit: 50,
+    });
+
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+    expect(sql).toContain('spec_key ILIKE $2');
+    expect(sql).toContain('spec_key ILIKE $3');
+    expect(sql).not.toContain('product_name ILIKE');
+    expect(sql).not.toContain('erp_item_code ILIKE');
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
+      'reviewed',
+      '%6.0m_mOT板%',
+      '%16.0m_mOT板%',
+      2,
+      50,
+    ]);
   });
 
   it('does not expand product-name aliases for price discovery terms', async () => {
@@ -172,7 +196,7 @@ describe('Steel price repositories', () => {
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%C%',
-      '%75*2.3%',
+      '%75x2.3%',
       '%CCG075%',
       2,
       10,
@@ -256,7 +280,7 @@ describe('Steel price repositories', () => {
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵%',
-      '%3.0m/mSTNO1雷射切割%',
+      '%3.0m_mSTNO1雷射切割%',
       10,
     ]);
   });
@@ -272,7 +296,7 @@ describe('Steel price repositories', () => {
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '%白鐵%',
-      "%STNO1 3.0*4'*8'(73.5)%",
+      '%STNO13.0x4_x8_73.5%',
       10,
     ]);
   });
@@ -342,8 +366,8 @@ describe('Steel price repositories', () => {
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining(' OR '), [
       'reviewed',
-      '%錏成型角鐵 L30x30%',
-      '%鍍鋅角鐵 L40x40%',
+      '%錏成型角鐵L30x30%',
+      '%鍍鋅角鐵L40x40%',
       'angle',
       1,
       5,
@@ -369,7 +393,7 @@ describe('Steel price repositories', () => {
       'reviewed',
       '%錏方管%',
       '%方管%',
-      '%75*2.0%',
+      '%75x2.0%',
       '%GDH%',
       2,
       20,
@@ -469,7 +493,7 @@ describe('Steel price repositories', () => {
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
-      '%錏成型角鐵 30x30%',
+      '%錏成型角鐵30x30%',
       5,
     ]);
   });
@@ -484,7 +508,7 @@ describe('Steel price repositories', () => {
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
       'reviewed',
-      '%錏角鐵 L30x30%',
+      '%錏角鐵L30x30%',
       5,
     ]);
   });

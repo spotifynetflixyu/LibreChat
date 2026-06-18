@@ -12,7 +12,7 @@ export const steelPriceSearchCandidateSchema = z
       .min(1)
       .max(10)
       .describe(
-        'Product-price product-name/spec text candidates. The price lookup backend matches these values against steel.price_items.spec_key.',
+        'Product-price product-name/spec text candidates. The price lookup backend normalizes these values to spec_key format before matching steel.price_items.spec_key.',
       )
       .optional(),
     erpItemCodes: z
@@ -20,7 +20,7 @@ export const steelPriceSearchCandidateSchema = z
       .min(1)
       .max(10)
       .describe(
-        'ERP item codes or code prefixes. The price lookup backend matches these values against steel.price_items.spec_key.',
+        'ERP item codes or code prefixes. The price lookup backend normalizes these values to spec_key format before matching steel.price_items.spec_key.',
       )
       .optional(),
     confidence: confidenceSchema,

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import SteelOAuthChat from './SteelOAuthChat';
@@ -139,5 +139,219 @@ describe('SteelOAuthChat', () => {
     expect(within(timingsPanel).getByText('Round 2')).toBeInTheDocument();
     expect(within(timingsPanel).queryByText('Workbook completion')).not.toBeInTheDocument();
     expect(within(timingsPanel).queryByText(/workbook ops/)).not.toBeInTheDocument();
+  });
+
+  it('renders streamed assistant text deltas before the stream finishes', async () => {
+    const user = userEvent.setup();
+    let finishStream: (() => void) | undefined;
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      onEvent({ type: 'text', delta: '即時' });
+      onEvent({ type: 'text', delta: '串流' });
+      await new Promise<void>((resolve) => {
+        finishStream = resolve;
+      });
+      const response = {
+        conversationId: 'steel-chat-1',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '即時串流',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), 'stream please');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('即時串流');
+    await act(async () => {
+      finishStream?.();
+    });
+
+    expect(await screen.findByText('即時串流')).toBeInTheDocument();
+    expect(screen.getAllByText('即時串流')).toHaveLength(1);
+  });
+
+  it('accepts queued steer text while a Steel response is running', async () => {
+    const user = userEvent.setup();
+    let finishStream: (() => void) | undefined;
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      onEvent({ type: 'text', delta: '第一輪處理中' });
+      await new Promise<void>((resolve) => {
+        finishStream = resolve;
+      });
+      const response = {
+        conversationId: 'steel-chat-1',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '第一輪處理中',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '先報 CCG075');
+    await user.click(screen.getByLabelText('Send'));
+    await screen.findByText('第一輪處理中');
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '數量改成 3 支');
+    await user.click(screen.getByLabelText('Send'));
+
+    const activityPanel = screen.getByLabelText('Activity panel');
+    expect(within(activityPanel).getByText('Queued steer accepted')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Message Steel')).toHaveValue('');
+
+    await act(async () => {
+      finishStream?.();
+    });
+  });
+
+  it('runs queued steer as a follow-up request after the current response finishes', async () => {
+    const user = userEvent.setup();
+    let finishFirstStream: (() => void) | undefined;
+    mockStreamSteelChat
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        onEvent({ type: 'text', delta: '第一輪完成' });
+        await new Promise<void>((resolve) => {
+          finishFirstStream = resolve;
+        });
+        const response = {
+          conversationId: 'steel-chat-1',
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '第一輪完成',
+          unsupportedSettings: [],
+          warnings: [],
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      })
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        onEvent({ type: 'steer_applied', message: 'Queued steer applied' });
+        const response = {
+          conversationId: 'steel-chat-1',
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '已改成 3 支',
+          unsupportedSettings: [],
+          warnings: [],
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '先報 CCG075');
+    await user.click(screen.getByLabelText('Send'));
+    await screen.findByText('第一輪完成');
+    await user.type(screen.getByPlaceholderText('Message Steel'), '數量改成 3 支');
+    await user.click(screen.getByLabelText('Send'));
+
+    await act(async () => {
+      finishFirstStream?.();
+    });
+
+    expect(await screen.findByText('已改成 3 支')).toBeInTheDocument();
+    expect(mockStreamSteelChat).toHaveBeenCalledTimes(2);
+    expect(mockStreamSteelChat.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        conversationId: 'steel-chat-1',
+        messageSource: 'queued_steer',
+        messages: [
+          expect.objectContaining({
+            role: 'user',
+            content: '數量改成 3 支',
+          }),
+        ],
+      }),
+    );
+    expect(within(screen.getByLabelText('Activity panel')).getByText('Queued steer applied')).toBeInTheDocument();
+  });
+
+  it('copies assistant Markdown and rendered tables without Activity text', async () => {
+    const user = userEvent.setup();
+    const writeTextSpy = jest.spyOn(navigator.clipboard, 'writeText');
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), 'C100 6M 一支多少');
+    await user.click(screen.getByLabelText('Send'));
+    await screen.findByText('643.2');
+
+    await user.click(screen.getByLabelText('Copy assistant message'));
+    expect(writeTextSpy).toHaveBeenLastCalledWith(
+      '| 品名 | 小計 |\n| --- | --- |\n| C100 | 643.2 |',
+    );
+    expect(writeTextSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('search_price_candidates completed'),
+    );
+
+    await user.click(screen.getByLabelText('Copy table Markdown'));
+    expect(writeTextSpy).toHaveBeenLastCalledWith(
+      '| 品名 | 小計 |\n| --- | --- |\n| C100 | 643.2 |',
+    );
+  });
+
+  it('edits a prior user message by overwriting visible text and rerunning from that message', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        const response = {
+          conversationId: 'steel-chat-1',
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '原本回覆',
+          unsupportedSettings: [],
+          warnings: [],
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      })
+      .mockImplementationOnce(async (_payload, onEvent) => {
+        const response = {
+          conversationId: 'steel-chat-1',
+          provider: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          text: '編輯後回覆',
+          unsupportedSettings: [],
+          warnings: [],
+        };
+        onEvent({ type: 'done', response });
+        return response;
+      });
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '先報 1 支');
+    await user.click(screen.getByLabelText('Send'));
+    await screen.findByText('原本回覆');
+    await user.click(screen.getByLabelText('Edit user message'));
+    await user.clear(screen.getByPlaceholderText('Message Steel'));
+    await user.type(screen.getByPlaceholderText('Message Steel'), '改成 3 支');
+    await user.click(screen.getByLabelText('Send'));
+
+    expect(await screen.findByText('編輯後回覆')).toBeInTheDocument();
+    expect(screen.queryByText('先報 1 支')).not.toBeInTheDocument();
+    expect(screen.queryByText('原本回覆')).not.toBeInTheDocument();
+    expect(mockStreamSteelChat.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        conversationId: 'steel-chat-1',
+        editMessageId: expect.stringMatching(/^user-/),
+        messages: [
+          expect.objectContaining({
+            role: 'user',
+            content: '改成 3 支',
+            messageId: expect.stringMatching(/^user-/),
+          }),
+        ],
+      }),
+    );
   });
 });

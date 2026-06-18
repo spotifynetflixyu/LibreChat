@@ -32,6 +32,34 @@ _Avoid_: Admin access, public access to all quotes
 The approved calculation rule or prompt context the AI uses to derive a workbook line's unit price and line total, with backend validation of source scope and workbook subtotal consistency.
 _Avoid_: Backend-only calculator, unstored calculation, manually inconsistent total
 
+**Working Order**:
+The current AI-assembled order table for a Steel quote conversation, including interpreted line items, customer/tier context, source references, and provisional or accepted calculation facts.
+_Avoid_: Quote workbook, raw chat Markdown, tool-result dump
+
+**Working Order Memory**:
+Conversation-scoped structured memory of a **Working Order** used to continue multi-turn quoting without requiring the full order table in every prompt.
+_Avoid_: Global cache, Admin-reviewed source data, hidden provider state
+
+**Working Order Memory Checkpoint**:
+The active **Working Order Memory** state at a chat-turn boundary, used to restore memory when an edited user message reruns from an earlier point.
+_Avoid_: Database deletion, full chat replay, global memory version
+
+**Conversation History**:
+The persisted user and assistant exchange for one Steel quote conversation, including final assistant text or Markdown and attachment references.
+_Avoid_: Browser-local messages, working-order row index, provider OAuth state, activity log
+
+**Message Revision**:
+The current replacement text for an edited user chat message, displayed and used for prompt construction while prior text remains only hidden trace metadata when needed.
+_Avoid_: Conversation branch, follow-up turn, browser-only overwrite
+
+**Superseded Turn**:
+A chat turn after an edited user message that is no longer part of the active transcript or prompt context, while remaining as hidden trace metadata when needed.
+_Avoid_: Deleted message, active chat history, conversation branch
+
+**Queued Steer**:
+A user correction sent while an AI quote turn is still running, saved for application at the next safe orchestration boundary or follow-up turn.
+_Avoid_: Cancellation, hidden prompt injection, lost input
+
 **Workbook Line**:
 A persisted quoted order item in the workbook, including its quantity, unit price, line total, formula, and adjustment state.
 _Avoid_: Transient tool result, chat-only calculation
@@ -82,12 +110,8 @@ cut marks, bolt sizes, and OCR uncertainty.
 _Avoid_: Formal source data, confirmed price/spec fact, provider-only memory
 
 **File Analysis Data**:
-A user-verifiable extraction workspace created once per quote conversation/order.
-It can contain rows from multiple quote request files; each row carries source
-file, page, and region metadata. It lets the user compare AI-read tables against
-the PDF/image, correct them across chat turns, and then explicitly request
-creation or update of quote workbook rows.
-_Avoid_: Quote workbook, Admin import source, raw OCR dump, hidden provider state
+A legacy user-verifiable extraction workspace from the workbook/file-analysis flow, containing AI-read rows from quote request files with source file, page, and region metadata.
+_Avoid_: Working Order Memory, quote workbook, Admin import source, raw OCR dump, hidden provider state
 
 **AI Tool Orchestration**:
 The AI-led process that interprets quote request evidence, proposes material/spec candidates, chooses the relevant backend business tools, compares reviewed results, proposes workbook updates, and asks for confirmation when confidence is not high enough.
@@ -142,8 +166,8 @@ remain English.
 _Avoid_: Code-hardcoded provider prompt, full instruction corpus, one-off task packet, separate `workbook_rules` table
 
 **Workbook Output Tool**:
-A provider-facing function tool that lets AI propose semantic quote workbook data after it has enough reviewed or provisional quote facts. The current `/steel/oauth-chat` implementation uses `patch_quote_workbook` when workbook context is present; backend projection, validation, and workbook services apply or reject the patch.
-_Avoid_: Reviewed lookup tool, direct DB mutation, raw natural-language workbook edit
+A legacy provider-facing function tool that let AI propose semantic quote workbook data after it had enough reviewed or provisional quote facts.
+_Avoid_: Working Order Memory, reviewed lookup tool, direct DB mutation, raw natural-language workbook edit
 
 **Product Price Unit Weight**:
 The primary unit weight used for a quote when reviewed product price data carries unit weight for the priced item.
@@ -216,6 +240,35 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - The database unit price is the default input for a new **Quoted Unit Price**, but an explicit customer instruction can adjust either **Quoted Unit Price** or **Line Total**.
 - When **Quoted Unit Price** changes, **Line Total** is recalculated through the **Price Formula**; when **Line Total** changes, **Quoted Unit Price** is recalculated for that **Workbook Line**.
 - Existing **Workbook Line** prices and quantities remain unchanged across chat rounds unless the customer explicitly asks to update or recalculate that line.
+- A **Working Order** belongs to one Steel quote conversation and may be derived
+  from **Quote Request Evidence**, **Drawing Evidence**, reviewed lookup
+  results, user corrections, and assistant final Markdown.
+- **Working Order Memory** indexes a **Working Order** for row number, ERP item
+  code, spec text, customer/tier, source, and calculation retrieval; it does not
+  mutate formal source tables.
+- A **Working Order Memory Checkpoint** belongs to one **Conversation History**
+  turn boundary and defines which memory entries are active for prompt summary
+  and memory reads.
+- **Conversation History** records the user-visible exchange, while **Working
+  Order Memory** provides precise structured retrieval when long Markdown
+  tables would be too large or fragile to rely on.
+- A **Message Revision** replaces the visible user message content used by
+  **Conversation History** and prompt construction; earlier text may be retained
+  as hidden trace metadata, but it is not a visible branch.
+- A **Message Revision** makes every later active chat turn a **Superseded
+  Turn** until a new assistant response is generated from the edited message.
+- **Superseded Turns** are excluded from active **Conversation History** replay
+  and prompt construction by default.
+- When a **Message Revision** reruns from an earlier point, **Working Order
+  Memory** is restored to the **Working Order Memory Checkpoint** before that
+  user message; memory produced by later **Superseded Turns** is not active.
+- Thinking, tool, OCR, memory, and parse activity is not part of **Conversation
+  History**; it is last-run UI state only.
+- A **Queued Steer** may update the active **Working Order** only after the AI
+  applies it in a safe orchestration boundary or follow-up turn.
+- Once assistant final answer text has started streaming, a **Queued Steer** is
+  deferred to the next follow-up turn rather than mutating the in-progress
+  assistant message.
 - A Phase 4 **Staff Workbook Export** may download any selected workbook sheets
   for company staff. It does not apply customer-visible masking, customer
   download permissions, or dedicated system-order export logic.

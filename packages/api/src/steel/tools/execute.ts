@@ -19,12 +19,16 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelCustomer, SteelPriceItem } from '../repositories';
-import type { SteelToolName } from './schemas';
+import type { ReadWorkingOrderItemsInput, SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
+
+export interface SteelWorkingOrderMemoryReader {
+  readWorkingOrderItems(input: ReadWorkingOrderItemsInput): Promise<SteelRawToolOutput>;
+}
 
 export interface SteelToolRunState {
   maxCalls: number;
@@ -35,6 +39,7 @@ export interface ExecuteSteelToolOptions {
   client: SteelRepositoryClient;
   toolName: string;
   arguments: unknown;
+  memoryReader?: SteelWorkingOrderMemoryReader;
   providerToolCallId?: string;
   runState?: SteelToolRunState;
   log?: SteelToolLogger;
@@ -62,6 +67,34 @@ function summarizeInput(value: unknown): string {
   }
 
   return `args=${Object.keys(value).sort().join(',')}`;
+}
+
+function uniqueNonEmptyStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function getQuoteRuleKeywordExpansions(keyword: string): string[] {
+  const normalized = keyword.normalize('NFKC');
+  const compact = normalized.replace(/\s+/gu, '');
+  const lower = compact.toLowerCase();
+  const isPlateLike =
+    /板/u.test(compact) ||
+    /雷射切割|四方切|切清/u.test(compact) ||
+    /^pl\d/u.test(lower) ||
+    /[^a-z0-9]pl\d/u.test(lower) ||
+    /^dnb\d/u.test(lower);
+
+  if (!isPlateLike) {
+    return [];
+  }
+
+  return ['plate', 'ot_plate', 'black_plate', '板材', '鐵板'];
+}
+
+function expandQuoteRuleKeywords(keywords: readonly string[]): string[] {
+  return uniqueNonEmptyStrings(
+    keywords.flatMap((keyword) => [keyword, ...getQuoteRuleKeywordExpansions(keyword)]),
+  );
 }
 
 function isSourceRef(value: unknown): value is SteelSourceRef {
@@ -111,6 +144,8 @@ function summarizeOutput(data: SteelToolJsonObject): string {
     'formulaCandidates',
     'customers',
     'priceCandidates',
+    'workingOrderRows',
+    'memoryEntries',
   ];
   const summary = summaryKeys
     .map((key) => {
@@ -223,14 +258,17 @@ async function errorResult(
 }
 
 async function dispatchSteelTool(
-  client: SteelRepositoryClient,
+  options: ExecuteSteelToolOptions,
   toolName: SteelToolName,
   args: unknown,
 ): Promise<SteelRawToolOutput> {
+  const { client } = options;
+
   switch (toolName) {
     case 'lookup_quote_rules': {
       const input = steelToolArgsSchemas.lookup_quote_rules.parse(args);
-      const searchInput = { keywords: input.keywords, limit: input.limit };
+      const keywords = expandQuoteRuleKeywords(input.keywords);
+      const searchInput = { keywords, limit: input.limit };
       const [instructionPackets, quoteDefaults, storedQuoteRules] = await Promise.all([
         searchSteelInstructionPackets(client, searchInput),
         searchSteelQuoteDefaults(client, searchInput),
@@ -238,7 +276,7 @@ async function dispatchSteelTool(
       ]);
 
       return {
-        keywords: input.keywords,
+        keywords,
         instructionPackets,
         quoteDefaults,
         quoteRules: storedQuoteRules,
@@ -262,6 +300,15 @@ async function dispatchSteelTool(
       const input = steelToolArgsSchemas.search_price_candidates.parse(args);
 
       return searchPriceCandidates(client, input);
+    }
+    case 'read_working_order_items': {
+      const input = steelToolArgsSchemas.read_working_order_items.parse(args);
+
+      if (!options.memoryReader) {
+        throw new Error('Steel working order memory reader unavailable');
+      }
+
+      return options.memoryReader.readWorkingOrderItems(input);
     }
     default:
       throw new Error(`Unhandled Steel tool: ${toolName}`);
@@ -311,7 +358,7 @@ export async function executeSteelTool(options: ExecuteSteelToolOptions): Promis
   }
 
   try {
-    const rawData = await dispatchSteelTool(options.client, options.toolName, parsedArgs.data);
+    const rawData = await dispatchSteelTool(options, options.toolName, parsedArgs.data);
     const data = sanitizeSteelToolOutput(rawData);
     const sourceRefs = collectSourceRefs(data);
     const durationMs = getDurationMs(startTime, now);

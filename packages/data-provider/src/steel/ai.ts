@@ -159,6 +159,7 @@ export type SteelProviderChatFile = z.infer<typeof steelProviderChatFileSchema>;
 export const steelProviderChatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant']),
   content: z.string().min(1),
+  messageId: z.string().min(1).optional(),
   files: z.array(steelProviderChatFileSchema).optional(),
 });
 
@@ -173,6 +174,8 @@ export type SteelProviderReasoningEffort = z.infer<typeof steelProviderReasoning
 export const steelProviderChatRequestSchema = z
   .object({
     conversationId: z.string().min(1).optional(),
+    editMessageId: z.string().min(1).optional(),
+    messageSource: z.enum(['user_input', 'queued_steer']).optional(),
     model: z.string().min(1).optional(),
     messages: z.array(steelProviderChatMessageSchema).min(1),
     maxOutputTokens: z.number().int().positive().optional(),
@@ -243,6 +246,37 @@ const steelProviderChatStreamReasoningEventSchema = z.object({
   summary: z.string().min(1),
 });
 
+const steelProviderChatStreamMemoryLoadedEventSchema = z.object({
+  type: z.literal('memory_loaded'),
+  message: z.string().min(1),
+  resultCount: z.number().int().nonnegative().optional(),
+});
+
+const steelProviderChatStreamMemoryReadEventSchema = z.object({
+  type: z.literal('memory_read'),
+  message: z.string().min(1),
+  mode: z.string().min(1).optional(),
+  resultCount: z.number().int().nonnegative().optional(),
+});
+
+const steelProviderChatStreamMemorySavedEventSchema = z.object({
+  type: z.literal('memory_saved'),
+  message: z.string().min(1),
+  savedCounts: z.record(z.number().int().nonnegative()),
+});
+
+const steelProviderChatStreamParseStatusEventSchema = z.object({
+  type: z.literal('parse_status'),
+  message: z.string().min(1),
+  parseStatus: z.enum(['saved', 'partial', 'skipped']),
+  savedCounts: z.record(z.number().int().nonnegative()).optional(),
+});
+
+const steelProviderChatStreamSteerEventSchema = z.object({
+  type: z.enum(['steer_queued', 'steer_applied', 'steer_deferred', 'steer_superseded']),
+  message: z.string().min(1),
+});
+
 const steelProviderChatStreamTextEventSchema = z.object({
   type: z.literal('text'),
   delta: z.string(),
@@ -264,6 +298,11 @@ export const steelProviderChatStreamEventSchema = z.discriminatedUnion('type', [
   steelProviderChatStreamLookupEventSchema,
   steelProviderChatStreamToolEventSchema,
   steelProviderChatStreamReasoningEventSchema,
+  steelProviderChatStreamMemoryLoadedEventSchema,
+  steelProviderChatStreamMemoryReadEventSchema,
+  steelProviderChatStreamMemorySavedEventSchema,
+  steelProviderChatStreamParseStatusEventSchema,
+  steelProviderChatStreamSteerEventSchema,
   steelProviderChatStreamTextEventSchema,
   steelProviderChatStreamDoneEventSchema,
   steelProviderChatStreamErrorEventSchema,

@@ -1,5 +1,80 @@
 # Lessons
 
+- Steel user-message editing should match Codex overwrite semantics. Editing a
+  prior user message replaces the visible message text and the prompt source for
+  that message; do not model it as a visible branch or follow-up turn. Keep old
+  text only as hidden revision/audit metadata when needed.
+- After a Steel user-message edit, later user/assistant turns should be marked
+  superseded and excluded from active transcript replay and prompt history. The
+  edited message becomes the prompt boundary for the rerun; keep superseded
+  turns only as hidden trace/idempotency metadata.
+- Steel edit/rerun must logically roll Working Order Memory back to the
+  checkpoint before the edited user message. Do not let rows, customer facts,
+  price evidence, OCR extracts, or calculation facts from superseded later turns
+  appear in active memory summaries or read tools; keep them only as hidden
+  trace metadata if retained.
+- If a Steel user-message edit/rerun happens while queued steers exist, queued
+  steers tied to the superseded run/context must be marked superseded or
+  canceled. Do not apply old-context steer text to the edited rerun prompt.
+- Steel Thinking/Activity events are last-run client state only. Do not persist
+  public thinking, tool calls, OCR progress, memory events, or parse status to
+  Mongo; persist only final chat messages, queued steers, and structured Working
+  Order Memory.
+- Steel chat Markdown must be copy-friendly like ChatGPT, and message controls
+  should match Codex expectations: assistant responses can be copied without
+  thinking/activity text, rendered tables can copy Markdown source, and user
+  messages can be edited by overwriting the visible message text.
+- Steel quote Markdown must default to detailed line-item tables when the user
+  supplies multiple items, part numbers, pages, or rows. Do not accept a grouped
+  thickness/category summary as the only final quote table; preserve each
+  user-supplied item identity in a Markdown detail row with adopted price,
+  quantity/weight, subtotal, confidence, and unresolved price notes, then add
+  summary tables only after the detail table.
+- Steel queued steer should follow Codex-like safe boundaries: if final answer
+  text has already started streaming, do not rewrite or interrupt that assistant
+  message. Persist the steer and apply it as the next follow-up turn.
+- Steel Codex-like chat UX means the assistant message contains only final
+  summary/quote text or Markdown. Public thinking, tool calls, OCR progress,
+  memory events, and parse status belong only in the last-run Thinking/Activity
+  tab and must not be persisted or replayed as chat bubble content.
+- Steel UX parity with Codex requires true provider delta streaming,
+  database-backed conversation history, queued user steer, working-memory
+  summary injection, and read-only memory tools. Do not rely on browser-local
+  `messages` or buffered `doGenerate` final text when the user asks for
+  Codex-like behavior.
+- Steel chat should stream Codex-like public work text while a turn is running:
+  safe reasoning summaries, tool call/result/error events, OCR progress, memory
+  read/save, Markdown parse status, counts, source refs, and elapsed time. Do
+  not expose hidden chain-of-thought or raw DB/OCR payloads as "thinking".
+- Steel final Markdown parsing must be best-effort post-processing. Do not make
+  canonical Markdown headers a hard success gate, and do not trigger another AI
+  round just because parsing failed or was partial; save recognized fields or
+  unclassified evidence and let the user-visible response finish.
+- Steel working-order memory should be backend auto-parse/save, not an AI save
+  tool. Let the assistant produce final Markdown tables; after the response,
+  backend parses/saves working-order rows, customer facts, calculation facts,
+  and tool/OCR evidence. Expose read-only memory tools only when AI needs prior
+  row detail in a follow-up turn.
+- Steel runtime tool exposure has three surfaces that must stay aligned:
+  registry/executor/provider tools, `docs/rules/agent規則.txt` visible tool
+  instructions, and Supabase sync `toolPolicy.availableTools`. When adding a
+  runtime tool such as `read_working_order_items`, update all three and add a
+  direction check so the Agent Instruction does not omit an available tool.
+- Steel OAuth provider should not duplicate default agent-rule wording in code.
+  Keep `docs/rules/agent規則.txt` as the local development/sync source and
+  Supabase reviewed `steel-default-agent-instruction` as the runtime source of
+  truth; provider code should compose DB agent rules, memory, history, and
+  tools, not append a second static quote/OCR/table instruction block.
+- Steel working-order Markdown should follow `docs/reference/系統訂單.xlsx` for
+  system-order columns. Treat `型號` and `品名規格` as adopted product-price
+  identity, `計價基準` as price-tier context, store customer data as first-class
+  memory, and save OCR blocks without fixed columns while preserving file,
+  image, and page source refs.
+- Steel OAuth multi-turn memory is not the same as Supabase/tool-result cache.
+  When the user asks for next-turn conversation memory with
+  `responsesState: false`, first build a compact working-memory context that is
+  injected into the next prompt; do not make cache short-circuiting the primary
+  design unless explicitly requested.
 - Steel price lookup tier carryover should be enforced in provider/runtime
   context, not only prompt wording. If `search_customers` returns one unique
   customer tier and the next `search_price_candidates` call omits
@@ -24,6 +99,35 @@
   active filters, but customer tier is the intentional exception: when AI does
   not provide a known `customerTierId`, default to B tier so the same item does
   not return multiple customer price levels and slow quoting.
+- Steel `search_price_candidates.candidateQueries` is a spec_key keyword array:
+  normalize every input keyword with the same spec_key rules used by the
+  importer (NFKC, `*` / `×` to `x`, remove spaces, replace `/` and other
+  punctuation with `_`) and search only `steel.price_items.spec_key` with
+  contains semantics. Do not add separate `product_name` / `erp_item_code`
+  searches because `spec_key` already contains both. [ad-hoc note]
+- Steel live chat table verification must distinguish "has Markdown tables"
+  from "has line-item quote detail." For multi-item quotes or repricing turns,
+  the first final Markdown table must be active line-item detail; summary,
+  thickness, price-source, hole-count, or total tables cannot replace the
+  per-item table. [ad-hoc note]
+- Steel live chat line-item tables must separate source identity from user
+  shorthand. The first detail table should contain exact `項次`, `型號`, and
+  `品名規格` columns; when a row adopts `search_price_candidates` evidence,
+  `型號` must copy `erpItemCode` and `品名規格` must copy `productName`. Put
+  oral names, query keywords, or short labels in `原始規格` / `原價格品名` /
+  notes, otherwise Working Order Memory will not save canonical rows and users
+  cannot audit table rows against tool data. [ad-hoc note]
+- Steel `lookup_quote_rules` must be able to retrieve reviewed rules from the
+  same oral/spec clues the model naturally uses before pricing. If live chat
+  sends `PL...`, `OT板`, `黑鐵板`, or DNB-like plate clues and rule lookup
+  returns `0` rules, expand those lookup keywords to reviewed rule families
+  such as `plate`, `ot_plate`, `black_plate`, `板材`, and `鐵板` before blaming
+  the model's candidate choice. [ad-hoc note]
+- Steel live latency diagnostics should always report both user-round total
+  time and step-level timing. Keep provider total/generation/tool time,
+  provider sub-rounds, executed tool calls, memory capture, final Markdown
+  capture, and harness overhead visible so long responses can be debugged
+  without rereading raw JSONL events. [ad-hoc note]
 - Steel minimal orchestration should be AI-led: expose only keyword lookup
   tools plus `run_file_ocr`, remove catalog-family/workbook/file-analysis
   orchestration paths, do not inject price filters, and have final quote/file

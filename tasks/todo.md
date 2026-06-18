@@ -1,3 +1,835 @@
+# Active: Steel Working Order Memory Plan
+
+Goal: keep Steel OAuth chat on `responsesState: false` while making the Steel
+UX behave like Codex: live public thinking/work text, live text streaming,
+queued user steering, database-backed chat history, compact working memory, and
+read-only memory tools. The memory is backend-owned: assistant final Markdown
+and tool/OCR outputs are parsed/saved automatically, and the AI only reads
+memory when it needs more detail.
+
+Live retest - multi-round detailed Markdown tables:
+
+- Current slice - Supabase agent rule as only runtime instruction source:
+  - [x] Write a failing provider spec proving Steel system prompt does not
+    append provider-owned orchestration text when Supabase agent rules are
+    present. Red run:
+    `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --runTestsByPath`
+    failed because system prompt appended provider static instruction text after
+    `DB_AGENT_RULE_SENTINEL`.
+  - [x] Remove `steelMinimalOrchestrationInstruction` and any dead constants
+    from provider code.
+  - [x] Keep `docs/rules/agent規則.txt` as the development/sync source for
+    Supabase `steel-default-agent-instruction`.
+  - [x] Update direction checks and lessons so future changes do not reintroduce
+    duplicated provider agent rules.
+  - [x] Run focused provider/direction verification and `git diff --check`.
+    Green verification:
+    `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --runTestsByPath`;
+    `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+    `git diff --check`.
+
+- First rerun conversation `debug_table_retest_1781758361` completed two rounds.
+  Both rounds had Markdown tables, but neither round satisfied the detailed
+  line-item contract: round 1 had 7 tables and round 2 had 6 tables, but the
+  complete assistant final text did not contain `RBL1`, `PC12`, or row 71. The
+  model produced thickness/price/hole/total summary tables instead of a
+  per-item detail table.
+- Tightened the contract in `docs/rules/agent規則.txt`,
+  `packages/api/src/steel/ai/provider.ts`, and
+  `tmp/chat-round-test/live-latency-diagnosis.ts`: for multi-item quote,
+  update, or repricing turns, the first final Markdown table must be active
+  line-item detail; summary tables cannot replace it.
+- Added `tmp/chat-round-test/current-direction-check.ts` coverage for the
+  first-table line-item rule. It failed before the rule change and passed after
+  the rule/provider/harness update.
+- Synced reviewed agent rule to Supabase. Active
+  `steel-default-agent-instruction` SHA is
+  `3cb560b851319a77fcbb5189d6309e41557c5f6390c2f7aaa467a4c9bc2587a5`.
+- Second strict rerun conversation `debug_table_retest_strict_1781758721`:
+  round 1 succeeded with 5 Markdown tables. The first two tables use the same
+  line-item schema and contain 36 + 35 data rows, covering all 71 items,
+  including `RBL1`, `PC12`, and row 71. This validates round 1 detailed table
+  behavior after the stricter prompt.
+- The strict rerun could not validate round 2 because the provider returned
+  `AI_APICallError: The usage limit has been reached` before producing a round
+  2 assistant final response.
+- Follow-up strict low-effort rerun conversation
+  `debug_table_retest_strict_low_1781768818` completed both rounds. Mongo
+  readback confirmed round 1 has 3 Markdown tables with the first table holding
+  71 line-item rows and containing `RBL1`, `PC12`, and row 71. Round 2 has 4
+  Markdown tables with the first table holding 71 line-item rows and containing
+  `RBL1`, `PC12`, row 71, `DNB70060`, and `DNB70160`.
+- Follow-up table identity verification found the low-effort rerun still failed
+  the adopted price identity contract. The first detail tables used alias
+  columns such as `ERP code` / `採用型號` and product shorthand such as
+  `6.0m/mOT板`, so final Markdown capture saved `working_order_row: 0`; live
+  verifier showed `型號` / `品名規格` were not exact canonical columns and
+  product names did not copy saved `price_evidence.productName`.
+- Tightened the output contract again: the first line-item table must include
+  exact `項次`, `型號`, and `品名規格` columns. When adopting a price row,
+  `型號` must copy source `erpItemCode` / ERP code and `品名規格` must copy
+  source `productName` / product name; user shorthand belongs in
+  `原始規格`, `原價格品名`, `來源`, or notes.
+- Added `tmp/chat-round-test/verify-live-table-price-evidence.ts`, which reads
+  assistant final Markdown and active `price_evidence` from Mongo, parses the
+  first line-item table, and verifies `項次` / `型號` / `品名規格`, memory
+  auto-save, and price-row `productName` identity.
+- Reran live conversation `debug_table_identity_1781776381` after the identity
+  rule update. Both rounds saved `working_order_row: 71` and the verifier
+  passed, but round 1 still selected `切清` / `四方切` rows because
+  `lookup_quote_rules` had returned `ruleCount: 0` in the prior run.
+- Added backend lookup keyword expansion for plate-like `lookup_quote_rules`
+  inputs. Keywords containing `PL...`, `OT板`, `黑鐵板`, DNB-like plate clues,
+  or plate cutting terms expand to `plate`, `ot_plate`, `black_plate`, `板材`,
+  and `鐵板`, so reviewed plate rules are retrievable from natural AI query
+  text.
+- Reran live conversation `debug_table_rules_1781776947` after the rule-lookup
+  expansion. Round 1 `lookup_quote_rules` returned `ruleCount: 5` /
+  `rule_evidence: 5`; round 1 and round 2 both saved `working_order_row: 71`.
+  The first detail table in both rounds used exact `項次`, `型號`, `品名規格`
+  columns and copied saved tool `productName` for all adopted price rows.
+  Round 1 adopted OT板雷射切割 rows such as `DNB70060`,
+  `DNB70140`, `DNB70160`, and `DNB70200`; round 2 updated the same line-item
+  table with the user-provided B-tier prices. Both rounds also output an
+  `人工複核事項` table for missing 4.0mm price, hole prices, and slot price.
+- Added per-round timing reporting to the live harness. Future runs now store
+  exact `timingSteps` on each turn and write `timingReport` into
+  `live-latency-summary.json`, plus standalone
+  `tmp/chat-round-test/live-latency-timing.json` and
+  `tmp/chat-round-test/live-latency-timing.md`. The report includes each chat
+  round's total wall time, provider total/generation/tool time, provider
+  sub-round timing, executed tool-call timing, memory capture timing, final
+  Markdown capture timing, memory read timing, and harness overhead.
+- Ran the timing report against the latest existing live summary. Current
+  totals for `debug_table_rules_1781776947`: round 1 total 163.55s, provider
+  156.52s, generation 151.16s, tools 3.56s, harness overhead 7.02s; round 2
+  total 141.48s, provider 136.89s, generation 134.34s, tools 0s, harness
+  overhead 4.59s.
+- Verification passed:
+  `npx tsx tmp/chat-round-test/timing-report.spec.ts`;
+  `npx tsx tmp/chat-round-test/timing-report.ts`;
+  `CHAT_ROUND_DRY_RUN=1 CHAT_ROUND_SUMMARY_PATH=tmp/chat-round-test/dry-run-timing-summary.json CHAT_ROUND_EVENTS_PATH=tmp/chat-round-test/dry-run-timing-events.jsonl CHAT_ROUND_TIMING_JSON_PATH=tmp/chat-round-test/dry-run-timing.json CHAT_ROUND_TIMING_MARKDOWN_PATH=tmp/chat-round-test/dry-run-timing.md npx tsx tmp/chat-round-test/live-latency-diagnosis.ts`;
+  `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+  `npx tsx tmp/chat-round-test/verify-live-table-price-evidence.ts`;
+  `cd packages/api && npx jest src/steel/repositories/prices.spec.ts src/steel/tools/execute.spec.ts src/steel/tools/registry.spec.ts src/steel/normalization/search.spec.ts src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/repositories/prices.spec.ts src/steel/tools/execute.spec.ts src/steel/tools/registry.spec.ts src/steel/normalization/search.spec.ts src/steel/ai/provider.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+  live `lookup_quote_rules` Supabase smoke for `PL6×80` / `6.0m/mOT板`;
+  strict live harness with `STEEL_OPENAI_REASONING_EFFORT=low
+  CHAT_ROUND_CONVERSATION_ID=debug_table_rules_1781776947 CHAT_ROUND_LIMIT=2
+  CHAT_ROUND_TIMEOUT_MS=720000 npx tsx
+  tmp/chat-round-test/live-latency-diagnosis.ts`;
+  strict live harness with `STEEL_OPENAI_REASONING_EFFORT=low
+  CHAT_ROUND_CONVERSATION_ID=debug_table_retest_strict_low_1781768818
+  CHAT_ROUND_LIMIT=2 CHAT_ROUND_TIMEOUT_MS=720000 npx tsx
+  tmp/chat-round-test/live-latency-diagnosis.ts`; Mongo readback table-row
+  verifier; `git diff --check`.
+
+Design decisions:
+
+- Do not restore old Workbook/File Analysis persistence, right-panel UI, REST
+  routes, or cell patch workflow.
+- Do not add an AI-visible save tool. There is no `save_working_order_items`;
+  backend auto-parses and saves after the assistant final response.
+- Add only read-side memory access for the AI, initially
+  `read_working_order_items`, so follow-up turns can fetch prior rows by item
+  number, ERP code, spec/product text, file/page, or paginated table slices.
+- Keep OpenAI/OAuth provider stateless: no `previous_response_id`, no
+  `responsesState: true`.
+- Preserve prompt cache: static system/rule/tool instructions stay first;
+  dynamic working memory is injected after static instructions and before
+  visible chat history.
+- Working memory is scoped to `conversationId`. It is not a Supabase price cache
+  and does not short-circuit tool execution by itself.
+- Persist full structured memory server-side, but inject only a compact summary
+  plus relevant rows into the prompt. A 100-line order should not force a 100
+  row prompt dump.
+- Markdown parsing is best-effort and non-blocking. Backend should never ask the
+  AI to retry only because a final Markdown table did not match canonical
+  headers; save whatever can be identified and let the user-visible reply
+  complete.
+- Stream public thinking text/activity like Codex while the turn is running.
+  This means user-visible work summaries, tool call start/result/error events,
+  memory read/save events, OCR progress, and lookup summaries. Do not expose
+  hidden chain-of-thought; only expose safe public reasoning summaries and
+  operational events.
+- Use provider `doStream` for true live text/reasoning delta streaming when the
+  OAuth provider exposes it. The current `doGenerate` path is acceptable only as
+  a fallback because it buffers text until the generation finishes.
+- Support queued user steer while a turn is running. Steering should not require
+  aborting by default; backend applies queued user input at the next safe
+  orchestration boundary.
+- Persist chat history in the database by `conversationId`. Browser-local
+  `messages` are not enough because refresh/navigation loses them and the
+  backend cannot build a reliable history window from URL state alone.
+- Match Codex message edit behavior: editing a user message overwrites the
+  visible message content and prompt input for that message. Do not create a
+  user-visible branch or follow-up turn just because a message was edited.
+- When a user edits an earlier message, mark all later user/assistant turns as
+  superseded for the active transcript and prompt history. Rebuild from the
+  edited message and generate a new assistant response after it.
+- Editing and rerunning a user message must also roll Working Order Memory back
+  to the checkpoint before that user message. Memory entries produced by later
+  superseded turns are excluded from active memory summary and read tools so old
+  tables/prices/OCR interpretation cannot pollute the rerun.
+- If a queued steer exists when a user edits/reruns an earlier message, queued
+  steers tied to the superseded run or superseded later turns are marked
+  superseded/canceled and are not applied to the edited rerun. The user can
+  submit a new steer against the new active run.
+
+Markdown contracts:
+
+- The system-order Markdown table follows
+  `docs/reference/系統訂單.xlsx` sheet `老公公轉出`.
+- Canonical system-order columns:
+  `公司編號`, `項次`, `倉庫編號`, `型號`, `品名規格`, `材質編號`, `廠別編號`,
+  `單位`, `數量`, `單重`, `總數`, `單價`, `計價基準`, `公式編號`, `厚度`,
+  `寬度`, `長度`, `類別`, `交貨日期`, `備註`.
+- `型號` and `品名規格` should preserve the adopted product-price identity,
+  matching price data fields such as `erpItemCode`, `productName`, and
+  `specKey` when a price row was selected.
+- `計價基準` records the adopted customer price tier context used for pricing
+  (`customerTierId` / tier code / tier display value, according to available
+  source data), not an unreliable unit/category filter.
+- Customer data is first-class working memory. Store compact customer facts from
+  `search_customers` and assistant Markdown, including customer id/code, display
+  name, selected tier, candidate tiers, contact/address fields if present, and
+  source refs.
+- OCR has no fixed table schema. The AI decides how to interpret OCR content;
+  backend saves all sanitized OCR text/table blocks with source metadata:
+  upload/file id, filename, media type, image index when relevant, page number
+  for PDFs, and OCR provider.
+
+Architecture:
+
+- Add a small Steel conversation-memory layer in Mongo/data-schemas. This is a
+  working-memory store, not a workbook/file-analysis state module and not a UI
+  preview data source.
+- Add a Steel conversation-history layer in Mongo/data-schemas for canonical
+  chat turns. This persists user messages, assistant final summary text/
+  Markdown, attachments/source refs, queued steer messages, and final response
+  metadata by `conversationId`. Thinking/tool/activity events are not persisted;
+  they exist only as browser last-run UI state.
+- Store memory entries by `conversationId`, `requestId`, `turnIndex`,
+  `memoryKind`, `sourceKind`, timestamps, source refs, active/superseded state,
+  compact summary, and bounded sanitized payload.
+- Maintain memory checkpoints at chat-turn boundaries so message edit/rerun can
+  restore the active Working Order Memory to the state before the edited user
+  message. This is a logical rollback: old entries may remain for trace, but
+  active summary and `read_working_order_items` exclude superseded memory.
+- Memory kinds:
+  - `working_order_row`: parsed system-order rows from assistant Markdown.
+  - `customer_fact`: selected/candidate customer information and tier context.
+  - `price_evidence`: selected price rows and candidate rows from
+    `search_price_candidates`.
+  - `rule_evidence`: useful quote rule summaries from `lookup_quote_rules`.
+  - `ocr_extract`: all sanitized OCR text/table blocks from `run_file_ocr`.
+  - `calculation_fact`: totals, formulas, assumptions, and manual-review flags
+    adopted by the assistant final answer.
+- Source kinds:
+  - `assistant_final_markdown`
+  - `tool_result`
+  - `ocr_result`
+  - `user_input`
+- Final Markdown parse policy:
+  1. If a final answer contains a full system-order table with canonical
+     headers, replace the active working-order snapshot for that conversation.
+  2. If a final answer contains a row-change table with `項次` plus changed
+     fields, merge those rows into the active snapshot.
+  3. If a table has recognizable aliases such as item/code/name/spec/quantity/
+     total headers, normalize the recognized fields into partial memory facts
+     and mark the table `partial`.
+  4. If a table cannot be classified safely, save it as an unclassified
+     Markdown/OCR evidence block and do not mutate the active order snapshot.
+  5. Parsing failure is recorded as `memory_parse_skipped` or
+     `memory_parse_partial`; it is not an AI retry trigger.
+- Tool/OCR capture policy:
+  1. After each `search_customers`, save compact customer candidates and the
+     unique/adopted tier if available.
+  2. After each `search_price_candidates`, save selected/candidate price rows
+     with `customerTierId`, `erpItemCode`, `productName`, `specKey`, `unitPrice`,
+     and source refs.
+  3. After each `run_file_ocr`, save every sanitized page/image block; do not
+     require fixed OCR columns.
+
+History policy:
+
+- The backend owns canonical history. On every request with `conversationId`,
+  load persisted chat turns from the database, merge the new user input, and
+  persist the new user turn before provider execution.
+- Frontend-supplied `messages` remain accepted for backward compatibility and
+  new/unsaved turns, but they are not the only source of truth.
+- Prompt construction order:
+  1. static system instructions, rules, and tool definitions
+  2. compact working memory summary
+  3. selected persisted chat history window
+  4. current user input and current attachments
+- The history window should be token-budgeted and relevance-aware. Keep recent
+  turns, user corrections, final assistant Markdown summaries, and explicit
+  decisions; avoid stuffing every large Markdown table when structured memory
+  already stores those rows.
+- Assistant Markdown remains in chat history as user-visible record and fallback
+  evidence. Working memory is the structured index used for precise row/code/
+  query reads.
+- Persist message ids, content/table hashes, and user-message revision metadata
+  so backend does not parse/save the same assistant Markdown table repeatedly
+  and can rebuild prompt context from the latest edited user text.
+- History-window selection must exclude superseded turns by default. Superseded
+  turns may remain in the database for trace/idempotency, but they are not part
+  of active prompt context or active chat replay.
+- Working-memory summary selection must use the same active boundary as
+  conversation history. After edit/rerun, memory generated by superseded later
+  turns is not injected and is not returned by default memory reads.
+
+Codex-like message UX policy:
+
+- The chat transcript shows only user messages and the assistant's final
+  summary/quote text. It must not embed public thinking, tool logs, OCR logs,
+  memory events, raw tool output, or hidden reasoning inside chat bubbles.
+- During a running turn, visible assistant answer text streams into the
+  in-progress assistant message. Public thinking/status/tool activity streams
+  only into the Thinking/Activity tab.
+- After the turn finishes, the assistant chat message contains only the final
+  normalized answer text/Markdown. The Thinking/Activity tab keeps the last run
+  activity trace separately.
+- The Thinking/Activity tab is last-run scoped. Loading or scrolling older chat
+  history should not replay old thinking/tool logs as chat content.
+- Persisted conversation history stores final message text and source/attachment
+  refs. It does not store thinking/tool/OCR/memory/parse activity events.
+
+Chat editing/copy policy:
+
+- Markdown tables in assistant messages must be selectable and copyable like
+  ChatGPT. Provide a table-level copy action that copies Markdown source, not
+  only rendered cell text.
+- Assistant responses need a copy action that copies the final response
+  Markdown/text without Thinking/Activity events.
+- User messages need edit behavior like Codex: editing a prior user message
+  overwrites the visible message text and reruns from that edited message as
+  the current prompt source.
+- After a user message edit, all later messages in that active conversation
+  tail are marked superseded and removed from active replay/prompt selection.
+  The edited message becomes the latest active prompt boundary, then the new
+  assistant response is generated after it.
+- Working Order Memory is rolled back to the checkpoint before the edited user
+  message before rerun starts. Superseded rows/customer facts/price evidence/OCR
+  extracts/calculation facts remain traceable but are not active memory.
+- Edited user messages must rebuild prompt context from persisted history,
+  working memory summary, and the latest edited message text; they must not
+  depend on browser-local message state.
+- If backend keeps old message text for audit/idempotency, it is hidden
+  revision metadata, not a visible conversation branch and not prompt input.
+
+Provider flow:
+
+1. Handler resolves `conversationId`.
+2. Persist the current user turn to conversation history.
+3. Emit public activity: loading persisted history and working memory.
+4. Load selected chat history and compact memory summary for that conversation.
+5. Compose prompt as static instructions/rules/tools, then `Steel working
+   memory`, then selected persisted chat history, then current user input.
+6. AI answers through `doStream` when available. Public reasoning/status deltas,
+   text deltas, tool-call deltas, and backend activity events are streamed as
+   they happen. It does not call a memory save tool.
+7. If the user asks "第 12 項", "CCG075", "75x45 那支", or "沿用整張表重新總計",
+   AI calls `read_working_order_items` with explicit read arguments.
+8. Backend executes normal tools and read-only memory tools, emitting public
+   events for tool call, arguments summary, row/result counts, source refs, and
+   errors.
+9. If queued user steer exists, apply it before the next provider round when a
+   tool round completes or when the current provider generation returns tool
+   calls. If visible final answer text has started streaming, do not mutate the
+   in-progress assistant message; persist the steer as the next user turn and
+   immediately start/facilitate a follow-up request after the current turn
+   finishes.
+10. After tool calls, backend auto-saves compact tool/OCR evidence and emits
+   public `memory_saved` counts.
+11. After the final assistant response, persist the assistant turn, then backend
+   auto-parses Markdown tables as a
+   post-response capture step and updates working-order/customer/calculation
+   memory when confidence is sufficient. Parse misses do not block the response
+   or start another AI round.
+
+Public thinking/activity stream:
+
+- The chat UI should show a public, synchronous work log similar to Codex:
+  short reasoning summaries, tool calls, OCR progress, customer lookup, price
+  lookup, memory reads, memory saves, parse status, and finalization.
+- Text output should stream as deltas into the visible assistant message, not
+  only appear after the provider finishes. The final assistant message persisted
+  to DB is the concatenation of streamed deltas plus any final normalized text.
+- Reasoning output should stream only when it is provider-supplied public
+  reasoning summary/status text. Hidden chain-of-thought must stay hidden.
+- Public thinking/status/tool events are not appended to assistant message
+  content. They are rendered only in the Thinking/Activity tab for the latest
+  run.
+- Thinking/Activity events are not stored in database history. Refreshing the
+  page may restore final chat messages and Working Order Memory, but not old
+  last-run activity.
+- Event payloads should be safe and compact. Show tool name, status, sanitized
+  argument summary, row counts, page/file refs, selected tier, selected price
+  count, and elapsed time. Do not stream raw database rows, raw OCR payloads, or
+  hidden chain-of-thought.
+- Required event kinds:
+  - `thinking`: public reasoning/status text.
+  - `tool_call`: tool name and sanitized arguments summary.
+  - `tool_result`: result count and source refs.
+  - `tool_error`: safe error summary.
+  - `memory_loaded`: injected summary counts.
+  - `memory_read`: read query and result count.
+  - `memory_saved`: saved memory counts by kind.
+  - `ocr_progress`: file/page/image progress.
+  - `parse_status`: Markdown parse saved/partial/skipped.
+  - `text_delta`: assistant visible text delta.
+  - `steer_queued`: user steer accepted while a turn is running.
+  - `steer_applied`: queued steer inserted into a provider round.
+  - `steer_deferred`: queued steer will run as a follow-up turn.
+  - `steer_superseded`: queued steer was canceled because message edit/rerun
+    superseded its target run or context.
+- Tool visibility examples:
+  - `search_customers`: keyword summary, candidate count, selected tier if any.
+  - `search_price_candidates`: candidate query count, tier used, returned row
+    count, selected/adopted row count if known.
+  - `run_file_ocr`: filename, page/image progress, extracted block count.
+  - `read_working_order_items`: lookup type, matched row count, whether summary
+    or paginated rows were returned.
+
+Queued steer policy:
+
+- While `isSending` is true, the input box should allow a steer message instead
+  of only disabling send. The UI labels this as steering the current run.
+- A steer is persisted as a user message with `source=queued_steer`, timestamp,
+  and target in-flight request id.
+- Backend applies queued steer only at safe boundaries:
+  - before the next provider round after tool results are appended
+  - before a provider round that follows memory/tool reads
+  - as an immediate follow-up turn if final answer text has already started
+    streaming
+- A queued steer does not rewrite or interrupt the current final assistant
+  message once `text_delta` has begun. This matches Codex-like UX: the current
+  answer finishes, then the steer becomes the next turn.
+- Multiple queued steers should preserve order. If the user edits/replaces a
+  steer before it is applied, store a supersession record instead of silently
+  losing the earlier text.
+- If the user edits a prior chat message while one or more steers are queued,
+  queued steers targeting the now-superseded run/context are marked superseded
+  or canceled. They are excluded from the edited rerun and from active prompt
+  history; they remain hidden trace metadata only if retained.
+- A rerun created by message edit starts with no inherited queued steer unless
+  the user submits a new steer after the rerun starts.
+- Activity must show whether steer was queued, applied in-run, deferred to a
+  follow-up, superseded by edit/rerun, or rejected because the request already
+  closed.
+
+AI-visible memory behavior:
+
+- Initial prompt injection should fit about 1000-1200 tokens:
+  current customer/tier, order row count, totals, unresolved items, last updated
+  time, and a small set of high-relevance rows.
+- The prompt tells AI to use `read_working_order_items` when it needs details
+  not present in the compact summary.
+- `read_working_order_items` supports:
+  - `summary`: row count, totals, current customer/tier, unresolved items.
+  - `rowNo`: exact `項次` / row number lookup.
+  - `erpItemCode`: exact `型號` / ERP code lookup.
+  - `query`: contains search over `品名規格`, `specKey`, product name, and notes.
+  - `source`: OCR/file lookup by filename, image index, and page.
+  - `page`: paginated row slices for large orders.
+- For "沿用整張表重新總計", backend may read all rows internally for summary or
+  calculation support, but the AI receives only the summary, changed rows, and
+  unresolved rows unless it explicitly pages through more.
+- Explicit refresh wording such as `重新查`, `重新 OCR`, `重新計算`, or conflicting
+  user data keeps normal tools available; working memory is context, not a hard
+  cache.
+
+Implementation tasks:
+
+Ad-hoc verification - live detailed quote response retest:
+
+- [x] Run a fresh two-round live chat harness after the detailed table/tool
+      rule sync.
+- [x] Verify from events that AI actually called price lookup tools.
+- [x] Verify from full assistant text that it outputs Markdown tables and an
+      explicit manual-review list.
+- [x] Record the result and gaps.
+
+Review:
+
+- Ran fresh live harness with conversation
+  `debug_detail_retest_1781757105`.
+- Round 1 called `lookup_quote_rules` and `search_price_candidates`, but the
+  price lookup returned `priceCandidateCount: 0` for exact strings such as
+  `6.0m/mOT板`, `16.0m/mOT板`, and hole-processing queries. This means the AI
+  did try to查價, but did not successfully adopt reviewed price rows in round 1.
+- Round 1 output 4 Markdown tables. The first table had 71 item rows with
+  columns for page, part number, OT price name, spec, quantity, holes, material
+  unit price, hole unit price, subtotal, and confidence/notes. Prices remained
+  `未確認`.
+- Round 1 included an explicit manual confirmation table headed
+  `目前需人工確認` with 4 rows.
+- Round 2 did not call tools; it used the user's supplied price table from the
+  prompt. It output 5 Markdown tables, adopted DNB rows for 6/10/12/14/16/20mm,
+  and listed manual review rows for 4.0mm and hole-processing prices. It still
+  did not emit a regenerated 71-row priced detail table after applying the
+  supplied prices.
+- Follow-up fix: `search_price_candidates` now normalizes every
+  `candidateQueries` keyword to the same `spec_key` format used by imported
+  `steel.price_items.spec_key` before contains search. This makes
+  `6.0m/mOT板` search as `6.0m_mOT板`, so it can match live rows such as
+  `DNB70060_6.0m_mOT板雷射切割`.
+- Verification: focused Jest for price repository, tool execution, registry,
+  normalization, and provider specs passed; live `executeSteelTool` probe for
+  `candidateQueries: ['6.0m/mOT板']`, `customerTierId: 2` returned 7 candidates
+  and included B-tier `DNB70060` at 38.5; `git diff --check` passed.
+- Verification evidence:
+  `CHAT_ROUND_CONVERSATION_ID=debug_detail_retest_1781757105 CHAT_ROUND_LIMIT=2 CHAT_ROUND_TIMEOUT_MS=720000 npx tsx tmp/chat-round-test/live-latency-diagnosis.ts`;
+  Mongo readback of assistant turns confirmed round 1 `itemRows: 71`,
+  round 1 `markdownTables: 4`, round 2 `markdownTables: 5`, and both turns
+  contained manual-review / unconfirmed sections.
+
+Ad-hoc implementation - detailed quote Markdown agent rule:
+
+- [x] Add a general Agent Instruction rule that multi-item quote answers must
+      include detailed per-item Markdown rows, not only grouped summaries.
+- [x] Remove conflicting minimal-provider wording that biases final quote
+      output toward concise summaries.
+- [x] Add `read_working_order_items` to the Agent Instruction visible tool list
+      and Supabase sync `toolPolicy.availableTools`.
+- [x] Sync reviewed Supabase Steel rules and verify readback / focused checks.
+
+Review:
+
+- Updated `docs/rules/agent規則.txt` so multi-item quote answers must begin with
+  detailed per-item Markdown rows; grouped thickness/category/price-name
+  summaries can only be follow-up summary tables.
+- Added `read_working_order_items` to the visible Agent Instruction tool list
+  and to `packages/api/scripts/sync-steel-rules.cjs` `toolPolicy.availableTools`.
+  The rule now describes it as read-only Working Order Memory access; there is
+  still no save tool.
+- Updated the provider fallback wording from concise Markdown tables to
+  detailed Markdown tables, and extended the local direction check so future
+  rule sync cannot omit the memory read tool while registry/provider expose it.
+- Verification passed:
+  `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand`;
+  `node packages/api/scripts/sync-steel-rules.cjs --dry-run`;
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`;
+  direct DB readback confirmed prompt contains `read_working_order_items` and
+  `逐項 Markdown 明細表`, with `tool_policy.availableTools` including
+  `read_working_order_items`.
+
+Ad-hoc verification - `tmp/chat-round-test` direction check:
+
+- [x] Add a local `tmp/chat-round-test` direction-check harness for the current
+      Working Order Memory / Markdown-table plan, because the older
+      `live-latency-diagnosis.ts` harness still targets removed workbook patch
+      behavior.
+- [x] Run the harness and focused Steel tests to verify implementation direction
+      and Markdown table output evidence.
+- [x] Record the result and any remaining gap for manual testing.
+
+Review:
+
+- Added `tmp/chat-round-test/current-direction-check.ts`, which writes
+  `tmp/chat-round-test/current-direction-check.json` and
+  `tmp/chat-round-test/current-direction-check.md`.
+- Direction check result: 12 pass, 0 fail, 1 warn. The warning is intentional:
+  the older `tmp/chat-round-test/live-latency-diagnosis.ts` still references
+  legacy workbook harness tokens (`createSteelWorkbookService`,
+  `workbookContextText`, `workbookPatchTool`), so it is not the correct current
+  Working Order Memory / Markdown-table verification entrypoint.
+- The check confirms the current implementation direction is present:
+  `responsesState: false`, read-only `read_working_order_items`, no
+  implementation `save_working_order_items`, DB-backed history wiring, active
+  Working Order Memory summary injection, automatic final Markdown/tool/OCR
+  capture, browser request contract without workbook ids, and frontend
+  Markdown table render/copy/edit behavior.
+- The generated Markdown report includes a sample final Markdown table output.
+- Verification passed:
+  `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/memory/service.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts --runInBand`.
+
+Ad-hoc implementation - migrate `tmp/chat-round-test/live-latency-diagnosis.ts`:
+
+- [x] Add a RED direction gate proving the live harness still used the legacy
+      workbook path before migration.
+- [x] Rewrite `live-latency-diagnosis.ts` as a Working Order Memory live
+      harness.
+- [x] Verify the harness in dry-run mode and re-run focused Steel tests.
+
+Review:
+
+- Replaced the old live latency harness with a Working Order Memory harness
+  while keeping the same entrypoint and output files:
+  `tmp/chat-round-test/live-latency-diagnosis.ts`,
+  `tmp/chat-round-test/live-latency-summary.json`, and
+  `tmp/chat-round-test/live-latency-events.jsonl`.
+- The new harness simulates the current backend flow directly: it appends user
+  turns to Mongo-backed conversation history, loads active Working Order Memory
+  into `workingMemorySummary`, executes business tools with a
+  conversation-scoped `read_working_order_items` reader, captures successful
+  tool/OCR results into memory, appends the assistant final turn, and runs
+  `captureAssistantFinalMarkdown`.
+- Activity remains local JSONL only for the harness; no activity/tool log is
+  persisted as Steel conversation history.
+- The harness supports `CHAT_ROUND_DRY_RUN=1` for fast contract checks and live
+  mode for real OAuth/provider runs. Useful live command:
+  `CHAT_ROUND_LIMIT=1 CHAT_ROUND_TIMEOUT_MS=720000 npx tsx tmp/chat-round-test/live-latency-diagnosis.ts`.
+- Verification passed:
+  `CHAT_ROUND_DRY_RUN=1 npx tsx tmp/chat-round-test/live-latency-diagnosis.ts`;
+  `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/memory/service.spec.ts src/steel/history/service.spec.ts src/steel/history/repository.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand`;
+  `git diff --check`.
+
+Ad-hoc verification - real handler Markdown autosave smoke:
+
+- [x] Add a handler smoke test using real Mongo-backed Steel conversation
+      history and Working Order Memory services.
+- [x] Verify the smoke directly reads Working Order Memory after the handler
+      returns a final Markdown table.
+- [x] Run focused handler/memory verification and record evidence.
+
+Review:
+
+- Added a real stream-handler smoke in `packages/api/src/steel/handlers.spec.ts`
+  that uses `MongoMemoryServer`, Mongo-backed Steel conversation history, and
+  the real Working Order Memory writer/reader.
+- The smoke stubs only the provider final response, then verifies the handler
+  emits `parse_status: saved` / `memory_saved` and directly reads the saved
+  normalized row from Working Order Memory: `rowNo`, `erpItemCode`,
+  `productName`, `quantity`, and `unitPrice`.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/history/service.spec.ts src/steel/history/repository.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+  `git diff --check`.
+
+Completion slice order:
+
+- [x] Finish Steel conversation-turn metadata and idempotent history behavior.
+- [x] Finish Working Order Memory capture for tool/OCR outputs with bounded
+      payloads and source refs.
+- [x] Finish streaming provider tool-loop regression coverage.
+- [x] Finish queued steer persistence/apply/defer behavior across backend and
+      frontend.
+- [x] Finish Codex-style copy/edit chat UI behavior.
+- [x] Run focused verification and document user test steps.
+
+- [x] Current slice: add RED handler/provider coverage for DB-backed history,
+      active Working Order Memory prompt injection, and memory-reader tool
+      binding.
+- [x] Current slice: wire Steel chat handlers so `conversationId` requests
+      persist/load active DB turns, inject compact active memory, and avoid
+      relying only on browser-local `messages`.
+- [x] Current slice: bind `createMongooseSteelWorkingOrderMemoryReader` into
+      default Steel stream tool execution by `conversationId`.
+- [x] Current slice: run focused verification and record evidence before moving
+      to final Markdown parser/auto-save.
+- [ ] Add RED data-schemas tests for persisted Steel conversation history:
+      user turns, assistant final-summary turns, queued steer messages,
+      attachment refs, table hashes, final response metadata, user-message
+      revision metadata, superseded-turn metadata, latest-visible content
+      semantics, and indexes by `{ conversationId, createdAt }`.
+- [x] Add RED history-window tests proving backend loads DB history by
+      `conversationId`, merges the current user turn, and builds prompt order as
+      static instructions -> working memory summary -> selected persisted chat
+      history -> current input.
+- [x] Add RED message-edit tests proving editing an earlier user message updates
+      that message's visible text, marks later turns superseded, excludes those
+      turns from prompt/history-window selection, and reruns from the edited
+      message.
+- [x] Add RED parser tests for final assistant Markdown:
+      full system-order table, row-change table, customer-info table,
+      alias/partial table, unclassified table, malformed table, and no-retry
+      parse-miss behavior.
+- [ ] Add RED memory repository tests for conversation-scoped entries, active
+      working-order snapshot replacement, row merge by `項次`, and bounded OCR
+      payload storage with file/page/image refs.
+- [x] Add RED memory rollback tests proving edit/rerun restores the active
+      memory checkpoint before the edited user message and excludes memory from
+      superseded later turns in summaries and `read_working_order_items`.
+- [x] Add data-schemas types and Mongo model/indexes for the lightweight Steel
+      conversation-memory store.
+- [x] Add data-schemas types and Mongo model/indexes for Steel chat history,
+      user-message revisions, and queued steer records.
+- [x] Do not add run-scoped activity persistence. Keep Thinking/Activity events
+      in client state only and exclude them from conversation-history schemas.
+- [ ] Implement Steel conversation-history repository/service with append,
+      idempotent message persistence, table/content hash dedupe, and
+      token-budgeted history-window selection. Message edit must update the
+      latest visible user content used by history-window selection without
+      exposing a branch in the chat UI; later turns must be marked superseded
+      and excluded from active prompt/replay.
+- [x] Implement Markdown table parsing in `packages/api/src/steel/memory/`
+      without depending on old workbook/file-analysis modules.
+- [ ] Implement memory repository/service with append, snapshot replace/merge,
+      summary build, relevance search, paginated row reads, turn-boundary
+      checkpoints, and logical rollback/exclusion for superseded memory.
+- [x] Add read-only `read_working_order_items` tool and prove no
+      `save_working_order_items` tool is registered or exposed.
+- [x] Wire memory summary loading in Steel handlers before provider prompt
+      construction, using the active conversation boundary after message edits.
+- [x] Wire persisted history loading/saving in Steel handlers so the backend no
+      longer depends only on browser-local `messages`.
+- [x] Wire prompt order tests proving static system/rules/tools come before
+      working memory, and working memory comes before chat history.
+- [x] Replace the primary Steel provider stream path with OAuth `doStream`
+      support: emit live `text_delta`, safe public reasoning deltas, tool-call
+      deltas, finish metadata, and aggregate the final assistant text for DB
+      persistence. Keep `doGenerate` as fallback.
+- [x] Add provider tests proving tool-result orchestration still calls a new
+      provider round after tool execution while streaming text/reasoning events
+      in order.
+- [x] Wire automatic tool/OCR evidence capture around business tool execution.
+- [x] Wire automatic final Markdown parse/save after the assistant response.
+- [x] Wire final Markdown parse as best-effort post-processing: bounded time,
+      no provider retry, no user-visible failure when parsing is skipped or
+      partial.
+- [ ] Add public activity streaming tests proving tool calls, tool results,
+      memory read/save, OCR progress, parse status, and safe thinking summaries
+      are emitted in order while the turn is running.
+- [x] Add queued steer tests: UI accepts steer while sending, backend persists
+      it, applies it at the next safe provider boundary, emits
+      `steer_queued`/`steer_applied`, and defers to a follow-up turn when final
+      text already completed.
+- [ ] Add queued-steer/edit collision tests proving queued steers tied to a
+      superseded run are marked superseded/canceled, excluded from the edited
+      rerun prompt, and surfaced only as last-run Activity state while the
+      collision is happening.
+
+## Current Slice Review - 2026-06-18
+
+- Implemented `conversationId`-scoped prompt preparation in Steel handlers:
+  active DB history is loaded, the current user turn is persisted, compact
+  active Working Order Memory is injected, and stale browser-local prior
+  messages are not used as the only prompt source.
+- Added provider prompt-order coverage proving static system/rules stay first,
+  Working Order Memory is inserted next, then active DB history, then the
+  current user input.
+- Bound the default stream tool executor to a conversation-scoped
+  `read_working_order_items` memory reader, with memory-only reads avoiding the
+  Postgres lookup client path.
+- Added best-effort final assistant Markdown capture for recognizable
+  `項次`/`型號`/`品名規格` tables. Captured rows replace the active
+  `working_order_row` snapshot while older active rows become superseded trace.
+- Verification passed:
+  `npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/history/service.spec.ts src/steel/history/repository.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+  `git diff --check`; `npm --workspace packages/api run build`.
+- Build still reports the known existing Redis `KeyvRedis` TypeScript warning
+  at `packages/api/src/cache/cacheFactory.ts:47`, but exits 0.
+
+- [x] Update Steel chat UI Activity/work log so public thinking text and tool
+      activity render synchronously, with sanitized details and elapsed time.
+- [x] Update Steel chat UI so visible assistant text streams incrementally and
+      the input can submit queued steer while a request is running.
+- [ ] Add UI tests proving final chat messages contain only final summary/
+      quote Markdown, while thinking/tool/activity events appear only in the
+      Thinking/Activity tab for the last run.
+- [ ] Add UI tests proving Thinking/Activity events disappear on reload/history
+      load while final chat messages and Working Order Memory remain available.
+- [x] Add UI support and tests for copying full assistant response Markdown,
+      copying rendered Markdown tables as Markdown source, and editing user
+      messages Codex-style: overwrite visible text, rerun from the edited
+      message, hide superseded later turns from the active transcript, and do
+      not show a branch/follow-up artifact.
+- [ ] Add backend integration tests proving an edited message rerun cannot read
+      working-order rows, customer facts, price evidence, OCR extracts, or
+      calculation facts that came only from superseded assistant/tool turns.
+- [ ] Update `docs/rules/agent規則.txt` and synced Supabase rules so AI knows:
+      final Markdown is the user-visible order, backend saves it automatically,
+      and AI should only read memory when follow-up detail is needed.
+- [x] Update client-only Activity stream with `memory_loaded`, `memory_read`,
+      and `memory_saved` events that expose counts/source refs, not raw DB/OCR
+      rows, and are never persisted as conversation history.
+- [ ] Run focused parser/memory/tool/provider/handler tests, shared package
+      builds if contracts change, API type/build check, Supabase rule
+      dry-run/apply/readback, and `git diff --check`.
+
+Review:
+
+- Completion slice finished. Added idempotent Steel conversation-turn upsert by
+  `conversationId`/`messageId`, final response metadata, queued steer metadata,
+  and active-history edit/rerun behavior that updates the edited user message
+  instead of creating a visible branch.
+- Tool and OCR results are now automatically captured into Working Order Memory
+  as bounded `customer_fact`, `price_evidence`, `rule_evidence`, and
+  `ocr_extract` entries with source refs. AI still only gets
+  `read_working_order_items`; no save tool was added.
+- Provider streaming now has regression coverage for a streamed tool-call round
+  followed by a second streamed text round. Frontend renders assistant text
+  deltas into the answer bubble while keeping Activity events separate.
+- Queued steers submitted during a running response are accepted in the UI,
+  shown as last-run Activity, then deferred into a follow-up request with
+  `messageSource: queued_steer`. Backend persists that queued source and emits
+  `steer_applied` for the follow-up request.
+- Codex-style chat controls are implemented and covered: assistant copy copies
+  final Markdown without Activity text, rendered tables copy Markdown source,
+  and editing a prior user message overwrites visible text and reruns from that
+  message with `editMessageId`.
+- Verification passed:
+  `cd packages/data-provider && npm run build`;
+  `cd packages/data-schemas && npm run build`;
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts --runInBand`;
+  `cd packages/data-schemas && npx jest src/schema/steel.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/history/service.spec.ts src/steel/history/repository.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand`;
+  `cd packages/api && npm run build`;
+  `git diff --check`.
+- `cd client && npm run typecheck` still fails on repo-wide pre-existing
+  frontend errors outside this Steel route. After fixing the one new
+  `SteelOAuthChat.tsx` narrowing error, filtering the typecheck output for
+  `SteelOAuthChat` / `src/routes/Steel` produced no matches.
+- Supabase rule dry-run/apply/readback was not run because this completion
+  slice did not change Steel Supabase rules or Postgres schema.
+
+- Second implementation slice completed. Provider streaming now uses OAuth
+  `doStream` when text-delta callbacks are available and keeps `doGenerate` as
+  fallback; frontend renders assistant text deltas into a single in-progress
+  assistant message without duplicating final text.
+- Added last-run Activity event contracts and UI rendering for
+  `memory_loaded`, `memory_read`, `memory_saved`, `parse_status`, and
+  `steer_queued` events. Activity remains frontend state only and is not added
+  to Mongo conversation history.
+- Expanded final Markdown capture: full system-order tables replace active row
+  snapshots, row-change tables merge by `項次`, customer/calculation tables save
+  compact facts, unclassified tables are retained as partial calculation
+  evidence, and malformed tables are skipped without retrying the provider.
+- Added queued-steer frontend behavior while a request is running: text-only
+  steers clear the composer and show `Queued steer accepted` in Activity. The
+  backend channel that persists/applies steers at a provider boundary remains
+  pending.
+- Verification passed:
+  `cd packages/data-provider && npx jest src/steel/ai.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/history/service.spec.ts src/steel/history/repository.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand`;
+  `cd packages/data-provider && npm run build`;
+  `cd packages/data-schemas && npm run build`;
+  `cd packages/data-schemas && npx jest src/schema/steel.spec.ts --runInBand`;
+  `cd packages/api && npm run build`;
+  `git diff --check`.
+- `cd client && npm run typecheck` still fails on repo-wide pre-existing
+  workspace type-resolution issues, mostly `Cannot find module
+  'librechat-data-provider'`, plus unrelated frontend type errors outside the
+  Steel route.
+
+- First implementation slice completed. Added Steel conversation turn and
+  Working Order Memory Mongo schemas/models; no run-scoped activity persistence
+  was added.
+- Added history service/repository coverage for Codex-style user-message edit:
+  visible text is replaced, later turns are superseded, queued-steer turns in
+  that later tail are excluded from active history, and Working Order Memory is
+  logically rolled back from the edited turn boundary.
+- Added read-only `read_working_order_items` tool schema/registry/executor
+  support and a Mongo-backed active-memory reader for `summary`, `rowNo`,
+  `erpItemCode`, `query`, `source`, and `page` modes. Verified that no
+  `save_working_order_items` tool is exposed.
+- Still pending: handler prompt construction and DB history persistence wiring,
+  final Markdown parser/auto-save, automatic tool/OCR evidence capture,
+  streaming `doStream`, queued steer UI/backend flow, and frontend copy/edit
+  behavior.
+
 # Active: Steel Price Tier and Table Spec-Key Continuity
 
 Goal: make `search_price_candidates` preserve known customer tier pricing and
@@ -166,7 +998,8 @@ Review:
 
 Goal: simplify Steel price lookup so `search_price_candidates` only accepts
 `candidateQueries`, and every candidate term from `productNames` or
-`erpItemCodes` is searched against `steel.price_items.spec_key`.
+`erpItemCodes` is normalized to spec_key format and searched against
+`steel.price_items.spec_key`.
 
 - [x] Add RED schema/registry coverage proving top-level `productNames` and
       `erpItemCodes` are rejected and `candidateQueries` is required.
@@ -345,6 +1178,16 @@ Review:
 - No new evidence points to token compression or context loss. The DNB markers
   were present in the previous live prompt captures; this failure is caused by
   tool input handling and post-query filtering.
+- Follow-up correction: current `search_price_candidates` accepts only
+  `candidateQueries: string[]`, not nested candidate objects or top-level
+  `erpItemCodes`. The live DB still has reviewed/active B-tier `DNB70060`, but
+  raw `6.0m/mOT板` previously missed because the stored `spec_key` is
+  `DNB70060_6.0m_mOT板雷射切割`. The repository now normalizes each keyword to
+  spec_key format and searches only `steel.price_items.spec_key` with contains
+  semantics.
+- Synced reviewed agent rule after adding the normalized spec_key tool
+  instruction. Readback confirmed active `steel-default-agent-instruction` SHA
+  `c620fe62efa7a73721dd807715fc008f30fbf6f811d68b20a8a6fe4015101d20`.
 
 # Active: Steel OAuth Chat Multi-Round Live Latency Diagnosis
 

@@ -124,14 +124,18 @@ describe('Steel AI public contracts', () => {
   it('validates minimal Steel provider chat requests', () => {
     expect(
       steelProviderChatRequestSchema.parse({
+        editMessageId: 'user-message-1',
         model: 'gpt-5.5',
-        messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+        messageSource: 'queued_steer',
+        messages: [{ role: 'user', content: 'Say steel-chat-ok', messageId: 'user-message-1' }],
         maxOutputTokens: 64,
         reasoningEffort: 'high',
       }),
     ).toEqual({
+      editMessageId: 'user-message-1',
       model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'Say steel-chat-ok' }],
+      messageSource: 'queued_steer',
+      messages: [{ role: 'user', content: 'Say steel-chat-ok', messageId: 'user-message-1' }],
       maxOutputTokens: 64,
       reasoningEffort: 'high',
     });
@@ -255,6 +259,63 @@ describe('Steel AI public contracts', () => {
     ).toEqual({
       type: 'reasoning',
       summary: '先查 catalog key，再查規則與價格。',
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'memory_loaded',
+        message: 'Loaded Working Order Memory',
+        resultCount: 2,
+      }),
+    ).toEqual({
+      type: 'memory_loaded',
+      message: 'Loaded Working Order Memory',
+      resultCount: 2,
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'memory_read',
+        message: 'read_working_order_items completed',
+        mode: 'rowNo',
+        resultCount: 1,
+      }),
+    ).toEqual({
+      type: 'memory_read',
+      message: 'read_working_order_items completed',
+      mode: 'rowNo',
+      resultCount: 1,
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'memory_saved',
+        message: 'Working Order Memory saved',
+        savedCounts: { working_order_row: 2 },
+      }),
+    ).toEqual({
+      type: 'memory_saved',
+      message: 'Working Order Memory saved',
+      savedCounts: { working_order_row: 2 },
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'parse_status',
+        message: 'Markdown parse saved',
+        parseStatus: 'saved',
+        savedCounts: { working_order_row: 2 },
+      }),
+    ).toEqual({
+      type: 'parse_status',
+      message: 'Markdown parse saved',
+      parseStatus: 'saved',
+      savedCounts: { working_order_row: 2 },
+    });
+    expect(
+      steelProviderChatStreamEventSchema.parse({
+        type: 'steer_queued',
+        message: 'Queued steer accepted',
+      }),
+    ).toEqual({
+      type: 'steer_queued',
+      message: 'Queued steer accepted',
     });
     expect(
       steelProviderChatStreamEventSchema.parse({ type: 'text', delta: '小計：643.2' }),

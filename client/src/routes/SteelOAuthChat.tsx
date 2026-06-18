@@ -3,11 +3,13 @@ import {
   AlertCircle,
   Bot,
   CheckCircle2,
+  Copy,
   Loader2,
   MessageSquarePlus,
   Paperclip,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
   Send,
   UserRound,
   X,
@@ -60,6 +62,10 @@ function createTurn(
     content,
     ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
   };
+}
+
+function copyText(value: string): Promise<void> | undefined {
+  return navigator.clipboard?.writeText(value);
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -165,6 +171,14 @@ function getStreamStatusMessage(event: SteelProviderChatStreamEvent): string | u
   if (event.type === 'progress' || event.type === 'lookup' || event.type === 'tool') {
     return event.message;
   }
+  if (
+    'message' in event &&
+    (event.type.startsWith('memory_') ||
+      event.type.startsWith('parse_') ||
+      event.type.startsWith('steer_'))
+  ) {
+    return event.message;
+  }
   if (event.type === 'reasoning') {
     return event.summary;
   }
@@ -187,6 +201,15 @@ function getStreamStatusLabel(event: SteelProviderChatStreamEvent): string {
   if (event.type === 'error') {
     return 'error';
   }
+  if (event.type.startsWith('memory_')) {
+    return 'working memory';
+  }
+  if (event.type.startsWith('parse_')) {
+    return 'memory parse';
+  }
+  if (event.type.startsWith('steer_')) {
+    return 'queued steer';
+  }
   return 'response';
 }
 
@@ -205,6 +228,15 @@ function getStreamActivityKindLabel(event: SteelProviderChatStreamEvent): string
   }
   if (event.type === 'error') {
     return 'Error';
+  }
+  if (event.type.startsWith('memory_')) {
+    return 'Memory';
+  }
+  if (event.type.startsWith('parse_')) {
+    return 'Memory parse';
+  }
+  if (event.type.startsWith('steer_')) {
+    return 'Steer';
   }
   return 'Activity';
 }
@@ -228,6 +260,9 @@ function getStreamActivityStateLabel(event: SteelProviderChatStreamEvent): strin
     }
     return 'Failed';
   }
+  if (event.type.startsWith('steer_')) {
+    return 'Queued';
+  }
   return 'Updated';
 }
 
@@ -239,6 +274,9 @@ function getStreamActivityStateClass(event: SteelProviderChatStreamEvent): strin
     return 'border-red-500/40 bg-red-500/10 text-red-400';
   }
   if ((event.type === 'lookup' || event.type === 'tool') && event.status === 'completed') {
+    return 'border-green-500/30 bg-green-500/10 text-green-400';
+  }
+  if (event.type.startsWith('memory_') || event.type.startsWith('parse_') || event.type.startsWith('steer_')) {
     return 'border-green-500/30 bg-green-500/10 text-green-400';
   }
   if (
@@ -261,6 +299,9 @@ function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
     return Bot;
   }
   if ((event.type === 'lookup' || event.type === 'tool') && event.status === 'completed') {
+    return CheckCircle2;
+  }
+  if (event.type.startsWith('memory_') || event.type.startsWith('parse_') || event.type.startsWith('steer_')) {
     return CheckCircle2;
   }
   return Loader2;
@@ -448,6 +489,17 @@ function renderMarkdownTable(lines: string[], key: string) {
 
   return (
     <div key={key} className="my-2 overflow-x-auto">
+      <button
+        type="button"
+        aria-label="Copy table Markdown"
+        className="mb-2 inline-flex h-7 items-center gap-1 rounded border border-border-light px-2 text-xs text-text-secondary hover:bg-surface-hover"
+        onClick={() => {
+          void copyText(lines.join('\n'));
+        }}
+      >
+        <Copy className="h-3 w-3" aria-hidden="true" />
+        Copy
+      </button>
       <table className="min-w-full border-collapse text-left text-sm">
         <thead>
           <tr>
@@ -523,6 +575,7 @@ function SteelMessageContent({ content }: { content: string }) {
 export default function SteelOAuthChat() {
   const layoutRef = useRef<HTMLElement | null>(null);
   const isComposingInputRef = useRef(false);
+  const queuedSteersRef = useRef<string[]>([]);
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<SteelProviderReasoningEffort>('medium');
   const [messages, setMessages] = useState<SteelChatTurn[]>([]);
@@ -533,6 +586,7 @@ export default function SteelOAuthChat() {
   const [isActivityPanelOpen, setIsActivityPanelOpen] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isEncodingFiles, setIsEncodingFiles] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<SelectedSteelFile[]>([]);
   const [streamEvents, setStreamEvents] = useState<SteelProviderChatStreamEvent[]>([]);
 
@@ -540,8 +594,11 @@ export default function SteelOAuthChat() {
     () => lastResponse?.provider ?? 'openai_oauth_responses',
     [lastResponse],
   );
-  const canSend =
-    (input.trim().length > 0 || selectedFiles.length > 0) && !isSending && !isEncodingFiles;
+  const hasComposedInput = input.trim().length > 0;
+  const hasSelectedFiles = selectedFiles.length > 0;
+  const canQueueSteer = isSending && hasComposedInput && !hasSelectedFiles && !isEncodingFiles;
+  const canStartSend = !isSending && !isEncodingFiles && (hasComposedInput || hasSelectedFiles);
+  const canSend = canStartSend || canQueueSteer;
 
   useEffect(() => {
     replaceSteelConversationIdInUrl(conversationId);
@@ -574,13 +631,130 @@ export default function SteelOAuthChat() {
     setConversationId(null);
     setSelectedFiles([]);
     setStreamEvents([]);
+    queuedSteersRef.current = [];
+    setEditingMessageId(null);
     setIsSending(false);
     setIsEncodingFiles(false);
   };
 
+  const streamAssistantResponse = async ({
+    payload,
+  }: {
+    payload: SteelProviderChatRequest;
+  }) => {
+    const streamingAssistantId = `assistant-stream-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    let hasStreamedText = false;
+    let streamedContent = '';
+
+    const response =
+      typeof dataService.streamSteelChat === 'function'
+        ? await dataService.streamSteelChat(payload, (event) => {
+            if (event.type === 'text') {
+              hasStreamedText = true;
+              streamedContent += event.delta;
+              setMessages((current) => {
+                const existing = current.some((message) => message.id === streamingAssistantId);
+                if (!existing) {
+                  return [
+                    ...current,
+                    {
+                      id: streamingAssistantId,
+                      role: 'assistant',
+                      content: streamedContent,
+                    },
+                  ];
+                }
+
+                return current.map((message) =>
+                  message.id === streamingAssistantId
+                    ? { ...message, content: streamedContent }
+                    : message,
+                );
+              });
+              return;
+            }
+
+            const message = getStreamStatusMessage(event);
+            if (!message) {
+              return;
+            }
+
+            setStreamEvents((current) => [...current, event]);
+          })
+        : await dataService.sendSteelChat(payload);
+
+    setLastResponse(response);
+    if (response.conversationId) {
+      setConversationId(response.conversationId);
+    }
+    setMessages((current) => {
+      if (!hasStreamedText) {
+        return [...current, createTurn('assistant', response.text)];
+      }
+
+      return current.map((message) =>
+        message.id === streamingAssistantId ? { ...message, content: response.text } : message,
+      );
+    });
+
+    return response;
+  };
+
+  const runQueuedSteer = async (content: string, currentConversationId: string | null) => {
+    const queuedUserTurn = createTurn('user', content);
+    setMessages((current) => [...current, queuedUserTurn]);
+    setIsSending(true);
+
+    try {
+      await streamAssistantResponse({
+        payload: {
+          model: steelModel,
+          reasoningEffort,
+          messageSource: 'queued_steer',
+          ...(currentConversationId ? { conversationId: currentConversationId } : {}),
+          messages: [{ role: 'user', content, messageId: queuedUserTurn.id }],
+        },
+      });
+    } catch (error) {
+      const errorText = getErrorText(error);
+      const errorEvent = createStreamErrorEvent(error);
+      setStreamEvents((current) => [...current, errorEvent]);
+      setMessages((current) => [
+        ...current,
+        {
+          ...createTurn('assistant', errorText),
+          status: 'error',
+        },
+      ]);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSend) {
+    const trimmedInput = input.trim();
+    const hasFiles = selectedFiles.length > 0;
+
+    if (isSending) {
+      if (trimmedInput.length === 0 || hasFiles || isEncodingFiles) {
+        return;
+      }
+      queuedSteersRef.current.push(trimmedInput);
+      setInput('');
+      setStreamEvents((current) => [
+        ...current,
+        {
+          type: 'steer_queued',
+          message: 'Queued steer accepted',
+        },
+      ]);
+      return;
+    }
+
+    if (trimmedInput.length === 0 && !hasFiles) {
       return;
     }
 
@@ -589,52 +763,56 @@ export default function SteelOAuthChat() {
       mediaType,
       dataBase64,
     }));
-    const content = input.trim() || 'Read the attached file(s).';
-    const nextUserTurn = {
-      ...createTurn(
-        'user',
-        content,
-        outgoingFiles.map((file) => file.filename ?? 'attachment'),
-      ),
-      ...(outgoingFiles.length > 0 ? { files: outgoingFiles } : {}),
-    };
-    const nextMessages = [...messages, nextUserTurn];
+    const content = trimmedInput || 'Read the attached file(s).';
+    const editingTurnIndex =
+      editingMessageId !== null
+        ? messages.findIndex((message) => message.id === editingMessageId && message.role === 'user')
+        : -1;
+    const isEditing = editingMessageId !== null && editingTurnIndex >= 0;
+    const nextUserTurn = isEditing
+      ? {
+          ...messages[editingTurnIndex],
+          content,
+          files: undefined,
+          attachmentNames: undefined,
+        }
+      : {
+          ...createTurn(
+            'user',
+            content,
+            outgoingFiles.map((file) => file.filename ?? 'attachment'),
+          ),
+          ...(outgoingFiles.length > 0 ? { files: outgoingFiles } : {}),
+        };
+    const nextMessages = isEditing
+      ? [...messages.slice(0, editingTurnIndex), nextUserTurn]
+      : [...messages, nextUserTurn];
     setInput('');
     setSelectedFiles([]);
     setMessages(nextMessages);
     setStreamEvents([]);
     setLastResponse(null);
     setIsSending(true);
+    setEditingMessageId(null);
+    let responseConversationId = conversationId;
 
     try {
       const payload: SteelProviderChatRequest = {
+        ...(isEditing ? { editMessageId: editingMessageId ?? undefined } : {}),
         model: steelModel,
         reasoningEffort,
         ...(conversationId ? { conversationId } : {}),
-        messages: nextMessages
+        messages: (isEditing ? [nextUserTurn] : nextMessages)
           .filter((message) => message.status !== 'error')
-          .map(({ role, content, files }) => ({
+          .map(({ id, role, content, files }) => ({
             role,
             content,
+            ...(role === 'user' ? { messageId: id } : {}),
             ...(files != null && files.length > 0 ? { files } : {}),
           })),
       };
-      const response =
-        typeof dataService.streamSteelChat === 'function'
-          ? await dataService.streamSteelChat(payload, (event) => {
-              const message = getStreamStatusMessage(event);
-              if (!message) {
-                return;
-              }
-
-              setStreamEvents((current) => [...current, event]);
-            })
-          : await dataService.sendSteelChat(payload);
-      setLastResponse(response);
-      if (response.conversationId) {
-        setConversationId(response.conversationId);
-      }
-      setMessages([...nextMessages, createTurn('assistant', response.text)]);
+      const response = await streamAssistantResponse({ payload });
+      responseConversationId = response.conversationId ?? responseConversationId;
     } catch (error) {
       const errorText = getErrorText(error);
       const errorEvent = createStreamErrorEvent(error);
@@ -654,6 +832,17 @@ export default function SteelOAuthChat() {
       ]);
     } finally {
       setIsSending(false);
+      const nextQueuedSteer = queuedSteersRef.current.shift();
+      if (nextQueuedSteer) {
+        setStreamEvents((current) => [
+          ...current,
+          {
+            type: 'steer_deferred',
+            message: 'Queued steer deferred to follow-up',
+          },
+        ]);
+        void runQueuedSteer(nextQueuedSteer, responseConversationId);
+      }
     }
   };
 
@@ -762,6 +951,35 @@ export default function SteelOAuthChat() {
                       }`}
                     >
                       <SteelMessageContent content={message.content} />
+                      <div className="mt-2 flex gap-1">
+                        {!isUser && (
+                          <button
+                            type="button"
+                            aria-label="Copy assistant message"
+                            className="flex h-7 w-7 items-center justify-center rounded border border-border-light text-text-secondary hover:bg-surface-hover"
+                            onClick={() => {
+                              void copyText(message.content);
+                            }}
+                          >
+                            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        )}
+                        {isUser && (
+                          <button
+                            type="button"
+                            aria-label="Edit user message"
+                            disabled={isSending || isEncodingFiles}
+                            className="flex h-7 w-7 items-center justify-center rounded border border-border-light text-text-secondary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                            onClick={() => {
+                              setEditingMessageId(message.id);
+                              setSelectedFiles([]);
+                              setInput(message.content);
+                            }}
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        )}
+                      </div>
                       {message.attachmentNames != null && message.attachmentNames.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {message.attachmentNames.map((name) => (

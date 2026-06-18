@@ -7,6 +7,7 @@ import {
   steelAdminMergeTableSchema,
   steelAuditLogSchema,
   steelConversationMetaSchema,
+  steelConversationTurnSchema,
   steelExcelExportSchema,
   steelMemoryCandidateSchema,
   steelMemorySchema,
@@ -14,6 +15,7 @@ import {
   steelProjectSourceSchema,
   steelSourceVersionSchema,
   steelToolCallSchema,
+  steelWorkingOrderMemorySchema,
 } from '~/schema/steel';
 
 type Mongoose = typeof import('mongoose');
@@ -37,6 +39,28 @@ export function createSteelConversationMetaModel(mongoose: Mongoose) {
       'SteelConversationMeta',
       steelConversationMetaSchema,
       'steel_conversation_meta',
+    )
+  );
+}
+
+export function createSteelConversationTurnModel(mongoose: Mongoose) {
+  return (
+    mongoose.models.SteelConversationTurn ||
+    mongoose.model<t.ISteelConversationTurn>(
+      'SteelConversationTurn',
+      steelConversationTurnSchema,
+      'steel_conversation_turns',
+    )
+  );
+}
+
+export function createSteelWorkingOrderMemoryModel(mongoose: Mongoose) {
+  return (
+    mongoose.models.SteelWorkingOrderMemory ||
+    mongoose.model<t.ISteelWorkingOrderMemory>(
+      'SteelWorkingOrderMemory',
+      steelWorkingOrderMemorySchema,
+      'steel_working_order_memory',
     )
   );
 }

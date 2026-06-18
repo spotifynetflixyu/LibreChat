@@ -13,6 +13,7 @@ export {
   createSteelAdminMergeTableModel,
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelConversationTurnModel,
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
@@ -20,6 +21,7 @@ export {
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,
   createSteelToolCallModel,
+  createSteelWorkingOrderMemoryModel,
 } from './models';
 export {
   createMethods,

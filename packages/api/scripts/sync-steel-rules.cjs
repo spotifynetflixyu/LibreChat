@@ -170,6 +170,7 @@ function buildAgentRules(repoRoot) {
           'lookup_quote_rules',
           'search_price_candidates',
           'run_file_ocr',
+          'read_working_order_items',
         ],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },

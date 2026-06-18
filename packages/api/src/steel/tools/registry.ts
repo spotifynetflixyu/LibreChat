@@ -24,7 +24,7 @@ const steelToolDefinitions: SteelToolDefinition[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search product price candidates from AI-derived candidateQueries only. The backend uses contains-style spec_key lookup, accepts an optional customerTierId, uses known customer tier pricing, defaults missing tier context to B tier, and does not apply unit/category/review/active filters.',
+      'Search product price candidates from AI-derived candidateQueries only. The backend normalizes each keyword to spec_key format, uses contains-style spec_key lookup, accepts an optional customerTierId, uses known customer tier pricing, defaults missing tier context to B tier, and does not apply unit/category/review/active filters.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
   {
@@ -32,6 +32,12 @@ const steelToolDefinitions: SteelToolDefinition[] = [
     description:
       'Run PaddleOCR MCP on an uploaded image or whole PDF when the AI decides OCR is needed; PDFs are sent as one document, not page-by-page.',
     argsSchema: steelToolArgsSchemas.run_file_ocr,
+  },
+  {
+    name: 'read_working_order_items',
+    description:
+      'Read conversation-scoped Working Order Memory by summary, item number, ERP item code, spec/product query, source file/page, or paginated rows. This is read-only; the backend saves final Markdown/tool/OCR evidence automatically.',
+    argsSchema: steelToolArgsSchemas.read_working_order_items,
   },
 ];
 

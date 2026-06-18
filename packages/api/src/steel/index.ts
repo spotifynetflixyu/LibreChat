@@ -6,6 +6,8 @@ export * from './calculators';
 export * from './conversations/repository';
 export * from './conversations/service';
 export * from './handlers';
+export * from './history';
+export * from './memory';
 export * from './normalization';
 export * from './repositories';
 export * from './rules';

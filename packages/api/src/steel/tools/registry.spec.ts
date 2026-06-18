@@ -9,7 +9,9 @@ describe('Steel tool registry', () => {
       'search_customers',
       'search_price_candidates',
       'run_file_ocr',
+      'read_working_order_items',
     ]);
+    expect(toolNames).not.toContain('save_working_order_items');
     expect(toolNames).not.toContain('lookup_catalog_families');
     expect(toolNames).not.toContain('lookup_formula');
     expect(toolNames).not.toContain('lookup_instructions');
@@ -148,6 +150,55 @@ describe('Steel tool registry', () => {
     expect(() => {
       // @ts-expect-error exercising a removed public tool name.
       getSteelToolDefinition('lookup_catalog_families');
+    }).toThrow('Unknown Steel tool');
+  });
+
+  it('lets AI read working-order memory without exposing a save tool', () => {
+    const definition = getSteelToolDefinition('read_working_order_items');
+
+    expect(
+      definition.argsSchema.parse({
+        mode: 'rowNo',
+        rowNo: 12,
+      }),
+    ).toEqual({
+      mode: 'rowNo',
+      rowNo: 12,
+    });
+    expect(
+      definition.argsSchema.parse({
+        mode: 'query',
+        query: '75x45',
+        pageSize: 10,
+      }),
+    ).toEqual({
+      mode: 'query',
+      query: '75x45',
+      pageSize: 10,
+    });
+    expect(() =>
+      definition.argsSchema.parse({
+        mode: 'rowNo',
+      }),
+    ).toThrow('Provide rowNo');
+    expect(() =>
+      definition.argsSchema.parse({
+        mode: 'erpItemCode',
+      }),
+    ).toThrow('Provide erpItemCode');
+    expect(() =>
+      definition.argsSchema.parse({
+        mode: 'query',
+      }),
+    ).toThrow('Provide query');
+    expect(() =>
+      definition.argsSchema.parse({
+        mode: 'source',
+      }),
+    ).toThrow('Provide filename, pageNumber, or imageIndex');
+    expect(() => {
+      // @ts-expect-error exercising a deliberately absent public tool name.
+      getSteelToolDefinition('save_working_order_items');
     }).toThrow('Unknown Steel tool');
   });
 });

@@ -1,0 +1,102 @@
+import { Schema } from 'mongoose';
+
+import {
+  steelWorkingOrderMemoryKindEnum,
+  steelWorkingOrderMemorySourceKindEnum,
+  steelWorkingOrderMemoryStateEnum,
+} from './common';
+
+import type { ISteelWorkingOrderMemory, SteelWorkingOrderMemorySourceRef } from '~/types';
+
+const steelWorkingOrderMemorySourceRefSchema = new Schema<SteelWorkingOrderMemorySourceRef>(
+  {
+    sourceKind: {
+      type: String,
+      required: true,
+    },
+    sourceId: {
+      type: String,
+    },
+    filename: {
+      type: String,
+    },
+    pageNumber: {
+      type: Number,
+    },
+    imageIndex: {
+      type: Number,
+    },
+    locator: {
+      type: String,
+    },
+  },
+  { _id: false },
+);
+
+const steelWorkingOrderMemorySchema = new Schema<ISteelWorkingOrderMemory>(
+  {
+    conversationId: {
+      type: String,
+      required: true,
+      index: true,
+    },
+    requestId: {
+      type: String,
+      index: true,
+    },
+    turnIndex: {
+      type: Number,
+      required: true,
+    },
+    checkpointTurnIndex: {
+      type: Number,
+      required: true,
+      index: true,
+    },
+    memoryKind: {
+      type: String,
+      enum: steelWorkingOrderMemoryKindEnum,
+      required: true,
+      index: true,
+    },
+    sourceKind: {
+      type: String,
+      enum: steelWorkingOrderMemorySourceKindEnum,
+      required: true,
+    },
+    state: {
+      type: String,
+      enum: steelWorkingOrderMemoryStateEnum,
+      default: 'active',
+      index: true,
+    },
+    sourceRefs: {
+      type: [steelWorkingOrderMemorySourceRefSchema],
+      default: undefined,
+    },
+    summary: {
+      type: String,
+    },
+    payload: {
+      type: Schema.Types.Mixed,
+    },
+    supersededAt: {
+      type: Date,
+    },
+    supersededByMessageId: {
+      type: String,
+      index: true,
+    },
+  },
+  { timestamps: true },
+);
+
+steelWorkingOrderMemorySchema.index({
+  conversationId: 1,
+  state: 1,
+  memoryKind: 1,
+  turnIndex: 1,
+});
+steelWorkingOrderMemorySchema.index({ conversationId: 1, checkpointTurnIndex: 1, state: 1 });
+
+export default steelWorkingOrderMemorySchema;

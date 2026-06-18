@@ -162,6 +162,28 @@ function createMockOpenAIOAuth(doGenerate: jest.Mock) {
   }) as unknown as typeof createOpenAIOAuthType;
 }
 
+function createMockStreamingOpenAIOAuth({
+  doGenerate,
+  doStream,
+}: {
+  doGenerate: jest.Mock;
+  doStream: jest.Mock;
+}) {
+  return jest.fn(() => {
+    const modelFactory = () =>
+      ({
+        specificationVersion: 'v3' as const,
+        provider: 'openai.responses',
+        modelId: 'gpt-5.5',
+        supportedUrls: {},
+        doGenerate,
+        doStream,
+      }) as unknown as LanguageModelV3;
+
+    return modelFactory as unknown as ReturnType<typeof createOpenAIOAuthType>;
+  }) as unknown as typeof createOpenAIOAuthType;
+}
+
 const defaultAgentRulePrompt = [
   'DB_AGENT_RULE_SENTINEL',
   'fixture:agent-rule-line-1',
@@ -173,9 +195,134 @@ const steelBusinessToolNames = [
   'search_customers',
   'search_price_candidates',
   'run_file_ocr',
+  'read_working_order_items',
 ] as const;
 
 describe('Steel OpenAI OAuth provider adapter', () => {
+  it('uses provider doStream for live text deltas when streaming callbacks are provided', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_1' });
+        controller.enqueue({ type: 'text-start', id: 'txt_1' });
+        controller.enqueue({ type: 'text-delta', id: 'txt_1', delta: '即時' });
+        controller.enqueue({ type: 'text-delta', id: 'txt_1', delta: '回覆' });
+        controller.enqueue({ type: 'text-end', id: 'txt_1' });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: { total: 7 }, outputTokens: { total: 3 } },
+        });
+        controller.close();
+      },
+    });
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async (_options: LanguageModelV3CallOptions) => ({ stream }));
+    const onTextDelta = jest.fn();
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'stream smoke' }],
+      onTextDelta,
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+    });
+
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(onTextDelta).toHaveBeenCalledWith('即時');
+    expect(onTextDelta).toHaveBeenCalledWith('回覆');
+    expect(response).toEqual(
+      expect.objectContaining({
+        text: '即時回覆',
+        responseId: 'resp_stream_1',
+      }),
+    );
+  });
+
+  it('continues to a second provider stream after streamed tool-call results', async () => {
+    const firstStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_tool_1' });
+        controller.enqueue({
+          type: 'tool-call',
+          toolCallId: 'call_lookup_stream',
+          toolName: 'lookup_quote_rules',
+          input: JSON.stringify({ keywords: ['C 型鋼'] }),
+        });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 11 }, outputTokens: { total: 3 } },
+        });
+        controller.close();
+      },
+    });
+    const secondStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_tool_2' });
+        controller.enqueue({ type: 'text-start', id: 'txt_2' });
+        controller.enqueue({ type: 'text-delta', id: 'txt_2', delta: '工具後' });
+        controller.enqueue({ type: 'text-delta', id: 'txt_2', delta: '回覆' });
+        controller.enqueue({ type: 'text-end', id: 'txt_2' });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: { total: 13 }, outputTokens: { total: 4 } },
+        });
+        controller.close();
+      },
+    });
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce({ stream: firstStream })
+      .mockResolvedValueOnce({ stream: secondStream });
+    const executeSteelToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'lookup_quote_rules',
+      data: { rules: [{ summary: 'C 型鋼規則' }] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const onTextDelta = jest.fn();
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'stream tool loop' }],
+      onTextDelta,
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+    });
+
+    expect(doStream).toHaveBeenCalledTimes(2);
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(executeSteelToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'lookup_quote_rules',
+        providerToolCallId: 'call_lookup_stream',
+      }),
+    );
+    expect(onTextDelta).toHaveBeenCalledWith('工具後');
+    expect(onTextDelta).toHaveBeenCalledWith('回覆');
+    expect(response).toEqual(
+      expect.objectContaining({
+        text: '工具後回覆',
+        responseId: 'resp_stream_tool_2',
+      }),
+    );
+  });
+
   it('answers price turns without workbook/file-analysis tools or required price-loop gating', async () => {
     const agentRulesClient = createAgentRulesClient([
       createAgentRuleRow(defaultAgentRulePrompt),
@@ -216,11 +363,96 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(firstGenerateOptions.tools?.map((tool) => tool.name)).not.toContain(
       'patch_file_analysis_data',
     );
+    expect(firstGenerateOptions.tools?.map((tool) => tool.name)).not.toContain(
+      'save_working_order_items',
+    );
     const systemPrompt = firstGenerateOptions.prompt[0] as { role: 'system'; content: string };
     expect(systemPrompt.content).toContain('DB_AGENT_RULE_SENTINEL');
     expect(systemPrompt.content).not.toContain('DB_WORKBOOK_RULE_SENTINEL');
     expect(systemPrompt.content).not.toContain('OCR_RULE_SENTINEL');
     expect(systemPrompt.content).not.toContain('VISION_RULE_SENTINEL');
+  });
+
+  it('uses Supabase agent rules as the only Steel runtime instruction source', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: '只使用 DB agent rule。' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: { inputTokens: { total: 5 }, outputTokens: { total: 3 } },
+      response: { id: 'resp_agent_rule_only' },
+      warnings: [],
+    }));
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '測試 agent rule source。' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelToolMaxCalls: 1,
+    });
+
+    const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+    const systemPrompt = firstGenerateOptions.prompt[0] as { role: 'system'; content: string };
+
+    expect(systemPrompt.content).toBe(defaultAgentRulePrompt);
+    expect(systemPrompt.content).not.toContain('Do not wait for catalog-family lookup');
+    expect(systemPrompt.content).not.toContain('Final quote, OCR, and file-analysis outputs');
+  });
+
+  it('places Working Order Memory before persisted history and the current user input', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: '已讀取記憶後回覆。' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: { inputTokens: { total: 9 }, outputTokens: { total: 4 } },
+      response: { id: 'resp_memory_prompt_order' },
+      warnings: [],
+    }));
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'assistant', content: 'DB history: previous final Markdown table' },
+        { role: 'user', content: 'current user request' },
+      ],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      workingMemorySummary:
+        'Working Order Memory: rows=2; customer=龍頂; unresolved=第 2 項缺厚度',
+    } as Parameters<typeof sendSteelOAuthChat>[0] & { workingMemorySummary: string });
+
+    const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+
+    expect(firstGenerateOptions.prompt.map((message) => message.role)).toEqual([
+      'system',
+      'system',
+      'assistant',
+      'user',
+    ]);
+    expect(firstGenerateOptions.prompt[0]).toEqual(
+      expect.objectContaining({
+        role: 'system',
+        content: expect.stringContaining('DB_AGENT_RULE_SENTINEL'),
+      }),
+    );
+    expect(firstGenerateOptions.prompt[1]).toEqual({
+      role: 'system',
+      content: 'Working Order Memory: rows=2; customer=龍頂; unresolved=第 2 項缺厚度',
+    });
+    expect(firstGenerateOptions.prompt[2]).toEqual(
+      expect.objectContaining({
+        role: 'assistant',
+      }),
+    );
+    expect(firstGenerateOptions.prompt[3]).toEqual(
+      expect.objectContaining({
+        role: 'user',
+      }),
+    );
   });
 
   it('keeps the ordinary AI-led business tool loop', async () => {

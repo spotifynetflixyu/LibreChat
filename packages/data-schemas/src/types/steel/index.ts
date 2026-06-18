@@ -3,6 +3,23 @@ import type { Document } from 'mongoose';
 export type SteelProviderId = 'openai_oauth_responses' | 'openai_api';
 export type SteelConversationCreatedFrom = 'authenticated' | 'guest';
 export type SteelConversationStatus = 'active' | 'archived';
+export type SteelConversationTurnRole = 'user' | 'assistant';
+export type SteelConversationTurnSource = 'user_input' | 'assistant_final' | 'queued_steer';
+export type SteelConversationTurnState = 'active' | 'superseded';
+export type SteelQueuedSteerStatus = 'queued' | 'applied' | 'deferred' | 'superseded';
+export type SteelWorkingOrderMemoryKind =
+  | 'working_order_row'
+  | 'customer_fact'
+  | 'price_evidence'
+  | 'rule_evidence'
+  | 'ocr_extract'
+  | 'calculation_fact';
+export type SteelWorkingOrderMemorySourceKind =
+  | 'assistant_final_markdown'
+  | 'tool_result'
+  | 'ocr_result'
+  | 'user_input';
+export type SteelWorkingOrderMemoryState = 'active' | 'superseded';
 export type SteelCapabilityStatus =
   | 'passed'
   | 'failed'
@@ -42,6 +59,8 @@ export type SteelRuleProposalChargeType =
 export type SteelRuleProposalConfidence = 'low' | 'medium' | 'high';
 export type SteelRuleProposalParameterValueType = 'string' | 'number' | 'boolean' | 'null';
 export type SteelRuleProposalParameterValue = string | number | boolean | null;
+export type SteelJsonPrimitive = string | number | boolean | null;
+export type SteelJsonValue = SteelJsonPrimitive | SteelJsonValue[] | { [key: string]: SteelJsonValue };
 
 export interface SteelRuleProposalSelectorEntry {
   key: string;
@@ -83,6 +102,84 @@ export interface ISteelConversationMeta extends Document {
   guestTokenHash?: string;
   createdFrom: SteelConversationCreatedFrom;
   status: SteelConversationStatus;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface SteelConversationTurnRevision {
+  content: string;
+  revisedAt: Date;
+  revisedByUserId?: string;
+}
+
+export interface SteelConversationTurnAttachmentRef {
+  fileId: string;
+  filename?: string;
+  mediaType?: string;
+}
+
+export interface SteelConversationTurnUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
+export interface SteelConversationTurnFinalResponseMetadata {
+  provider: SteelProviderId;
+  model: string;
+  responseId?: string;
+  usage?: SteelConversationTurnUsage;
+}
+
+export interface SteelConversationTurnQueuedSteer {
+  targetRequestId: string;
+  status: SteelQueuedSteerStatus;
+  appliedAt?: Date;
+  deferredAt?: Date;
+}
+
+export interface ISteelConversationTurn extends Document {
+  conversationId: string;
+  requestId?: string;
+  messageId: string;
+  turnIndex: number;
+  role: SteelConversationTurnRole;
+  source: SteelConversationTurnSource;
+  state: SteelConversationTurnState;
+  content: string;
+  attachments?: SteelConversationTurnAttachmentRef[];
+  tableHashes?: string[];
+  finalResponseMetadata?: SteelConversationTurnFinalResponseMetadata;
+  queuedSteer?: SteelConversationTurnQueuedSteer;
+  revisions?: SteelConversationTurnRevision[];
+  supersededAt?: Date;
+  supersededByMessageId?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface SteelWorkingOrderMemorySourceRef {
+  sourceKind: string;
+  sourceId?: string;
+  filename?: string;
+  pageNumber?: number;
+  imageIndex?: number;
+  locator?: string;
+}
+
+export interface ISteelWorkingOrderMemory extends Document {
+  conversationId: string;
+  requestId?: string;
+  turnIndex: number;
+  checkpointTurnIndex: number;
+  memoryKind: SteelWorkingOrderMemoryKind;
+  sourceKind: SteelWorkingOrderMemorySourceKind;
+  state: SteelWorkingOrderMemoryState;
+  sourceRefs?: SteelWorkingOrderMemorySourceRef[];
+  summary?: string;
+  payload?: SteelJsonValue;
+  supersededAt?: Date;
+  supersededByMessageId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }

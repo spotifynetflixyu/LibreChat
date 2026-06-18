@@ -159,7 +159,7 @@ const searchPriceCandidatesSchema = z
       .min(1)
       .max(20)
       .describe(
-        'Required AI-selected price lookup keywords. Put each product name, spec fragment, ERP item code, code prefix, or prior-table code + product-name spec_key-like anchor in its own string; backend applies contains-style spec_key lookup without unit/category/review/active filters.',
+        'Required AI-selected price lookup keywords. Put each product name, spec fragment, ERP item code, code prefix, or prior-table code + product-name spec_key-like anchor in its own string; backend normalizes every keyword to spec_key format before contains-style spec_key lookup without unit/category/review/active filters.',
       ),
     customerTierId: z
       .number()
@@ -190,6 +190,59 @@ const runFileOcrSchema = z
       code: z.ZodIssueCode.custom,
       message: 'Provide filename or fileIndex',
     });
+  });
+
+const readWorkingOrderItemsSchema = z
+  .object({
+    mode: z
+      .enum(['summary', 'rowNo', 'erpItemCode', 'query', 'source', 'page'])
+      .describe('Read mode for conversation-scoped Working Order Memory.'),
+    rowNo: z.number().int().positive().optional(),
+    erpItemCode: nonEmptyString.optional(),
+    query: nonEmptyString.optional(),
+    filename: nonEmptyString.optional(),
+    pageNumber: z.number().int().positive().optional(),
+    imageIndex: z.number().int().positive().optional(),
+    page: z.number().int().positive().optional(),
+    pageSize: z.number().int().min(1).max(50).optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.mode === 'rowNo' && input.rowNo === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide rowNo',
+      });
+    }
+    if (input.mode === 'erpItemCode' && input.erpItemCode === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide erpItemCode',
+      });
+    }
+    if (input.mode === 'query' && input.query === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide query',
+      });
+    }
+    if (
+      input.mode === 'source' &&
+      input.filename === undefined &&
+      input.pageNumber === undefined &&
+      input.imageIndex === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide filename, pageNumber, or imageIndex',
+      });
+    }
+    if (input.mode === 'page' && input.page === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide page',
+      });
+    }
   });
 
 const runVisualInspectionSchema = z
@@ -235,6 +288,7 @@ export const steelToolArgsSchemas = {
   }),
   search_price_candidates: searchPriceCandidatesSchema,
   run_file_ocr: runFileOcrSchema,
+  read_working_order_items: readWorkingOrderItemsSchema,
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
@@ -244,4 +298,5 @@ export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
 export type LookupQuoteRulesInput = z.infer<typeof legacyLookupQuoteRulesSchema>;
 export type LookupQuoteRulesToolInput = z.infer<typeof lookupQuoteRulesSchema>;
 export type RunFileOcrInput = z.infer<typeof runFileOcrSchema>;
+export type ReadWorkingOrderItemsInput = z.infer<typeof readWorkingOrderItemsSchema>;
 export type RunVisualInspectionInput = z.infer<typeof runVisualInspectionSchema>;

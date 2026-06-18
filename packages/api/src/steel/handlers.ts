@@ -16,6 +16,15 @@ import {
   SteelConversationNotFoundError,
   SteelConversationUnauthenticatedError,
 } from './conversations/service';
+import {
+  createMongooseSteelConversationHistoryRepository,
+  createMongooseSteelWorkingOrderMemoryRollbackRepository,
+} from './history/repository';
+import { createSteelConversationHistoryService } from './history/service';
+import {
+  createMongooseSteelWorkingOrderMemoryReader,
+  createMongooseSteelWorkingOrderMemoryWriter,
+} from './memory/service';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
 import {
   parseSteelOpenAIConfig,
@@ -35,6 +44,9 @@ import { createSteelPostgresPool } from './postgres';
 import { executeSteelTool } from './tools/execute';
 
 import type { Request, Response } from 'express';
+import type { SteelRepositoryClient } from './repositories';
+import type { SteelToolResult } from './tools/results';
+import type { SteelWorkingOrderMemoryReader } from './tools/execute';
 import type {
   SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
@@ -85,7 +97,10 @@ export interface SteelHandlersDeps {
     conversationId?: string;
   }) => Promise<SteelOAuthChatFile>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
+  createWorkingOrderMemoryReader?: (conversationId: string) => SteelWorkingOrderMemoryReader;
+  historyService?: ReturnType<typeof createSteelConversationHistoryService>;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
+  workingOrderMemoryWriter?: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
 }
 
 type SteelChatProviderResult = SteelOAuthProviderChatResponse;
@@ -108,6 +123,20 @@ interface SteelChatErrorResponse {
 }
 
 let defaultStreamToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
+let defaultHistoryService: ReturnType<typeof createSteelConversationHistoryService> | undefined;
+let defaultWorkingOrderMemoryWriter:
+  | ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>
+  | undefined;
+
+const steelConversationHistoryMaxTurns = 20;
+const steelUserTurnSources = ['user_input', 'queued_steer'] as const;
+type SteelUserTurnSource = (typeof steelUserTurnSources)[number];
+
+const memoryOnlyToolClient: SteelRepositoryClient = {
+  async query() {
+    throw new Error('Steel Postgres client is not available for memory-only tool execution.');
+  },
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -156,23 +185,285 @@ function getDefaultStreamToolClient() {
   return defaultStreamToolClient;
 }
 
-function createDefaultStreamToolExecutor(): {
+function getDefaultHistoryService() {
+  defaultHistoryService ??= createSteelConversationHistoryService({
+    historyRepository: createMongooseSteelConversationHistoryRepository(mongoose),
+    memoryRepository: createMongooseSteelWorkingOrderMemoryRollbackRepository(mongoose),
+  });
+  return defaultHistoryService;
+}
+
+function createDefaultWorkingOrderMemoryReader(conversationId: string) {
+  return createMongooseSteelWorkingOrderMemoryReader(mongoose, conversationId);
+}
+
+function getDefaultWorkingOrderMemoryWriter() {
+  defaultWorkingOrderMemoryWriter ??= createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+  return defaultWorkingOrderMemoryWriter;
+}
+
+function createDefaultStreamToolExecutor({
+  conversationId,
+  createWorkingOrderMemoryReader,
+}: {
+  conversationId?: string;
+  createWorkingOrderMemoryReader: (conversationId: string) => SteelWorkingOrderMemoryReader;
+}): {
   executeToolCall: SteelProviderToolExecutor;
   close: () => Promise<void>;
 } {
-  const client = getDefaultStreamToolClient();
+  const memoryReader =
+    conversationId !== undefined ? createWorkingOrderMemoryReader(conversationId) : undefined;
 
   return {
     executeToolCall: (options) =>
       executeSteelTool({
-        client,
+        client:
+          options.toolName === 'read_working_order_items'
+            ? memoryOnlyToolClient
+            : getDefaultStreamToolClient(),
         toolName: options.toolName,
         arguments: options.arguments,
+        memoryReader,
         providerToolCallId: options.providerToolCallId,
         runState: options.runState,
       }),
     close: async () => {},
   };
+}
+
+function toHistoryChatMessage(turn: {
+  role: 'user' | 'assistant';
+  content: string;
+}): SteelOAuthChatMessage {
+  return {
+    role: turn.role,
+    content: turn.content,
+  };
+}
+
+function getCurrentPromptMessage(messages: readonly SteelOAuthChatMessage[]) {
+  return messages[messages.length - 1];
+}
+
+function getNextTurnIndex(turns: readonly { turnIndex: number }[]) {
+  return turns.reduce((highest, turn) => Math.max(highest, turn.turnIndex), 0) + 1;
+}
+
+function getMessageAttachmentRefs(message: SteelOAuthChatMessage) {
+  return message.files?.map((file, index) => ({
+    fileId: `request-file-${index}`,
+    filename: file.filename,
+    mediaType: file.mediaType,
+  }));
+}
+
+function getMemoryEntrySummaries(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) =>
+      isRecord(entry) && typeof entry.summary === 'string' ? entry.summary : undefined,
+    )
+    .filter((entry): entry is string => entry !== undefined)
+    .slice(0, 5);
+}
+
+function formatWorkingOrderMemorySummary(result: Record<string, unknown>): string | undefined {
+  const resultCount = typeof result.resultCount === 'number' ? result.resultCount : undefined;
+  const summary = isRecord(result.summary) ? JSON.stringify(result.summary) : undefined;
+  const entrySummaries = getMemoryEntrySummaries(result.memoryEntries);
+  const lines = [
+    'Steel Working Order Memory (active conversation state; use read_working_order_items for details).',
+    resultCount !== undefined ? `resultCount=${resultCount}` : undefined,
+    summary ? `counts=${summary}` : undefined,
+    ...entrySummaries.map((entry) => `entry=${entry}`),
+  ].filter((line): line is string => line !== undefined);
+
+  return lines.length > 1 ? lines.join('\n') : undefined;
+}
+
+async function buildWorkingOrderMemorySummary({
+  conversationId,
+  createWorkingOrderMemoryReader,
+}: {
+  conversationId: string;
+  createWorkingOrderMemoryReader: (conversationId: string) => SteelWorkingOrderMemoryReader;
+}) {
+  const reader = createWorkingOrderMemoryReader(conversationId);
+  const result = await reader.readWorkingOrderItems({ mode: 'summary' });
+  return {
+    resultCount: typeof result.resultCount === 'number' ? result.resultCount : undefined,
+    summary: formatWorkingOrderMemorySummary(result),
+  };
+}
+
+async function prepareChatContext({
+  conversationId,
+  createWorkingOrderMemoryReader,
+  editMessageId,
+  historyService,
+  messages,
+  messageSource,
+  requestId,
+}: {
+  conversationId?: string;
+  createWorkingOrderMemoryReader: (conversationId: string) => SteelWorkingOrderMemoryReader;
+  editMessageId?: string;
+  historyService: ReturnType<typeof createSteelConversationHistoryService>;
+  messageSource: SteelUserTurnSource;
+  messages: SteelOAuthChatMessage[];
+  requestId: string;
+}): Promise<{
+  messages: SteelOAuthChatMessage[];
+  memoryLoadedResultCount?: number;
+  nextAssistantTurnIndex?: number;
+  nextMemoryCheckpointTurnIndex?: number;
+  workingMemorySummary?: string;
+}> {
+  if (!conversationId) {
+    return { messages };
+  }
+
+  const currentMessage = getCurrentPromptMessage(messages);
+  if (!currentMessage) {
+    return { messages };
+  }
+
+  if (editMessageId && currentMessage.role === 'user') {
+    await historyService.editUserMessage({
+      conversationId,
+      messageId: editMessageId,
+      nextContent: currentMessage.content,
+    });
+  }
+
+  const activeHistory = await historyService.buildHistoryWindow({
+    conversationId,
+    maxTurns: steelConversationHistoryMaxTurns,
+  });
+  const nextTurnIndex = getNextTurnIndex(activeHistory);
+  const nextAssistantTurnIndex =
+    currentMessage.role === 'user' ? nextTurnIndex + 1 : nextTurnIndex;
+
+  if (currentMessage.role === 'user' && !editMessageId) {
+    await historyService.appendTurn({
+      conversationId,
+      requestId,
+      messageId: currentMessage.messageId ?? createSteelChatConversationId(),
+      turnIndex: nextTurnIndex,
+      role: 'user',
+      source: messageSource,
+      content: currentMessage.content,
+      attachments: getMessageAttachmentRefs(currentMessage),
+      ...(messageSource === 'queued_steer'
+        ? {
+            queuedSteer: {
+              targetRequestId: requestId,
+              status: 'applied',
+            },
+          }
+        : {}),
+    });
+  }
+
+  const memorySummary = await buildWorkingOrderMemorySummary({
+    conversationId,
+    createWorkingOrderMemoryReader,
+  });
+
+  return {
+    messages: editMessageId
+      ? activeHistory.map(toHistoryChatMessage)
+      : [...activeHistory.map(toHistoryChatMessage), currentMessage],
+    memoryLoadedResultCount: memorySummary.resultCount,
+    nextAssistantTurnIndex,
+    nextMemoryCheckpointTurnIndex: Math.max(0, nextAssistantTurnIndex - 1),
+    workingMemorySummary: memorySummary.summary,
+  };
+}
+
+async function persistAssistantTurn({
+  conversationId,
+  content,
+  historyService,
+  turnIndex,
+  checkpointTurnIndex,
+  workingOrderMemoryWriter,
+}: {
+  conversationId?: string;
+  content: string;
+  historyService: ReturnType<typeof createSteelConversationHistoryService>;
+  turnIndex?: number;
+  checkpointTurnIndex?: number;
+  workingOrderMemoryWriter: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
+}) {
+  if (!conversationId || content.trim().length === 0) {
+    return undefined;
+  }
+
+  let assistantTurnIndex = turnIndex;
+  if (assistantTurnIndex === undefined) {
+    const activeHistory = await historyService.buildHistoryWindow({
+      conversationId,
+      maxTurns: steelConversationHistoryMaxTurns,
+    });
+    assistantTurnIndex = getNextTurnIndex(activeHistory);
+  }
+
+  const messageId = createSteelChatConversationId();
+  await historyService.appendTurn({
+    conversationId,
+    messageId,
+    turnIndex: assistantTurnIndex,
+    role: 'assistant',
+    source: 'assistant_final',
+    content,
+  });
+  return workingOrderMemoryWriter.captureAssistantFinalMarkdown({
+    conversationId,
+    messageId,
+    turnIndex: assistantTurnIndex,
+    checkpointTurnIndex: checkpointTurnIndex ?? Math.max(0, assistantTurnIndex - 1),
+    content,
+  });
+}
+
+function hasSavedMemory(savedCounts: { [key: string]: number }) {
+  return Object.values(savedCounts).some((count) => count > 0);
+}
+
+async function captureSuccessfulToolResult({
+  conversationId,
+  providerToolCallId,
+  toolName,
+  toolResult,
+  turnIndex,
+  checkpointTurnIndex,
+  workingOrderMemoryWriter,
+}: {
+  conversationId?: string;
+  providerToolCallId?: string;
+  toolName: string;
+  toolResult?: SteelToolResult;
+  turnIndex?: number;
+  checkpointTurnIndex?: number;
+  workingOrderMemoryWriter: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
+}) {
+  if (!conversationId || !toolResult?.ok || turnIndex === undefined) {
+    return undefined;
+  }
+
+  return workingOrderMemoryWriter.captureToolResult({
+    conversationId,
+    providerToolCallId,
+    toolName,
+    turnIndex,
+    checkpointTurnIndex: checkpointTurnIndex ?? Math.max(0, turnIndex - 1),
+    data: toolResult.data,
+  });
 }
 
 function parseBase64FileData(value: unknown, index: number, fileIndex: number): Uint8Array {
@@ -288,6 +579,7 @@ async function parseMessages(
     }
 
     const { role, content } = item;
+    const messageId = typeof item.messageId === 'string' ? item.messageId.trim() : undefined;
     if (role !== 'system' && role !== 'user' && role !== 'assistant') {
       throw new Error(`messages[${index}].role must be system, user, or assistant`);
     }
@@ -297,7 +589,7 @@ async function parseMessages(
 
     const files = await parseMessageFiles(item.files, index, context);
 
-    messages.push(files ? { role, content, files } : { role, content });
+    messages.push(files ? { role, content, messageId, files } : { role, content, messageId });
   }
 
   return messages;
@@ -305,6 +597,24 @@ async function parseMessages(
 
 function parseOptionalConversationId(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseOptionalEditMessageId(value: unknown) {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseOptionalMessageSource(value: unknown): SteelUserTurnSource {
+  if (value === undefined) {
+    return 'user_input';
+  }
+  if (
+    typeof value === 'string' &&
+    (steelUserTurnSources as readonly string[]).includes(value)
+  ) {
+    return value as SteelUserTurnSource;
+  }
+
+  throw new Error(`messageSource must be one of: ${steelUserTurnSources.join(', ')}`);
 }
 
 function createSteelChatConversationId() {
@@ -473,10 +783,16 @@ export function createSteelHandlers({
   sendChat = sendSteelOAuthChat,
   resolveEvidenceFile,
   conversationService,
+  createWorkingOrderMemoryReader = createDefaultWorkingOrderMemoryReader,
+  historyService,
   ruleProposalService,
+  workingOrderMemoryWriter,
 }: SteelHandlersDeps) {
   const getConversationService = () => conversationService ?? createDefaultConversationService(env);
+  const getHistoryService = () => historyService ?? getDefaultHistoryService();
   const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
+  const getWorkingOrderMemoryWriter = () =>
+    workingOrderMemoryWriter ?? getDefaultWorkingOrderMemoryWriter();
 
   return {
     async chat(req: Request, res: Response) {
@@ -488,8 +804,13 @@ export function createSteelHandlers({
       let maxOutputTokens: number | undefined;
       let reasoningEffort: SteelOpenAIReasoningEffort;
       let conversationId: string | undefined;
+      let editMessageId: string | undefined;
+      let messageSource: SteelUserTurnSource;
+      const requestId = createSteelChatConversationId();
       try {
         conversationId = parseOptionalConversationId(body.conversationId);
+        editMessageId = parseOptionalEditMessageId(body.editMessageId);
+        messageSource = parseOptionalMessageSource(body.messageSource);
         messages = await parseMessages(body.messages, {
           conversationId,
           resolveEvidenceFile,
@@ -534,19 +855,61 @@ export function createSteelHandlers({
         messages,
         (req as SteelRequest).config,
       );
+      const preparedContext = await prepareChatContext({
+        conversationId,
+        createWorkingOrderMemoryReader,
+        editMessageId,
+        historyService: getHistoryService(),
+        messageSource,
+        messages: messagesWithInstructions,
+        requestId,
+      });
+      const defaultToolExecutor = executeToolCall
+        ? undefined
+        : createDefaultStreamToolExecutor({
+            conversationId,
+            createWorkingOrderMemoryReader,
+          });
+      const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
+      const executeToolCallWithMemoryCapture = baseExecuteToolCall
+        ? async (options: Parameters<SteelProviderToolExecutor>[0]) => {
+            const toolResult = await baseExecuteToolCall(options);
+            await captureSuccessfulToolResult({
+              conversationId,
+              providerToolCallId: options.providerToolCallId,
+              toolName: options.toolName,
+              toolResult,
+              turnIndex: preparedContext.nextAssistantTurnIndex,
+              checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+              workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+            });
+            return toolResult;
+          }
+        : undefined;
 
       let result: SteelChatProviderResult;
       try {
         result = await sendChat({
           authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
+          conversationId,
+          executeSteelToolCall: executeToolCallWithMemoryCapture,
           maxOutputTokens,
-          messages: messagesWithInstructions,
+          messages: preparedContext.messages,
           model,
-          ...(hasMessageFiles(messagesWithInstructions)
+          ...(hasMessageFiles(preparedContext.messages)
             ? { passThroughUnsupportedFiles: true }
             : {}),
           reasoningEffort,
           steelRuntimePolicy: true,
+          workingMemorySummary: preparedContext.workingMemorySummary,
+        });
+        await persistAssistantTurn({
+          conversationId,
+          content: result.text,
+          historyService: getHistoryService(),
+          turnIndex: preparedContext.nextAssistantTurnIndex,
+          checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+          workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
         });
       } catch (error) {
         res
@@ -558,8 +921,10 @@ export function createSteelHandlers({
               getProviderErrorCategory(error),
               getProviderErrorSummary(error),
             ),
-          );
+        );
         return;
+      } finally {
+        await defaultToolExecutor?.close();
       }
 
       res.status(200).json({
@@ -577,8 +942,13 @@ export function createSteelHandlers({
       let maxOutputTokens: number | undefined;
       let reasoningEffort: SteelOpenAIReasoningEffort;
       let conversationId: string | undefined;
+      let editMessageId: string | undefined;
+      let messageSource: SteelUserTurnSource;
+      const requestId = createSteelChatConversationId();
       try {
         conversationId = parseOptionalConversationId(body.conversationId);
+        editMessageId = parseOptionalEditMessageId(body.editMessageId);
+        messageSource = parseOptionalMessageSource(body.messageSource);
         messages = await parseMessages(body.messages, {
           conversationId,
           resolveEvidenceFile,
@@ -623,6 +993,15 @@ export function createSteelHandlers({
         messages,
         (req as SteelRequest).config,
       );
+      const preparedContext = await prepareChatContext({
+        conversationId,
+        createWorkingOrderMemoryReader,
+        editMessageId,
+        historyService: getHistoryService(),
+        messageSource,
+        messages: messagesWithInstructions,
+        requestId,
+      });
 
       setStreamHeaders(res);
       writeStreamEvent(res, {
@@ -630,11 +1009,30 @@ export function createSteelHandlers({
         stage: 'request_validated',
         message: 'Request validated',
       });
+      if (messageSource === 'queued_steer') {
+        writeStreamEvent(res, {
+          type: 'steer_applied',
+          message: 'Queued steer applied',
+        });
+      }
+      if (preparedContext.memoryLoadedResultCount !== undefined) {
+        writeStreamEvent(res, {
+          type: 'memory_loaded',
+          message: 'Loaded Working Order Memory',
+          resultCount: preparedContext.memoryLoadedResultCount,
+        });
+      }
 
-      const defaultToolExecutor = executeToolCall ? undefined : createDefaultStreamToolExecutor();
+      const defaultToolExecutor = executeToolCall
+        ? undefined
+        : createDefaultStreamToolExecutor({
+            conversationId,
+            createWorkingOrderMemoryReader,
+          });
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
 
       try {
+        let streamedText = false;
         writeStreamEvent(res, {
           type: 'progress',
           stage: 'provider_request',
@@ -643,6 +1041,7 @@ export function createSteelHandlers({
 
         const result = await sendChat({
           authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
+          conversationId,
           executeSteelToolCall: async (options) => {
             const type = getStreamToolEventType(options.toolName);
             writeStreamEvent(res, {
@@ -669,6 +1068,37 @@ export function createSteelHandlers({
                 message: failedToolMessage ?? `${options.toolName} completed`,
                 ok: toolResult.ok,
               });
+              const captureResult = await captureSuccessfulToolResult({
+                conversationId,
+                providerToolCallId: options.providerToolCallId,
+                toolName: options.toolName,
+                toolResult,
+                turnIndex: preparedContext.nextAssistantTurnIndex,
+                checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+                workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+              });
+              if (captureResult && hasSavedMemory(captureResult.savedCounts)) {
+                writeStreamEvent(res, {
+                  type: 'memory_saved',
+                  message: 'Working Order Memory saved',
+                  savedCounts: captureResult.savedCounts,
+                });
+              }
+              if (
+                options.toolName === 'read_working_order_items' &&
+                toolResult.ok &&
+                isRecord(toolResult.data)
+              ) {
+                writeStreamEvent(res, {
+                  type: 'memory_read',
+                  message: `${options.toolName} completed`,
+                  mode: typeof toolResult.data.mode === 'string' ? toolResult.data.mode : undefined,
+                  resultCount:
+                    typeof toolResult.data.resultCount === 'number'
+                      ? toolResult.data.resultCount
+                      : undefined,
+                });
+              }
               return toolResult;
             } catch (error) {
               writeStreamEvent(res, {
@@ -682,8 +1112,15 @@ export function createSteelHandlers({
             }
           },
           maxOutputTokens,
-          messages: messagesWithInstructions,
+          messages: preparedContext.messages,
           model,
+          onTextDelta: (delta) => {
+            streamedText = true;
+            writeStreamEvent(res, {
+              type: 'text',
+              delta,
+            });
+          },
           onReasoningSummary: (summary) => {
             writeStreamEvent(res, {
               type: 'reasoning',
@@ -703,20 +1140,59 @@ export function createSteelHandlers({
                   : `${event.toolName} ${event.status}`),
               ok: event.result?.ok,
             });
+            const captureResult = await captureSuccessfulToolResult({
+              conversationId,
+              toolName: event.toolName,
+              toolResult: event.result,
+              turnIndex: preparedContext.nextAssistantTurnIndex,
+              checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+              workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+            });
+            if (captureResult && hasSavedMemory(captureResult.savedCounts)) {
+              writeStreamEvent(res, {
+                type: 'memory_saved',
+                message: 'Working Order Memory saved',
+                savedCounts: captureResult.savedCounts,
+              });
+            }
           },
-          ...(hasMessageFiles(messagesWithInstructions)
+          ...(hasMessageFiles(preparedContext.messages)
             ? { passThroughUnsupportedFiles: true }
             : {}),
           reasoningEffort,
           steelRuntimePolicy: true,
+          workingMemorySummary: preparedContext.workingMemorySummary,
         });
+        const captureResult = await persistAssistantTurn({
+          conversationId,
+          content: result.text,
+          historyService: getHistoryService(),
+          turnIndex: preparedContext.nextAssistantTurnIndex,
+          checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+          workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+        });
+        if (captureResult) {
+          writeStreamEvent(res, {
+            type: 'parse_status',
+            message: `Markdown parse ${captureResult.parseStatus}`,
+            parseStatus: captureResult.parseStatus,
+            savedCounts: captureResult.savedCounts,
+          });
+          if (hasSavedMemory(captureResult.savedCounts)) {
+            writeStreamEvent(res, {
+              type: 'memory_saved',
+              message: 'Working Order Memory saved',
+              savedCounts: captureResult.savedCounts,
+            });
+          }
+        }
 
         const response = {
           ...result,
           conversationId: conversationId ?? createSteelChatConversationId(),
         };
 
-        if (response.text.length > 0) {
+        if (!streamedText && response.text.length > 0) {
           writeStreamEvent(res, {
             type: 'text',
             delta: response.text,

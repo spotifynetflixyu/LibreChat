@@ -38,6 +38,7 @@ import {
   createSteelAdminMergeTableModel,
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelConversationTurnModel,
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
@@ -45,6 +46,7 @@ import {
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,
   createSteelToolCallModel,
+  createSteelWorkingOrderMemoryModel,
 } from './steel';
 
 /**
@@ -85,6 +87,8 @@ export function createModels(mongoose: typeof import('mongoose')) {
     Group: createGroupModel(mongoose),
     Config: createConfigModel(mongoose),
     SteelConversationMeta: createSteelConversationMetaModel(mongoose),
+    SteelConversationTurn: createSteelConversationTurnModel(mongoose),
+    SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
     SteelAIRun: createSteelAIRunModel(mongoose),
     SteelAICapability: createSteelAICapabilityModel(mongoose),
     SteelAuditLog: createSteelAuditLogModel(mongoose),
@@ -109,6 +113,7 @@ export {
   createSteelAdminMergeTableModel,
   createSteelAuditLogModel,
   createSteelConversationMetaModel,
+  createSteelConversationTurnModel,
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
@@ -116,4 +121,5 @@ export {
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,
   createSteelToolCallModel,
+  createSteelWorkingOrderMemoryModel,
 } from './steel';

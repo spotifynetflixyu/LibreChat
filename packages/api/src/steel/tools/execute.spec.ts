@@ -88,7 +88,7 @@ describe('Steel minimal tool execution', () => {
     }
 
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['%OT板雷射切割%', '%6.0m/m%', 2, 5]);
+    expect(client.calls[0]?.values).toEqual(['%OT板雷射切割%', '%6.0m_m%', 2, 5]);
     expect(client.calls[0]?.sql).not.toContain('review_state =');
     expect(client.calls[0]?.sql).not.toContain('active = true');
     expect(client.calls[0]?.sql).toContain('(customer_tier_id = $3 OR customer_tier_id IS NULL)');
@@ -192,17 +192,111 @@ describe('Steel minimal tool execution', () => {
 
     expect(client.calls).toHaveLength(3);
     for (const call of client.calls) {
-      expect(call.values).toEqual(['%PL6%', '%雷射切割%', 20]);
+      expect(call.values).toEqual(
+        expect.arrayContaining([
+          '%PL6%',
+          '%雷射切割%',
+          '%plate%',
+          '%ot_plate%',
+          '%black_plate%',
+          '%板材%',
+          '%鐵板%',
+          20,
+        ]),
+      );
       expect(call.sql).not.toContain('review_state =');
       expect(call.sql).not.toContain('active = true');
     }
     expect(result.data).toEqual(
       expect.objectContaining({
-        keywords: ['PL6', '雷射切割'],
+        keywords: expect.arrayContaining(['PL6', '雷射切割', 'plate', 'ot_plate']),
         instructionPackets: [],
         quoteDefaults: [],
         quoteRules: [],
         rules: [],
+      }),
+    );
+  });
+
+  it('expands plate-like quote rule keywords so reviewed plate rules are retrievable', async () => {
+    const client = createClient([[], [], []]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'lookup_quote_rules',
+      arguments: {
+        keywords: ['PL6×80', '6.0m/mOT板'],
+        limit: 20,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    for (const call of client.calls) {
+      expect(call.values).toEqual(
+        expect.arrayContaining([
+          '%PL6×80%',
+          '%6.0m/mOT板%',
+          '%plate%',
+          '%ot_plate%',
+          '%black_plate%',
+          '%板材%',
+          '%鐵板%',
+        ]),
+      );
+    }
+    expect(result.data.keywords).toEqual(
+      expect.arrayContaining(['plate', 'ot_plate', 'black_plate', '板材', '鐵板']),
+    );
+  });
+
+  it('reads working-order memory through the read-only memory reader', async () => {
+    const memoryReader = {
+      readWorkingOrderItems: jest.fn(async () => ({
+        mode: 'rowNo',
+        resultCount: 1,
+        workingOrderRows: [
+          {
+            rowNo: 12,
+            erpItemCode: 'CCG075',
+            productName: '錏輕型鋼 75x45',
+            quantity: 2,
+          },
+        ],
+      })),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      memoryReader,
+      toolName: 'read_working_order_items',
+      arguments: {
+        mode: 'rowNo',
+        rowNo: 12,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(memoryReader.readWorkingOrderItems).toHaveBeenCalledWith({
+      mode: 'rowNo',
+      rowNo: 12,
+    });
+    expect(result.data).toEqual(
+      expect.objectContaining({
+        resultCount: 1,
+        workingOrderRows: [
+          expect.objectContaining({
+            erpItemCode: 'CCG075',
+            rowNo: 12,
+          }),
+        ],
       }),
     );
   });
