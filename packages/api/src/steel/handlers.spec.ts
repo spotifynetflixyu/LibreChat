@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
@@ -13,6 +14,11 @@ import {
 } from './memory/service';
 
 import type { Request, Response } from 'express';
+import type {
+  FullActiveSteelOutputSheets,
+  SteelRuntimeContext,
+  SteelRuntimeContextConversationInput,
+} from './runtime/context';
 
 function createResponse() {
   const res = {
@@ -55,6 +61,143 @@ function parseStreamChunks(chunks: readonly string[]) {
     .split('\n')
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as unknown);
+}
+
+function createTestOutputSheets(): FullActiveSteelOutputSheets {
+  return {
+    system_order: {
+      sheetId: 'system_order',
+      rows: [
+        {
+          rowId: 'system_order:1',
+          cells: {
+            rowNo: 1,
+            erpItemCode: 'CCG075',
+          },
+        },
+      ],
+    },
+    customer_data: {
+      sheetId: 'customer_data',
+      rows: [
+        {
+          rowId: 'customer_data:1',
+          cells: {
+            customerTierId: 2,
+          },
+        },
+      ],
+    },
+    manual_review: {
+      sheetId: 'manual_review',
+      rows: [],
+    },
+    customer_quote: {
+      sheetId: 'customer_quote',
+      rows: [
+        {
+          rowId: 'customer_quote:1',
+          cells: {
+            rowNo: 1,
+            subtotal: 536,
+          },
+        },
+      ],
+    },
+  };
+}
+
+function createTestRuntimeContext(
+  conversation: SteelRuntimeContextConversationInput,
+): SteelRuntimeContext {
+  return {
+    conversation,
+    rules: {
+      agentRules: [
+        {
+          id: 1,
+          slug: 'steel-default-agent-instruction',
+          version: 1,
+          ruleType: 'agent_instruction_rule',
+          title: 'Steel default agent instruction',
+          locale: 'zh-TW',
+          ruleSections: ['agent_instruction'],
+          selectors: { appliesTo: ['steel_quote_runtime'] },
+          prompt: 'Fixture agent instruction',
+          toolPolicy: { availableTools: ['search_customers'] },
+          outputPolicy: null,
+          priority: 10,
+          confidence: 'high',
+          active: true,
+          reviewState: 'reviewed',
+          sourceRefs: [],
+        },
+      ],
+      steelGlobalRules: {
+        instructionPackets: [],
+        quoteDefaults: [],
+        quoteRules: [
+          {
+            id: 31,
+            ruleType: 'formula_rule',
+            scopeType: 'catalog_family',
+            catalogFamily: 'plate',
+            productFamily: undefined,
+            chargeType: undefined,
+            formulaCode: undefined,
+            selectors: { catalogFamily: 'plate' },
+            parameters: {},
+            prompt: 'Fixture quote rule',
+            priority: 40,
+            confidence: 'high',
+            active: true,
+            reviewState: 'reviewed',
+            sourceRefs: [],
+          },
+        ],
+        groupedBy: {
+          packetGroups: [],
+          catalogFamilies: ['plate'],
+          productFamilies: [],
+          chargeTypes: [],
+          formulaCodes: [],
+          quoteRuleTypes: ['formula_rule'],
+          quoteDefaultTypes: [],
+        },
+      },
+      otherGlobalRules: {
+        fileRules: [],
+        sourcePriorityRules: [],
+        markdownOutputRules: [],
+        workbookOutputRules: [],
+      },
+    },
+    outputSheets: {
+      activeOnly: true,
+      memoryName: 'Output Sheet Memory',
+      contextName: 'Runtime Output Sheet Context',
+      conversationId: conversation.conversationId,
+      sheetIds: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
+      previousOutputSheets: createTestOutputSheets(),
+      derivedIndex: {
+        lineItems: [{ rowNo: 1, erpItemCode: 'CCG075' }],
+        customers: [{ customerTierId: 2 }],
+        adoptedPrices: [],
+        calculations: [{ rowNo: 1, subtotal: 536 }],
+        ocrExtracts: [],
+        unresolvedItems: [],
+      },
+    },
+    attachments: {
+      currentTurnFiles: [],
+      priorActiveFileEvidence: [],
+      includeOcrRules: false,
+    },
+    toolPolicy: {
+      aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      removedTools: ['lookup_quote_rules', 'read_working_order_items'],
+    },
+  };
 }
 
 async function withMongoMemory<T>(run: () => Promise<T>): Promise<T> {
@@ -126,18 +269,18 @@ describe('createSteelHandlers', () => {
   it('streams Steel chat progress, business tool status, text, and final response as NDJSON', async () => {
     const executeToolCall = jest.fn(async (options) => ({
       ok: true as const,
-      toolName: options.toolName as 'lookup_quote_rules',
-      data: { ruleSummary: 'C type lookup rules' },
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [{ displayName: '大成鋼鐵', erpCustomerCode: 'A001' }] },
       sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1 as const,
     }));
     const sendChat = jest.fn(async (options) => {
-      options.onReasoningSummary?.('先查規則，再用文字表格回覆。');
+      options.onReasoningSummary?.('先查客戶，再用文字表格回覆。');
       await options.executeSteelToolCall?.({
-        toolName: 'lookup_quote_rules',
-        arguments: { keywords: ['c_type'] },
-        providerToolCallId: 'call_lookup_1',
+        toolName: 'search_customers',
+        arguments: { keywords: ['大成'] },
+        providerToolCallId: 'call_customer_1',
         runState: { maxCalls: 8, callsUsed: 0 },
       });
       return {
@@ -170,12 +313,12 @@ describe('createSteelHandlers', () => {
         expect.objectContaining({ type: 'progress', stage: 'provider_request' }),
         expect.objectContaining({
           type: 'reasoning',
-          summary: '先查規則，再用文字表格回覆。',
+          summary: '先查客戶，再用文字表格回覆。',
         }),
         expect.objectContaining({
-          type: 'lookup',
+          type: 'tool',
           status: 'completed',
-          toolName: 'lookup_quote_rules',
+          toolName: 'search_customers',
           ok: true,
         }),
         expect.objectContaining({
@@ -234,11 +377,42 @@ describe('createSteelHandlers', () => {
     ]);
   });
 
-  it('builds same-conversation prompts from active DB history and Working Order Memory instead of browser-local prior messages', async () => {
+  it('passes request close abort signal to the streaming provider call', async () => {
+    const req = Object.assign(new EventEmitter(), {
+      body: {
+        messages: [{ role: 'user', content: 'stream abort' }],
+      },
+    }) as Request & EventEmitter;
+    let abortSignal: AbortSignal | undefined;
+    const sendChat = jest.fn(async (options) => {
+      abortSignal = options.abortSignal;
+      expect(abortSignal?.aborted).toBe(false);
+      req.emit('close');
+      expect(abortSignal?.aborted).toBe(true);
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: 'aborted after close',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+    });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const { res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    expect(abortSignal).toBeDefined();
+  });
+
+  it('builds same-conversation prompts from active DB history and runtime context instead of browser-local prior messages', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
       model: 'gpt-5.5',
-      text: '已依資料庫歷史與工作訂單記憶回覆。',
+      text: '已依資料庫歷史與 runtime context 回覆。',
       unsupportedSettings: [],
       warnings: [],
     }));
@@ -281,10 +455,14 @@ describe('createSteelHandlers', () => {
       })),
     };
     const createWorkingOrderMemoryReader = jest.fn(() => memoryReader);
+    const prepareRuntimeContext = jest.fn(async (input) =>
+      createTestRuntimeContext(input.conversation),
+    );
     const handlers = createSteelHandlers({
       createWorkingOrderMemoryReader,
       getModelsConfig: jest.fn(),
       historyService,
+      prepareRuntimeContext,
       sendChat,
     } as unknown as Parameters<typeof createSteelHandlers>[0]);
     const req = {
@@ -313,21 +491,47 @@ describe('createSteelHandlers', () => {
         turnIndex: 3,
       }),
     );
-    expect(createWorkingOrderMemoryReader).toHaveBeenCalledWith('steel_conversation_1');
-    expect(memoryReader.readWorkingOrderItems).toHaveBeenCalledWith({ mode: 'summary' });
+    expect(createWorkingOrderMemoryReader).not.toHaveBeenCalled();
+    expect(memoryReader.readWorkingOrderItems).not.toHaveBeenCalled();
+    expect(prepareRuntimeContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({
+          conversationId: 'steel_conversation_1',
+          activeHistory: [
+            { role: 'assistant', content: 'DB persisted final Markdown table' },
+            { role: 'user', content: '新增第 3 項 CCG075 兩支' },
+          ],
+          currentUserTurn: { role: 'user', content: '新增第 3 項 CCG075 兩支' },
+        }),
+      }),
+    );
 
     const sendChatOptions = sendChat.mock.calls[0]?.[0];
     expect(sendChatOptions).toEqual(
       expect.objectContaining({
         conversationId: 'steel_conversation_1',
-        workingMemorySummary: expect.stringContaining('working_order_row'),
+        steelRuntimeContext: expect.objectContaining({
+          outputSheets: expect.objectContaining({
+            previousOutputSheets: expect.objectContaining({
+              system_order: expect.objectContaining({
+                rows: [expect.objectContaining({ rowId: 'system_order:1' })],
+              }),
+            }),
+          }),
+          rules: expect.objectContaining({
+            agentRules: [expect.objectContaining({ slug: 'steel-default-agent-instruction' })],
+            steelGlobalRules: expect.objectContaining({
+              quoteRules: [expect.objectContaining({ catalogFamily: 'plate' })],
+            }),
+          }),
+        }),
         messages: [
           { role: 'assistant', content: 'DB persisted final Markdown table' },
           { role: 'user', content: '新增第 3 項 CCG075 兩支' },
         ],
       }),
     );
-    expect(sendChatOptions?.workingMemorySummary).toContain('龍頂');
+    expect(sendChatOptions).not.toHaveProperty('workingMemorySummary');
     expect(JSON.stringify(sendChatOptions?.messages)).not.toContain('browser-local stale table');
   });
 
@@ -391,22 +595,84 @@ describe('createSteelHandlers', () => {
     );
   });
 
-  it('binds the default stream read_working_order_items executor to the conversation memory reader', async () => {
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async (input) => ({
-        mode: input.mode,
-        resultCount: input.mode === 'summary' ? 0 : 1,
-        summary: input.mode === 'summary' ? {} : undefined,
-        workingOrderRows:
-          input.mode === 'rowNo'
-            ? [
-                {
-                  rowNo: input.rowNo,
-                  erpItemCode: 'CCG075',
-                },
-              ]
-            : [],
+  it('captures non-stream provider tool-status OCR results into Working Order Memory', async () => {
+    const historyService = {
+      appendTurn: jest.fn(async (turn) => ({
+        ...turn,
+        id: turn.messageId,
+        revisions: [],
+        createdAt: new Date('2026-06-18T00:00:00.000Z'),
+        updatedAt: new Date('2026-06-18T00:00:00.000Z'),
       })),
+      buildHistoryWindow: jest.fn(async () => []),
+    };
+    const workingOrderMemoryWriter = {
+      captureAssistantFinalMarkdown: jest.fn(async () => ({
+        parseStatus: 'skipped' as const,
+        savedCounts: {},
+      })),
+      captureToolResult: jest.fn(async () => ({
+        savedCounts: { ocr_extract: 1 },
+      })),
+    };
+    const sendChat = jest.fn(async (options) => {
+      await options.onToolStatus?.({
+        toolName: 'run_file_ocr',
+        status: 'completed',
+        result: {
+          ok: true,
+          toolName: 'run_file_ocr',
+          data: { filename: 'a.pdf', pageResults: [{ page: 1, text: 'OCR' }] },
+          sourceRefs: [],
+          durationMs: 1,
+          redactionVersion: 1,
+        },
+      });
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: '已 OCR。',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+    });
+    const memoryReader = {
+      readWorkingOrderItems: jest.fn(async () => ({
+        mode: 'summary',
+        resultCount: 0,
+        summary: {},
+        workingOrderRows: [],
+      })),
+    };
+    const handlers = createSteelHandlers({
+      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
+      getModelsConfig: jest.fn(),
+      historyService,
+      sendChat,
+      workingOrderMemoryWriter,
+    } as unknown as Parameters<typeof createSteelHandlers>[0]);
+    const req = {
+      body: {
+        conversationId: 'steel_conversation_1',
+        messages: [{ role: 'user', content: 'OCR a.pdf' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(workingOrderMemoryWriter.captureToolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'steel_conversation_1',
+        toolName: 'run_file_ocr',
+        data: { filename: 'a.pdf', pageResults: [{ page: 1, text: 'OCR' }] },
+      }),
+    );
+  });
+
+  it('does not bind the default stream provider executor to working-order memory reads', async () => {
+    const memoryReader = {
+      readWorkingOrderItems: jest.fn(),
     };
     const createWorkingOrderMemoryReader = jest.fn(() => memoryReader);
     const historyService = {
@@ -419,32 +685,13 @@ describe('createSteelHandlers', () => {
       })),
       buildHistoryWindow: jest.fn(async () => []),
     };
-    const sendChat = jest.fn(async (options) => {
-      const toolResult = await options.executeSteelToolCall?.({
-        toolName: 'read_working_order_items',
-        arguments: { mode: 'rowNo', rowNo: 12 },
-        providerToolCallId: 'call_memory_1',
-        runState: { maxCalls: 8, callsUsed: 0 },
-      });
-
-      expect(toolResult).toEqual(
-        expect.objectContaining({
-          ok: true,
-          toolName: 'read_working_order_items',
-          data: expect.objectContaining({
-            workingOrderRows: [expect.objectContaining({ erpItemCode: 'CCG075', rowNo: 12 })],
-          }),
-        }),
-      );
-
-      return {
-        provider: 'openai_oauth_responses' as const,
-        model: 'gpt-5.5',
-        text: '已讀取工作訂單記憶。',
-        unsupportedSettings: [],
-        warnings: [],
-      };
-    });
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: '已使用 runtime context 回覆。',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
     const handlers = createSteelHandlers({
       createWorkingOrderMemoryReader,
       getModelsConfig: jest.fn(),
@@ -461,32 +708,20 @@ describe('createSteelHandlers', () => {
 
     await handlers.streamChat(req, res);
 
-    expect(memoryReader.readWorkingOrderItems).toHaveBeenCalledWith({ mode: 'summary' });
-    expect(memoryReader.readWorkingOrderItems).toHaveBeenCalledWith({
-      mode: 'rowNo',
-      rowNo: 12,
-    });
+    expect(createWorkingOrderMemoryReader).not.toHaveBeenCalled();
+    expect(memoryReader.readWorkingOrderItems).not.toHaveBeenCalled();
     const events = parseStreamChunks(chunks);
-    expect(events).toEqual(
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'memory_read',
+        }),
+      ]),
+    );
+    expect(events).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'memory_loaded',
-          resultCount: 0,
-        }),
-        expect.objectContaining({
-          type: 'memory_read',
-          mode: 'rowNo',
-          resultCount: 1,
-        }),
-        expect.objectContaining({
-          type: 'parse_status',
-          parseStatus: 'skipped',
-        }),
-        expect.objectContaining({
-          type: 'tool',
-          status: 'completed',
-          toolName: 'read_working_order_items',
-          ok: true,
         }),
       ]),
     );
@@ -622,7 +857,7 @@ describe('createSteelHandlers', () => {
           }),
         ]),
       );
-      expect(createWorkingOrderMemoryReader).toHaveBeenCalledWith(conversationId);
+      expect(createWorkingOrderMemoryReader).not.toHaveBeenCalled();
 
       const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, conversationId);
       await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
@@ -877,10 +1112,14 @@ describe('createSteelHandlers', () => {
         workingOrderRows: [],
       })),
     };
+    const prepareRuntimeContext = jest.fn(async (input) =>
+      createTestRuntimeContext(input.conversation),
+    );
     const handlers = createSteelHandlers({
       createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       getModelsConfig: jest.fn(),
       historyService,
+      prepareRuntimeContext,
       sendChat,
       workingOrderMemoryWriter: {
         captureAssistantFinalMarkdown: jest.fn(async () => ({
@@ -914,8 +1153,18 @@ describe('createSteelHandlers', () => {
     expect(sendChat.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         messages: [{ role: 'user', content: '改成 3 支' }],
+        steelRuntimeContext: expect.objectContaining({
+          conversation: expect.objectContaining({
+            edit: {
+              editMessageId: 'user-message-1',
+              supersededAfterTurnIndex: 1,
+            },
+            activeHistory: [{ role: 'user', content: '改成 3 支' }],
+          }),
+        }),
       }),
     );
+    expect(sendChat.mock.calls[0]?.[0]).not.toHaveProperty('workingMemorySummary');
   });
 
   it('does not expose workbook or file-analysis REST handlers', () => {

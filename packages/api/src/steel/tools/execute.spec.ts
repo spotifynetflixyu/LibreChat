@@ -1,4 +1,5 @@
 import { createSteelToolRunState, executeSteelTool } from './execute';
+import { steelToolArgsSchemas } from './schemas';
 
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories/types';
 
@@ -171,6 +172,44 @@ describe('Steel minimal tool execution', () => {
         status: 'inactive',
       }),
     ]);
+  });
+
+  it('passes registry-parsed args into dispatch without parsing the same schema twice', async () => {
+    const client = createClient([
+      [
+        {
+          id: '21',
+          erp_customer_code: 'A001',
+          display_name: '大成鋼',
+          legal_name: '大成鋼鐵股份有限公司',
+          tax_id: '12345678',
+          customer_tier_id: null,
+          customer_tier_code: null,
+          customer_tier_name: null,
+          matched_alias: '大成',
+          status: 'active',
+          source_refs: [],
+        },
+      ],
+      [],
+    ]);
+    const parseSpy = jest.spyOn(steelToolArgsSchemas.search_customers, 'parse');
+
+    try {
+      const result = await executeSteelTool({
+        client,
+        toolName: 'search_customers',
+        arguments: {
+          keywords: ['大成'],
+          limit: 10,
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(parseSpy).not.toHaveBeenCalled();
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 
   it('searches quote rules, instruction packets, and defaults by AI-provided keywords', async () => {

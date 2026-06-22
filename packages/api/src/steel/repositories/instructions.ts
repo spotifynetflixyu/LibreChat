@@ -209,3 +209,37 @@ LIMIT $${values.length}
 
   return result.rows.map(toInstructionPacket);
 }
+
+export async function listReviewedSteelInstructionPackets(
+  client: SteelRepositoryClient,
+): Promise<SteelInstructionPacket[]> {
+  const result = await client.query<SteelInstructionPacketRow>(
+    `
+SELECT
+  id,
+  slug,
+  version,
+  title,
+  locale,
+  packet_groups,
+  selectors,
+  instruction,
+  blocking_rules,
+  required_lookups,
+  user_visible_notes,
+  confirmation_questions,
+  priority,
+  confidence,
+  active,
+  review_state,
+  source_refs
+FROM steel.instruction_packets
+WHERE review_state = $1
+  AND active = true
+ORDER BY priority ASC, id ASC
+`,
+    ['reviewed'],
+  );
+
+  return result.rows.map(toInstructionPacket);
+}

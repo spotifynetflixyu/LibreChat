@@ -382,6 +382,40 @@ LIMIT ${addLimit(values, input.limit)}
   return result.rows.map(toAgentRule);
 }
 
+export async function listReviewedSteelAgentRules(
+  client: SteelRepositoryClient,
+): Promise<SteelAgentRule[]> {
+  const result = await client.query<SteelAgentRuleRow>(
+    `
+SELECT
+  id,
+  slug,
+  version,
+  rule_type,
+  title,
+  locale,
+  rule_sections,
+  sheet_id,
+  selectors,
+  prompt,
+  tool_policy,
+  output_policy,
+  priority,
+  confidence,
+  active,
+  review_state,
+  source_refs
+FROM steel.agent_rules
+WHERE review_state = $1
+  AND active = true
+ORDER BY priority ASC, id ASC
+`,
+    ['reviewed'],
+  );
+
+  return result.rows.map(toAgentRule);
+}
+
 export async function searchSteelQuoteRules(
   client: SteelRepositoryClient,
   input: SearchSteelQuoteRulesInput,
@@ -454,6 +488,45 @@ ORDER BY
 LIMIT ${addLimit(values, input.limit)}
 `,
     values,
+  );
+
+  return result.rows.map(toQuoteRule);
+}
+
+export async function listReviewedSteelQuoteRules(
+  client: SteelRepositoryClient,
+): Promise<SteelQuoteRule[]> {
+  const result = await client.query<SteelQuoteRuleRow>(
+    `
+SELECT
+  id,
+  rule_type,
+  scope_type,
+  catalog_family,
+  product_family,
+  charge_type,
+  formula_code,
+  selectors,
+  parameters,
+  prompt,
+  priority,
+  confidence,
+  active,
+  review_state,
+  source_refs
+FROM steel.quote_rules
+WHERE review_state = $1
+  AND active = true
+ORDER BY
+  CASE scope_type
+    WHEN 'catalog_family' THEN 0
+    WHEN 'product_family' THEN 1
+    ELSE 2
+  END ASC,
+  priority ASC,
+  id ASC
+`,
+    ['reviewed'],
   );
 
   return result.rows.map(toQuoteRule);

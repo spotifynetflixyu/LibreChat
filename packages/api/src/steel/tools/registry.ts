@@ -1,14 +1,25 @@
-import { steelToolArgsSchemas, type SteelBusinessToolName } from './schemas';
+import { steelToolArgsSchemas, type SteelToolName } from './schemas';
 
 import type { ZodType } from 'zod';
 
-export interface SteelToolDefinition {
-  name: SteelBusinessToolName;
+export type SteelProviderToolName = Extract<
+  SteelToolName,
+  'search_customers' | 'search_price_candidates' | 'run_file_ocr'
+>;
+
+export interface SteelToolDefinition<Name extends SteelToolName = SteelProviderToolName> {
+  name: Name;
   description: string;
   argsSchema: ZodType;
 }
 
-const steelToolDefinitions: SteelToolDefinition[] = [
+const providerToolNames = new Set<SteelProviderToolName>([
+  'search_customers',
+  'search_price_candidates',
+  'run_file_ocr',
+]);
+
+const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'lookup_quote_rules',
     description:
@@ -41,23 +52,54 @@ const steelToolDefinitions: SteelToolDefinition[] = [
   },
 ];
 
-const definitionsByName = new Map(
+function isSteelProviderToolName(value: SteelToolName): value is SteelProviderToolName {
+  return providerToolNames.has(value as SteelProviderToolName);
+}
+
+const steelToolDefinitions = executableSteelToolDefinitions.filter(
+  (definition): definition is SteelToolDefinition<SteelProviderToolName> =>
+    isSteelProviderToolName(definition.name),
+);
+
+const providerDefinitionsByName = new Map(
   steelToolDefinitions.map((definition) => [definition.name, definition]),
 );
 
-export function getSteelToolDefinitions(): SteelToolDefinition[] {
+const executableDefinitionsByName = new Map(
+  executableSteelToolDefinitions.map((definition) => [definition.name, definition]),
+);
+
+export function getSteelToolDefinitions(): SteelToolDefinition<SteelProviderToolName>[] {
   return [...steelToolDefinitions];
 }
 
-export function isSteelToolName(value: string): value is SteelBusinessToolName {
-  return definitionsByName.has(value as SteelBusinessToolName);
+export function isSteelToolName(value: string): value is SteelProviderToolName {
+  return providerDefinitionsByName.has(value as SteelProviderToolName);
 }
 
-export function getSteelToolDefinition(name: SteelBusinessToolName): SteelToolDefinition {
-  const definition = definitionsByName.get(name);
+export function getSteelToolDefinition(
+  name: SteelProviderToolName,
+): SteelToolDefinition<SteelProviderToolName> {
+  const definition = providerDefinitionsByName.get(name);
 
   if (!definition) {
-    throw new Error(`Unknown Steel tool: ${name}`);
+    throw new Error(`Unknown Steel provider tool: ${name}`);
+  }
+
+  return definition;
+}
+
+export function isExecutableSteelToolName(value: string): value is SteelToolName {
+  return executableDefinitionsByName.has(value as SteelToolName);
+}
+
+export function getExecutableSteelToolDefinition(
+  name: SteelToolName,
+): SteelToolDefinition<SteelToolName> {
+  const definition = executableDefinitionsByName.get(name);
+
+  if (!definition) {
+    throw new Error(`Unknown Steel executable tool: ${name}`);
   }
 
   return definition;

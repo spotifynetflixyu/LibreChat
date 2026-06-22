@@ -141,6 +141,45 @@ describe('SteelOAuthChat', () => {
     expect(within(timingsPanel).queryByText(/workbook ops/)).not.toBeInTheDocument();
   });
 
+  it('shows Markdown parse status and saved memory counts in Activity', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        conversationId: 'steel-chat-1',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '| 項次 | 型號 | 品名規格 |\n| --- | --- | --- |\n| 1 | CCG075 | 75x45 |',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+      onEvent({
+        type: 'parse_status',
+        message: 'Markdown parse saved',
+        parseStatus: 'saved',
+        savedCounts: {
+          working_order_row: 71,
+          customer_fact: 1,
+        },
+      });
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '存成表格');
+    await user.click(screen.getByLabelText('Send'));
+    await screen.findByText('CCG075');
+
+    const activityPanel = screen.getByLabelText('Activity panel');
+    expect(within(activityPanel).getByText('Memory parse')).toBeInTheDocument();
+    expect(within(activityPanel).getByText('Saved')).toBeInTheDocument();
+    expect(within(activityPanel).getByText('Markdown parse saved')).toBeInTheDocument();
+    expect(
+      within(activityPanel).getByText('working_order_row: 71, customer_fact: 1'),
+    ).toBeInTheDocument();
+  });
+
   it('renders streamed assistant text deltas before the stream finishes', async () => {
     const user = userEvent.setup();
     let finishStream: (() => void) | undefined;

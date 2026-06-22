@@ -3,6 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createSteelWorkingOrderMemoryModel } from '@librechat/data-schemas';
 
 import {
+  createMongooseSteelOutputSheetMemoryReader,
   createMongooseSteelWorkingOrderMemoryReader,
   createMongooseSteelWorkingOrderMemoryWriter,
 } from './service';
@@ -24,6 +25,178 @@ afterAll(async () => {
 });
 
 describe('Mongoose Steel working-order memory reader', () => {
+  it('reads full active Output Sheet Memory for provider context without compact summaries', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const reader = createMongooseSteelOutputSheetMemoryReader(mongoose, 'steel_conversation_1');
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'active system row',
+        payload: {
+          rowNo: 1,
+          erpItemCode: 'CCG075',
+          productName: '錏輕型鋼 75x45',
+          quantity: 2,
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'customer_fact',
+        sourceKind: 'tool_result',
+        state: 'active',
+        summary: 'active customer',
+        payload: {
+          displayName: '龍頂',
+          customerTierId: 2,
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 3,
+        checkpointTurnIndex: 2,
+        memoryKind: 'price_evidence',
+        sourceKind: 'tool_result',
+        state: 'active',
+        summary: 'active price',
+        payload: {
+          erpItemCode: 'CCG075',
+          unitPrice: 268,
+          customerTierId: 2,
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        memoryKind: 'calculation_fact',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'active quote line',
+        payload: {
+          rowNo: 1,
+          subtotal: 536,
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        memoryKind: 'calculation_fact',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'active manual review',
+        payload: {
+          rowNo: 1,
+          reason: '尺寸待確認',
+          reviewStatus: 'manual_review',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 5,
+        checkpointTurnIndex: 4,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'active OCR',
+        payload: {
+          filename: 'drawing.pdf',
+          page: 1,
+          text: '尺寸 75x45',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 6,
+        checkpointTurnIndex: 5,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'superseded',
+        summary: 'superseded row',
+        payload: {
+          rowNo: 1,
+          erpItemCode: 'OLD001',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_2',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'other conversation row',
+        payload: {
+          rowNo: 1,
+          erpItemCode: 'OTHER001',
+        },
+      },
+    ]);
+
+    const result = await reader.readOutputSheetMemory();
+
+    expect(Object.keys(result.previousOutputSheets)).toEqual([
+      'system_order',
+      'customer_data',
+      'manual_review',
+      'customer_quote',
+    ]);
+    expect(result).not.toHaveProperty('resultCount');
+    expect(result).not.toHaveProperty('summary');
+    expect(result.previousOutputSheets.system_order.rows).toEqual([
+      expect.objectContaining({
+        cells: expect.objectContaining({
+          erpItemCode: 'CCG075',
+          quantity: 2,
+        }),
+      }),
+    ]);
+    expect(result.previousOutputSheets.customer_data.rows).toEqual([
+      expect.objectContaining({
+        cells: expect.objectContaining({
+          customerTierId: 2,
+        }),
+      }),
+    ]);
+    expect(result.previousOutputSheets.customer_quote.rows).toEqual([
+      expect.objectContaining({
+        cells: expect.objectContaining({
+          rowNo: 1,
+          subtotal: 536,
+        }),
+      }),
+    ]);
+    expect(result.previousOutputSheets.manual_review.rows).toEqual([
+      expect.objectContaining({
+        cells: expect.objectContaining({
+          rowNo: 1,
+          reviewStatus: 'manual_review',
+        }),
+      }),
+    ]);
+    expect(result.derivedIndex).toEqual(
+      expect.objectContaining({
+        lineItems: [expect.objectContaining({ erpItemCode: 'CCG075' })],
+        customers: [expect.objectContaining({ customerTierId: 2 })],
+        adoptedPrices: [expect.objectContaining({ erpItemCode: 'CCG075', unitPrice: 268 })],
+        calculations: expect.arrayContaining([
+          expect.objectContaining({ rowNo: 1, subtotal: 536 }),
+          expect.objectContaining({ rowNo: 1, reason: '尺寸待確認' }),
+        ]),
+        ocrExtracts: [expect.objectContaining({ filename: 'drawing.pdf', page: 1 })],
+        unresolvedItems: [expect.objectContaining({ rowNo: 1, reviewStatus: 'manual_review' })],
+      }),
+    );
+  });
+
   it('reads active rows by item number and excludes superseded memory', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');

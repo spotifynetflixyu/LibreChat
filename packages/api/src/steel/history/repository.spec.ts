@@ -159,6 +159,28 @@ describe('Mongoose Steel conversation history repository', () => {
     expect(supersededAssistant?.state).toBe('superseded');
     expect(supersededAssistant?.supersededByMessageId).toBe('u1');
   });
+
+  it('limits active history in the database while preserving prompt order', async () => {
+    const repository = createMongooseSteelConversationHistoryRepository(mongoose);
+
+    for (let index = 1; index <= 6; index += 1) {
+      await repository.appendTurn({
+        conversationId: 'steel_conversation_1',
+        messageId: `turn_${index}`,
+        turnIndex: index,
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        source: index % 2 === 0 ? 'assistant_final' : 'user_input',
+        content: `turn ${index}`,
+      });
+    }
+
+    const activeTurns = await repository.listActiveTurns({
+      conversationId: 'steel_conversation_1',
+      maxTurns: 3,
+    });
+
+    expect(activeTurns.map((turn) => turn.messageId)).toEqual(['turn_4', 'turn_5', 'turn_6']);
+  });
 });
 
 describe('Mongoose Steel working-order memory rollback repository', () => {

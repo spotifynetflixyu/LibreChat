@@ -1,10 +1,10 @@
-lookup_quote_rules 回傳規則
+Steel global rules context
 
-lookup_quote_rules 是鋼材品類、訂單格式、計價方式、配料、true zero、加工與客戶/品類規則的 merged rule lookup。
+Steel global rules 是 backend 在 provider 前一次載入的 reviewed 鋼材品類、訂單格式、計價方式、配料、true zero、加工與客戶 / 品類規則。
 
-當 AI 已推得 catalog family、品類、加工類型或配料/加工規則需求時，必須用 lookup_quote_rules 取得規則提示與候選；不要另呼叫獨立公式 lookup tool。
+AI 不需要呼叫規則查詢工具取得這些內容；需要品類、加工、配料或計價規則時，直接使用 runtime context 內已提供的 Steel global rules。
 
-lookup_quote_rules 應回傳 rules array。每個 rule object 可代表特定客戶、特定品類或特定品名/品類推論後的規則，內容至少要讓 AI 判斷：
+每個 reviewed rule 可代表特定客戶、特定品類或特定品名 / 品類推論後的規則，內容至少要讓 AI 判斷：
 
 材料或品類適用範圍。
 報價計價單位與計算方式。
@@ -13,7 +13,7 @@ lookup_quote_rules 應回傳 rules array。每個 rule object 可代表特定客
 true zero rule 是否成立。
 需要人工確認的缺口與信心降低原因。
 
-公式編號與系統訂單欄位不由 lookup_quote_rules 提供；若需要輸出系統訂單資料，AI 在最終 Markdown 表格中整理可核對欄位與計算依據。
+公式編號與系統訂單欄位不由單一工具回傳決定；若需要輸出系統訂單資料，AI 依 runtime context、採用價格證據與最終 Markdown 表格整理可核對欄位與計算依據。
 
 backend 不另跑公式計算邏輯，也不以獨立 formula lookup tool 作為 runtime 必要步驟。
 
@@ -99,7 +99,7 @@ H 型鋼規則
 必須確認尺寸、長度、支數、材質與是否加工。
 每支分別算重量與價格。
 若 price row 為 kg 價，使用單位重量 × 長度 × 數量 × kg 單價。
-常規 / 非常規米數規則必須來自 lookup_quote_rules，不得寫死。
+常規 / 非常規米數規則必須來自 Steel global rules，不得寫死。
 若 quote rule 回傳非常規米數加價，必須列入材料單價或價格調整說明。
 H 型鋼切工若有加工需求，優先使用 price candidate 或 cutting rule 的 H 型鋼切工資料。
 斜切、翼板切斜、特殊角度、修頭尾或圖面不清時，標低信心並列人工複核。

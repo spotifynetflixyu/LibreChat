@@ -126,7 +126,7 @@ function quoteRule({
     chargeType: null,
     formulaCode: null,
     selectors: {
-      appliesTo: ['lookup_quote_rules'],
+      appliesTo: ['steel_quote_runtime', 'steel_global_rules_context'],
       ...selectors,
     },
     parameters: [],
@@ -151,6 +151,7 @@ function quoteRule({
 function buildAgentRules(repoRoot) {
   const agent = readRulePrompt(repoRoot, 'docs/rules/agent規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/OCR規則.txt');
+  const output = readRulePrompt(repoRoot, 'docs/rules/輸出規則.txt');
   const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
 
   return [
@@ -167,10 +168,8 @@ function buildAgentRules(repoRoot) {
       toolPolicy: {
         availableTools: [
           'search_customers',
-          'lookup_quote_rules',
           'search_price_candidates',
           'run_file_ocr',
-          'read_working_order_items',
         ],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
@@ -195,6 +194,44 @@ function buildAgentRules(repoRoot) {
       ],
     },
     {
+      slug: 'steel-workbook-output-policy',
+      version: 1,
+      ruleType: 'workbook_output_rule',
+      title: 'Steel 輸出表單規則',
+      locale: 'zh-TW',
+      ruleSections: ['workbook_output', 'output_policy', 'output_sheet', 'customer_tier_sync'],
+      sheetId: null,
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'output_sheet_context'],
+        activeSheets: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
+        synchronizedSheetsOnCustomerTierChange: ['system_order', 'customer_quote'],
+      },
+      prompt: output.prompt,
+      toolPolicy: {
+        availableTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      },
+      outputPolicy: {
+        activeSheets: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
+        missingSheetBehavior: 'carry_forward_previous_active_sheet',
+        emittedSheetBehavior: 'replace_previous_active_sheet',
+        omittedRowsInEmittedSheet: 'clear_or_delete',
+        defaultCustomerTierWhenUncertain: 'B',
+        synchronizedSheetsOnCustomerTierChange: ['system_order', 'customer_quote'],
+      },
+      priority: 20,
+      confidence: 'high',
+      active: true,
+      reviewState: 'reviewed',
+      sourceRefs: [
+        sourceRef(
+          'docs/rules/輸出規則.txt',
+          'Steel 輸出規則',
+          'steel_output_sheet_policy',
+          output.sha256,
+        ),
+      ],
+    },
+    {
       slug: 'steel-drawing-ocr-policy',
       version: 1,
       ruleType: 'inference_order_rule',
@@ -203,6 +240,9 @@ function buildAgentRules(repoRoot) {
       ruleSections: ['file_ocr', 'drawing_ocr', 'vision_evidence'],
       sheetId: null,
       selectors: {
+        appliesTo: ['steel_quote_runtime', 'other_global_rules'],
+        otherGlobalRulesKey: 'ocrRules',
+        includeWhenFileContext: true,
         sourceKinds: ['image', 'pdf', 'scanned_pdf'],
         requiresDrawingOcr: true,
         tableTypes: ['material_table', 'part_table', 'bolt_table', 'cutting_table'],

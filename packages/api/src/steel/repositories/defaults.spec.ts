@@ -1,4 +1,4 @@
-import { searchSteelQuoteDefaults } from './defaults';
+import { listReviewedSteelQuoteDefaults, searchSteelQuoteDefaults } from './defaults';
 
 import type { SteelRepositoryClient } from './types';
 
@@ -7,6 +7,82 @@ function fixtureText(key: string) {
 }
 
 describe('Steel quote default repositories', () => {
+  it('lists all reviewed active quote defaults without keyword, facet, or limit filters', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          id: '21',
+          default_type: 'customer_tier_default',
+          origin_table: 'docs/rules/輸出規則.txt',
+          origin_id: 'default-tier-b',
+          origin_revision: '1',
+          scope_type: 'company',
+          customer_id: null,
+          customer_tier_id: null,
+          catalog_family: null,
+          product_family: null,
+          charge_type: null,
+          formula_code: null,
+          selector: { appliesTo: ['steel_quote_runtime'] },
+          effect: 'default_customer_tier',
+          default_parameters: { tierCode: 'B' },
+          priority: '30',
+          confidence: 'high',
+          active: true,
+          review_state: 'reviewed',
+          source_refs: [
+            {
+              channel: 'repo_docs',
+              factType: 'quote_default',
+              canonicalKey: 'default_tier_b',
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await listReviewedSteelQuoteDefaults({ query } as SteelRepositoryClient);
+    const sql = query.mock.calls[0]?.[0];
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.quote_defaults'), [
+      'reviewed',
+    ]);
+    expect(sql).toEqual(expect.stringContaining('active = true'));
+    expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
+    expect(sql).not.toEqual(expect.stringContaining('scope_type IN'));
+    expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
+    expect(result).toEqual([
+      {
+        id: 21,
+        defaultType: 'customer_tier_default',
+        originTable: 'docs/rules/輸出規則.txt',
+        originId: 'default-tier-b',
+        originRevision: '1',
+        scopeType: 'company',
+        customerId: null,
+        customerTierId: null,
+        catalogFamily: undefined,
+        productFamily: undefined,
+        chargeType: undefined,
+        formulaCode: undefined,
+        selector: { appliesTo: ['steel_quote_runtime'] },
+        effect: 'default_customer_tier',
+        defaultParameters: { tierCode: 'B' },
+        priority: 30,
+        confidence: 'high',
+        active: true,
+        reviewState: 'reviewed',
+        sourceRefs: [
+          {
+            channel: 'repo_docs',
+            factType: 'quote_default',
+            canonicalKey: 'default_tier_b',
+          },
+        ],
+      },
+    ]);
+  });
+
   it('searches reviewed active quote defaults by batched catalog, charge, and formula facets', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [

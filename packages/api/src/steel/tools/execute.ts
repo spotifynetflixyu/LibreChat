@@ -6,7 +6,7 @@ import {
   searchSteelQuoteRules,
   searchSteelQuoteDefaults,
 } from '../repositories';
-import { getSteelToolDefinition, isSteelToolName } from './registry';
+import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { defaultSteelPriceCustomerTierId, steelToolArgsSchemas } from './schemas';
 import { toCustomerRuleArray, toQuoteRulesRuleArray } from './rules';
@@ -22,6 +22,8 @@ import type { SteelCustomer, SteelPriceItem } from '../repositories';
 import type { ReadWorkingOrderItemsInput, SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
+type LookupQuoteRulesInput = ReturnType<typeof steelToolArgsSchemas.lookup_quote_rules.parse>;
+type SearchCustomersInput = ReturnType<typeof steelToolArgsSchemas.search_customers.parse>;
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
@@ -260,13 +262,13 @@ async function errorResult(
 async function dispatchSteelTool(
   options: ExecuteSteelToolOptions,
   toolName: SteelToolName,
-  args: unknown,
+  args: LookupQuoteRulesInput | SearchCustomersInput | SearchPriceCandidatesInput | ReadWorkingOrderItemsInput,
 ): Promise<SteelRawToolOutput> {
   const { client } = options;
 
   switch (toolName) {
     case 'lookup_quote_rules': {
-      const input = steelToolArgsSchemas.lookup_quote_rules.parse(args);
+      const input = args as LookupQuoteRulesInput;
       const keywords = expandQuoteRuleKeywords(input.keywords);
       const searchInput = { keywords, limit: input.limit };
       const [instructionPackets, quoteDefaults, storedQuoteRules] = await Promise.all([
@@ -288,7 +290,7 @@ async function dispatchSteelTool(
       };
     }
     case 'search_customers': {
-      const input = steelToolArgsSchemas.search_customers.parse(args);
+      const input = args as SearchCustomersInput;
       const customers = await searchSteelCustomers(client, input);
 
       return {
@@ -297,12 +299,12 @@ async function dispatchSteelTool(
       };
     }
     case 'search_price_candidates': {
-      const input = steelToolArgsSchemas.search_price_candidates.parse(args);
+      const input = args as SearchPriceCandidatesInput;
 
       return searchPriceCandidates(client, input);
     }
     case 'read_working_order_items': {
-      const input = steelToolArgsSchemas.read_working_order_items.parse(args);
+      const input = args as ReadWorkingOrderItemsInput;
 
       if (!options.memoryReader) {
         throw new Error('Steel working order memory reader unavailable');
@@ -332,7 +334,7 @@ export async function executeSteelTool(options: ExecuteSteelToolOptions): Promis
   const now = options.now ?? Date.now;
   const startTime = now();
 
-  if (!isSteelToolName(options.toolName)) {
+  if (!isExecutableSteelToolName(options.toolName)) {
     return errorResult(
       options,
       startTime,
@@ -345,7 +347,7 @@ export async function executeSteelTool(options: ExecuteSteelToolOptions): Promis
     return errorResult(options, startTime, 'rate_limited', 'Steel tool call limit exceeded');
   }
 
-  const definition = getSteelToolDefinition(options.toolName);
+  const definition = getExecutableSteelToolDefinition(options.toolName);
   const parsedArgs = definition.argsSchema.safeParse(options.arguments);
 
   if (!parsedArgs.success) {

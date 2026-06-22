@@ -1,4 +1,618 @@
-# Active: Steel Working Order Memory Plan
+# Active: Steel Provider-Prepared Full Context Orchestration Plan
+
+> Implementation note: runtime implementation, Supabase rule sync, focused
+> regression checks, and direct live OAuth/provider harness smoke have been
+> executed task-by-task. Browser Activity visual smoke is the remaining optional
+> UI check.
+
+Goal: move Steel OAuth chat from AI-driven rule/memory lookup loops to a
+provider-prepared context model. Before `sendSteelOAuthChat`, backend assembles
+Agent rules, all reviewed Steel global rules, conditional OCR/file rules, and
+full active output sheet data. AI-visible tools are reduced to live external
+data needs only. Workbook sheet merging is backend-only: when AI output lacks
+one of the four active sheets, backend simply uses that sheet from the previous
+active output form.
+
+Architecture:
+
+- `prepareChatContext` remains responsible for conversation history,
+  edit/rerun, queued steer, and active-turn boundaries.
+- Add `prepareSteelRuntimeContext` before provider invocation. It loads rules
+  and full active output sheet state, then serializes that context into the
+  provider prompt.
+- `sendSteelOAuthChat` becomes provider serialization/execution only. It no
+  longer loads DB agent rules, no longer receives `workingMemorySummary`, and
+  no longer exposes rule/memory lookup tools to the model.
+- Existing Steel rule classifications stay in DB as admin/organization metadata,
+  but runtime AI receives the full reviewed global rule set at once instead of
+  calling `lookup_quote_rules` by category.
+- AI sheet output is sheet-level patch/replace. AI does not need any special
+  marker; generated sheets replace the corresponding active sheet, and backend
+  uses the previous active sheet only when an entire sheet is missing from AI
+  output.
+- Runtime naming uses `Output Sheet Memory` and `Runtime Output Sheet Context`
+  instead of the older `Working Order Memory` naming, so the concept clearly
+  points at the output form/sheets.
+
+Locked Decisions:
+
+- [x] Context assembly happens before `sendSteelOAuthChat`.
+- [x] Context includes Agent rules, Steel global rules, output/source-priority
+  rules, conditional OCR/file rules, and full active output sheet data.
+- [x] Runtime output sheet context is full active output sheet data, not compact
+  summary.
+- [x] Full active output sheet context includes only four active sheets:
+  `system_order`, `customer_data`, `manual_review`, and `customer_quote`.
+- [x] OCR rules belong under `otherGlobalRules` and are included only when the
+  current turn or active evidence has files requiring OCR/file interpretation.
+- [x] `read_working_order_items` is removed from AI-visible runtime tools.
+- [x] `lookup_quote_rules` is removed from AI-visible runtime tools.
+- [x] All reviewed active DB Steel rules are loaded in one backend context pass;
+  category-scoped lookup is not a model tool.
+- [x] AI does not need to explicitly mark omitted sheets or output merge
+  metadata. Backend uses the previous active version for any active sheet
+  missing from AI output. When AI does output a sheet, that sheet is a full
+  replacement; prior rows omitted from that emitted sheet are cleared/deleted.
+- [x] If AI updates `customer_quote` and the customer price tier changes or
+  affects pricing, output rules must require synchronized updates to both
+  `system_order` and `customer_quote`. This rule belongs in
+  `docs/rules/輸出規則.txt`, synced DB `steel.agent_rules` workbook/output rules,
+  and direction checks.
+- [x] If customer tier is uncertain, output rules default quote pricing to
+  價格B instead of blocking quote generation.
+- [x] Any update to `docs/rules/agent規則.txt` or `docs/rules/輸出規則.txt` must
+  be followed by Supabase rule sync and DB readback before that task is
+  considered complete.
+
+Target Runtime Context Shape:
+
+```ts
+interface SteelRuntimeContext {
+  conversation: {
+    conversationId?: string;
+    requestId: string;
+    activeHistory: SteelOAuthChatMessage[];
+    currentUserTurn?: SteelOAuthChatMessage;
+    edit?: {
+      editMessageId: string;
+      supersededAfterTurnIndex: number;
+    };
+  };
+  rules: {
+    agentRules: SteelAgentRule[];
+    steelGlobalRules: {
+      instructionPackets: SteelInstructionPacket[];
+      quoteDefaults: SteelQuoteDefault[];
+      quoteRules: SteelQuoteRule[];
+      groupedBy: Record<string, string[]>;
+    };
+    otherGlobalRules: {
+      ocrRules?: SteelAgentRule[];
+      fileRules: SteelAgentRule[];
+      sourcePriorityRules: SteelAgentRule[];
+      markdownOutputRules: SteelAgentRule[];
+      workbookOutputRules: SteelAgentRule[];
+    };
+  };
+  outputSheets: {
+    activeOnly: true;
+    conversationId?: string;
+    sheetIds: ['system_order', 'customer_data', 'manual_review', 'customer_quote'];
+    previousOutputSheets: FullActiveSteelOutputSheets;
+    derivedIndex: {
+      lineItems: FullOrderLine[];
+      customers: FullCustomerFact[];
+      adoptedPrices: FullPriceEvidence[];
+      calculations: FullCalculationFact[];
+      ocrExtracts: FullOcrExtract[];
+      unresolvedItems: FullManualReviewItem[];
+    };
+  };
+  attachments: {
+    currentTurnFiles: SteelOAuthChatFile[];
+    priorActiveFileEvidence: FullOcrExtract[];
+    includeOcrRules: boolean;
+  };
+  toolPolicy: {
+    aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'];
+    removedTools: ['lookup_quote_rules', 'read_working_order_items'];
+  };
+}
+```
+
+Planned Files:
+
+- Create: `packages/api/src/steel/runtime/context.ts`
+- Create: `packages/api/src/steel/runtime/context.spec.ts`
+- Modify: `packages/api/src/steel/handlers.ts`
+- Modify: `packages/api/src/steel/handlers.spec.ts`
+- Modify: `packages/api/src/steel/ai/provider.ts`
+- Modify: `packages/api/src/steel/ai/provider.spec.ts`
+- Modify: `packages/api/src/steel/tools/registry.ts`
+- Modify: `packages/api/src/steel/tools/registry.spec.ts`
+- Modify: `packages/api/src/steel/tools/schemas.ts`
+- Modify: `packages/api/src/steel/tools/execute.ts`
+- Modify: `packages/api/src/steel/tools/execute.spec.ts`
+- Modify: `packages/api/src/steel/repositories/instructions.ts`
+- Modify: `packages/api/src/steel/repositories/defaults.ts`
+- Modify: `packages/api/src/steel/repositories/rules.ts`
+- Modify: `packages/api/src/steel/memory/service.ts`
+- Modify: `packages/api/src/steel/memory/service.spec.ts`
+- Modify: `docs/rules/輸出規則.txt`
+- Modify: `docs/rules/agent規則.txt`
+- Modify: `docs/rules/鋼材規則.txt`
+- Modify: `docs/rules/OCR規則.txt`
+- Modify: `packages/api/scripts/sync-steel-rules.cjs`
+- Modify: `tmp/chat-round-test/current-direction-check.ts`
+- Modify: `CONTEXT.md`
+- Create: `docs/adr/0003-provider-prepared-steel-context.md`
+
+No Supabase schema migration is expected for this plan. If implementation
+discovers a Steel Postgres schema change is required, update both
+`supabase/schema.sql` and a new `supabase/migration/*.sql` file created through
+`npx supabase migration new <change_name>`.
+
+## Checkpoint 0 - Plan Approval
+
+- [x] User reviewed this plan and approved scope before implementation.
+- [x] AI-visible tools for this slice remain only `search_customers`,
+  `search_price_candidates`, and `run_file_ocr`.
+- [x] Full active output sheet context includes only the four active sheets:
+  `system_order`, `customer_data`, `manual_review`, and `customer_quote`.
+  Hidden/internal seven-sheet compatibility sheets are not included in provider
+  context for this redesign.
+
+## Task 1 - Add Runtime Context Contract Tests
+
+Files:
+
+- Create: `packages/api/src/steel/runtime/context.spec.ts`
+- Create: `packages/api/src/steel/runtime/context.ts`
+
+Steps:
+
+- [x] Add RED test: `prepareSteelRuntimeContext` loads agent rules before
+  provider call and returns them in `rules.agentRules`.
+- [x] Add RED test: `prepareSteelRuntimeContext` loads all reviewed active
+  `steel.instruction_packets`, `steel.quote_defaults`, and `steel.quote_rules`
+  without user/category keywords.
+- [x] Add RED test: context contains full active output sheet rows, not only
+  result counts or entry summaries.
+- [x] Add RED test: output sheet context uses the `Output Sheet Memory` /
+  `Runtime Output Sheet Context` naming and exposes only the four active output
+  sheets.
+- [x] Add RED test: OCR rules are absent when there are no current files or
+  active file/OCR evidence, and present under `otherGlobalRules` when file
+  context exists.
+- [x] Add RED test: serialized output rules contain the customer-tier cascade
+  requirement: customer tier changes that affect `customer_quote` require
+  synchronized `system_order` and `customer_quote` output.
+- [x] Add RED test: serialized output rules state uncertain customer tier uses
+  價格B by default.
+- [x] Add RED test: serialized output rules state emitted sheets overwrite
+  previous rows, while wholly omitted sheets carry forward.
+- [x] Add RED test: tool policy contains only `search_customers`,
+  `search_price_candidates`, and `run_file_ocr`.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts --runInBand --runTestsByPath`
+  Expected: FAIL because the runtime context module does not exist.
+
+## Task 2 - Add Full Reviewed Rule Loaders
+
+Files:
+
+- Modify: `packages/api/src/steel/repositories/instructions.ts`
+- Modify: `packages/api/src/steel/repositories/defaults.ts`
+- Modify: `packages/api/src/steel/repositories/rules.ts`
+- Test: `packages/api/src/steel/runtime/context.spec.ts`
+
+Steps:
+
+- [x] Add repository functions for all reviewed active rule data, for example:
+  `listReviewedSteelInstructionPackets`, `listReviewedSteelQuoteDefaults`, and
+  `listReviewedSteelQuoteRules`.
+- [x] Do not use `keywords`, catalog family, product family, or charge filters
+  in these all-rule loaders.
+- [x] Avoid the existing `getLimit(..., maxLimit = 100)` truncation problem for
+  all-rule context. Either use a no-limit reviewed-active query with stable
+  ordering, or introduce a clearly named high backend-only max limit.
+- [x] Preserve existing search functions for admin/debug compatibility until
+  downstream tests have migrated.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts --runInBand --runTestsByPath`
+  Expected: rule loader tests PASS after implementation.
+
+## Task 3 - Build Full Active Output Sheet Context
+
+Files:
+
+- Modify: `packages/api/src/steel/memory/service.ts`
+- Modify: `packages/api/src/steel/memory/service.spec.ts`
+- Modify: `packages/api/src/steel/runtime/context.ts`
+- Test: `packages/api/src/steel/runtime/context.spec.ts`
+
+Steps:
+
+- [x] Add a backend-only reader path that returns full active Output Sheet
+  Memory for a conversation. It must include all active `working_order_row`,
+  `customer_fact`, `price_evidence`, `calculation_fact`, `ocr_extract`, and
+  unresolved/manual-review records.
+- [x] Do not reuse the current compact `formatWorkingOrderMemorySummary` as the
+  provider context source.
+- [x] Ensure superseded turns and superseded memory are excluded from this full
+  active context.
+- [x] Define `previousOutputSheets` from active persisted Output Sheet Memory,
+  limited to `system_order`, `customer_data`, `manual_review`, and
+  `customer_quote`. If only row/evidence memory exists today, build the full
+  four-sheet output form from active memory documents with stable sheet IDs.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/memory/service.spec.ts src/steel/runtime/context.spec.ts --runInBand`
+  Expected: PASS with full context and superseded-memory exclusion.
+
+## Task 4 - Implement Output Sheet Patch/Replace Contract
+
+Files:
+
+- Modify: `packages/api/src/steel/memory/service.ts`
+- Modify: `packages/api/src/steel/memory/service.spec.ts`
+- Modify: `packages/api/src/steel/runtime/context.ts`
+- Test: `packages/api/src/steel/runtime/context.spec.ts`
+
+Steps:
+
+- [x] Add type/test fixtures for `FullActiveSteelOutputSheets`, `GeneratedSheet`,
+  and backend sheet merge output.
+- [x] Add RED test: when AI output contains only `customer_quote`, the next
+  active output form keeps previous `system_order`, `customer_data`, and
+  `manual_review`.
+- [x] Add RED prompt/direction test: when output rules describe a customer tier
+  change that affects pricing, AI must be instructed to output updated
+  `system_order` and `customer_quote` sheets together.
+- [x] Add RED prompt/direction test: when customer tier is uncertain, AI must
+  use 價格B instead of stopping the quote.
+- [x] Add RED test: an entire sheet not present in AI output does not clear
+  that sheet.
+- [x] Add RED test: when AI emits a sheet, previous rows omitted from that
+  emitted sheet are cleared/deleted because emitted sheets are overwrite
+  snapshots, not row merges.
+- [x] Implement a simple backend merge helper in the output-sheet context
+  layer: for each of the four active sheets, use the generated sheet as a full
+  replacement when present; otherwise use the previous active sheet.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/memory/service.spec.ts src/steel/runtime/context.spec.ts --runInBand`
+  Expected: PASS.
+
+## Task 5 - Move Context Assembly Before Provider Call
+
+Files:
+
+- Modify: `packages/api/src/steel/handlers.ts`
+- Modify: `packages/api/src/steel/handlers.spec.ts`
+- Modify: `packages/api/src/steel/runtime/context.ts`
+- Test: `packages/api/src/steel/handlers.spec.ts`
+
+Steps:
+
+- [x] Keep `prepareChatContext` focused on history/edit/rerun/queued steer.
+- [x] Call `prepareSteelRuntimeContext` after `prepareChatContext` and before
+  `sendChat`.
+- [x] Pass the assembled runtime context into provider options.
+- [x] Remove `workingMemorySummary` from handler/provider option plumbing.
+- [x] Add RED test: `sendChat` receives a `steelRuntimeContext` containing
+  full active output sheet data and rule sets.
+- [x] Add RED test: edit/rerun still rolls back active history and active
+  output sheet context to the correct checkpoint.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/runtime/context.spec.ts --runInBand`
+  Expected: PASS.
+
+## Task 6 - Simplify Provider Responsibility
+
+Files:
+
+- Modify: `packages/api/src/steel/ai/provider.ts`
+- Modify: `packages/api/src/steel/ai/provider.spec.ts`
+- Test: `packages/api/src/steel/ai/provider.spec.ts`
+
+Steps:
+
+- [x] Replace provider-side DB agent-rule loading with serialized
+  `steelRuntimeContext`.
+- [x] Remove `workingMemorySummary` injection from provider prompt assembly.
+- [x] Add prompt serialization for:
+  - Agent rules.
+  - All Steel global rules.
+  - Source/output global rules.
+  - OCR/file rules only when current turn files or active file evidence exist.
+  - Full active output sheet data.
+  - Customer-tier cascade output rules.
+- [x] Do not serialize workbook merge behavior for the AI. Backend
+  missing-sheet carry-forward stays implementation logic.
+- [x] Keep provider-side `responsesState: false`.
+- [x] Keep true text streaming through `doStream` when available.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --runTestsByPath`
+  Expected: PASS, and provider tests should not mock DB rule loading inside
+  `sendSteelOAuthChat`.
+
+## Task 7 - Remove AI-Visible Rule/Memory Tools
+
+Files:
+
+- Modify: `packages/api/src/steel/tools/registry.ts`
+- Modify: `packages/api/src/steel/tools/registry.spec.ts`
+- Modify: `packages/api/src/steel/tools/schemas.ts`
+- Modify: `packages/api/src/steel/tools/execute.ts`
+- Modify: `packages/api/src/steel/tools/execute.spec.ts`
+- Modify: `packages/api/src/steel/ai/provider.spec.ts`
+- Modify: `packages/api/src/steel/handlers.spec.ts`
+
+Steps:
+
+- [x] Split provider-visible tools from backend/internal helpers if needed.
+  Provider-visible tools must be only:
+  `search_customers`, `search_price_candidates`, `run_file_ocr`.
+- [x] Remove `lookup_quote_rules` from provider-visible tool definitions.
+- [x] Remove `read_working_order_items` from provider-visible tool definitions.
+- [x] Update tests that currently expect those tools in `getSteelToolDefinitions`.
+- [x] If `executeSteelTool` still supports legacy/internal rule reads during
+  migration, name that surface clearly and prevent it from reaching provider
+  tool serialization.
+- [x] Run:
+  `cd packages/api && npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --runInBand`
+  Expected: PASS, with no provider-visible `lookup_quote_rules` or
+  `read_working_order_items`.
+
+## Task 8 - Update Agent/Rule Prompt Sources And Sync
+
+Files:
+
+- Modify: `docs/rules/輸出規則.txt`
+- Modify: `docs/rules/agent規則.txt`
+- Modify: `docs/rules/鋼材規則.txt`
+- Modify: `docs/rules/OCR規則.txt`
+- Modify: `packages/api/scripts/sync-steel-rules.cjs`
+- Modify: `tmp/chat-round-test/current-direction-check.ts`
+
+Steps:
+
+- [x] Add `docs/rules/輸出規則.txt` as the reviewed local source for output
+  sheet requirements, including the customer-tier cascade rule: if customer
+  tier changes and affects quote pricing, AI must regenerate both
+  `system_order` and `customer_quote`.
+- [x] Move detailed output requirements out of `docs/rules/agent規則.txt` and
+  into `docs/rules/輸出規則.txt`.
+- [x] Update `docs/rules/agent規則.txt` visible tool list to remove
+  `lookup_quote_rules` and `read_working_order_items`.
+- [x] Update `docs/rules/agent規則.txt` to state that reviewed Steel rules and
+  full active output sheet data are already present in context.
+- [x] Update `docs/rules/鋼材規則.txt` from tool-output wording to global
+  context wording.
+- [x] Update OCR rule sync/serialization so OCR rules belong to
+  `otherGlobalRules` and are included only when the current turn or active
+  evidence has file context.
+- [x] Update sync script payload so `docs/rules/輸出規則.txt` writes reviewed DB
+  `steel.agent_rules` workbook/output rules, with rule sections plus
+  selectors/output-policy metadata for `system_order` and `customer_quote`.
+- [x] Update sync script payload/tool policy so Supabase `toolPolicy` exposes
+  only the remaining AI-visible tools.
+- [x] Add a direction/sync guard: if `docs/rules/agent規則.txt` or
+  `docs/rules/輸出規則.txt` changes, run Supabase sync dry-run, apply, and DB
+  readback in the same implementation slice.
+- [x] Add direction check assertions:
+  - Provider-visible tools exclude `lookup_quote_rules`.
+  - Provider-visible tools exclude `read_working_order_items`.
+  - Agent rule text does not instruct AI to call removed tools.
+  - Context contract includes full active output sheet data and all reviewed
+    rules.
+  - OCR rules are conditional on file context.
+  - Output rules include the customer-tier cascade requirement for
+    `system_order` and `customer_quote`.
+- [x] Run:
+  `npx tsx tmp/chat-round-test/current-direction-check.ts`
+  Expected: PASS.
+- [x] After any `agent規則.txt` or `輸出規則.txt` update, run rule sync dry-run
+  and apply using the existing project script. Record Supabase DB readback hash
+  for both Agent rules and output rules in Review.
+
+## Task 9 - Focused Regression Verification
+
+Commands:
+
+- [x] `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/memory/service.spec.ts --runInBand`
+- [x] `npx tsx tmp/chat-round-test/current-direction-check.ts`
+- [x] `git diff --check`
+- [x] `cd packages/api && npm run build`
+
+Expected:
+
+- Runtime context tests prove rules and full output sheet data are assembled
+  before provider execution.
+- Provider/tool tests prove removed tools are not provider-visible.
+- Memory tests prove sheets not present in AI output carry forward.
+- Direction checks prove OCR rules are conditional and customer-tier changes
+  require synchronized `system_order` / `customer_quote` output rules.
+- Build passes or reports only pre-existing unrelated warnings.
+
+## Task 10 - Manual / Live Smoke After Approval
+
+Only run after focused tests pass and the user confirms live OAuth usage.
+
+- [x] Confirm backend/frontend are not needed for the direct live provider
+  harness smoke.
+- [x] Run one live provider harness quote follow-up for the `/steel/oauth-chat`
+  orchestration path where prior active output form data is available from
+  Output Sheet Memory.
+- [x] Run one customer-tier change follow-up and confirm AI outputs synchronized
+  `system_order` and `customer_quote` sheets instead of only changing
+  `customer_quote`.
+- [x] Confirm provider/tool event log exposes only provider-visible tools and no
+  removed rule/memory lookup tools.
+- [x] Confirm final assistant Markdown is saved.
+- [x] Confirm Mongo Output Sheet Memory readback keeps active sheet state after
+  follow-up turns.
+- [x] Record timings with generation/tool split.
+- [ ] Browser Activity panel visual smoke was not run in this slice because no
+  backend/frontend dev server was running; direct provider event logs covered
+  the provider/tool surface.
+
+Review:
+
+- Task 10 completed as a direct live OAuth/provider harness smoke on
+  2026-06-22. The harness uses Mongo history/memory, Supabase/Postgres reviewed
+  rules, `openai_oauth_responses`, and provider-prepared
+  `steelRuntimeContext`; it does not start the browser UI or visually inspect
+  Activity.
+- Main live smoke conversation:
+  `task10_context_smoke_1782133498`; command wrote
+  `tmp/chat-round-test/task10-live-summary.json`,
+  `tmp/chat-round-test/task10-live-events.jsonl`,
+  `tmp/chat-round-test/task10-live-timing.json`, and
+  `tmp/chat-round-test/task10-live-timing.md`. Round 1 used two
+  `search_price_candidates` calls with `customerTierId = 2`; Round 2 used no
+  tools. Both rounds exposed only `search_customers`,
+  `search_price_candidates`, and `run_file_ocr`; `badToolCalls` and
+  `badProviderTools` were empty.
+- Main live timing totals:
+  total 356106 ms; provider total 343082 ms; provider generation 338974 ms;
+  provider tool execution 4102 ms; harness overhead 13024 ms. This confirms
+  latency is dominated by generation/context, not tool execution.
+- Customer-tier follow-up reused the same live conversation and wrote
+  `tmp/chat-round-test/task10-tier-summary.json`,
+  `tmp/chat-round-test/task10-tier-events.jsonl`,
+  `tmp/chat-round-test/task10-tier-timing.json`, and
+  `tmp/chat-round-test/task10-tier-timing.md`. It called
+  `search_price_candidates` once with `customerTierId = 1` and the final answer
+  explicitly included both `system_order` and `customer_quote`.
+- Customer-tier follow-up timing:
+  total 164029 ms; provider total 156705 ms; provider generation 156057 ms;
+  provider tool execution 637 ms; harness overhead 7324 ms.
+- Final Mongo Output Sheet Memory readback for
+  `task10_context_smoke_1782133498`: `system_order` 71 rows,
+  `customer_data` 0 rows, `manual_review` 15 rows, and `customer_quote` 23
+  rows. Final Markdown capture was partial but saved active rows/facts:
+  main Round 1 saved 71 `working_order_row` and 12 `calculation_fact`;
+  main Round 2 saved 71 `working_order_row` and 11 `calculation_fact`;
+  tier follow-up saved 71 `working_order_row` and 15 `calculation_fact`.
+- Live harness was updated to build `prepareSteelRuntimeContext` before
+  `sendSteelOAuthChat`, pass full Output Sheet Memory through
+  `createMongooseSteelOutputSheetMemoryReader`, and accept
+  `CHAT_ROUND1_PATH` / `CHAT_ROUND2_PATH` overrides for focused follow-ups.
+- Task 9 completed on 2026-06-22:
+  focused Jest passed 6 suites / 57 tests; `current-direction-check.ts` passed
+  all checks; `git diff --check` passed; `npm --workspace packages/api run build`
+  exited 0. Build output still reports existing non-Steel Rollup/TypeScript
+  warnings in `src/agents/resources.ts`, `src/app/config.ts`,
+  `src/cache/cacheFactory.ts`, `src/endpoints/config/*`,
+  `src/middleware/remoteAgentAuth.ts`, and `src/middleware/share.ts`.
+- Task 7 completed on 2026-06-22: provider-visible Steel tools are now only
+  `search_customers`, `search_price_candidates`, and `run_file_ocr`.
+  `lookup_quote_rules` and `read_working_order_items` remain only in the
+  clearly named internal executable tool registry for legacy/backend execution,
+  not in provider tool serialization.
+- Task 7 RED/GREEN verification:
+  - RED `cd packages/api && npx jest src/steel/tools/registry.spec.ts src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --runInBand --runTestsByPath` failed on the old 5-tool provider registry and stream memory-reader binding.
+  - GREEN `cd packages/api && npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --runInBand --runTestsByPath` passed 4 suites / 39 tests.
+  - Regression `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/repositories/instructions.spec.ts src/steel/repositories/defaults.spec.ts src/steel/repositories/rules.spec.ts src/steel/memory/service.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand --runTestsByPath` passed 9 suites / 63 tests.
+  - `git diff --check -- packages/api/src/steel/tools/registry.ts packages/api/src/steel/tools/registry.spec.ts packages/api/src/steel/tools/execute.ts packages/api/src/steel/tools/execute.spec.ts packages/api/src/steel/ai/provider.ts packages/api/src/steel/ai/provider.spec.ts packages/api/src/steel/handlers.ts packages/api/src/steel/handlers.spec.ts` passed.
+- Checkpoint corrections applied on 2026-06-22:
+  `Working Order Memory` naming was replaced in current docs with
+  `Output Sheet Memory` / `Runtime Output Sheet Context`; OCR rules are
+  conditional `otherGlobalRules`; customer-tier changes that affect
+  `customer_quote` now require synchronized `system_order` and
+  `customer_quote` output rules.
+- Added `docs/rules/輸出規則.txt` as the local reviewed source for the output
+  rule.
+- Task 8 completed on 2026-06-22: `agent規則.txt` now states rules and full
+  active output sheet data are already in runtime context, `鋼材規則.txt`
+  is Steel global rules context instead of tool-output wording, OCR rules are
+  marked as conditional `otherGlobalRules.ocrRules`, and sync metadata exposes
+  only `search_customers`, `search_price_candidates`, and `run_file_ocr` to
+  agent/output toolPolicy.
+- Task 8 Supabase sync/readback:
+  `node packages/api/scripts/sync-steel-rules.cjs --dry-run` passed;
+  `node packages/api/scripts/sync-steel-rules.cjs --apply` passed; direct DB
+  readback confirmed `steel.agent_rules.tool_policy`, selectors, outputPolicy,
+  and sample `steel.quote_rules.selectors`.
+- Latest DB readback hashes:
+  `steel-default-agent-instruction` from `docs/rules/agent規則.txt` has SHA
+  `b05dfd0c4aacac251d2132a9a245dfa4ad6b7f51538ff49d5d10367f15a51832`;
+  `steel-workbook-output-policy` from `docs/rules/輸出規則.txt` has SHA
+  `91ca32b6c85caa81800ffbf7b76af3eb20c39d4a0b305a940ca04bc7428f6f08`;
+  `steel-drawing-ocr-policy` from `docs/rules/OCR規則.txt` has SHA
+  `d78cdb27810a2e37be4ea799d536a40dcfdf919bc7e6db8fa968b7d01e18f5dc`;
+  `docs/rules/鋼材規則.txt` quote rules have SHA
+  `1adbb4616f1c24fa22d14a1799b584d9d1c3841efa79d2b5b1fbc5f4a6f0d1a8`.
+- Direct DB readback confirmed `steel-default-agent-instruction.tool_policy`
+  contains only the three provider-visible tools; `steel-drawing-ocr-policy`
+  selectors include `otherGlobalRulesKey = ocrRules` and
+  `includeWhenFileContext = true`; `steel-workbook-output-policy.output_policy`
+  contains `emittedSheetBehavior = replace_previous_active_sheet`,
+  `omittedRowsInEmittedSheet = clear_or_delete`,
+  `defaultCustomerTierWhenUncertain = B`, and synchronized sheets
+  `system_order` / `customer_quote`; sample quote rules now apply to
+  `steel_global_rules_context`.
+- Task 8 verification:
+  `npx tsx tmp/chat-round-test/current-direction-check.ts` passed;
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/memory/service.spec.ts --runInBand --runTestsByPath` passed 6 suites / 57 tests;
+  `git diff --check -- docs/rules/agent規則.txt docs/rules/鋼材規則.txt docs/rules/OCR規則.txt docs/rules/輸出規則.txt packages/api/scripts/sync-steel-rules.cjs tmp/chat-round-test/current-direction-check.ts packages/api/src/steel/tools/registry.ts packages/api/src/steel/tools/execute.ts packages/api/src/steel/ai/provider.ts packages/api/src/steel/handlers.ts packages/api/src/steel/tools/registry.spec.ts packages/api/src/steel/ai/provider.spec.ts packages/api/src/steel/handlers.spec.ts tasks/todo.md` passed.
+- Future edits to either `agent規則.txt` or `輸出規則.txt` must rerun Supabase
+  sync dry-run, apply, and direct DB readback in the same slice.
+- Runtime implementation started on 2026-06-22:
+  `packages/api/src/steel/runtime/context.ts` now defines the provider-prepared
+  runtime context contract, the four active output sheet ids, serialized context
+  output, conditional OCR rule inclusion, and reduced AI-visible tool policy.
+- Added no-limit reviewed-active repository loaders:
+  `listReviewedSteelAgentRules`, `listReviewedSteelInstructionPackets`,
+  `listReviewedSteelQuoteDefaults`, and `listReviewedSteelQuoteRules`; existing
+  search APIs remain available for admin/debug paths.
+- Added `createMongooseSteelOutputSheetMemoryReader`, which builds full active
+  `system_order`, `customer_data`, `manual_review`, and `customer_quote` sheets
+  from active memory documents while excluding superseded memory and avoiding
+  compact summary injection.
+- TDD evidence:
+  `src/steel/runtime/context.spec.ts` first failed because `./context` did not
+  exist; repository loader specs first failed because the new loader functions
+  did not exist; memory spec first failed because
+  `createMongooseSteelOutputSheetMemoryReader` did not exist.
+- Verification after implementation:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/repositories/instructions.spec.ts src/steel/repositories/defaults.spec.ts src/steel/repositories/rules.spec.ts src/steel/memory/service.spec.ts --runInBand --runTestsByPath`
+  passed 21 tests across 5 suites.
+- Task 4 added `resolveNextSteelOutputSheets`: generated sheets fully replace
+  their active sheet, wholly missing sheets carry forward from the previous
+  active output form, and emitted empty sheets clear only that sheet. Runtime
+  context + memory verification passed:
+  `cd packages/api && npx jest src/steel/memory/service.spec.ts src/steel/runtime/context.spec.ts --runInBand --runTestsByPath`
+  passed 18 tests across 2 suites.
+- Task 5 moved runtime context assembly to handler orchestration. `prepareChatContext`
+  now stays on history/edit/queued-steer work, `steelRuntimeContext` is passed
+  to provider options before execution, and compact `workingMemorySummary`
+  injection was removed from handler plumbing. Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/runtime/context.spec.ts --runInBand --runTestsByPath`
+  passed 22 tests across 2 suites.
+- Task 6 simplified provider responsibility. `sendSteelOAuthChat` now requires
+  provider-prepared `steelRuntimeContext` for Steel runtime policy, serializes
+  that context as the system instruction, no longer loads DB agent rules inside
+  provider code, and ignores the legacy compact `workingMemorySummary` option.
+  Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand --runTestsByPath`
+  passed 11 tests.
+- Batch 4-6 combined verification passed:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/memory/service.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts --runInBand --runTestsByPath`
+  passed 43 tests across 4 suites.
+- Task 1-6 targeted verification passed after including repository loader specs:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/repositories/instructions.spec.ts src/steel/repositories/defaults.spec.ts src/steel/repositories/rules.spec.ts src/steel/memory/service.spec.ts src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts --runInBand --runTestsByPath`
+  passed 49 tests across 7 suites.
+- Diff hygiene passed for all files touched in Tasks 1-6 with `git diff --check`.
+- `npm --workspace packages/api run build` completed with exit 0. Rollup still
+  reports existing non-Steel TypeScript warnings in `src/agents/resources.ts`,
+  `src/app/config.ts`, `src/cache/cacheFactory.ts`,
+  `src/endpoints/config/*`, `src/middleware/remoteAgentAuth.ts`, and
+  `src/middleware/share.ts`.
+
+---
+
+# Previous Active: Steel Working Order Memory Plan
 
 Goal: keep Steel OAuth chat on `responsesState: false` while making the Steel
 UX behave like Codex: live public thinking/work text, live text streaming,
@@ -8,6 +622,96 @@ and tool/OCR outputs are parsed/saved automatically, and the AI only reads
 memory when it needs more detail.
 
 Live retest - multi-round detailed Markdown tables:
+
+- Current slice - Activity parse status visibility:
+  - [x] Add a frontend regression test proving `parse_status` shows its parse
+    result and saved memory counts in the Activity panel.
+  - [x] Implement the minimal Activity rendering change.
+  - [x] Run the targeted frontend test and `git diff --check`.
+
+Review:
+
+- `parse_status` now renders its concrete parse result badge
+  (`Saved` / `Partial` / `Skipped`) in the Activity panel instead of the generic
+  `Updated` badge.
+- `parse_status` and `memory_saved` Activity rows now show saved memory counts,
+  e.g. `working_order_row: 71, customer_fact: 1`, so the last run makes memory
+  auto-save visible without persisting Activity.
+- Verification passed:
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --runTestsByPath`;
+  `git diff --check`.
+
+- Current slice - complete deferred orchestration simplifications:
+  - [x] Add shared `spec_key` normalization utility and migrate provider /
+    importer / price repository to it.
+  - [x] Add shared Markdown table parser and migrate provider prior-table
+    candidate extraction, Working Order Memory final-table capture, and live
+    harness table counting to it.
+  - [x] Add a conservative default provider tool-loop cap while preserving
+    explicit `steelToolMaxCalls` override.
+  - [x] Push active-history limit down to repository query instead of fetching
+    all active turns and slicing in service.
+  - [x] Share request parse/preparation between `chat` and `streamChat` without
+    changing request/response contracts.
+  - [x] Pass already parsed tool args into `dispatchSteelTool` to avoid schema
+    parsing twice.
+  - [x] Run focused tests, direction check, build, and `git diff --check`.
+
+Review:
+
+- Added shared normalization and Markdown table helpers under
+  `packages/api/src/steel/normalization` and `packages/api/src/steel/markdown`.
+  Provider, memory capture, price repository, importer, and live harness now use
+  the shared helpers instead of separate local parsers/normalizers.
+- Provider tool loops now default to an internal max-call budget when
+  `steelToolMaxCalls` is not supplied; explicit overrides still win.
+- `executeSteelTool` validates once through the registry and passes parsed args
+  into `dispatchSteelTool`, avoiding duplicate schema parses.
+- Conversation history window selection now pushes `maxTurns` down to the
+  Mongo query and returns prompt-ordered active turns.
+- `chat` and `streamChat` now share request parsing and provider base-option
+  construction while preserving separate stream event behavior.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/normalization/spec.spec.ts src/steel/markdown/table.spec.ts src/steel/ai/provider.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/history/service.spec.ts src/steel/history/repository.spec.ts src/steel/memory/service.spec.ts src/steel/repositories/prices.spec.ts src/steel/handlers.spec.ts --runInBand`.
+- Direction/build/diff verification passed:
+  `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+  `git diff --check`;
+  `cd packages/api && npm run build`. API build exited 0 and still prints
+  existing Rollup TypeScript warnings around endpoint config typing and
+  `src/cache/cacheFactory.ts:47` Redis client typing.
+- Live table verifier passed after shared parser migration:
+  `npx tsx tmp/chat-round-test/verify-live-table-price-evidence.ts` found 20
+  active price evidence rows; both active assistant turns had 71-row first
+  Markdown tables, exact `項次` / `型號` / `品名規格` columns, and
+  `working_order_row: 71` auto-save counts. It reported warnings only for four
+  intentional `未確認` rows without active price evidence.
+- Follow-up correction: do not import or test against `docs/reference`; those
+  files are development viewing/design references only, and Steel quote data is
+  database-backed through reviewed DB/Admin flows. The old file-backed
+  reference importer and CLI are now disabled instead of trying to read
+  `docs/reference` or synthetic document fixtures. Verification:
+  `cd packages/api && npx jest src/steel/importer/reference.spec.ts
+  src/steel/importer/cli.spec.ts --runInBand`.
+
+- Current slice - simplify Steel orchestration flow:
+  - [x] Review Steel OAuth orchestration path for code reuse, code quality, and
+    efficiency without changing public API contracts.
+  - [x] Apply only local simplifications that reduce duplicated prompt/tool/
+    memory orchestration logic. Applied: deleted provider's dead OCR-specific
+    instruction branch, passed request-close `abortSignal` into provider calls,
+    captured non-stream provider `onToolStatus` OCR results into Working Order
+    Memory, and made memory count/find queries concurrent.
+  - [x] Keep runtime instruction source on Supabase agent rules only.
+  - [x] Run focused provider/handler/tool tests, direction checks, and
+    `git diff --check`. Verification:
+    `cd packages/api && npx jest src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts src/steel/memory/service.spec.ts --runInBand`;
+    `npx tsx tmp/chat-round-test/current-direction-check.ts`;
+    `git diff --check`;
+    `cd packages/api && npm run build`.
+  - [x] Deferred bigger simplifications: shared spec-key normalization,
+    Markdown table parser reuse, request parse helper shared by `chat` /
+    `streamChat`, default tool-loop cap, history query limit pushdown, and
+    parsed-args handoff inside `executeSteelTool`.
 
 - Current slice - Supabase agent rule as only runtime instruction source:
   - [x] Write a failing provider spec proving Steel system prompt does not

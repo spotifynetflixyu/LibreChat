@@ -22,6 +22,7 @@ import {
 } from './history/repository';
 import { createSteelConversationHistoryService } from './history/service';
 import {
+  createMongooseSteelOutputSheetMemoryReader,
   createMongooseSteelWorkingOrderMemoryReader,
   createMongooseSteelWorkingOrderMemoryWriter,
 } from './memory/service';
@@ -41,12 +42,30 @@ import {
   type SteelProviderChatResponse as SteelOAuthProviderChatResponse,
 } from './ai/provider';
 import { createSteelPostgresPool } from './postgres';
+import {
+  listReviewedSteelAgentRules,
+  listReviewedSteelInstructionPackets,
+  listReviewedSteelQuoteDefaults,
+  listReviewedSteelQuoteRules,
+} from './repositories';
+import {
+  createEmptySteelOutputSheetMemorySnapshot,
+  prepareSteelRuntimeContext,
+} from './runtime/context';
 import { executeSteelTool } from './tools/execute';
 
 import type { Request, Response } from 'express';
+import type {
+  ListSteelOtherGlobalRulesInput,
+  PrepareSteelRuntimeContextInput,
+  SteelRuntimeContext,
+  SteelRuntimeContextDependencies,
+} from './runtime/context';
 import type { SteelRepositoryClient } from './repositories';
+import type { SteelAgentRule } from './repositories/rules';
 import type { SteelToolResult } from './tools/results';
 import type { SteelWorkingOrderMemoryReader } from './tools/execute';
+import type { SteelOutputSheetMemoryReader } from './memory/service';
 import type {
   SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
@@ -98,7 +117,12 @@ export interface SteelHandlersDeps {
   }) => Promise<SteelOAuthChatFile>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
   createWorkingOrderMemoryReader?: (conversationId: string) => SteelWorkingOrderMemoryReader;
+  createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
   historyService?: ReturnType<typeof createSteelConversationHistoryService>;
+  prepareRuntimeContext?: (
+    input: PrepareSteelRuntimeContextInput,
+  ) => Promise<SteelRuntimeContext>;
+  runtimeRulesClient?: SteelRepositoryClient;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
   workingOrderMemoryWriter?: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
 }
@@ -122,6 +146,19 @@ interface SteelChatErrorResponse {
   errorSummary: string;
 }
 
+type SteelOpenAIConfig = ReturnType<typeof parseSteelOpenAIConfig>;
+
+interface ParsedSteelChatRequest {
+  conversationId?: string;
+  editMessageId?: string;
+  maxOutputTokens?: number;
+  messageSource: SteelUserTurnSource;
+  messages: SteelOAuthChatMessage[];
+  model: string;
+  reasoningEffort: SteelOpenAIReasoningEffort;
+  requestId: string;
+}
+
 let defaultStreamToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
 let defaultHistoryService: ReturnType<typeof createSteelConversationHistoryService> | undefined;
 let defaultWorkingOrderMemoryWriter:
@@ -131,12 +168,6 @@ let defaultWorkingOrderMemoryWriter:
 const steelConversationHistoryMaxTurns = 20;
 const steelUserTurnSources = ['user_input', 'queued_steer'] as const;
 type SteelUserTurnSource = (typeof steelUserTurnSources)[number];
-
-const memoryOnlyToolClient: SteelRepositoryClient = {
-  async query() {
-    throw new Error('Steel Postgres client is not available for memory-only tool execution.');
-  },
-};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -180,6 +211,36 @@ function setStreamHeaders(res: Response): void {
   res.flushHeaders?.();
 }
 
+type CloseEventTarget = {
+  on?: (event: 'close', listener: () => void) => CloseEventTarget;
+  off?: (event: 'close', listener: () => void) => CloseEventTarget;
+  removeListener?: (event: 'close', listener: () => void) => CloseEventTarget;
+};
+
+function createRequestAbortSignal(req: Request, res: Response) {
+  const abortController = new AbortController();
+  const abort = () => abortController.abort();
+  const targets: CloseEventTarget[] = [req, res];
+
+  for (const target of targets) {
+    target.on?.('close', abort);
+  }
+
+  return {
+    signal: abortController.signal,
+    cleanup: () => {
+      for (const target of targets) {
+        if (target.off) {
+          target.off('close', abort);
+          continue;
+        }
+
+        target.removeListener?.('close', abort);
+      }
+    },
+  };
+}
+
 function getDefaultStreamToolClient() {
   defaultStreamToolClient ??= createSteelPostgresPool();
   return defaultStreamToolClient;
@@ -197,34 +258,93 @@ function createDefaultWorkingOrderMemoryReader(conversationId: string) {
   return createMongooseSteelWorkingOrderMemoryReader(mongoose, conversationId);
 }
 
+function createDefaultOutputSheetMemoryReader(conversationId: string) {
+  return createMongooseSteelOutputSheetMemoryReader(mongoose, conversationId);
+}
+
 function getDefaultWorkingOrderMemoryWriter() {
   defaultWorkingOrderMemoryWriter ??= createMongooseSteelWorkingOrderMemoryWriter(mongoose);
   return defaultWorkingOrderMemoryWriter;
 }
 
-function createDefaultStreamToolExecutor({
+function hasRuleSection(rule: SteelAgentRule, matches: readonly string[]): boolean {
+  return rule.ruleSections.some((section) => matches.some((match) => section.includes(match)));
+}
+
+function isOcrRule(rule: SteelAgentRule): boolean {
+  return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
+}
+
+function isWorkbookOutputRule(rule: SteelAgentRule): boolean {
+  return rule.ruleType === 'workbook_output_rule' || hasRuleSection(rule, ['workbook_output']);
+}
+
+function filterOtherGlobalRules(
+  rules: readonly SteelAgentRule[],
+  { includeOcrRules }: ListSteelOtherGlobalRulesInput,
+) {
+  const ocrRules = rules.filter(isOcrRule);
+
+  return {
+    ocrRules: includeOcrRules ? ocrRules : undefined,
+    fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
+    sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
+    markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
+    workbookOutputRules: rules.filter(isWorkbookOutputRule),
+  };
+}
+
+function createRuntimeContextDependencies({
   conversationId,
-  createWorkingOrderMemoryReader,
+  createOutputSheetMemoryReader,
+  getRulesClient,
 }: {
   conversationId?: string;
-  createWorkingOrderMemoryReader: (conversationId: string) => SteelWorkingOrderMemoryReader;
-}): {
+  createOutputSheetMemoryReader: (conversationId: string) => SteelOutputSheetMemoryReader;
+  getRulesClient: () => SteelRepositoryClient;
+}): SteelRuntimeContextDependencies {
+  let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
+  let rulesClient: SteelRepositoryClient | undefined;
+  const getClient = () => {
+    rulesClient ??= getRulesClient();
+    return rulesClient;
+  };
+  const listAgentRuleRows = () => {
+    agentRulesPromise ??= listReviewedSteelAgentRules(getClient());
+    return agentRulesPromise;
+  };
+
+  return {
+    async listAgentRules() {
+      const rules = await listAgentRuleRows();
+      return rules.filter((rule) => rule.ruleType === 'agent_instruction_rule');
+    },
+    listReviewedInstructionPackets: () => listReviewedSteelInstructionPackets(getClient()),
+    listReviewedQuoteDefaults: () => listReviewedSteelQuoteDefaults(getClient()),
+    listReviewedQuoteRules: () => listReviewedSteelQuoteRules(getClient()),
+    async listOtherGlobalRules(input) {
+      return filterOtherGlobalRules(await listAgentRuleRows(), input);
+    },
+    async readOutputSheetMemory() {
+      if (!conversationId) {
+        return createEmptySteelOutputSheetMemorySnapshot();
+      }
+
+      return createOutputSheetMemoryReader(conversationId).readOutputSheetMemory();
+    },
+  };
+}
+
+function createDefaultStreamToolExecutor(): {
   executeToolCall: SteelProviderToolExecutor;
   close: () => Promise<void>;
 } {
-  const memoryReader =
-    conversationId !== undefined ? createWorkingOrderMemoryReader(conversationId) : undefined;
-
   return {
     executeToolCall: (options) =>
       executeSteelTool({
-        client:
-          options.toolName === 'read_working_order_items'
-            ? memoryOnlyToolClient
-            : getDefaultStreamToolClient(),
+        client: getDefaultStreamToolClient(),
         toolName: options.toolName,
         arguments: options.arguments,
-        memoryReader,
         providerToolCallId: options.providerToolCallId,
         runState: options.runState,
       }),
@@ -258,51 +378,8 @@ function getMessageAttachmentRefs(message: SteelOAuthChatMessage) {
   }));
 }
 
-function getMemoryEntrySummaries(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
-    .map((entry) =>
-      isRecord(entry) && typeof entry.summary === 'string' ? entry.summary : undefined,
-    )
-    .filter((entry): entry is string => entry !== undefined)
-    .slice(0, 5);
-}
-
-function formatWorkingOrderMemorySummary(result: Record<string, unknown>): string | undefined {
-  const resultCount = typeof result.resultCount === 'number' ? result.resultCount : undefined;
-  const summary = isRecord(result.summary) ? JSON.stringify(result.summary) : undefined;
-  const entrySummaries = getMemoryEntrySummaries(result.memoryEntries);
-  const lines = [
-    'Steel Working Order Memory (active conversation state; use read_working_order_items for details).',
-    resultCount !== undefined ? `resultCount=${resultCount}` : undefined,
-    summary ? `counts=${summary}` : undefined,
-    ...entrySummaries.map((entry) => `entry=${entry}`),
-  ].filter((line): line is string => line !== undefined);
-
-  return lines.length > 1 ? lines.join('\n') : undefined;
-}
-
-async function buildWorkingOrderMemorySummary({
-  conversationId,
-  createWorkingOrderMemoryReader,
-}: {
-  conversationId: string;
-  createWorkingOrderMemoryReader: (conversationId: string) => SteelWorkingOrderMemoryReader;
-}) {
-  const reader = createWorkingOrderMemoryReader(conversationId);
-  const result = await reader.readWorkingOrderItems({ mode: 'summary' });
-  return {
-    resultCount: typeof result.resultCount === 'number' ? result.resultCount : undefined,
-    summary: formatWorkingOrderMemorySummary(result),
-  };
-}
-
 async function prepareChatContext({
   conversationId,
-  createWorkingOrderMemoryReader,
   editMessageId,
   historyService,
   messages,
@@ -310,7 +387,6 @@ async function prepareChatContext({
   requestId,
 }: {
   conversationId?: string;
-  createWorkingOrderMemoryReader: (conversationId: string) => SteelWorkingOrderMemoryReader;
   editMessageId?: string;
   historyService: ReturnType<typeof createSteelConversationHistoryService>;
   messageSource: SteelUserTurnSource;
@@ -318,10 +394,12 @@ async function prepareChatContext({
   requestId: string;
 }): Promise<{
   messages: SteelOAuthChatMessage[];
-  memoryLoadedResultCount?: number;
   nextAssistantTurnIndex?: number;
   nextMemoryCheckpointTurnIndex?: number;
-  workingMemorySummary?: string;
+  edit?: {
+    editMessageId: string;
+    supersededAfterTurnIndex: number;
+  };
 }> {
   if (!conversationId) {
     return { messages };
@@ -332,13 +410,14 @@ async function prepareChatContext({
     return { messages };
   }
 
-  if (editMessageId && currentMessage.role === 'user') {
-    await historyService.editUserMessage({
-      conversationId,
-      messageId: editMessageId,
-      nextContent: currentMessage.content,
-    });
-  }
+  const editResult =
+    editMessageId && currentMessage.role === 'user'
+      ? await historyService.editUserMessage({
+          conversationId,
+          messageId: editMessageId,
+          nextContent: currentMessage.content,
+        })
+      : undefined;
 
   const activeHistory = await historyService.buildHistoryWindow({
     conversationId,
@@ -369,20 +448,75 @@ async function prepareChatContext({
     });
   }
 
-  const memorySummary = await buildWorkingOrderMemorySummary({
-    conversationId,
-    createWorkingOrderMemoryReader,
-  });
-
   return {
     messages: editMessageId
       ? activeHistory.map(toHistoryChatMessage)
       : [...activeHistory.map(toHistoryChatMessage), currentMessage],
-    memoryLoadedResultCount: memorySummary.resultCount,
     nextAssistantTurnIndex,
     nextMemoryCheckpointTurnIndex: Math.max(0, nextAssistantTurnIndex - 1),
-    workingMemorySummary: memorySummary.summary,
+    edit:
+      editMessageId && editResult?.updatedTurn
+        ? {
+            editMessageId,
+            supersededAfterTurnIndex: editResult.updatedTurn.turnIndex,
+          }
+        : undefined,
   };
+}
+
+type PreparedSteelChatContext = Awaited<ReturnType<typeof prepareChatContext>>;
+
+function getCurrentUserTurn(messages: readonly SteelOAuthChatMessage[]) {
+  const currentMessage = getCurrentPromptMessage(messages);
+  return currentMessage?.role === 'user' ? currentMessage : undefined;
+}
+
+async function buildSteelRuntimeContext({
+  conversationId,
+  createOutputSheetMemoryReader,
+  parsedRequest,
+  prepareDefaultRuntimeContext,
+  prepareRuntimeContext,
+  preparedContext,
+  runtimeRulesClient,
+}: {
+  conversationId?: string;
+  createOutputSheetMemoryReader: (conversationId: string) => SteelOutputSheetMemoryReader;
+  parsedRequest: ParsedSteelChatRequest;
+  prepareDefaultRuntimeContext: boolean;
+  prepareRuntimeContext?: (
+    input: PrepareSteelRuntimeContextInput,
+  ) => Promise<SteelRuntimeContext>;
+  preparedContext: PreparedSteelChatContext;
+  runtimeRulesClient?: SteelRepositoryClient;
+}): Promise<SteelRuntimeContext | undefined> {
+  const shouldPrepareRuntimeContext =
+    prepareRuntimeContext !== undefined || prepareDefaultRuntimeContext;
+
+  if (!shouldPrepareRuntimeContext) {
+    return undefined;
+  }
+
+  const prepare = prepareRuntimeContext ?? prepareSteelRuntimeContext;
+
+  return prepare({
+    conversation: {
+      conversationId,
+      requestId: parsedRequest.requestId,
+      activeHistory: preparedContext.messages,
+      currentUserTurn: getCurrentUserTurn(preparedContext.messages),
+      edit: preparedContext.edit,
+    },
+    attachments: {
+      currentTurnFiles: getCurrentUserTurn(preparedContext.messages)?.files ?? [],
+      priorActiveFileEvidence: [],
+    },
+    dependencies: createRuntimeContextDependencies({
+      conversationId,
+      createOutputSheetMemoryReader,
+      getRulesClient: () => runtimeRulesClient ?? getDefaultStreamToolClient(),
+    }),
+  });
 }
 
 async function persistAssistantTurn({
@@ -464,6 +598,124 @@ async function captureSuccessfulToolResult({
     checkpointTurnIndex: checkpointTurnIndex ?? Math.max(0, turnIndex - 1),
     data: toolResult.data,
   });
+}
+
+function createToolExecutorWithMemoryCapture({
+  baseExecuteToolCall,
+  conversationId,
+  getWorkingOrderMemoryWriter,
+  preparedContext,
+}: {
+  baseExecuteToolCall?: SteelProviderToolExecutor;
+  conversationId?: string;
+  getWorkingOrderMemoryWriter: () => ReturnType<
+    typeof createMongooseSteelWorkingOrderMemoryWriter
+  >;
+  preparedContext: PreparedSteelChatContext;
+}): SteelProviderToolExecutor | undefined {
+  if (!baseExecuteToolCall) {
+    return undefined;
+  }
+
+  return async (options) => {
+    const toolResult = await baseExecuteToolCall(options);
+    await captureSuccessfulToolResult({
+      conversationId,
+      providerToolCallId: options.providerToolCallId,
+      toolName: options.toolName,
+      toolResult,
+      turnIndex: preparedContext.nextAssistantTurnIndex,
+      checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+      workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+    });
+    return toolResult;
+  };
+}
+
+function createStreamToolExecutorWithMemoryEvents({
+  baseExecuteToolCall,
+  conversationId,
+  getWorkingOrderMemoryWriter,
+  preparedContext,
+  res,
+}: {
+  baseExecuteToolCall?: SteelProviderToolExecutor;
+  conversationId?: string;
+  getWorkingOrderMemoryWriter: () => ReturnType<
+    typeof createMongooseSteelWorkingOrderMemoryWriter
+  >;
+  preparedContext: PreparedSteelChatContext;
+  res: Response;
+}): SteelProviderToolExecutor {
+  return async (options) => {
+    const type = getStreamToolEventType(options.toolName);
+    writeStreamEvent(res, {
+      type,
+      status: 'started',
+      toolName: options.toolName,
+      message: `${options.toolName} started`,
+    });
+
+    try {
+      if (!baseExecuteToolCall) {
+        throw new Error('Steel stream tool executor is not available.');
+      }
+
+      const toolResult = await baseExecuteToolCall(options);
+      const failedToolMessage =
+        toolResult.ok === false
+          ? `${options.toolName} failed: ${toolResult.errorSummary}`
+          : undefined;
+      writeStreamEvent(res, {
+        type,
+        status: toolResult.ok ? 'completed' : 'failed',
+        toolName: options.toolName,
+        message: failedToolMessage ?? `${options.toolName} completed`,
+        ok: toolResult.ok,
+      });
+      const captureResult = await captureSuccessfulToolResult({
+        conversationId,
+        providerToolCallId: options.providerToolCallId,
+        toolName: options.toolName,
+        toolResult,
+        turnIndex: preparedContext.nextAssistantTurnIndex,
+        checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+        workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+      });
+      if (captureResult && hasSavedMemory(captureResult.savedCounts)) {
+        writeStreamEvent(res, {
+          type: 'memory_saved',
+          message: 'Working Order Memory saved',
+          savedCounts: captureResult.savedCounts,
+        });
+      }
+      if (
+        options.toolName === 'read_working_order_items' &&
+        toolResult.ok &&
+        isRecord(toolResult.data)
+      ) {
+        writeStreamEvent(res, {
+          type: 'memory_read',
+          message: `${options.toolName} completed`,
+          mode: typeof toolResult.data.mode === 'string' ? toolResult.data.mode : undefined,
+          resultCount:
+            typeof toolResult.data.resultCount === 'number'
+              ? toolResult.data.resultCount
+              : undefined,
+        });
+      }
+      return toolResult;
+    } catch (error) {
+      writeStreamEvent(res, {
+        type,
+        status: 'failed',
+        toolName: options.toolName,
+        message: getErrorMessage(error),
+        ok: false,
+      });
+      throw error;
+    }
+  };
 }
 
 function parseBase64FileData(value: unknown, index: number, fileIndex: number): Uint8Array {
@@ -661,6 +913,104 @@ function parseOptionalReasoningEffort(
   throw new Error(`reasoningEffort must be one of: ${requestReasoningEfforts.join(', ')}`);
 }
 
+async function parseSteelChatRunRequest({
+  config,
+  req,
+  resolveEvidenceFile,
+}: {
+  config: SteelOpenAIConfig;
+  req: Request;
+  resolveEvidenceFile?: SteelHandlersDeps['resolveEvidenceFile'];
+}): Promise<ParsedSteelChatRequest> {
+  const body = isRecord(req.body) ? req.body : {};
+  const conversationId = parseOptionalConversationId(body.conversationId);
+  const editMessageId = parseOptionalEditMessageId(body.editMessageId);
+  const messageSource = parseOptionalMessageSource(body.messageSource);
+  const messages = await parseMessages(body.messages, {
+    conversationId,
+    resolveEvidenceFile,
+    request: req,
+    userId: (req as SteelRequest).user?.id,
+  });
+
+  return {
+    conversationId,
+    editMessageId,
+    maxOutputTokens: parseOptionalMaxOutputTokens(body.maxOutputTokens),
+    messageSource,
+    messages,
+    model: parseOptionalModel(body.model, config.model),
+    reasoningEffort: parseOptionalReasoningEffort(body.reasoningEffort, config.reasoningEffort),
+    requestId: createSteelChatConversationId(),
+  };
+}
+
+function sendInvalidSteelChatRequest(
+  res: Response,
+  config: SteelOpenAIConfig,
+  error: unknown,
+) {
+  res
+    .status(400)
+    .json(
+      createErrorResponse(
+        'openai_oauth_responses',
+        config.model,
+        'unknown',
+        getErrorMessage(error),
+      ),
+    );
+}
+
+function sendUnsupportedApiProviderResponse(res: Response, model: string) {
+  res
+    .status(501)
+    .json(
+      createErrorResponse(
+        'openai_api',
+        model,
+        'unknown',
+        'STEEL_OPENAI_PROVIDER=API is reserved for the OpenAI API adapter, which is not implemented in this slice.',
+      ),
+    );
+}
+
+function buildProviderBaseOptions({
+  abortSignal,
+  conversationId,
+  env,
+  executeSteelToolCall,
+  maxOutputTokens,
+  messages,
+  model,
+  reasoningEffort,
+  steelRuntimeContext,
+}: {
+  abortSignal: AbortSignal;
+  conversationId?: string;
+  env: SteelOpenAIConfigEnv;
+  executeSteelToolCall?: SteelProviderToolExecutor;
+  maxOutputTokens?: number;
+  messages: SteelOAuthChatMessage[];
+  model: string;
+  reasoningEffort: SteelOpenAIReasoningEffort;
+  steelRuntimeContext?: SteelRuntimeContext;
+}): SendSteelOAuthChatOptions {
+  return {
+    abortSignal,
+    authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
+    conversationId,
+    executeSteelToolCall,
+    maxOutputTokens,
+    messages,
+    model,
+    ...(hasMessageFiles(messages) ? { passThroughUnsupportedFiles: true } : {}),
+    reasoningEffort,
+    steelRuntimePolicy: true,
+    steelRuntimeContext,
+  };
+}
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -783,8 +1133,11 @@ export function createSteelHandlers({
   sendChat = sendSteelOAuthChat,
   resolveEvidenceFile,
   conversationService,
+  createOutputSheetMemoryReader = createDefaultOutputSheetMemoryReader,
   createWorkingOrderMemoryReader = createDefaultWorkingOrderMemoryReader,
   historyService,
+  prepareRuntimeContext,
+  runtimeRulesClient,
   ruleProposalService,
   workingOrderMemoryWriter,
 }: SteelHandlersDeps) {
@@ -797,57 +1150,26 @@ export function createSteelHandlers({
   return {
     async chat(req: Request, res: Response) {
       const config = parseSteelOpenAIConfig(env);
-      const body = isRecord(req.body) ? req.body : {};
-
-      let messages: SteelOAuthChatMessage[];
-      let model: string;
-      let maxOutputTokens: number | undefined;
-      let reasoningEffort: SteelOpenAIReasoningEffort;
-      let conversationId: string | undefined;
-      let editMessageId: string | undefined;
-      let messageSource: SteelUserTurnSource;
-      const requestId = createSteelChatConversationId();
+      let parsedRequest: ParsedSteelChatRequest;
       try {
-        conversationId = parseOptionalConversationId(body.conversationId);
-        editMessageId = parseOptionalEditMessageId(body.editMessageId);
-        messageSource = parseOptionalMessageSource(body.messageSource);
-        messages = await parseMessages(body.messages, {
-          conversationId,
-          resolveEvidenceFile,
-          request: req,
-          userId: (req as SteelRequest).user?.id,
-        });
-        model = parseOptionalModel(body.model, config.model);
-        maxOutputTokens = parseOptionalMaxOutputTokens(body.maxOutputTokens);
-        reasoningEffort = parseOptionalReasoningEffort(
-          body.reasoningEffort,
-          config.reasoningEffort,
-        );
+        parsedRequest = await parseSteelChatRunRequest({ config, req, resolveEvidenceFile });
       } catch (error) {
-        res
-          .status(400)
-          .json(
-            createErrorResponse(
-              'openai_oauth_responses',
-              config.model,
-              'unknown',
-              getErrorMessage(error),
-            ),
-          );
+        sendInvalidSteelChatRequest(res, config, error);
         return;
       }
+      const {
+        conversationId,
+        editMessageId,
+        maxOutputTokens,
+        messageSource,
+        messages,
+        model,
+        reasoningEffort,
+        requestId,
+      } = parsedRequest;
 
       if (config.provider === 'API') {
-        res
-          .status(501)
-          .json(
-            createErrorResponse(
-              'openai_api',
-              model,
-              'unknown',
-              'STEEL_OPENAI_PROVIDER=API is reserved for the OpenAI API adapter, which is not implemented in this slice.',
-            ),
-          );
+        sendUnsupportedApiProviderResponse(res, model);
         return;
       }
 
@@ -857,51 +1179,57 @@ export function createSteelHandlers({
       );
       const preparedContext = await prepareChatContext({
         conversationId,
-        createWorkingOrderMemoryReader,
         editMessageId,
         historyService: getHistoryService(),
         messageSource,
         messages: messagesWithInstructions,
         requestId,
       });
+      const steelRuntimeContext = await buildSteelRuntimeContext({
+        conversationId,
+        createOutputSheetMemoryReader,
+        parsedRequest,
+        prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
+        prepareRuntimeContext,
+        preparedContext,
+        runtimeRulesClient,
+      });
       const defaultToolExecutor = executeToolCall
         ? undefined
-        : createDefaultStreamToolExecutor({
-            conversationId,
-            createWorkingOrderMemoryReader,
-          });
+        : createDefaultStreamToolExecutor();
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
-      const executeToolCallWithMemoryCapture = baseExecuteToolCall
-        ? async (options: Parameters<SteelProviderToolExecutor>[0]) => {
-            const toolResult = await baseExecuteToolCall(options);
-            await captureSuccessfulToolResult({
-              conversationId,
-              providerToolCallId: options.providerToolCallId,
-              toolName: options.toolName,
-              toolResult,
-              turnIndex: preparedContext.nextAssistantTurnIndex,
-              checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
-              workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
-            });
-            return toolResult;
-          }
-        : undefined;
+      const executeToolCallWithMemoryCapture = createToolExecutorWithMemoryCapture({
+        baseExecuteToolCall,
+        conversationId,
+        getWorkingOrderMemoryWriter,
+        preparedContext,
+      });
+      const requestAbort = createRequestAbortSignal(req, res);
 
       let result: SteelChatProviderResult;
       try {
         result = await sendChat({
-          authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
-          conversationId,
-          executeSteelToolCall: executeToolCallWithMemoryCapture,
-          maxOutputTokens,
-          messages: preparedContext.messages,
-          model,
-          ...(hasMessageFiles(preparedContext.messages)
-            ? { passThroughUnsupportedFiles: true }
-            : {}),
-          reasoningEffort,
-          steelRuntimePolicy: true,
-          workingMemorySummary: preparedContext.workingMemorySummary,
+          ...buildProviderBaseOptions({
+            abortSignal: requestAbort.signal,
+            conversationId,
+            env,
+            executeSteelToolCall: executeToolCallWithMemoryCapture,
+            maxOutputTokens,
+            messages: preparedContext.messages,
+            model,
+            reasoningEffort,
+            steelRuntimeContext,
+          }),
+          onToolStatus: async (event) => {
+            await captureSuccessfulToolResult({
+              conversationId,
+              toolName: event.toolName,
+              toolResult: event.result,
+              turnIndex: preparedContext.nextAssistantTurnIndex,
+              checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+              workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
+            });
+          },
         });
         await persistAssistantTurn({
           conversationId,
@@ -924,6 +1252,7 @@ export function createSteelHandlers({
         );
         return;
       } finally {
+        requestAbort.cleanup();
         await defaultToolExecutor?.close();
       }
 
@@ -935,57 +1264,26 @@ export function createSteelHandlers({
 
     async streamChat(req: Request, res: Response) {
       const config = parseSteelOpenAIConfig(env);
-      const body = isRecord(req.body) ? req.body : {};
-
-      let messages: SteelOAuthChatMessage[];
-      let model: string;
-      let maxOutputTokens: number | undefined;
-      let reasoningEffort: SteelOpenAIReasoningEffort;
-      let conversationId: string | undefined;
-      let editMessageId: string | undefined;
-      let messageSource: SteelUserTurnSource;
-      const requestId = createSteelChatConversationId();
+      let parsedRequest: ParsedSteelChatRequest;
       try {
-        conversationId = parseOptionalConversationId(body.conversationId);
-        editMessageId = parseOptionalEditMessageId(body.editMessageId);
-        messageSource = parseOptionalMessageSource(body.messageSource);
-        messages = await parseMessages(body.messages, {
-          conversationId,
-          resolveEvidenceFile,
-          request: req,
-          userId: (req as SteelRequest).user?.id,
-        });
-        model = parseOptionalModel(body.model, config.model);
-        maxOutputTokens = parseOptionalMaxOutputTokens(body.maxOutputTokens);
-        reasoningEffort = parseOptionalReasoningEffort(
-          body.reasoningEffort,
-          config.reasoningEffort,
-        );
+        parsedRequest = await parseSteelChatRunRequest({ config, req, resolveEvidenceFile });
       } catch (error) {
-        res
-          .status(400)
-          .json(
-            createErrorResponse(
-              'openai_oauth_responses',
-              config.model,
-              'unknown',
-              getErrorMessage(error),
-            ),
-          );
+        sendInvalidSteelChatRequest(res, config, error);
         return;
       }
+      const {
+        conversationId,
+        editMessageId,
+        maxOutputTokens,
+        messageSource,
+        messages,
+        model,
+        reasoningEffort,
+        requestId,
+      } = parsedRequest;
 
       if (config.provider === 'API') {
-        res
-          .status(501)
-          .json(
-            createErrorResponse(
-              'openai_api',
-              model,
-              'unknown',
-              'STEEL_OPENAI_PROVIDER=API is reserved for the OpenAI API adapter, which is not implemented in this slice.',
-            ),
-          );
+        sendUnsupportedApiProviderResponse(res, model);
         return;
       }
 
@@ -995,12 +1293,20 @@ export function createSteelHandlers({
       );
       const preparedContext = await prepareChatContext({
         conversationId,
-        createWorkingOrderMemoryReader,
         editMessageId,
         historyService: getHistoryService(),
         messageSource,
         messages: messagesWithInstructions,
         requestId,
+      });
+      const steelRuntimeContext = await buildSteelRuntimeContext({
+        conversationId,
+        createOutputSheetMemoryReader,
+        parsedRequest,
+        prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
+        prepareRuntimeContext,
+        preparedContext,
+        runtimeRulesClient,
       });
 
       setStreamHeaders(res);
@@ -1015,21 +1321,11 @@ export function createSteelHandlers({
           message: 'Queued steer applied',
         });
       }
-      if (preparedContext.memoryLoadedResultCount !== undefined) {
-        writeStreamEvent(res, {
-          type: 'memory_loaded',
-          message: 'Loaded Working Order Memory',
-          resultCount: preparedContext.memoryLoadedResultCount,
-        });
-      }
-
       const defaultToolExecutor = executeToolCall
         ? undefined
-        : createDefaultStreamToolExecutor({
-            conversationId,
-            createWorkingOrderMemoryReader,
-          });
+        : createDefaultStreamToolExecutor();
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
+      const requestAbort = createRequestAbortSignal(req, res);
 
       try {
         let streamedText = false;
@@ -1040,80 +1336,23 @@ export function createSteelHandlers({
         });
 
         const result = await sendChat({
-          authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
-          conversationId,
-          executeSteelToolCall: async (options) => {
-            const type = getStreamToolEventType(options.toolName);
-            writeStreamEvent(res, {
-              type,
-              status: 'started',
-              toolName: options.toolName,
-              message: `${options.toolName} started`,
-            });
-
-            try {
-              if (!baseExecuteToolCall) {
-                throw new Error('Steel stream tool executor is not available.');
-              }
-
-              const toolResult = await baseExecuteToolCall(options);
-              const failedToolMessage =
-                toolResult.ok === false
-                  ? `${options.toolName} failed: ${toolResult.errorSummary}`
-                  : undefined;
-              writeStreamEvent(res, {
-                type,
-                status: toolResult.ok ? 'completed' : 'failed',
-                toolName: options.toolName,
-                message: failedToolMessage ?? `${options.toolName} completed`,
-                ok: toolResult.ok,
-              });
-              const captureResult = await captureSuccessfulToolResult({
-                conversationId,
-                providerToolCallId: options.providerToolCallId,
-                toolName: options.toolName,
-                toolResult,
-                turnIndex: preparedContext.nextAssistantTurnIndex,
-                checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
-                workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
-              });
-              if (captureResult && hasSavedMemory(captureResult.savedCounts)) {
-                writeStreamEvent(res, {
-                  type: 'memory_saved',
-                  message: 'Working Order Memory saved',
-                  savedCounts: captureResult.savedCounts,
-                });
-              }
-              if (
-                options.toolName === 'read_working_order_items' &&
-                toolResult.ok &&
-                isRecord(toolResult.data)
-              ) {
-                writeStreamEvent(res, {
-                  type: 'memory_read',
-                  message: `${options.toolName} completed`,
-                  mode: typeof toolResult.data.mode === 'string' ? toolResult.data.mode : undefined,
-                  resultCount:
-                    typeof toolResult.data.resultCount === 'number'
-                      ? toolResult.data.resultCount
-                      : undefined,
-                });
-              }
-              return toolResult;
-            } catch (error) {
-              writeStreamEvent(res, {
-                type,
-                status: 'failed',
-                toolName: options.toolName,
-                message: getErrorMessage(error),
-                ok: false,
-              });
-              throw error;
-            }
-          },
-          maxOutputTokens,
-          messages: preparedContext.messages,
-          model,
+          ...buildProviderBaseOptions({
+            abortSignal: requestAbort.signal,
+            conversationId,
+            env,
+            executeSteelToolCall: createStreamToolExecutorWithMemoryEvents({
+              baseExecuteToolCall,
+              conversationId,
+              getWorkingOrderMemoryWriter,
+              preparedContext,
+              res,
+            }),
+            maxOutputTokens,
+            messages: preparedContext.messages,
+            model,
+            reasoningEffort,
+            steelRuntimeContext,
+          }),
           onTextDelta: (delta) => {
             streamedText = true;
             writeStreamEvent(res, {
@@ -1156,12 +1395,6 @@ export function createSteelHandlers({
               });
             }
           },
-          ...(hasMessageFiles(preparedContext.messages)
-            ? { passThroughUnsupportedFiles: true }
-            : {}),
-          reasoningEffort,
-          steelRuntimePolicy: true,
-          workingMemorySummary: preparedContext.workingMemorySummary,
         });
         const captureResult = await persistAssistantTurn({
           conversationId,
@@ -1210,6 +1443,7 @@ export function createSteelHandlers({
           errorSummary: getProviderErrorSummary(error),
         });
       } finally {
+        requestAbort.cleanup();
         await defaultToolExecutor?.close();
         res.end();
       }

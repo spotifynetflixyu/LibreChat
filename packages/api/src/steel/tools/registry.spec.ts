@@ -5,12 +5,12 @@ describe('Steel tool registry', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
 
     expect(toolNames).toEqual([
-      'lookup_quote_rules',
       'search_customers',
       'search_price_candidates',
       'run_file_ocr',
-      'read_working_order_items',
     ]);
+    expect(toolNames).not.toContain('lookup_quote_rules');
+    expect(toolNames).not.toContain('read_working_order_items');
     expect(toolNames).not.toContain('save_working_order_items');
     expect(toolNames).not.toContain('lookup_catalog_families');
     expect(toolNames).not.toContain('lookup_formula');
@@ -94,16 +94,7 @@ describe('Steel tool registry', () => {
     expect(definition.description).not.toContain('erpItemCodes');
   });
 
-  it('uses AI-supplied keyword arrays for rule and customer lookups', () => {
-    expect(
-      getSteelToolDefinition('lookup_quote_rules').argsSchema.parse({
-        keywords: ['OT板雷射切割', 'PL6'],
-        limit: 20,
-      }),
-    ).toEqual({
-      keywords: ['OT板雷射切割', 'PL6'],
-      limit: 20,
-    });
+  it('uses AI-supplied keyword arrays for customer lookup only', () => {
     expect(
       getSteelToolDefinition('search_customers').argsSchema.parse({
         keywords: ['大成', 'A001'],
@@ -114,8 +105,9 @@ describe('Steel tool registry', () => {
       limit: 10,
     });
     expect(() =>
+      // @ts-expect-error exercising a removed provider-visible tool name.
       getSteelToolDefinition('lookup_quote_rules').argsSchema.parse({ catalogContexts: [] }),
-    ).toThrow();
+    ).toThrow('Unknown Steel provider tool');
     expect(() =>
       getSteelToolDefinition('search_customers').argsSchema.parse({
         searchText: '大成',
@@ -150,55 +142,17 @@ describe('Steel tool registry', () => {
     expect(() => {
       // @ts-expect-error exercising a removed public tool name.
       getSteelToolDefinition('lookup_catalog_families');
-    }).toThrow('Unknown Steel tool');
+    }).toThrow('Unknown Steel provider tool');
   });
 
-  it('lets AI read working-order memory without exposing a save tool', () => {
-    const definition = getSteelToolDefinition('read_working_order_items');
-
-    expect(
-      definition.argsSchema.parse({
-        mode: 'rowNo',
-        rowNo: 12,
-      }),
-    ).toEqual({
-      mode: 'rowNo',
-      rowNo: 12,
-    });
-    expect(
-      definition.argsSchema.parse({
-        mode: 'query',
-        query: '75x45',
-        pageSize: 10,
-      }),
-    ).toEqual({
-      mode: 'query',
-      query: '75x45',
-      pageSize: 10,
-    });
-    expect(() =>
-      definition.argsSchema.parse({
-        mode: 'rowNo',
-      }),
-    ).toThrow('Provide rowNo');
-    expect(() =>
-      definition.argsSchema.parse({
-        mode: 'erpItemCode',
-      }),
-    ).toThrow('Provide erpItemCode');
-    expect(() =>
-      definition.argsSchema.parse({
-        mode: 'query',
-      }),
-    ).toThrow('Provide query');
-    expect(() =>
-      definition.argsSchema.parse({
-        mode: 'source',
-      }),
-    ).toThrow('Provide filename, pageNumber, or imageIndex');
+  it('does not expose working-order memory reads as a provider tool', () => {
+    expect(() => {
+      // @ts-expect-error exercising a removed provider-visible tool name.
+      getSteelToolDefinition('read_working_order_items');
+    }).toThrow('Unknown Steel provider tool');
     expect(() => {
       // @ts-expect-error exercising a deliberately absent public tool name.
       getSteelToolDefinition('save_working_order_items');
-    }).toThrow('Unknown Steel tool');
+    }).toThrow('Unknown Steel provider tool');
   });
 });

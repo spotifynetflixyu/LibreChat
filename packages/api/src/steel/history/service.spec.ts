@@ -147,6 +147,10 @@ describe('Steel conversation history service', () => {
       maxTurns: 10,
     });
 
+    expect(deps.historyRepository.listActiveTurns).toHaveBeenCalledWith({
+      conversationId: 'steel_conversation_1',
+      maxTurns: 10,
+    });
     expect(historyWindow).toEqual([
       expect.objectContaining({
         content: '改成 2 支',

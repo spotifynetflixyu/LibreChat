@@ -1,19 +1,20 @@
 【Steel OCR 流程契約】
 
+本規則屬於 otherGlobalRules.ocrRules；只有本輪或 active evidence 有 PDF / image / OCR file context 時，backend 才會放入 runtime context。
+
 一、OCR 工具邊界
 1. PDF、掃描 PDF、圖片、拍照圖面、材料表截圖、手寫單、工程圖或任何 image/pdf 附件需要文字或表格資料時，AI 必須先呼叫 `run_file_ocr`。
-2. `run_file_ocr` 由 backend 透過 PaddleOCR MCP 執行；AI 不得把 OpenAI OAuth 對附件的原生文字解析當作正式 OCR 來源。
-3. PDF 必須一次以整份 PDF 呼叫 `run_file_ocr`，由 PaddleOCR MCP 回傳整份文件文字 / 表格結果；不得再用分頁 OCR 規則。
-4. 圖片也先呼叫 `run_file_ocr` 取得文字 / 表格內容。只有孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才交由 AI 直接視覺判斷並標示信心。
+2. `run_file_ocr` 由 backend 透過 PaddleOCR MCP 執行；AI 不得用 OpenAI 內建的 OCR 模組。
+3. PDF 必須一次以整份 PDF 呼叫 `run_file_ocr`，由 PaddleOCR MCP 回傳整份文件文字 / 表格結果。
+4. 圖片也先呼叫 `run_file_ocr` 取得文字 / 表格內容。只有孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才交由 AI 視覺判斷並標示信心。
 
 二、輸出格式
-1. OCR 結果不寫入 `file_analysis_data`、`manual_review`、`interpretation_notes` 或任何持久化 workspace。
-2. AI 回覆時直接用繁體中文與 Markdown 表格整理可報價資料、低信心項目、來源檔案與需要人工複核的欄位。
-3. 若 OCR 失敗，直接在回答中列出失敗來源、錯誤摘要與需要人工補資料的位置，不呼叫任何 patch tool。
-4. 使用者後續更正 OCR 表格資料時，AI 以最新使用者訊息為準重新整理 Markdown 表格；不要嘗試讀取或修補舊 file-analysis state。
+1. AI 回覆時直接用繁體中文與 Markdown 表格整理可報價資料、低信心項目、來源檔案與需要人工複核的欄位。
+2. 若 OCR 失敗，直接在回答中列出失敗來源、錯誤摘要與需要人工補資料的位置，不呼叫任何 patch tool。
+3. 使用者後續更正 OCR 表格資料時，AI 以最新使用者訊息為準重新整理 Markdown 表格；不要呼叫 `run_file_ocr`。
 
 三、資料完整性
-1. PaddleOCR MCP 輸出的欄位名稱、Markdown 表格格式或 JSON key 不必和內部 fixture 完全相同；驗收重點是同一列表格資料能核對名稱、件號、規格、數量、螺栓尺寸、螺栓總數或公式等核心值。
+1. PaddleOCR MCP 輸出的欄位名稱、Markdown 表格格式或 JSON key 不必和內部 fixture 完全相同。
 2. 若來源表格可辨識為 N 列，Markdown 表格應盡量對應 N 列；無法讀完時必須列出缺漏範圍與人工複核原因。
 3. 若某欄看不清楚，仍需保留該資料列，缺失欄位填「未確認」或標低信心；不可自行猜規格、厚度、數量、孔數或價格。
 

@@ -106,15 +106,18 @@ export function createMongooseSteelConversationHistoryRepository(
       return document ? toTurnRecord(document) : null;
     },
 
-    async listActiveTurns({ conversationId }) {
-      const documents = await SteelConversationTurn.find({
+    async listActiveTurns({ conversationId, maxTurns }) {
+      const query = SteelConversationTurn.find({
         conversationId,
         state: 'active',
-      })
-        .sort({ turnIndex: 1 })
-        .lean<SteelConversationTurnDocument[]>();
+      });
+      const hasLimit = typeof maxTurns === 'number' && maxTurns > 0;
+      const documents = await (hasLimit
+        ? query.sort({ turnIndex: -1 }).limit(maxTurns)
+        : query.sort({ turnIndex: 1 })
+      ).lean<SteelConversationTurnDocument[]>();
 
-      return documents.map(toTurnRecord);
+      return (hasLimit ? documents.reverse() : documents).map(toTurnRecord);
     },
 
     async markTurnsSupersededAfter({

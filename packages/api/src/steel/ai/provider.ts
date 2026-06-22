@@ -12,26 +12,30 @@ import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { SteelOpenAIReasoningEffort } from './config';
+import { serializeSteelRuntimeContext, type SteelRuntimeContext } from '../runtime/context';
 import { createSteelPostgresPool } from '../postgres';
-import { searchSteelAgentRules, type SteelAgentRule } from '../repositories';
+import { parseMarkdownTables } from '../markdown/table';
+import { normalizeSteelSpecKey } from '../normalization/spec';
 import {
   createSteelToolRunState,
   executeSteelTool,
   type SteelToolRunState,
 } from '../tools/execute';
-import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
+import {
+  getSteelToolDefinitions,
+  isSteelToolName,
+  type SteelProviderToolName,
+} from '../tools/registry';
 import type { SteelToolResult } from '../tools/results';
 import { defaultSteelPriceCustomerTierId, steelToolArgsSchemas } from '../tools/schemas';
 import { runSteelFileOcr } from '../vision/ocr';
-import type { SteelRepositoryClient } from '../repositories';
-import type { SteelBusinessToolName } from '../tools/schemas';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<typeof import('openai-oauth-provider')>;
 
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
-type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelBusinessToolName };
+type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelProviderToolName };
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
@@ -56,6 +60,8 @@ type SteelProviderTimings = {
   roundCount: number;
   rounds: SteelProviderRoundTiming[];
 };
+
+const defaultSteelToolMaxCalls = 8;
 
 export interface SteelProviderExecuteToolCallOptions {
   toolName: string;
@@ -127,7 +133,7 @@ export interface SendSteelOAuthChatOptions {
   reasoningEffort: SteelOpenAIReasoningEffort;
   steelToolMaxCalls?: number;
   steelRuntimePolicy?: boolean;
-  agentRulesClient?: SteelRepositoryClient;
+  steelRuntimeContext?: SteelRuntimeContext;
   workingMemorySummary?: string;
 }
 
@@ -289,16 +295,6 @@ function toPrompt(
   });
 }
 
-const steelAgentRuleSections = [
-  'agent_instruction',
-  'tool_flow',
-  'inference_order',
-  'confirmation_policy',
-] as const;
-const steelAgentRuleTypes = ['agent_instruction_rule'] as const;
-const steelOcrRuleSections = ['file_ocr', 'drawing_ocr', 'vision_evidence'] as const;
-const steelOcrRuleTypes = ['inference_order_rule', 'tool_flow_rule', 'output_policy_rule'] as const;
-
 type VisualEvidenceSourceKind = 'image' | 'pdf' | 'scanned_pdf';
 
 function getFileSourceKinds(file: SteelOAuthChatFile): VisualEvidenceSourceKind[] {
@@ -313,37 +309,6 @@ function getFileSourceKinds(file: SteelOAuthChatFile): VisualEvidenceSourceKind[
   }
 
   return [];
-}
-
-function getVisualEvidenceSourceKindsFromFiles(files: readonly SteelOAuthChatFile[]) {
-  const sourceKinds = new Set<VisualEvidenceSourceKind>();
-
-  for (const file of files) {
-    for (const sourceKind of getFileSourceKinds(file)) {
-      sourceKinds.add(sourceKind);
-    }
-  }
-
-  return [...sourceKinds];
-}
-
-function getLatestUserMessage(
-  messages: readonly SteelOAuthChatMessage[],
-): SteelOAuthChatMessage | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === 'user') {
-      return message;
-    }
-  }
-
-  return undefined;
-}
-
-function getVisualEvidenceFilesFromMessage(
-  message?: SteelOAuthChatMessage,
-): SteelOAuthChatFile[] {
-  return (message?.files ?? []).filter(isVisualEvidenceFile);
 }
 
 function getVisualEvidenceFiles(
@@ -362,84 +327,6 @@ function getVisualEvidenceFiles(
   }
 
   return files;
-}
-
-function readSelectorStrings(rule: SteelAgentRule, key: string): string[] {
-  const selectors = rule.selectors;
-
-  if (typeof selectors !== 'object' || selectors === null || Array.isArray(selectors)) {
-    return [];
-  }
-
-  const value = selectors[key];
-
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '');
-}
-
-function matchesOcrSourceKind(rule: SteelAgentRule, sourceKinds: readonly string[]) {
-  const selectorSourceKinds = readSelectorStrings(rule, 'sourceKinds');
-
-  if (selectorSourceKinds.length === 0) {
-    return true;
-  }
-
-  return selectorSourceKinds.some((sourceKind) => sourceKinds.includes(sourceKind));
-}
-
-function formatOcrRuleInstruction(rule: SteelAgentRule) {
-  const source = rule.sourceRefs[0];
-  const provenance = [
-    source?.sourceFile ? `sourceFile=${source.sourceFile}` : undefined,
-    source?.locator ? `locator=${source.locator}` : undefined,
-    source?.canonicalKey ? `canonicalKey=${source.canonicalKey}` : undefined,
-    source?.sha256 ? `sha256=${source.sha256}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(', ');
-
-  return provenance
-    ? `${rule.prompt.trim()}\nOCR rule provenance: ${provenance}`
-    : rule.prompt.trim();
-}
-
-async function getSteelRuntimePolicyInstruction(client: SteelRepositoryClient): Promise<string> {
-  const rules = await searchSteelAgentRules(client, {
-    ruleTypes: steelAgentRuleTypes,
-    ruleSections: steelAgentRuleSections,
-    limit: 100,
-  });
-  const prompts = rules.map((rule) => rule.prompt.trim()).filter(Boolean);
-
-  if (prompts.length === 0) {
-    throw new Error('steel.agent_rules did not return reviewed Agent Prompt rules.');
-  }
-
-  return prompts.join('\n\n');
-}
-
-async function getSteelOcrInstruction(
-  client: SteelRepositoryClient,
-  sourceKinds: readonly VisualEvidenceSourceKind[],
-): Promise<string> {
-  const rules = await searchSteelAgentRules(client, {
-    ruleTypes: steelOcrRuleTypes,
-    ruleSections: steelOcrRuleSections,
-    limit: 100,
-  });
-  const prompts = rules
-    .filter((rule) => matchesOcrSourceKind(rule, sourceKinds))
-    .map(formatOcrRuleInstruction)
-    .filter(Boolean);
-
-  if (prompts.length === 0) {
-    throw new Error('steel.agent_rules did not return reviewed OCR rules.');
-  }
-
-  return prompts.join('\n\n');
 }
 
 function toPromptWithSystemInstruction(
@@ -462,50 +349,22 @@ function toPromptWithSystemInstruction(
   ];
 }
 
-function getPromptMessages(
-  messages: SteelOAuthChatMessage[],
-  workingMemorySummary: string | undefined,
-): SteelOAuthChatMessage[] {
-  const summary = workingMemorySummary?.trim();
-
-  if (!summary) {
-    return messages;
-  }
-
-  return [
-    {
-      role: 'system',
-      content: summary,
-    },
-    ...messages,
-  ];
-}
-
-async function getSystemInstruction({
-  agentRulesClient,
+function getSystemInstruction({
   steelRuntimePolicy,
-  ocrSourceKinds,
+  steelRuntimeContext,
 }: {
-  agentRulesClient?: SteelRepositoryClient;
   steelRuntimePolicy?: boolean;
-  ocrSourceKinds?: readonly VisualEvidenceSourceKind[];
-}): Promise<string | undefined> {
-  const hasOcrRules = (ocrSourceKinds?.length ?? 0) > 0;
-
-  if ((steelRuntimePolicy || hasOcrRules) && !agentRulesClient) {
-    throw new Error('steel.agent_rules client is required for Steel runtime rules.');
+  steelRuntimeContext?: SteelRuntimeContext;
+}): string | undefined {
+  if (!steelRuntimePolicy) {
+    return undefined;
   }
 
-  const instructions = [
-    ...(steelRuntimePolicy && agentRulesClient
-      ? [await getSteelRuntimePolicyInstruction(agentRulesClient)]
-      : []),
-    ...(hasOcrRules && agentRulesClient
-      ? [await getSteelOcrInstruction(agentRulesClient, ocrSourceKinds ?? [])]
-      : []),
-  ];
+  if (!steelRuntimeContext) {
+    throw new Error('Steel runtime context is required for Steel runtime policy.');
+  }
 
-  return instructions.length > 0 ? instructions.join('\n\n') : undefined;
+  return `Steel Runtime Context\n\n${serializeSteelRuntimeContext(steelRuntimeContext)}`;
 }
 
 function getGeneratedText(result: LanguageModelV3GenerateResult): string {
@@ -536,18 +395,6 @@ function createInvalidToolInputResult(call: LanguageModelV3ToolCall): SteelToolR
     toolName: call.toolName,
     errorCategory: 'invalid_arguments',
     errorSummary: 'Steel tool input must be valid JSON.',
-    durationMs: 0,
-    redactionVersion: 1,
-  };
-}
-
-function createInstructionLookupRequiredResult(call: LanguageModelV3ToolCall): SteelToolResult {
-  return {
-    ok: false,
-    toolName: call.toolName,
-    errorCategory: 'invalid_arguments',
-    errorSummary:
-      'lookup_quote_rules is required before category-dependent Steel lookups. When AI has selected a catalog/category key from oral order evidence, first call lookup_quote_rules with the interpreted order context, then call search_price_candidates.',
     durationMs: 0,
     redactionVersion: 1,
   };
@@ -596,52 +443,14 @@ function isJsonObject(value: unknown): value is { [key: string]: unknown } {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizeSpecKey(...parts: Array<string | undefined>): string | undefined {
-  const joined = parts
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join('_')
-    .normalize('NFKC')
-    .replace(/[＊*×]/gu, 'x')
-    .replace(/\s+/gu, '')
-    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
-    .replace(/^_+|_+$/gu, '');
-
-  return joined || undefined;
-}
-
-function splitMarkdownTableRow(line: string): string[] {
-  const trimmed = line.trim();
-  const withoutEdges = trimmed.replace(/^\|/u, '').replace(/\|$/u, '');
-
-  return withoutEdges.split('|').map((cell) => cell.trim());
-}
-
-function isMarkdownTableSeparator(line: string): boolean {
-  const cells = splitMarkdownTableRow(line);
-
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell.trim()));
-}
-
 function findHeaderIndex(headers: readonly string[], patterns: readonly RegExp[]): number {
   return headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
 }
 
 function getMarkdownTableSpecKeyCandidates(content: string): string[] {
-  const lines = content.split(/\r?\n/u);
   const candidates: string[] = [];
 
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const headerLine = lines[index];
-    const separatorLine = lines[index + 1];
-    if (
-      !headerLine?.includes('|') ||
-      !separatorLine?.includes('|') ||
-      !isMarkdownTableSeparator(separatorLine)
-    ) {
-      continue;
-    }
-
-    const headers = splitMarkdownTableRow(headerLine);
+  for (const { headers, rows } of parseMarkdownTables(content)) {
     const codeIndex = findHeaderIndex(headers, [
       /代號/u,
       /型號/u,
@@ -655,14 +464,8 @@ function getMarkdownTableSpecKeyCandidates(content: string): string[] {
       continue;
     }
 
-    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
-      const rowLine = lines[rowIndex];
-      if (!rowLine?.includes('|') || isMarkdownTableSeparator(rowLine)) {
-        break;
-      }
-
-      const cells = splitMarkdownTableRow(rowLine);
-      const candidate = normalizeSpecKey(cells[codeIndex], cells[productNameIndex]);
+    for (const cells of rows) {
+      const candidate = normalizeSteelSpecKey(cells[codeIndex], cells[productNameIndex]);
       if (candidate) {
         candidates.push(candidate);
       }
@@ -827,6 +630,59 @@ function reserveProviderToolCall(
   };
 }
 
+function recordProviderToolCallIfNeeded(
+  runState: SteelToolRunState,
+  callsUsedBeforeExecution: number,
+  result: SteelToolResult,
+) {
+  if (
+    runState.callsUsed === callsUsedBeforeExecution &&
+    (!result.ok ? result.errorCategory !== 'rate_limited' : true)
+  ) {
+    runState.callsUsed += 1;
+  }
+}
+
+async function executeProviderBusinessToolCall({
+  call,
+  executeSteelToolCall,
+  input,
+  runState,
+}: {
+  call: SteelBusinessToolCall;
+  executeSteelToolCall: SteelProviderToolExecutor;
+  input: unknown;
+  runState: SteelToolRunState;
+}): Promise<SteelToolResult> {
+  if (runState.callsUsed >= runState.maxCalls) {
+    return {
+      ok: false,
+      toolName: call.toolName,
+      errorCategory: 'rate_limited',
+      errorSummary: 'Steel tool call limit exceeded',
+      durationMs: 0,
+      redactionVersion: 1,
+    };
+  }
+
+  const callsUsedBeforeExecution = runState.callsUsed;
+
+  try {
+    const result = await executeSteelToolCall({
+      toolName: call.toolName,
+      arguments: input,
+      providerToolCallId: call.toolCallId,
+      runState,
+    });
+    recordProviderToolCallIfNeeded(runState, callsUsedBeforeExecution, result);
+    return result;
+  } catch (error) {
+    const result = createToolExecutionErrorResult(call, error);
+    recordProviderToolCallIfNeeded(runState, callsUsedBeforeExecution, result);
+    return result;
+  }
+}
+
 async function executeSteelBusinessToolCalls({
   calls,
   executeSteelToolCall,
@@ -968,16 +824,12 @@ async function executeSteelBusinessToolCalls({
           groupedCalls.map(({ searchInput }) => searchInput),
         );
         if (batchedInput) {
-          try {
-            result = await executeSteelToolCall({
-              toolName: call.toolName,
-              arguments: batchedInput,
-              providerToolCallId: call.toolCallId,
-              runState,
-            });
-          } catch (error) {
-            result = createToolExecutionErrorResult(call, error);
-          }
+          result = await executeProviderBusinessToolCall({
+            call,
+            executeSteelToolCall,
+            input: batchedInput,
+            runState,
+          });
 
           for (const groupedCall of groupedCalls) {
             coalescedToolCallIds.add(groupedCall.call.toolCallId);
@@ -996,16 +848,12 @@ async function executeSteelBusinessToolCalls({
       }
     }
 
-    try {
-      result = await executeSteelToolCall({
-        toolName: call.toolName,
-        arguments: input,
-        providerToolCallId: call.toolCallId,
-        runState,
-      });
-    } catch (error) {
-      result = createToolExecutionErrorResult(call, error);
-    }
+    result = await executeProviderBusinessToolCall({
+      call,
+      executeSteelToolCall,
+      input,
+      runState,
+    });
 
     if (isFatalSteelToolResult(result)) {
       executedCalls.push({
@@ -1238,7 +1086,6 @@ async function streamToGenerateResult({
 
 export async function sendSteelOAuthChat({
   abortSignal,
-  agentRulesClient,
   authFilePath,
   createOpenAIOAuth: injectedCreateOpenAIOAuth,
   ensureFresh = true,
@@ -1254,21 +1101,16 @@ export async function sendSteelOAuthChat({
   reasoningEffort,
   steelToolMaxCalls,
   steelRuntimePolicy,
-  workingMemorySummary,
+  steelRuntimeContext,
 }: SendSteelOAuthChatOptions): Promise<SteelProviderChatResponse> {
   const providerStartedAt = Date.now();
-  const promptMessages = getPromptMessages(messages, workingMemorySummary);
+  const promptMessages = messages;
   const allVisualEvidenceFiles =
     steelRuntimePolicy === true ? getVisualEvidenceFiles(promptMessages) : [];
-  const shouldLoadAgentRules = steelRuntimePolicy === true;
-  const databaseSystemInstruction = await getSystemInstruction({
-    agentRulesClient: shouldLoadAgentRules
-      ? (agentRulesClient ?? getDefaultSteelToolClient())
-      : undefined,
+  const systemInstruction = getSystemInstruction({
     steelRuntimePolicy,
-    ocrSourceKinds: [],
+    steelRuntimeContext,
   });
-  const systemInstruction = databaseSystemInstruction;
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({
     authFilePath,
@@ -1279,7 +1121,8 @@ export async function sendSteelOAuthChat({
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
   ] satisfies SteelRoundTool[];
-  const runState = createSteelToolRunState(steelToolMaxCalls ?? Number.MAX_SAFE_INTEGER);
+  const maxToolCalls = steelToolMaxCalls ?? defaultSteelToolMaxCalls;
+  const runState = createSteelToolRunState(maxToolCalls);
   const priceLookupContext = createPriceLookupRuntimeContext(promptMessages);
   const omitVisualEvidenceFileParts = false;
   let prompt = systemInstruction
@@ -1294,7 +1137,7 @@ export async function sendSteelOAuthChat({
   const generationResults: LanguageModelV3GenerateResult[] = [];
   const roundTimings: SteelProviderRoundTiming[] = [];
 
-  for (let round = 0; steelToolMaxCalls === undefined || round <= steelToolMaxCalls; round += 1) {
+  for (let round = 0; round <= maxToolCalls; round += 1) {
     const promptMessageCount = prompt.length;
     const generationStartedAt = Date.now();
     const languageModel = openai(model);
@@ -1351,6 +1194,9 @@ export async function sendSteelOAuthChat({
     if (steelBusinessToolCalls.length === 0) {
       recordRoundTiming();
       break;
+    }
+    if (round >= maxToolCalls) {
+      throw new Error('Steel tool call limit exceeded');
     }
 
     const steelBusinessToolsStartedAt = Date.now();

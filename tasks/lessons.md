@@ -75,6 +75,49 @@
   `responsesState: false`, first build a compact working-memory context that is
   injected into the next prompt; do not make cache short-circuiting the primary
   design unless explicitly requested.
+- For the next Steel orchestration redesign, context assembly must happen before
+  `sendSteelOAuthChat` and include Agent rules, Steel global rules, conditional
+  OCR/file rules, and full active output sheet data. Do not rely on compact
+  memory summary plus `read_working_order_items` as the primary runtime path
+  when the user explicitly asks for full output sheet data in context.
+- The provider-prepared Steel Runtime Output Sheet Context should include only the
+  four active sheets `system_order`, `customer_data`, `manual_review`, and
+  `customer_quote`; do not include hidden/internal seven-sheet compatibility
+  sheets in provider context unless the user explicitly reopens that scope.
+- For the next Steel orchestration redesign, replace AI-visible
+  `lookup_quote_rules` category-scoped runtime lookup with pre-provider loading
+  of all reviewed DB steel rules in one context assembly pass. Existing steel
+  rule classifications may remain admin/organization metadata, but runtime AI
+  should receive the assembled global rule set instead of calling a rule lookup
+  tool by category.
+- In the next Steel orchestration redesign, AI sheet output uses sheet-level
+  patch/replace semantics. AI only outputs sheets it wants to update and does
+  not need to mark omitted sheets or emit merge metadata. Backend logic stays
+  simple: if an entire active sheet is missing, carry forward the previous
+  sheet; if AI emits a sheet, treat that sheet as an overwrite snapshot and
+  clear/delete prior rows omitted from the emitted sheet.
+- In the provider-prepared Steel context redesign, use `Output Sheet Memory`
+  and `Runtime Output Sheet Context` instead of `Working Order Memory` for the
+  active output-form state. The name should make it clear this is the current
+  quote output sheets, not only a compact memory summary.
+- Steel OCR rules belong under `otherGlobalRules` and should be included in
+  provider-prepared context only when the current turn or active evidence has
+  files that may require OCR/file interpretation. Do not globally inject OCR
+  policy into every no-file quote turn.
+- Steel output rules must keep customer tier and quote sheets synchronized. If
+  AI updates `customer_quote` and the customer price tier changes or affects
+  pricing, the reviewed output rule must require regenerated `system_order` and
+  `customer_quote` sheets together; store this in `docs/rules/輸出規則.txt`,
+  sync it to DB `steel.agent_rules` workbook/output rules, and verify readback
+  plus direction checks.
+- Steel output rules must default uncertain customer tier to 價格B instead of
+  blocking quote generation. The default can be marked for review, but the
+  generated `system_order` and `customer_quote` should be priced from B until a
+  confirmed customer tier is available.
+- Steel `agent規則.txt` and `輸出規則.txt` are runtime DB-backed rule sources.
+  After updating either local file, always run Supabase sync dry-run, apply,
+  and direct DB readback before marking the task complete; do not leave local
+  rule text ahead of the reviewed DB prompt.
 - Steel price lookup tier carryover should be enforced in provider/runtime
   context, not only prompt wording. If `search_customers` returns one unique
   customer tier and the next `search_price_candidates` call omits
@@ -105,6 +148,11 @@
   punctuation with `_`) and search only `steel.price_items.spec_key` with
   contains semantics. Do not add separate `product_name` / `erp_item_code`
   searches because `spec_key` already contains both. [ad-hoc note]
+- Steel quote/catalog/customer/formula/cutting data source is the database, not
+  files under `docs/reference` and not synthetic file fixtures in tests. Treat
+  `docs/reference` as development viewing/design material only; do not build
+  runtime importers or Jest coverage that imports those documents as formal
+  data. [ad-hoc note]
 - Steel live chat table verification must distinguish "has Markdown tables"
   from "has line-item quote detail." For multi-item quotes or repricing turns,
   the first final Markdown table must be active line-item detail; summary,
@@ -1042,3 +1090,15 @@
   string array, never top-level or nested `productNames` / `erpItemCodes`.
   Backend price discovery must run one unified lookup that matches every
   candidate query string against `steel.price_items.spec_key`.
+- Current Steel orchestration direction is provider-prepared context, not
+  AI-driven rule or memory lookup. Before `sendSteelOAuthChat`, backend should
+  assemble Agent rules, all reviewed Steel global rules, conditional OCR rules,
+  and full active Output Sheet Memory for only `system_order`, `customer_data`,
+  `manual_review`, and `customer_quote`; provider-visible tools must stay
+  limited to `search_customers`, `search_price_candidates`, and `run_file_ocr`.
+- For Steel output-sheet rules, a generated sheet is a full replacement: omitted
+  rows in that emitted sheet mean clear/delete, while an entirely missing active
+  sheet carries forward from the previous active output form. If customer tier
+  is uncertain, default pricing to 價格B; if a customer-tier change affects
+  `customer_quote`, require synchronized `system_order` and `customer_quote`
+  output and sync both Agent/output rules to Supabase with DB readback.

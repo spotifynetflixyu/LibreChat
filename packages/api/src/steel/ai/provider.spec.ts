@@ -3,6 +3,7 @@ import { sendSteelOAuthChat } from './provider';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import type { LanguageModelV3, LanguageModelV3CallOptions } from '@ai-sdk/provider';
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories';
+import type { SteelRuntimeContext } from '../runtime/context';
 
 interface QueryCall {
   sql: string;
@@ -91,7 +92,9 @@ function createAgentRuleRow(prompt: string): AgentRuleRowFixture {
     sheet_id: null,
     selectors: { appliesTo: ['steel_quote_runtime'], locale: 'zh-TW' },
     prompt,
-    tool_policy: { availableTools: ['lookup_quote_rules', 'run_file_ocr'] },
+    tool_policy: {
+      availableTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+    },
     output_policy: { answerLanguage: 'zh-TW' },
     priority: '10',
     confidence: 'high',
@@ -191,12 +194,203 @@ const defaultAgentRulePrompt = [
 ].join('\n');
 
 const steelBusinessToolNames = [
-  'lookup_quote_rules',
   'search_customers',
   'search_price_candidates',
   'run_file_ocr',
-  'read_working_order_items',
 ] as const;
+
+function createProviderRuntimeContext({
+  agentPrompt = defaultAgentRulePrompt,
+  includeOcrRules = false,
+  workbookPrompt,
+}: {
+  agentPrompt?: string;
+  includeOcrRules?: boolean;
+  workbookPrompt?: string;
+} = {}): SteelRuntimeContext {
+  const workbookRule = workbookPrompt
+    ? [
+        {
+          id: 2,
+          slug: 'steel-workbook-output-policy',
+          version: 1,
+          ruleType: 'workbook_output_rule',
+          title: 'Steel workbook output policy',
+          locale: 'zh-TW',
+          ruleSections: ['workbook_output'],
+          selectors: { appliesTo: ['steel_quote_runtime'] },
+          prompt: workbookPrompt,
+          toolPolicy: {},
+          outputPolicy: {
+            defaultCustomerTierWhenUncertain: 'B',
+            synchronizedSheetsOnCustomerTierChange: ['system_order', 'customer_quote'],
+          },
+          priority: 20,
+          confidence: 'high',
+          active: true,
+          reviewState: 'reviewed' as const,
+          sourceRefs: [],
+        },
+      ]
+    : [];
+  const ocrRules = includeOcrRules
+    ? [
+        {
+          id: 3,
+          slug: 'steel-drawing-ocr-policy',
+          version: 1,
+          ruleType: 'inference_order_rule',
+          title: 'Steel OCR policy',
+          locale: 'zh-TW',
+          ruleSections: ['file_ocr'],
+          selectors: { sourceKinds: ['image', 'pdf'] },
+          prompt: 'OCR_RULE_SENTINEL',
+          toolPolicy: {},
+          outputPolicy: null,
+          priority: 30,
+          confidence: 'high',
+          active: true,
+          reviewState: 'reviewed' as const,
+          sourceRefs: [],
+        },
+      ]
+    : undefined;
+
+  return {
+    conversation: {
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_1',
+      activeHistory: [{ role: 'user', content: 'runtime context request' }],
+      currentUserTurn: { role: 'user', content: 'runtime context request' },
+    },
+    rules: {
+      agentRules: [
+        {
+          id: 1,
+          slug: 'steel-default-agent-instruction',
+          version: 1,
+          ruleType: 'agent_instruction_rule',
+          title: 'Steel default agent instruction',
+          locale: 'zh-TW',
+          ruleSections: ['agent_instruction'],
+          selectors: { appliesTo: ['steel_quote_runtime'] },
+          prompt: agentPrompt,
+          toolPolicy: { availableTools: ['search_customers'] },
+          outputPolicy: null,
+          priority: 10,
+          confidence: 'high',
+          active: true,
+          reviewState: 'reviewed',
+          sourceRefs: [],
+        },
+      ],
+      steelGlobalRules: {
+        instructionPackets: [],
+        quoteDefaults: [],
+        quoteRules: [
+          {
+            id: 31,
+            ruleType: 'formula_rule',
+            scopeType: 'catalog_family',
+            catalogFamily: 'plate',
+            productFamily: undefined,
+            chargeType: undefined,
+            formulaCode: undefined,
+            selectors: { catalogFamily: 'plate' },
+            parameters: {},
+            prompt: 'QUOTE_RULE_SENTINEL',
+            priority: 40,
+            confidence: 'high',
+            active: true,
+            reviewState: 'reviewed',
+            sourceRefs: [],
+          },
+        ],
+        groupedBy: {
+          packetGroups: [],
+          catalogFamilies: ['plate'],
+          productFamilies: [],
+          chargeTypes: [],
+          formulaCodes: [],
+          quoteRuleTypes: ['formula_rule'],
+          quoteDefaultTypes: [],
+        },
+      },
+      otherGlobalRules: {
+        ocrRules,
+        fileRules: [],
+        sourcePriorityRules: [],
+        markdownOutputRules: [],
+        workbookOutputRules: workbookRule,
+      },
+    },
+    outputSheets: {
+      activeOnly: true,
+      memoryName: 'Output Sheet Memory',
+      contextName: 'Runtime Output Sheet Context',
+      conversationId: 'steel_conversation_1',
+      sheetIds: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
+      previousOutputSheets: {
+        system_order: {
+          sheetId: 'system_order',
+          rows: [
+            {
+              rowId: 'system_order:1',
+              cells: {
+                rowNo: 1,
+                erpItemCode: 'CCG075',
+              },
+            },
+          ],
+        },
+        customer_data: {
+          sheetId: 'customer_data',
+          rows: [
+            {
+              rowId: 'customer_data:1',
+              cells: {
+                customerTierId: 2,
+              },
+            },
+          ],
+        },
+        manual_review: {
+          sheetId: 'manual_review',
+          rows: [],
+        },
+        customer_quote: {
+          sheetId: 'customer_quote',
+          rows: [
+            {
+              rowId: 'customer_quote:1',
+              cells: {
+                rowNo: 1,
+                subtotal: 536,
+              },
+            },
+          ],
+        },
+      },
+      derivedIndex: {
+        lineItems: [{ rowNo: 1, erpItemCode: 'CCG075' }],
+        customers: [{ customerTierId: 2 }],
+        adoptedPrices: [],
+        calculations: [{ rowNo: 1, subtotal: 536 }],
+        ocrExtracts: [],
+        unresolvedItems: [],
+      },
+    },
+    attachments: {
+      currentTurnFiles: [],
+      priorActiveFileEvidence: [],
+      includeOcrRules: includeOcrRules,
+    },
+    toolPolicy: {
+      aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      removedTools: ['lookup_quote_rules', 'read_working_order_items'],
+    },
+  };
+}
 
 describe('Steel OpenAI OAuth provider adapter', () => {
   it('uses provider doStream for live text deltas when streaming callbacks are provided', async () => {
@@ -228,7 +422,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       onTextDelta,
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(doStream).toHaveBeenCalledTimes(1);
@@ -250,9 +444,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         controller.enqueue({ type: 'response-metadata', id: 'resp_stream_tool_1' });
         controller.enqueue({
           type: 'tool-call',
-          toolCallId: 'call_lookup_stream',
-          toolName: 'lookup_quote_rules',
-          input: JSON.stringify({ keywords: ['C 型鋼'] }),
+          toolCallId: 'call_customer_stream',
+          toolName: 'search_customers',
+          input: JSON.stringify({ keywords: ['大成'] }),
         });
         controller.enqueue({
           type: 'finish',
@@ -285,8 +479,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       .mockResolvedValueOnce({ stream: secondStream });
     const executeSteelToolCall = jest.fn(async (options) => ({
       ok: true as const,
-      toolName: options.toolName as 'lookup_quote_rules',
-      data: { rules: [{ summary: 'C 型鋼規則' }] },
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [{ displayName: '大成鋼鐵', erpCustomerCode: 'A001' }] },
       sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1 as const,
@@ -302,15 +496,15 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       onTextDelta,
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(doStream).toHaveBeenCalledTimes(2);
     expect(doGenerate).not.toHaveBeenCalled();
     expect(executeSteelToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
-        toolName: 'lookup_quote_rules',
-        providerToolCallId: 'call_lookup_stream',
+        toolName: 'search_customers',
+        providerToolCallId: 'call_customer_stream',
       }),
     );
     expect(onTextDelta).toHaveBeenCalledWith('工具後');
@@ -324,12 +518,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
   });
 
   it('answers price turns without workbook/file-analysis tools or required price-loop gating', async () => {
-    const agentRulesClient = createAgentRulesClient([
-      createAgentRuleRow(defaultAgentRulePrompt),
-      createWorkbookRuleRow('DB_WORKBOOK_RULE_SENTINEL'),
-      createOcrRuleRow('OCR_RULE_SENTINEL'),
-      createVisionRuleRow('VISION_RULE_SENTINEL'),
-    ]);
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: '| 項目 | 金額 |\n| --- | --- |\n| PL6*80 | 待查 |' }],
       finishReason: { unified: 'stop', raw: 'stop' },
@@ -345,7 +533,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'PL6*80 多少錢？請直接用表格回答。' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient,
+      steelRuntimeContext: createProviderRuntimeContext({
+        workbookPrompt: 'DB_WORKBOOK_RULE_SENTINEL',
+      }),
       steelToolMaxCalls: 1,
     });
 
@@ -368,12 +558,15 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
     const systemPrompt = firstGenerateOptions.prompt[0] as { role: 'system'; content: string };
     expect(systemPrompt.content).toContain('DB_AGENT_RULE_SENTINEL');
-    expect(systemPrompt.content).not.toContain('DB_WORKBOOK_RULE_SENTINEL');
+    expect(systemPrompt.content).toContain('QUOTE_RULE_SENTINEL');
+    expect(systemPrompt.content).toContain('DB_WORKBOOK_RULE_SENTINEL');
+    expect(systemPrompt.content).toContain('Output Sheet Memory');
+    expect(systemPrompt.content).toContain('CCG075');
     expect(systemPrompt.content).not.toContain('OCR_RULE_SENTINEL');
     expect(systemPrompt.content).not.toContain('VISION_RULE_SENTINEL');
   });
 
-  it('uses Supabase agent rules as the only Steel runtime instruction source', async () => {
+  it('uses provider-prepared runtime context as the Steel instruction source', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: '只使用 DB agent rule。' }],
       finishReason: { unified: 'stop', raw: 'stop' },
@@ -389,19 +582,22 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '測試 agent rule source。' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
       steelToolMaxCalls: 1,
     });
 
     const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
     const systemPrompt = firstGenerateOptions.prompt[0] as { role: 'system'; content: string };
 
-    expect(systemPrompt.content).toBe(defaultAgentRulePrompt);
+    expect(systemPrompt.content).toContain('Steel Runtime Context');
+    expect(systemPrompt.content).toContain('DB_AGENT_RULE_SENTINEL');
+    expect(systemPrompt.content).toContain('QUOTE_RULE_SENTINEL');
+    expect(systemPrompt.content).toContain('Runtime Output Sheet Context');
     expect(systemPrompt.content).not.toContain('Do not wait for catalog-family lookup');
     expect(systemPrompt.content).not.toContain('Final quote, OCR, and file-analysis outputs');
   });
 
-  it('places Working Order Memory before persisted history and the current user input', async () => {
+  it('places runtime context before persisted history and ignores compact memory summaries', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: '已讀取記憶後回覆。' }],
       finishReason: { unified: 'stop', raw: 'stop' },
@@ -420,7 +616,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
       workingMemorySummary:
         'Working Order Memory: rows=2; customer=龍頂; unresolved=第 2 項缺厚度',
     } as Parameters<typeof sendSteelOAuthChat>[0] & { workingMemorySummary: string });
@@ -428,7 +624,6 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
 
     expect(firstGenerateOptions.prompt.map((message) => message.role)).toEqual([
-      'system',
       'system',
       'assistant',
       'user',
@@ -439,16 +634,15 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         content: expect.stringContaining('DB_AGENT_RULE_SENTINEL'),
       }),
     );
-    expect(firstGenerateOptions.prompt[1]).toEqual({
-      role: 'system',
-      content: 'Working Order Memory: rows=2; customer=龍頂; unresolved=第 2 項缺厚度',
-    });
-    expect(firstGenerateOptions.prompt[2]).toEqual(
+    expect(JSON.stringify(firstGenerateOptions.prompt)).not.toContain(
+      'Working Order Memory: rows=2',
+    );
+    expect(firstGenerateOptions.prompt[1]).toEqual(
       expect.objectContaining({
         role: 'assistant',
       }),
     );
-    expect(firstGenerateOptions.prompt[3]).toEqual(
+    expect(firstGenerateOptions.prompt[2]).toEqual(
       expect.objectContaining({
         role: 'user',
       }),
@@ -462,9 +656,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         content: [
           {
             type: 'tool-call',
-            toolCallId: 'call_lookup_rules',
-            toolName: 'lookup_quote_rules',
-            input: JSON.stringify({ keywords: ['C 型鋼', 'C75'] }),
+            toolCallId: 'call_search_customers',
+            toolName: 'search_customers',
+            input: JSON.stringify({ keywords: ['大成', 'A001'] }),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
@@ -481,8 +675,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       }));
     const executeSteelToolCall = jest.fn(async (options) => ({
       ok: true as const,
-      toolName: options.toolName as 'lookup_quote_rules',
-      data: { instructionPacketGroups: [] },
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [{ displayName: '大成鋼鐵', erpCustomerCode: 'A001' }] },
       sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1 as const,
@@ -496,15 +690,15 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '查 C 型鋼規則後回答。' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(response.text).toBe('已依查詢結果回覆。');
     expect(doGenerate).toHaveBeenCalledTimes(2);
     expect(executeSteelToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
-        toolName: 'lookup_quote_rules',
-        providerToolCallId: 'call_lookup_rules',
+        toolName: 'search_customers',
+        providerToolCallId: 'call_search_customers',
       }),
     );
   });
@@ -556,7 +750,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '用不同客戶 tier 查 DNB70060。' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(executeSteelToolCall).toHaveBeenCalledTimes(2);
@@ -652,7 +846,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '大成 CCG075 報價。' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(executeSteelToolCall).toHaveBeenLastCalledWith(
@@ -719,7 +913,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       ],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(executeSteelToolCall).toHaveBeenCalledWith(
@@ -752,7 +946,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: 'timing smoke' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      agentRulesClient: createAgentRulesClient([createAgentRuleRow(defaultAgentRulePrompt)]),
+      steelRuntimeContext: createProviderRuntimeContext(),
     });
 
     expect(response.timings).toEqual(
@@ -775,5 +969,44 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(response.timings).not.toHaveProperty('workbookCompletionDurationMs');
     expect(response.timings?.rounds[0]).not.toHaveProperty('workbookPatchOperationCount');
     expect(response.timings?.rounds[0]).not.toHaveProperty('workbookCompletionRequired');
+  });
+
+  it('stops the default tool loop after the internal max tool-call budget', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: `call_loop_${doGenerate.mock.calls.length}`,
+          toolName: 'search_customers',
+          input: JSON.stringify({ keywords: ['loop'] }),
+        },
+      ],
+      finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+      usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+      response: { id: `resp_loop_${doGenerate.mock.calls.length}` },
+      warnings: [],
+    }));
+    const executeSteelToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+        ensureFresh: false,
+        executeSteelToolCall,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'keep looping tools' }],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        steelRuntimeContext: createProviderRuntimeContext(),
+      }),
+    ).rejects.toThrow('Steel tool call limit exceeded');
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(8);
   });
 });

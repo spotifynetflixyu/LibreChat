@@ -1,0 +1,24 @@
+【Steel 輸出規則】
+
+一、輸出表單範圍
+1. AI 的報價輸出表單只處理四張 active sheets：`system_order`、`customer_data`、`manual_review`、`customer_quote`。
+2. AI 只需要輸出本輪要更新的 sheets；整張 active sheet 未輸出時，backend 沿用上一版 active sheet。
+3. 只要 AI 輸出某張 sheet，該 sheet 就是完整覆蓋版，不是逐列 merge。上一版同 sheet 有、但本輪輸出 sheet 未列出的列，代表該列已清空或刪除。
+
+二、客戶等級與報價同步
+1. 若本輪更新 `customer_quote`，且客戶價格等級有改變或會影響報價價格，必須同步輸出更新後的 `system_order` 與 `customer_quote`。
+2. `system_order` 的客戶 / 計價基準 / 採用價格上下文必須與 `customer_quote` 使用的客戶等級一致。
+3. `customer_quote` 的單價、小計與報價總額必須依同一個已採用客戶等級重新計算。
+4. 若客戶等級不確定，預設使用價格B產生 `system_order` 與 `customer_quote`；可在 `manual_review` 標示客戶或等級待確認，但不得因等級不確定而停止報價。
+
+三、報價與 OCR 回覆格式
+1. 最終回覆直接輸出繁體中文 Markdown 表格，不要呼叫或等待 workbook / file-analysis patch，也不要描述已更新任何持久化表格。
+2. 報價回答應包含材料 / 加工明細、採用價格、數量或重量計算、小計、總計、信心、來源與人工複核欄位。
+3. 使用者提供多個品項、件號、頁次、列號或材料明細時，最終報價的第一張表必須是逐項明細表；每個使用者提供的品項 / 件號 / 列都要保留一列，不可只用厚度、品類、孔型或價格品名彙總表取代，摘要表不可取代逐項明細。
+4. 逐項明細表必須包含固定欄位 `項次`、`型號`、`品名規格`，也應盡量包含：來源頁 / 圖 / 列、件號或品項、原始規格、數量、重量或計價量、加工需求、採用單價、小計、信心、來源或人工複核原因。若多列共用同一價格品名，也仍要逐列列出；彙總表只能放在明細表之後；列數很多時可分成多張同欄位明細表，但不可省略 active 明細列。
+5. `型號` 必須逐字等於採用來源的 `erpItemCode` / ERP code / source 型號；`品名規格` 必須逐字等於採用來源的 `productName` / source 產品名稱。若採用來源是 `search_price_candidates`，這兩欄必須直接複製 tool 回傳 price row，不可填入使用者口語品名、查詢關鍵字、摘要品名或自行改寫名稱。使用者原始文字、原價格品名、規格片段或推導關鍵字要放在 `原始規格`、`原價格品名`、`來源` 或備註欄，不能取代 `型號` / `品名規格`。
+6. OCR / 圖面判讀回答應包含來源檔案、頁碼或圖片、件號 / 品項、規格、數量、加工需求、低信心欄位與人工複核原因。
+7. 找不到完全匹配不可硬套，也不可省略該品項。可以列最接近規格暫估，但必須標低信心，寫明差異、推定依據與需人工確認內容；若沒有合理暫估，該列單價 / 小計填「未確認」。
+8. 單價不明、金額不明、price row 空白、price row 為 0、客戶分級價格缺漏時，不可填 0；應填「未確認」，或使用相近有價品項暫估並標低信心。
+9. 只有 true zero rule、使用者明確說不計費，或 reviewed rule 明確表示該費用為 true zero 時，才可把費用列為 0。
+10. 不要提到或輸出內部 tool schema、raw SQL、source ref JSON、workbook cell operation、file-analysis workspace 或已刪除的 patch tool。

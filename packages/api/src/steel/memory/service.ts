@@ -2,8 +2,15 @@ import {
   createSteelWorkingOrderMemoryModel,
   type ISteelWorkingOrderMemory,
 } from '@librechat/data-schemas';
+import { parseMarkdownTables } from '../markdown/table';
 
 import type { FilterQuery } from 'mongoose';
+import type {
+  FullActiveSteelOutputSheets,
+  SteelOutputSheetMemorySnapshot,
+  SteelRuntimeOutputSheet,
+  SteelRuntimeOutputSheetRow,
+} from '../runtime/context';
 import type { SteelWorkingOrderMemoryReader } from '../tools/execute';
 import type { ReadWorkingOrderItemsInput } from '../tools/schemas';
 
@@ -48,6 +55,7 @@ interface SteelWorkingOrderMemoryDocument {
   memoryKind: string;
   sourceKind: string;
   turnIndex: number;
+  createdAt?: Date;
   summary?: string;
   payload?: SteelJsonValue;
   sourceRefs?: {
@@ -67,6 +75,10 @@ interface MemorySourceRef {
   pageNumber?: number;
   imageIndex?: number;
   locator?: string;
+}
+
+export interface SteelOutputSheetMemoryReader {
+  readOutputSheetMemory(): Promise<SteelOutputSheetMemorySnapshot>;
 }
 
 function escapeRegex(value: string): string {
@@ -190,57 +202,6 @@ function summarizeByKind(documents: SteelWorkingOrderMemoryDocument[]) {
   return counts;
 }
 
-function getMarkdownTableBlocks(content: string): string[][] {
-  const blocks: string[][] = [];
-  let currentBlock: string[] = [];
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.startsWith('|') && line.endsWith('|')) {
-      currentBlock.push(line);
-      continue;
-    }
-
-    if (currentBlock.length > 0) {
-      blocks.push(currentBlock);
-      currentBlock = [];
-    }
-  }
-
-  if (currentBlock.length > 0) {
-    blocks.push(currentBlock);
-  }
-
-  return blocks;
-}
-
-function splitMarkdownTableRow(line: string): string[] {
-  return line
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim());
-}
-
-function isSeparatorRow(cells: readonly string[]): boolean {
-  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseMarkdownTable(block: string[]) {
-  if (block.length < 3) {
-    return undefined;
-  }
-
-  const headers = splitMarkdownTableRow(block[0] ?? '');
-  const separator = splitMarkdownTableRow(block[1] ?? '');
-  if (!isSeparatorRow(separator)) {
-    return undefined;
-  }
-
-  const rows = block.slice(2).map(splitMarkdownTableRow);
-  return { headers, rows };
-}
-
 function isWorkingOrderTable(headers: readonly string[]): boolean {
   return ['項次', '型號', '品名規格'].every((header) => headers.includes(header));
 }
@@ -331,9 +292,7 @@ function getFactSummary(payload: SteelJsonObject): string {
 }
 
 function getParsedTables(content: string) {
-  return getMarkdownTableBlocks(content)
-    .map(parseMarkdownTable)
-    .filter((table): table is { headers: string[]; rows: string[][] } => table !== undefined);
+  return parseMarkdownTables(content);
 }
 
 function toPayloads(headers: readonly string[], rows: readonly string[][]): SteelJsonObject[] {
@@ -609,6 +568,107 @@ function getParsedRowNo(payload: SteelJsonObject): number | undefined {
   return typeof payload.rowNo === 'number' ? payload.rowNo : undefined;
 }
 
+function toOutputSheetRow(
+  document: SteelWorkingOrderMemoryDocument,
+  index: number,
+): SteelRuntimeOutputSheetRow | undefined {
+  if (!isJsonObject(document.payload)) {
+    return undefined;
+  }
+
+  return {
+    rowId: `${document.memoryKind}:${String(document._id ?? index + 1)}`,
+    cells: document.payload,
+  };
+}
+
+function createOutputSheet(
+  sheetId: SteelRuntimeOutputSheet['sheetId'],
+  rows: SteelRuntimeOutputSheetRow[],
+): SteelRuntimeOutputSheet {
+  return {
+    sheetId,
+    rows,
+  };
+}
+
+function isManualReviewPayload(payload: SteelJsonObject): boolean {
+  return (
+    getStringProperty(payload, 'reviewStatus') === 'manual_review' ||
+    getStringProperty(payload, 'classification') === 'manual_review' ||
+    getStringProperty(payload, 'classification') === 'unclassified_markdown_table' ||
+    getStringProperty(payload, 'reason') !== undefined ||
+    getStringProperty(payload, 'unresolvedReason') !== undefined
+  );
+}
+
+function getEmptyDerivedIndex(): SteelOutputSheetMemorySnapshot['derivedIndex'] {
+  return {
+    lineItems: [],
+    customers: [],
+    adoptedPrices: [],
+    calculations: [],
+    ocrExtracts: [],
+    unresolvedItems: [],
+  };
+}
+
+function createEmptyOutputSheets(): FullActiveSteelOutputSheets {
+  return {
+    system_order: createOutputSheet('system_order', []),
+    customer_data: createOutputSheet('customer_data', []),
+    manual_review: createOutputSheet('manual_review', []),
+    customer_quote: createOutputSheet('customer_quote', []),
+  };
+}
+
+function toOutputSheetMemorySnapshot(
+  documents: SteelWorkingOrderMemoryDocument[],
+): SteelOutputSheetMemorySnapshot {
+  const previousOutputSheets = createEmptyOutputSheets();
+  const derivedIndex = getEmptyDerivedIndex();
+
+  documents.forEach((document, index) => {
+    const row = toOutputSheetRow(document, index);
+    if (!row || !isJsonObject(document.payload)) {
+      return;
+    }
+
+    switch (document.memoryKind) {
+      case 'working_order_row':
+        previousOutputSheets.system_order.rows.push(row);
+        derivedIndex.lineItems.push(document.payload);
+        return;
+      case 'customer_fact':
+        previousOutputSheets.customer_data.rows.push(row);
+        derivedIndex.customers.push(document.payload);
+        return;
+      case 'price_evidence':
+        derivedIndex.adoptedPrices.push(document.payload);
+        return;
+      case 'calculation_fact':
+        derivedIndex.calculations.push(document.payload);
+        if (isManualReviewPayload(document.payload)) {
+          previousOutputSheets.manual_review.rows.push(row);
+          derivedIndex.unresolvedItems.push(document.payload);
+          return;
+        }
+        previousOutputSheets.customer_quote.rows.push(row);
+        return;
+      case 'ocr_extract':
+        derivedIndex.ocrExtracts.push(document.payload);
+        return;
+      default:
+        return;
+    }
+  });
+
+  return {
+    previousOutputSheets,
+    derivedIndex,
+  };
+}
+
 function mergePayload(
   previous: SteelJsonValue | undefined,
   patch: SteelJsonObject,
@@ -638,12 +698,14 @@ export function createMongooseSteelWorkingOrderMemoryReader(
       };
       const pageSize = getPageSize(input);
       const page = getPage(input);
-      const resultCount = await SteelWorkingOrderMemory.countDocuments(filter);
-      const documents = await SteelWorkingOrderMemory.find(filter)
-        .sort({ turnIndex: 1, createdAt: 1 })
-        .skip((page - 1) * pageSize)
-        .limit(pageSize)
-        .lean<SteelWorkingOrderMemoryDocument[]>();
+      const [resultCount, documents] = await Promise.all([
+        SteelWorkingOrderMemory.countDocuments(filter),
+        SteelWorkingOrderMemory.find(filter)
+          .sort({ turnIndex: 1, createdAt: 1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .lean<SteelWorkingOrderMemoryDocument[]>(),
+      ]);
       const workingOrderRows = documents
         .map(toWorkingOrderRow)
         .filter((row): row is SteelJsonObject => row !== undefined);
@@ -660,6 +722,35 @@ export function createMongooseSteelWorkingOrderMemoryReader(
             ? documents.map(toMemoryEntry)
             : undefined,
       };
+    },
+  };
+}
+
+export function createMongooseSteelOutputSheetMemoryReader(
+  mongoose: Mongoose,
+  conversationId: string,
+): SteelOutputSheetMemoryReader {
+  const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+
+  return {
+    async readOutputSheetMemory() {
+      const documents = await SteelWorkingOrderMemory.find({
+        conversationId,
+        state: 'active',
+        memoryKind: {
+          $in: [
+            'working_order_row',
+            'customer_fact',
+            'price_evidence',
+            'calculation_fact',
+            'ocr_extract',
+          ],
+        },
+      })
+        .sort({ turnIndex: 1, createdAt: 1 })
+        .lean<SteelWorkingOrderMemoryDocument[]>();
+
+      return toOutputSheetMemorySnapshot(documents);
     },
   };
 }

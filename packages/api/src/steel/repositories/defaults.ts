@@ -249,3 +249,49 @@ LIMIT $${values.length}
 
   return result.rows.map(toQuoteDefault);
 }
+
+export async function listReviewedSteelQuoteDefaults(
+  client: SteelRepositoryClient,
+): Promise<SteelQuoteDefault[]> {
+  const result = await client.query<SteelQuoteDefaultRow>(
+    `
+SELECT
+  id,
+  default_type,
+  origin_table,
+  origin_id,
+  origin_revision,
+  scope_type,
+  customer_id,
+  customer_tier_id,
+  catalog_family,
+  product_family,
+  charge_type,
+  formula_code,
+  selector,
+  effect,
+  default_parameters,
+  priority,
+  confidence,
+  active,
+  review_state,
+  source_refs
+FROM steel.quote_defaults
+WHERE review_state = $1
+  AND active = true
+ORDER BY
+  CASE scope_type
+    WHEN 'customer' THEN 0
+    WHEN 'customer_tier' THEN 1
+    WHEN 'catalog_family' THEN 2
+    WHEN 'product_family' THEN 3
+    ELSE 5
+  END ASC,
+  priority ASC,
+  id ASC
+`,
+    ['reviewed'],
+  );
+
+  return result.rows.map(toQuoteDefault);
+}

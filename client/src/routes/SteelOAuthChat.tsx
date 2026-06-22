@@ -263,6 +263,9 @@ function getStreamActivityStateLabel(event: SteelProviderChatStreamEvent): strin
   if (event.type.startsWith('steer_')) {
     return 'Queued';
   }
+  if (event.type === 'parse_status') {
+    return event.parseStatus.charAt(0).toUpperCase() + event.parseStatus.slice(1);
+  }
   return 'Updated';
 }
 
@@ -276,7 +279,16 @@ function getStreamActivityStateClass(event: SteelProviderChatStreamEvent): strin
   if ((event.type === 'lookup' || event.type === 'tool') && event.status === 'completed') {
     return 'border-green-500/30 bg-green-500/10 text-green-400';
   }
-  if (event.type.startsWith('memory_') || event.type.startsWith('parse_') || event.type.startsWith('steer_')) {
+  if (event.type === 'parse_status') {
+    if (event.parseStatus === 'saved') {
+      return 'border-green-500/30 bg-green-500/10 text-green-400';
+    }
+    if (event.parseStatus === 'partial') {
+      return 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400';
+    }
+    return 'border-border-light bg-surface-primary text-text-secondary';
+  }
+  if (event.type.startsWith('memory_') || event.type.startsWith('steer_')) {
     return 'border-green-500/30 bg-green-500/10 text-green-400';
   }
   if (
@@ -305,6 +317,19 @@ function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
     return CheckCircle2;
   }
   return Loader2;
+}
+
+function getStreamActivitySavedCounts(event: SteelProviderChatStreamEvent): string | undefined {
+  if (event.type !== 'memory_saved' && event.type !== 'parse_status') {
+    return undefined;
+  }
+  const savedCounts = event.savedCounts;
+  if (!savedCounts) {
+    return undefined;
+  }
+  const entries = Object.entries(savedCounts).map(([name, count]) => `${name}: ${count}`);
+
+  return entries.length > 0 ? entries.join(', ') : undefined;
 }
 
 function formatTimingDurationMs(durationMs: number): string {
@@ -389,6 +414,7 @@ function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent
         const isFailed =
           event.type === 'error' ||
           ((event.type === 'lookup' || event.type === 'tool') && event.status === 'failed');
+        const savedCounts = getStreamActivitySavedCounts(event);
 
         return (
           <li
@@ -427,6 +453,11 @@ function StreamStatusTimeline({ events }: { events: SteelProviderChatStreamEvent
                 <span className="mt-1 block whitespace-pre-wrap break-words text-text-primary">
                   {message}
                 </span>
+                {savedCounts && (
+                  <span className="mt-1 block whitespace-pre-wrap break-words text-text-secondary">
+                    {savedCounts}
+                  </span>
+                )}
               </div>
             </div>
           </li>

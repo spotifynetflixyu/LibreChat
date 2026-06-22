@@ -76,6 +76,10 @@ interface ConversationScopedInput {
   conversationId: string;
 }
 
+interface ListActiveTurnsInput extends ConversationScopedInput {
+  maxTurns?: number;
+}
+
 interface MessageScopedInput extends ConversationScopedInput {
   messageId: string;
 }
@@ -97,7 +101,7 @@ interface MemoryRollbackInput extends SupersedeTurnsInput {}
 export interface SteelConversationHistoryRepository {
   appendTurn(turn: SteelConversationTurnCreateInput): Promise<SteelConversationTurnRecord>;
   findTurnByMessageId(input: MessageScopedInput): Promise<SteelConversationTurnRecord | null>;
-  listActiveTurns(input: ConversationScopedInput): Promise<SteelConversationTurnRecord[]>;
+  listActiveTurns(input: ListActiveTurnsInput): Promise<SteelConversationTurnRecord[]>;
   markTurnsSupersededAfter(input: SupersedeTurnsInput): Promise<number>;
   updateUserMessageRevision(
     input: UpdateUserMessageRevisionInput,
@@ -206,8 +210,8 @@ export function createSteelConversationHistoryService({
         return [];
       }
 
-      const activeTurns = await historyRepository.listActiveTurns({ conversationId });
-      return activeTurns.sort(byTurnIndex).slice(-maxTurns);
+      const activeTurns = await historyRepository.listActiveTurns({ conversationId, maxTurns });
+      return activeTurns.sort(byTurnIndex);
     },
   };
 }

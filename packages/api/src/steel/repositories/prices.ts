@@ -7,6 +7,7 @@ import {
   parseSteelSourceRefs,
   parseValueState,
 } from './types';
+import { normalizeSteelSpecKey } from '../normalization/spec';
 
 import type {
   SteelRepositoryClient,
@@ -106,19 +107,10 @@ function getDiscoverySearchTerms(input: SearchSteelPriceItemsInput): string[] {
   ].filter((value): value is string => value !== undefined));
 }
 
-function normalizeSpecKeyContainsTerm(value: string): string {
-  return value
-    .normalize('NFKC')
-    .replace(/[＊*×]/gu, 'x')
-    .replace(/\s+/gu, '')
-    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
-    .replace(/^_+|_+$/gu, '');
-}
-
 function getSpecKeyContainsTerms(input: SearchSteelPriceItemsInput): string[] {
   return uniqueNonEmpty(
     getDiscoverySearchTerms(input).map((term) => {
-      const normalizedTerm = normalizeSpecKeyContainsTerm(term);
+      const normalizedTerm = normalizeSteelSpecKey(term);
 
       return normalizedTerm || term;
     }),
