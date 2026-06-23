@@ -1,16 +1,19 @@
 import {
   searchSteelCustomers,
-  searchSteelCustomerRules,
-  searchSteelInstructionPackets,
+  discoverSteelPriceCategories,
   searchSteelPriceItems,
   searchSteelQuoteRules,
-  searchSteelQuoteDefaults,
 } from '../repositories';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
-import { defaultSteelPriceCustomerTierId, steelToolArgsSchemas } from './schemas';
-import { toCustomerRuleArray, toQuoteRulesRuleArray } from './rules';
+import { steelToolArgsSchemas } from './schemas';
+import { toQuoteRulesRuleArray } from './rules';
 
+import type {
+  SteelOutputSheetMemorySnapshot,
+  SteelRuntimeActiveOutputSheetId,
+  SteelRuntimeOutputSheetRow,
+} from '../runtime/context';
 import type {
   SteelToolResult,
   SteelToolLogger,
@@ -18,8 +21,8 @@ import type {
   SteelToolErrorCategory,
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
-import type { SteelCustomer, SteelPriceItem } from '../repositories';
-import type { ReadWorkingOrderItemsInput, SteelToolName } from './schemas';
+import type { SteelPriceItem } from '../repositories';
+import type { ReadActiveWorkbookInput, ReadWorkingOrderItemsInput, SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type LookupQuoteRulesInput = ReturnType<typeof steelToolArgsSchemas.lookup_quote_rules.parse>;
@@ -27,9 +30,19 @@ type SearchCustomersInput = ReturnType<typeof steelToolArgsSchemas.search_custom
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
+type DispatchSteelToolArgs =
+  | LookupQuoteRulesInput
+  | SearchCustomersInput
+  | SearchPriceCandidatesInput
+  | ReadActiveWorkbookInput
+  | ReadWorkingOrderItemsInput;
 
 export interface SteelWorkingOrderMemoryReader {
   readWorkingOrderItems(input: ReadWorkingOrderItemsInput): Promise<SteelRawToolOutput>;
+}
+
+export interface SteelActiveWorkbookMemoryReader {
+  readOutputSheetMemory(): Promise<SteelOutputSheetMemorySnapshot>;
 }
 
 export interface SteelToolRunState {
@@ -42,6 +55,7 @@ export interface ExecuteSteelToolOptions {
   toolName: string;
   arguments: unknown;
   memoryReader?: SteelWorkingOrderMemoryReader;
+  outputSheetMemoryReader?: SteelActiveWorkbookMemoryReader;
   providerToolCallId?: string;
   runState?: SteelToolRunState;
   log?: SteelToolLogger;
@@ -180,41 +194,111 @@ async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  const customerTierId = input.customerTierId ?? defaultSteelPriceCustomerTierId;
+  if (input.mode === 'category_discovery') {
+    const categoryCandidates = await discoverSteelPriceCategories(client, {
+      keyword: input.keyword,
+      limit: input.limit,
+    });
+
+    return {
+      mode: input.mode,
+      keyword: input.keyword,
+      categoryCandidates,
+    };
+  }
+
   const priceCandidates = await searchSteelPriceItems(client, {
-    unfiltered: true,
-    customerTierId,
-    productNames: input.candidateQueries,
+    queries: input.queries,
+    includeRelatedCutting: input.includeRelatedCutting,
     limit: input.limit,
   });
 
   return {
-    customerTierId,
     priceCandidates: dedupePriceCandidates(priceCandidates),
-    searchQueries: input.candidateQueries,
+    searchQueries: input.queries,
   };
 }
 
-async function lookupCustomerRules(
-  client: SteelRepositoryClient,
-  customers: readonly SteelCustomer[],
-): Promise<SteelRawToolOutput[]> {
-  const customerIds = customers.map((customer) => customer.id);
-  const customerTierIds = customers
-    .map((customer) => customer.customerTier?.id)
-    .filter((id): id is number => id !== undefined);
-
-  if (customerIds.length === 0 && customerTierIds.length === 0) {
-    return [];
+function normalizeWorkbookSearchText(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
   }
 
-  return toCustomerRuleArray(
-    await searchSteelCustomerRules(client, {
-      customerIds,
-      customerTierIds,
-      limit: 100,
-    }),
+  return String(value)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/gu, '');
+}
+
+function getWorkbookSearchTokens(query: string): string[] {
+  const tokens = query
+    .normalize('NFKC')
+    .split(/\s+/u)
+    .map(normalizeWorkbookSearchText)
+    .filter(Boolean);
+
+  return tokens.length > 0 ? [...new Set(tokens)] : [normalizeWorkbookSearchText(query)];
+}
+
+function getSelectedWorkbookSheetIds(
+  input: ReadActiveWorkbookInput,
+): SteelRuntimeActiveOutputSheetId[] {
+  return input.sheetIds ?? ['system_order', 'customer_data', 'manual_review', 'customer_quote'];
+}
+
+function getMatchedFields(
+  row: SteelRuntimeOutputSheetRow,
+  tokens: readonly string[],
+): string[] {
+  return Object.entries(row.cells)
+    .filter(([, value]) => {
+      const normalized = normalizeWorkbookSearchText(value);
+      return normalized.length > 0 && tokens.some((token) => normalized.includes(token));
+    })
+    .map(([key]) => key);
+}
+
+function rowContainsAllTokens(row: SteelRuntimeOutputSheetRow, tokens: readonly string[]): boolean {
+  const rowText = normalizeWorkbookSearchText(Object.values(row.cells).join(' '));
+  return tokens.every((token) => rowText.includes(token));
+}
+
+async function readActiveWorkbookRows(
+  options: ExecuteSteelToolOptions,
+  input: ReadActiveWorkbookInput,
+): Promise<SteelRawToolOutput> {
+  if (!options.outputSheetMemoryReader) {
+    throw new Error('Steel output sheet memory reader unavailable');
+  }
+
+  const snapshot = await options.outputSheetMemoryReader.readOutputSheetMemory();
+  const tokens = getWorkbookSearchTokens(input.query);
+  const sheetIds = getSelectedWorkbookSheetIds(input);
+  const matches = sheetIds.flatMap((sheetId) =>
+    snapshot.previousOutputSheets[sheetId].rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => rowContainsAllTokens(row, tokens))
+      .map(({ row, index }) => {
+        const matchedFields = getMatchedFields(row, tokens);
+        return {
+          sheetId,
+          rowId: row.rowId,
+          rowIndex: index + 1,
+          matchedFields,
+          score: matchedFields.length,
+          rowData: row.cells,
+        };
+      }),
   );
+  const limit = input.limit ?? 10;
+
+  return {
+    query: input.query,
+    sheetIds,
+    resultCount: matches.length,
+    limit,
+    matches: matches.slice(0, limit),
+  };
 }
 
 async function emitLog(
@@ -262,7 +346,7 @@ async function errorResult(
 async function dispatchSteelTool(
   options: ExecuteSteelToolOptions,
   toolName: SteelToolName,
-  args: LookupQuoteRulesInput | SearchCustomersInput | SearchPriceCandidatesInput | ReadWorkingOrderItemsInput,
+  args: DispatchSteelToolArgs,
 ): Promise<SteelRawToolOutput> {
   const { client } = options;
 
@@ -271,16 +355,10 @@ async function dispatchSteelTool(
       const input = args as LookupQuoteRulesInput;
       const keywords = expandQuoteRuleKeywords(input.keywords);
       const searchInput = { keywords, limit: input.limit };
-      const [instructionPackets, quoteDefaults, storedQuoteRules] = await Promise.all([
-        searchSteelInstructionPackets(client, searchInput),
-        searchSteelQuoteDefaults(client, searchInput),
-        searchSteelQuoteRules(client, searchInput),
-      ]);
+      const storedQuoteRules = await searchSteelQuoteRules(client, searchInput);
 
       return {
         keywords,
-        instructionPackets,
-        quoteDefaults,
         quoteRules: storedQuoteRules,
         rules: toQuoteRulesRuleArray({
           quoteRules: storedQuoteRules,
@@ -295,13 +373,17 @@ async function dispatchSteelTool(
 
       return {
         customers,
-        rules: await lookupCustomerRules(client, customers),
       };
     }
     case 'search_price_candidates': {
       const input = args as SearchPriceCandidatesInput;
 
       return searchPriceCandidates(client, input);
+    }
+    case 'read_active_workbook': {
+      const input = args as ReadActiveWorkbookInput;
+
+      return readActiveWorkbookRows(options, input);
     }
     case 'read_working_order_items': {
       const input = args as ReadWorkingOrderItemsInput;

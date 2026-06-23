@@ -63,7 +63,6 @@ export function getSteelQuoteDefaultSearchInput(
 ): SearchSteelQuoteDefaultsInput {
   return {
     customerId: input.customerContext?.customerId,
-    customerTierId: input.customerContext?.customerTierId,
     catalogFamilies: getLookupCatalogFamilies(input),
     chargeTypes: getLookupChargeTypes(input),
     formulaCodes: getLookupFormulaCodes(input),

@@ -208,10 +208,8 @@ CREATE TABLE IF NOT EXISTS steel.prices (
   product_name TEXT NOT NULL,
   spec_key TEXT NOT NULL,
   category TEXT NOT NULL,
-  subcategory TEXT,
   material TEXT,
   source_category_label TEXT,
-  source_subcategory_label TEXT,
   source_material_label TEXT,
   source_thickness TEXT,
   source_spec TEXT,
@@ -248,9 +246,6 @@ ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_unknown_has_no_price_c
 ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_metadata_check;
 ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_source_refs_check;
 ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_source_row_unique;
-ALTER TABLE steel.prices
-  ADD COLUMN IF NOT EXISTS subcategory TEXT,
-  ADD COLUMN IF NOT EXISTS source_subcategory_label TEXT;
 ALTER TABLE steel.prices
   ADD CONSTRAINT prices_kind_check
   CHECK (price_kind IN ('product', 'cutting', 'hole'));
@@ -317,31 +312,18 @@ CREATE INDEX IF NOT EXISTS prices_kind_category_idx
 ON steel.prices (price_kind, category);
 CREATE INDEX IF NOT EXISTS prices_kind_category_material_idx
 ON steel.prices (price_kind, category, material);
-CREATE INDEX IF NOT EXISTS prices_kind_category_subcategory_idx
-ON steel.prices (price_kind, category, subcategory);
 CREATE INDEX IF NOT EXISTS prices_review_active_idx
 ON steel.prices (review_state, active);
 CREATE INDEX IF NOT EXISTS prices_spec_key_trgm_idx
 ON steel.prices USING GIN (spec_key gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS prices_product_name_trgm_idx
 ON steel.prices USING GIN (product_name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS prices_subcategory_trgm_idx
-ON steel.prices USING GIN (subcategory gin_trgm_ops)
-WHERE subcategory IS NOT NULL;
-CREATE INDEX IF NOT EXISTS prices_source_subcategory_trgm_idx
-ON steel.prices USING GIN (source_subcategory_label gin_trgm_ops)
-WHERE source_subcategory_label IS NOT NULL;
 CREATE INDEX IF NOT EXISTS prices_source_thickness_trgm_idx
 ON steel.prices USING GIN (source_thickness gin_trgm_ops)
 WHERE source_thickness IS NOT NULL;
 CREATE INDEX IF NOT EXISTS prices_source_spec_trgm_idx
 ON steel.prices USING GIN (source_spec gin_trgm_ops)
 WHERE source_spec IS NOT NULL;
-
-COMMENT ON COLUMN steel.prices.subcategory IS
-'Normalized price subcategory, primarily for cutting tables such as H型鋼, 工字鐵/H型鋼, 管, 角鐵, 槽鐵, 平鐵/扁鐵.';
-COMMENT ON COLUMN steel.prices.source_subcategory_label IS
-'Source worksheet 次類別 label after reviewed cleanup.';
 
 DROP TRIGGER IF EXISTS set_prices_updated_at ON steel.prices;
 CREATE TRIGGER set_prices_updated_at

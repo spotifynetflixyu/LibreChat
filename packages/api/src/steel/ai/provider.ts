@@ -14,8 +14,6 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { SteelOpenAIReasoningEffort } from './config';
 import { serializeSteelRuntimeContext, type SteelRuntimeContext } from '../runtime/context';
 import { createSteelPostgresPool } from '../postgres';
-import { parseMarkdownTables } from '../markdown/table';
-import { normalizeSteelSpecKey } from '../normalization/spec';
 import {
   createSteelToolRunState,
   executeSteelTool,
@@ -24,10 +22,11 @@ import {
 import {
   getSteelToolDefinitions,
   isSteelToolName,
+  type SteelProviderToolContextMode,
   type SteelProviderToolName,
 } from '../tools/registry';
 import type { SteelToolResult } from '../tools/results';
-import { defaultSteelPriceCustomerTierId, steelToolArgsSchemas } from '../tools/schemas';
+import { steelToolArgsSchemas } from '../tools/schemas';
 import { runSteelFileOcr } from '../vision/ocr';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
@@ -39,13 +38,10 @@ type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelProvider
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
-type SearchPriceCandidateQuery =
-  NonNullable<SearchPriceCandidatesInput['candidateQueries']>[number];
+type SearchPriceLookupInput = Extract<SearchPriceCandidatesInput, { queries: readonly unknown[] }>;
+type SearchPriceCandidateQuery = SearchPriceLookupInput['queries'][number];
 type SteelRoundTool = LanguageModelV3FunctionTool;
-interface SteelPriceLookupRuntimeContext {
-  customerTierId?: number;
-  tableCandidateQueries: string[];
-}
+type SteelPriceLookupRuntimeContext = Record<string, never>;
 type SteelProviderRoundTiming = {
   round: number;
   generationDurationMs: number;
@@ -143,7 +139,10 @@ async function loadCreateOpenAIOAuth(): Promise<typeof createOpenAIOAuthType> {
 }
 
 let defaultSteelToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
-let steelBusinessFunctionTools: LanguageModelV3FunctionTool[] | undefined;
+const steelBusinessFunctionToolsByMode = new Map<
+  SteelProviderToolContextMode,
+  LanguageModelV3FunctionTool[]
+>();
 
 function getDefaultSteelToolClient() {
   defaultSteelToolClient ??= createSteelPostgresPool();
@@ -165,17 +164,27 @@ async function executeDefaultSteelToolCall({
   });
 }
 
-function getSteelBusinessFunctionTools(): LanguageModelV3FunctionTool[] {
-  steelBusinessFunctionTools ??= getSteelToolDefinitions().map((definition) => ({
-    type: 'function',
-    name: definition.name,
-    description: definition.description,
-    inputSchema: zodToJsonSchema(definition.argsSchema, {
-      $refStrategy: 'none',
-    }) as LanguageModelV3FunctionTool['inputSchema'],
-  }));
+function getSteelBusinessFunctionTools(
+  contextMode: SteelProviderToolContextMode,
+): LanguageModelV3FunctionTool[] {
+  const existingTools = steelBusinessFunctionToolsByMode.get(contextMode);
+  if (existingTools) {
+    return existingTools;
+  }
 
-  return steelBusinessFunctionTools;
+  const tools = getSteelToolDefinitions({ contextMode }).map(
+    (definition): LanguageModelV3FunctionTool => ({
+      type: 'function',
+      name: definition.name,
+      description: definition.description,
+      inputSchema: zodToJsonSchema(definition.argsSchema, {
+        $refStrategy: 'none',
+      }) as LanguageModelV3FunctionTool['inputSchema'],
+    }),
+  );
+
+  steelBusinessFunctionToolsByMode.set(contextMode, tools);
+  return tools;
 }
 
 function isVisualEvidenceFile(file: SteelOAuthChatFile): boolean {
@@ -377,12 +386,20 @@ function getGeneratedText(result: LanguageModelV3GenerateResult): string {
   }, '');
 }
 
-function isSteelBusinessToolCall(part: LanguageModelV3GenerateResult['content'][number]) {
-  return part.type === 'tool-call' && isSteelToolName(part.toolName);
+function isSteelBusinessToolCall(
+  part: LanguageModelV3GenerateResult['content'][number],
+  contextMode: SteelProviderToolContextMode,
+): part is SteelBusinessToolCall {
+  return part.type === 'tool-call' && isSteelToolName(part.toolName, { contextMode });
 }
 
-function getSteelBusinessToolCalls(result: LanguageModelV3GenerateResult): SteelBusinessToolCall[] {
-  return result.content.filter(isSteelBusinessToolCall) as SteelBusinessToolCall[];
+function getSteelBusinessToolCalls(
+  result: LanguageModelV3GenerateResult,
+  contextMode: SteelProviderToolContextMode,
+): SteelBusinessToolCall[] {
+  return result.content.filter((part): part is SteelBusinessToolCall =>
+    isSteelBusinessToolCall(part, contextMode),
+  );
 }
 
 function parseToolCallInput(call: LanguageModelV3ToolCall): unknown {
@@ -435,103 +452,29 @@ function toJsonValue(value: unknown): JSONValue {
   return JSON.parse(serialized) as JSONValue;
 }
 
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values.filter((value) => value.trim() !== ''))];
-}
-
-function isJsonObject(value: unknown): value is { [key: string]: unknown } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function findHeaderIndex(headers: readonly string[], patterns: readonly RegExp[]): number {
-  return headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
-}
-
-function getMarkdownTableSpecKeyCandidates(content: string): string[] {
-  const candidates: string[] = [];
-
-  for (const { headers, rows } of parseMarkdownTables(content)) {
-    const codeIndex = findHeaderIndex(headers, [
-      /代號/u,
-      /型號/u,
-      /品號/u,
-      /erp/i,
-      /item\s*code/i,
-      /model\s*code/i,
-    ]);
-    const productNameIndex = findHeaderIndex(headers, [/品名/u, /產品/u, /product/i]);
-    if (codeIndex < 0 || productNameIndex < 0) {
-      continue;
-    }
-
-    for (const cells of rows) {
-      const candidate = normalizeSteelSpecKey(cells[codeIndex], cells[productNameIndex]);
-      if (candidate) {
-        candidates.push(candidate);
-      }
-    }
-  }
-
-  return uniqueStrings(candidates);
-}
-
 function createPriceLookupRuntimeContext(
-  messages: readonly SteelOAuthChatMessage[],
+  _messages: readonly SteelOAuthChatMessage[],
 ): SteelPriceLookupRuntimeContext {
-  return {
-    tableCandidateQueries: uniqueStrings(
-      messages.flatMap((message) => getMarkdownTableSpecKeyCandidates(message.content)),
-    ),
-  };
-}
-
-function readCustomerTierIds(result: SteelToolResult): number[] {
-  if (!result.ok || result.toolName !== 'search_customers') {
-    return [];
-  }
-
-  const customers = result.data.customers;
-  if (!Array.isArray(customers)) {
-    return [];
-  }
-
-  return uniqueStrings(
-    customers.flatMap((customer) => {
-      if (!isJsonObject(customer) || !isJsonObject(customer.customerTier)) {
-        return [];
-      }
-
-      const id = customer.customerTier.id;
-      return typeof id === 'number' && Number.isFinite(id) ? [String(id)] : [];
-    }),
-  ).map((id) => Number(id));
+  return {};
 }
 
 function updatePriceLookupRuntimeContext(
-  context: SteelPriceLookupRuntimeContext,
-  result: SteelToolResult,
+  _context: SteelPriceLookupRuntimeContext,
+  _result: SteelToolResult,
 ) {
-  const customerTierIds = readCustomerTierIds(result);
-  if (customerTierIds.length === 1) {
-    context.customerTierId = customerTierIds[0];
-  }
 }
 
 function enrichSearchPriceInput(
   input: SearchPriceCandidatesInput,
-  context: SteelPriceLookupRuntimeContext,
+  _context: SteelPriceLookupRuntimeContext,
 ): SearchPriceCandidatesInput {
-  const candidateQueries = uniqueStrings([
-    ...input.candidateQueries,
-    ...context.tableCandidateQueries,
-  ]).slice(0, 20);
-  const enrichedInput = {
-    ...input,
-    candidateQueries,
-    customerTierId: input.customerTierId ?? context.customerTierId,
-  };
+  return steelToolArgsSchemas.search_price_candidates.parse(input);
+}
 
-  return steelToolArgsSchemas.search_price_candidates.parse(enrichedInput);
+function isSearchPriceLookupInput(
+  input: SearchPriceCandidatesInput,
+): input is SearchPriceLookupInput {
+  return 'queries' in input;
 }
 
 function isSearchPriceCoalesceCompatible(
@@ -539,16 +482,31 @@ function isSearchPriceCoalesceCompatible(
   right: SearchPriceCandidatesInput,
 ): boolean {
   return (
+    isSearchPriceLookupInput(left) &&
+    isSearchPriceLookupInput(right) &&
     left.limit === right.limit &&
-    (left.customerTierId ?? defaultSteelPriceCustomerTierId) ===
-      (right.customerTierId ?? defaultSteelPriceCustomerTierId)
+    left.includeRelatedCutting === right.includeRelatedCutting
   );
 }
 
 function toBatchedPriceCandidate(
   input: SearchPriceCandidatesInput,
 ): SearchPriceCandidateQuery[] {
-  return input.candidateQueries;
+  return isSearchPriceLookupInput(input) ? [...input.queries] : [];
+}
+
+function uniquePriceQueries(queries: readonly SearchPriceCandidateQuery[]): SearchPriceCandidateQuery[] {
+  const seen = new Set<string>();
+
+  return queries.filter((query) => {
+    const key = JSON.stringify(query);
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
 }
 
 function createBatchedSearchPriceInput(
@@ -562,32 +520,23 @@ function createBatchedSearchPriceInput(
   if (!firstInput) {
     return undefined;
   }
+  if (!isSearchPriceLookupInput(firstInput)) {
+    return undefined;
+  }
 
   if (!inputs.every((input) => isSearchPriceCoalesceCompatible(firstInput, input))) {
     return undefined;
   }
 
-  const candidateQueries = uniqueStrings(
-    inputs.flatMap((input) => {
-      return toBatchedPriceCandidate(input);
-    }),
-  );
-  if (candidateQueries.length === 0 || candidateQueries.length > 20) {
+  const queries = uniquePriceQueries(inputs.flatMap((input) => toBatchedPriceCandidate(input)));
+  if (queries.length === 0 || queries.length > 20) {
     return undefined;
   }
 
-  const batchedInput = {
-    candidateQueries,
-    limit: firstInput.limit,
-  };
-
-  if (firstInput.customerTierId === undefined) {
-    return steelToolArgsSchemas.search_price_candidates.parse(batchedInput);
-  }
-
   return steelToolArgsSchemas.search_price_candidates.parse({
-    ...batchedInput,
-    customerTierId: firstInput.customerTierId,
+    queries,
+    includeRelatedCutting: firstInput.includeRelatedCutting,
+    limit: firstInput.limit,
   });
 }
 
@@ -1111,6 +1060,7 @@ export async function sendSteelOAuthChat({
     steelRuntimePolicy,
     steelRuntimeContext,
   });
+  const runtimeContextMode = steelRuntimeContext?.outputSheets.contextMode ?? 'full';
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({
     authFilePath,
@@ -1119,7 +1069,7 @@ export async function sendSteelOAuthChat({
     responsesState: false,
   });
   const tools = [
-    ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
+    ...(steelRuntimePolicy ? getSteelBusinessFunctionTools(runtimeContextMode) : []),
   ] satisfies SteelRoundTool[];
   const maxToolCalls = steelToolMaxCalls ?? defaultSteelToolMaxCalls;
   const runState = createSteelToolRunState(maxToolCalls);
@@ -1190,7 +1140,9 @@ export async function sendSteelOAuthChat({
       });
     };
 
-    const steelBusinessToolCalls = steelRuntimePolicy ? getSteelBusinessToolCalls(result) : [];
+    const steelBusinessToolCalls = steelRuntimePolicy
+      ? getSteelBusinessToolCalls(result, runtimeContextMode)
+      : [];
     if (steelBusinessToolCalls.length === 0) {
       recordRoundTiming();
       break;

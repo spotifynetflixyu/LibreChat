@@ -1,5 +1,14 @@
 import { getSteelToolDefinition, getSteelToolDefinitions } from './registry';
 
+type GetToolDefinitionsWithMode = (input?: {
+  contextMode?: 'full' | 'compact_workbook';
+}) => Array<{
+  name: string;
+  argsSchema: {
+    parse(value: unknown): unknown;
+  };
+}>;
+
 describe('Steel tool registry', () => {
   it('exposes only the minimal AI-led tool surface', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
@@ -9,6 +18,7 @@ describe('Steel tool registry', () => {
       'search_price_candidates',
       'run_file_ocr',
     ]);
+    expect(toolNames).not.toContain('read_active_workbook');
     expect(toolNames).not.toContain('lookup_quote_rules');
     expect(toolNames).not.toContain('read_working_order_items');
     expect(toolNames).not.toContain('save_working_order_items');
@@ -28,14 +38,39 @@ describe('Steel tool registry', () => {
 
     expect(
       definition.argsSchema.parse({
-        candidateQueries: ['錏輕型鋼', '75*2.3', 'CCG075'],
-        customerTierId: 5,
+        queries: [
+          {
+            category: '扁方管',
+            material: 'OT 黑鐵',
+            thicknesses: ['2.0'],
+            specs: ['75'],
+            keyword: '扁方管',
+          },
+        ],
         limit: 5,
       }),
     ).toEqual({
-      candidateQueries: ['錏輕型鋼', '75*2.3', 'CCG075'],
-      customerTierId: 5,
+      queries: [
+        {
+          category: '扁方管',
+          material: 'OT 黑鐵',
+          thicknesses: ['2.0'],
+          specs: ['75'],
+          keyword: '扁方管',
+          },
+        ],
       limit: 5,
+    });
+    expect(
+      definition.argsSchema.parse({
+        mode: 'category_discovery',
+        keyword: '白鐵 方管',
+        limit: 10,
+      }),
+    ).toEqual({
+      mode: 'category_discovery',
+      keyword: '白鐵 方管',
+      limit: 10,
     });
     expect(() =>
       definition.argsSchema.parse({
@@ -50,46 +85,57 @@ describe('Steel tool registry', () => {
         ],
       }),
     ).toThrow();
-    expect(() => definition.argsSchema.parse({ productNames: ['錏輕型鋼'], limit: 2 })).toThrow(
-      'Unrecognized key',
-    );
-    expect(() => definition.argsSchema.parse({ erpItemCodes: ['CCG075'], limit: 2 })).toThrow(
-      'Unrecognized key',
-    );
-    expect(() => definition.argsSchema.parse({ productName: '錏成型角鐵', limit: 5 })).toThrow(
-      'Unrecognized key',
-    );
     expect(() =>
       definition.argsSchema.parse({
-        candidateQueries: ['OT板雷射切割'],
+        queries: [{ material: 'OT 黑鐵', keyword: '方管' }],
+      }),
+    ).toThrow('Required');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: 'rectangular_tube', material: 'OT 黑鐵' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管', material: 'ot_black_iron' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管', material: 'OT 黑鐵' }],
+        customerTier: 'b',
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管', material: 'OT 黑鐵' }],
+        customerTier: 'A',
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管' }],
         customerTierId: 2,
       }),
-    ).not.toThrow();
+    ).toThrow('Unrecognized key');
     expect(() =>
       definition.argsSchema.parse({
-        candidateQueries: ['OT板雷射切割'],
+        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵' }],
         reviewState: 'reviewed',
       }),
     ).toThrow('Unrecognized key');
     expect(() =>
       definition.argsSchema.parse({
-        candidateQueries: ['OT板雷射切割'],
+        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵' }],
         includeInactive: true,
       }),
     ).toThrow('Unrecognized key');
-    expect(() => definition.argsSchema.parse({ specKey: '30x30', limit: 5 })).toThrow(
-      'Unrecognized key',
-    );
-    expect(() => definition.argsSchema.parse({ specKeyContains: '30x30', limit: 5 })).toThrow(
-      'Unrecognized key',
-    );
-    expect(() => definition.argsSchema.parse({ catalogFamilies: ['c_type'], limit: 5 })).toThrow(
-      'Unrecognized key',
-    );
-    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow(
-      'Provide candidateQueries',
-    );
-    expect(definition.description).toContain('candidateQueries');
+    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow('Required');
+    expect(definition.description).toContain('queries');
+    expect(definition.description).toContain('category');
+    expect(definition.description).not.toContain('customerTier');
+    expect(definition.description).not.toContain('customerTierId');
+    expect(definition.description).not.toContain('candidateQueries');
     expect(definition.description).not.toContain('productNames');
     expect(definition.description).not.toContain('erpItemCodes');
   });
@@ -143,6 +189,44 @@ describe('Steel tool registry', () => {
       // @ts-expect-error exercising a removed public tool name.
       getSteelToolDefinition('lookup_catalog_families');
     }).toThrow('Unknown Steel provider tool');
+  });
+
+  it('exposes keyword-only active workbook reads only for compact workbook context', () => {
+    const compactDefinitions = (getSteelToolDefinitions as GetToolDefinitionsWithMode)({
+      contextMode: 'compact_workbook',
+    });
+    const definition = compactDefinitions.find((entry) => entry.name === 'read_active_workbook');
+
+    expect(definition).toBeDefined();
+    expect(definition?.argsSchema.parse({
+      query: 'CCG075 龍頂',
+      sheetIds: ['system_order', 'customer_quote'],
+      limit: 5,
+      reason: 'Need exact rows after compact context',
+    })).toEqual({
+      query: 'CCG075 龍頂',
+      sheetIds: ['system_order', 'customer_quote'],
+      limit: 5,
+      reason: 'Need exact rows after compact context',
+    });
+    expect(() => definition?.argsSchema.parse({ query: 'A12' })).toThrow(
+      'Use semantic keywords',
+    );
+    expect(() =>
+      definition?.argsSchema.parse({
+        query: 'CCG075',
+        column: 'A',
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition?.argsSchema.parse({
+        rowNo: 12,
+        sheetIds: ['system_order'],
+      }),
+    ).toThrow('Unrecognized key');
+    expect(getSteelToolDefinitions().map((entry) => entry.name)).not.toContain(
+      'read_active_workbook',
+    );
   });
 
   it('does not expose working-order memory reads as a provider tool', () => {

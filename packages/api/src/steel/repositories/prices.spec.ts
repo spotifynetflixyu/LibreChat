@@ -1,68 +1,99 @@
-import { searchSteelPriceItems } from './prices';
+import { discoverSteelPriceCategories, searchSteelPriceItems } from './prices';
 
 import type { SteelRepositoryClient } from './types';
 
+function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: '10',
+    erp_item_code: 'GDH075',
+    price_kind: 'product',
+    spec_key: 'GDH075_黑方管75x45x2.0',
+    product_name: '黑方管 75*45*2.0',
+    category: '扁方管',
+    subcategory: null,
+    material: 'OT 黑鐵',
+    source_subcategory_label: null,
+    source_thickness: '2.0',
+    source_spec: '75*45',
+    unit: 'piece',
+    unit_price_a: '100.0000',
+    unit_price_b: '110.0000',
+    unit_price_c: '120.0000',
+    unit_price_f: '130.0000',
+    ratio_a: null,
+    ratio_b: null,
+    ratio_c: null,
+    ratio_f: null,
+    product_price_unit_weight: '12.34500',
+    product_price_unit_weight_unit: 'kg_per_piece',
+    currency: 'TWD',
+    value_state: 'confirmed',
+    review_state: 'reviewed',
+    active: true,
+    source_refs: [
+      {
+        channel: 'admin_erp_xlsx',
+        factType: 'product_price',
+        locator: 'sheet=整理後資料;row=6',
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe('Steel price repositories', () => {
-  it('searches reviewed active price candidates with source refs and value state', async () => {
+  it('searches unified reviewed active price rows by category, material, thickness, spec, and keyword', async () => {
     const query = jest.fn().mockResolvedValue({
-      rows: [
-        {
-          id: '10',
-          erp_item_code: 'A001',
-          category_id: '3',
-          customer_tier_id: '2',
-          customer_tier_code: 'B',
-          customer_tier_name: 'B級',
-          spec_key: 'H100x100',
-          product_name: 'H型鋼',
-          material_grade: 'SS400',
-          unit: 'kg',
-          unit_price: '37.5000',
-          product_price_unit_weight: '17.20000',
-          product_price_unit_weight_unit: 'kg_per_m',
-          currency: 'TWD',
-          value_state: 'confirmed',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'product_price',
-              locator: 'sheet=Sheet1;row=6',
-            },
-          ],
-        },
-      ],
+      rows: [createPriceRow()],
     });
 
     const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      specKey: 'H100x100',
-      customerTierId: 2,
+      queries: [
+        {
+          category: '扁方管',
+          material: 'OT 黑鐵',
+          thicknesses: ['2'],
+          specs: ['75*45'],
+          keyword: '黑方管',
+        },
+      ],
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('review_state = $1'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.prices'), [
       'reviewed',
-      'H100x100',
-      2,
+      '扁方管',
+      'OT 黑鐵',
+      '2.0',
+      '%75x45%',
+      '%黑方管%',
       5,
     ]);
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('review_state = $1'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('active = true'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('category = $2'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('material = $3'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('source_thickness = $4'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('steel.price_items'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tier_id'));
     expect(result).toEqual([
       {
         id: 10,
-        erpItemCode: 'A001',
-        categoryId: 3,
-        customerTierId: 2,
-        customerTierCode: 'B',
-        customerTierName: 'B級',
-        specKey: 'H100x100',
-        productName: 'H型鋼',
-        catalogFamily: undefined,
-        materialGrade: 'SS400',
-        unit: 'kg',
-        unitPrice: 37.5,
-        productPriceUnitWeight: 17.2,
-        productPriceUnitWeightUnit: 'kg_per_m',
+        erpItemCode: 'GDH075',
+        priceKind: 'product',
+        specKey: 'GDH075_黑方管75x45x2.0',
+        productName: '黑方管 75*45*2.0',
+        category: '扁方管',
+        subcategory: undefined,
+        material: 'OT 黑鐵',
+        sourceSubcategoryLabel: undefined,
+        sourceThickness: '2.0',
+        sourceSpec: '75*45',
+        unit: 'piece',
+        tierPrices: { A: 100, B: 110, C: 120, F: 130 },
+        tierRatios: { A: null, B: null, C: null, F: null },
+        productPriceUnitWeight: 12.345,
+        productPriceUnitWeightUnit: 'kg_per_piece',
         currency: 'TWD',
         valueState: 'confirmed',
         reviewState: 'reviewed',
@@ -72,7 +103,7 @@ describe('Steel price repositories', () => {
             channel: 'admin_erp_xlsx',
             factType: 'product_price',
             sourceFile: undefined,
-            locator: 'sheet=Sheet1;row=6',
+            locator: 'sheet=整理後資料;row=6',
             confidence: undefined,
             extractedLabel: undefined,
             canonicalKey: undefined,
@@ -83,433 +114,159 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('defaults price candidate query limit to 100 when limit is not provided', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
+  it('returns all tier prices without adding a customer tier predicate', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [createPriceRow()] });
 
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['錏方管'],
-      customerTierId: 2,
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      queries: [{ category: '扁方管', keyword: 'GDH075' }],
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('LIMIT $4'), [
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
-      '%錏方管%',
-      2,
+      '扁方管',
+      '%GDH075%',
       100,
     ]);
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tier'));
+    expect(result[0]?.tierPrices).toEqual({ A: 100, B: 110, C: 120, F: 130 });
   });
 
   it('preserves unknown reviewed prices as null instead of zero', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
-        {
-          id: '11',
-          erp_item_code: null,
-          category_id: null,
-          customer_tier_id: null,
-          spec_key: 'C75',
-          product_name: 'C型鋼',
-          material_grade: null,
-          unit: 'kg',
-          unit_price: null,
-          product_price_unit_weight: null,
-          product_price_unit_weight_unit: null,
-          currency: 'TWD',
+        createPriceRow({
+          unit_price_a: null,
+          unit_price_b: null,
+          unit_price_c: null,
+          unit_price_f: null,
           value_state: 'unknown',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [],
-        },
+        }),
       ],
     });
 
     const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      specKey: 'C75',
+      queries: [{ category: '扁方管', keyword: 'GDH075' }],
     });
 
-    expect(result[0]?.unitPrice).toBeNull();
+    expect(result[0]?.tierPrices).toEqual({ A: null, B: null, C: null, F: null });
     expect(result[0]?.valueState).toBe('unknown');
   });
 
-  it('searches all price discovery keywords through spec_key contains', async () => {
+  it('searches multiple query objects as OR groups while keeping each query facets conjunctive', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['錏輕型鋼', '75*2.3'],
-      erpItemCodes: ['CCG'],
-      limit: 10,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining(' OR '), [
-      'reviewed',
-      '%錏輕型鋼%',
-      '%75x2.3%',
-      '%CCG%',
-      10,
-    ]);
-    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $2'));
-    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $3'));
-    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('spec_key ILIKE $4'));
-    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('product_name ILIKE'));
-    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('erp_item_code ILIKE'));
-  });
-
-  it('normalizes product price keywords before spec_key contains search', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['6.0m/mOT板', '16.0m/mOT板'],
-      customerTierId: 2,
-      limit: 50,
-    });
-
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-
-    expect(sql).toContain('spec_key ILIKE $2');
-    expect(sql).toContain('spec_key ILIKE $3');
-    expect(sql).not.toContain('product_name ILIKE');
-    expect(sql).not.toContain('erp_item_code ILIKE');
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%6.0m_mOT板%',
-      '%16.0m_mOT板%',
-      2,
-      50,
-    ]);
-  });
-
-  it('does not expand product-name aliases for price discovery terms', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['C', '75*2.3'],
-      erpItemCodes: ['CCG075'],
-      customerTierId: 2,
+      queries: [
+        { category: '扁方管', material: 'OT 黑鐵', specs: ['75'] },
+        { category: '扁方管', material: '錏', specs: ['50'] },
+      ],
       limit: 10,
     });
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).not.toContain('steel.product_name_aliases');
-    expect(sql).not.toContain('target_product_name');
     expect(sql).toContain(' OR ');
+    expect(sql).toContain('category = $2');
+    expect(sql).toContain('material = $3');
+    expect(sql).toContain('category = $5');
+    expect(sql).toContain('material = $6');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
-      '%C%',
-      '%75x2.3%',
-      '%CCG075%',
-      2,
+      '扁方管',
+      'OT 黑鐵',
+      '%75%',
+      '扁方管',
+      '錏',
+      '%50%',
       10,
     ]);
   });
 
-  it('treats surface marker text as spec_key discovery text only', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['白鐵亮面'],
-      limit: 10,
-    });
-
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-
-    expect(sql).toContain('spec_key ILIKE $2');
-    expect(sql).not.toContain('product_name_alias');
-    expect(sql).not.toContain('product_name ~*');
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%白鐵亮面%',
-      10,
-    ]);
-  });
-
-  it('does not add surface alias thickness predicates for broad text', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['白鐵'],
-      limit: 10,
-    });
-
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-
-    expect(sql).toContain('spec_key ILIKE $2');
-    expect(sql).not.toContain("product_name_alias.metadata->>'minThicknessMm'");
-    expect(sql).not.toContain('NULL::numeric IS NOT NULL');
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%白鐵%',
-      10,
-    ]);
-  });
-
-  it('searches thickness evidence as another spec_key term', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['白鐵', '3t'],
-      limit: 10,
-    });
-
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-
-    expect(sql).toContain('spec_key ILIKE $2');
-    expect(sql).toContain('spec_key ILIKE $3');
-    expect(sql).not.toContain("product_name_alias.metadata->>'minThicknessMm'");
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%白鐵%',
-      '%3t%',
-      10,
-    ]);
-  });
-
-  it('searches NO1 product text directly through spec_key', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['白鐵', '3.0m/mSTNO1雷射切割'],
-      limit: 10,
-    });
-
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-
-    expect(sql).toContain('spec_key ILIKE $2');
-    expect(sql).toContain('spec_key ILIKE $3');
-    expect(sql).not.toContain('ST[[:space:]]*NO[[:space:]]*1');
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%白鐵%',
-      '%3.0m_mSTNO1雷射切割%',
-      10,
-    ]);
-  });
-
-  it('searches NO1 plate-size text directly through spec_key', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['白鐵', "STNO1 3.0*4'*8'(73.5)"],
-      limit: 10,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%白鐵%',
-      '%STNO13.0x4_x8_73.5%',
-      10,
-    ]);
-  });
-
-  it('searches reviewed price candidates with product-name terms', async () => {
+  it('can include related cutting rows in the same price lookup', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
-        {
-          id: '21',
-          erp_item_code: 'A-L30-25',
-          category_id: null,
-          customer_tier_id: '1',
-          spec_key: 'angle_L30x30x2.5x6M',
-          product_name: '錏成型角鐵',
-          material_grade: null,
-          unit: 'piece',
-          unit_price: '194.3000',
-          product_price_unit_weight: null,
-          product_price_unit_weight_unit: null,
-          currency: 'TWD',
-          value_state: 'confirmed',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [],
-        },
+        createPriceRow({
+          id: '20',
+          erp_item_code: null,
+          price_kind: 'cutting',
+          spec_key: 'H型鋼200x100切工',
+          product_name: 'H型鋼 200*100 切工',
+          category: '切工/切割',
+          subcategory: 'H型鋼',
+          material: '無',
+          source_subcategory_label: 'H型鋼',
+          source_spec: '200x100',
+          unit: '刀',
+        }),
       ],
     });
 
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productName: '錏成型角鐵',
-      customerTierId: 1,
-      limit: 5,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
-      'reviewed',
-      '%錏成型角鐵%',
-      1,
-      5,
-    ]);
-  });
-
-  it('matches oral zinc angle candidates as a single spec_key term', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productName: '錏角鐵',
-      limit: 5,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE $2'), [
-      'reviewed',
-      '%錏角鐵%',
-      5,
-    ]);
-  });
-
-  it('batches multiple product-name candidates as product-name text searches', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['錏成型角鐵 L30x30', '鍍鋅角鐵 L40x40'],
-      catalogFamilies: ['angle'],
-      customerTierId: 1,
-      limit: 5,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining(' OR '), [
-      'reviewed',
-      '%錏成型角鐵L30x30%',
-      '%鍍鋅角鐵L40x40%',
-      'angle',
-      1,
-      5,
-    ]);
-  });
-
-  it('orders broad discovery candidates by combined product-name and ERP-code match score', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productNames: ['錏方管', '方管', '75*2.0'],
-      erpItemCodes: ['GDH'],
-      customerTierId: 2,
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      queries: [{ category: 'H型鋼', specs: ['200*100'] }],
+      includeRelatedCutting: true,
       limit: 20,
     });
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain('discovery_match_score');
-    expect(sql).toContain('ORDER BY');
-    expect(sql).toContain('discovery_match_score ASC');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
+    expect(sql).toContain('category = $2');
+    expect(sql).toContain("price_kind = 'cutting'");
+    expect(sql).toContain('category = $4');
+    expect(sql).toContain('subcategory = ANY($5::text[])');
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
-      '%錏方管%',
-      '%方管%',
-      '%75x2.0%',
-      '%GDH%',
-      2,
+      'H型鋼',
+      '%200x100%',
+      '切工/切割',
+      ['H型鋼', '工字鐵/H型鋼'],
+      '%200x100%',
       20,
     ]);
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: 20,
+        priceKind: 'cutting',
+        category: '切工/切割',
+        subcategory: 'H型鋼',
+        sourceSubcategoryLabel: 'H型鋼',
+        sourceSpec: '200x100',
+        unit: '刀',
+      }),
+    ]);
   });
 
-  it('searches reviewed price candidates by normalized catalog family keys', async () => {
+  it('discovers candidate categories before exact lookup when category is unknown', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         {
-          id: '31',
-          erp_item_code: 'EHS100506',
-          category_id: null,
-          customer_tier_id: '1',
-          spec_key: 'EHS100506_H型鋼100x50x5_7x6M_56_進口',
-          product_name: 'H型鋼100*50*5/7*6M(56)進口',
-          catalog_family: 'h_beam',
-          material_grade: null,
-          unit: 'piece',
-          unit_price: '1800.0000',
-          product_price_unit_weight: '56.00000',
-          product_price_unit_weight_unit: 'kg_per_piece',
-          currency: 'TWD',
-          value_state: 'confirmed',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [],
+          category: '扁方管',
+          material: 'OT 黑鐵',
+          candidate_count: '8',
+          example_erp_item_code: 'GDH075',
+          example_product_name: '黑方管 75*45',
         },
       ],
     });
 
-    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      catalogFamilies: ['h_beam'],
-      customerTierId: 1,
+    const result = await discoverSteelPriceCategories({ query } as SteelRepositoryClient, {
+      keyword: '黑方管 75',
       limit: 5,
     });
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('catalog_family IN ($2)'), [
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('GROUP BY category, material'), [
       'reviewed',
-      'h_beam',
-      1,
+      '%黑方管 75%',
+      '%黑方管75%',
       5,
     ]);
-    expect(result[0]?.catalogFamily).toBe('h_beam');
-  });
-
-  it('searches reviewed price candidates by generic catalog family keys', async () => {
-    const query = jest.fn().mockResolvedValue({
-      rows: [
-        {
-          id: '41',
-          erp_item_code: 'FTB0311',
-          category_id: '9',
-          customer_tier_id: '1',
-          spec_key: 'FTB0311_磁鋼板專用小六角釘子_黑_電白_5_8_1000支',
-          product_name: '磁鋼板專用小六角釘子(黑/電白)5/8 (1000支)',
-          catalog_family: 'screw',
-          material_grade: null,
-          unit: 'piece',
-          unit_price: '300.0000',
-          product_price_unit_weight: null,
-          product_price_unit_weight_unit: null,
-          currency: 'TWD',
-          value_state: 'confirmed',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [],
-        },
-      ],
-    });
-
-    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      catalogFamilies: ['screw'],
-      customerTierId: 1,
-      limit: 5,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('catalog_family IN ($2)'), [
-      'reviewed',
-      'screw',
-      1,
-      5,
-    ]);
-    expect(result[0]).toMatchObject({
-      catalogFamily: 'screw',
-      productName: '磁鋼板專用小六角釘子(黑/電白)5/8 (1000支)',
-    });
-  });
-
-  it('keeps size text inside product-name candidate searches', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productName: '錏成型角鐵 30x30',
-      limit: 5,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
-      'reviewed',
-      '%錏成型角鐵30x30%',
-      5,
-    ]);
-  });
-
-  it('keeps oral product-name candidates as direct spec_key terms', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [] });
-
-    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      productName: '錏角鐵 L30x30',
-      limit: 5,
-    });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('spec_key ILIKE'), [
-      'reviewed',
-      '%錏角鐵L30x30%',
-      5,
+    expect(result).toEqual([
+      {
+        category: '扁方管',
+        material: 'OT 黑鐵',
+        candidateCount: 8,
+        exampleErpItemCode: 'GDH075',
+        exampleProductName: '黑方管 75*45',
+      },
     ]);
   });
 });

@@ -1,9 +1,10 @@
-import { sendSteelOAuthChat } from './provider';
+import { sendSteelOAuthChat, type SteelProviderToolExecutor } from './provider';
 
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import type { LanguageModelV3, LanguageModelV3CallOptions } from '@ai-sdk/provider';
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories';
 import type { SteelRuntimeContext } from '../runtime/context';
+import type { SteelToolResult } from '../tools/results';
 
 interface QueryCall {
   sql: string;
@@ -202,12 +203,68 @@ const steelBusinessToolNames = [
 function createProviderRuntimeContext({
   agentPrompt = defaultAgentRulePrompt,
   includeOcrRules = false,
+  contextMode = 'full',
   workbookPrompt,
 }: {
   agentPrompt?: string;
+  contextMode?: 'full' | 'compact_workbook';
   includeOcrRules?: boolean;
   workbookPrompt?: string;
 } = {}): SteelRuntimeContext {
+  const compactWorkbook =
+    contextMode === 'compact_workbook'
+      ? {
+          sheets: {
+            system_order: {
+              sheetId: 'system_order' as const,
+              rowCount: 1,
+              rows: [
+                {
+                  rowId: 'system_order:1',
+                  rowIndex: 1,
+                  anchors: {
+                    rowNo: 1,
+                    erpItemCode: 'CCG075',
+                  },
+                },
+              ],
+            },
+            customer_data: {
+              sheetId: 'customer_data' as const,
+              rowCount: 1,
+              rows: [
+                {
+                  rowId: 'customer_data:1',
+                  rowIndex: 1,
+                  anchors: {
+                    customerTier: 'B',
+                  },
+                },
+              ],
+            },
+            manual_review: {
+              sheetId: 'manual_review' as const,
+              rowCount: 0,
+              rows: [],
+            },
+            customer_quote: {
+              sheetId: 'customer_quote' as const,
+              rowCount: 1,
+              rows: [
+                {
+                  rowId: 'customer_quote:1',
+                  rowIndex: 1,
+                  anchors: {
+                    rowNo: 1,
+                    subtotal: 536,
+                  },
+                },
+              ],
+            },
+          },
+          unresolvedCount: 0,
+        }
+      : undefined;
   const workbookRule = workbookPrompt
     ? [
         {
@@ -316,16 +373,17 @@ function createProviderRuntimeContext({
           quoteDefaultTypes: [],
         },
       },
+      outputRules: workbookRule,
       otherGlobalRules: {
         ocrRules,
         fileRules: [],
         sourcePriorityRules: [],
         markdownOutputRules: [],
-        workbookOutputRules: workbookRule,
       },
     },
     outputSheets: {
       activeOnly: true,
+      contextMode,
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: 'steel_conversation_1',
@@ -349,7 +407,7 @@ function createProviderRuntimeContext({
             {
               rowId: 'customer_data:1',
               cells: {
-                customerTierId: 2,
+                customerTier: 'B',
               },
             },
           ],
@@ -373,12 +431,13 @@ function createProviderRuntimeContext({
       },
       derivedIndex: {
         lineItems: [{ rowNo: 1, erpItemCode: 'CCG075' }],
-        customers: [{ customerTierId: 2 }],
+        customers: [{ customerTier: 'B' }],
         adoptedPrices: [],
         calculations: [{ rowNo: 1, subtotal: 536 }],
         ocrExtracts: [],
         unresolvedItems: [],
       },
+      compactWorkbook,
     },
     attachments: {
       currentTurnFiles: [],
@@ -386,7 +445,10 @@ function createProviderRuntimeContext({
       includeOcrRules: includeOcrRules,
     },
     toolPolicy: {
-      aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      aiVisibleTools:
+        contextMode === 'compact_workbook'
+          ? ['search_customers', 'search_price_candidates', 'run_file_ocr', 'read_active_workbook']
+          : ['search_customers', 'search_price_candidates', 'run_file_ocr'],
       removedTools: ['lookup_quote_rules', 'read_working_order_items'],
     },
   };
@@ -566,6 +628,39 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).not.toContain('VISION_RULE_SENTINEL');
   });
 
+  it('exposes active workbook keyword reads only when runtime context uses compact workbook mode', async () => {
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
+      content: [{ type: 'text', text: 'ok' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: { inputTokens: { total: 5 }, outputTokens: { total: 1 } },
+      response: { id: 'resp_compact_tools' },
+      warnings: [],
+    }));
+
+    await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ensureFresh: false,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '工具列表測試' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      steelRuntimeContext: createProviderRuntimeContext({ contextMode: 'compact_workbook' }),
+      steelToolMaxCalls: 1,
+    });
+
+    const compactGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
+
+    expect(compactGenerateOptions.tools?.map((tool) => tool.name)).toEqual([
+      'search_customers',
+      'search_price_candidates',
+      'run_file_ocr',
+      'read_active_workbook',
+    ]);
+    expect(JSON.stringify(compactGenerateOptions.prompt[0])).not.toContain(
+      '"rows":[{"rowId":"system_order:1","cells"',
+    );
+  });
+
   it('uses provider-prepared runtime context as the Steel instruction source', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: '只使用 DB agent rule。' }],
@@ -703,7 +798,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('does not batch same-round price tool calls when customer tiers differ', async () => {
+  it('batches same-round lookup price tool calls without customer tier props', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -712,13 +807,19 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             type: 'tool-call',
             toolCallId: 'call_price_b',
             toolName: 'search_price_candidates',
-            input: JSON.stringify({ candidateQueries: ['DNB70060'], limit: 5 }),
+            input: JSON.stringify({
+              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060' }],
+              limit: 5,
+            }),
           },
           {
             type: 'tool-call',
             toolCallId: 'call_price_custom',
             toolName: 'search_price_candidates',
-            input: JSON.stringify({ candidateQueries: ['DNB70060'], customerTierId: 5, limit: 5 }),
+            input: JSON.stringify({
+              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160' }],
+              limit: 5,
+            }),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
@@ -753,24 +854,22 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       steelRuntimeContext: createProviderRuntimeContext(),
     });
 
-    expect(executeSteelToolCall).toHaveBeenCalledTimes(2);
-    expect(executeSteelToolCall).toHaveBeenNthCalledWith(
-      1,
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(1);
+    expect(executeSteelToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         providerToolCallId: 'call_price_b',
-        arguments: { candidateQueries: ['DNB70060'], limit: 5 },
-      }),
-    );
-    expect(executeSteelToolCall).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        providerToolCallId: 'call_price_custom',
-        arguments: { candidateQueries: ['DNB70060'], customerTierId: 5, limit: 5 },
+        arguments: {
+          queries: [
+            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060' },
+            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160' },
+          ],
+          limit: 5,
+        },
       }),
     );
   });
 
-  it('applies a uniquely discovered customer tier to later price lookup calls', async () => {
+  it('does not apply discovered customer tier to later price lookup calls', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -793,7 +892,10 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             type: 'tool-call',
             toolCallId: 'call_price',
             toolName: 'search_price_candidates',
-            input: JSON.stringify({ candidateQueries: ['CCG075'], limit: 5 }),
+            input: JSON.stringify({
+              queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075' }],
+              limit: 5,
+            }),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
@@ -808,7 +910,10 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         response: { id: 'resp_customer_3' },
         warnings: [],
       }));
-    const executeSteelToolCall = jest.fn(async (options) => {
+    const executeSteelToolCall = jest.fn<
+      ReturnType<SteelProviderToolExecutor>,
+      Parameters<SteelProviderToolExecutor>
+    >(async (options): Promise<SteelToolResult> => {
       if (options.toolName === 'search_customers') {
         return {
           ok: true as const,
@@ -818,7 +923,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
               {
                 id: 8,
                 displayName: '大成',
-                customerTier: { id: 5, code: 'C', name: 'C tier' },
+                customerTier: 'C',
               },
             ],
           },
@@ -854,15 +959,14 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         toolName: 'search_price_candidates',
         providerToolCallId: 'call_price',
         arguments: {
-          candidateQueries: ['CCG075'],
-          customerTierId: 5,
+          queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075' }],
           limit: 5,
         },
       }),
     );
   });
 
-  it('preserves prior Markdown table code and product name as price spec-key candidates', async () => {
+  it('does not enrich price lookup with prior Markdown table text without category', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -871,7 +975,10 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             type: 'tool-call',
             toolCallId: 'call_price_table',
             toolName: 'search_price_candidates',
-            input: JSON.stringify({ candidateQueries: ['75x45x15x2.3'], limit: 5 }),
+            input: JSON.stringify({
+              queries: [{ category: 'C型鋼', material: '錏', specs: ['75x45x15x2.3'] }],
+              limit: 5,
+            }),
           },
         ],
         finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
@@ -920,10 +1027,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       expect.objectContaining({
         toolName: 'search_price_candidates',
         arguments: {
-          candidateQueries: [
-            '75x45x15x2.3',
-            'CCG075_錏輕型鋼75x45x15x2.3',
-          ],
+          queries: [{ category: 'C型鋼', material: '錏', specs: ['75x45x15x2.3'] }],
           limit: 5,
         },
       }),
@@ -972,20 +1076,25 @@ describe('Steel OpenAI OAuth provider adapter', () => {
   });
 
   it('stops the default tool loop after the internal max tool-call budget', async () => {
-    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
-      content: [
-        {
-          type: 'tool-call',
-          toolCallId: `call_loop_${doGenerate.mock.calls.length}`,
-          toolName: 'search_customers',
-          input: JSON.stringify({ keywords: ['loop'] }),
-        },
-      ],
-      finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
-      usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
-      response: { id: `resp_loop_${doGenerate.mock.calls.length}` },
-      warnings: [],
-    }));
+    let loopCallIndex = 0;
+    const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => {
+      loopCallIndex += 1;
+
+      return {
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: `call_loop_${loopCallIndex}`,
+            toolName: 'search_customers',
+            input: JSON.stringify({ keywords: ['loop'] }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+        response: { id: `resp_loop_${loopCallIndex}` },
+        warnings: [],
+      };
+    });
     const executeSteelToolCall = jest.fn(async (options) => ({
       ok: true as const,
       toolName: options.toolName as 'search_customers',

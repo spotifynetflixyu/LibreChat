@@ -14,6 +14,7 @@ import {
 } from './memory/service';
 
 import type { Request, Response } from 'express';
+import type { SendSteelOAuthChatOptions } from './ai/provider';
 import type {
   FullActiveSteelOutputSheets,
   SteelRuntimeContext,
@@ -165,15 +166,16 @@ function createTestRuntimeContext(
           quoteDefaultTypes: [],
         },
       },
+      outputRules: [],
       otherGlobalRules: {
         fileRules: [],
         sourcePriorityRules: [],
         markdownOutputRules: [],
-        workbookOutputRules: [],
       },
     },
     outputSheets: {
       activeOnly: true,
+      contextMode: 'full',
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: conversation.conversationId,
@@ -506,7 +508,7 @@ describe('createSteelHandlers', () => {
       }),
     );
 
-    const sendChatOptions = sendChat.mock.calls[0]?.[0];
+    const sendChatOptions = (sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>)[0]?.[0];
     expect(sendChatOptions).toEqual(
       expect.objectContaining({
         conversationId: 'steel_conversation_1',
@@ -533,6 +535,39 @@ describe('createSteelHandlers', () => {
     );
     expect(sendChatOptions).not.toHaveProperty('workingMemorySummary');
     expect(JSON.stringify(sendChatOptions?.messages)).not.toContain('browser-local stale table');
+  });
+
+  it('passes compact workbook runtime context mode from env into context preparation', async () => {
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: 'ok',
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const prepareRuntimeContext = jest.fn(async (input) =>
+      createTestRuntimeContext(input.conversation),
+    );
+    const handlers = createSteelHandlers({
+      env: { STEEL_RUNTIME_CONTEXT_MODE: 'compact_workbook' },
+      getModelsConfig: jest.fn(),
+      prepareRuntimeContext,
+      sendChat,
+    } as unknown as Parameters<typeof createSteelHandlers>[0]);
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: '測試 compact mode' }],
+      },
+    } as Request;
+    const res = createResponse();
+
+    await handlers.chat(req, res);
+
+    expect(prepareRuntimeContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'compact_workbook',
+      }),
+    );
   });
 
   it('auto-captures final assistant Markdown into Working Order Memory after provider completion', async () => {
@@ -1150,7 +1185,8 @@ describe('createSteelHandlers', () => {
         content: '改成 3 支',
       }),
     );
-    expect(sendChat.mock.calls[0]?.[0]).toEqual(
+    const sendChatOptions = (sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>)[0]?.[0];
+    expect(sendChatOptions).toEqual(
       expect.objectContaining({
         messages: [{ role: 'user', content: '改成 3 支' }],
         steelRuntimeContext: expect.objectContaining({
@@ -1164,7 +1200,7 @@ describe('createSteelHandlers', () => {
         }),
       }),
     );
-    expect(sendChat.mock.calls[0]?.[0]).not.toHaveProperty('workingMemorySummary');
+    expect(sendChatOptions).not.toHaveProperty('workingMemorySummary');
   });
 
   it('does not expose workbook or file-analysis REST handlers', () => {

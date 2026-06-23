@@ -9,7 +9,13 @@ import type { SteelOAuthChatFile } from '../ai/provider';
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelInstructionPacket } from '../repositories/instructions';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
-import type { FullActiveSteelOutputSheets, GeneratedSteelOutputSheet } from './context';
+import type {
+  FullActiveSteelOutputSheets,
+  GeneratedSteelOutputSheet,
+  PrepareSteelRuntimeContextInput,
+  SteelRuntimeContextDependencies,
+  SteelOutputSheetMemorySnapshot,
+} from './context';
 
 const activeSheetIds = [
   'system_order',
@@ -170,20 +176,20 @@ function createPreviousOutputSheets(): FullActiveSteelOutputSheets {
   };
 }
 
-function createRuntimeDependencies() {
+function createRuntimeDependencies(): SteelRuntimeContextDependencies {
   return {
     listAgentRules: jest.fn(async () => [createAgentRule()]),
     listReviewedInstructionPackets: jest.fn(async () => [createInstructionPacket()]),
     listReviewedQuoteDefaults: jest.fn(async () => [createQuoteDefault()]),
     listReviewedQuoteRules: jest.fn(async () => [createQuoteRule()]),
+    listOutputRules: jest.fn(async () => [createWorkbookOutputRule()]),
     listOtherGlobalRules: jest.fn(async ({ includeOcrRules }: { includeOcrRules: boolean }) => ({
       ocrRules: includeOcrRules ? [createOcrRule()] : undefined,
       fileRules: [createAgentRule({ id: 61, slug: 'steel-file-policy' })],
       sourcePriorityRules: [createAgentRule({ id: 62, slug: 'steel-source-priority' })],
       markdownOutputRules: [createAgentRule({ id: 63, slug: 'steel-markdown-output-policy' })],
-      workbookOutputRules: [createWorkbookOutputRule()],
     })),
-    readOutputSheetMemory: jest.fn(async () => ({
+    readOutputSheetMemory: jest.fn(async (): Promise<SteelOutputSheetMemorySnapshot> => ({
       previousOutputSheets: {
         system_order: {
           sheetId: 'system_order',
@@ -194,6 +200,7 @@ function createRuntimeDependencies() {
                 項次: '1',
                 型號: 'CCG075',
                 品名規格: '錏輕型鋼 75x45',
+                內部備註: 'full-row-only-note',
               },
             },
           ],
@@ -274,21 +281,34 @@ function createRuntimeDependencies() {
   };
 }
 
-async function prepareContext(files: SteelOAuthChatFile[] = []) {
+async function prepareContext(
+  files: SteelOAuthChatFile[] = [],
+  mode?: 'full' | 'compact_workbook',
+  historyFiles: SteelOAuthChatFile[] = [],
+  priorActiveFileEvidence: Record<string, string>[] = [],
+) {
   const dependencies = createRuntimeDependencies();
-  const context = await prepareSteelRuntimeContext({
+  const input: PrepareSteelRuntimeContextInput & { mode?: 'full' | 'compact_workbook' } = {
     conversation: {
       conversationId: 'steel_conversation_1',
       requestId: 'request_1',
-      activeHistory: [{ role: 'user', content: '請報價' }],
+      activeHistory: [
+        {
+          role: 'user',
+          content: '請報價',
+          ...(historyFiles.length > 0 ? { files: historyFiles } : {}),
+        },
+      ],
       currentUserTurn: { role: 'user', content: '請報價' },
     },
     attachments: {
       currentTurnFiles: files,
-      priorActiveFileEvidence: [],
+      priorActiveFileEvidence,
     },
     dependencies,
-  });
+    ...(mode ? { mode } : {}),
+  };
+  const context = await prepareSteelRuntimeContext(input);
 
   return { context, dependencies };
 }
@@ -301,6 +321,7 @@ describe('Steel runtime context', () => {
     expect(dependencies.listReviewedInstructionPackets).toHaveBeenCalledWith();
     expect(dependencies.listReviewedQuoteDefaults).toHaveBeenCalledWith();
     expect(dependencies.listReviewedQuoteRules).toHaveBeenCalledWith();
+    expect(dependencies.listOutputRules).toHaveBeenCalledWith();
     expect(context.rules.agentRules.map((rule) => rule.slug)).toEqual([
       'steel-default-agent-instruction',
     ]);
@@ -312,6 +333,9 @@ describe('Steel runtime context', () => {
     ]);
     expect(context.rules.steelGlobalRules.quoteRules.map((rule) => rule.catalogFamily)).toEqual([
       'plate',
+    ]);
+    expect(context.rules.outputRules.map((rule) => rule.slug)).toEqual([
+      'steel-workbook-output-policy',
     ]);
   });
 
@@ -341,7 +365,7 @@ describe('Steel runtime context', () => {
     ]);
   });
 
-  it('adds OCR rules only when current files or active file evidence require OCR context', async () => {
+  it('keeps OCR rules when current files, previous files, or active evidence require OCR context', async () => {
     const noFileResult = await prepareContext();
     const pdfFile: SteelOAuthChatFile = {
       filename: 'drawing.pdf',
@@ -349,6 +373,8 @@ describe('Steel runtime context', () => {
       data: new Uint8Array([1, 2, 3]),
     };
     const fileResult = await prepareContext([pdfFile]);
+    const historyFileResult = await prepareContext([], undefined, [pdfFile]);
+    const evidenceResult = await prepareContext([], undefined, [], [{ filename: 'drawing.pdf' }]);
 
     expect(noFileResult.context.attachments.includeOcrRules).toBe(false);
     expect(noFileResult.context.rules.otherGlobalRules.ocrRules).toBeUndefined();
@@ -362,12 +388,17 @@ describe('Steel runtime context', () => {
     expect(fileResult.dependencies.listOtherGlobalRules).toHaveBeenCalledWith({
       includeOcrRules: true,
     });
+    expect(historyFileResult.context.attachments.includeOcrRules).toBe(true);
+    expect(
+      historyFileResult.context.rules.otherGlobalRules.ocrRules?.map((rule) => rule.slug),
+    ).toEqual(['steel-drawing-ocr-policy']);
+    expect(evidenceResult.context.attachments.includeOcrRules).toBe(true);
   });
 
   it('serializes workbook output rules as backend sheet carry-forward and emitted-sheet replacement policy', async () => {
     const { context } = await prepareContext();
     const serialized = JSON.parse(serializeSteelRuntimeContext(context));
-    const outputPolicy = serialized.rules.otherGlobalRules.workbookOutputRules[0].outputPolicy;
+    const outputPolicy = serialized.rules.outputRules[0].outputPolicy;
 
     expect(outputPolicy).toEqual({
       activeSheets: [...activeSheetIds],
@@ -379,6 +410,26 @@ describe('Steel runtime context', () => {
     });
   });
 
+  it('serializes default context with stable rules and tool policy before volatile context', async () => {
+    const { context } = await prepareContext();
+    const serializedText = serializeSteelRuntimeContext(context);
+    const serialized = JSON.parse(serializedText);
+
+    expect(Object.keys(serialized)).toEqual([
+      'rules',
+      'toolPolicy',
+      'outputSheets',
+      'conversation',
+      'attachments',
+    ]);
+    expect(Object.keys(serialized.rules)).toEqual([
+      'agentRules',
+      'steelGlobalRules',
+      'outputRules',
+      'otherGlobalRules',
+    ]);
+  });
+
   it('serializes the reduced AI-visible tool policy and removed rule or memory lookup tools', async () => {
     const { context } = await prepareContext();
     const serialized = JSON.parse(serializeSteelRuntimeContext(context));
@@ -388,11 +439,43 @@ describe('Steel runtime context', () => {
       'search_price_candidates',
       'run_file_ocr',
     ]);
+    expect(context.toolPolicy.aiVisibleTools).not.toContain('read_active_workbook');
     expect(context.toolPolicy.removedTools).toEqual([
       'lookup_quote_rules',
       'read_working_order_items',
     ]);
     expect(serialized.toolPolicy).toEqual(context.toolPolicy);
+  });
+
+  it('serializes compact workbook mode without full active sheet rows but with compact row indexes', async () => {
+    const { context } = await prepareContext([], 'compact_workbook');
+    const serializedText = serializeSteelRuntimeContext(context);
+    const serialized = JSON.parse(serializedText);
+
+    expect(serialized.outputSheets.contextMode).toBe('compact_workbook');
+    expect(serialized.outputSheets.previousOutputSheets.system_order).toEqual({
+      sheetId: 'system_order',
+      rowCount: 1,
+    });
+    expect(serialized.outputSheets).not.toHaveProperty('derivedIndex');
+    expect(serializedText).not.toContain('full-row-only-note');
+    expect(serialized.outputSheets.compactWorkbook.sheets.system_order.rows).toEqual([
+      expect.objectContaining({
+        rowId: 'system_order:1',
+        rowIndex: 1,
+        anchors: expect.objectContaining({
+          型號: 'CCG075',
+          品名規格: '錏輕型鋼 75x45',
+        }),
+      }),
+    ]);
+    expect(serialized.outputSheets.compactWorkbook.sheets.customer_quote.rowCount).toBe(1);
+    expect(serialized.toolPolicy.aiVisibleTools).toEqual([
+      'search_customers',
+      'search_price_candidates',
+      'run_file_ocr',
+      'read_active_workbook',
+    ]);
   });
 
   it('carries forward active sheets that are wholly missing from generated output', () => {

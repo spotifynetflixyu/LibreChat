@@ -18,13 +18,21 @@ export const steelRuntimeAiVisibleTools = [
   'run_file_ocr',
 ] as const satisfies readonly SteelBusinessToolName[];
 
+export const steelRuntimeCompactWorkbookAiVisibleTools = [
+  ...steelRuntimeAiVisibleTools,
+  'read_active_workbook',
+] as const satisfies readonly SteelBusinessToolName[];
+
 export const steelRuntimeRemovedTools = [
   'lookup_quote_rules',
   'read_working_order_items',
 ] as const satisfies readonly SteelBusinessToolName[];
 
 export type SteelRuntimeActiveOutputSheetId = (typeof steelRuntimeActiveOutputSheetIds)[number];
-export type SteelRuntimeAiVisibleToolName = (typeof steelRuntimeAiVisibleTools)[number];
+export type SteelRuntimeContextMode = 'full' | 'compact_workbook';
+export type SteelRuntimeAiVisibleToolName =
+  | (typeof steelRuntimeAiVisibleTools)[number]
+  | (typeof steelRuntimeCompactWorkbookAiVisibleTools)[number];
 export type SteelRuntimeRemovedToolName = (typeof steelRuntimeRemovedTools)[number];
 
 export interface SteelRuntimeJsonObject {
@@ -64,6 +72,23 @@ export interface SteelOutputSheetMemorySnapshot {
   derivedIndex: SteelRuntimeDerivedIndex;
 }
 
+export interface SteelRuntimeCompactWorkbookRow {
+  rowId: string;
+  rowIndex: number;
+  anchors: SteelRuntimeJsonObject;
+}
+
+export interface SteelRuntimeCompactWorkbookSheet {
+  sheetId: SteelRuntimeActiveOutputSheetId;
+  rowCount: number;
+  rows: SteelRuntimeCompactWorkbookRow[];
+}
+
+export interface SteelRuntimeCompactWorkbookContext {
+  sheets: Record<SteelRuntimeActiveOutputSheetId, SteelRuntimeCompactWorkbookSheet>;
+  unresolvedCount: number;
+}
+
 export interface SteelGlobalRuleGroups {
   packetGroups: string[];
   catalogFamilies: string[];
@@ -79,7 +104,6 @@ export interface SteelRuntimeOtherGlobalRules {
   fileRules: SteelAgentRule[];
   sourcePriorityRules: SteelAgentRule[];
   markdownOutputRules: SteelAgentRule[];
-  workbookOutputRules: SteelAgentRule[];
 }
 
 export interface SteelRuntimeContext {
@@ -101,16 +125,19 @@ export interface SteelRuntimeContext {
       quoteRules: SteelQuoteRule[];
       groupedBy: SteelGlobalRuleGroups;
     };
+    outputRules: SteelAgentRule[];
     otherGlobalRules: SteelRuntimeOtherGlobalRules;
   };
   outputSheets: {
     activeOnly: true;
+    contextMode: SteelRuntimeContextMode;
     memoryName: 'Output Sheet Memory';
     contextName: 'Runtime Output Sheet Context';
     conversationId?: string;
     sheetIds: typeof steelRuntimeActiveOutputSheetIds;
     previousOutputSheets: FullActiveSteelOutputSheets;
     derivedIndex: SteelRuntimeDerivedIndex;
+    compactWorkbook?: SteelRuntimeCompactWorkbookContext;
   };
   attachments: {
     currentTurnFiles: SteelOAuthChatFile[];
@@ -118,7 +145,7 @@ export interface SteelRuntimeContext {
     includeOcrRules: boolean;
   };
   toolPolicy: {
-    aiVisibleTools: typeof steelRuntimeAiVisibleTools;
+    aiVisibleTools: readonly SteelRuntimeAiVisibleToolName[];
     removedTools: typeof steelRuntimeRemovedTools;
   };
 }
@@ -148,6 +175,7 @@ export interface SteelRuntimeContextDependencies {
   listReviewedInstructionPackets(): Promise<SteelInstructionPacket[]>;
   listReviewedQuoteDefaults(): Promise<SteelQuoteDefault[]>;
   listReviewedQuoteRules(): Promise<SteelQuoteRule[]>;
+  listOutputRules(): Promise<SteelAgentRule[]>;
   listOtherGlobalRules(
     input: ListSteelOtherGlobalRulesInput,
   ): Promise<SteelRuntimeOtherGlobalRules>;
@@ -158,6 +186,7 @@ export interface PrepareSteelRuntimeContextInput {
   conversation: SteelRuntimeContextConversationInput;
   attachments?: SteelRuntimeContextAttachmentsInput;
   dependencies: SteelRuntimeContextDependencies;
+  mode?: SteelRuntimeContextMode;
 }
 
 export interface ResolveNextSteelOutputSheetsInput {
@@ -188,14 +217,27 @@ function hasOcrRelevantMediaType(file: SteelOAuthChatFile): boolean {
   return mediaType.startsWith('image/') || mediaType === 'application/pdf';
 }
 
+function hasOcrRelevantMessageFile(message: SteelOAuthChatMessage | undefined): boolean {
+  return message?.files?.some(hasOcrRelevantMediaType) ?? false;
+}
+
 function shouldIncludeOcrRules({
+  activeHistory,
   currentTurnFiles,
+  currentUserTurn,
   priorActiveFileEvidence,
 }: {
+  activeHistory: readonly SteelOAuthChatMessage[];
   currentTurnFiles: readonly SteelOAuthChatFile[];
+  currentUserTurn?: SteelOAuthChatMessage;
   priorActiveFileEvidence: readonly SteelRuntimeJsonObject[];
 }): boolean {
-  return currentTurnFiles.some(hasOcrRelevantMediaType) || priorActiveFileEvidence.length > 0;
+  return (
+    currentTurnFiles.some(hasOcrRelevantMediaType) ||
+    activeHistory.some(hasOcrRelevantMessageFile) ||
+    hasOcrRelevantMessageFile(currentUserTurn) ||
+    priorActiveFileEvidence.length > 0
+  );
 }
 
 function buildGlobalRuleGroups({
@@ -238,6 +280,88 @@ function pickActiveOutputSheets(
     customer_data: snapshot.previousOutputSheets.customer_data,
     manual_review: snapshot.previousOutputSheets.manual_review,
     customer_quote: snapshot.previousOutputSheets.customer_quote,
+  };
+}
+
+const compactWorkbookAnchorKeys = new Set([
+  '項次',
+  'rowNo',
+  '件號',
+  'partNo',
+  '型號',
+  'erpItemCode',
+  '品名規格',
+  'productName',
+  '數量',
+  'quantity',
+  '單價',
+  'unitPrice',
+  '小計',
+  'subtotal',
+  '客戶名稱',
+  'displayName',
+  '客戶等級',
+  'customerTier',
+  '計價基準',
+  'reviewStatus',
+  'reason',
+  'unresolvedReason',
+  '項目',
+]);
+
+function isCompactAnchorValue(value: SteelJsonValue | undefined): value is SteelJsonValue {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+function toCompactWorkbookRow(
+  row: SteelRuntimeOutputSheetRow,
+  rowIndex: number,
+): SteelRuntimeCompactWorkbookRow {
+  const anchors = Object.entries(row.cells).reduce<SteelRuntimeJsonObject>(
+    (result, [key, value]) => {
+      if (compactWorkbookAnchorKeys.has(key) && isCompactAnchorValue(value)) {
+        result[key] = value;
+      }
+
+      return result;
+    },
+    {},
+  );
+
+  return {
+    rowId: row.rowId,
+    rowIndex,
+    anchors,
+  };
+}
+
+function toCompactWorkbookSheet(
+  sheet: SteelRuntimeOutputSheet,
+): SteelRuntimeCompactWorkbookSheet {
+  return {
+    sheetId: sheet.sheetId,
+    rowCount: sheet.rows.length,
+    rows: sheet.rows.map((row, index) => toCompactWorkbookRow(row, index + 1)),
+  };
+}
+
+function buildCompactWorkbookContext(
+  outputSheets: FullActiveSteelOutputSheets,
+  derivedIndex: SteelRuntimeDerivedIndex,
+): SteelRuntimeCompactWorkbookContext {
+  return {
+    sheets: {
+      system_order: toCompactWorkbookSheet(outputSheets.system_order),
+      customer_data: toCompactWorkbookSheet(outputSheets.customer_data),
+      manual_review: toCompactWorkbookSheet(outputSheets.manual_review),
+      customer_quote: toCompactWorkbookSheet(outputSheets.customer_quote),
+    },
+    unresolvedCount: derivedIndex.unresolvedItems.length,
   };
 }
 
@@ -318,11 +442,14 @@ export async function prepareSteelRuntimeContext({
   conversation,
   attachments,
   dependencies,
+  mode = 'full',
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
   const priorActiveFileEvidence = attachments?.priorActiveFileEvidence ?? [];
   const includeOcrRules = shouldIncludeOcrRules({
+    activeHistory: conversation.activeHistory,
     currentTurnFiles,
+    currentUserTurn: conversation.currentUserTurn,
     priorActiveFileEvidence,
   });
   const [
@@ -330,6 +457,7 @@ export async function prepareSteelRuntimeContext({
     instructionPackets,
     quoteDefaults,
     quoteRules,
+    outputRules,
     otherGlobalRules,
     outputSheetMemory,
   ] = await Promise.all([
@@ -337,6 +465,7 @@ export async function prepareSteelRuntimeContext({
     dependencies.listReviewedInstructionPackets(),
     dependencies.listReviewedQuoteDefaults(),
     dependencies.listReviewedQuoteRules(),
+    dependencies.listOutputRules(),
     dependencies.listOtherGlobalRules({ includeOcrRules }),
     dependencies.readOutputSheetMemory(conversation.conversationId),
   ]);
@@ -348,23 +477,32 @@ export async function prepareSteelRuntimeContext({
       steelGlobalRules: {
         instructionPackets,
         quoteDefaults,
-        quoteRules,
-        groupedBy: buildGlobalRuleGroups({
-          instructionPackets,
-          quoteDefaults,
           quoteRules,
-        }),
-      },
+          groupedBy: buildGlobalRuleGroups({
+            instructionPackets,
+            quoteDefaults,
+            quoteRules,
+          }),
+        },
+      outputRules,
       otherGlobalRules,
     },
     outputSheets: {
       activeOnly: true,
+      contextMode: mode,
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: conversation.conversationId,
       sheetIds: steelRuntimeActiveOutputSheetIds,
       previousOutputSheets: pickActiveOutputSheets(outputSheetMemory),
       derivedIndex: outputSheetMemory.derivedIndex,
+      compactWorkbook:
+        mode === 'compact_workbook'
+          ? buildCompactWorkbookContext(
+              pickActiveOutputSheets(outputSheetMemory),
+              outputSheetMemory.derivedIndex,
+            )
+          : undefined,
     },
     attachments: {
       currentTurnFiles,
@@ -372,15 +510,59 @@ export async function prepareSteelRuntimeContext({
       includeOcrRules,
     },
     toolPolicy: {
-      aiVisibleTools: steelRuntimeAiVisibleTools,
+      aiVisibleTools:
+        mode === 'compact_workbook'
+          ? steelRuntimeCompactWorkbookAiVisibleTools
+          : steelRuntimeAiVisibleTools,
       removedTools: steelRuntimeRemovedTools,
     },
+  };
+}
+
+function summarizePreviousOutputSheets(outputSheets: FullActiveSteelOutputSheets) {
+  return {
+    system_order: {
+      sheetId: 'system_order',
+      rowCount: outputSheets.system_order.rows.length,
+    },
+    customer_data: {
+      sheetId: 'customer_data',
+      rowCount: outputSheets.customer_data.rows.length,
+    },
+    manual_review: {
+      sheetId: 'manual_review',
+      rowCount: outputSheets.manual_review.rows.length,
+    },
+    customer_quote: {
+      sheetId: 'customer_quote',
+      rowCount: outputSheets.customer_quote.rows.length,
+    },
+  };
+}
+
+function serializeOutputSheets(outputSheets: SteelRuntimeContext['outputSheets']) {
+  if (outputSheets.contextMode !== 'compact_workbook') {
+    return outputSheets;
+  }
+
+  return {
+    activeOnly: outputSheets.activeOnly,
+    contextMode: outputSheets.contextMode,
+    memoryName: outputSheets.memoryName,
+    contextName: outputSheets.contextName,
+    conversationId: outputSheets.conversationId,
+    sheetIds: outputSheets.sheetIds,
+    previousOutputSheets: summarizePreviousOutputSheets(outputSheets.previousOutputSheets),
+    compactWorkbook: outputSheets.compactWorkbook,
   };
 }
 
 export function serializeSteelRuntimeContext(context: SteelRuntimeContext): string {
   return JSON.stringify(
     {
+      rules: context.rules,
+      toolPolicy: context.toolPolicy,
+      outputSheets: serializeOutputSheets(context.outputSheets),
       conversation: {
         ...context.conversation,
         activeHistory: context.conversation.activeHistory.map(toSerializableMessage),
@@ -389,13 +571,10 @@ export function serializeSteelRuntimeContext(context: SteelRuntimeContext): stri
             ? toSerializableMessage(context.conversation.currentUserTurn)
             : undefined,
       },
-      rules: context.rules,
-      outputSheets: context.outputSheets,
       attachments: {
         ...context.attachments,
         currentTurnFiles: context.attachments.currentTurnFiles.map(toSerializableFile),
       },
-      toolPolicy: context.toolPolicy,
     },
     null,
     2,

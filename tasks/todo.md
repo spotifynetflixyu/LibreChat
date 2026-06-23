@@ -1,4 +1,896 @@
-# Active: Steel Provider-Prepared Full Context Orchestration Plan
+# Active: Steel Rules Folder Source and Runtime Context Ordering
+
+Goal: treat `docs/rules/鋼材規則/` as the canonical Steel rule source,
+sync those files to unified `steel.rules`, and keep provider runtime context
+ordered with default rules first: agent, all steel rules, output rules, then
+conditional other rules.
+
+Plan:
+
+- [x] Confirm old `docs/rules/鋼材規則.txt` and `docs/rules/OCR規則.txt` are no
+  longer the canonical repo rule sources.
+- [x] Update `sync-steel-rules.cjs` so it reads `docs/rules/鋼材規則/*.txt` and
+  `docs/rules/其他規則/OCR規則.txt`.
+- [x] Apply rule sync to cloud Supabase and remove stale active reviewed rows
+  sourced from the deleted old rule files.
+- [x] Split runtime rule loaders so `agent`, `steel`, `output`, and `other`
+  rules are loaded as separate DB-backed groups.
+- [x] Serialize runtime context with `rules` first and with rule group order
+  `agentRules -> steelGlobalRules -> outputRules -> otherGlobalRules`.
+- [x] Keep `other` rules conditional; OCR rules are included only when current
+  files or active evidence require OCR context.
+- [x] Verify DB readback, focused Jest, and `git diff --check`.
+
+Review - 2026-06-23:
+
+- `steel.rules` active reviewed readback now contains 7 rows:
+  `agent=1`, `steel=4`, `output=1`, `other=1`.
+- Steel rule rows now source from `docs/rules/鋼材規則/C型鋼.txt`,
+  `H型鋼.txt`, `鐵板.txt`, and `長管-切工.txt`.
+- Old active reviewed source refs for `docs/rules/鋼材規則.txt` and
+  `docs/rules/OCR規則.txt` read back as zero rows.
+- Runtime context now has the rules block first, with rule keys ordered as
+  `agentRules`, `steelGlobalRules`, `outputRules`, `otherGlobalRules`.
+- Follow-up correction: top-level serialized runtime context order is now
+  `rules`, `toolPolicy`, `outputSheets`, `conversation`, `attachments` so the
+  stable tool contract stays ahead of volatile workbook/conversation/file data.
+- Follow-up verification: runtime dependencies now load all active reviewed
+  `agent`, `steel`, and `output` rows without section filters; only `other`
+  rules remain conditional.
+- Follow-up correction: OCR rules now remain included when any active history
+  turn had PDF/image files, even if the current turn is text-only. Current
+  files, prior active file evidence, and current-turn files still also trigger
+  OCR rules.
+- Focused Jest passed for rule repository, runtime context, handler, and
+  provider tests.
+
+# Previous Active: Steel Cutting Price v3 Subcategory Integration
+
+Goal: import the updated cutting workbook
+`/Users/neven/Downloads/產品價格_分類檔案_v3/產品價格_20_切工／切割.xlsm`,
+store its new `次類別` and `規格` fields in `steel.prices`, and make one
+`search_price_candidates` call able to return both material/product price rows
+and related cutting price rows for quote calculation.
+
+Observed source facts:
+
+- `整理後資料` has 97 effective cutting rows.
+- Headers now include `類別`, `次類別`, `規格`, `單位`, `價格狀態`,
+  `停用/缺貨註記`, `原始列號`, `型號`, `品名規格`, A/B/C/F prices and ratios.
+- All effective rows have `類別='切工/切割'` and `單位='刀'`.
+- `次類別` values are `H型鋼`, `工字鐵/H型鋼`, `管`, `角鐵`, `槽鐵`,
+  `平鐵/扁鐵`.
+
+Integration design:
+
+- [x] Add nullable `subcategory` and `source_subcategory_label` columns to
+  `steel.prices`; keep cutting rows in the unified prices table.
+- [x] Import cutting rows as `price_kind='cutting'`,
+  `category='切工/切割'`, `subcategory=<次類別>`, `source_spec=<規格>`.
+- [x] Keep `規格` as string and normalize obvious steel spec separators with the
+  same spec key normalizer; preserve inch/range text where needed.
+- [x] Extend `search_price_candidates` lookup input with
+  `includeRelatedCutting?: boolean`.
+- [x] When `includeRelatedCutting=true`, one backend lookup should include
+  matching product/material rows plus related cutting rows by category mapping:
+  `H型鋼 -> H型鋼, 工字鐵/H型鋼`; `工字鐵/I字鐵 -> 工字鐵/H型鋼`;
+  pipe/tube categories -> `管`; `角鐵/角鋼 -> 角鐵`;
+  `槽鐵 -> 槽鐵`; `平鐵/扁鐵 -> 平鐵/扁鐵`.
+- [x] Update tool output to expose `subcategory` and `sourceSubcategoryLabel`
+  so AI can select cutting rows explicitly.
+- [x] Update `docs/rules/鋼材規則/長管-切工.txt` so AI uses one
+  `search_price_candidates` call with `includeRelatedCutting=true` when product
+  and cutting price are both needed.
+- [x] Sync rules to `steel.rules` if rule docs change.
+- [x] Apply migration to cloud Supabase, update `supabase/schema.sql`, import
+  cutting rows, and read back counts.
+- [x] Verify with focused Jest, direct DB smoke, direct tool smoke, and
+  `git diff --check`.
+
+Review - 2026-06-23:
+
+- Added `subcategory` and `source_subcategory_label` to unified
+  `steel.prices` in both schema snapshot and migration
+  `20260623115453_steel_prices_subcategory.sql`; cloud Supabase was updated
+  directly through `STEEL_POSTGRES_URL` because this checkout is not linked to a
+  Supabase project ref for CLI migration apply.
+- Re-imported `/Users/neven/Downloads/產品價格_分類檔案_v3/產品價格_20_切工／切割.xlsm`
+  with `--replace-workbook`. The workbook contributes 97 cutting rows, all with
+  `subcategory` and `source_spec`.
+- Direct DB readback shows total `steel.prices=6464`, active `6147`, and the
+  new cutting workbook row distribution: `H型鋼=19`, `工字鐵/H型鋼=31`,
+  `管=13`, `角鐵=12`, `槽鐵=12`, `平鐵/扁鐵=10`.
+- `steel.rules` now has 19 active reviewed rows, including
+  `steel_quote_rules_long_material_cutting` sourced from
+  `docs/rules/鋼材規則/長管-切工.txt`.
+- Direct tool smoke for `category='H型鋼'`, `specs=['200*100']`,
+  `includeRelatedCutting=true` returned 11 candidates in one call:
+  10 H 型鋼 product rows and 1 `切工/切割` / `H型鋼` cutting row with A/B/C/F
+  prices.
+- Focused Jest passed for importer, price repository, tool executor, tool
+  registry, and provider batching. Full `packages/api` TypeScript still fails
+  on existing unrelated agents/config/redis and older Steel spec typing issues;
+  the tsc log has no errors under this task's touched Steel paths.
+
+# Previous Active: Steel Product Price v3 Plate Correction Reload
+
+Goal: re-update Steel product price data after the corrected
+`產品價格_03_鐵板／鋼板.xlsm` moved the listed `雷切割型` ERP rows into the plate
+workbook. These rows must be treated as `鐵板/鋼板` product rows, not
+`切工/切割` cutting rows.
+
+Correction rows:
+
+- `B4NA900010`, `B4NA900012`, `B4NA900015`
+- `B4NH900010`, `B4NH900012`, `B4NH900015`
+- `B4NS900010`, `B4NS900012`, `B4NS900015`, `B4NS900020`, `B4NS900030`
+- `B4NT900030`, `B4NT900045`, `B4NT900060`
+- `B4XS900030`
+
+Plan:
+
+- [x] Read current cloud rows for the listed ERP codes and confirm they are
+  currently imported as `price_kind='cutting'`, `category='切工/切割'`.
+- [x] Read the corrected workbook and confirm the listed rows are present in
+  `產品價格_03_鐵板／鋼板.xlsm`.
+- [x] Add importer correction so these listed ERP codes import as
+  `price_kind='product'`, `category='鐵板/鋼板'`, even if the source row's `類別`
+  still says `切工/切割`.
+- [x] Add regression coverage for one corrected row.
+- [x] Dry-run import and verify summary/counts.
+- [x] Apply the corrected import to cloud `steel.prices`.
+- [x] Verify all listed ERP codes read back as `product` / `鐵板/鋼板` with
+  A/B/C/F tier prices.
+- [x] Run focused Jest and `git diff --check`.
+- [x] Correction follow-up: `source_category_label` for the listed ERP codes
+  must also be `鐵板/鋼板`, not the stale row-level `切工/切割`.
+
+Review - 2026-06-23:
+
+- Current cloud data before correction had all 15 listed ERP codes as
+  `price_kind='cutting'`, `category='切工/切割'`, sourced from
+  `產品價格_20_切工／切割.xlsm`.
+- Corrected workbook read confirmed the rows exist in
+  `產品價格_03_鐵板／鋼板.xlsm` at rows 442-456, though row-level `類別` still says
+  `切工/切割`.
+- Importer now has a targeted 2026-06-23 correction list so those rows import as
+  `price_kind='product'`, `category='鐵板/鋼板'`.
+- Applied single-workbook safe update mode: only the 15 listed ERP codes were
+  deleted/reinserted; cloud `steel.prices` total remains `6433`.
+- Cloud readback shows all 15 listed ERP codes are now
+  `price_kind='product'`, `category='鐵板/鋼板'`.
+- Follow-up correction: user clarified `source_category_label` must also be
+  normalized to `鐵板/鋼板` for these corrected rows.
+- Re-applied the same 15-code safe update after importer correction. Cloud
+  readback now groups all 15 rows under `price_kind='product'`,
+  `category='鐵板/鋼板'`, `source_category_label='鐵板/鋼板'`, and all 15 still
+  have A/B/C/F tier prices.
+- Follow-up correction: remove any metadata annotation of the stale raw
+  row-level category. These rows should only retain the corrected `鐵板/鋼板`
+  category labels.
+- Re-applied the same 15-code safe update after removing correction metadata.
+  Cloud readback shows `with_category_correction=0`,
+  `with_stale_category_text=0`, and all 15 rows remain
+  `product` / `鐵板/鋼板` with A/B/C/F tier prices.
+
+# Previous Active: Steel Unified Prices/Rules Supabase Schema Plan
+
+Goal: design the new Steel Supabase schema and runtime contract before any
+migration, destructive delete, or data import. The current target architecture
+keeps only `customers` and `formula_versions` as existing business tables, then
+adds one unified `prices` table for product/cutting/hole prices and one unified
+`rules` table for all runtime rules.
+
+Latest user-locked decisions:
+
+- [x] `prices` contains all price categories, including product prices, cutting
+  prices, and hole prices.
+- [x] `rules` contains all rules.
+- [x] Split rule tables are obsolete. Do not preserve runtime dependencies on
+  `agent_rules`, `quote_rules`, `customer_rules`, `catalog_family_rules`,
+  `material_rules`, or similar split tables.
+- [x] Split price tables are obsolete. Do not restore `steel.price_items` as
+  the runtime product-price table.
+- [x] `customer_tier` is the product price level code. Runtime tier selection
+  maps to product price A/B/C/F with uppercase string codes `A`, `B`, `C`, `F`;
+  `B` is the default when no customer tier is known.
+- [x] Do not recreate `customer_tiers` as a separate runtime table. The tier
+  mapping is an application/database check constraint contract:
+  `A`, `B`, `C`, `F`. Do not convert these to numeric IDs or lowercase codes.
+- [x] `search_price_candidates` must return all A/B/C/F prices for matching
+  rows. If a later lookup updates the customer tier, the quote recalculates from
+  the already returned tier prices; it must not repeat `search_price_candidates`
+  only to change price tier.
+- [x] Global default rules are split by `rule_kind`: `agent`, `output`,
+  `steel`, and `other`. `other` covers OCR and similar supporting policy.
+- [x] Global `agent`, `output`, and `steel` rules are included at the top of
+  every send-API context in stable order to improve provider KV-cache reuse.
+
+Supabase schema target:
+
+```sql
+-- Price tier codes are an application contract, not row-level price rows.
+-- A/B/C/F are stored as uppercase text codes. Runtime default is B.
+
+CREATE TABLE steel.customers (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  erp_customer_code TEXT,
+  display_name TEXT NOT NULL,
+  legal_name TEXT,
+  tax_id TEXT,
+  customer_tier TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  notes TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT customers_tier_check
+    CHECK (customer_tier IS NULL OR customer_tier IN ('A', 'B', 'C', 'F')),
+  CONSTRAINT customers_status_check
+    CHECK (status IN ('active', 'inactive', 'archived')),
+  CONSTRAINT customers_metadata_check
+    CHECK (jsonb_typeof(metadata) = 'object'),
+  CONSTRAINT customers_source_refs_check
+    CHECK (jsonb_typeof(source_refs) = 'array')
+);
+
+CREATE TABLE steel.formula_versions (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  code TEXT NOT NULL,
+  version_seq INTEGER NOT NULL,
+  display_name TEXT,
+  source_expression TEXT,
+  formula_body JSONB NOT NULL DEFAULT '{}'::jsonb,
+  compiled_formula JSONB,
+  allowed_variables JSONB NOT NULL DEFAULT '[]'::jsonb,
+  active BOOLEAN NOT NULL DEFAULT true,
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT formula_versions_code_version_unique UNIQUE (code, version_seq)
+);
+
+CREATE TABLE steel.prices (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  price_kind TEXT NOT NULL,
+  source_dataset TEXT NOT NULL,
+  source_row_key TEXT NOT NULL,
+  erp_item_code TEXT,
+  product_name TEXT NOT NULL,
+  spec_key TEXT NOT NULL,
+  category TEXT NOT NULL,
+  material TEXT,
+  source_category_label TEXT,
+  source_material_label TEXT,
+  source_thickness TEXT,
+  source_spec TEXT,
+  unit TEXT NOT NULL DEFAULT 'piece',
+  currency TEXT NOT NULL DEFAULT 'TWD',
+  unit_price_a NUMERIC(14, 4),
+  unit_price_b NUMERIC(14, 4),
+  unit_price_c NUMERIC(14, 4),
+  unit_price_f NUMERIC(14, 4),
+  ratio_a NUMERIC(14, 4),
+  ratio_b NUMERIC(14, 4),
+  ratio_c NUMERIC(14, 4),
+  ratio_f NUMERIC(14, 4),
+  product_price_unit_weight NUMERIC(14, 5),
+  product_price_unit_weight_unit TEXT,
+  active BOOLEAN NOT NULL DEFAULT true,
+  value_state TEXT NOT NULL DEFAULT 'confirmed',
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT prices_kind_check
+    CHECK (price_kind IN ('product', 'cutting', 'hole')),
+  CONSTRAINT prices_value_state_check
+    CHECK (value_state IN ('unknown', 'confirmed', 'true_zero', 'estimate')),
+  CONSTRAINT prices_review_state_check
+    CHECK (review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')),
+  CONSTRAINT prices_unit_prices_nonnegative_check CHECK (
+    (unit_price_a IS NULL OR unit_price_a >= 0)
+    AND (unit_price_b IS NULL OR unit_price_b >= 0)
+    AND (unit_price_c IS NULL OR unit_price_c >= 0)
+    AND (unit_price_f IS NULL OR unit_price_f >= 0)
+  ),
+  CONSTRAINT prices_confirmed_has_price_check CHECK (
+    value_state = 'unknown'
+    OR unit_price_a IS NOT NULL
+    OR unit_price_b IS NOT NULL
+    OR unit_price_c IS NOT NULL
+    OR unit_price_f IS NOT NULL
+  ),
+  CONSTRAINT prices_unknown_has_no_price_check CHECK (
+    value_state <> 'unknown'
+    OR (
+      unit_price_a IS NULL
+      AND unit_price_b IS NULL
+      AND unit_price_c IS NULL
+      AND unit_price_f IS NULL
+    )
+  ),
+  CONSTRAINT prices_metadata_check
+    CHECK (jsonb_typeof(metadata) = 'object'),
+  CONSTRAINT prices_source_refs_check
+    CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT prices_source_row_unique UNIQUE (source_dataset, source_row_key)
+);
+
+CREATE TABLE steel.rules (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  slug TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  rule_kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  locale TEXT NOT NULL DEFAULT 'zh-TW',
+  rule_sections TEXT[] NOT NULL DEFAULT '{}'::text[],
+  selectors JSONB NOT NULL DEFAULT '{}'::jsonb,
+  prompt TEXT NOT NULL,
+  tool_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+  output_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+  priority INTEGER NOT NULL DEFAULT 100,
+  active BOOLEAN NOT NULL DEFAULT true,
+  review_state TEXT NOT NULL DEFAULT 'reviewed',
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  invalidated_at TIMESTAMPTZ,
+  created_by TEXT,
+  reviewed_by TEXT,
+  reviewed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT rules_kind_check
+    CHECK (rule_kind IN ('agent', 'output', 'steel', 'other')),
+  CONSTRAINT rules_review_state_check
+    CHECK (review_state IN ('draft', 'needs_review', 'reviewed', 'rejected')),
+  CONSTRAINT rules_selectors_check
+    CHECK (jsonb_typeof(selectors) = 'object'),
+  CONSTRAINT rules_tool_policy_check
+    CHECK (jsonb_typeof(tool_policy) = 'object'),
+  CONSTRAINT rules_output_policy_check
+    CHECK (jsonb_typeof(output_policy) = 'object'),
+  CONSTRAINT rules_source_refs_check
+    CHECK (jsonb_typeof(source_refs) = 'array'),
+  CONSTRAINT rules_slug_version_unique UNIQUE (slug, version)
+);
+```
+
+Indexes and extensions:
+
+- Ensure `pg_trgm` exists before text-search indexes.
+- `customers`: unique index on `erp_customer_code` where not null; trigram
+  indexes on `display_name`, `legal_name`, and `tax_id` if customer search still
+  needs fuzzy matching.
+- `prices`: btree indexes on `(price_kind, category)`,
+  `(price_kind, category, material)`, `(review_state, active)`;
+  trigram indexes on `spec_key`, `product_name`, `source_thickness`,
+  `source_spec`; unique `(source_dataset, source_row_key)`.
+- `rules`: btree indexes on `(rule_kind, active, review_state, priority)` and
+  unique `(slug, version)`.
+
+Migration plan:
+
+- [x] Create migration with `npx supabase migration new steel_unified_prices_rules_schema`.
+- [x] In migration, preserve existing `customers` and `formula_versions`
+  data where present.
+- [x] Rename or migrate old `customers.customer_tier_id` to
+  `customers.customer_tier` if present. Drop any foreign key to a deleted
+  `customer_tiers` table; keep the column as nullable uppercase text with check
+  `IN ('A','B','C','F')`.
+- [x] Add SQL comments documenting `customers.customer_tier`:
+  `A/B/C/F uppercase text code; runtime default is B when tier is unknown`.
+- [x] Create `steel.prices` and `steel.rules` if missing.
+- [x] Drop obsolete split tables if they still exist:
+  `price_items`, `price_history`, `price_rule_conditions`, `customer_tiers`,
+  `customer_aliases`, `agent_rules`, `quote_rules`, `customer_rules`,
+  `catalog_family_rules`, `material_rules`, `instruction_packets`,
+  `lesson_memory_entries`, `source_chunks`, `source_embeddings`,
+  `weight_specs`, `orders`, `order_items`, `import_rule_notes`.
+- [x] Update `supabase/schema.sql` to the unified current snapshot in the same
+  change.
+- [x] Verify migration with direct cloud readback of tables, columns,
+  constraints, and indexes before import.
+
+`search_price_candidates` API design:
+
+```ts
+type SearchPriceCandidatesInput =
+  | {
+      mode?: 'lookup';
+      queries: PriceCandidateQuery[];
+      limit?: number;
+    }
+  | {
+      mode: 'category_discovery';
+      keyword: string;
+      limit?: number;
+    };
+
+interface PriceCandidateQuery {
+  category: PriceCategory;
+  material?: MaterialKind;
+  thicknesses?: string[];
+  specs?: string[];
+  keyword?: string;
+}
+```
+
+Query semantics:
+
+- Lookup mode requires `queries[].category`.
+- `category` and `material` values are the normalized visible enum values, e.g.
+  `扁方管`, `鐵板/鋼板`, `OT 黑鐵`, `2B 白鐵霧面`; no English/snake-case API
+  values.
+- Per query object: AND semantics across category/material/thickness/spec/keyword.
+- Across `queries`: OR semantics.
+- `thicknesses` targets `prices.source_thickness`. Pure integer query tokens
+  normalize to one decimal string, e.g. `2` -> `2.0`; numeric thickness
+  filters use exact match so `6.0` does not match `16.0`. Non-numeric thickness
+  text can still use contains matching.
+- `specs` are string contains filters against `prices.source_spec` /
+  `spec_key`.
+- `keyword` searches product-name/spec-key text.
+- Category unknown path: use `mode: 'category_discovery'` with `keyword`; do
+  not guess category.
+
+Tier behavior:
+
+- `search_price_candidates` does not accept or return `customerTier` props.
+- `search_price_candidates` returns every candidate with
+  `tierPrices: { A, B, C, F }`.
+- Quote calculation chooses the effective tier separately from customer context,
+  defaulting to `B` when no customer tier is known.
+- If customer tier becomes known or changes after a price result is already in
+  context, backend should recompute the selected price from `tierPrices`; do not call
+  `search_price_candidates` again solely for tier change.
+
+Provider/context rules:
+
+- Before every `sendSteelOAuthChat`, load active reviewed global rules from
+  `steel.rules` in stable order:
+  1. `rule_kind = 'agent'`
+  2. `rule_kind = 'output'`
+  3. `rule_kind = 'steel'`
+  4. `rule_kind = 'other'` only when applicable, e.g. OCR/file turns
+- Rule SQL should filter `active = true`, `review_state = 'reviewed'`, and
+  `invalidated_at IS NULL`, then order by fixed kind rank, `priority ASC`,
+  `slug ASC`, `version DESC`.
+- Put the stable global rule block at the top of context before per-turn memory,
+  active output sheet context, user messages, and tool results.
+- Update `docs/rules/agent規則.txt` and synced DB `rules` rows to state the new
+  `search_price_candidates` contract, tier default, tier-reprice behavior, and
+  category-discovery rule.
+
+Implementation checkpoints:
+
+- [x] Checkpoint A: schema migration and `supabase/schema.sql` unified snapshot.
+- [x] Checkpoint B: parser/import dry-run from v3 ZIP, no DB writes.
+- [x] Checkpoint C: `prices` import apply, readback grouped by
+  `price_kind/category/material/value_state`.
+- [x] Checkpoint D: `rules` seed/sync and fixed context assembly readback.
+- [x] Checkpoint E: focused Jest for parser, repository query semantics, tool
+  schema, provider tier-reprice behavior, and context rule ordering.
+- [x] Checkpoint F: direct tool smoke for category discovery, lookup, B default,
+  and tier reprice without re-search.
+
+Review - 2026-06-23:
+
+- Applied cloud migration to the unified Steel schema and synced
+  `supabase/schema.sql` plus
+  `supabase/migration/20260623093400_steel_unified_prices_rules_schema.sql`.
+- Imported v3 price ZIP into `steel.prices` after cleanup normalization:
+  cloud readback shows `prices=6433`.
+- Synced unified rules into `steel.rules`: cloud readback shows `rules=18`
+  with `agent=1`, `output=1`, `steel=15`, `other=1`.
+- Verified sample `DNB70060` stores one row with `category='鐵板/鋼板'`,
+  `material='OT 黑鐵'`, `source_thickness='6.0'`, and all
+  `unit_price_a/b/c/f` values.
+- Focused Jest passed: 9 suites, 64 tests.
+- Full `tsc --noEmit --project packages/api/tsconfig.json` still fails on
+  pre-existing non-target areas (`agents`, app config endpoint typing, Redis
+  client typing, older Steel history/memory/manual OCR specs). No errors remain
+  in this task's touched Steel paths after filtering `/tmp/steel-tsc.log`.
+
+Only this top `# Active` section is current. Later `# Active` / `## Active`
+sections are historical task records unless explicitly promoted again.
+
+# Superseded: Steel Product Price v3 Category Import Plan
+
+Status update - 2026-06-23 schema correction:
+
+- User clarified the target database architecture has changed:
+  - all rules should be unified into one table,
+  - all prices, including product price, cutting price, and hole price, should
+    be unified into one price table,
+  - obsolete split tables should be deleted.
+- Stop the previous `steel.price_items` / split rule-table implementation path.
+- Live DB introspection through current `.env` `STEEL_POSTGRES_URL` currently
+  shows no `steel.price_items`, but also does not show an obvious unified price
+  table. It still shows split rule tables such as `catalog_family_rules`,
+  `customer_rules`, `quote_rules`, `material_rules`, and
+  `price_rule_conditions`.
+- Blocking requirement before destructive migration/import: confirm the actual
+  unified rules table name and unified price table name/columns, or create a
+  new migration that establishes those unified tables and explicitly drops the
+  obsolete split tables.
+
+Goal: replace the existing Steel product-price database with the v3 classified
+product-price ZIP, collapse `A/B/C/F` tier prices into one row per product,
+normalize source category/material labels before import, and redesign
+`search_price_candidates` around multi-condition category/material queries.
+
+Current data facts from
+`/Users/neven/Downloads/產品價格_分類檔案_v3-20260623T075539Z-3-001.zip`:
+
+- ZIP contains 21 `.xlsm` workbooks. Each workbook has `整理後資料`, `分類統計`,
+  and `分類規則`.
+- `整理後資料` has 6,436 non-empty product rows before tier expansion.
+- Rows should stay one product row each. Do not expand `售價A/B/C/F` into four
+  `steel.price_items` rows.
+- Store normalized `category` from source `類別`.
+- Store normalized fixed-enum `material` from source `材質`.
+- Store `厚度` and `規格` as strings. If a source value is a pure integer
+  number/string, normalize it to one decimal-place string before DB import,
+  for example `1`, `2`, `3`, `4` become `1.0`, `2.0`, `3.0`, `4.0`.
+  Query those string fields with contains-style keyword matching.
+- Important parser caveat: some `規格` cells such as `5/8` and `3/4` are stored
+  by Excel as date-like values. The importer must recover those as fraction
+  specs, not persist dates like `2026-05-08`.
+- `無售價/0價` means unknown/missing price unless a future reviewed rule marks
+  a row as true zero. Do not treat blank or `0` tier prices as free prices.
+- 317 rows are marked stopped/out-of-stock. Preserve the source flag and set
+  runtime active status accordingly.
+
+Source normalization before DB import:
+
+- `No1 白鐵3t以上含` -> `No1 白鐵`
+- `鋁/鋁合金` -> `鋁`
+- `其他加工` -> `加工`
+- `不適用` -> `無`
+- `PVC` -> `塑膠`
+- `PC` -> `塑膠`
+
+Locked decisions:
+
+- [x] Clear old `steel.price_items` data before importing the v3 dataset.
+- [x] `category` is the normalized spreadsheet `類別` value.
+- [x] `search_price_candidates` lookup mode requires category and uses fixed
+  enum values.
+- [x] `PriceCategory` enum values are the normalized user/data-visible category
+  strings, for example `C型鋼`, `扁方管`, and `加工`. Do not introduce separate
+  English or snake-case values for the runtime/API contract.
+- [x] `material` uses a fixed enum when supplied. `MaterialKind` enum values are
+  the normalized user/data-visible material strings, for example `OT 黑鐵`,
+  `2B 白鐵霧面`, and `無`.
+- [x] One `steel.price_items` row represents one product with `A/B/C/F` prices
+  together.
+- [x] Existing runtime still defaults unknown customer tier to B for effective
+  quote price selection.
+- [x] This remains an Admin/data maintenance import. Do not re-enable the old
+  file-backed runtime reference importer.
+- [x] `其他加工` is not a canonical DB/import category after cleanup. Use
+  `加工` as the canonical DB/API enum value. Do not expose an extra English
+  value for it.
+- [x] `厚度` and `規格` are string columns. Pure integer values normalize to
+  one-decimal strings before import; decimal values, ranges, fractions, and
+  mixed dimension text remain string values without forced numeric conversion.
+
+Recommended approach:
+
+- Superseded: the earlier approach targeted `steel.price_items`. Do not proceed
+  with that table path after the unified-table correction.
+- Revised approach: make the next migration target the confirmed unified price
+  table. That table must be able to store price kind (`product`, `cutting`,
+  `hole`), normalized category/material enum values, string thickness/spec
+  facets, A/B/C/F tier prices and ratios where applicable, product/source
+  identity, and source refs.
+- The unified rules table must be the only runtime rule lookup source after the
+  migration. Existing code paths that still query split rules tables need to be
+  routed to the unified rules table or left untouched only if they are known
+  dead code.
+- Use one schema migration to reshape product-price storage for v3:
+  add `category`, `material`, source spec/thickness fields, and `A/B/C/F`
+  tier-price columns; replace tier-expanded identity with one-row-per-product
+  identity.
+- Keep `customerTierId` in the tool input as quote context only. Repository SQL
+  should not filter `price_items` by row-level `customer_tier_id` anymore; it
+  should select the effective `unitPrice` from the row's A/B/C/F columns based
+  on the requested or default tier.
+- Replace the old flat `candidateQueries` contract with condition groups:
+  each query object filters by required `category`, optional `material`,
+  optional `thicknesses`, optional `specs`, and optional product-name
+  `keyword`.
+- Category/material enum values in API input/output must be the exact normalized
+  Chinese/user-visible strings from the source data after cleanup. Prefer
+  `as const` string arrays / literal unions or equivalent zod enums whose values
+  are the visible strings. Do not make callers send `c_type`,
+  `ot_black_iron`, `PROCESSING`, or other invented English values.
+- Importer and query normalization should use the same string-normalization
+  rules for `厚度` and `規格`: integer numeric tokens become one-decimal strings
+  before storing or matching, while range/fraction/dimension text stays textual.
+- Apply AND semantics inside one query object and OR semantics across query
+  objects. Example:
+
+  ```json
+  {
+    "queries": [
+      { "category": "C型鋼", "material": "OT 黑鐵", "thicknesses": ["2.3"] },
+      { "category": "方管", "material": "錏/鍍鋅", "specs": ["75", "6M"] }
+    ],
+    "customerTierId": 2,
+    "limit": 100
+  }
+  ```
+
+- Category-discovery path: when category is unknown, the AI should call the
+  same tool with keyword discovery instead of guessing. The tool returns
+  candidate category/material counts and examples, then the next price lookup
+  must use enum category values.
+
+Rejected approaches:
+
+- Do not keep the current A/B/C/F row expansion. It contradicts the required
+  one-product-one-row contract and keeps the old `customer_tier_id` identity.
+- Do not store new category/material/spec/thickness only in `metadata`. Tool
+  filtering needs indexed, typed columns.
+- Do not infer category through the existing large `catalog_family` layer for
+  this import. The user-visible category is the normalized spreadsheet `類別`.
+
+API design:
+
+- Lookup input is object-shaped for provider compatibility:
+
+  ```ts
+  type SearchPriceCandidatesInput =
+    | {
+        mode?: 'lookup';
+        queries: PriceCandidateQuery[];
+        customerTierId?: number;
+        limit?: number;
+      }
+    | {
+        mode: 'category_discovery';
+        keyword: string;
+        limit?: number;
+      };
+
+  interface PriceCandidateQuery {
+    category: PriceCategory;
+    material?: MaterialKind;
+    thicknesses?: string[];
+    specs?: string[];
+    keyword?: string;
+  }
+  ```
+
+- Query behavior:
+  - `category`: required in lookup mode; SQL equality / enum value.
+  - `material`: optional; SQL equality / enum value.
+  - `thicknesses`: optional string array; default is no thickness filter.
+    When supplied, match ANY token by contains against stored thickness string.
+  - `specs`: optional string array; match ANY token by contains against stored
+    spec string, for dimensions, length, inches, OD, or similar facets.
+  - `keyword`: optional; contains query against `product_name` / 品名規格.
+  - Cross-field semantics are AND; multi-query array semantics are OR.
+  - Result output includes normalized enum values, original source labels in
+    metadata, all A/B/C/F prices and ratios, and the selected effective
+    `unitPrice`. Since enum values are already user-visible strings, separate
+    display labels are optional compatibility fields, not a second value system.
+
+Canonical category enum values:
+
+```ts
+export const PriceCategories = [
+  'C型鋼',
+  'H型鋼',
+  '鐵板/鋼板',
+  '圓鐵/圓鋼',
+  '角鐵/角鋼',
+  '孔',
+  '平鐵/扁鐵',
+  '槽鐵',
+  '工字鐵/I字鐵',
+  '方鋼/方鐵',
+  '圓管/鋼管',
+  '方管',
+  '扁方管',
+  '樓層板',
+  '浪板/收邊',
+  '網材',
+  '門窗/捲門/配件',
+  '五金/零件/耗材',
+  '折工',
+  '切工/切割',
+  '非鋼材/其他材料',
+  '鐵軌',
+  'T型鋼',
+  '加工',
+] as const;
+
+export type PriceCategory = (typeof PriceCategories)[number];
+```
+
+Canonical material enum values:
+
+```ts
+export const MaterialKinds = [
+  'OT 黑鐵',
+  'ST 白鐵',
+  '2B 白鐵霧面',
+  'BA 白鐵亮面',
+  'HL 白鐵沙面',
+  'No1 白鐵',
+  '錏/鍍鋅',
+  '錏',
+  '鋁鋅',
+  '彩色/烤漆',
+  '中碳鋼',
+  '鋁',
+  '非鋼材',
+  '塑膠',
+  '玻璃',
+  '無',
+  '待確認',
+] as const;
+
+export type MaterialKind = (typeof MaterialKinds)[number];
+```
+
+Planned files:
+
+- Modify: `supabase/schema.sql`
+- Create: `supabase/migration/<generated>_steel_product_price_v3_category.sql`
+- Create: `packages/api/src/steel/prices/category.ts`
+- Create: `packages/api/src/steel/prices/import.ts`
+- Create: `packages/api/src/steel/prices/import.spec.ts`
+- Create: `packages/api/scripts/import-steel-product-prices-v3.cjs`
+- Modify: `packages/api/src/steel/repositories/prices.ts`
+- Modify: `packages/api/src/steel/repositories/prices.spec.ts`
+- Modify: `packages/api/src/steel/tools/schemas.ts`
+- Modify: `packages/api/src/steel/tools/registry.ts`
+- Modify: `packages/api/src/steel/tools/registry.spec.ts`
+- Modify: `packages/api/src/steel/tools/execute.ts`
+- Modify: `packages/api/src/steel/tools/execute.spec.ts`
+- Modify: `packages/api/src/steel/ai/provider.ts`
+- Modify: `packages/api/src/steel/ai/provider.spec.ts`
+- Modify: `packages/api/src/steel/tools/sanitize.ts`
+- Modify: `packages/api/src/steel/tools/sanitize.spec.ts`
+- Modify: `docs/rules/agent規則.txt`
+- Modify: `docs/steel-catalog-family-data-contract.md`
+
+Checkpoint 0 - Plan Approval:
+
+- [x] User clarified cleanup rules, one-row tier storage, and multi-condition
+  search API.
+- [x] User corrected enum contract: category/material enum values must be the
+  visible normalized values such as `OT 黑鐵`, `2B 白鐵霧面`, and `扁方管`,
+  not separate English values.
+- [x] User corrected dimension storage: `厚度` and `規格` are strings, and pure
+  integer values must import as one-decimal strings such as `1.0`.
+- [x] User corrected database architecture: rules are unified to one table and
+  prices are unified to one table for product/cutting/hole.
+- [ ] Confirm actual unified rules table name and unified price table
+  name/columns, because current `STEEL_POSTGRES_URL` introspection does not
+  show the unified price table.
+- [ ] Confirm destructive operation scope under the unified architecture:
+  clear only unified price rows for v3 product-price import, and do not clear
+  customers, formulas, workbook memory, source chunks/embeddings, or unrelated
+  retained tables.
+
+Task 1 - Write Product Price v3 Parser Tests:
+
+- [ ] Add fixture workbook/rows that cover normal `厚度`, `規格`, `厚度(mm)`,
+  date-like fractions (`5/8`, `3/4`), `待確認`, stopped rows, and tier prices.
+- [ ] Add fixture rows for cleanup rules:
+  `No1 白鐵3t以上含`, `鋁/鋁合金`, `其他加工`, `不適用`, `PVC`, and `PC`.
+- [ ] Verify parser returns one canonical product row with `tierPrices` and
+  `tierRatios`, not four rows.
+- [ ] Verify parser returns normalized enum values and original source labels
+  separately.
+- [ ] Verify source refs include workbook name/index, sheet `整理後資料`, and
+  original row number.
+
+Task 2 - Add Product Price v3 Constants and Parser:
+
+- [ ] Add fixed `PriceCategory` values as normalized visible string literals.
+- [ ] Add fixed `MaterialKind` values as normalized visible string literals.
+- [ ] Add source-label cleanup maps before enum conversion.
+- [ ] Normalize units to existing runtime unit conventions without losing the
+  source unit in metadata.
+- [ ] Generate `spec_key` from ERP code, product name, category, material, spec,
+  and thickness facets so current keyword search still works.
+
+Task 3 - Add Supabase Schema Migration:
+
+- [ ] Run `npx supabase migration new steel_product_price_v3_category`.
+- [ ] Target the confirmed unified price table, not `steel.price_items`.
+- [ ] Add one-row-per-product columns to the unified price table: `category`,
+  `material`, `source_category_label`, `source_material_label`, `source_spec`,
+  `source_thickness`, `unit_price_a`, `unit_price_b`, `unit_price_c`,
+  `unit_price_f`, `ratio_a`, `ratio_b`, `ratio_c`, `ratio_f`. Do not add
+  separate label columns for normalized `category` / `material`; those columns
+  already store the visible enum values.
+- [ ] Drop or replace the old misleading ERP+tier unique index with one-product
+  identity, using `erp_item_code` when present and a stable source key fallback.
+- [ ] Add indexes for `category`, `(category, material)`, `source_thickness`,
+  `source_spec`, `product_name`, and spec-key lookup.
+- [ ] Update `supabase/schema.sql` in the same change.
+
+Task 4 - Update Repository and Tool Contract:
+
+- [ ] Replace flat `candidateQueries` with lookup `queries` and category
+  discovery mode.
+- [ ] Make `queries[].category` required in lookup mode.
+- [ ] Add optional `queries[].material`, `queries[].thicknesses`,
+  `queries[].specs`, and `queries[].keyword`.
+- [ ] Update price repository SQL to query the unified price table, OR multiple
+  query objects, require category in each lookup object, optionally filter
+  material, match thicknesses / specs / keyword by contains, and return
+  all A/B/C/F price columns.
+- [ ] Return all tier prices in tool output without `customerTier`,
+  `effectiveTier`, or tier-selected `unitPrice` props.
+- [ ] Update provider coalescing so batched `search_price_candidates` calls only
+  merge compatible lookup queries and never merge category discovery calls with
+  price lookup calls.
+
+Task 5 - Add Admin Import Script:
+
+- [ ] Add script for explicit v3 ZIP import using `STEEL_POSTGRES_URL`.
+- [ ] Default to dry-run: parse ZIP, print row counts, enum counts, stopped row
+  counts, missing-code/name errors, duplicate keys, and planned DB changes.
+- [ ] Dry-run must show pre/post cleanup counts for each source normalization
+  rule.
+- [ ] In apply mode, run one transaction: clear v3-target product-price rows in
+  the unified price table, insert v3 rows, and read back counts grouped by
+  price kind/category/material/value state.
+- [ ] Do not read from `docs/reference` or make runtime depend on local files.
+
+Task 6 - Update Rules and Docs:
+
+- [ ] Update `docs/rules/agent規則.txt` so AI must provide enum `category` for
+  price lookup calls whenever category is known.
+- [ ] Add rule: if category is unknown, use keyword category discovery first and
+  do not hard-guess category.
+- [ ] Add rule: category and material must use listed enum values exactly; those
+  enum values are the visible strings such as `扁方管` and `OT 黑鐵`, not legacy
+  keys or invented aliases.
+- [ ] Keep generic tool-contract wording in `agent規則`; put material/category
+  examples only where they belong.
+- [ ] Update data-contract docs to describe v3 one-row tier prices and source
+  `category`.
+- [ ] If `agent規則.txt` changes, run Supabase rule sync dry-run, apply, and DB
+  readback before completion.
+
+Task 7 - Verification:
+
+- [ ] Focused Jest: parser cleanup, repository query semantics, tool
+  schema/registry/execute/sanitize, provider coalescing.
+- [ ] `git diff --check`.
+- [ ] `npm --workspace packages/api run build`.
+- [ ] Supabase migration/apply verification on cloud Steel Postgres.
+- [ ] Import dry-run against the provided ZIP.
+- [ ] Import apply against cloud DB only after approval.
+- [ ] Direct DB readback: total rows, unique product rows, category/material
+  counts, tier-price availability counts, sample rows for C型鋼/H型鋼/鐵板.
+- [ ] Live or direct tool smoke: `search_price_candidates` rejects missing
+  category in lookup mode, category discovery returns candidates, lookup filters
+  by multi-condition category/material/spec/thickness/keyword, returns one row
+  with all A/B/C/F prices, and uses B as default effective price.
+
+Review:
+
+- Plan created on 2026-06-23 after inspecting the v3 ZIP and current Steel
+  price lookup code.
+- Awaiting user approval before implementation and before any destructive DB
+  clear/import step.
+
+# Previous: Steel Provider-Prepared Full Context Orchestration Plan
 
 > Implementation note: runtime implementation, Supabase rule sync, focused
 > regression checks, and direct live OAuth/provider harness smoke have been
@@ -498,6 +1390,152 @@ Review:
   `sendSteelOAuthChat`, pass full Output Sheet Memory through
   `createMongooseSteelOutputSheetMemoryReader`, and accept
   `CHAT_ROUND1_PATH` / `CHAT_ROUND2_PATH` overrides for focused follow-ups.
+
+## Task 11 - Compact Workbook Context A/B Experiment
+
+Goal: compare current full active workbook context against a compact active
+workbook context plus keyword-only row lookup tool, to measure token and latency
+reduction without losing quote correctness.
+
+Locked decisions:
+
+- [x] Keep reviewed Agent/Steel/OCR/global rules loaded in context for this
+  experiment; only compact active workbook/order data first.
+- [x] Add `STEEL_RUNTIME_CONTEXT_MODE=full|compact_workbook` so baseline and
+  experiment can be compared with the same live harness prompts.
+- [x] In compact mode, provider prompt includes compact active workbook indexes
+  and counts, not every full row/cell in `previousOutputSheets`.
+- [x] Add provider-visible `read_active_workbook` only for compact mode. AI
+  may use it when it suspects compact workbook context is truncated or needs
+  exact row/cell data.
+- [x] `read_active_workbook` must search by keyword/semantic text only, not
+  spreadsheet coordinates or column letters.
+- [x] `read_active_workbook` returns matching rows as complete `rowData`, not
+  snippets or matched columns only.
+- [x] If too many rows match, backend limits row count but still returns
+  complete data for each returned row.
+
+Planned files:
+
+- Modify: `packages/api/src/steel/runtime/context.ts`
+- Modify: `packages/api/src/steel/runtime/context.spec.ts`
+- Modify: `packages/api/src/steel/tools/schemas.ts`
+- Modify: `packages/api/src/steel/tools/registry.ts`
+- Modify: `packages/api/src/steel/tools/registry.spec.ts`
+- Modify: `packages/api/src/steel/tools/execute.ts`
+- Modify: `packages/api/src/steel/tools/execute.spec.ts`
+- Modify: `packages/api/src/steel/handlers.ts`
+- Modify: `packages/api/src/steel/handlers.spec.ts`
+- Modify: `packages/api/src/steel/ai/provider.ts`
+- Modify: `packages/api/src/steel/ai/provider.spec.ts`
+- Modify: `docs/rules/agent規則.txt`
+- Modify: `packages/api/scripts/sync-steel-rules.cjs`
+- Modify: `tmp/chat-round-test/current-direction-check.ts`
+- Modify: `tmp/chat-round-test/live-latency-diagnosis.ts`
+
+Steps:
+
+- [x] Add RED runtime context tests for `mode: compact_workbook`: serialized
+  context has compact workbook counts/indexes and omits full
+  `previousOutputSheets.*.rows`.
+- [x] Add RED tool schema/registry tests: provider-visible tools include
+  `read_active_workbook`; schema requires `query`, forbids coordinate-only
+  lookup keys, and allows optional `sheetIds`, `limit`, `reason`.
+- [x] Add RED execute tests: `read_active_workbook` searches active output
+  sheet rows by normalized keyword and returns complete `rowData` for each
+  match with `matchedFields`.
+- [x] Implement compact context mode and keyword row lookup reader with minimal
+  code.
+- [x] Thread `STEEL_RUNTIME_CONTEXT_MODE` through handler/provider options and
+  live harness summaries.
+- [x] Update agent rule source and sync metadata so the AI knows
+  `read_active_workbook` is only for compact mode / suspected truncation /
+  exact row needs.
+- [x] Run Supabase sync dry-run, apply, and direct DB readback if agent rule
+  text or toolPolicy changes.
+- [x] Run focused Jest for runtime context, tools, provider, handlers, memory.
+- [x] Run `current-direction-check.ts`, `git diff --check`, and API build.
+- [x] Run live A/B smoke with the same prompts in full and compact modes, then
+  record token/time deltas.
+
+Expected comparison metrics:
+
+- Baseline full mode keeps current behavior.
+- Compact mode should reduce input tokens by at least 50% and total duration by
+  at least 30% in the same live prompt set.
+- Customer-tier follow-up must still output synchronized `system_order` and
+  `customer_quote`.
+- Tool calls must not become excessive; `read_active_workbook` should be used
+  only when exact row data is needed.
+
+Review:
+
+- Task 11 started on 2026-06-22 after user approved the compact workbook +
+  keyword read tool A/B experiment.
+- Task 11 implementation completed on 2026-06-22:
+  `STEEL_RUNTIME_CONTEXT_MODE=full|compact_workbook` now controls provider
+  runtime context shape; compact mode serializes compact active workbook
+  indexes/counts and exposes `read_active_workbook`; full mode keeps the
+  existing three provider-visible tools.
+- `read_active_workbook` is keyword-only and rejects coordinate/row/column
+  lookup requests. Matching rows return full `rowData` plus `matchedFields`,
+  `rowId`, `rowIndex`, `sheetId`, and `score`.
+- Task 11 Supabase sync/readback:
+  `node packages/api/scripts/sync-steel-rules.cjs --dry-run` passed;
+  `node packages/api/scripts/sync-steel-rules.cjs --apply` passed; direct DB
+  readback confirmed `steel-default-agent-instruction.tool_policy` and
+  `steel-workbook-output-policy.tool_policy` include
+  `read_active_workbook`.
+- Latest DB readback hashes for Task 11:
+  `steel-default-agent-instruction` from `docs/rules/agent規則.txt` has SHA
+  `36ce9303c444588a0dcce250a1e7efd5babdf4d9a2d0fb54b1b54cc354fee675`;
+  `steel-workbook-output-policy` from `docs/rules/輸出規則.txt` remains
+  `91ca32b6c85caa81800ffbf7b76af3eb20c39d4a0b305a940ca04bc7428f6f08`;
+  `steel-drawing-ocr-policy` from `docs/rules/OCR規則.txt` remains
+  `d78cdb27810a2e37be4ea799d536a40dcfdf919bc7e6db8fa968b7d01e18f5dc`;
+  Steel quote rules from `docs/rules/鋼材規則.txt` remain
+  `1adbb4616f1c24fa22d14a1799b584d9d1c3841efa79d2b5b1fbc5f4a6f0d1a8`.
+- Task 11 RED/GREEN verification:
+  - RED `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts --runInBand --runTestsByPath` initially failed because compact context had no `contextMode`, compact provider tools did not include `read_active_workbook`, and the executor returned `ok:false` for the new tool.
+  - GREEN same command passed 3 suites / 25 tests.
+  - `cd packages/api && npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --runInBand --runTestsByPath` passed 2 suites / 27 tests after wiring the handler/provider mode path.
+  - `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/memory/service.spec.ts --runInBand --runTestsByPath` passed 6 suites / 62 tests.
+  - `npx tsx tmp/chat-round-test/current-direction-check.ts` passed.
+  - `git diff --check` passed.
+  - `npm --workspace packages/api run build` exited 0. New Steel TypeScript
+    warnings found during the first build were fixed; remaining build warnings
+    are pre-existing non-Steel warnings in `src/agents/resources.ts`,
+    `src/app/config.ts`, `src/cache/cacheFactory.ts`,
+    `src/endpoints/config/*`, `src/middleware/remoteAgentAuth.ts`, and
+    `src/middleware/share.ts`.
+- Task 11 live full-mode baseline:
+  conversation `task11_full_ab_1782135827`, 2 rounds, total 557,673 ms;
+  provider generation 540,619 ms; provider tool time 1,835 ms; total input
+  tokens 302,497; output tokens 20,754; tool calls were 2
+  `search_price_candidates`; final Markdown capture saved 71
+  `working_order_row` rows each round.
+- Task 11 live compact-mode A/B:
+  conversation `task11_compact_ab_1782136398`, 2 rounds, total 330,278 ms;
+  provider generation 313,756 ms; provider tool time 3,248 ms; total input
+  tokens 289,758; output tokens 13,975; tool calls were 2
+  `search_price_candidates`; `read_active_workbook` was exposed but not called;
+  final Markdown capture saved 71 `working_order_row` rows each round.
+- Compact vs full result: total two-round duration improved by 227,395 ms
+  (-40.8%) and provider generation improved by 226,863 ms (-42.0%), so the
+  latency target was met. Total input tokens improved only by 12,739 (-4.2%),
+  so the overall 50% token target was not met. The useful token reduction
+  appeared in round 2: input tokens dropped from 118,953 to 75,181 (-36.8%).
+- Round 1 compact mode was faster despite higher input tokens
+  (183,544 -> 214,577, +16.9%) because the final response was shorter
+  (12,757 -> 7,564 output tokens) and generation ended sooner. Do not attribute
+  round-1 speedup solely to workbook compaction.
+- Customer-tier follow-up in compact mode:
+  same conversation `task11_compact_ab_1782136398`, 1 follow-up round, total
+  161,622 ms; provider generation 153,186 ms; provider tool time 553 ms;
+  input tokens 180,422; output tokens 7,651; 1 `search_price_candidates` call
+  at `customerTierId: 1`; no `read_active_workbook` call. The assistant output
+  explicitly updated `system_order` and `customer_quote` for price tier A and
+  final Markdown capture saved 71 `working_order_row` rows.
 - Task 9 completed on 2026-06-22:
   focused Jest passed 6 suites / 57 tests; `current-direction-check.ts` passed
   all checks; `git diff --check` passed; `npm --workspace packages/api run build`

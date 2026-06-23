@@ -7,6 +7,10 @@ import {
   parseSteelSourceRefs,
   parseValueState,
 } from './types';
+import {
+  type MaterialKind,
+  type PriceCategory,
+} from '../pricing/enums';
 import { normalizeSteelSpecKey } from '../normalization/spec';
 
 import type {
@@ -18,19 +22,29 @@ import type {
   SteelValueState,
 } from './types';
 
+export type SteelPriceKind = 'product' | 'cutting' | 'hole';
+
 interface SteelPriceItemRow {
   id: string | number;
   erp_item_code: string | null;
-  category_id: string | number | null;
-  customer_tier_id: string | number | null;
-  customer_tier_code: string | null;
-  customer_tier_name: string | null;
+  price_kind: string;
   spec_key: string;
   product_name: string;
-  catalog_family: string | null;
-  material_grade: string | null;
+  category: string;
+  subcategory: string | null;
+  material: string | null;
+  source_subcategory_label: string | null;
+  source_thickness: string | null;
+  source_spec: string | null;
   unit: string;
-  unit_price: string | number | null;
+  unit_price_a: string | number | null;
+  unit_price_b: string | number | null;
+  unit_price_c: string | number | null;
+  unit_price_f: string | number | null;
+  ratio_a: string | number | null;
+  ratio_b: string | number | null;
+  ratio_c: string | number | null;
+  ratio_f: string | number | null;
   product_price_unit_weight: string | number | null;
   product_price_unit_weight_unit: string | null;
   currency: string;
@@ -40,19 +54,36 @@ interface SteelPriceItemRow {
   source_refs: unknown;
 }
 
+interface SteelPriceCategoryCandidateRow {
+  category: string;
+  material: string | null;
+  candidate_count: string | number;
+  example_erp_item_code: string | null;
+  example_product_name: string | null;
+}
+
+export interface SteelPriceTierValues {
+  A: number | null;
+  B: number | null;
+  C: number | null;
+  F: number | null;
+}
+
 export interface SteelPriceItem extends SteelSourceBackedRecord {
   id: number;
   erpItemCode?: string;
-  categoryId: number | null;
-  customerTierId: number | null;
-  customerTierCode?: string;
-  customerTierName?: string;
+  priceKind: SteelPriceKind;
   specKey: string;
   productName: string;
-  catalogFamily?: string;
-  materialGrade?: string;
+  category: PriceCategory | string;
+  subcategory?: string;
+  material?: MaterialKind | string;
+  sourceSubcategoryLabel?: string;
+  sourceThickness?: string;
+  sourceSpec?: string;
   unit: string;
-  unitPrice: number | null;
+  tierPrices: SteelPriceTierValues;
+  tierRatios: SteelPriceTierValues;
   productPriceUnitWeight: number | null;
   productPriceUnitWeightUnit?: string;
   currency: string;
@@ -62,98 +93,246 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   sourceRefs: SteelSourceRef[];
 }
 
+export interface SteelPriceCandidateQuery {
+  category: PriceCategory;
+  material?: MaterialKind;
+  thicknesses?: readonly string[];
+  specs?: readonly string[];
+  keyword?: string;
+}
+
 export interface SearchSteelPriceItemsInput {
-  unfiltered?: boolean;
-  specKey?: string;
-  productName?: string;
-  productNames?: readonly string[];
-  erpItemCodes?: readonly string[];
-  catalogFamilies?: readonly string[];
-  customerTierId?: number;
+  queries: readonly SteelPriceCandidateQuery[];
+  includeRelatedCutting?: boolean;
   reviewState?: SteelReviewState;
   includeInactive?: boolean;
   limit?: number;
 }
 
-function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
-  return [...new Set((values ?? []).filter((value) => value.trim() !== ''))];
+export interface DiscoverSteelPriceCategoriesInput {
+  keyword: string;
+  reviewState?: SteelReviewState;
+  includeInactive?: boolean;
+  limit?: number;
 }
 
-function addTextFacetFilter(
-  where: string[],
+export interface SteelPriceCategoryCandidate {
+  category: PriceCategory | string;
+  material: MaterialKind | string | null;
+  candidateCount: number;
+  exampleErpItemCode?: string;
+  exampleProductName?: string;
+}
+
+function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function normalizeNumericString(value: string): string {
+  const normalized = value.normalize('NFKC').trim();
+
+  if (/^\d+$/u.test(normalized)) {
+    return `${normalized}.0`;
+  }
+
+  return normalized;
+}
+
+function normalizeSpecTerm(value: string): string {
+  return normalizeSteelSpecKey(value) ?? value;
+}
+
+function addContainsAnyFilter(
+  clauses: string[],
   values: SteelSqlParameter[],
-  column: string,
+  columnExpression: string,
   matches: readonly string[] | undefined,
+  normalize: (value: string) => string = (value) => value,
 ) {
-  const uniqueMatches = uniqueNonEmpty(matches);
+  const uniqueMatches = uniqueNonEmpty(matches).map(normalize).filter(Boolean);
 
   if (uniqueMatches.length === 0) {
     return;
   }
 
-  const placeholders = uniqueMatches.map((match) => {
-    values.push(match);
-    return `$${values.length}`;
+  const matchClauses = uniqueMatches.map((match) => {
+    values.push(`%${match}%`);
+    return `${columnExpression} ILIKE $${values.length}`;
   });
 
-  where.push(`${column} IN (${placeholders.join(', ')})`);
+  clauses.push(`(${matchClauses.join(' OR ')})`);
 }
 
-function getDiscoverySearchTerms(input: SearchSteelPriceItemsInput): string[] {
-  return uniqueNonEmpty([
-    input.productName,
-    ...(input.productNames ?? []),
-    ...(input.erpItemCodes ?? []),
-  ].filter((value): value is string => value !== undefined));
-}
-
-function getSpecKeyContainsTerms(input: SearchSteelPriceItemsInput): string[] {
-  return uniqueNonEmpty(
-    getDiscoverySearchTerms(input).map((term) => {
-      const normalizedTerm = normalizeSteelSpecKey(term);
-
-      return normalizedTerm || term;
-    }),
-  );
-}
-
-function addDiscoverySearchFilter(
-  where: string[],
+function addThicknessAnyFilter(
+  clauses: string[],
   values: SteelSqlParameter[],
-  input: SearchSteelPriceItemsInput,
-): string[] {
-  const clauses: string[] = [];
-  const scoreExpressions: string[] = [];
+  matches: readonly string[] | undefined,
+) {
+  const uniqueMatches = uniqueNonEmpty(matches).map(normalizeNumericString).filter(Boolean);
 
-  getSpecKeyContainsTerms(input).forEach((term) => {
-    values.push(`%${term}%`);
-    const placeholder = `$${values.length}`;
-    const matchExpression = `spec_key ILIKE ${placeholder}`;
-    scoreExpressions.push(`CASE WHEN ${matchExpression} THEN 0 ELSE 1 END`);
-    clauses.push(matchExpression);
-  });
-
-  if (clauses.length > 0) {
-    where.push(`(${clauses.join(' OR ')})`);
+  if (uniqueMatches.length === 0) {
+    return;
   }
 
-  return scoreExpressions;
+  const matchClauses = uniqueMatches.map((match) => {
+    if (/^\d+(?:\.\d+)?$/u.test(match)) {
+      values.push(match);
+      return `source_thickness = $${values.length}`;
+    }
+
+    values.push(`%${match}%`);
+    return `source_thickness ILIKE $${values.length}`;
+  });
+
+  clauses.push(`(${matchClauses.join(' OR ')})`);
+}
+
+function addPriceQueryFilter(
+  values: SteelSqlParameter[],
+  query: SteelPriceCandidateQuery,
+): string {
+  const clauses: string[] = [];
+
+  values.push(query.category);
+  clauses.push(`category = $${values.length}`);
+
+  if (query.material) {
+    values.push(query.material);
+    clauses.push(`material = $${values.length}`);
+  }
+
+  addThicknessAnyFilter(clauses, values, query.thicknesses);
+  addContainsAnyFilter(
+    clauses,
+    values,
+    'COALESCE(source_spec, spec_key)',
+    query.specs,
+    normalizeSpecTerm,
+  );
+
+  if (query.keyword) {
+    values.push(`%${query.keyword}%`);
+    const placeholder = `$${values.length}`;
+    clauses.push(`(
+      product_name ILIKE ${placeholder}
+      OR spec_key ILIKE ${placeholder}
+      OR erp_item_code ILIKE ${placeholder}
+    )`);
+  }
+
+  return `(${clauses.join('\n    AND ')})`;
+}
+
+function getRelatedCuttingSubcategories(category: string): string[] {
+  if (category === 'H型鋼') {
+    return ['H型鋼', '工字鐵/H型鋼'];
+  }
+  if (category === '工字鐵/I字鐵') {
+    return ['工字鐵/H型鋼'];
+  }
+  if (category === '圓管/鋼管' || category === '方管' || category === '扁方管') {
+    return ['管'];
+  }
+  if (category === '角鐵/角鋼') {
+    return ['角鐵'];
+  }
+  if (category === '槽鐵') {
+    return ['槽鐵'];
+  }
+  if (category === '平鐵/扁鐵') {
+    return ['平鐵/扁鐵'];
+  }
+
+  return [];
+}
+
+function addRelatedCuttingQueryFilter(
+  values: SteelSqlParameter[],
+  query: SteelPriceCandidateQuery,
+): string | undefined {
+  const subcategories = getRelatedCuttingSubcategories(query.category);
+  if (subcategories.length === 0) {
+    return undefined;
+  }
+
+  const clauses = [`price_kind = 'cutting'`];
+  values.push('切工/切割');
+  clauses.push(`category = $${values.length}`);
+  values.push(subcategories);
+  clauses.push(`subcategory = ANY($${values.length}::text[])`);
+  addContainsAnyFilter(
+    clauses,
+    values,
+    'COALESCE(source_spec, spec_key)',
+    query.specs,
+    normalizeSpecTerm,
+  );
+
+  if (query.keyword) {
+    values.push(`%${query.keyword}%`);
+    const placeholder = `$${values.length}`;
+    clauses.push(`(
+      product_name ILIKE ${placeholder}
+      OR spec_key ILIKE ${placeholder}
+      OR source_spec ILIKE ${placeholder}
+      OR subcategory ILIKE ${placeholder}
+    )`);
+  }
+
+  return `(${clauses.join('\n    AND ')})`;
+}
+
+function toTierValues(input: {
+  a: string | number | null;
+  b: string | number | null;
+  c: string | number | null;
+  f: string | number | null;
+}): SteelPriceTierValues {
+  return {
+    A: parseNullableNumber(input.a),
+    B: parseNullableNumber(input.b),
+    C: parseNullableNumber(input.c),
+    F: parseNullableNumber(input.f),
+  };
+}
+
+function parsePriceKind(value: string): SteelPriceKind {
+  if (value === 'product' || value === 'cutting' || value === 'hole') {
+    return value;
+  }
+
+  throw new Error(`Unexpected Steel price_kind: ${value}`);
 }
 
 function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
+  const tierPrices = toTierValues({
+    a: row.unit_price_a,
+    b: row.unit_price_b,
+    c: row.unit_price_c,
+    f: row.unit_price_f,
+  });
+  const tierRatios = toTierValues({
+    a: row.ratio_a,
+    b: row.ratio_b,
+    c: row.ratio_c,
+    f: row.ratio_f,
+  });
+
   return {
     id: parseRequiredNumber(row.id),
     erpItemCode: parseNullableString(row.erp_item_code),
-    categoryId: parseNullableNumber(row.category_id),
-    customerTierId: parseNullableNumber(row.customer_tier_id),
-    customerTierCode: parseNullableString(row.customer_tier_code),
-    customerTierName: parseNullableString(row.customer_tier_name),
+    priceKind: parsePriceKind(row.price_kind),
     specKey: row.spec_key,
     productName: row.product_name,
-    catalogFamily: parseNullableString(row.catalog_family),
-    materialGrade: parseNullableString(row.material_grade),
+    category: row.category,
+    subcategory: parseNullableString(row.subcategory),
+    material: parseNullableString(row.material),
+    sourceSubcategoryLabel: parseNullableString(row.source_subcategory_label),
+    sourceThickness: parseNullableString(row.source_thickness),
+    sourceSpec: parseNullableString(row.source_spec),
     unit: row.unit,
-    unitPrice: parseNullableNumber(row.unit_price),
+    tierPrices,
+    tierRatios,
     productPriceUnitWeight: parseNullableNumber(row.product_price_unit_weight),
     productPriceUnitWeightUnit: parseNullableString(row.product_price_unit_weight_unit),
     currency: row.currency,
@@ -164,81 +343,76 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
   };
 }
 
+function toCategoryCandidate(
+  row: SteelPriceCategoryCandidateRow,
+): SteelPriceCategoryCandidate {
+  return {
+    category: row.category,
+    material: row.material,
+    candidateCount: parseRequiredNumber(row.candidate_count),
+    exampleErpItemCode: parseNullableString(row.example_erp_item_code),
+    exampleProductName: parseNullableString(row.example_product_name),
+  };
+}
+
 export async function searchSteelPriceItems(
   client: SteelRepositoryClient,
   input: SearchSteelPriceItemsInput,
 ): Promise<SteelPriceItem[]> {
-  const where: string[] = [];
-  const values: SteelSqlParameter[] = [];
+  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
+  const where: string[] = [`review_state = $${values.length}`];
 
-  if (!input.unfiltered || input.reviewState !== undefined) {
-    values.push(input.reviewState ?? 'reviewed');
-    where.push(`review_state = $${values.length}`);
-  }
-
-  if (input.includeInactive === false || (!input.unfiltered && !input.includeInactive)) {
+  if (!input.includeInactive) {
     where.push('active = true');
   }
 
-  if (input.specKey) {
-    values.push(input.specKey);
-    where.push(`spec_key = $${values.length}`);
-  }
+  const queryFilters = input.queries.flatMap((query) => {
+    const filters = [addPriceQueryFilter(values, query)];
+    const relatedCuttingFilter = input.includeRelatedCutting
+      ? addRelatedCuttingQueryFilter(values, query)
+      : undefined;
 
-  const discoveryScoreExpressions = addDiscoverySearchFilter(where, values, input);
-  const discoveryScore =
-    discoveryScoreExpressions.length > 0 ? discoveryScoreExpressions.join(' + ') : '0';
-
-  if (!input.unfiltered) {
-    addTextFacetFilter(where, values, 'catalog_family', input.catalogFamilies);
-  }
-
-  if (input.customerTierId !== undefined) {
-    values.push(input.customerTierId);
-    where.push(`(customer_tier_id = $${values.length} OR customer_tier_id IS NULL)`);
+    return relatedCuttingFilter ? [...filters, relatedCuttingFilter] : filters;
+  });
+  if (queryFilters.length > 0) {
+    where.push(`(${queryFilters.join('\n  OR ')})`);
   }
 
   values.push(getLimit(input.limit, 100));
-  const whereClause = where.length > 0 ? `WHERE ${where.join('\n  AND ')}` : '';
-  const tierSort = input.customerTierId === undefined
-    ? ''
-    : `
-  CASE WHEN customer_tier_id IS NULL THEN 1 ELSE 0 END,`;
 
   const result = await client.query<SteelPriceItemRow>(
     `
 SELECT
   id,
   erp_item_code,
-  category_id,
-  customer_tier_id,
-  customer_tier_code,
-  customer_tier_name,
+  price_kind,
   spec_key,
   product_name,
-  catalog_family,
-  material_grade,
+  category,
+  subcategory,
+  material,
+  source_subcategory_label,
+  source_thickness,
+  source_spec,
   unit,
-  unit_price,
+  unit_price_a,
+  unit_price_b,
+  unit_price_c,
+  unit_price_f,
+  ratio_a,
+  ratio_b,
+  ratio_c,
+  ratio_f,
   product_price_unit_weight,
   product_price_unit_weight_unit,
   currency,
   value_state,
   review_state,
   active,
-  source_refs,
-  ${discoveryScore} AS discovery_match_score
-FROM (
-  SELECT
-    price_item.*,
-    tier.code AS customer_tier_code,
-    tier.name AS customer_tier_name
-  FROM steel.price_items AS price_item
-  LEFT JOIN steel.customer_tiers AS tier ON tier.id = price_item.customer_tier_id
-) AS price_item
-${whereClause}
+  source_refs
+FROM steel.prices
+WHERE ${where.join('\n  AND ')}
 ORDER BY
-  discovery_match_score ASC,${tierSort}
   product_name ASC,
   id ASC
 LIMIT $${values.length}
@@ -247,4 +421,52 @@ LIMIT $${values.length}
   );
 
   return result.rows.map(toPriceItem);
+}
+
+export async function discoverSteelPriceCategories(
+  client: SteelRepositoryClient,
+  input: DiscoverSteelPriceCategoriesInput,
+): Promise<SteelPriceCategoryCandidate[]> {
+  const normalizedKeyword = normalizeSteelSpecKey(input.keyword) ?? input.keyword;
+  const values: SteelSqlParameter[] = [
+    input.reviewState ?? 'reviewed',
+    `%${input.keyword}%`,
+    `%${normalizedKeyword}%`,
+  ];
+  const where = [
+    'review_state = $1',
+    `(
+      product_name ILIKE $2
+      OR spec_key ILIKE $3
+      OR erp_item_code ILIKE $2
+    )`,
+  ];
+
+  if (!input.includeInactive) {
+    where.push('active = true');
+  }
+
+  values.push(getLimit(input.limit, 100));
+
+  const result = await client.query<SteelPriceCategoryCandidateRow>(
+    `
+SELECT
+  category,
+  material,
+  COUNT(*) AS candidate_count,
+  MIN(erp_item_code) AS example_erp_item_code,
+  MIN(product_name) AS example_product_name
+FROM steel.prices
+WHERE ${where.join('\n  AND ')}
+GROUP BY category, material
+ORDER BY
+  candidate_count DESC,
+  category ASC,
+  material ASC
+LIMIT $${values.length}
+`,
+    values,
+  );
+
+  return result.rows.map(toCategoryCandidate);
 }

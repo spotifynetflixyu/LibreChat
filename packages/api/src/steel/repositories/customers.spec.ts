@@ -3,7 +3,7 @@ import { searchSteelCustomers } from './customers';
 import type { SteelRepositoryClient } from './types';
 
 describe('Steel customer repository', () => {
-  it('searches active customers by name or alias and includes tier/source refs', async () => {
+  it('searches customers by keyword and includes uppercase customer tier/source refs', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         {
@@ -12,10 +12,7 @@ describe('Steel customer repository', () => {
           display_name: '龍頂鋼鐵',
           legal_name: '龍頂鋼鐵股份有限公司',
           tax_id: '12345678',
-          customer_tier_id: '2',
-          customer_tier_code: 'A',
-          customer_tier_name: 'A級',
-          matched_alias: '龍頂',
+          customer_tier: 'A',
           status: 'active',
           source_refs: [
             {
@@ -29,24 +26,21 @@ describe('Steel customer repository', () => {
     });
 
     const result = await searchSteelCustomers({ query } as SteelRepositoryClient, {
-      searchText: '龍頂',
+      keywords: ['龍頂'],
       limit: 3,
     });
 
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('LEFT JOIN steel.customer_aliases'),
+      expect.stringContaining('FROM steel.customers c'),
       ['龍頂', '%龍頂%', 3],
     );
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_aliases'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tiers'));
     expect(result[0]).toMatchObject({
       id: 1,
       erpCustomerCode: 'C001',
       displayName: '龍頂鋼鐵',
-      customerTier: {
-        id: 2,
-        code: 'A',
-        name: 'A級',
-      },
-      matchedAlias: '龍頂',
+      customerTier: 'A',
       status: 'active',
     });
   });

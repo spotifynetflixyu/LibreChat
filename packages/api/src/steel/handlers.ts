@@ -44,8 +44,8 @@ import {
 import { createSteelPostgresPool } from './postgres';
 import {
   listReviewedSteelAgentRules,
-  listReviewedSteelInstructionPackets,
-  listReviewedSteelQuoteDefaults,
+  listReviewedSteelOtherRules,
+  listReviewedSteelOutputRules,
   listReviewedSteelQuoteRules,
 } from './repositories';
 import {
@@ -59,6 +59,7 @@ import type {
   ListSteelOtherGlobalRulesInput,
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
+  SteelRuntimeContextMode,
   SteelRuntimeContextDependencies,
 } from './runtime/context';
 import type { SteelRepositoryClient } from './repositories';
@@ -198,6 +199,10 @@ function getStreamToolEventType(toolName: string): 'lookup' | 'tool' {
   return isLookupStreamTool(toolName) ? 'lookup' : 'tool';
 }
 
+function parseSteelRuntimeContextMode(env: SteelOpenAIConfigEnv): SteelRuntimeContextMode {
+  return env.STEEL_RUNTIME_CONTEXT_MODE === 'compact_workbook' ? 'compact_workbook' : 'full';
+}
+
 function writeStreamEvent(res: Response, event: SteelProviderChatStreamEvent): void {
   res.write(`${JSON.stringify(event)}\n`);
 }
@@ -275,10 +280,6 @@ function isOcrRule(rule: SteelAgentRule): boolean {
   return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
 }
 
-function isWorkbookOutputRule(rule: SteelAgentRule): boolean {
-  return rule.ruleType === 'workbook_output_rule' || hasRuleSection(rule, ['workbook_output']);
-}
-
 function filterOtherGlobalRules(
   rules: readonly SteelAgentRule[],
   { includeOcrRules }: ListSteelOtherGlobalRulesInput,
@@ -290,7 +291,6 @@ function filterOtherGlobalRules(
     fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
     sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
     markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
-    workbookOutputRules: rules.filter(isWorkbookOutputRule),
   };
 }
 
@@ -304,6 +304,8 @@ function createRuntimeContextDependencies({
   getRulesClient: () => SteelRepositoryClient;
 }): SteelRuntimeContextDependencies {
   let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
+  let outputRulesPromise: Promise<SteelAgentRule[]> | undefined;
+  let otherRulesPromise: Promise<SteelAgentRule[]> | undefined;
   let rulesClient: SteelRepositoryClient | undefined;
   const getClient = () => {
     rulesClient ??= getRulesClient();
@@ -313,17 +315,23 @@ function createRuntimeContextDependencies({
     agentRulesPromise ??= listReviewedSteelAgentRules(getClient());
     return agentRulesPromise;
   };
+  const listOutputRuleRows = () => {
+    outputRulesPromise ??= listReviewedSteelOutputRules(getClient());
+    return outputRulesPromise;
+  };
+  const listOtherRuleRows = () => {
+    otherRulesPromise ??= listReviewedSteelOtherRules(getClient());
+    return otherRulesPromise;
+  };
 
   return {
-    async listAgentRules() {
-      const rules = await listAgentRuleRows();
-      return rules.filter((rule) => rule.ruleType === 'agent_instruction_rule');
-    },
-    listReviewedInstructionPackets: () => listReviewedSteelInstructionPackets(getClient()),
-    listReviewedQuoteDefaults: () => listReviewedSteelQuoteDefaults(getClient()),
+    listAgentRules: listAgentRuleRows,
+    listReviewedInstructionPackets: async () => [],
+    listReviewedQuoteDefaults: async () => [],
     listReviewedQuoteRules: () => listReviewedSteelQuoteRules(getClient()),
+    listOutputRules: listOutputRuleRows,
     async listOtherGlobalRules(input) {
-      return filterOtherGlobalRules(await listAgentRuleRows(), input);
+      return filterOtherGlobalRules(await listOtherRuleRows(), input);
     },
     async readOutputSheetMemory() {
       if (!conversationId) {
@@ -335,7 +343,13 @@ function createRuntimeContextDependencies({
   };
 }
 
-function createDefaultStreamToolExecutor(): {
+function createDefaultStreamToolExecutor({
+  conversationId,
+  createOutputSheetMemoryReader,
+}: {
+  conversationId?: string;
+  createOutputSheetMemoryReader: (conversationId: string) => SteelOutputSheetMemoryReader;
+}): {
   executeToolCall: SteelProviderToolExecutor;
   close: () => Promise<void>;
 } {
@@ -345,6 +359,9 @@ function createDefaultStreamToolExecutor(): {
         client: getDefaultStreamToolClient(),
         toolName: options.toolName,
         arguments: options.arguments,
+        outputSheetMemoryReader: conversationId
+          ? createOutputSheetMemoryReader(conversationId)
+          : undefined,
         providerToolCallId: options.providerToolCallId,
         runState: options.runState,
       }),
@@ -478,6 +495,7 @@ async function buildSteelRuntimeContext({
   prepareDefaultRuntimeContext,
   prepareRuntimeContext,
   preparedContext,
+  runtimeContextMode,
   runtimeRulesClient,
 }: {
   conversationId?: string;
@@ -488,6 +506,7 @@ async function buildSteelRuntimeContext({
     input: PrepareSteelRuntimeContextInput,
   ) => Promise<SteelRuntimeContext>;
   preparedContext: PreparedSteelChatContext;
+  runtimeContextMode: SteelRuntimeContextMode;
   runtimeRulesClient?: SteelRepositoryClient;
 }): Promise<SteelRuntimeContext | undefined> {
   const shouldPrepareRuntimeContext =
@@ -516,6 +535,7 @@ async function buildSteelRuntimeContext({
       createOutputSheetMemoryReader,
       getRulesClient: () => runtimeRulesClient ?? getDefaultStreamToolClient(),
     }),
+    mode: runtimeContextMode,
   });
 }
 
@@ -1192,11 +1212,15 @@ export function createSteelHandlers({
         prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
         prepareRuntimeContext,
         preparedContext,
+        runtimeContextMode: parseSteelRuntimeContextMode(env),
         runtimeRulesClient,
       });
       const defaultToolExecutor = executeToolCall
         ? undefined
-        : createDefaultStreamToolExecutor();
+        : createDefaultStreamToolExecutor({
+            conversationId,
+            createOutputSheetMemoryReader,
+          });
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
       const executeToolCallWithMemoryCapture = createToolExecutorWithMemoryCapture({
         baseExecuteToolCall,
@@ -1306,6 +1330,7 @@ export function createSteelHandlers({
         prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
         prepareRuntimeContext,
         preparedContext,
+        runtimeContextMode: parseSteelRuntimeContextMode(env),
         runtimeRulesClient,
       });
 
@@ -1323,7 +1348,10 @@ export function createSteelHandlers({
       }
       const defaultToolExecutor = executeToolCall
         ? undefined
-        : createDefaultStreamToolExecutor();
+        : createDefaultStreamToolExecutor({
+            conversationId,
+            createOutputSheetMemoryReader,
+          });
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
       const requestAbort = createRequestAbortSignal(req, res);
 

@@ -4,8 +4,10 @@ import type { ZodType } from 'zod';
 
 export type SteelProviderToolName = Extract<
   SteelToolName,
-  'search_customers' | 'search_price_candidates' | 'run_file_ocr'
+  'search_customers' | 'search_price_candidates' | 'run_file_ocr' | 'read_active_workbook'
 >;
+
+export type SteelProviderToolContextMode = 'full' | 'compact_workbook';
 
 export interface SteelToolDefinition<Name extends SteelToolName = SteelProviderToolName> {
   name: Name;
@@ -32,17 +34,23 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
       'Search Steel customers using AI-selected keywords across ERP code, display name, legal name, tax id, and aliases.',
     argsSchema: steelToolArgsSchemas.search_customers,
   },
-  {
-    name: 'search_price_candidates',
-    description:
-      'Search product price candidates from AI-derived candidateQueries only. The backend normalizes each keyword to spec_key format, uses contains-style spec_key lookup, accepts an optional customerTierId, uses known customer tier pricing, defaults missing tier context to B tier, and does not apply unit/category/review/active filters.',
-    argsSchema: steelToolArgsSchemas.search_price_candidates,
-  },
+	  {
+	    name: 'search_price_candidates',
+	    description:
+	      'Search unified Steel price candidates with AI-derived queries. Lookup mode requires each query to include a visible category enum value, optionally filters visible material enum values, thickness strings, spec strings, and product keyword text, and returns all A/B/C/F tier prices for each candidate. Set includeRelatedCutting=true when the same lookup should also return related 切工/切割 rows for long materials. If category is unclear, use category_discovery mode with a keyword first instead of guessing.',
+	    argsSchema: steelToolArgsSchemas.search_price_candidates,
+	  },
   {
     name: 'run_file_ocr',
     description:
       'Run PaddleOCR MCP on an uploaded image or whole PDF when the AI decides OCR is needed; PDFs are sent as one document, not page-by-page.',
     argsSchema: steelToolArgsSchemas.run_file_ocr,
+  },
+  {
+    name: 'read_active_workbook',
+    description:
+      'Keyword-search compact active workbook context when exact row data is needed. Search by semantic keywords such as model, product name, customer, item number, part number, or status. Do not use spreadsheet coordinates. Returned matches include complete rowData for each matched row.',
+    argsSchema: steelToolArgsSchemas.read_active_workbook,
   },
   {
     name: 'read_working_order_items',
@@ -52,35 +60,49 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   },
 ];
 
-function isSteelProviderToolName(value: SteelToolName): value is SteelProviderToolName {
-  return providerToolNames.has(value as SteelProviderToolName);
+function getProviderToolNames(contextMode: SteelProviderToolContextMode): Set<SteelProviderToolName> {
+  if (contextMode !== 'compact_workbook') {
+    return providerToolNames;
+  }
+
+  return new Set([...providerToolNames, 'read_active_workbook']);
 }
 
-const steelToolDefinitions = executableSteelToolDefinitions.filter(
-  (definition): definition is SteelToolDefinition<SteelProviderToolName> =>
-    isSteelProviderToolName(definition.name),
-);
-
-const providerDefinitionsByName = new Map(
-  steelToolDefinitions.map((definition) => [definition.name, definition]),
-);
+function isSteelProviderToolName(
+  value: SteelToolName,
+  contextMode: SteelProviderToolContextMode,
+): value is SteelProviderToolName {
+  return getProviderToolNames(contextMode).has(value as SteelProviderToolName);
+}
 
 const executableDefinitionsByName = new Map(
   executableSteelToolDefinitions.map((definition) => [definition.name, definition]),
 );
 
-export function getSteelToolDefinitions(): SteelToolDefinition<SteelProviderToolName>[] {
-  return [...steelToolDefinitions];
+export function getSteelToolDefinitions(
+  input: { contextMode?: SteelProviderToolContextMode } = {},
+): SteelToolDefinition<SteelProviderToolName>[] {
+  const contextMode = input.contextMode ?? 'full';
+
+  return executableSteelToolDefinitions.filter(
+    (definition): definition is SteelToolDefinition<SteelProviderToolName> =>
+      isSteelProviderToolName(definition.name, contextMode),
+  );
 }
 
-export function isSteelToolName(value: string): value is SteelProviderToolName {
-  return providerDefinitionsByName.has(value as SteelProviderToolName);
+export function isSteelToolName(
+  value: string,
+  input: { contextMode?: SteelProviderToolContextMode } = {},
+): value is SteelProviderToolName {
+  const contextMode = input.contextMode ?? 'full';
+  return getSteelToolDefinitions({ contextMode }).some((definition) => definition.name === value);
 }
 
 export function getSteelToolDefinition(
   name: SteelProviderToolName,
+  input: { contextMode?: SteelProviderToolContextMode } = {},
 ): SteelToolDefinition<SteelProviderToolName> {
-  const definition = providerDefinitionsByName.get(name);
+  const definition = getSteelToolDefinitions(input).find((entry) => entry.name === name);
 
   if (!definition) {
     throw new Error(`Unknown Steel provider tool: ${name}`);

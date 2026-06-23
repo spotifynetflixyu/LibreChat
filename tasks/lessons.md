@@ -1102,3 +1102,77 @@
   is uncertain, default pricing to 價格B; if a customer-tier change affects
   `customer_quote`, require synchronized `system_order` and `customer_quote`
   output and sync both Agent/output rules to Supabase with DB readback.
+- Steel compact active workbook mode should use keyword lookup only. The
+  `read_active_workbook` tool must reject coordinate/row/column-style reads and
+  return each matching active sheet row as complete `rowData`, not snippets or
+  matched fields only.
+- Steel product price v3 import should collapse `A/B/C/F` tier prices into one
+  `price_items` row per product, clear old product-price rows before import,
+  and treat `category` as the spreadsheet `類別` value rather than a separate
+  inferred category layer.
+- Steel product price v3 cleanup rules are canonical before DB import:
+  `No1 白鐵3t以上含 -> No1 白鐵`, `鋁/鋁合金 -> 鋁`,
+  `其他加工 -> 加工`, `不適用 -> 無`, and `PVC` / `PC -> 塑膠`.
+  The search API should support multi-condition category/material query objects,
+  with thickness/spec/name keyword filters as contains-style string filters.
+- Steel product price v3 category/material enum values must be the normalized
+  user/data-visible strings, such as `OT 黑鐵`, `2B 白鐵霧面`, and `扁方管`.
+  Do not introduce separate English or snake-case runtime/API values.
+- Steel product price v3 `厚度` and `規格` must both be stored as strings. Pure
+  integer source values should normalize to one-decimal strings such as
+  `1.0`, while ranges, fractions, decimals, and mixed dimension text stay
+  textual.
+- Steel product/rule database architecture may be intentionally collapsed by
+  the user. When the user says rules or prices are unified into one table, stop
+  any `steel.price_items` or split-rule-table assumptions and introspect the
+  live `STEEL_POSTGRES_URL` schema before writing migrations or import scripts.
+- In the unified Steel schema, `customer_tier_id` is the product price level
+  selector, not a row filter on price rows. It is now superseded by the API/DB
+  field name `customerTier` / `customer_tier`, and should use uppercase string
+  codes `A`, `B`, `C`, `F`, not numeric IDs or lowercase codes. Price rows
+  should carry all A/B/C/F values so changing customer tier only recomputes the
+  selected price from an existing candidate result instead of repeating
+  `search_price_candidates`.
+- `search_price_candidates` must not accept or return `customerTier` props.
+  Customer tier is a customer/quote-calculation concern; the price search tool
+  returns every candidate with all A/B/C/F tier prices, and quote calculation
+  selects the effective tier separately, defaulting to B when unknown.
+- Steel global rules should be stored in one `rules` table with `rule_kind`
+  values `agent`, `output`, `steel`, and `other`; stable global `agent`,
+  `output`, and `steel` rule blocks belong at the top of every provider context
+  to improve KV-cache reuse.
+- Steel product price v3 can contain corrected rows moved into a workbook whose
+  file/category context supersedes the stale row-level `類別`. For the
+  2026-06-23 correction, the listed `B4N*/B4XS* 雷切割型` rows in
+  `產品價格_03_鐵板／鋼板.xlsm` must import as `鐵板/鋼板` product rows even if the
+  row still says `切工/切割`.
+- For corrected Steel price rows where workbook context supersedes row-level
+  `類別`, update both canonical `category` and audit-facing
+  `source_category_label` to the corrected category. Do not preserve or annotate
+  the stale raw row label in metadata when the user says to keep only the
+  corrected category.
+- Steel cutting price v3 workbook rows use `次類別` and `規格` as first-class
+  lookup fields. Store them on unified `steel.prices` as
+  `subcategory`/`source_subcategory_label` and `source_spec`; when product and
+  cutting prices are both needed, make one `search_price_candidates` call with
+  `includeRelatedCutting=true` so the AI receives product rows plus related
+  cutting rows together.
+- Steel rule docs are directory-backed. Do not read or recreate deleted
+  `docs/rules/鋼材規則.txt` or `docs/rules/OCR規則.txt`; sync steel rules from
+  `docs/rules/鋼材規則/*.txt` and OCR/other rules from
+  `docs/rules/其他規則/*.txt`. Provider runtime context must place default rule
+  groups first in this order: agent, all steel rules, output rules, then
+  conditional other rules such as OCR.
+- Steel runtime context serialization should keep stable, cache-friendly
+  contract blocks before volatile state. Top-level order is
+  `rules -> toolPolicy -> outputSheets -> conversation -> attachments`; do not
+  move `toolPolicy` behind workbook, conversation, or attachment payloads.
+- Steel runtime default rule assembly must load all active reviewed `agent`,
+  all active reviewed `steel`, and all active reviewed `output` rows from the
+  unified `steel.rules` table without section filters. Apply conditions only to
+  `other` rules, such as including OCR rules when the turn has PDF/image files
+  or active file evidence.
+- Steel OCR rules should remain in runtime context after a prior active turn had
+  PDF/image evidence, even when the current turn is text-only. Removing OCR
+  rules between adjacent turns can lower KV-cache reuse and make follow-up file
+  reasoning less reliable.

@@ -1,93 +1,34 @@
 import { z } from 'zod';
+import {
+  defaultPriceTierCode,
+  materialKinds,
+  priceCategories,
+  priceTierCodes,
+} from '../pricing/enums';
 
-export const defaultSteelPriceCustomerTierId = 2;
+export const defaultSteelPriceCustomerTier = defaultPriceTierCode;
 
 const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
 const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
+const activeWorkbookSheetIdSchema = z.enum([
+  'system_order',
+  'customer_data',
+  'manual_review',
+  'customer_quote',
+]);
 
-function normalizeCatalogFilterText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[＊*×]/g, 'x')
-    .trim();
-}
+function isCoordinateOnlyQuery(value: string): boolean {
+  const normalized = value.normalize('NFKC').trim();
+  const compact = normalized.replace(/\s+/gu, '');
 
-function uniqueNonEmptyStrings(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.trim() !== ''))];
-}
-
-function extractNumbers(value: string): string[] {
-  return Array.from(value.matchAll(/\d+(?:\.\d+)?/g), (match) => match[0]);
-}
-
-function getExpectedCTypeCompactSpec(value: string): string | undefined {
-  const fullSectionPattern =
-    /\d+(?:\.\d+)?\s*[xX*＊×]\s*\d+(?:\.\d+)?\s*[xX*＊×]\s*\d+(?:\.\d+)?(?:\s*[xX*＊×]\s*|\s+)\d+(?:\.\d+)?\s*t?/u;
-  const match = value.match(fullSectionPattern);
-  if (!match?.[0]) {
-    return undefined;
-  }
-
-  const numbers = extractNumbers(match[0]);
-  if (numbers.length < 4) {
-    return undefined;
-  }
-
-  return `${numbers[0]}x${numbers[3]}`;
-}
-
-function getCTypeExpectedCompactSpecs(input: {
-  originalText?: string;
-  candidateQueries?: string[];
-}): string[] {
-  const values = [input.originalText, ...(input.candidateQueries ?? [])].filter(
-    (value): value is string => value !== undefined,
+  return (
+    /^[A-Z]{1,2}\d+(?::[A-Z]{1,2}\d+)?$/iu.test(compact) ||
+    /^(?:row|rows|column|columns|col)\d+$/iu.test(compact) ||
+    /^第?\d+[列欄行]$/u.test(compact) ||
+    /^[A-Z]{1,3}欄$/iu.test(compact)
   );
-
-  return uniqueNonEmptyStrings(
-    values.map(getExpectedCTypeCompactSpec).filter((value): value is string => value !== undefined),
-  );
-}
-
-function hasCTypeCompactSpecFragment(
-  input: {
-    candidateQueries?: string[];
-  },
-  expectedSpec: string,
-): boolean {
-  const expected = normalizeCatalogFilterText(expectedSpec);
-  const specValues = input.candidateQueries ?? [];
-
-  return specValues.some((value) => normalizeCatalogFilterText(value).includes(expected));
-}
-
-function hasPlateSearchSignal(value: string): boolean {
-  return /(?:\bPL\s*\d|板|黑鐵|黑板|OT板)/iu.test(value);
-}
-
-function hasSquareCutPlateProductName(input: {
-  originalText?: string;
-  candidateQueries?: string[];
-}): boolean {
-  const candidateQueries = input.candidateQueries ?? [];
-  const contextText = [input.originalText, ...candidateQueries]
-    .filter((value): value is string => value !== undefined)
-    .join(' ');
-
-  return candidateQueries.some(
-    (candidateQuery) => candidateQuery.includes('四方切') && hasPlateSearchSignal(contextText),
-  );
-}
-
-function normalizeComparableText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[＊*×]/g, 'x')
-    .trim();
 }
 
 const instructionCatalogContextSchema = z.object({
@@ -121,7 +62,7 @@ const legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
   customerContext: z
     .object({
       customerId: z.number().int().positive().optional(),
-      customerTierId: z.number().int().positive().optional(),
+      customerTier: z.enum(priceTierCodes).optional(),
       customerName: nonEmptyString.optional(),
       tierKnown: z.boolean().optional(),
     })
@@ -142,7 +83,7 @@ const lookupDefaultsSchema = z.object({
   customerContext: z
     .object({
       customerId: z.number().int().positive().optional(),
-      customerTierId: z.number().int().positive().optional(),
+      customerTier: z.enum(priceTierCodes).optional(),
       customerName: nonEmptyString.optional(),
       tierKnown: z.boolean().optional(),
     })
@@ -152,26 +93,49 @@ const lookupDefaultsSchema = z.object({
   limit: limitSchema,
 });
 
-const searchPriceCandidatesSchema = z
+const priceCandidateQuerySchema = z
   .object({
-    candidateQueries: z
-      .array(nonEmptyString, { required_error: 'Provide candidateQueries' })
-      .min(1)
-      .max(20)
+    category: z
+      .enum(priceCategories)
       .describe(
-        'Required AI-selected price lookup keywords. Put each product name, spec fragment, ERP item code, code prefix, or prior-table code + product-name spec_key-like anchor in its own string; backend normalizes every keyword to spec_key format before contains-style spec_key lookup without unit/category/review/active filters.',
+        'Required price category enum value. If the category is unknown, call category_discovery mode first instead of guessing.',
       ),
-    customerTierId: z
-      .number()
-      .int()
-      .positive()
+    material: z
+      .enum(materialKinds)
+      .optional()
+      .describe('Optional material enum value. Use the visible enum value, for example OT 黑鐵 or 錏.'),
+    thicknesses: z.array(nonEmptyString).min(1).max(20).optional(),
+    specs: z.array(nonEmptyString).min(1).max(20).optional(),
+    keyword: nonEmptyString.optional(),
+  })
+  .strict();
+
+const searchPriceLookupSchema = z
+  .object({
+    mode: z.literal('lookup').optional(),
+    queries: z.array(priceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1).max(20),
+    includeRelatedCutting: z
+      .boolean()
       .optional()
       .describe(
-        'Known Steel customer tier id from customer lookup or conversation context. If omitted, price lookup defaults to B tier.',
+        'When true, the same lookup also returns related 切工/切割 rows for product categories such as H型鋼, 工字鐵/I字鐵, 管, 角鐵, 槽鐵, or 平鐵/扁鐵.',
       ),
     limit: limitSchema,
   })
   .strict();
+
+const searchPriceCategoryDiscoverySchema = z
+  .object({
+    mode: z.literal('category_discovery'),
+    keyword: nonEmptyString.describe('Required keyword used to discover candidate categories.'),
+    limit: limitSchema,
+  })
+  .strict();
+
+const searchPriceCandidatesSchema = z.union([
+  searchPriceCategoryDiscoverySchema,
+  searchPriceLookupSchema,
+]);
 
 const runFileOcrSchema = z
   .object({
@@ -245,6 +209,28 @@ const readWorkingOrderItemsSchema = z
     }
   });
 
+const readActiveWorkbookSchema = z
+  .object({
+    query: nonEmptyString.describe(
+      'Required semantic keyword query for active workbook rows. Use item codes, product names, customer names, part numbers, status words, or quote text. Do not use spreadsheet coordinates.',
+    ),
+    sheetIds: z.array(activeWorkbookSheetIdSchema).min(1).max(4).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+    reason: nonEmptyString.optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (!isCoordinateOnlyQuery(input.query)) {
+      return;
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Use semantic keywords, not spreadsheet coordinates or row/column references',
+      path: ['query'],
+    });
+  });
+
 const runVisualInspectionSchema = z
   .object({
     filename: nonEmptyString.optional(),
@@ -288,6 +274,7 @@ export const steelToolArgsSchemas = {
   }),
   search_price_candidates: searchPriceCandidatesSchema,
   run_file_ocr: runFileOcrSchema,
+  read_active_workbook: readActiveWorkbookSchema,
   read_working_order_items: readWorkingOrderItemsSchema,
 } as const;
 
@@ -298,5 +285,6 @@ export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
 export type LookupQuoteRulesInput = z.infer<typeof legacyLookupQuoteRulesSchema>;
 export type LookupQuoteRulesToolInput = z.infer<typeof lookupQuoteRulesSchema>;
 export type RunFileOcrInput = z.infer<typeof runFileOcrSchema>;
+export type ReadActiveWorkbookInput = z.infer<typeof readActiveWorkbookSchema>;
 export type ReadWorkingOrderItemsInput = z.infer<typeof readWorkingOrderItemsSchema>;
 export type RunVisualInspectionInput = z.infer<typeof runVisualInspectionSchema>;
