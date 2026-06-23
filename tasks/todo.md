@@ -1,4 +1,87 @@
-# Active: Steel Rules Folder Source and Runtime Context Ordering
+# Active: Simplify Steel Live Quote Pricing Smoke Changes
+
+Goal: simplify this round's live pricing smoke changes, including the manual
+provider test and the documented tool-use verification, without changing public
+APIs or broadening the task scope.
+
+Plan:
+
+- [x] Collect the current diff and nearby Steel provider/tool context.
+- [x] Review the diff from code reuse, code quality, and efficiency angles.
+- [x] Apply only local, low-risk simplifications that keep the live smoke
+  behavior intact.
+- [x] Re-run focused checks and record the review result.
+
+Review - 2026-06-23:
+
+- Simplified the new live smoke spec so skipped default Jest runs no longer
+  read repo `.env`; `.env` is loaded only when
+  `STEEL_OPENAI_OAUTH_PRICING_LIVE_TEST=true` is already set.
+- Replaced manual `unknown` tool-argument casting for
+  `includeRelatedCutting` with `steelToolArgsSchemas.search_price_candidates`
+  `safeParse`, so the tool-use assertion follows the real tool contract.
+- Removed captured `onToolStatus` state from the spec because captured
+  `executeSteelTool` calls/results already prove the tool flow and are enough
+  for the auth-leak check.
+- Parsed response numbers once and reused the parsed array for the expected
+  subtotal checks.
+- Intentionally skipped extracting handler runtime-rule dependency helpers
+  because that would broaden this simplify pass into handler structure changes.
+- Tried adding an `AbortController` timeout around the live provider call, but
+  removed it after it coincided with repeated `Streaming request failed`
+  provider errors; preserving live-smoke stability is higher value here.
+- Post-simplify live reruns are currently blocked by the OAuth provider:
+  both the pricing live smoke and the smaller
+  `provider.real-auth.manual.spec.ts` fail at `sendSteelOAuthChat`
+  `doGenerate` with `Streaming request failed`, before pricing assertions or
+  tool-flow assertions run.
+- Focused local verification passed: `git diff --check`, untracked-file
+  whitespace check for the new spec, and default-off Jest skip behavior. Full
+  `packages/api` TypeScript still fails on existing unrelated diagnostics, with
+  no `provider.pricing-live` diagnostics in the log.
+
+# Previous Active: Steel Live Quote Pricing Smoke
+
+Goal: run a real OAuth/Codex provider smoke to verify AI can retrieve effective
+product price rows, effective cutting rows, and produce a quote containing
+material/cutting subtotals for plate, H beam, and H beam cutting. If the live
+model misses data or calculation flow, first adjust reviewed prompt/rule text,
+then retest; adjust tool descriptions only if prompt rules are insufficient.
+
+Plan:
+
+- [x] Confirm deterministic DB/tool availability for target plate, H beam, and
+  H beam cutting rows.
+- [x] Add a gated live manual spec that records tool calls, candidate groups,
+  and final quote text without exposing auth material.
+- [x] Run the live spec against real `openai_oauth_responses` and cloud
+  Supabase.
+- [x] If AI misses effective price/cutting data or quote subtotals, diagnose
+  from tool-call arguments and results before changing prompts.
+- [x] Prefer updating reviewed rules in `docs/rules/鋼材規則/` and syncing
+  `steel.rules`; only then consider tool description/schema wording.
+- [x] Re-run focused tests, DB/tool smoke, live smoke, and `git diff --check`.
+
+Review - 2026-06-23:
+
+- Deterministic DB/tool smoke confirmed available target rows:
+  `DNB70060` / `6.0m/mOT板雷射切割` B=38.5/kg,
+  `EHS201010` / `H型鋼200*100*5.5/8*10M(209)` B=28.4/kg,
+  and `H型鋼 200*100 切工` B=125/刀.
+- Added gated manual live spec
+  `packages/api/src/steel/ai/provider.pricing-live.manual.spec.ts`.
+- Live OAuth/Codex run passed with real `openai_oauth_responses` and cloud
+  Supabase:
+  `NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_PRICING_LIVE_TEST=true ...`
+  ran in about 60 seconds and passed 1/1 test.
+- The live run verified AI called `search_price_candidates`, used
+  `includeRelatedCutting=true`, received effective candidates for plate,
+  H 型鋼 product, and H 型鋼 cutting, and final output contained plate,
+  H material, and H cutting subtotals close to expected values:
+  plate about 145.07, H material about 5,935.6, H cutting 125.
+- No prompt/rule/tool wording change was needed after this live run.
+
+# Previous Active: Steel Rules Folder Source and Runtime Context Ordering
 
 Goal: treat `docs/rules/鋼材規則/` as the canonical Steel rule source,
 sync those files to unified `steel.rules`, and keep provider runtime context

@@ -190,6 +190,11 @@
   (`volume * density`, density 7.850 for OT/black iron), and use laser-cut
   product-price rows such as `黑鐵板 雷射切割` / `OT板雷射切割`, not `四方切`
   or per-piece pricing.
+- For Steel quote behavior claims, run deterministic DB/tool smoke first, then
+  a gated live OAuth/Codex provider smoke against cloud Supabase. This separates
+  data availability from AI tool-call flow and proves whether
+  `search_price_candidates` produced usable product/cutting evidence before
+  changing prompt rules or tool descriptions.
 - Steel workbook UI now includes the internal `客戶資料` / `customer_data` tab
   alongside `系統訂單`, `人工複核`, and `報價單`. When users provide a customer or
   vendor name, `search_customers` candidates should be written to
