@@ -1350,3 +1350,24 @@
   conversation that was already created before a persistence fix. If the user
   can restart that conversation, keep DB history authoritative and limit the
   fix to preventing new turns from being lost.
+- Steel integration into LibreChat is intended to become global native
+  LibreChat behavior, not only a scoped Steel route/spec. Implement it as an
+  additive global layer: load Steel rules/context first and merge Steel
+  tools/MCP/skills with existing user skills, memory, presets, chat history,
+  SSE, abort/resume, and settings instead of replacing those LibreChat modules.
+- Use `Memory` to mean LibreChat's user-memory module. Steel does not own a
+  separate user Memory feature; Steel has structured quote/workbook state
+  currently named `Output Sheet Memory` / `Working Order Memory` in code. In
+  plans and user-facing explanations, call that Steel structured state unless
+  referring to exact existing code names.
+- For native LibreChat Steel context ordering, optimize for provider prefix/KV
+  cache by keeping stable content first: Steel rules, Steel tool policy,
+  LibreChat agent instructions, MCP instructions, and stable skill catalog.
+  Put volatile per-turn content later: LibreChat Memory, chat history, Steel
+  runtime data, current-turn skill primes, then the current user message.
+- Steel native LibreChat integration should be implemented as extension hooks,
+  not a rewrite of LibreChat modules. Add Steel adapter code under
+  `packages/api/src/steel/native/`, then use thin hooks in `AgentClient`,
+  `applyContextToAgent`, `ToolService`, `initializeClient`, and `responses.js`
+  while preserving `BaseClient` history/persistence, user Memory, MCP, skills,
+  tools, SSE, abort/resume, and model settings.

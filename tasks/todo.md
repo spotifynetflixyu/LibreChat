@@ -10208,3 +10208,32 @@ packages/api run build` passed with existing non-Steel Rollup TypeScript
 - `docs/rules/workbook規則.txt` now requires `systemOrder.modelCode` from adopted `search_price_candidates` `erpItemCode` / source `型號`, and `systemOrder.itemSpec` from adopted `productName` / source `產品名稱`.
 - Synced reviewed rule row `steel-workbook-output-policy`; readback confirmed both new prompt fragments and SHA-256 `a6b328c12b66124e96e8c4691d03a9ec33ef415cf74725c9403452d97e615b39`.
 - Verification: `jest src/steel/workbook/semantic.spec.ts -- --runInBand` passed 6/6, `jest src/steel/ai/provider.spec.ts -- --runInBand` passed 32/32, `jest src/steel/handlers.spec.ts -- --runInBand` passed 42/43 with 1 skipped, `npm --workspace packages/api run build` completed with exit 0 and an existing Redis type warning, and `git diff --check` passed.
+
+# Steel Global Native LibreChat Integration Plan Doc
+
+- [x] Reconfirm project instructions, lessons, and prior Steel runtime-context memory.
+- [x] Inspect native LibreChat chat context/history, provider state, tools, MCP, skills, memory, files, stream, settings, and persistence modules for integration gaps.
+- [x] Write the plan document under `docs/plans/` with an explicit missing-module audit.
+- [x] Review the plan for additive global behavior: Steel first in context, but user skills/memory/MCP/settings preserved.
+- [x] Run documentation hygiene checks and add a review section here.
+
+## Review
+
+- Wrote `docs/plans/2026-06-24-steel-global-native-librechat-integration.md`.
+- Confirmed the global integration should hook native LibreChat paths rather
+  than keep `/steel/oauth-chat` as the normal workflow.
+- Native modules checked: `AgentClient.buildMessages`, `applyContextToAgent`,
+  `initializeClient`, `BaseClient.loadHistory/sendMessage`, `ToolService`,
+  skill catalog/prime injection, MCP auth/tool loading, OpenAI config
+  `useResponsesApi`, file encoding, external `responses.js`, and current Steel
+  runtime context/tool/provider handlers.
+- Main missing implementation modules captured in the plan: native Steel
+  context adapter, top-of-context instruction prefix, additive Steel
+  `toolDefinitions/toolRegistry` merge, Steel MCP/skills adapter,
+  stateful/stateless provider policy, external Responses route hook, file/OCR
+  bridge, event mapping, permissions/config defaults, and parity cleanup for
+  `/steel/oauth-chat`.
+- Verification: `git diff --check` passed for tracked changes; direct
+  trailing-whitespace scan of the new plan, `tasks/todo.md`, and
+  `tasks/lessons.md` returned no matches. No Jest/build tests were run because
+  this task only produced planning documentation.
