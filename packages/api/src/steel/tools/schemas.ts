@@ -5,6 +5,7 @@ import {
   priceCategories,
   priceTierCodes,
 } from '../pricing/enums';
+import { steelRuntimeActiveOutputSheetIds } from '../runtime/context';
 
 export const defaultSteelPriceCustomerTier = defaultPriceTierCode;
 
@@ -12,12 +13,7 @@ const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
 const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
-const activeWorkbookSheetIdSchema = z.enum([
-  'system_order',
-  'customer_data',
-  'manual_review',
-  'customer_quote',
-]);
+const activeWorkbookSheetIdSchema = z.enum(steelRuntimeActiveOutputSheetIds);
 
 function isCoordinateOnlyQuery(value: string): boolean {
   const normalized = value.normalize('NFKC').trim();
@@ -124,44 +120,7 @@ const priceLookupQuerySchema = z
     keyword: nonEmptyString.optional(),
     limit: limitSchema,
   })
-  .strict()
-  .superRefine((query, context) => {
-    if (query.category !== '孔') {
-      return;
-    }
-
-    if (query.keyword !== '鐵板') {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['keyword'],
-        message: '孔 category lookup only accepts keyword 鐵板',
-      });
-    }
-
-    if (query.material !== undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['material'],
-        message: '孔 category lookup does not accept material',
-      });
-    }
-
-    if (query.thicknessMm !== undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['thicknessMm'],
-        message: '孔 category lookup does not accept thicknessMm',
-      });
-    }
-
-    if (query.limit !== undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['limit'],
-        message: '孔 category lookup does not accept limit',
-      });
-    }
-  });
+  .strict();
 
 const priceCategoryDiscoveryQuerySchema = z
   .object({

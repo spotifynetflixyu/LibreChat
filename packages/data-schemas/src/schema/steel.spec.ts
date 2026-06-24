@@ -68,6 +68,7 @@ describe('Steel Mongo schemas', () => {
       'active',
       'superseded',
     ]);
+    expect(SteelConversationTurn.schema.path('userId')).toBeDefined();
     expect(SteelConversationTurn.schema.path('finalResponseMetadata.provider')).toBeDefined();
     expect(SteelConversationTurn.schema.path('finalResponseMetadata.responseId')).toBeDefined();
     expect(SteelConversationTurn.schema.path('finalResponseMetadata.usage.totalTokens')).toBeDefined();
@@ -80,6 +81,10 @@ describe('Steel Mongo schemas', () => {
     ]);
     expect(SteelConversationTurn.schema.indexes()).toContainEqual([
       { conversationId: 1, state: 1, turnIndex: 1 },
+      expect.any(Object),
+    ]);
+    expect(SteelConversationTurn.schema.indexes()).toContainEqual([
+      { conversationId: 1, userId: 1, state: 1, turnIndex: 1 },
       expect.any(Object),
     ]);
     expect(SteelConversationTurn.schema.indexes()).toContainEqual([

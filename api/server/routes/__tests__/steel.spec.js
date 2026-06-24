@@ -47,6 +47,9 @@ const mockCreateGuestConversation = jest.fn((_req, res) =>
 const mockReadConversation = jest.fn((_req, res) =>
   res.status(200).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
 );
+const mockReadConversationMessages = jest.fn((_req, res) =>
+  res.status(200).json({ conversationId: 'steel-chat-1', messages: [] }),
+);
 const mockCreateRuleProposal = jest.fn((_req, res) =>
   res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
@@ -57,6 +60,7 @@ const mockCreateSteelHandlers = jest.fn(() => ({
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
   readConversation: mockReadConversation,
+  readConversationMessages: mockReadConversationMessages,
   streamChat: mockStreamChat,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
@@ -115,6 +119,7 @@ function createApp() {
 describe('Steel route shells', () => {
   beforeEach(() => {
     mockRequireJwtAuth.mockClear();
+    mockReadConversationMessages.mockClear();
   });
 
   it('registers user-facing Steel model options under /api/steel', async () => {
@@ -226,6 +231,17 @@ describe('Steel route shells', () => {
 
     expect(res.status).toBe(200);
     expect(mockRequireJwtAuth).not.toHaveBeenCalled();
+  });
+
+  it('registers authenticated Steel conversation message reload under /api/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).get('/api/steel/conversations/steel-chat-1/messages');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ conversationId: 'steel-chat-1', messages: [] });
+    expect(mockReadConversationMessages).toHaveBeenCalledTimes(1);
+    expect(mockRequireJwtAuth).toHaveBeenCalled();
   });
 
   it('registers authenticated Steel rule proposal creation under /api/steel', async () => {

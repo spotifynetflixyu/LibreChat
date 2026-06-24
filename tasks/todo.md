@@ -1,4 +1,138 @@
-# Active: Steel OAuth Post-Tool Final Generation Progress
+# Active: Concise Output Rule Version
+
+Goal: shorten Steel quote-output rules while preserving the enforceable sheet
+logic for `system_order`, `customer_data`, `customer_quote`, and
+`manual_review`.
+
+Plan:
+
+- [x] Draft a shorter version that keeps sheet headings and core constraints.
+- [x] Update `docs/rules/輸出規則.txt` and capture the lesson.
+- [x] Sync reviewed rules to DB and verify readback.
+- [x] Run focused validation and document the result.
+
+Review - 2026-06-24:
+
+- Shortened the full `docs/rules/輸出規則.txt`, including active-sheet scope,
+  customer-tier synchronization, OCR confirmation flow, and per-sheet quote
+  output rules.
+- Preserved enforceable logic for sheet overwrite semantics, default price B
+  when tier is unknown, OCR-first confirmation without pricing, required hole
+  totals, fixed `system_order` columns, separate processing rows,
+  customer-facing privacy, and `manual_review` boundaries.
+- Synced reviewed rules to DB with
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`; direct DB readback
+  confirmed `steel-workbook-output-policy` is active, reviewed, and has source
+  hash `1f159414804d2f32321411f8bfd502deb2fbde1eea4e1aaf238263ca2a237180`.
+- The synced output prompt is now 2519 characters. Readback checks confirmed
+  active-sheet scope, overwrite semantics, final Markdown output wording, tier
+  sync, OCR no-quote flow, hole requirements, per-sheet headings, customer quote
+  privacy, and processing-row requirements.
+
+# Previous Active: Output Rule Sheet Segmentation
+
+Goal: restructure Steel quote-output rules so each active sheet has its own
+rule section instead of mixing `system_order`, `customer_quote`, and
+`manual_review` details in one long numbered list.
+
+Plan:
+
+- [x] Inspect the current output rule source and relevant workbook context.
+- [x] Rewrite `docs/rules/輸出規則.txt` by sheet section and capture the lesson.
+- [x] Sync reviewed rules to DB and verify readback.
+- [x] Run focused validation and document the result.
+
+Review - 2026-06-24:
+
+- Restructured `docs/rules/輸出規則.txt` section four into explicit
+  per-sheet blocks: `通用`, `system_order`, `customer_data`,
+  `customer_quote`, and `manual_review`.
+- Preserved the existing runtime semantics while separating ERP fixed-column
+  rules, customer-facing quote privacy/itemization rules, and manual-review
+  exception rules.
+- `customer_quote` still requires `項目`、`說明`、`小計`, hides internal price
+  tier wording, keeps steel/material rows itemized by source row, and allows
+  processing subtotals only by processing type.
+- Synced reviewed rules to DB with
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`; direct DB readback
+  confirmed `steel-workbook-output-policy` is active, reviewed, and has source
+  hash `c725e8007e1e9376618b265d0b6322f794ff823d35290217906ec622b424394f`.
+- Direct DB prompt checks confirmed all per-sheet headings and core boundaries
+  are present in the runtime rule.
+
+# Previous Active: Customer Quote Output Rule Update
+
+Goal: update Steel `customer_quote` output rules so customer-facing quote
+tables hide internal price tiers and preserve OCR/source-item line granularity.
+
+Plan:
+
+- [x] Locate the runtime output-rule source and DB sync path.
+- [x] Update `docs/rules/輸出規則.txt` and capture the lesson.
+- [x] Sync reviewed rules to DB and verify readback.
+- [x] Run focused validation and document the result.
+
+Review - 2026-06-24:
+
+- Updated `docs/rules/輸出規則.txt` so `customer_quote` uses customer-facing
+  columns `項目`、`說明`、`小計`, hides internal price tier wording such as
+  `價格 B`, and requires a final `總計` row.
+- Steel / material / product customer-quote rows must now preserve OCR,
+  drawing, or source-list item granularity; D3 / S3 / S4 or other source items
+  cannot be collapsed into one generic material subtotal row.
+- Processing rows may be subtotaled by processing type only: `孔`, `刀`, `切工
+  / 切`, `開槽` and similar categories can each become one customer-facing
+  subtotal row, with source items and quantities listed in `說明`.
+- Synced reviewed rules to DB with
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`; direct DB readback
+  confirmed `steel-workbook-output-policy` is active, reviewed, and has source
+  hash `2cd7b175d237f52027cfba0214f9912dde29a4f057a127a8c4610101fed30953`.
+- Direct DB prompt checks confirmed the runtime rule contains the fixed
+  columns, price-tier ban, material itemization rule, processing-type merge
+  rule, and `總計` row requirement.
+
+# Previous Active: Simplify Steel Runtime Commit 4d1898
+
+Goal: run `$simplify` on current-branch commit
+`4d1898a16fc74e3473d1284851f9c134f2ee01eb` without changing public APIs or
+touching other branches.
+
+Plan:
+
+- [x] Confirm the target commit and current worktree state.
+- [x] Inspect the commit diff and collect reuse / quality / efficiency findings.
+- [x] Apply local simplifications and important fixes with clear benefit.
+- [x] Run focused checks and document what was changed or skipped.
+
+Review - 2026-06-24:
+
+- Removed no-op Steel price lookup runtime context/enrichment helpers from the
+  OAuth provider and simplified same-round price query batching to use parsed
+  query arrays directly.
+- Kept `category: "孔"` canonicalization lenient by deleting unreachable
+  schema-level rejection branches after the preprocess has already reduced it
+  to `{ category: "孔", keyword: "鐵板" }`.
+- Fixed non-stream OCR/tool-status memory capture to use the generated
+  persistent `steel-chat-*` conversation id on first-turn chats.
+- Added owner-scoped Steel conversation history: turns now persist `userId`,
+  prompt replay/edit/reload queries filter by `userId`, and reload messages
+  return 401 without an authenticated user.
+- Reduced post-tool provider prompt bloat by compacting coalesced sibling
+  `search_price_candidates` tool results to a reference/count object while
+  preserving a tool-result for every provider tool call id.
+- Made transient provider retry sleep abort-aware so closed requests do not
+  issue another provider call after abort.
+- Consolidated active workbook sheet ids on the runtime constant and ran
+  price category discovery and lookup branches in parallel inside the tool
+  executor.
+- Verification passed: targeted Steel provider/tools/prices/history/handlers
+  Jest suites, Steel data-schema Jest suite, Steel route shell Jest suite,
+  targeted ESLint, `git diff --check`, and `packages/data-schemas` build. The
+  `packages/api` build reached `created dist`; its only TypeScript warning was
+  the existing unrelated Redis `cacheFactory.ts` warning, and the PTY had to be
+  interrupted after completion because it did not return to the shell.
+
+# Previous Active: Steel OAuth Post-Tool Final Generation Progress
 
 Goal: diagnose why conversation
 `steel-chat-e896d495-aa55-4fa7-ba5c-c45c6f509940` appeared stuck after

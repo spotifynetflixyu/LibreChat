@@ -107,6 +107,10 @@ const steelConversationTurnSchema = new Schema<ISteelConversationTurn>(
       required: true,
       index: true,
     },
+    userId: {
+      type: String,
+      index: true,
+    },
     requestId: {
       type: String,
       index: true,
@@ -171,6 +175,7 @@ const steelConversationTurnSchema = new Schema<ISteelConversationTurn>(
 );
 
 steelConversationTurnSchema.index({ conversationId: 1, state: 1, turnIndex: 1 });
+steelConversationTurnSchema.index({ conversationId: 1, userId: 1, state: 1, turnIndex: 1 });
 steelConversationTurnSchema.index({ conversationId: 1, createdAt: -1 });
 steelConversationTurnSchema.index({ conversationId: 1, messageId: 1 }, { unique: true });
 

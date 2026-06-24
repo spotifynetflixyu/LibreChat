@@ -140,6 +140,7 @@ export interface SteelConversationTurnQueuedSteer {
 
 export interface ISteelConversationTurn extends Document {
   conversationId: string;
+  userId?: string;
   requestId?: string;
   messageId: string;
   turnIndex: number;

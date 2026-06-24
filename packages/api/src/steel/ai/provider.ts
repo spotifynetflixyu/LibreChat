@@ -27,7 +27,7 @@ import {
   type SteelProviderToolContextMode,
   type SteelProviderToolName,
 } from '../tools/registry';
-import type { SteelToolResult } from '../tools/results';
+import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import { steelToolArgsSchemas } from '../tools/schemas';
 import { runSteelFileOcr } from '../vision/ocr';
 
@@ -45,7 +45,6 @@ type SearchPriceCandidatesInput = ReturnType<
 >;
 type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
 type SteelRoundTool = LanguageModelV3FunctionTool;
-type SteelPriceLookupRuntimeContext = Record<string, never>;
 type SteelProviderRoundTiming = {
   round: number;
   generationDurationMs: number;
@@ -526,9 +525,32 @@ function getTransientProviderRetryDelayMs(attemptIndex: number): number {
   );
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+function createProviderAbortError() {
+  return new Error('OpenAI OAuth provider request aborted.');
+}
+
+function throwIfProviderAborted(abortSignal?: AbortSignal) {
+  if (abortSignal?.aborted) {
+    throw createProviderAbortError();
+  }
+}
+
+function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (abortSignal?.aborted) {
+      reject(createProviderAbortError());
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      abortSignal?.removeEventListener('abort', abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(createProviderAbortError());
+    };
+    abortSignal?.addEventListener('abort', abort, { once: true });
   });
 }
 
@@ -712,38 +734,6 @@ function toJsonValue(value: unknown): JSONValue {
   return JSON.parse(serialized) as JSONValue;
 }
 
-function createPriceLookupRuntimeContext(
-  _messages: readonly SteelOAuthChatMessage[],
-): SteelPriceLookupRuntimeContext {
-  return {};
-}
-
-function updatePriceLookupRuntimeContext(
-  _context: SteelPriceLookupRuntimeContext,
-  _result: SteelToolResult,
-) {
-}
-
-function enrichSearchPriceInput(
-  input: SearchPriceCandidatesInput,
-  _context: SteelPriceLookupRuntimeContext,
-): SearchPriceCandidatesInput {
-  return steelToolArgsSchemas.search_price_candidates.parse(input);
-}
-
-function isSearchPriceCoalesceCompatible(
-  _left: SearchPriceCandidatesInput,
-  _right: SearchPriceCandidatesInput,
-): boolean {
-  return true;
-}
-
-function toBatchedPriceCandidate(
-  input: SearchPriceCandidatesInput,
-): SearchPriceCandidateQuery[] {
-  return [...input.queries];
-}
-
 function uniquePriceQueries(queries: readonly SearchPriceCandidateQuery[]): SearchPriceCandidateQuery[] {
   const seen = new Set<string>();
 
@@ -765,15 +755,7 @@ function createBatchedSearchPriceInput(
     return undefined;
   }
 
-  const [firstInput] = inputs;
-  if (!firstInput) {
-    return undefined;
-  }
-  if (!inputs.every((input) => isSearchPriceCoalesceCompatible(firstInput, input))) {
-    return undefined;
-  }
-
-  const queries = uniquePriceQueries(inputs.flatMap((input) => toBatchedPriceCandidate(input)));
+  const queries = uniquePriceQueries(inputs.flatMap((input) => input.queries));
   if (queries.length === 0 || queries.length > 20) {
     return undefined;
   }
@@ -787,6 +769,43 @@ interface ExecutedSteelToolCall {
   call: SteelBusinessToolCall;
   input: unknown;
   result: SteelToolResult;
+  coalescedResultOfToolCallId?: string;
+}
+
+function getJsonArrayCount(value: SteelToolJsonObject[string]): number | undefined {
+  return Array.isArray(value) ? value.length : undefined;
+}
+
+function createCoalescedSearchPriceResult(
+  result: SteelToolResult,
+  primaryToolCallId: string,
+): SteelToolResult {
+  if (!result.ok || result.toolName !== 'search_price_candidates') {
+    return result;
+  }
+
+  const data: SteelToolJsonObject = {
+    coalescedWithProviderToolCallId: primaryToolCallId,
+    message: 'Full search_price_candidates data is available in the referenced tool result.',
+  };
+  const priceCandidateCount = getJsonArrayCount(result.data.priceCandidates);
+  const categoryCandidateCount = getJsonArrayCount(result.data.categoryCandidates);
+  const searchQueryCount = getJsonArrayCount(result.data.searchQueries);
+
+  if (priceCandidateCount !== undefined) {
+    data.priceCandidateCount = priceCandidateCount;
+  }
+  if (categoryCandidateCount !== undefined) {
+    data.categoryCandidateCount = categoryCandidateCount;
+  }
+  if (searchQueryCount !== undefined) {
+    data.searchQueryCount = searchQueryCount;
+  }
+
+  return {
+    ...result,
+    data,
+  };
 }
 
 function createInvalidToolArgumentsResult(
@@ -880,14 +899,12 @@ async function executeSteelBusinessToolCalls({
   executeSteelToolCall,
   files,
   onToolStatus,
-  priceLookupContext,
   runState,
 }: {
   calls: SteelBusinessToolCall[];
   executeSteelToolCall: SteelProviderToolExecutor;
   files: readonly SteelOAuthChatFile[];
   onToolStatus?: SteelProviderToolStatusCallback;
-  priceLookupContext: SteelPriceLookupRuntimeContext;
   runState: SteelToolRunState;
 }): Promise<ExecutedSteelToolCall[]> {
   const executedCalls: ExecutedSteelToolCall[] = [];
@@ -969,16 +986,13 @@ async function executeSteelBusinessToolCalls({
     if (call.toolName === 'search_price_candidates') {
       const parsedSearchInput = steelToolArgsSchemas.search_price_candidates.safeParse(input);
       if (parsedSearchInput.success) {
-        const enrichedSearchInput = enrichSearchPriceInput(
-          parsedSearchInput.data,
-          priceLookupContext,
-        );
-        input = enrichedSearchInput;
+        const searchInput = parsedSearchInput.data;
+        input = searchInput;
         const groupedCalls: Array<{
           call: SteelBusinessToolCall;
           input: unknown;
           searchInput: SearchPriceCandidatesInput;
-        }> = [{ call, input, searchInput: enrichedSearchInput }];
+        }> = [{ call, input, searchInput }];
 
         for (const siblingCall of calls.slice(callIndex + 1)) {
           if (
@@ -997,17 +1011,11 @@ async function executeSteelBusinessToolCalls({
 
           const parsedSiblingSearchInput =
             steelToolArgsSchemas.search_price_candidates.safeParse(siblingInput);
-          const enrichedSiblingSearchInput = parsedSiblingSearchInput.success
-            ? enrichSearchPriceInput(parsedSiblingSearchInput.data, priceLookupContext)
-            : undefined;
-          if (
-            enrichedSiblingSearchInput &&
-            isSearchPriceCoalesceCompatible(enrichedSearchInput, enrichedSiblingSearchInput)
-          ) {
+          if (parsedSiblingSearchInput.success) {
             groupedCalls.push({
               call: siblingCall,
-              input: enrichedSiblingSearchInput,
-              searchInput: enrichedSiblingSearchInput,
+              input: parsedSiblingSearchInput.data,
+              searchInput: parsedSiblingSearchInput.data,
             });
           }
         }
@@ -1029,6 +1037,9 @@ async function executeSteelBusinessToolCalls({
               call: groupedCall.call,
               input: groupedCall.input,
               result,
+              ...(groupedCall.call.toolCallId !== call.toolCallId
+                ? { coalescedResultOfToolCallId: call.toolCallId }
+                : {}),
             });
           }
 
@@ -1061,7 +1072,6 @@ async function executeSteelBusinessToolCalls({
       input,
       result,
     });
-    updatePriceLookupRuntimeContext(priceLookupContext, result);
   }
 
   return executedCalls;
@@ -1085,15 +1095,21 @@ function toToolResultMessage(executedCalls: ExecutedSteelToolCall[]): LanguageMo
   return {
     role: 'tool',
     content: [
-      ...executedCalls.map(({ call, result }) => ({
-        type: 'tool-result' as const,
-        toolCallId: call.toolCallId,
-        toolName: call.toolName,
-        output: {
-          type: 'json' as const,
-          value: toJsonValue(result),
-        },
-      })),
+      ...executedCalls.map(({ call, coalescedResultOfToolCallId, result }) => {
+        const outputResult = coalescedResultOfToolCallId
+          ? createCoalescedSearchPriceResult(result, coalescedResultOfToolCallId)
+          : result;
+
+        return {
+          type: 'tool-result' as const,
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          output: {
+            type: 'json' as const,
+            value: toJsonValue(outputResult),
+          },
+        };
+      }),
     ],
   };
 }
@@ -1288,6 +1304,7 @@ async function generateProviderRoundWithRetry({
   onTextDelta?: (delta: string) => void;
 }): Promise<LanguageModelV3GenerateResult> {
   for (let attemptIndex = 0; attemptIndex < transientProviderMaxAttempts; attemptIndex += 1) {
+    throwIfProviderAborted(callOptions.abortSignal);
     let streamedTextDelta = false;
     const onAttemptTextDelta = onTextDelta
       ? (delta: string) => {
@@ -1315,7 +1332,7 @@ async function generateProviderRoundWithRetry({
         throw error;
       }
 
-      await sleep(getTransientProviderRetryDelayMs(attemptIndex));
+      await sleep(getTransientProviderRetryDelayMs(attemptIndex), callOptions.abortSignal);
     }
   }
 
@@ -1364,7 +1381,6 @@ export async function sendSteelOAuthChat({
   ] satisfies SteelRoundTool[];
   const maxToolCalls = steelToolMaxCalls ?? defaultSteelToolMaxCalls;
   const runState = createSteelToolRunState(maxToolCalls);
-  const priceLookupContext = createPriceLookupRuntimeContext(promptMessages);
   const omitVisualEvidenceFileParts = false;
   let prompt = systemInstruction
     ? toPromptWithSystemInstruction(promptMessages, systemInstruction, {
@@ -1453,7 +1469,6 @@ export async function sendSteelOAuthChat({
       executeSteelToolCall,
       files: allVisualEvidenceFiles,
       onToolStatus,
-      priceLookupContext,
       runState,
     });
     toolDurationMs += Math.max(0, Date.now() - steelBusinessToolsStartedAt);

@@ -833,6 +833,9 @@ describe('createSteelHandlers', () => {
       params: {
         conversationId: 'steel-chat-reload',
       },
+      user: {
+        id: 'user_1',
+      },
     } as unknown as Request;
     const res = createResponse();
 
@@ -840,6 +843,7 @@ describe('createSteelHandlers', () => {
 
     expect(historyService.listActiveTurns).toHaveBeenCalledWith({
       conversationId: 'steel-chat-reload',
+      userId: 'user_1',
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
@@ -867,6 +871,34 @@ describe('createSteelHandlers', () => {
           updatedAt: '2026-06-24T00:00:01.000Z',
         },
       ],
+    });
+  });
+
+  it('requires an authenticated user before reading Steel reload messages', async () => {
+    const historyService = {
+      appendTurn: jest.fn(),
+      buildHistoryWindow: jest.fn(),
+      editUserMessage: jest.fn(),
+      listActiveTurns: jest.fn(),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      historyService,
+      sendChat: jest.fn(),
+    } as unknown as Parameters<typeof createSteelHandlers>[0]);
+    const req = {
+      params: {
+        conversationId: 'steel-chat-reload',
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.readConversationMessages(req, res);
+
+    expect(historyService.listActiveTurns).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Steel conversation messages require login',
     });
   });
 
@@ -1021,7 +1053,6 @@ describe('createSteelHandlers', () => {
     } as unknown as Parameters<typeof createSteelHandlers>[0]);
     const req = {
       body: {
-        conversationId: 'steel_conversation_1',
         messages: [{ role: 'user', content: 'OCR a.pdf' }],
       },
     } as Request;
@@ -1031,7 +1062,7 @@ describe('createSteelHandlers', () => {
 
     expect(workingOrderMemoryWriter.captureToolResult).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationId: 'steel_conversation_1',
+        conversationId: expect.stringMatching(/^steel-chat-/),
         toolName: 'run_file_ocr',
         data: { filename: 'a.pdf', pageResults: [{ page: 1, text: 'OCR' }] },
       }),

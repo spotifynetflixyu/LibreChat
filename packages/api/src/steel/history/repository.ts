@@ -19,6 +19,7 @@ type Mongoose = typeof import('mongoose');
 interface SteelConversationTurnDocument {
   _id: { toString(): string };
   conversationId: string;
+  userId?: string;
   requestId?: string;
   messageId: string;
   turnIndex: number;
@@ -43,6 +44,7 @@ function toTurnRecord(document: SteelConversationTurnDocument): SteelConversatio
   return {
     id: document._id.toString(),
     conversationId: document.conversationId,
+    userId: document.userId,
     requestId: document.requestId,
     messageId: document.messageId,
     turnIndex: document.turnIndex,
@@ -80,6 +82,7 @@ export function createMongooseSteelConversationHistoryRepository(
         {
           conversationId: turn.conversationId,
           messageId: turn.messageId,
+          ...(turn.userId ? { userId: turn.userId } : {}),
         },
         {
           $setOnInsert: createTurnDocument(turn),
@@ -97,18 +100,20 @@ export function createMongooseSteelConversationHistoryRepository(
       return toTurnRecord(document);
     },
 
-    async findTurnByMessageId({ conversationId, messageId }) {
+    async findTurnByMessageId({ conversationId, messageId, userId }) {
       const document = await SteelConversationTurn.findOne({
         conversationId,
         messageId,
+        ...(userId ? { userId } : {}),
       }).lean<SteelConversationTurnDocument>();
 
       return document ? toTurnRecord(document) : null;
     },
 
-    async listActiveTurns({ conversationId, maxTurns }) {
+    async listActiveTurns({ conversationId, maxTurns, userId }) {
       const query = SteelConversationTurn.find({
         conversationId,
+        ...(userId ? { userId } : {}),
         state: 'active',
       });
       const hasLimit = typeof maxTurns === 'number' && maxTurns > 0;
@@ -125,10 +130,12 @@ export function createMongooseSteelConversationHistoryRepository(
       turnIndex,
       supersededAt,
       supersededByMessageId,
+      userId,
     }) {
       const result = await SteelConversationTurn.updateMany(
         {
           conversationId,
+          ...(userId ? { userId } : {}),
           state: 'active',
           turnIndex: { $gt: turnIndex },
         },
@@ -149,11 +156,13 @@ export function createMongooseSteelConversationHistoryRepository(
       messageId,
       nextContent,
       editedAt,
+      userId,
       editedByUserId,
     }) {
       const previous = await SteelConversationTurn.findOne({
         conversationId,
         messageId,
+        ...(userId ? { userId } : {}),
         role: 'user',
       }).lean<SteelConversationTurnDocument>();
 
@@ -181,6 +190,7 @@ export function createMongooseSteelConversationHistoryRepository(
       const updated = await SteelConversationTurn.findOne({
         conversationId,
         messageId,
+        ...(userId ? { userId } : {}),
       }).lean<SteelConversationTurnDocument>();
 
       return updated ? toTurnRecord(updated) : null;

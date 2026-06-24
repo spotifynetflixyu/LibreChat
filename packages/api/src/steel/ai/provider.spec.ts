@@ -908,6 +908,29 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
+  it('does not retry transient provider errors after the request aborts', async () => {
+    const abortController = new AbortController();
+    const doGenerate = jest.fn(async () => {
+      abortController.abort();
+      throw new Error('read ETIMEDOUT');
+    });
+
+    await expect(
+      sendSteelOAuthChat({
+        abortSignal: abortController.signal,
+        createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+        ensureFresh: false,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'abort before retry' }],
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        steelRuntimeContext: createProviderRuntimeContext(),
+      }),
+    ).rejects.toThrow('OpenAI OAuth provider request aborted.');
+
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+
   it('answers price turns without workbook/file-analysis tools or required price-loop gating', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: '| 項目 | 金額 |\n| --- | --- |\n| PL6*80 | 待查 |' }],
@@ -1164,7 +1187,11 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const executeSteelToolCall = jest.fn(async (options) => ({
       ok: true as const,
       toolName: options.toolName as 'search_price_candidates',
-      data: { priceCandidates: [] },
+      data: {
+        priceCandidates: [{ id: 1, erpItemCode: 'OTL006', unitPrice: 40 }],
+        categoryCandidates: [],
+        searchQueries: (options.arguments as SearchPriceCandidatesInput).queries,
+      },
       sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1 as const,
@@ -1193,6 +1220,39 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         },
       }),
     );
+    const secondGenerateOptions = doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions;
+    const toolResultMessage = secondGenerateOptions.prompt.find(
+      (message) => message.role === 'tool',
+    ) as Extract<LanguageModelV3Prompt[number], { role: 'tool' }>;
+    const toolResults = toolResultMessage.content.filter(
+      (part) => part.type === 'tool-result',
+    );
+    const primaryToolResult = toolResults.find(
+      (part) => part.toolCallId === 'call_price_b',
+    )?.output.value as SteelToolResult;
+    const coalescedToolResult = toolResults.find(
+      (part) => part.toolCallId === 'call_price_custom',
+    )?.output.value as SteelToolResult;
+
+    expect(primaryToolResult).toEqual(
+      expect.objectContaining({
+        ok: true,
+        data: expect.objectContaining({
+          priceCandidates: [expect.objectContaining({ erpItemCode: 'OTL006' })],
+        }),
+      }),
+    );
+    expect(coalescedToolResult).toEqual(
+      expect.objectContaining({
+        ok: true,
+        data: expect.objectContaining({
+          coalescedWithProviderToolCallId: 'call_price_b',
+          priceCandidateCount: 1,
+          searchQueryCount: 2,
+        }),
+      }),
+    );
+    expect(JSON.stringify(coalescedToolResult)).not.toContain('OTL006');
   });
 
   it('does not apply discovered customer tier to later price lookup calls', async () => {

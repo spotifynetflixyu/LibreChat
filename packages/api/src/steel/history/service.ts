@@ -39,6 +39,7 @@ export interface SteelConversationTurnQueuedSteer {
 export interface SteelConversationTurnRecord {
   id: string;
   conversationId: string;
+  userId?: string;
   requestId?: string;
   messageId: string;
   turnIndex: number;
@@ -59,6 +60,7 @@ export interface SteelConversationTurnRecord {
 
 export interface SteelConversationTurnCreateInput {
   conversationId: string;
+  userId?: string;
   requestId?: string;
   messageId: string;
   turnIndex: number;
@@ -74,6 +76,7 @@ export interface SteelConversationTurnCreateInput {
 
 interface ConversationScopedInput {
   conversationId: string;
+  userId?: string;
 }
 
 interface ListActiveTurnsInput extends ConversationScopedInput {
@@ -159,11 +162,13 @@ export function createSteelConversationHistoryService({
       conversationId,
       messageId,
       nextContent,
+      userId,
       editedByUserId,
     }: EditUserMessageInput) {
       const targetTurn = await historyRepository.findTurnByMessageId({
         conversationId,
         messageId,
+        ...(userId ? { userId } : {}),
       });
 
       if (!targetTurn) {
@@ -179,8 +184,9 @@ export function createSteelConversationHistoryService({
         conversationId,
         messageId,
         nextContent,
+        ...(userId ? { userId } : {}),
         editedAt: supersededAt,
-        editedByUserId,
+        ...(editedByUserId ? { editedByUserId } : {}),
       });
 
       if (!updatedTurn) {
@@ -189,6 +195,7 @@ export function createSteelConversationHistoryService({
 
       const supersedeInput = {
         conversationId,
+        ...(userId ? { userId } : {}),
         turnIndex: targetTurn.turnIndex,
         supersededAt,
         supersededByMessageId: messageId,
@@ -205,17 +212,24 @@ export function createSteelConversationHistoryService({
       };
     },
 
-    async buildHistoryWindow({ conversationId, maxTurns }: BuildHistoryWindowInput) {
+    async buildHistoryWindow({ conversationId, maxTurns, userId }: BuildHistoryWindowInput) {
       if (maxTurns <= 0) {
         return [];
       }
 
-      const activeTurns = await historyRepository.listActiveTurns({ conversationId, maxTurns });
+      const activeTurns = await historyRepository.listActiveTurns({
+        conversationId,
+        maxTurns,
+        ...(userId ? { userId } : {}),
+      });
       return activeTurns.sort(byTurnIndex);
     },
 
-    async listActiveTurns({ conversationId }: ConversationScopedInput) {
-      const activeTurns = await historyRepository.listActiveTurns({ conversationId });
+    async listActiveTurns({ conversationId, userId }: ConversationScopedInput) {
+      const activeTurns = await historyRepository.listActiveTurns({
+        conversationId,
+        ...(userId ? { userId } : {}),
+      });
       return activeTurns.sort(byTurnIndex);
     },
   };

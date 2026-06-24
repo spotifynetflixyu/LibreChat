@@ -4,6 +4,7 @@ import {
   searchSteelPriceItems,
   searchSteelQuoteRules,
 } from '../repositories';
+import { steelRuntimeActiveOutputSheetIds } from '../runtime/context';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas } from './schemas';
@@ -209,7 +210,7 @@ async function searchPriceCandidates(
 ): Promise<SteelRawToolOutput> {
   const discoveryQueries = input.queries.filter(isCategoryDiscoveryPriceQuery);
   const lookupQueries = input.queries.filter(isLookupPriceQuery);
-  const categoryCandidateGroups = await Promise.all(
+  const categoryCandidateGroupsPromise = Promise.all(
     discoveryQueries.map((query) =>
       discoverSteelPriceCategories(client, {
         keyword: query.keyword,
@@ -217,10 +218,13 @@ async function searchPriceCandidates(
       }),
     ),
   );
+  const priceCandidatesPromise =
+    lookupQueries.length > 0 ? searchSteelPriceItems(client, { queries: lookupQueries }) : [];
 
-  const priceCandidates = lookupQueries.length > 0
-    ? await searchSteelPriceItems(client, { queries: lookupQueries })
-    : [];
+  const [categoryCandidateGroups, priceCandidates] = await Promise.all([
+    categoryCandidateGroupsPromise,
+    priceCandidatesPromise,
+  ]);
 
   return {
     priceCandidates: dedupePriceCandidates(priceCandidates),
@@ -253,7 +257,7 @@ function getWorkbookSearchTokens(query: string): string[] {
 function getSelectedWorkbookSheetIds(
   input: ReadActiveWorkbookInput,
 ): SteelRuntimeActiveOutputSheetId[] {
-  return input.sheetIds ?? ['system_order', 'customer_data', 'manual_review', 'customer_quote'];
+  return input.sheetIds ?? [...steelRuntimeActiveOutputSheetIds];
 }
 
 function getMatchedFields(

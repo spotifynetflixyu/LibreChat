@@ -423,6 +423,7 @@ async function prepareChatContext({
   messages,
   messageSource,
   requestId,
+  userId,
 }: {
   conversationId?: string;
   editMessageId?: string;
@@ -430,6 +431,7 @@ async function prepareChatContext({
   messageSource: SteelUserTurnSource;
   messages: SteelOAuthChatMessage[];
   requestId: string;
+  userId?: string;
 }): Promise<{
   messages: SteelOAuthChatMessage[];
   nextAssistantTurnIndex?: number;
@@ -454,12 +456,14 @@ async function prepareChatContext({
           conversationId,
           messageId: editMessageId,
           nextContent: currentMessage.content,
+          ...(userId ? { userId, editedByUserId: userId } : {}),
         })
       : undefined;
 
   const activeHistory = await historyService.buildHistoryWindow({
     conversationId,
     maxTurns: steelConversationHistoryMaxTurns,
+    ...(userId ? { userId } : {}),
   });
   const nextTurnIndex = getNextTurnIndex(activeHistory);
   const nextAssistantTurnIndex =
@@ -468,6 +472,7 @@ async function prepareChatContext({
   if (currentMessage.role === 'user' && !editMessageId) {
     await historyService.appendTurn({
       conversationId,
+      ...(userId ? { userId } : {}),
       requestId,
       messageId: currentMessage.messageId ?? createSteelChatConversationId(),
       turnIndex: nextTurnIndex,
@@ -566,6 +571,7 @@ async function persistAssistantTurn({
   historyService,
   turnIndex,
   checkpointTurnIndex,
+  userId,
   workingOrderMemoryWriter,
 }: {
   conversationId?: string;
@@ -573,6 +579,7 @@ async function persistAssistantTurn({
   historyService: ReturnType<typeof createSteelConversationHistoryService>;
   turnIndex?: number;
   checkpointTurnIndex?: number;
+  userId?: string;
   workingOrderMemoryWriter: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
 }) {
   if (!conversationId || content.trim().length === 0) {
@@ -584,6 +591,7 @@ async function persistAssistantTurn({
     const activeHistory = await historyService.buildHistoryWindow({
       conversationId,
       maxTurns: steelConversationHistoryMaxTurns,
+      ...(userId ? { userId } : {}),
     });
     assistantTurnIndex = getNextTurnIndex(activeHistory);
   }
@@ -591,6 +599,7 @@ async function persistAssistantTurn({
   const messageId = createSteelChatConversationId();
   await historyService.appendTurn({
     conversationId,
+    ...(userId ? { userId } : {}),
     messageId,
     turnIndex: assistantTurnIndex,
     role: 'assistant',
@@ -1324,6 +1333,7 @@ export function createSteelHandlers({
 
       const { persistentConversationId, responseConversationId } =
         getConversationIdsForRequest(conversationId);
+      const requestUser = getSteelRequestUser(req as SteelRequest);
       const messagesWithInstructions = applyFileInstructionsToMessages(
         messages,
         (req as SteelRequest).config,
@@ -1335,6 +1345,7 @@ export function createSteelHandlers({
         messageSource,
         messages: messagesWithInstructions,
         requestId,
+        ...(requestUser?.id ? { userId: requestUser.id } : {}),
       });
       const steelRuntimeContext = await buildSteelRuntimeContext({
         conversationId: persistentConversationId,
@@ -1377,7 +1388,7 @@ export function createSteelHandlers({
           }),
           onToolStatus: async (event) => {
             await captureSuccessfulToolResult({
-              conversationId,
+              conversationId: persistentConversationId,
               toolName: event.toolName,
               toolResult: event.result,
               turnIndex: preparedContext.nextAssistantTurnIndex,
@@ -1392,6 +1403,7 @@ export function createSteelHandlers({
           historyService: getHistoryService(),
           turnIndex: preparedContext.nextAssistantTurnIndex,
           checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+          ...(requestUser?.id ? { userId: requestUser.id } : {}),
           workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
         });
       } catch (error) {
@@ -1444,6 +1456,7 @@ export function createSteelHandlers({
 
       const { persistentConversationId, responseConversationId } =
         getConversationIdsForRequest(conversationId);
+      const requestUser = getSteelRequestUser(req as SteelRequest);
       const messagesWithInstructions = applyFileInstructionsToMessages(
         messages,
         (req as SteelRequest).config,
@@ -1455,6 +1468,7 @@ export function createSteelHandlers({
         messageSource,
         messages: messagesWithInstructions,
         requestId,
+        ...(requestUser?.id ? { userId: requestUser.id } : {}),
       });
       const steelRuntimeContext = await buildSteelRuntimeContext({
         conversationId: persistentConversationId,
@@ -1570,6 +1584,7 @@ export function createSteelHandlers({
           historyService: getHistoryService(),
           turnIndex: preparedContext.nextAssistantTurnIndex,
           checkpointTurnIndex: preparedContext.nextMemoryCheckpointTurnIndex,
+          ...(requestUser?.id ? { userId: requestUser.id } : {}),
           workingOrderMemoryWriter: getWorkingOrderMemoryWriter(),
         });
         if (captureResult) {
@@ -1680,9 +1695,17 @@ export function createSteelHandlers({
         res.status(400).json({ message: 'Invalid Steel conversation id' });
         return;
       }
+      const requestUser = getSteelRequestUser(req);
+      if (!requestUser?.id) {
+        res.status(401).json({ message: 'Steel conversation messages require login' });
+        return;
+      }
 
       try {
-        const activeTurns = await getHistoryService().listActiveTurns({ conversationId });
+        const activeTurns = await getHistoryService().listActiveTurns({
+          conversationId,
+          userId: requestUser.id,
+        });
         const response: SteelConversationMessagesResponse = {
           conversationId,
           messages: activeTurns.map(toConversationReloadMessage),

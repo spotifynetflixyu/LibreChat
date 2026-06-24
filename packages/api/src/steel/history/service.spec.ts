@@ -27,6 +27,12 @@ function createTurn(overrides: Partial<SteelConversationTurnRecord>): SteelConve
 }
 
 function createDeps() {
+  const matchesScope = (
+    turn: SteelConversationTurnRecord,
+    scope: { conversationId: string; userId?: string },
+  ) =>
+    turn.conversationId === scope.conversationId &&
+    (scope.userId === undefined || turn.userId === scope.userId);
   const turns = [
     createTurn({ messageId: 'u1', turnIndex: 1, content: '原本要 1 支' }),
     createTurn({
@@ -52,41 +58,56 @@ function createDeps() {
         updatedAt: createdAt,
       }),
     ),
-    findTurnByMessageId: jest.fn(async ({ messageId }) => {
-      return turns.find((turn) => turn.messageId === messageId) ?? null;
+    findTurnByMessageId: jest.fn(async ({ conversationId, messageId, userId }) => {
+      return (
+        turns.find(
+          (turn) =>
+            matchesScope(turn, { conversationId, userId }) && turn.messageId === messageId,
+        ) ?? null
+      );
     }),
-    listActiveTurns: jest.fn(async ({ conversationId }) => {
-      return turns.filter((turn) => turn.conversationId === conversationId && turn.state === 'active');
+    listActiveTurns: jest.fn(async ({ conversationId, userId }) => {
+      return turns.filter(
+        (turn) => matchesScope(turn, { conversationId, userId }) && turn.state === 'active',
+      );
     }),
-    markTurnsSupersededAfter: jest.fn(async ({ conversationId, turnIndex, supersededAt }) => {
-      let updatedCount = 0;
-      for (const turn of turns) {
-        if (turn.conversationId !== conversationId || turn.turnIndex <= turnIndex) {
-          continue;
+    markTurnsSupersededAfter: jest.fn(
+      async ({ conversationId, turnIndex, supersededAt, userId }) => {
+        let updatedCount = 0;
+        for (const turn of turns) {
+          if (!matchesScope(turn, { conversationId, userId }) || turn.turnIndex <= turnIndex) {
+            continue;
+          }
+          turn.state = 'superseded';
+          turn.supersededAt = supersededAt;
+          updatedCount += 1;
         }
-        turn.state = 'superseded';
-        turn.supersededAt = supersededAt;
-        updatedCount += 1;
-      }
-      return updatedCount;
-    }),
-    updateUserMessageRevision: jest.fn(async ({ messageId, nextContent, editedAt }) => {
-      const turn = turns.find((candidate) => candidate.messageId === messageId);
-      if (!turn) {
-        return null;
-      }
-      const previousContent = turn.content;
-      turn.content = nextContent;
-      turn.updatedAt = editedAt;
-      turn.revisions = [
-        ...turn.revisions,
-        {
-          content: previousContent,
-          revisedAt: editedAt,
-        },
-      ];
-      return turn;
-    }),
+        return updatedCount;
+      },
+    ),
+    updateUserMessageRevision: jest.fn(
+      async ({ conversationId, messageId, nextContent, editedAt, userId }) => {
+        const turn = turns.find(
+          (candidate) =>
+            matchesScope(candidate, { conversationId, userId }) &&
+            candidate.messageId === messageId,
+        );
+        if (!turn) {
+          return null;
+        }
+        const previousContent = turn.content;
+        turn.content = nextContent;
+        turn.updatedAt = editedAt;
+        turn.revisions = [
+          ...turn.revisions,
+          {
+            content: previousContent,
+            revisedAt: editedAt,
+          },
+        ];
+        return turn;
+      },
+    ),
   };
   const memoryRepository: SteelWorkingOrderMemoryRollbackRepository = {
     markEntriesSupersededFromTurn: jest.fn(async () => 4),
@@ -127,6 +148,57 @@ describe('Steel conversation history service', () => {
     });
     expect(deps.turns.find((turn) => turn.messageId === 'a1')?.state).toBe('superseded');
     expect(deps.turns.find((turn) => turn.messageId === 's1')?.state).toBe('superseded');
+  });
+
+  it('scopes edit and reload history operations by user id when provided', async () => {
+    const deps = createDeps();
+    deps.turns.forEach((turn) => {
+      turn.userId = 'user_a';
+    });
+    deps.turns.push(
+      createTurn({
+        userId: 'user_b',
+        messageId: 'u2',
+        turnIndex: 1,
+        content: '別人的對話',
+      }),
+    );
+    const service = createSteelConversationHistoryService({
+      historyRepository: deps.historyRepository,
+      memoryRepository: deps.memoryRepository,
+      now: () => editedAt,
+    });
+
+    await service.editUserMessage({
+      conversationId: 'steel_conversation_1',
+      messageId: 'u1',
+      nextContent: 'user_a 改成 2 支',
+      userId: 'user_a',
+      editedByUserId: 'user_a',
+    });
+    const activeTurns = await service.listActiveTurns({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_a',
+    });
+
+    expect(deps.historyRepository.findTurnByMessageId).toHaveBeenCalledWith({
+      conversationId: 'steel_conversation_1',
+      messageId: 'u1',
+      userId: 'user_a',
+    });
+    expect(deps.historyRepository.markTurnsSupersededAfter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'steel_conversation_1',
+        userId: 'user_a',
+      }),
+    );
+    expect(deps.memoryRepository.markEntriesSupersededFromTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'steel_conversation_1',
+        userId: 'user_a',
+      }),
+    );
+    expect(activeTurns.map((turn) => turn.messageId)).toEqual(['u1']);
   });
 
   it('builds prompt history from active latest-visible turns only', async () => {

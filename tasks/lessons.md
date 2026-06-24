@@ -1,5 +1,31 @@
 # Lessons
 
+- For Steel output rules, keep final-response wording focused on the visible
+  output contract. Do not add extra no-patch/no-persistence caveats unless the
+  user explicitly asks for that wording.
+- When shortening Steel output rules, include the whole document scope, not just
+  the quote-format section. Keep concise versions of active-sheet overwrite
+  semantics, customer-tier synchronization, and OCR-first confirmation flow.
+- When Steel output rules are too long, compress repeated prose and examples
+  first, but keep the executable logic: sheet headings, fixed columns, row
+  granularity, processing-line requirements, customer-facing privacy, and
+  `manual_review` boundaries.
+- Steel output rules should be grouped by target sheet when the behavior differs
+  per sheet. Keep `system_order`, `customer_quote`, `manual_review`, and
+  `customer_data` rules under separate headings instead of mixing ERP row rules,
+  customer-facing privacy rules, and review rules in one long numbered list.
+- During `$simplify`, do not stop after cosmetic or dead-code cleanup when
+  subagents identify P1/P2 issues that are still local and verifiable. Fix the
+  important owner-scope, retry/cancellation, and prompt-bloat issues in the same
+  pass, and explicitly leave only items that require broader product/schema
+  decisions.
+- Steel `customer_quote` is a customer-facing itemized quote table, not an
+  internal pricing summary. Its visible columns should be `項目`, `說明`, `小計`;
+  it must not show `價格A/B/C/F`, `A級/B級`, `計價基準`, `客戶價格`, cost, margin,
+  or tier wording. Steel/material/product rows must preserve OCR/source item
+  granularity instead of merging D3/S3/S4 into one 板材費 total; processing
+  charges such as 孔, 刀, 切, and 開槽 may be subtotaled by processing type with
+  source items and quantities listed in the description.
 - Steel OAuth Activity showing `search_price_candidates completed` and
   `Working Order Memory saved` only proves the tool round is done; the next
   post-tool provider round may still be generating the final answer for minutes.

@@ -35,6 +35,7 @@ describe('Mongoose Steel conversation history repository', () => {
 
     const first = await repository.appendTurn({
       conversationId: 'steel_conversation_1',
+      userId: 'user_a',
       messageId: 'assistant_1',
       turnIndex: 2,
       role: 'assistant',
@@ -54,6 +55,7 @@ describe('Mongoose Steel conversation history repository', () => {
     });
     const second = await repository.appendTurn({
       conversationId: 'steel_conversation_1',
+      userId: 'user_a',
       messageId: 'assistant_1',
       turnIndex: 2,
       role: 'assistant',
@@ -73,6 +75,7 @@ describe('Mongoose Steel conversation history repository', () => {
     });
     const steer = await repository.appendTurn({
       conversationId: 'steel_conversation_1',
+      userId: 'user_a',
       messageId: 'steer_1',
       requestId: 'request_1',
       turnIndex: 3,
@@ -86,6 +89,7 @@ describe('Mongoose Steel conversation history repository', () => {
     });
 
     expect(second.id).toBe(first.id);
+    expect(second.userId).toBe('user_a');
     expect(second.finalResponseMetadata).toEqual(
       expect.objectContaining({
         provider: 'openai_oauth_responses',
@@ -97,6 +101,82 @@ describe('Mongoose Steel conversation history repository', () => {
       targetRequestId: 'request_1',
       status: 'queued',
     });
+  });
+
+  it('scopes active history, edits, and supersedes by user id', async () => {
+    const repository = createMongooseSteelConversationHistoryRepository(mongoose);
+
+    await repository.appendTurn({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_a',
+      messageId: 'u1',
+      turnIndex: 1,
+      role: 'user',
+      source: 'user_input',
+      content: 'user_a 原本 1 支',
+    });
+    await repository.appendTurn({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_a',
+      messageId: 'a1',
+      turnIndex: 2,
+      role: 'assistant',
+      source: 'assistant_final',
+      content: 'user_a 回覆',
+    });
+    await repository.appendTurn({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_b',
+      messageId: 'u2',
+      turnIndex: 1,
+      role: 'user',
+      source: 'user_input',
+      content: 'user_b 對話',
+    });
+
+    const wrongUserEdit = await repository.updateUserMessageRevision({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_b',
+      messageId: 'u1',
+      nextContent: '不應更新',
+      editedAt: supersededAt,
+    });
+    const updatedTurn = await repository.updateUserMessageRevision({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_a',
+      messageId: 'u1',
+      nextContent: 'user_a 改成 2 支',
+      editedAt: supersededAt,
+      editedByUserId: 'user_a',
+    });
+    const supersededCount = await repository.markTurnsSupersededAfter({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_a',
+      turnIndex: 1,
+      supersededAt,
+      supersededByMessageId: 'u1',
+    });
+    const userATurns = await repository.listActiveTurns({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_a',
+    });
+    const userBTurns = await repository.listActiveTurns({
+      conversationId: 'steel_conversation_1',
+      userId: 'user_b',
+    });
+
+    expect(wrongUserEdit).toBeNull();
+    expect(updatedTurn?.content).toBe('user_a 改成 2 支');
+    expect(updatedTurn?.revisions).toEqual([
+      {
+        content: 'user_a 原本 1 支',
+        revisedAt: supersededAt,
+        revisedByUserId: 'user_a',
+      },
+    ]);
+    expect(supersededCount).toBe(1);
+    expect(userATurns.map((turn) => turn.messageId)).toEqual(['u1']);
+    expect(userBTurns.map((turn) => turn.messageId)).toEqual(['u2']);
   });
 
   it('updates edited user text and excludes later superseded turns from active history', async () => {
