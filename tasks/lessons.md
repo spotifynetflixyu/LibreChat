@@ -299,6 +299,29 @@
   admin-maintained product-name aliases as extra reviewed search terms, keep OR
   facets usable, and let no-result evidence flow into workbook/manual-review
   output.
+- Steel PDF/image turns with OCR must be confirmation-gated. First turn after
+  `run_file_ocr` should return only structured OCR extraction tables for user
+  confirmation/correction, not price lookup or final quote tables. After the
+  user confirms or edits OCR data, the next turn may price from the confirmed
+  OCR rows without re-OCR unless explicitly asked.
+- Steel OCR-derived quote output must preserve row granularity. Each OCR product
+  row becomes one independent `system_order` quote row; hole, cutting, bending,
+  slotting/open-slot, and other processing charges are additional independent
+  quote rows, not folded into material summaries. If OCR has 71 product rows,
+  the system-order quote must keep 71 product rows plus separate processing
+  charge rows.
+- Steel live-smoke tests for reviewed rules must not embed the target behavior
+  in the test-created user prompt. Use neutral user prompts, read back the
+  reviewed active `steel.rules` DB rows, and prove the model behavior comes from
+  runtime context rather than prompt-specific instructions.
+- Steel OCR quote verification must not count material rows with hole/slot notes
+  as independent processing quote rows. Processing rows need their own
+  `system_order` rows, preferably with processing price-row `型號` /
+  `品名規格`; material row notes such as `拓孔未確認` are not enough.
+- Steel OCR confirmation tables for drawings must include explicit hole counts:
+  `孔數 / 件` and `總孔數`. Treat these as user-confirmed quantities for the next
+  quote turn, then verify the independent hole-processing quote rows sum back to
+  the confirmed `總孔數`; do not accept vague hole notes as count evidence.
 - Steel product-name alias storage must be many-to-one: multiple source names
   such as `C`, `C型鋼`, `C鋼`, and `輕型鋼` can all point at the same reviewed
   target product name such as `錏輕型鋼`, and admins should be able to add or

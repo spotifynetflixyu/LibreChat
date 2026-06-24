@@ -1,4 +1,163 @@
-# Active: Simplify Steel Live Quote Pricing Smoke Changes
+# Active: PB PDF Live Smoke With DB Runtime Rules
+
+Goal: run the full two-turn `docs/reference/example/PB.pdf` live smoke with
+formal reviewed `steel.rules` DB context as the rule source. The user messages
+must be neutral and must not restate the OCR confirmation gate, one-OCR limit,
+no-price-first-turn rule, no-re-OCR second-turn rule, per-row quote rule, or
+hole-count rule. OCR confirmation must expose `孔數 / 件` and `總孔數`; quote
+turn must add independent hole-processing quote rows whose quantities sum to the
+confirmed OCR `總孔數`.
+
+Plan:
+
+- [x] Update the PB manual live spec so test-created user prompts are neutral
+  and the required behavior comes from DB-backed runtime context rules.
+- [x] Read back production `steel.rules` rows before the live run and record
+  hashes / required rule fragments in evidence.
+- [x] Run the full two-turn live smoke with `PB.pdf`, OAuth provider, cloud
+  Supabase context, and PaddleOCR timeout.
+- [x] Record whether the model followed the real DB rules: first turn OCR-only,
+  second turn no re-OCR, price lookup only after confirmation, row-granular
+  `system_order`, OCR hole counts, confirmed total hole count pricing, and
+  independent processing rows.
+- [x] Run final focused checks and record results.
+
+Review - 2026-06-23:
+
+- Updated the PB manual live spec to use neutral user prompts only:
+  `請處理附檔 PB.pdf。` then `確認上一輪資料正確，請產生報價。`.
+  The spec now fails if those prompts embed tool or rule instructions.
+- Strengthened DB-backed rules so the first OCR confirmation table must expose
+  `孔數 / 件` and `總孔數`, with hole counts coming from text tables, drawing
+  annotations, or AI vision counting. The second quote turn must sum confirmed
+  `總孔數` and use that total as the quantity for independent hole-processing
+  quote rows.
+- Synced reviewed rules to production Supabase `steel.rules` and read back active
+  reviewed rows:
+  `steel-default-agent-instruction`
+  `b726019cf2259cb947fd73ba2757c1063e05c4067ac9ebfce7fa302e3a816906`,
+  `steel-workbook-output-policy`
+  `482ff60ef92539e908f5911c035e52ce393f56e1e738dec03c610af6c0a02ff1`.
+- Live-smoke iteration exposed two real gaps before final pass: the model first
+  put hole prices only in a price-basis table, then a too-loose assertion counted
+  material rows with `拓孔未確認` notes as hole-processing rows. The final spec now
+  requires additional non-material hole-processing rows and matching quantities.
+- Final strict live run passed:
+  `STEEL_OPENAI_OAUTH_PB_PDF_QUOTE_LIVE_TEST=true ... npx jest --runTestsByPath src/steel/ai/provider.pb-pdf-quote.manual.spec.ts`
+  passed 1/1 in about 710 seconds.
+- Final evidence in `tmp/steel-pb-pdf-quote-live-evidence.json`: first turn ran
+  one `run_file_ocr`, no price lookup, found 71 OCR product rows, exposed
+  `孔數 / 件` and `總孔數`, and summed OCR holes to 1,784. Second turn did not
+  re-OCR, called `search_price_candidates`, produced two `system_order`
+  Markdown tables with 77 total rows, kept at least 71 material rows, added 4
+  independent hole-processing rows, and hole quote quantities summed to 1,784.
+- Final local checks passed: direction check, default-off PB spec Jest load,
+  `git diff --check`, and untracked PB spec whitespace check.
+
+# Previous Active: OCR Confirmation Gate and Per-Row Quote Rules
+
+Goal: update Steel runtime rules so PDF/image OCR turns first return only
+structured OCR extraction for user confirmation, and only after user
+confirmation/correction generate quote tables where every OCR product row and
+every processing charge is an independent quote row.
+
+Design:
+
+- Agent rules own the turn-level flow: OCR first, first OCR response is
+  confirmation-only, confirmed OCR data is used in the next turn without
+  re-OCR.
+- Output rules own row granularity: each OCR product row maps to one
+  `system_order` row; holes, cutting, bending, slotting/open-slot, and other
+  processing charges are separate additional rows.
+- Keep wording reusable. The 71-row example is only a row-preservation example,
+  not a PB-specific part-name rule.
+
+Plan:
+
+- [x] Update `docs/rules/agent規則.txt` with the OCR confirmation gate and
+  follow-up confirmation behavior.
+- [x] Update `docs/rules/輸出規則.txt` with per-OCR-row and separate processing
+  row output requirements.
+- [x] Update the PB manual spec so first OCR turn no longer expects direct quote
+  output.
+- [x] Extend local direction checks for the new OCR confirmation / row
+  granularity rule direction.
+- [x] Run Supabase rule sync dry-run/apply, direct DB readback, focused checks,
+  and `git diff --check`.
+
+Review - 2026-06-23:
+
+- `agent規則` now gates PDF/image OCR turns: first OCR turn must call
+  `run_file_ocr`, stop at OCR confirmation, avoid price lookup and formal quote
+  tables, then wait for user confirmation/correction before quoting.
+- `輸出規則` now requires first OCR replies to be OCR confirmation tables only,
+  and after confirmation each OCR product/material row becomes an independent
+  `system_order` row. Holes, cutting, bending, slotting/open-slot, and other
+  processing charges become additional independent quote rows.
+- Updated `provider.pb-pdf-quote.manual.spec.ts` from one-turn OCR+quote to a
+  two-turn manual live contract: first turn asserts one whole-PDF OCR and no
+  `search_price_candidates`; second turn asserts no re-OCR, price lookup usage,
+  row-granular `system_order`, and priced hole processing. The manual live
+  output token limit is configurable and defaults to 20000 so 71 OCR rows are
+  not capped by the test.
+- Direction check passed, including the new OCR confirmation gate and per-row
+  quote assertions.
+- Supabase rule sync dry-run/apply passed. DB readback confirmed reviewed active
+  rows:
+  `steel-default-agent-instruction`
+  `8ee2588ca4af9ce2a00c317063e0ba260d1b9aac6effecb4b873dfe17c14ed12`,
+  `steel-workbook-output-policy`
+  `f220ee2407375066571b74e30f5bb612f7fb47d7c02a317ca959f33aa73f78c8`.
+- Focused default-off Jest for the PB manual spec passed in skipped mode. The
+  full two-turn PB live smoke was not rerun in this pass because it is gated,
+  OAuth/PaddleOCR-dependent, and long-running.
+
+# Previous Active: PB PDF OCR Quote Flow Test
+
+Goal: add focused coverage for `docs/reference/example/PB.pdf` proving the
+Steel chat quote flow can OCR the whole PDF once, expose per-round timings, and
+produce quote output with `system_order` rows for material/steel and hole or
+processing charges.
+
+Plan:
+
+- [x] Locate the existing Steel provider/OCR/live-test harness and choose the
+  smallest stable entry point.
+- [x] Add a failing test first that uses `PB.pdf`, records per-round timings,
+  and asserts one whole-PDF `run_file_ocr` call.
+- [x] Assert structured output behavior through stable tool/results metadata:
+  `system_order` exists, has at least one material/steel row, and has a hole or
+  processing quote row.
+- [x] Run the focused test in RED/GREEN form, then run nearby focused checks and
+  `git diff --check`.
+- [x] Record verification results and any limits in this file.
+
+Review - 2026-06-23:
+
+- Added gated manual live spec
+  `packages/api/src/steel/ai/provider.pb-pdf-quote.manual.spec.ts`.
+- The spec attaches `docs/reference/example/PB.pdf` as a PDF file, prepares
+  Steel runtime context with OCR rules, and verifies the provider flow rather
+  than exact human wording.
+- Assertions cover one `run_file_ocr` start/completion for the whole PDF,
+  structured per-round provider timings, `search_price_candidates` usage,
+  product and hole price candidates, and a system-order-compatible Markdown
+  table with material/steel and priced hole-processing rows.
+- The first live run failed at `run_file_ocr` with PaddleOCR MCP
+  `Request timed out` after about 125 seconds, proving the default timeout was
+  too low for the 71-page PB PDF.
+- Re-running with `STEEL_PADDLEOCR_MCP_TIMEOUT_MS=900000` passed in about
+  509 seconds. Evidence was written to
+  `tmp/steel-pb-pdf-quote-live-evidence.json`.
+- Passing evidence: OCR completed once in about 91.7 seconds, OCR text length
+  was 230,954 characters, provider timings reported 5 rounds, tool duration was
+  about 97.5 seconds, and total provider duration was about 506.7 seconds.
+- The final `系統訂單` table had 9 rows, including plate/material rows and a
+  priced hole-processing row using a hole price candidate.
+- This remains a manual live smoke, not default CI coverage. It requires OAuth
+  auth state, cloud Supabase, PaddleOCR MCP credentials, and a long OCR timeout.
+
+# Previous Active: Simplify Steel Live Quote Pricing Smoke Changes
 
 Goal: simplify this round's live pricing smoke changes, including the manual
 provider test and the documented tool-use verification, without changing public
