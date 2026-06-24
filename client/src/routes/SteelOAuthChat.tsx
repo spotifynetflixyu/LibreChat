@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { dataService } from 'librechat-data-provider';
 import type {
+  SteelConversationMessagesResponse,
   SteelProviderChatMessage,
   SteelProviderChatRequest,
   SteelProviderReasoningEffort,
@@ -29,6 +30,8 @@ type SteelChatTurn = SteelProviderChatMessage & {
   status?: 'error';
   attachmentNames?: string[];
 };
+
+type SteelConversationReloadMessage = SteelConversationMessagesResponse['messages'][number];
 
 type SelectedSteelFile = {
   id: string;
@@ -60,6 +63,21 @@ function createTurn(
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role,
     content,
+    ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
+  };
+}
+
+function getReloadAttachmentNames(message: SteelConversationReloadMessage): string[] {
+  return message.attachments?.map((attachment) => attachment.filename ?? attachment.fileId) ?? [];
+}
+
+function toHydratedSteelChatTurn(message: SteelConversationReloadMessage): SteelChatTurn {
+  const attachmentNames = getReloadAttachmentNames(message);
+
+  return {
+    id: message.messageId,
+    role: message.role,
+    content: message.content,
     ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
   };
 }
@@ -112,32 +130,101 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function getErrorText(error: unknown): string {
-  if (isRecord(error)) {
-    const response = error.response;
-    if (isRecord(response)) {
-      const data = response.data;
-      if (isRecord(data)) {
-        if (typeof data.errorSummary === 'string') {
-          return data.errorSummary;
-        }
-        if (typeof data.message === 'string') {
-          return data.message;
-        }
+function isReadableErrorMessage(message: string): boolean {
+  const trimmed = message.trim();
+  return trimmed.length > 0 && trimmed !== '[object Object]' && !isGenericErrorWrapper(trimmed);
+}
+
+function isGenericErrorWrapper(message: string): boolean {
+  const normalized = message.trim().replace(/\.$/, '').toLowerCase();
+  return (
+    normalized === 'openai oauth provider request failed' ||
+    normalized === 'streaming request failed'
+  );
+}
+
+function extractJsonStringErrorMessage(value: string, depth: number): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return undefined;
+  }
+
+  try {
+    return extractReadableErrorMessage(JSON.parse(trimmed), depth + 1);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractReadableErrorMessage(value: unknown, depth = 0): string | undefined {
+  if (depth > 5) {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const jsonMessage = extractJsonStringErrorMessage(trimmed, depth);
+    if (jsonMessage) {
+      return jsonMessage;
+    }
+    return isReadableErrorMessage(trimmed) ? trimmed : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const message = extractReadableErrorMessage(entry, depth + 1);
+      if (message) {
+        return message;
       }
     }
+    return undefined;
   }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === 'object' && error !== null && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string') {
+
+  if (value instanceof Error) {
+    const causeMessage = extractReadableErrorMessage(value.cause, depth + 1);
+    if (causeMessage) {
+      return causeMessage;
+    }
+    const message = extractReadableErrorMessage(value.message, depth + 1);
+    if (message) {
       return message;
     }
   }
 
-  return 'Steel chat request failed.';
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const fields = [
+    'errorSummary',
+    'message',
+    'detail',
+    'details',
+    'description',
+    'reason',
+    'error',
+    'errors',
+    'cause',
+    'response',
+    'data',
+    'body',
+    'error_description',
+    'errorMessage',
+    'statusText',
+  ];
+
+  for (const field of fields) {
+    const message = extractReadableErrorMessage(value[field], depth + 1);
+    if (message) {
+      return message;
+    }
+  }
+
+  return undefined;
+}
+
+function getErrorText(error: unknown): string {
+  return extractReadableErrorMessage(error) ?? 'Steel chat request failed.';
 }
 
 function getInitialSteelConversationId(): string | null {
@@ -499,6 +586,48 @@ function createStreamErrorEvent(error: unknown): SteelProviderChatStreamEvent {
   };
 }
 
+function normalizeStreamEvent(event: SteelProviderChatStreamEvent): SteelProviderChatStreamEvent {
+  if (event.type !== 'error') {
+    return event;
+  }
+
+  return {
+    ...event,
+    errorSummary: getErrorText(event),
+  };
+}
+
+function appendStreamEvent(
+  events: SteelProviderChatStreamEvent[],
+  event: SteelProviderChatStreamEvent,
+): SteelProviderChatStreamEvent[] {
+  if (event.type === 'reasoning') {
+    const lastEvent = events[events.length - 1];
+    if (lastEvent?.type === 'reasoning') {
+      const mergedSummary = event.summary.startsWith(lastEvent.summary)
+        ? event.summary
+        : `${lastEvent.summary}${event.summary}`;
+
+      return [
+        ...events.slice(0, -1),
+        {
+          ...lastEvent,
+          summary: mergedSummary,
+        },
+      ];
+    }
+  }
+
+  if (event.type === 'error') {
+    const lastEvent = events[events.length - 1];
+    if (lastEvent?.type === 'error' && lastEvent.errorSummary === event.errorSummary) {
+      return events;
+    }
+  }
+
+  return [...events, event];
+}
+
 function isMarkdownTableBlock(lines: string[]): boolean {
   return (
     lines.length >= 2 &&
@@ -506,6 +635,16 @@ function isMarkdownTableBlock(lines: string[]): boolean {
     /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[1] ?? '')
   );
 }
+
+const markdownTableTextClampStyle = {
+  display: '-webkit-box',
+  WebkitBoxOrient: 'vertical',
+  WebkitLineClamp: 3,
+  overflow: 'hidden',
+  overflowWrap: 'break-word',
+  whiteSpace: 'normal',
+  wordBreak: 'normal',
+} as const;
 
 function renderMarkdownTable(lines: string[], key: string) {
   const rows = lines.map((line) =>
@@ -519,7 +658,7 @@ function renderMarkdownTable(lines: string[], key: string) {
   const [headers = [], _divider, ...bodyRows] = rows;
 
   return (
-    <div key={key} className="my-2 overflow-x-auto">
+    <div key={key} className="my-2 max-w-full overflow-x-auto pb-2">
       <button
         type="button"
         aria-label="Copy table Markdown"
@@ -531,15 +670,15 @@ function renderMarkdownTable(lines: string[], key: string) {
         <Copy className="h-3 w-3" aria-hidden="true" />
         Copy
       </button>
-      <table className="min-w-full border-collapse text-left text-sm">
+      <table className="w-max min-w-full table-auto border-collapse text-left text-sm">
         <thead>
           <tr>
             {headers.map((header, index) => (
               <th
                 key={`${key}-h-${index}`}
-                className="border border-border-light bg-surface-secondary px-2 py-1 font-semibold"
+                className="min-w-[9rem] max-w-[18rem] border border-border-light bg-surface-secondary px-3 py-2 align-top font-semibold"
               >
-                {header}
+                <div style={markdownTableTextClampStyle}>{header}</div>
               </th>
             ))}
           </tr>
@@ -548,8 +687,11 @@ function renderMarkdownTable(lines: string[], key: string) {
           {bodyRows.map((row, rowIndex) => (
             <tr key={`${key}-r-${rowIndex}`}>
               {headers.map((_header, cellIndex) => (
-                <td key={`${key}-c-${rowIndex}-${cellIndex}`} className="border border-border-light px-2 py-1">
-                  {row[cellIndex] ?? ''}
+                <td
+                  key={`${key}-c-${rowIndex}-${cellIndex}`}
+                  className="min-w-[9rem] max-w-[18rem] border border-border-light px-3 py-2 align-top"
+                >
+                  <div style={markdownTableTextClampStyle}>{row[cellIndex] ?? ''}</div>
                 </td>
               ))}
             </tr>
@@ -606,6 +748,7 @@ function SteelMessageContent({ content }: { content: string }) {
 export default function SteelOAuthChat() {
   const layoutRef = useRef<HTMLElement | null>(null);
   const isComposingInputRef = useRef(false);
+  const hydratedConversationIdRef = useRef<string | null>(null);
   const queuedSteersRef = useRef<string[]>([]);
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<SteelProviderReasoningEffort>('medium');
@@ -634,6 +777,54 @@ export default function SteelOAuthChat() {
   useEffect(() => {
     replaceSteelConversationIdInUrl(conversationId);
   }, [conversationId]);
+
+  useEffect(() => {
+    if (
+      !conversationId ||
+      messages.length > 0 ||
+      hydratedConversationIdRef.current === conversationId
+    ) {
+      return;
+    }
+
+    let isCanceled = false;
+    hydratedConversationIdRef.current = conversationId;
+
+    void dataService
+      .getSteelConversationMessages(conversationId)
+      .then((response) => {
+        if (isCanceled || response.conversationId !== conversationId) {
+          return;
+        }
+
+        setMessages((current) =>
+          current.length === 0 ? response.messages.map(toHydratedSteelChatTurn) : current,
+        );
+      })
+      .catch((error) => {
+        if (isCanceled) {
+          return;
+        }
+
+        const errorText = getErrorText(error);
+        const errorEvent = createStreamErrorEvent(error);
+        setStreamEvents((current) => appendStreamEvent(current, errorEvent));
+        setMessages((current) =>
+          current.length === 0
+            ? [
+                {
+                  ...createTurn('assistant', errorText),
+                  status: 'error',
+                },
+              ]
+            : current,
+        );
+      });
+
+    return () => {
+      isCanceled = true;
+    };
+  }, [conversationId, messages.length]);
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -707,12 +898,13 @@ export default function SteelOAuthChat() {
               return;
             }
 
-            const message = getStreamStatusMessage(event);
+            const visibleEvent = normalizeStreamEvent(event);
+            const message = getStreamStatusMessage(visibleEvent);
             if (!message) {
               return;
             }
 
-            setStreamEvents((current) => [...current, event]);
+            setStreamEvents((current) => appendStreamEvent(current, visibleEvent));
           })
         : await dataService.sendSteelChat(payload);
 
@@ -751,7 +943,7 @@ export default function SteelOAuthChat() {
     } catch (error) {
       const errorText = getErrorText(error);
       const errorEvent = createStreamErrorEvent(error);
-      setStreamEvents((current) => [...current, errorEvent]);
+      setStreamEvents((current) => appendStreamEvent(current, errorEvent));
       setMessages((current) => [
         ...current,
         {
@@ -847,13 +1039,7 @@ export default function SteelOAuthChat() {
     } catch (error) {
       const errorText = getErrorText(error);
       const errorEvent = createStreamErrorEvent(error);
-      setStreamEvents((current) => {
-        const lastEvent = current[current.length - 1];
-        if (lastEvent?.type === 'error' && lastEvent.errorSummary === errorText) {
-          return current;
-        }
-        return [...current, errorEvent];
-      });
+      setStreamEvents((current) => appendStreamEvent(current, errorEvent));
       setMessages([
         ...nextMessages,
         {

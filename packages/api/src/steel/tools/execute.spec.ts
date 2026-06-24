@@ -159,12 +159,11 @@ describe('Steel minimal tool execution', () => {
           {
             category: '鐵板/鋼板',
             material: 'OT 黑鐵',
-            thicknesses: ['6'],
-            specs: ['雷射切割'],
+            thicknessMm: ['6'],
             keyword: 'OT板',
+            limit: 5,
           },
         ],
-        limit: 5,
       },
     });
 
@@ -179,7 +178,6 @@ describe('Steel minimal tool execution', () => {
       '鐵板/鋼板',
       'OT 黑鐵',
       '6.0',
-      '%雷射切割%',
       '%OT板%',
       5,
     ]);
@@ -209,9 +207,8 @@ describe('Steel minimal tool execution', () => {
       client: createClient([]),
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'OT板' }],
+        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'OT板', limit: 5 }],
         customerTier: 'A',
-        limit: 5,
       },
     });
 
@@ -228,8 +225,7 @@ describe('Steel minimal tool execution', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'OT板' }],
-        limit: 5,
+        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'OT板', limit: 5 }],
       },
     });
 
@@ -244,6 +240,57 @@ describe('Steel minimal tool execution', () => {
     expect(result.data.priceCandidates).toEqual([
       expect.objectContaining({
         tierPrices: { A: 40, B: 42, C: 45, F: 50 },
+      }),
+    ]);
+  });
+
+  it('canonicalizes hole lookup arguments instead of failing on irrelevant fields', async () => {
+    const client = createClient([
+      [
+        createPriceRow({
+          id: '13',
+          erp_item_code: 'DZA1319',
+          price_kind: 'hole',
+          spec_key: '鐵板孔加工',
+          product_name: '鐵板孔加工',
+          category: '孔',
+          material: '無',
+          unit: '孔',
+          unit_price_b: '7.0000',
+        }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [
+          {
+            category: '孔',
+            material: 'OT 黑鐵',
+            thicknessMm: ['15'],
+            keyword: '鑽孔',
+            limit: 5,
+          },
+        ],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '孔', '%鐵板%', 30]);
+    expect(result.data.searchQueries).toEqual([{ category: '孔', keyword: '鐵板' }]);
+    expect(result.data.priceCandidates).toEqual([
+      expect.objectContaining({
+        priceKind: 'hole',
+        category: '孔',
+        productName: '鐵板孔加工',
+        tierPrices: expect.objectContaining({ B: 7 }),
       }),
     ]);
   });
@@ -275,9 +322,7 @@ describe('Steel minimal tool execution', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: 'H型鋼', specs: ['200*100'] }],
-        includeRelatedCutting: true,
-        limit: 20,
+        queries: [{ category: 'H型鋼', keyword: '200*100', limit: 20 }],
       },
     });
 
@@ -326,9 +371,7 @@ describe('Steel minimal tool execution', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        mode: 'category_discovery',
-        keyword: '黑方管 75',
-        limit: 5,
+        queries: [{ mode: 'category_discovery', keyword: '白鐵方管 75x45', limit: 5 }],
       },
     });
 
@@ -340,13 +383,12 @@ describe('Steel minimal tool execution', () => {
     expect(client.calls).toHaveLength(1);
     expect(client.calls[0]?.values).toEqual([
       'reviewed',
-      '%黑方管 75%',
-      '%黑方管75%',
+      '%白鐵方管%',
+      '%75x45%',
       5,
     ]);
     expect(result.data).toEqual(
       expect.objectContaining({
-        mode: 'category_discovery',
         categoryCandidates: [
           {
             category: '扁方管',

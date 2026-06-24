@@ -20,8 +20,8 @@
 
 若同一品項同時需要產品價格與切工價格，必須用同一次 `search_price_candidates`：
 
-* 產品 query 填產品 `category`、`material`、`specs` / `keyword`
-* 設定 `includeRelatedCutting: true`
+* 產品 query 填產品 `category`、`material`、`thicknessMm` / `keyword`
+* 不要設定 `includeRelatedCutting`；backend 依產品 category 自動帶回相關切工候選
 * 不要先查產品、再另外第二次查切工；backend 會同次帶回相關 `切工/切割` rows
 * AI 需從同一批 price candidates 中分別採用產品 row 與 cutting row，再自行計算材料費與切工費
 

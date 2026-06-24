@@ -1,5 +1,7 @@
 import type {
   JSONValue,
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
   LanguageModelV3FunctionTool,
   LanguageModelV3GenerateResult,
   LanguageModelV3ToolCall,
@@ -33,13 +35,15 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<typeof import('openai-oauth-provider')>;
 
+const transientProviderMaxAttempts = 3;
+const transientProviderRetryDelaysMs = [300, 1000] as const;
+
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelProviderToolName };
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
-type SearchPriceLookupInput = Extract<SearchPriceCandidatesInput, { queries: readonly unknown[] }>;
-type SearchPriceCandidateQuery = SearchPriceLookupInput['queries'][number];
+type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
 type SteelRoundTool = LanguageModelV3FunctionTool;
 type SteelPriceLookupRuntimeContext = Record<string, never>;
 type SteelProviderRoundTiming = {
@@ -56,8 +60,10 @@ type SteelProviderTimings = {
   roundCount: number;
   rounds: SteelProviderRoundTiming[];
 };
+type SteelProviderRoundProgressStatus = 'started' | 'waiting';
 
 const defaultSteelToolMaxCalls = 8;
+const defaultProviderRoundProgressIntervalMs = 30000;
 
 export interface SteelProviderExecuteToolCallOptions {
   toolName: string;
@@ -76,6 +82,14 @@ export type SteelProviderToolStatusCallback = (event: {
   message?: string;
   result?: SteelToolResult;
   errorSummary?: string;
+}) => void | Promise<void>;
+
+export type SteelProviderRoundStatusCallback = (event: {
+  round: number;
+  status: SteelProviderRoundProgressStatus;
+  elapsedMs: number;
+  promptMessageCount: number;
+  message: string;
 }) => void | Promise<void>;
 
 export type SteelOAuthChatMessageRole = 'system' | 'user' | 'assistant';
@@ -125,7 +139,9 @@ export interface SendSteelOAuthChatOptions {
   onReasoningSummary?: (summary: string) => void;
   onTextDelta?: (delta: string) => void;
   onToolStatus?: SteelProviderToolStatusCallback;
+  onProviderRoundStatus?: SteelProviderRoundStatusCallback;
   passThroughUnsupportedFiles?: boolean;
+  providerRoundProgressIntervalMs?: number;
   reasoningEffort: SteelOpenAIReasoningEffort;
   steelToolMaxCalls?: number;
   steelRuntimePolicy?: boolean;
@@ -386,6 +402,250 @@ function getGeneratedText(result: LanguageModelV3GenerateResult): string {
   }, '');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isReadableStreamErrorMessage(message: string): boolean {
+  const trimmed = message.trim();
+  return trimmed.length > 0 && trimmed !== '[object Object]';
+}
+
+function extractJsonStreamErrorMessage(value: string, depth: number): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return undefined;
+  }
+
+  try {
+    return extractStreamErrorMessage(JSON.parse(trimmed), depth + 1);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractStreamErrorMessage(value: unknown, depth = 0): string | undefined {
+  if (depth > 5) {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const parsedMessage = extractJsonStreamErrorMessage(value, depth);
+    if (parsedMessage) {
+      return parsedMessage;
+    }
+    return isReadableStreamErrorMessage(value) ? value.trim() : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const message = extractStreamErrorMessage(entry, depth + 1);
+      if (message) {
+        return message;
+      }
+    }
+    return undefined;
+  }
+
+  if (value instanceof Error) {
+    return (
+      extractStreamErrorMessage(value.cause, depth + 1) ??
+      extractStreamErrorMessage(value.message, depth + 1)
+    );
+  }
+
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const fields = [
+    'message',
+    'error',
+    'errorSummary',
+    'detail',
+    'details',
+    'description',
+    'reason',
+    'cause',
+    'response',
+    'data',
+    'body',
+    'error_description',
+    'errorMessage',
+    'statusText',
+  ];
+
+  for (const field of fields) {
+    const message = extractStreamErrorMessage(value[field], depth + 1);
+    if (message) {
+      return message;
+    }
+  }
+
+  return undefined;
+}
+
+function createProviderStreamError(error: unknown): Error {
+  const message = extractStreamErrorMessage(error) ?? 'OpenAI OAuth provider stream failed.';
+  if (error instanceof Error && error.message === message) {
+    return error;
+  }
+
+  return new Error(message, { cause: error });
+}
+
+function isTransientProviderError(error: unknown): boolean {
+  const message = extractStreamErrorMessage(error)?.toLowerCase() ?? '';
+  return (
+    message.includes('overloaded') ||
+    message.includes('try again later') ||
+    message.includes('rate limit') ||
+    message.includes('rate_limit') ||
+    message.includes('too many requests') ||
+    message.includes('temporarily unavailable') ||
+    message.includes('service unavailable') ||
+    message.includes('server unavailable') ||
+    message.includes('etimedout') ||
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('econnreset') ||
+    message.includes('connection reset') ||
+    message.includes('socket hang up') ||
+    message.includes('fetch failed') ||
+    message.includes('network error') ||
+    /\b429\b/.test(message) ||
+    /\b503\b/.test(message)
+  );
+}
+
+function getTransientProviderRetryDelayMs(attemptIndex: number): number {
+  return (
+    transientProviderRetryDelaysMs[attemptIndex] ??
+    transientProviderRetryDelaysMs[transientProviderRetryDelaysMs.length - 1] ??
+    0
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function getProviderRoundProgressIntervalMs(intervalMs: number | undefined): number {
+  if (intervalMs !== undefined) {
+    return Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 0;
+  }
+
+  const parsed = Number(process.env.STEEL_OPENAI_OAUTH_PROVIDER_ROUND_PROGRESS_INTERVAL_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultProviderRoundProgressIntervalMs;
+}
+
+function getProviderRoundProgressMessage({
+  elapsedMs,
+  round,
+  status,
+}: {
+  elapsedMs: number;
+  round: number;
+  status: SteelProviderRoundProgressStatus;
+}): string {
+  const baseMessage =
+    round === 0
+      ? `Provider round ${round} waiting for model`
+      : `Provider round ${round} generating final response after tool results`;
+
+  if (status !== 'waiting') {
+    return baseMessage;
+  }
+
+  const elapsedSeconds = Math.max(1, Math.round(elapsedMs / 1000));
+  return `${baseMessage} (${elapsedSeconds}s elapsed)`;
+}
+
+function emitProviderRoundStatus(
+  onProviderRoundStatus: SteelProviderRoundStatusCallback | undefined,
+  event: Parameters<SteelProviderRoundStatusCallback>[0],
+): void {
+  if (!onProviderRoundStatus) {
+    return;
+  }
+
+  void Promise.resolve(onProviderRoundStatus(event)).catch(() => undefined);
+}
+
+function startProviderRoundProgress({
+  onProviderRoundStatus,
+  progressIntervalMs,
+  promptMessageCount,
+  round,
+}: {
+  onProviderRoundStatus?: SteelProviderRoundStatusCallback;
+  progressIntervalMs?: number;
+  promptMessageCount: number;
+  round: number;
+}): () => void {
+  if (!onProviderRoundStatus) {
+    return () => undefined;
+  }
+
+  const startedAt = Date.now();
+  const intervalMs = getProviderRoundProgressIntervalMs(progressIntervalMs);
+  emitProviderRoundStatus(onProviderRoundStatus, {
+    elapsedMs: 0,
+    message: getProviderRoundProgressMessage({ elapsedMs: 0, round, status: 'started' }),
+    promptMessageCount,
+    round,
+    status: 'started',
+  });
+
+  if (intervalMs <= 0) {
+    return () => undefined;
+  }
+
+  const interval = setInterval(() => {
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    emitProviderRoundStatus(onProviderRoundStatus, {
+      elapsedMs,
+      message: getProviderRoundProgressMessage({ elapsedMs, round, status: 'waiting' }),
+      promptMessageCount,
+      round,
+      status: 'waiting',
+    });
+  }, intervalMs);
+
+  return () => {
+    clearInterval(interval);
+  };
+}
+
+async function runWithProviderRoundProgress<T>({
+  onProviderRoundStatus,
+  progressIntervalMs,
+  promptMessageCount,
+  round,
+  run,
+}: {
+  onProviderRoundStatus?: SteelProviderRoundStatusCallback;
+  progressIntervalMs?: number;
+  promptMessageCount: number;
+  round: number;
+  run: () => Promise<T>;
+}): Promise<T> {
+  const stopProgress = startProviderRoundProgress({
+    onProviderRoundStatus,
+    progressIntervalMs,
+    promptMessageCount,
+    round,
+  });
+
+  try {
+    return await run();
+  } finally {
+    stopProgress();
+  }
+}
+
 function isSteelBusinessToolCall(
   part: LanguageModelV3GenerateResult['content'][number],
   contextMode: SteelProviderToolContextMode,
@@ -471,28 +731,17 @@ function enrichSearchPriceInput(
   return steelToolArgsSchemas.search_price_candidates.parse(input);
 }
 
-function isSearchPriceLookupInput(
-  input: SearchPriceCandidatesInput,
-): input is SearchPriceLookupInput {
-  return 'queries' in input;
-}
-
 function isSearchPriceCoalesceCompatible(
-  left: SearchPriceCandidatesInput,
-  right: SearchPriceCandidatesInput,
+  _left: SearchPriceCandidatesInput,
+  _right: SearchPriceCandidatesInput,
 ): boolean {
-  return (
-    isSearchPriceLookupInput(left) &&
-    isSearchPriceLookupInput(right) &&
-    left.limit === right.limit &&
-    left.includeRelatedCutting === right.includeRelatedCutting
-  );
+  return true;
 }
 
 function toBatchedPriceCandidate(
   input: SearchPriceCandidatesInput,
 ): SearchPriceCandidateQuery[] {
-  return isSearchPriceLookupInput(input) ? [...input.queries] : [];
+  return [...input.queries];
 }
 
 function uniquePriceQueries(queries: readonly SearchPriceCandidateQuery[]): SearchPriceCandidateQuery[] {
@@ -520,10 +769,6 @@ function createBatchedSearchPriceInput(
   if (!firstInput) {
     return undefined;
   }
-  if (!isSearchPriceLookupInput(firstInput)) {
-    return undefined;
-  }
-
   if (!inputs.every((input) => isSearchPriceCoalesceCompatible(firstInput, input))) {
     return undefined;
   }
@@ -535,8 +780,6 @@ function createBatchedSearchPriceInput(
 
   return steelToolArgsSchemas.search_price_candidates.parse({
     queries,
-    includeRelatedCutting: firstInput.includeRelatedCutting,
-    limit: firstInput.limit,
   });
 }
 
@@ -1013,7 +1256,7 @@ async function streamToGenerateResult({
           finishReason = part.finishReason;
           break;
         case 'error':
-          throw part.error instanceof Error ? part.error : new Error(String(part.error));
+          throw createProviderStreamError(part.error);
         default:
           break;
       }
@@ -1033,6 +1276,52 @@ async function streamToGenerateResult({
   };
 }
 
+async function generateProviderRoundWithRetry({
+  callOptions,
+  languageModel,
+  onReasoningSummary,
+  onTextDelta,
+}: {
+  callOptions: LanguageModelV3CallOptions;
+  languageModel: LanguageModelV3;
+  onReasoningSummary?: (summary: string) => void;
+  onTextDelta?: (delta: string) => void;
+}): Promise<LanguageModelV3GenerateResult> {
+  for (let attemptIndex = 0; attemptIndex < transientProviderMaxAttempts; attemptIndex += 1) {
+    let streamedTextDelta = false;
+    const onAttemptTextDelta = onTextDelta
+      ? (delta: string) => {
+          streamedTextDelta = true;
+          onTextDelta(delta);
+        }
+      : undefined;
+
+    try {
+      if (onTextDelta && typeof languageModel.doStream === 'function') {
+        return await streamToGenerateResult({
+          ...(await languageModel.doStream(callOptions)),
+          onReasoningSummary,
+          onTextDelta: onAttemptTextDelta,
+        });
+      }
+
+      return await languageModel.doGenerate(callOptions);
+    } catch (error) {
+      const canRetry =
+        !streamedTextDelta &&
+        attemptIndex < transientProviderMaxAttempts - 1 &&
+        isTransientProviderError(error);
+      if (!canRetry) {
+        throw error;
+      }
+
+      await sleep(getTransientProviderRetryDelayMs(attemptIndex));
+    }
+  }
+
+  throw new Error('OpenAI OAuth provider retry loop exited unexpectedly.');
+}
+
 export async function sendSteelOAuthChat({
   abortSignal,
   authFilePath,
@@ -1046,7 +1335,9 @@ export async function sendSteelOAuthChat({
   onReasoningSummary,
   onTextDelta,
   onToolStatus,
+  onProviderRoundStatus,
   passThroughUnsupportedFiles,
+  providerRoundProgressIntervalMs,
   reasoningEffort,
   steelToolMaxCalls,
   steelRuntimePolicy,
@@ -1091,7 +1382,7 @@ export async function sendSteelOAuthChat({
     const promptMessageCount = prompt.length;
     const generationStartedAt = Date.now();
     const languageModel = openai(model);
-    const callOptions = {
+    const callOptions: LanguageModelV3CallOptions = {
       abortSignal,
       prompt,
       maxOutputTokens,
@@ -1109,14 +1400,19 @@ export async function sendSteelOAuthChat({
         },
       },
     };
-    const result =
-      onTextDelta && typeof languageModel.doStream === 'function'
-        ? await streamToGenerateResult({
-            ...(await languageModel.doStream(callOptions)),
-            onReasoningSummary,
-            onTextDelta,
-          })
-        : await languageModel.doGenerate(callOptions);
+    const result = await runWithProviderRoundProgress({
+      onProviderRoundStatus,
+      progressIntervalMs: providerRoundProgressIntervalMs,
+      promptMessageCount,
+      round,
+      run: () =>
+        generateProviderRoundWithRetry({
+          callOptions,
+          languageModel,
+          onReasoningSummary,
+          onTextDelta,
+        }),
+    });
     const generationDurationMs = Math.max(0, Date.now() - generationStartedAt);
     let toolDurationMs = 0;
 

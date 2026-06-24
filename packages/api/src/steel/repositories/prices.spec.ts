@@ -42,7 +42,7 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('Steel price repositories', () => {
-  it('searches unified reviewed active price rows by category, material, thickness, spec, and keyword', async () => {
+  it('searches unified reviewed active price rows by category, material, OR thicknesses, and keyword terms', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [createPriceRow()],
     });
@@ -52,12 +52,11 @@ describe('Steel price repositories', () => {
         {
           category: '扁方管',
           material: 'OT 黑鐵',
-          thicknesses: ['2'],
-          specs: ['75*45'],
-          keyword: '黑方管',
+          thicknessMm: ['2', '2.3'],
+          keyword: '75*45 黑方管',
+          limit: 5,
         },
       ],
-      limit: 5,
     });
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.prices'), [
@@ -65,6 +64,11 @@ describe('Steel price repositories', () => {
       '扁方管',
       'OT 黑鐵',
       '2.0',
+      '2.3',
+      '%75x45%',
+      '%黑方管%',
+      '切工/切割',
+      ['管'],
       '%75x45%',
       '%黑方管%',
       5,
@@ -74,6 +78,7 @@ describe('Steel price repositories', () => {
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('category = $2'));
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('material = $3'));
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('source_thickness = $4'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('source_thickness = $5'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('steel.price_items'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tier_id'));
     expect(result).toEqual([
@@ -125,10 +130,42 @@ describe('Steel price repositories', () => {
       'reviewed',
       '扁方管',
       '%GDH075%',
-      100,
+      '切工/切割',
+      ['管'],
+      '%GDH075%',
+      30,
     ]);
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tier'));
     expect(result[0]?.tierPrices).toEqual({ A: 100, B: 110, C: 120, F: 130 });
+  });
+
+  it('extracts thickness from keyword and matches remaining keyword terms with AND semantics', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [createPriceRow()] });
+
+    await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      queries: [
+        {
+          category: '鐵板/鋼板',
+          keyword: '15mm 黑鐵板雷射切割',
+          limit: 5,
+        },
+      ],
+    });
+
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+    expect(sql).toContain('material = $3');
+    expect(sql).toContain('source_thickness = $4');
+    expect(sql).toContain('product_name ILIKE $5');
+    expect(sql).toContain(' AND ');
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
+      'reviewed',
+      '鐵板/鋼板',
+      'OT 黑鐵',
+      '15.0',
+      '%雷射切割%',
+      5,
+    ]);
   });
 
   it('preserves unknown reviewed prices as null instead of zero', async () => {
@@ -157,32 +194,38 @@ describe('Steel price repositories', () => {
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
       queries: [
-        { category: '扁方管', material: 'OT 黑鐵', specs: ['75'] },
-        { category: '扁方管', material: '錏', specs: ['50'] },
+        { category: '扁方管', material: 'OT 黑鐵', keyword: '75', limit: 10 },
+        { category: '扁方管', material: '錏', keyword: '50', limit: 10 },
       ],
-      limit: 10,
     });
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain(' OR ');
+    expect(sql).toContain('UNION ALL');
     expect(sql).toContain('category = $2');
     expect(sql).toContain('material = $3');
-    expect(sql).toContain('category = $5');
-    expect(sql).toContain('material = $6');
+    expect(sql).toContain('category = $9');
+    expect(sql).toContain('material = $10');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '扁方管',
       'OT 黑鐵',
       '%75%',
+      '切工/切割',
+      ['管'],
+      '%75%',
+      10,
       '扁方管',
       '錏',
+      '%50%',
+      '切工/切割',
+      ['管'],
       '%50%',
       10,
     ]);
   });
 
-  it('can include related cutting rows in the same price lookup', async () => {
+  it('automatically includes related cutting rows for long-material categories', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         createPriceRow({
@@ -202,9 +245,7 @@ describe('Steel price repositories', () => {
     });
 
     const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
-      queries: [{ category: 'H型鋼', specs: ['200*100'] }],
-      includeRelatedCutting: true,
-      limit: 20,
+      queries: [{ category: 'H型鋼', keyword: '200*100', limit: 20 }],
     });
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
@@ -235,7 +276,7 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('discovers candidate categories before exact lookup when category is unknown', async () => {
+  it('discovers candidate categories with whitespace keyword terms using AND semantics', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         {
@@ -249,14 +290,14 @@ describe('Steel price repositories', () => {
     });
 
     const result = await discoverSteelPriceCategories({ query } as SteelRepositoryClient, {
-      keyword: '黑方管 75',
+      keyword: '白鐵方管 75x45',
       limit: 5,
     });
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining('GROUP BY category, material'), [
       'reviewed',
-      '%黑方管 75%',
-      '%黑方管75%',
+      '%白鐵方管%',
+      '%75x45%',
       5,
     ]);
     expect(result).toEqual([

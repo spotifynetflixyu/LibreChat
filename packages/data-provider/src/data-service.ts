@@ -15,6 +15,7 @@ import * as r from './roles';
 import * as permissions from './accessPermissions';
 import { getTokenHeader } from './headers-helpers';
 import type {
+  SteelConversationMessagesResponse,
   SteelProviderChatRequest,
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
@@ -45,6 +46,12 @@ export function sendSteelChat(
   payload: SteelProviderChatRequest,
 ): Promise<SteelProviderChatResponse> {
   return request.post(endpoints.steelChat(), payload);
+}
+
+export function getSteelConversationMessages(
+  conversationId: string,
+): Promise<SteelConversationMessagesResponse> {
+  return request.get(endpoints.steelConversationMessages(conversationId));
 }
 
 export async function streamSteelChat(

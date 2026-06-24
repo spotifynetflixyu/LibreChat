@@ -159,4 +159,22 @@ describe('Steel conversation history service', () => {
       }),
     ]);
   });
+
+  it('lists all active turns for UI conversation reload', async () => {
+    const deps = createDeps();
+    const service = createSteelConversationHistoryService({
+      historyRepository: deps.historyRepository,
+      memoryRepository: deps.memoryRepository,
+      now: () => editedAt,
+    });
+
+    const activeTurns = await service.listActiveTurns({
+      conversationId: 'steel_conversation_1',
+    });
+
+    expect(deps.historyRepository.listActiveTurns).toHaveBeenCalledWith({
+      conversationId: 'steel_conversation_1',
+    });
+    expect(activeTurns.map((turn) => turn.messageId)).toEqual(['u1', 'a1', 's1']);
+  });
 });

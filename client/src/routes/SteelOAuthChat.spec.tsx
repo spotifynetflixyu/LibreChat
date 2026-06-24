@@ -6,9 +6,11 @@ import SteelOAuthChat from './SteelOAuthChat';
 
 const mockSendSteelChat = jest.fn();
 const mockStreamSteelChat = jest.fn();
+const mockGetSteelConversationMessages = jest.fn();
 
 jest.mock('librechat-data-provider', () => ({
   dataService: {
+    getSteelConversationMessages: (...args: unknown[]) => mockGetSteelConversationMessages(...args),
     sendSteelChat: (...args: unknown[]) => mockSendSteelChat(...args),
     streamSteelChat: (...args: unknown[]) => mockStreamSteelChat(...args),
   },
@@ -16,6 +18,12 @@ jest.mock('librechat-data-provider', () => ({
 
 describe('SteelOAuthChat', () => {
   beforeEach(() => {
+    window.history.replaceState({}, '', '/steel/oauth-chat');
+    mockGetSteelConversationMessages.mockReset();
+    mockGetSteelConversationMessages.mockResolvedValue({
+      conversationId: 'steel-chat-empty',
+      messages: [],
+    });
     mockSendSteelChat.mockReset();
     mockStreamSteelChat.mockReset();
     mockStreamSteelChat.mockImplementation(async (_payload, onEvent) => {
@@ -42,6 +50,77 @@ describe('SteelOAuthChat', () => {
       onEvent({ type: 'done', response });
       return response;
     });
+  });
+
+  it('reloads persisted Steel chat turns from the URL conversationId and reuses message ids for edits', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, '', '/steel/oauth-chat?conversationId=steel-chat-reload');
+    mockGetSteelConversationMessages.mockResolvedValueOnce({
+      conversationId: 'steel-chat-reload',
+      messages: [
+        {
+          messageId: 'user-1',
+          role: 'user',
+          content: '上一輪 PL15*500',
+          attachments: [
+            {
+              fileId: 'file-1',
+              filename: 'PL.pdf',
+              mediaType: 'application/pdf',
+            },
+          ],
+          createdAt: '2026-06-24T00:00:00.000Z',
+          updatedAt: '2026-06-24T00:00:00.000Z',
+        },
+        {
+          messageId: 'assistant-1',
+          role: 'assistant',
+          content: '已保存報價',
+          createdAt: '2026-06-24T00:00:01.000Z',
+          updatedAt: '2026-06-24T00:00:01.000Z',
+        },
+      ],
+    });
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        conversationId: 'steel-chat-reload',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已重新報價',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    expect(await screen.findByText('上一輪 PL15*500')).toBeInTheDocument();
+    expect(screen.getByText('PL.pdf')).toBeInTheDocument();
+    expect(screen.getByText('已保存報價')).toBeInTheDocument();
+    expect(mockGetSteelConversationMessages).toHaveBeenCalledWith('steel-chat-reload');
+    expect(mockStreamSteelChat).not.toHaveBeenCalled();
+
+    await user.click(screen.getByLabelText('Edit user message'));
+    await user.clear(screen.getByPlaceholderText('Message Steel'));
+    await user.type(screen.getByPlaceholderText('Message Steel'), '改成 PL15*500 兩片');
+    await user.click(screen.getByLabelText('Send'));
+
+    expect(await screen.findByText('已重新報價')).toBeInTheDocument();
+    expect(mockStreamSteelChat.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        conversationId: 'steel-chat-reload',
+        editMessageId: 'user-1',
+        messages: [
+          expect.objectContaining({
+            role: 'user',
+            content: '改成 PL15*500 兩片',
+            messageId: 'user-1',
+          }),
+        ],
+      }),
+    );
   });
 
   it('sends chat payloads without workbook ids and renders assistant Markdown tables', async () => {
@@ -71,6 +150,47 @@ describe('SteelOAuthChat', () => {
     expect(mockStreamSteelChat.mock.calls[0]?.[0]).not.toHaveProperty('workbookVersion');
     expect(screen.queryByRole('tab', { name: 'Workbook' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'File Analysis' })).not.toBeInTheDocument();
+  });
+
+  it('renders wide Markdown tables with readable columns and three-line cell text', async () => {
+    const user = userEvent.setup();
+    const longReviewText =
+      '孔標註可辨識為 2-Ø30 與 4-Ø24；請確認是否需另計鑽孔 / 沖孔 / 雷射孔，這段文字應限制最多三行避免表格被撐高。';
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        conversationId: 'steel-chat-1',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: [
+          '| 來源頁 | 圖面名稱 | 件號 / 編號 | 斷面規格 | 判讀尺寸 mm | 材料 | 數量 | 長度 mm | 面積 | 重量 kg | 孔數 / 件 | 總孔數 | 孔徑 / 孔型 | 切工 / 折工 / 開槽 / 其他加工 | 信心 | 人工複核原因 |',
+          '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+          `| 3 | PL15*500 | 03 | PL15*500 | 厚 15 × 寬 500 × 長 300 | A36 | 10 | 300.0 | 0.32 | 17.7 | 6 | 60 | 2-Ø30、4-Ø24 | 板材切割；孔加工 | 高 | ${longReviewText} |`,
+        ].join('\n'),
+        unsupportedSettings: [],
+        warnings: [],
+      };
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '顯示 PL.pdf OCR 表格');
+    await user.click(screen.getByLabelText('Send'));
+
+    const table = await screen.findByRole('table');
+    expect(table).toHaveClass('w-max');
+    expect(table.parentElement).toHaveClass('overflow-x-auto');
+    expect(screen.getByRole('columnheader', { name: '人工複核原因' }).closest('th')).toHaveClass(
+      'min-w-[9rem]',
+    );
+    expect(screen.getByRole('cell', { name: longReviewText }).closest('td')).toHaveClass(
+      'min-w-[9rem]',
+    );
+    expect(screen.getByText(longReviewText)).toHaveStyle({
+      WebkitLineClamp: '3',
+      overflow: 'hidden',
+    });
   });
 
   it('shows activity and neutral provider timings without workbook metrics', async () => {
@@ -139,6 +259,99 @@ describe('SteelOAuthChat', () => {
     expect(within(timingsPanel).getByText('Round 2')).toBeInTheDocument();
     expect(within(timingsPanel).queryByText('Workbook completion')).not.toBeInTheDocument();
     expect(within(timingsPanel).queryByText(/workbook ops/)).not.toBeInTheDocument();
+  });
+
+  it('coalesces streamed reasoning deltas into one Activity item', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      const response = {
+        conversationId: 'steel-chat-1',
+        provider: 'openai_oauth_responses',
+        model: 'gpt-5.5',
+        text: '已確認 OCR 內容。',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+      onEvent({ type: 'reasoning', summary: 'I' });
+      onEvent({ type: 'reasoning', summary: ' need' });
+      onEvent({ type: 'reasoning', summary: ' final OCR confirmation.' });
+      onEvent({ type: 'done', response });
+      return response;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '請確認 PL.pdf OCR');
+    await user.click(screen.getByLabelText('Send'));
+
+    await screen.findByText('已確認 OCR 內容。');
+    const activityPanel = screen.getByLabelText('Activity panel');
+    expect(within(activityPanel).getAllByText('Reasoning summary')).toHaveLength(1);
+    expect(within(activityPanel).getAllByText('Summary')).toHaveLength(1);
+    expect(within(activityPanel).getAllByText('reasoning summary')).toHaveLength(1);
+    expect(
+      within(activityPanel).getByText('I need final OCR confirmation.'),
+    ).toBeInTheDocument();
+    expect(within(activityPanel).queryByText('I')).not.toBeInTheDocument();
+    expect(within(activityPanel).queryByText(' need')).not.toBeInTheDocument();
+    expect(within(activityPanel).queryByText(' final OCR confirmation.')).not.toBeInTheDocument();
+  });
+
+  it('does not render object-placeholder provider errors in Activity or chat', async () => {
+    const user = userEvent.setup();
+    mockStreamSteelChat.mockImplementationOnce(async (_payload, onEvent) => {
+      onEvent({
+        type: 'progress',
+        stage: 'provider_request',
+        message: 'Waiting for provider',
+      });
+      onEvent({
+        type: 'error',
+        errorCategory: 'unknown',
+        errorSummary: '[object Object]',
+      });
+      throw new Error('[object Object]');
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '請處理 PL.pdf');
+    await user.click(screen.getByLabelText('Send'));
+
+    expect(await screen.findAllByText('Steel chat request failed.')).toHaveLength(2);
+    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
+    const activityPanel = screen.getByLabelText('Activity panel');
+    expect(within(activityPanel).queryByText('[object Object]')).not.toBeInTheDocument();
+    expect(within(activityPanel).getAllByText('Error')).toHaveLength(1);
+    expect(within(activityPanel).getAllByText('Failed')).toHaveLength(1);
+  });
+
+  it('renders nested provider error detail instead of a generic OAuth wrapper', async () => {
+    const user = userEvent.setup();
+    const providerError = new Error('OpenAI OAuth provider request failed.', {
+      cause: {
+        response: {
+          data: {
+            error: {
+              message: 'Provider rejected follow-up after PL.pdf OCR table context.',
+            },
+          },
+        },
+      },
+    });
+    mockStreamSteelChat.mockImplementationOnce(async () => {
+      throw providerError;
+    });
+
+    render(<SteelOAuthChat />);
+
+    await user.type(screen.getByPlaceholderText('Message Steel'), '請處理 PL.pdf');
+    await user.click(screen.getByLabelText('Send'));
+
+    expect(
+      await screen.findAllByText('Provider rejected follow-up after PL.pdf OCR table context.'),
+    ).toHaveLength(2);
+    expect(screen.queryByText('OpenAI OAuth provider request failed.')).not.toBeInTheDocument();
   });
 
   it('shows Markdown parse status and saved memory counts in Activity', async () => {

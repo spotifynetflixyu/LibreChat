@@ -401,13 +401,15 @@ describe('Mongoose Steel working-order memory reader', () => {
         resultCount: 2,
         workingOrderRows: [
           expect.objectContaining({
-            rowNo: 1,
+            rowNo: 10,
+            項次: '10',
             erpItemCode: 'CCG075',
             productName: '錏輕型鋼 75x45x15x2.3',
             quantity: 2,
           }),
           expect.objectContaining({
-            rowNo: 2,
+            rowNo: 20,
+            項次: '20',
             erpItemCode: 'EQB0090',
             productName: '圓鐵 9m/m',
             quantity: 3,

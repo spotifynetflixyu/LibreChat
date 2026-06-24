@@ -1,6 +1,7 @@
 import {
   steelAuthenticatedConversationRequestSchema,
   steelConversationMessageRequestSchema,
+  steelConversationMessagesResponseSchema,
   steelConversationReadResponseSchema,
   steelGuestConversationRequestSchema,
 } from './conversations';
@@ -69,6 +70,62 @@ describe('Steel conversation public contracts', () => {
     ).toEqual({
       conversationId: 'steel_meta_1',
       message: '請報價',
+    });
+  });
+
+  it('validates Steel active conversation messages for browser reload', () => {
+    expect(
+      steelConversationMessagesResponseSchema.parse({
+        conversationId: 'steel-chat-1',
+        messages: [
+          {
+            messageId: 'user-1',
+            role: 'user',
+            content: '上一輪報價',
+            attachments: [
+              {
+                fileId: 'file-1',
+                filename: 'PL.pdf',
+                mediaType: 'application/pdf',
+              },
+            ],
+            createdAt: '2026-06-24T00:00:00.000Z',
+            updatedAt: '2026-06-24T00:00:00.000Z',
+          },
+          {
+            messageId: 'assistant-1',
+            role: 'assistant',
+            content: '| 項次 | 型號 |\n| --- | --- |\n| 1 | CCG075 |',
+            createdAt: '2026-06-24T00:00:01.000Z',
+            updatedAt: '2026-06-24T00:00:01.000Z',
+          },
+        ],
+      }),
+    ).toEqual({
+      conversationId: 'steel-chat-1',
+      messages: [
+        {
+          messageId: 'user-1',
+          role: 'user',
+          content: '上一輪報價',
+          attachments: [
+            {
+              fileId: 'file-1',
+              filename: 'PL.pdf',
+              mediaType: 'application/pdf',
+            },
+          ],
+          createdAt: '2026-06-24T00:00:00.000Z',
+          updatedAt: '2026-06-24T00:00:00.000Z',
+        },
+        {
+          messageId: 'assistant-1',
+          role: 'assistant',
+          content: '| 項次 | 型號 |\n| --- | --- |\n| 1 | CCG075 |',
+          createdAt: '2026-06-24T00:00:01.000Z',
+          updatedAt: '2026-06-24T00:00:01.000Z',
+        },
+      ],
     });
   });
 });

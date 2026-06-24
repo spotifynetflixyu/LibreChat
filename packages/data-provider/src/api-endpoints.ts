@@ -276,6 +276,8 @@ export const steelChat = () => `${steelBase()}/ai/chat`;
 export const steelChatStream = () => `${steelChat()}/stream`;
 export const steelConversation = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}`;
+export const steelConversationMessages = (conversationId: string) =>
+  `${steelConversation(conversationId)}/messages`;
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

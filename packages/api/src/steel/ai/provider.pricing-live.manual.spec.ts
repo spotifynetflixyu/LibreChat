@@ -55,10 +55,14 @@ function isObject(value: SteelToolJsonValue | undefined): value is SteelToolJson
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hasIncludeRelatedCutting(value: unknown): boolean {
+function hasLongMaterialPriceLookup(value: unknown): boolean {
   const parsed = steelToolArgsSchemas.search_price_candidates.safeParse(value);
 
-  return parsed.success && 'queries' in parsed.data && parsed.data.includeRelatedCutting === true;
+  return (
+    parsed.success &&
+    'queries' in parsed.data &&
+    parsed.data.queries.some((query) => query.category === 'H型鋼')
+  );
 }
 
 function readString(value: SteelToolJsonValue | undefined): string | undefined {
@@ -172,7 +176,7 @@ describePricingLive('Steel live pricing quote smoke', () => {
                 '項目1：OT黑鐵鐵板 PL6*80*1000，數量1片，材料費用板材雷射切割 kg 單價計算。',
                 '項目2：H型鋼 200*100*5.5/8*10M，一支，材料費用 kg 單價計算。',
                 '項目3：同一支 H型鋼 200*100，10M 切成兩支 5M，不修頭尾，切工另列，切工刀數1刀。',
-                'H型鋼同時需要產品價格與切工價格時，search_price_candidates 必須使用 includeRelatedCutting=true。',
+                'H型鋼同時需要產品價格與切工價格時，search_price_candidates 只需要查 H型鋼，切工候選由後端自動帶回。',
                 '最後請用 Markdown 表格列出採用價格來源、單價、重量或刀數、各項小計與總計。',
               ].join('\n'),
             },
@@ -188,7 +192,7 @@ describePricingLive('Steel live pricing quote smoke', () => {
         expect(capturedCalls.some((call) => call.toolName === 'search_price_candidates')).toBe(true);
         expect(
           capturedCalls.some(
-            (call) => call.toolName === 'search_price_candidates' && hasIncludeRelatedCutting(call.arguments),
+            (call) => call.toolName === 'search_price_candidates' && hasLongMaterialPriceLookup(call.arguments),
           ),
         ).toBe(true);
         expect(priceCandidates).toEqual(

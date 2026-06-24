@@ -1,4 +1,753 @@
-# Active: PB PDF Live Smoke With DB Runtime Rules
+# Active: Steel OAuth Post-Tool Final Generation Progress
+
+Goal: diagnose why conversation
+`steel-chat-e896d495-aa55-4fa7-ba5c-c45c6f509940` appeared stuck after
+`search_price_candidates` and `Working Order Memory saved`, and make the
+post-tool final-generation wait visible in Activity.
+
+Plan:
+
+- [x] Inspect the persisted conversation and timing data to distinguish tool /
+      memory latency from provider final-generation latency.
+- [x] Add RED coverage for provider round progress events after a tool-result
+      round enters the follow-up final-generation round.
+- [x] Implement round-level provider progress callbacks and stream them as
+      Activity progress events.
+- [x] Run focused provider / handler / UI contract tests, lint or diff hygiene,
+      build if needed, restart backend, and document results.
+
+Review - 2026-06-24:
+
+- Conversation `steel-chat-e896d495-aa55-4fa7-ba5c-c45c6f509940` was not stuck
+  in `search_price_candidates` or memory save. Mongo shows the user `確認`
+  turn at `2026-06-24T09:50:50.834Z` and the assistant final turn saved at
+  `2026-06-24T09:53:16.197Z`; the final answer contains the `system_order`
+  table and was followed by `working_order_row` / `calculation_fact` memory
+  saves.
+- The Activity timings explain the wait: tools took 571 ms, but provider Round
+  1 had zero tool calls and spent 130,389 ms generating the final answer. The
+  UI looked stalled because the last visible event before final text was a
+  completed tool/memory event.
+- Added provider round progress callbacks with a default 30s heartbeat. Round
+  0 now reports waiting for model, and follow-up rounds report that they are
+  generating final response after tool results, including elapsed time on
+  heartbeat events.
+- Streaming handler maps these callbacks to existing `progress` Activity events
+  with `stage: "provider_round"`, so no client event-schema change is needed.
+- Updated the Mongo-backed handler smoke expected `rowNo` from `1` to `10` to
+  match the already-implemented `system_order` item-number canonicalization.
+- Verification passed: RED/GREEN provider round progress test; full
+  `provider.spec.ts`; full `handlers.spec.ts`; `SteelOAuthChat.spec.tsx`;
+  targeted ESLint with Prettier/no-unused rules disabled for existing worktree
+  noise; `git diff --check`; `packages/api` build. Build still reports existing
+  unrelated non-Steel Rollup TypeScript warnings. Backend restarted on 3080 and
+  `/health` plus 3090 proxy smoke passed.
+
+# Previous Active: Steel Price Lookup Schema Simplification
+
+Goal: simplify `search_price_candidates` lookup inputs by removing overlapping
+`specs` / `keyword` semantics and making related cutting lookup backend-driven.
+The new input shape is top-level `queries` only. Each query carries its own
+mode and limit: lookup queries use category + optional material + optional `thicknessMm`
+string array with OR semantics + optional `keyword`; `category: "孔"` uses only
+`keyword: "鐵板"` with no thickness/material params.
+
+Plan:
+
+- [x] Write the design/implementation plan under `docs/plans/`.
+- [x] Add RED schema/repository/tool/provider tests for the new params,
+      including `孔` keyword-only lookup and automatic cutting rows.
+- [x] Update `search_price_candidates` schema, registry text, repository query
+      builder, executor, and provider coalescing.
+- [x] Update runtime rules, add `docs/rules/鋼材規則/孔.txt`, sync rules to
+      Supabase, and verify DB readback.
+- [x] Run focused tests, lint, build, diff hygiene, and restart backend.
+
+Review - 2026-06-24:
+
+- Implemented the new `search_price_candidates` contract as top-level
+  `queries` only. Each query owns its own `mode` and `limit`; lookup mode can
+  omit `mode`, and `category_discovery` is now
+  `queries: [{ mode: "category_discovery", keyword, limit? }]`.
+- Removed lookup `specs` and `includeRelatedCutting` params. Lookup queries use
+  `category`, optional `material`, optional `thicknessMm: string[]` with OR
+  semantics, optional `keyword`, and per-query `limit` defaulting to 30.
+  Related cutting candidates are added by the backend for long-material
+  categories.
+- Added strict `category: "孔"` validation: the only valid lookup shape is
+  `queries: [{ category: "孔", keyword: "鐵板" }]`; no material,
+  thickness, limit, diameter, or extra processing params are accepted.
+- Updated keyword handling so whitespace-delimited terms are AND conditions.
+  For example, `白鐵方管 75x45` is searched as `白鐵方管` AND `75x45`;
+  keyword parsing also extracts plate thickness like `15mm` into structured
+  thickness when thickness was not explicitly supplied.
+- Added `docs/rules/鋼材規則/孔.txt`, updated agent/plate/long-material rules,
+  added rule-sync metadata, synced reviewed rules to Supabase, and verified DB
+  readback for the new contract wording.
+- Verification passed: focused RED/GREEN Jest suites for schema, repository,
+  tool execution, and provider coalescing; targeted ESLint with existing
+  project-noise rules disabled; `git diff --check`; rule sync dry-run/apply;
+  live tool smoke for 15mm OT plate lookup and `孔` lookup; API build.
+- Follow-up correction: compacted `docs/rules/agent規則.txt`
+  `search_price_candidates` instructions from verbose bullets into a concise
+  runtime contract plus three examples, then re-ran rule sync dry-run/apply and
+  direct DB prompt readback. The synced agent prompt is 3413 characters and
+  contains the lookup, category-discovery, and hole examples.
+- Follow-up DB sync check: re-applied all runtime rules from `docs/rules/**/*.txt`
+  to DB and directly compared local prompt hashes against DB `source_refs`.
+  All eight active rule rows matched: agent, output, OCR, hole, long-material
+  cutting, plate, C-type, and H-beam rules.
+- Live discovery smoke for the exact example `白鐵方管 75x45` returned zero
+  candidates because the current reviewed data has no matching row. The same
+  AND-split path returned `扁方管 / ST 白鐵` for existing data
+  `白鐵扁方管 25x50`, confirming the query logic works and the miss is data,
+  not parameter shape.
+
+# Follow-up Active: Steel Hole Price Query Tolerance
+
+Goal: `search_price_candidates` should not fail the whole tool call when a
+`category: "孔"` lookup includes irrelevant lookup fields such as `material`,
+`thicknessMm`, or `limit`; the backend should canonicalize the hole lookup to
+the supported keyword-only shape.
+
+Plan:
+
+- [x] Add RED schema/tool coverage proving extra hole lookup fields are ignored
+      instead of raising validation errors.
+- [x] Change the hole lookup parser at the schema seam so downstream repository
+      code receives only the canonical hole query.
+- [x] Update concise agent rule wording if needed, sync rules to DB if changed,
+      and record the lesson.
+- [x] Run focused tests, lint/diff hygiene, build, and restart backend.
+
+Review - 2026-06-24:
+
+- Root cause: the previous `category: "孔"` schema was intentionally strict and
+  returned `invalid_arguments` when the model sent otherwise harmless fields
+  such as `material`, `thicknessMm`, or query `limit`. That blocked quoting even
+  though `category: "孔"` already identifies the supported hole lookup.
+- Added RED/GREEN schema and tool execution coverage. Hole lookups with
+  irrelevant fields now parse and execute as canonical
+  `{ category: "孔", keyword: "鐵板" }`.
+- Implemented the fix at the schema preprocess seam so provider batching,
+  execution, tests, and manual calls all receive the same canonical query.
+- Updated `docs/rules/agent規則.txt` and `docs/rules/鋼材規則/孔.txt` to say
+  extra hole fields are ignored by backend instead of treated as fatal.
+- Synced runtime rules to Supabase and verified DB `source_refs` hashes match
+  all local `docs/rules/**/*.txt` runtime files.
+- Verification passed: focused registry/execute/repository/provider Jest suites;
+  targeted ESLint; `git diff --check`; API build; live DB smoke using the
+  failing shape `category: "孔"`, `material`, `thicknessMm`, `keyword: "鑽孔"`,
+  and `limit`, which returned `ok: true`, canonical search query
+  `{ category: "孔", keyword: "鐵板" }`, and 6孔加工 candidates.
+
+# Follow-up Active: Steel Provider ETIMEDOUT Retry
+
+Goal: when a post-tool provider round fails with transient network timeout such
+as `read ETIMEDOUT`, retry the provider round automatically instead of failing
+the chat and forcing a manual retry.
+
+Plan:
+
+- [x] Add RED provider coverage for a streamed tool round followed by
+      `read ETIMEDOUT` and then a successful provider retry.
+- [x] Extend transient provider retry classification to include network
+      timeout/reset errors without retrying after final text has streamed.
+- [x] Run focused provider tests, lint/build/diff hygiene, and restart backend.
+- [x] Record the lesson and summarize verification.
+
+Review - 2026-06-24:
+
+- Root cause: the failure happened after `search_price_candidates` completed,
+  at the next provider round. Handler classification already treats timeout
+  messages as provider timeouts, but provider-round retry only recognized
+  overload/rate-limit/server-unavailable messages, so `read ETIMEDOUT` failed
+  the chat instead of using the existing bounded retry path.
+- Added RED/GREEN provider coverage for a streamed tool-call round, followed by
+  a second provider stream rejection with `read ETIMEDOUT`, followed by a
+  successful retry stream. The tool call is executed once, and the retry only
+  redoes the provider round.
+- Extended transient provider error classification to include `ETIMEDOUT`,
+  `timeout`, `timed out`, `ECONNRESET`, `connection reset`, `socket hang up`,
+  `fetch failed`, and generic `network error`. The existing guard still
+  prevents retry after final text deltas have already streamed.
+- Verification passed: targeted RED/GREEN test; full `provider.spec.ts`;
+  targeted provider ESLint; `git diff --check`; API build. The API build still
+  reports existing unrelated Rollup TypeScript warnings in non-Steel files but
+  completed successfully.
+
+# Follow-up Active: Steel System Order Item Numbering
+
+Goal: update `system_order`.`項次` rules so product/material main items use
+10-based numbers (`10`, `20`, `30`) and attached processing/subitems use the
+same tens group (`11`, `12`, `21`, `22`) instead of simple row sequence
+`1`, `2`, `3`; if AI still sends a full system-order snapshot with simple
+`1..N`, backend canonicalizes it to `10..N*10` instead of treating it as a
+parse error.
+
+Plan:
+
+- [x] Update DB-backed output rules to define main item and subitem numbering.
+- [x] Update live quote smoke validation so it accepts and checks the new
+      main/subitem numbering scheme.
+- [x] Add RED/GREEN memory capture coverage for backend canonicalization from
+      `1, 2, 3, 4` to `10, 20, 30, 40`.
+- [x] Sync updated runtime rules to DB and verify DB hash readback.
+- [x] Run focused tests, lint/diff hygiene, build, restart backend, and
+      summarize verification.
+
+Review - 2026-06-24:
+
+- Updated `docs/rules/輸出規則.txt` so `system_order`.`項次` uses main/subitem
+  numbering: material/product main rows are `10`, `20`, `30`; attached
+  processing rows are `11`, `12`, `21`, `22`, etc. The rule also states that
+  if AI outputs a simple full-table sequence `1, 2, 3, 4`, backend normalizes it
+  to `10, 20, 30, 40` instead of treating it as a parse error.
+- Added backend canonicalization in memory capture for full `system_order`
+  snapshots. If the parsed full table item numbers are exactly `1..N`, the
+  saved active output sheet memory rewrites both `項次` and `rowNo` to
+  10-based main item numbers. Row-change tables are left untouched so explicit
+  edits against existing item numbers are not remapped accidentally.
+- Updated PB live quote smoke validation to accept/check the main/subitem item
+  numbering pattern and to require the synced DB output rule to include the new
+  item-number fragments.
+- Synced runtime rules to Supabase and verified DB `source_refs` hashes match
+  all local runtime rule files; DB output policy includes both the 10-based
+  main item rule and the backend normalization statement.
+- Verification passed: RED/GREEN memory capture test; full
+  `memory/service.spec.ts`; targeted ESLint for memory service and PB manual
+  smoke; `git diff --check`; API build. Build completed with existing unrelated
+  non-Steel Rollup TypeScript warnings. Backend restarted on 3080 and
+  `/health` plus 3090 proxy smoke passed.
+
+# Previous Active: Steel PL.pdf Price Candidate Miss
+
+Goal: diagnose why conversation
+`steel-chat-a138ef92-49cf-4887-a80f-1ef851e31b71` had a second-round
+`search_price_candidates` step with no candidates for the PL.pdf plate quote,
+and decide whether the fix belongs in prompt rules, tool input normalization, or
+price search SQL.
+
+Plan:
+
+- [x] Inspect this conversation's persisted turns and Steel memory/tool
+      artifacts to recover the quoting context and any saved tool outputs.
+- [x] Compare the current `docs/rules/agent規則.txt` and
+      `docs/rules/鋼材規則/鐵板.txt` price-search instructions against the
+      executable `search_price_candidates` schema.
+- [x] Reproduce the price lookup against live `steel.prices` with the expected
+      PL15 / A36 / OT 黑鐵 queries and likely wrong query shapes.
+- [x] If root cause is code, add RED coverage at the tool/repository seam,
+      implement the minimal fix, and verify. If it is data/rule-only, document
+      the exact rule/data change needed.
+
+Review - 2026-06-24:
+
+- Root cause: the legal category enum was not the miss. The successful PL.pdf
+  quote used `category: "鐵板/鋼板"`, `material: "OT 黑鐵"`, `thicknesses:
+  ["15"]`, and eventually adopted reviewed ERP row `DNB70150`
+  `15.0m/mOT板雷射切割`. The zero-candidate step came from over-narrow
+  phrase-like keyword shapes such as `15 OT板` / PL-style keywords, while the
+  existing SQL treated keyword as one contains phrase.
+- Rule correction: for plate/PL lookup, when category/material/thickness are
+  already known, first query with structured fields and no `keyword`. Use
+  `keyword` mainly for `category_discovery` when category is unknown, or as a
+  second-pass narrowing field after a broad structured lookup returns too many
+  candidates.
+- Code guardrail: `searchSteelPriceItems` now keeps phrase keyword matching but
+  also applies bounded whitespace-token fallback, so accidental `15 OT板` still
+  can find rows whose searchable text contains both tokens.
+- Verification passed: focused RED/GREEN repository coverage; full
+  `prices.spec.ts`; `steel/tools/execute.spec.ts`; targeted ESLint with
+  project-noise rules disabled; live SQL/token-fallback smoke; rule sync
+  dry-run/apply; API build; `git diff --check`.
+
+# Previous Active: Steel New Conversation OCR Confirmation History
+
+Goal: when the first PL.pdf turn produces an OCR confirmation table and the user
+replies `確認`, the next provider request must receive the prior OCR table from
+persisted conversation history and proceed to quote generation instead of saying
+there is no OCR result to confirm.
+
+Plan:
+
+- [x] Add RED handler coverage proving a first turn without incoming
+      `conversationId` still persists user and assistant turns under the
+      generated conversation id.
+- [x] Update chat/stream handlers to create the effective Steel conversation id
+      before context preparation/persistence, and return the same id to the
+      client.
+- [x] Verify follow-up prompt context keeps the previous assistant OCR table
+      plus the current `確認` user turn.
+- [x] Run focused Steel API/client checks, build/lint/diff hygiene, restart
+      backend, and record the lesson.
+
+Review - 2026-06-24:
+
+- Root cause: for the first PL.pdf turn, the request had no `conversationId`.
+  The handlers generated a new id only at response time, after
+  `prepareChatContext` and `persistAssistantTurn` had already received
+  `undefined`. That meant the first user message and assistant OCR confirmation
+  table were not written to Steel DB history. The second user message `確認`
+  carried the returned id, but DB history for that id was empty, so the provider
+  said there was no OCR result to confirm.
+- Added RED stream-handler coverage for a first turn without incoming
+  `conversationId`. It now proves the generated id is used for `sendChat`,
+  user-turn history append, assistant-turn history append, Working Order Memory
+  capture, and the final `done.response.conversationId`.
+- `chat` and `streamChat` now create a response conversation id before context
+  preparation. When history persistence is available, the same id is used as the
+  persistent conversation id before appending the current user turn and
+  assistant final response. Existing unit tests without Mongo/history deps keep
+  their lightweight path, but production has Mongo ready and persists first
+  turns.
+- Follow-up prompt context is covered by the existing same-conversation DB
+  history test: active DB history is used instead of browser-local stale
+  messages, and the current user turn is appended to the prior active assistant
+  history before provider call.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand -t "persists first-turn OCR confirmation history"`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  targeted ESLint for handler/client files with existing `prettier/prettier`
+  and `i18next/no-literal-string` noise disabled; `git diff --check`;
+  `npm --workspace packages/api run build`.
+- API build still emits existing unrelated Rollup TypeScript warnings in
+  non-Steel files, but completed successfully. Backend was restarted on 3080;
+  `/health` returned `OK`, and the 3090 proxied Steel messages endpoint returned
+  `401 No auth token` instead of a route/proxy failure.
+
+# Previous Active: PL.pdf Provider Overload Auto-Retry
+
+Goal: when the post-OCR provider round returns a transient overload such as
+`Our servers are currently overloaded. Please try again later.`, retry the
+provider round instead of immediately failing the PL.pdf turn.
+
+Plan:
+
+- [x] Add RED provider coverage for a streamed tool round followed by a
+      transient provider overload and then a successful retry.
+- [x] Add bounded provider-round retry for transient overload/rate-limit/server
+      availability errors without duplicating already-streamed final text.
+- [x] Verify focused provider/handler suites, build/lint/diff hygiene, and
+      restart backend so 3090 uses the new adapter.
+- [x] Record review evidence and lesson for this correction.
+
+Review - 2026-06-24:
+
+- Root cause: after the previous structured-error fix, the real post-OCR
+  failure became visible: `Our servers are currently overloaded. Please try
+  again later.` This is a transient provider availability error, not an OCR tool
+  failure. Without retry, a PL.pdf turn failed immediately after the provider
+  returned overload on the next round.
+- Added RED provider regression coverage for a streamed tool-call round,
+  followed by a second provider stream that emits the overload error, followed
+  by a successful retry stream. Before the fix the turn rejected with the
+  overload message; after the fix it returns the retry text and does not rerun
+  the already-completed tool call.
+- `provider.ts` now runs each provider round through a bounded retry helper.
+  It retries up to three total attempts for transient overload/rate-limit/server
+  availability messages (`overloaded`, `try again later`, `rate limit`, 429,
+  503, `service unavailable`, etc.). It does not retry after a final text delta
+  has already been streamed to the UI, preventing duplicate assistant text.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand -t "retries transient provider overloads"`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  targeted ESLint for provider/handler files with existing `prettier/prettier`
+  and `i18next/no-literal-string` noise disabled; `git diff --check`;
+  `npm --workspace packages/api run build`.
+- API build still emits existing unrelated Rollup TypeScript warnings in
+  non-Steel files, but completed successfully. Backend was restarted on 3080;
+  `/health` returned `OK`, and the 3090 proxied Steel messages endpoint returned
+  `401 No auth token` instead of a route/proxy failure.
+
+# Previous Active: PL.pdf Post-OCR Generic Stream Failure
+
+Goal: when a PL.pdf turn completes `run_file_ocr` and then fails, identify and
+surface the actual post-OCR failure instead of leaving only
+`Steel chat request failed.` in Activity/chat.
+
+Plan:
+
+- [x] Trace backend/client stream failure path after tool completion and find
+      why no actionable error reaches the UI.
+- [x] Add RED coverage for the concrete generic post-OCR stream failure shape.
+- [x] Fix the smallest backend/client seam so the failure is either avoided or
+      reported with the real cause.
+- [x] Verify focused Steel API checks, runtime smoke, lint,
+      diff hygiene, and record the lesson.
+
+Review - 2026-06-24:
+
+- Root cause: the OCR tool itself completed. The failure happened on the next
+  provider stream round after the tool result was appended to the prompt. When
+  the provider emitted a stream `type: "error"` with a structured object,
+  `streamToGenerateResult` converted it with `new Error(String(part.error))`,
+  losing the nested provider message as `[object Object]`. The backend then
+  fell back to a generic OAuth failure, and the client rendered only
+  `Steel chat request failed.`.
+- Added RED provider regression coverage for a streamed tool-call round followed
+  by a second provider stream that emits a structured object error. Before the
+  fix the rejection message was `[object Object]`; after the fix it preserves
+  `Provider rejected follow-up after PL.pdf OCR tool result.`.
+- `provider.ts` now extracts readable messages from stream error strings,
+  arrays, `Error.cause`, and nested object fields such as `message`, `error`,
+  `response`, `data`, and `body`. It creates an `Error` with the readable
+  message while preserving the original structured payload in `cause`, so the
+  existing handler sanitizer/category logic can still inspect it.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand -t "preserves structured provider stream error details"`;
+  `cd packages/api && npx jest src/steel/ai/provider.spec.ts --runInBand`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  targeted ESLint for provider/handler files with existing `prettier/prettier`
+  and `i18next/no-literal-string` noise disabled; `git diff --check`;
+  `npm --workspace packages/api run build`.
+- API build still emits existing unrelated Rollup TypeScript warnings in
+  non-Steel files, but completed successfully. Backend was restarted on 3080;
+  `/health` returned `OK`, and the 3090 proxied Steel messages endpoint returned
+  `401 No auth token` instead of a route/proxy failure.
+
+# Previous Active: Steel Stream Reasoning Delta UI Regression
+
+Goal: when the provider streams reasoning summary deltas, Activity should show a
+single continuously growing reasoning entry instead of repeating the
+`Reasoning summary / Summary / reasoning summary` chrome for every token.
+
+Plan:
+
+- [x] Add RED client coverage for multiple sequential `reasoning` stream
+      events that should merge into one visible Activity item.
+- [x] Update Steel OAuth chat stream event accumulation to coalesce reasoning
+      deltas while preserving separate progress/tool/error events.
+- [x] Verify focused client checks and diff hygiene.
+- [x] Record review evidence and lesson for this correction.
+
+Review - 2026-06-24:
+
+- Root cause: `openai-oauth-provider` can stream reasoning summary as small
+  delta chunks. `SteelOAuthChat` treated every `reasoning` chunk as a separate
+  Activity event, so each token/word rendered a full card with
+  `Reasoning summary`, `Summary`, and `reasoning summary` labels.
+- Added RED client regression coverage for three sequential reasoning chunks
+  (`I`, ` need`, ` final OCR confirmation.`). The test failed with three
+  visible `Reasoning summary` cards before the fix.
+- `appendStreamEvent` now coalesces consecutive `reasoning` events into the
+  last reasoning item. Delta chunks append exactly as streamed; cumulative
+  chunks replace the previous summary when the new summary already starts with
+  the prior text. Other event types, including progress/tool/error, keep their
+  existing append/dedupe behavior.
+- Verification passed:
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false -t "coalesces streamed reasoning deltas"`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  targeted ESLint for `SteelOAuthChat.tsx` and `SteelOAuthChat.spec.tsx` with
+  existing `prettier/prettier` and `i18next/no-literal-string` noise disabled;
+  `git diff --check`.
+
+# Previous Active: PL.pdf Provider Error Detail After OCR
+
+Goal: when a PL.pdf turn completes `run_file_ocr` but the next OpenAI OAuth
+provider round fails, show the actual nested provider error detail instead of
+only `OpenAI OAuth provider request failed.`.
+
+Plan:
+
+- [x] Add RED coverage for generic provider wrapper errors with nested response
+      body/cause details.
+- [x] Update Steel backend/client error extraction to prefer nested actionable
+      detail over generic transport wrappers.
+- [x] Verify focused Steel API/client suites, builds, lint, and diff hygiene.
+- [x] Record review evidence and lesson for this correction.
+
+Review - 2026-06-24:
+
+- Root cause: after `run_file_ocr` completed, the next provider round could
+  throw a generic wrapper such as `OpenAI OAuth provider request failed.` while
+  the actionable rejection lived in nested `cause`, `response.data`, or JSON
+  `body` fields. The backend/client error extraction accepted the wrapper too
+  early, and backend categorization also treated the word `OAuth` as an auth
+  failure because it contained `auth`.
+- Added RED backend and client regressions for a PL.pdf-style post-OCR provider
+  failure where the wrapper is generic but nested response detail is readable.
+- Backend and client error extraction now reject generic wrappers, parse nested
+  JSON strings, inspect `Error.cause` before `Error.message`, and search nested
+  response/body/detail fields before falling back. Backend auth categorization
+  no longer classifies `OAuth` alone as an authentication error.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand -t "generic OAuth wrapper|object placeholder"`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false -t "generic OAuth wrapper|object-placeholder"`;
+  `cd packages/data-provider && npx jest src/steel/conversations.spec.ts --runInBand --coverage=false`;
+  `cd packages/api && npx jest src/steel/history/service.spec.ts src/steel/handlers.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  `npm run build:data-provider`;
+  `npm --workspace packages/api run build`;
+  targeted ESLint with existing `prettier/prettier` and
+  `i18next/no-literal-string` noise disabled; `git diff --check`.
+- API build still emits existing unrelated Rollup TypeScript warnings in
+  non-Steel files, but completed successfully.
+- Local runtime smoke after restart passed: backend `/health` on 3080 returned
+  `OK`, `/steel/oauth-chat?conversationId=...` on 3090 returned `200`, and the
+  3090 proxied messages endpoint returned `401 No auth token` instead of 404,
+  confirming the route is mounted and protected.
+
+# Previous Active: Steel OAuth Chat Conversation Reload
+
+Goal: make `/steel/oauth-chat?conversationId=...` reload persisted chat turns
+from Steel DB history, matching `/c/` expectations that refresh does not empty
+the conversation.
+
+Plan:
+
+- [x] Add RED shared/backend/frontend coverage for conversation message reload.
+- [x] Expose an authenticated Steel conversation messages read endpoint backed
+      by active DB history turns.
+- [x] Hydrate `SteelOAuthChat` from the URL `conversationId` on mount and keep
+      persisted message ids for edit/rerun.
+- [x] Verify focused data-provider/API/client checks and diff hygiene.
+- [x] Record review evidence and lesson for the reload correction.
+
+Review - 2026-06-24:
+
+- Root cause: `/steel/oauth-chat` kept `conversationId` in the URL and backend
+  provider prompt construction used DB-backed history, but the React page never
+  loaded persisted active turns on mount. A browser refresh therefore recreated
+  local `messages` as an empty array and showed `Ready`.
+- Added `GET /api/steel/conversations/:conversationId/messages` before the
+  generic metadata route. It requires JWT auth and returns active Steel history
+  turns as browser-safe `messageId`, `role`, `content`, optional attachment
+  refs, and timestamps.
+- Added `dataService.getSteelConversationMessages` plus shared
+  `steelConversationMessagesResponseSchema`.
+- `SteelOAuthChat` now hydrates only when URL `conversationId` exists and the
+  visible message list is empty, so a newly created conversation does not
+  immediately refetch and overwrite streaming/local state. Hydrated user turns
+  keep persisted `messageId`, so edit/rerun still targets the backend history
+  row after reload.
+- Verification passed:
+  `cd packages/data-provider && npx jest src/steel/conversations.spec.ts --runInBand --coverage=false`;
+  `cd packages/api && npx jest src/steel/history/service.spec.ts src/steel/handlers.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  `npm run build:data-provider`;
+  `npm --workspace packages/api run build`;
+  targeted ESLint with existing `prettier/prettier` and
+  `i18next/no-literal-string` noise disabled; `git diff --check`.
+- `npm --workspace client run typecheck -- --pretty false` is still blocked by
+  existing unrelated client TypeScript errors in hooks/utils/config/e2e files.
+  The typecheck log contained no `SteelOAuthChat`,
+  `getSteelConversationMessages`, `steelConversationMessages`, or
+  `SteelConversationMessages` errors.
+
+# Previous Active: Steel Markdown Table Readability
+
+Goal: improve Steel chat rendered Markdown tables so wide OCR/quote tables use
+wider columns, avoid character-by-character wrapping, and clamp visible cell
+text to at most three lines.
+
+Plan:
+
+- [x] Add a focused UI regression for rendered Markdown table cell sizing and
+      three-line clamping.
+- [x] Update Steel Markdown table rendering with wider minimum columns,
+      horizontal scroll, and clamped cell/header content.
+- [x] Verify the focused Steel chat UI suite and diff checks.
+- [x] Record review evidence and any lesson.
+
+Review - 2026-06-24:
+
+- Screenshots showed wide OCR Markdown tables squeezed into the assistant
+  bubble, causing Chinese headers and notes to wrap character-by-character.
+- Added RED client coverage for a 16-column PL-style OCR table that requires
+  `w-max` table layout, horizontal overflow, `min-w-[9rem]` cells, and
+  three-line clamped long text.
+- `renderMarkdownTable` now renders tables as `w-max min-w-full table-auto`
+  inside a horizontal scroll wrapper. Header and body cells use
+  `min-w-[9rem] max-w-[18rem]`, larger padding, top alignment, and a shared
+  three-line clamp style.
+- Verification passed:
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  targeted ESLint with existing `prettier/prettier` and
+  `i18next/no-literal-string` noise disabled; `git diff --check`.
+
+# Previous Active: PL.pdf Stream Error Event Dedupe
+
+Goal: fix the follow-up Steel Activity state where a raw stream `type:error`
+event with `[object Object]` is rendered first, then the client catch handler
+adds a second `Steel chat request failed.` error.
+
+Plan:
+
+- [x] Add a RED client regression for a stream that emits
+      `errorSummary: "[object Object]"` and then throws.
+- [x] Normalize inbound stream error events before they enter Activity state.
+- [x] Deduplicate normalized stream errors against catch-handler fallback
+      errors.
+- [x] Run focused client verification and diff checks.
+- [x] Update task review and lesson for this correction.
+
+Review - 2026-06-24:
+
+- User provided the real fixture path `docs/reference/example/PL.pdf`; the file
+  exists locally as a 352K PDF 1.4 document with 3 pages.
+- RED client regression reproduced the exact Activity sequence: stream progress,
+  provider request, raw stream `type:error` with `[object Object]`, then thrown
+  fallback error.
+- Root cause: the previous fix normalized thrown exceptions and backend stream
+  summaries, but `streamAssistantResponse` still stored inbound stream error
+  events before normalization. `dataService.streamSteelChat` calls `onEvent`
+  for `type:error` before throwing, so Activity kept the raw event.
+- `SteelOAuthChat` now normalizes every inbound stream error event before
+  rendering and uses a single `appendStreamEvent` helper to deduplicate
+  normalized error events against catch-handler fallbacks.
+- Verification passed:
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  targeted ESLint with existing `prettier/prettier` and
+  `i18next/no-literal-string` noise disabled; `git diff --check`.
+
+# Previous Active: PL.pdf Provider Error Object Rendering
+
+Goal: fix the Steel OAuth chat failure where a PDF turn can end at
+`provider_request` and show the user only `[object Object]` instead of a useful,
+sanitized provider/OCR error summary.
+
+Plan:
+
+- [x] Reproduce the object-shaped provider failure at the backend stream/client
+      error seams with focused RED tests.
+- [x] Identify whether the failure is OCR execution, provider transport, or
+      error serialization/display.
+- [x] Implement the smallest normalization fix that preserves useful sanitized
+      detail and never renders `[object Object]`.
+- [x] Run focused Steel client/API/data-provider checks plus formatting diff
+      checks.
+- [x] Record review evidence and any correction lesson.
+
+Review - 2026-06-24:
+
+- RED backend stream regression reproduced the reported failure shape:
+  an upstream `Error('[object Object]')` with structured `cause.message`
+  produced a Steel stream `errorSummary` of `[object Object]`.
+- RED client regression reproduced the visible UI issue: a failed stream after
+  `provider_request` rendered `[object Object]` in both Activity/chat.
+- Root cause: backend and frontend error normalization trusted `Error.message`
+  even when it was only the object placeholder. That hid useful nested provider
+  detail and allowed the placeholder into user-visible Activity.
+- Backend `getProviderErrorSummary` now extracts nested readable fields such as
+  `errorSummary`, `message`, `cause`, `response`, `data`, and `body` before
+  sanitizing. Placeholder-only messages fall back instead of being emitted.
+- Frontend `getErrorText` applies the same readable-message extraction and
+  falls back to `Steel chat request failed.` when only `[object Object]` is
+  available.
+- Verification passed:
+  `cd packages/api && npx jest src/steel/handlers.spec.ts --runInBand`;
+  `cd client && npx jest src/routes/SteelOAuthChat.spec.tsx --runInBand --coverage=false`;
+  `npm --workspace packages/api run build`; `git diff --check`.
+- API build completed with existing unrelated Rollup TypeScript warnings in
+  non-Steel files. Plain targeted ESLint is still blocked by existing formatter
+  and i18n literal-string errors in the touched files; rerunning targeted ESLint
+  with only `prettier/prettier` and `i18next/no-literal-string` disabled passed.
+
+# Active: Backend MongoDB Atlas Startup Failure
+
+Goal: start the LibreChat backend on the current checkout and isolate why the
+MongoDB Atlas connection fails before changing application code.
+
+Plan:
+
+- [x] Reproduce the backend startup failure with the current environment.
+- [x] Verify the effective local prerequisites without printing secrets:
+  `MONGO_URI`, `librechat.yaml`, build artifacts, and port 3080 availability.
+- [x] Test MongoDB reachability separately from the Express startup path.
+- [x] Identify the smallest appropriate fix or operator action.
+- [x] Record the result and any follow-up in this task review.
+
+Review - 2026-06-24:
+
+- `npm run backend` reproduced the startup failure. The server exited during
+  `mongoose.connect` with `Server selection timed out after 30000 ms`; port
+  3080 never listened and `/health` was unreachable.
+- Local prerequisites were present: `.env` had a `mongodb+srv` `MONGO_URI`,
+  `STEEL_POSTGRES_URL` was set, `SEARCH=false`, `MEILI_NO_SYNC=true`,
+  `librechat.yaml` existed, and `client/dist/index.html` existed.
+- Direct MongoDB driver probe outside Express failed with
+  `MongoServerSelectionError: Server selection timed out after 5000 ms`.
+- DNS SRV/TXT lookup for the Atlas cluster succeeded and returned the three
+  shard hosts plus `authSource=admin&replicaSet=atlas-lom10k-shard-0`.
+- Raw TCP probes to all three Atlas shard hosts on port 27017 timed out. A
+  same-port control probe to `portquiz.net:27017` also timed out, so this
+  machine/network currently cannot prove outbound MongoDB-port reachability.
+- Current public egress IP observed during the diagnostic was `1.163.67.207`.
+  The operator action is to allow this IP in Atlas Network Access and ensure
+  the local network/VPN/firewall permits outbound TCP 27017, then rerun
+  `npm run backend`.
+- After Atlas Network Access was set to `0.0.0.0/0`, the direct MongoDB driver
+  probe still failed with `Server selection timed out after 8000 ms`. TCP
+  probes confirmed `portquiz.net:443` and `www.google.com:443` connect, while
+  all Atlas shard hosts on `27017` and `portquiz.net:27017` still timeout. The
+  remaining blocker is outbound TCP 27017 from the current machine/network, not
+  Atlas IP allowlisting.
+
+# Active: System Order ERP Markdown Output Columns
+
+Goal: update Steel output rules so quote-turn `system_order` Markdown uses the
+ERP-facing fixed columns from `系統訂單`, with product and processing rows in the
+same sheet and sequential item numbers. The runtime rule source must remain
+DB-backed reviewed rules, not test-created prompts.
+
+Plan:
+
+- [x] Add focused behavior checks for `system_order` Markdown columns, numeric
+  price-tier basis, and processing-row item sequence.
+- [x] Update `docs/rules/輸出規則.txt` so `system_order` uses exactly the fixed
+  ERP column order and maps product-price identity fields consistently.
+- [x] Sync reviewed output rules to production Supabase and read back the
+  `steel-workbook-output-policy` row.
+- [x] Run focused default-off PB spec checks, direction/rule sync checks, and
+  formatting checks.
+- [x] Record verification results and lessons.
+
+Review - 2026-06-24:
+
+- Updated `docs/rules/輸出規則.txt` so `system_order` must use the fixed
+  20-column ERP header: `公司編號`, `項次`, `倉庫編號`, `型號`, `品名規格`,
+  `材質編號`, `廠別編號`, `單位`, `數量`, `單重`, `總數`, `單價`, `計價基準`,
+  `公式編號`, `厚度`, `寬度`, `長度`, `類別`, `交貨日期`, `備註`.
+- Output rules now require `型號`, `品名規格`, and `類別` to come from adopted
+  product / processing price rows; `計價基準` is numeric with A=1, B=2, C=3,
+  F=5 and default 2 for uncertain customer tier.
+- Output rules now keep holes, cutting, bending, knife counts, slotting, and
+  other processing rows in the same `system_order` table, with item numbers
+  continuing sequentially after product rows or after the source product item.
+- Extended the gated PB live spec to assert exact `system_order` headers,
+  numeric price basis, sequential item numbers, and processing rows in fixed
+  ERP columns. The RED check failed before OCR against the previous DB rule
+  hash, proving the new assertion caught the missing DB rule contract.
+- Synced reviewed rules to production Supabase. Direct DB readback confirmed
+  `steel-workbook-output-policy` active/reviewed prompt sha256
+  `768f35390200057811eec21e897027084f37d4c52b3c8c6f787b3e21a00970a3` and
+  all new ERP-column fragments present.
+- Full two-turn PB live smoke passed with formal DB runtime rules and neutral
+  prompts:
+  `NODE_OPTIONS=--experimental-vm-modules STEEL_OPENAI_OAUTH_PB_PDF_QUOTE_LIVE_TEST=true ... npx jest --runTestsByPath src/steel/ai/provider.pb-pdf-quote.manual.spec.ts --testPathIgnorePatterns='/node_modules/|/dist/' --runInBand --coverage=false`
+  passed 1/1 in about 734.9 seconds.
+- Final evidence in `tmp/steel-pb-pdf-quote-live-evidence.json`: first quote
+  table used the exact 20-column ERP header, `systemOrderTableCount=1`,
+  `systemOrderRowCount=75`, `ocrProductRowCount=71`,
+  `hasSequentialItemNumbers=true`, `hasNumericPriceBasis=true`, OCR total holes
+  `1,784`, and hole-processing quote quantity total `1,784`.
+- Refreshed inspectable Markdown table artifacts under
+  `tmp/pb-live-smoke-markdown-tables/`; the new fixed-column quote table is
+  `06-quote-system_order-逐項明細表採用價格B計價基準2.md`.
+- Created a proof XLSX at
+  `tmp/pb-live-smoke-markdown-tables/pb-live-smoke-tables.xlsx`; readback
+  confirmed the `system_order` sheet has 20 columns and 75 data rows.
+- Verification passed: rule sync dry-run/apply, direct DB readback,
+  current-direction-check, default-off PB spec load, full PB live smoke, and
+  `git diff --check`.
+
+# Previous Active: PB PDF Live Smoke With DB Runtime Rules
 
 Goal: run the full two-turn `docs/reference/example/PB.pdf` live smoke with
 formal reviewed `steel.rules` DB context as the rule source. The user messages

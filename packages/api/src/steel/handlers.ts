@@ -67,7 +67,9 @@ import type { SteelAgentRule } from './repositories/rules';
 import type { SteelToolResult } from './tools/results';
 import type { SteelWorkingOrderMemoryReader } from './tools/execute';
 import type { SteelOutputSheetMemoryReader } from './memory/service';
+import type { SteelConversationTurnRecord } from './history/service';
 import type {
+  SteelConversationMessagesResponse,
   SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
 } from 'librechat-data-provider';
@@ -376,6 +378,25 @@ function toHistoryChatMessage(turn: {
   return {
     role: turn.role,
     content: turn.content,
+  };
+}
+
+function toConversationReloadMessage(
+  turn: SteelConversationTurnRecord,
+): SteelConversationMessagesResponse['messages'][number] {
+  const attachments = turn.attachments?.map((attachment) => ({
+    fileId: attachment.fileId,
+    ...(attachment.filename ? { filename: attachment.filename } : {}),
+    ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}),
+  }));
+
+  return {
+    messageId: turn.messageId,
+    role: turn.role,
+    content: turn.content,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    createdAt: turn.createdAt.toISOString(),
+    updatedAt: turn.updatedAt.toISOString(),
   };
 }
 
@@ -1031,8 +1052,101 @@ function buildProviderBaseOptions({
   };
 }
 
+function isReadableErrorMessage(message: string): boolean {
+  const trimmed = message.trim();
+  return trimmed.length > 0 && trimmed !== '[object Object]' && !isGenericErrorWrapper(trimmed);
+}
+
+function isGenericErrorWrapper(message: string): boolean {
+  const normalized = message.trim().replace(/\.$/, '').toLowerCase();
+  return (
+    normalized === 'openai oauth provider request failed' ||
+    normalized === 'streaming request failed'
+  );
+}
+
+function extractJsonStringErrorMessage(value: string, depth: number): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return undefined;
+  }
+
+  try {
+    return extractReadableErrorMessage(JSON.parse(trimmed), depth + 1);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractReadableErrorMessage(value: unknown, depth = 0): string | undefined {
+  if (depth > 5) {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const jsonMessage = extractJsonStringErrorMessage(trimmed, depth);
+    if (jsonMessage) {
+      return jsonMessage;
+    }
+    return isReadableErrorMessage(trimmed) ? trimmed : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const message = extractReadableErrorMessage(entry, depth + 1);
+      if (message) {
+        return message;
+      }
+    }
+    return undefined;
+  }
+
+  if (value instanceof Error) {
+    const causeMessage = extractReadableErrorMessage(value.cause, depth + 1);
+    if (causeMessage) {
+      return causeMessage;
+    }
+    const message = extractReadableErrorMessage(value.message, depth + 1);
+    if (message) {
+      return message;
+    }
+  }
+
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const fields = [
+    'errorSummary',
+    'message',
+    'detail',
+    'details',
+    'description',
+    'reason',
+    'error',
+    'errors',
+    'cause',
+    'response',
+    'data',
+    'body',
+    'error_description',
+    'errorMessage',
+    'statusText',
+  ];
+
+  for (const field of fields) {
+    const message = extractReadableErrorMessage(value[field], depth + 1);
+    if (message) {
+      return message;
+    }
+  }
+
+  return undefined;
+}
+
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return extractReadableErrorMessage(error) ?? '';
 }
 
 function getProviderErrorCategory(error: unknown): SteelChatErrorResponse['errorCategory'] {
@@ -1045,7 +1159,10 @@ function getProviderErrorCategory(error: unknown): SteelChatErrorResponse['error
   if (
     message.includes('access token') ||
     message.includes('account id') ||
-    message.includes('auth')
+    message.includes('auth.json') ||
+    message.includes('codex login') ||
+    message.includes('unauthorized') ||
+    /\bauth(entication|orization)?\b/i.test(rawMessage)
   ) {
     return 'auth';
   }
@@ -1081,7 +1198,7 @@ function getProviderErrorSummary(error: unknown): string {
   if (category === 'provider_terminated') {
     return 'OpenAI OAuth provider request terminated before completion. The provider or network closed the connection without a detailed cause; check server/provider logs around this request and retry with a smaller context if it repeats.';
   }
-  const message = error instanceof Error ? error.message : '';
+  const message = getErrorMessage(error);
   if (message.startsWith('Steel tool ')) {
     return message;
   }
@@ -1166,6 +1283,18 @@ export function createSteelHandlers({
   const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
   const getWorkingOrderMemoryWriter = () =>
     workingOrderMemoryWriter ?? getDefaultWorkingOrderMemoryWriter();
+  const canPersistConversationHistory = () =>
+    historyService !== undefined || mongoose.connection.readyState === 1;
+  const getConversationIdsForRequest = (requestedConversationId?: string) => {
+    const responseConversationId = requestedConversationId ?? createSteelChatConversationId();
+    const persistentConversationId =
+      requestedConversationId ?? (canPersistConversationHistory() ? responseConversationId : undefined);
+
+    return {
+      persistentConversationId,
+      responseConversationId,
+    };
+  };
 
   return {
     async chat(req: Request, res: Response) {
@@ -1193,12 +1322,14 @@ export function createSteelHandlers({
         return;
       }
 
+      const { persistentConversationId, responseConversationId } =
+        getConversationIdsForRequest(conversationId);
       const messagesWithInstructions = applyFileInstructionsToMessages(
         messages,
         (req as SteelRequest).config,
       );
       const preparedContext = await prepareChatContext({
-        conversationId,
+        conversationId: persistentConversationId,
         editMessageId,
         historyService: getHistoryService(),
         messageSource,
@@ -1206,7 +1337,7 @@ export function createSteelHandlers({
         requestId,
       });
       const steelRuntimeContext = await buildSteelRuntimeContext({
-        conversationId,
+        conversationId: persistentConversationId,
         createOutputSheetMemoryReader,
         parsedRequest,
         prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
@@ -1218,13 +1349,13 @@ export function createSteelHandlers({
       const defaultToolExecutor = executeToolCall
         ? undefined
         : createDefaultStreamToolExecutor({
-            conversationId,
+            conversationId: persistentConversationId,
             createOutputSheetMemoryReader,
           });
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
       const executeToolCallWithMemoryCapture = createToolExecutorWithMemoryCapture({
         baseExecuteToolCall,
-        conversationId,
+        conversationId: persistentConversationId,
         getWorkingOrderMemoryWriter,
         preparedContext,
       });
@@ -1235,7 +1366,7 @@ export function createSteelHandlers({
         result = await sendChat({
           ...buildProviderBaseOptions({
             abortSignal: requestAbort.signal,
-            conversationId,
+            conversationId: responseConversationId,
             env,
             executeSteelToolCall: executeToolCallWithMemoryCapture,
             maxOutputTokens,
@@ -1256,7 +1387,7 @@ export function createSteelHandlers({
           },
         });
         await persistAssistantTurn({
-          conversationId,
+          conversationId: persistentConversationId,
           content: result.text,
           historyService: getHistoryService(),
           turnIndex: preparedContext.nextAssistantTurnIndex,
@@ -1282,7 +1413,7 @@ export function createSteelHandlers({
 
       res.status(200).json({
         ...result,
-        conversationId: conversationId ?? createSteelChatConversationId(),
+        conversationId: responseConversationId,
       });
     },
 
@@ -1311,12 +1442,14 @@ export function createSteelHandlers({
         return;
       }
 
+      const { persistentConversationId, responseConversationId } =
+        getConversationIdsForRequest(conversationId);
       const messagesWithInstructions = applyFileInstructionsToMessages(
         messages,
         (req as SteelRequest).config,
       );
       const preparedContext = await prepareChatContext({
-        conversationId,
+        conversationId: persistentConversationId,
         editMessageId,
         historyService: getHistoryService(),
         messageSource,
@@ -1324,7 +1457,7 @@ export function createSteelHandlers({
         requestId,
       });
       const steelRuntimeContext = await buildSteelRuntimeContext({
-        conversationId,
+        conversationId: persistentConversationId,
         createOutputSheetMemoryReader,
         parsedRequest,
         prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
@@ -1349,7 +1482,7 @@ export function createSteelHandlers({
       const defaultToolExecutor = executeToolCall
         ? undefined
         : createDefaultStreamToolExecutor({
-            conversationId,
+            conversationId: persistentConversationId,
             createOutputSheetMemoryReader,
           });
       const baseExecuteToolCall = executeToolCall ?? defaultToolExecutor?.executeToolCall;
@@ -1366,11 +1499,11 @@ export function createSteelHandlers({
         const result = await sendChat({
           ...buildProviderBaseOptions({
             abortSignal: requestAbort.signal,
-            conversationId,
+            conversationId: responseConversationId,
             env,
             executeSteelToolCall: createStreamToolExecutorWithMemoryEvents({
               baseExecuteToolCall,
-              conversationId,
+              conversationId: persistentConversationId,
               getWorkingOrderMemoryWriter,
               preparedContext,
               res,
@@ -1394,6 +1527,13 @@ export function createSteelHandlers({
               summary,
             });
           },
+          onProviderRoundStatus: (event) => {
+            writeStreamEvent(res, {
+              type: 'progress',
+              stage: 'provider_round',
+              message: event.message,
+            });
+          },
           onToolStatus: async (event) => {
             writeStreamEvent(res, {
               type: 'tool',
@@ -1408,7 +1548,7 @@ export function createSteelHandlers({
               ok: event.result?.ok,
             });
             const captureResult = await captureSuccessfulToolResult({
-              conversationId,
+              conversationId: persistentConversationId,
               toolName: event.toolName,
               toolResult: event.result,
               turnIndex: preparedContext.nextAssistantTurnIndex,
@@ -1425,7 +1565,7 @@ export function createSteelHandlers({
           },
         });
         const captureResult = await persistAssistantTurn({
-          conversationId,
+          conversationId: persistentConversationId,
           content: result.text,
           historyService: getHistoryService(),
           turnIndex: preparedContext.nextAssistantTurnIndex,
@@ -1450,7 +1590,7 @@ export function createSteelHandlers({
 
         const response = {
           ...result,
-          conversationId: conversationId ?? createSteelChatConversationId(),
+          conversationId: responseConversationId,
         };
 
         if (!streamedText && response.text.length > 0) {
@@ -1531,6 +1671,26 @@ export function createSteelHandlers({
         res.status(200).json(result);
       } catch (error) {
         sendConversationError(res, error);
+      }
+    },
+
+    async readConversationMessages(req: SteelRequest, res: Response) {
+      const conversationId = req.params.conversationId;
+      if (typeof conversationId !== 'string' || conversationId.trim().length === 0) {
+        res.status(400).json({ message: 'Invalid Steel conversation id' });
+        return;
+      }
+
+      try {
+        const activeTurns = await getHistoryService().listActiveTurns({ conversationId });
+        const response: SteelConversationMessagesResponse = {
+          conversationId,
+          messages: activeTurns.map(toConversationReloadMessage),
+        };
+        res.status(200).json(response);
+      } catch (error) {
+        logger.error('[steel] Failed to read conversation messages', error);
+        res.status(500).json({ message: 'Steel conversation messages request failed' });
       }
     },
 

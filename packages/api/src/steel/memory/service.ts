@@ -568,6 +568,26 @@ function getParsedRowNo(payload: SteelJsonObject): number | undefined {
   return typeof payload.rowNo === 'number' ? payload.rowNo : undefined;
 }
 
+function hasSimpleSequentialItemNumbers(payloads: readonly SteelJsonObject[]): boolean {
+  return payloads.length > 0 && payloads.every((payload, index) => getParsedRowNo(payload) === index + 1);
+}
+
+function canonicalizeSystemOrderItemNumbers(payloads: readonly SteelJsonObject[]): SteelJsonObject[] {
+  if (!hasSimpleSequentialItemNumbers(payloads)) {
+    return [...payloads];
+  }
+
+  return payloads.map((payload, index) => {
+    const rowNo = (index + 1) * 10;
+
+    return {
+      ...payload,
+      項次: String(rowNo),
+      rowNo,
+    };
+  });
+}
+
 function toOutputSheetRow(
   document: SteelWorkingOrderMemoryDocument,
   index: number,
@@ -787,7 +807,9 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         const payloads = toPayloads(table.headers, table.rows);
 
         if (isWorkingOrderTable(table.headers)) {
-          const rows = payloads.filter((payload) => getParsedRowNo(payload) !== undefined);
+          const rows = canonicalizeSystemOrderItemNumbers(
+            payloads.filter((payload) => getParsedRowNo(payload) !== undefined),
+          );
           if (rows.length === 0) {
             continue;
           }

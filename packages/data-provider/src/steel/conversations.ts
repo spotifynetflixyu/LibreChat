@@ -41,6 +41,30 @@ export const steelConversationMessageRequestSchema = z.object({
 
 export type SteelConversationMessageRequest = z.infer<typeof steelConversationMessageRequestSchema>;
 
+export const steelConversationReloadMessageAttachmentSchema = z.object({
+  fileId: z.string().min(1),
+  filename: z.string().min(1).optional(),
+  mediaType: z.string().min(1).optional(),
+});
+
+export const steelConversationReloadMessageSchema = z.object({
+  messageId: z.string().min(1),
+  role: z.enum(['user', 'assistant']),
+  content: z.string(),
+  attachments: z.array(steelConversationReloadMessageAttachmentSchema).optional(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+});
+
+export const steelConversationMessagesResponseSchema = z.object({
+  conversationId: z.string().min(1),
+  messages: z.array(steelConversationReloadMessageSchema),
+});
+
+export type SteelConversationMessagesResponse = z.infer<
+  typeof steelConversationMessagesResponseSchema
+>;
+
 export interface SteelConversationMeta {
   id: string;
   libreChatConversationId?: string;

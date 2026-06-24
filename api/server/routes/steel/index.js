@@ -96,6 +96,11 @@ router.post(
 );
 router.post('/conversations/guest', handlers.createGuestConversation);
 router.get(
+  '/conversations/:conversationId/messages',
+  requireJwtAuth,
+  handlers.readConversationMessages,
+);
+router.get(
   '/conversations/:conversationMetaId',
   requireJwtUnlessGuestToken,
   handlers.readConversation,

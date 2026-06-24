@@ -579,6 +579,335 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     );
   });
 
+  it('reports provider round progress while a post-tool final stream is still generating', async () => {
+    const firstStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_round_progress_1' });
+        controller.enqueue({
+          type: 'tool-call',
+          toolCallId: 'call_round_progress_price',
+          toolName: 'search_price_candidates',
+          input: JSON.stringify({
+            queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', thicknessMm: ['15'] }],
+          }),
+        });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 11 }, outputTokens: { total: 3 } },
+        });
+        controller.close();
+      },
+    });
+    const secondStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_round_progress_2' });
+        setTimeout(() => {
+          controller.enqueue({ type: 'text-start', id: 'txt_round_progress' });
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'txt_round_progress',
+            delta: 'final-ok',
+          });
+          controller.enqueue({ type: 'text-end', id: 'txt_round_progress' });
+          controller.enqueue({
+            type: 'finish',
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: { inputTokens: { total: 13 }, outputTokens: { total: 2 } },
+          });
+          controller.close();
+        }, 40);
+      },
+    });
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce({ stream: firstStream })
+      .mockResolvedValueOnce({ stream: secondStream });
+    const executeSteelToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'search_price_candidates',
+      data: { priceCandidates: [{ productName: '15.0m/mOT板雷射切割' }] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const onProviderRoundStatus = jest.fn();
+
+    const responsePromise = sendSteelOAuthChat({
+      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'PL15 報價。' }],
+      onProviderRoundStatus,
+      onTextDelta: jest.fn(),
+      providerRoundProgressIntervalMs: 5,
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      steelRuntimeContext: createProviderRuntimeContext(),
+    } as Parameters<typeof sendSteelOAuthChat>[0] & {
+      onProviderRoundStatus: jest.Mock;
+      providerRoundProgressIntervalMs: number;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(onProviderRoundStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        round: 1,
+        status: 'started',
+        message: expect.stringContaining('final response'),
+      }),
+    );
+    expect(onProviderRoundStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        round: 1,
+        status: 'waiting',
+        elapsedMs: expect.any(Number),
+        message: expect.stringContaining('elapsed'),
+      }),
+    );
+
+    const response = await responsePromise;
+    expect(response.text).toBe('final-ok');
+  });
+
+  it('preserves structured provider stream error details after streamed tool results', async () => {
+    const providerErrorMessage = 'Provider rejected follow-up after PL.pdf OCR tool result.';
+    const firstStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_tool_error_1' });
+        controller.enqueue({
+          type: 'tool-call',
+          toolCallId: 'call_customer_stream_error',
+          toolName: 'search_customers',
+          input: JSON.stringify({ keywords: ['大成'] }),
+        });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 11 }, outputTokens: { total: 3 } },
+        });
+        controller.close();
+      },
+    });
+    const secondStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_tool_error_2' });
+        controller.enqueue({
+          type: 'error',
+          error: {
+            error: {
+              message: providerErrorMessage,
+            },
+          },
+        });
+        controller.close();
+      },
+    });
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce({ stream: firstStream })
+      .mockResolvedValueOnce({ stream: secondStream });
+    const executeSteelToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [{ displayName: '大成鋼鐵', erpCustomerCode: 'A001' }] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+
+    await expect(
+      sendSteelOAuthChat({
+        createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+        ensureFresh: false,
+        executeSteelToolCall,
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'stream tool loop' }],
+        onTextDelta: jest.fn(),
+        reasoningEffort: 'medium',
+        steelRuntimePolicy: true,
+        steelRuntimeContext: createProviderRuntimeContext(),
+      }),
+    ).rejects.toThrow(providerErrorMessage);
+
+    expect(doStream).toHaveBeenCalledTimes(2);
+    expect(executeSteelToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'search_customers',
+        providerToolCallId: 'call_customer_stream_error',
+      }),
+    );
+  });
+
+  it('retries transient provider overloads after streamed tool results before failing the turn', async () => {
+    const firstStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_retry_1' });
+        controller.enqueue({
+          type: 'tool-call',
+          toolCallId: 'call_customer_stream_retry',
+          toolName: 'search_customers',
+          input: JSON.stringify({ keywords: ['大成'] }),
+        });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 11 }, outputTokens: { total: 3 } },
+        });
+        controller.close();
+      },
+    });
+    const overloadedStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_retry_2' });
+        controller.enqueue({
+          type: 'error',
+          error: {
+            error: {
+              message: 'Our servers are currently overloaded. Please try again later.',
+            },
+          },
+        });
+        controller.close();
+      },
+    });
+    const retryStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_retry_3' });
+        controller.enqueue({ type: 'text-start', id: 'txt_retry' });
+        controller.enqueue({ type: 'text-delta', id: 'txt_retry', delta: 'retry-ok' });
+        controller.enqueue({ type: 'text-end', id: 'txt_retry' });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: { total: 12 }, outputTokens: { total: 2 } },
+        });
+        controller.close();
+      },
+    });
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce({ stream: firstStream })
+      .mockResolvedValueOnce({ stream: overloadedStream })
+      .mockResolvedValueOnce({ stream: retryStream });
+    const executeSteelToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [{ displayName: '大成鋼鐵', erpCustomerCode: 'A001' }] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const onTextDelta = jest.fn();
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'stream tool loop' }],
+      onTextDelta,
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      steelRuntimeContext: createProviderRuntimeContext(),
+    });
+
+    expect(doStream).toHaveBeenCalledTimes(3);
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(1);
+    expect(onTextDelta).toHaveBeenCalledWith('retry-ok');
+    expect(response).toEqual(
+      expect.objectContaining({
+        text: 'retry-ok',
+        responseId: 'resp_stream_retry_3',
+      }),
+    );
+  });
+
+  it('retries transient provider read ETIMEDOUT after streamed tool results', async () => {
+    const firstStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_timeout_1' });
+        controller.enqueue({
+          type: 'tool-call',
+          toolCallId: 'call_customer_timeout_retry',
+          toolName: 'search_customers',
+          input: JSON.stringify({ keywords: ['大成'] }),
+        });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: { inputTokens: { total: 11 }, outputTokens: { total: 3 } },
+        });
+        controller.close();
+      },
+    });
+    const retryStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] });
+        controller.enqueue({ type: 'response-metadata', id: 'resp_stream_timeout_3' });
+        controller.enqueue({ type: 'text-start', id: 'txt_timeout_retry' });
+        controller.enqueue({ type: 'text-delta', id: 'txt_timeout_retry', delta: 'timeout-retry-ok' });
+        controller.enqueue({ type: 'text-end', id: 'txt_timeout_retry' });
+        controller.enqueue({
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: { total: 12 }, outputTokens: { total: 2 } },
+        });
+        controller.close();
+      },
+    });
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce({ stream: firstStream })
+      .mockRejectedValueOnce(new Error('read ETIMEDOUT'))
+      .mockResolvedValueOnce({ stream: retryStream });
+    const executeSteelToolCall = jest.fn(async (options) => ({
+      ok: true as const,
+      toolName: options.toolName as 'search_customers',
+      data: { customers: [{ displayName: '大成鋼鐵', erpCustomerCode: 'A001' }] },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1 as const,
+    }));
+    const onTextDelta = jest.fn();
+
+    const response = await sendSteelOAuthChat({
+      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'stream timeout tool loop' }],
+      onTextDelta,
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      steelRuntimeContext: createProviderRuntimeContext(),
+    });
+
+    expect(doStream).toHaveBeenCalledTimes(3);
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(1);
+    expect(onTextDelta).toHaveBeenCalledWith('timeout-retry-ok');
+    expect(response).toEqual(
+      expect.objectContaining({
+        text: 'timeout-retry-ok',
+        responseId: 'resp_stream_timeout_3',
+      }),
+    );
+  });
+
   it('answers price turns without workbook/file-analysis tools or required price-loop gating', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: '| 項目 | 金額 |\n| --- | --- |\n| PL6*80 | 待查 |' }],
@@ -808,8 +1137,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_b',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060' }],
-              limit: 5,
+              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060', limit: 5 }],
             }),
           },
           {
@@ -817,8 +1145,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_custom',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160' }],
-              limit: 5,
+              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160', limit: 5 }],
             }),
           },
         ],
@@ -860,10 +1187,9 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         providerToolCallId: 'call_price_b',
         arguments: {
           queries: [
-            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060' },
-            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160' },
+            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060', limit: 5 },
+            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160', limit: 5 },
           ],
-          limit: 5,
         },
       }),
     );
@@ -893,8 +1219,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075' }],
-              limit: 5,
+              queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075', limit: 5 }],
             }),
           },
         ],
@@ -959,8 +1284,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         toolName: 'search_price_candidates',
         providerToolCallId: 'call_price',
         arguments: {
-          queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075' }],
-          limit: 5,
+          queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075', limit: 5 }],
         },
       }),
     );
@@ -976,8 +1300,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_table',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: 'C型鋼', material: '錏', specs: ['75x45x15x2.3'] }],
-              limit: 5,
+              queries: [{ category: 'C型鋼', material: '錏', keyword: '75x45x15x2.3', limit: 5 }],
             }),
           },
         ],
@@ -1027,8 +1350,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       expect.objectContaining({
         toolName: 'search_price_candidates',
         arguments: {
-          queries: [{ category: 'C型鋼', material: '錏', specs: ['75x45x15x2.3'] }],
-          limit: 5,
+          queries: [{ category: 'C型鋼', material: '錏', keyword: '75x45x15x2.3', limit: 5 }],
         },
       }),
     );

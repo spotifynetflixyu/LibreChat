@@ -345,6 +345,208 @@ describe('createSteelHandlers', () => {
     expect(res.end).toHaveBeenCalled();
   });
 
+  it('persists first-turn OCR confirmation history under the generated conversation id', async () => {
+    const ocrConfirmation = [
+      '已讀取附件 `PL.pdf`，並完成 OCR / 圖面初步判讀。',
+      '',
+      '## OCR 結果確認表',
+      '',
+      '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 |',
+      '|---|---|---|---:|',
+      '| PL.pdf | D3 | PL15*500 | 6 |',
+    ].join('\n');
+    const sendChat = jest.fn(async () => ({
+      provider: 'openai_oauth_responses' as const,
+      model: 'gpt-5.5',
+      text: ocrConfirmation,
+      unsupportedSettings: [],
+      warnings: [],
+    }));
+    const historyService = {
+      appendTurn: jest.fn(async (turn) => ({
+        ...turn,
+        id: turn.messageId,
+        state: 'active' as const,
+        revisions: [],
+        createdAt: new Date('2026-06-24T00:00:00.000Z'),
+        updatedAt: new Date('2026-06-24T00:00:00.000Z'),
+      })),
+      buildHistoryWindow: jest.fn(async () => []),
+    };
+    const workingOrderMemoryWriter = {
+      captureAssistantFinalMarkdown: jest.fn(async () => ({
+        parseStatus: 'skipped' as const,
+        savedCounts: {},
+      })),
+    };
+    const handlers = createSteelHandlers({
+      executeToolCall: jest.fn(),
+      getModelsConfig: jest.fn(),
+      historyService,
+      sendChat,
+      workingOrderMemoryWriter,
+    } as unknown as Parameters<typeof createSteelHandlers>[0]);
+    const req = {
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: 'Read the attached file(s).',
+            messageId: 'user-pl-first',
+            files: [
+              {
+                filename: 'PL.pdf',
+                mediaType: 'application/pdf',
+                dataBase64: Buffer.from('%PDF-1.4\n%%EOF', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    const doneEvent = events.find(
+      (event): event is { type: 'done'; response: { conversationId: string } } =>
+        (event as { type?: unknown }).type === 'done',
+    );
+    const generatedConversationId = doneEvent?.response.conversationId;
+    expect(generatedConversationId).toEqual(expect.stringMatching(/^steel-chat-/));
+
+    const sendChatOptions = (sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>)[0]?.[0];
+    expect(sendChatOptions?.conversationId).toBe(generatedConversationId);
+    expect(sendChatOptions?.messages).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: 'Read the attached file(s).',
+      }),
+    ]);
+    expect(historyService.appendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: generatedConversationId,
+        messageId: 'user-pl-first',
+        role: 'user',
+        content: 'Read the attached file(s).',
+        attachments: [
+          expect.objectContaining({
+            filename: 'PL.pdf',
+            mediaType: 'application/pdf',
+          }),
+        ],
+      }),
+    );
+    expect(historyService.appendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: generatedConversationId,
+        role: 'assistant',
+        source: 'assistant_final',
+        content: ocrConfirmation,
+      }),
+    );
+    expect(workingOrderMemoryWriter.captureAssistantFinalMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: generatedConversationId,
+        content: ocrConfirmation,
+      }),
+    );
+  });
+
+  it('streams a readable provider error when upstream throws an object placeholder', async () => {
+    const providerError = Object.assign(new Error('[object Object]'), {
+      cause: { message: 'OpenAI payload rejected after PL.pdf upload' },
+    });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat: jest.fn(async () => {
+        throw providerError;
+      }),
+    });
+    const req = {
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: '請處理 PL.pdf',
+            files: [
+              {
+                filename: 'PL.pdf',
+                mediaType: 'application/pdf',
+                dataBase64: Buffer.from('%PDF-1.4\n%%EOF', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    const errorEvent = events.find(
+      (event): event is { type: 'error'; errorSummary: string } =>
+        (event as { type?: unknown }).type === 'error',
+    );
+
+    expect(errorEvent?.errorSummary).toContain('OpenAI payload rejected after PL.pdf upload');
+    expect(errorEvent?.errorSummary).not.toContain('[object Object]');
+    expect(res.end).toHaveBeenCalled();
+  });
+
+  it('streams nested provider response detail instead of a generic OAuth wrapper after OCR', async () => {
+    const providerError = new Error('OpenAI OAuth provider request failed.', {
+      cause: {
+        status: 400,
+        statusText: 'Bad Request',
+        body: JSON.stringify({
+          error: {
+            message: 'Provider rejected follow-up after PL.pdf OCR table context.',
+          },
+        }),
+      },
+    });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat: jest.fn(async () => {
+        throw providerError;
+      }),
+    });
+    const req = {
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: '請處理 PL.pdf',
+            files: [
+              {
+                filename: 'PL.pdf',
+                mediaType: 'application/pdf',
+                dataBase64: Buffer.from('%PDF-1.4\n%%EOF', 'utf8').toString('base64'),
+              },
+            ],
+          },
+        ],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const events = parseStreamChunks(chunks);
+    const errorEvent = events.find(
+      (event): event is { type: 'error'; errorSummary: string } =>
+        (event as { type?: unknown }).type === 'error',
+    );
+
+    expect(errorEvent?.errorSummary).toBe(
+      'Provider rejected follow-up after PL.pdf OCR table context.',
+    );
+    expect(errorEvent?.errorSummary).not.toBe('OpenAI OAuth provider request failed.');
+  });
+
   it('forwards provider text deltas immediately without duplicating final text', async () => {
     const sendChat = jest.fn(async (options) => {
       options.onTextDelta?.('即時');
@@ -377,6 +579,48 @@ describe('createSteelHandlers', () => {
       { type: 'text', delta: '即時' },
       { type: 'text', delta: '串流' },
     ]);
+  });
+
+  it('streams provider round progress from the provider callback', async () => {
+    const sendChat = jest.fn(async (options) => {
+      const roundStatusCallback = (
+        options as SendSteelOAuthChatOptions & {
+          onProviderRoundStatus?: (event: { message: string }) => void | Promise<void>;
+        }
+      ).onProviderRoundStatus;
+      await roundStatusCallback?.({
+        message: 'Provider round 1 generating final response after tool results',
+      });
+
+      return {
+        provider: 'openai_oauth_responses' as const,
+        model: 'gpt-5.5',
+        text: 'final summary',
+        unsupportedSettings: [],
+        warnings: [],
+      };
+    });
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      sendChat,
+    });
+    const req = {
+      body: {
+        messages: [{ role: 'user', content: 'stream round progress' }],
+      },
+    } as Request;
+    const { chunks, res } = createStreamResponse();
+
+    await handlers.streamChat(req, res);
+
+    const progressEvents = parseStreamChunks(chunks).filter((event) => {
+      return (event as { type?: string }).type === 'progress';
+    });
+    expect(progressEvents).toContainEqual({
+      type: 'progress',
+      stage: 'provider_round',
+      message: 'Provider round 1 generating final response after tool results',
+    });
   });
 
   it('passes request close abort signal to the streaming provider call', async () => {
@@ -535,6 +779,95 @@ describe('createSteelHandlers', () => {
     );
     expect(sendChatOptions).not.toHaveProperty('workingMemorySummary');
     expect(JSON.stringify(sendChatOptions?.messages)).not.toContain('browser-local stale table');
+  });
+
+  it('reads active Steel conversation messages for browser reload', async () => {
+    const createdAt = new Date('2026-06-24T00:00:00.000Z');
+    const updatedAt = new Date('2026-06-24T00:00:01.000Z');
+    const historyService = {
+      appendTurn: jest.fn(),
+      buildHistoryWindow: jest.fn(),
+      editUserMessage: jest.fn(),
+      listActiveTurns: jest.fn(async () => [
+        {
+          id: 'turn_1',
+          conversationId: 'steel-chat-reload',
+          messageId: 'user-1',
+          turnIndex: 1,
+          role: 'user' as const,
+          source: 'user_input' as const,
+          state: 'active' as const,
+          content: '上一輪 PL15*500',
+          attachments: [
+            {
+              fileId: 'file-1',
+              filename: 'PL.pdf',
+              mediaType: 'application/pdf',
+            },
+          ],
+          revisions: [],
+          createdAt,
+          updatedAt,
+        },
+        {
+          id: 'turn_2',
+          conversationId: 'steel-chat-reload',
+          messageId: 'assistant-1',
+          turnIndex: 2,
+          role: 'assistant' as const,
+          source: 'assistant_final' as const,
+          state: 'active' as const,
+          content: '| 項次 | 型號 |\n| --- | --- |\n| 1 | CCG075 |',
+          revisions: [],
+          createdAt,
+          updatedAt,
+        },
+      ]),
+    };
+    const handlers = createSteelHandlers({
+      getModelsConfig: jest.fn(),
+      historyService,
+      sendChat: jest.fn(),
+    } as unknown as Parameters<typeof createSteelHandlers>[0]);
+    const req = {
+      params: {
+        conversationId: 'steel-chat-reload',
+      },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.readConversationMessages(req, res);
+
+    expect(historyService.listActiveTurns).toHaveBeenCalledWith({
+      conversationId: 'steel-chat-reload',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      conversationId: 'steel-chat-reload',
+      messages: [
+        {
+          messageId: 'user-1',
+          role: 'user',
+          content: '上一輪 PL15*500',
+          attachments: [
+            {
+              fileId: 'file-1',
+              filename: 'PL.pdf',
+              mediaType: 'application/pdf',
+            },
+          ],
+          createdAt: '2026-06-24T00:00:00.000Z',
+          updatedAt: '2026-06-24T00:00:01.000Z',
+        },
+        {
+          messageId: 'assistant-1',
+          role: 'assistant',
+          content: '| 項次 | 型號 |\n| --- | --- |\n| 1 | CCG075 |',
+          createdAt: '2026-06-24T00:00:00.000Z',
+          updatedAt: '2026-06-24T00:00:01.000Z',
+        },
+      ],
+    });
   });
 
   it('passes compact workbook runtime context mode from env into context preparation', async () => {
@@ -900,7 +1233,7 @@ describe('createSteelHandlers', () => {
           resultCount: 1,
           workingOrderRows: [
             expect.objectContaining({
-              rowNo: 1,
+              rowNo: 10,
               erpItemCode: 'DNB70060',
               productName: '6.0m/mOT板雷射切割',
               quantity: 2,

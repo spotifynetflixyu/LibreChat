@@ -1,5 +1,92 @@
 # Lessons
 
+- Steel OAuth Activity showing `search_price_candidates completed` and
+  `Working Order Memory saved` only proves the tool round is done; the next
+  post-tool provider round may still be generating the final answer for minutes.
+  Emit provider-round progress / heartbeat events after tool results so users
+  can distinguish slow final generation from a stuck tool or memory save.
+- Steel OAuth chat must allocate the new `conversationId` before
+  `prepareChatContext`, tool-memory capture, and assistant persistence run. If
+  the id is generated only when sending the response, the first user turn and
+  assistant OCR confirmation table are not saved, so a follow-up `確認` arrives
+  with an empty DB history and the model incorrectly says there is no OCR result
+  to confirm.
+- Steel OAuth provider overloads such as `Our servers are currently overloaded.
+  Please try again later.` are transient provider-round failures, especially
+  likely after a tool result forces another model round. Retry those provider
+  rounds with a small bounded backoff, but do not retry once final text deltas
+  have already streamed to the UI because that would duplicate assistant text.
+- Steel OAuth provider network read failures such as `read ETIMEDOUT`,
+  `ECONNRESET`, `socket hang up`, `fetch failed`, or generic network errors
+  are also transient provider-round failures when no final text has streamed.
+  Retry them with the same bounded provider-round retry path used for overloads,
+  especially after tool results where the next model round can hit a flaky
+  upstream connection.
+- Steel provider stream errors can arrive as structured `type: "error"` payloads
+  after a successful tool round such as `run_file_ocr`. Never convert
+  `part.error` with `String(error)`; extract nested readable fields and preserve
+  the original payload as `cause`, otherwise the UI degrades to
+  `[object Object]` / generic `Steel chat request failed.` after the tool
+  visibly completes.
+- Steel `reasoning` stream events from the OAuth provider can be deltas, not
+  complete standalone summaries. In Activity, coalesce consecutive reasoning
+  chunks into one visible item so token-level deltas do not repeat the
+  `Reasoning summary` card chrome for every word.
+- Steel provider errors after OCR can arrive as generic transport wrappers
+  around nested provider response details. Do not present
+  `OpenAI OAuth provider request failed.` or `Streaming request failed.` as the
+  final user-visible detail until nested `cause`, `response.data`, and JSON
+  `body` fields have been inspected; also do not classify the word `OAuth`
+  itself as an auth failure.
+- Steel OAuth chat reload support requires a browser-visible persisted-turn read
+  path. Keeping `conversationId` in the URL and using DB-backed history for the
+  next provider prompt is not enough; `/steel/oauth-chat` must hydrate active
+  user/assistant turns from the backend on mount and preserve persisted
+  `messageId` values for edit/rerun.
+- Steel chat Markdown tables are operational OCR/quote tables, not prose. Render
+  them as horizontally scrollable wide tables with stable minimum column widths
+  and a visible three-line clamp, so Chinese headers and long review notes do
+  not wrap one character per line or make rows unusably tall.
+- Steel PL / plate price lookup should not fill `keyword` when `category`,
+  `material`, and `thicknessMm` are already known. First query with structured
+  fields only, for example `category: "鐵板/鋼板"`, `material: "OT 黑鐵"`,
+  `thicknessMm: ["15"]`; use query-level `mode: "category_discovery"` with
+  `keyword` when category is unknown, or use `keyword` as a second-pass
+  narrowing field after broad structured lookup.
+- Steel price lookup schema should avoid overlapping `specs` and `keyword`
+  semantics. Prefer one lookup text field in lookup mode, let the backend split
+  text like `15mm 黑鐵板雷射切割` into AND terms, and keep `keyword` optional
+  when category plus thickness filters are enough. `thicknessMm` should be a
+  string array with OR semantics so the AI can query multiple thickness rows in
+  one call. `mode` and `limit` belong inside each query object; lookup query
+  mode defaults to lookup, and query limit defaults to 30. Related
+  long-material cutting lookup should be inferred by backend category mapping,
+  not exposed as an AI toggle. Thickness should stay absent when unknown
+  instead of using sentinel text such as `無`.
+- When changing the Steel `search_price_candidates` input contract, update
+  `docs/rules/agent規則.txt` with concrete legal and illegal JSON shapes, not
+  only TypeScript schema, registry descriptions, or material-family rule files.
+  The agent rule is the runtime prompt source that prevents the model from
+  sending old top-level `mode` / `keyword` / `limit`, `specs`, or
+  `includeRelatedCutting` params.
+- Keep Steel agent tool rules compact. `docs/rules/agent規則.txt` should carry
+  only the runtime tool contract, major pitfalls, and a few legal examples;
+  detailed family logic belongs in `docs/rules/鋼材規則/*.txt` or executable
+  schema/tests so the prompt does not become too long for the model to follow.
+- Steel provider and client error paths must treat `[object Object]` as an
+  unusable placeholder, not as a user-facing message. Extract nested
+  `errorSummary` / `message` / `cause` / response data first, sanitize the
+  readable detail, and fall back to a generic Steel chat failure instead of
+  rendering the placeholder.
+- Steel stream `type:error` events must be normalized before entering Activity
+  state, not only after the stream promise throws. Otherwise Activity can show a
+  raw `[object Object]` event followed by the catch-handler fallback as two
+  separate errors.
+- When MongoDB Atlas Network Access is already open, do not keep blaming the
+  Atlas IP allowlist for `Server selection timed out`. Probe outbound TCP
+  `27017` against both Atlas shard hosts and a neutral host such as
+  `portquiz.net`; if `443` works but `27017` times out everywhere, treat the
+  blocker as local/VPN/firewall/ISP egress before changing backend code.
 - Steel user-message editing should match Codex overwrite semantics. Editing a
   prior user message replaces the visible message text and the prompt source for
   that message; do not model it as a visible branch or follow-up turn. Keep old
@@ -114,10 +201,39 @@
   blocking quote generation. The default can be marked for review, but the
   generated `system_order` and `customer_quote` should be priced from B until a
   confirmed customer tier is available.
+- Steel `system_order` Markdown is an ERP-facing sheet contract, not a flexible
+  quote detail table. Output rules and live smokes should require the fixed
+  20-column order: `公司編號`, `項次`, `倉庫編號`, `型號`, `品名規格`, `材質編號`,
+  `廠別編號`, `單位`, `數量`, `單重`, `總數`, `單價`, `計價基準`, `公式編號`,
+  `厚度`, `寬度`, `長度`, `類別`, `交貨日期`, `備註`; material rows and
+  processing rows such as holes, bending, cutting, slotting, and other
+  processing all belong in this same table, with processing item numbers
+  continuing after the source product item number.
+- Steel `system_order`.`項次` is not simple row sequence `1, 2, 3`. Product /
+  material main items use decimal tens `10, 20, 30`; processing or attached
+  subitems under a main item use the following integers in that tens group, such
+  as `11, 12` under `10` and `21, 22` under `20`. Keep output rules and live
+  smoke validators aligned to this numbering scheme.
+- Steel backend must tolerate simple AI-emitted `system_order`.`項次` values
+  `1, 2, 3, 4` for full system-order snapshots. Canonicalize them before saving
+  active output sheet memory to `10, 20, 30, 40` instead of treating the table as
+  a parse error. Keep row-change tables scoped separately so explicit existing
+  item references are not remapped accidentally.
 - Steel `agent規則.txt` and `輸出規則.txt` are runtime DB-backed rule sources.
   After updating either local file, always run Supabase sync dry-run, apply,
   and direct DB readback before marking the task complete; do not leave local
   rule text ahead of the reviewed DB prompt.
+- Every updated Steel runtime rule under `docs/rules/**/*.txt` must be synced
+  to DB before completion, not only `agent規則.txt` and `輸出規則.txt`. Run the
+  rule sync apply step and compare local prompt hashes with DB `source_refs`
+  for all touched rule files so local docs and reviewed runtime prompts cannot
+  drift.
+- Steel `category: "孔"` price lookup should be backend-tolerant. If the model
+  includes irrelevant fields such as `material`, `thicknessMm`, `limit`, hole
+  diameter, or a non-standard hole keyword, canonicalize the query to
+  `{ category: "孔", keyword: "鐵板" }` instead of returning
+  `invalid_arguments`; tool errors should not block quoting when the category
+  already identifies the supported lookup.
 - Steel price lookup tier carryover should be enforced in provider/runtime
   context, not only prompt wording. If `search_customers` returns one unique
   customer tier and the next `search_price_candidates` call omits
@@ -1204,3 +1320,7 @@
   PDF/image evidence, even when the current turn is text-only. Removing OCR
   rules between adjacent turns can lower KV-cache reuse and make follow-up file
   reasoning less reliable.
+- Do not add a browser-history backfill path just to repair a Steel
+  conversation that was already created before a persistence fix. If the user
+  can restart that conversation, keep DB history authoritative and limit the
+  fix to preventing new turns from being lost.

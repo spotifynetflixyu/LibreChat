@@ -34,10 +34,10 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
       'Search Steel customers using AI-selected keywords across ERP code, display name, legal name, tax id, and aliases.',
     argsSchema: steelToolArgsSchemas.search_customers,
   },
-	  {
+	{
 	    name: 'search_price_candidates',
 	    description:
-	      'Search unified Steel price candidates with AI-derived queries. Lookup mode requires each query to include a visible category enum value, optionally filters visible material enum values, thickness strings, spec strings, and product keyword text, and returns all A/B/C/F tier prices for each candidate. Set includeRelatedCutting=true when the same lookup should also return related 切工/切割 rows for long materials. If category is unclear, use category_discovery mode with a keyword first instead of guessing.',
+	      'Search unified Steel price candidates with AI-derived query objects. Send only top-level queries. Each lookup query omits mode or uses mode=lookup, includes a visible category enum value, and may include visible material, thicknessMm string array, keyword text, and per-query limit defaulting to 30. Related 切工/切割 rows for long-material categories are included automatically by the backend. If category is unclear, add a query with mode=category_discovery and keyword first instead of guessing.',
 	    argsSchema: steelToolArgsSchemas.search_price_candidates,
 	  },
   {

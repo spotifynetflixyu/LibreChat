@@ -30,6 +30,7 @@ type SearchCustomersInput = ReturnType<typeof steelToolArgsSchemas.search_custom
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
+type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
 type DispatchSteelToolArgs =
   | LookupQuoteRulesInput
   | SearchCustomersInput
@@ -190,31 +191,40 @@ function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
   });
 }
 
+function isCategoryDiscoveryPriceQuery(
+  query: SearchPriceCandidateQuery,
+): query is Extract<SearchPriceCandidateQuery, { mode: 'category_discovery' }> {
+  return query.mode === 'category_discovery';
+}
+
+function isLookupPriceQuery(
+  query: SearchPriceCandidateQuery,
+): query is Extract<SearchPriceCandidateQuery, { category: string }> {
+  return query.mode !== 'category_discovery';
+}
+
 async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  if (input.mode === 'category_discovery') {
-    const categoryCandidates = await discoverSteelPriceCategories(client, {
-      keyword: input.keyword,
-      limit: input.limit,
-    });
+  const discoveryQueries = input.queries.filter(isCategoryDiscoveryPriceQuery);
+  const lookupQueries = input.queries.filter(isLookupPriceQuery);
+  const categoryCandidateGroups = await Promise.all(
+    discoveryQueries.map((query) =>
+      discoverSteelPriceCategories(client, {
+        keyword: query.keyword,
+        limit: query.limit,
+      }),
+    ),
+  );
 
-    return {
-      mode: input.mode,
-      keyword: input.keyword,
-      categoryCandidates,
-    };
-  }
-
-  const priceCandidates = await searchSteelPriceItems(client, {
-    queries: input.queries,
-    includeRelatedCutting: input.includeRelatedCutting,
-    limit: input.limit,
-  });
+  const priceCandidates = lookupQueries.length > 0
+    ? await searchSteelPriceItems(client, { queries: lookupQueries })
+    : [];
 
   return {
     priceCandidates: dedupePriceCandidates(priceCandidates),
+    categoryCandidates: categoryCandidateGroups.flat(),
     searchQueries: input.queries,
   };
 }

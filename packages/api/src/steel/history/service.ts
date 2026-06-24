@@ -96,7 +96,7 @@ interface UpdateUserMessageRevisionInput extends MessageScopedInput {
   editedByUserId?: string;
 }
 
-interface MemoryRollbackInput extends SupersedeTurnsInput {}
+type MemoryRollbackInput = SupersedeTurnsInput;
 
 export interface SteelConversationHistoryRepository {
   appendTurn(turn: SteelConversationTurnCreateInput): Promise<SteelConversationTurnRecord>;
@@ -211,6 +211,11 @@ export function createSteelConversationHistoryService({
       }
 
       const activeTurns = await historyRepository.listActiveTurns({ conversationId, maxTurns });
+      return activeTurns.sort(byTurnIndex);
+    },
+
+    async listActiveTurns({ conversationId }: ConversationScopedInput) {
+      const activeTurns = await historyRepository.listActiveTurns({ conversationId });
       return activeTurns.sort(byTurnIndex);
     },
   };

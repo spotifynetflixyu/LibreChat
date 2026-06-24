@@ -174,6 +174,14 @@ const steelRuleMetadataByFile = {
     catalogFamily: 'plate',
     priority: 25,
   },
+  'docs/rules/鋼材規則/孔.txt': {
+    slug: 'steel_quote_rules_hole',
+    title: 'Steel 孔加工規則',
+    locator: '孔加工規則',
+    ruleSection: 'hole_processing',
+    catalogFamily: 'hole',
+    priority: 23,
+  },
   'docs/rules/鋼材規則/長管-切工.txt': {
     slug: 'steel_quote_rules_long_material_cutting',
     title: 'Steel 長條料切工規則',

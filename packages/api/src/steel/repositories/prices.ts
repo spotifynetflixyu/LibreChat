@@ -96,17 +96,15 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
 export interface SteelPriceCandidateQuery {
   category: PriceCategory;
   material?: MaterialKind;
-  thicknesses?: readonly string[];
-  specs?: readonly string[];
+  thicknessMm?: readonly string[];
   keyword?: string;
+  limit?: number;
 }
 
 export interface SearchSteelPriceItemsInput {
   queries: readonly SteelPriceCandidateQuery[];
-  includeRelatedCutting?: boolean;
   reviewState?: SteelReviewState;
   includeInactive?: boolean;
-  limit?: number;
 }
 
 export interface DiscoverSteelPriceCategoriesInput {
@@ -124,64 +122,124 @@ export interface SteelPriceCategoryCandidate {
   exampleProductName?: string;
 }
 
-function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+interface ParsedPriceKeyword {
+  material?: MaterialKind;
+  thicknessMm?: string;
+  terms: string[];
 }
 
-function normalizeNumericString(value: string): string {
+function normalizeKeywordText(value: string): string {
+  return value.normalize('NFKC').replace(/[＊*×]/gu, 'x').trim();
+}
+
+function formatThicknessMm(value: string): string {
   const normalized = value.normalize('NFKC').trim();
+  const parsed = Number(normalized);
 
-  if (/^\d+$/u.test(normalized)) {
-    return `${normalized}.0`;
+  if (!Number.isFinite(parsed)) {
+    return normalized;
   }
 
-  return normalized;
+  return Number.isInteger(parsed) ? `${parsed}.0` : String(parsed);
 }
 
-function normalizeSpecTerm(value: string): string {
-  return normalizeSteelSpecKey(value) ?? value;
-}
-
-function addContainsAnyFilter(
-  clauses: string[],
-  values: SteelSqlParameter[],
-  columnExpression: string,
-  matches: readonly string[] | undefined,
-  normalize: (value: string) => string = (value) => value,
-) {
-  const uniqueMatches = uniqueNonEmpty(matches).map(normalize).filter(Boolean);
-
-  if (uniqueMatches.length === 0) {
-    return;
-  }
-
-  const matchClauses = uniqueMatches.map((match) => {
-    values.push(`%${match}%`);
-    return `${columnExpression} ILIKE $${values.length}`;
-  });
-
-  clauses.push(`(${matchClauses.join(' OR ')})`);
-}
-
-function addThicknessAnyFilter(
-  clauses: string[],
-  values: SteelSqlParameter[],
-  matches: readonly string[] | undefined,
-) {
-  const uniqueMatches = uniqueNonEmpty(matches).map(normalizeNumericString).filter(Boolean);
-
-  if (uniqueMatches.length === 0) {
-    return;
-  }
-
-  const matchClauses = uniqueMatches.map((match) => {
-    if (/^\d+(?:\.\d+)?$/u.test(match)) {
-      values.push(match);
-      return `source_thickness = $${values.length}`;
+function extractThicknessMm(value: string): { text: string; thicknessMm?: string } {
+  let thicknessMm: string | undefined;
+  const text = value.replace(/\b(\d+(?:\.\d+)?)\s*(?:m\/m|mm)\b/giu, (_match, numberText) => {
+    if (thicknessMm === undefined) {
+      thicknessMm = formatThicknessMm(String(numberText));
     }
 
-    values.push(`%${match}%`);
-    return `source_thickness ILIKE $${values.length}`;
+    return ' ';
+  });
+
+  return { text, thicknessMm };
+}
+
+function extractMaterial(value: string): { text: string; material?: MaterialKind } {
+  if (!/(?:OT板|OT|黑鐵板|黑鐵)/iu.test(value)) {
+    return { text: value };
+  }
+
+  return {
+    text: value.replace(/(?:OT板|OT|黑鐵板|黑鐵)/giu, ' '),
+    material: 'OT 黑鐵',
+  };
+}
+
+function toKeywordTerms(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/\s+/u)
+        .map((term) => normalizeSteelSpecKey(term) ?? term.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function parsePriceKeyword(
+  keyword: string | undefined,
+  query: SteelPriceCandidateQuery,
+): ParsedPriceKeyword {
+  if (!keyword?.trim()) {
+    return { terms: [] };
+  }
+
+  const normalized = normalizeKeywordText(keyword);
+  const thicknessResult = query.thicknessMm === undefined
+    ? extractThicknessMm(normalized)
+    : { text: normalized, thicknessMm: undefined };
+  const materialResult = query.material === undefined && query.category !== '孔'
+    ? extractMaterial(thicknessResult.text)
+    : { text: thicknessResult.text, material: undefined };
+
+  return {
+    material: materialResult.material,
+    thicknessMm: thicknessResult.thicknessMm,
+    terms: toKeywordTerms(materialResult.text),
+  };
+}
+
+function addKeywordTermsFilter(
+  clauses: string[],
+  values: SteelSqlParameter[],
+  columns: readonly string[],
+  terms: readonly string[],
+) {
+  if (terms.length === 0) {
+    return;
+  }
+
+  clauses.push(
+    terms
+      .map((term) => {
+        values.push(`%${term}%`);
+        const placeholder = `$${values.length}`;
+
+        return `(${columns.map((column) => `${column} ILIKE ${placeholder}`).join('\n      OR ')})`;
+      })
+      .join('\n      AND '),
+  );
+}
+
+function addThicknessMmFilter(
+  clauses: string[],
+  values: SteelSqlParameter[],
+  thicknessMm: readonly string[] | undefined,
+) {
+  if (!thicknessMm || thicknessMm.length === 0) {
+    return;
+  }
+
+  const matches = [...new Set(thicknessMm.map(formatThicknessMm).filter(Boolean))];
+  if (matches.length === 0) {
+    return;
+  }
+
+  const matchClauses = matches.map((match) => {
+    values.push(match);
+    return `source_thickness = $${values.length}`;
   });
 
   clauses.push(`(${matchClauses.join(' OR ')})`);
@@ -196,29 +254,25 @@ function addPriceQueryFilter(
   values.push(query.category);
   clauses.push(`category = $${values.length}`);
 
-  if (query.material) {
-    values.push(query.material);
+  const parsedKeyword = parsePriceKeyword(query.keyword, query);
+  const material = query.material ?? parsedKeyword.material;
+  if (material) {
+    values.push(material);
     clauses.push(`material = $${values.length}`);
   }
 
-  addThicknessAnyFilter(clauses, values, query.thicknesses);
-  addContainsAnyFilter(
+  addThicknessMmFilter(
     clauses,
     values,
-    'COALESCE(source_spec, spec_key)',
-    query.specs,
-    normalizeSpecTerm,
+    query.thicknessMm ?? (parsedKeyword.thicknessMm ? [parsedKeyword.thicknessMm] : undefined),
   );
 
-  if (query.keyword) {
-    values.push(`%${query.keyword}%`);
-    const placeholder = `$${values.length}`;
-    clauses.push(`(
-      product_name ILIKE ${placeholder}
-      OR spec_key ILIKE ${placeholder}
-      OR erp_item_code ILIKE ${placeholder}
-    )`);
-  }
+  addKeywordTermsFilter(
+    clauses,
+    values,
+    ['product_name', 'spec_key', 'erp_item_code', 'source_spec'],
+    parsedKeyword.terms,
+  );
 
   return `(${clauses.join('\n    AND ')})`;
 }
@@ -260,24 +314,13 @@ function addRelatedCuttingQueryFilter(
   clauses.push(`category = $${values.length}`);
   values.push(subcategories);
   clauses.push(`subcategory = ANY($${values.length}::text[])`);
-  addContainsAnyFilter(
+
+  addKeywordTermsFilter(
     clauses,
     values,
-    'COALESCE(source_spec, spec_key)',
-    query.specs,
-    normalizeSpecTerm,
+    ['product_name', 'spec_key', 'source_spec', 'subcategory'],
+    parsePriceKeyword(query.keyword, query).terms,
   );
-
-  if (query.keyword) {
-    values.push(`%${query.keyword}%`);
-    const placeholder = `$${values.length}`;
-    clauses.push(`(
-      product_name ILIKE ${placeholder}
-      OR spec_key ILIKE ${placeholder}
-      OR source_spec ILIKE ${placeholder}
-      OR subcategory ILIKE ${placeholder}
-    )`);
-  }
 
   return `(${clauses.join('\n    AND ')})`;
 }
@@ -360,28 +403,19 @@ export async function searchSteelPriceItems(
   input: SearchSteelPriceItemsInput,
 ): Promise<SteelPriceItem[]> {
   const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
-  const where: string[] = [`review_state = $${values.length}`];
+  const selects = input.queries.map((query) => {
+    const where: string[] = ['review_state = $1'];
 
-  if (!input.includeInactive) {
-    where.push('active = true');
-  }
+    if (!input.includeInactive) {
+      where.push('active = true');
+    }
 
-  const queryFilters = input.queries.flatMap((query) => {
     const filters = [addPriceQueryFilter(values, query)];
-    const relatedCuttingFilter = input.includeRelatedCutting
-      ? addRelatedCuttingQueryFilter(values, query)
-      : undefined;
+    const relatedCuttingFilter = addRelatedCuttingQueryFilter(values, query);
+    where.push(`(${(relatedCuttingFilter ? [...filters, relatedCuttingFilter] : filters).join('\n  OR ')})`);
 
-    return relatedCuttingFilter ? [...filters, relatedCuttingFilter] : filters;
-  });
-  if (queryFilters.length > 0) {
-    where.push(`(${queryFilters.join('\n  OR ')})`);
-  }
-
-  values.push(getLimit(input.limit, 100));
-
-  const result = await client.query<SteelPriceItemRow>(
-    `
+    values.push(getLimit(query.limit, 30));
+    return `
 SELECT
   id,
   erp_item_code,
@@ -416,9 +450,26 @@ ORDER BY
   product_name ASC,
   id ASC
 LIMIT $${values.length}
-`,
-    values,
-  );
+`;
+  });
+
+  if (selects.length === 0) {
+    return [];
+  }
+
+  const sql = selects.length === 1
+    ? selects[0]
+    : `
+SELECT *
+FROM (
+${selects.map((select) => `(${select})`).join('\nUNION ALL\n')}
+) AS price_candidates
+ORDER BY
+  product_name ASC,
+  id ASC
+`;
+
+  const result = await client.query<SteelPriceItemRow>(sql, values);
 
   return result.rows.map(toPriceItem);
 }
@@ -427,20 +478,16 @@ export async function discoverSteelPriceCategories(
   client: SteelRepositoryClient,
   input: DiscoverSteelPriceCategoriesInput,
 ): Promise<SteelPriceCategoryCandidate[]> {
-  const normalizedKeyword = normalizeSteelSpecKey(input.keyword) ?? input.keyword;
-  const values: SteelSqlParameter[] = [
-    input.reviewState ?? 'reviewed',
-    `%${input.keyword}%`,
-    `%${normalizedKeyword}%`,
-  ];
+  const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
   const where = [
     'review_state = $1',
-    `(
-      product_name ILIKE $2
-      OR spec_key ILIKE $3
-      OR erp_item_code ILIKE $2
-    )`,
   ];
+  addKeywordTermsFilter(
+    where,
+    values,
+    ['product_name', 'spec_key', 'erp_item_code', 'source_spec'],
+    toKeywordTerms(normalizeKeywordText(input.keyword)),
+  );
 
   if (!input.includeInactive) {
     where.push('active = true');

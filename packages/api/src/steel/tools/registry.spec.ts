@@ -42,35 +42,51 @@ describe('Steel tool registry', () => {
           {
             category: '扁方管',
             material: 'OT 黑鐵',
-            thicknesses: ['2.0'],
-            specs: ['75'],
-            keyword: '扁方管',
+            thicknessMm: ['2'],
+            keyword: '75x45 扁方管',
+            limit: 5,
           },
         ],
-        limit: 5,
       }),
     ).toEqual({
       queries: [
         {
           category: '扁方管',
           material: 'OT 黑鐵',
-          thicknesses: ['2.0'],
-          specs: ['75'],
-          keyword: '扁方管',
-          },
-        ],
-      limit: 5,
+          thicknessMm: ['2'],
+          keyword: '75x45 扁方管',
+          limit: 5,
+        },
+      ],
     });
     expect(
       definition.argsSchema.parse({
-        mode: 'category_discovery',
-        keyword: '白鐵 方管',
-        limit: 10,
+        queries: [{ category: '孔', keyword: '鐵板' }],
       }),
     ).toEqual({
-      mode: 'category_discovery',
-      keyword: '白鐵 方管',
-      limit: 10,
+      queries: [{ category: '孔', keyword: '鐵板' }],
+    });
+    expect(
+      definition.argsSchema.parse({
+        queries: [
+          {
+            category: '孔',
+            material: 'OT 黑鐵',
+            thicknessMm: ['15'],
+            keyword: '鑽孔',
+            limit: 5,
+          },
+        ],
+      }),
+    ).toEqual({
+      queries: [{ category: '孔', keyword: '鐵板' }],
+    });
+    expect(
+      definition.argsSchema.parse({
+        queries: [{ mode: 'category_discovery', keyword: '白鐵 方管', limit: 10 }],
+      }),
+    ).toEqual({
+      queries: [{ mode: 'category_discovery', keyword: '白鐵 方管', limit: 10 }],
     });
     expect(() =>
       definition.argsSchema.parse({
@@ -130,9 +146,61 @@ describe('Steel tool registry', () => {
         includeInactive: true,
       }),
     ).toThrow('Unrecognized key');
-    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow('Required');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '鐵板/鋼板', specs: ['雷射切割'] }],
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: 'H型鋼', keyword: '200x100' }],
+        includeRelatedCutting: true,
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: 'H型鋼', keyword: '200x100' }],
+        limit: 5,
+      }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      definition.argsSchema.parse({
+        mode: 'category_discovery',
+        keyword: '白鐵 方管',
+      }),
+    ).toThrow('Unrecognized key');
+    expect(
+      definition.argsSchema.parse({
+        queries: [{ category: '孔', keyword: '鐵板', thicknessMm: 15 }],
+      }),
+    ).toEqual({
+      queries: [{ category: '孔', keyword: '鐵板' }],
+    });
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '鐵板/鋼板', thicknessMm: [15] }],
+      }),
+    ).toThrow();
+    expect(
+      definition.argsSchema.parse({
+        queries: [{ category: '孔', material: '無', keyword: '鐵板' }],
+      }),
+    ).toEqual({
+      queries: [{ category: '孔', keyword: '鐵板' }],
+    });
+    expect(
+      definition.argsSchema.parse({
+        queries: [{ category: '孔', keyword: '鑽孔' }],
+      }),
+    ).toEqual({
+      queries: [{ category: '孔', keyword: '鐵板' }],
+    });
+    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow();
     expect(definition.description).toContain('queries');
     expect(definition.description).toContain('category');
+    expect(definition.description).toContain('thicknessMm');
+    expect(definition.description).not.toContain('specs');
+    expect(definition.description).not.toContain('includeRelatedCutting');
     expect(definition.description).not.toContain('customerTier');
     expect(definition.description).not.toContain('customerTierId');
     expect(definition.description).not.toContain('candidateQueries');

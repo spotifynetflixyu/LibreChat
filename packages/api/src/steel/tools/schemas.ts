@@ -31,6 +31,21 @@ function isCoordinateOnlyQuery(value: string): boolean {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeSearchPriceCandidateQueryInput(value: unknown): unknown {
+  if (!isRecord(value) || value.category !== '孔') {
+    return value;
+  }
+
+  return {
+    category: '孔',
+    keyword: '鐵板',
+  };
+}
+
 const instructionCatalogContextSchema = z.object({
   lineRefs: z.array(nonEmptyString).min(1).max(20).optional(),
   packetGroupHints: z.array(nonEmptyString).min(1).max(20).optional(),
@@ -93,8 +108,9 @@ const lookupDefaultsSchema = z.object({
   limit: limitSchema,
 });
 
-const priceCandidateQuerySchema = z
+const priceLookupQuerySchema = z
   .object({
+    mode: z.literal('lookup').optional(),
     category: z
       .enum(priceCategories)
       .describe(
@@ -104,27 +120,50 @@ const priceCandidateQuerySchema = z
       .enum(materialKinds)
       .optional()
       .describe('Optional material enum value. Use the visible enum value, for example OT 黑鐵 or 錏.'),
-    thicknesses: z.array(nonEmptyString).min(1).max(20).optional(),
-    specs: z.array(nonEmptyString).min(1).max(20).optional(),
+    thicknessMm: z.array(nonEmptyString).min(1).max(20).optional(),
     keyword: nonEmptyString.optional(),
-  })
-  .strict();
-
-const searchPriceLookupSchema = z
-  .object({
-    mode: z.literal('lookup').optional(),
-    queries: z.array(priceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1).max(20),
-    includeRelatedCutting: z
-      .boolean()
-      .optional()
-      .describe(
-        'When true, the same lookup also returns related 切工/切割 rows for product categories such as H型鋼, 工字鐵/I字鐵, 管, 角鐵, 槽鐵, or 平鐵/扁鐵.',
-      ),
     limit: limitSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((query, context) => {
+    if (query.category !== '孔') {
+      return;
+    }
 
-const searchPriceCategoryDiscoverySchema = z
+    if (query.keyword !== '鐵板') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['keyword'],
+        message: '孔 category lookup only accepts keyword 鐵板',
+      });
+    }
+
+    if (query.material !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['material'],
+        message: '孔 category lookup does not accept material',
+      });
+    }
+
+    if (query.thicknessMm !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['thicknessMm'],
+        message: '孔 category lookup does not accept thicknessMm',
+      });
+    }
+
+    if (query.limit !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['limit'],
+        message: '孔 category lookup does not accept limit',
+      });
+    }
+  });
+
+const priceCategoryDiscoveryQuerySchema = z
   .object({
     mode: z.literal('category_discovery'),
     keyword: nonEmptyString.describe('Required keyword used to discover candidate categories.'),
@@ -132,10 +171,16 @@ const searchPriceCategoryDiscoverySchema = z
   })
   .strict();
 
-const searchPriceCandidatesSchema = z.union([
-  searchPriceCategoryDiscoverySchema,
-  searchPriceLookupSchema,
-]);
+const searchPriceCandidateQuerySchema = z.preprocess(
+  normalizeSearchPriceCandidateQueryInput,
+  z.union([priceCategoryDiscoveryQuerySchema, priceLookupQuerySchema]),
+);
+
+const searchPriceCandidatesSchema = z
+  .object({
+    queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1).max(20),
+  })
+  .strict();
 
 const runFileOcrSchema = z
   .object({
