@@ -18,7 +18,7 @@ export const steelRuntimeAiVisibleTools = [
   'run_file_ocr',
 ] as const satisfies readonly SteelBusinessToolName[];
 
-export const steelRuntimeCompactWorkbookAiVisibleTools = [
+export const steelRuntimeCompactWorkbookAiVisibleTools: readonly SteelBusinessToolName[] = [
   ...steelRuntimeAiVisibleTools,
   'read_active_workbook',
 ] as const satisfies readonly SteelBusinessToolName[];

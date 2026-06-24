@@ -1,5 +1,8 @@
 import { createSteelNamedStateSchema } from './state';
 
-const steelAdminMergeTableSchema = createSteelNamedStateSchema();
+import type { Schema } from 'mongoose';
+import type { ISteelNamedState } from '~/types';
+
+const steelAdminMergeTableSchema: Schema<ISteelNamedState> = createSteelNamedStateSchema();
 
 export default steelAdminMergeTableSchema;

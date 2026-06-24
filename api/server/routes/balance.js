@@ -1,6 +1,6 @@
 const express = require('express');
-const router = express.Router();
 const { createSetBalanceConfig } = require('@librechat/api');
+const router = express.Router();
 const controller = require('~/server/controllers/Balance');
 const { findBalanceByUser, upsertBalanceFields } = require('~/models');
 const { requireJwtAuth } = require('~/server/middleware');

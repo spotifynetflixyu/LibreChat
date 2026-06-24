@@ -2,7 +2,7 @@ import { Schema } from 'mongoose';
 
 import type { ISteelToolCall } from '~/types';
 
-const steelToolCallSchema = new Schema<ISteelToolCall>(
+const steelToolCallSchema: Schema<ISteelToolCall> = new Schema<ISteelToolCall>(
   {
     conversationMetaId: {
       type: String,

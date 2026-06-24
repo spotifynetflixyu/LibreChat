@@ -8,7 +8,7 @@ import {
 
 import type { ISteelSourceVersion } from '~/types';
 
-const steelSourceVersionSchema = new Schema<ISteelSourceVersion>(
+const steelSourceVersionSchema: Schema<ISteelSourceVersion> = new Schema<ISteelSourceVersion>(
   {
     projectSourceId: {
       type: String,

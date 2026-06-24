@@ -1,5 +1,8 @@
 import { createSteelNamedStateSchema } from './state';
 
-const steelExcelExportSchema = createSteelNamedStateSchema();
+import type { Schema } from 'mongoose';
+import type { ISteelNamedState } from '~/types';
+
+const steelExcelExportSchema: Schema<ISteelNamedState> = createSteelNamedStateSchema();
 
 export default steelExcelExportSchema;

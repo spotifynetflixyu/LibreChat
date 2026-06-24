@@ -1,5 +1,8 @@
 import { createSteelNamedStateSchema } from './state';
 
-const steelAdminImportSessionSchema = createSteelNamedStateSchema();
+import type { Schema } from 'mongoose';
+import type { ISteelNamedState } from '~/types';
+
+const steelAdminImportSessionSchema: Schema<ISteelNamedState> = createSteelNamedStateSchema();
 
 export default steelAdminImportSessionSchema;

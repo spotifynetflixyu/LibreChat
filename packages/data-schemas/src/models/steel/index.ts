@@ -1,4 +1,5 @@
 import type * as t from '~/types';
+import type { Model, Schema } from 'mongoose';
 import {
   steelAICapabilitySchema,
   steelAIRunSchema,
@@ -20,21 +21,25 @@ import {
 
 type Mongoose = typeof import('mongoose');
 
+function getExistingModel<T>(mongoose: Mongoose, modelName: string): Model<T> | undefined {
+  return mongoose.models[modelName] as Model<T> | undefined;
+}
+
 function createSteelNamedStateModel(
   mongoose: Mongoose,
   modelName: string,
-  schema: Parameters<Mongoose['model']>[1],
+  schema: Schema<t.ISteelNamedState>,
   collectionName: string,
-) {
+) : Model<t.ISteelNamedState> {
   return (
-    mongoose.models[modelName] ||
+    getExistingModel<t.ISteelNamedState>(mongoose, modelName) ||
     mongoose.model<t.ISteelNamedState>(modelName, schema, collectionName)
   );
 }
 
-export function createSteelConversationMetaModel(mongoose: Mongoose) {
+export function createSteelConversationMetaModel(mongoose: Mongoose): Model<t.ISteelConversationMeta> {
   return (
-    mongoose.models.SteelConversationMeta ||
+    getExistingModel<t.ISteelConversationMeta>(mongoose, 'SteelConversationMeta') ||
     mongoose.model<t.ISteelConversationMeta>(
       'SteelConversationMeta',
       steelConversationMetaSchema,
@@ -43,9 +48,9 @@ export function createSteelConversationMetaModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelConversationTurnModel(mongoose: Mongoose) {
+export function createSteelConversationTurnModel(mongoose: Mongoose): Model<t.ISteelConversationTurn> {
   return (
-    mongoose.models.SteelConversationTurn ||
+    getExistingModel<t.ISteelConversationTurn>(mongoose, 'SteelConversationTurn') ||
     mongoose.model<t.ISteelConversationTurn>(
       'SteelConversationTurn',
       steelConversationTurnSchema,
@@ -54,9 +59,9 @@ export function createSteelConversationTurnModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelWorkingOrderMemoryModel(mongoose: Mongoose) {
+export function createSteelWorkingOrderMemoryModel(mongoose: Mongoose): Model<t.ISteelWorkingOrderMemory> {
   return (
-    mongoose.models.SteelWorkingOrderMemory ||
+    getExistingModel<t.ISteelWorkingOrderMemory>(mongoose, 'SteelWorkingOrderMemory') ||
     mongoose.model<t.ISteelWorkingOrderMemory>(
       'SteelWorkingOrderMemory',
       steelWorkingOrderMemorySchema,
@@ -65,16 +70,16 @@ export function createSteelWorkingOrderMemoryModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelAIRunModel(mongoose: Mongoose) {
+export function createSteelAIRunModel(mongoose: Mongoose): Model<t.ISteelAIRun> {
   return (
-    mongoose.models.SteelAIRun ||
+    getExistingModel<t.ISteelAIRun>(mongoose, 'SteelAIRun') ||
     mongoose.model<t.ISteelAIRun>('SteelAIRun', steelAIRunSchema, 'steel_ai_runs')
   );
 }
 
-export function createSteelAICapabilityModel(mongoose: Mongoose) {
+export function createSteelAICapabilityModel(mongoose: Mongoose): Model<t.ISteelAICapability> {
   return (
-    mongoose.models.SteelAICapability ||
+    getExistingModel<t.ISteelAICapability>(mongoose, 'SteelAICapability') ||
     mongoose.model<t.ISteelAICapability>(
       'SteelAICapability',
       steelAICapabilitySchema,
@@ -83,16 +88,16 @@ export function createSteelAICapabilityModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelAuditLogModel(mongoose: Mongoose) {
+export function createSteelAuditLogModel(mongoose: Mongoose): Model<t.ISteelAuditLog> {
   return (
-    mongoose.models.SteelAuditLog ||
+    getExistingModel<t.ISteelAuditLog>(mongoose, 'SteelAuditLog') ||
     mongoose.model<t.ISteelAuditLog>('SteelAuditLog', steelAuditLogSchema, 'steel_audit_logs')
   );
 }
 
-export function createSteelSourceVersionModel(mongoose: Mongoose) {
+export function createSteelSourceVersionModel(mongoose: Mongoose): Model<t.ISteelSourceVersion> {
   return (
-    mongoose.models.SteelSourceVersion ||
+    getExistingModel<t.ISteelSourceVersion>(mongoose, 'SteelSourceVersion') ||
     mongoose.model<t.ISteelSourceVersion>(
       'SteelSourceVersion',
       steelSourceVersionSchema,
@@ -101,14 +106,14 @@ export function createSteelSourceVersionModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelToolCallModel(mongoose: Mongoose) {
+export function createSteelToolCallModel(mongoose: Mongoose): Model<t.ISteelToolCall> {
   return (
-    mongoose.models.SteelToolCall ||
+    getExistingModel<t.ISteelToolCall>(mongoose, 'SteelToolCall') ||
     mongoose.model<t.ISteelToolCall>('SteelToolCall', steelToolCallSchema, 'steel_tool_calls')
   );
 }
 
-export function createSteelExcelExportModel(mongoose: Mongoose) {
+export function createSteelExcelExportModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(
     mongoose,
     'SteelExcelExport',
@@ -117,11 +122,11 @@ export function createSteelExcelExportModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelProjectModel(mongoose: Mongoose) {
+export function createSteelProjectModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(mongoose, 'SteelProject', steelProjectSchema, 'steel_projects');
 }
 
-export function createSteelProjectSourceModel(mongoose: Mongoose) {
+export function createSteelProjectSourceModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(
     mongoose,
     'SteelProjectSource',
@@ -130,7 +135,7 @@ export function createSteelProjectSourceModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelAdminImportSessionModel(mongoose: Mongoose) {
+export function createSteelAdminImportSessionModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(
     mongoose,
     'SteelAdminImportSession',
@@ -139,7 +144,7 @@ export function createSteelAdminImportSessionModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelAdminMergeTableModel(mongoose: Mongoose) {
+export function createSteelAdminMergeTableModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(
     mongoose,
     'SteelAdminMergeTable',
@@ -148,7 +153,7 @@ export function createSteelAdminMergeTableModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelAdminMappingProfileModel(mongoose: Mongoose) {
+export function createSteelAdminMappingProfileModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(
     mongoose,
     'SteelAdminMappingProfile',
@@ -157,9 +162,9 @@ export function createSteelAdminMappingProfileModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelMemoryCandidateModel(mongoose: Mongoose) {
+export function createSteelMemoryCandidateModel(mongoose: Mongoose): Model<t.ISteelMemoryCandidate> {
   return (
-    mongoose.models.SteelMemoryCandidate ||
+    getExistingModel<t.ISteelMemoryCandidate>(mongoose, 'SteelMemoryCandidate') ||
     mongoose.model<t.ISteelMemoryCandidate>(
       'SteelMemoryCandidate',
       steelMemoryCandidateSchema,
@@ -168,6 +173,6 @@ export function createSteelMemoryCandidateModel(mongoose: Mongoose) {
   );
 }
 
-export function createSteelMemoryModel(mongoose: Mongoose) {
+export function createSteelMemoryModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
   return createSteelNamedStateModel(mongoose, 'SteelMemory', steelMemorySchema, 'steel_memories');
 }

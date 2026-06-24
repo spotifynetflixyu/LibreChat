@@ -4,7 +4,7 @@ import { steelCapabilityStatusEnum, steelProviderEnum } from './common';
 
 import type { ISteelAICapability } from '~/types';
 
-const steelAICapabilitySchema = new Schema<ISteelAICapability>(
+const steelAICapabilitySchema: Schema<ISteelAICapability> = new Schema<ISteelAICapability>(
   {
     provider: {
       type: String,

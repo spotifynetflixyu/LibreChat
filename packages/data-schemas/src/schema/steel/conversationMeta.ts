@@ -4,7 +4,7 @@ import { steelConversationCreatedFromEnum, steelConversationStatusEnum } from '.
 
 import type { ISteelConversationMeta } from '~/types';
 
-const steelConversationMetaSchema = new Schema<ISteelConversationMeta>(
+const steelConversationMetaSchema: Schema<ISteelConversationMeta> = new Schema<ISteelConversationMeta>(
   {
     libreChatConversationId: {
       type: String,

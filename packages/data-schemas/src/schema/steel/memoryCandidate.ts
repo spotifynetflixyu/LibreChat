@@ -1,6 +1,12 @@
 import { Schema } from 'mongoose';
 
-import type { ISteelMemoryCandidate } from '~/types';
+import type {
+  ISteelMemoryCandidate,
+  SteelRuleProposalDefaultParameter,
+  SteelRuleProposalSelector,
+  SteelRuleProposalSelectorEntry,
+  SteelRuleProposalSourceRef,
+} from '~/types';
 
 const steelRuleProposalTypes = [
   'customer_default',
@@ -32,7 +38,8 @@ const steelRuleProposalConfidences = ['low', 'medium', 'high'];
 
 const steelRuleProposalValueTypes = ['string', 'number', 'boolean', 'null'];
 
-const steelRuleProposalSelectorEntrySchema = new Schema(
+const steelRuleProposalSelectorEntrySchema: Schema<SteelRuleProposalSelectorEntry> =
+  new Schema<SteelRuleProposalSelectorEntry>(
   {
     key: { type: String, required: true },
     value: {
@@ -44,9 +51,10 @@ const steelRuleProposalSelectorEntrySchema = new Schema(
     },
   },
   { _id: false },
-);
+  );
 
-const steelRuleProposalSelectorSchema = new Schema(
+const steelRuleProposalSelectorSchema: Schema<SteelRuleProposalSelector> =
+  new Schema<SteelRuleProposalSelector>(
   {
     catalogFamily: { type: String },
     productFamily: { type: String },
@@ -60,9 +68,10 @@ const steelRuleProposalSelectorSchema = new Schema(
     },
   },
   { _id: false },
-);
+  );
 
-const steelRuleProposalDefaultParameterSchema = new Schema(
+const steelRuleProposalDefaultParameterSchema: Schema<SteelRuleProposalDefaultParameter> =
+  new Schema<SteelRuleProposalDefaultParameter>(
   {
     key: { type: String, required: true },
     value: {
@@ -81,9 +90,10 @@ const steelRuleProposalDefaultParameterSchema = new Schema(
     reason: { type: String },
   },
   { _id: false },
-);
+  );
 
-const steelRuleProposalSourceRefSchema = new Schema(
+const steelRuleProposalSourceRefSchema: Schema<SteelRuleProposalSourceRef> =
+  new Schema<SteelRuleProposalSourceRef>(
   {
     channel: { type: String, required: true },
     factType: { type: String, required: true },
@@ -95,9 +105,9 @@ const steelRuleProposalSourceRefSchema = new Schema(
     canonicalKey: { type: String },
   },
   { _id: false },
-);
+  );
 
-const steelMemoryCandidateSchema = new Schema<ISteelMemoryCandidate>(
+const steelMemoryCandidateSchema: Schema<ISteelMemoryCandidate> = new Schema<ISteelMemoryCandidate>(
   {
     proposalType: {
       type: String,

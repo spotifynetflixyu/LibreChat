@@ -7,13 +7,130 @@ import {
 } from '../pricing/enums';
 import { steelRuntimeActiveOutputSheetIds } from '../runtime/context';
 
-export const defaultSteelPriceCustomerTier = defaultPriceTierCode;
+export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
 const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
 const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
 const activeWorkbookSheetIdSchema = z.enum(steelRuntimeActiveOutputSheetIds);
+
+interface InstructionCatalogContextInput {
+  lineRefs?: string[];
+  packetGroupHints?: string[];
+  catalogCandidates?: string[];
+  productNameCandidates?: string[];
+  surfaceCandidates?: string[];
+  formulaCandidates?: string[];
+  processingTypes?: string[];
+  lowConfidenceReasons?: string[];
+}
+
+interface LookupCustomerContextInput {
+  customerId?: number;
+  customerTier?: (typeof priceTierCodes)[number];
+  customerName?: string;
+  tierKnown?: boolean;
+}
+
+type ReviewStateInput = 'draft' | 'needs_review' | 'reviewed' | 'rejected';
+
+export interface LookupDefaultsInput {
+  catalogContexts: InstructionCatalogContextInput[];
+  customerContext?: LookupCustomerContextInput;
+  reviewState?: ReviewStateInput;
+  includeInactive?: boolean;
+  limit?: number;
+}
+
+export interface LookupInstructionsInput {
+  taskTypes: string[];
+  packetGroupHints?: string[];
+  evidenceSummary: string;
+  catalogContexts: InstructionCatalogContextInput[];
+  customerContext?: Pick<LookupCustomerContextInput, 'customerName' | 'tierKnown'>;
+  reviewState?: ReviewStateInput;
+  includeInactive?: boolean;
+  limit?: number;
+}
+
+export interface LookupQuoteRulesInput
+  extends Omit<LookupInstructionsInput, 'customerContext'> {
+  customerContext?: LookupCustomerContextInput;
+}
+
+export interface LookupQuoteRulesToolInput {
+  keywords: string[];
+  limit?: number;
+}
+
+interface SteelPriceLookupQueryInput {
+  mode?: 'lookup';
+  category: (typeof priceCategories)[number];
+  material?: (typeof materialKinds)[number];
+  thicknessMm?: string[];
+  keyword?: string;
+  limit?: number;
+}
+
+interface SteelPriceCategoryDiscoveryQueryInput {
+  mode: 'category_discovery';
+  keyword: string;
+  limit?: number;
+}
+
+interface SearchPriceCandidatesInput {
+  queries: Array<SteelPriceLookupQueryInput | SteelPriceCategoryDiscoveryQueryInput>;
+}
+
+interface SearchCustomersInput {
+  keywords: string[];
+  limit?: number;
+}
+
+export interface RunFileOcrInput {
+  filename?: string;
+  fileIndex?: number;
+  output_mode?: 'markdown' | 'detailed' | 'json';
+  dpi?: number;
+}
+
+export interface ReadWorkingOrderItemsInput {
+  mode: 'summary' | 'rowNo' | 'erpItemCode' | 'query' | 'source' | 'page';
+  rowNo?: number;
+  erpItemCode?: string;
+  query?: string;
+  filename?: string;
+  pageNumber?: number;
+  imageIndex?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ReadActiveWorkbookInput {
+  query: string;
+  sheetIds?: Array<(typeof steelRuntimeActiveOutputSheetIds)[number]>;
+  limit?: number;
+  reason?: string;
+}
+
+export interface RunVisualInspectionInput {
+  filename?: string;
+  fileIndex?: number;
+  page?: number;
+  imageIndex?: number;
+  inspection_types: Array<
+    | 'holes'
+    | 'slots'
+    | 'continuous_edges'
+    | 'bends'
+    | 'cut_corners'
+    | 'notches'
+    | 'geometry_consistency'
+  >;
+  prompt: string;
+  dpi?: number;
+}
 
 function isCoordinateOnlyQuery(value: string): boolean {
   const normalized = value.normalize('NFKC').trim();
@@ -135,13 +252,13 @@ const searchPriceCandidateQuerySchema = z.preprocess(
   z.union([priceCategoryDiscoveryQuerySchema, priceLookupQuerySchema]),
 );
 
-const searchPriceCandidatesSchema = z
+const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput> = z
   .object({
     queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1).max(20),
   })
   .strict();
 
-const runFileOcrSchema = z
+const runFileOcrSchema: z.ZodType<RunFileOcrInput> = z
   .object({
     filename: nonEmptyString.optional(),
     fileIndex: z.number().int().min(0).optional(),
@@ -160,7 +277,7 @@ const runFileOcrSchema = z
     });
   });
 
-const readWorkingOrderItemsSchema = z
+const readWorkingOrderItemsSchema: z.ZodType<ReadWorkingOrderItemsInput> = z
   .object({
     mode: z
       .enum(['summary', 'rowNo', 'erpItemCode', 'query', 'source', 'page'])
@@ -213,7 +330,7 @@ const readWorkingOrderItemsSchema = z
     }
   });
 
-const readActiveWorkbookSchema = z
+const readActiveWorkbookSchema: z.ZodType<ReadActiveWorkbookInput> = z
   .object({
     query: nonEmptyString.describe(
       'Required semantic keyword query for active workbook rows. Use item codes, product names, customer names, part numbers, status words, or quote text. Do not use spreadsheet coordinates.',
@@ -235,7 +352,7 @@ const readActiveWorkbookSchema = z
     });
   });
 
-const runVisualInspectionSchema = z
+const runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
   .object({
     filename: nonEmptyString.optional(),
     fileIndex: z.number().int().min(0).optional(),
@@ -270,12 +387,21 @@ const runVisualInspectionSchema = z
     });
   });
 
-export const steelToolArgsSchemas = {
+const searchCustomersSchema: z.ZodType<SearchCustomersInput> = z.object({
+  keywords: keywordsSchema,
+  limit: limitSchema,
+});
+
+export const steelToolArgsSchemas: {
+  readonly lookup_quote_rules: z.ZodType<LookupQuoteRulesToolInput>;
+  readonly search_customers: z.ZodType<SearchCustomersInput>;
+  readonly search_price_candidates: z.ZodType<SearchPriceCandidatesInput>;
+  readonly run_file_ocr: z.ZodType<RunFileOcrInput>;
+  readonly read_active_workbook: z.ZodType<ReadActiveWorkbookInput>;
+  readonly read_working_order_items: z.ZodType<ReadWorkingOrderItemsInput>;
+} = {
   lookup_quote_rules: lookupQuoteRulesSchema,
-  search_customers: z.object({
-    keywords: keywordsSchema,
-    limit: limitSchema,
-  }),
+  search_customers: searchCustomersSchema,
   search_price_candidates: searchPriceCandidatesSchema,
   run_file_ocr: runFileOcrSchema,
   read_active_workbook: readActiveWorkbookSchema,
@@ -284,11 +410,3 @@ export const steelToolArgsSchemas = {
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
 export type SteelBusinessToolName = SteelToolName;
-export type LookupDefaultsInput = z.infer<typeof lookupDefaultsSchema>;
-export type LookupInstructionsInput = z.infer<typeof lookupInstructionsSchema>;
-export type LookupQuoteRulesInput = z.infer<typeof legacyLookupQuoteRulesSchema>;
-export type LookupQuoteRulesToolInput = z.infer<typeof lookupQuoteRulesSchema>;
-export type RunFileOcrInput = z.infer<typeof runFileOcrSchema>;
-export type ReadActiveWorkbookInput = z.infer<typeof readActiveWorkbookSchema>;
-export type ReadWorkingOrderItemsInput = z.infer<typeof readWorkingOrderItemsSchema>;
-export type RunVisualInspectionInput = z.infer<typeof runVisualInspectionSchema>;

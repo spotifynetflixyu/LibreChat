@@ -16,7 +16,8 @@ import type {
   SteelConversationTurnRevision,
 } from '~/types';
 
-const steelConversationTurnRevisionSchema = new Schema<SteelConversationTurnRevision>(
+const steelConversationTurnRevisionSchema: Schema<SteelConversationTurnRevision> =
+  new Schema<SteelConversationTurnRevision>(
   {
     content: {
       type: String,
@@ -31,9 +32,10 @@ const steelConversationTurnRevisionSchema = new Schema<SteelConversationTurnRevi
     },
   },
   { _id: false },
-);
+  );
 
-const steelConversationTurnAttachmentRefSchema = new Schema<SteelConversationTurnAttachmentRef>(
+const steelConversationTurnAttachmentRefSchema: Schema<SteelConversationTurnAttachmentRef> =
+  new Schema<SteelConversationTurnAttachmentRef>(
   {
     fileId: {
       type: String,
@@ -47,9 +49,9 @@ const steelConversationTurnAttachmentRefSchema = new Schema<SteelConversationTur
     },
   },
   { _id: false },
-);
+  );
 
-const steelConversationTurnFinalResponseMetadataSchema =
+const steelConversationTurnFinalResponseMetadataSchema: Schema<SteelConversationTurnFinalResponseMetadata> =
   new Schema<SteelConversationTurnFinalResponseMetadata>(
     {
       provider: {
@@ -79,7 +81,8 @@ const steelConversationTurnFinalResponseMetadataSchema =
     { _id: false },
   );
 
-const steelConversationTurnQueuedSteerSchema = new Schema<SteelConversationTurnQueuedSteer>(
+const steelConversationTurnQueuedSteerSchema: Schema<SteelConversationTurnQueuedSteer> =
+  new Schema<SteelConversationTurnQueuedSteer>(
   {
     targetRequestId: {
       type: String,
@@ -98,9 +101,9 @@ const steelConversationTurnQueuedSteerSchema = new Schema<SteelConversationTurnQ
     },
   },
   { _id: false },
-);
+  );
 
-const steelConversationTurnSchema = new Schema<ISteelConversationTurn>(
+const steelConversationTurnSchema: Schema<ISteelConversationTurn> = new Schema<ISteelConversationTurn>(
   {
     conversationId: {
       type: String,

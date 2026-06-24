@@ -3,7 +3,26 @@ import { z } from 'zod';
 const confidenceSchema = z.enum(['high', 'medium', 'low']);
 const nonEmptyString = z.string().trim().min(1);
 
-export const steelPriceSearchCandidateSchema = z
+export interface SteelPriceSearchCandidate {
+  queryId: string;
+  label?: string;
+  productNames?: string[];
+  erpItemCodes?: string[];
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  sourceCandidateId?: string;
+}
+
+interface SteelPriceStructuredFilters {
+  categories?: string[];
+  surfaces?: string[];
+  sizeAMm?: number;
+  sizeBMm?: number;
+  thicknessMm?: number;
+  lengthM?: number;
+}
+
+export const steelPriceSearchCandidateSchema: z.ZodType<SteelPriceSearchCandidate> = z
   .object({
     queryId: nonEmptyString,
     label: nonEmptyString.optional(),
@@ -41,7 +60,7 @@ interface SteelPriceSearchQueryText {
   erpItemCodes?: string[];
 }
 
-const steelPriceStructuredFiltersSchema = z.object({
+const steelPriceStructuredFiltersSchema: z.ZodType<SteelPriceStructuredFilters> = z.object({
   categories: z.array(nonEmptyString).max(10).optional(),
   surfaces: z.array(nonEmptyString).max(10).optional(),
   sizeAMm: z.number().positive().optional(),
@@ -131,7 +150,14 @@ function hasDerivedCandidate(input: SteelPriceSearchTermsRawInput): boolean {
   );
 }
 
-export const steelPriceSearchTermsInputSchema = z
+export interface SteelPriceSearchTermsInput {
+  originalText: string;
+  candidates: SteelPriceSearchCandidate[];
+  structuredFilters?: SteelPriceStructuredFilters;
+  maxQueries?: number;
+}
+
+export const steelPriceSearchTermsInputSchema: z.ZodType<SteelPriceSearchTermsInput> = z
   .object({
     originalText: nonEmptyString,
     candidates: z.array(steelPriceSearchCandidateSchema).max(20),
@@ -148,9 +174,6 @@ export const steelPriceSearchTermsInputSchema = z
     }
   });
 
-export type SteelPriceSearchCandidate = z.infer<typeof steelPriceSearchCandidateSchema>;
-export type SteelPriceSearchTermsInput = z.input<typeof steelPriceSearchTermsInputSchema>;
-
 export interface SteelRejectedPriceSearchQuery {
   queryId: string;
   reason: 'raw_user_text_is_not_a_reviewed_candidate';
@@ -161,7 +184,7 @@ export interface SteelPriceSearchTermsResult {
   rawTextSearchAllowed: false;
   candidateQueries: SteelPriceSearchCandidate[];
   rejectedQueries: SteelRejectedPriceSearchQuery[];
-  structuredFilters?: z.infer<typeof steelPriceStructuredFiltersSchema>;
+  structuredFilters?: SteelPriceStructuredFilters;
 }
 
 export function generateSteelPriceSearchTerms(

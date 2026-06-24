@@ -4,7 +4,7 @@ import { steelProviderEnum } from './common';
 
 import type { ISteelAIRun } from '~/types';
 
-const steelAIRunSchema = new Schema<ISteelAIRun>(
+const steelAIRunSchema: Schema<ISteelAIRun> = new Schema<ISteelAIRun>(
   {
     conversationMetaId: {
       type: String,

@@ -2,7 +2,7 @@ import { Schema } from 'mongoose';
 
 import type { ISteelNamedState } from '~/types';
 
-export function createSteelNamedStateSchema() {
+export function createSteelNamedStateSchema(): Schema<ISteelNamedState> {
   return new Schema<ISteelNamedState>(
     {
       name: {

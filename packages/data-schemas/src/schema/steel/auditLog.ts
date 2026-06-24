@@ -4,7 +4,7 @@ import { steelAuditActorTypeEnum, steelAuditResultEnum } from './common';
 
 import type { ISteelAuditLog } from '~/types';
 
-const steelAuditLogSchema = new Schema<ISteelAuditLog>(
+const steelAuditLogSchema: Schema<ISteelAuditLog> = new Schema<ISteelAuditLog>(
   {
     actorType: {
       type: String,

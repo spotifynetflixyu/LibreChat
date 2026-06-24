@@ -130,6 +130,21 @@ export interface SteelHandlersDeps {
   workingOrderMemoryWriter?: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
 }
 
+interface SteelHandlers {
+  chat(req: Request, res: Response): Promise<void>;
+  streamChat(req: Request, res: Response): Promise<void>;
+  listModels(req: SteelRequest, res: Response): Promise<void>;
+  createAuthenticatedConversation(req: SteelRequest, res: Response): Promise<void>;
+  createGuestConversation(req: SteelRequest, res: Response): Promise<void>;
+  readConversation(req: SteelRequest, res: Response): Promise<void>;
+  readConversationMessages(req: SteelRequest, res: Response): Promise<void>;
+  createRuleProposal(req: SteelRequest, res: Response): Promise<void>;
+}
+
+interface SteelAdminHandlers {
+  requestCapabilitySmoke(_req: Request, res: Response): Promise<void>;
+}
+
 type SteelChatProviderResult = SteelOAuthProviderChatResponse;
 
 type SteelChatErrorProvider = 'openai_oauth_responses' | 'openai_api';
@@ -1286,7 +1301,7 @@ export function createSteelHandlers({
   runtimeRulesClient,
   ruleProposalService,
   workingOrderMemoryWriter,
-}: SteelHandlersDeps) {
+}: SteelHandlersDeps): SteelHandlers {
   const getConversationService = () => conversationService ?? createDefaultConversationService(env);
   const getHistoryService = () => historyService ?? getDefaultHistoryService();
   const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
@@ -1732,9 +1747,9 @@ export function createSteelHandlers({
   };
 }
 
-export function createSteelAdminHandlers() {
+export function createSteelAdminHandlers(): SteelAdminHandlers {
   return {
-    async requestCapabilitySmoke(_req: Request, res: Response) {
+    async requestCapabilitySmoke(_req: Request, res: Response): Promise<void> {
       res.status(200).json({
         capabilities: {
           text: 'passed',

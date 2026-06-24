@@ -8,7 +8,8 @@ import {
 
 import type { ISteelWorkingOrderMemory, SteelWorkingOrderMemorySourceRef } from '~/types';
 
-const steelWorkingOrderMemorySourceRefSchema = new Schema<SteelWorkingOrderMemorySourceRef>(
+const steelWorkingOrderMemorySourceRefSchema: Schema<SteelWorkingOrderMemorySourceRef> =
+  new Schema<SteelWorkingOrderMemorySourceRef>(
   {
     sourceKind: {
       type: String,
@@ -31,9 +32,10 @@ const steelWorkingOrderMemorySourceRefSchema = new Schema<SteelWorkingOrderMemor
     },
   },
   { _id: false },
-);
+  );
 
-const steelWorkingOrderMemorySchema = new Schema<ISteelWorkingOrderMemory>(
+const steelWorkingOrderMemorySchema: Schema<ISteelWorkingOrderMemory> =
+  new Schema<ISteelWorkingOrderMemory>(
   {
     conversationId: {
       type: String,
@@ -89,7 +91,7 @@ const steelWorkingOrderMemorySchema = new Schema<ISteelWorkingOrderMemory>(
     },
   },
   { timestamps: true },
-);
+  );
 
 steelWorkingOrderMemorySchema.index({
   conversationId: 1,
