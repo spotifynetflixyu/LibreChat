@@ -34,12 +34,12 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
       'Search Steel customers using AI-selected keywords across ERP code, display name, legal name, tax id, and aliases.',
     argsSchema: steelToolArgsSchemas.search_customers,
   },
-	{
-	    name: 'search_price_candidates',
-	    description:
-	      'Search unified Steel price candidates with AI-derived query objects. Send only top-level queries. Each lookup query omits mode or uses mode=lookup, includes a visible category enum value, and may include visible material, thicknessMm string array, keyword text, and per-query limit defaulting to 30. Related 切工/切割 rows for long-material categories are included automatically by the backend. If category is unclear, add a query with mode=category_discovery and keyword first instead of guessing.',
-	    argsSchema: steelToolArgsSchemas.search_price_candidates,
-	  },
+  {
+    name: 'search_price_candidates',
+    description:
+      'Search unified Steel price candidates with AI-derived query objects. Send only top-level queries. Each lookup query omits mode or uses mode=lookup, includes a visible category enum value, and may include material keyword enum value: 黑鐵, 白鐵, 錏, 鋁, or 鋅. It may also include thicknessMm string array, keyword text, and per-query limit defaulting to 30. If category is unclear, add a query with mode=category_discovery and keyword first instead of guessing.',
+    argsSchema: steelToolArgsSchemas.search_price_candidates,
+  },
   {
     name: 'run_file_ocr',
     description:
@@ -60,7 +60,9 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   },
 ];
 
-function getProviderToolNames(contextMode: SteelProviderToolContextMode): Set<SteelProviderToolName> {
+function getProviderToolNames(
+  contextMode: SteelProviderToolContextMode,
+): Set<SteelProviderToolName> {
   if (contextMode !== 'compact_workbook') {
     return providerToolNames;
   }

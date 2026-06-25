@@ -1,0 +1,459 @@
+import {
+  prepareSteelRuntimeContext,
+  serializeSteelRuntimeContext,
+} from '../runtime/context';
+
+import type { SteelOAuthChatMessage, SteelOAuthChatMessageRole } from '../ai/provider';
+import type { SteelInstructionPacket } from '../repositories/instructions';
+import type { SteelQuoteDefault } from '../repositories/defaults';
+import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
+import type {
+  PrepareSteelRuntimeContextInput,
+  SteelRuntimeContext,
+  SteelRuntimeContextDependencies,
+  SteelRuntimeContextMode,
+  SteelRuntimeJsonObject,
+} from '../runtime/context';
+
+export const steelNativeContextVersion = 1 as const;
+export const steelNativeDefaultRuntimeContextMode = 'compact_workbook' as const;
+
+export const steelNativeInstructionPrefixSections = [
+  'agent_rules',
+  'quote_defaults_and_rules',
+  'output_rules',
+  'tool_policy',
+  'other_rules',
+  'reviewed_agent_rules',
+  'instruction_packets',
+] as const;
+
+export type SteelNativeInstructionPrefixSection =
+  (typeof steelNativeInstructionPrefixSections)[number];
+
+export type SteelNativeRenderProfile =
+  | 'agent_client'
+  | 'agents_chat_completions'
+  | 'open_responses';
+
+export type SteelNativeAttachmentSource =
+  | 'librechat_file_record'
+  | 'provider_file_reference'
+  | 'tool_evidence_reference';
+
+export interface SteelNativeInstructionFragment {
+  slug: string;
+  content: string;
+  title?: string;
+  source?: string;
+}
+
+export interface SteelNativeFileReference {
+  fileId: string;
+  source: SteelNativeAttachmentSource;
+  mediaType: string;
+  conversationId?: string;
+  messageId?: string;
+  filename?: string;
+  pageCount?: number;
+  providerFileId?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface SteelNativeMessage {
+  role: SteelOAuthChatMessageRole;
+  content: string;
+  messageId?: string;
+  files?: readonly SteelNativeFileReference[];
+}
+
+export interface SteelNativeConversationInput {
+  requestId: string;
+  conversationId?: string;
+  activeHistory: readonly SteelNativeMessage[];
+  currentUserTurn?: SteelNativeMessage;
+  edit?: {
+    editMessageId: string;
+    supersededAfterTurnIndex: number;
+  };
+}
+
+export interface SteelNativeContextAttachmentsInput {
+  currentTurnFiles?: readonly SteelNativeFileReference[];
+  priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
+}
+
+export interface SteelNativeContextMetadata {
+  nativeContextVersion: typeof steelNativeContextVersion;
+  contextMode: SteelRuntimeContextMode;
+  renderProfile: SteelNativeRenderProfile;
+  globalApplied: true;
+  attachmentBytePolicy: 'metadata_references_only';
+  ocrExecutionPolicy: 'agent_calls_run_file_ocr';
+  rulePrefixOrder: typeof steelNativeInstructionPrefixSections;
+}
+
+export interface SteelNativeInstructionPrefixSlot {
+  section: SteelNativeInstructionPrefixSection;
+  itemCount: number;
+  text?: string;
+}
+
+export interface BuildSteelNativeInstructionPrefixInput {
+  runtimeContext: SteelRuntimeContext;
+  agentRuleFragments?: readonly SteelNativeInstructionFragment[];
+}
+
+export interface BuildSteelNativeRuntimeContextTextInput {
+  runtimeContext: SteelRuntimeContext;
+  metadata: SteelNativeContextMetadata;
+  attachmentReferences: readonly SteelNativeFileReference[];
+}
+
+export interface BuildSteelGlobalAgentContextInput {
+  conversation: SteelNativeConversationInput;
+  dependencies: SteelRuntimeContextDependencies;
+  attachments?: SteelNativeContextAttachmentsInput;
+  runtimeContextMode?: SteelRuntimeContextMode;
+  renderProfile?: SteelNativeRenderProfile;
+  agentRuleFragments?: readonly SteelNativeInstructionFragment[];
+  prepareRuntimeContext?: (
+    input: PrepareSteelRuntimeContextInput,
+  ) => Promise<SteelRuntimeContext>;
+}
+
+export interface SteelNativeContextSlots {
+  instructionPrefix: 'top_of_context';
+  runtimeContext: 'dynamic_system_tail';
+}
+
+export interface SteelNativeGlobalAgentContext {
+  instructionPrefix: string;
+  runtimeContextText: string;
+  runtimeContext: SteelRuntimeContext;
+  metadata: SteelNativeContextMetadata;
+  contextSlots: SteelNativeContextSlots;
+  attachmentReferences: readonly SteelNativeFileReference[];
+  instructionPrefixSections: readonly SteelNativeInstructionPrefixSlot[];
+}
+
+type SteelNativeJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly SteelNativeJsonValue[]
+  | { readonly [key: string]: SteelNativeJsonValue | undefined };
+
+function compactText(values: readonly (string | undefined)[]): string[] {
+  return values.map((value) => value?.trim()).filter((value): value is string => Boolean(value));
+}
+
+function renderJson(value: SteelNativeJsonValue): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function renderInstructionFragment(fragment: SteelNativeInstructionFragment): string {
+  return compactText([
+    `## ${fragment.slug}`,
+    fragment.title,
+    fragment.source ? `source: ${fragment.source}` : undefined,
+    fragment.content,
+  ]).join('\n');
+}
+
+function renderAgentRule(rule: SteelAgentRule): string {
+  return compactText([
+    `## ${rule.slug}`,
+    rule.title,
+    `ruleType: ${rule.ruleType}`,
+    `ruleSections: ${rule.ruleSections.join(', ')}`,
+    rule.prompt,
+    rule.toolPolicy === null ? undefined : `toolPolicy: ${JSON.stringify(rule.toolPolicy)}`,
+    rule.outputPolicy === null ? undefined : `outputPolicy: ${JSON.stringify(rule.outputPolicy)}`,
+  ]).join('\n');
+}
+
+function renderQuoteDefault(quoteDefault: SteelQuoteDefault): string {
+  return compactText([
+    `## quote_default:${quoteDefault.id}`,
+    `defaultType: ${quoteDefault.defaultType}`,
+    `scopeType: ${quoteDefault.scopeType}`,
+    quoteDefault.effect,
+    `selector: ${JSON.stringify(quoteDefault.selector)}`,
+    `defaultParameters: ${JSON.stringify(quoteDefault.defaultParameters)}`,
+  ]).join('\n');
+}
+
+function renderQuoteRule(quoteRule: SteelQuoteRule): string {
+  return compactText([
+    `## quote_rule:${quoteRule.id}`,
+    `ruleType: ${quoteRule.ruleType}`,
+    `scopeType: ${quoteRule.scopeType}`,
+    quoteRule.catalogFamily ? `catalogFamily: ${quoteRule.catalogFamily}` : undefined,
+    quoteRule.productFamily ? `productFamily: ${quoteRule.productFamily}` : undefined,
+    quoteRule.chargeType ? `chargeType: ${quoteRule.chargeType}` : undefined,
+    quoteRule.formulaCode ? `formulaCode: ${quoteRule.formulaCode}` : undefined,
+    quoteRule.prompt,
+    `selectors: ${JSON.stringify(quoteRule.selectors)}`,
+    `parameters: ${JSON.stringify(quoteRule.parameters)}`,
+  ]).join('\n');
+}
+
+function renderInstructionPacket(packet: SteelInstructionPacket): string {
+  return compactText([
+    `## ${packet.slug}`,
+    packet.title,
+    `packetGroups: ${packet.packetGroups.join(', ')}`,
+    packet.instruction,
+    packet.blockingRules.length > 0
+      ? `blockingRules: ${packet.blockingRules.join(', ')}`
+      : undefined,
+    packet.requiredLookups.length > 0
+      ? `requiredLookups: ${packet.requiredLookups.join(', ')}`
+      : undefined,
+  ]).join('\n');
+}
+
+function buildSlot(
+  section: SteelNativeInstructionPrefixSection,
+  title: string,
+  items: readonly string[],
+): SteelNativeInstructionPrefixSlot {
+  const renderedItems = compactText(items);
+
+  return {
+    section,
+    itemCount: renderedItems.length,
+    text: renderedItems.length > 0 ? [`# ${title}`, ...renderedItems].join('\n\n') : undefined,
+  };
+}
+
+function buildOtherRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  const otherGlobalRules = runtimeContext.rules.otherGlobalRules;
+
+  return [
+    ...(otherGlobalRules.ocrRules ?? []).map(renderAgentRule),
+    ...otherGlobalRules.fileRules.map(renderAgentRule),
+    ...otherGlobalRules.sourcePriorityRules.map(renderAgentRule),
+    ...otherGlobalRules.markdownOutputRules.map(renderAgentRule),
+  ];
+}
+
+export function buildSteelNativeInstructionPrefix({
+  runtimeContext,
+  agentRuleFragments = [],
+}: BuildSteelNativeInstructionPrefixInput): {
+  instructionPrefix: string;
+  sections: SteelNativeInstructionPrefixSlot[];
+} {
+  const sections = [
+    buildSlot(
+      'agent_rules',
+      'Steel Agent Rules',
+      agentRuleFragments.map(renderInstructionFragment),
+    ),
+    buildSlot('quote_defaults_and_rules', 'Steel Quote Defaults And Rules', [
+      ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
+      ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
+    ]),
+    buildSlot(
+      'output_rules',
+      'Steel Output Rules',
+      runtimeContext.rules.outputRules.map(renderAgentRule),
+    ),
+    buildSlot('tool_policy', 'Steel Tool Policy', [renderJson(runtimeContext.toolPolicy)]),
+    buildSlot('other_rules', 'Steel Other Rules', buildOtherRuleItems(runtimeContext)),
+    buildSlot(
+      'reviewed_agent_rules',
+      'Steel Reviewed Agent Rules',
+      runtimeContext.rules.agentRules.map(renderAgentRule),
+    ),
+    buildSlot(
+      'instruction_packets',
+      'Steel Instruction Packets',
+      runtimeContext.rules.steelGlobalRules.instructionPackets.map(renderInstructionPacket),
+    ),
+  ];
+
+  return {
+    instructionPrefix: compactText(sections.map((section) => section.text)).join('\n\n'),
+    sections,
+  };
+}
+
+export function createSteelNativeContextMetadata({
+  contextMode,
+  renderProfile = 'agent_client',
+}: {
+  contextMode: SteelRuntimeContextMode;
+  renderProfile?: SteelNativeRenderProfile;
+}): SteelNativeContextMetadata {
+  return {
+    nativeContextVersion: steelNativeContextVersion,
+    contextMode,
+    renderProfile,
+    globalApplied: true,
+    attachmentBytePolicy: 'metadata_references_only',
+    ocrExecutionPolicy: 'agent_calls_run_file_ocr',
+    rulePrefixOrder: steelNativeInstructionPrefixSections,
+  };
+}
+
+function toRuntimeMessage(message: SteelNativeMessage): SteelOAuthChatMessage {
+  return {
+    role: message.role,
+    content: message.content,
+    messageId: message.messageId,
+  };
+}
+
+function toRuntimeConversationInput(
+  conversation: SteelNativeConversationInput,
+): PrepareSteelRuntimeContextInput['conversation'] {
+  return {
+    requestId: conversation.requestId,
+    conversationId: conversation.conversationId,
+    activeHistory: conversation.activeHistory.map(toRuntimeMessage),
+    currentUserTurn:
+      conversation.currentUserTurn !== undefined
+        ? toRuntimeMessage(conversation.currentUserTurn)
+        : undefined,
+    edit: conversation.edit,
+  };
+}
+
+function getFileReferenceKey(file: SteelNativeFileReference): string {
+  return [file.source, file.fileId, file.messageId ?? '', file.providerFileId ?? ''].join(':');
+}
+
+function collectAttachmentReferences({
+  conversation,
+  attachments,
+}: {
+  conversation: SteelNativeConversationInput;
+  attachments?: SteelNativeContextAttachmentsInput;
+}): SteelNativeFileReference[] {
+  const filesByKey = new Map<string, SteelNativeFileReference>();
+  const addFiles = (files: readonly SteelNativeFileReference[] | undefined) => {
+    for (const file of files ?? []) {
+      filesByKey.set(getFileReferenceKey(file), file);
+    }
+  };
+
+  for (const message of conversation.activeHistory) {
+    addFiles(message.files);
+  }
+  addFiles(conversation.currentUserTurn?.files);
+  addFiles(attachments?.currentTurnFiles);
+
+  return [...filesByKey.values()];
+}
+
+function createNativeRuntimeDependencies(
+  dependencies: SteelRuntimeContextDependencies,
+): SteelRuntimeContextDependencies {
+  return {
+    ...dependencies,
+    listOtherGlobalRules: () => dependencies.listOtherGlobalRules({ includeOcrRules: true }),
+  };
+}
+
+function markNativeGlobalAttachments(runtimeContext: SteelRuntimeContext): SteelRuntimeContext {
+  return {
+    ...runtimeContext,
+    attachments: {
+      ...runtimeContext.attachments,
+      includeOcrRules: true,
+    },
+  };
+}
+
+function toSerializableFileReference(file: SteelNativeFileReference): SteelRuntimeJsonObject {
+  return {
+    fileId: file.fileId,
+    source: file.source,
+    mediaType: file.mediaType,
+    conversationId: file.conversationId,
+    messageId: file.messageId,
+    filename: file.filename,
+    pageCount: file.pageCount,
+    providerFileId: file.providerFileId,
+    width: file.width,
+    height: file.height,
+  };
+}
+
+export function buildSteelNativeRuntimeContextText({
+  runtimeContext,
+  metadata,
+  attachmentReferences,
+}: BuildSteelNativeRuntimeContextTextInput): string {
+  const parts = [
+    `# Steel Native Context Metadata\n${JSON.stringify(metadata, null, 2)}`,
+    `# Steel Runtime Context\n${serializeSteelRuntimeContext(runtimeContext)}`,
+  ];
+
+  if (attachmentReferences.length > 0) {
+    parts.push(
+      `# Steel Native File References\n${JSON.stringify(
+        attachmentReferences.map(toSerializableFileReference),
+        null,
+        2,
+      )}`,
+    );
+  }
+
+  return parts.join('\n\n');
+}
+
+export async function buildSteelGlobalAgentContext({
+  conversation,
+  dependencies,
+  attachments,
+  runtimeContextMode = steelNativeDefaultRuntimeContextMode,
+  renderProfile = 'agent_client',
+  agentRuleFragments,
+  prepareRuntimeContext = prepareSteelRuntimeContext,
+}: BuildSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
+  const runtimeContext = markNativeGlobalAttachments(
+    await prepareRuntimeContext({
+      conversation: toRuntimeConversationInput(conversation),
+      attachments: {
+        priorActiveFileEvidence:
+          attachments?.priorActiveFileEvidence !== undefined
+            ? [...attachments.priorActiveFileEvidence]
+            : undefined,
+      },
+      dependencies: createNativeRuntimeDependencies(dependencies),
+      mode: runtimeContextMode,
+    }),
+  );
+  const attachmentReferences = collectAttachmentReferences({ conversation, attachments });
+  const metadata = createSteelNativeContextMetadata({
+    contextMode: runtimeContext.outputSheets.contextMode,
+    renderProfile,
+  });
+  const { instructionPrefix, sections } = buildSteelNativeInstructionPrefix({
+    runtimeContext,
+    agentRuleFragments,
+  });
+
+  return {
+    instructionPrefix,
+    runtimeContextText: buildSteelNativeRuntimeContextText({
+      runtimeContext,
+      metadata,
+      attachmentReferences,
+    }),
+    runtimeContext,
+    metadata,
+    contextSlots: {
+      instructionPrefix: 'top_of_context',
+      runtimeContext: 'dynamic_system_tail',
+    },
+    attachmentReferences,
+    instructionPrefixSections: sections,
+  };
+}

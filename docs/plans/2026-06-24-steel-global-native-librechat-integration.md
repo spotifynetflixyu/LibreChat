@@ -81,7 +81,7 @@ Before implementing any phase, preserve these audited constraints:
 - Steel-enabled Open Responses must be durable and LibreChat-managed, equivalent to `store:true`; do not add a Steel `store:false` branch.
 - Keep LibreChat user Memory separate from Steel structured quote/workbook state, even when existing Steel service names contain `Memory`.
 - Final assistant Markdown capture must run after assistant message persistence succeeds. Use a native UI post-save hook around the assistant `databasePromise`, and use `responses.js` `saveResponseOutput()` after `db.saveMessage` for Open Responses.
-- LibreChat file records and permissions remain canonical. When OCR/table extraction is needed, route permitted file bytes/metadata through `run_file_ocr` to PaddleOCR MCP (`PaddleOCR-VL-1.6` / `paddleocr_vl`), and reuse persisted OCR/file-analysis state on follow-up turns.
+- LibreChat file records and permissions remain canonical. Native provider vision/file inputs must still be available to the AI agent for drawing reasoning such as holes, bends, slots, and cut marks. When OCR/table extraction is needed, route permitted file bytes/metadata through `run_file_ocr` to PaddleOCR MCP (`PaddleOCR-VL-1.6` / `paddleocr_vl`), and reuse persisted OCR/file-analysis state on follow-up turns.
 - `/steel/oauth-chat` is dev-only. It may provide fixture smoke evidence and activity-log comparison, but product behavior must be implemented in native LibreChat hooks.
 
 ## Module And Entrypoint Map
@@ -298,10 +298,34 @@ Create `packages/api/src/steel/native/context.ts`.
 Tasks:
 
 - Convert LibreChat `TMessage`/formatted messages into `SteelOAuthChatMessage` input for `prepareSteelRuntimeContext`.
+- Treat Steel as globally applied native behavior; do not make Phase 1 context correctness depend on a model-spec opt-in marker.
+- Do not add code that classifies ordinary chat as non-Steel and skips the framework; the AI decides whether Steel quoting behavior is relevant.
+- Do not add new `librechat.yaml` schema/config for Phase 1. Steel native
+  context should use existing LibreChat config surfaces only where they already
+  exist, such as model specs, endpoint config, and permissions. Do not duplicate
+  reviewed Steel OCR/file rules into `fileAnalysis.instructions`.
 - Preserve current user turn, file metadata, and active history.
-- Build a `Steel Global Context` text block using `serializeSteelRuntimeContext`.
-- Add a stable context version field.
+- Build native render outputs from the Steel runtime context:
+  - `instructionPrefix`, using fixed order: agent rules, quote defaults/rules,
+    output rules, tool policy, other rules including OCR/file rules, reviewed
+    agent rules, instruction packets.
+  - `runtimeContext`, carrying compact workbook/state metadata near the tail.
+- Do not conditionally omit OCR/file rules or other rule groups from the global
+  prefix.
+- Add stable diagnostic metadata, including native context version, context mode,
+  render profile, and `globalApplied: true`.
 - Default `runtimeContextMode` to `compact_workbook`.
+- Do not inline attachment bytes/base64 into Phase 1 Steel context; carry only
+  LibreChat file metadata/references there. The actual attachment should still
+  flow through LibreChat's native provider file/vision path when supported, and
+  OCR/tool byte access should use the permission-checked file pipeline.
+- Do not auto-run OCR when LibreChat receives or loads a file, and do not inject
+  OCR text into every prompt by default. `run_file_ocr` is an AI-visible Steel
+  tool that the agent calls when structured OCR/table extraction or durable
+  drawing evidence is needed.
+- Do not introduce a Phase 1 runtime disable switch. Tests should use dependency
+  injection, no-op dependencies, or mocks to verify behavior without adding a
+  product path that disables global Steel.
 - Return both:
   - `instructionPrefix`: for top-of-context Steel rules.
   - `runtimeContext`: for tools and structured state writers.
@@ -431,17 +455,29 @@ Tests:
 Tasks:
 
 - Reuse native LibreChat file records and attachment permissions.
+- Preserve native provider file/vision inputs so the AI agent can inspect
+  uploaded drawings/images/PDFs directly for holes, bends, slots, cut marks,
+  dimensions, and visual cross-checks.
 - When a LibreChat file message or attachment needs OCR/table extraction, pass the permitted LibreChat file bytes and metadata into the Steel OCR path instead of bypassing native file ownership.
 - Use existing document encoder support for Responses `input_file`.
-- Preserve `fileAnalysis.instructions`.
+- Treat reviewed Steel OCR/file rules as the authoritative OCR policy. Do not
+  duplicate that policy through `fileAnalysis.instructions`; if the YAML field is
+  retained for non-Steel compatibility, keep it as a short generic
+  provider-vision hint.
 - Route OCR tool calls through Steel `run_file_ocr`.
-- Default Steel table/drawing OCR to the configured PaddleOCR MCP implementation, currently `PaddleOCR-VL-1.6` / `paddleocr_vl`; do not treat OpenAI built-in OCR as the primary Steel table OCR source.
+- Keep `run_file_ocr` as an agent-called tool. File upload/loading alone should
+  not trigger automatic OCR text injection.
+- Default Steel table/drawing OCR to the configured PaddleOCR MCP implementation, currently `PaddleOCR-VL-1.6` / `paddleocr_vl`; provider vision may still inspect attachments directly, but it is not the durable structured-state writer by itself.
 - Ensure prior OCR/file evidence is read from Steel structured state, not prompt-inlined forever.
 - Do not re-OCR the same file on later turns when persisted OCR/file-analysis state is already available, unless the user explicitly asks to re-read/re-analyze or the stored state is missing/incomplete.
 
 Tests:
 
-- PDF/image upload in native chat exposes OCR rules only when relevant.
+- PDF/image upload in native chat keeps OCR/file rules available and passes
+  permitted attachments through the native provider file/vision path when
+  supported.
+- OCR runs only when the AI agent calls `run_file_ocr` or a later explicit
+  product decision adds a separate pre-processing path.
 - LibreChat PDF/image attachment requiring OCR invokes `run_file_ocr` with the native file bytes/metadata and reaches the PaddleOCR MCP-backed executor.
 - Previous file evidence can be used on follow-up turns.
 - Follow-up turns use persisted OCR/file-analysis state without calling `run_file_ocr` again by default.
@@ -485,26 +521,22 @@ Tests:
 - Disconnect/resume keeps final assistant message and content parts.
 - Abort stops provider/tool work.
 
-### Phase 9 - Permissions, Config, And Admin Defaults
+### Phase 9 - Permissions, Admin Defaults, And Existing Config Surfaces
 
 Tasks:
 
-- Add Steel global config under existing app config parsing, for example:
-  - `steel.global.enabled`
-  - `steel.global.includeRules`
-  - `steel.global.includeTools`
-  - `steel.global.includeMcp`
-  - `steel.global.includeSkills`
-  - `steel.global.providerMode`
-  - `steel.global.contextMode`
+- Do not add `librechat.yaml` switches that disable global Steel behavior or
+  selectively omit Steel rules/tools/framework. Steel is globally applied.
+- Reuse existing LibreChat config surfaces where needed:
+  - `modelSpecs` and endpoint config for provider/model defaults.
+  - existing permissions and capability config for access control.
 - Gate Steel data/tool access by existing user role plus Steel-specific capability.
 - Default enabled for this deployment, but keep testable switches.
 - Use modelSpecs/default presets to expose Steel-enabled OpenAI Responses defaults.
 
 Tests:
 
-- Disabled Steel global config produces original LibreChat behavior.
-- Enabled config preserves user memory/skills/tools.
+- Global Steel preserves user memory/skills/tools.
 - Unauthorized user cannot access Steel business tools/data.
 
 ### Phase 10 - Parity, Dev Probe Cleanup, And Rollout
@@ -538,7 +570,7 @@ Tests:
 | OAuth provider selected | Stateless reconstructed context; no provider `previous_response_id` dependency |
 | OpenAI API key Responses selected | Responses API default on for Steel spec; provider state used only when safe |
 | Provider state missing | Fallback to reconstructed context with metadata |
-| PDF/image turn | FileAnalysis instructions and OCR rules included only when relevant |
+| PDF/image turn | FileAnalysis instructions and OCR/file rules are present; native provider vision still receives permitted attachments where supported |
 | Tool call writes quote data | Steel structured state captures tool evidence and output sheet state |
 | Assistant emits full system-order Markdown table | Active working-order rows are overwritten by a new snapshot |
 | Assistant emits row-change Markdown table | Only affected active rows are superseded and replaced by merged rows |

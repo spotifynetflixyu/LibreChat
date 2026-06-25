@@ -21,11 +21,12 @@
 2. `search_price_candidates`
    - 需要產品價格、材料價格、加工價格、切工價格、孔加工價格、開槽價格、折工價格或其他報價單價時使用。
    - input 只允許 `{ "queries": [...] }`；`mode`、`keyword`、`limit` 都放在單筆 query 內，不放 top-level。
-   - lookup query 可省略 `mode`，使用可見 enum `category` / `material`，可選 `thicknessMm: string[]`、`keyword`、`limit`；不用 `specs`、`includeRelatedCutting` 或 `無`。
+   - lookup query 可省略 `mode`，使用可見 enum `category` / 查詢端 `material`；`material` 只用簡化關鍵字：`黑鐵`、`白鐵`、`錏`、`鋁`、`鋅`，可選 `thicknessMm: string[]`、`keyword`、`limit`；不用 `specs`、`includeRelatedCutting` 或 `無`。
    - `keyword` 可省略；有空白時 backend 會拆成 AND。category 不明時先用 `mode: "category_discovery"`，不要硬猜。
    - `category: "孔"` 只需送 `keyword: "鐵板"`；若多送材料、厚度、孔徑、limit 或其他加工參數，backend 會忽略。
-   - 鐵板先拆成結構化查詢，例如 `category: "鐵板/鋼板"`, `material: "OT 黑鐵"`, `thicknessMm: ["15"]`，不要把 `PL15*500` 當 keyword。
-   - 範例：`{ "queries": [{ "category": "鐵板/鋼板", "material": "OT 黑鐵", "thicknessMm": ["15"] }] }`；`{ "queries": [{ "mode": "category_discovery", "keyword": "白鐵方管 75x45" }] }`；`{ "queries": [{ "category": "孔", "keyword": "鐵板" }] }`。
+   - 鐵板先拆成結構化查詢，例如 `category: "鐵板/鋼板"`, `material: "黑鐵"`, `thicknessMm: ["15"]`，不要把 `PL15*500` 當 keyword。
+   - 自動附帶 `切工/切割` 只適用鋼軌、H型鋼、工字鐵、角鐵、槽鐵、平鐵/扁鐵、圓鐵/圓鋼/圓條、方鋼/方鐵、圓管、方管、扁方管；鐵板沒有另查切割價。
+   - 範例：`{ "queries": [{ "category": "鐵板/鋼板", "material": "黑鐵", "thicknessMm": ["15"] }] }`；`{ "queries": [{ "mode": "category_discovery", "keyword": "白鐵方管 75x45" }] }`；`{ "queries": [{ "category": "孔", "keyword": "鐵板" }] }`。
 3. `run_file_ocr`
    - PDF、掃描 PDF、圖片、拍照圖面、材料表截圖、手寫單、工程圖或任何 image/pdf 附件需要文字或表格資料時先呼叫。
    - PDF 一次以整份 PDF 呼叫，不做分頁 OCR。

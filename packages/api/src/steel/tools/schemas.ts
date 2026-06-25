@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   defaultPriceTierCode,
-  materialKinds,
+  priceLookupMaterialKinds,
   priceCategories,
   priceTierCodes,
 } from '../pricing/enums';
@@ -67,7 +67,7 @@ export interface LookupQuoteRulesToolInput {
 interface SteelPriceLookupQueryInput {
   mode?: 'lookup';
   category: (typeof priceCategories)[number];
-  material?: (typeof materialKinds)[number];
+  material?: (typeof priceLookupMaterialKinds)[number];
   thicknessMm?: string[];
   keyword?: string;
   limit?: number;
@@ -79,8 +79,12 @@ interface SteelPriceCategoryDiscoveryQueryInput {
   limit?: number;
 }
 
+type SearchPriceCandidateQueryInput =
+  | SteelPriceLookupQueryInput
+  | SteelPriceCategoryDiscoveryQueryInput;
+
 interface SearchPriceCandidatesInput {
-  queries: Array<SteelPriceLookupQueryInput | SteelPriceCategoryDiscoveryQueryInput>;
+  queries: SearchPriceCandidateQueryInput[];
 }
 
 interface SearchCustomersInput {
@@ -230,9 +234,9 @@ const priceLookupQuerySchema = z
         'Required price category enum value. If the category is unknown, call category_discovery mode first instead of guessing.',
       ),
     material: z
-      .enum(materialKinds)
+      .enum(priceLookupMaterialKinds)
       .optional()
-      .describe('Optional material enum value. Use the visible enum value, for example OT 黑鐵 or 錏.'),
+      .describe('Optional material keyword enum value. Use one of 黑鐵, 白鐵, 錏, 鋁, or 鋅.'),
     thicknessMm: z.array(nonEmptyString).min(1).max(20).optional(),
     keyword: nonEmptyString.optional(),
     limit: limitSchema,
@@ -247,12 +251,20 @@ const priceCategoryDiscoveryQuerySchema = z
   })
   .strict();
 
-const searchPriceCandidateQuerySchema = z.preprocess(
+const searchPriceCandidateQuerySchema: z.ZodType<
+  SearchPriceCandidateQueryInput,
+  z.ZodTypeDef,
+  unknown
+> = z.preprocess(
   normalizeSearchPriceCandidateQueryInput,
   z.union([priceCategoryDiscoveryQuerySchema, priceLookupQuerySchema]),
 );
 
-const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput> = z
+const searchPriceCandidatesSchema: z.ZodType<
+  SearchPriceCandidatesInput,
+  z.ZodTypeDef,
+  unknown
+> = z
   .object({
     queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1).max(20),
   })
@@ -395,7 +407,7 @@ const searchCustomersSchema: z.ZodType<SearchCustomersInput> = z.object({
 export const steelToolArgsSchemas: {
   readonly lookup_quote_rules: z.ZodType<LookupQuoteRulesToolInput>;
   readonly search_customers: z.ZodType<SearchCustomersInput>;
-  readonly search_price_candidates: z.ZodType<SearchPriceCandidatesInput>;
+  readonly search_price_candidates: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown>;
   readonly run_file_ocr: z.ZodType<RunFileOcrInput>;
   readonly read_active_workbook: z.ZodType<ReadActiveWorkbookInput>;
   readonly read_working_order_items: z.ZodType<ReadWorkingOrderItemsInput>;

@@ -158,7 +158,7 @@ describe('Steel minimal tool execution', () => {
         queries: [
           {
             category: '鐵板/鋼板',
-            material: 'OT 黑鐵',
+            material: '黑鐵',
             thicknessMm: ['6'],
             keyword: 'OT板',
             limit: 5,
@@ -176,7 +176,7 @@ describe('Steel minimal tool execution', () => {
     expect(client.calls[0]?.values).toEqual([
       'reviewed',
       '鐵板/鋼板',
-      'OT 黑鐵',
+      '%黑鐵%',
       '6.0',
       '%OT板%',
       5,
@@ -185,7 +185,7 @@ describe('Steel minimal tool execution', () => {
     expect(client.calls[0]?.sql).toContain('review_state = $1');
     expect(client.calls[0]?.sql).toContain('active = true');
     expect(client.calls[0]?.sql).toContain('category = $2');
-    expect(client.calls[0]?.sql).toContain('material = $3');
+    expect(client.calls[0]?.sql).toContain('material ILIKE $3');
     expect(client.calls[0]?.sql).not.toContain('customer_tier_id');
     expect(client.calls[0]?.sql).not.toContain("unit = 'kg'");
     expect(result.data).not.toHaveProperty('customerTier');
@@ -207,7 +207,7 @@ describe('Steel minimal tool execution', () => {
       client: createClient([]),
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'OT板', limit: 5 }],
+        queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'OT板', limit: 5 }],
         customerTier: 'A',
       },
     });
@@ -225,7 +225,7 @@ describe('Steel minimal tool execution', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'OT板', limit: 5 }],
+        queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'OT板', limit: 5 }],
       },
     });
 
@@ -235,7 +235,13 @@ describe('Steel minimal tool execution', () => {
     }
 
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['reviewed', '鐵板/鋼板', 'OT 黑鐵', '%OT板%', 5]);
+    expect(client.calls[0]?.values).toEqual([
+      'reviewed',
+      '鐵板/鋼板',
+      '%黑鐵%',
+      '%OT板%',
+      5,
+    ]);
     expect(client.calls[0]?.sql).not.toContain('customer_tier_id');
     expect(result.data.priceCandidates).toEqual([
       expect.objectContaining({

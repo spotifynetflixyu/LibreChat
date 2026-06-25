@@ -1,5 +1,6 @@
 import { discoverSteelPriceCategories, searchSteelPriceItems } from './prices';
 
+import type { PriceCategory } from '../pricing/enums';
 import type { SteelRepositoryClient } from './types';
 
 function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
@@ -51,7 +52,7 @@ describe('Steel price repositories', () => {
       queries: [
         {
           category: '扁方管',
-          material: 'OT 黑鐵',
+          material: '黑鐵',
           thicknessMm: ['2', '2.3'],
           keyword: '75*45 黑方管',
           limit: 5,
@@ -62,7 +63,7 @@ describe('Steel price repositories', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.prices'), [
       'reviewed',
       '扁方管',
-      'OT 黑鐵',
+      '%黑鐵%',
       '2.0',
       '2.3',
       '%75x45%',
@@ -76,7 +77,7 @@ describe('Steel price repositories', () => {
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('review_state = $1'));
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('active = true'));
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('category = $2'));
-    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('material = $3'));
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('material ILIKE $3'));
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('source_thickness = $4'));
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('source_thickness = $5'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('steel.price_items'));
@@ -154,14 +155,17 @@ describe('Steel price repositories', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
 
-    expect(sql).toContain('material = $3');
+    expect(sql).toContain('material ILIKE $3');
     expect(sql).toContain('source_thickness = $4');
     expect(sql).toContain('product_name ILIKE $5');
+    expect(sql).not.toContain("category = $6");
+    expect(sql).not.toContain("price_kind = 'cutting'");
+    expect(sql).not.toContain('subcategory = ANY');
     expect(sql).toContain(' AND ');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '鐵板/鋼板',
-      'OT 黑鐵',
+      '%黑鐵%',
       '15.0',
       '%雷射切割%',
       5,
@@ -194,8 +198,8 @@ describe('Steel price repositories', () => {
 
     await searchSteelPriceItems({ query } as SteelRepositoryClient, {
       queries: [
-        { category: '扁方管', material: 'OT 黑鐵', keyword: '75', limit: 10 },
-        { category: '扁方管', material: '錏', keyword: '50', limit: 10 },
+        { category: '扁方管', material: '黑鐵', keyword: '75', limit: 10 },
+        { category: '扁方管', material: '鋅', keyword: '50', limit: 10 },
       ],
     });
 
@@ -203,20 +207,20 @@ describe('Steel price repositories', () => {
 
     expect(sql).toContain('UNION ALL');
     expect(sql).toContain('category = $2');
-    expect(sql).toContain('material = $3');
+    expect(sql).toContain('material ILIKE $3');
     expect(sql).toContain('category = $9');
-    expect(sql).toContain('material = $10');
+    expect(sql).toContain('material ILIKE $10');
     expect(query).toHaveBeenCalledWith(expect.any(String), [
       'reviewed',
       '扁方管',
-      'OT 黑鐵',
+      '%黑鐵%',
       '%75%',
       '切工/切割',
       ['管'],
       '%75%',
       10,
       '扁方管',
-      '錏',
+      '%鋅%',
       '%50%',
       '切工/切割',
       ['管'],
@@ -225,7 +229,206 @@ describe('Steel price repositories', () => {
     ]);
   });
 
-  it('automatically includes related cutting rows for long-material categories', async () => {
+  it('searches zinc-family lookup material as a keyword against galvanized storage values', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [createPriceRow({ material: '錏/鍍鋅', product_name: '錏角鐵 L50' })],
+    });
+
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      queries: [{ category: '角鐵/角鋼', material: '鋅', limit: 5 }],
+    });
+
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
+      'reviewed',
+      '角鐵/角鋼',
+      '%鋅%',
+      '切工/切割',
+      ['角鐵'],
+      5,
+    ]);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        material: '錏/鍍鋅',
+        productName: '錏角鐵 L50',
+      }),
+    );
+  });
+
+  it('searches white-iron lookup material as a keyword across material and price text', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        createPriceRow({
+          material: 'No1 白鐵',
+          spec_key: 'STNO1_3.0',
+          product_name: 'STNO1 3.0*4*8',
+        }),
+      ],
+    });
+
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      queries: [{ category: '鐵板/鋼板', material: '白鐵', thicknessMm: ['3'], limit: 5 }],
+    });
+
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+    expect(sql).toContain('material ILIKE $3');
+    expect(sql).toContain('product_name ILIKE $3');
+    expect(sql).not.toContain("price_kind = 'cutting'");
+    expect(sql).not.toContain('subcategory = ANY');
+    expect(sql).not.toContain('material = $3');
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
+      'reviewed',
+      '鐵板/鋼板',
+      '%白鐵%',
+      '3.0',
+      5,
+    ]);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        material: 'No1 白鐵',
+        productName: 'STNO1 3.0*4*8',
+      }),
+    );
+  });
+
+  it('keeps sparse zinc plate lookup broad instead of applying thickness or keyword filters', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        createPriceRow({
+          material: '鋁鋅',
+          product_name: '鋁鋅鋼板 0.5',
+          category: '鐵板/鋼板',
+          source_thickness: '0.5',
+        }),
+      ],
+    });
+
+    const result = await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+      queries: [
+        {
+          category: '鐵板/鋼板',
+          material: '鋅',
+          thicknessMm: ['3'],
+          keyword: '浪板',
+          limit: 5,
+        },
+      ],
+    });
+
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+    expect(sql).toContain('category = $2');
+    expect(sql).toContain('material ILIKE $3');
+    expect(sql).not.toContain('source_thickness =');
+    expect(sql).not.toContain("price_kind = 'cutting'");
+    expect(sql).not.toContain('subcategory = ANY');
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
+      'reviewed',
+      '鐵板/鋼板',
+      '%鋅%',
+      5,
+    ]);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        material: '鋁鋅',
+        productName: '鋁鋅鋼板 0.5',
+      }),
+    );
+  });
+
+  it.each([
+    ['H型鋼', ['H型鋼', '工字鐵/H型鋼']],
+    ['工字鐵/I字鐵', ['工字鐵/H型鋼']],
+    ['角鐵/角鋼', ['角鐵']],
+    ['槽鐵', ['槽鐵']],
+    ['平鐵/扁鐵', ['平鐵/扁鐵']],
+    ['圓管/鋼管', ['管']],
+    ['方管', ['管']],
+    ['扁方管', ['管']],
+  ] satisfies Array<[PriceCategory, string[]]>)(
+    'automatically includes related cutting rows for subcategory-backed category %s',
+    async (category, subcategories) => {
+      const query = jest.fn().mockResolvedValue({ rows: [] });
+
+      await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+        queries: [{ category, keyword: '200*100', limit: 20 }],
+      });
+
+      const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+      expect(sql).toContain("price_kind = 'cutting'");
+      expect(sql).toContain('subcategory = ANY($5::text[])');
+      expect(query).toHaveBeenCalledWith(expect.any(String), [
+        'reviewed',
+        category,
+        '%200x100%',
+        '切工/切割',
+        subcategories,
+        '%200x100%',
+        20,
+      ]);
+    },
+  );
+
+  it.each([
+    ['鐵軌', ['%鋼軌%', '%鐵軌%']],
+    ['圓鐵/圓鋼', ['%圓鐵%', '%圓鋼%', '%圓條%']],
+    ['方鋼/方鐵', ['%方鋼%', '%方鐵%']],
+  ] satisfies Array<[PriceCategory, string[]]>)(
+    'automatically includes related cutting rows by cutting text for category %s',
+    async (category, cuttingKeywords) => {
+      const query = jest.fn().mockResolvedValue({ rows: [] });
+
+      await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+        queries: [{ category, keyword: '200*100', limit: 20 }],
+      });
+
+      const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+      expect(sql).toContain("price_kind = 'cutting'");
+      expect(sql).not.toContain('subcategory = ANY');
+      expect(sql).toContain('product_name ILIKE $5');
+      expect(query).toHaveBeenCalledWith(expect.any(String), [
+        'reviewed',
+        category,
+        '%200x100%',
+        '切工/切割',
+        ...cuttingKeywords,
+        '%200x100%',
+        20,
+      ]);
+    },
+  );
+
+  it.each([
+    'C型鋼',
+    '鐵板/鋼板',
+    '樓層板',
+    '浪板/收邊',
+    'T型鋼',
+  ] satisfies PriceCategory[])(
+    'does not include related cutting rows for non-whitelisted category %s',
+    async (category) => {
+      const query = jest.fn().mockResolvedValue({ rows: [] });
+
+      await searchSteelPriceItems({ query } as SteelRepositoryClient, {
+        queries: [{ category, keyword: '200*100', limit: 20 }],
+      });
+
+      const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+      expect(sql).not.toContain("price_kind = 'cutting'");
+      expect(sql).not.toContain('subcategory = ANY');
+      expect(query).toHaveBeenCalledWith(expect.any(String), [
+        'reviewed',
+        category,
+        '%200x100%',
+        20,
+      ]);
+    },
+  );
+
+  it('returns related cutting rows in the same price candidate call', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         createPriceRow({
@@ -308,6 +511,26 @@ describe('Steel price repositories', () => {
         exampleErpItemCode: 'GDH075',
         exampleProductName: '黑方管 75*45',
       },
+    ]);
+  });
+
+  it('discovers candidate categories by matching keyword terms against material too', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await discoverSteelPriceCategories({ query } as SteelRepositoryClient, {
+      keyword: '白鐵 方管',
+      limit: 5,
+    });
+
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+
+    expect(sql).toContain('material ILIKE $2');
+    expect(sql).toContain('product_name ILIKE $3');
+    expect(query).toHaveBeenCalledWith(expect.any(String), [
+      'reviewed',
+      '%白鐵%',
+      '%方管%',
+      5,
     ]);
   });
 });

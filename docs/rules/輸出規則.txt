@@ -23,7 +23,7 @@
 2. 第一張表必須是 `system_order` 逐項明細；摘要、總計、人工複核、說明表只能放在其後，不可取代逐項明細。
 3. 找不到完全匹配不可硬套或省略；可用相近品項暫估並標低信心，否則單價 / 小計填「未確認」。
 4. 單價不明、金額不明、price row 空白 / 0、客戶分級價格缺漏時不可填 0；只有 true zero rule、使用者明確不計費或 reviewed rule 明確為 0 時，才可填 0。
-5. 不輸出內部 tool schema、raw SQL、source ref JSON、workbook cell operation、file-analysis workspace 或已刪除 patch tool。
+5. 不輸出內部 tool schema、raw SQL、source ref JSON、workbook cell operation、file-analysis workspace。
 
 `system_order`：
 1. 固定 ERP 欄位與順序：`公司編號`、`項次`、`倉庫編號`、`型號`、`品名規格`、`材質編號`、`廠別編號`、`單位`、`數量`、`單重`、`總數`、`單價`、`計價基準`、`公式編號`、`厚度`、`寬度`、`長度`、`類別`、`交貨日期`、`備註`；不得新增自訂欄位，輔助資訊寫入 `備註` 或 `manual_review`。
@@ -47,6 +47,6 @@
 5. 最後一列必須是 `總計`；未確認費用可列說明或 `manual_review`，不可混入已確認總額。
 
 `manual_review`：
-1. 只列需人工確認、低信心、未完全匹配、客戶 / 等級 / 交期不明、加工方式不明、單價不明或未確認費用。
+1. 只列需人工確認、低信心、未完全匹配、客戶 / 等級、加工方式不明、單價不明或未確認費用。
 2. 不可取代 `system_order` 或 `customer_quote` 必要報價列；需複核的品項仍要在對應表格保留列。
 3. 每列標明來源表格、來源件號 / 項次、問題欄位、目前判斷、需確認內容與影響範圍。

@@ -8,6 +8,7 @@ export * from './conversations/service';
 export * from './handlers';
 export * from './history';
 export * from './memory';
+export * from './native';
 export * from './normalization';
 export * from './repositories';
 export * from './rules';

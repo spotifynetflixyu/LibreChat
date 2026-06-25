@@ -82,6 +82,7 @@ export * from './steel/conversations/repository';
 export * from './steel/conversations/service';
 export * from './steel/handlers';
 export * from './steel/models';
+export * from './steel/native';
 export * from './steel/normalization';
 export * from './steel/postgres';
 export * from './steel/repositories';

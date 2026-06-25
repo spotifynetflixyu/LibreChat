@@ -7,10 +7,6 @@ import {
   parseSteelSourceRefs,
   parseValueState,
 } from './types';
-import {
-  type MaterialKind,
-  type PriceCategory,
-} from '../pricing/enums';
 import { normalizeSteelSpecKey } from '../normalization/spec';
 
 import type {
@@ -21,6 +17,11 @@ import type {
   SteelSqlParameter,
   SteelValueState,
 } from './types';
+import type {
+  PriceLookupMaterialKind,
+  PriceCategory,
+  MaterialKind,
+} from '../pricing/enums';
 
 export type SteelPriceKind = 'product' | 'cutting' | 'hole';
 
@@ -95,7 +96,7 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
 
 export interface SteelPriceCandidateQuery {
   category: PriceCategory;
-  material?: MaterialKind;
+  material?: PriceLookupMaterialKind;
   thicknessMm?: readonly string[];
   keyword?: string;
   limit?: number;
@@ -123,10 +124,32 @@ export interface SteelPriceCategoryCandidate {
 }
 
 interface ParsedPriceKeyword {
-  material?: MaterialKind;
+  material?: PriceLookupMaterialKind;
   thicknessMm?: string;
   terms: string[];
 }
+
+interface RelatedCuttingCriteria {
+  subcategories: readonly string[];
+  keywords: readonly string[];
+}
+
+const priceKeywordColumns = ['product_name', 'spec_key', 'erp_item_code', 'source_spec'];
+const priceMaterialKeywordColumns = ['material', ...priceKeywordColumns];
+const relatedCuttingKeywordColumns = ['product_name', 'spec_key', 'source_spec', 'subcategory'];
+const relatedCuttingCriteriaByCategory: Partial<Record<PriceCategory, RelatedCuttingCriteria>> = {
+  鐵軌: { subcategories: [], keywords: ['鋼軌', '鐵軌'] },
+  H型鋼: { subcategories: ['H型鋼', '工字鐵/H型鋼'], keywords: [] },
+  '工字鐵/I字鐵': { subcategories: ['工字鐵/H型鋼'], keywords: [] },
+  '角鐵/角鋼': { subcategories: ['角鐵'], keywords: [] },
+  槽鐵: { subcategories: ['槽鐵'], keywords: [] },
+  '平鐵/扁鐵': { subcategories: ['平鐵/扁鐵'], keywords: [] },
+  '圓鐵/圓鋼': { subcategories: [], keywords: ['圓鐵', '圓鋼', '圓條'] },
+  '方鋼/方鐵': { subcategories: [], keywords: ['方鋼', '方鐵'] },
+  '圓管/鋼管': { subcategories: ['管'], keywords: [] },
+  方管: { subcategories: ['管'], keywords: [] },
+  扁方管: { subcategories: ['管'], keywords: [] },
+};
 
 function normalizeKeywordText(value: string): string {
   return value.normalize('NFKC').replace(/[＊*×]/gu, 'x').trim();
@@ -156,14 +179,14 @@ function extractThicknessMm(value: string): { text: string; thicknessMm?: string
   return { text, thicknessMm };
 }
 
-function extractMaterial(value: string): { text: string; material?: MaterialKind } {
+function extractMaterial(value: string): { text: string; material?: PriceLookupMaterialKind } {
   if (!/(?:OT板|OT|黑鐵板|黑鐵)/iu.test(value)) {
     return { text: value };
   }
 
   return {
     text: value.replace(/(?:OT板|OT|黑鐵板|黑鐵)/giu, ' '),
-    material: 'OT 黑鐵',
+    material: '黑鐵',
   };
 }
 
@@ -245,6 +268,13 @@ function addThicknessMmFilter(
   clauses.push(`(${matchClauses.join(' OR ')})`);
 }
 
+function shouldUseBroadPlateZincLookup(
+  query: SteelPriceCandidateQuery,
+  material: PriceLookupMaterialKind | undefined,
+): boolean {
+  return query.category === '鐵板/鋼板' && material === '鋅';
+}
+
 function addPriceQueryFilter(
   values: SteelSqlParameter[],
   query: SteelPriceCandidateQuery,
@@ -257,68 +287,86 @@ function addPriceQueryFilter(
   const parsedKeyword = parsePriceKeyword(query.keyword, query);
   const material = query.material ?? parsedKeyword.material;
   if (material) {
-    values.push(material);
-    clauses.push(`material = $${values.length}`);
+    addKeywordTermsFilter(
+      clauses,
+      values,
+      priceMaterialKeywordColumns,
+      [normalizeKeywordText(material)],
+    );
   }
 
-  addThicknessMmFilter(
-    clauses,
-    values,
-    query.thicknessMm ?? (parsedKeyword.thicknessMm ? [parsedKeyword.thicknessMm] : undefined),
-  );
+  if (!shouldUseBroadPlateZincLookup(query, material)) {
+    addThicknessMmFilter(
+      clauses,
+      values,
+      query.thicknessMm ?? (parsedKeyword.thicknessMm ? [parsedKeyword.thicknessMm] : undefined),
+    );
 
-  addKeywordTermsFilter(
-    clauses,
-    values,
-    ['product_name', 'spec_key', 'erp_item_code', 'source_spec'],
-    parsedKeyword.terms,
-  );
+    addKeywordTermsFilter(
+      clauses,
+      values,
+      priceKeywordColumns,
+      parsedKeyword.terms,
+    );
+  }
 
   return `(${clauses.join('\n    AND ')})`;
 }
 
-function getRelatedCuttingSubcategories(category: string): string[] {
-  if (category === 'H型鋼') {
-    return ['H型鋼', '工字鐵/H型鋼'];
-  }
-  if (category === '工字鐵/I字鐵') {
-    return ['工字鐵/H型鋼'];
-  }
-  if (category === '圓管/鋼管' || category === '方管' || category === '扁方管') {
-    return ['管'];
-  }
-  if (category === '角鐵/角鋼') {
-    return ['角鐵'];
-  }
-  if (category === '槽鐵') {
-    return ['槽鐵'];
-  }
-  if (category === '平鐵/扁鐵') {
-    return ['平鐵/扁鐵'];
+function getRelatedCuttingCriteria(
+  category: PriceCategory,
+): RelatedCuttingCriteria | undefined {
+  return relatedCuttingCriteriaByCategory[category];
+}
+
+function addRelatedCuttingCriteriaFilter(
+  clauses: string[],
+  values: SteelSqlParameter[],
+  criteria: RelatedCuttingCriteria,
+) {
+  const criteriaClauses: string[] = [];
+
+  if (criteria.subcategories.length > 0) {
+    values.push(criteria.subcategories);
+    criteriaClauses.push(`subcategory = ANY($${values.length}::text[])`);
   }
 
-  return [];
+  if (criteria.keywords.length > 0) {
+    criteriaClauses.push(
+      criteria.keywords
+        .map((keyword) => {
+          values.push(`%${normalizeKeywordText(keyword)}%`);
+          const placeholder = `$${values.length}`;
+
+          return `(${relatedCuttingKeywordColumns
+            .map((column) => `${column} ILIKE ${placeholder}`)
+            .join('\n      OR ')})`;
+        })
+        .join('\n      OR '),
+    );
+  }
+
+  clauses.push(`(${criteriaClauses.join('\n    OR ')})`);
 }
 
 function addRelatedCuttingQueryFilter(
   values: SteelSqlParameter[],
   query: SteelPriceCandidateQuery,
 ): string | undefined {
-  const subcategories = getRelatedCuttingSubcategories(query.category);
-  if (subcategories.length === 0) {
+  const criteria = getRelatedCuttingCriteria(query.category);
+  if (!criteria) {
     return undefined;
   }
 
   const clauses = [`price_kind = 'cutting'`];
   values.push('切工/切割');
   clauses.push(`category = $${values.length}`);
-  values.push(subcategories);
-  clauses.push(`subcategory = ANY($${values.length}::text[])`);
+  addRelatedCuttingCriteriaFilter(clauses, values, criteria);
 
   addKeywordTermsFilter(
     clauses,
     values,
-    ['product_name', 'spec_key', 'source_spec', 'subcategory'],
+    relatedCuttingKeywordColumns,
     parsePriceKeyword(query.keyword, query).terms,
   );
 
@@ -485,7 +533,7 @@ export async function discoverSteelPriceCategories(
   addKeywordTermsFilter(
     where,
     values,
-    ['product_name', 'spec_key', 'erp_item_code', 'source_spec'],
+    priceMaterialKeywordColumns,
     toKeywordTerms(normalizeKeywordText(input.keyword)),
   );
 

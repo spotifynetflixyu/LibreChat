@@ -41,7 +41,7 @@ describe('Steel tool registry', () => {
         queries: [
           {
             category: '扁方管',
-            material: 'OT 黑鐵',
+            material: '黑鐵',
             thicknessMm: ['2'],
             keyword: '75x45 扁方管',
             limit: 5,
@@ -52,7 +52,7 @@ describe('Steel tool registry', () => {
       queries: [
         {
           category: '扁方管',
-          material: 'OT 黑鐵',
+          material: '黑鐵',
           thicknessMm: ['2'],
           keyword: '75x45 扁方管',
           limit: 5,
@@ -88,6 +88,28 @@ describe('Steel tool registry', () => {
     ).toEqual({
       queries: [{ mode: 'category_discovery', keyword: '白鐵 方管', limit: 10 }],
     });
+    expect(
+      definition.argsSchema.parse({
+        queries: [{ category: '鐵板/鋼板', material: '白鐵', thicknessMm: ['3'], limit: 10 }],
+      }),
+    ).toEqual({
+      queries: [{ category: '鐵板/鋼板', material: '白鐵', thicknessMm: ['3'], limit: 10 }],
+    });
+    expect(
+      definition.argsSchema.parse({
+        queries: [
+          { category: '角鐵/角鋼', material: '錏', keyword: 'L50', limit: 10 },
+          { category: '非鋼材/其他材料', material: '鋁', keyword: '扁條', limit: 10 },
+          { category: '浪板/收邊', material: '鋅', keyword: '收邊', limit: 10 },
+        ],
+      }),
+    ).toEqual({
+      queries: [
+        { category: '角鐵/角鋼', material: '錏', keyword: 'L50', limit: 10 },
+        { category: '非鋼材/其他材料', material: '鋁', keyword: '扁條', limit: 10 },
+        { category: '浪板/收邊', material: '鋅', keyword: '收邊', limit: 10 },
+      ],
+    });
     expect(() =>
       definition.argsSchema.parse({
         candidateQueries: [
@@ -118,13 +140,33 @@ describe('Steel tool registry', () => {
     ).toThrow();
     expect(() =>
       definition.argsSchema.parse({
+        queries: [{ category: '鐵板/鋼板', material: 'No1 白鐵' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
         queries: [{ category: '扁方管', material: 'OT 黑鐵' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管', material: '錏/鍍鋅' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管', material: '鋁鋅' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '扁方管', material: '黑鐵' }],
         customerTier: 'b',
       }),
     ).toThrow('Unrecognized key');
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: 'OT 黑鐵' }],
+        queries: [{ category: '扁方管', material: '黑鐵' }],
         customerTier: 'A',
       }),
     ).toThrow('Unrecognized key');
@@ -136,13 +178,13 @@ describe('Steel tool registry', () => {
     ).toThrow('Unrecognized key');
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵' }],
+        queries: [{ category: '鐵板/鋼板', material: '黑鐵' }],
         reviewState: 'reviewed',
       }),
     ).toThrow('Unrecognized key');
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵' }],
+        queries: [{ category: '鐵板/鋼板', material: '黑鐵' }],
         includeInactive: true,
       }),
     ).toThrow('Unrecognized key');

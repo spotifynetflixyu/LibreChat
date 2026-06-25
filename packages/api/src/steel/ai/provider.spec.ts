@@ -1,10 +1,28 @@
 import { sendSteelOAuthChat, type SteelProviderToolExecutor } from './provider';
 
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
-import type { LanguageModelV3, LanguageModelV3CallOptions } from '@ai-sdk/provider';
+import type {
+  LanguageModelV3CallOptions,
+  LanguageModelV3,
+} from '@ai-sdk/provider';
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories';
 import type { SteelRuntimeContext } from '../runtime/context';
-import type { SteelToolResult } from '../tools/results';
+import type { SteelToolJsonValue, SteelToolResult } from '../tools/results';
+
+interface SearchPriceCandidatesInputFixture {
+  queries: SteelToolJsonValue[];
+}
+
+interface ToolResultPartFixture {
+  type: 'tool-result';
+  toolCallId: string;
+  output: { value: SteelToolResult };
+}
+
+interface ToolMessageFixture {
+  role: 'tool';
+  content: ToolResultPartFixture[];
+}
 
 interface QueryCall {
   sql: string;
@@ -589,7 +607,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
           toolCallId: 'call_round_progress_price',
           toolName: 'search_price_candidates',
           input: JSON.stringify({
-            queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', thicknessMm: ['15'] }],
+            queries: [{ category: '鐵板/鋼板', material: '黑鐵', thicknessMm: ['15'] }],
           }),
         });
         controller.enqueue({
@@ -1160,7 +1178,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_b',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060', limit: 5 }],
+              queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70060', limit: 5 }],
             }),
           },
           {
@@ -1168,7 +1186,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_custom',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160', limit: 5 }],
+              queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70160', limit: 5 }],
             }),
           },
         ],
@@ -1190,7 +1208,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       data: {
         priceCandidates: [{ id: 1, erpItemCode: 'OTL006', unitPrice: 40 }],
         categoryCandidates: [],
-        searchQueries: (options.arguments as SearchPriceCandidatesInput).queries,
+        searchQueries: (options.arguments as SearchPriceCandidatesInputFixture).queries,
       },
       sourceRefs: [],
       durationMs: 1,
@@ -1214,8 +1232,8 @@ describe('Steel OpenAI OAuth provider adapter', () => {
         providerToolCallId: 'call_price_b',
         arguments: {
           queries: [
-            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70060', limit: 5 },
-            { category: '鐵板/鋼板', material: 'OT 黑鐵', keyword: 'DNB70160', limit: 5 },
+            { category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70060', limit: 5 },
+            { category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70160', limit: 5 },
           ],
         },
       }),
@@ -1223,7 +1241,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const secondGenerateOptions = doGenerate.mock.calls[1]?.[0] as LanguageModelV3CallOptions;
     const toolResultMessage = secondGenerateOptions.prompt.find(
       (message) => message.role === 'tool',
-    ) as Extract<LanguageModelV3Prompt[number], { role: 'tool' }>;
+    ) as unknown as ToolMessageFixture;
     const toolResults = toolResultMessage.content.filter(
       (part) => part.type === 'tool-result',
     );
