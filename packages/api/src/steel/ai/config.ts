@@ -1,17 +1,21 @@
 import os from 'os';
 
-export type SteelOpenAIProviderPreference = 'OAUTH' | 'API';
-export type SteelOpenAIDefaultModel = 'gpt-5.5';
-export type SteelOpenAIReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type OpenAIProviderPreference = 'OAUTH' | 'API';
+export type OpenAIDefaultModel = 'gpt-5.5';
+export type OpenAIReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
-export interface SteelOpenAIConfig {
-  provider: SteelOpenAIProviderPreference;
-  model: SteelOpenAIDefaultModel;
-  reasoningEffort: SteelOpenAIReasoningEffort;
+export interface OpenAIConfig {
+  provider: OpenAIProviderPreference;
+  model: OpenAIDefaultModel;
+  reasoningEffort: OpenAIReasoningEffort;
 }
 
-export interface SteelOpenAIConfigEnv {
+export interface OpenAIConfigEnv {
   [key: string]: string | undefined;
+  OPENAI_PROVIDER?: string;
+  OPENAI_DEFAULT_MODEL?: string;
+  OPENAI_REASONING_EFFORT?: string;
+  OPENAI_OAUTH_AUTH_FILE?: string;
   STEEL_OPENAI_PROVIDER?: string;
   STEEL_OPENAI_DEFAULT_MODEL?: string;
   STEEL_OPENAI_REASONING_EFFORT?: string;
@@ -21,16 +25,20 @@ export interface SteelOpenAIConfigEnv {
   HOME?: string;
 }
 
-export class SteelOpenAIConfigError extends Error {
+export class OpenAIConfigError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'SteelOpenAIConfigError';
+    this.name = 'OpenAIConfigError';
   }
 }
 
 const providerValues = ['OAUTH', 'API'] as const;
 const modelValues = ['gpt-5.5'] as const;
 const reasoningEffortValues = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+function getEnvValue(env: OpenAIConfigEnv, key: string, legacyKey: string): string | undefined {
+  return env[key] ?? env[legacyKey];
+}
 
 function parseEnumValue<T extends string>(
   name: string,
@@ -46,26 +54,26 @@ function parseEnumValue<T extends string>(
     return value as T;
   }
 
-  throw new SteelOpenAIConfigError(`${name} must be one of: ${values.join(', ')}`);
+  throw new OpenAIConfigError(`${name} must be one of: ${values.join(', ')}`);
 }
 
-export function parseSteelOpenAIConfig(env: SteelOpenAIConfigEnv = process.env): SteelOpenAIConfig {
+export function parseOpenAIConfig(env: OpenAIConfigEnv = process.env): OpenAIConfig {
   return {
     provider: parseEnumValue(
-      'STEEL_OPENAI_PROVIDER',
-      env.STEEL_OPENAI_PROVIDER,
+      'OPENAI_PROVIDER',
+      getEnvValue(env, 'OPENAI_PROVIDER', 'STEEL_OPENAI_PROVIDER'),
       'OAUTH',
       providerValues,
     ),
     model: parseEnumValue(
-      'STEEL_OPENAI_DEFAULT_MODEL',
-      env.STEEL_OPENAI_DEFAULT_MODEL,
+      'OPENAI_DEFAULT_MODEL',
+      getEnvValue(env, 'OPENAI_DEFAULT_MODEL', 'STEEL_OPENAI_DEFAULT_MODEL'),
       'gpt-5.5',
       modelValues,
     ),
     reasoningEffort: parseEnumValue(
-      'STEEL_OPENAI_REASONING_EFFORT',
-      env.STEEL_OPENAI_REASONING_EFFORT,
+      'OPENAI_REASONING_EFFORT',
+      getEnvValue(env, 'OPENAI_REASONING_EFFORT', 'STEEL_OPENAI_REASONING_EFFORT'),
       'medium',
       reasoningEffortValues,
     ),
@@ -87,10 +95,14 @@ function stripWrappingQuotes(value: string): string {
   return trimmed;
 }
 
-export function resolveSteelOpenAIOAuthAuthFilePath(
-  env: SteelOpenAIConfigEnv = process.env,
+export function resolveOpenAIOAuthAuthFilePath(
+  env: OpenAIConfigEnv = process.env,
 ): string | undefined {
-  const configuredPath = env.STEEL_OPENAI_OAUTH_AUTH_FILE;
+  const configuredPath = getEnvValue(
+    env,
+    'OPENAI_OAUTH_AUTH_FILE',
+    'STEEL_OPENAI_OAUTH_AUTH_FILE',
+  );
   if (!configuredPath) {
     return undefined;
   }

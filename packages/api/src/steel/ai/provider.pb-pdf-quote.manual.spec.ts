@@ -16,7 +16,7 @@ import {
   prepareSteelRuntimeContext,
 } from '../runtime/context';
 import { executeSteelTool } from '../tools/execute';
-import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from './config';
+import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from './config';
 import { sendSteelOAuthChat } from './provider';
 
 import type { SteelAgentRule } from '../repositories/rules';
@@ -626,8 +626,8 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
     'returns OCR confirmation first, then quotes confirmed OCR rows as independent order lines',
     async () => {
       const pool = createSteelPostgresPool();
-      const config = parseSteelOpenAIConfig(process.env);
-      const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+      const config = parseOpenAIConfig(process.env);
+      const authFilePath = resolveOpenAIOAuthAuthFilePath(process.env);
       const pbFile = await loadPBFile();
       const runtimeRuleEvidence = await readRuntimeRuleEvidence(pool);
       assertWithEvidence(

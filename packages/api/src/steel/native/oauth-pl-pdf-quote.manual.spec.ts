@@ -11,12 +11,12 @@ import { parseMarkdownTables } from '../markdown/table';
 import { createSteelPostgresPool } from '../postgres';
 import { createEmptySteelOutputSheetMemorySnapshot } from '../runtime/context';
 import { createSteelToolRunState, executeSteelTool } from '../tools/execute';
-import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from '../ai/config';
+import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '../ai/config';
 import {
   buildSteelGlobalAgentContext,
-  createSteelNativeRuntimeContextDependencies,
+  createSteelContextDependencies,
 } from './context';
-import { createSteelNativeOpenAIOAuthModel } from './oauth';
+import { createOpenAIOAuthModel } from './oauth';
 import { mergeSteelToolDefinitions, resolveSteelProviderToolName } from './tools';
 
 import type { LCTool } from '@librechat/agents';
@@ -385,7 +385,7 @@ async function runNativeToolLoop({
 }: {
   initialMessages: BaseMessage[];
   maxToolRounds: number;
-  model: ReturnType<typeof createSteelNativeOpenAIOAuthModel>;
+  model: ReturnType<typeof createOpenAIOAuthModel>;
   ocrFiles: readonly SteelOAuthChatFile[];
   pool: ReturnType<typeof createSteelPostgresPool>;
 }): Promise<NativeTurnResult> {
@@ -428,13 +428,13 @@ async function runNativeToolLoop({
   throw new Error('Native OAuth PL.pdf live smoke loop exited unexpectedly.');
 }
 
-describeNativePLQuoteLive('Steel native OpenAI OAuth PL.pdf quote live smoke', () => {
+describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
   it(
     'returns OCR confirmation first, then quotes from confirmed OCR evidence',
     async () => {
       const pool = createSteelPostgresPool();
-      const config = parseSteelOpenAIConfig(process.env);
-      const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+      const config = parseOpenAIConfig(process.env);
+      const authFilePath = resolveOpenAIOAuthAuthFilePath(process.env);
       const conversationId = 'steel_native_live_pl_pdf_ocr_confirm';
       const plFile = await loadPLFile();
       const plFileReference = createPLFileReference(conversationId);
@@ -461,15 +461,14 @@ describeNativePLQuoteLive('Steel native OpenAI OAuth PL.pdf quote live smoke', (
           attachments: {
             currentTurnFiles: [plFileReference],
           },
-          dependencies: createSteelNativeRuntimeContextDependencies({
+          dependencies: createSteelContextDependencies({
             runtimeRulesClient: pool,
           }),
-          runtimeContextMode: 'compact_workbook',
         });
         const ocrTools = mergeSteelToolDefinitions({
           runtimeContext: ocrContext.runtimeContext,
         });
-        const ocrModel = createSteelNativeOpenAIOAuthModel({
+        const ocrModel = createOpenAIOAuthModel({
           authFilePath,
           maxOutputTokens,
           model: config.model,
@@ -503,15 +502,14 @@ describeNativePLQuoteLive('Steel native OpenAI OAuth PL.pdf quote live smoke', (
           attachments: {
             priorActiveFileEvidence: priorOcrEvidence,
           },
-          dependencies: createSteelNativeRuntimeContextDependencies({
+          dependencies: createSteelContextDependencies({
             runtimeRulesClient: pool,
           }),
-          runtimeContextMode: 'compact_workbook',
         });
         const quoteTools = mergeSteelToolDefinitions({
           runtimeContext: quoteContext.runtimeContext,
         });
-        const quoteModel = createSteelNativeOpenAIOAuthModel({
+        const quoteModel = createOpenAIOAuthModel({
           authFilePath,
           maxOutputTokens,
           model: config.model,

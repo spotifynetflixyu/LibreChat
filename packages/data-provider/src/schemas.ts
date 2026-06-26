@@ -18,6 +18,7 @@ export const authTypeSchema = z.nativeEnum(AuthType);
 export enum EModelEndpoint {
   azureOpenAI = 'azureOpenAI',
   openAI = 'openAI',
+  openAIOAuth = 'openai_oauth_responses',
   google = 'google',
   anthropic = 'anthropic',
   assistants = 'assistants',
@@ -49,6 +50,7 @@ export enum Providers {
 export const documentSupportedProviders = new Set<string>([
   EModelEndpoint.anthropic,
   EModelEndpoint.openAI,
+  EModelEndpoint.openAIOAuth,
   EModelEndpoint.bedrock,
   EModelEndpoint.custom,
   // handled in AttachFileMenu and DragDropModal since azureOpenAI only supports documents with Use Responses API set to true
@@ -65,6 +67,7 @@ export const documentSupportedProviders = new Set<string>([
 
 const openAILikeProviders = new Set<string>([
   Providers.OPENAI,
+  EModelEndpoint.openAIOAuth,
   Providers.AZURE,
   EModelEndpoint.custom,
   Providers.MISTRALAI,
@@ -113,6 +116,7 @@ export const isDocumentSupportedProvider = (provider?: string | null): boolean =
 export const paramEndpoints = new Set<EModelEndpoint | string>([
   EModelEndpoint.agents,
   EModelEndpoint.openAI,
+  EModelEndpoint.openAIOAuth,
   EModelEndpoint.bedrock,
   EModelEndpoint.azureOpenAI,
   EModelEndpoint.anthropic,
@@ -687,6 +691,7 @@ export const agentsSettings = {
 
 export const endpointSettings = {
   [EModelEndpoint.openAI]: openAISettings,
+  [EModelEndpoint.openAIOAuth]: openAISettings,
   [EModelEndpoint.google]: googleSettings,
   [EModelEndpoint.anthropic]: anthropicSettings,
   [EModelEndpoint.agents]: agentsSettings,

@@ -4,14 +4,18 @@ import { replaceSpecialVars } from 'librechat-data-provider';
 import { useChatContext, useChatFormContext, useAddedChatContext } from '~/Providers';
 import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useAuthContext } from '~/hooks/AuthContext';
+import useLocalize from '~/hooks/useLocalize';
 import { mainTextareaId } from '~/common';
 import store from '~/store';
 
+const emptyFiles = new Map();
+
 export default function useSubmitMessage() {
   const { user } = useAuthContext();
+  const localize = useLocalize();
   const methods = useChatFormContext();
   const { conversation: addedConvo } = useAddedChatContext();
-  const { ask, index, getMessages, setMessages } = useChatContext();
+  const { ask, index, getMessages, setMessages, files = emptyFiles } = useChatContext();
   const latestMessage = useLatestMessage(index);
 
   const autoSendPrompts = useRecoilValue(store.autoSendPrompts);
@@ -21,6 +25,14 @@ export default function useSubmitMessage() {
     (data?: { text: string }) => {
       if (!data) {
         return console.warn('No data provided to submitMessage');
+      }
+      const text = data.text.trim()
+        ? data.text
+        : files.size > 0
+          ? localize('com_ui_steel_file_ocr_default_prompt')
+          : '';
+      if (!text.trim()) {
+        return false;
       }
       const rootMessages = getMessages();
       const isLatestInRootMessages = rootMessages?.some(
@@ -32,7 +44,7 @@ export default function useSubmitMessage() {
 
       const submitted = ask(
         {
-          text: data.text,
+          text,
         },
         {
           addedConvo: addedConvo ?? undefined,
@@ -43,7 +55,7 @@ export default function useSubmitMessage() {
       }
       methods.reset();
     },
-    [ask, methods, addedConvo, setMessages, getMessages, latestMessage],
+    [ask, methods, addedConvo, setMessages, getMessages, latestMessage, files, localize],
   );
 
   const submitPrompt = useCallback(

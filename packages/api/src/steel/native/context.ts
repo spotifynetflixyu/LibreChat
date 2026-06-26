@@ -8,7 +8,6 @@ import { createSteelPostgresPool } from '../postgres';
 import { createMongooseSteelOutputSheetMemoryReader } from '../memory/service';
 import {
   listReviewedSteelAgentRules,
-  listReviewedSteelInstructionPackets,
   listReviewedSteelOtherRules,
   listReviewedSteelOutputRules,
   listReviewedSteelQuoteDefaults,
@@ -16,7 +15,6 @@ import {
 } from '../repositories';
 
 import type { SteelOAuthChatMessage, SteelOAuthChatMessageRole } from '../ai/provider';
-import type { SteelInstructionPacket } from '../repositories/instructions';
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
 import type { SteelOutputSheetMemoryReader } from '../memory/service';
@@ -34,13 +32,10 @@ export const steelNativeContextVersion = 1 as const;
 export const steelNativeDefaultRuntimeContextMode = 'compact_workbook' as const;
 
 export const steelNativeInstructionPrefixSections = [
-  'agent_rules',
-  'quote_defaults_and_rules',
-  'output_rules',
-  'tool_policy',
-  'other_rules',
-  'reviewed_agent_rules',
-  'instruction_packets',
+  'agent',
+  'quote_rules',
+  'output',
+  'other',
 ] as const;
 
 export type SteelNativeInstructionPrefixSection =
@@ -55,13 +50,6 @@ export type SteelNativeAttachmentSource =
   | 'librechat_file_record'
   | 'provider_file_reference'
   | 'tool_evidence_reference';
-
-export interface SteelNativeInstructionFragment {
-  slug: string;
-  content: string;
-  title?: string;
-  source?: string;
-}
 
 export interface SteelNativeFileReference {
   fileId: string;
@@ -117,7 +105,6 @@ export interface SteelNativeInstructionPrefixSlot {
 
 export interface BuildSteelNativeInstructionPrefixInput {
   runtimeContext: SteelRuntimeContext;
-  agentRuleFragments?: readonly SteelNativeInstructionFragment[];
 }
 
 export interface BuildSteelNativeRuntimeContextTextInput {
@@ -130,9 +117,7 @@ export interface BuildSteelGlobalAgentContextInput {
   conversation: SteelNativeConversationInput;
   dependencies: SteelRuntimeContextDependencies;
   attachments?: SteelNativeContextAttachmentsInput;
-  runtimeContextMode?: SteelRuntimeContextMode;
   renderProfile?: SteelNativeRenderProfile;
-  agentRuleFragments?: readonly SteelNativeInstructionFragment[];
   prepareRuntimeContext?: (
     input: PrepareSteelRuntimeContextInput,
   ) => Promise<SteelRuntimeContext>;
@@ -176,15 +161,6 @@ function renderJson(value: SteelNativeJsonValue): string {
   return JSON.stringify(value, null, 2);
 }
 
-function renderInstructionFragment(fragment: SteelNativeInstructionFragment): string {
-  return compactText([
-    `## ${fragment.slug}`,
-    fragment.title,
-    fragment.source ? `source: ${fragment.source}` : undefined,
-    fragment.content,
-  ]).join('\n');
-}
-
 function renderAgentRule(rule: SteelAgentRule): string {
   return compactText([
     `## ${rule.slug}`,
@@ -223,21 +199,6 @@ function renderQuoteRule(quoteRule: SteelQuoteRule): string {
   ]).join('\n');
 }
 
-function renderInstructionPacket(packet: SteelInstructionPacket): string {
-  return compactText([
-    `## ${packet.slug}`,
-    packet.title,
-    `packetGroups: ${packet.packetGroups.join(', ')}`,
-    packet.instruction,
-    packet.blockingRules.length > 0
-      ? `blockingRules: ${packet.blockingRules.join(', ')}`
-      : undefined,
-    packet.requiredLookups.length > 0
-      ? `requiredLookups: ${packet.requiredLookups.join(', ')}`
-      : undefined,
-  ]).join('\n');
-}
-
 function buildSlot(
   section: SteelNativeInstructionPrefixSection,
   title: string,
@@ -265,38 +226,26 @@ function buildOtherRuleItems(runtimeContext: SteelRuntimeContext): string[] {
 
 export function buildSteelNativeInstructionPrefix({
   runtimeContext,
-  agentRuleFragments = [],
 }: BuildSteelNativeInstructionPrefixInput): {
   instructionPrefix: string;
   sections: SteelNativeInstructionPrefixSlot[];
 } {
   const sections = [
     buildSlot(
-      'agent_rules',
+      'agent',
       'Steel Agent Rules',
-      agentRuleFragments.map(renderInstructionFragment),
+      runtimeContext.rules.agentRules.map(renderAgentRule),
     ),
-    buildSlot('quote_defaults_and_rules', 'Steel Quote Defaults And Rules', [
+    buildSlot('quote_rules', 'Steel Quote Rules', [
       ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
       ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
     ]),
     buildSlot(
-      'output_rules',
+      'output',
       'Steel Output Rules',
       runtimeContext.rules.outputRules.map(renderAgentRule),
     ),
-    buildSlot('tool_policy', 'Steel Tool Policy', [renderJson(runtimeContext.toolPolicy)]),
-    buildSlot('other_rules', 'Steel Other Rules', buildOtherRuleItems(runtimeContext)),
-    buildSlot(
-      'reviewed_agent_rules',
-      'Steel Reviewed Agent Rules',
-      runtimeContext.rules.agentRules.map(renderAgentRule),
-    ),
-    buildSlot(
-      'instruction_packets',
-      'Steel Instruction Packets',
-      runtimeContext.rules.steelGlobalRules.instructionPackets.map(renderInstructionPacket),
-    ),
+    buildSlot('other', 'Steel Other Rules', buildOtherRuleItems(runtimeContext)),
   ];
 
   return {
@@ -343,7 +292,7 @@ function resolveSteelNativeContextList<T>(load: () => Promise<T[]>): Promise<T[]
   return load().catch(() => []);
 }
 
-export function createSteelNativeRuntimeContextDependencies({
+export function createSteelContextDependencies({
   conversationId,
   createOutputSheetMemoryReader = createDefaultOutputSheetMemoryReader,
   runtimeRulesClient,
@@ -353,7 +302,6 @@ export function createSteelNativeRuntimeContextDependencies({
   runtimeRulesClient?: SteelRepositoryClient;
 } = {}): SteelRuntimeContextDependencies {
   let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
-  let instructionPacketsPromise: Promise<SteelInstructionPacket[]> | undefined;
   let otherRulesPromise: Promise<SteelAgentRule[]> | undefined;
   let outputRulesPromise: Promise<SteelAgentRule[]> | undefined;
   let quoteDefaultsPromise: Promise<SteelQuoteDefault[]> | undefined;
@@ -368,10 +316,7 @@ export function createSteelNativeRuntimeContextDependencies({
       return agentRulesPromise;
     },
     listReviewedInstructionPackets() {
-      instructionPacketsPromise ??= resolveSteelNativeContextList(() =>
-        listReviewedSteelInstructionPackets(getClient()),
-      );
-      return instructionPacketsPromise;
+      return Promise.resolve([]);
     },
     listReviewedQuoteDefaults() {
       quoteDefaultsPromise ??= resolveSteelNativeContextList(() =>
@@ -577,9 +522,7 @@ export async function buildSteelGlobalAgentContext({
   conversation,
   dependencies,
   attachments,
-  runtimeContextMode = steelNativeDefaultRuntimeContextMode,
   renderProfile = 'agent_client',
-  agentRuleFragments,
   prepareRuntimeContext = prepareLibreChatSteelRuntimeContext,
 }: BuildSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
   const attachmentReferences = collectAttachmentReferences({ conversation, attachments });
@@ -592,7 +535,6 @@ export async function buildSteelGlobalAgentContext({
           : undefined,
     },
     dependencies: createNativeRuntimeDependencies(dependencies),
-    mode: runtimeContextMode,
   });
   const runtimeContext = markNativeGlobalAttachments(preparedRuntimeContext);
   const metadata = createSteelNativeContextMetadata({
@@ -601,7 +543,6 @@ export async function buildSteelGlobalAgentContext({
   });
   const { instructionPrefix, sections } = buildSteelNativeInstructionPrefix({
     runtimeContext,
-    agentRuleFragments,
   });
 
   return {
@@ -632,7 +573,7 @@ export async function buildDefaultSteelGlobalAgentContext({
     ...input,
     dependencies:
       dependencies ??
-      createSteelNativeRuntimeContextDependencies({
+      createSteelContextDependencies({
         conversationId: input.conversation.conversationId,
         createOutputSheetMemoryReader,
         runtimeRulesClient,

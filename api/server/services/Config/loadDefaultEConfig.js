@@ -16,6 +16,7 @@ async function loadDefaultEndpointsConfig(appConfig) {
     : { google: false };
 
   const endpointConfig = {
+    [EModelEndpoint.openAIOAuth]: config[EModelEndpoint.openAIOAuth],
     [EModelEndpoint.openAI]: config[EModelEndpoint.openAI],
     [EModelEndpoint.agents]: config[EModelEndpoint.agents],
     [EModelEndpoint.assistants]: assistants,

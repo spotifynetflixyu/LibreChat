@@ -10,6 +10,7 @@ import MarketplaceItem, { marketplaceSearchMatches } from './Marketplace';
 import { filterModels, shouldRenderEndpointOption } from '../utils';
 import { useModelSelectorContext } from '../ModelSelectorContext';
 import { renderEndpointModels } from './EndpointModelItem';
+import OpenAIOAuthUsageRemaining from './OpenAIOAuthUsageRemaining';
 import { ModelSpecItem } from './ModelSpecItem';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -144,6 +145,7 @@ function EndpointMenuContent({
         ? renderEndpointModels(endpoint, endpoint.models || [], filteredModels, endpointIndex)
         : endpoint.models &&
           renderEndpointModels(endpoint, endpoint.models, undefined, endpointIndex)}
+      {endpoint.value === EModelEndpoint.openAIOAuth && <OpenAIOAuthUsageRemaining />}
     </>
   );
 }

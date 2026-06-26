@@ -249,6 +249,13 @@ describe('getModelMaxTokens', () => {
     );
   });
 
+  test('should cap OpenAI OAuth models at the OAuth provider context limit', () => {
+    expect(maxTokensMap[EModelEndpoint.openAIOAuth]['gpt-5.5']).toBe(258000);
+    expect(getModelMaxTokens('gpt-5.5', EModelEndpoint.openAIOAuth)).toBe(258000);
+    expect(getModelMaxTokens('gpt-5.5-thinking', EModelEndpoint.openAIOAuth)).toBe(258000);
+    expect(getModelMaxTokens('gpt-4o', EModelEndpoint.openAIOAuth)).toBe(258000);
+  });
+
   test('should return correct tokens for gpt-5.5-pro matches', () => {
     expect(getModelMaxTokens('gpt-5.5-pro')).toBe(
       maxTokensMap[EModelEndpoint.openAI]['gpt-5.5-pro'],

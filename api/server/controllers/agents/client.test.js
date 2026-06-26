@@ -15,6 +15,7 @@ jest.mock('@librechat/api', () => ({
   checkAccess: jest.fn(),
   countFormattedMessageTokens: jest.fn(() => 42),
   countTokens: jest.fn((text) => Math.ceil(String(text ?? '').length / 4)),
+  generateOpenAIOAuthTitle: jest.fn(),
   buildDefaultSteelGlobalAgentContext: jest.fn(),
   prepareLibreChatSteelChatContext: jest.fn((conversation) => {
     const toReference = (message) =>
@@ -498,6 +499,57 @@ describe('AgentClient - titleConvo', () => {
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
+    });
+
+    it('uses OpenAI OAuth title generation for OpenAI OAuth endpoint', async () => {
+      mockAgent.endpoint = EModelEndpoint.openAIOAuth;
+      mockAgent.provider = EModelEndpoint.openAIOAuth;
+      mockReq.config = {
+        endpoints: {
+          [EModelEndpoint.openAIOAuth]: {
+            titleModel: 'gpt-5.5',
+            titlePrompt: 'Custom OAuth title prompt',
+            titlePromptTemplate: 'OAuth template: {{content}}',
+          },
+        },
+      };
+      require('@librechat/api').generateOpenAIOAuthTitle.mockResolvedValueOnce({
+        model: 'gpt-5.5',
+        title: 'PL OCR Review',
+        usage: {
+          input_tokens: 11,
+          output_tokens: 3,
+        },
+      });
+
+      const result = await client.titleConvo({
+        text: 'Test conversation text',
+        abortController: new AbortController(),
+      });
+
+      expect(result).toBe('PL OCR Review');
+      expect(require('@librechat/api').generateOpenAIOAuthTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contentParts: client.contentParts,
+          inputText: 'Test conversation text',
+          model: 'gpt-5.5',
+          titlePrompt: 'Custom OAuth title prompt',
+          titlePromptTemplate: 'OAuth template: {{content}}',
+        }),
+      );
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
+      expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          collectedUsage: [
+            {
+              input_tokens: 11,
+              output_tokens: 3,
+            },
+          ],
+          context: 'title',
+          model: 'gpt-5.5',
+        }),
+      );
     });
 
     it('should skip title generation for temporary chats', async () => {

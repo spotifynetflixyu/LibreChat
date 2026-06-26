@@ -289,13 +289,13 @@ function createRuntimeDependencies(
 
 async function prepareContext(
   files: SteelOAuthChatFile[] = [],
-  mode?: 'full' | 'compact_workbook',
+  _mode?: 'compact_workbook',
   historyFiles: SteelOAuthChatFile[] = [],
   priorActiveFileEvidence: Record<string, string>[] = [],
   memorySnapshot: SteelOutputSheetMemorySnapshot = createRuntimeMemorySnapshot(),
 ) {
   const dependencies = createRuntimeDependencies(memorySnapshot);
-  const input: PrepareSteelRuntimeContextInput & { mode?: 'full' | 'compact_workbook' } = {
+  const input: PrepareSteelRuntimeContextInput = {
     conversation: {
       conversationId: 'steel_conversation_1',
       requestId: 'request_1',
@@ -313,7 +313,6 @@ async function prepareContext(
       priorActiveFileEvidence,
     },
     dependencies,
-    ...(mode ? { mode } : {}),
   };
   const context = await prepareSteelRuntimeContext(input);
 
@@ -469,7 +468,7 @@ describe('Steel runtime context', () => {
     ]);
   });
 
-  it('serializes the reduced AI-visible tool policy and removed rule or memory lookup tools', async () => {
+  it('serializes the reduced AI-visible tool policy with read_markdown always available', async () => {
     const { context } = await prepareContext();
     const serialized = JSON.parse(serializeSteelRuntimeContext(context));
 
@@ -477,13 +476,14 @@ describe('Steel runtime context', () => {
       'search_customers',
       'search_price_candidates',
       'run_file_ocr',
+      'read_markdown',
     ]);
     expect(context.toolPolicy.removedTools).toEqual([]);
     expect(serialized.toolPolicy).toEqual(context.toolPolicy);
   });
 
   it('serializes compact workbook mode without full active sheet rows but with compact row indexes', async () => {
-    const { context } = await prepareContext([], 'compact_workbook');
+    const { context } = await prepareContext();
     const serializedText = serializeSteelRuntimeContext(context);
     const serialized = JSON.parse(serializedText);
 

@@ -1,5 +1,5 @@
 import { createSteelOAuthFileCapabilityFixtures } from './fixtures';
-import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from './config';
+import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from './config';
 import { sendSteelOAuthChat } from './provider';
 
 import type { SteelOAuthFileCapabilityExpected } from './fixtures';
@@ -27,12 +27,12 @@ function findMissingExpectedValues(text: string, expected: SteelOAuthFileCapabil
     .map(([field]) => field);
 }
 
-describeFileCapability('Steel OpenAI OAuth provider file capability smoke', () => {
+describeFileCapability('OpenAI OAuth provider file capability smoke', () => {
   it.each(fixtureIds)(
     'extracts English, Chinese, numeric, and sentinel text from %s fixture',
     async (fixtureId) => {
-      const config = parseSteelOpenAIConfig(process.env);
-      const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+      const config = parseOpenAIConfig(process.env);
+      const authFilePath = resolveOpenAIOAuthAuthFilePath(process.env);
       const fixture = (await createSteelOAuthFileCapabilityFixtures()).find(
         (candidate) => candidate.id === fixtureId,
       );

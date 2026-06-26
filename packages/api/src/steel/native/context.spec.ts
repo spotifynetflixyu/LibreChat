@@ -1,7 +1,7 @@
 import {
   buildDefaultSteelGlobalAgentContext,
   buildSteelGlobalAgentContext,
-  createSteelNativeRuntimeContextDependencies,
+  createSteelContextDependencies,
   prepareLibreChatSteelChatContext,
   steelNativeDefaultRuntimeContextMode,
   steelNativeInstructionPrefixSections,
@@ -209,13 +209,6 @@ async function buildFixtureContext({
     },
     attachments,
     dependencies,
-    agentRuleFragments: [
-      {
-        slug: 'steel-base-agent-rule',
-        content: 'Fixture base agent rule.',
-        source: 'docs/rules/agent規則.txt',
-      },
-    ],
   });
 
   return { context, dependencies };
@@ -320,19 +313,13 @@ describe('Steel native context adapter', () => {
     expect(sections.map((section) => section.section)).toEqual([
       ...steelNativeInstructionPrefixSections,
     ]);
-    expect(sections.find((section) => section.section === 'agent_rules')?.itemCount).toBe(1);
-    expect(
-      sections.find((section) => section.section === 'quote_defaults_and_rules')?.itemCount,
-    ).toBe(2);
-    expect(sections.find((section) => section.section === 'output_rules')?.itemCount).toBe(1);
-    expect(sections.find((section) => section.section === 'tool_policy')?.itemCount).toBe(1);
-    expect(sections.find((section) => section.section === 'other_rules')?.itemCount).toBe(4);
-    expect(
-      sections.find((section) => section.section === 'reviewed_agent_rules')?.itemCount,
-    ).toBe(1);
-    expect(
-      sections.find((section) => section.section === 'instruction_packets')?.itemCount,
-    ).toBe(1);
+    expect(sections.find((section) => section.section === 'agent')?.itemCount).toBe(1);
+    expect(sections.find((section) => section.section === 'quote_rules')?.itemCount).toBe(2);
+    expect(sections.find((section) => section.section === 'output')?.itemCount).toBe(1);
+    expect(sections.find((section) => section.section === 'other')?.itemCount).toBe(4);
+    expect(sections.map((section) => section.section)).not.toEqual(
+      expect.arrayContaining(['tool_policy', 'reviewed_agent_rules', 'instruction_packets']),
+    );
   });
 
   it('defaults native runtime context to compact workbook mode with diagnostic metadata', async () => {
@@ -399,7 +386,9 @@ describe('Steel native context adapter', () => {
       dependencies,
     });
 
-    expect(context.instructionPrefix).toContain('Steel Tool Policy');
+    expect(context.instructionPrefix).toContain('Steel Agent Rules');
+    expect(context.instructionPrefix).toContain('Steel Quote Rules');
+    expect(context.instructionPrefix).not.toContain('Steel Tool Policy');
     expect(context.runtimeContextText).toContain('Steel Native Context Metadata');
     expect(context.metadata).toEqual(
       expect.objectContaining({
@@ -416,7 +405,7 @@ describe('Steel native context adapter', () => {
         throw new Error('relation "steel.quote_defaults" does not exist');
       }),
     } as unknown as SteelRepositoryClient;
-    const dependencies = createSteelNativeRuntimeContextDependencies({
+    const dependencies = createSteelContextDependencies({
       conversationId: 'conversation_1',
       runtimeRulesClient: failingClient,
       createOutputSheetMemoryReader: () => ({
@@ -453,6 +442,7 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContext.rules.steelGlobalRules.quoteDefaults).toHaveLength(0);
     expect(context.runtimeContext.rules.steelGlobalRules.quoteRules).toHaveLength(0);
     expect(context.runtimeContext.toolPolicy.aiVisibleTools).toContain('run_file_ocr');
-    expect(context.instructionPrefix).toContain('Steel Tool Policy');
+    expect(context.instructionPrefix).not.toContain('Steel Tool Policy');
+    expect(context.runtimeContextText).not.toContain('instructionPackets');
   });
 });

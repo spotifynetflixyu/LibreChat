@@ -946,6 +946,37 @@ describe('initializeAgent — maxContextTokens', () => {
     expect(result.maxContextTokens).toBe(expected);
   });
 
+  it('uses the OpenAI OAuth token map before SDK provider remapping', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: EModelEndpoint.openAIOAuth,
+      model: 'gpt-5.5',
+      maxContextTokens: undefined,
+      maxOutputTokens: 0,
+      useRealTokenLookup: true,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([EModelEndpoint.openAIOAuth]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(mockGetModelMaxTokens).toHaveBeenCalledWith(
+      'gpt-5.5',
+      EModelEndpoint.openAIOAuth,
+      undefined,
+    );
+    expect(result.baseContextTokens).toBe(258000);
+    expect(result.maxContextTokens).toBe(Math.round(258000 * 0.95));
+  });
+
   it('falls back to formula when maxContextTokens is 0', async () => {
     const maxOutputTokens = 4096;
     const { agent, req, res, loadTools, db } = createMocks({

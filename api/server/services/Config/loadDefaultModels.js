@@ -1,5 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
-const { EModelEndpoint } = require('librechat-data-provider');
+const { EModelEndpoint, defaultModels } = require('librechat-data-provider');
 const {
   mergeHeaders,
   getAnthropicModels,
@@ -8,6 +8,13 @@ const {
   getGoogleModels,
 } = require('@librechat/api');
 const { getAppConfig } = require('./app');
+
+function splitModelList(value) {
+  return (value ?? '')
+    .split(',')
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
 
 /**
  * Loads the default models for the application.
@@ -76,8 +83,18 @@ async function loadDefaultModels(req) {
           return [];
         }),
       ]);
+    const configuredOpenAIOAuthModels = splitModelList(
+      process.env.OPENAI_OAUTH_MODELS || process.env.OPENAI_MODELS,
+    );
+    const openAIOAuth =
+      configuredOpenAIOAuthModels.length > 0
+        ? configuredOpenAIOAuthModels
+        : openAI.length > 0
+          ? openAI
+          : defaultModels[EModelEndpoint.openAIOAuth];
 
     return {
+      [EModelEndpoint.openAIOAuth]: openAIOAuth,
       [EModelEndpoint.openAI]: openAI,
       [EModelEndpoint.google]: google,
       [EModelEndpoint.anthropic]: anthropic,

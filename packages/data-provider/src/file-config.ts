@@ -5,6 +5,7 @@ import { normalizeEndpointName } from './utils';
 
 export const supportsFiles = {
   [EModelEndpoint.openAI]: true,
+  [EModelEndpoint.openAIOAuth]: true,
   [EModelEndpoint.google]: true,
   [EModelEndpoint.assistants]: true,
   [EModelEndpoint.azureAssistants]: true,

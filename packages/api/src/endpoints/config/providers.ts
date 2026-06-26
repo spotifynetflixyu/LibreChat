@@ -8,6 +8,7 @@ import { initializeBedrock } from '../bedrock/initialize';
 import { initializeCustom } from '../custom/initialize';
 import { initializeGoogle } from '../google/initialize';
 import { initializeOpenAI } from '../openai/initialize';
+import { initializeOpenAIOAuth } from '../openai/oauth';
 import { getCustomEndpointConfig } from '~/app/config';
 
 /**
@@ -43,6 +44,7 @@ export const providerConfigMap: Record<string, InitializeFn> = {
   [Providers.OPENROUTER]: initializeCustom,
   [Providers.VERTEXAI]: initializeGoogle,
   [EModelEndpoint.openAI]: initializeOpenAI,
+  [EModelEndpoint.openAIOAuth]: initializeOpenAIOAuth,
   [EModelEndpoint.google]: initializeGoogle,
   [EModelEndpoint.bedrock]: initializeBedrock,
   [EModelEndpoint.azureOpenAI]: initializeOpenAI,

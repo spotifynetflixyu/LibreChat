@@ -2,6 +2,15 @@ const express = require('express');
 const request = require('supertest');
 
 const mockListModels = jest.fn((_req, res) => res.status(200).json({ options: [] }));
+const mockReadOpenAIOAuthUsage = jest.fn((_req, res) =>
+  res.status(200).json({
+    provider: 'openai_oauth_responses',
+    source: 'chatgpt_wham_usage',
+    status: 'available',
+    fetchedAt: '2026-06-26T07:00:00.000Z',
+    windows: [],
+  }),
+);
 const mockChat = jest.fn((_req, res) =>
   res.status(200).json({
     provider: 'openai_oauth_responses',
@@ -59,6 +68,7 @@ const mockCreateSteelHandlers = jest.fn(() => ({
   createGuestConversation: mockCreateGuestConversation,
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
+  readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
   readConversation: mockReadConversation,
   readConversationMessages: mockReadConversationMessages,
   streamChat: mockStreamChat,
@@ -119,6 +129,7 @@ function createApp() {
 describe('Steel route shells', () => {
   beforeEach(() => {
     mockRequireJwtAuth.mockClear();
+    mockReadOpenAIOAuthUsage.mockClear();
     mockReadConversationMessages.mockClear();
   });
 
@@ -129,6 +140,22 @@ describe('Steel route shells', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ options: [] });
+  });
+
+  it('registers authenticated OpenAI OAuth usage remaining under /api/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).get('/api/steel/ai/oauth-usage');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      provider: 'openai_oauth_responses',
+      source: 'chatgpt_wham_usage',
+      status: 'available',
+      fetchedAt: '2026-06-26T07:00:00.000Z',
+      windows: [],
+    });
+    expect(mockReadOpenAIOAuthUsage).toHaveBeenCalledTimes(1);
   });
 
   it('registers authenticated Steel chat under /api/steel', async () => {

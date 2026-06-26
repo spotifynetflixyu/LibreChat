@@ -3,8 +3,11 @@ import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import {
   allowedAddressesSchema,
+  alternateName,
   configSchema,
+  defaultEndpoints,
   excludedKeys,
+  initialModelsConfig,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
@@ -26,6 +29,26 @@ describe('excludedKeys', () => {
 
   it('does not exclude tenantId (plugin-level guard owns this)', () => {
     expect(excludedKeys.has('tenantId')).toBe(false);
+  });
+});
+
+describe('OpenAI OAuth endpoint defaults', () => {
+  it('places OpenAI OAuth first and reuses OpenAI endpoint behavior', () => {
+    expect(defaultEndpoints[0]).toBe(EModelEndpoint.openAIOAuth);
+    expect(alternateName[EModelEndpoint.openAIOAuth]).toBe('OpenAI (OAuth)');
+    expect(initialModelsConfig[EModelEndpoint.openAIOAuth]).toContain('gpt-5.5');
+    expect(
+      resolveEndpointType(
+        {
+          [EModelEndpoint.openAIOAuth]: {
+            type: EModelEndpoint.openAI,
+            userProvide: false,
+            order: 0,
+          },
+        },
+        EModelEndpoint.openAIOAuth,
+      ),
+    ).toBe(EModelEndpoint.openAI);
   });
 });
 

@@ -7,8 +7,6 @@ export type SteelProviderToolName = Extract<
   'search_customers' | 'search_price_candidates' | 'run_file_ocr' | 'read_markdown'
 >;
 
-export type SteelProviderToolContextMode = 'full' | 'compact_workbook';
-
 export interface SteelToolDefinition<Name extends SteelToolName = SteelProviderToolName> {
   name: Name;
   description: string;
@@ -34,6 +32,7 @@ const providerToolNames = new Set<SteelProviderToolName>([
   'search_customers',
   'search_price_candidates',
   'run_file_ocr',
+  'read_markdown',
 ]);
 
 const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
@@ -64,51 +63,29 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   },
 ];
 
-function getProviderToolNames(
-  contextMode: SteelProviderToolContextMode,
-): Set<SteelProviderToolName> {
-  if (contextMode !== 'compact_workbook') {
-    return providerToolNames;
-  }
-
-  return new Set([...providerToolNames, 'read_markdown']);
-}
-
-function isSteelProviderToolName(
-  value: SteelToolName,
-  contextMode: SteelProviderToolContextMode,
-): value is SteelProviderToolName {
-  return getProviderToolNames(contextMode).has(value as SteelProviderToolName);
+function isSteelProviderToolName(value: SteelToolName): value is SteelProviderToolName {
+  return providerToolNames.has(value as SteelProviderToolName);
 }
 
 const executableDefinitionsByName = new Map(
   executableSteelToolDefinitions.map((definition) => [definition.name, definition]),
 );
 
-export function getSteelToolDefinitions(
-  input: { contextMode?: SteelProviderToolContextMode } = {},
-): SteelToolDefinition<SteelProviderToolName>[] {
-  const contextMode = input.contextMode ?? 'full';
-
+export function getSteelToolDefinitions(): SteelToolDefinition<SteelProviderToolName>[] {
   return executableSteelToolDefinitions.filter(
     (definition): definition is SteelToolDefinition<SteelProviderToolName> =>
-      isSteelProviderToolName(definition.name, contextMode),
+      isSteelProviderToolName(definition.name),
   );
 }
 
-export function isSteelToolName(
-  value: string,
-  input: { contextMode?: SteelProviderToolContextMode } = {},
-): value is SteelProviderToolName {
-  const contextMode = input.contextMode ?? 'full';
-  return getSteelToolDefinitions({ contextMode }).some((definition) => definition.name === value);
+export function isSteelToolName(value: string): value is SteelProviderToolName {
+  return getSteelToolDefinitions().some((definition) => definition.name === value);
 }
 
 export function getSteelToolDefinition(
   name: SteelProviderToolName,
-  input: { contextMode?: SteelProviderToolContextMode } = {},
 ): SteelToolDefinition<SteelProviderToolName> {
-  const definition = getSteelToolDefinitions(input).find((entry) => entry.name === name);
+  const definition = getSteelToolDefinitions().find((entry) => entry.name === name);
 
   if (!definition) {
     throw new Error(`Unknown Steel provider tool: ${name}`);

@@ -1,3 +1,458 @@
+# Active: Compact Steel Runtime And Markdown Table Actions
+
+Goal: make compact workbook the only Steel runtime mode so `read_markdown` is
+always available, prove compact context is not the full workbook payload, and
+add Markdown table actions for copy, XLSX download, and full-viewport review
+without changing LibreChat's broader layout.
+
+Plan:
+
+- [x] Remove runtime mode switching from Steel context/tool exposure and keep
+      compact workbook behavior as the only path.
+- [x] Verify serialized compact context contains sheet row counts/anchors, not
+      complete workbook rows, and capture an example for user review.
+- [x] Add assistant Markdown table controls above rendered tables: copy
+      Markdown, download XLSX, and expand.
+- [x] Add a full-viewport table modal with the same copy/download actions and a
+      close control.
+- [x] Add focused runtime/frontend regression tests and run builds/checks.
+- [x] Record review evidence and lessons.
+
+Review - 2026-06-26 compact runtime and Markdown table actions:
+
+- Steel runtime context is now compact-only. `PrepareSteelRuntimeContextInput`
+  no longer accepts `mode`; handler/native context no longer pass
+  `runtimeContextMode`; registry/native/provider tool surfaces no longer accept
+  `contextMode` switches.
+- `read_markdown` is always in the AI-visible Steel tool surface:
+  `search_customers`, `search_price_candidates`, `run_file_ocr`,
+  `read_markdown`.
+- Serialized compact context example shape:
+
+```json
+{
+  "outputSheets": {
+    "contextMode": "compact_workbook",
+    "previousOutputSheets": {
+      "system_order": { "sheetId": "system_order", "rowCount": 1 },
+      "customer_quote": { "sheetId": "customer_quote", "rowCount": 1 }
+    },
+    "compactWorkbook": {
+      "sheets": {
+        "system_order": {
+          "sheetId": "system_order",
+          "rowCount": 1,
+          "rows": [
+            {
+              "rowId": "system_order:1",
+              "rowIndex": 1,
+              "anchors": {
+                "項次": "1",
+                "型號": "CCG075",
+                "品名規格": "錏輕型鋼 75x45"
+              }
+            }
+          ]
+        }
+      },
+      "unresolvedCount": 1
+    }
+  }
+}
+```
+
+- This is not the workbook Markdown and not the full workbook rows. Runtime
+  tests prove serialized context omits full `cells`, `derivedIndex`, and the
+  fixture-only value `full-row-only-note`.
+- Markdown tables now render with action buttons above the table: copy Markdown,
+  download XLSX, and expand. Expanded table opens a full-viewport modal with
+  copy/download/close controls and explicitly syncs the root theme class and
+  `data-theme`.
+- Updated `docs/rules/agent規則.txt` and
+  `docs/steel-native-librechat-master-framework.md` to describe compact-only
+  runtime behavior.
+- Verification:
+  - `cd packages/api && rtk npx jest src/steel/runtime/context.spec.ts src/steel/tools/registry.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts --coverage=false --runInBand` passed: 69 tests.
+  - `cd client && npx jest src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx --runInBand --watch=false --coverage=false` passed: 7 tests.
+  - `rtk npm run build:api` passed.
+  - `cd client && rtk npm run typecheck` passed.
+  - `cd client && rtk npm run build` passed; Vite reported existing eval,
+    large chunk, and PWA glob warnings.
+  - `git diff --check` passed.
+  - Backend dev server restarted and `http://localhost:3080/health` returned
+    `OK`.
+
+Previous completed work:
+
+# Active: OpenAI OAuth Native Chat Follow-Up
+
+Goal: align the native `/c` OpenAI (OAuth) Steel quote flow with the user
+corrections from the UI smoke: OAuth context accounting must use the 258K
+provider limit, chat Markdown tables must be readable for OCR/system_order
+workbooks, and database rules must match `docs/rules`.
+
+Plan:
+
+- [x] Root-cause the 947.6K context-window display and patch the shared token
+      lookup path so OpenAI (OAuth) uses a 258K context source.
+- [x] Add focused token-config/runtime tests proving OAuth context accounting
+      no longer inherits the normal OpenAI gpt-5.5 1M window.
+- [x] Widen native chat Markdown table cells and preserve horizontal scrolling
+      without changing LibreChat's page layout.
+- [x] Compare `steel.rules` readback with `docs/rules`, apply the existing
+      sync script only where mismatched, and read back evidence.
+- [x] Simplify native Steel rule prefix sections so each prompt rule section
+      maps to a `docs/rules/*.txt` source in `steel.rules`.
+- [x] Remove empty/legacy native prompt sections that are not DB-backed rules:
+      `reviewed_agent_rules`, `instruction_packets`, and prompt-level
+      `tool_policy`.
+- [x] Rename `quote_defaults_and_rules` to the shorter `quote_rules`.
+- [x] Rename `createSteelNativeRuntimeContextDependencies` to the shorter
+      `createSteelContextDependencies`.
+- [x] Rebuild/restart only what changed and run focused verification.
+
+Review - 2026-06-26 rules and native context:
+
+- Cloud `steel.rules` now matches all 8 repo rule files under `docs/rules`:
+  `agent規則.txt`, `輸出規則.txt`, `其他規則/OCR規則.txt`, and the five
+  `鋼材規則/*.txt` files.
+- Native prompt prefix now has only DB-backed rule sections:
+  `agent` = 1, `quote_rules` = 5, `output` = 1, `other` = 1.
+- Removed native prompt sections that were misleading or empty:
+  `reviewed_agent_rules` was a duplicate of the agent rule, `instruction_packets`
+  points at a legacy cloud table that does not exist, and prompt-level
+  `tool_policy` was runtime executable configuration rather than a rule txt.
+- `quote_defaults_and_rules` is now `quote_rules`.
+- `createSteelNativeRuntimeContextDependencies()` is now
+  `createSteelContextDependencies()`. Built exports include the new function and
+  no longer export the old long name.
+- Runtime `toolPolicy` is still used as backend executable configuration and is
+  serialized in runtime JSON, not as a prompt rule section. Current values:
+  - visible tools: `search_customers`, `search_price_candidates`,
+    `run_file_ocr`, `read_markdown`.
+  - removed tools: none.
+  - OCR correction policy: user OCR/table corrections update complete Markdown
+    directly; do not call `run_file_ocr` again unless the user explicitly asks
+    to rerun OCR or provides new/changed file evidence.
+  - `read_markdown` usage policy: use only when history lacks complete
+    OCR/workbook Markdown; forbid when history already has needed Markdown;
+    allowed scopes are `workbook` and `ocr`; always active-conversation scoped.
+- DB row `tool_policy` metadata readback:
+  - `steel-default-agent-instruction`: available tools
+    `search_customers`, `search_price_candidates`, `run_file_ocr`,
+    `read_markdown`.
+  - `steel-workbook-output-policy`: same available tools.
+  - `steel-drawing-ocr-policy`: `run_file_ocr`, required before
+    drawing evidence extraction, must mark low confidence.
+  - five steel quote rules: empty `tool_policy`.
+- No new txt file is needed for runtime `toolPolicy`: the AI-facing behavior is
+  already present in `docs/rules/agent規則.txt`, `docs/rules/輸出規則.txt`, and
+  `docs/rules/其他規則/OCR規則.txt`; the remaining runtime field controls actual
+  backend tool exposure and should stay code-owned.
+- Verification:
+  - `cd packages/api && rtk npx jest src/steel/native/context.spec.ts src/steel/native/metadata.spec.ts src/steel/runtime/context.spec.ts src/steel/native/tools.spec.ts --coverage=false --runInBand` passed with 24 tests.
+  - `rtk npm run build:api` passed.
+  - Built-dist smoke confirmed 8 rule markers are present in prompt, sections
+    are `agent`, `quote_rules`, `output`, `other`, prompt `Steel Tool Policy`
+    is absent, and `instructionPackets` is absent from runtime prompt text.
+  - `git diff --check` passed.
+  - `curl http://localhost:3080/health` returned `OK`.
+  - A direct `tsc --noEmit` remains blocked by existing repo-wide type issues
+    in unrelated Redis/manual-spec/OAuth test files; package build still passes.
+
+Previous completed work:
+
+# OpenAI OAuth Native Chat Runtime Bugfix
+
+Goal: fix the native `/c` OpenAI (OAuth) path so a user can attach
+`docs/reference/example/PL.pdf`, run OCR, see the OCR table, confirm it, and
+let the AI continue into quotation without the LangChain graph rejecting the
+OAuth model adapter.
+
+Plan:
+
+- [x] Reproduce the reported `Expected a Runnable, function or object` error
+      with a focused native OAuth graph pipeline test.
+- [x] Make the OpenAI OAuth model and graph model conform to LangChain
+      `Runnable` so native system context piping works.
+- [x] Run focused OAuth/runtime regression tests.
+- [x] Check API build and whitespace/diff sanity.
+- [x] Record review evidence and any lessons learned.
+
+Review - 2026-06-26 OpenAI OAuth native chat runtime:
+
+- Root cause: `createOpenAIOAuthModel()` / `createOpenAIOAuthGraphModel()`
+  returned plain class instances with `invoke()` and `stream()`, but LibreChat
+  agents calls `AgentContext.systemRunnable.pipe(model)`. LangChain only accepts
+  real `Runnable` instances, functions, or runnable maps, so the native `/c`
+  OAuth path failed with `Expected a Runnable, function or object`.
+- Fix: `OpenAIOAuthModel` and `OpenAIOAuthGraphModel` now extend LangChain
+  `Runnable`, keep `bindTools()` behavior, and implement streaming through
+  `_streamIterator()`.
+- Follow-up fix: `OpenAIOAuthGraphModel` can apply the native agent
+  `systemRunnable` itself when LibreChat invokes `overrideModel` directly,
+  preserving native Steel context/rules without changing the LibreChat UI/UX
+  layout.
+- Regression coverage:
+  - `cd packages/api && npx jest src/steel/native/oauth.spec.ts --coverage=false --runInBand --testNamePattern "system context runnable"` first reproduced the reported unsupported-type error, then passed after the fix.
+  - `cd packages/api && npx jest src/steel/native/oauth.spec.ts src/steel/native/title.spec.ts src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand` passed with 73 tests.
+  - `cd api && npx jest server/controllers/agents/client.test.js --coverage=false --runInBand` passed with 87 tests.
+  - `npm run build:api` passed after adding explicit `lc_namespace: string[]`
+    declarations.
+  - `git diff --check` passed.
+
+Follow-up - 2026-06-26 live retry:
+
+- User retried `/c` and still saw `Expected a Runnable, function or object`.
+  Root cause of the retry: the backend on port 3080 was still the old
+  `api/server/index.js` child process started at 16:31, before the fixed
+  `@librechat/api` dist was built.
+- Restarted the actual 3080 backend process. New startup reached readiness at
+  `2026-06-26T08:58:22Z`, and `curl http://localhost:3080/health` returned
+  `OK`.
+- Runtime package smoke verified the built `createOpenAIOAuthGraphModel()` is
+  `lc_runnable: true` and can be piped by
+  `@librechat/agents/langchain/runnables`.
+- Real DB native context smoke against `.env` `STEEL_POSTGRES_URL` succeeded:
+  the current schema uses `steel.rules` / `steel.prices`, not legacy
+  `steel.agent_rules` / `steel.quote_defaults`; native context fail-opened the
+  missing legacy tables and loaded 5 quote/steel rules, 1 output rule, and 1
+  OCR/other rule.
+- Full live smoke passed:
+  `cd packages/api && NODE_OPTIONS=--experimental-vm-modules STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_TIMEOUT_MS=900000 npx jest --coverage=false --runInBand --runTestsByPath src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --testPathIgnorePatterns 'a^'`
+  passed in 192.38s.
+- Live evidence file:
+  `tmp/steel-native-openai-oauth-pl-pdf-quote-live-evidence.json`
+  shows first turn called `run_file_ocr` on `PL.pdf` and returned an OCR
+  confirmation table; confirmed quote turn did not rerun OCR, called
+  `search_price_candidates`, and returned `system_order`, `customer_quote`, and
+  `manual_review` Markdown tables.
+- After the restart, scanning `api/logs/error-2026-06-26.log` from
+  `2026-06-26T08:58:14Z` found zero new matches for
+  `Expected a Runnable`, `generateOpenAIOAuthTitle is not a function`, or
+  `Missing credentials`.
+
+Previous completed work:
+
+# Phase 14 OpenAI OAuth UI Provider And Usage Remaining
+
+Goal: add a first/default `OpenAI (OAuth)` provider option to the normal
+LibreChat model selector and show ChatGPT OAuth usage remaining under the OAuth
+model list without changing the existing LibreChat UI layout or duplicating
+Steel tool/OCR/quote flows.
+
+Follow-up goal: allow a file-only chat submit by auto-filling the native
+composer with the Steel OCR review prompt when attachments are present and the
+message text is empty.
+
+Plan:
+
+- [x] Research how the local `openai-oauth-provider` can retrieve usage
+      remaining.
+- [x] Add focused backend tests for OAuth usage parsing, sanitization, caching,
+      and unavailable-state behavior.
+- [x] Add shared data-provider types/endpoints for sanitized OAuth usage
+      remaining.
+- [x] Add a thin authenticated backend route that calls ChatGPT WHAM OAuth
+      usage with the bearer token and returns only UI-safe remaining/reset data.
+- [x] Add `OpenAI (OAuth)` as the first/default model-provider UI option while
+      reusing the shared Steel native context/tools/OCR/quote modules.
+- [x] Add Usage remaining rows under the OAuth model list only, with loading and
+      unavailable states.
+- [x] Run focused Jest tests, data-provider build, frontend build or smoke
+      checks, backend restart if needed, and `git diff --check`.
+- [x] Record review evidence.
+- [x] Auto-fill the composer with `OCR檔案內容，逐一列表給我核對。` when a file
+      is attached and the text area is empty.
+- [x] Let the send button submit when attachments exist even if text is still
+      empty.
+- [x] Add a submit-time fallback so keyboard/programmatic submits send the same
+      default prompt with file-only messages.
+- [x] Add focused regression tests and run client checks.
+- [x] Fix `OpenAI (OAuth)` native chat runtime so SDK graph creation does not
+      fall back to the API-key OpenAI client without the OpenAI OAuth override.
+- [x] Disable unsupported OAuth title generation until the title path has its
+      own OAuth-backed model.
+- [x] Add focused regression tests for the OAuth graph override and title skip.
+- [x] Rebuild/verify backend packages and restart the local backend for testing.
+- [x] Implement OAuth-backed title generation for `OpenAI (OAuth)` without
+      using the normal API-key OpenAI title path.
+- [x] Add focused regression tests for OAuth title generation, usage recording,
+      and prompt isolation from Steel runtime context.
+- [x] Rename generic OpenAI OAuth transport/model/title symbols so they no
+      longer use `Steel` as a prefix.
+- [x] Keep `Steel` naming only for quote/OCR/rules/context/tooling modules and
+      behavior, while preserving external provider ids/routes/UI labels.
+- [x] Run focused OAuth/title/runtime tests, API build, and health checks after
+      the rename.
+
+Research lock:
+
+- The local `openai-oauth-provider` package exposes `loadAuthTokens()` and
+  wraps ChatGPT Codex Responses calls, but it does not expose a public usage
+  helper.
+- The live-verified usage endpoint is
+  `GET https://chatgpt.com/backend-api/wham/usage` with the Codex OAuth bearer
+  access token. The previously assumed `/backend-api/codex/usage` returns 403.
+- The response contains `rate_limit.primary_window` and
+  `rate_limit.secondary_window` with `used_percent`, `limit_window_seconds`,
+  `reset_after_seconds`, and `reset_at`. UI remaining percent is
+  `100 - used_percent`.
+- A 5-hour primary window maps to the screenshot's `5h` row, and the 604800
+  second secondary window maps to the weekly row.
+- Backend responses must not expose OAuth access tokens, refresh tokens,
+  account IDs, emails, auth file paths, or raw ChatGPT usage JSON. The frontend
+  receives only sanitized window labels, remaining/used percentages, reset
+  timestamps, and availability metadata.
+- Usage fetch is best-effort and should be cached briefly in backend memory so
+  opening the model selector does not hammer the OAuth endpoint.
+- This is provider/model UI work only. Steel tools, OCR, quote parsing, runtime
+  context, and Markdown recovery remain the shared native Steel modules.
+
+Review - 2026-06-26:
+
+- Added normal LibreChat endpoint support for `openai_oauth_responses` as
+  `OpenAI (OAuth)`, first in the default endpoint list and backed by the
+  existing native OpenAI OAuth provider path.
+- Added a sanitized authenticated route at `/api/steel/ai/oauth-usage`. It uses
+  `openai-oauth-provider` only to load/refresh the local Codex OAuth token,
+  calls live-verified `https://chatgpt.com/backend-api/wham/usage`, caches the
+  result briefly, and returns only `remainingPercent`, `usedPercent`, window
+  seconds, reset timestamps, and availability metadata.
+- Added shared data-provider usage schemas, endpoint keys, data-service method,
+  and React Query hook.
+- Added a small `Usage remaining` footer under the OAuth model list only. It
+  keeps the existing selector layout and shows the 5h/weekly windows with
+  loading/unavailable states.
+- Live sanitized probe from the built API returned `chatgpt_wham_usage` with
+  available primary and secondary windows; no token/account/email/auth path was
+  printed.
+- Verification:
+  - `npm run build:data-provider` passed.
+  - `cd packages/api && npx jest src/steel/native/usage.spec.ts src/endpoints/openai/oauth.spec.ts src/steel/native/provider.spec.ts --coverage=false --runInBand` passed with 10 tests.
+  - `cd packages/data-provider && npx jest src/config.spec.ts src/steel/ai.spec.ts --coverage=false --runInBand` passed with 130 tests.
+  - `cd api && npx jest server/routes/__tests__/steel.spec.js --coverage=false --runInBand` passed with 13 tests.
+  - `cd client && npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx src/utils/__tests__/getDefaultEndpoint.test.ts --coverage=false --runInBand` passed with 5 tests.
+  - `npm run build:api` passed.
+  - `cd client && npm run typecheck` passed.
+  - `npm run build:client` passed with existing Vite/PWA warnings about
+    `vm-browserify` eval, large chunks, and unmatched icon glob patterns.
+  - `git diff --check` passed.
+
+Correction - 2026-06-26:
+
+- The original `OpenAI` API-key endpoint must remain visible separately from
+  `OpenAI (OAuth)`. When `OPENAI_API_KEY` is not set server-side, it should
+  fall back to LibreChat's existing user-provided key mode so the selector can
+  open the API-key settings dialog.
+- `Usage remaining` should not hide all failure modes behind a plain
+  `Unavailable` label. The UI now surfaces the sanitized backend reason and
+  retries unavailable usage checks while the OAuth model list is open.
+- Added focused regression coverage for the OpenAI API-key fallback and the
+  OAuth usage unavailable reason label.
+- Follow-up: the OpenAI API-key fallback also had to be wired into the runtime
+  `initializeOpenAI()` path. Without `OPENAI_API_KEY=user_provided`, the UI
+  could save a user key but the runtime would not read it. `initializeOpenAI()`
+  now treats a missing `OPENAI_API_KEY` for the original `OpenAI` endpoint as
+  user-provided, matching the selector config fallback.
+- File-only submit follow-up: when the user attaches a file and the composer is
+  empty, native LibreChat now auto-fills `OCR檔案內容，逐一列表給我核對。`. The send
+  button also treats attached files as submit-ready, and `useSubmitMessage()`
+  applies the same default prompt as a submit-time fallback for keyboard or
+  programmatic submits.
+- Verification:
+  - `cd api && npx jest server/services/Config/__tests__/EndpointService.spec.js server/services/Config/loadDefaultEConfig.spec.js server/routes/__tests__/steel.spec.js --coverage=false --runInBand` passed with 23 tests.
+  - `cd client && npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx src/utils/__tests__/getDefaultEndpoint.test.ts --coverage=false --runInBand` passed with 5 tests.
+  - `cd packages/api && npx jest src/endpoints/openai/initialize.spec.ts src/endpoints/openai/oauth.spec.ts --coverage=false --runInBand` passed with 11 tests.
+  - `cd api && npx jest server/services/Config/__tests__/EndpointService.spec.js server/services/Config/loadDefaultEConfig.spec.js --coverage=false --runInBand` passed with 10 tests.
+  - `cd client && npx jest src/hooks/Messages/__tests__/useSubmitMessage.spec.ts src/components/Chat/Input/__tests__/SendButton.spec.tsx src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx src/utils/__tests__/getDefaultEndpoint.test.ts --coverage=false --runInBand` passed with 11 tests.
+  - `npm run build:api` passed.
+  - `cd client && npm run typecheck` passed after the file-only submit changes.
+  - `npm run build:client` passed with the same Vite/PWA warnings already
+    noted above.
+  - Built API live usage probe returned `status: available`,
+    `source: chatgpt_wham_usage`, primary remaining 56%, and weekly remaining
+    51%.
+
+Correction - 2026-06-26 runtime:
+
+- Root cause of the `Missing credentials` error: native chat correctly mapped
+  `openai_oauth_responses` to SDK provider `openAI`, but the Steel OAuth
+  override was checking the mapped graph `provider` instead of the original
+  initialized agent endpoint/provider. The SDK then initialized the normal
+  OpenAI client without an API key.
+- `createRun()` now decides whether to attach the OpenAI OAuth graph override
+  from the original initialized agent (`endpoint` or `provider` equals
+  `openai_oauth_responses`) while leaving the SDK graph provider as `openAI`.
+- Auto title generation initially had to avoid `run.generateTitle()` because it
+  constructs a normal title LLM from provider/options and does not use the Steel
+  OAuth override model.
+- Verification:
+  - `cd packages/api && npx jest src/agents/__tests__/run-summarization.test.ts src/endpoints/openai/oauth.spec.ts --coverage=false --runInBand` passed with 66 tests.
+  - `cd api && npx jest server/controllers/agents/client.test.js --coverage=false --runInBand` passed with 87 tests.
+  - `npm run build:api` passed.
+  - `curl -sS http://localhost:3080/health` returned `OK`.
+  - Built `packages/api/dist/index.cjs` contains the new `sourceAgent` OAuth
+    override path, and nodemon restarted the backend at `16:08:19`.
+  - `git diff --check` passed.
+
+Correction - 2026-06-26 OAuth title:
+
+- Added `generateOpenAIOAuthTitle()` in `packages/api/src/steel/native`.
+  It uses the existing `openai-oauth-provider` transport through
+  `createOpenAIOAuthModel()` and returns only title text plus usage
+  metadata.
+- `AgentClient.titleConvo()` now routes `OpenAI (OAuth)` title generation to
+  that helper instead of `run.generateTitle()`. The normal API-key OpenAI title
+  path is still used for the original `OpenAI` endpoint and other providers.
+- The OAuth title prompt uses only the current user text, assistant text parts,
+  and title prompt/template settings. It does not inject Steel runtime context,
+  workbook/OCR state, or tools.
+- Verification:
+  - Red tests failed before implementation:
+    `cd packages/api && npx jest src/steel/native/title.spec.ts --coverage=false --runInBand`
+    failed because `./title` did not exist; `cd api && npx jest server/controllers/agents/client.test.js --coverage=false --runInBand --testNamePattern "OpenAI OAuth title"`
+    failed because the OAuth branch returned `undefined`.
+  - `cd packages/api && npx jest src/steel/native/title.spec.ts src/steel/native/oauth.spec.ts --coverage=false --runInBand` passed with 6 tests.
+  - `cd api && npx jest server/controllers/agents/client.test.js --coverage=false --runInBand` passed with 87 tests.
+  - `npm run build:api` passed.
+  - Built `packages/api/dist/index.cjs` and `packages/api/dist/index.d.cts`
+    export `generateOpenAIOAuthTitle`.
+  - Nodemon restarted the backend and readiness checks passed at `16:19:00`.
+
+Correction - 2026-06-26 OpenAI OAuth naming:
+
+- Renamed generic OAuth transport/model/title symbols away from `Steel`:
+  `createOpenAIOAuthModel()`, `OpenAIOAuthModel`,
+  `createOpenAIOAuthGraphModel()`, `OpenAIOAuthGraphModel`,
+  `generateOpenAIOAuthTitle()`, and the OpenAI OAuth graph override helpers.
+- Renamed OpenAI OAuth config and usage helper symbols away from `Steel`:
+  `parseOpenAIConfig()`, `resolveOpenAIOAuthAuthFilePath()`,
+  `OpenAIOAuthUsageRemaining`, `getOpenAIOAuthUsage()`, and
+  `useGetOpenAIOAuthUsageQuery()`.
+- Preserved external contracts: provider id remains `openai_oauth_responses`,
+  UI label remains `OpenAI (OAuth)`, usage URL remains
+  `/api/steel/ai/oauth-usage`, and legacy `STEEL_OPENAI_*` env names remain as
+  fallback aliases. `.env.example` now documents the preferred `OPENAI_*`
+  names.
+- Restored `steelProviderMetadata` after the broad rename pass; that metadata
+  still belongs to Steel structured response state, not generic OAuth provider
+  transport.
+- Verification:
+  - `cd packages/api && npx jest src/steel/ai/config.spec.ts src/steel/native/oauth.spec.ts src/steel/native/title.spec.ts src/steel/native/usage.spec.ts src/agents/__tests__/run-summarization.test.ts src/steel/ai/provider.spec.ts --coverage=false --runInBand` passed with 6 suites / 98 tests.
+  - `cd api && npx jest server/controllers/agents/client.test.js server/routes/__tests__/steel.spec.js --coverage=false --runInBand` passed with 2 suites / 100 tests.
+  - `cd client && npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --coverage=false --runInBand` passed with 3 tests.
+  - `npm run build:api` passed.
+  - `cd packages/data-provider && npm run build` passed and rebuilt the shared
+    dist/type exports.
+  - `cd client && npm run typecheck` passed.
+  - `git diff --check` passed.
+  - `curl -sS http://localhost:3080/health` returned `OK`.
+  - `curl -I -sS http://localhost:3090` returned `HTTP/1.1 200 OK`.
+  - Targeted grep over source/client/server files found no remaining old
+    Steel-prefixed OpenAI OAuth model/title/usage/config helper names, and no
+    accidental provider metadata rename.
+
 # Active: search_price_candidates Material Keyword Lookup
 
 Goal: make `search_price_candidates` treat lookup `material` as a material
@@ -324,8 +779,8 @@ Design lock:
 
 Review - 2026-06-25:
 
-- Added `mergeSteelToolDefinitions()` to convert
-  `getSteelToolDefinitions({ contextMode })` into native `LCTool` definitions.
+- Added `mergeSteelToolDefinitions()` to convert `getSteelToolDefinitions()`
+  into native `LCTool` definitions.
 - Added `createSteelNativeTool()` and `resolveSteelProviderToolName()` so
   native tool calls can execute canonical Steel tools even when the visible name
   is namespaced after a collision.
@@ -568,7 +1023,7 @@ Plan:
 - [x] Add failing native OAuth adapter tests for stateless provider creation,
       message/file conversion, tool-call mapping, and streaming chunks.
 - [x] Add failing `createRun()` contract coverage for standard native OAuth
-      chat injecting a Steel OAuth override model.
+      chat injecting an OpenAI OAuth override model.
 - [x] Implement `packages/api/src/steel/native/oauth.ts` and export it through
       the native Steel barrel.
 - [x] Wire `packages/api/src/agents/run.ts` so standard single-agent
@@ -601,8 +1056,8 @@ Review - 2026-06-25:
 - Red adapter test:
   - `cd packages/api && npx jest src/steel/native/oauth.spec.ts --coverage=false --runInBand`
     failed because `./oauth` did not exist.
-- Implemented `SteelNativeOpenAIOAuthModel` and
-  `SteelNativeOpenAIOAuthGraphModel` in
+- Implemented `OpenAIOAuthModel` and
+  `OpenAIOAuthGraphModel` in
   `packages/api/src/steel/native/oauth.ts`.
 - The adapter:
   - lazy-loads `openai-oauth-provider` unless a test injects
@@ -1294,7 +1749,7 @@ Review - 2026-06-26:
   confirmation, required `孔數 / 件` and `總孔數`, and `10/11/20/21` item
   numbering.
 - OpenAI OAuth + real PaddleOCR live smoke was not run in this environment:
-  `.env` has `STEEL_POSTGRES_URL`, but no `STEEL_OPENAI_OAUTH_AUTH_FILE` and no
+  `.env` has `STEEL_POSTGRES_URL`, but no `OPENAI_OAUTH_AUTH_FILE` and no
   PaddleOCR endpoint/API-key variables were configured.
 
 Verification:
@@ -1315,7 +1770,7 @@ Verification:
   `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/steel/native/markdown.spec.ts src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts src/steel/tools/execute.spec.ts --coverage=false --runInBand`
   passed with 47 tests.
 - Native OAuth run seam:
-  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "Steel native OpenAI OAuth"`
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "OpenAI OAuth"`
   passed with 1 matching test.
 - `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH node --check e2e/setup/fake-model.js`
   passed.
@@ -1450,7 +1905,7 @@ Review - 2026-06-26:
   the existing prompt-only history + memory reconstruction path satisfies the
   contract.
 - Environment check found `.env` contains database connection keys, but no
-  `STEEL_OPENAI_OAUTH_AUTH_FILE` and no PaddleOCR endpoint/API-key/MCP command
+  `OPENAI_OAUTH_AUTH_FILE` and no PaddleOCR endpoint/API-key/MCP command
   variables, so real OpenAI OAuth + PaddleOCR `PL.pdf` live smoke remains
   pending.
 
@@ -1526,7 +1981,7 @@ Review - 2026-06-26:
 - Checked the new native OAuth spec for banned wording-fragment matchers:
   no `stringContaining`, `toContain`, or `toMatch` remain in that spec.
 - `.env` currently exposes `MONGO_URI` and `STEEL_POSTGRES_URL`, but not
-  `STEEL_OPENAI_OAUTH_AUTH_FILE` or PaddleOCR endpoint/API-key/MCP command
+  `OPENAI_OAUTH_AUTH_FILE` or PaddleOCR endpoint/API-key/MCP command
   variables, so real OpenAI OAuth + PaddleOCR `PL.pdf` live smoke remains
   pending.
 
@@ -1597,7 +2052,7 @@ Review - 2026-06-26:
   check found no `stringContaining`, `toContain`, or `toMatch` in the new file.
 - Live run env gap remains:
   - `.env` has `MONGO_URI` and `STEEL_POSTGRES_URL`;
-  - `.env` does not expose `STEEL_OPENAI_OAUTH_AUTH_FILE`;
+  - `.env` does not expose `OPENAI_OAUTH_AUTH_FILE`;
   - `.env` does not expose PaddleOCR endpoint/API key or MCP command variables.
 
 Verification:
@@ -1655,7 +2110,7 @@ Review - 2026-06-26:
 - Added `packages/api/src/steel/native/oauth-pl-pdf-quote.manual.spec.ts`, a
   gated live smoke for the native OpenAI OAuth adapter path.
 - The spec uses `buildSteelGlobalAgentContext()` and
-  `createSteelNativeOpenAIOAuthModel()`, then runs native-style LangChain
+  `createOpenAIOAuthModel()`, then runs native-style LangChain
   messages through a small manual tool loop:
   - first turn sends `PL.pdf` as a provider `input_file`, binds native Steel
     tool definitions, executes returned Steel tool calls through
@@ -1682,11 +2137,11 @@ Review - 2026-06-26:
 Verification:
 
 - First live attempt without ESM VM support:
-  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true STEEL_OPENAI_OAUTH_AUTH_FILE=/Users/neven/.codex/auth.json npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true OPENAI_OAUTH_AUTH_FILE=/Users/neven/.codex/auth.json npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
   failed before provider execution with Jest dynamic import error:
   `A dynamic import callback was invoked without --experimental-vm-modules`.
 - Live native OpenAI OAuth + PaddleOCR PL.pdf smoke:
-  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH NODE_OPTIONS=--experimental-vm-modules STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true STEEL_OPENAI_OAUTH_AUTH_FILE=/Users/neven/.codex/auth.json npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH NODE_OPTIONS=--experimental-vm-modules STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true OPENAI_OAUTH_AUTH_FILE=/Users/neven/.codex/auth.json npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
   passed with 1 test in 201103 ms.
 - Manual spec readiness with live env disabled:
   `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`

@@ -26,6 +26,14 @@ jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: jest.fn(),
 }));
 
+jest.mock('~/hooks/useLocalize', () => ({
+  __esModule: true,
+  default: () => (key: string) =>
+    key === 'com_ui_steel_file_ocr_default_prompt'
+      ? 'OCR檔案內容，逐一列表給我核對。'
+      : key,
+}));
+
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
   useLatestMessage: jest.fn(),
 }));
@@ -51,9 +59,13 @@ describe('useSubmitMessage', () => {
   const reset = jest.fn();
   const setMessages = jest.fn();
   const getMessages = jest.fn();
+  let files: Map<string, unknown>;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    ask.mockReset();
+    ask.mockReturnValue(undefined);
+    files = new Map();
     mockUseRecoilValue.mockReturnValue(false);
     mockUseSetRecoilState.mockReturnValue(mockSetActivePrompt);
     mockUseAuthContext.mockReturnValue({ user: { id: 'user-1' } });
@@ -64,6 +76,7 @@ describe('useSubmitMessage', () => {
     mockUseChatContext.mockReturnValue({
       ask,
       index: 0,
+      files,
       getMessages,
       setMessages,
     });
@@ -80,6 +93,35 @@ describe('useSubmitMessage', () => {
     });
 
     expect(submitted).toBe(false);
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('submits the default OCR review prompt when only files are attached', () => {
+    files.set('file-1', {});
+
+    const { result } = renderHook(() => useSubmitMessage());
+
+    act(() => {
+      result.current.submitMessage({ text: '   ' });
+    });
+
+    expect(ask).toHaveBeenCalledWith(
+      { text: 'OCR檔案內容，逐一列表給我核對。' },
+      { addedConvo: undefined },
+    );
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks an empty submit when no files are attached', () => {
+    const { result } = renderHook(() => useSubmitMessage());
+
+    let submitted: false | void = undefined;
+    act(() => {
+      submitted = result.current.submitMessage({ text: '   ' });
+    });
+
+    expect(submitted).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
     expect(reset).not.toHaveBeenCalled();
   });
 });

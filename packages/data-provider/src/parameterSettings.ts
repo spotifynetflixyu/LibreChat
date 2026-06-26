@@ -1108,6 +1108,7 @@ const bedrockMoonshotCol2: SettingsConfiguration = [
 
 export const paramSettings: Record<string, SettingsConfiguration | undefined> = {
   [EModelEndpoint.openAI]: openAI,
+  [EModelEndpoint.openAIOAuth]: openAI,
   [EModelEndpoint.azureOpenAI]: openAI,
   [EModelEndpoint.custom]: openAI,
   [Providers.OPENROUTER]: openRouter,
@@ -1145,6 +1146,7 @@ export const presetSettings: Record<
   | undefined
 > = {
   [EModelEndpoint.openAI]: openAIColumns,
+  [EModelEndpoint.openAIOAuth]: openAIColumns,
   [EModelEndpoint.azureOpenAI]: openAIColumns,
   [EModelEndpoint.custom]: openAIColumns,
   [Providers.OPENROUTER]: {

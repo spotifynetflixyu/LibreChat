@@ -18,20 +18,14 @@ export const steelRuntimeAiVisibleTools = [
   'search_customers',
   'search_price_candidates',
   'run_file_ocr',
-] as const satisfies readonly SteelBusinessToolName[];
-
-export const steelRuntimeCompactWorkbookAiVisibleTools: readonly SteelBusinessToolName[] = [
-  ...steelRuntimeAiVisibleTools,
   'read_markdown',
 ] as const satisfies readonly SteelBusinessToolName[];
 
 export const steelRuntimeRemovedTools = [] as const satisfies readonly SteelBusinessToolName[];
 
 export type SteelRuntimeActiveOutputSheetId = (typeof steelRuntimeActiveOutputSheetIds)[number];
-export type SteelRuntimeContextMode = 'full' | 'compact_workbook';
-export type SteelRuntimeAiVisibleToolName =
-  | (typeof steelRuntimeAiVisibleTools)[number]
-  | (typeof steelRuntimeCompactWorkbookAiVisibleTools)[number];
+export type SteelRuntimeContextMode = 'compact_workbook';
+export type SteelRuntimeAiVisibleToolName = (typeof steelRuntimeAiVisibleTools)[number];
 export type SteelRuntimeRemovedToolName = (typeof steelRuntimeRemovedTools)[number];
 
 export interface SteelRuntimeJsonObject {
@@ -136,7 +130,7 @@ export interface SteelRuntimeContext {
     sheetIds: typeof steelRuntimeActiveOutputSheetIds;
     previousOutputSheets: FullActiveSteelOutputSheets;
     derivedIndex: SteelRuntimeDerivedIndex;
-    compactWorkbook?: SteelRuntimeCompactWorkbookContext;
+    compactWorkbook: SteelRuntimeCompactWorkbookContext;
   };
   attachments: {
     currentTurnFiles: SteelOAuthChatFile[];
@@ -187,7 +181,6 @@ export interface PrepareSteelRuntimeContextInput {
   conversation: SteelRuntimeContextConversationInput;
   attachments?: SteelRuntimeContextAttachmentsInput;
   dependencies: SteelRuntimeContextDependencies;
-  mode?: SteelRuntimeContextMode;
 }
 
 export interface ResolveNextSteelOutputSheetsInput {
@@ -496,7 +489,6 @@ export async function prepareSteelRuntimeContext({
   conversation,
   attachments,
   dependencies,
-  mode = 'full',
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
   const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(conversation.conversationId);
@@ -546,20 +538,17 @@ export async function prepareSteelRuntimeContext({
     },
     outputSheets: {
       activeOnly: true,
-      contextMode: mode,
+      contextMode: 'compact_workbook',
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: conversation.conversationId,
       sheetIds: steelRuntimeActiveOutputSheetIds,
       previousOutputSheets: pickActiveOutputSheets(outputSheetMemory),
       derivedIndex: outputSheetMemory.derivedIndex,
-      compactWorkbook:
-        mode === 'compact_workbook'
-          ? buildCompactWorkbookContext(
-              pickActiveOutputSheets(outputSheetMemory),
-              outputSheetMemory.derivedIndex,
-            )
-          : undefined,
+      compactWorkbook: buildCompactWorkbookContext(
+        pickActiveOutputSheets(outputSheetMemory),
+        outputSheetMemory.derivedIndex,
+      ),
     },
     attachments: {
       currentTurnFiles,
@@ -567,10 +556,7 @@ export async function prepareSteelRuntimeContext({
       includeOcrRules,
     },
     toolPolicy: {
-      aiVisibleTools:
-        mode === 'compact_workbook'
-          ? steelRuntimeCompactWorkbookAiVisibleTools
-          : steelRuntimeAiVisibleTools,
+      aiVisibleTools: steelRuntimeAiVisibleTools,
       removedTools: steelRuntimeRemovedTools,
       ocrCorrectionPolicy:
         'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not call run_file_ocr again unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
@@ -583,7 +569,6 @@ export async function prepareLibreChatSteelRuntimeContext({
   conversation,
   attachments,
   dependencies,
-  mode = 'full',
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const runtimeConversation = prepareLibreChatRuntimeConversation(conversation);
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
@@ -638,17 +623,17 @@ export async function prepareLibreChatSteelRuntimeContext({
     },
     outputSheets: {
       activeOnly: true,
-      contextMode: mode,
+      contextMode: 'compact_workbook',
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: runtimeConversation.conversationId,
       sheetIds: steelRuntimeActiveOutputSheetIds,
       previousOutputSheets: supplementalOutputSheetMemory.previousOutputSheets,
       derivedIndex: supplementalOutputSheetMemory.derivedIndex,
-      compactWorkbook:
-        mode === 'compact_workbook'
-          ? buildCompactWorkbookContext(activeOutputSheets, outputSheetMemory.derivedIndex)
-          : undefined,
+      compactWorkbook: buildCompactWorkbookContext(
+        activeOutputSheets,
+        outputSheetMemory.derivedIndex,
+      ),
     },
     attachments: {
       currentTurnFiles,
@@ -656,10 +641,7 @@ export async function prepareLibreChatSteelRuntimeContext({
       includeOcrRules,
     },
     toolPolicy: {
-      aiVisibleTools:
-        mode === 'compact_workbook'
-          ? steelRuntimeCompactWorkbookAiVisibleTools
-          : steelRuntimeAiVisibleTools,
+      aiVisibleTools: steelRuntimeAiVisibleTools,
       removedTools: steelRuntimeRemovedTools,
       ocrCorrectionPolicy:
         'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not call run_file_ocr again unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
@@ -690,10 +672,6 @@ function summarizePreviousOutputSheets(outputSheets: FullActiveSteelOutputSheets
 }
 
 function serializeOutputSheets(outputSheets: SteelRuntimeContext['outputSheets']) {
-  if (outputSheets.contextMode !== 'compact_workbook') {
-    return outputSheets;
-  }
-
   return {
     activeOnly: outputSheets.activeOnly,
     contextMode: outputSheets.contextMode,
@@ -706,10 +684,30 @@ function serializeOutputSheets(outputSheets: SteelRuntimeContext['outputSheets']
   };
 }
 
+function serializeSteelGlobalRules(rules: SteelRuntimeContext['rules']['steelGlobalRules']) {
+  return {
+    ...(rules.instructionPackets.length > 0
+      ? { instructionPackets: rules.instructionPackets }
+      : {}),
+    quoteDefaults: rules.quoteDefaults,
+    quoteRules: rules.quoteRules,
+    groupedBy: rules.groupedBy,
+  };
+}
+
+function serializeRules(rules: SteelRuntimeContext['rules']) {
+  return {
+    agentRules: rules.agentRules,
+    steelGlobalRules: serializeSteelGlobalRules(rules.steelGlobalRules),
+    outputRules: rules.outputRules,
+    otherGlobalRules: rules.otherGlobalRules,
+  };
+}
+
 export function serializeSteelRuntimeContext(context: SteelRuntimeContext): string {
   return JSON.stringify(
     {
-      rules: context.rules,
+      rules: serializeRules(context.rules),
       toolPolicy: context.toolPolicy,
       outputSheets: serializeOutputSheets(context.outputSheets),
       conversation: {

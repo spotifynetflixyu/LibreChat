@@ -21,7 +21,7 @@ import {
   type BaseMessage,
 } from '@librechat/agents/langchain/messages';
 import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
-import type { RunnableConfig } from '@librechat/agents/langchain/runnables';
+import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
@@ -34,7 +34,7 @@ type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type OpenAIOAuthSettings = NonNullable<Parameters<CreateOpenAIOAuth>[0]>;
 type MessageContentArray = Array<Record<string, unknown>>;
 
-export interface SteelNativeOpenAIOAuthModelOptions {
+export interface OpenAIOAuthModelOptions {
   authFilePath?: string;
   createOpenAIOAuth?: CreateOpenAIOAuth;
   ensureFresh?: boolean;
@@ -69,7 +69,7 @@ function createOpenAIOAuthSettings({
   ensureFresh,
   fetch,
 }: Pick<
-  SteelNativeOpenAIOAuthModelOptions,
+  OpenAIOAuthModelOptions,
   'authFilePath' | 'ensureFresh' | 'fetch'
 >): OpenAIOAuthSettings {
   return omitUndefined({
@@ -80,8 +80,8 @@ function createOpenAIOAuthSettings({
   }) as OpenAIOAuthSettings;
 }
 
-function getRunnableAbortSignal(config?: RunnableConfig): AbortSignal | undefined {
-  return (config as (RunnableConfig & { signal?: AbortSignal }) | undefined)?.signal;
+function getRunnableAbortSignal(config?: Partial<RunnableConfig>): AbortSignal | undefined {
+  return (config as (Partial<RunnableConfig> & { signal?: AbortSignal }) | undefined)?.signal;
 }
 
 function parseDataUrl(value: string): { data: string; mediaType: string } | undefined {
@@ -516,9 +516,9 @@ function createCallOptions({
   options,
   tools,
 }: {
-  config?: RunnableConfig;
+  config?: Partial<RunnableConfig>;
   messages: BaseMessage[];
-  options: SteelNativeOpenAIOAuthModelOptions;
+  options: OpenAIOAuthModelOptions;
   tools?: BindToolsInput[];
 }): LanguageModelV3CallOptions {
   const languageModelTools = toLanguageModelTools(tools);
@@ -611,21 +611,25 @@ async function* toChunkStream({
   });
 }
 
-export class SteelNativeOpenAIOAuthModel {
-  readonly steelProvider = 'openai_oauth_responses';
+export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, RunnableConfig> {
+  readonly providerId = 'openai_oauth_responses';
+
+  lc_namespace: string[] = ['librechat', 'openai_oauth'];
 
   private providerModel: LanguageModelV3 | undefined;
 
-  constructor(private readonly options: SteelNativeOpenAIOAuthModelOptions) {}
+  constructor(private readonly options: OpenAIOAuthModelOptions) {
+    super();
+  }
 
-  bindTools(tools: BindToolsInput[]): SteelNativeOpenAIOAuthModel {
-    return new SteelNativeOpenAIOAuthModel({
+  bindTools(tools: BindToolsInput[]): OpenAIOAuthModel {
+    return new OpenAIOAuthModel({
       ...this.options,
       tools,
     });
   }
 
-  async invoke(messages: BaseMessage[], config?: RunnableConfig): Promise<AIMessageChunk> {
+  async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
     const providerModel = await this.getProviderModel();
     const result = await providerModel.doGenerate(
       createCallOptions({
@@ -639,17 +643,15 @@ export class SteelNativeOpenAIOAuthModel {
     return toMessageChunk(result, this.options.model);
   }
 
-  async stream(
+  protected async *_streamIterator(
     messages: BaseMessage[],
-    config?: RunnableConfig,
-  ): Promise<AsyncIterable<AIMessageChunk>> {
+    config?: Partial<RunnableConfig>,
+  ): AsyncGenerator<AIMessageChunk> {
     const providerModel = await this.getProviderModel();
 
     if (typeof providerModel.doStream !== 'function') {
-      const chunk = await this.invoke(messages, config);
-      return (async function* fallbackStream(): AsyncGenerator<AIMessageChunk> {
-        yield chunk;
-      })();
+      yield await this.invoke(messages, config);
+      return;
     }
 
     const result = await providerModel.doStream(
@@ -661,7 +663,7 @@ export class SteelNativeOpenAIOAuthModel {
       }),
     );
 
-    return toChunkStream({
+    yield* toChunkStream({
       model: this.options.model,
       stream: result.stream,
     });
@@ -679,46 +681,78 @@ export class SteelNativeOpenAIOAuthModel {
   }
 }
 
-export function createSteelNativeOpenAIOAuthModel(
-  options: SteelNativeOpenAIOAuthModelOptions,
-): SteelNativeOpenAIOAuthModel {
-  return new SteelNativeOpenAIOAuthModel(options);
+export function createOpenAIOAuthModel(
+  options: OpenAIOAuthModelOptions,
+): OpenAIOAuthModel {
+  return new OpenAIOAuthModel(options);
 }
 
-export interface SteelNativeOpenAIOAuthGraphModelOptions {
+export interface OpenAIOAuthGraphModelOptions {
+  getSystemRunnable?: () =>
+    | Runnable<BaseMessage[], BaseMessage[], RunnableConfig<Record<string, unknown>>>
+    | undefined;
   getTools?: () => BindToolsInput[] | undefined;
-  modelOptions: Omit<SteelNativeOpenAIOAuthModelOptions, 'tools'>;
+  modelOptions: Omit<OpenAIOAuthModelOptions, 'tools'>;
 }
 
-export class SteelNativeOpenAIOAuthGraphModel {
-  readonly steelProvider = 'openai_oauth_responses';
+export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChunk, RunnableConfig> {
+  readonly providerId = 'openai_oauth_responses';
 
-  constructor(private readonly options: SteelNativeOpenAIOAuthGraphModelOptions) {}
+  lc_namespace: string[] = ['librechat', 'openai_oauth'];
 
-  bindTools(tools: BindToolsInput[]): SteelNativeOpenAIOAuthModel {
-    return createSteelNativeOpenAIOAuthModel({
+  constructor(private readonly options: OpenAIOAuthGraphModelOptions) {
+    super();
+  }
+
+  private async prepareMessages(
+    messages: BaseMessage[],
+    config?: Partial<RunnableConfig>,
+  ): Promise<BaseMessage[]> {
+    if (messages[0]?._getType() === 'system') {
+      return messages;
+    }
+
+    const systemRunnable = this.options.getSystemRunnable?.();
+    if (!systemRunnable) {
+      return messages;
+    }
+
+    return systemRunnable.invoke(messages, config as RunnableConfig<Record<string, unknown>>);
+  }
+
+  bindTools(tools: BindToolsInput[]): OpenAIOAuthModel {
+    return createOpenAIOAuthModel({
       ...this.options.modelOptions,
       tools,
     });
   }
 
-  invoke(messages: BaseMessage[], config?: RunnableConfig): Promise<AIMessageChunk> {
-    return createSteelNativeOpenAIOAuthModel({
+  async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
+    const preparedMessages = await this.prepareMessages(messages, config);
+    return createOpenAIOAuthModel({
       ...this.options.modelOptions,
       tools: this.options.getTools?.(),
-    }).invoke(messages, config);
+    }).invoke(preparedMessages, config);
   }
 
-  stream(messages: BaseMessage[], config?: RunnableConfig): Promise<AsyncIterable<AIMessageChunk>> {
-    return createSteelNativeOpenAIOAuthModel({
+  protected async *_streamIterator(
+    messages: BaseMessage[],
+    config?: Partial<RunnableConfig>,
+  ): AsyncGenerator<AIMessageChunk> {
+    const preparedMessages = await this.prepareMessages(messages, config);
+    const stream = await createOpenAIOAuthModel({
       ...this.options.modelOptions,
       tools: this.options.getTools?.(),
-    }).stream(messages, config);
+    }).stream(preparedMessages, config);
+
+    for await (const chunk of stream) {
+      yield chunk;
+    }
   }
 }
 
-export function createSteelNativeOpenAIOAuthGraphModel(
-  options: SteelNativeOpenAIOAuthGraphModelOptions,
-): SteelNativeOpenAIOAuthGraphModel {
-  return new SteelNativeOpenAIOAuthGraphModel(options);
+export function createOpenAIOAuthGraphModel(
+  options: OpenAIOAuthGraphModelOptions,
+): OpenAIOAuthGraphModel {
+  return new OpenAIOAuthGraphModel(options);
 }

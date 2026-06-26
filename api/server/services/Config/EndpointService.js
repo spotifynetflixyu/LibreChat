@@ -1,5 +1,5 @@
 const { isUserProvided, isEnabled } = require('@librechat/api');
-const { EModelEndpoint } = require('librechat-data-provider');
+const { AuthType, EModelEndpoint } = require('librechat-data-provider');
 const { generateConfig } = require('~/server/utils/handleText');
 
 const {
@@ -16,6 +16,7 @@ const {
 } = process.env ?? {};
 
 const userProvidedOpenAI = isUserProvided(openAIApiKey);
+const openAIKeyConfig = openAIApiKey || AuthType.USER_PROVIDED;
 const anthropicUsesVertex = isEnabled(process.env.ANTHROPIC_USE_VERTEX);
 const firstNonEmpty = (...values) => values.find((value) => value != null && value !== '');
 const bedrockUserProvidedCredential = [
@@ -31,8 +32,14 @@ module.exports = {
     openAIApiKey,
     azureOpenAIApiKey,
     userProvidedOpenAI,
+    [EModelEndpoint.openAIOAuth]: {
+      ...generateConfig('true'),
+      type: EModelEndpoint.openAI,
+      iconURL: EModelEndpoint.openAI,
+      modelDisplayLabel: 'OpenAI (OAuth)',
+    },
     [EModelEndpoint.anthropic]: generateConfig(anthropicUsesVertex ? 'true' : anthropicApiKey),
-    [EModelEndpoint.openAI]: generateConfig(openAIApiKey, OPENAI_REVERSE_PROXY),
+    [EModelEndpoint.openAI]: generateConfig(openAIKeyConfig, OPENAI_REVERSE_PROXY),
     [EModelEndpoint.azureOpenAI]: generateConfig(azureOpenAIApiKey, AZURE_OPENAI_BASEURL),
     [EModelEndpoint.assistants]: generateConfig(
       assistantsApiKey,

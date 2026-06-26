@@ -15,6 +15,10 @@ const mockDataProvider = {
     bedrock: 'bedrock',
     google: 'google',
     openAI: 'openAI',
+    openAIOAuth: 'openai_oauth_responses',
+  },
+  AuthType: {
+    USER_PROVIDED: 'user_provided',
   },
   defaultAgentCapabilities: [],
   defaultRetrievalModels: [],
@@ -60,6 +64,7 @@ describe('EndpointService', () => {
     process.env = { ...originalEnv };
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_USE_VERTEX;
+    delete process.env.OPENAI_API_KEY;
     delete process.env.BEDROCK_AWS_ACCESS_KEY_ID;
     delete process.env.BEDROCK_AWS_SECRET_ACCESS_KEY;
     delete process.env.BEDROCK_AWS_SESSION_TOKEN;
@@ -85,6 +90,20 @@ describe('EndpointService', () => {
     });
 
     expect(config[EModelEndpoint.anthropic]).toEqual({ userProvide: true });
+  });
+
+  it('keeps OpenAI visible as a user-provided endpoint when no server API key is set', () => {
+    const config = loadConfig({});
+
+    expect(config[EModelEndpoint.openAI]).toEqual({ userProvide: true });
+  });
+
+  it('keeps OpenAI server-key mode when OPENAI_API_KEY is set', () => {
+    const config = loadConfig({
+      OPENAI_API_KEY: 'sk-test',
+    });
+
+    expect(config[EModelEndpoint.openAI]).toEqual({ userProvide: false });
   });
 
   it('requires a user Bedrock key when bearer token user_provided is set with a legacy static secret', () => {

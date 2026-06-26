@@ -51,9 +51,11 @@ function getErrorMessage(error) {
 }
 
 function sendSteelRouteError(res, error) {
+  const model =
+    process.env.OPENAI_DEFAULT_MODEL || process.env.STEEL_OPENAI_DEFAULT_MODEL || 'unknown';
   res.status(500).json({
     provider: 'openai_oauth_responses',
-    model: process.env.STEEL_OPENAI_DEFAULT_MODEL || 'unknown',
+    model,
     text: '',
     unsupportedSettings: [],
     warnings: [],
@@ -106,6 +108,7 @@ router.get(
   handlers.readConversation,
 );
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
+router.get('/ai/oauth-usage', requireJwtAuth, handlers.readOpenAIOAuthUsage);
 router.post('/ai/chat', requireJwtAuth, handlers.chat);
 router.post('/ai/chat/stream', requireJwtAuth, steelAsyncRoute(handlers.streamChat));
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);

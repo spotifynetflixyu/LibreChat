@@ -12,6 +12,7 @@ const settings: { [key: string]: FC<TModelSelectProps> | undefined } = {
   [EModelEndpoint.azureAssistants]: AssistantsSettings,
   [EModelEndpoint.agents]: OpenAISettings,
   [EModelEndpoint.openAI]: OpenAISettings,
+  [EModelEndpoint.openAIOAuth]: OpenAISettings,
   [EModelEndpoint.custom]: OpenAISettings,
   [EModelEndpoint.azureOpenAI]: OpenAISettings,
   [EModelEndpoint.anthropic]: AnthropicSettings,

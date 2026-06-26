@@ -27,10 +27,10 @@ import {
 } from './memory/service';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
 import {
-  parseSteelOpenAIConfig,
-  resolveSteelOpenAIOAuthAuthFilePath,
-  type SteelOpenAIConfigEnv,
-  type SteelOpenAIReasoningEffort,
+  parseOpenAIConfig,
+  resolveOpenAIOAuthAuthFilePath,
+  type OpenAIConfigEnv,
+  type OpenAIReasoningEffort,
 } from './ai/config';
 import {
   sendSteelOAuthChat,
@@ -52,13 +52,13 @@ import {
   prepareSteelRuntimeContext,
 } from './runtime/context';
 import { executeSteelTool } from './tools/execute';
+import { getOpenAIOAuthUsageRemaining } from './native/usage';
 
 import type { Request, Response } from 'express';
 import type {
   ListSteelOtherGlobalRulesInput,
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
-  SteelRuntimeContextMode,
   SteelRuntimeContextDependencies,
 } from './runtime/context';
 import type { SteelRepositoryClient } from './repositories';
@@ -106,9 +106,10 @@ interface SteelRequest extends Request {
 }
 
 export interface SteelHandlersDeps {
-  env?: SteelOpenAIConfigEnv;
+  env?: OpenAIConfigEnv;
   executeToolCall?: SteelProviderToolExecutor;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
+  getOpenAIOAuthUsageRemaining?: typeof getOpenAIOAuthUsageRemaining;
   sendChat?: (options: SendSteelOAuthChatOptions) => Promise<SteelChatProviderResult>;
   resolveEvidenceFile?: (input: {
     fileId: string;
@@ -131,6 +132,7 @@ interface SteelHandlers {
   chat(req: Request, res: Response): Promise<void>;
   streamChat(req: Request, res: Response): Promise<void>;
   listModels(req: SteelRequest, res: Response): Promise<void>;
+  readOpenAIOAuthUsage(req: SteelRequest, res: Response): Promise<void>;
   createAuthenticatedConversation(req: SteelRequest, res: Response): Promise<void>;
   createGuestConversation(req: SteelRequest, res: Response): Promise<void>;
   readConversation(req: SteelRequest, res: Response): Promise<void>;
@@ -161,7 +163,7 @@ interface SteelChatErrorResponse {
   errorSummary: string;
 }
 
-type SteelOpenAIConfig = ReturnType<typeof parseSteelOpenAIConfig>;
+type OpenAIConfig = ReturnType<typeof parseOpenAIConfig>;
 
 interface ParsedSteelChatRequest {
   conversationId?: string;
@@ -170,7 +172,7 @@ interface ParsedSteelChatRequest {
   messageSource: SteelUserTurnSource;
   messages: SteelOAuthChatMessage[];
   model: string;
-  reasoningEffort: SteelOpenAIReasoningEffort;
+  reasoningEffort: OpenAIReasoningEffort;
   requestId: string;
 }
 
@@ -211,10 +213,6 @@ function isLookupStreamTool(toolName: string): boolean {
 
 function getStreamToolEventType(toolName: string): 'lookup' | 'tool' {
   return isLookupStreamTool(toolName) ? 'lookup' : 'tool';
-}
-
-function parseSteelRuntimeContextMode(env: SteelOpenAIConfigEnv): SteelRuntimeContextMode {
-  return env.STEEL_RUNTIME_CONTEXT_MODE === 'compact_workbook' ? 'compact_workbook' : 'full';
 }
 
 function writeStreamEvent(res: Response, event: SteelProviderChatStreamEvent): void {
@@ -529,7 +527,6 @@ async function buildSteelRuntimeContext({
   prepareDefaultRuntimeContext,
   prepareRuntimeContext,
   preparedContext,
-  runtimeContextMode,
   runtimeRulesClient,
 }: {
   conversationId?: string;
@@ -540,7 +537,6 @@ async function buildSteelRuntimeContext({
     input: PrepareSteelRuntimeContextInput,
   ) => Promise<SteelRuntimeContext>;
   preparedContext: PreparedSteelChatContext;
-  runtimeContextMode: SteelRuntimeContextMode;
   runtimeRulesClient?: SteelRepositoryClient;
 }): Promise<SteelRuntimeContext | undefined> {
   const shouldPrepareRuntimeContext =
@@ -569,7 +565,6 @@ async function buildSteelRuntimeContext({
       createOutputSheetMemoryReader,
       getRulesClient: () => runtimeRulesClient ?? getDefaultStreamToolClient(),
     }),
-    mode: runtimeContextMode,
   });
 }
 
@@ -944,13 +939,13 @@ function parseOptionalMaxOutputTokens(value: unknown): number | undefined {
 
 function parseOptionalReasoningEffort(
   value: unknown,
-  defaultReasoningEffort: SteelOpenAIReasoningEffort,
-): SteelOpenAIReasoningEffort {
+  defaultReasoningEffort: OpenAIReasoningEffort,
+): OpenAIReasoningEffort {
   if (value === undefined) {
     return defaultReasoningEffort;
   }
   if (typeof value === 'string' && (requestReasoningEfforts as readonly string[]).includes(value)) {
-    return value as SteelOpenAIReasoningEffort;
+    return value as OpenAIReasoningEffort;
   }
 
   throw new Error(`reasoningEffort must be one of: ${requestReasoningEfforts.join(', ')}`);
@@ -961,7 +956,7 @@ async function parseSteelChatRunRequest({
   req,
   resolveEvidenceFile,
 }: {
-  config: SteelOpenAIConfig;
+  config: OpenAIConfig;
   req: Request;
   resolveEvidenceFile?: SteelHandlersDeps['resolveEvidenceFile'];
 }): Promise<ParsedSteelChatRequest> {
@@ -990,7 +985,7 @@ async function parseSteelChatRunRequest({
 
 function sendInvalidSteelChatRequest(
   res: Response,
-  config: SteelOpenAIConfig,
+  config: OpenAIConfig,
   error: unknown,
 ) {
   res
@@ -1013,7 +1008,7 @@ function sendUnsupportedApiProviderResponse(res: Response, model: string) {
         'openai_api',
         model,
         'unknown',
-        'STEEL_OPENAI_PROVIDER=API is reserved for the OpenAI API adapter, which is not implemented in this slice.',
+        'OPENAI_PROVIDER=API is reserved for the OpenAI API adapter, which is not implemented in this slice.',
       ),
     );
 }
@@ -1031,17 +1026,17 @@ function buildProviderBaseOptions({
 }: {
   abortSignal: AbortSignal;
   conversationId?: string;
-  env: SteelOpenAIConfigEnv;
+  env: OpenAIConfigEnv;
   executeSteelToolCall?: SteelProviderToolExecutor;
   maxOutputTokens?: number;
   messages: SteelOAuthChatMessage[];
   model: string;
-  reasoningEffort: SteelOpenAIReasoningEffort;
+  reasoningEffort: OpenAIReasoningEffort;
   steelRuntimeContext?: SteelRuntimeContext;
 }): SendSteelOAuthChatOptions {
   return {
     abortSignal,
-    authFilePath: resolveSteelOpenAIOAuthAuthFilePath(env),
+    authFilePath: resolveOpenAIOAuthAuthFilePath(env),
     conversationId,
     executeSteelToolCall,
     maxOutputTokens,
@@ -1222,7 +1217,7 @@ function getSteelGuestToken(req: Request): string | undefined {
   return value;
 }
 
-function createDefaultConversationService(env: SteelOpenAIConfigEnv) {
+function createDefaultConversationService(env: OpenAIConfigEnv) {
   return createSteelConversationService({
     audit: createMongooseSteelAuditRecorder(mongoose),
     env,
@@ -1269,6 +1264,7 @@ export function createSteelHandlers({
   env = process.env,
   executeToolCall,
   getModelsConfig,
+  getOpenAIOAuthUsageRemaining: readOpenAIOAuthUsageRemaining = getOpenAIOAuthUsageRemaining,
   sendChat = sendSteelOAuthChat,
   resolveEvidenceFile,
   conversationService,
@@ -1299,7 +1295,7 @@ export function createSteelHandlers({
 
   return {
     async chat(req: Request, res: Response) {
-      const config = parseSteelOpenAIConfig(env);
+      const config = parseOpenAIConfig(env);
       let parsedRequest: ParsedSteelChatRequest;
       try {
         parsedRequest = await parseSteelChatRunRequest({ config, req, resolveEvidenceFile });
@@ -1346,7 +1342,6 @@ export function createSteelHandlers({
         prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
         prepareRuntimeContext,
         preparedContext,
-        runtimeContextMode: parseSteelRuntimeContextMode(env),
         runtimeRulesClient,
       });
       const defaultToolExecutor = executeToolCall
@@ -1422,7 +1417,7 @@ export function createSteelHandlers({
     },
 
     async streamChat(req: Request, res: Response) {
-      const config = parseSteelOpenAIConfig(env);
+      const config = parseOpenAIConfig(env);
       let parsedRequest: ParsedSteelChatRequest;
       try {
         parsedRequest = await parseSteelChatRunRequest({ config, req, resolveEvidenceFile });
@@ -1469,7 +1464,6 @@ export function createSteelHandlers({
         prepareDefaultRuntimeContext: sendChat === sendSteelOAuthChat,
         prepareRuntimeContext,
         preparedContext,
-        runtimeContextMode: parseSteelRuntimeContextMode(env),
         runtimeRulesClient,
       });
 
@@ -1631,6 +1625,13 @@ export function createSteelHandlers({
         modelSpecs: req.config?.modelSpecs,
       });
       res.status(200).json({ options });
+    },
+
+    async readOpenAIOAuthUsage(_req: SteelRequest, res: Response) {
+      const usage = await readOpenAIOAuthUsageRemaining({
+        authFilePath: resolveOpenAIOAuthAuthFilePath(env),
+      });
+      res.status(200).json(usage);
     },
 
     async createAuthenticatedConversation(req: SteelRequest, res: Response) {

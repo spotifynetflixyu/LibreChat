@@ -170,9 +170,10 @@ Use existing Steel runtime context as the source of truth:
 - `serializeSteelRuntimeContext`
 - `steelRuntimeActiveOutputSheetIds`
 - `steelRuntimeAiVisibleTools`
-- `steelRuntimeCompactWorkbookAiVisibleTools`
 
-Default to `compact_workbook` unless a test or rollback path explicitly needs full context.
+Runtime context is compact workbook only. It should expose row counts and compact anchor
+metadata, not the full workbook/OCR Markdown. When complete current Markdown is needed
+and chat history no longer has it, agents use `read_markdown`.
 
 Runtime sources:
 

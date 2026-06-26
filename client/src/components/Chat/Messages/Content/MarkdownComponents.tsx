@@ -4,6 +4,7 @@ import { useToastContext } from '@librechat/client';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
 import Mermaid, { MermaidErrorBoundary } from '~/components/Messages/Content/Mermaid';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
+import MarkdownTableActions from './MarkdownTableActions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { useFileDownload } from '~/data-provider';
 import { useCodeBlockContext } from '~/Providers';
@@ -190,11 +191,7 @@ type TTableProps = {
 };
 
 export const table: React.ElementType = memo(function MarkdownTable({ children }: TTableProps) {
-  return (
-    <div className="markdown-table-wrapper w-full max-w-full">
-      <table>{children}</table>
-    </div>
-  );
+  return <MarkdownTableActions>{children}</MarkdownTableActions>;
 });
 table.displayName = 'MarkdownTable';
 

@@ -30,7 +30,13 @@ function createParams(env: Record<string, string | undefined>): BaseInitializePa
   for (const key of Object.keys(env)) {
     savedEnv[key] = process.env[key];
   }
-  Object.assign(process.env, env);
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 
   const db = {
     getUserKeyValues: jest.fn().mockResolvedValue({
@@ -124,6 +130,31 @@ describe('initializeOpenAI – SSRF guard wiring', () => {
     }
 
     expect(mockValidateEndpointURL).not.toHaveBeenCalled();
+  });
+
+  it('uses the saved user OpenAI key when OPENAI_API_KEY is not set', async () => {
+    const params = createParams({
+      OPENAI_API_KEY: undefined,
+    });
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    expect(params.db.getUserKeyValues).toHaveBeenCalledWith({
+      userId: 'user-1',
+      name: EModelEndpoint.openAI,
+    });
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'sk-user-key',
+      expect.objectContaining({
+        reverseProxyUrl: undefined,
+        baseURLIsUserProvided: false,
+      }),
+      EModelEndpoint.openAI,
+    );
   });
 
   it('should propagate SSRF rejection from validateEndpointURL', async () => {

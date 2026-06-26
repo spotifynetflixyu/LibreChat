@@ -7,6 +7,7 @@ const defaultConfig: TEndpointsConfig = {
   [EModelEndpoint.azureAssistants]: null,
   [EModelEndpoint.assistants]: null,
   [EModelEndpoint.agents]: null,
+  [EModelEndpoint.openAIOAuth]: null,
   [EModelEndpoint.openAI]: null,
   [EModelEndpoint.google]: null,
   [EModelEndpoint.anthropic]: null,

@@ -5,7 +5,7 @@ import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '.
 import type { SteelAgentRule } from '../repositories/rules';
 import type { SteelProviderToolExecutor } from './provider';
 
-import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from './config';
+import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from './config';
 import {
   listReviewedSteelAgentRules,
   listReviewedSteelOtherRules,
@@ -104,8 +104,8 @@ describePricingLive('Steel live pricing quote smoke', () => {
     'quotes plate, H beam material, and H beam cutting with effective price candidates',
     async () => {
       const pool = createSteelPostgresPool();
-      const config = parseSteelOpenAIConfig(process.env);
-      const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+      const config = parseOpenAIConfig(process.env);
+      const authFilePath = resolveOpenAIOAuthAuthFilePath(process.env);
       const capturedCalls: CapturedToolCall[] = [];
       const executeToolCall: SteelProviderToolExecutor = async (options) => {
         const captured: CapturedToolCall = {

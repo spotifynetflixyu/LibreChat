@@ -15,7 +15,7 @@ import {
   prepareSteelRuntimeContext,
 } from '../runtime/context';
 import { executeSteelTool } from '../tools/execute';
-import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from './config';
+import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from './config';
 import { sendSteelOAuthChat } from './provider';
 
 import type { SteelAgentRule } from '../repositories/rules';
@@ -272,8 +272,8 @@ describePLQuoteLive('Steel live PL.pdf OCR confirmation and quote flow', () => {
     'returns OCR confirmation first, then quotes the confirmed OCR table',
     async () => {
       const pool = createSteelPostgresPool();
-      const config = parseSteelOpenAIConfig(process.env);
-      const authFilePath = resolveSteelOpenAIOAuthAuthFilePath(process.env);
+      const config = parseOpenAIConfig(process.env);
+      const authFilePath = resolveOpenAIOAuthAuthFilePath(process.env);
       const plFile = await loadPLFile();
       const conversationId = 'steel_live_pl_pdf_ocr_confirm';
       const ocrUserMessage: SteelOAuthChatMessage = {

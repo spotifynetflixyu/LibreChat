@@ -48,7 +48,11 @@ export async function initializeOpenAI({
     [EModelEndpoint.azureOpenAI]: AZURE_OPENAI_BASEURL,
   };
 
-  const userProvidesKey = isUserProvided(credentials[endpoint as keyof typeof credentials]);
+  const openAIUsesUserProvidedFallback =
+    endpoint === EModelEndpoint.openAI && !credentials[EModelEndpoint.openAI];
+  const userProvidesKey =
+    openAIUsesUserProvidedFallback ||
+    isUserProvided(credentials[endpoint as keyof typeof credentials]);
   const userProvidesURL = isUserProvided(baseURLOptions[endpoint as keyof typeof baseURLOptions]);
 
   let userValues: UserKeyValues | null = null;

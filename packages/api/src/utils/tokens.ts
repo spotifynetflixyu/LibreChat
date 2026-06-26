@@ -68,6 +68,14 @@ const openAIModels = {
   'gpt-5.2-pro': 400000,
 };
 
+export const OPENAI_OAUTH_CONTEXT_TOKENS = 258000;
+
+const openAIOAuthModels = {
+  system_default: OPENAI_OAUTH_CONTEXT_TOKENS,
+  'gpt-5.5': OPENAI_OAUTH_CONTEXT_TOKENS,
+  'gpt-5.5-pro': OPENAI_OAUTH_CONTEXT_TOKENS,
+};
+
 const mistralModels = {
   'mistral-': 31990, // -10 from max
   'mistral-7b': 31990, // -10 from max
@@ -367,6 +375,7 @@ const aggregateModels = {
 };
 
 export const maxTokensMap: Record<string, Record<string, number>> = {
+  [EModelEndpoint.openAIOAuth]: openAIOAuthModels,
   [EModelEndpoint.azureOpenAI]: openAIModels,
   [EModelEndpoint.openAI]: aggregateModels,
   [EModelEndpoint.agents]: aggregateModels,

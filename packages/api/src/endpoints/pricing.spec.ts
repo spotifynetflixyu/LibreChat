@@ -61,6 +61,20 @@ describe('buildTokenConfigMap', () => {
     expect(map.MyProxy['gpt-4o-mini'].context).toBeGreaterThan(0);
   });
 
+  it('resolves OpenAI OAuth models with the OAuth context ceiling', () => {
+    const map = buildTokenConfigMap(
+      {
+        modelsConfig: {
+          [EModelEndpoint.openAIOAuth]: ['gpt-5.5', 'gpt-4o'],
+        },
+      },
+      deps,
+    );
+
+    expect(map[EModelEndpoint.openAIOAuth]['gpt-5.5'].context).toBe(258000);
+    expect(map[EModelEndpoint.openAIOAuth]['gpt-4o'].context).toBe(258000);
+  });
+
   it('prefers endpoint token config overrides for context and rates', () => {
     const override: EndpointTokenConfig = {
       'custom-model': { prompt: 1.5, completion: 4.5, context: 32000 },

@@ -5,4 +5,6 @@ export * from './markdown';
 export * from './metadata';
 export * from './oauth';
 export * from './provider';
+export * from './title';
 export * from './tools';
+export * from './usage';

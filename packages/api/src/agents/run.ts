@@ -42,8 +42,8 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { resolveConfigHeaders } from '~/utils/headers';
 import { applyTestRunHook } from '~/agents/testHook';
 import { isUserProvided } from '~/utils/common';
-import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from '~/steel/ai/config';
-import { createSteelNativeOpenAIOAuthGraphModel } from '~/steel/native/oauth';
+import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '~/steel/ai/config';
+import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
 
 /** Expected shape of JSON tool search results */
 interface ToolSearchJsonResult {
@@ -51,7 +51,7 @@ interface ToolSearchJsonResult {
   tools?: Array<{ name: string }>;
 }
 
-const steelOpenAIOAuthProvider = 'openai_oauth_responses';
+const openAIOAuthProvider = 'openai_oauth_responses';
 
 /**
  * Parses tool names from JSON-formatted tool_search output.
@@ -728,10 +728,13 @@ function anyAgentHasCodeEnv(agents: RunAgent[]): boolean {
   return false;
 }
 
-type SteelNativeOpenAIOAuthGraph = {
+type OpenAIOAuthGraph = {
   agentContexts?: Map<
     string,
     {
+      systemRunnable?: ReturnType<
+        NonNullable<Parameters<typeof createOpenAIOAuthGraphModel>[0]['getSystemRunnable']>
+      >;
       getToolsForBinding?: () => Parameters<typeof resolveLocalToolsForBinding>[0]['tools'];
     }
   >;
@@ -739,10 +742,12 @@ type SteelNativeOpenAIOAuthGraph = {
   toolExecution?: Parameters<typeof resolveLocalToolsForBinding>[0]['toolExecution'];
 };
 
-function isSteelNativeOpenAIOAuthAgent(
-  agentInput: AgentInputs | undefined,
-): agentInput is AgentInputs {
-  return (agentInput?.provider as string | undefined) === steelOpenAIOAuthProvider;
+function isOpenAIOAuthAgent(
+  agent: Pick<RunAgent, 'endpoint' | 'provider'> | undefined,
+): boolean {
+  return (
+    agent?.provider === openAIOAuthProvider || agent?.endpoint === openAIOAuthProvider
+  );
 }
 
 function getRecordValue(record: Record<string, unknown> | undefined, key: string): unknown {
@@ -767,15 +772,15 @@ function getBooleanValue(
   return typeof value === 'boolean' ? value : undefined;
 }
 
-function getSteelNativeOpenAIOAuthModelOptions(agentInput: AgentInputs) {
+function getOpenAIOAuthModelOptions(agentInput: AgentInputs) {
   const clientOptions = agentInput.clientOptions as Record<string, unknown> | undefined;
-  const steelOpenAIConfig = parseSteelOpenAIConfig(process.env);
-  const model = getStringValue(clientOptions, 'model') ?? steelOpenAIConfig.model;
+  const openAIConfig = parseOpenAIConfig(process.env);
+  const model = getStringValue(clientOptions, 'model') ?? openAIConfig.model;
 
   return {
     authFilePath:
       getStringValue(clientOptions, 'authFilePath') ??
-      resolveSteelOpenAIOAuthAuthFilePath(process.env),
+      resolveOpenAIOAuthAuthFilePath(process.env),
     ensureFresh: getBooleanValue(clientOptions, 'ensureFresh'),
     frequencyPenalty: getNumberValue(clientOptions, 'frequencyPenalty'),
     maxOutputTokens:
@@ -785,31 +790,34 @@ function getSteelNativeOpenAIOAuthModelOptions(agentInput: AgentInputs) {
     model,
     presencePenalty: getNumberValue(clientOptions, 'presencePenalty'),
     reasoningEffort:
-      getStringValue(clientOptions, 'reasoningEffort') ?? steelOpenAIConfig.reasoningEffort,
+      getStringValue(clientOptions, 'reasoningEffort') ?? openAIConfig.reasoningEffort,
     temperature: getNumberValue(clientOptions, 'temperature'),
     topP: getNumberValue(clientOptions, 'topP'),
   };
 }
 
-function applySteelNativeOpenAIOAuthGraphOverride({
+function applyOpenAIOAuthGraphOverride({
   agentInput,
   run,
+  sourceAgent,
 }: {
   agentInput?: AgentInputs;
   run: unknown;
+  sourceAgent?: Pick<RunAgent, 'endpoint' | 'provider'>;
 }): void {
-  if (!isSteelNativeOpenAIOAuthAgent(agentInput)) {
+  if (!agentInput || !isOpenAIOAuthAgent(sourceAgent)) {
     return;
   }
 
-  const graph = (run as { Graph?: SteelNativeOpenAIOAuthGraph }).Graph;
+  const graph = (run as { Graph?: OpenAIOAuthGraph }).Graph;
   if (!graph) {
     return;
   }
 
   const agentId = agentInput.agentId;
-  graph.overrideModel = createSteelNativeOpenAIOAuthGraphModel({
-    modelOptions: getSteelNativeOpenAIOAuthModelOptions(agentInput),
+  graph.overrideModel = createOpenAIOAuthGraphModel({
+    modelOptions: getOpenAIOAuthModelOptions(agentInput),
+    getSystemRunnable: () => graph.agentContexts?.get(agentId)?.systemRunnable,
     getTools: () =>
       resolveLocalToolsForBinding({
         tools: graph.agentContexts?.get(agentId)?.getToolsForBinding?.(),
@@ -1266,9 +1274,10 @@ export async function createRun({
   };
   const run = await Run.create(runConfig);
 
-  applySteelNativeOpenAIOAuthGraphOverride({
+  applyOpenAIOAuthGraphOverride({
     agentInput: agentInputs.length === 1 ? agentInputs[0] : undefined,
     run,
+    sourceAgent: agents.length === 1 ? agents[0] : undefined,
   });
 
   applyTestRunHook(run, { messages, agents });

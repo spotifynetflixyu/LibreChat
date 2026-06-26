@@ -13,7 +13,7 @@ import type {
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { SteelOpenAIReasoningEffort } from './config';
+import type { OpenAIReasoningEffort } from './config';
 import { serializeSteelRuntimeContext, type SteelRuntimeContext } from '../runtime/context';
 import { createSteelPostgresPool } from '../postgres';
 import {
@@ -24,7 +24,6 @@ import {
 import {
   getSteelToolDefinitions,
   isSteelToolName,
-  type SteelProviderToolContextMode,
   type SteelProviderToolName,
 } from '../tools/registry';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
@@ -141,7 +140,7 @@ export interface SendSteelOAuthChatOptions {
   onProviderRoundStatus?: SteelProviderRoundStatusCallback;
   passThroughUnsupportedFiles?: boolean;
   providerRoundProgressIntervalMs?: number;
-  reasoningEffort: SteelOpenAIReasoningEffort;
+  reasoningEffort: OpenAIReasoningEffort;
   steelToolMaxCalls?: number;
   steelRuntimePolicy?: boolean;
   steelRuntimeContext?: SteelRuntimeContext;
@@ -154,10 +153,7 @@ async function loadCreateOpenAIOAuth(): Promise<typeof createOpenAIOAuthType> {
 }
 
 let defaultSteelToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
-const steelBusinessFunctionToolsByMode = new Map<
-  SteelProviderToolContextMode,
-  LanguageModelV3FunctionTool[]
->();
+let steelBusinessFunctionTools: LanguageModelV3FunctionTool[] | undefined;
 
 function getDefaultSteelToolClient() {
   defaultSteelToolClient ??= createSteelPostgresPool();
@@ -179,15 +175,12 @@ async function executeDefaultSteelToolCall({
   });
 }
 
-function getSteelBusinessFunctionTools(
-  contextMode: SteelProviderToolContextMode,
-): LanguageModelV3FunctionTool[] {
-  const existingTools = steelBusinessFunctionToolsByMode.get(contextMode);
-  if (existingTools) {
-    return existingTools;
+function getSteelBusinessFunctionTools(): LanguageModelV3FunctionTool[] {
+  if (steelBusinessFunctionTools) {
+    return steelBusinessFunctionTools;
   }
 
-  const tools = getSteelToolDefinitions({ contextMode }).map(
+  steelBusinessFunctionTools = getSteelToolDefinitions().map(
     (definition): LanguageModelV3FunctionTool => ({
       type: 'function',
       name: definition.name,
@@ -198,8 +191,7 @@ function getSteelBusinessFunctionTools(
     }),
   );
 
-  steelBusinessFunctionToolsByMode.set(contextMode, tools);
-  return tools;
+  return steelBusinessFunctionTools;
 }
 
 function isVisualEvidenceFile(file: SteelOAuthChatFile): boolean {
@@ -670,17 +662,13 @@ async function runWithProviderRoundProgress<T>({
 
 function isSteelBusinessToolCall(
   part: LanguageModelV3GenerateResult['content'][number],
-  contextMode: SteelProviderToolContextMode,
 ): part is SteelBusinessToolCall {
-  return part.type === 'tool-call' && isSteelToolName(part.toolName, { contextMode });
+  return part.type === 'tool-call' && isSteelToolName(part.toolName);
 }
 
-function getSteelBusinessToolCalls(
-  result: LanguageModelV3GenerateResult,
-  contextMode: SteelProviderToolContextMode,
-): SteelBusinessToolCall[] {
+function getSteelBusinessToolCalls(result: LanguageModelV3GenerateResult): SteelBusinessToolCall[] {
   return result.content.filter((part): part is SteelBusinessToolCall =>
-    isSteelBusinessToolCall(part, contextMode),
+    isSteelBusinessToolCall(part),
   );
 }
 
@@ -1368,7 +1356,6 @@ export async function sendSteelOAuthChat({
     steelRuntimePolicy,
     steelRuntimeContext,
   });
-  const runtimeContextMode = steelRuntimeContext?.outputSheets.contextMode ?? 'full';
   const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const openai = createOpenAIOAuth({
     authFilePath,
@@ -1377,7 +1364,7 @@ export async function sendSteelOAuthChat({
     responsesState: false,
   });
   const tools = [
-    ...(steelRuntimePolicy ? getSteelBusinessFunctionTools(runtimeContextMode) : []),
+    ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),
   ] satisfies SteelRoundTool[];
   const maxToolCalls = steelToolMaxCalls ?? defaultSteelToolMaxCalls;
   const runState = createSteelToolRunState(maxToolCalls);
@@ -1452,9 +1439,7 @@ export async function sendSteelOAuthChat({
       });
     };
 
-    const steelBusinessToolCalls = steelRuntimePolicy
-      ? getSteelBusinessToolCalls(result, runtimeContextMode)
-      : [];
+    const steelBusinessToolCalls = steelRuntimePolicy ? getSteelBusinessToolCalls(result) : [];
     if (steelBusinessToolCalls.length === 0) {
       recordRoundTiming();
       break;

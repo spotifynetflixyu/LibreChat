@@ -89,6 +89,7 @@ export enum QueryKeys {
   /* Steel */
   steelModels = 'steelModels',
   steelConversation = 'steelConversation',
+  openAIOAuthUsage = 'openAIOAuthUsage',
 }
 
 // Dynamic query keys that require parameters

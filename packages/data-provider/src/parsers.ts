@@ -39,6 +39,7 @@ type EndpointSchemaLookupKey = EModelEndpoint | Providers.OPENROUTER;
 
 const endpointSchemas: Record<EndpointSchemaLookupKey, EndpointSchema> = {
   [EModelEndpoint.openAI]: openAISchema,
+  [EModelEndpoint.openAIOAuth]: openAISchema,
   [EModelEndpoint.azureOpenAI]: openAISchema,
   [EModelEndpoint.custom]: openAISchema,
   [Providers.OPENROUTER]: openRouterSchema,
@@ -75,6 +76,7 @@ const getFallbackEndpointSchema = <TSchema>(
 /** Get the enabled endpoints from the `ENDPOINTS` environment variable */
 export function getEnabledEndpoints() {
   const defaultEndpoints: string[] = [
+    EModelEndpoint.openAIOAuth,
     EModelEndpoint.openAI,
     EModelEndpoint.agents,
     EModelEndpoint.assistants,
@@ -239,7 +241,12 @@ export const getResponseSender = (endpointOption: Partial<t.TEndpointOption>): s
   const chatGptLabel = _cgl ?? '';
   const modelLabel = _ml ?? '';
   if (
-    [EModelEndpoint.openAI, EModelEndpoint.bedrock, EModelEndpoint.azureOpenAI].includes(endpoint)
+    [
+      EModelEndpoint.openAI,
+      EModelEndpoint.openAIOAuth,
+      EModelEndpoint.bedrock,
+      EModelEndpoint.azureOpenAI,
+    ].includes(endpoint)
   ) {
     if (modelLabel) {
       return modelLabel;
@@ -321,6 +328,7 @@ type CompactEndpointSchema =
 
 const compactEndpointSchemas: Record<EndpointSchemaLookupKey, CompactEndpointSchema> = {
   [EModelEndpoint.openAI]: openAISchema,
+  [EModelEndpoint.openAIOAuth]: openAISchema,
   [EModelEndpoint.azureOpenAI]: openAISchema,
   [EModelEndpoint.custom]: openAISchema,
   [Providers.OPENROUTER]: openRouterSchema,

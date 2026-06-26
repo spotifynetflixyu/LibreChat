@@ -216,73 +216,69 @@ const steelBusinessToolNames = [
   'search_customers',
   'search_price_candidates',
   'run_file_ocr',
+  'read_markdown',
 ] as const;
 
 function createProviderRuntimeContext({
   agentPrompt = defaultAgentRulePrompt,
   includeOcrRules = false,
-  contextMode = 'full',
   workbookPrompt,
 }: {
   agentPrompt?: string;
-  contextMode?: 'full' | 'compact_workbook';
   includeOcrRules?: boolean;
   workbookPrompt?: string;
 } = {}): SteelRuntimeContext {
-  const compactWorkbook =
-    contextMode === 'compact_workbook'
-      ? {
-          sheets: {
-            system_order: {
-              sheetId: 'system_order' as const,
-              rowCount: 1,
-              rows: [
-                {
-                  rowId: 'system_order:1',
-                  rowIndex: 1,
-                  anchors: {
-                    rowNo: 1,
-                    erpItemCode: 'CCG075',
-                  },
-                },
-              ],
-            },
-            customer_data: {
-              sheetId: 'customer_data' as const,
-              rowCount: 1,
-              rows: [
-                {
-                  rowId: 'customer_data:1',
-                  rowIndex: 1,
-                  anchors: {
-                    customerTier: 'B',
-                  },
-                },
-              ],
-            },
-            manual_review: {
-              sheetId: 'manual_review' as const,
-              rowCount: 0,
-              rows: [],
-            },
-            customer_quote: {
-              sheetId: 'customer_quote' as const,
-              rowCount: 1,
-              rows: [
-                {
-                  rowId: 'customer_quote:1',
-                  rowIndex: 1,
-                  anchors: {
-                    rowNo: 1,
-                    subtotal: 536,
-                  },
-                },
-              ],
+  const compactWorkbook = {
+    sheets: {
+      system_order: {
+        sheetId: 'system_order' as const,
+        rowCount: 1,
+        rows: [
+          {
+            rowId: 'system_order:1',
+            rowIndex: 1,
+            anchors: {
+              rowNo: 1,
+              erpItemCode: 'CCG075',
             },
           },
-          unresolvedCount: 0,
-        }
-      : undefined;
+        ],
+      },
+      customer_data: {
+        sheetId: 'customer_data' as const,
+        rowCount: 1,
+        rows: [
+          {
+            rowId: 'customer_data:1',
+            rowIndex: 1,
+            anchors: {
+              customerTier: 'B',
+            },
+          },
+        ],
+      },
+      manual_review: {
+        sheetId: 'manual_review' as const,
+        rowCount: 0,
+        rows: [],
+      },
+      customer_quote: {
+        sheetId: 'customer_quote' as const,
+        rowCount: 1,
+        rows: [
+          {
+            rowId: 'customer_quote:1',
+            rowIndex: 1,
+            anchors: {
+              rowNo: 1,
+              subtotal: 536,
+            },
+          },
+        ],
+      },
+    },
+    unresolvedCount: 0,
+  };
   const workbookRule = workbookPrompt
     ? [
         {
@@ -399,9 +395,9 @@ function createProviderRuntimeContext({
         markdownOutputRules: [],
       },
     },
-    outputSheets: {
-      activeOnly: true,
-      contextMode,
+      outputSheets: {
+        activeOnly: true,
+        contextMode: 'compact_workbook',
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: 'steel_conversation_1',
@@ -463,17 +459,25 @@ function createProviderRuntimeContext({
       includeOcrRules: includeOcrRules,
     },
     toolPolicy: {
-      aiVisibleTools:
-        contextMode === 'compact_workbook'
-          ? ['search_customers', 'search_price_candidates', 'run_file_ocr', 'read_markdown']
-          : ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      aiVisibleTools: [
+        'search_customers',
+        'search_price_candidates',
+        'run_file_ocr',
+        'read_markdown',
+      ],
       removedTools: [],
       ocrCorrectionPolicy: 'Do not rerun OCR for user corrections.',
+      readMarkdownUsagePolicy: {
+        requiresMissingMarkdownInHistory: true,
+        forbiddenWhenHistoryHasNeededMarkdown: true,
+        allowedScopes: ['workbook', 'ocr'],
+        currentConversationScoped: true,
+      },
     },
   };
 }
 
-describe('Steel OpenAI OAuth provider adapter', () => {
+describe('OpenAI OAuth provider adapter', () => {
   it('uses provider doStream for live text deltas when streaming callbacks are provided', async () => {
     const stream = new ReadableStream({
       start(controller) {
@@ -999,7 +1003,7 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).not.toContain('VISION_RULE_SENTINEL');
   });
 
-  it('exposes active workbook keyword reads only when runtime context uses compact workbook mode', async () => {
+  it('always exposes read_markdown with the compact workbook runtime prompt', async () => {
     const doGenerate = jest.fn(async (_options: LanguageModelV3CallOptions) => ({
       content: [{ type: 'text', text: 'ok' }],
       finishReason: { unified: 'stop', raw: 'stop' },
@@ -1015,18 +1019,18 @@ describe('Steel OpenAI OAuth provider adapter', () => {
       messages: [{ role: 'user', content: '工具列表測試' }],
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
-      steelRuntimeContext: createProviderRuntimeContext({ contextMode: 'compact_workbook' }),
+      steelRuntimeContext: createProviderRuntimeContext(),
       steelToolMaxCalls: 1,
     });
 
     const compactGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
 
     expect(compactGenerateOptions.tools?.map((tool) => tool.name)).toEqual([
-	      'search_customers',
-	      'search_price_candidates',
-	      'run_file_ocr',
-	      'read_markdown',
-	    ]);
+      'search_customers',
+      'search_price_candidates',
+      'run_file_ocr',
+      'read_markdown',
+    ]);
     expect(JSON.stringify(compactGenerateOptions.prompt[0])).not.toContain(
       '"rows":[{"rowId":"system_order:1","cells"',
     );

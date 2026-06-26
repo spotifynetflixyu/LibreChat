@@ -5,20 +5,6 @@ import {
 } from './registry';
 import { steelToolArgsSchemas } from './schemas';
 
-type GetToolDefinitionsWithMode = (input?: {
-  contextMode?: 'full' | 'compact_workbook';
-}) => Array<{
-  name: string;
-  usagePolicy?: {
-    readonly requiresMissingMarkdownInHistory?: boolean;
-    readonly forbiddenWhenHistoryHasNeededMarkdown?: boolean;
-    readonly allowedScopes?: readonly string[];
-  };
-  argsSchema: {
-    parse(value: unknown): unknown;
-  };
-}>;
-
 describe('Steel tool registry', () => {
   it('exposes only the minimal AI-led tool surface', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
@@ -27,6 +13,7 @@ describe('Steel tool registry', () => {
       'search_customers',
       'search_price_candidates',
       'run_file_ocr',
+      'read_markdown',
     ]);
     expect(toolNames).not.toContain('lookup_quote_rules');
     expect(toolNames).not.toContain('read_working_order_items');
@@ -324,11 +311,8 @@ describe('Steel tool registry', () => {
     }).toThrow('Unknown Steel provider tool');
   });
 
-  it('exposes scope-only Markdown-derived current-state reads only for compact workbook context', () => {
-    const compactDefinitions = (getSteelToolDefinitions as GetToolDefinitionsWithMode)({
-      contextMode: 'compact_workbook',
-    });
-    const definition = compactDefinitions.find((entry) => entry.name === 'read_markdown');
+  it('exposes scope-only Markdown-derived current-state reads by default', () => {
+    const definition = getSteelToolDefinitions().find((entry) => entry.name === 'read_markdown');
 
     expect(definition).toBeDefined();
     expect(definition?.usagePolicy).toEqual({
@@ -370,9 +354,7 @@ describe('Steel tool registry', () => {
         sheetIds: ['system_order'],
       }),
     ).toThrow();
-    expect(getSteelToolDefinitions().map((entry) => entry.name)).not.toContain(
-      'read_markdown',
-    );
+    expect(getSteelToolDefinitions().map((entry) => entry.name)).toContain('read_markdown');
   });
 
   it('does not expose working-order memory reads as a provider tool', () => {

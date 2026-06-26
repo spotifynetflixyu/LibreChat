@@ -228,12 +228,14 @@ beforeEach(() => {
 // Suite: custom endpoint stream usage defaults
 // ---------------------------------------------------------------------------
 describe('custom endpoint stream usage defaults', () => {
-  it('injects a Steel native OpenAI OAuth override model for standard native chat runs', async () => {
+  it('injects an OpenAI OAuth override model for standard native chat runs', async () => {
+    const systemRunnable = { invoke: jest.fn() };
     const graph = {
       agentContexts: new Map([
         [
           'agent_1',
           {
+            systemRunnable,
             getToolsForBinding: jest.fn(() => []),
           },
         ],
@@ -270,14 +272,18 @@ describe('custom endpoint stream usage defaults', () => {
 
     expect(result).toBe(run);
     expect(graphConfig.type).toBe('standard');
-    expect(graphConfig.agents[0].provider).toBe('openai_oauth_responses');
+    expect(graphConfig.agents[0].provider).toBe(EModelEndpoint.openAI);
     expect(graph).toEqual(
       expect.objectContaining({
         overrideModel: expect.objectContaining({
-          steelProvider: 'openai_oauth_responses',
+          providerId: 'openai_oauth_responses',
         }),
       }),
     );
+    const overrideModel = (graph as { overrideModel?: unknown }).overrideModel as
+      | { options?: { getSystemRunnable?: () => unknown } }
+      | undefined;
+    expect(overrideModel?.options?.getSystemRunnable?.()).toBe(systemRunnable);
   });
 
   it('disables streamUsage by default for OpenAI-compatible custom endpoints', async () => {

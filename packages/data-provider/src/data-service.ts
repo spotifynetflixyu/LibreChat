@@ -4,6 +4,7 @@ import type { TFileConfig } from './file-config';
 import type * as t from './types';
 import type {
   SteelConversationMessagesResponse,
+  OpenAIOAuthUsageRemaining,
   SteelProviderChatRequest,
   SteelProviderChatResponse,
   SteelProviderChatStreamEvent,
@@ -54,6 +55,10 @@ export function getSteelConversationMessages(
   conversationId: string,
 ): Promise<SteelConversationMessagesResponse> {
   return request.get(endpoints.steelConversationMessages(conversationId));
+}
+
+export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
+  return request.get(endpoints.openAIOAuthUsage());
 }
 
 export async function streamSteelChat(

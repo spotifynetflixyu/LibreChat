@@ -181,7 +181,7 @@ function createTestRuntimeContext(
     },
     outputSheets: {
       activeOnly: true,
-      contextMode: 'full',
+      contextMode: 'compact_workbook',
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: conversation.conversationId,
@@ -195,6 +195,49 @@ function createTestRuntimeContext(
         ocrExtracts: [],
         unresolvedItems: [],
       },
+      compactWorkbook: {
+        sheets: {
+          system_order: {
+            sheetId: 'system_order',
+            rowCount: 1,
+            rows: [
+              {
+                rowId: 'system_order:1',
+                rowIndex: 1,
+                anchors: { rowNo: 1, erpItemCode: 'CCG075' },
+              },
+            ],
+          },
+          customer_data: {
+            sheetId: 'customer_data',
+            rowCount: 1,
+            rows: [
+              {
+                rowId: 'customer_data:1',
+                rowIndex: 1,
+                anchors: { customerTierId: 2 },
+              },
+            ],
+          },
+          manual_review: {
+            sheetId: 'manual_review',
+            rowCount: 0,
+            rows: [],
+          },
+          customer_quote: {
+            sheetId: 'customer_quote',
+            rowCount: 1,
+            rows: [
+              {
+                rowId: 'customer_quote:1',
+                rowIndex: 1,
+                anchors: { rowNo: 1, subtotal: 536 },
+              },
+            ],
+          },
+        },
+        unresolvedCount: 0,
+      },
       ...overrides.outputSheets,
     },
     attachments: overrides.attachments ?? {
@@ -203,9 +246,20 @@ function createTestRuntimeContext(
       includeOcrRules: false,
     },
     toolPolicy: {
-      aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      aiVisibleTools: [
+        'search_customers',
+        'search_price_candidates',
+        'run_file_ocr',
+        'read_markdown',
+      ],
       removedTools: [],
       ocrCorrectionPolicy: 'Do not rerun OCR for user corrections.',
+      readMarkdownUsagePolicy: {
+        requiresMissingMarkdownInHistory: true,
+        forbiddenWhenHistoryHasNeededMarkdown: true,
+        allowedScopes: ['workbook', 'ocr'],
+        currentConversationScoped: true,
+      },
     },
   };
 }
@@ -892,7 +946,7 @@ describe('createSteelHandlers', () => {
     });
   });
 
-  it('passes compact workbook runtime context mode from env into context preparation', async () => {
+  it('prepares compact workbook runtime context without passing a runtime mode switch', async () => {
     const sendChat = jest.fn(async () => ({
       provider: 'openai_oauth_responses' as const,
       model: 'gpt-5.5',
@@ -904,7 +958,6 @@ describe('createSteelHandlers', () => {
       createTestRuntimeContext(input.conversation),
     );
     const handlers = createSteelHandlers({
-      env: { STEEL_RUNTIME_CONTEXT_MODE: 'compact_workbook' },
       getModelsConfig: jest.fn(),
       prepareRuntimeContext,
       sendChat,
@@ -919,8 +972,8 @@ describe('createSteelHandlers', () => {
     await handlers.chat(req, res);
 
     expect(prepareRuntimeContext).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: 'compact_workbook',
+      expect.not.objectContaining({
+        mode: expect.anything(),
       }),
     );
   });

@@ -1496,6 +1496,41 @@ button {
   background-color: transparent;
 }
 
+.markdown-table-container {
+  margin-bottom: 1rem;
+  margin-top: 0.75rem;
+  max-width: 100%;
+}
+
+.markdown-table-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 0.25rem;
+  justify-content: flex-end;
+  margin-bottom: 0.35rem;
+}
+
+.markdown-table-action {
+  align-items: center;
+  border: 1px solid var(--border-light);
+  border-radius: 0.375rem;
+  color: var(--text-secondary);
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  width: 2rem;
+}
+
+.markdown-table-action:hover {
+  background-color: var(--surface-hover);
+  border-color: var(--border-medium);
+  color: var(--text-primary);
+}
+
 .markdown-table-wrapper {
   -webkit-overflow-scrolling: touch;
   overflow-x: auto;
@@ -1503,6 +1538,76 @@ button {
   padding-bottom: 0.25rem;
   scrollbar-color: var(--border-medium) transparent;
   scrollbar-width: thin;
+}
+
+.markdown .markdown-table-wrapper table {
+  min-width: 100%;
+  width: max-content;
+}
+
+.markdown .markdown-table-wrapper th,
+.markdown .markdown-table-wrapper td {
+  max-width: 28rem;
+  min-width: 9rem;
+  vertical-align: top;
+  white-space: normal;
+  word-break: normal;
+}
+
+.markdown .markdown-table-wrapper th:first-child,
+.markdown .markdown-table-wrapper td:first-child {
+  min-width: 5rem;
+}
+
+.markdown-table-modal {
+  background-color: rgba(0, 0, 0, 0.58);
+  color: var(--text-primary);
+  inset: 0;
+  padding: 1rem;
+  position: fixed;
+  z-index: 1000;
+}
+
+.markdown-table-modal-surface {
+  background-color: var(--surface-primary);
+  border: 1px solid var(--border-medium);
+  border-radius: 0.5rem;
+  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.32);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  padding: 0.75rem;
+  width: 100%;
+}
+
+.markdown-table-modal-scroll {
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-color: var(--border-medium) transparent;
+  scrollbar-width: thin;
+}
+
+.markdown-table-modal-scroll table {
+  min-width: 100%;
+  width: max-content;
+}
+
+.markdown-table-modal-scroll th,
+.markdown-table-modal-scroll td {
+  max-width: 32rem;
+  min-width: 10rem;
+  vertical-align: top;
+  white-space: normal;
+  word-break: normal;
+}
+
+.markdown-table-modal-scroll th:first-child,
+.markdown-table-modal-scroll td:first-child {
+  min-width: 6rem;
 }
 
 .markdown-table-wrapper::-webkit-scrollbar {

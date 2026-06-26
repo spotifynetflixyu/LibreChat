@@ -2,11 +2,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
 
 import type { JsonSchemaType, LCTool, LCToolRegistry } from '@librechat/agents';
-import type {
-  SteelProviderToolContextMode,
-  SteelProviderToolName,
-  SteelToolDefinition,
-} from '../tools/registry';
+import type { SteelProviderToolName, SteelToolDefinition } from '../tools/registry';
 import type { SteelToolResult } from '../tools/results';
 import type { SteelRuntimeContext } from '../runtime/context';
 
@@ -16,7 +12,6 @@ export interface MergeSteelToolDefinitionsInput {
   toolDefinitions?: readonly LCTool[];
   toolRegistry?: LCToolRegistry;
   runtimeContext?: Pick<SteelRuntimeContext, 'outputSheets' | 'toolPolicy'>;
-  contextMode?: SteelProviderToolContextMode;
   aiVisibleTools?: readonly string[];
 }
 
@@ -88,9 +83,8 @@ export function resolveNativeSteelToolName(
 
 export function resolveSteelProviderToolName(
   nativeToolName: string,
-  contextMode: SteelProviderToolContextMode = 'compact_workbook',
 ): SteelProviderToolName | undefined {
-  if (isSteelToolName(nativeToolName, { contextMode })) {
+  if (isSteelToolName(nativeToolName)) {
     return nativeToolName;
   }
 
@@ -99,7 +93,7 @@ export function resolveSteelProviderToolName(
   }
 
   const unprefixedName = nativeToolName.slice('steel_'.length);
-  return isSteelToolName(unprefixedName, { contextMode }) ? unprefixedName : undefined;
+  return isSteelToolName(unprefixedName) ? unprefixedName : undefined;
 }
 
 function getProviderToolCallId(config?: SteelNativeToolInvokeConfig): string | undefined {
@@ -134,18 +128,11 @@ export function createSteelNativeTool({
   };
 }
 
-function getContextMode(input: MergeSteelToolDefinitionsInput): SteelProviderToolContextMode {
-  return input.runtimeContext?.outputSheets.contextMode ?? input.contextMode ?? 'compact_workbook';
-}
-
-function getAiVisibleTools(
-  input: MergeSteelToolDefinitionsInput,
-  contextMode: SteelProviderToolContextMode,
-): Set<string> {
+function getAiVisibleTools(input: MergeSteelToolDefinitionsInput): Set<string> {
   return new Set(
     input.aiVisibleTools ??
       input.runtimeContext?.toolPolicy.aiVisibleTools ??
-      getSteelToolDefinitions({ contextMode }).map((definition) => definition.name),
+      getSteelToolDefinitions().map((definition) => definition.name),
   );
 }
 
@@ -191,8 +178,7 @@ function toNativeToolDefinition({
 export function mergeSteelToolDefinitions(
   input: MergeSteelToolDefinitionsInput = {},
 ): MergeSteelToolDefinitionsResult {
-  const contextMode = getContextMode(input);
-  const aiVisibleTools = getAiVisibleTools(input, contextMode);
+  const aiVisibleTools = getAiVisibleTools(input);
   const toolDefinitions = [...(input.toolDefinitions ?? [])];
   const toolRegistry: LCToolRegistry = new Map(input.toolRegistry ?? []);
   const usedNames = new Set([
@@ -201,7 +187,7 @@ export function mergeSteelToolDefinitions(
   ]);
   const nameMap: NativeSteelToolNameMap = new Map();
 
-  for (const definition of getSteelToolDefinitions({ contextMode })) {
+  for (const definition of getSteelToolDefinitions()) {
     if (!aiVisibleTools.has(definition.name)) {
       continue;
     }

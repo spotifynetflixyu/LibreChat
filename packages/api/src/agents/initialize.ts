@@ -329,6 +329,22 @@ export type InitializedAgent = Agent & {
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32000;
 
+function resolveTokenLookupEndpoint({
+  originalProvider,
+  overrideProvider,
+}: {
+  originalProvider: string;
+  overrideProvider: string;
+}): EModelEndpoint {
+  if (originalProvider === EModelEndpoint.openAIOAuth) {
+    return EModelEndpoint.openAIOAuth;
+  }
+  return (
+    providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap] ??
+    EModelEndpoint.openAI
+  );
+}
+
 /**
  * Parameters for initializing an agent
  * Matches the CJS signature from api/server/services/Endpoints/agents/agent.js
@@ -1011,7 +1027,7 @@ export async function initializeAgent(
     maxContextTokens,
     getModelMaxTokens(
       tokensModel ?? '',
-      providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
+      resolveTokenLookupEndpoint({ originalProvider: provider, overrideProvider }),
       options.endpointTokenConfig,
     ),
     DEFAULT_MAX_CONTEXT_TOKENS,

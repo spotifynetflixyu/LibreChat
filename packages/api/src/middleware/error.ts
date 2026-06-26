@@ -71,9 +71,12 @@ function sendSteelStreamError(error: CustomError, req: Request, res: Response): 
     error,
   });
 
+  const model =
+    process.env.OPENAI_DEFAULT_MODEL || process.env.STEEL_OPENAI_DEFAULT_MODEL || 'unknown';
+
   return res.status(statusCode).json({
     provider: 'openai_oauth_responses',
-    model: process.env.STEEL_OPENAI_DEFAULT_MODEL || 'unknown',
+    model,
     text: '',
     unsupportedSettings: [],
     warnings: [],

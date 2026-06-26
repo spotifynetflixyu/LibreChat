@@ -26,7 +26,6 @@ describe('Steel native tool adapter', () => {
     const result = mergeSteelToolDefinitions({
       toolDefinitions: [existingTool],
       toolRegistry: registry,
-      contextMode: 'compact_workbook',
       aiVisibleTools: [
         'search_customers',
         'search_price_candidates',
@@ -51,18 +50,23 @@ describe('Steel native tool adapter', () => {
     );
   });
 
-  it('limits Steel tools to the runtime policy and omits compact-only workbook reads outside compact mode', () => {
+  it('limits Steel tools to the runtime policy while read_markdown remains globally available', () => {
     const result = mergeSteelToolDefinitions({
-      contextMode: 'full',
-      aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      aiVisibleTools: [
+        'search_customers',
+        'search_price_candidates',
+        'run_file_ocr',
+        'read_markdown',
+      ],
     });
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'search_customers',
       'search_price_candidates',
       'run_file_ocr',
+      'read_markdown',
     ]);
-    expect(result.toolRegistry.has('read_markdown')).toBe(false);
+    expect(result.toolRegistry.has('read_markdown')).toBe(true);
   });
 
   it('namespaces Steel tools deterministically when an existing tool has the same name', () => {
@@ -75,7 +79,6 @@ describe('Steel native tool adapter', () => {
     const result = mergeSteelToolDefinitions({
       toolDefinitions: [existingTool],
       toolRegistry: new Map([[existingTool.name, existingTool]]),
-      contextMode: 'compact_workbook',
       aiVisibleTools: ['search_customers'],
     });
 

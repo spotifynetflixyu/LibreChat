@@ -11,6 +11,7 @@ const {
   payloadParser,
   createSafeUser,
   initializeAgent,
+  generateOpenAIOAuthTitle,
   resolveConfigHeaders,
   countTokens,
   getBalanceConfig,
@@ -1723,7 +1724,6 @@ class AgentClient extends BaseClient {
 
     const appConfig = req.config;
     let endpoint = agent.endpoint;
-
     /** @type {import('@librechat/agents').ClientOptions} */
     let clientOptions = {
       model: agent.model || agent.model_parameters.model,
@@ -1773,6 +1773,39 @@ class AgentClient extends BaseClient {
       endpointConfig.titleModel !== Constants.CURRENT_MODEL
     ) {
       clientOptions.model = endpointConfig.titleModel;
+    }
+
+    if (endpoint === EModelEndpoint.openAIOAuth) {
+      try {
+        const titleResult = await generateOpenAIOAuthTitle({
+          contentParts: immediate ? [] : this.contentParts,
+          inputText: text,
+          model: clientOptions.model,
+          signal: abortController.signal,
+          titlePrompt: endpointConfig?.titlePrompt,
+          titlePromptTemplate: endpointConfig?.titlePromptTemplate,
+        });
+        const balanceConfig = getBalanceConfig(appConfig);
+        const transactionsConfig = getTransactionsConfig(appConfig);
+        await this.recordCollectedUsage({
+          collectedUsage: titleResult.usage ? [titleResult.usage] : [],
+          context: 'title',
+          model: titleResult.model,
+          balance: balanceConfig,
+          transactions: transactionsConfig,
+          messageId: this.responseMessageId,
+        }).catch((err) => {
+          logger.error(
+            '[api/server/controllers/agents/client.js #titleConvo] Error recording collected usage',
+            err,
+          );
+        });
+
+        return sanitizeTitle(titleResult.title);
+      } catch (err) {
+        logger.error('[api/server/controllers/agents/client.js #titleConvo] Error', err);
+        return;
+      }
     }
 
     const options = await titleProviderConfig.getOptions({

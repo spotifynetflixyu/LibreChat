@@ -6,9 +6,15 @@ import type {
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import { AIMessage, HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+  type BaseMessage,
+} from '@librechat/agents/langchain/messages';
+import { RunnableLambda } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
-import { createSteelNativeOpenAIOAuthModel } from './oauth';
+import { createOpenAIOAuthGraphModel, createOpenAIOAuthModel } from './oauth';
 
 function createUsage(): LanguageModelV3GenerateResult['usage'] {
   return {
@@ -70,7 +76,7 @@ function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
   return doGenerate.mock.calls[0][0] as LanguageModelV3CallOptions;
 }
 
-describe('Steel native OpenAI OAuth model adapter', () => {
+describe('OpenAI OAuth model adapter', () => {
   it('creates a stateless OAuth provider model and converts LangChain messages to AI SDK prompt', async () => {
     const fetchFn = jest.fn() as unknown as FetchFunction;
     const doGenerate = jest.fn(async () =>
@@ -83,7 +89,7 @@ describe('Steel native OpenAI OAuth model adapter', () => {
     );
     const createOpenAIOAuth = createFakeOpenAIOAuth({ doGenerate });
 
-    const model = createSteelNativeOpenAIOAuthModel({
+    const model = createOpenAIOAuthModel({
       authFilePath: '/tmp/auth.json',
       createOpenAIOAuth,
       ensureFresh: false,
@@ -132,6 +138,91 @@ describe('Steel native OpenAI OAuth model adapter', () => {
     });
   });
 
+  it('can be piped after a system context runnable in the native graph path', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '已解析',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      model: 'gpt-5.5',
+    });
+    const systemRunnable = RunnableLambda.from((messages: unknown) => messages);
+
+    const result = await systemRunnable
+      .pipe(model)
+      .invoke([new HumanMessage('請 OCR PL.pdf')]);
+
+    expect(result.content).toBe('已解析');
+  });
+
+  it('applies native graph system context when LibreChat invokes the override model directly', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '已套用 context',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+        model: 'gpt-5.5',
+      },
+      getSystemRunnable: () =>
+        RunnableLambda.from((messages: BaseMessage[]) => [
+          new SystemMessage('Steel Runtime Context'),
+          ...messages,
+        ]),
+    });
+
+    await model.invoke([new HumanMessage('請 OCR PL.pdf')]);
+
+    expect(getGenerateCall(doGenerate).prompt).toEqual([
+      {
+        role: 'system',
+        content: 'Steel Runtime Context',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '請 OCR PL.pdf',
+          },
+        ],
+      },
+    ]);
+
+    doGenerate.mockClear();
+
+    await model.invoke([
+      new SystemMessage('Already prepared'),
+      new HumanMessage('確認後報價'),
+    ]);
+
+    expect(getGenerateCall(doGenerate).prompt).toEqual([
+      {
+        role: 'system',
+        content: 'Already prepared',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '確認後報價',
+          },
+        ],
+      },
+    ]);
+  });
+
   it('passes native tools to the OAuth provider and maps tool calls back to AIMessageChunk', async () => {
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -143,7 +234,7 @@ describe('Steel native OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createSteelNativeOpenAIOAuthModel({
+    const model = createOpenAIOAuthModel({
       createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
       model: 'gpt-5.5',
     });
@@ -204,7 +295,7 @@ describe('Steel native OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createSteelNativeOpenAIOAuthModel({
+    const model = createOpenAIOAuthModel({
       createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
       model: 'gpt-5.5',
     });
@@ -269,7 +360,7 @@ describe('Steel native OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createSteelNativeOpenAIOAuthModel({
+    const model = createOpenAIOAuthModel({
       createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
       model: 'gpt-5.5',
     });
@@ -417,7 +508,7 @@ describe('Steel native OpenAI OAuth model adapter', () => {
         warnings: [],
       };
     });
-    const model = createSteelNativeOpenAIOAuthModel({
+    const model = createOpenAIOAuthModel({
       createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
       model: 'gpt-5.5',
     });

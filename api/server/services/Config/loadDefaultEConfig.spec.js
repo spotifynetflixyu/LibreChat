@@ -21,6 +21,7 @@ function mockDependencies() {
       bedrock: 'bedrock',
       google: 'google',
       openAI: 'openAI',
+      openAIOAuth: 'openai_oauth_responses',
     },
     getEnabledEndpoints: mockGetEnabledEndpoints,
   }));
@@ -36,6 +37,12 @@ function mockDependencies() {
       azureOpenAI: false,
       bedrock: false,
       openAI: { userProvide: false },
+      openai_oauth_responses: {
+        userProvide: false,
+        type: 'openAI',
+        iconURL: 'openAI',
+        modelDisplayLabel: 'OpenAI (OAuth)',
+      },
     },
   }));
 }
@@ -56,6 +63,24 @@ describe('loadDefaultEndpointsConfig', () => {
     expect(mockLoadAsyncEndpoints).not.toHaveBeenCalled();
     expect(result).toEqual({
       openAI: { userProvide: false, order: 0 },
+    });
+  });
+
+  it('keeps OpenAI OAuth and original OpenAI as separate enabled endpoints', async () => {
+    mockGetEnabledEndpoints.mockReturnValue(['openai_oauth_responses', 'openAI']);
+    const loadDefaultEndpointsConfig = require('./loadDefaultEConfig');
+
+    const result = await loadDefaultEndpointsConfig();
+
+    expect(result).toEqual({
+      openai_oauth_responses: {
+        userProvide: false,
+        type: 'openAI',
+        iconURL: 'openAI',
+        modelDisplayLabel: 'OpenAI (OAuth)',
+        order: 0,
+      },
+      openAI: { userProvide: false, order: 1 },
     });
   });
 

@@ -48,9 +48,15 @@
   endpoints, and permissions only when they already own the concern. Do not use
   `fileAnalysis.instructions` as a duplicate Steel OCR-policy source; reviewed
   Steel OCR/file rules are authoritative.
-- For native Steel context ordering, use the user-confirmed fixed prefix order:
-  agent rules, quote defaults/rules, output rules, tool policy, other rules
-  including OCR/file rules, reviewed agent rules, instruction packets.
+- For native Steel context ordering, every prompt prefix section must map back
+  to `docs/rules/*.txt` synced through `steel.rules`. Use the compact order
+  `agent`, `quote_rules`, `output`, `other`. Do not add prompt sections for
+  runtime-only tool configuration, duplicate reviewed-agent aliases, or empty
+  legacy instruction packets.
+- Steel runtime tool exposure is executable backend configuration, not a prompt
+  rule section. Keep AI-facing tool behavior in `docs/rules/*.txt` and
+  `steel.rules`, but do not let txt/DB rows directly decide which executable
+  tools are exposed; code-owned filtering must remain the final guard.
 - Phase 1 native Steel context should carry LibreChat attachment
   metadata/references, not duplicate uploaded file bytes or base64 bodies in
   prompt text. This does not mean hiding files from the AI; attachments still
@@ -128,6 +134,63 @@
   exist because reviewed quote rules are injected into runtime context, and
   `read_working_order_items` should not exist because current workbook/OCR
   recovery is handled by `read_markdown`.
+- `OpenAI (OAuth)` should be a first/default normal LibreChat provider-model UI
+  choice for the native `openai_oauth_responses` path. Selecting it changes only
+  provider/model transport; Steel tools, OCR, quote auto-parse, Markdown
+  recovery, and runtime context must stay shared native Steel modules.
+- OAuth usage remaining comes from the ChatGPT WHAM usage endpoint
+  (`/backend-api/wham/usage`), not `/backend-api/codex/usage`. Fetch it
+  server-side with the Codex OAuth bearer token, cache briefly, and sanitize
+  before reaching the browser. Never expose OAuth tokens, account IDs, emails,
+  auth file paths, or raw usage JSON in LibreChat UI/API responses.
+- `OpenAI (OAuth)` must not replace or hide the original `OpenAI` API-key
+  endpoint. Keep the OAuth provider first/default, but when `OPENAI_API_KEY` is
+  absent the original OpenAI endpoint should stay visible through LibreChat's
+  existing user-provided API key flow.
+- When enabling the original `OpenAI` endpoint without a server
+  `OPENAI_API_KEY`, update both the selector config and the runtime
+  `initializeOpenAI()` key resolution. A visible user-provided OpenAI setting is
+  incomplete unless runtime reads the saved Mongo `Key` record.
+- For native LibreChat file-only Steel OCR turns, fix both UI affordance and
+  submit pipeline. Enabling the send button is not enough because
+  `useChatFunctions.ask()` rejects empty trimmed text; `useSubmitMessage()` must
+  provide the default OCR review prompt before calling `ask()`.
+- For native `OpenAI (OAuth)` chat, keep the SDK graph provider mapped to
+  `openAI`, but attach the OpenAI OAuth override based on the original
+  initialized agent endpoint/provider (`openai_oauth_responses`). If the
+  override decision only checks the mapped SDK provider, the request falls back
+  to the normal OpenAI client and fails without `OPENAI_API_KEY`.
+- OpenAI OAuth native graph overrides must be real LangChain `Runnable`
+  instances. Plain objects with `invoke()`/`stream()` fail when LibreChat pipes
+  `AgentContext.systemRunnable`, and the override model must preserve that
+  system context because LibreChat may invoke `overrideModel` directly after
+  building the piped local model.
+- After changing `packages/api` code used by the legacy `/api` backend, rebuild
+  `@librechat/api` and restart the actual 3080 backend process before telling
+  the user to retest `/c`. A green package test/build is not enough when the
+  running `api/server/index.js` process still has the old module loaded in
+  memory.
+- OpenAI OAuth API calls have a 258K-token provider-side context ceiling before
+  ChatGPT/OpenAI OAuth compression behavior can kick in. Native LibreChat token
+  config and runtime context budgeting for `openai_oauth_responses` must not
+  inherit the normal OpenAI `gpt-5.5` 1M+ model window.
+- For Steel OCR and quote Markdown in native LibreChat, keep the existing chat
+  layout but make table cells wide enough for ERP/OCR columns and rely on the
+  message-level horizontal table scroller instead of squeezing text into narrow
+  cells.
+- When the user says database rules must align with `docs/rules`, compare
+  canonical source refs/hashes against `steel.rules`, then use the existing
+  `packages/api/scripts/sync-steel-rules.cjs` readback flow. Do not hand-edit
+  individual rule rows.
+- Do not let `OpenAI (OAuth)` title generation use the normal
+  `run.generateTitle()` path. That path builds a fresh LLM from
+  provider/clientOptions and does not use the OpenAI OAuth graph override. Route
+  OAuth titles through the dedicated `generateOpenAIOAuthTitle()` helper so
+  title calls use `openai-oauth-provider` and do not require `OPENAI_API_KEY`.
+- Keep OpenAI OAuth transport/config/title/usage helper names free of the
+  `Steel` prefix. Reserve `Steel` naming for quote/OCR/rules/runtime context,
+  Markdown capture, auto-parse/save, and other steel-business modules. Existing
+  `STEEL_OPENAI_*` env names may stay only as backwards-compatible fallbacks.
 - For Steel price lookup material simplification, only unify the query/tool
   input enum into simple material keywords such as `黑鐵`, `白鐵`, `錏`, `鋁`, and
   `鋅`. Keep import/storage canonical material values such as `No1 白鐵`,
@@ -153,3 +216,9 @@
   `npm run e2e:prepare` before judging Playwright UI failures; a stale bundle
   can make frontend changes look broken even when backend SSE events are
   correct.
+- Portal-based Markdown table modals must explicitly sync the active root theme
+  class and `data-theme`; do not assume a body-level portal inherits the chat
+  message theme scope.
+- When compact workbook is the only supported Steel runtime mode, remove mode
+  inputs and tool-registry branches instead of keeping no-op `contextMode`
+  parameters that imply a hidden full-mode path.

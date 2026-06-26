@@ -1764,6 +1764,7 @@ export const configSchema = z.object({
       allowedAddresses: allowedAddressesSchema,
       all: baseEndpointSchema.omit({ baseURL: true }).optional(),
       [EModelEndpoint.openAI]: baseEndpointSchema.optional(),
+      [EModelEndpoint.openAIOAuth]: baseEndpointSchema.optional(),
       [EModelEndpoint.google]: baseEndpointSchema.optional(),
       [EModelEndpoint.anthropic]: anthropicEndpointSchema.optional(),
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
@@ -1837,6 +1838,7 @@ export enum FetchTokenConfig {
 }
 
 export const defaultEndpoints: EModelEndpoint[] = [
+  EModelEndpoint.openAIOAuth,
   EModelEndpoint.openAI,
   EModelEndpoint.assistants,
   EModelEndpoint.azureAssistants,
@@ -1849,6 +1851,7 @@ export const defaultEndpoints: EModelEndpoint[] = [
 ];
 
 export const alternateName = {
+  [EModelEndpoint.openAIOAuth]: 'OpenAI (OAuth)',
   [EModelEndpoint.openAI]: 'OpenAI',
   [EModelEndpoint.assistants]: 'Assistants',
   [EModelEndpoint.agents]: 'My Agents',
@@ -1952,6 +1955,7 @@ export const bedrockModels = [
 ];
 
 export const defaultModels = {
+  [EModelEndpoint.openAIOAuth]: sharedOpenAIModels,
   [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
   [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
   [EModelEndpoint.agents]: sharedOpenAIModels, // TODO: Add agent models (agentsModels)
@@ -1989,6 +1993,7 @@ const openAIModels = defaultModels[EModelEndpoint.openAI];
 
 export const initialModelsConfig: TModelsConfig = {
   initial: [],
+  [EModelEndpoint.openAIOAuth]: sharedOpenAIModels,
   [EModelEndpoint.openAI]: openAIModels,
   [EModelEndpoint.assistants]: openAIModels.filter(fitlerAssistantModels),
   [EModelEndpoint.agents]: openAIModels, // TODO: Add agent models (agentsModels)
@@ -2005,6 +2010,7 @@ export const EndpointURLs = {
 } as const;
 
 export const modularEndpoints = new Set<EModelEndpoint | string>([
+  EModelEndpoint.openAIOAuth,
   EModelEndpoint.anthropic,
   EModelEndpoint.google,
   EModelEndpoint.openAI,
@@ -2015,6 +2021,7 @@ export const modularEndpoints = new Set<EModelEndpoint | string>([
 ]);
 
 export const supportsBalanceCheck = {
+  [EModelEndpoint.openAIOAuth]: true,
   [EModelEndpoint.custom]: true,
   [EModelEndpoint.openAI]: true,
   [EModelEndpoint.anthropic]: true,
@@ -2681,6 +2688,7 @@ export enum SystemCategories {
 }
 
 export const providerEndpointMap = {
+  [EModelEndpoint.openAIOAuth]: EModelEndpoint.openAI,
   [EModelEndpoint.openAI]: EModelEndpoint.openAI,
   [EModelEndpoint.bedrock]: EModelEndpoint.bedrock,
   [EModelEndpoint.anthropic]: EModelEndpoint.anthropic,
