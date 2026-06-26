@@ -33,7 +33,10 @@ const {
   buildNonStreamingResponse,
   createOpenAIStreamTracker,
   resolveAgentScopedSkillIds,
+  buildDefaultSteelGlobalAgentContext,
+  prepareLibreChatSteelChatContext,
   createOpenAIContentAggregator,
+  applySteelNativeGlobalContextToAgentConfigs,
   isChatCompletionValidationFailure,
 } = require('@librechat/api');
 const {
@@ -132,6 +135,54 @@ function convertMessages(messages) {
       ...(msg.tool_call_id && { tool_call_id: msg.tool_call_id }),
     };
   });
+}
+
+const steelNativeChatCompletionRoles = new Set(['system', 'user', 'assistant']);
+
+function extractSteelNativeTextContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+      if (part == null || typeof part !== 'object') {
+        return '';
+      }
+      return typeof part.text === 'string' ? part.text : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function toSteelNativeChatCompletionMessages(messages) {
+  return messages.flatMap((message) => {
+    if (!steelNativeChatCompletionRoles.has(message.role)) {
+      return [];
+    }
+
+    return [
+      {
+        role: message.role,
+        content: extractSteelNativeTextContent(message.content),
+      },
+    ];
+  });
+}
+
+function getLatestSteelNativeUserTurn(messages) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role === 'user') {
+      return messages[index];
+    }
+  }
 }
 
 /**
@@ -440,6 +491,33 @@ const OpenAIChatCompletionController = async (req, res) => {
     }
 
     primaryConfig.edges = discoveredEdges;
+    const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
+
+    const openaiMessages = convertMessages(request.messages);
+    const steelNativeMessages = toSteelNativeChatCompletionMessages(request.messages);
+    const currentUserTurn = getLatestSteelNativeUserTurn(steelNativeMessages);
+    const steelConversation = prepareLibreChatSteelChatContext({
+      conversationId,
+      requestId: responseId,
+      activeHistory: steelNativeMessages,
+      ...(currentUserTurn ? { currentUserTurn } : {}),
+    });
+    const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+      conversation: steelConversation,
+      renderProfile: 'agents_chat_completions',
+    });
+    applySteelNativeGlobalContextToAgentConfigs({
+      agents: runAgents,
+      context: steelNativeContext,
+    });
+    const assistantTurnIndex = request.messages.length;
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      conversationId,
+      requestId: responseId,
+      assistantTurnIndex,
+      memoryCheckpointTurnIndex: Math.max(0, assistantTurnIndex - 1),
+    };
 
     // Determine if streaming is enabled (check both request and agent config)
     const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
@@ -511,8 +589,6 @@ const OpenAIChatCompletionController = async (req, res) => {
     };
 
     const summarizationConfig = appConfig?.summarization;
-
-    const openaiMessages = convertMessages(request.messages);
 
     const toolSet = buildToolSet(primaryConfig);
     const formatted = formatAgentMessages(openaiMessages, {}, toolSet);
@@ -725,8 +801,6 @@ const OpenAIChatCompletionController = async (req, res) => {
     // Extract merged userMCPAuthMap (needed for MCP tool connections across
     // the primary and any discovered handoff sub-agents)
     const userMCPAuthMap = discoveredMCPAuthMap ?? primaryConfig.userMCPAuthMap;
-
-    const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
 
     const run = await createRun({
       agents: runAgents,

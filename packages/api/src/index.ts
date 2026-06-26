@@ -81,6 +81,7 @@ export * from './steel/ai/provider';
 export * from './steel/conversations/repository';
 export * from './steel/conversations/service';
 export * from './steel/handlers';
+export * from './steel/memory/service';
 export * from './steel/models';
 export * from './steel/native';
 export * from './steel/normalization';

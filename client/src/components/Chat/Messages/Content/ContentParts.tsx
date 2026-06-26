@@ -14,6 +14,7 @@ import PendingSkillCall from './Parts/PendingSkillCall';
 import { EditTextPart, EmptyText } from './Parts';
 import MemoryArtifacts from './MemoryArtifacts';
 import ToolCallGroup from './ToolCallGroup';
+import SteelActivity from './SteelActivity';
 import Container from './Container';
 import Part from './Part';
 
@@ -226,6 +227,9 @@ const ContentParts = memo(function ContentParts({
     pendingSkills.map((name) => (
       <PendingSkillCall key={`pending-skill-${name}`} skillName={name} loaded={hasRealContent} />
     ));
+  const renderSteelActivity = () => (
+    <SteelActivity messageId={messageId} isCreatedByUser={isCreatedByUser} />
+  );
 
   const renderPart = useCallback(
     (part: TMessageContentParts, idx: number, isLastPart: boolean) => {
@@ -321,7 +325,7 @@ const ContentParts = memo(function ContentParts({
 
   // Early return: no content to render AND no pending skill cards
   if (!content && !hasPendingSkills) {
-    return null;
+    return renderSteelActivity();
   }
 
   // Edit mode: render editable text parts. Interim skill cards are a
@@ -385,6 +389,7 @@ const ContentParts = memo(function ContentParts({
           isSubmitting={effectiveIsSubmitting}
           renderPart={renderPart}
         />
+        {renderSteelActivity()}
       </>
     );
   }
@@ -419,6 +424,7 @@ const ContentParts = memo(function ContentParts({
           />
         );
       })}
+      {renderSteelActivity()}
     </SearchContext.Provider>
   );
 });

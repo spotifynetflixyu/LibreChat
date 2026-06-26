@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const { logger, redactMessage } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
@@ -27,7 +28,18 @@ const {
   buildMCPAuthRunStepEvent,
   buildMCPAuthRunStepDeltaEvent,
   buildMCPAuthRunStepCompletedEvent,
+  captureSteelNativeToolResult,
+  buildSteelNativeEventEnvelopes,
   isFileAuthoringToolDefinition,
+  createSteelNativeTool,
+  createSteelPostgresPool,
+  createSteelToolRunState,
+  executeSteelTool,
+  mergeSteelToolDefinitions,
+  resolveEvidenceFileForProvider,
+  resolveSteelProviderToolName,
+  createMongooseSteelOutputSheetMemoryReader,
+  createMongooseSteelWorkingOrderMemoryWriter,
 } = require('@librechat/api');
 const {
   Time,
@@ -67,12 +79,13 @@ const { primeFiles: primeSearchFiles } = require('~/app/clients/tools/util/fileS
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
 const { manifestToolMap, toolkits } = require('~/app/clients/tools/manifest');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
 const { createMCPPermissionContext, resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
-const { findPluginAuthsByKeys } = require('~/models');
+const { findPluginAuthsByKeys, getFiles } = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
@@ -508,6 +521,8 @@ async function processRequiredActions(client, requiredActions) {
  */
 /** Native LibreChat tools that are not in the manifest */
 const nativeTools = new Set([Tools.execute_code, Tools.file_search, Tools.web_search]);
+const defaultSteelNativeToolMaxCalls = 8;
+let defaultSteelNativeToolClient;
 
 /** Checks if a tool name is a known built-in tool */
 const isBuiltInTool = (toolName) =>
@@ -516,6 +531,169 @@ const isBuiltInTool = (toolName) =>
       toolkits.some((t) => t.pluginKey === toolName) ||
       nativeTools.has(toolName),
   );
+
+function getDefaultSteelNativeToolClient() {
+  defaultSteelNativeToolClient ??= createSteelPostgresPool();
+  return defaultSteelNativeToolClient;
+}
+
+function getRequestConversationId(req) {
+  const conversationId = req.body?.conversationId ?? req.steelNativeContext?.conversationId;
+  return typeof conversationId === 'string' && conversationId.trim() !== ''
+    ? conversationId
+    : undefined;
+}
+
+async function streamToUint8Array(stream) {
+  if (stream && typeof stream.arrayBuffer === 'function') {
+    return new Uint8Array(await stream.arrayBuffer());
+  }
+
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
+function getSteelNativeCurrentTurnFileReferences(req) {
+  const files = req.steelNativeContext?.currentTurnFiles;
+  return Array.isArray(files) ? files.filter((file) => typeof file?.fileId === 'string') : [];
+}
+
+async function resolveSteelNativeOcrFiles({ req, conversationId }) {
+  const fileReferences = getSteelNativeCurrentTurnFileReferences(req);
+  if (fileReferences.length === 0) {
+    return [];
+  }
+
+  return Promise.all(
+    fileReferences.map((file) =>
+      resolveEvidenceFileForProvider({
+        fileId: file.fileId,
+        userId: req.user.id,
+        conversationId,
+        findFile: async (fileId) => {
+          const files = await getFiles({ file_id: { $in: [fileId] } }, null, { text: 0 });
+          return files?.[0] ?? null;
+        },
+        readFileBytes: async (attachment) => {
+          const { getDownloadStream } = getStrategyFunctions(attachment.fileRef.source);
+          if (!getDownloadStream) {
+            throw new Error(`Steel evidence file source ${attachment.fileRef.source} cannot be read`);
+          }
+
+          const filepath = attachment.fileRef.storageKey || attachment.fileRef.filepath;
+          const stream = await getDownloadStream(req, filepath);
+          return streamToUint8Array(stream);
+        },
+      }),
+    ),
+  );
+}
+
+function mergeSteelNativeToolDefinitions(result) {
+  const merged = mergeSteelToolDefinitions({
+    toolDefinitions: result.toolDefinitions ?? [],
+    toolRegistry: result.toolRegistry,
+    contextMode: 'compact_workbook',
+  });
+
+  return {
+    ...result,
+    toolDefinitions: merged.toolDefinitions,
+    toolRegistry: merged.toolRegistry,
+  };
+}
+
+async function emitSteelNativeEvents({ events, res, streamId }) {
+  for (const event of events) {
+    if (streamId) {
+      await GenerationJobManager.emitChunk(streamId, event);
+    } else if (typeof res?.write === 'function' && !res.writableEnded) {
+      sendEvent(res, event);
+    }
+  }
+}
+
+function createSteelNativeToolExecute({ req, res, streamId, runState }) {
+  const conversationId = getRequestConversationId(req);
+  let workingOrderMemoryWriter;
+  let outputSheetMemoryReader;
+  let ocrFilesPromise;
+
+  const getWorkingOrderMemoryWriter = () => {
+    if (!conversationId) {
+      return undefined;
+    }
+    workingOrderMemoryWriter ??= createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    return workingOrderMemoryWriter;
+  };
+
+  const getOutputSheetMemoryReader = () => {
+    if (!conversationId) {
+      return undefined;
+    }
+    outputSheetMemoryReader ??= createMongooseSteelOutputSheetMemoryReader(
+      mongoose,
+      conversationId,
+    );
+    return outputSheetMemoryReader;
+  };
+
+  const getOcrFiles = () => {
+    if (!ocrFilesPromise) {
+      ocrFilesPromise = resolveSteelNativeOcrFiles({ req, conversationId });
+    }
+    return ocrFilesPromise;
+  };
+
+  return async ({ toolName, arguments: args, providerToolCallId }) => {
+    const ocrFiles = toolName === 'run_file_ocr' ? await getOcrFiles() : undefined;
+    const result = await executeSteelTool({
+      client: getDefaultSteelNativeToolClient(),
+      toolName,
+      arguments: args,
+      providerToolCallId,
+      runState,
+      ...(ocrFiles ? { ocrFiles } : {}),
+      outputSheetMemoryReader: getOutputSheetMemoryReader(),
+    });
+    const captureResult = await captureSteelNativeToolResult({
+      writer: getWorkingOrderMemoryWriter(),
+      conversationId,
+      requestId: req.steelNativeContext?.requestId,
+      providerToolCallId,
+      toolName,
+      turnIndex: req.steelNativeContext?.assistantTurnIndex,
+      checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
+      result,
+    });
+
+    logger.debug('[ToolService] Steel native tool result capture', {
+      toolName,
+      providerToolCallId,
+      status: captureResult.status,
+      reason: captureResult.status === 'skipped' ? captureResult.reason : undefined,
+      savedCounts: captureResult.status === 'captured' ? captureResult.result.savedCounts : undefined,
+    });
+    await emitSteelNativeEvents({
+      res,
+      streamId,
+      events: buildSteelNativeEventEnvelopes({
+        source: 'tool_result',
+        conversationId,
+        requestId: req.steelNativeContext?.requestId,
+        toolName,
+        providerToolCallId,
+        capture: captureResult,
+      }),
+    });
+
+    return result;
+  };
+}
 
 /**
  * Loads only tool definitions without creating tool instances.
@@ -535,33 +713,25 @@ const isBuiltInTool = (toolName) =>
  * }>}
  */
 async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, tool_resources }) {
-  if (!agent.tools || agent.tools.length === 0) {
-    return { toolDefinitions: [] };
-  }
-
-  if (
-    agent.tools.length === 1 &&
-    (agent.tools[0] === AgentCapabilities.context || agent.tools[0] === AgentCapabilities.ocr)
-  ) {
-    return { toolDefinitions: [] };
-  }
-
   const appConfig = req.config;
   const enabledCapabilities = await resolveAgentCapabilities(req, appConfig, agent.id);
-
+  const selectedTools = Array.isArray(agent.tools) ? agent.tools : [];
   const checkCapability = (capability) => enabledCapabilities.has(capability);
   const areToolsEnabled = checkCapability(AgentCapabilities.tools);
   const actionsEnabled = checkCapability(AgentCapabilities.actions);
   const deferredToolsEnabled = checkCapability(AgentCapabilities.deferred_tools);
   const programmaticToolsEnabled = enabledCapabilities.has(AgentCapabilities.programmatic_tools);
   const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
+    selectedTools.includes(Tools.execute_code) === true &&
     enabledCapabilities.has(AgentCapabilities.execute_code);
-  const hasMCPTools = agent.tools?.some((tool) => tool?.includes(Constants.mcp_delimiter));
+  const hasMCPTools = selectedTools.some((tool) => tool?.includes(Constants.mcp_delimiter));
   const mcpPermissionContext = createMCPPermissionContext(req);
   const canUseMCP = hasMCPTools ? await mcpPermissionContext.canUseServers(req.user) : true;
 
-  const filteredTools = agent.tools?.filter((tool) => {
+  const filteredTools = selectedTools.filter((tool) => {
+    if (tool === AgentCapabilities.context || tool === AgentCapabilities.ocr) {
+      return false;
+    }
     if (tool === Tools.file_search) {
       return checkCapability(AgentCapabilities.file_search);
     }
@@ -577,6 +747,9 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
     if (tool?.includes(Constants.mcp_delimiter)) {
       return areToolsEnabled && canUseMCP;
     }
+    if (resolveSteelProviderToolName(tool)) {
+      return false;
+    }
     if (!areToolsEnabled) {
       return false;
     }
@@ -584,7 +757,12 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
   });
 
   if (!filteredTools || filteredTools.length === 0) {
-    return { toolDefinitions: [] };
+    const baseResult = {
+      toolDefinitions: [],
+      toolRegistry: new Map(),
+      actionsEnabled,
+    };
+    return areToolsEnabled ? mergeSteelNativeToolDefinitions(baseResult) : baseResult;
   }
 
   /** @type {Record<string, Record<string, string>>} */
@@ -1036,6 +1214,15 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
         dynamicToolContextMap.gemini_image_gen = toolContext;
       }
     }
+  }
+
+  if (areToolsEnabled) {
+    const mergedResult = mergeSteelNativeToolDefinitions({
+      toolDefinitions,
+      toolRegistry,
+    });
+    toolDefinitions = mergedResult.toolDefinitions;
+    toolRegistry = mergedResult.toolRegistry;
   }
 
   return {
@@ -1566,10 +1753,34 @@ async function loadToolsForExecution({
     ? [...new Set([...allowedNonSpecialToolNames, ...ptcOrchestratedToolNames])]
     : allowedNonSpecialToolNames;
 
+  const steelToolEntries = [];
   const actionToolNames = [];
   const regularToolNames = [];
   for (const name of allToolNamesToLoad) {
-    (isActionTool(name) ? actionToolNames : regularToolNames).push(name);
+    const steelToolName = resolveSteelProviderToolName(name);
+    if (steelToolName) {
+      steelToolEntries.push({ nativeToolName: name, steelToolName });
+    } else {
+      (isActionTool(name) ? actionToolNames : regularToolNames).push(name);
+    }
+  }
+
+  if (steelToolEntries.length > 0) {
+    const execute = createSteelNativeToolExecute({
+      req,
+      res,
+      streamId,
+      runState: createSteelToolRunState(defaultSteelNativeToolMaxCalls),
+    });
+    allLoadedTools.push(
+      ...steelToolEntries.map(({ nativeToolName, steelToolName }) =>
+        createSteelNativeTool({
+          nativeToolName,
+          steelToolName,
+          execute,
+        }),
+      ),
+    );
   }
 
   if (regularToolNames.length > 0) {

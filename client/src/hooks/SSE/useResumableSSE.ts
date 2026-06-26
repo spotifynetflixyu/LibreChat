@@ -43,6 +43,7 @@ import useEventHandlers, { buildCreatedInitialResponse } from './useEventHandler
 import { useAuthContext } from '~/hooks/AuthContext';
 import useUsageHandler from './useUsageHandler';
 import store from '~/store';
+import { steelNativeStreamEventName } from '~/store/steel';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -460,6 +461,7 @@ export default function useResumableSSE(
     titleHandler,
     syncStepMessage,
     attachmentHandler,
+    steelEventHandler,
     resetContentHandler,
   } = useEventHandlers({
     setMessages,
@@ -600,6 +602,11 @@ export default function useResumableSSE(
 
           if (data.event === 'title') {
             titleHandler(data);
+            return;
+          }
+
+          if (data.event === steelNativeStreamEventName) {
+            steelEventHandler(data, currentSubmission as EventSubmission);
             return;
           }
 
@@ -761,6 +768,8 @@ export default function useResumableSSE(
                   contextHandler(replayEvent.data, resumeSubmission);
                 } else if (replayEvent.event === UsageEvents.ON_TOKEN_USAGE) {
                   usageHandler(replayEvent.data, resumeSubmission);
+                } else if (replayEvent.event === steelNativeStreamEventName) {
+                  steelEventHandler(replayEvent, resumeSubmission);
                 } else if (replayEvent.event != null) {
                   if (
                     replayEvent.event === StepEvents.ON_MESSAGE_DELTA ||
@@ -782,6 +791,8 @@ export default function useResumableSSE(
                   contextHandler(pendingEvent.data, resumeSubmission);
                 } else if (pendingEvent.event === UsageEvents.ON_TOKEN_USAGE) {
                   usageHandler(pendingEvent.data, resumeSubmission);
+                } else if (pendingEvent.event === steelNativeStreamEventName) {
+                  steelEventHandler(pendingEvent, resumeSubmission);
                 } else if (pendingEvent.event != null) {
                   if (
                     pendingEvent.event === StepEvents.ON_MESSAGE_DELTA ||
@@ -1076,6 +1087,7 @@ export default function useResumableSSE(
       createdHandler,
       attachmentHandler,
       titleHandler,
+      steelEventHandler,
       stepHandler,
       contentHandler,
       resetContentHandler,

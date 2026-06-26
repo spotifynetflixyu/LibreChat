@@ -23,7 +23,6 @@ import {
 import { createSteelConversationHistoryService } from './history/service';
 import {
   createMongooseSteelOutputSheetMemoryReader,
-  createMongooseSteelWorkingOrderMemoryReader,
   createMongooseSteelWorkingOrderMemoryWriter,
 } from './memory/service';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
@@ -65,7 +64,6 @@ import type {
 import type { SteelRepositoryClient } from './repositories';
 import type { SteelAgentRule } from './repositories/rules';
 import type { SteelToolResult } from './tools/results';
-import type { SteelWorkingOrderMemoryReader } from './tools/execute';
 import type { SteelOutputSheetMemoryReader } from './memory/service';
 import type { SteelConversationTurnRecord } from './history/service';
 import type {
@@ -119,7 +117,6 @@ export interface SteelHandlersDeps {
     conversationId?: string;
   }) => Promise<SteelOAuthChatFile>;
   conversationService?: ReturnType<typeof createSteelConversationService>;
-  createWorkingOrderMemoryReader?: (conversationId: string) => SteelWorkingOrderMemoryReader;
   createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
   historyService?: ReturnType<typeof createSteelConversationHistoryService>;
   prepareRuntimeContext?: (
@@ -274,10 +271,6 @@ function getDefaultHistoryService() {
     memoryRepository: createMongooseSteelWorkingOrderMemoryRollbackRepository(mongoose),
   });
   return defaultHistoryService;
-}
-
-function createDefaultWorkingOrderMemoryReader(conversationId: string) {
-  return createMongooseSteelWorkingOrderMemoryReader(mongoose, conversationId);
 }
 
 function createDefaultOutputSheetMemoryReader(conversationId: string) {
@@ -752,21 +745,6 @@ function createStreamToolExecutorWithMemoryEvents({
           type: 'memory_saved',
           message: 'Working Order Memory saved',
           savedCounts: captureResult.savedCounts,
-        });
-      }
-      if (
-        options.toolName === 'read_working_order_items' &&
-        toolResult.ok &&
-        isRecord(toolResult.data)
-      ) {
-        writeStreamEvent(res, {
-          type: 'memory_read',
-          message: `${options.toolName} completed`,
-          mode: typeof toolResult.data.mode === 'string' ? toolResult.data.mode : undefined,
-          resultCount:
-            typeof toolResult.data.resultCount === 'number'
-              ? toolResult.data.resultCount
-              : undefined,
         });
       }
       return toolResult;
@@ -1295,7 +1273,6 @@ export function createSteelHandlers({
   resolveEvidenceFile,
   conversationService,
   createOutputSheetMemoryReader = createDefaultOutputSheetMemoryReader,
-  createWorkingOrderMemoryReader = createDefaultWorkingOrderMemoryReader,
   historyService,
   prepareRuntimeContext,
   runtimeRulesClient,

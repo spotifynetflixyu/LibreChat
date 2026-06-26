@@ -11,8 +11,6 @@ import type {
   SteelRuntimeOutputSheet,
   SteelRuntimeOutputSheetRow,
 } from '../runtime/context';
-import type { SteelWorkingOrderMemoryReader } from '../tools/execute';
-import type { ReadWorkingOrderItemsInput } from '../tools/schemas';
 
 type Mongoose = typeof import('mongoose');
 type SteelJsonPrimitive = string | number | boolean | null;
@@ -81,6 +79,22 @@ export interface SteelOutputSheetMemoryReader {
   readOutputSheetMemory(): Promise<SteelOutputSheetMemorySnapshot>;
 }
 
+export interface SteelWorkingOrderMemoryReadInput {
+  mode: 'summary' | 'rowNo' | 'erpItemCode' | 'query' | 'source' | 'page';
+  rowNo?: number;
+  erpItemCode?: string;
+  query?: string;
+  filename?: string;
+  pageNumber?: number;
+  imageIndex?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface SteelWorkingOrderMemoryReader {
+  readWorkingOrderItems(input: SteelWorkingOrderMemoryReadInput): Promise<SteelJsonObject>;
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -89,11 +103,11 @@ function isJsonObject(value: SteelJsonValue | undefined): value is SteelJsonObje
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function getPageSize(input: ReadWorkingOrderItemsInput): number {
+function getPageSize(input: SteelWorkingOrderMemoryReadInput): number {
   return input.pageSize ?? 20;
 }
 
-function getPage(input: ReadWorkingOrderItemsInput): number {
+function getPage(input: SteelWorkingOrderMemoryReadInput): number {
   return input.mode === 'page' ? input.page ?? 1 : 1;
 }
 
@@ -138,7 +152,9 @@ function queryFilter(query: string): FilterQuery<ISteelWorkingOrderMemory> {
   };
 }
 
-function sourceFilter(input: ReadWorkingOrderItemsInput): FilterQuery<ISteelWorkingOrderMemory> {
+function sourceFilter(
+  input: SteelWorkingOrderMemoryReadInput,
+): FilterQuery<ISteelWorkingOrderMemory> {
   const sourceRefMatchers: FilterQuery<ISteelWorkingOrderMemory>[] = [];
 
   if (input.filename !== undefined) {
@@ -154,7 +170,9 @@ function sourceFilter(input: ReadWorkingOrderItemsInput): FilterQuery<ISteelWork
   return sourceRefMatchers.length === 1 ? sourceRefMatchers[0] : { $or: sourceRefMatchers };
 }
 
-function getModeFilter(input: ReadWorkingOrderItemsInput): FilterQuery<ISteelWorkingOrderMemory> {
+function getModeFilter(
+  input: SteelWorkingOrderMemoryReadInput,
+): FilterQuery<ISteelWorkingOrderMemory> {
   switch (input.mode) {
     case 'summary':
       return {};
@@ -204,10 +222,6 @@ function summarizeByKind(documents: SteelWorkingOrderMemoryDocument[]) {
 
 function isWorkingOrderTable(headers: readonly string[]): boolean {
   return ['項次', '型號', '品名規格'].every((header) => headers.includes(header));
-}
-
-function isRowChangeTable(headers: readonly string[]): boolean {
-  return headers.includes('項次') && !isWorkingOrderTable(headers);
 }
 
 function isCustomerTable(headers: readonly string[]): boolean {
@@ -410,15 +424,6 @@ function getPriceSummary(payload: SteelJsonObject): string {
     .join(' ');
 }
 
-function getRuleEvidenceSummary(payload: SteelJsonObject): string {
-  return (
-    getStringProperty(payload, 'slug') ??
-    getStringProperty(payload, 'summary') ??
-    getStringProperty(payload, 'title') ??
-    'rule evidence'
-  );
-}
-
 function createToolMemoryDocument(input: {
   conversationId: string;
   requestId?: string;
@@ -495,18 +500,6 @@ function getToolCaptureDocuments(input: CaptureToolResultInput) {
     );
   }
 
-  if (input.toolName === 'lookup_quote_rules') {
-    return getArrayProperty(data, 'rules').filter(isJsonObject).map((rule) =>
-      createToolMemoryDocument({
-        ...input,
-        memoryKind: 'rule_evidence',
-        sourceKind: 'tool_result',
-        payload: rule,
-        summary: getRuleEvidenceSummary(rule),
-      }),
-    );
-  }
-
   if (input.toolName === 'run_file_ocr') {
     const filename = getStringProperty(data, 'filename');
     return getArrayProperty(data, 'pageResults').filter(isJsonObject).map((page) => {
@@ -566,6 +559,79 @@ function createMemoryDocuments(input: {
 
 function getParsedRowNo(payload: SteelJsonObject): number | undefined {
   return typeof payload.rowNo === 'number' ? payload.rowNo : undefined;
+}
+
+async function replaceActiveMarkdownRows({
+  SteelWorkingOrderMemory,
+  conversationId,
+  requestId,
+  messageId,
+  turnIndex,
+  checkpointTurnIndex,
+  memoryKind,
+  payloads,
+  summaryForPayload,
+  locatorPrefix,
+  replacementFilter,
+}: {
+  SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
+  conversationId: string;
+  requestId?: string;
+  messageId: string;
+  turnIndex: number;
+  checkpointTurnIndex: number;
+  memoryKind: string;
+  payloads: SteelJsonObject[];
+  summaryForPayload: (payload: SteelJsonObject) => string;
+  locatorPrefix: string;
+  replacementFilter?: FilterQuery<ISteelWorkingOrderMemory>;
+}) {
+  if (payloads.length === 0) {
+    return;
+  }
+
+  await SteelWorkingOrderMemory.deleteMany(
+    {
+      conversationId,
+      memoryKind,
+      ...(replacementFilter ?? {}),
+    },
+  );
+  await SteelWorkingOrderMemory.insertMany(
+    createMemoryDocuments({
+      conversationId,
+      requestId,
+      messageId,
+      turnIndex,
+      checkpointTurnIndex,
+      memoryKind,
+      payloads,
+      summaryForPayload,
+      locatorPrefix,
+    }),
+  );
+}
+
+function quoteCalculationFilter(): FilterQuery<ISteelWorkingOrderMemory> {
+  return {
+    $nor: [
+      { 'payload.reviewStatus': 'manual_review' },
+      { 'payload.classification': { $in: ['manual_review', 'unclassified_markdown_table'] } },
+      { 'payload.reason': { $exists: true } },
+      { 'payload.unresolvedReason': { $exists: true } },
+    ],
+  };
+}
+
+function manualReviewCalculationFilter(): FilterQuery<ISteelWorkingOrderMemory> {
+  return {
+    $or: [
+      { 'payload.reviewStatus': 'manual_review' },
+      { 'payload.classification': { $in: ['manual_review', 'unclassified_markdown_table'] } },
+      { 'payload.reason': { $exists: true } },
+      { 'payload.unresolvedReason': { $exists: true } },
+    ],
+  };
 }
 
 function hasSimpleSequentialItemNumbers(payloads: readonly SteelJsonObject[]): boolean {
@@ -689,20 +755,6 @@ function toOutputSheetMemorySnapshot(
   };
 }
 
-function mergePayload(
-  previous: SteelJsonValue | undefined,
-  patch: SteelJsonObject,
-): SteelJsonObject {
-  if (!isJsonObject(previous)) {
-    return patch;
-  }
-
-  return {
-    ...previous,
-    ...patch,
-  };
-}
-
 export function createMongooseSteelWorkingOrderMemoryReader(
   mongoose: Mongoose,
   conversationId: string,
@@ -785,6 +837,12 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         return { savedCounts: {} };
       }
 
+      if (input.toolName === 'run_file_ocr') {
+        await SteelWorkingOrderMemory.deleteMany({
+          conversationId: input.conversationId,
+          memoryKind: 'ocr_extract',
+        });
+      }
       await SteelWorkingOrderMemory.insertMany(documents);
       return {
         savedCounts: summarizeByKind(documents),
@@ -814,139 +872,68 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
             continue;
           }
 
-          await SteelWorkingOrderMemory.updateMany(
-            {
-              conversationId,
-              state: 'active',
-              memoryKind: 'working_order_row',
-            },
-            {
-              $set: {
-                state: 'superseded',
-                supersededAt: new Date(),
-                supersededByMessageId: messageId,
-              },
-            },
-          );
-          await SteelWorkingOrderMemory.insertMany(
-            createMemoryDocuments({
-              conversationId,
-              requestId,
-              messageId,
-              turnIndex,
-              checkpointTurnIndex,
-              memoryKind: 'working_order_row',
-              payloads: rows,
-              summaryForPayload: getRowSummary,
-              locatorPrefix: 'table:system_order',
-            }),
-          );
+          await replaceActiveMarkdownRows({
+            SteelWorkingOrderMemory,
+            conversationId,
+            requestId,
+            messageId,
+            turnIndex,
+            checkpointTurnIndex,
+            memoryKind: 'working_order_row',
+            payloads: rows,
+            summaryForPayload: getRowSummary,
+            locatorPrefix: 'table:system_order',
+          });
           incrementSavedCount(savedCounts, 'working_order_row', rows.length);
           continue;
         }
 
-        if (isRowChangeTable(table.headers)) {
-          const rowPatches = payloads.filter((payload) => getParsedRowNo(payload) !== undefined);
-          const rowNumbers = rowPatches
-            .map(getParsedRowNo)
-            .filter((rowNo): rowNo is number => rowNo !== undefined);
-          const activeRows = await SteelWorkingOrderMemory.find({
-            conversationId,
-            state: 'active',
-            memoryKind: 'working_order_row',
-            $or: rowNumbers.flatMap((rowNo) => [
-              { 'payload.rowNo': rowNo },
-              { 'payload.rowNo': String(rowNo) },
-              { 'payload.項次': rowNo },
-              { 'payload.項次': String(rowNo) },
-            ]),
-          }).lean<SteelWorkingOrderMemoryDocument[]>();
-          const activeByRowNo = new Map<number, SteelWorkingOrderMemoryDocument>();
-
-          activeRows.forEach((row) => {
-            if (!isJsonObject(row.payload)) {
-              return;
-            }
-            const rowNo = getParsedRowNo(row.payload);
-            if (rowNo !== undefined) {
-              activeByRowNo.set(rowNo, row);
-            }
-          });
-
-          await SteelWorkingOrderMemory.updateMany(
-            {
-              conversationId,
-              state: 'active',
-              memoryKind: 'working_order_row',
-              $or: rowNumbers.flatMap((rowNo) => [
-                { 'payload.rowNo': rowNo },
-                { 'payload.rowNo': String(rowNo) },
-                { 'payload.項次': rowNo },
-                { 'payload.項次': String(rowNo) },
-              ]),
-            },
-            {
-              $set: {
-                state: 'superseded',
-                supersededAt: new Date(),
-                supersededByMessageId: messageId,
-              },
-            },
-          );
-
-          const mergedRows = rowPatches.map((patch) => {
-            const activeRow = activeByRowNo.get(getParsedRowNo(patch) ?? -1);
-            return mergePayload(activeRow?.payload, patch);
-          });
-          await SteelWorkingOrderMemory.insertMany(
-            createMemoryDocuments({
-              conversationId,
-              requestId,
-              messageId,
-              turnIndex,
-              checkpointTurnIndex,
-              memoryKind: 'working_order_row',
-              payloads: mergedRows,
-              summaryForPayload: getRowSummary,
-              locatorPrefix: 'table:row_change',
-            }),
-          );
-          incrementSavedCount(savedCounts, 'working_order_row', mergedRows.length);
-          continue;
-        }
-
         if (isCustomerTable(table.headers)) {
-          await SteelWorkingOrderMemory.insertMany(
-            createMemoryDocuments({
-              conversationId,
-              requestId,
-              messageId,
-              turnIndex,
-              checkpointTurnIndex,
-              memoryKind: 'customer_fact',
-              payloads,
-              summaryForPayload: getFactSummary,
-              locatorPrefix: 'table:customer_fact',
-            }),
-          );
+          await replaceActiveMarkdownRows({
+            SteelWorkingOrderMemory,
+            conversationId,
+            requestId,
+            messageId,
+            turnIndex,
+            checkpointTurnIndex,
+            memoryKind: 'customer_fact',
+            payloads,
+            summaryForPayload: getFactSummary,
+            locatorPrefix: 'table:customer_fact',
+          });
           incrementSavedCount(savedCounts, 'customer_fact', payloads.length);
           continue;
         }
 
         if (isCalculationTable(table.headers)) {
-          await SteelWorkingOrderMemory.insertMany(
-            createMemoryDocuments({
-              conversationId,
-              requestId,
-              messageId,
-              turnIndex,
-              checkpointTurnIndex,
-              memoryKind: 'calculation_fact',
-              payloads,
-              summaryForPayload: getFactSummary,
-              locatorPrefix: 'table:calculation_fact',
-            }),
-          );
+          const quoteRows = payloads.filter((payload) => !isManualReviewPayload(payload));
+          const manualRows = payloads.filter(isManualReviewPayload);
+          await replaceActiveMarkdownRows({
+            SteelWorkingOrderMemory,
+            conversationId,
+            requestId,
+            messageId,
+            turnIndex,
+            checkpointTurnIndex,
+            memoryKind: 'calculation_fact',
+            payloads: quoteRows,
+            summaryForPayload: getFactSummary,
+            locatorPrefix: 'table:calculation_fact',
+            replacementFilter: quoteCalculationFilter(),
+          });
+          await replaceActiveMarkdownRows({
+            SteelWorkingOrderMemory,
+            conversationId,
+            requestId,
+            messageId,
+            turnIndex,
+            checkpointTurnIndex,
+            memoryKind: 'calculation_fact',
+            payloads: manualRows,
+            summaryForPayload: getFactSummary,
+            locatorPrefix: 'table:manual_review',
+            replacementFilter: manualReviewCalculationFilter(),
+          });
           incrementSavedCount(savedCounts, 'calculation_fact', payloads.length);
           continue;
         }
@@ -955,19 +942,19 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
           ...payload,
           classification: 'unclassified_markdown_table',
         }));
-        await SteelWorkingOrderMemory.insertMany(
-          createMemoryDocuments({
-            conversationId,
-            requestId,
-            messageId,
-            turnIndex,
-            checkpointTurnIndex,
-            memoryKind: 'calculation_fact',
-            payloads: unclassifiedPayloads,
-            summaryForPayload: getFactSummary,
-            locatorPrefix: 'table:unclassified',
-          }),
-        );
+        await replaceActiveMarkdownRows({
+          SteelWorkingOrderMemory,
+          conversationId,
+          requestId,
+          messageId,
+          turnIndex,
+          checkpointTurnIndex,
+          memoryKind: 'calculation_fact',
+          payloads: unclassifiedPayloads,
+          summaryForPayload: getFactSummary,
+          locatorPrefix: 'table:unclassified',
+          replacementFilter: manualReviewCalculationFilter(),
+        });
         sawUnclassifiedTable = true;
         incrementSavedCount(savedCounts, 'calculation_fact', unclassifiedPayloads.length);
       }

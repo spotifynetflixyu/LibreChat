@@ -1,3 +1,5 @@
+import { steelReadMarkdownUsagePolicy } from '../tools/registry';
+
 import type { SteelOAuthChatFile, SteelOAuthChatMessage } from '../ai/provider';
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelInstructionPacket } from '../repositories/instructions';
@@ -20,13 +22,10 @@ export const steelRuntimeAiVisibleTools = [
 
 export const steelRuntimeCompactWorkbookAiVisibleTools: readonly SteelBusinessToolName[] = [
   ...steelRuntimeAiVisibleTools,
-  'read_active_workbook',
+  'read_markdown',
 ] as const satisfies readonly SteelBusinessToolName[];
 
-export const steelRuntimeRemovedTools = [
-  'lookup_quote_rules',
-  'read_working_order_items',
-] as const satisfies readonly SteelBusinessToolName[];
+export const steelRuntimeRemovedTools = [] as const satisfies readonly SteelBusinessToolName[];
 
 export type SteelRuntimeActiveOutputSheetId = (typeof steelRuntimeActiveOutputSheetIds)[number];
 export type SteelRuntimeContextMode = 'full' | 'compact_workbook';
@@ -147,6 +146,8 @@ export interface SteelRuntimeContext {
   toolPolicy: {
     aiVisibleTools: readonly SteelRuntimeAiVisibleToolName[];
     removedTools: typeof steelRuntimeRemovedTools;
+    ocrCorrectionPolicy: string;
+    readMarkdownUsagePolicy: typeof steelReadMarkdownUsagePolicy;
   };
 }
 
@@ -202,7 +203,7 @@ interface SerializableSteelOAuthChatFile {
 
 interface SerializableSteelOAuthChatMessage {
   role: SteelOAuthChatMessage['role'];
-  content: string;
+  contentSource: 'provider_messages';
   messageId?: string;
   files?: SerializableSteelOAuthChatFile[];
 }
@@ -238,6 +239,16 @@ function shouldIncludeOcrRules({
     hasOcrRelevantMessageFile(currentUserTurn) ||
     priorActiveFileEvidence.length > 0
   );
+}
+
+function collectPriorActiveFileEvidence({
+  explicitEvidence,
+  outputSheetMemory,
+}: {
+  explicitEvidence: readonly SteelRuntimeJsonObject[];
+  outputSheetMemory: SteelOutputSheetMemorySnapshot;
+}): SteelRuntimeJsonObject[] {
+  return [...explicitEvidence, ...outputSheetMemory.derivedIndex.ocrExtracts];
 }
 
 function buildGlobalRuleGroups({
@@ -432,9 +443,52 @@ function toSerializableFile(file: SteelOAuthChatFile): SerializableSteelOAuthCha
 function toSerializableMessage(message: SteelOAuthChatMessage): SerializableSteelOAuthChatMessage {
   return {
     role: message.role,
-    content: message.content,
+    contentSource: 'provider_messages',
     messageId: message.messageId,
     files: message.files?.map(toSerializableFile),
+  };
+}
+
+function isSameRuntimeMessage(
+  left: SteelOAuthChatMessage,
+  right: SteelOAuthChatMessage | undefined,
+): boolean {
+  if (!right) {
+    return false;
+  }
+  if (left.messageId && right.messageId) {
+    return left.messageId === right.messageId;
+  }
+  return left.role === right.role && left.content === right.content;
+}
+
+function toLibreChatRuntimeMessageReference(
+  message: SteelOAuthChatMessage,
+): SteelOAuthChatMessage {
+  return {
+    role: message.role,
+    content: '',
+    messageId: message.messageId,
+    files: message.files?.map((file) => ({ ...file })),
+  };
+}
+
+function prepareLibreChatRuntimeConversation(
+  conversation: SteelRuntimeContextConversationInput,
+): SteelRuntimeContextConversationInput {
+  const currentUserTurn =
+    conversation.currentUserTurn !== undefined
+      ? toLibreChatRuntimeMessageReference(conversation.currentUserTurn)
+      : undefined;
+
+  return {
+    conversationId: conversation.conversationId,
+    requestId: conversation.requestId,
+    activeHistory: conversation.activeHistory
+      .filter((message) => !isSameRuntimeMessage(message, conversation.currentUserTurn))
+      .map(toLibreChatRuntimeMessageReference),
+    currentUserTurn,
+    edit: conversation.edit,
   };
 }
 
@@ -445,7 +499,12 @@ export async function prepareSteelRuntimeContext({
   mode = 'full',
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
-  const priorActiveFileEvidence = attachments?.priorActiveFileEvidence ?? [];
+  const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(conversation.conversationId);
+  const outputSheetMemory = await outputSheetMemoryPromise;
+  const priorActiveFileEvidence = collectPriorActiveFileEvidence({
+    explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
+    outputSheetMemory,
+  });
   const includeOcrRules = shouldIncludeOcrRules({
     activeHistory: conversation.activeHistory,
     currentTurnFiles,
@@ -459,7 +518,6 @@ export async function prepareSteelRuntimeContext({
     quoteRules,
     outputRules,
     otherGlobalRules,
-    outputSheetMemory,
   ] = await Promise.all([
     dependencies.listAgentRules(),
     dependencies.listReviewedInstructionPackets(),
@@ -467,7 +525,6 @@ export async function prepareSteelRuntimeContext({
     dependencies.listReviewedQuoteRules(),
     dependencies.listOutputRules(),
     dependencies.listOtherGlobalRules({ includeOcrRules }),
-    dependencies.readOutputSheetMemory(conversation.conversationId),
   ]);
 
   return {
@@ -477,13 +534,13 @@ export async function prepareSteelRuntimeContext({
       steelGlobalRules: {
         instructionPackets,
         quoteDefaults,
+        quoteRules,
+        groupedBy: buildGlobalRuleGroups({
+          instructionPackets,
+          quoteDefaults,
           quoteRules,
-          groupedBy: buildGlobalRuleGroups({
-            instructionPackets,
-            quoteDefaults,
-            quoteRules,
-          }),
-        },
+        }),
+      },
       outputRules,
       otherGlobalRules,
     },
@@ -515,6 +572,98 @@ export async function prepareSteelRuntimeContext({
           ? steelRuntimeCompactWorkbookAiVisibleTools
           : steelRuntimeAiVisibleTools,
       removedTools: steelRuntimeRemovedTools,
+      ocrCorrectionPolicy:
+        'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not call run_file_ocr again unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
+      readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
+    },
+  };
+}
+
+export async function prepareLibreChatSteelRuntimeContext({
+  conversation,
+  attachments,
+  dependencies,
+  mode = 'full',
+}: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
+  const runtimeConversation = prepareLibreChatRuntimeConversation(conversation);
+  const currentTurnFiles = attachments?.currentTurnFiles ?? [];
+  const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(
+    runtimeConversation.conversationId,
+  );
+  const outputSheetMemory = await outputSheetMemoryPromise;
+  const activeOutputSheets = pickActiveOutputSheets(outputSheetMemory);
+  const supplementalOutputSheetMemory = createEmptySteelOutputSheetMemorySnapshot();
+  const priorActiveFileEvidence = collectPriorActiveFileEvidence({
+    explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
+    outputSheetMemory,
+  });
+  const includeOcrRules = shouldIncludeOcrRules({
+    activeHistory: runtimeConversation.activeHistory,
+    currentTurnFiles,
+    currentUserTurn: runtimeConversation.currentUserTurn,
+    priorActiveFileEvidence,
+  });
+  const [
+    agentRules,
+    instructionPackets,
+    quoteDefaults,
+    quoteRules,
+    outputRules,
+    otherGlobalRules,
+  ] = await Promise.all([
+    dependencies.listAgentRules(),
+    dependencies.listReviewedInstructionPackets(),
+    dependencies.listReviewedQuoteDefaults(),
+    dependencies.listReviewedQuoteRules(),
+    dependencies.listOutputRules(),
+    dependencies.listOtherGlobalRules({ includeOcrRules }),
+  ]);
+
+  return {
+    conversation: runtimeConversation,
+    rules: {
+      agentRules,
+      steelGlobalRules: {
+        instructionPackets,
+        quoteDefaults,
+        quoteRules,
+        groupedBy: buildGlobalRuleGroups({
+          instructionPackets,
+          quoteDefaults,
+          quoteRules,
+        }),
+      },
+      outputRules,
+      otherGlobalRules,
+    },
+    outputSheets: {
+      activeOnly: true,
+      contextMode: mode,
+      memoryName: 'Output Sheet Memory',
+      contextName: 'Runtime Output Sheet Context',
+      conversationId: runtimeConversation.conversationId,
+      sheetIds: steelRuntimeActiveOutputSheetIds,
+      previousOutputSheets: supplementalOutputSheetMemory.previousOutputSheets,
+      derivedIndex: supplementalOutputSheetMemory.derivedIndex,
+      compactWorkbook:
+        mode === 'compact_workbook'
+          ? buildCompactWorkbookContext(activeOutputSheets, outputSheetMemory.derivedIndex)
+          : undefined,
+    },
+    attachments: {
+      currentTurnFiles,
+      priorActiveFileEvidence,
+      includeOcrRules,
+    },
+    toolPolicy: {
+      aiVisibleTools:
+        mode === 'compact_workbook'
+          ? steelRuntimeCompactWorkbookAiVisibleTools
+          : steelRuntimeAiVisibleTools,
+      removedTools: steelRuntimeRemovedTools,
+      ocrCorrectionPolicy:
+        'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not call run_file_ocr again unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
+      readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };
 }

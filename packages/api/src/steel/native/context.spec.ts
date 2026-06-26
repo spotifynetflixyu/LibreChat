@@ -1,18 +1,26 @@
 import {
+  buildDefaultSteelGlobalAgentContext,
   buildSteelGlobalAgentContext,
+  createSteelNativeRuntimeContextDependencies,
+  prepareLibreChatSteelChatContext,
   steelNativeDefaultRuntimeContextMode,
   steelNativeInstructionPrefixSections,
   type SteelNativeFileReference,
 } from './context';
-import { createEmptySteelOutputSheetMemorySnapshot } from '../runtime/context';
+import {
+  createEmptySteelOutputSheetMemorySnapshot,
+  serializeSteelRuntimeContext,
+} from '../runtime/context';
 
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelInstructionPacket } from '../repositories/instructions';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
 import type {
   SteelRuntimeContextDependencies,
+  SteelRuntimeJsonObject,
   SteelOutputSheetMemorySnapshot,
 } from '../runtime/context';
+import type { SteelRepositoryClient } from '../repositories/types';
 
 const sourceRefs = [
   {
@@ -166,10 +174,21 @@ function createRuntimeDependencies(): SteelRuntimeContextDependencies {
 
 async function buildFixtureContext({
   fileReference,
+  currentUserContent = '請依附件報價',
+  priorActiveFileEvidence,
 }: {
   fileReference?: SteelNativeFileReference;
+  currentUserContent?: string;
+  priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 } = {}) {
   const dependencies = createRuntimeDependencies();
+  const attachments =
+    fileReference !== undefined || priorActiveFileEvidence !== undefined
+      ? {
+          ...(fileReference ? { currentTurnFiles: [fileReference] } : {}),
+          ...(priorActiveFileEvidence ? { priorActiveFileEvidence } : {}),
+        }
+      : undefined;
   const context = await buildSteelGlobalAgentContext({
     conversation: {
       conversationId: 'conversation_1',
@@ -183,12 +202,12 @@ async function buildFixtureContext({
       ],
       currentUserTurn: {
         role: 'user',
-        content: '請依附件報價',
+        content: currentUserContent,
         messageId: 'message_2',
         files: fileReference ? [fileReference] : undefined,
       },
     },
-    attachments: fileReference ? { currentTurnFiles: [fileReference] } : undefined,
+    attachments,
     dependencies,
     agentRuleFragments: [
       {
@@ -203,6 +222,97 @@ async function buildFixtureContext({
 }
 
 describe('Steel native context adapter', () => {
+  it('prepares LibreChat-native history without duplicating the current user turn', () => {
+    const currentTurnFile: SteelNativeFileReference = {
+      fileId: 'file_current_pdf',
+      source: 'librechat_file_record',
+      mediaType: 'application/pdf',
+      conversationId: 'conversation_1',
+      messageId: 'message_user_2',
+      filename: 'PL.pdf',
+    };
+    const prepared = prepareLibreChatSteelChatContext({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      activeHistory: [
+        {
+          role: 'assistant',
+          content: 'OCR_TABLE_SENTINEL_9f5c',
+          messageId: 'message_assistant_1',
+        },
+        {
+          role: 'user',
+          content: 'CONFIRMED_OCR_SENTINEL_7c2a',
+          messageId: 'message_user_2',
+          files: [currentTurnFile],
+        },
+      ],
+      currentUserTurn: {
+        role: 'user',
+        content: 'CONFIRMED_OCR_SENTINEL_7c2a',
+        messageId: 'message_user_2',
+        files: [currentTurnFile],
+      },
+    });
+
+    expect(prepared.activeHistory.map((message) => message.messageId)).toEqual([
+      'message_assistant_1',
+    ]);
+    expect(prepared.currentUserTurn).toEqual(
+      expect.objectContaining({
+        role: 'user',
+        messageId: 'message_user_2',
+        files: [currentTurnFile],
+      }),
+    );
+  });
+
+  it('serializes LibreChat-native message references without repeating history content', async () => {
+    const dependencies = createRuntimeDependencies();
+    const context = await buildDefaultSteelGlobalAgentContext({
+      conversation: {
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        activeHistory: [
+          {
+            role: 'assistant',
+            content: 'OCR_TABLE_SENTINEL_9f5c',
+            messageId: 'message_assistant_1',
+          },
+          {
+            role: 'user',
+            content: 'CONFIRMED_OCR_SENTINEL_7c2a',
+            messageId: 'message_user_2',
+          },
+        ],
+        currentUserTurn: {
+          role: 'user',
+          content: 'CONFIRMED_OCR_SENTINEL_7c2a',
+          messageId: 'message_user_2',
+        },
+      },
+      dependencies,
+    });
+    const serialized = JSON.parse(serializeSteelRuntimeContext(context.runtimeContext));
+
+    expect(serialized.conversation.activeHistory).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        messageId: 'message_assistant_1',
+        contentSource: 'provider_messages',
+      }),
+    ]);
+    expect(serialized.conversation.activeHistory[0]).not.toHaveProperty('content');
+    expect(serialized.conversation.currentUserTurn).toEqual(
+      expect.objectContaining({
+        role: 'user',
+        messageId: 'message_user_2',
+        contentSource: 'provider_messages',
+      }),
+    );
+    expect(serialized.conversation.currentUserTurn).not.toHaveProperty('content');
+  });
+
   it('builds instruction prefix slots in the fixed native Steel order', async () => {
     const { context } = await buildFixtureContext();
     const sections = context.instructionPrefixSections;
@@ -265,5 +375,84 @@ describe('Steel native context adapter', () => {
     expect(context.attachmentReferences).toEqual([fileReference]);
     expect(Object.keys(context.attachmentReferences[0])).not.toContain('data');
     expect(context.runtimeContext.toolPolicy.aiVisibleTools).toContain('run_file_ocr');
+  });
+
+  it('builds default native context with injected dependencies for JS callers', async () => {
+    const dependencies = createRuntimeDependencies();
+    const context = await buildDefaultSteelGlobalAgentContext({
+      conversation: {
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        activeHistory: [
+          {
+            role: 'user',
+            content: '請依表單報價',
+            messageId: 'message_1',
+          },
+        ],
+        currentUserTurn: {
+          role: 'user',
+          content: '請依表單報價',
+          messageId: 'message_1',
+        },
+      },
+      dependencies,
+    });
+
+    expect(context.instructionPrefix).toContain('Steel Tool Policy');
+    expect(context.runtimeContextText).toContain('Steel Native Context Metadata');
+    expect(context.metadata).toEqual(
+      expect.objectContaining({
+        globalApplied: true,
+        contextMode: 'compact_workbook',
+      }),
+    );
+    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith({ includeOcrRules: true });
+  });
+
+  it('fails open when the Steel rules database is unavailable during global context injection', async () => {
+    const failingClient = {
+      query: jest.fn(async () => {
+        throw new Error('relation "steel.quote_defaults" does not exist');
+      }),
+    } as unknown as SteelRepositoryClient;
+    const dependencies = createSteelNativeRuntimeContextDependencies({
+      conversationId: 'conversation_1',
+      runtimeRulesClient: failingClient,
+      createOutputSheetMemoryReader: () => ({
+        readOutputSheetMemory: jest.fn(async () => createEmptySteelOutputSheetMemorySnapshot()),
+      }),
+    });
+
+    const context = await buildDefaultSteelGlobalAgentContext({
+      conversation: {
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        activeHistory: [
+          {
+            role: 'user',
+            content: '一般聊天',
+            messageId: 'message_1',
+          },
+        ],
+      },
+      dependencies,
+    });
+
+    expect(failingClient.query).toHaveBeenCalled();
+    expect(context.metadata).toEqual(
+      expect.objectContaining({
+        globalApplied: true,
+        contextMode: 'compact_workbook',
+      }),
+    );
+    expect(context.runtimeContext.rules.agentRules).toHaveLength(0);
+    expect(context.runtimeContext.rules.outputRules).toHaveLength(0);
+    expect(context.runtimeContext.rules.otherGlobalRules.ocrRules ?? []).toHaveLength(0);
+    expect(context.runtimeContext.rules.steelGlobalRules.instructionPackets).toHaveLength(0);
+    expect(context.runtimeContext.rules.steelGlobalRules.quoteDefaults).toHaveLength(0);
+    expect(context.runtimeContext.rules.steelGlobalRules.quoteRules).toHaveLength(0);
+    expect(context.runtimeContext.toolPolicy.aiVisibleTools).toContain('run_file_ocr');
+    expect(context.instructionPrefix).toContain('Steel Tool Policy');
   });
 });

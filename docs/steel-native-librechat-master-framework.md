@@ -34,7 +34,13 @@ That means:
 - Users stay in the normal LibreChat chat interface.
 - LibreChat remains responsible for chat history, message persistence, regenerate/edit, files, user Memory, skills, MCP, tools, presets, model selector, SSE, abort/resume, permissions, and billing.
 - Steel adds rules, runtime context, tools, MCP, skills, Markdown persistence, and provider policy on top of those modules.
+- Normal LibreChat chat must support OpenAI OAuth API through a native provider adapter when that provider mode is selected. This support belongs in the native chat path and must preserve LibreChat history, stream, abort/resume, files, tools, permissions, and Steel context.
 - Steel rules, tools, and framework behavior apply globally to native LibreChat agent execution; Phase 1 must not require a model-spec opt-in marker for Steel correctness.
+- All Steel-related native modules are globally open by default. Do not add
+  Steel-specific role, capability, or permission gates for Steel rules, context,
+  quote/OCR behavior, or read-only AI tools. Existing LibreChat permissions
+  still own platform resources such as files, MCP auth, provider/model config,
+  and admin settings.
 - Non-steel and non-quote conversations still receive the global Steel framework; the AI decides from the user request whether the Steel quoting workflow is relevant. Do not add code that tries to classify and skip Steel context for ordinary chat.
 - Do not add `librechat.yaml` Steel enablement or inclusion switches such as `steel.enabled`, `includeRules`, or `includeTools` for the native framework. Existing LibreChat YAML configuration, such as model specs, endpoint config, and permissions, still applies through the normal LibreChat config path. Steel OCR/file behavior should come from reviewed Steel rules, not duplicated OCR policy in `fileAnalysis.instructions`.
 - Steel rules must be loaded at the top of context.
@@ -49,7 +55,7 @@ These conclusions are locked from the current audit and must be treated as imple
 1. Native LibreChat agent runs reconstruct context from LibreChat state. `BaseClient` / `AgentClient` load ordered Mongo `Message` history, apply LibreChat Memory, agent instructions, MCP instructions, files/RAG, skills, tools, and summarization/pruning as needed, then send the resulting messages to the model. Do not design Steel correctness around provider-only hidden history.
 2. Native `useResponsesApi: true` is currently a Responses transport/model-shape switch, not a complete provider-state continuation flow. LangChain can pass a top-level `previous_response_id` call option into `this.client.responses.create(...)`, but native LibreChat does not currently persist an OpenAI `response.id` and inject it into the next run. Treat current native Responses behavior as `openai_responses_reconstructed`.
 3. `openai_responses_previous_response_id` is a future optimization mode only. It requires storing the provider `response.id`, resolving it by LibreChat `conversationId/messageId`, injecting it as a top-level call option, and proving fallback to reconstructed context. OpenAI's conversation-state guide still counts previous-turn tokens as input tokens, so do not describe it as a free token or KV-cache bypass.
-4. The external `/api/agents/v1/responses` route is a LibreChat Open Responses-compatible facade, not a direct OpenAI SDK proxy. Its current continuation behavior validates `previous_response_id` as a LibreChat conversation id, loads Mongo messages, merges current input, and resends reconstructed history. The generated `resp_*` response id is not yet a reliable continuation id until a response-id-to-conversation-id resolver or explicit continuation-id contract is implemented.
+4. The external `/api/agents/v1/responses` route is a LibreChat Open Responses-compatible facade, not a direct OpenAI SDK proxy. Continuation remains reconstructed from LibreChat Mongo history. Generated `resp_*` response ids are resolved through the saved assistant `Message.messageId` back to the LibreChat `conversationId`; direct conversation-id continuation remains supported.
 5. Steel-enabled Open Responses is always durable and LibreChat-managed, equivalent to `store:true`. There is no supported Steel `store:false` state path.
 6. LibreChat user Memory is separate from Steel structured quote/workbook state. Steel may reuse existing services whose code names include `Memory`, but user-facing design and prompts must call that Steel structured state, not LibreChat Memory.
 7. Steel context order is stable-to-dynamic: Steel rules, Steel tool policy, LibreChat agent instructions, MCP instructions, stable skills, LibreChat Memory, chat history, Steel runtime data, current-turn skill primes, current user message. Steel rules must not be appended only through `sharedRunContext`.
@@ -78,21 +84,21 @@ Use this table to find the design owner and implementation files for each native
 | Implementation plan | Steel native implementation plan | `docs/plans/2026-06-24-steel-global-native-librechat-integration.md` | Phase plan and testing checklist; must link back here |
 | Normal user workflow | Native LibreChat chat | `api/server/controllers/agents/client.js`, `api/server/controllers/agents/request.js`, `api/app/clients/BaseClient.js` | Users should stay in normal LibreChat UI |
 | Agent initialization | Native agent endpoint setup | `api/server/services/Endpoints/agents/initialize.js`, `packages/api/src/agents/initialize.ts` | Load agents, tools, MCP, skills, permissions, model config |
-| Stable context injection | Agent context helpers | `packages/api/src/agents/context.ts`, planned `packages/api/src/steel/native/context.ts` | Steel rules and tool policy must prepend before base agent instructions |
-| Dynamic runtime context | Steel runtime adapter | `packages/api/src/steel/runtime/context.ts`, planned `packages/api/src/steel/native/context.ts` | Runtime workbook/file/quote state belongs near the tail |
+| Stable context injection | Agent context helpers | `packages/api/src/agents/context.ts`, `packages/api/src/steel/native/context.ts` | Steel rules and tool policy must prepend before base agent instructions |
+| Dynamic runtime context | Steel runtime adapter | `packages/api/src/steel/runtime/context.ts`, `packages/api/src/steel/native/context.ts` | Runtime workbook/file/quote state belongs near the tail |
 | LibreChat history | Native message persistence | `api/app/clients/BaseClient.js`, data-schemas message/conversation methods | LibreChat chat history remains canonical |
 | LibreChat user Memory | Existing Memory module | `api/server/controllers/agents/client.js`, `packages/api/src/agents/memory.ts` | Keep separate from Steel structured quote/workbook state |
-| Steel structured state | Steel state services keyed to LibreChat ids | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/history/service.ts`, planned `packages/api/src/steel/native/context.ts` | Existing code names may say memory, but product term is structured state |
-| Markdown auto parse/save/update/overwrite | Steel Markdown persistence adapter | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/history/service.ts`, `packages/data-schemas/src/schema/steel/workingOrderMemory.ts`, planned `packages/api/src/steel/native/markdown.ts` | Parse final assistant Markdown and tool results into Steel structured state; full system-order tables overwrite active snapshots, row-change tables patch active rows |
-| Tool registry merge | Native tool loading plus Steel adapter | `api/server/services/ToolService.js`, planned `packages/api/src/steel/native/tools.ts`, `packages/api/src/steel/tools/registry.ts`, `packages/api/src/steel/tools/execute.ts` | Additive merge only; do not replace user tools/MCP/actions |
+| Steel structured state | Steel state services keyed to LibreChat ids | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/history/service.ts`, `packages/api/src/steel/native/context.ts`, `packages/api/src/steel/native/markdown.ts` | Existing code names may say memory, but product term is structured state |
+| Markdown auto parse/save/update/overwrite | Steel Markdown persistence adapter | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/history/service.ts`, `packages/data-schemas/src/schema/steel/workingOrderMemory.ts`, `packages/api/src/steel/native/markdown.ts`, `api/app/clients/BaseClient.js`, `api/server/services/Endpoints/agents/initialize.js` | Parse final assistant Markdown and tool results into current Steel structured state; full sheet tables replace the current workbook/quote sheets, while partial row-change tables are evidence/manual-review data rather than backend row patches |
+| Tool registry merge | Native tool loading plus Steel adapter | `api/server/services/ToolService.js`, `packages/api/src/steel/native/tools.ts`, `packages/api/src/steel/tools/registry.ts`, `packages/api/src/steel/tools/execute.ts` | Additive merge only; do not replace user tools/MCP/actions |
 | MCP integration | Native MCP services plus Steel adapter | `api/server/services/MCP.js`, `api/server/services/Tools/mcp.js`, planned `packages/api/src/steel/native/mcp.ts` | Preserve existing MCP auth/OAuth flow |
 | Skills integration | Native skill catalog/primes plus Steel adapter | `packages/api/src/agents/skills.ts`, planned `packages/api/src/steel/native/skills.ts` | Preserve manual user skills and active/deactivated state |
-| Native event mapping | LibreChat run events plus Steel adapter | `api/server/controllers/agents/callbacks.js`, `packages/api/src/stream/GenerationJobManager.ts`, planned `packages/api/src/steel/native/events.ts` | Map Steel progress/tool/state events into native stream surfaces |
-| File/OCR bridge | Native file handling plus Steel OCR tools | `packages/api/src/files/encode/document.ts`, `packages/api/src/steel/vision/service.ts`, planned `packages/api/src/steel/native/context.ts` | Use LibreChat file records and `fileAnalysis.instructions`; route OCR/table extraction through `run_file_ocr` backed by PaddleOCR MCP |
-| Provider policy | Steel provider resolver | `packages/api/src/endpoints/openai/llm.ts`, `packages/api/src/steel/ai/provider.ts`, planned `packages/api/src/steel/native/provider.ts` | OAuth stays stateless; official OpenAI Responses state is optimization only |
-| Agents API Chat Completions ingress | Remote agents OpenAI-compatible route | `api/server/routes/agents/openai.js`, `packages/api/src/agents/openai/service.ts` | Must receive same Steel global behavior as UI path |
-| Agents API Open Responses ingress | Remote agents Open Responses route | `api/server/controllers/agents/responses.js`, `packages/api/src/agents/responses/*` | Parallel path; needs its own thin Steel hook |
-| Permissions/config | Existing LibreChat permissions/config | `packages/data-provider/src/config.ts`, `packages/api/src/app/permissions.ts`, `api/server/routes/agents/middleware.js` | Steel must not bypass role/resource checks |
+| Native event mapping | LibreChat run events plus Steel adapter | `packages/api/src/steel/native/events.ts`, `api/server/services/Endpoints/agents/initialize.js`, `api/server/services/ToolService.js`, `packages/api/src/stream/GenerationJobManager.ts`, `client/src/hooks/SSE/useSteelEventHandler.ts`, `client/src/store/steel.ts`, `client/src/components/Chat/Messages/Content/SteelActivity.tsx` | Map persisted Steel parse/save/tool capture results into native `steel_event` stream envelopes and live assistant-message activity UI; live provider/OCR progress remains a later mapping slice |
+| File/OCR bridge | Native file handling plus Steel OCR tools | `packages/api/src/files/encode/document.ts`, `packages/api/src/agents/responses/service.ts`, `packages/api/src/steel/vision/service.ts`, `packages/api/src/steel/native/context.ts`, `api/server/controllers/agents/client.js`, `api/server/controllers/agents/responses.js` | Use LibreChat file records and reviewed Steel OCR/file rules; route OCR/table extraction through `run_file_ocr` backed by PaddleOCR MCP |
+| Provider policy | Steel native provider adapter and resolver | `packages/api/src/endpoints/openai/llm.ts`, `packages/api/src/steel/ai/provider.ts`, `packages/api/src/steel/native/provider.ts`, `packages/api/src/steel/native/oauth.ts`, `packages/api/src/agents/run.ts`, `api/server/services/Endpoints/agents/initialize.js` | Native chat must support OpenAI OAuth API in stateless reconstructed mode; official OpenAI Responses state is optimization only |
+| Agents API Chat Completions ingress | Remote agents OpenAI-compatible route | `api/server/routes/agents/openai.js`, `api/server/controllers/agents/openai.js`, `packages/api/src/agents/openai/service.ts`, `packages/api/src/steel/native/agents.ts` | Controller path builds `agents_chat_completions` Steel context and applies it to primary/handoff agents before `createRun`; keep exported service parity explicit if that service becomes the mounted route |
+| Agents API Open Responses ingress | Remote agents Open Responses route | `api/server/controllers/agents/responses.js`, `packages/api/src/agents/responses/*` | Builds `open_responses` Steel context from reconstructed previous/current messages and current-turn `input_file` references, resolves generated `resp_*` ids back to LibreChat conversations, applies Steel prefix/runtime context before `createRun`, and runs the post-save Steel Markdown hook |
+| Permissions/config | Existing LibreChat permissions/config | `packages/data-provider/src/config.ts`, `packages/api/src/app/permissions.ts`, `api/server/routes/agents/middleware.js` | Steel modules/tools are globally open; preserve existing checks only for LibreChat-owned resources such as files, MCP auth, provider/model config, and admin settings |
 | Dev-only workflow probe | Standalone Steel OAuth chat | `client/src/routes/SteelOAuthChat.tsx`, `api/server/routes/steel/index.js`, `packages/api/src/steel/handlers.ts`, `packages/api/src/steel/ai/provider.ts` | Development smoke/activity-log surface only |
 
 ## Context Ordering Contract
@@ -151,6 +157,7 @@ The adapter should expose these functions:
 - `createSteelNativeToolExecutor(input)`
 - `captureSteelNativeMarkdownState(input)`
 - `mapSteelRuntimeEventToLibreChatEvent(input)`
+- `buildSteelNativeEventEnvelopes(input)`
 
 Keep `/api` changes thin. JS files should call TypeScript exports from `@librechat/api` or `packages/api`, not implement Steel business logic.
 
@@ -208,14 +215,20 @@ The standalone Steel route already has the core pieces:
 
 - `packages/api/src/steel/memory/service.ts` parses final assistant Markdown tables through `captureAssistantFinalMarkdown`.
 - `packages/api/src/steel/memory/service.ts` captures successful Steel tool results through `captureToolResult`.
-- `packages/data-schemas/src/schema/steel/workingOrderMemory.ts` stores active and superseded Steel structured state.
+- `packages/data-schemas/src/schema/steel/workingOrderMemory.ts` stores current Steel structured state for the active conversation dataset.
+- `packages/api/src/steel/runtime/context.ts` reuses active
+  `derivedIndex.ocrExtracts` from Steel structured state as prior file evidence
+  for follow-up turns, keeping OCR/file rules available without copying
+  attachment bytes into prompt context.
 - `packages/api/src/steel/history/service.ts` rolls Steel turns and structured state back when an edited user message supersedes later turns.
 - `packages/api/src/steel/handlers.ts` currently wires this into `/steel/oauth-chat` and emits `parse_status` / `memory_saved` events.
 - `packages/data-provider/src/steel/ai.ts` defines the current standalone stream event shapes for parse/save status.
+- `packages/api/src/steel/native/events.ts` maps native capture results into
+  `steel_event` envelopes for LibreChat native streams.
 
 ### Native Requirement
 
-Native LibreChat integration must add `packages/api/src/steel/native/markdown.ts` as the adapter that calls those existing services from native lifecycle hooks.
+Native LibreChat integration uses `packages/api/src/steel/native/markdown.ts` as the adapter that calls those existing services from native lifecycle hooks.
 
 It must run for:
 
@@ -231,10 +244,10 @@ The Markdown persistence adapter must:
 
 1. Parse final assistant Markdown tables after final assistant content is known.
 2. Save parsed working-order rows, customer facts, calculation facts, row changes, source refs, and tool evidence into Steel structured state.
-3. Treat a full system-order table as an overwrite snapshot: mark prior active `working_order_row` entries for the conversation as `superseded`, then insert the current rows.
-4. Treat a row-change table as a patch update: mark only affected active rows as `superseded`, merge patch payloads with the latest active row state, then insert merged rows.
+3. Treat an emitted full sheet table as the current sheet replacement: delete the prior current rows for that conversation/sheet and insert the latest complete rows.
+4. Treat a row-change or incomplete table as calculation/manual-review evidence. Do not merge it into current workbook rows; the assistant must output complete updated tables when it wants workbook rows changed.
 5. Save successful Steel tool result facts through the same structured state writer.
-6. On edit/regenerate, call the Steel history rollback path so turns and structured state after the edited boundary are marked `superseded` and excluded from active context replay.
+6. On edit/regenerate, call the Steel history rollback path for chat turn replay. Structured workbook/OCR state remains a current conversation dataset, not a versioned history exposed to the AI.
 7. Emit native LibreChat run-step/custom events for parse/save status, but do not persist internal activity as visible assistant message text.
 8. Keep all records keyed to LibreChat `conversationId`, `messageId`, `requestId`, `turnIndex`, and user scope when available.
 
@@ -245,9 +258,28 @@ The adapter belongs at the assistant-message persistence boundary: after final a
 Recommended hook points:
 
 - Native UI chat path: add a thin optional lifecycle hook around `api/app/clients/BaseClient.js` `sendMessage()` where `responseMessage.databasePromise = this.saveMessageToDatabase(responseMessage, ...)` is assigned. The hook should run after that assistant `databasePromise` resolves, because the response message has final `messageId`, `conversationId`, parent linkage, content/text, metadata, attachments, and conversation save result. Keep Steel logic out of `BaseClient`; wire the hook from the native Steel adapter through Agent initialization/options.
+- Current native UI implementation: `BaseClient.withResponseMessageSavedHook()` preserves the original `databasePromise` contract and `api/server/services/Endpoints/agents/initialize.js` wires `captureSteelNativeAssistantMarkdown()` with a Mongo-backed Steel writer.
 - `api/server/controllers/agents/request.js`: do not make the controller final SSE event the primary capture point. In both resumable and legacy paths, the controller awaits `response.databasePromise` before sending the normal final event, so the post-save hook above runs earlier and avoids duplicating capture logic in the controller.
-- `api/server/controllers/agents/responses.js`: this route does not use `BaseClient.sendMessage()`. Steel-enabled Open Responses must be treated as durable (`store:true`) before execution. Add a separate thin hook inside `saveResponseOutput()` after `db.saveMessage` succeeds, using the already extracted `responseText`, `conversationId`, and `responseId`. Run it in both streaming and non-streaming stored branches.
-- Native tool execution callback path: capture successful Steel tool result facts immediately through the same structured state writer; this complements final Markdown parsing and should not wait for assistant Markdown.
+- `api/server/controllers/agents/responses.js`: this route does not use `BaseClient.sendMessage()`. Steel-enabled Open Responses are normalized to durable mode (`store:true`) before the response context is created. Current implementation saves auditable Steel metadata under `metadata.steel.native` on the assistant message, then calls `captureSteelNativeResponseOutput()` inside `saveResponseOutput()` after `db.saveMessage` succeeds, using `conversationId`, `responseId`, and request-scoped native Steel turn metadata. Both streaming and non-streaming stored branches call `saveResponseOutput()`.
+- Native tool execution callback path: `api/server/services/ToolService.js` captures successful Steel tool result facts through `captureSteelNativeToolResult()` immediately after `executeSteelTool()` succeeds; this complements final Markdown parsing and does not wait for assistant Markdown.
+- Current native event mapping: `api/server/services/Endpoints/agents/initialize.js`
+  emits `steel_event` envelopes for native UI assistant Markdown capture
+  results, and `api/server/services/ToolService.js` emits `steel_event`
+  envelopes for native Steel tool-result capture. The current envelope payloads
+  use `parse_status` for Markdown parse status and `memory_saved` for persisted
+  structured state counts.
+- Current native frontend handling: `client/src/hooks/SSE/useSSE.ts` and
+  `client/src/hooks/SSE/useResumableSSE.ts` route `steel_event` envelopes into
+  `client/src/hooks/SSE/useSteelEventHandler.ts`. The handler appends
+  deduplicated live activity to `client/src/store/steel.ts`, and
+  `client/src/components/Chat/Messages/Content/SteelActivity.tsx` renders the
+  assistant-message parse/save status without writing internal activity into
+  persisted assistant text or content parts.
+- Open Responses protocol guard: `api/server/controllers/agents/responses.js`
+  runs durable Steel Markdown capture after `db.saveMessage`, but it does not
+  currently inject custom `steel_event` SSE into the Open Responses-compatible
+  stream. Add a LibreChat-owned side channel before exposing custom Steel events
+  there.
 
 Rejected hook points:
 
@@ -267,13 +299,24 @@ LibreChat chat history remains the source of truth in both modes.
 
 ### OAuth Stateless Mode
 
-For Open OAuth API:
+For OpenAI OAuth API in normal LibreChat chat:
 
+- Route through the native provider adapter in `packages/api/src/steel/native/provider.ts`, not through `/steel/oauth-chat`.
 - Keep `responsesState: false`.
 - Do not rely on provider-side `previous_response_id`.
 - Reconstruct full provider prompt from LibreChat history plus Steel global context every turn.
+- Preserve native LibreChat stream, abort/resume, tools, files/vision inputs, permissions, and message persistence.
 - Persist final chat messages through LibreChat `Message` records.
 - Persist Steel structured quote/workbook state through Steel services keyed by LibreChat `conversationId` and `messageId`.
+- Track enough metadata to audit the mode, including `steel.providerStateMode = openai_oauth_stateless`.
+
+Current native implementation status:
+
+- `packages/api/src/steel/native/provider.ts` resolves per-turn provider policy for OpenAI OAuth stateless mode, API-key Responses reconstructed mode, and the future previous-response-id mode.
+- `api/server/services/Endpoints/agents/initialize.js` applies that policy to native agent model parameters and stores provider policy metadata on assistant messages under `metadata.steel.provider`.
+- `packages/api/src/steel/native/oauth.ts` wraps `openai-oauth-provider` as a native LangChain-compatible chat model for standard native Agent runs. It keeps `responsesState:false`, converts LibreChat/LangChain messages into AI SDK v3 prompts, preserves image/PDF file parts, maps provider tool calls back to `AIMessageChunk.tool_calls`, streams text deltas, and reports usage/response metadata.
+- `packages/api/src/agents/run.ts` injects that OAuth model through the existing Graph `overrideModel` seam for standard single-agent native chat runs whose provider is `openai_oauth_responses`. The override model resolves tools from the live Graph agent context on every invoke/stream so native tool discovery and schema-only Steel tools stay available.
+- Multi-agent/per-agent OAuth model factory support is still a later provider-factory seam; do not treat multi-agent OAuth as complete until `@librechat/agents` exposes a per-agent model adapter or equivalent tested hook.
 
 ### OpenAI Responses Stateful Mode
 
@@ -334,7 +377,9 @@ LibreChat's current route implementation behaves differently from a pure provide
 1. It generates a new `responseId` with `generateResponseId()`.
 2. It stores that generated `responseId` in the response context and later uses it as the saved assistant `messageId`.
 3. If `request.previous_response_id` exists, it validates ownership by calling `db.getConvo(userId, request.previous_response_id)`.
-4. It sets `conversationId = request.previous_response_id ?? uuidv4()`.
+4. It resolves `request.previous_response_id` as either a LibreChat
+   `conversationId` or a saved assistant `resp_*` message id, then uses the
+   resolved LibreChat `conversationId`.
 5. It loads previous messages from Mongo with `db.getMessages({ conversationId, user })`.
 6. It converts current `request.input` into internal messages.
 7. It merges `allMessages = [...previousMessages, ...inputMessages]`.
@@ -342,20 +387,26 @@ LibreChat's current route implementation behaves differently from a pure provide
 
 Therefore the current LibreChat `/responses` route reconstructs and resends LibreChat DB history on continuation. It does not rely on provider-side `previous_response_id` alone, and it does not only send the newest user message for follow-up turns.
 
-Current ID mapping caveat:
+Current ID mapping:
 
 - The response body `id` is the generated `resp_*` `responseId`.
 - The saved assistant message id is also that `responseId`.
-- The LibreChat conversation id is a new UUID on the first turn, or `request.previous_response_id` on continuation.
-- `GET /v1/responses/:id` currently treats `:id` as a LibreChat `conversationId`; the code comment says response id may also work, but the implementation first calls `db.getConvo(userId, id)` and then loads messages by `conversationId: id`.
-- Existing tests acknowledge that retrieving by the returned `resp_*` id may return 404 because storage is keyed by conversation id.
+- The LibreChat conversation id is a new UUID on the first turn, a direct
+  conversation id on legacy continuation, or the `conversationId` resolved from
+  the saved assistant message when `previous_response_id` is a generated
+  `resp_*`.
+- `GET /v1/responses/:id` resolves direct conversation ids and generated
+  `resp_*` ids through the same resolver.
 
-Steel implication: do not assume the current LibreChat `/responses` route can continue with `previous_response_id = prior response.id` until this mapping is normalized. For Steel-enabled Open Responses, either add a response-id-to-conversation-id resolver or explicitly return/use a durable continuation id while keeping Open Responses response ids stable for spec output.
+Steel implication: continuation remains LibreChat-reconstructed, but callers may
+now pass the prior response body's generated `resp_*` id and the route resolves
+it to the durable LibreChat conversation.
 
 Steel-enabled Open Responses must use LibreChat-managed durable history:
 
 - Treat Steel-enabled requests as `store:true`.
-- Preserve DB-backed continuation loading for the route, but fix or normalize the `previous_response_id` mapping before exposing it as an OpenResponses-compatible response-id chain.
+- Preserve DB-backed continuation loading for the route. The generated
+  `resp_*` resolver is implemented through the saved assistant message id.
 - Key Steel structured state to both the LibreChat `conversationId` and saved assistant `responseId`.
 - Keep the current route as a reconstructed-history path unless a later provider-state resolver explicitly proves that provider-side history is safe and compatible.
 - Do not design a Steel `store:false` branch; non-stored Responses calls are outside the supported Steel workflow.
@@ -381,23 +432,24 @@ Main missing implementation modules:
 
 | Scenario | Expected result |
 |---|---|
-| Normal LibreChat chat, Steel disabled | No Steel rules/tools/context; existing behavior unchanged |
+| Ordinary non-quote LibreChat chat | Steel global framework is present; the AI does not force the quote workflow unless relevant |
 | Native LibreChat chat, Steel enabled | Steel rules appear first; user Memory/skills/MCP/tools still appear |
 | User manually invokes a skill | Manual skill preserved; Steel additions do not suppress it |
 | User has MCP server selected | MCP auth/instructions/tools still work |
-| OAuth provider selected | Stateless reconstructed context; no provider `previous_response_id` dependency |
+| OpenAI OAuth API provider selected in native chat | Stateless reconstructed context; no provider `previous_response_id` dependency; native stream, abort, files/vision, tools, permissions, and persistence still work |
 | OpenAI API key Responses selected | Responses API default on for Steel spec; provider state used only when safe |
 | Provider state missing | Fallback to reconstructed context with metadata |
 | PDF/image turn | FileAnalysis instructions and OCR/file rules are present; native provider vision still receives permitted attachments where supported |
 | Tool call writes quote data | Steel structured state captures tool evidence and output sheet state |
 | Assistant emits full system-order Markdown table | Active working-order rows are overwritten by a new snapshot |
-| Assistant emits row-change Markdown table | Only affected active rows are superseded and replaced by merged rows |
+| Assistant emits row-change Markdown table | Backend does not patch workbook rows; it stores the table as calculation/manual-review evidence unless the assistant emits a complete sheet |
 | Edit/regenerate | Steel structured state rolls back to the edited message boundary |
 | External Responses route | Receives the same Steel global behavior as native UI chat |
 
 ## Guardrails
 
-- Default to `compact_workbook`; use `read_active_workbook` for row details.
+- Default to `compact_workbook`; use `read_markdown` only when chat history no
+  longer contains the complete Markdown-derived workbook or OCR data.
 - Namespace or deterministically reject duplicate Steel/user tool names before the model sees them.
 - Merge with existing settings; never replace whole agent/tool/skill arrays.
 - Keep LibreChat user Memory separate from Steel structured quote/workbook state and reviewed Steel defaults.
@@ -413,5 +465,6 @@ The integration is done when a user can use the normal LibreChat interface and g
 - Steel tools/MCP/skills are additive.
 - LibreChat user Memory, manual skills, MCP, files, settings, history, edit/regenerate, SSE, abort/resume, and message persistence still work.
 - OAuth stateless and OpenAI API-key Responses modes both have explicit tested context behavior.
+- Normal LibreChat chat can run through OpenAI OAuth API without using `/steel/oauth-chat` as the product path.
 - Steel structured quote/workbook state and Markdown persistence are keyed to native LibreChat conversation/message lifecycle.
 - `/steel/oauth-chat` remains dev-only and is no longer required for normal Steel work.

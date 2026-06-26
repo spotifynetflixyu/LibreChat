@@ -266,7 +266,7 @@ function buildRules(repoRoot) {
           'search_customers',
           'search_price_candidates',
           'run_file_ocr',
-          'read_active_workbook',
+          'read_markdown',
         ],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
@@ -305,7 +305,7 @@ function buildRules(repoRoot) {
           'search_customers',
           'search_price_candidates',
           'run_file_ocr',
-          'read_active_workbook',
+          'read_markdown',
         ],
       },
       outputPolicy: {

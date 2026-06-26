@@ -21,6 +21,51 @@ const mockBuildSkillPrimedIdsByName = jest.fn((manualSkillPrimes, alwaysApplySki
   }
   return Object.keys(primed).length > 0 ? primed : undefined;
 });
+const mockSteelNativeContext = {
+  instructionPrefix: 'Steel global prefix',
+  runtimeContextText: 'Steel runtime tail',
+  metadata: {
+    nativeContextVersion: 1,
+    globalApplied: true,
+  },
+};
+const mockBuildDefaultSteelGlobalAgentContext = jest
+  .fn()
+  .mockResolvedValue(mockSteelNativeContext);
+const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
+  const currentUserTurn = conversation.currentUserTurn
+    ? { ...conversation.currentUserTurn, content: '' }
+    : undefined;
+  return {
+    ...conversation,
+    activeHistory: conversation.activeHistory
+      .filter((message) => {
+        if (!conversation.currentUserTurn) {
+          return true;
+        }
+        if (message.messageId && conversation.currentUserTurn.messageId) {
+          return message.messageId !== conversation.currentUserTurn.messageId;
+        }
+        return (
+          message.role !== conversation.currentUserTurn.role ||
+          message.content !== conversation.currentUserTurn.content
+        );
+      })
+      .map((message) => ({ ...message, content: '' })),
+    ...(currentUserTurn ? { currentUserTurn } : {}),
+  };
+});
+const mockApplySteelNativeGlobalContextToAgentConfigs = jest.fn(({ agents, context }) => {
+  for (const agent of agents) {
+    agent.instructions = [context.instructionPrefix, agent.instructions]
+      .filter(Boolean)
+      .join('\n\n');
+    agent.additional_instructions = [agent.additional_instructions, context.runtimeContextText]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return agents;
+});
 const mockEnrichWithSkillConfigurable = jest.fn((result) => result);
 const mockBuildAgentToolContext = jest.fn(({ agent, config }) => ({
   agent,
@@ -105,6 +150,9 @@ jest.mock('@librechat/api', () => ({
   createErrorResponse: jest.fn(),
   getTransactionsConfig: mockGetTransactionsConfig,
   recordCollectedUsage: mockRecordCollectedUsage,
+  buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
+  prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
+  applySteelNativeGlobalContextToAgentConfigs: mockApplySteelNativeGlobalContextToAgentConfigs,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
   extractManualSkills: jest.fn().mockReturnValue(undefined),
   injectSkillPrimes: jest.fn().mockReturnValue({
@@ -426,6 +474,67 @@ describe('OpenAIChatCompletionController', () => {
     });
   });
 
+  describe('Steel native context', () => {
+    it('applies Steel global context to OpenAI-compatible run agents before createRun', async () => {
+      const {
+        createRun,
+        validateRequest,
+        initializeAgent,
+        buildDefaultSteelGlobalAgentContext,
+        applySteelNativeGlobalContextToAgentConfigs,
+      } = require('@librechat/api');
+      const primaryConfig = {
+        id: 'agent-123',
+        model: 'gpt-4',
+        model_parameters: {},
+        toolRegistry: new Map(),
+        edges: [],
+        instructions: 'Base instructions',
+        additional_instructions: 'Existing dynamic context',
+      };
+      initializeAgent.mockResolvedValueOnce(primaryConfig);
+      validateRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          messages: [{ role: 'user', content: 'Hello' }],
+          stream: false,
+        },
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          renderProfile: 'agents_chat_completions',
+          conversation: expect.objectContaining({
+	            conversationId: 'mock-nanoid-123',
+	            requestId: 'chatcmpl-mock-nanoid-123',
+	            activeHistory: [],
+	            currentUserTurn: { role: 'user', content: '' },
+	          }),
+        }),
+      );
+      expect(applySteelNativeGlobalContextToAgentConfigs).toHaveBeenCalledWith({
+        agents: [primaryConfig],
+        context: mockSteelNativeContext,
+      });
+
+      const createRunArgs = createRun.mock.calls.at(-1)[0];
+      expect(createRunArgs.agents[0].instructions).toBe(
+        'Steel global prefix\n\nBase instructions',
+      );
+      expect(createRunArgs.agents[0].additional_instructions).toBe(
+        'Existing dynamic context\n\nSteel runtime tail',
+      );
+      expect(req.steelNativeContext).toMatchObject({
+        conversationId: 'mock-nanoid-123',
+        requestId: 'chatcmpl-mock-nanoid-123',
+        assistantTurnIndex: 1,
+        memoryCheckpointTurnIndex: 0,
+      });
+    });
+  });
+
   describe('sub-agent skill priming', () => {
     it('passes the sub-agent primed skill IDs into tool execution', async () => {
       const {
@@ -478,6 +587,13 @@ describe('OpenAIChatCompletionController', () => {
       });
 
       await OpenAIChatCompletionController(req, res);
+
+      const steelContextAgents =
+        mockApplySteelNativeGlobalContextToAgentConfigs.mock.calls.at(-1)[0].agents;
+      expect(steelContextAgents).toEqual([
+        expect.objectContaining({ id: 'agent-123' }),
+        subConfig,
+      ]);
 
       const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
       await toolExecuteOptions.loadTools(['read_file'], 'agent-sub');

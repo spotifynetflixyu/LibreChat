@@ -115,21 +115,38 @@ describe('convertInputToMessages', () => {
   });
 
   // ── input_file content blocks ──────────────────────────────────────
-  it('converts input_file blocks to text placeholders', () => {
+  it('preserves input_file blocks so Responses file inputs reach the model', () => {
     const input: InputItem[] = [
       {
         type: 'message',
         role: 'user',
-        content: [{ type: 'input_file', filename: 'report.pdf', file_id: 'f_123' }],
+        content: [
+          {
+            type: 'input_file',
+            filename: 'report.pdf',
+            file_id: 'f_123',
+            file_data: 'data:application/pdf;base64,abc123',
+          },
+        ],
       },
     ];
     const result = convertInputToMessages(input);
     expect(result).toEqual([
-      { role: 'user', content: [{ type: 'text', text: '[File: report.pdf]' }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            filename: 'report.pdf',
+            file_id: 'f_123',
+            file_data: 'data:application/pdf;base64,abc123',
+          },
+        ],
+      },
     ]);
   });
 
-  it('uses "unknown" for input_file without filename', () => {
+  it('preserves input_file blocks without filename for backend file-id resolution', () => {
     const input: InputItem[] = [
       {
         type: 'message',
@@ -139,7 +156,7 @@ describe('convertInputToMessages', () => {
     ];
     const result = convertInputToMessages(input);
     expect(result).toEqual([
-      { role: 'user', content: [{ type: 'text', text: '[File: unknown]' }] },
+      { role: 'user', content: [{ type: 'input_file', file_id: 'f_123' }] },
     ]);
   });
 

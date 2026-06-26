@@ -15,6 +15,37 @@ jest.mock('@librechat/api', () => ({
   checkAccess: jest.fn(),
   countFormattedMessageTokens: jest.fn(() => 42),
   countTokens: jest.fn((text) => Math.ceil(String(text ?? '').length / 4)),
+  buildDefaultSteelGlobalAgentContext: jest.fn(),
+  prepareLibreChatSteelChatContext: jest.fn((conversation) => {
+    const toReference = (message) =>
+      message
+        ? {
+            ...message,
+            content: '',
+          }
+        : undefined;
+    const currentUserTurn = toReference(conversation.currentUserTurn);
+    const activeHistory = (conversation.activeHistory ?? [])
+      .filter((message) => {
+        if (!conversation.currentUserTurn) {
+          return true;
+        }
+        if (message.messageId && conversation.currentUserTurn.messageId) {
+          return message.messageId !== conversation.currentUserTurn.messageId;
+        }
+        return (
+          message.role !== conversation.currentUserTurn.role ||
+          message.content !== conversation.currentUserTurn.content
+        );
+      })
+      .map(toReference);
+
+    return {
+      ...conversation,
+      activeHistory,
+      currentUserTurn,
+    };
+  }),
   initializeAgent: jest.fn(),
   createMemoryProcessor: jest.fn(),
   isMemoryAgentEnabled: jest.fn((config) => {
@@ -59,6 +90,21 @@ describe('AgentClient - titleConvo', () => {
   beforeEach(() => {
     // Reset all mocks
     jest.clearAllMocks();
+    require('@librechat/api').buildDefaultSteelGlobalAgentContext.mockResolvedValue({
+      instructionPrefix: '',
+      runtimeContextText: '',
+      runtimeContext: {},
+      metadata: {
+        globalApplied: true,
+        contextMode: 'compact_workbook',
+      },
+      contextSlots: {
+        instructionPrefix: 'top_of_context',
+        runtimeContext: 'dynamic_system_tail',
+      },
+      attachmentReferences: [],
+      instructionPrefixSections: [],
+    });
 
     // Mock run object
     mockRun = {
@@ -1836,6 +1882,61 @@ describe('AgentClient - titleConvo', () => {
       );
 
       expect(mockAgent.additional_instructions).toContain('Direct primary context');
+    });
+
+    it('injects native Steel prefix and runtime tail without moving request file context', async () => {
+      const { buildDefaultSteelGlobalAgentContext } = require('@librechat/api');
+      const currentFile = makeTextFile('current-file', 'current.txt', 'Current turn file body');
+      buildDefaultSteelGlobalAgentContext.mockResolvedValue({
+        instructionPrefix: 'Steel stable prefix',
+        runtimeContextText: 'Steel runtime tail',
+        runtimeContext: {},
+        metadata: {
+          globalApplied: true,
+          contextMode: 'compact_workbook',
+        },
+        contextSlots: {
+          instructionPrefix: 'top_of_context',
+          runtimeContext: 'dynamic_system_tail',
+        },
+        attachmentReferences: [],
+        instructionPrefixSections: [],
+      });
+
+      client.options.attachments = [currentFile];
+
+      const result = await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Quote this attached form.',
+            isCreatedByUser: true,
+          },
+        ],
+        'msg-1',
+        {},
+      );
+
+      expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversation: expect.objectContaining({
+            conversationId: 'convo-123',
+            requestId: 'response-123',
+            currentUserTurn: expect.objectContaining({
+              role: 'user',
+              content: '',
+              messageId: 'msg-1',
+            }),
+            activeHistory: [],
+          }),
+        }),
+      );
+      expect(mockAgent.instructions).toBe('Steel stable prefix\n\nPrimary instructions');
+      expect(mockAgent.additional_instructions).toContain('Steel runtime tail');
+      expect(mockAgent.additional_instructions ?? '').not.toContain('Current turn file body');
+      expect(result.prompt[0].content).toContain('Current turn file body');
     });
   });
 

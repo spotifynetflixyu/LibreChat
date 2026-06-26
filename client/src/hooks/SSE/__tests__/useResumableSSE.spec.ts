@@ -117,6 +117,7 @@ const mockFinalHandler = jest.fn();
 const mockCreatedHandler = jest.fn();
 const mockStepHandler = jest.fn();
 const mockTitleHandler = jest.fn();
+const mockSteelEventHandler = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
 
@@ -132,6 +133,7 @@ jest.mock('~/hooks/SSE/useEventHandlers', () => {
       attachmentHandler: jest.fn(),
       stepHandler: mockStepHandler,
       titleHandler: mockTitleHandler,
+      steelEventHandler: mockSteelEventHandler,
       contentHandler: jest.fn(),
       resetContentHandler: jest.fn(),
       syncStepMessage: jest.fn(),
@@ -245,6 +247,7 @@ describe('useResumableSSE - 404 error path', () => {
     mockCreatedHandler.mockClear();
     mockStepHandler.mockClear();
     mockTitleHandler.mockClear();
+    mockSteelEventHandler.mockClear();
     mockClearStepMaps.mockClear();
     mockSetIsSubmitting.mockClear();
     mockSetQueryData.mockClear();
@@ -617,6 +620,44 @@ describe('useResumableSSE - 404 error path', () => {
         }),
       }),
     );
+    unmount();
+  });
+
+  it('routes native Steel stream events to the Steel activity handler', async () => {
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const event = {
+      event: 'steel_event',
+      data: {
+        type: 'memory_saved',
+        source: 'tool_result',
+        conversationId: CONV_ID,
+        toolName: 'run_file_ocr',
+        providerToolCallId: 'call-ocr',
+        message: 'Working Order Memory saved',
+        savedCounts: { ocr_extract: 1 },
+      },
+    };
+
+    const sse = getLastSSE();
+    await act(async () => {
+      sse._emit('message', { data: JSON.stringify(event) });
+    });
+
+    expect(mockSteelEventHandler).toHaveBeenCalledWith(
+      event,
+      expect.objectContaining({
+        initialResponse: expect.objectContaining({ messageId: 'resp-1' }),
+      }),
+    );
+    expect(mockStepHandler).not.toHaveBeenCalledWith(event, expect.anything());
     unmount();
   });
 

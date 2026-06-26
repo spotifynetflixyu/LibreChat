@@ -131,3 +131,1923 @@ Review - 2026-06-25:
     existing project errors in cache/openai endpoint/manual Steel specs/rules
     tooling, but the native context files are no longer in the TypeScript error
     list after fixing the readonly attachment evidence mismatch.
+
+# Active: OpenAI OAuth API Native Chat Plan Documentation
+
+Goal: update the Steel native LibreChat master framework and implementation
+plan so normal LibreChat chat explicitly supports OpenAI OAuth API through a
+native provider adapter.
+
+Plan:
+
+- [x] Inspect existing provider-state and OAuth policy wording.
+- [x] Update the master framework with native OpenAI OAuth chat support as a
+      product target.
+- [x] Update the implementation plan Phase 5 and verification checklist.
+- [x] Run documentation diff checks and record review evidence.
+
+Design lock:
+
+- OpenAI OAuth API support belongs in the normal LibreChat chat path through
+  `packages/api/src/steel/native/provider.ts`, not through `/steel/oauth-chat`.
+- OAuth mode remains stateless/reconstructed: `responsesState: false`, no
+  provider `previous_response_id` dependency, LibreChat Mongo history remains
+  canonical.
+- Native OAuth support must preserve LibreChat stream, abort, files/vision,
+  tools, permissions, and Steel context/tool policy.
+
+Review - 2026-06-25:
+
+- Updated `docs/steel-native-librechat-master-framework.md` so normal
+  LibreChat chat explicitly supports OpenAI OAuth API through
+  `packages/api/src/steel/native/provider.ts`.
+- Updated the provider policy to require `openai_oauth_stateless`,
+  `responsesState: false`, reconstructed LibreChat context, and no provider
+  `previous_response_id` dependency.
+- Updated `docs/plans/2026-06-24-steel-global-native-librechat-integration.md`
+  Phase 5 from only provider-state resolution to native provider adapter plus
+  provider-state resolver.
+- Added plan/test coverage for native OpenAI OAuth API preserving stream,
+  abort/resume, files/vision, tool execution, message persistence, permissions,
+  and text/PDF/image Steel fixture smoke.
+- Replaced old "Steel disabled" verification wording with ordinary non-quote
+  chat behavior under the global Steel framework.
+- Verification: `git diff --check` passed for the touched docs/task files, and
+  `rg` confirms both master framework and implementation plan now name native
+  OpenAI OAuth API support and keep `/steel/oauth-chat` dev-only.
+
+# Active: Phase 2 Native Steel Top Prefix Seam
+
+Goal: add the native Agent context seam that lets Steel put stable global rules
+before base agent instructions without moving existing LibreChat dynamic
+context.
+
+Plan:
+
+- [x] Inspect current `packages/api/src/agents/context.ts` behavior and tests.
+- [x] Add tests for `globalInstructionPrefix` ordering.
+- [x] Implement optional `globalInstructionPrefix` in `buildAgentInstructions`
+      and `applyContextToAgent`.
+- [x] Run focused Jest and diff checks.
+
+Design lock:
+
+- `globalInstructionPrefix` is for stable top-of-context Steel rules only.
+- Existing agent instructions and MCP instructions remain after the prefix.
+- Existing `additional_instructions`, shared run context, Memory, RAG, file
+  context, and agent-scoped context remain in the dynamic additional-instruction
+  path.
+
+Review - 2026-06-25:
+
+- Added optional `globalInstructionPrefix` to
+  `packages/api/src/agents/context.ts`:
+  - `buildAgentInstructions()` now orders stable instructions as Steel/global
+    prefix, base agent instructions, then MCP instructions.
+  - `applyContextToAgent()` forwards the prefix in both normal and fallback
+    paths.
+  - Existing `additional_instructions` and `sharedRunContext` remain in
+    `buildAgentAdditionalInstructions()`.
+- Added regression coverage in `packages/api/src/agents/context.spec.ts` for
+  prefix-only, prefix-before-base/MCP, and preservation of existing dynamic
+  additional instructions.
+- Verification:
+  - `cd packages/api && npx jest src/agents/context.spec.ts --coverage=false --runInBand`
+    passed with 35 tests.
+  - `cd packages/api && npx jest src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts --coverage=false --runInBand`
+    passed with 13 tests.
+  - `git diff --check` passed for touched implementation/task files.
+  - Full `tsc` still has existing project errors, but filtering the full output
+    for touched `agents/context` and `steel/*/context` files returned no
+    errors.
+
+# Active: Phase 2 Native AgentClient Steel Context Hook
+
+Goal: wire the Phase 1 native Steel context adapter into normal LibreChat
+`AgentClient.buildMessages()` so every native agent run receives Steel global
+instructions and compact runtime context without moving LibreChat file bytes.
+
+Plan:
+
+- [x] Add a regression test for native Steel prefix/runtime-tail injection in
+      `api/server/controllers/agents/client.test.js`.
+- [x] Add a default native Steel dependency builder for JS callers in
+      `packages/api/src/steel/native/context.ts`.
+- [x] Convert LibreChat message/file records into metadata-only Steel native
+      references inside `AgentClient.buildMessages()`.
+- [x] Pass Steel stable rules through `globalInstructionPrefix` and append
+      Steel runtime context to the dynamic shared context tail.
+- [x] Run focused package tests, JS syntax check, TypeScript filtered check,
+      and diff checks.
+
+Design lock:
+
+- The JS controller remains a thin bridge: it maps LibreChat conversation
+  history and file records to native Steel metadata references, then calls the
+  TypeScript native context builder.
+- Current-turn file bodies stay in LibreChat's existing request/file context
+  path. Steel native context only receives file identifiers and metadata.
+- Steel stable prefix is injected at the top of agent instructions through
+  `globalInstructionPrefix`.
+- Steel compact runtime context is appended to the existing dynamic
+  `additional_instructions` tail with other run-level context.
+
+Review - 2026-06-25:
+
+- Added `buildDefaultSteelGlobalAgentContext()` and
+  `createSteelNativeRuntimeContextDependencies()` in
+  `packages/api/src/steel/native/context.ts`.
+- The default dependency builder reads reviewed Steel agent rules, quote
+  defaults/rules, output rules, other file/OCR rules, instruction packets, and
+  output-sheet workbook state from the existing Steel repositories/services.
+- Updated `AgentClient.buildMessages()` to:
+  - capture current-turn LibreChat attachment metadata after normal attachment
+    processing;
+  - pass active conversation history, current user turn, and current file
+    references into the native Steel context adapter;
+  - append `runtimeContextText` to the shared dynamic context;
+  - pass `instructionPrefix` to `applyContextToAgent()` as the global prefix.
+- Added a controller regression test asserting Steel prefix/tail injection while
+  keeping current request file body content in the user prompt path.
+- Verification:
+  - `cd packages/api && npx jest src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts src/agents/context.spec.ts --coverage=false --runInBand`
+    passed with 49 tests.
+  - `node -c api/server/controllers/agents/client.js` passed.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json` still has
+    existing project errors, but filtering full output for touched context files
+    returned no errors.
+  - `git diff --check -- api/server/controllers/agents/client.js api/server/controllers/agents/client.test.js packages/api/src/steel/native/context.ts packages/api/src/steel/native/context.spec.ts tasks/todo.md`
+    passed.
+  - `cd api && npx jest server/controllers/agents/client.test.js --runInBand --coverage=false --testNamePattern "injects native Steel prefix"`
+    is currently blocked before test execution by the existing root dependency
+    state: `Cannot find module '@langchain/core/errors'` from
+    `@langchain/openai`.
+
+# Active: Phase 3 Additive Steel Native Tools
+
+Goal: merge Steel business tools into native LibreChat agent tool loading and
+execution without removing user tools, MCP tools, actions, web search, file
+search, or code execution.
+
+Plan:
+
+- [x] Add native Steel tool adapter tests for additive merge, compact workbook
+      gating, deterministic name collisions, and executable wrapper behavior.
+- [x] Create `packages/api/src/steel/native/tools.ts` and export it through
+      the native Steel barrel.
+- [x] Convert Steel provider tool definitions into native `LCTool`
+      definitions with JSON schemas.
+- [x] Merge Steel tools into `ToolService` definitions-only loading while
+      preserving existing user-selected tools.
+- [x] Intercept Steel tool calls in `loadToolsForExecution()` and execute them
+      through `executeSteelTool()` instead of the generic LibreChat tool
+      loader.
+- [x] Run focused package tests, TypeScript filtered check, JS syntax checks,
+      and diff checks.
+
+Design lock:
+
+- Steel tools are additive native tools. They do not replace user tools, MCP,
+  actions, web/file search, code execution, or deferred/programmatic tool
+  behavior.
+- Tool visibility follows the Steel runtime tool policy and defaults to
+  `compact_workbook`; Markdown-derived state recovery uses `read_markdown`
+  only, scoped to the active conversation.
+- If a native tool name already exists, the Steel adapter deterministically
+  exposes the Steel version as `steel_<toolName>` and maps execution back to the
+  canonical Steel tool name.
+- `ToolService.js` remains a thin bridge. Steel tool schema conversion and
+  name mapping live in TypeScript under `packages/api/src/steel/native/tools.ts`.
+- Native execution uses existing Steel repositories and Mongo-backed structured
+  state readers keyed by LibreChat `conversationId`. Successful native Steel
+  tool results are captured through the Phase 8 Markdown/state adapter.
+
+Review - 2026-06-25:
+
+- Added `mergeSteelToolDefinitions()` to convert
+  `getSteelToolDefinitions({ contextMode })` into native `LCTool` definitions.
+- Added `createSteelNativeTool()` and `resolveSteelProviderToolName()` so
+  native tool calls can execute canonical Steel tools even when the visible name
+  is namespaced after a collision.
+- Exported native Steel tools through `packages/api/src/steel/native/index.ts`.
+- Updated `api/server/services/ToolService.js` so definitions-only loading:
+  - no longer returns early before Steel global tools are considered;
+  - filters legacy pseudo-tools and Steel tool names out of the generic loader;
+  - merges Steel tool definitions into the returned `toolDefinitions` and
+    `toolRegistry`.
+- Updated `loadToolsForExecution()` so Steel tool calls are handled by native
+  executable wrappers backed by `executeSteelTool()`, `createSteelPostgresPool()`,
+  and Mongo Steel structured-state readers.
+- Verification:
+  - `cd packages/api && npx jest src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts src/agents/context.spec.ts --coverage=false --runInBand`
+    passed with 54 tests.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json` still has
+    existing project errors, but filtering full output for touched Steel native,
+    Steel tools, Steel runtime, and agent context files returned no errors.
+  - `node -c api/server/services/ToolService.js` passed.
+  - `node -c api/server/controllers/agents/client.js` passed.
+  - `git diff --check` passed for touched implementation, docs, and task files.
+  - `cd api && npx jest server/services/__tests__/ToolService.spec.js --runInBand --coverage=false --testNamePattern "loadAgentTools"`
+    is currently blocked before test execution by the existing root dependency
+    state: `Cannot find module '@langchain/core/errors'` from
+    `@langchain/openai`.
+
+# Active: Phase 8 Native Markdown And Tool State Capture
+
+Goal: connect native LibreChat assistant persistence and native Steel tool
+execution to the existing Steel structured quote/workbook state writer without
+moving Steel parsing logic into generic LibreChat persistence code.
+
+Plan:
+
+- [x] Add native Markdown/state adapter tests for text extraction, final
+      assistant Markdown capture, skip reasons, successful tool-result capture,
+      and failed tool-result skips.
+- [x] Add `packages/api/src/steel/native/markdown.ts` and export it from the
+      native Steel barrel.
+- [x] Add a thin optional post-save hook around `BaseClient` assistant
+      `databasePromise`.
+- [x] Wire `AgentClient` initialization to capture final assistant Markdown
+      after the LibreChat assistant message saves successfully.
+- [x] Share native assistant turn metadata from `AgentClient.buildMessages()`
+      to the request-scoped ToolService execution path.
+- [x] Capture successful native Steel tool results immediately after
+      `executeSteelTool()` succeeds.
+- [x] Run focused native tests, JS syntax checks, TypeScript filtered check,
+      and diff checks.
+
+Design lock:
+
+- `BaseClient.js` only exposes a generic `onResponseMessageSaved` lifecycle
+  seam and preserves the original `databasePromise` contract.
+- Steel parsing and writer calls live in `packages/api/src/steel/native/markdown.ts`.
+- Native UI final Markdown capture runs after the assistant message save
+  resolves; it skips user, temporary, unfinished, error, missing metadata, and
+  blank-content messages.
+- Native Steel tool result capture uses the same Mongo-backed Steel writer and
+  request-scoped turn metadata so tool evidence and assistant Markdown state
+  share a turn/checkpoint boundary.
+- Open Responses post-save capture is tracked in the next Phase 8 slice; native
+  event mapping remains pending Phase 8 work.
+
+Review - 2026-06-25:
+
+- Added `captureSteelNativeAssistantMarkdown()`,
+  `captureSteelNativeToolResult()`, and `extractSteelNativeMarkdownText()` in
+  `packages/api/src/steel/native/markdown.ts`.
+- Updated `api/app/clients/BaseClient.js` with
+  `withResponseMessageSavedHook()` so endpoint-specific clients can attach
+  post-save side effects without duplicating controller finalization logic.
+- Updated `api/server/services/Endpoints/agents/initialize.js` to wire the
+  native Steel Markdown capture hook with
+  `createMongooseSteelWorkingOrderMemoryWriter(mongoose)`.
+- Updated `api/server/controllers/agents/client.js` to publish
+  request-scoped `steelNativeContext` metadata with `conversationId`,
+  `requestId`, `assistantTurnIndex`, and `memoryCheckpointTurnIndex`.
+- Updated `api/server/services/ToolService.js` so native Steel tool execution
+  captures successful tool results through `captureSteelNativeToolResult()`
+  using the same writer contract.
+- Updated the master framework and implementation plan to reflect that native
+  UI Markdown/tool-result state capture is implemented; Open Responses capture
+  was tracked as the next Phase 8 slice, and event mapping remains pending.
+- Verification:
+  - `cd packages/api && npx jest src/steel/native/markdown.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+    passed with 14 tests.
+  - `node -c api/app/clients/BaseClient.js` passed.
+  - `node -c api/server/services/Endpoints/agents/initialize.js` passed.
+  - `node -c api/server/services/ToolService.js` passed.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json` still has
+    existing project errors, including
+    `src/steel/memory/service.spec.ts(725,27): error TS2589`, but filtering full
+    output for touched native/agent/runtime/tool files returned no errors.
+  - `git diff --check` passed for touched native UI persistence, Steel native
+    Markdown/tool adapter, docs, and task files.
+
+# Active: Phase 8 Open Responses Steel Markdown Capture
+
+Goal: wire `api/server/controllers/agents/responses.js` to the same native
+Steel Markdown/state adapter so stored Open Responses API calls capture final
+assistant Markdown after `db.saveMessage()` succeeds.
+
+Plan:
+
+- [x] Add a failing native adapter test for Open Responses output extraction
+      and capture metadata.
+- [x] Implement an Open Responses output capture helper in
+      `packages/api/src/steel/native/markdown.ts`.
+- [x] Wire `saveResponseOutput()` to call the helper after assistant message
+      persistence succeeds.
+- [x] Run focused package tests, JS syntax check, TypeScript filtered check,
+      and diff check.
+
+Design lock:
+
+- `responses.js` remains a thin JS bridge. Steel parsing/writer conversion
+  stays in `packages/api/src/steel/native/markdown.ts`.
+- Capture must happen after `db.saveMessage()` succeeds, not before and not at
+  stream finalization.
+- Both streaming and non-streaming stored branches already call
+  `saveResponseOutput()`, so the hook belongs there.
+- `store:false` Open Responses calls do not create Steel structured state.
+
+Review - 2026-06-25:
+
+- Added failing tests in `packages/api/src/steel/native/markdown.spec.ts` for:
+  - extracting Markdown from Open Responses `output_text` parts;
+  - capturing a stored Open Responses assistant response with
+    `conversationId`, `responseId`, `turnIndex`, and checkpoint metadata.
+- The red test run failed as expected because
+  `extractSteelNativeResponseOutputText()` and
+  `captureSteelNativeResponseOutput()` did not exist.
+- Implemented both helpers in `packages/api/src/steel/native/markdown.ts`.
+- Updated `api/server/controllers/agents/responses.js` so:
+  - request-scoped `steelNativeContext` is created from
+    `previousMessages + inputMessages`;
+  - `saveResponseOutput()` calls `captureSteelNativeResponseOutput()` after
+    `db.saveMessage()` succeeds;
+  - streaming and non-streaming stored branches share the same hook because
+    both already call `saveResponseOutput()`.
+- Updated the master framework and implementation plan to mark Open Responses
+  persistence hook as implemented while keeping event mapping pending.
+- Verification:
+  - Red test:
+    `cd packages/api && npx jest src/steel/native/markdown.spec.ts --coverage=false --runInBand`
+    failed because the two new exports were missing.
+  - Green test:
+    `cd packages/api && npx jest src/steel/native/markdown.spec.ts --coverage=false --runInBand`
+    passed with 7 tests.
+  - Focused native suite:
+    `cd packages/api && npx jest src/steel/native/markdown.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+    passed with 16 tests.
+  - `node -c api/server/controllers/agents/responses.js` passed.
+  - `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false`
+    passed with 14 tests.
+  - `git diff --check` passed for touched Open Responses persistence,
+    Steel native Markdown adapter, docs, and task files.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json` still has
+    existing project errors, but filtering full output for touched
+    native/responses/agent/runtime/tool files returned no errors.
+
+# Active: Phase 6 Agents API Chat Completions Steel Context Hook
+
+Goal: make the remote OpenAI-compatible
+`/api/agents/v1/chat/completions` route receive the same global Steel context
+as the normal native UI path.
+
+Plan:
+
+- [x] Add a focused regression test for the OpenAI-compatible controller
+      applying Steel global instructions and runtime context before `createRun`.
+- [x] Keep `api/server/controllers/agents/openai.js` as a thin bridge and put
+      reusable Steel context application logic in `packages/api`.
+- [x] Apply the Steel prefix/runtime tail to the primary agent and discovered
+      handoff agents.
+- [x] Preserve existing remote-agent permissions, skill primes, MCP/tool
+      execution, streaming/non-streaming response behavior, and usage billing.
+- [x] Update the master framework/implementation plan and run focused
+      verification.
+
+Design lock:
+
+- This is the OpenAI-compatible Agents API ingress, not the normal UI
+  `AgentClient` path and not `/steel/oauth-chat`.
+- The route already performs its own initialize/discover/createRun flow, so it
+  must explicitly apply Steel context after agent initialization and before
+  `formatAgentMessages()` / `createRun()`.
+- Stable Steel rules belong in `agent.instructions`; dynamic Steel runtime
+  context belongs in `agent.additional_instructions`.
+- Request-scoped Steel metadata should be available to native Steel tool
+  execution and Markdown/state capture where this route later persists output.
+
+Review - 2026-06-25:
+
+- Added `packages/api/src/steel/native/agents.ts` with reusable helpers that
+  prepend Steel global instructions and append Steel runtime context to
+  initialized native agent configs.
+- Exported the helper through the native Steel barrel.
+- Updated `api/server/controllers/agents/openai.js` so
+  `/api/agents/v1/chat/completions`:
+  - converts OpenAI-compatible system/user/assistant messages into Steel
+    runtime conversation input while leaving tool messages in the original
+    LibreChat model flow;
+  - builds `agents_chat_completions` Steel global context after primary and
+    handoff agent initialization;
+  - applies the Steel prefix/runtime tail to every run agent before
+    `formatAgentMessages()` and `createRun()`;
+  - sets request-scoped Steel context metadata for native Steel tool/state
+    boundaries.
+- Updated the master framework and implementation plan with Phase 6A for the
+  OpenAI-compatible Chat Completions ingress.
+- Verification:
+  - Red test:
+    `cd api && npx jest server/controllers/agents/__tests__/openai.spec.js --runInBand --coverage=false --testNamePattern "Steel native context"`
+    failed because `buildDefaultSteelGlobalAgentContext` was not called.
+  - Green controller suite:
+    `cd api && npx jest server/controllers/agents/__tests__/openai.spec.js --runInBand --coverage=false`
+    passed with 13 tests.
+  - Native package suite:
+    `cd packages/api && npx jest src/steel/native/agents.spec.ts src/steel/native/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/markdown.spec.ts src/steel/native/provider.spec.ts src/steel/native/oauth.spec.ts --coverage=false --runInBand`
+    passed with 27 tests.
+  - `node -c api/server/controllers/agents/openai.js` passed.
+  - `git diff --check` passed.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json --pretty false`
+    still fails on existing project errors in Redis typing, OpenAI config
+    specs, missing `@langchain/core/messages`, manual Steel specs, rules
+    repository typing, and PaddleOCR manual specs; no current touched file is
+    in the TypeScript error list after fixing the new helper spec typing.
+
+# Active: Phase 5 Native OpenAI OAuth Transport Adapter
+
+Goal: make standard native LibreChat agent chat able to execute
+`openai_oauth_responses` through `openai-oauth-provider` without routing product
+traffic through `/steel/oauth-chat`.
+
+Plan:
+
+- [x] Inspect the `@librechat/agents` model factory and provider registry seam.
+- [x] Add failing native OAuth adapter tests for stateless provider creation,
+      message/file conversion, tool-call mapping, and streaming chunks.
+- [x] Add failing `createRun()` contract coverage for standard native OAuth
+      chat injecting a Steel OAuth override model.
+- [x] Implement `packages/api/src/steel/native/oauth.ts` and export it through
+      the native Steel barrel.
+- [x] Wire `packages/api/src/agents/run.ts` so standard single-agent
+      `openai_oauth_responses` runs use the native OAuth adapter.
+- [x] Run focused native/provider/run tests and TypeScript/diff checks.
+
+Design lock:
+
+- Product traffic still stays in normal LibreChat native chat; `/steel/oauth-chat`
+  remains dev-only.
+- OAuth transport is stateless: `responsesState:false`, no
+  `previous_response_id`, and full prompt reconstruction from LibreChat history
+  plus Steel global context.
+- The OAuth adapter wraps `openai-oauth-provider` as a LangChain-compatible
+  native chat model. It converts LangChain messages to AI SDK v3 prompt
+  messages, preserves native image/PDF file parts, forwards native tool schemas,
+  maps OAuth provider tool calls back to `AIMessageChunk.tool_calls`, streams
+  text deltas, and records response/usage metadata.
+- `createRun()` injects the adapter through the existing Graph `overrideModel`
+  seam only for standard single-agent native chat. The injected model resolves
+  tools from the live Graph agent context on every invoke/stream, so tool schema
+  discovery is not frozen at run creation.
+- Multi-agent/per-agent OAuth model support remains a later seam. Do not claim
+  it complete until `@librechat/agents` exposes a per-agent model adapter or an
+  equivalent tested hook.
+
+Review - 2026-06-25:
+
+- Added `packages/api/src/steel/native/oauth.spec.ts`.
+- Red adapter test:
+  - `cd packages/api && npx jest src/steel/native/oauth.spec.ts --coverage=false --runInBand`
+    failed because `./oauth` did not exist.
+- Implemented `SteelNativeOpenAIOAuthModel` and
+  `SteelNativeOpenAIOAuthGraphModel` in
+  `packages/api/src/steel/native/oauth.ts`.
+- The adapter:
+  - lazy-loads `openai-oauth-provider` unless a test injects
+    `createOpenAIOAuth`;
+  - creates the provider with `responsesState:false`;
+  - converts system/user/assistant/tool LangChain messages to AI SDK v3 prompt
+    messages;
+  - converts `image_url`, `input_file`, and OpenAI-style `file` parts into AI
+    SDK file parts;
+  - forwards native tool schemas as AI SDK function tools;
+  - maps generated tool calls back into LangChain `AIMessageChunk.tool_calls`;
+  - streams text/tool/finish parts as `AIMessageChunk` values with usage and
+    response metadata.
+- Updated `packages/api/src/agents/run.ts` so standard single-agent
+  `openai_oauth_responses` runs receive the OAuth graph override model after
+  `Run.create()`.
+- Updated `packages/api/src/agents/__tests__/run-summarization.test.ts` with
+  a focused native run contract test and a minimal `@librechat/agents` mock so
+  the suite no longer loads the unavailable `@langchain/core/errors` path.
+- Updated the master framework and Phase 5 implementation plan to mark the
+  standard native OAuth transport adapter as implemented while keeping
+  multi-agent/provider-factory and live fixture smoke as later proof work.
+- Verification:
+  - `cd packages/api && npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/steel/native/markdown.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+    passed with 25 tests.
+  - `cd packages/api && npx jest src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand`
+    passed with 65 tests.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json --pretty false`
+    still fails on existing project errors in Redis, OpenAI config specs,
+    missing `@langchain/core/messages`, manual Steel specs, rules repository,
+    and PaddleOCR manual specs; no touched Phase 5 OAuth/native/run files remain
+    in the TypeScript error list.
+  - `cd api && npx jest server/routes/agents/__tests__/responses.spec.js --runInBand --coverage=false`
+    is blocked before route assertions by the existing root dependency state:
+    `Cannot find module '@langchain/core/errors'` from `@langchain/openai`.
+
+Dependency unblock addendum - 2026-06-25:
+
+- Added root `@langchain/core@^1.2.1` to satisfy the hoisted LangChain provider
+  peer imports used by `@librechat/agents`, `@langchain/openai`, and nested
+  OAuth/provider dependencies during native API tests.
+- Kept the npm-generated `package-lock.json` sync because the narrower manual
+  lock edit failed `npm ci --dry-run`; the generated lock also reconciles
+  existing package/lock drift around peer/dev dependency placement.
+- Rebuilt ignored `packages/api/dist` locally with `cd packages/api && npm run
+  build` so API Jest consumed the current `packages/api/src/agents/context.ts`
+  global-prefix implementation.
+- Verification:
+  - `npm ls @langchain/core --depth=0` reports `@langchain/core@1.2.1`.
+  - `npm ci --dry-run --ignore-scripts --cache /private/tmp/librechat-npm-cache`
+    passed, with existing Node engine warnings under local Node `v22.17.1`.
+  - `cd api && npx jest server/controllers/agents/client.test.js --runInBand --coverage=false --testNamePattern "injects native Steel prefix"` passed.
+  - `cd api && npx jest server/services/__tests__/ToolService.spec.js --runInBand --coverage=false --testNamePattern "request-scoped Steel OCR files"` passed.
+
+# Active: Phase 5 Native Provider Policy Resolver
+
+Goal: add the native Steel provider policy resolver and wire provider-policy
+metadata into native AgentClient runs without pretending the OAuth transport
+adapter is complete.
+
+Plan:
+
+- [x] Add failing provider policy tests for OpenAI OAuth stateless mode,
+      API-key Responses reconstructed mode, explicit `useResponsesApi:false`,
+      and guarded `previous_response_id` usage.
+- [x] Implement `packages/api/src/steel/native/provider.ts` and export it from
+      the native Steel barrel.
+- [x] Apply the policy in native agent initialization for OpenAI/OAuth provider
+      branches only.
+- [x] Persist provider policy metadata on native assistant messages.
+- [x] Run focused tests, JS syntax checks, TypeScript filtered check, and diff
+      check.
+
+Design lock:
+
+- `openai_oauth_responses` resolves to `openai_oauth_stateless`,
+  `responsesState:false`, and strips unsupported `previous_response_id`.
+- Official OpenAI API-key specs default to `useResponsesApi:true` and
+  `openai_responses_reconstructed`.
+- Explicit `useResponsesApi:false` is preserved unless
+  `enforceResponsesApi:true` is passed by an admin-enforced Steel spec.
+- `openai_responses_previous_response_id` is only selected when a persisted
+  provider response id is supplied and previous-response-id mode is explicitly
+  allowed.
+- Non-OpenAI providers are not touched by the Steel provider policy resolver.
+- This slice does not yet make `openai_oauth_responses` executable through the
+  native LangGraph/model factory; that transport adapter remains the next Phase
+  5 gap.
+
+Review - 2026-06-25:
+
+- Added `packages/api/src/steel/native/provider.spec.ts`.
+- Added `packages/api/src/steel/native/provider.ts` with:
+  - `resolveSteelNativeProviderPolicy()`;
+  - `toSteelNativeProviderMetadata()`;
+  - `isSteelNativeProviderPolicyTarget()`.
+- Exported the provider module from `packages/api/src/steel/native/index.ts`.
+- Updated `api/server/services/Endpoints/agents/initialize.js` to:
+  - apply provider policy only for OpenAI API/OAuth branches;
+  - update `primaryConfig.model_parameters` with the policy-cleaned model
+    parameters;
+  - pass provider policy metadata into `AgentClient`.
+- Updated `api/server/controllers/agents/client.js` to persist provider policy
+  metadata under `metadata.steel.provider`.
+- Updated the master framework and Phase 5 plan to mark provider policy
+  resolver/metadata as implemented while keeping the native OAuth transport
+  adapter pending.
+- Verification:
+  - Red test:
+    `cd packages/api && npx jest src/steel/native/provider.spec.ts --coverage=false --runInBand`
+    failed because `./provider` did not exist.
+  - Green test:
+    `cd packages/api && npx jest src/steel/native/provider.spec.ts --coverage=false --runInBand`
+    passed with 5 tests.
+  - Focused native suite:
+    `cd packages/api && npx jest src/steel/native/provider.spec.ts src/steel/native/markdown.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+    passed with 21 tests.
+  - `node -c api/server/services/Endpoints/agents/initialize.js` passed.
+  - `node -c api/server/controllers/agents/client.js` passed.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json` still has
+    existing project errors, but filtering full output for touched
+    native/responses/agent/runtime/tool files returned no errors.
+
+# Active: Phase 6B Open Responses Steel Context Hook
+
+Goal: make the remote Open Responses-compatible
+`/api/agents/v1/responses` route receive the same global Steel context as the
+normal native UI and Chat Completions ingress paths.
+
+Plan:
+
+- [x] Add a focused regression test for the Responses controller building
+      Steel global context from reconstructed previous + current input messages.
+- [x] Apply Steel stable prefix through `applyContextToAgent()` before
+      `createRun`.
+- [x] Append Steel runtime context after existing per-agent attachment context.
+- [x] Preserve existing Open Responses continuation loading, streaming and
+      non-streaming branches, tool execution, usage billing, and post-save
+      Markdown/state capture.
+- [x] Resolve generated `resp_*` response ids back to the durable LibreChat
+      conversation for continuation and retrieval.
+- [x] Normalize Steel-enabled Open Responses storage so incoming `store:false`
+      requests still use durable LibreChat history/state.
+- [x] Update master framework/implementation plan and run focused verification.
+
+Design lock:
+
+- This is the Open Responses-compatible Agents API ingress, not the normal UI
+  `AgentClient` path and not `/steel/oauth-chat`.
+- The route reconstructs history from LibreChat messages and current input; the
+  Steel context builder must see that same merged message set.
+- Stable Steel rules belong in `globalInstructionPrefix`; dynamic Steel runtime
+  context belongs at the end of the route's shared run context.
+- Incoming `store:false` is normalized to durable `store:true`; there is no
+  supported non-stored Steel structured-state path.
+
+Review - 2026-06-25:
+
+- Updated `api/server/controllers/agents/responses.js` so the Open
+  Responses-compatible route:
+  - converts the merged `previousMessages + inputMessages` reconstruction into
+    Steel native conversation messages;
+  - builds `open_responses` Steel global context before
+    `formatAgentMessages()` and `createRun()`;
+  - passes Steel stable rules through `applyContextToAgent()` as
+    `globalInstructionPrefix`;
+  - appends Steel runtime context after existing per-agent attachment context in
+    `sharedRunContext`;
+  - keeps request-scoped Steel turn metadata for post-save Markdown/state
+    capture.
+- Updated `api/server/controllers/agents/__tests__/responses.unit.spec.js` with
+  regression coverage for reconstructed-history Steel context, generated
+  `resp_*` continuation/retrieval, and streaming native tool execution callback
+  parity.
+- Added a shared Open Responses resolver that:
+  - keeps direct conversation-id continuation compatible;
+  - resolves generated `resp_*` ids through the saved assistant
+    `Message.messageId` to the durable `conversationId`;
+  - supports `GET /responses/:id` with the returned response id.
+- Normalized Steel-enabled Open Responses storage in
+  `api/server/controllers/agents/responses.js` so both streaming and
+  non-streaming `store:false` requests still call `saveConvo()`,
+  `saveInputMessages()`, and `saveResponseOutput()`. Non-streaming responses
+  return `store: true`.
+- Added `packages/api/src/steel/native/metadata.ts` and wired
+  `saveResponseOutput()` to persist auditable Open Responses metadata under
+  `metadata.steel.native`, including ingress, native context version, context
+  mode, render profile, provider-state mode, conversation/response ids, turn
+  indexes, and normalized durable storage state.
+- Updated the master framework and implementation plan to mark the Open
+  Responses context hook, generated `resp_*` resolver, `store:true`
+  normalization, and saved Steel metadata as implemented.
+- Verification:
+  - Red metadata helper test:
+    `cd packages/api && npx jest src/steel/native/metadata.spec.ts --coverage=false --runInBand`
+    failed because `./metadata` did not exist.
+  - Red response metadata test:
+    `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false --testNamePattern "auditable Steel metadata"`
+    failed because the Open Responses assistant message did not call the Steel
+    metadata builder.
+  - Red storage test:
+    `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false --testNamePattern "normalizes .*store false"`
+    failed because `store:false` did not call `saveConvo()`/`saveMessage()`.
+  - Red test:
+    `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false --testNamePattern "Steel global context"`
+    failed because `buildDefaultSteelGlobalAgentContext` was not called.
+  - Green route suite:
+    `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false`
+    passed with 21 tests.
+  - Combined route controller suites:
+    `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/__tests__/openai.spec.js --runInBand --coverage=false`
+    passed with 34 tests.
+  - Route integration attempt:
+    `cd api && npx jest server/routes/agents/__tests__/responses.spec.js --runInBand --coverage=false --testNamePattern "Response Storage"`
+    is still blocked before route assertions by the existing dependency state:
+    `Cannot find module '@langchain/core/errors'` from `@langchain/openai`.
+  - Native package suite:
+    `cd packages/api && npx jest src/steel/native/agents.spec.ts src/steel/native/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/markdown.spec.ts src/steel/native/metadata.spec.ts src/steel/native/provider.spec.ts src/steel/native/oauth.spec.ts --coverage=false --runInBand`
+    passed with 28 tests.
+  - `node -c api/server/controllers/agents/responses.js` passed.
+  - `git diff --check` passed.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json --pretty false`
+    still fails on existing project errors in Redis typing, OpenAI config
+    specs, missing `@langchain/core/messages`, manual Steel specs, rules
+    repository typing, and PaddleOCR manual specs; no current touched file is
+    in the TypeScript error list.
+
+Open Responses bridge addendum - 2026-06-25:
+
+- [x] Add failing package coverage proving Open Responses `input_file` blocks
+      stay as file inputs instead of becoming text placeholders.
+- [x] Preserve `input_file` blocks in
+      `packages/api/src/agents/responses/service.ts` with `file_id`,
+      `file_data`, and `filename` fields.
+- [x] Add failing controller coverage proving Open Responses current-turn
+      `input_file.file_id` references enter `req.steelNativeContext.currentTurnFiles`.
+- [x] Collect Open Responses current-turn file references in
+      `api/server/controllers/agents/responses.js`, attach them to native Steel
+      context, and reuse the existing ToolService `run_file_ocr` file-resolution
+      path. Inline `file_data` remains provider-visible and is not copied into
+      Steel context bytes.
+- [x] Update the master framework and implementation plan Phase 7 status.
+
+Open Responses bridge verification:
+
+- Red package test:
+  `cd packages/api && npx jest src/agents/responses/__tests__/service.test.ts --coverage=false --runInBand --testNamePattern "input_file"`
+  failed before implementation because `input_file` became a text placeholder.
+- Green package tests:
+  `cd packages/api && npx jest src/agents/responses/__tests__/service.test.ts --coverage=false --runInBand`
+  passed with 24 tests.
+- Red controller test:
+  `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false --testNamePattern "passes Open Responses input_file"`
+  failed before implementation because `req.steelNativeContext.currentTurnFiles`
+  was `undefined`.
+- Green controller tests:
+  `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --coverage=false`
+  passed with 22 tests.
+- Combined route controller suites:
+  `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/__tests__/openai.spec.js --runInBand --coverage=false`
+  passed with 35 tests.
+- Focused native package suite:
+  `cd packages/api && npx jest src/agents/responses/__tests__/service.test.ts src/steel/tools/execute.spec.ts src/steel/native/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/metadata.spec.ts src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/steel/native/agents.spec.ts src/steel/native/markdown.spec.ts --coverage=false --runInBand`
+  passed with 67 tests.
+- `node -c api/server/controllers/agents/responses.js` passed.
+- `git diff --check` passed.
+- `cd packages/api && npx tsc --noEmit --project tsconfig.json --pretty false`
+  still fails on existing project errors in Redis typing, OpenAI config specs,
+  missing `@langchain/core/messages`, manual Steel specs, rules repository
+  typing, and PaddleOCR manual specs; no Open Responses/Steel native file
+  touched in this slice is in the TypeScript error list.
+
+# Active: Phase 7 Native AgentClient OCR File Bridge
+
+Goal: let the normal native LibreChat AgentClient path pass permitted current
+PDF/image attachment bytes into Steel `run_file_ocr` only when the AI agent
+explicitly calls that tool.
+
+Plan:
+
+- [x] Add package-level regression coverage for `executeSteelTool()` dispatching
+      `run_file_ocr` to an injected OCR runner with uploaded file bytes.
+- [x] Add request-scoped current-turn Steel file references in AgentClient after
+      LibreChat native attachment processing.
+- [x] Resolve those file refs inside ToolService through LibreChat Mongo file
+      records and configured storage download streams.
+- [x] Pass resolved OCR files into `executeSteelTool({ ocrFiles })` only for
+      `run_file_ocr` calls.
+- [x] Update implementation plan status and run focused verification.
+
+Design lock:
+
+- File upload/loading alone does not auto-run OCR or inject OCR text.
+- Native provider file/vision inputs remain in the existing LibreChat
+  attachment pipeline; the Steel context only carries metadata references.
+- `run_file_ocr` uses LibreChat-owned file records and storage streams, then
+  reaches the PaddleOCR-backed runner through `executeSteelTool()`.
+- This slice covers normal native AgentClient current-turn attachments. Open
+  Responses `input_file` bridging is covered by the addendum above. Runtime
+  context prior OCR evidence reuse is covered by the addendum below; live
+  no-re-OCR follow-up behavior remains a Phase 7 smoke/evidence gap.
+
+Review - 2026-06-25:
+
+- Added `run_file_ocr` dispatch support to
+  `packages/api/src/steel/tools/execute.ts` with injectable `runFileOcr` and
+  `ocrFiles` dependencies for deterministic tests.
+- Updated `api/server/controllers/agents/client.js` so the request-scoped
+  `steelNativeContext` includes `currentTurnFiles` after LibreChat attachment
+  processing.
+- Updated `api/server/services/ToolService.js` so native Steel OCR execution:
+  - reads `req.steelNativeContext.currentTurnFiles`;
+  - resolves each file through `resolveEvidenceFileForProvider()`;
+  - uses LibreChat `getFiles()` and `getStrategyFunctions(...).getDownloadStream`
+    to read permitted file bytes;
+  - passes the resulting files into `executeSteelTool()` only when the native
+    Steel tool call is `run_file_ocr`.
+- Verification:
+  - Red package test:
+    `cd packages/api && npx jest src/steel/tools/execute.spec.ts --coverage=false --runInBand --testNamePattern "runs OCR only"`
+    failed because the OCR runner was not called.
+  - Green package test:
+    `cd packages/api && npx jest src/steel/tools/execute.spec.ts --coverage=false --runInBand --testNamePattern "runs OCR only"`
+    passed.
+  - Green tools suite:
+    `cd packages/api && npx jest src/steel/tools/execute.spec.ts --coverage=false --runInBand`
+    passed with 15 tests.
+  - Focused native/tool suite:
+    `cd packages/api && npx jest src/steel/tools/execute.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+    passed with 24 tests.
+  - Focused native package suite:
+    `cd packages/api && npx jest src/steel/tools/execute.spec.ts src/steel/native/agents.spec.ts src/steel/native/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/markdown.spec.ts src/steel/native/metadata.spec.ts src/steel/native/provider.spec.ts src/steel/native/oauth.spec.ts --coverage=false --runInBand`
+    passed with 43 tests.
+  - Combined route controller suites:
+    `cd api && npx jest server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/__tests__/openai.spec.js --runInBand --coverage=false`
+    passed with 34 tests.
+  - `node -c api/server/services/ToolService.js` passed.
+  - `node -c api/server/controllers/agents/client.js` passed.
+  - ToolService red/integration test attempt:
+    `cd api && npx jest server/services/__tests__/ToolService.spec.js --runInBand --coverage=false --testNamePattern "request-scoped Steel OCR files"`
+    originally failed before assertions with `Cannot find module
+    '@langchain/core/errors'` from `@langchain/openai`; after the root
+    `@langchain/core@^1.2.1` dependency fix and API package rebuild, this
+    focused test now passes.
+  - AgentClient focused test attempt:
+    `cd api && npx jest server/controllers/agents/client.test.js --runInBand --coverage=false --testNamePattern "native Steel prefix"`
+    originally hit the same missing `@langchain/core/errors` dependency; after
+    rebuilding ignored `packages/api/dist`, the focused native Steel prefix test
+    passes with the current source implementation.
+  - `cd packages/api && npx tsc --noEmit --project tsconfig.json --pretty false`
+    still fails on existing project errors in Redis typing, OpenAI config
+    specs, missing `@langchain/core/messages`, manual Steel specs, rules
+    repository typing, and PaddleOCR manual specs; no current touched file is
+    in the TypeScript error list.
+
+Prior OCR evidence reuse addendum - 2026-06-25:
+
+- [x] Add a failing runtime context test proving active OCR extracts from Steel
+      structured state are reused on follow-up turns.
+- [x] Update `prepareSteelRuntimeContext()` so it reads `Output Sheet Memory`
+      before deciding OCR rule inclusion, derives
+      `attachments.priorActiveFileEvidence` from active
+      `derivedIndex.ocrExtracts`, and still keeps explicit prior evidence.
+- [x] Keep current-turn file bytes out of runtime context; this change only
+      replays persisted structured OCR evidence.
+- [x] Update the master framework and implementation plan Phase 7 status.
+
+Prior OCR evidence reuse verification:
+
+- Red runtime test:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts --coverage=false --runInBand --testNamePattern "reuses active OCR extracts"`
+  failed because `context.attachments.priorActiveFileEvidence` was empty.
+- Green runtime test:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts --coverage=false --runInBand --testNamePattern "reuses active OCR extracts"`
+  passed.
+- Full runtime context suite:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts --coverage=false --runInBand`
+  passed with 11 tests.
+- Focused native/tool suite:
+  `cd packages/api && npx jest src/steel/native/context.spec.ts src/steel/tools/execute.spec.ts src/steel/native/tools.spec.ts --coverage=false --runInBand`
+  passed with 24 tests.
+- Focused native/runtime package suite:
+  `cd packages/api && npx jest src/steel/runtime/context.spec.ts src/steel/native/context.spec.ts src/steel/tools/execute.spec.ts src/steel/native/tools.spec.ts src/steel/native/metadata.spec.ts src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/steel/native/agents.spec.ts src/steel/native/markdown.spec.ts src/agents/responses/__tests__/service.test.ts --coverage=false --runInBand`
+  passed with 78 tests.
+- `git diff --check` passed.
+- `cd packages/api && npx tsc --noEmit --project tsconfig.json --pretty false`
+  still fails on existing project errors in Redis typing, OpenAI config specs,
+  missing `@langchain/core/messages`, manual Steel specs, rules repository
+  typing, and PaddleOCR manual specs; no runtime context file touched in this
+  slice is in the TypeScript error list.
+
+# Active: Phase 8 Native Steel Event Mapping
+
+Goal: expose persisted Steel parse/save/tool capture status through native
+LibreChat stream surfaces without persisting internal activity as assistant
+message text.
+
+Plan:
+
+- [x] Add package-level regression coverage for mapping Steel native capture
+      results into stream event envelopes.
+- [x] Emit native `steel_event` envelopes after native UI assistant Markdown
+      capture succeeds.
+- [x] Emit native `steel_event` envelopes after native Steel tool-result capture
+      succeeds.
+- [x] Keep Open Responses Markdown capture durable and protocol-compatible; do
+      not inject custom SSE into the Open Responses-compatible stream yet.
+- [x] Re-run focused verification under Node 24 after the local shell PATH was
+      corrected.
+
+Design lock:
+
+- `packages/api/src/steel/native/events.ts` owns event mapping.
+- Native UI assistant Markdown capture emits `parse_status` and `memory_saved`
+  envelopes when capture results have parse status or persisted state counts.
+- Native Steel tool-result capture emits `memory_saved` envelopes after
+  persisted tool evidence has saved counts.
+- Skipped captures and zero saved-count captures emit no Steel events.
+- Open Responses route capture stays in `saveResponseOutput()` after
+  `db.saveMessage`; custom Steel events for that protocol require a future
+  LibreChat-owned side channel.
+
+Review - 2026-06-25:
+
+- Added `packages/api/src/steel/native/events.ts` and
+  `packages/api/src/steel/native/events.spec.ts`.
+- Updated `packages/api/src/steel/native/index.ts` to export the event mapper.
+- Updated `api/server/services/Endpoints/agents/initialize.js` to emit native
+  Steel events after `captureSteelNativeAssistantMarkdown()`.
+- Updated `api/server/services/ToolService.js` to emit native Steel events after
+  `captureSteelNativeToolResult()`.
+- Updated focused Jest coverage in:
+  - `api/server/services/Endpoints/agents/initialize.spec.js`
+  - `api/server/services/__tests__/ToolService.spec.js`
+- Added root `unrun@0.3.1` devDependency because `packages/api` `tsdown`
+  build requires that optional peer in this checkout.
+- Node 24 verification used:
+  `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH`.
+
+Verification:
+
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm ci --dry-run --ignore-scripts --cache /private/tmp/librechat-npm-cache`
+  passed.
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm ls unrun --depth=0`
+  passed and reported `unrun@0.3.1`.
+- `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed.
+- `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/events.spec.ts src/steel/native/markdown.spec.ts --coverage=false --runInBand`
+  passed with 10 tests.
+- `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/services/Endpoints/agents/initialize.spec.js --runInBand --coverage=false --testNamePattern "emits native Steel parse"`
+  passed.
+- `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/services/__tests__/ToolService.spec.js --runInBand --coverage=false --testNamePattern "request-scoped Steel OCR files"`
+  passed.
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH node -c api/server/services/ToolService.js`
+  passed.
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH node -c api/server/services/Endpoints/agents/initialize.js`
+  passed.
+
+Frontend live activity addendum - 2026-06-25:
+
+- [x] Add failing frontend coverage for native `steel_event` activity storage.
+- [x] Add failing frontend coverage for assistant-message Steel activity
+      rendering.
+- [x] Add focused resumable SSE coverage so `steel_event` routes to Steel
+      activity handling instead of the generic run-step handler.
+- [x] Implement client live activity state and rendering without mutating
+      assistant message text/content.
+- [x] Route both legacy SSE and resumable SSE `steel_event` envelopes to the
+      Steel activity handler.
+
+Frontend design lock:
+
+- `client/src/store/steel.ts` owns live native Steel activity state keyed by
+  assistant `messageId`.
+- `client/src/hooks/SSE/useSteelEventHandler.ts` validates native event
+  envelopes, falls back tool-result events without `messageId` to the current
+  assistant response, deduplicates replayed envelopes, and bounds the activity
+  list.
+- `client/src/components/Chat/Messages/Content/SteelActivity.tsx` renders
+  localized parse/save status under assistant messages only.
+- Activity is live UI state, not persisted assistant text and not an injected
+  content part.
+- `packages/client` was rebuilt under Node 24 because its prior local `dist`
+  lacked `index.cjs`, which made client Jest fail to resolve
+  `@librechat/client`.
+
+Frontend verification:
+
+- Red frontend tests:
+  - `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx --runInBand --coverage=false`
+    first failed because `~/store/steel` did not exist.
+  - `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --coverage=false`
+    first failed because `~/store/steel` did not exist.
+- `cd packages/client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed and restored `@librechat/client` CJS/ESM outputs for client Jest.
+- `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx src/components/Chat/Messages/Content/__tests__/ContentParts.test.tsx --runInBand --coverage=false`
+  passed with 13 tests.
+- `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/hooks/SSE/__tests__/useResumableSSE.spec.ts --runInBand --coverage=false --testNamePattern "routes native Steel"`
+  passed.
+- `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx tsc --noEmit --project tsconfig.json --pretty false`
+  passed.
+- `git diff --check` passed.
+
+Phase 9 decision correction - 2026-06-25:
+
+- [x] Locked user correction: all Steel-related native modules are globally
+      open by default.
+- [x] Do not add Steel-specific role, capability, or permission gates for Steel
+      rules, context, quote/OCR behavior, or read-only AI tools.
+- [x] Preserve only existing LibreChat-owned permission paths for files, MCP
+      auth, provider/model config, and admin settings.
+- [x] Re-verified Steel model/default provider contracts under Node 24.
+
+Phase 9 verification:
+
+- `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/services/__tests__/ToolService.spec.js --runInBand --coverage=false --testNamePattern "request-scoped Steel OCR files"`
+  passed after the access-gate direction was removed.
+- `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/provider.spec.ts src/steel/models.spec.ts --coverage=false --runInBand`
+  passed with 7 tests.
+- `cd packages/data-provider && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/ai.spec.ts --coverage=false --runInBand`
+  passed with 9 tests.
+- `git diff --check` passed.
+
+# Active: Phase 10 Native Steel UI Smoke And Rule Sync Check
+
+Goal: verify the normal LibreChat chat path has global Steel context/tools,
+captures Steel quote state from assistant Markdown, renders native Steel
+activity, and follows the ERP `system_order` item numbering rule.
+
+Plan:
+
+- [x] Check whether the `10、20、30` item-number rule exists in local/global
+      Steel rule content.
+- [x] Query the cloud Steel `rules` table through `.env` `STEEL_POSTGRES_URL`
+      without exposing secrets.
+- [x] Update the mock Steel native fixture so successful output requires the
+      `10、20、30` rule marker and emits `項次=10`.
+- [x] Add E2E coverage that asserts the rendered system-order row uses
+      `項次=10`, not sequential `1`.
+- [x] Fix native Markdown extraction for persisted content-part text shaped as
+      `{ text: { value } }`.
+- [x] Rebuild the production frontend bundle before judging Playwright UI
+      activity assertions.
+- [x] Run focused frontend/backend tests and the native Steel mock E2E.
+
+Findings:
+
+- Cloud `steel.rules` contains the reviewed active
+  `steel-workbook-output-policy` rule with `項次 採主項 / 次項：材料主項為
+  10、20、30；附屬加工為 11、12、21、22。`
+- The missing activity assertion was not a cloud rule sync issue. The backend
+  SSE trace already emitted `steel_event` envelopes with the same final
+  assistant `messageId`; the failing run served an old `client/dist` bundle
+  from before the native Steel activity UI was built.
+
+Review - 2026-06-26:
+
+- Updated `e2e/setup/fake-model.js` so the Steel native smoke fixture requires
+  the `10、20、30` context marker and returns a `system_order` table row with
+  `項次=10`.
+- Updated `e2e/specs/mock/steel-native.spec.ts` to assert the first rendered
+  table row has `項次=10`.
+- Updated `packages/api/src/steel/native/markdown.ts` and spec coverage so
+  Markdown capture reads both string text parts and persisted
+  `{ text: { value } }` content parts.
+- Rebuilt production frontend assets with `npm run frontend`; mock Playwright
+  uses those assets via the backend, so direct Playwright runs must not skip
+  this step after client changes.
+
+Verification:
+
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run frontend`
+  passed.
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium`
+  passed with 1 test.
+- `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx src/components/Chat/Messages/Content/__tests__/ContentParts.test.tsx src/hooks/SSE/__tests__/useResumableSSE.spec.ts --runInBand --coverage=false --testNamePattern "Steel|steel"`
+  passed with 7 matching tests; the unrelated non-Steel tests in that command
+  were skipped by the test-name filter.
+- `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/markdown.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+  passed with 12 tests.
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH node --check e2e/setup/fake-model.js`
+  passed.
+
+# Active: Phase 10 Native Steel Attachment Smoke Closeout
+
+Goal: extend the normal LibreChat mock smoke so a Steel native quote turn with a
+PDF provider attachment proves the file stays in LibreChat's provider-visible
+file path while Steel context/tools/activity remain globally available.
+
+Plan:
+
+- [x] Add a failing Playwright mock assertion for Steel native context plus a
+      PDF provider attachment.
+- [x] Update the fake model harness so the assertion fails unless the Steel
+      global context/tools are model-visible and the requested filename is
+      still present in the latest provider file content.
+- [x] Rebuild the production frontend bundle before judging Playwright UI
+      behavior.
+- [x] Re-run the focused mock E2E, frontend Steel activity tests, native
+      package tests, JS syntax check, and `git diff --check`.
+- [x] Record review evidence.
+
+Design lock:
+
+- This is a credential-free mock smoke for the normal LibreChat chat path.
+- Do not call the real PaddleOCR/OCR runner from this smoke; package-level
+  coverage already proves `run_file_ocr` receives permitted file bytes through
+  injected dependencies.
+- Do not change LibreChat layout. Steel activity stays under the assistant
+  message through the existing content rendering slot.
+- Native OpenAI OAuth API live smoke remains credential-dependent; contract
+  coverage for the adapter/run seam remains the default non-secret proof unless
+  a valid local OAuth auth file is available for a live run.
+
+Review - 2026-06-26:
+
+- Added a normal LibreChat mock E2E that uploads a provider PDF and requires
+  Steel global context/tools plus the latest provider-visible filename before
+  returning a `system_order` quote table.
+- The first red run failed before final text because the mock endpoint context
+  budget was too small for the native Steel prefix plus provider PDF message;
+  `e2e/config/librechat.e2e.yaml` now gives `mock-model-a` a static 200000
+  context window for this smoke fixture only.
+- The second red run failed because the fake model harness did not yet know the
+  Steel native PDF assertion marker.
+- Green evidence is covered by the full `steel-native.spec.ts` Playwright run
+  below, which now includes both the existing native smoke and provider-PDF
+  smoke.
+
+# Active: Phase 10 PL.pdf Two-Round OCR Quote Gate
+
+Goal: prove the normal LibreChat chat path can handle the required Steel OCR
+quote flow for `docs/reference/example/PL.pdf`: first assistant turn returns
+OCR confirmation only, and the second turn after user confirmation returns a
+quote from the confirmed OCR table without changing the existing LibreChat
+layout.
+
+Plan:
+
+- [x] Add a failing normal-chat Playwright mock flow using `PL.pdf`:
+      first turn uploads the PDF and asks for OCR confirmation, then asserts no
+      `system_order` quote table is rendered.
+- [x] Extend the fake model harness so first-turn PL OCR assertions require
+      Steel global context/tools plus the requested provider filename.
+- [x] Add a second-turn mock assertion that fails unless the previous assistant
+      OCR confirmation table is visible in reconstructed conversation history.
+- [x] Make the second turn return a `system_order` quote table only after user
+      confirmation, keeping item numbering at `10` and activity under the
+      assistant message.
+- [x] Rebuild the production frontend bundle before Playwright judgment.
+- [x] Re-run focused mock E2E, frontend Steel activity tests, native package
+      tests, OAuth adapter/run tests, JS syntax check, and `git diff --check`.
+- [x] Record review evidence and remaining live-OAuth/PaddleOCR manual smoke
+      gaps.
+
+Design lock:
+
+- The product behavior is normal LibreChat chat with global Steel context, not
+  `/steel/oauth-chat`.
+- Credential-free mock E2E must not call the real PaddleOCR runner. Real
+  OpenAI OAuth + PaddleOCR validation remains a manual/live smoke gated by
+  local secrets and long timeouts.
+- OCR first turn must not output `system_order` or `customer_quote` and must
+  not imply final pricing.
+- The confirmation turn must reuse the prior OCR confirmation from history and
+  must not require a second file upload or a second OCR pass.
+- Do not change LibreChat UI/UX layout; only assert existing message content,
+  attachment chips, and Steel activity placement.
+
+Review - 2026-06-26:
+
+- Added `PL.pdf` as the real fixture upload source in
+  `e2e/specs/mock/steel-native.spec.ts`.
+- Added the two-turn normal-chat mock flow:
+  - first turn uploads `PL.pdf`, requires Steel global context/tools and the
+    provider-visible filename, renders only an OCR confirmation table, and
+    asserts no `system_order` / `customer_quote` output;
+  - second turn sends explicit user confirmation, requires the prior assistant
+    OCR confirmation table in reconstructed history, and only then renders a
+    `system_order` table with item number `10`.
+- Extended `e2e/setup/fake-model.js` with PL OCR and PL quote markers so the
+  test fails if normal chat history reconstruction loses the first OCR table.
+- Synced reviewed cloud Steel rules from repo `docs/rules/*.txt` through
+  `node packages/api/scripts/sync-steel-rules.cjs --apply`, then read back the
+  active reviewed `steel-default-agent-instruction` and
+  `steel-workbook-output-policy` rules. The readback confirms the required
+  OCR gate fragments are present, including first-turn OCR confirmation,
+  no price lookup before confirmation, no second `run_file_ocr` after
+  confirmation, required `孔數 / 件` and `總孔數`, and `10/11/20/21` item
+  numbering.
+- OpenAI OAuth + real PaddleOCR live smoke was not run in this environment:
+  `.env` has `STEEL_POSTGRES_URL`, but no `STEEL_OPENAI_OAUTH_AUTH_FILE` and no
+  PaddleOCR endpoint/API-key variables were configured.
+
+Verification:
+
+- Red test:
+  `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium --grep "gates PL.pdf"`
+  failed because `E2E Steel native PL OCR confirmation passed` was not rendered.
+- Green focused PL flow:
+  `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium --grep "gates PL.pdf"`
+  passed with 1 test.
+- Full Steel native mock E2E:
+  `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium`
+  passed with 3 tests.
+- Frontend Steel activity tests:
+  `cd client && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx src/components/Chat/Messages/Content/__tests__/ContentParts.test.tsx src/hooks/SSE/__tests__/useResumableSSE.spec.ts --runInBand --coverage=false --testNamePattern "Steel|steel"`
+  passed with 7 matching tests.
+- Native package/OAuth/runtime tests:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/steel/native/markdown.spec.ts src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts src/steel/tools/execute.spec.ts --coverage=false --runInBand`
+  passed with 47 tests.
+- Native OAuth run seam:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "Steel native OpenAI OAuth"`
+  passed with 1 matching test.
+- `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH node --check e2e/setup/fake-model.js`
+  passed.
+- `git diff --check` passed.
+
+# Active: Phase 10 Prompt-Only OCR Strategy Research
+
+Goal: realign the Steel OCR quote flow so `/steel/oauth-chat` and normal
+LibreChat Steel chat are guided by prompt/rule context only. Do not add runtime
+workflow gates such as `ocrWorkflow`, `policy_blocked`, or hidden tool blockers.
+
+Correction lock:
+
+- User correction: `/steel/oauth-chat` has no runtime gate; the first-turn OCR
+  and second-turn quote behavior must come from agent prompt/rule guidance.
+- Superseded direction: explicit OCR workflow phase signals, provider-side tool
+  blocking, and activity UI for blocked calls.
+- UI/UX lock: no LibreChat layout changes.
+
+Plan:
+
+- [x] Record the correction in `tasks/lessons.md`.
+- [x] Remove the code-level `ocrWorkflow` and `policy_blocked` residues from
+      runtime/native/provider/tool result paths.
+- [x] Trace `/steel/oauth-chat` routing, history reconstruction, runtime
+      context serialization, OpenAI OAuth prompt construction, and tool loop.
+- [x] Reframe the strategy around prompt/rule/history/evidence rather than
+      backend phase gates.
+- [x] Run focused Jest/build/diff checks proving no runtime gate residues remain.
+- [x] Record verification results and remaining live OpenAI OAuth / PaddleOCR
+      smoke gap.
+
+Research - 2026-06-26:
+
+- `/steel/oauth-chat` routes `POST /ai/chat` and `POST /ai/chat/stream` through
+  `createSteelHandlers`; file bytes are resolved as provider evidence files,
+  not as a separate OCR workflow state machine.
+- `prepareChatContext` reconstructs the active conversation history and appends
+  the current user turn. The second user confirmation therefore reaches the
+  provider together with the first assistant OCR confirmation table.
+- `buildSteelRuntimeContext` passes `activeHistory`, `currentUserTurn`,
+  `currentTurnFiles`, and Output Sheet Memory into `prepareSteelRuntimeContext`.
+  It does not need to decide an OCR phase.
+- `prepareSteelRuntimeContext` includes OCR-related reviewed rules whenever the
+  current turn, prior history, or prior active file evidence indicates PDF/image
+  OCR context. It also serializes prior OCR extracts from Output Sheet Memory.
+- `sendSteelOAuthChat` creates the OpenAI OAuth Responses provider with
+  `responsesState: false`, prepends `Steel Runtime Context` as a system
+  instruction, passes file parts to the model, exposes Steel business tools, and
+  uses `toolChoice: auto`.
+- The provider loop executes whatever Steel tool calls the model selects, then
+  appends assistant tool-call messages and tool-result messages back into the
+  prompt for the next round. This is an agent loop, not a gate.
+- Successful tool results are captured into Working Order Memory / Output Sheet
+  Memory. That gives the next user turn prompt-visible OCR evidence without
+  requiring another file upload or another `run_file_ocr` call.
+
+Prompt-only strategy:
+
+- First turn with a PDF: reviewed Steel rules plus current file evidence should
+  guide the model to call `run_file_ocr`, then answer with an OCR confirmation
+  table only.
+- Before user confirmation: reviewed output rules should tell the model not to
+  produce `system_order` or `customer_quote` quote tables.
+- Second turn after user confirmation: reconstructed history plus prior OCR
+  evidence should guide the model to reuse the confirmed OCR table, call
+  pricing/search tools as needed, and produce ERP-facing quote tables.
+- Verification should assert visible behavior, tool-call sequence, persisted
+  OCR evidence, and rule availability. It should not add backend blockers that
+  prevent `search_price_candidates` or `run_file_ocr` from executing.
+
+Verification:
+
+- Runtime gate residue scan:
+  `rg -n "ocrWorkflow|policy_blocked|SteelRuntimeOcrWorkflow|resolveSteelRuntimeOcrWorkflow|mustNotSearchPricesBeforeConfirmation|mustNotRunFileOcrAgain" packages/api/src api/server client/src`
+  returned no matches.
+- Focused backend Jest:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/runtime/context.spec.ts src/steel/native/context.spec.ts src/steel/ai/provider.spec.ts src/steel/tools/execute.spec.ts --coverage=false --runInBand`
+  passed with 48 tests.
+- API build:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed.
+- `git diff --check` passed.
+- Real OpenAI OAuth + PaddleOCR live smoke was not run in this correction pass;
+  this pass proves the prompt-only code path compiles and the removed runtime
+  gate names are absent from code.
+
+# Active: Phase 10 OAuth Chat Prompt-Only Two-Round Regression
+
+Goal: add a handler-level regression for the `/steel/oauth-chat` dev probe that
+proves the second confirmation turn is reconstructed from conversation history
+and prompt-visible prior OCR evidence, without adding `ocrWorkflow`,
+`policy_blocked`, or any runtime tool gate.
+
+Plan:
+
+- [x] Add a failing `packages/api/src/steel/handlers.spec.ts` test for a
+      two-turn `PL.pdf` conversation where the second user message confirms the
+      first OCR table.
+- [x] Verify the red attempt. It exposed a test setup import error rather than
+      a production behavior gap.
+- [x] Implement the smallest needed change: fix the test import/helper and keep
+      production runtime unchanged.
+- [x] Run focused handler/runtime/provider tests and `git diff --check`.
+- [x] Record review evidence and whether real OpenAI OAuth + PaddleOCR live
+      smoke remains pending.
+
+Design lock:
+
+- `/steel/oauth-chat` remains a dev/smoke surface; product behavior still lives
+  in normal LibreChat global native hooks.
+- The regression must prove prompt-only behavior: second-turn provider input
+  has the prior assistant OCR table in `messages`, prior OCR evidence in
+  runtime context, AI-visible Steel tools, and no runtime OCR phase/gate field.
+- Do not assert exact human-authored rule wording. Assert stable metadata,
+  message reconstruction, tool visibility, and absence of gate fields.
+
+Review - 2026-06-26:
+
+- Added a two-call handler regression in `packages/api/src/steel/handlers.spec.ts`:
+  - first call uploads `PL.pdf`, receives a mocked `run_file_ocr` tool-status
+    result, returns an OCR confirmation table, and persists OCR evidence through
+    the real Mongo-backed Working Order Memory writer;
+  - second call sends a user confirmation in the same conversation and verifies
+    provider input contains the prior assistant OCR table, prior OCR evidence in
+    runtime context, AI-visible Steel tools, and no `ocrWorkflow` /
+    `policy_blocked` runtime gate fields.
+- The first red run failed because the new test missed the
+  `createMongooseSteelOutputSheetMemoryReader` import. That was a test setup
+  issue, not a product behavior gap.
+- After fixing the test import/helper, no production code change was required:
+  the existing prompt-only history + memory reconstruction path satisfies the
+  contract.
+- Environment check found `.env` contains database connection keys, but no
+  `STEEL_OPENAI_OAUTH_AUTH_FILE` and no PaddleOCR endpoint/API-key/MCP command
+  variables, so real OpenAI OAuth + PaddleOCR `PL.pdf` live smoke remains
+  pending.
+
+Verification:
+
+- Red/setup run:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/handlers.spec.ts --coverage=false --runInBand --testNamePattern "reconstructs confirmed PL.pdf OCR follow-up"`
+  failed with `ReferenceError: createMongooseSteelOutputSheetMemoryReader is not defined`.
+- Green focused regression:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/handlers.spec.ts --coverage=false --runInBand --testNamePattern "reconstructs confirmed PL.pdf OCR follow-up"`
+  passed with 1 matching test.
+- Focused backend suites:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/handlers.spec.ts src/steel/runtime/context.spec.ts src/steel/ai/provider.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts --coverage=false --runInBand`
+  passed with 65 tests.
+- API build:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed.
+- `git diff --check` passed.
+- Runtime gate residue scan:
+  `rg -n "ocrWorkflow|policy_blocked|SteelRuntimeOcrWorkflow|resolveSteelRuntimeOcrWorkflow|mustNotSearchPricesBeforeConfirmation|mustNotRunFileOcrAgain" packages/api/src api/server client/src`
+  now returns only the new negative assertions in
+  `packages/api/src/steel/handlers.spec.ts`.
+- Normal LibreChat PL.pdf mock E2E:
+  `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium --grep "gates PL.pdf"`
+  passed with 1 test.
+
+# Active: Phase 10 Native OAuth Follow-Up Prompt Regression
+
+Goal: protect the normal LibreChat OpenAI OAuth adapter path so reconstructed
+native chat history can carry the first OCR confirmation table into the second
+user confirmation turn while preserving `PL.pdf` provider file parts and
+AI-visible Steel tools.
+
+Plan:
+
+- [x] Add a `packages/api/src/steel/native/oauth.spec.ts` regression
+      covering system Steel context, prior assistant OCR table, current
+      confirmation text, current `PL.pdf` file part, and Steel tool schema in
+      one native OpenAI OAuth invoke.
+- [x] Verify the run. The regression passed immediately, so the adapter already
+      satisfied this prompt reconstruction contract.
+- [x] Implement the smallest native OAuth adapter change if the red run exposes
+      a real gap. No production change was needed.
+- [x] Run focused native OAuth/provider/run tests, API build, and
+      `git diff --check`.
+- [x] Record review evidence and the remaining real OpenAI OAuth + PaddleOCR
+      `PL.pdf` live smoke gap.
+
+Design lock:
+
+- This is normal LibreChat native chat coverage, not `/steel/oauth-chat`.
+- OpenAI OAuth stays stateless with `responsesState: false`.
+- The test should assert stable provider call structure: roles, OCR table
+  history text, confirmation text, `PL.pdf` file part, `toolChoice:auto`, and
+  tool names. Do not assert reviewed rule wording.
+
+Review - 2026-06-26:
+
+- Added native OpenAI OAuth adapter regression coverage in
+  `packages/api/src/steel/native/oauth.spec.ts`.
+- The regression invokes the adapter with:
+  - system Steel Runtime Context text;
+  - a prior assistant OCR confirmation markdown table;
+  - the current user confirmation turn;
+  - a current `PL.pdf` `input_file` part;
+  - `run_file_ocr` and `search_price_candidates` tool schemas.
+- The assertion verifies the OpenAI OAuth provider call receives the full
+  reconstructed prompt, keeps the assistant OCR table as assistant history,
+  converts the current `PL.pdf` into an AI SDK file part, and uses
+  `toolChoice: auto` with both Steel tools.
+- The new regression passed on the first valid run, so the existing adapter
+  already satisfied this contract; no production code change was required.
+- Checked the new native OAuth spec for banned wording-fragment matchers:
+  no `stringContaining`, `toContain`, or `toMatch` remain in that spec.
+- `.env` currently exposes `MONGO_URI` and `STEEL_POSTGRES_URL`, but not
+  `STEEL_OPENAI_OAUTH_AUTH_FILE` or PaddleOCR endpoint/API-key/MCP command
+  variables, so real OpenAI OAuth + PaddleOCR `PL.pdf` live smoke remains
+  pending.
+
+Verification:
+
+- Focused native OAuth/provider/run pattern:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "OpenAI OAuth|OAuth|reconstructed PL.pdf|Steel native"`
+  passed with 11 matching tests.
+- Full relevant native OAuth/provider/run suites:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand`
+  passed with 75 tests.
+- API build:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed.
+- `git diff --check` passed.
+- `rg -n "stringContaining|toContain|toMatch" packages/api/src/steel/native/oauth.spec.ts`
+  returned no matches.
+
+# Active: Phase 10 PL.pdf Live Smoke Harness
+
+Goal: add a direct manual live smoke target for the final fixture
+`docs/reference/example/PL.pdf`, using OpenAI OAuth `gpt-5.5` and the
+prompt-only two-round OCR confirmation flow.
+
+Plan:
+
+- [x] Add a gated manual Jest spec for `PL.pdf` live smoke, separate from the
+      existing PB-specific manual spec.
+- [x] Keep user prompts simple and free of embedded rule/tool instructions.
+- [x] Assert first turn runs OCR and does not call price lookup before user
+      confirmation.
+- [x] Assert second turn uses the confirmed OCR table, does not rerun OCR, calls
+      price lookup, and returns a quote table.
+- [x] Run the spec in default skipped mode, focused backend checks, API build,
+      and `git diff --check`.
+- [x] Record the exact env gap if the real live run still cannot execute.
+
+Design lock:
+
+- Manual live smoke is gated by `STEEL_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true`
+  so normal local test runs stay deterministic.
+- Do not copy PB.pdf's full fixture-specific ERP assertions; keep this target
+  focused on the final requested `PL.pdf` two-round quote behavior.
+- Do not add OCR runtime gates. The model is guided by reviewed runtime rules,
+  prompt history, confirmed OCR evidence, and tool availability.
+
+Review - 2026-06-26:
+
+- Added `packages/api/src/steel/ai/provider.pl-pdf-quote.manual.spec.ts`, a
+  gated manual live smoke for `docs/reference/example/PL.pdf`.
+- The live spec uses two plain user turns:
+  - first: `請處理附檔 PL.pdf。`
+  - second: `確認上一輪 OCR 表格正確，請依 OCR 表單給出報價。`
+- The spec verifies the strategy through provider/tool behavior rather than a
+  backend workflow gate:
+  - OpenAI OAuth model must be `gpt-5.5`;
+  - first turn must complete `run_file_ocr`;
+  - first turn must not call `search_price_candidates`;
+  - first assistant response must include an OCR confirmation table;
+  - second turn includes the previous assistant OCR table and OCR tool evidence;
+  - second turn must not rerun OCR;
+  - second turn must call `search_price_candidates`;
+  - second assistant response must include a quote table.
+- No `ocrWorkflow` or `policy_blocked` runtime gate was added. The AI agent is
+  guided by serialized Steel runtime context, reviewed OCR/output rules,
+  reconstructed conversation history, confirmed OCR evidence, and visible tools.
+- The manual spec avoids exact human-wording match assertions; the local grep
+  check found no `stringContaining`, `toContain`, or `toMatch` in the new file.
+- Live run env gap remains:
+  - `.env` has `MONGO_URI` and `STEEL_POSTGRES_URL`;
+  - `.env` does not expose `STEEL_OPENAI_OAUTH_AUTH_FILE`;
+  - `.env` does not expose PaddleOCR endpoint/API key or MCP command variables.
+
+Verification:
+
+- Manual spec readiness with live env disabled:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/ai/provider.pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+  passed with 1 skipped test. This override is required because repo Jest
+  config intentionally ignores `*.manual.spec.ts`.
+- Focused backend behavior:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/ai/provider.spec.ts src/steel/tools/execute.spec.ts src/steel/runtime/context.spec.ts --coverage=false --runInBand`
+  passed with 43 tests.
+- API build:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed.
+- `git diff --check` passed.
+- `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx tsc --noEmit --project tsconfig.spec.json --pretty false`
+  still fails on existing unrelated errors in Redis cache typing,
+  `provider.pb-pdf-quote.manual.spec.ts`, `provider.pricing-live.manual.spec.ts`,
+  Steel memory service spec, rule repository typing, and PaddleOCR manual specs;
+  the new `provider.pl-pdf-quote.manual.spec.ts` is not in the error list.
+
+# Active: Phase 10 Native OpenAI OAuth PL.pdf Live Smoke Harness
+
+Goal: add a gated live smoke target for the normal LibreChat native OpenAI OAuth
+adapter path, using `docs/reference/example/PL.pdf`, `gpt-5.5`, visible Steel
+tools, and the prompt-only two-round OCR confirmation quote flow.
+
+Plan:
+
+- [x] Add a native OpenAI OAuth manual spec that uses the native LangChain
+      message/file/tool adapter shape, not `/steel/oauth-chat`.
+- [x] Keep first and second user prompts simple and free of embedded tool/rule
+      instructions.
+- [x] In the first turn, assert the model calls `run_file_ocr`, does not call
+      `search_price_candidates`, and returns an OCR confirmation table.
+- [x] In the second turn, assert the prompt carries the prior assistant OCR
+      table and prior OCR evidence, does not re-upload or re-OCR by default,
+      calls `search_price_candidates`, and returns a quote table.
+- [x] Run the new manual spec in default skipped mode, focused native/OAuth
+      suites, API build, matcher grep, runtime-gate grep, and `git diff --check`.
+- [x] Record the remaining real live run env gap if credentials/PaddleOCR are
+      still absent.
+
+Design lock:
+
+- This harness is native adapter evidence for normal LibreChat chat parity; it
+  must not make `/steel/oauth-chat` a product dependency.
+- Do not add `ocrWorkflow`, `policy_blocked`, or hidden runtime blockers. The
+  strategy remains model-guided by serialized Steel runtime context, reviewed
+  rules, prompt history, prior OCR evidence, and auto-selected tools.
+- Do not change LibreChat UI/UX layout.
+
+Review - 2026-06-26:
+
+- Added `packages/api/src/steel/native/oauth-pl-pdf-quote.manual.spec.ts`, a
+  gated live smoke for the native OpenAI OAuth adapter path.
+- The spec uses `buildSteelGlobalAgentContext()` and
+  `createSteelNativeOpenAIOAuthModel()`, then runs native-style LangChain
+  messages through a small manual tool loop:
+  - first turn sends `PL.pdf` as a provider `input_file`, binds native Steel
+    tool definitions, executes returned Steel tool calls through
+    `executeSteelTool()`, and writes JSON tool results back as `ToolMessage`;
+  - second turn sends no provider file part, includes the prior assistant OCR
+    table in reconstructed history, includes prior OCR evidence in native
+    runtime context, and runs the same native OAuth/tool loop.
+- Real live smoke passed using `gpt-5.5`, `/Users/neven/.codex/auth.json`, and
+  the repo `.env` PaddleOCR MCP token:
+  - first turn took 2 model/tool rounds and called only `run_file_ocr`;
+  - second turn took 2 model/tool rounds and called only
+    `search_price_candidates`;
+  - reusable OCR evidence count was 1;
+  - first assistant response returned an OCR confirmation table;
+  - second assistant response returned a quote table with ERP-style `項次`,
+    `型號`, and `品名規格` headers.
+- Evidence was written to
+  `tmp/steel-native-openai-oauth-pl-pdf-quote-live-evidence.json`; a local scan
+  found no `access_token`, `authorization`, `Bearer`, or `authFile` marker.
+- No `ocrWorkflow`, `policy_blocked`, runtime blocker, or UI/UX layout change
+  was added. The live pass is still adapter/harness-level native evidence; a
+  full browser UI live run remains a separate Phase 10 parity check.
+
+Verification:
+
+- First live attempt without ESM VM support:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true STEEL_OPENAI_OAUTH_AUTH_FILE=/Users/neven/.codex/auth.json npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+  failed before provider execution with Jest dynamic import error:
+  `A dynamic import callback was invoked without --experimental-vm-modules`.
+- Live native OpenAI OAuth + PaddleOCR PL.pdf smoke:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH NODE_OPTIONS=--experimental-vm-modules STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true STEEL_OPENAI_OAUTH_AUTH_FILE=/Users/neven/.codex/auth.json npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+  passed with 1 test in 201103 ms.
+- Manual spec readiness with live env disabled:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+  passed with 1 skipped test.
+- Focused native OAuth/tool/run suites:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/steel/native/tools.spec.ts src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "OpenAI OAuth|OAuth|reconstructed PL.pdf|Steel native|tool adapter"`
+  passed with 16 tests and 64 skipped tests.
+- API build:
+  `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+  passed.
+- `rg -n "stringContaining|toContain|toMatch" packages/api/src/steel/native/oauth-pl-pdf-quote.manual.spec.ts`
+  returned no matches.
+- `rg -n "ocrWorkflow|policy_blocked" packages/api/src/steel/native/oauth-pl-pdf-quote.manual.spec.ts packages/api/src/steel/native packages/api/src/steel/ai/provider.ts packages/api/src/steel/handlers.ts`
+  returned no matches.
+- `git diff --check` passed.
+- `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx tsc --noEmit --project tsconfig.spec.json --pretty false`
+  still fails on existing unrelated Redis/manual-spec/rule-repository errors;
+  the new native PL OAuth manual spec is not in the error list.
+
+# Active: Phase 10 OAuth Chat Agent Strategy Re-Review
+
+Goal: re-study `/steel/oauth-chat` as a development probe and lock how it guides
+the AI agent without runtime OCR workflow gates, so the same strategy can be
+carried into normal LibreChat native chat.
+
+Plan:
+
+- [x] Re-read `/steel/oauth-chat` route, handler, runtime context, provider loop,
+      native context, and native tool merge call sites.
+- [x] Separate prompt/rule guidance from runtime blockers.
+- [x] Compare the standalone OAuth chat path against native LibreChat agent,
+      Responses, OpenAI-compatible, ToolService, and provider-policy seams.
+- [x] Record the strategy lock and remaining browser UI parity gap.
+
+Research - 2026-06-26:
+
+- `/steel/oauth-chat` is still a dev-only route. It enters through
+  `api/server/routes/steel/index.js`, then `createSteelHandlers()` in
+  `packages/api/src/steel/handlers.ts`.
+- The route reconstructs conversation history in `prepareChatContext()`, then
+  calls `prepareSteelRuntimeContext()` through `buildSteelRuntimeContext()`.
+  The second confirmation turn therefore includes the prior assistant OCR
+  table as normal chat history.
+- `prepareSteelRuntimeContext()` decides whether OCR/file rules are present
+  from current files, active history, current turn, and persisted OCR evidence.
+  This is context selection, not a runtime workflow phase.
+- `sendSteelOAuthChat()` prepends `Steel Runtime Context` as a system
+  instruction, uses `openai-oauth-provider` with `responsesState: false`,
+  exposes Steel tools with `toolChoice: auto`, and appends assistant tool calls
+  plus JSON tool-result messages back into the next provider round.
+- The apparent "OCR confirmation gate" lives in reviewed rule text such as
+  `docs/rules/agent規則.txt`; it is a prompt contract. It must not become
+  `ocrWorkflow`, `policy_blocked`, or provider-side tool blocking.
+- Normal LibreChat already follows the same shape through native seams:
+  `AgentClient`, Responses, and OpenAI-compatible controllers build
+  `buildDefaultSteelGlobalAgentContext()`, place stable rules in agent
+  instructions, place runtime workbook/context text in `additional_instructions`,
+  and let `ToolService` merge executable Steel tools into normal LibreChat tool
+  loading.
+- OpenAI OAuth API support in normal LibreChat is owned by the native provider
+  policy / graph override path, not by routing product traffic through
+  `/steel/oauth-chat`.
+
+Strategy lock:
+
+- Keep `/steel/oauth-chat` only as a comparator for prompt construction, live
+  OAuth/PaddleOCR behavior, and activity-log inspection.
+- Preserve the prompt-only two-turn flow:
+  first turn with PDF/image -> model calls `run_file_ocr` and returns OCR
+  confirmation table only; user confirms or corrects; second turn -> model
+  reuses confirmed OCR/history/evidence, calls pricing tools, and returns quote
+  tables.
+- Do not add hidden runtime blockers for wrong tool choice. Improve behavior by
+  tightening reviewed rules, context ordering, tool descriptions, persisted OCR
+  evidence, and verification fixtures.
+- Native parity proof should verify prompt-visible prior OCR table/evidence,
+  tool-call sequence, quote output, and no UI/UX layout change. The remaining
+  work is a full browser UI live smoke for normal LibreChat with OpenAI OAuth
+  API and `PL.pdf`.
+
+# Active: Phase 10 LibreChat Native Context De-Duplication
+
+Goal: split LibreChat native Steel context preparation from `/steel/oauth-chat`
+context preparation so normal LibreChat chat history remains the only source of
+prompt-visible user/assistant text, while Steel runtime context carries only
+non-chat-content state and metadata before browser UI live smoke work continues.
+
+Plan:
+
+- [x] Compare `/steel/oauth-chat` `prepareChatContext()` with normal LibreChat
+      native agent history construction.
+- [x] Identify whether prior assistant OCR Markdown is already sent through
+      normal provider messages.
+- [x] Add focused coverage proving LibreChat native runtime context does not
+      carry chat message text or prior assistant OCR Markdown.
+- [x] Add LibreChat-native `prepareChatContext` and `prepareRuntimeContext`
+      seams instead of reusing `/steel/oauth-chat` `prepareChatContext()` or the
+      generic `prepareSteelRuntimeContext()` directly.
+- [x] Replace serialized native history content with metadata/reference fields
+      while preserving rule selection, tool policy, workbook state, and file
+      metadata.
+- [x] Run focused Steel context/provider/handler checks and grep for forbidden
+      runtime OCR gates.
+
+Research - 2026-06-26:
+
+- `/steel/oauth-chat` still needs `prepareChatContext()`. It owns the dev-only
+  endpoint's DB-backed history window, edit handling, queued steer source,
+  assistant turn index, and workbook/state checkpoint indices.
+- Standard LibreChat native chat already builds provider history from
+  `orderedMessages` in `AgentClient`; OpenAI OAuth native adapter converts
+  those BaseMessages into provider user/assistant/tool messages.
+- The duplicate is not `prepareChatContext()` by itself. The duplicate is
+  `serializeSteelRuntimeContext()`, which currently serializes
+  `conversation.activeHistory[].content` and `currentUserTurn.content` into the
+  runtime context that is also prepended as system/additional instructions.
+- For the PL.pdf two-turn flow, the prior assistant OCR table should appear via
+  normal chat history only. Runtime context may keep role/message/file
+  references for diagnostics and rule selection, but should not include the
+  assistant OCR Markdown body again.
+- LibreChat native also needs a dedicated runtime preparer. It should not pass
+  raw LibreChat chat text through the generic Steel runtime context path. Its
+  context contract is non-chat-content state: reviewed rules, tool policy,
+  Markdown-derived workbook/quote summary and indexes, OCR/file evidence
+  references, attachment metadata, request IDs, and diagnostic metadata.
+- Workbook/quote state originates from assistant response Markdown that is auto
+  parsed and saved. Native context should not inline full saved Markdown tables.
+  Full information should be the assistant Markdown in chat history, with a
+  read-Markdown style tool available to recover parsed/saved quote or workbook
+  content from the database when token compression loses it.
+- One LibreChat conversation maps to one current Steel workbook and one current
+  OCR dataset. `read_markdown` must read by backend conversation id and
+  explicit `scope: "workbook"` or `scope: "ocr"` only; it should not require
+  semantic row queries, expose standalone quote/all scopes, or expose multiple
+  datasets per chat.
+- Assistant updates to workbook/quote tables must output complete tables.
+  Auto parse/save should whole-table overwrite the current conversation data
+  from the complete Markdown table. It should not infer row deletions, row
+  updates, or retained rows by applying partial patches.
+- Backend auto parse merges at workbook/quote sheet level: latest assistant
+  Markdown tables replace the corresponding current sheet in the singleton
+  workbook/quote; omitted sheets carry forward from the database. This is parse
+  and sheet merge only, not backend business reasoning.
+- In OCR confirmation/correction turns, AI should not call `run_file_ocr`
+  again unless the user explicitly requests rerun OCR or supplies new/changed
+  file evidence. It should update the OCR/quote Markdown from chat history and
+  user corrections, return the complete latest table, and let backend auto
+  parse/save update the current conversation state.
+
+Review - 2026-06-26:
+
+- Added LibreChat-native chat/context preparation:
+  `prepareLibreChatSteelChatContext()` and
+  `prepareLibreChatSteelRuntimeContext()` keep provider chat history as the
+  only prompt-visible source of user/assistant text, and serialize native
+  runtime messages as metadata references with `contentSource:
+  provider_messages`.
+- Native AgentClient, Open Responses, and OpenAI-compatible controller paths now
+  call the LibreChat-specific chat context preparer before building Steel global
+  context.
+- Replaced workbook row keyword recovery with `read_markdown` only. The legacy
+  active-workbook reader was removed from schema, registry, executor, tests,
+  rule sync script, and reviewed rule docs. `rg` over the repo for the old tool
+  identifier now returns no matches.
+- `read_markdown` is strict scope-only (`workbook` or `ocr`) and reads the
+  active conversation's current Markdown-derived singleton dataset from the
+  output-sheet memory reader. It converts DB JSON rows/evidence into Markdown
+  text for the AI, and rejects row queries, quote/all scopes, and conversation
+  ids before reading DB state.
+- Auto parse/save now treats backend parsing as sheet-level merge only: latest
+  complete assistant Markdown tables replace the matching current sheet by
+  deleting overwritten rows and inserting the latest current rows, while omitted
+  sheets carry forward. Partial row-change Markdown is saved as
+  calculation/manual-review evidence and does not patch active rows. OCR tool
+  capture similarly replaces the current OCR dataset for the conversation.
+- Tool and rule policy now says OCR confirmation/correction turns should update
+  and return complete latest OCR/quote Markdown directly; `run_file_ocr` is for
+  explicit rerun requests or new/changed file evidence.
+- Verification:
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/runtime/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts src/steel/ai/provider.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 73 tests.
+  - `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/controllers/agents/client.test.js server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/__tests__/openai.spec.js --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 121 tests.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build` passed.
+  - Repo-wide grep for legacy active-workbook tool identifiers returned no
+    matches.
+  - `rg -n "ocrWorkflow|policy_blocked|SteelRuntimeOcrWorkflow|resolveSteelRuntimeOcrWorkflow|mustNotSearchPricesBeforeConfirmation|mustNotRunFileOcrAgain" packages/api/src api/server client/src` returned only negative assertions in `packages/api/src/steel/handlers.spec.ts`.
+  - `git diff --check` passed.
+
+## Phase 11 Native read_markdown History-First Usage Limit
+
+Goal:
+
+- Add an AI-visible `read_markdown` usage limit for native LibreChat Steel:
+  the agent must inspect provider chat history first, and must not call
+  `read_markdown` when the needed OCR/workbook Markdown is already present and
+  complete enough in chat history.
+- Keep this as prompt/tool-policy guidance only. Do not add a runtime gate,
+  `ocrWorkflow`, or hidden backend blocker.
+- Preserve the existing `read_markdown` scope contract: only `workbook` and
+  `ocr`; no standalone quote/all scopes, row queries, or conversation ids.
+
+Plan:
+
+- [x] Add failing tests for structured `read_markdown` usage policy metadata in
+  the Steel tool registry and serialized runtime context.
+- [x] Implement the structured policy and mirror it into the AI-visible tool
+  description / runtime context.
+- [x] Update reviewed agent rules and lessons so future changes keep the same
+  history-first behavior.
+- [x] Run focused registry/runtime tests plus `git diff --check` and targeted
+  greps.
+
+Review - 2026-06-26:
+
+- Added structured `read_markdown` usage policy metadata:
+  `requiresMissingMarkdownInHistory`, `forbiddenWhenHistoryHasNeededMarkdown`,
+  `allowedScopes`, and `currentConversationScoped`.
+- Serialized the same policy into Steel runtime `toolPolicy` so native
+  LibreChat context tells the agent to inspect provider chat history first and
+  avoid `read_markdown` when the needed OCR/workbook Markdown is already present
+  and complete enough.
+- Updated reviewed agent rules and lessons with the same history-first
+  restriction. This remains prompt/tool-policy guidance only; no runtime gate or
+  OCR workflow blocker was added.
+- Verification:
+  - RED: `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/runtime/context.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` failed because `usagePolicy` and `readMarkdownUsagePolicy` were undefined.
+  - GREEN: the same command passed with 2 suites / 17 tests.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/runtime/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts src/steel/ai/provider.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 7 suites / 75 tests.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build` passed.
+  - `git diff --check` passed.
+  - Targeted grep found the new history-first policy in registry/runtime/rules
+    and only negative assertions for `ocrWorkflow` / `policy_blocked`.
+
+## Phase 12 Delete Duplicate Steel Read/Rule Tools
+
+Goal:
+
+- Delete `lookup_quote_rules` and `read_working_order_items` from the Steel
+  tool surface entirely.
+- `lookup_quote_rules` is redundant because reviewed quote rules are injected
+  into runtime context.
+- `read_working_order_items` is redundant with `read_markdown`, which recovers
+  current workbook/OCR Markdown for the active conversation.
+- Keep internal auto parse/save storage intact; this phase deletes the AI/tool
+  execution surface, not workbook/OCR persistence.
+
+Plan:
+
+- [x] Add failing tests proving both tool names are no longer schema keys,
+  executable tools, or runtime `removedTools`.
+- [x] Remove schema entries, registry definitions, executor dispatch cases, and
+  read event handling for the deleted tools.
+- [x] Update docs/lessons to point to context injection and `read_markdown`
+  instead.
+- [x] Run focused Steel tests, build, targeted grep, and `git diff --check`.
+
+Review - 2026-06-26:
+
+- Deleted `lookup_quote_rules` and `read_working_order_items` from
+  `steelToolArgsSchemas`, executable registry definitions, executor dispatch,
+  runtime `removedTools`, and stream memory-read event handling.
+- Removed `lookup_quote_rules` tool-result memory capture and stale
+  `read_working_order_items` executor wiring. Internal Working Order Memory
+  persistence/reader code remains for auto parse/save verification and DB-backed
+  current workbook state; it is no longer exposed as a Steel tool.
+- Updated legacy instruction sanitization to reference runtime-context reviewed
+  quote rules instead of `lookup_quote_rules`.
+- Verification:
+  - RED: `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/runtime/context.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` failed because schema keys and runtime `removedTools` still contained the deleted names.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/runtime/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts src/steel/ai/provider.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 7 suites / 73 tests.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build` passed.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/handlers.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 1 suite / 22 tests.
+  - `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/services/__tests__/ToolService.spec.js --coverage=false --runInBand --testNamePattern "Steel|OCR|native" --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 1 focused test.
+  - `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/services/__tests__/ToolService.spec.js --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 1 suite / 60 tests after updating generic MCP assertions to compare non-Steel tool definitions separately from globally injected Steel native tools.
+  - Targeted grep over non-test source/docs found no
+    `lookup_quote_rules`, `read_working_order_items`,
+    `ReadWorkingOrderItemsInput`, `createWorkingOrderMemoryReader`, or
+    `memoryReader:` matches.
+  - `git diff --check` passed.
+
+Review update - 2026-06-26:
+
+- Tightened `read_markdown` to the final AI-facing contract:
+  - only `scope: "workbook"` or `scope: "ocr"` is accepted;
+  - standalone quote/all scopes are rejected because quote data belongs inside
+    workbook;
+  - DB JSON rows/evidence are converted into Markdown text before returning to
+    the AI;
+  - workbook Markdown includes strict workbook/quote sheets, while OCR Markdown
+    preserves free-form OCR/drawing text and metadata for the AI to organize.
+- Changed structured storage overwrite behavior to current-only for workbook
+  and OCR:
+  - emitted complete workbook/quote sheets delete overwritten rows and insert
+    the latest current rows;
+  - OCR capture deletes the previous current OCR extract dataset for the
+    conversation before inserting the latest OCR result;
+  - partial row-change Markdown remains calculation/manual-review evidence and
+    does not patch workbook rows.
+- Updated reviewed agent rule docs, sync script tool policy, master framework,
+  and implementation plan to match the `read_markdown` Markdown-output and
+  current-only workbook/OCR contract.
+- Verification:
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/runtime/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts src/steel/ai/provider.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 75 tests.
+  - `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/controllers/agents/client.test.js server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/__tests__/openai.spec.js --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 121 tests.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "OpenAI OAuth|OAuth|reconstructed PL.pdf|Steel native" --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'` passed with 11 focused tests.
+  - `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run frontend` passed.
+  - `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium --grep "gates PL.pdf"` passed.
+  - Native OpenAI OAuth + PaddleOCR live smoke was first blocked by provider
+    quota, then re-run successfully after quota became available:
+    `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH NODE_OPTIONS=--experimental-vm-modules STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST=true STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_TIMEOUT_MS=1200000 npx jest src/steel/native/oauth-pl-pdf-quote.manual.spec.ts --coverage=false --runInBand --testNamePattern "returns OCR confirmation first, then quotes from confirmed OCR evidence" --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+    passed with 1 live test in 188.53s.
+  - Live evidence was written to
+    `tmp/steel-native-openai-oauth-pl-pdf-quote-live-evidence.json`: first turn
+    called only `run_file_ocr` and returned OCR confirmation Markdown; second
+    turn included prior assistant OCR Markdown in normal chat history, called
+    `search_price_candidates`, did not call `run_file_ocr`, did not call
+    `read_markdown`, and returned `system_order`, `customer_quote`, and
+    `manual_review`.
+  - Repo-wide grep for legacy active-workbook tool identifiers returned no
+    matches.
+  - `rg -n "ocrWorkflow|policy_blocked|SteelRuntimeOcrWorkflow|resolveSteelRuntimeOcrWorkflow|mustNotSearchPricesBeforeConfirmation|mustNotRunFileOcrAgain" packages/api/src api/server client/src` returned only negative assertions in `packages/api/src/steel/handlers.spec.ts`.
+  - `git diff --check` passed.
+
+Completion review - 2026-06-26:
+
+- `lookup_quote_rules` and `read_working_order_items` are deleted from the
+  provider-visible Steel tool surface. Quote rules are injected through context,
+  and current workbook/OCR recovery is handled by `read_markdown`.
+- `read_markdown` remains the only AI-visible DB recovery read tool for
+  workbook/OCR Markdown, with the history-first usage limit preserved in tool
+  metadata, runtime context, and reviewed rules.
+- Normal LibreChat native chat now has global Steel context/tools, OpenAI OAuth
+  provider support, and the two-turn PL.pdf OCR confirmation then quote flow
+  without adding `ocrWorkflow`, `policy_blocked`, or hidden OCR runtime gates.
+- LibreChat UI/UX layout was not restructured. Client changes add SSE handling,
+  Recoil state, and a small Steel activity line inside existing assistant
+  message content; sidebar, composer, navigation, and message container layout
+  are unchanged.
+- Final verification:
+  - Steel focused suite:
+    `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/tools/registry.spec.ts src/steel/tools/execute.spec.ts src/steel/runtime/context.spec.ts src/steel/native/tools.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts src/steel/ai/provider.spec.ts --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+    passed with 7 suites / 73 tests.
+  - API focused suite:
+    `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/controllers/agents/client.test.js server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/__tests__/openai.spec.js server/services/__tests__/ToolService.spec.js --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+    passed with 4 suites / 181 tests.
+  - Full ToolService spec:
+    `cd api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest server/services/__tests__/ToolService.spec.js --coverage=false --runInBand --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+    passed with 1 suite / 60 tests.
+  - `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run build`
+    passed.
+  - `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npm run frontend`
+    passed.
+  - OAuth focused suite:
+    `cd packages/api && PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx jest src/steel/native/oauth.spec.ts src/steel/native/provider.spec.ts src/agents/__tests__/run-summarization.test.ts --coverage=false --runInBand --testNamePattern "OpenAI OAuth|OAuth|reconstructed PL.pdf|Steel native" --testPathIgnorePatterns='node_modules|dist|\\.dev\\.ts$|\\.helper\\.ts$|\\.helper\\.d\\.ts$|__tests__/helpers/'`
+    passed with 11 focused tests.
+  - Native OpenAI OAuth + PaddleOCR live PL.pdf smoke passed with model
+    `gpt-5.5`, using `docs/reference/example/PL.pdf`.
+  - Mock UI E2E:
+    `PATH=/Users/neven/.nvm/versions/node/v24.18.0/bin:$PATH npx playwright test --config=e2e/playwright.config.mock.ts e2e/specs/mock/steel-native.spec.ts --project=chromium --grep "gates PL.pdf"`
+    passed.
+  - Targeted grep over non-test source/docs found no
+    `lookup_quote_rules`, `read_working_order_items`,
+    `ReadWorkingOrderItemsInput`, `createWorkingOrderMemoryReader`, or
+    `memoryReader:` matches.
+  - `git diff --check` passed.

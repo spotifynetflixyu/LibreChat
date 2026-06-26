@@ -1,4 +1,5 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
@@ -69,9 +70,16 @@ const baseProps = {
   content: [],
 };
 
+const renderContentParts = (props: React.ComponentProps<typeof ContentParts>) =>
+  render(
+    <RecoilRoot>
+      <ContentParts {...props} />
+    </RecoilRoot>,
+  );
+
 describe('ContentParts — interim skill cards', () => {
   it('renders a PendingSkillCall per manual skill on assistant messages', () => {
-    render(<ContentParts {...baseProps} manualSkills={['brand-guidelines', 'pptx']} />);
+    renderContentParts({ ...baseProps, manualSkills: ['brand-guidelines', 'pptx'] });
     const cards = screen.getAllByTestId('pending-skill-call');
     expect(cards).toHaveLength(2);
     expect(cards[0]).toHaveAttribute('data-skill', 'brand-guidelines');
@@ -79,7 +87,7 @@ describe('ContentParts — interim skill cards', () => {
   });
 
   it('starts pending skill cards in the not-loaded state (no real content yet)', () => {
-    render(<ContentParts {...baseProps} manualSkills={['pptx']} />);
+    renderContentParts({ ...baseProps, manualSkills: ['pptx'] });
     expect(screen.getByTestId('pending-skill-call')).toHaveAttribute('data-loaded', 'false');
   });
 
@@ -87,24 +95,26 @@ describe('ContentParts — interim skill cards', () => {
     const content: TMessageContentParts[] = [
       { type: ContentTypes.TEXT, text: 'streamed' } as unknown as TMessageContentParts,
     ];
-    render(<ContentParts {...baseProps} content={content} manualSkills={['pptx']} />);
+    renderContentParts({ ...baseProps, content, manualSkills: ['pptx'] });
     expect(screen.getByTestId('pending-skill-call')).toHaveAttribute('data-loaded', 'true');
   });
 
   it('does NOT render skill cards on user messages', () => {
-    render(<ContentParts {...baseProps} isCreatedByUser manualSkills={['pptx']} />);
+    renderContentParts({ ...baseProps, isCreatedByUser: true, manualSkills: ['pptx'] });
     expect(screen.queryByTestId('pending-skill-call')).toBeNull();
   });
 
   it('renders nothing when manualSkills is empty and content is undefined', () => {
-    const { container } = render(
-      <ContentParts {...baseProps} content={undefined} manualSkills={[]} />,
-    );
+    const { container } = renderContentParts({
+      ...baseProps,
+      content: undefined,
+      manualSkills: [],
+    });
     expect(container.firstChild).toBeNull();
   });
 
   it('renders pending skill cards even when content is undefined', () => {
-    render(<ContentParts {...baseProps} content={undefined} manualSkills={['pptx']} />);
+    renderContentParts({ ...baseProps, content: undefined, manualSkills: ['pptx'] });
     expect(screen.getAllByTestId('pending-skill-call')).toHaveLength(1);
   });
 
@@ -116,7 +126,7 @@ describe('ContentParts — interim skill cards', () => {
         groupId: 'group-1',
       } as unknown as TMessageContentParts,
     ];
-    render(<ContentParts {...baseProps} content={parallelContent} manualSkills={['pptx']} />);
+    renderContentParts({ ...baseProps, content: parallelContent, manualSkills: ['pptx'] });
     const skillCard = screen.getByTestId('pending-skill-call');
     const parallelRenderer = screen.getByTestId('parallel-renderer');
     expect(skillCard).toBeTruthy();
@@ -130,7 +140,7 @@ describe('ContentParts — interim skill cards', () => {
     const sequentialContent: TMessageContentParts[] = [
       { type: ContentTypes.TEXT, text: 'streamed' } as unknown as TMessageContentParts,
     ];
-    render(<ContentParts {...baseProps} content={sequentialContent} manualSkills={['pptx']} />);
+    renderContentParts({ ...baseProps, content: sequentialContent, manualSkills: ['pptx'] });
     const skillCard = screen.getByTestId('pending-skill-call');
     const textPart = screen.getByTestId(`real-part-${ContentTypes.TEXT}`);
     expect(skillCard).toBeTruthy();

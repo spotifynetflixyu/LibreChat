@@ -12,6 +12,8 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const mockInitializeAgent = jest.fn();
 const mockValidateAgentModel = jest.fn();
+const mockCaptureSteelNativeAssistantMarkdown = jest.fn();
+const mockEmitChunk = jest.fn();
 
 jest.mock('@librechat/agents', () => ({
   ...jest.requireActual('@librechat/agents'),
@@ -25,7 +27,12 @@ jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   initializeAgent: (...args) => mockInitializeAgent(...args),
   validateAgentModel: (...args) => mockValidateAgentModel(...args),
-  GenerationJobManager: { setCollectedUsage: jest.fn() },
+  captureSteelNativeAssistantMarkdown: (...args) => mockCaptureSteelNativeAssistantMarkdown(...args),
+  createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({ capture: jest.fn() })),
+  GenerationJobManager: {
+    setCollectedUsage: jest.fn(),
+    emitChunk: (...args) => mockEmitChunk(...args),
+  },
   getCustomEndpointConfig: jest.fn(),
   createSequentialChainEdges: jest.fn(),
 }));
@@ -107,6 +114,13 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
 
     mockValidateAgentModel.mockResolvedValue({ isValid: true });
+    mockCaptureSteelNativeAssistantMarkdown.mockResolvedValue({
+      status: 'captured',
+      result: {
+        parseStatus: 'saved',
+        savedCounts: { working_order_row: 1 },
+      },
+    });
   });
 
   const makeReq = () => ({
@@ -138,6 +152,54 @@ describe('initializeClient — processAgent ACL gate', () => {
     tool_resources: {},
     resendFiles: true,
     maxContextTokens: 4096,
+  });
+
+  it('emits native Steel parse and save events after assistant message capture', async () => {
+    const req = makeReq();
+    req._resumableStreamId = 'stream-1';
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    await initializeClient({
+      req,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    await agentClientArgs.onResponseMessageSaved({
+      responseMessage: {
+        conversationId: 'conv_1',
+        messageId: 'message_2',
+        text: '| row | value |',
+      },
+      turnIndex: 4,
+    });
+
+    expect(mockEmitChunk).toHaveBeenCalledWith('stream-1', {
+      event: 'steel_event',
+      data: {
+        type: 'parse_status',
+        message: 'Markdown parse saved',
+        parseStatus: 'saved',
+        savedCounts: { working_order_row: 1 },
+        source: 'assistant_markdown',
+        conversationId: 'conv_1',
+        requestId: 'message_2',
+        messageId: 'message_2',
+      },
+    });
+    expect(mockEmitChunk).toHaveBeenCalledWith('stream-1', {
+      event: 'steel_event',
+      data: {
+        type: 'memory_saved',
+        message: 'Working Order Memory saved',
+        savedCounts: { working_order_row: 1 },
+        source: 'assistant_markdown',
+        conversationId: 'conv_1',
+        requestId: 'message_2',
+        messageId: 'message_2',
+      },
+    });
   });
 
   it('should skip handoff agent and filter its edge when user lacks VIEW access', async () => {

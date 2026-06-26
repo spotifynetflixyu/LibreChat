@@ -1,13 +1,28 @@
+import mongoose from 'mongoose';
 import {
-  prepareSteelRuntimeContext,
+  createEmptySteelOutputSheetMemorySnapshot,
+  prepareLibreChatSteelRuntimeContext,
   serializeSteelRuntimeContext,
 } from '../runtime/context';
+import { createSteelPostgresPool } from '../postgres';
+import { createMongooseSteelOutputSheetMemoryReader } from '../memory/service';
+import {
+  listReviewedSteelAgentRules,
+  listReviewedSteelInstructionPackets,
+  listReviewedSteelOtherRules,
+  listReviewedSteelOutputRules,
+  listReviewedSteelQuoteDefaults,
+  listReviewedSteelQuoteRules,
+} from '../repositories';
 
 import type { SteelOAuthChatMessage, SteelOAuthChatMessageRole } from '../ai/provider';
 import type { SteelInstructionPacket } from '../repositories/instructions';
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
+import type { SteelOutputSheetMemoryReader } from '../memory/service';
+import type { SteelRepositoryClient } from '../repositories';
 import type {
+  ListSteelOtherGlobalRulesInput,
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
   SteelRuntimeContextDependencies,
@@ -121,6 +136,13 @@ export interface BuildSteelGlobalAgentContextInput {
   prepareRuntimeContext?: (
     input: PrepareSteelRuntimeContextInput,
   ) => Promise<SteelRuntimeContext>;
+}
+
+export interface BuildDefaultSteelGlobalAgentContextInput
+  extends Omit<BuildSteelGlobalAgentContextInput, 'dependencies'> {
+  dependencies?: SteelRuntimeContextDependencies;
+  runtimeRulesClient?: SteelRepositoryClient;
+  createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
 }
 
 export interface SteelNativeContextSlots {
@@ -283,6 +305,108 @@ export function buildSteelNativeInstructionPrefix({
   };
 }
 
+function hasRuleSection(rule: SteelAgentRule, matches: readonly string[]): boolean {
+  return rule.ruleSections.some((section) => matches.some((match) => section.includes(match)));
+}
+
+function isOcrRule(rule: SteelAgentRule): boolean {
+  return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
+}
+
+function filterOtherGlobalRules(
+  rules: readonly SteelAgentRule[],
+  { includeOcrRules }: ListSteelOtherGlobalRulesInput,
+) {
+  const ocrRules = rules.filter(isOcrRule);
+
+  return {
+    ocrRules: includeOcrRules ? ocrRules : undefined,
+    fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
+    sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
+    markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
+  };
+}
+
+let defaultSteelNativeRulesClient: ReturnType<typeof createSteelPostgresPool> | undefined;
+
+function getDefaultSteelNativeRulesClient() {
+  defaultSteelNativeRulesClient ??= createSteelPostgresPool();
+  return defaultSteelNativeRulesClient;
+}
+
+function createDefaultOutputSheetMemoryReader(conversationId: string) {
+  return createMongooseSteelOutputSheetMemoryReader(mongoose, conversationId);
+}
+
+function resolveSteelNativeContextList<T>(load: () => Promise<T[]>): Promise<T[]> {
+  // Global Steel context is fail-open so unavailable Steel rule tables do not block ordinary chat.
+  return load().catch(() => []);
+}
+
+export function createSteelNativeRuntimeContextDependencies({
+  conversationId,
+  createOutputSheetMemoryReader = createDefaultOutputSheetMemoryReader,
+  runtimeRulesClient,
+}: {
+  conversationId?: string;
+  createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
+  runtimeRulesClient?: SteelRepositoryClient;
+} = {}): SteelRuntimeContextDependencies {
+  let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
+  let instructionPacketsPromise: Promise<SteelInstructionPacket[]> | undefined;
+  let otherRulesPromise: Promise<SteelAgentRule[]> | undefined;
+  let outputRulesPromise: Promise<SteelAgentRule[]> | undefined;
+  let quoteDefaultsPromise: Promise<SteelQuoteDefault[]> | undefined;
+  let quoteRulesPromise: Promise<SteelQuoteRule[]> | undefined;
+  const getClient = () => runtimeRulesClient ?? getDefaultSteelNativeRulesClient();
+
+  return {
+    listAgentRules() {
+      agentRulesPromise ??= resolveSteelNativeContextList(() =>
+        listReviewedSteelAgentRules(getClient()),
+      );
+      return agentRulesPromise;
+    },
+    listReviewedInstructionPackets() {
+      instructionPacketsPromise ??= resolveSteelNativeContextList(() =>
+        listReviewedSteelInstructionPackets(getClient()),
+      );
+      return instructionPacketsPromise;
+    },
+    listReviewedQuoteDefaults() {
+      quoteDefaultsPromise ??= resolveSteelNativeContextList(() =>
+        listReviewedSteelQuoteDefaults(getClient()),
+      );
+      return quoteDefaultsPromise;
+    },
+    listReviewedQuoteRules() {
+      quoteRulesPromise ??= resolveSteelNativeContextList(() =>
+        listReviewedSteelQuoteRules(getClient()),
+      );
+      return quoteRulesPromise;
+    },
+    listOutputRules() {
+      outputRulesPromise ??= resolveSteelNativeContextList(() =>
+        listReviewedSteelOutputRules(getClient()),
+      );
+      return outputRulesPromise;
+    },
+    async listOtherGlobalRules(input) {
+      otherRulesPromise ??= resolveSteelNativeContextList(() =>
+        listReviewedSteelOtherRules(getClient()),
+      );
+      return filterOtherGlobalRules(await otherRulesPromise, input);
+    },
+    async readOutputSheetMemory() {
+      if (!conversationId) {
+        return createEmptySteelOutputSheetMemorySnapshot();
+      }
+
+      return createOutputSheetMemoryReader(conversationId).readOutputSheetMemory();
+    },
+  };
+}
+
 export function createSteelNativeContextMetadata({
   contextMode,
   renderProfile = 'agent_client',
@@ -306,6 +430,47 @@ function toRuntimeMessage(message: SteelNativeMessage): SteelOAuthChatMessage {
     role: message.role,
     content: message.content,
     messageId: message.messageId,
+  };
+}
+
+function isSameNativeMessage(
+  left: SteelNativeMessage,
+  right: SteelNativeMessage | undefined,
+): boolean {
+  if (!right) {
+    return false;
+  }
+  if (left.messageId && right.messageId) {
+    return left.messageId === right.messageId;
+  }
+  return left.role === right.role && left.content === right.content;
+}
+
+function toLibreChatMessageReference(message: SteelNativeMessage): SteelNativeMessage {
+  return {
+    role: message.role,
+    content: '',
+    messageId: message.messageId,
+    files: message.files?.map((file) => ({ ...file })),
+  };
+}
+
+export function prepareLibreChatSteelChatContext(
+  conversation: SteelNativeConversationInput,
+): SteelNativeConversationInput {
+  const currentUserTurn =
+    conversation.currentUserTurn !== undefined
+      ? toLibreChatMessageReference(conversation.currentUserTurn)
+      : undefined;
+
+  return {
+    conversationId: conversation.conversationId,
+    requestId: conversation.requestId,
+    activeHistory: conversation.activeHistory
+      .filter((message) => !isSameNativeMessage(message, conversation.currentUserTurn))
+      .map(toLibreChatMessageReference),
+    currentUserTurn,
+    edit: conversation.edit,
   };
 }
 
@@ -415,22 +580,21 @@ export async function buildSteelGlobalAgentContext({
   runtimeContextMode = steelNativeDefaultRuntimeContextMode,
   renderProfile = 'agent_client',
   agentRuleFragments,
-  prepareRuntimeContext = prepareSteelRuntimeContext,
+  prepareRuntimeContext = prepareLibreChatSteelRuntimeContext,
 }: BuildSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
-  const runtimeContext = markNativeGlobalAttachments(
-    await prepareRuntimeContext({
-      conversation: toRuntimeConversationInput(conversation),
-      attachments: {
-        priorActiveFileEvidence:
-          attachments?.priorActiveFileEvidence !== undefined
-            ? [...attachments.priorActiveFileEvidence]
-            : undefined,
-      },
-      dependencies: createNativeRuntimeDependencies(dependencies),
-      mode: runtimeContextMode,
-    }),
-  );
   const attachmentReferences = collectAttachmentReferences({ conversation, attachments });
+  const preparedRuntimeContext = await prepareRuntimeContext({
+    conversation: toRuntimeConversationInput(conversation),
+    attachments: {
+      priorActiveFileEvidence:
+        attachments?.priorActiveFileEvidence !== undefined
+          ? [...attachments.priorActiveFileEvidence]
+          : undefined,
+    },
+    dependencies: createNativeRuntimeDependencies(dependencies),
+    mode: runtimeContextMode,
+  });
+  const runtimeContext = markNativeGlobalAttachments(preparedRuntimeContext);
   const metadata = createSteelNativeContextMetadata({
     contextMode: runtimeContext.outputSheets.contextMode,
     renderProfile,
@@ -456,4 +620,22 @@ export async function buildSteelGlobalAgentContext({
     attachmentReferences,
     instructionPrefixSections: sections,
   };
+}
+
+export async function buildDefaultSteelGlobalAgentContext({
+  dependencies,
+  runtimeRulesClient,
+  createOutputSheetMemoryReader,
+  ...input
+}: BuildDefaultSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
+  return buildSteelGlobalAgentContext({
+    ...input,
+    dependencies:
+      dependencies ??
+      createSteelNativeRuntimeContextDependencies({
+        conversationId: input.conversation.conversationId,
+        createOutputSheetMemoryReader,
+        runtimeRulesClient,
+      }),
+  });
 }

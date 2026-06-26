@@ -47,6 +47,8 @@ const {
   collectFileIds,
   processTextWithTokenLimit,
   buildAgentScopedContext,
+  buildDefaultSteelGlobalAgentContext,
+  prepareLibreChatSteelChatContext,
   buildSkillPrimeContentParts,
   buildInitialToolSessions,
   hasUrlContextTool,
@@ -87,6 +89,44 @@ const db = require('~/models');
 const loadAgent = (params) => loadAgentFn(params, { getAgent: db.getAgent, getMCPServerTools });
 
 const MEMORY_INPUT_CHARS_PER_TOKEN = 8;
+
+function toSteelNativeFileReference(file, { conversationId, messageId } = {}) {
+  const fileId = file?.file_id ?? file?.fileId ?? file?.id;
+  if (!fileId) {
+    return;
+  }
+
+  return removeNullishValues({
+    fileId,
+    source: 'librechat_file_record',
+    mediaType: file.type ?? file.mimeType ?? file.mediaType ?? 'application/octet-stream',
+    conversationId: file.conversationId ?? conversationId,
+    messageId: file.messageId ?? messageId,
+    filename: file.filename,
+    width: file.width,
+    height: file.height,
+  });
+}
+
+function toSteelNativeMessage(message, conversationId) {
+  const files = Array.isArray(message.files)
+    ? message.files
+        .map((file) =>
+          toSteelNativeFileReference(file, {
+            conversationId,
+            messageId: message.messageId,
+          }),
+        )
+        .filter(Boolean)
+    : undefined;
+
+  return removeNullishValues({
+    role: message.isCreatedByUser ? 'user' : 'assistant',
+    content: message.text ?? '',
+    messageId: message.messageId,
+    files: files?.length ? files : undefined,
+  });
+}
 
 class AgentClient extends BaseClient {
   constructor(options = {}) {
@@ -321,6 +361,7 @@ class AgentClient extends BaseClient {
         : []),
     ];
     const sharedRunAttachmentIds = new Set();
+    let currentTurnSteelFileReferences = [];
     if (this.options.attachments) {
       const attachments = await this.options.attachments;
       const latestMessage = orderedMessages[orderedMessages.length - 1];
@@ -339,6 +380,14 @@ class AgentClient extends BaseClient {
 
       await this.addFileContextToMessage(latestMessage, attachments);
       const files = await this.processAttachments(latestMessage, attachments);
+      currentTurnSteelFileReferences = files
+        .map((file) =>
+          toSteelNativeFileReference(file, {
+            conversationId: this.conversationId,
+            messageId: latestMessage.messageId,
+          }),
+        )
+        .filter(Boolean);
 
       this.options.attachments = files;
     }
@@ -516,6 +565,42 @@ class AgentClient extends BaseClient {
       }
     }
 
+    const steelConversation = prepareLibreChatSteelChatContext({
+      conversationId: this.conversationId,
+      requestId:
+        this.responseMessageId ??
+        latestOrdered?.messageId ??
+        this.conversationId ??
+        'unknown_request',
+      activeHistory: orderedMessages.map((message) =>
+        toSteelNativeMessage(message, this.conversationId),
+      ),
+      currentUserTurn: latestOrdered
+        ? toSteelNativeMessage(latestOrdered, this.conversationId)
+        : undefined,
+    });
+    const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+      conversation: steelConversation,
+      attachments: {
+        currentTurnFiles: currentTurnSteelFileReferences,
+        priorActiveFileEvidence: [],
+      },
+      renderProfile: 'agent_client',
+    });
+    if (this.options.req) {
+      this.options.req.steelNativeContext = {
+        ...(this.options.req.steelNativeContext ?? {}),
+        conversationId: this.conversationId,
+        requestId: this.responseMessageId,
+        assistantTurnIndex: orderedMessages.length,
+        memoryCheckpointTurnIndex: Math.max(0, orderedMessages.length - 1),
+        currentTurnFiles: currentTurnSteelFileReferences,
+      };
+    }
+    if (steelNativeContext.runtimeContextText) {
+      sharedRunContextParts.push(steelNativeContext.runtimeContextText);
+    }
+
     /** Memory context (user preferences/memories) */
     const withoutKeys = await this.useMemory();
     const memoryContext = withoutKeys
@@ -582,6 +667,7 @@ class AgentClient extends BaseClient {
         return applyContextToAgent({
           agent,
           agentId,
+          globalInstructionPrefix: steelNativeContext.instructionPrefix,
           logger,
           mcpManager,
           configServers,
@@ -912,6 +998,7 @@ class AgentClient extends BaseClient {
    * Returns undefined when nothing was captured.
    * @returns {{
    *   thoughtSignatures?: Record<string, string>,
+   *   steel?: { provider?: unknown },
    *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
    *   usage?: import('librechat-data-provider').TResponseUsage,
    * } | undefined}
@@ -919,10 +1006,17 @@ class AgentClient extends BaseClient {
   buildResponseMetadata() {
     /** @type {{
      *   thoughtSignatures?: Record<string, string>,
+     *   steel?: { provider?: unknown },
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
      * }} */
     const metadata = {};
+    if (this.options?.steelProviderMetadata) {
+      metadata.steel = {
+        ...(metadata.steel ?? {}),
+        provider: this.options.steelProviderMetadata,
+      };
+    }
     const signatures = this.collectedThoughtSignatures;
     if (signatures && Object.keys(signatures).length > 0) {
       metadata.thoughtSignatures = signatures;

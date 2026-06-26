@@ -4,7 +4,7 @@ import type { ZodType } from 'zod';
 
 export type SteelProviderToolName = Extract<
   SteelToolName,
-  'search_customers' | 'search_price_candidates' | 'run_file_ocr' | 'read_active_workbook'
+  'search_customers' | 'search_price_candidates' | 'run_file_ocr' | 'read_markdown'
 >;
 
 export type SteelProviderToolContextMode = 'full' | 'compact_workbook';
@@ -13,7 +13,22 @@ export interface SteelToolDefinition<Name extends SteelToolName = SteelProviderT
   name: Name;
   description: string;
   argsSchema: ZodType;
+  usagePolicy?: SteelToolUsagePolicy;
 }
+
+export interface SteelToolUsagePolicy {
+  readonly requiresMissingMarkdownInHistory?: boolean;
+  readonly forbiddenWhenHistoryHasNeededMarkdown?: boolean;
+  readonly allowedScopes?: readonly string[];
+  readonly currentConversationScoped?: boolean;
+}
+
+export const steelReadMarkdownUsagePolicy = {
+  requiresMissingMarkdownInHistory: true,
+  forbiddenWhenHistoryHasNeededMarkdown: true,
+  allowedScopes: ['workbook', 'ocr'],
+  currentConversationScoped: true,
+} as const satisfies SteelToolUsagePolicy;
 
 const providerToolNames = new Set<SteelProviderToolName>([
   'search_customers',
@@ -22,12 +37,6 @@ const providerToolNames = new Set<SteelProviderToolName>([
 ]);
 
 const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
-  {
-    name: 'lookup_quote_rules',
-    description:
-      'Search Steel quote rules, instruction packets, and quote defaults using AI-selected keywords with contains-style database lookup.',
-    argsSchema: steelToolArgsSchemas.lookup_quote_rules,
-  },
   {
     name: 'search_customers',
     description:
@@ -43,20 +52,15 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'run_file_ocr',
     description:
-      'Run PaddleOCR MCP on an uploaded image or whole PDF when the AI decides OCR is needed; PDFs are sent as one document, not page-by-page.',
+      'Run PaddleOCR MCP on an uploaded image or whole PDF when the AI decides OCR is needed; PDFs are sent as one document, not page-by-page. Do not call this for user confirmations or corrections of prior OCR/table content unless the user explicitly requests rerun OCR or provides new/changed file evidence.',
     argsSchema: steelToolArgsSchemas.run_file_ocr,
   },
   {
-    name: 'read_active_workbook',
+    name: 'read_markdown',
     description:
-      'Keyword-search compact active workbook context when exact row data is needed. Search by semantic keywords such as model, product name, customer, item number, part number, or status. Do not use spreadsheet coordinates. Returned matches include complete rowData for each matched row.',
-    argsSchema: steelToolArgsSchemas.read_active_workbook,
-  },
-  {
-    name: 'read_working_order_items',
-    description:
-      'Read conversation-scoped Working Order Memory by summary, item number, ERP item code, spec/product query, source file/page, or paginated rows. This is read-only; the backend saves final Markdown/tool/OCR evidence automatically.',
-    argsSchema: steelToolArgsSchemas.read_working_order_items,
+      'Read the current conversation-scoped Markdown text for either workbook or OCR data only when chat history no longer contains the complete assistant table/evidence. First inspect provider chat history; if the needed OCR/workbook Markdown is already present and complete enough there, do not call this tool. Use scope=workbook for the strict workbook including quote sheets, or scope=ocr for free-form drawing/OCR evidence. Do not pass row queries, quote scope, all scope, or conversation IDs; the backend uses the active conversation.',
+    argsSchema: steelToolArgsSchemas.read_markdown,
+    usagePolicy: steelReadMarkdownUsagePolicy,
   },
 ];
 
@@ -67,7 +71,7 @@ function getProviderToolNames(
     return providerToolNames;
   }
 
-  return new Set([...providerToolNames, 'read_active_workbook']);
+  return new Set([...providerToolNames, 'read_markdown']);
 }
 
 function isSteelProviderToolName(

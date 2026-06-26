@@ -465,9 +465,10 @@ function createProviderRuntimeContext({
     toolPolicy: {
       aiVisibleTools:
         contextMode === 'compact_workbook'
-          ? ['search_customers', 'search_price_candidates', 'run_file_ocr', 'read_active_workbook']
+          ? ['search_customers', 'search_price_candidates', 'run_file_ocr', 'read_markdown']
           : ['search_customers', 'search_price_candidates', 'run_file_ocr'],
-      removedTools: ['lookup_quote_rules', 'read_working_order_items'],
+      removedTools: [],
+      ocrCorrectionPolicy: 'Do not rerun OCR for user corrections.',
     },
   };
 }
@@ -1021,11 +1022,11 @@ describe('Steel OpenAI OAuth provider adapter', () => {
     const compactGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
 
     expect(compactGenerateOptions.tools?.map((tool) => tool.name)).toEqual([
-      'search_customers',
-      'search_price_candidates',
-      'run_file_ocr',
-      'read_active_workbook',
-    ]);
+	      'search_customers',
+	      'search_price_candidates',
+	      'run_file_ocr',
+	      'read_markdown',
+	    ]);
     expect(JSON.stringify(compactGenerateOptions.prompt[0])).not.toContain(
       '"rows":[{"rowId":"system_order:1","cells"',
     );

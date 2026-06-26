@@ -176,7 +176,101 @@ function createPreviousOutputSheets(): FullActiveSteelOutputSheets {
   };
 }
 
-function createRuntimeDependencies(): SteelRuntimeContextDependencies {
+function createRuntimeMemorySnapshot(): SteelOutputSheetMemorySnapshot {
+  return {
+    previousOutputSheets: {
+      system_order: {
+        sheetId: 'system_order',
+        rows: [
+          {
+            rowId: 'system_order:1',
+            cells: {
+              項次: '1',
+              型號: 'CCG075',
+              品名規格: '錏輕型鋼 75x45',
+              內部備註: 'full-row-only-note',
+            },
+          },
+        ],
+      },
+      customer_data: {
+        sheetId: 'customer_data',
+        rows: [
+          {
+            rowId: 'customer_data:1',
+            cells: {
+              客戶名稱: '龍頂',
+              計價基準: 'B',
+            },
+          },
+        ],
+      },
+      manual_review: {
+        sheetId: 'manual_review',
+        rows: [
+          {
+            rowId: 'manual_review:1',
+            cells: {
+              項目: '尺寸待確認',
+            },
+          },
+        ],
+      },
+      customer_quote: {
+        sheetId: 'customer_quote',
+        rows: [
+          {
+            rowId: 'customer_quote:1',
+            cells: {
+              項次: '1',
+              小計: '536',
+            },
+          },
+        ],
+      },
+    },
+    derivedIndex: {
+      lineItems: [
+        {
+          rowNo: 1,
+          erpItemCode: 'CCG075',
+          productName: '錏輕型鋼 75x45',
+          quantity: 2,
+        },
+      ],
+      customers: [
+        {
+          displayName: '龍頂',
+          customerTierId: 2,
+        },
+      ],
+      adoptedPrices: [
+        {
+          erpItemCode: 'CCG075',
+          unitPrice: 268,
+          customerTierId: 2,
+        },
+      ],
+      calculations: [
+        {
+          rowNo: 1,
+          subtotal: 536,
+        },
+      ],
+      ocrExtracts: [],
+      unresolvedItems: [
+        {
+          rowNo: 1,
+          reason: '尺寸待確認',
+        },
+      ],
+    },
+  };
+}
+
+function createRuntimeDependencies(
+  memorySnapshot: SteelOutputSheetMemorySnapshot = createRuntimeMemorySnapshot(),
+): SteelRuntimeContextDependencies {
   return {
     listAgentRules: jest.fn(async () => [createAgentRule()]),
     listReviewedInstructionPackets: jest.fn(async () => [createInstructionPacket()]),
@@ -189,95 +283,7 @@ function createRuntimeDependencies(): SteelRuntimeContextDependencies {
       sourcePriorityRules: [createAgentRule({ id: 62, slug: 'steel-source-priority' })],
       markdownOutputRules: [createAgentRule({ id: 63, slug: 'steel-markdown-output-policy' })],
     })),
-    readOutputSheetMemory: jest.fn(async (): Promise<SteelOutputSheetMemorySnapshot> => ({
-      previousOutputSheets: {
-        system_order: {
-          sheetId: 'system_order',
-          rows: [
-            {
-              rowId: 'system_order:1',
-              cells: {
-                項次: '1',
-                型號: 'CCG075',
-                品名規格: '錏輕型鋼 75x45',
-                內部備註: 'full-row-only-note',
-              },
-            },
-          ],
-        },
-        customer_data: {
-          sheetId: 'customer_data',
-          rows: [
-            {
-              rowId: 'customer_data:1',
-              cells: {
-                客戶名稱: '龍頂',
-                計價基準: 'B',
-              },
-            },
-          ],
-        },
-        manual_review: {
-          sheetId: 'manual_review',
-          rows: [
-            {
-              rowId: 'manual_review:1',
-              cells: {
-                項目: '尺寸待確認',
-              },
-            },
-          ],
-        },
-        customer_quote: {
-          sheetId: 'customer_quote',
-          rows: [
-            {
-              rowId: 'customer_quote:1',
-              cells: {
-                項次: '1',
-                小計: '536',
-              },
-            },
-          ],
-        },
-      },
-      derivedIndex: {
-        lineItems: [
-          {
-            rowNo: 1,
-            erpItemCode: 'CCG075',
-            productName: '錏輕型鋼 75x45',
-            quantity: 2,
-          },
-        ],
-        customers: [
-          {
-            displayName: '龍頂',
-            customerTierId: 2,
-          },
-        ],
-        adoptedPrices: [
-          {
-            erpItemCode: 'CCG075',
-            unitPrice: 268,
-            customerTierId: 2,
-          },
-        ],
-        calculations: [
-          {
-            rowNo: 1,
-            subtotal: 536,
-          },
-        ],
-        ocrExtracts: [],
-        unresolvedItems: [
-          {
-            rowNo: 1,
-            reason: '尺寸待確認',
-          },
-        ],
-      },
-    })),
+    readOutputSheetMemory: jest.fn(async (): Promise<SteelOutputSheetMemorySnapshot> => memorySnapshot),
   };
 }
 
@@ -286,8 +292,9 @@ async function prepareContext(
   mode?: 'full' | 'compact_workbook',
   historyFiles: SteelOAuthChatFile[] = [],
   priorActiveFileEvidence: Record<string, string>[] = [],
+  memorySnapshot: SteelOutputSheetMemorySnapshot = createRuntimeMemorySnapshot(),
 ) {
-  const dependencies = createRuntimeDependencies();
+  const dependencies = createRuntimeDependencies(memorySnapshot);
   const input: PrepareSteelRuntimeContextInput & { mode?: 'full' | 'compact_workbook' } = {
     conversation: {
       conversationId: 'steel_conversation_1',
@@ -395,6 +402,38 @@ describe('Steel runtime context', () => {
     expect(evidenceResult.context.attachments.includeOcrRules).toBe(true);
   });
 
+  it('reuses active OCR extracts from structured state on follow-up turns', async () => {
+    const ocrExtract = {
+      filename: 'drawing.pdf',
+      page: 1,
+      textPreview: '孔徑 12mm, 折彎 2 道',
+      ocrEngine: 'PaddleOCR MCP',
+    };
+    const memorySnapshot = createRuntimeMemorySnapshot();
+    memorySnapshot.derivedIndex.ocrExtracts = [ocrExtract];
+
+    const { context, dependencies } = await prepareContext(
+      [],
+      undefined,
+      [],
+      [],
+      memorySnapshot,
+    );
+
+    expect(context.attachments.priorActiveFileEvidence).toEqual([
+      expect.objectContaining({
+        filename: 'drawing.pdf',
+        page: 1,
+        ocrEngine: 'PaddleOCR MCP',
+      }),
+    ]);
+    expect(context.attachments.includeOcrRules).toBe(true);
+    expect(context.rules.otherGlobalRules.ocrRules?.map((rule) => rule.slug)).toEqual([
+      'steel-drawing-ocr-policy',
+    ]);
+    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith({ includeOcrRules: true });
+  });
+
   it('serializes workbook output rules as backend sheet carry-forward and emitted-sheet replacement policy', async () => {
     const { context } = await prepareContext();
     const serialized = JSON.parse(serializeSteelRuntimeContext(context));
@@ -439,11 +478,7 @@ describe('Steel runtime context', () => {
       'search_price_candidates',
       'run_file_ocr',
     ]);
-    expect(context.toolPolicy.aiVisibleTools).not.toContain('read_active_workbook');
-    expect(context.toolPolicy.removedTools).toEqual([
-      'lookup_quote_rules',
-      'read_working_order_items',
-    ]);
+    expect(context.toolPolicy.removedTools).toEqual([]);
     expect(serialized.toolPolicy).toEqual(context.toolPolicy);
   });
 
@@ -474,8 +509,14 @@ describe('Steel runtime context', () => {
       'search_customers',
       'search_price_candidates',
       'run_file_ocr',
-      'read_active_workbook',
+      'read_markdown',
     ]);
+    expect(serialized.toolPolicy.readMarkdownUsagePolicy).toEqual({
+      requiresMissingMarkdownInHistory: true,
+      forbiddenWhenHistoryHasNeededMarkdown: true,
+      allowedScopes: ['workbook', 'ocr'],
+      currentConversationScoped: true,
+    });
   });
 
   it('carries forward active sheets that are wholly missing from generated output', () => {

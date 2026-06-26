@@ -1,5 +1,6 @@
 import { createSteelToolRunState, executeSteelTool } from './execute';
 import { steelToolArgsSchemas } from './schemas';
+import { parseMarkdownTables } from '../markdown/table';
 
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories/types';
 import type { SteelOutputSheetMemorySnapshot } from '../runtime/context';
@@ -123,7 +124,14 @@ function createOutputSheetMemorySnapshot(): SteelOutputSheetMemorySnapshot {
       customers: [],
       adoptedPrices: [],
       calculations: [],
-      ocrExtracts: [],
+      ocrExtracts: [
+        {
+          filename: 'PL.pdf',
+          page: 1,
+          markdown: '| 件號 | 規格 | 數量 | 孔數 / 件 |\n| --- | --- | ---: | ---: |\n| D3 | PL15*500 | 10 | 6 |',
+          confidence: 'high',
+        },
+      ],
       unresolvedItems: [],
     },
   };
@@ -488,131 +496,7 @@ describe('Steel minimal tool execution', () => {
     }
   });
 
-  it('searches unified rules by AI-provided keywords', async () => {
-    const client = createClient([[]]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'lookup_quote_rules',
-      arguments: {
-        keywords: ['PL6', '雷射切割'],
-        limit: 20,
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(
-      expect.arrayContaining([
-        'reviewed',
-        '%PL6%',
-        '%雷射切割%',
-        '%plate%',
-        '%ot_plate%',
-        '%black_plate%',
-        '%板材%',
-        '%鐵板%',
-        20,
-      ]),
-    );
-    expect(client.calls[0]?.sql).toContain('FROM steel.rules');
-    expect(client.calls[0]?.sql).toContain('review_state = $1');
-    expect(client.calls[0]?.sql).toContain('active = true');
-    expect(result.data).toEqual(
-      expect.objectContaining({
-        keywords: expect.arrayContaining(['PL6', '雷射切割', 'plate', 'ot_plate']),
-        rules: [],
-      }),
-    );
-  });
-
-  it('expands plate-like quote rule keywords so reviewed plate rules are retrievable', async () => {
-    const client = createClient([[]]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'lookup_quote_rules',
-      arguments: {
-        keywords: ['PL6×80', '6.0m/mOT板'],
-        limit: 20,
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(
-      expect.arrayContaining([
-        '%PL6×80%',
-        '%6.0m/mOT板%',
-        '%plate%',
-        '%ot_plate%',
-        '%black_plate%',
-        '%板材%',
-        '%鐵板%',
-      ]),
-    );
-    expect(result.data.keywords).toEqual(
-      expect.arrayContaining(['plate', 'ot_plate', 'black_plate', '板材', '鐵板']),
-    );
-  });
-
-  it('reads working-order memory through the read-only memory reader', async () => {
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'rowNo',
-        resultCount: 1,
-        workingOrderRows: [
-          {
-            rowNo: 12,
-            erpItemCode: 'CCG075',
-            productName: '錏輕型鋼 75x45',
-            quantity: 2,
-          },
-        ],
-      })),
-    };
-
-    const result = await executeSteelTool({
-      client: createClient([]),
-      memoryReader,
-      toolName: 'read_working_order_items',
-      arguments: {
-        mode: 'rowNo',
-        rowNo: 12,
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(memoryReader.readWorkingOrderItems).toHaveBeenCalledWith({
-      mode: 'rowNo',
-      rowNo: 12,
-    });
-    expect(result.data).toEqual(
-      expect.objectContaining({
-        resultCount: 1,
-        workingOrderRows: [
-          expect.objectContaining({
-            erpItemCode: 'CCG075',
-            rowNo: 12,
-          }),
-        ],
-      }),
-    );
-  });
-
-  it('reads active workbook rows by keyword and returns complete matching row data', async () => {
+  it('reads current workbook data as Markdown text without row queries', async () => {
     const outputSheetMemoryReader = {
       readOutputSheetMemory: jest.fn(async () => createOutputSheetMemorySnapshot()),
     };
@@ -620,12 +504,10 @@ describe('Steel minimal tool execution', () => {
     const result = await executeSteelTool({
       client: createClient([]),
       outputSheetMemoryReader,
-      toolName: 'read_active_workbook',
+      toolName: 'read_markdown',
       arguments: {
-        query: 'CCG075',
-        sheetIds: ['system_order'],
-        limit: 5,
-        reason: 'Need exact compact-context row',
+        scope: 'workbook',
+        reason: 'Need current parsed workbook after compact context',
       },
     } as Parameters<typeof executeSteelTool>[0] & {
       outputSheetMemoryReader: typeof outputSheetMemoryReader;
@@ -639,25 +521,175 @@ describe('Steel minimal tool execution', () => {
     expect(outputSheetMemoryReader.readOutputSheetMemory).toHaveBeenCalledWith();
     expect(result.data).toEqual(
       expect.objectContaining({
-        query: 'CCG075',
-        resultCount: 1,
-        matches: [
-          expect.objectContaining({
-            sheetId: 'system_order',
-            rowId: 'system_order:1',
-            rowIndex: 1,
-            matchedFields: expect.arrayContaining(['型號']),
-            rowData: {
-              項次: '1',
-              型號: 'CCG075',
-              品名規格: '錏輕型鋼 75x45',
-              數量: 2,
-              內部備註: '完整 row data 必須回傳',
-            },
-          }),
-        ],
+        source: 'assistant_markdown_auto_parse',
+        scope: 'workbook',
+        format: 'markdown',
+        markdown: expect.any(String),
       }),
     );
+    expect(result.data).not.toHaveProperty('workbook');
+    expect(result.data).not.toHaveProperty('quote');
+    expect(result.data).not.toHaveProperty('ocr');
+    const markdown = String(result.data.markdown);
+    const sectionHeadings = markdown
+      .split('\n')
+      .filter((line) => line.startsWith('## '))
+      .map((line) => line.slice(3));
+    const tables = parseMarkdownTables(markdown);
+
+    expect(sectionHeadings).toEqual([
+      'system_order',
+      'customer_data',
+      'customer_quote',
+      'manual_review',
+    ]);
+    expect(tables[0]?.headers.slice(0, 5)).toEqual([
+      '公司編號',
+      '項次',
+      '倉庫編號',
+      '型號',
+      '品名規格',
+    ]);
+    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual([
+      '',
+      '1',
+      '',
+      'CCG075',
+      '錏輕型鋼 75x45',
+    ]);
+    expect(tables[2]?.headers).toEqual(['項目', '說明', '小計']);
+    expect(tables[2]?.rows[0]).toEqual(['', '', '536']);
+  });
+
+  it('reads current OCR data as Markdown text without fixed workbook columns', async () => {
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => createOutputSheetMemorySnapshot()),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'ocr',
+        reason: 'Need current OCR evidence after compact context',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(result.data).toEqual(
+      expect.objectContaining({
+        source: 'assistant_markdown_auto_parse',
+        scope: 'ocr',
+        format: 'markdown',
+        markdown: expect.any(String),
+      }),
+    );
+    expect(result.data).not.toHaveProperty('workbook');
+    expect(result.data).not.toHaveProperty('ocr');
+    const markdown = String(result.data.markdown);
+    const tables = parseMarkdownTables(markdown);
+
+    expect(tables).toHaveLength(2);
+    expect(tables[0]?.headers).toEqual(['件號', '規格', '數量', '孔數 / 件']);
+    expect(tables[0]?.rows[0]).toEqual(['D3', 'PL15*500', '10', '6']);
+    expect(tables[1]?.headers).toEqual(['欄位', '內容']);
+    expect(tables[1]?.rows).toEqual(
+      expect.arrayContaining([
+        ['filename', 'PL.pdf'],
+        ['page', '1'],
+        ['confidence', 'high'],
+      ]),
+    );
+  });
+
+  it('rejects row query arguments for current Markdown-derived reads', async () => {
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => createOutputSheetMemorySnapshot()),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        query: 'CCG075',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        errorCategory: 'invalid_arguments',
+      }),
+    );
+    if (result.ok) {
+      throw new Error('read_markdown should reject row queries');
+    }
+    expect(outputSheetMemoryReader.readOutputSheetMemory).not.toHaveBeenCalled();
+  });
+
+  it('runs OCR only when run_file_ocr is explicitly called with uploaded files', async () => {
+    const files = [
+      {
+        filename: 'drawing.pdf',
+        mediaType: 'application/pdf',
+        data: new Uint8Array([1, 2, 3]),
+      },
+    ];
+    const runFileOcr = jest.fn(async ({ arguments: args, files: inputFiles }) => ({
+      ok: true as const,
+      toolName: 'run_file_ocr' as const,
+      data: {
+        filename: inputFiles[0]?.filename,
+        outputMode: args.output_mode,
+        text: 'OCR result',
+      },
+      sourceRefs: [],
+      durationMs: 12,
+      redactionVersion: 1,
+    }));
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      providerToolCallId: 'call_ocr',
+      toolName: 'run_file_ocr',
+      arguments: {
+        filename: 'drawing.pdf',
+        output_mode: 'markdown',
+      },
+      ocrFiles: files,
+      runFileOcr,
+    } as Parameters<typeof executeSteelTool>[0] & {
+      ocrFiles: typeof files;
+      runFileOcr: typeof runFileOcr;
+    });
+
+    expect(runFileOcr).toHaveBeenCalledWith({
+      arguments: {
+        filename: 'drawing.pdf',
+        output_mode: 'markdown',
+      },
+      files,
+      providerToolCallId: 'call_ocr',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data).toEqual({
+      filename: 'drawing.pdf',
+      outputMode: 'markdown',
+      text: 'OCR result',
+    });
   });
 
   it('enforces per-run tool call limits', async () => {

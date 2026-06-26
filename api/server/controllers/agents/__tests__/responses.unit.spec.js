@@ -57,6 +57,50 @@ const mockGetSkillToolDeps = jest.fn(() => ({}));
 const mockBuildAgentScopedContext = jest.fn().mockResolvedValue(new Map());
 const mockBuildAgentContextAttachmentsByAgentId = jest.fn().mockReturnValue(new Map());
 const mockApplyContextToAgent = jest.fn().mockResolvedValue(undefined);
+const mockSteelNativeContext = {
+  instructionPrefix: 'Steel global prefix',
+  runtimeContextText: 'Steel runtime tail',
+  metadata: {
+    nativeContextVersion: 1,
+    contextMode: 'compact_workbook',
+    renderProfile: 'open_responses',
+    globalApplied: true,
+  },
+};
+const mockBuildDefaultSteelGlobalAgentContext = jest
+  .fn()
+  .mockResolvedValue(mockSteelNativeContext);
+const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
+  const currentUserTurn = conversation.currentUserTurn
+    ? { ...conversation.currentUserTurn, content: '' }
+    : undefined;
+  return {
+    ...conversation,
+    activeHistory: conversation.activeHistory
+      .filter((message) => {
+        if (!conversation.currentUserTurn) {
+          return true;
+        }
+        if (message.messageId && conversation.currentUserTurn.messageId) {
+          return message.messageId !== conversation.currentUserTurn.messageId;
+        }
+        return (
+          message.role !== conversation.currentUserTurn.role ||
+          message.content !== conversation.currentUserTurn.content
+        );
+      })
+      .map((message) => ({ ...message, content: '' })),
+    ...(currentUserTurn ? { currentUserTurn } : {}),
+  };
+});
+const mockBuildSteelNativeResponseMessageMetadata = jest.fn().mockReturnValue({
+  steel: {
+    native: {
+      ingress: 'open_responses',
+      renderProfile: 'open_responses',
+    },
+  },
+});
 
 jest.mock('nanoid', () => ({
   nanoid: jest.fn(() => 'mock-nanoid-123'),
@@ -88,6 +132,10 @@ jest.mock('@librechat/api', () => ({
     processStream: jest.fn().mockResolvedValue(undefined),
   }),
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
+  buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
+  prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
+  buildSteelNativeResponseMessageMetadata: (...args) =>
+    mockBuildSteelNativeResponseMessageMetadata(...args),
   buildToolSet: jest.fn().mockReturnValue(new Set()),
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
   buildAgentContextAttachmentsByAgentId: (...args) =>
@@ -260,6 +308,7 @@ jest.mock('~/models', () => ({
   getFiles: jest.fn(),
   getUserKey: jest.fn(),
   getMessages: jest.fn().mockResolvedValue([]),
+  getMessage: jest.fn().mockResolvedValue(null),
   saveMessage: jest.fn().mockResolvedValue({}),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
@@ -280,7 +329,7 @@ jest.mock('~/models', () => ({
 let mockGlobalDiscoveredAgentConfigs = null;
 
 describe('createResponse controller', () => {
-  let createResponse;
+  let createResponse, getResponse;
   let req, res;
 
   beforeEach(() => {
@@ -289,6 +338,7 @@ describe('createResponse controller', () => {
 
     const controller = require('../responses');
     createResponse = controller.createResponse;
+    getResponse = controller.getResponse;
 
     req = {
       body: {
@@ -388,6 +438,48 @@ describe('createResponse controller', () => {
       );
     });
 
+    it('should resolve generated previous_response_id to its stored conversation', async () => {
+      const { createRun, validateResponseRequest } = require('@librechat/api');
+      const { getConvo, getMessage, getMessages } = require('~/models');
+      validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Follow up',
+          stream: false,
+          previous_response_id: 'resp_previous',
+        },
+      });
+      getConvo
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ conversationId: 'convo-abc', user: 'user-123' });
+      getMessage.mockResolvedValueOnce({
+        messageId: 'resp_previous',
+        conversationId: 'convo-abc',
+      });
+      getMessages.mockResolvedValueOnce([
+        {
+          isCreatedByUser: false,
+          messageId: 'resp_previous',
+          text: 'Stored answer',
+        },
+      ]);
+
+      await createResponse(req, res);
+
+      expect(getConvo).toHaveBeenNthCalledWith(1, 'user-123', 'resp_previous');
+      expect(getMessage).toHaveBeenCalledWith({
+        user: 'user-123',
+        messageId: 'resp_previous',
+      });
+      expect(getConvo).toHaveBeenNthCalledWith(2, 'user-123', 'convo-abc');
+      expect(getMessages).toHaveBeenCalledWith({ conversationId: 'convo-abc', user: 'user-123' });
+      expect(createRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestBody: expect.objectContaining({ conversationId: 'convo-abc' }),
+        }),
+      );
+    });
+
     it('should return 500 when getConvo throws a DB error', async () => {
       const { validateResponseRequest, sendResponsesErrorResponse } = require('@librechat/api');
       const { getConvo } = require('~/models');
@@ -411,7 +503,114 @@ describe('createResponse controller', () => {
     });
   });
 
+  describe('getResponse resolver', () => {
+    it('retrieves a stored response by generated response id', async () => {
+      const { getConvo, getMessage, getMessages } = require('~/models');
+      req.params = { id: 'resp_previous' };
+      getConvo
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          conversationId: 'convo-abc',
+          user: 'user-123',
+          createdAt: new Date('2026-06-25T00:00:00.000Z'),
+          updatedAt: new Date('2026-06-25T00:01:00.000Z'),
+        });
+      getMessage.mockResolvedValueOnce({
+        messageId: 'resp_previous',
+        conversationId: 'convo-abc',
+      });
+      getMessages.mockResolvedValueOnce([
+        {
+          isCreatedByUser: false,
+          messageId: 'resp_previous',
+          text: 'Stored answer',
+          tokenCount: 12,
+        },
+      ]);
+
+      await getResponse(req, res);
+
+      expect(getMessage).toHaveBeenCalledWith({
+        user: 'user-123',
+        messageId: 'resp_previous',
+      });
+      expect(getMessages).toHaveBeenCalledWith({
+        conversationId: 'convo-abc',
+        user: 'user-123',
+      });
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'resp_previous',
+          status: 'completed',
+          output: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'resp_previous',
+              type: 'message',
+            }),
+          ]),
+        }),
+      );
+    });
+  });
+
   describe('token usage recording - non-streaming', () => {
+    it('normalizes non-streaming store false requests into durable Steel storage', async () => {
+      const { validateResponseRequest } = require('@librechat/api');
+      const { saveConvo, saveMessage } = require('~/models');
+      validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: false, store: false },
+      });
+
+      await createResponse(req, res);
+
+      expect(saveConvo).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ conversationId: expect.any(String) }),
+        expect.any(Object),
+      );
+      expect(saveMessage).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ store: true }));
+    });
+
+    it('stores auditable Steel metadata on the assistant response message', async () => {
+      const { validateResponseRequest } = require('@librechat/api');
+      const { saveMessage } = require('~/models');
+      validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: false, store: false },
+      });
+
+      await createResponse(req, res);
+
+      expect(mockBuildSteelNativeResponseMessageMetadata).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'mock-uuid-456',
+          responseId: 'resp_mock-123',
+          turnIndex: 0,
+          checkpointTurnIndex: 0,
+          requestedStore: false,
+          store: true,
+          providerStateMode: 'openai_responses_reconstructed',
+          contextMetadata: mockSteelNativeContext.metadata,
+        }),
+      );
+      const assistantMessage = saveMessage.mock.calls
+        .map((call) => call[1])
+        .find((message) => message.isCreatedByUser === false);
+      expect(assistantMessage).toEqual(
+        expect.objectContaining({
+          messageId: 'resp_mock-123',
+          metadata: {
+            steel: {
+              native: {
+                ingress: 'open_responses',
+                renderProfile: 'open_responses',
+              },
+            },
+          },
+        }),
+      );
+    });
+
     it('should call recordCollectedUsage after successful non-streaming completion', async () => {
       await createResponse(req, res);
 
@@ -477,6 +676,135 @@ describe('createResponse controller', () => {
   });
 
   describe('agent context parity with UI path', () => {
+    it('applies Steel global context from reconstructed Responses messages before createRun', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'new quote request',
+          stream: false,
+          previous_response_id: 'convo-abc',
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        { role: 'user', content: 'new quote request', messageId: 'user-2' },
+      ]);
+      db.getConvo.mockResolvedValueOnce({ conversationId: 'convo-abc', user: 'user-123' });
+      db.getMessages.mockResolvedValueOnce([
+        {
+          isCreatedByUser: false,
+          messageId: 'assistant-1',
+          text: 'previous quote answer',
+        },
+      ]);
+      mockBuildAgentScopedContext.mockResolvedValueOnce(
+        new Map([['agent-123', 'PDF context: drawing.pdf']]),
+      );
+
+      await createResponse(req, res);
+
+      expect(api.buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          renderProfile: 'open_responses',
+          conversation: expect.objectContaining({
+            conversationId: 'convo-abc',
+            requestId: 'resp_mock-123',
+	            activeHistory: [
+	              {
+	                role: 'assistant',
+	                content: '',
+	                messageId: 'assistant-1',
+	              },
+	            ],
+	            currentUserTurn: {
+	              role: 'user',
+	              content: '',
+	              messageId: 'user-2',
+	            },
+          }),
+        }),
+      );
+      expect(mockApplyContextToAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-123',
+          globalInstructionPrefix: 'Steel global prefix',
+          sharedRunContext: 'PDF context: drawing.pdf\n\nSteel runtime tail',
+        }),
+      );
+    });
+
+    it('passes Open Responses input_file references into Steel native OCR context', async () => {
+      const api = require('@librechat/api');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [
+                { type: 'input_text', text: '請分析這張圖' },
+                { type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' },
+                { type: 'input_file', file_id: 'file-drawing', filename: 'drawing-copy.pdf' },
+              ],
+            },
+          ],
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '請分析這張圖' },
+            { type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' },
+            { type: 'input_file', file_id: 'file-drawing', filename: 'drawing-copy.pdf' },
+          ],
+        },
+      ]);
+
+      await createResponse(req, res);
+
+      expect(req.steelNativeContext.currentTurnFiles).toEqual([
+        {
+          fileId: 'file-drawing',
+          filename: 'drawing.pdf',
+          mediaType: 'application/octet-stream',
+          source: 'librechat_file_record',
+          conversationId: 'mock-uuid-456',
+        },
+      ]);
+      expect(api.buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachments: {
+            currentTurnFiles: [
+              {
+                fileId: 'file-drawing',
+                filename: 'drawing.pdf',
+                mediaType: 'application/octet-stream',
+                source: 'librechat_file_record',
+                conversationId: 'mock-uuid-456',
+              },
+            ],
+          },
+          conversation: expect.objectContaining({
+            currentUserTurn: expect.objectContaining({
+              files: [
+                {
+                  fileId: 'file-drawing',
+                  filename: 'drawing.pdf',
+                  mediaType: 'application/octet-stream',
+                  source: 'librechat_file_record',
+                  conversationId: 'mock-uuid-456',
+                },
+              ],
+            }),
+          }),
+        }),
+      );
+    });
+
     it('applies agent-scoped attachment context before createRun', async () => {
       const api = require('@librechat/api');
       api.initializeAgent.mockResolvedValueOnce({
@@ -510,7 +838,8 @@ describe('createResponse controller', () => {
         expect.objectContaining({
           agent: expect.objectContaining({ id: 'agent-123' }),
           agentId: 'agent-123',
-          sharedRunContext: 'PDF context: ocr_file.pdf',
+          globalInstructionPrefix: 'Steel global prefix',
+          sharedRunContext: 'PDF context: ocr_file.pdf\n\nSteel runtime tail',
         }),
       );
     });
@@ -553,7 +882,8 @@ describe('createResponse controller', () => {
       expect(mockApplyContextToAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'agent-handoff',
-          sharedRunContext: 'Handoff context',
+          globalInstructionPrefix: 'Steel global prefix',
+          sharedRunContext: 'Handoff context\n\nSteel runtime tail',
         }),
       );
     });
@@ -588,6 +918,23 @@ describe('createResponse controller', () => {
           context: 'message',
         }),
       );
+    });
+
+    it('normalizes streaming store false requests into durable Steel storage', async () => {
+      const { validateResponseRequest } = require('@librechat/api');
+      const { saveConvo, saveMessage } = require('~/models');
+      validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: true, store: false },
+      });
+
+      await createResponse(req, res);
+
+      expect(saveConvo).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ conversationId: expect.any(String) }),
+        expect.any(Object),
+      );
+      expect(saveMessage).toHaveBeenCalled();
     });
   });
 
@@ -627,6 +974,29 @@ describe('createResponse controller', () => {
   });
 
   describe('sub-agent skill priming', () => {
+    it('uses the shared native tool execution callback in streaming responses', async () => {
+      const { validateResponseRequest, createToolExecuteHandler } = require('@librechat/api');
+      const { loadToolsForExecution } = require('~/server/services/ToolService');
+      req.body.stream = true;
+      validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: true },
+      });
+
+      await createResponse(req, res);
+
+      const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
+      await toolExecuteOptions.loadTools(['search_price_candidates'], 'agent-123');
+
+      expect(loadToolsForExecution).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          req,
+          res,
+          toolNames: ['search_price_candidates'],
+          agent: expect.objectContaining({ id: 'agent-123' }),
+        }),
+      );
+    });
+
     it('passes the sub-agent primed skill IDs into non-streaming tool execution', async () => {
       const {
         initializeAgent,

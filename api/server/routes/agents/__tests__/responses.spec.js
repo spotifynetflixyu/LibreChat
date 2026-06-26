@@ -1052,13 +1052,10 @@ describeWithApiKey('Open Responses API Integration Tests', () => {
       // Retrieve the stored response
       const getResponseResult = await authRequest().get(`/api/agents/v1/responses/${responseId}`);
 
-      // Note: The response might be stored under conversationId, not responseId
-      // If we get 404, that's expected behavior for now since we store by conversationId
-      if (getResponseResult.status === 200) {
-        expect(getResponseResult.body.object).toBe('response');
-        expect(getResponseResult.body.status).toBe('completed');
-        expect(getResponseResult.body.output.length).toBeGreaterThan(0);
-      }
+      expect(getResponseResult.status).toBe(200);
+      expect(getResponseResult.body.object).toBe('response');
+      expect(getResponseResult.body.status).toBe('completed');
+      expect(getResponseResult.body.output.length).toBeGreaterThan(0);
     });
 
     it('should return 404 for non-existent response', async () => {

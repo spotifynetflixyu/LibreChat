@@ -42,6 +42,11 @@ endpoints:
         default:
           - 'mock-model-a'
         fetch: false
+      tokenConfig:
+        mock-model-a:
+          prompt: 1
+          completion: 1
+          context: 200000
       titleConvo: false
       modelDisplayLabel: 'Mock Provider A'
       customParams:

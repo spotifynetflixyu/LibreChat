@@ -18,6 +18,7 @@ import useEventHandlers from './useEventHandlers';
 import useUsageHandler from './useUsageHandler';
 import { clearAllDrafts } from '~/utils';
 import store from '~/store';
+import { steelNativeStreamEventName } from '~/store/steel';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -52,6 +53,7 @@ export default function useSSE(
     titleHandler,
     attachmentHandler,
     abortConversation,
+    steelEventHandler,
   } = useEventHandlers({
     setMessages,
     getMessages,
@@ -133,6 +135,8 @@ export default function useSSE(
         createdHandler(data, { ...submission, userMessage } as EventSubmission);
       } else if (data.event === 'title') {
         titleHandler(data);
+      } else if (data.event === steelNativeStreamEventName) {
+        steelEventHandler(data, { ...submission, userMessage } as EventSubmission);
       } else if (data.event === UsageEvents.ON_CONTEXT_USAGE) {
         contextHandler(data.data, { ...submission, userMessage });
       } else if (data.event === UsageEvents.ON_TOKEN_USAGE) {

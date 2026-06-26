@@ -124,13 +124,13 @@ function sanitizeLegacyRuntimeToolText(value: string): string {
   return value
     .replace(
       /必須透過 lookup_formula 查 reviewed active formula rows/g,
-      '公式編號由 lookup_quote_rules 取得的 reviewed 鋼材規則與 AI 報價表格推理決定',
+      '公式編號由 runtime context 內已注入的 reviewed 鋼材規則與 AI 報價表格推理決定',
     )
     .replace(
       /不要跳過 lookup_formula 或 reviewed formula validation/g,
-      '不要跳過 lookup_quote_rules 查詢或 reviewed 鋼材規則驗證',
+      '不要跳過 runtime context 內已注入的 reviewed 鋼材規則驗證',
     )
-    .replace(/lookup_formula/g, 'lookup_quote_rules');
+    .replace(/lookup_formula/g, 'runtime context reviewed quote rules');
 }
 
 function sanitizeLegacyRuntimeToolTexts(values: readonly string[]): string[] {

@@ -22,10 +22,36 @@ jest.mock('~/server/services/Config', () => ({
 
 const mockLoadToolDefinitions = jest.fn();
 const mockGetUserMCPAuthMap = jest.fn();
+const mockExecuteSteelTool = jest.fn();
+const mockCaptureSteelNativeToolResult = jest.fn().mockResolvedValue({
+  status: 'skipped',
+  reason: 'missing_conversation_id',
+});
+const mockResolveEvidenceFileForProvider = jest.fn();
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   loadToolDefinitions: (...args) => mockLoadToolDefinitions(...args),
   getUserMCPAuthMap: (...args) => mockGetUserMCPAuthMap(...args),
+  createSteelPostgresPool: jest.fn(() => ({ query: jest.fn() })),
+  createSteelToolRunState: jest.fn(() => ({ calls: [] })),
+  createMongooseSteelOutputSheetMemoryReader: jest.fn(() => ({ readOutputSheetMemory: jest.fn() })),
+  createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({
+    captureToolResult: jest.fn(),
+  })),
+  createSteelNativeTool: ({ nativeToolName, steelToolName, execute }) => ({
+    name: nativeToolName,
+    invoke: (args, config) =>
+      execute({
+        toolName: steelToolName,
+        arguments: args,
+        providerToolCallId: config?.toolCall?.id,
+      }),
+  }),
+  executeSteelTool: (...args) => mockExecuteSteelTool(...args),
+  captureSteelNativeToolResult: (...args) => mockCaptureSteelNativeToolResult(...args),
+  resolveSteelProviderToolName: (name) =>
+    name === 'run_file_ocr' || name === 'steel_run_file_ocr' ? 'run_file_ocr' : undefined,
+  resolveEvidenceFileForProvider: (...args) => mockResolveEvidenceFileForProvider(...args),
   sendEvent: (...args) => mockSendEvent(...args),
   GenerationJobManager: {
     emitChunk: (...args) => mockEmitChunk(...args),
@@ -77,6 +103,7 @@ jest.mock('~/server/services/Threads', () => ({
 }));
 jest.mock('~/models', () => ({
   findPluginAuthsByKeys: jest.fn(),
+  getFiles: jest.fn(),
 }));
 jest.mock('~/config', () => ({
   getFlowStateManager: jest.fn(() => mockFlowManager),
@@ -123,6 +150,34 @@ function createEndpointsConfig(capabilities) {
   };
 }
 
+const steelNativeToolNames = new Set([
+  'search_customers',
+  'search_price_candidates',
+  'run_file_ocr',
+  'read_markdown',
+]);
+
+function getToolDefinitionName(definition) {
+  return typeof definition === 'string' ? definition : definition?.name;
+}
+
+function isSteelNativeToolDefinition(definition) {
+  return steelNativeToolNames.has(getToolDefinitionName(definition));
+}
+
+function getNonSteelToolDefinitions(definitions) {
+  return definitions.filter((definition) => !isSteelNativeToolDefinition(definition));
+}
+
+function expectSteelNativeToolDefinitions(definitions) {
+  expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual([
+    'read_markdown',
+    'run_file_ocr',
+    'search_customers',
+    'search_price_candidates',
+  ]);
+}
+
 describe('ToolService - Action Capability Gating', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -139,6 +194,19 @@ describe('ToolService - Action Capability Gating', () => {
     mockGetServerConfig.mockResolvedValue(undefined);
     mockFlowManager.getFlowState.mockResolvedValue(undefined);
     mockResolveConfigServers.mockResolvedValue({});
+    mockExecuteSteelTool.mockResolvedValue({
+      ok: true,
+      toolName: 'run_file_ocr',
+      data: { text: 'OCR' },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1,
+    });
+    mockResolveEvidenceFileForProvider.mockResolvedValue({
+      filename: 'drawing.pdf',
+      mediaType: 'application/pdf',
+      data: new Uint8Array([1, 2, 3]),
+    });
   });
 
   describe('resolveAgentCapabilities', () => {
@@ -421,7 +489,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
       });
 
-      expect(result.toolDefinitions).toEqual([]);
+      expect(getNonSteelToolDefinitions(result.toolDefinitions)).toEqual([]);
+      expectSteelNativeToolDefinitions(result.toolDefinitions);
       expect(mockGetMCPServerTools).not.toHaveBeenCalled();
     });
 
@@ -472,7 +541,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
       });
 
-      expect(result.toolDefinitions).toEqual([mcpTool]);
+      expect(getNonSteelToolDefinitions(result.toolDefinitions)).toEqual([mcpTool]);
+      expectSteelNativeToolDefinitions(result.toolDefinitions);
       expect(mockGetMCPServerTools).toHaveBeenCalledWith(
         req.user.id,
         serverName,
@@ -604,7 +674,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
       });
 
-      expect(result.toolDefinitions).toEqual([mcpTool]);
+      expect(getNonSteelToolDefinitions(result.toolDefinitions)).toEqual([mcpTool]);
+      expectSteelNativeToolDefinitions(result.toolDefinitions);
       expect(mockGetMCPServerTools).not.toHaveBeenCalled();
       expect(reinitMCPServer).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -654,7 +725,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
       });
 
-      expect(result.toolDefinitions).toEqual([mcpTool]);
+      expect(getNonSteelToolDefinitions(result.toolDefinitions)).toEqual([mcpTool]);
+      expectSteelNativeToolDefinitions(result.toolDefinitions);
       expect(reinitMCPServer).toHaveBeenCalledWith(
         expect.objectContaining({
           serverName,
@@ -814,7 +886,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
       });
 
-      expect(result.toolDefinitions).toEqual([mcpTool]);
+      expect(getNonSteelToolDefinitions(result.toolDefinitions)).toEqual([mcpTool]);
+      expectSteelNativeToolDefinitions(result.toolDefinitions);
       expect(result.mcpAvailableTools).toEqual({ [serverName]: availableTools });
       expect(mockGetMCPServerTools).toHaveBeenCalledWith(
         req.user.id,
@@ -916,7 +989,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
       });
 
-      expect(result.toolDefinitions).toEqual([mcpTool]);
+      expect(getNonSteelToolDefinitions(result.toolDefinitions)).toEqual([mcpTool]);
+      expectSteelNativeToolDefinitions(result.toolDefinitions);
       expect(mockGetServerConfig).not.toHaveBeenCalled();
       expect(mockGetMCPServerTools).toHaveBeenCalledWith(
         req.user.id,
@@ -1161,6 +1235,76 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(mockLoadActionSets).not.toHaveBeenCalled();
+    });
+
+    it('passes request-scoped Steel OCR files into native run_file_ocr execution', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 2,
+        memoryCheckpointTurnIndex: 1,
+        currentTurnFiles: [
+          {
+            fileId: 'file-1',
+            filename: 'drawing.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockCaptureSteelNativeToolResult.mockResolvedValueOnce({
+        status: 'captured',
+        result: { savedCounts: { ocr_extract: 1 } },
+      });
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['run_file_ocr'],
+        streamId: 'stream-1',
+        actionsEnabled: false,
+      });
+      const ocrTool = result.loadedTools.find((tool) => tool.name === 'run_file_ocr');
+      await ocrTool.invoke(
+        { filename: 'drawing.pdf', output_mode: 'markdown' },
+        { toolCall: { id: 'call_ocr' } },
+      );
+
+      expect(mockResolveEvidenceFileForProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fileId: 'file-1',
+          userId: 'user_123',
+          conversationId: 'convo-1',
+        }),
+      );
+      expect(mockExecuteSteelTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolName: 'run_file_ocr',
+          providerToolCallId: 'call_ocr',
+          ocrFiles: [
+            {
+              filename: 'drawing.pdf',
+              mediaType: 'application/pdf',
+              data: new Uint8Array([1, 2, 3]),
+            },
+          ],
+        }),
+      );
+      expect(mockEmitChunk).toHaveBeenCalledWith('stream-1', {
+        event: 'steel_event',
+        data: {
+          type: 'memory_saved',
+          message: 'Working Order Memory saved',
+          savedCounts: { ocr_extract: 1 },
+          source: 'tool_result',
+          conversationId: 'convo-1',
+          requestId: 'resp-1',
+          toolName: 'run_file_ocr',
+          providerToolCallId: 'call_ocr',
+        },
+      });
     });
   });
 

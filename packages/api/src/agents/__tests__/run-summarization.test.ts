@@ -58,14 +58,29 @@ jest.mock('@librechat/data-schemas', () => ({
 
 // Mock Run.create to capture the graphConfig it receives
 jest.mock('@librechat/agents', () => {
-  const actual = jest.requireActual('@librechat/agents');
   return {
-    ...actual,
-    Run: {
-      create: jest.fn().mockResolvedValue({
-        processStream: jest.fn().mockResolvedValue(undefined),
-      }),
+    Constants: {
+      SKILL_TOOL: 'skill',
+      TOOL_SEARCH: 'tool_search',
     },
+    Providers: {
+      ANTHROPIC: 'anthropic',
+      AZURE: 'azureOpenAI',
+      BEDROCK: 'bedrock',
+      DEEPSEEK: 'deepseek',
+      GOOGLE: 'google',
+      MISTRAL: 'mistral',
+      MISTRALAI: 'mistralAI',
+      MOONSHOT: 'moonshot',
+      OPENAI: 'openAI',
+      OPENROUTER: 'openrouter',
+      VERTEXAI: 'vertexAI',
+      XAI: 'xai',
+    },
+    Run: {
+      create: jest.fn(),
+    },
+    resolveLocalToolsForBinding: jest.fn(({ tools }) => tools),
   };
 });
 
@@ -203,12 +218,68 @@ function makeAppConfig(customEndpoints: TestCustomEndpoint[]): AppConfig {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  (Run.create as jest.Mock).mockResolvedValue({
+    Graph: {},
+    processStream: jest.fn().mockResolvedValue(undefined),
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Suite: custom endpoint stream usage defaults
 // ---------------------------------------------------------------------------
 describe('custom endpoint stream usage defaults', () => {
+  it('injects a Steel native OpenAI OAuth override model for standard native chat runs', async () => {
+    const graph = {
+      agentContexts: new Map([
+        [
+          'agent_1',
+          {
+            getToolsForBinding: jest.fn(() => []),
+          },
+        ],
+      ]),
+    };
+    const run = {
+      Graph: graph,
+      processStream: jest.fn().mockResolvedValue(undefined),
+    };
+    (Run.create as jest.Mock).mockResolvedValueOnce(run);
+
+    const result = await createRun({
+      agents: [
+        makeAgent({
+          endpoint: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          model_parameters: {
+            model: 'gpt-5.5',
+          },
+          provider: 'openai_oauth_responses',
+        }) as never,
+      ],
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const createMock = Run.create as jest.Mock;
+    const runConfig = createMock.mock.calls[0][0] as Record<string, unknown>;
+    const graphConfig = runConfig.graphConfig as {
+      agents: Array<{ provider: string }>;
+      type: string;
+    };
+
+    expect(result).toBe(run);
+    expect(graphConfig.type).toBe('standard');
+    expect(graphConfig.agents[0].provider).toBe('openai_oauth_responses');
+    expect(graph).toEqual(
+      expect.objectContaining({
+        overrideModel: expect.objectContaining({
+          steelProvider: 'openai_oauth_responses',
+        }),
+      }),
+    );
+  });
+
   it('disables streamUsage by default for OpenAI-compatible custom endpoints', async () => {
     const agents = await callAndCapture({
       agents: [makeAgent({ endpoint: 'LiteLLM' })],

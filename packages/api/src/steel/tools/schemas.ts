@@ -5,7 +5,6 @@ import {
   priceCategories,
   priceTierCodes,
 } from '../pricing/enums';
-import { steelRuntimeActiveOutputSheetIds } from '../runtime/context';
 
 export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
@@ -13,7 +12,6 @@ const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
 const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
-const activeWorkbookSheetIdSchema = z.enum(steelRuntimeActiveOutputSheetIds);
 
 interface InstructionCatalogContextInput {
   lineRefs?: string[];
@@ -59,11 +57,6 @@ export interface LookupQuoteRulesInput
   customerContext?: LookupCustomerContextInput;
 }
 
-export interface LookupQuoteRulesToolInput {
-  keywords: string[];
-  limit?: number;
-}
-
 interface SteelPriceLookupQueryInput {
   mode?: 'lookup';
   category: (typeof priceCategories)[number];
@@ -99,22 +92,8 @@ export interface RunFileOcrInput {
   dpi?: number;
 }
 
-export interface ReadWorkingOrderItemsInput {
-  mode: 'summary' | 'rowNo' | 'erpItemCode' | 'query' | 'source' | 'page';
-  rowNo?: number;
-  erpItemCode?: string;
-  query?: string;
-  filename?: string;
-  pageNumber?: number;
-  imageIndex?: number;
-  page?: number;
-  pageSize?: number;
-}
-
-export interface ReadActiveWorkbookInput {
-  query: string;
-  sheetIds?: Array<(typeof steelRuntimeActiveOutputSheetIds)[number]>;
-  limit?: number;
+export interface ReadMarkdownInput {
+  scope: 'workbook' | 'ocr';
   reason?: string;
 }
 
@@ -134,18 +113,6 @@ export interface RunVisualInspectionInput {
   >;
   prompt: string;
   dpi?: number;
-}
-
-function isCoordinateOnlyQuery(value: string): boolean {
-  const normalized = value.normalize('NFKC').trim();
-  const compact = normalized.replace(/\s+/gu, '');
-
-  return (
-    /^[A-Z]{1,2}\d+(?::[A-Z]{1,2}\d+)?$/iu.test(compact) ||
-    /^(?:row|rows|column|columns|col)\d+$/iu.test(compact) ||
-    /^第?\d+[列欄行]$/u.test(compact) ||
-    /^[A-Z]{1,3}欄$/iu.test(compact)
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -200,15 +167,6 @@ const legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
     })
     .optional(),
 });
-
-const lookupQuoteRulesSchema = z
-  .object({
-    keywords: keywordsSchema.describe(
-      'AI-selected Steel rule lookup keywords. Use product names, material words, processing terms, customer/rule hints, formula codes, or quote-context fragments as separate strings.',
-    ),
-    limit: limitSchema,
-  })
-  .strict();
 
 const lookupDefaultsSchema = z.object({
   catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
@@ -289,80 +247,12 @@ const runFileOcrSchema: z.ZodType<RunFileOcrInput> = z
     });
   });
 
-const readWorkingOrderItemsSchema: z.ZodType<ReadWorkingOrderItemsInput> = z
+const readMarkdownSchema: z.ZodType<ReadMarkdownInput> = z
   .object({
-    mode: z
-      .enum(['summary', 'rowNo', 'erpItemCode', 'query', 'source', 'page'])
-      .describe('Read mode for conversation-scoped Working Order Memory.'),
-    rowNo: z.number().int().positive().optional(),
-    erpItemCode: nonEmptyString.optional(),
-    query: nonEmptyString.optional(),
-    filename: nonEmptyString.optional(),
-    pageNumber: z.number().int().positive().optional(),
-    imageIndex: z.number().int().positive().optional(),
-    page: z.number().int().positive().optional(),
-    pageSize: z.number().int().min(1).max(50).optional(),
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (input.mode === 'rowNo' && input.rowNo === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide rowNo',
-      });
-    }
-    if (input.mode === 'erpItemCode' && input.erpItemCode === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide erpItemCode',
-      });
-    }
-    if (input.mode === 'query' && input.query === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide query',
-      });
-    }
-    if (
-      input.mode === 'source' &&
-      input.filename === undefined &&
-      input.pageNumber === undefined &&
-      input.imageIndex === undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide filename, pageNumber, or imageIndex',
-      });
-    }
-    if (input.mode === 'page' && input.page === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide page',
-      });
-    }
-  });
-
-const readActiveWorkbookSchema: z.ZodType<ReadActiveWorkbookInput> = z
-  .object({
-    query: nonEmptyString.describe(
-      'Required semantic keyword query for active workbook rows. Use item codes, product names, customer names, part numbers, status words, or quote text. Do not use spreadsheet coordinates.',
-    ),
-    sheetIds: z.array(activeWorkbookSheetIdSchema).min(1).max(4).optional(),
-    limit: z.number().int().min(1).max(50).optional(),
+    scope: z.enum(['workbook', 'ocr']),
     reason: nonEmptyString.optional(),
   })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (!isCoordinateOnlyQuery(input.query)) {
-      return;
-    }
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Use semantic keywords, not spreadsheet coordinates or row/column references',
-      path: ['query'],
-    });
-  });
+  .strict();
 
 const runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
   .object({
@@ -405,19 +295,15 @@ const searchCustomersSchema: z.ZodType<SearchCustomersInput> = z.object({
 });
 
 export const steelToolArgsSchemas: {
-  readonly lookup_quote_rules: z.ZodType<LookupQuoteRulesToolInput>;
   readonly search_customers: z.ZodType<SearchCustomersInput>;
   readonly search_price_candidates: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown>;
   readonly run_file_ocr: z.ZodType<RunFileOcrInput>;
-  readonly read_active_workbook: z.ZodType<ReadActiveWorkbookInput>;
-  readonly read_working_order_items: z.ZodType<ReadWorkingOrderItemsInput>;
+  readonly read_markdown: z.ZodType<ReadMarkdownInput>;
 } = {
-  lookup_quote_rules: lookupQuoteRulesSchema,
   search_customers: searchCustomersSchema,
   search_price_candidates: searchPriceCandidatesSchema,
   run_file_ocr: runFileOcrSchema,
-  read_active_workbook: readActiveWorkbookSchema,
-  read_working_order_items: readWorkingOrderItemsSchema,
+  read_markdown: readMarkdownSchema,
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;

@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { Run, Providers, Constants } from '@librechat/agents';
+import { Run, Providers, Constants, resolveLocalToolsForBinding } from '@librechat/agents';
 import {
   KnownEndpoints,
   EModelEndpoint,
@@ -42,12 +42,16 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { resolveConfigHeaders } from '~/utils/headers';
 import { applyTestRunHook } from '~/agents/testHook';
 import { isUserProvided } from '~/utils/common';
+import { parseSteelOpenAIConfig, resolveSteelOpenAIOAuthAuthFilePath } from '~/steel/ai/config';
+import { createSteelNativeOpenAIOAuthGraphModel } from '~/steel/native/oauth';
 
 /** Expected shape of JSON tool search results */
 interface ToolSearchJsonResult {
   found?: number;
   tools?: Array<{ name: string }>;
 }
+
+const steelOpenAIOAuthProvider = 'openai_oauth_responses';
 
 /**
  * Parses tool names from JSON-formatted tool_search output.
@@ -724,6 +728,96 @@ function anyAgentHasCodeEnv(agents: RunAgent[]): boolean {
   return false;
 }
 
+type SteelNativeOpenAIOAuthGraph = {
+  agentContexts?: Map<
+    string,
+    {
+      getToolsForBinding?: () => Parameters<typeof resolveLocalToolsForBinding>[0]['tools'];
+    }
+  >;
+  overrideModel?: unknown;
+  toolExecution?: Parameters<typeof resolveLocalToolsForBinding>[0]['toolExecution'];
+};
+
+function isSteelNativeOpenAIOAuthAgent(
+  agentInput: AgentInputs | undefined,
+): agentInput is AgentInputs {
+  return (agentInput?.provider as string | undefined) === steelOpenAIOAuthProvider;
+}
+
+function getRecordValue(record: Record<string, unknown> | undefined, key: string): unknown {
+  return record ? record[key] : undefined;
+}
+
+function getStringValue(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = getRecordValue(record, key);
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function getNumberValue(record: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = getRecordValue(record, key);
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function getBooleanValue(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): boolean | undefined {
+  const value = getRecordValue(record, key);
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function getSteelNativeOpenAIOAuthModelOptions(agentInput: AgentInputs) {
+  const clientOptions = agentInput.clientOptions as Record<string, unknown> | undefined;
+  const steelOpenAIConfig = parseSteelOpenAIConfig(process.env);
+  const model = getStringValue(clientOptions, 'model') ?? steelOpenAIConfig.model;
+
+  return {
+    authFilePath:
+      getStringValue(clientOptions, 'authFilePath') ??
+      resolveSteelOpenAIOAuthAuthFilePath(process.env),
+    ensureFresh: getBooleanValue(clientOptions, 'ensureFresh'),
+    frequencyPenalty: getNumberValue(clientOptions, 'frequencyPenalty'),
+    maxOutputTokens:
+      getNumberValue(clientOptions, 'maxOutputTokens') ??
+      getNumberValue(clientOptions, 'maxTokens') ??
+      getNumberValue(clientOptions, 'maxCompletionTokens'),
+    model,
+    presencePenalty: getNumberValue(clientOptions, 'presencePenalty'),
+    reasoningEffort:
+      getStringValue(clientOptions, 'reasoningEffort') ?? steelOpenAIConfig.reasoningEffort,
+    temperature: getNumberValue(clientOptions, 'temperature'),
+    topP: getNumberValue(clientOptions, 'topP'),
+  };
+}
+
+function applySteelNativeOpenAIOAuthGraphOverride({
+  agentInput,
+  run,
+}: {
+  agentInput?: AgentInputs;
+  run: unknown;
+}): void {
+  if (!isSteelNativeOpenAIOAuthAgent(agentInput)) {
+    return;
+  }
+
+  const graph = (run as { Graph?: SteelNativeOpenAIOAuthGraph }).Graph;
+  if (!graph) {
+    return;
+  }
+
+  const agentId = agentInput.agentId;
+  graph.overrideModel = createSteelNativeOpenAIOAuthGraphModel({
+    modelOptions: getSteelNativeOpenAIOAuthModelOptions(agentInput),
+    getTools: () =>
+      resolveLocalToolsForBinding({
+        tools: graph.agentContexts?.get(agentId)?.getToolsForBinding?.(),
+        toolExecution: graph.toolExecution,
+      }),
+  });
+}
+
 /**
  * Whether any agent reachable in the run — primary, handoff/parallel, or a
  * nested subagent — opts into cross-turn `reasoning_content` reconstruction.
@@ -1171,6 +1265,11 @@ export async function createRun({
     }),
   };
   const run = await Run.create(runConfig);
+
+  applySteelNativeOpenAIOAuthGraphOverride({
+    agentInput: agentInputs.length === 1 ? agentInputs[0] : undefined,
+    run,
+  });
 
   applyTestRunHook(run, { messages, agents });
   return run;

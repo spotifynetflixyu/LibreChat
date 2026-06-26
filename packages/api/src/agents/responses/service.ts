@@ -110,7 +110,16 @@ export function isValidationFailure(
 /** Internal message format (LibreChat-compatible) */
 export interface InternalMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | Array<{ type: string; text?: string; image_url?: unknown }>;
+  content:
+    | string
+    | Array<{
+        type: string;
+        text?: string;
+        image_url?: unknown;
+        file_id?: string;
+        file_data?: string;
+        filename?: string;
+      }>;
   name?: string;
   tool_call_id?: string;
   tool_calls?: Array<{
@@ -169,8 +178,13 @@ export function convertInputToMessages(input: string | InputItem[]): InternalMes
               };
             }
             if (part.type === 'input_file') {
-              const filePart = part as { filename?: string };
-              return { type: 'text', text: `[File: ${filePart.filename ?? 'unknown'}]` };
+              const filePart = part as { file_id?: string; file_data?: string; filename?: string };
+              return {
+                type: 'input_file',
+                ...(filePart.file_id ? { file_id: filePart.file_id } : {}),
+                ...(filePart.file_data ? { file_data: filePart.file_data } : {}),
+                ...(filePart.filename ? { filename: filePart.filename } : {}),
+              };
             }
             return null;
           })

@@ -9,6 +9,7 @@ import {
 } from './history/repository';
 import { createSteelConversationHistoryService } from './history/service';
 import {
+  createMongooseSteelOutputSheetMemoryReader,
   createMongooseSteelWorkingOrderMemoryReader,
   createMongooseSteelWorkingOrderMemoryWriter,
 } from './memory/service';
@@ -17,6 +18,7 @@ import type { Request, Response } from 'express';
 import type { SendSteelOAuthChatOptions } from './ai/provider';
 import type {
   FullActiveSteelOutputSheets,
+  PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
   SteelRuntimeContextConversationInput,
 } from './runtime/context';
@@ -110,6 +112,10 @@ function createTestOutputSheets(): FullActiveSteelOutputSheets {
 
 function createTestRuntimeContext(
   conversation: SteelRuntimeContextConversationInput,
+  overrides: {
+    attachments?: SteelRuntimeContext['attachments'];
+    outputSheets?: Partial<SteelRuntimeContext['outputSheets']>;
+  } = {},
 ): SteelRuntimeContext {
   return {
     conversation,
@@ -189,15 +195,17 @@ function createTestRuntimeContext(
         ocrExtracts: [],
         unresolvedItems: [],
       },
+      ...overrides.outputSheets,
     },
-    attachments: {
+    attachments: overrides.attachments ?? {
       currentTurnFiles: [],
       priorActiveFileEvidence: [],
       includeOcrRules: false,
     },
     toolPolicy: {
       aiVisibleTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
-      removedTools: ['lookup_quote_rules', 'read_working_order_items'],
+      removedTools: [],
+      ocrCorrectionPolicy: 'Do not rerun OCR for user corrections.',
     },
   };
 }
@@ -686,26 +694,10 @@ describe('createSteelHandlers', () => {
         },
       ]),
     };
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 2,
-        summary: { customer_fact: 1, working_order_row: 2 },
-        workingOrderRows: [],
-        memoryEntries: [
-          {
-            memoryKind: 'customer_fact',
-            summary: '龍頂 B tier',
-          },
-        ],
-      })),
-    };
-    const createWorkingOrderMemoryReader = jest.fn(() => memoryReader);
     const prepareRuntimeContext = jest.fn(async (input) =>
       createTestRuntimeContext(input.conversation),
     );
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader,
       getModelsConfig: jest.fn(),
       historyService,
       prepareRuntimeContext,
@@ -737,8 +729,6 @@ describe('createSteelHandlers', () => {
         turnIndex: 3,
       }),
     );
-    expect(createWorkingOrderMemoryReader).not.toHaveBeenCalled();
-    expect(memoryReader.readWorkingOrderItems).not.toHaveBeenCalled();
     expect(prepareRuntimeContext).toHaveBeenCalledWith(
       expect.objectContaining({
         conversation: expect.objectContaining({
@@ -953,14 +943,6 @@ describe('createSteelHandlers', () => {
       })),
       buildHistoryWindow: jest.fn(async () => []),
     };
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 0,
-        summary: {},
-        workingOrderRows: [],
-      })),
-    };
     const workingOrderMemoryWriter = {
       captureAssistantFinalMarkdown: jest.fn(async () => ({
         parseStatus: 'saved' as const,
@@ -968,7 +950,6 @@ describe('createSteelHandlers', () => {
       })),
     };
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       getModelsConfig: jest.fn(),
       historyService,
       sendChat,
@@ -1036,16 +1017,7 @@ describe('createSteelHandlers', () => {
         warnings: [],
       };
     });
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 0,
-        summary: {},
-        workingOrderRows: [],
-      })),
-    };
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       getModelsConfig: jest.fn(),
       historyService,
       sendChat,
@@ -1069,11 +1041,184 @@ describe('createSteelHandlers', () => {
     );
   });
 
+  it('reconstructs confirmed PL.pdf OCR follow-up from history and stored OCR evidence without runtime gates', async () => {
+    await withMongoMemory(async () => {
+      const ocrConfirmation = [
+        '已讀取附件 `PL.pdf`，並完成 OCR / 圖面初步判讀。',
+        '',
+        '## OCR 結果確認表',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 |',
+        '|---|---|---|---:|---:|',
+        '| PL.pdf | PL1 | PL6*80*1000 | 4 | 8 |',
+      ].join('\n');
+      const quoteMarkdown = [
+        '| 項次 | 型號 | 品名規格 | 數量 |',
+        '| --- | --- | --- | ---: |',
+        '| 10 | PL6X80X1000 | PL6*80*1000 | 2 |',
+      ].join('\n');
+      const historyService = createSteelConversationHistoryService({
+        historyRepository: createMongooseSteelConversationHistoryRepository(mongoose),
+        memoryRepository: createMongooseSteelWorkingOrderMemoryRollbackRepository(mongoose),
+        now: () => new Date('2026-06-26T00:00:00.000Z'),
+      });
+      const createOutputSheetMemoryReader = jest.fn((conversationId: string) =>
+        createMongooseSteelOutputSheetMemoryReader(mongoose, conversationId),
+      );
+      const prepareRuntimeContext = jest.fn(async (input: PrepareSteelRuntimeContextInput) => {
+        const outputSheetMemory = await input.dependencies.readOutputSheetMemory(
+          input.conversation.conversationId,
+        );
+        const currentTurnFiles = input.attachments?.currentTurnFiles ?? [];
+        const priorActiveFileEvidence = outputSheetMemory.derivedIndex.ocrExtracts;
+
+        return createTestRuntimeContext(input.conversation, {
+          attachments: {
+            currentTurnFiles,
+            priorActiveFileEvidence,
+            includeOcrRules: currentTurnFiles.length > 0 || priorActiveFileEvidence.length > 0,
+          },
+          outputSheets: {
+            derivedIndex: outputSheetMemory.derivedIndex,
+          },
+        });
+      });
+      const sendChat = jest
+        .fn()
+        .mockImplementationOnce(async (options: SendSteelOAuthChatOptions) => {
+          await options.onToolStatus?.({
+            toolName: 'run_file_ocr',
+            status: 'completed',
+            message: 'run_file_ocr completed',
+            result: {
+              ok: true,
+              toolName: 'run_file_ocr',
+              data: {
+                filename: 'PL.pdf',
+                pageResults: [
+                  {
+                    page: 1,
+                    text: 'PL6*80*1000 孔數 4 每件，數量 2，總孔數 8',
+                  },
+                ],
+              },
+              sourceRefs: [],
+              durationMs: 1,
+              redactionVersion: 1,
+            },
+          });
+
+          return {
+            provider: 'openai_oauth_responses' as const,
+            model: 'gpt-5.5',
+            text: ocrConfirmation,
+            unsupportedSettings: [],
+            warnings: [],
+          };
+        })
+        .mockImplementationOnce(async () => ({
+          provider: 'openai_oauth_responses' as const,
+          model: 'gpt-5.5',
+          text: quoteMarkdown,
+          unsupportedSettings: [],
+          warnings: [],
+        }));
+      const handlers = createSteelHandlers({
+        createOutputSheetMemoryReader,
+        getModelsConfig: jest.fn(),
+        historyService,
+        prepareRuntimeContext,
+        sendChat,
+        workingOrderMemoryWriter: createMongooseSteelWorkingOrderMemoryWriter(mongoose),
+      } as unknown as Parameters<typeof createSteelHandlers>[0]);
+      const firstReq = {
+        body: {
+          messages: [
+            {
+              role: 'user',
+              content: '請處理 PL.pdf，先輸出 OCR 表格。',
+              messageId: 'user-pl-ocr',
+              files: [
+                {
+                  filename: 'PL.pdf',
+                  mediaType: 'application/pdf',
+                  dataBase64: Buffer.from('%PDF-1.4\n%%EOF', 'utf8').toString('base64'),
+                },
+              ],
+            },
+          ],
+        },
+      } as Request;
+      const firstRes = createResponse();
+
+      await handlers.chat(firstReq, firstRes);
+
+      const firstJson = firstRes.json.mock.calls[0]?.[0] as
+        | { conversationId?: string; text?: string }
+        | undefined;
+      expect(firstJson?.text).toBe(ocrConfirmation);
+      expect(firstJson?.conversationId).toEqual(expect.stringMatching(/^steel-chat-/));
+      const conversationId = firstJson?.conversationId;
+      if (!conversationId) {
+        throw new Error('Expected generated Steel conversation id');
+      }
+
+      const secondReq = {
+        body: {
+          conversationId,
+          messages: [
+            {
+              role: 'user',
+              content: '確認上一輪 OCR 表格正確，請依 OCR 表單給出報價。',
+              messageId: 'user-pl-confirm',
+            },
+          ],
+        },
+      } as Request;
+      const secondRes = createResponse();
+
+      await handlers.chat(secondReq, secondRes);
+
+      expect(sendChat).toHaveBeenCalledTimes(2);
+      const secondOptions = (sendChat.mock.calls as Array<[SendSteelOAuthChatOptions]>)[1]?.[0];
+      expect(secondOptions?.model).toBe('gpt-5.5');
+      expect(secondOptions?.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+      ]);
+      expect(secondOptions?.messages[1]?.content).toContain('OCR 結果確認表');
+      expect(secondOptions?.messages[2]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: '確認上一輪 OCR 表格正確，請依 OCR 表單給出報價。',
+        }),
+      );
+      expect(
+        secondOptions?.steelRuntimeContext?.attachments.priorActiveFileEvidence,
+      ).toEqual([
+        expect.objectContaining({
+          filename: 'PL.pdf',
+          page: 1,
+          text: 'PL6*80*1000 孔數 4 每件，數量 2，總孔數 8',
+        }),
+      ]);
+      expect(secondOptions?.steelRuntimeContext?.toolPolicy.aiVisibleTools).toEqual(
+        expect.arrayContaining(['search_price_candidates', 'run_file_ocr']),
+      );
+      const serializedRuntimeContext = JSON.stringify(secondOptions?.steelRuntimeContext);
+      expect(serializedRuntimeContext).not.toContain('ocrWorkflow');
+      expect(serializedRuntimeContext).not.toContain('policy_blocked');
+      expect(secondRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId,
+          text: quoteMarkdown,
+        }),
+      );
+    });
+  });
+
   it('does not bind the default stream provider executor to working-order memory reads', async () => {
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(),
-    };
-    const createWorkingOrderMemoryReader = jest.fn(() => memoryReader);
     const historyService = {
       appendTurn: jest.fn(async (turn) => ({
         ...turn,
@@ -1092,7 +1237,6 @@ describe('createSteelHandlers', () => {
       warnings: [],
     }));
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader,
       getModelsConfig: jest.fn(),
       historyService,
       sendChat,
@@ -1107,8 +1251,6 @@ describe('createSteelHandlers', () => {
 
     await handlers.streamChat(req, res);
 
-    expect(createWorkingOrderMemoryReader).not.toHaveBeenCalled();
-    expect(memoryReader.readWorkingOrderItems).not.toHaveBeenCalled();
     const events = parseStreamChunks(chunks);
     expect(events).not.toEqual(
       expect.arrayContaining([
@@ -1127,14 +1269,6 @@ describe('createSteelHandlers', () => {
   });
 
   it('streams memory save activity after final assistant Markdown is parsed', async () => {
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 0,
-        summary: {},
-        workingOrderRows: [],
-      })),
-    };
     const historyService = {
       appendTurn: jest.fn(async (turn) => ({
         ...turn,
@@ -1152,7 +1286,6 @@ describe('createSteelHandlers', () => {
       })),
     };
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       getModelsConfig: jest.fn(),
       historyService,
       sendChat: jest.fn(async () => ({
@@ -1202,9 +1335,6 @@ describe('createSteelHandlers', () => {
         memoryRepository: createMongooseSteelWorkingOrderMemoryRollbackRepository(mongoose),
         now: () => new Date('2026-06-18T00:00:00.000Z'),
       });
-      const createWorkingOrderMemoryReader = jest.fn((activeConversationId: string) =>
-        createMongooseSteelWorkingOrderMemoryReader(mongoose, activeConversationId),
-      );
       const sendChat = jest.fn(async () => ({
         provider: 'openai_oauth_responses' as const,
         model: 'gpt-5.5',
@@ -1213,7 +1343,6 @@ describe('createSteelHandlers', () => {
         warnings: [],
       }));
       const handlers = createSteelHandlers({
-        createWorkingOrderMemoryReader,
         getModelsConfig: jest.fn(),
         historyService,
         sendChat,
@@ -1256,8 +1385,6 @@ describe('createSteelHandlers', () => {
           }),
         ]),
       );
-      expect(createWorkingOrderMemoryReader).not.toHaveBeenCalled();
-
       const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, conversationId);
       await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
         expect.objectContaining({
@@ -1277,14 +1404,6 @@ describe('createSteelHandlers', () => {
   });
 
   it('captures successful tool and OCR results into Working Order Memory during streaming', async () => {
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 0,
-        summary: {},
-        workingOrderRows: [],
-      })),
-    };
     const historyService = {
       appendTurn: jest.fn(async (turn) => ({
         ...turn,
@@ -1314,7 +1433,6 @@ describe('createSteelHandlers', () => {
         .mockResolvedValueOnce({ savedCounts: { ocr_extract: 1 } }),
     };
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       executeToolCall,
       getModelsConfig: jest.fn(),
       historyService,
@@ -1398,16 +1516,7 @@ describe('createSteelHandlers', () => {
       })),
       buildHistoryWindow: jest.fn(async () => []),
     };
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 0,
-        summary: {},
-        workingOrderRows: [],
-      })),
-    };
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       getModelsConfig: jest.fn(),
       historyService,
       sendChat: jest.fn(async () => ({
@@ -1503,19 +1612,10 @@ describe('createSteelHandlers', () => {
         },
       ]),
     };
-    const memoryReader = {
-      readWorkingOrderItems: jest.fn(async () => ({
-        mode: 'summary',
-        resultCount: 0,
-        summary: {},
-        workingOrderRows: [],
-      })),
-    };
     const prepareRuntimeContext = jest.fn(async (input) =>
       createTestRuntimeContext(input.conversation),
     );
     const handlers = createSteelHandlers({
-      createWorkingOrderMemoryReader: jest.fn(() => memoryReader),
       getModelsConfig: jest.fn(),
       historyService,
       prepareRuntimeContext,

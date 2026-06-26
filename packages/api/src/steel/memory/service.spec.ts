@@ -418,19 +418,14 @@ describe('Mongoose Steel working-order memory reader', () => {
       }),
     );
 
-    const superseded = await SteelWorkingOrderMemory.findOne({
+    const oldRow = await SteelWorkingOrderMemory.findOne({
       conversationId: 'steel_conversation_1',
-      state: 'superseded',
       'payload.erpItemCode': 'OLD001',
     }).lean();
-    expect(superseded).toEqual(
-      expect.objectContaining({
-        supersededByMessageId: 'assistant_4',
-      }),
-    );
+    expect(oldRow).toBeNull();
   });
 
-  it('merges row-change Markdown by item number without replacing unrelated rows', async () => {
+  it('does not apply partial row-change Markdown as backend row patches', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');
@@ -481,25 +476,29 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
 
     expect(result).toEqual({
-      parseStatus: 'saved',
-      savedCounts: { working_order_row: 1 },
+      parseStatus: 'partial',
+      savedCounts: { calculation_fact: 1, working_order_row: 0 },
     });
     await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
       expect.objectContaining({
         resultCount: 2,
-        workingOrderRows: [
+        workingOrderRows: expect.arrayContaining([
+          expect.objectContaining({
+            rowNo: 1,
+            erpItemCode: 'CCG075',
+            quantity: 1,
+          }),
           expect.objectContaining({
             rowNo: 2,
             erpItemCode: 'EQB0090',
             quantity: 3,
           }),
-          expect.objectContaining({
-            rowNo: 1,
-            erpItemCode: 'CCG075',
-            quantity: 5,
-            備註: '客戶改數量',
-          }),
-        ],
+        ]),
+      }),
+    );
+    await expect(reader.readWorkingOrderItems({ mode: 'summary' })).resolves.toEqual(
+      expect.objectContaining({
+        summary: { calculation_fact: 1, working_order_row: 2 },
       }),
     );
   });
@@ -547,6 +546,93 @@ describe('Mongoose Steel working-order memory reader', () => {
         ]),
       }),
     );
+  });
+
+  it('merges latest assistant tables by sheet while carrying omitted sheets forward', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const outputReader = createMongooseSteelOutputSheetMemoryReader(mongoose, 'steel_conversation_1');
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'system row',
+        payload: {
+          rowNo: 10,
+          erpItemCode: 'CCG075',
+          productName: '錏輕型鋼',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'calculation_fact',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'old quote',
+        payload: {
+          項目: '第 10 項',
+          小計: '100',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'calculation_fact',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'manual review',
+        payload: {
+          項目: '待確認',
+          reason: '尺寸待確認',
+        },
+      },
+    ]);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_8',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      content: [
+        '| 項目 | 公式 | 小計 |',
+        '| --- | --- | --- |',
+        '| 第 10 項 | 2 * 26.8 | 53.6 |',
+      ].join('\n'),
+    });
+    const snapshot = await outputReader.readOutputSheetMemory();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { calculation_fact: 1, working_order_row: 0 },
+    });
+    expect(snapshot.previousOutputSheets.system_order.rows).toHaveLength(1);
+    expect(snapshot.previousOutputSheets.system_order.rows[0].cells).toEqual(
+      expect.objectContaining({
+        erpItemCode: 'CCG075',
+      }),
+    );
+    expect(snapshot.previousOutputSheets.customer_quote.rows).toEqual([
+      expect.objectContaining({
+        cells: expect.objectContaining({
+          小計: '53.6',
+        }),
+      }),
+    ]);
+    expect(snapshot.previousOutputSheets.manual_review.rows).toEqual([
+      expect.objectContaining({
+        cells: expect.objectContaining({
+          reason: '尺寸待確認',
+        }),
+      }),
+    ]);
   });
 
   it('stores unclassified Markdown tables without mutating active rows', async () => {
@@ -667,19 +753,6 @@ describe('Mongoose Steel working-order memory reader', () => {
       writer.captureToolResult({
         conversationId: 'steel_conversation_1',
         requestId: 'request_8',
-        toolName: 'lookup_quote_rules',
-        providerToolCallId: 'call_rules',
-        turnIndex: 8,
-        checkpointTurnIndex: 7,
-        data: {
-          rules: [{ slug: 'steel-rule', summary: '用 B tier' }],
-        },
-      }),
-    ).resolves.toEqual({ savedCounts: { rule_evidence: 1 } });
-    await expect(
-      writer.captureToolResult({
-        conversationId: 'steel_conversation_1',
-        requestId: 'request_8',
         toolName: 'run_file_ocr',
         providerToolCallId: 'call_ocr',
         turnIndex: 8,
@@ -702,13 +775,11 @@ describe('Mongoose Steel working-order memory reader', () => {
         summary: {
           customer_fact: 1,
           price_evidence: 1,
-          rule_evidence: 1,
           ocr_extract: 1,
         },
         memoryEntries: expect.arrayContaining([
           expect.objectContaining({ memoryKind: 'customer_fact', summary: expect.stringContaining('龍頂') }),
           expect.objectContaining({ memoryKind: 'price_evidence', summary: expect.stringContaining('CCG075') }),
-          expect.objectContaining({ memoryKind: 'rule_evidence', summary: expect.stringContaining('steel-rule') }),
           expect.objectContaining({
             memoryKind: 'ocr_extract',
             sourceRefs: [expect.objectContaining({ filename: 'a.pdf', pageNumber: 1 })],
@@ -723,5 +794,52 @@ describe('Mongoose Steel working-order memory reader', () => {
       memoryKind: 'ocr_extract',
     }).lean();
     expect(JSON.stringify(ocrEntry?.payload).length).toBeLessThan(5000);
+  });
+
+  it('replaces current OCR data instead of retaining overwritten OCR extracts', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await writer.captureToolResult({
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_ocr_1',
+      toolName: 'run_file_ocr',
+      providerToolCallId: 'call_ocr_1',
+      turnIndex: 2,
+      checkpointTurnIndex: 1,
+      data: {
+        filename: 'first.pdf',
+        pageResults: [{ page: 1, text: 'first' }],
+      },
+    });
+    await writer.captureToolResult({
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_ocr_2',
+      toolName: 'run_file_ocr',
+      providerToolCallId: 'call_ocr_2',
+      turnIndex: 4,
+      checkpointTurnIndex: 3,
+      data: {
+        filename: 'second.pdf',
+        pageResults: [{ page: 2, text: 'second' }],
+      },
+    });
+
+    const ocrEntries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+    }).lean();
+
+    expect(ocrEntries).toHaveLength(1);
+    expect(ocrEntries[0]).toEqual(
+      expect.objectContaining({
+        sourceKind: 'ocr_result',
+        state: 'active',
+        payload: expect.objectContaining({
+          filename: 'second.pdf',
+          page: 2,
+        }),
+      }),
+    );
   });
 });

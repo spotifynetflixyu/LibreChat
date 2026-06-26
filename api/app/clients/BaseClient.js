@@ -844,13 +844,50 @@ class BaseClient {
       responseMessage.contextMeta = this.contextMeta;
     }
 
-    responseMessage.databasePromise = this.saveMessageToDatabase(
+    const assistantTurnIndex =
+      this.options?.req?.steelNativeContext?.assistantTurnIndex ?? this.currentMessages.length;
+    const responseDatabasePromise = this.saveMessageToDatabase(
       responseMessage,
       saveOptions,
       user,
     );
+    responseMessage.databasePromise = this.withResponseMessageSavedHook({
+      responseMessage,
+      databasePromise: responseDatabasePromise,
+      saveOptions,
+      user,
+      turnIndex: assistantTurnIndex,
+    });
     this.savedMessageIds.add(responseMessage.messageId);
     return responseMessage;
+  }
+
+  /**
+   * Lets endpoint-specific clients attach side effects to a successfully saved
+   * assistant response while preserving the original databasePromise contract.
+   * @param {object} params
+   * @param {TMessage} params.responseMessage
+   * @param {Promise<object>} params.databasePromise
+   * @param {Partial<TConversation>} params.saveOptions
+   * @param {string | null} params.user
+   * @param {number} params.turnIndex
+   */
+  withResponseMessageSavedHook({ responseMessage, databasePromise, saveOptions, user, turnIndex }) {
+    const onResponseMessageSaved = this.options?.onResponseMessageSaved;
+    if (typeof onResponseMessageSaved !== 'function') {
+      return databasePromise;
+    }
+
+    return databasePromise.then(async (saveResult) => {
+      await onResponseMessageSaved({
+        responseMessage,
+        saveResult,
+        saveOptions,
+        user,
+        turnIndex,
+      });
+      return saveResult;
+    });
   }
 
   async loadHistory(conversationId, parentMessageId = null) {

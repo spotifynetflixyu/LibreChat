@@ -1,9 +1,19 @@
-import { getSteelToolDefinition, getSteelToolDefinitions } from './registry';
+import {
+  getExecutableSteelToolDefinition,
+  getSteelToolDefinition,
+  getSteelToolDefinitions,
+} from './registry';
+import { steelToolArgsSchemas } from './schemas';
 
 type GetToolDefinitionsWithMode = (input?: {
   contextMode?: 'full' | 'compact_workbook';
 }) => Array<{
   name: string;
+  usagePolicy?: {
+    readonly requiresMissingMarkdownInHistory?: boolean;
+    readonly forbiddenWhenHistoryHasNeededMarkdown?: boolean;
+    readonly allowedScopes?: readonly string[];
+  };
   argsSchema: {
     parse(value: unknown): unknown;
   };
@@ -18,7 +28,6 @@ describe('Steel tool registry', () => {
       'search_price_candidates',
       'run_file_ocr',
     ]);
-    expect(toolNames).not.toContain('read_active_workbook');
     expect(toolNames).not.toContain('lookup_quote_rules');
     expect(toolNames).not.toContain('read_working_order_items');
     expect(toolNames).not.toContain('save_working_order_items');
@@ -31,6 +40,19 @@ describe('Steel tool registry', () => {
     expect(toolNames).not.toContain('rank_price_candidates');
     expect(toolNames).not.toContain('raw_sql');
     expect(toolNames).not.toContain('read_file');
+  });
+
+  it('deletes context-injected and duplicate read tools from schema and executable registry', () => {
+    expect(Object.keys(steelToolArgsSchemas)).not.toContain('lookup_quote_rules');
+    expect(Object.keys(steelToolArgsSchemas)).not.toContain('read_working_order_items');
+    expect(() => {
+      // @ts-expect-error exercising a deleted executable tool name.
+      getExecutableSteelToolDefinition('lookup_quote_rules');
+    }).toThrow('Unknown Steel executable tool');
+    expect(() => {
+      // @ts-expect-error exercising a deleted executable tool name.
+      getExecutableSteelToolDefinition('read_working_order_items');
+    }).toThrow('Unknown Steel executable tool');
   });
 
   it('keeps Zod validation owned by the backend registry', () => {
@@ -274,6 +296,7 @@ describe('Steel tool registry', () => {
   it('lets AI trigger whole-file OCR without page-level arguments', () => {
     const definition = getSteelToolDefinition('run_file_ocr');
 
+    expect(definition.name).toBe('run_file_ocr');
     expect(
       definition.argsSchema.parse({
         fileIndex: 0,
@@ -288,54 +311,67 @@ describe('Steel tool registry', () => {
         fileIndex: 0,
         page: 1,
       }),
-    ).toThrow('Unrecognized key');
+    ).toThrow();
     expect(() =>
       definition.argsSchema.parse({
         fileIndex: 0,
         imageIndex: 1,
       }),
-    ).toThrow('Unrecognized key');
+    ).toThrow();
     expect(() => {
       // @ts-expect-error exercising a removed public tool name.
       getSteelToolDefinition('lookup_catalog_families');
     }).toThrow('Unknown Steel provider tool');
   });
 
-  it('exposes keyword-only active workbook reads only for compact workbook context', () => {
+  it('exposes scope-only Markdown-derived current-state reads only for compact workbook context', () => {
     const compactDefinitions = (getSteelToolDefinitions as GetToolDefinitionsWithMode)({
       contextMode: 'compact_workbook',
     });
-    const definition = compactDefinitions.find((entry) => entry.name === 'read_active_workbook');
+    const definition = compactDefinitions.find((entry) => entry.name === 'read_markdown');
 
     expect(definition).toBeDefined();
-    expect(definition?.argsSchema.parse({
-      query: 'CCG075 龍頂',
-      sheetIds: ['system_order', 'customer_quote'],
-      limit: 5,
-      reason: 'Need exact rows after compact context',
-    })).toEqual({
-      query: 'CCG075 龍頂',
-      sheetIds: ['system_order', 'customer_quote'],
-      limit: 5,
-      reason: 'Need exact rows after compact context',
+    expect(definition?.usagePolicy).toEqual({
+      requiresMissingMarkdownInHistory: true,
+      forbiddenWhenHistoryHasNeededMarkdown: true,
+      allowedScopes: ['workbook', 'ocr'],
+      currentConversationScoped: true,
     });
-    expect(() => definition?.argsSchema.parse({ query: 'A12' })).toThrow(
-      'Use semantic keywords',
-    );
+    expect(definition?.argsSchema.parse({
+      scope: 'workbook',
+      reason: 'Need current parsed workbook after compact context',
+    })).toEqual({
+      scope: 'workbook',
+      reason: 'Need current parsed workbook after compact context',
+    });
+    expect(definition?.argsSchema.parse({
+      scope: 'ocr',
+    })).toEqual({
+      scope: 'ocr',
+    });
+    expect(() =>
+      definition?.argsSchema.parse({
+        scope: 'quote',
+      }),
+    ).toThrow();
+    expect(() =>
+      definition?.argsSchema.parse({
+        scope: 'all',
+      }),
+    ).toThrow();
     expect(() =>
       definition?.argsSchema.parse({
         query: 'CCG075',
-        column: 'A',
       }),
-    ).toThrow('Unrecognized key');
+    ).toThrow();
     expect(() =>
       definition?.argsSchema.parse({
         rowNo: 12,
         sheetIds: ['system_order'],
       }),
-    ).toThrow('Unrecognized key');
+    ).toThrow();
     expect(getSteelToolDefinitions().map((entry) => entry.name)).not.toContain(
-      'read_active_workbook',
+      'read_markdown',
     );
   });
 

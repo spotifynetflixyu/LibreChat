@@ -42,6 +42,7 @@ import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedRespons
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
+import useSteelEventHandler from '~/hooks/SSE/useSteelEventHandler';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -301,6 +302,7 @@ export default function useEventHandlers({
   const { token } = useAuthContext();
 
   const { contentHandler, resetContentHandler } = useContentHandler({ setMessages, getMessages });
+  const steelEventHandler = useSteelEventHandler();
   /** `refetchType: 'all'` so cached-but-unmounted skill queries refresh too —
    *  they opt out of `refetchOnMount`, so a plain invalidation would leave
    *  the Skills panel stale until a manual refresh. */
@@ -1116,6 +1118,7 @@ export default function useEventHandlers({
     contentHandler,
     createdHandler,
     titleHandler,
+    steelEventHandler,
     syncStepMessage,
     attachmentHandler,
     abortConversation,

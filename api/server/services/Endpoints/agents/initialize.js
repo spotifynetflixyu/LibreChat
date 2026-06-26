@@ -1,4 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
+const mongoose = require('mongoose');
 const { createContentAggregator } = require('@librechat/agents');
 const {
   loadSkillStates,
@@ -12,7 +13,14 @@ const {
   resolveAgentTokenConfig,
   resolveAgentScopedSkillIds,
   resolveModelSpecSkillIds,
+  captureSteelNativeAssistantMarkdown,
+  buildSteelNativeEventEnvelopes,
+  createMongooseSteelWorkingOrderMemoryWriter,
   buildAgentContextAttachmentsByAgentId,
+  isSteelNativeProviderPolicyTarget,
+  resolveSteelNativeProviderPolicy,
+  toSteelNativeProviderMetadata,
+  sendEvent,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -95,6 +103,55 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
     } catch (error) {
       logger.error('Error loading tools for agent ' + agentId, error);
     }
+  };
+}
+
+async function emitSteelNativeEvents({ events, res, streamId }) {
+  for (const event of events) {
+    if (streamId) {
+      await GenerationJobManager.emitChunk(streamId, event);
+    } else if (typeof res?.write === 'function' && !res.writableEnded) {
+      sendEvent(res, event);
+    }
+  }
+}
+
+function createSteelNativeResponseSaveHook({ res, streamId }) {
+  const workingOrderMemoryWriter = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+  return async function onResponseMessageSaved({ responseMessage, turnIndex }) {
+    const result = await captureSteelNativeAssistantMarkdown({
+      writer: workingOrderMemoryWriter,
+      conversationId: responseMessage?.conversationId,
+      requestId: responseMessage?.messageId,
+      messageId: responseMessage?.messageId,
+      turnIndex,
+      text: responseMessage?.text,
+      content: responseMessage?.content,
+      isCreatedByUser: responseMessage?.isCreatedByUser,
+      unfinished: responseMessage?.unfinished,
+      error: responseMessage?.error,
+      temporary: responseMessage?.temporary,
+    });
+
+    logger.debug('[AgentClient] Steel native response capture', {
+      messageId: responseMessage?.messageId,
+      status: result.status,
+      reason: result.status === 'skipped' ? result.reason : undefined,
+      parseStatus: result.status === 'captured' ? result.result.parseStatus : undefined,
+      savedCounts: result.status === 'captured' ? result.result.savedCounts : undefined,
+    });
+    await emitSteelNativeEvents({
+      res,
+      streamId,
+      events: buildSteelNativeEventEnvelopes({
+        source: 'assistant_markdown',
+        conversationId: responseMessage?.conversationId,
+        requestId: responseMessage?.messageId,
+        messageId: responseMessage?.messageId,
+        capture: result,
+      }),
+    });
   };
 }
 
@@ -927,6 +984,17 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       fallback: usageCost.endpointTokenConfig,
     });
 
+  const steelProviderPolicy = isSteelNativeProviderPolicyTarget(primaryConfig.provider)
+    ? resolveSteelNativeProviderPolicy({
+        provider: primaryConfig.provider,
+        model: primaryConfig.model_parameters?.model ?? primaryConfig.model,
+        modelParameters: primaryConfig.model_parameters ?? {},
+      })
+    : undefined;
+  if (steelProviderPolicy) {
+    primaryConfig.model_parameters = steelProviderPolicy.modelParameters;
+  }
+
   const client = new AgentClient({
     req,
     res,
@@ -961,6 +1029,10 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
+    onResponseMessageSaved: createSteelNativeResponseSaveHook({ res, streamId }),
+    steelProviderMetadata: steelProviderPolicy
+      ? toSteelNativeProviderMetadata(steelProviderPolicy)
+      : undefined,
   });
 
   if (streamId) {

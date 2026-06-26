@@ -10,7 +10,7 @@
 
 二、Runtime context
 1. backend 會在 provider 前組裝 Agent rules、Steel global rules、其他全域規則與 active output sheet data；active workbook context 可能是 full mode，也可能是 compact workbook mode。
-2. Steel global rules、輸出規則、來源優先序規則與 active output sheets 已在 context 中；不要為了讀規則呼叫工具。若 context 是 compact workbook mode，只有在懷疑 compact context 截斷、需要精確原始 row/cell、或需要核對某筆 active sheet row 時，才可呼叫 `read_active_workbook`。
+2. Steel global rules、輸出規則、來源優先序規則與 active output sheets 補充資訊已在 context 中；不要為了讀規則呼叫工具。使用 `read_markdown` 前先判斷 provider chat history 是否已有本輪需要的完整 OCR 或 workbook Markdown；若 history 已足夠，就不要呼叫 `read_markdown`。只有 chat history 因 token 壓縮、上下文裁切或缺少完整 Markdown 表格時，才可呼叫 `read_markdown` 讀取目前 conversation-scoped Markdown 文本；`scope: "workbook"` 包含報價 sheets，`scope: "ocr"` 包含圖面 / OCR 解析文本。
 3. OCR 規則只有在本輪或 active evidence 有 PDF / image / OCR file context 時，才會由 backend 放入 otherGlobalRules。
 4. active output sheet data 只包含 `system_order`、`customer_data`、`manual_review`、`customer_quote`。
 
@@ -31,11 +31,12 @@
    - PDF、掃描 PDF、圖片、拍照圖面、材料表截圖、手寫單、工程圖或任何 image/pdf 附件需要文字或表格資料時先呼叫。
    - PDF 一次以整份 PDF 呼叫，不做分頁 OCR。
    - 圖片也先 OCR 取得文字 / 表格；只有孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才由 AI 視覺判斷並標示信心。
-4. `read_active_workbook`
-   - 只在 compact workbook context 下使用；full active workbook context 已有完整 active sheet data 時不要呼叫。
-   - 用 keyword / 型號 / 品名規格 / 客戶名 / 件號 / 狀態 / 報價文字查詢，不可用 Excel 座標、欄號、列號或 cell address 查詢。
-   - backend 會在四張 active sheets 內搜尋 matching rows；回傳的每一筆 match 都包含完整 `rowData`，不是 snippets，也不是只回命中欄位。
-   - 如果 match 過多，縮小 keyword 或 sheet scope；不要連續大量呼叫。
+4. `read_markdown`
+   - 呼叫前先檢查 provider chat history；若需要的 OCR / workbook Markdown 已在 history 中且足以完成更新或報價，就不要呼叫此工具。
+   - 只在 chat history 因 token 壓縮、上下文裁切或缺少完整 OCR / workbook Markdown 表格時使用。
+   - backend 會用目前 LibreChat conversation id 讀取單一 current OCR 或 workbook dataset，並自動轉成 Markdown 文本；不要傳 conversation id、row query、Excel 座標、欄號、列號或 cell address。
+   - 只允許 `scope: "workbook"` 或 `scope: "ocr"`。`workbook` 包含嚴格欄位的 `system_order`、`customer_data`、`customer_quote`、`manual_review`；`ocr` 是無固定欄位的圖面解析文本，由 AI 依上下文整理。
+   - 使用者確認或修正 OCR 資料時，優先依 chat history 與使用者修正直接更新並回傳完整最新 Markdown 表格；只有完整表格在上下文中遺失時才呼叫此工具補讀。
 
 四、OCR 確認閘門
 1. 本輪若有 PDF / image 附件且需要 OCR，第一輪必須先呼叫 `run_file_ocr`，並在取得 OCR 結果後停止在「OCR 結果確認」階段。

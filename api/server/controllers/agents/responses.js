@@ -1,5 +1,6 @@
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
+const mongoose = require('mongoose');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, ToolEndHandler, formatAgentMessages } = require('@librechat/agents');
 const {
@@ -15,6 +16,8 @@ const {
   buildToolSet,
   buildAgentScopedContext,
   buildAgentContextAttachmentsByAgentId,
+  buildDefaultSteelGlobalAgentContext,
+  prepareLibreChatSteelChatContext,
   createSafeUser,
   initializeAgent,
   loadSkillStates,
@@ -29,6 +32,9 @@ const {
   createToolExecuteHandler,
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
+  captureSteelNativeResponseOutput,
+  buildSteelNativeResponseMessageMetadata,
+  createMongooseSteelWorkingOrderMemoryWriter,
   // Responses API
   writeDone,
   buildResponse,
@@ -73,6 +79,13 @@ const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
 
+let steelWorkingOrderMemoryWriter;
+
+function getSteelWorkingOrderMemoryWriter() {
+  steelWorkingOrderMemoryWriter ??= createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+  return steelWorkingOrderMemoryWriter;
+}
+
 /**
  * Creates a tool loader function for the agent.
  * @param {AbortSignal} signal - The abort signal
@@ -114,6 +127,190 @@ function createToolLoader(signal, definitionsOnly = true) {
  */
 function convertToInternalMessages(input) {
   return convertInputToMessages(input);
+}
+
+const steelNativeResponseRoles = new Set(['system', 'user', 'assistant']);
+
+function extractSteelNativeTextContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+      if (part == null || typeof part !== 'object') {
+        return '';
+      }
+      return typeof part.text === 'string' ? part.text : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function parseSteelNativeDataUrlMediaType(value) {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const match = /^data:([^;,]+);base64,/i.exec(value);
+  return match?.[1];
+}
+
+function collectSteelNativeFilePartsFromContent(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  return content.filter(
+    (part) =>
+      part != null &&
+      typeof part === 'object' &&
+      (part.type === 'input_file' || part.type === 'input_image'),
+  );
+}
+
+function addSteelNativeFileReference(filesById, part, conversationId) {
+  const fileId = part.file_id;
+  if (typeof fileId !== 'string' || fileId.trim() === '' || filesById.has(fileId)) {
+    return;
+  }
+
+  const mediaType =
+    typeof part.mediaType === 'string'
+      ? part.mediaType
+      : typeof part.media_type === 'string'
+        ? part.media_type
+        : parseSteelNativeDataUrlMediaType(part.file_data) ?? 'application/octet-stream';
+
+  filesById.set(fileId, {
+    fileId,
+    mediaType,
+    source: 'librechat_file_record',
+    ...(conversationId ? { conversationId } : {}),
+    ...(typeof part.filename === 'string' && part.filename.trim() !== ''
+      ? { filename: part.filename }
+      : {}),
+  });
+}
+
+function collectSteelNativeInputFileReferencesFromOpenResponsesInput(input, conversationId) {
+  const filesById = new Map();
+  if (!Array.isArray(input)) {
+    return filesById;
+  }
+
+  for (const item of input) {
+    if (item?.type !== 'message') {
+      continue;
+    }
+    for (const part of collectSteelNativeFilePartsFromContent(item.content)) {
+      addSteelNativeFileReference(filesById, part, conversationId);
+    }
+  }
+
+  return filesById;
+}
+
+function collectSteelNativeInputFileReferencesFromMessages(messages, conversationId) {
+  const filesById = new Map();
+
+  for (const message of messages) {
+    if (message?.role !== 'user') {
+      continue;
+    }
+    for (const part of collectSteelNativeFilePartsFromContent(message.content)) {
+      addSteelNativeFileReference(filesById, part, conversationId);
+    }
+  }
+
+  return filesById;
+}
+
+function collectSteelNativeInputFileReferences({ requestInput, inputMessages, conversationId }) {
+  const filesById = collectSteelNativeInputFileReferencesFromOpenResponsesInput(
+    requestInput,
+    conversationId,
+  );
+
+  for (const [fileId, file] of collectSteelNativeInputFileReferencesFromMessages(
+    inputMessages,
+    conversationId,
+  )) {
+    if (!filesById.has(fileId)) {
+      filesById.set(fileId, file);
+    }
+  }
+
+  return [...filesById.values()];
+}
+
+function collectSteelNativeResponseMessages(messages) {
+  const activeHistory = [];
+  let currentUserTurn;
+
+  for (const message of messages) {
+    if (!steelNativeResponseRoles.has(message.role)) {
+      continue;
+    }
+
+    const steelMessage = {
+      role: message.role,
+      content: extractSteelNativeTextContent(message.content),
+      ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+    };
+    activeHistory.push(steelMessage);
+    if (steelMessage.role === 'user') {
+      currentUserTurn = steelMessage;
+    }
+  }
+
+  return { activeHistory, currentUserTurn };
+}
+
+function buildSharedRunContextWithSteel(agentScopedContext, steelRuntimeContext) {
+  return [agentScopedContext, steelRuntimeContext]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function normalizeSteelNativeResponseStorage(request) {
+  request.store = true;
+  return true;
+}
+
+function markSteelNativeResponseStored(response) {
+  response.store = true;
+  return response;
+}
+
+async function resolveResponseConversation(responseId, userId) {
+  const directConversation = await db.getConvo(userId, responseId);
+  if (directConversation) {
+    return { conversationId: responseId, conversation: directConversation };
+  }
+
+  if (!responseId.startsWith('resp_')) {
+    return null;
+  }
+
+  const responseMessage = await db.getMessage({ user: userId, messageId: responseId });
+  const conversationId =
+    responseMessage && typeof responseMessage.conversationId === 'string'
+      ? responseMessage.conversationId
+      : undefined;
+  if (!conversationId || conversationId === responseId) {
+    return null;
+  }
+
+  const conversation = await db.getConvo(userId, conversationId);
+  return conversation ? { conversationId, conversation } : null;
 }
 
 /**
@@ -220,9 +417,38 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
       model: agentId,
       finish_reason: response.status === 'completed' ? 'stop' : response.status,
       tokenCount: response.usage?.output_tokens,
+      metadata: buildSteelNativeResponseMessageMetadata({
+        conversationId,
+        responseId,
+        turnIndex: req.steelNativeContext?.assistantTurnIndex,
+        checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
+        requestedStore: req.steelNativeContext?.requestedStore,
+        store: req.steelNativeContext?.store === true,
+        providerStateMode:
+          req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
+        contextMetadata: req.steelNativeContext?.contextMetadata,
+      }),
     },
     { context: 'Responses API - save assistant response' },
   );
+
+  const captureResult = await captureSteelNativeResponseOutput({
+    writer: getSteelWorkingOrderMemoryWriter(),
+    conversationId,
+    responseId,
+    turnIndex: req.steelNativeContext?.assistantTurnIndex,
+    checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
+    response,
+  });
+
+  logger.debug('[Responses API] Steel native response capture', {
+    responseId,
+    conversationId,
+    status: captureResult.status,
+    reason: captureResult.status === 'skipped' ? captureResult.reason : undefined,
+    parseStatus: captureResult.status === 'captured' ? captureResult.result.parseStatus : undefined,
+    savedCounts: captureResult.status === 'captured' ? captureResult.result.savedCounts : undefined,
+  });
 }
 
 /**
@@ -300,6 +526,8 @@ const createResponse = async (req, res) => {
   }
 
   const request = validation.request;
+  const requestedStore = request.store;
+  const shouldStoreResponse = normalizeSteelNativeResponseStorage(request);
   const agentId = request.model;
   const isStreaming = request.stream === true;
   const summarizationConfig = appConfig?.summarization;
@@ -336,6 +564,7 @@ const createResponse = async (req, res) => {
   });
 
   try {
+    let continuationConversationId = null;
     if (request.previous_response_id != null) {
       if (typeof request.previous_response_id !== 'string') {
         return sendResponsesErrorResponse(
@@ -345,12 +574,17 @@ const createResponse = async (req, res) => {
           'invalid_request',
         );
       }
-      if (!(await db.getConvo(req.user?.id, request.previous_response_id))) {
+      const continuation = await resolveResponseConversation(
+        request.previous_response_id,
+        req.user?.id,
+      );
+      continuationConversationId = continuation?.conversationId ?? null;
+      if (!continuationConversationId) {
         return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
       }
     }
 
-    const conversationId = request.previous_response_id ?? uuidv4();
+    const conversationId = continuationConversationId ?? uuidv4();
     const parentMessageId = null;
 
     // Build allowed providers set
@@ -577,19 +811,6 @@ const createResponse = async (req, res) => {
     const mcpManager = getMCPManager();
     const configServers = await resolveConfigServers(req);
 
-    await Promise.all(
-      runAgents.map((runAgent) =>
-        applyContextToAgent({
-          agent: runAgent,
-          agentId: runAgent.id,
-          logger,
-          mcpManager,
-          configServers,
-          sharedRunContext: agentScopedContext.get(runAgent.id) ?? '',
-        }),
-      ),
-    );
-
     // Determine if streaming is enabled (check both request and agent config)
     const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
     const actuallyStreaming = isStreaming && !streamingDisabled;
@@ -598,13 +819,18 @@ const createResponse = async (req, res) => {
     let previousMessages = [];
     if (request.previous_response_id) {
       const userId = req.user?.id ?? 'api-user';
-      previousMessages = await loadPreviousMessages(request.previous_response_id, userId);
+      previousMessages = await loadPreviousMessages(conversationId, userId);
     }
 
     // Convert input to internal messages
     const inputMessages = convertToInternalMessages(
       typeof request.input === 'string' ? request.input : request.input,
     );
+    const currentTurnFiles = collectSteelNativeInputFileReferences({
+      requestInput: request.input,
+      inputMessages,
+      conversationId,
+    });
 
     const piiHit = findPiiMatchInMessages(inputMessages, appConfig?.messageFilter?.pii);
     if (piiHit != null) {
@@ -619,6 +845,54 @@ const createResponse = async (req, res) => {
 
     // Merge previous messages with new input
     const allMessages = [...previousMessages, ...inputMessages];
+    const assistantTurnIndex = allMessages.length;
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      conversationId,
+      requestId: responseId,
+      assistantTurnIndex,
+      memoryCheckpointTurnIndex: Math.max(0, assistantTurnIndex - 1),
+      requestedStore,
+      store: shouldStoreResponse,
+      providerStateMode: 'openai_responses_reconstructed',
+      currentTurnFiles,
+    };
+    const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(allMessages);
+    if (currentUserTurn && currentTurnFiles.length > 0) {
+      currentUserTurn.files = currentTurnFiles;
+    }
+    const steelConversation = prepareLibreChatSteelChatContext({
+      conversationId,
+      requestId: responseId,
+      activeHistory,
+      ...(currentUserTurn ? { currentUserTurn } : {}),
+    });
+    const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+      conversation: steelConversation,
+      ...(currentTurnFiles.length > 0 ? { attachments: { currentTurnFiles } } : {}),
+      renderProfile: 'open_responses',
+    });
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      contextMetadata: steelNativeContext.metadata,
+    };
+
+    await Promise.all(
+      runAgents.map((runAgent) =>
+        applyContextToAgent({
+          agent: runAgent,
+          agentId: runAgent.id,
+          logger,
+          mcpManager,
+          configServers,
+          globalInstructionPrefix: steelNativeContext.instructionPrefix,
+          sharedRunContext: buildSharedRunContextWithSteel(
+            agentScopedContext.get(runAgent.id),
+            steelNativeContext.runtimeContextText,
+          ),
+        }),
+      ),
+    );
 
     const toolSet = buildToolSet(primaryConfig);
     const formatted = formatAgentMessages(allMessages, {}, toolSet);
@@ -845,8 +1119,7 @@ const createResponse = async (req, res) => {
       const duration = Date.now() - requestStartTime;
       logger.debug(`[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`);
 
-      // Save to database if store: true
-      if (request.store === true) {
+      if (shouldStoreResponse) {
         try {
           // Save conversation
           await saveConversation(req, conversationId, agentId, agent);
@@ -855,7 +1128,9 @@ const createResponse = async (req, res) => {
           await saveInputMessages(req, conversationId, inputMessages, agentId);
 
           // Build response for saving (use tracker with buildResponse for streaming)
-          const finalResponse = buildResponse(context, tracker, 'completed');
+          const finalResponse = markSteelNativeResponseStored(
+            buildResponse(context, tracker, 'completed'),
+          );
           await saveResponseOutput(req, conversationId, responseId, finalResponse, agentId);
 
           logger.debug(
@@ -1023,9 +1298,9 @@ const createResponse = async (req, res) => {
         }
       }
 
-      const response = buildAggregatedResponse(context, aggregator);
+      const response = markSteelNativeResponseStored(buildAggregatedResponse(context, aggregator));
 
-      if (request.store === true) {
+      if (shouldStoreResponse) {
         try {
           await saveConversation(req, conversationId, agentId, agent);
 
@@ -1146,11 +1421,8 @@ const getResponse = async (req, res) => {
       return sendResponsesErrorResponse(res, 400, 'Response ID is required');
     }
 
-    // The responseId could be either the response ID or the conversation ID
-    // Try to find a conversation with this ID
-    const conversation = await db.getConvo(userId, responseId);
-
-    if (!conversation) {
+    const resolvedResponse = await resolveResponseConversation(responseId, userId);
+    if (!resolvedResponse) {
       return sendResponsesErrorResponse(
         res,
         404,
@@ -1159,9 +1431,10 @@ const getResponse = async (req, res) => {
         'response_not_found',
       );
     }
+    const { conversationId, conversation } = resolvedResponse;
 
     // Load messages for this conversation
-    const messages = await db.getMessages({ conversationId: responseId, user: userId });
+    const messages = await db.getMessages({ conversationId, user: userId });
 
     if (!messages || messages.length === 0) {
       return sendResponsesErrorResponse(

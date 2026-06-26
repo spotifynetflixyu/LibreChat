@@ -94,6 +94,17 @@ export async function sendMessage(page: Page, text: string): Promise<Response> {
   return response;
 }
 
+export async function sendMessageByButton(page: Page, text: string): Promise<Response> {
+  const input = page.getByRole('textbox', { name: 'Message input' });
+  await input.click();
+  await input.fill(text);
+  const [response] = await Promise.all([
+    page.waitForResponse(isAgentsStream, { timeout: 30000 }),
+    page.getByRole('button', { name: 'Send message' }).click(),
+  ]);
+  return response;
+}
+
 export async function getAccessToken(page: Page): Promise<string> {
   const result = await page.evaluate(async () => {
     const response = await fetch('/api/auth/refresh', {

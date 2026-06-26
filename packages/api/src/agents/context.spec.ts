@@ -211,11 +211,30 @@ describe('Agent Context Utilities', () => {
   describe('buildAgentInstructions', () => {
     it('should combine all parts with double newlines', () => {
       const result = buildAgentInstructions({
+        globalInstructionPrefix: 'Global prefix',
         baseInstructions: 'Base instructions',
         mcpInstructions: 'MCP instructions',
       });
 
-      expect(result).toBe('Base instructions\n\nMCP instructions');
+      expect(result).toBe('Global prefix\n\nBase instructions\n\nMCP instructions');
+    });
+
+    it('should place global instruction prefix before base and MCP instructions', () => {
+      const result = buildAgentInstructions({
+        globalInstructionPrefix: 'Steel prefix',
+        baseInstructions: 'Base instructions',
+        mcpInstructions: 'MCP instructions',
+      });
+
+      expect(result).toBe('Steel prefix\n\nBase instructions\n\nMCP instructions');
+    });
+
+    it('should handle only global instruction prefix', () => {
+      const result = buildAgentInstructions({
+        globalInstructionPrefix: 'Steel prefix only',
+      });
+
+      expect(result).toBe('Steel prefix only');
     });
 
     it('should filter out empty parts', () => {
@@ -332,13 +351,14 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
+        globalInstructionPrefix: 'Steel prefix',
         sharedRunContext: 'Shared context',
         mcpManager: mockMCPManager,
         agentId: 'test-agent',
         logger: mockLogger,
       });
 
-      expect(agent.instructions).toBe('Original instructions\n\nMCP instructions');
+      expect(agent.instructions).toBe('Steel prefix\n\nOriginal instructions\n\nMCP instructions');
       expect(agent.additional_instructions).toBe('Shared context');
       expect(mockLogger.debug).toHaveBeenCalledWith(
         '[AgentContext] Applied context to agent: test-agent',
@@ -565,11 +585,12 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
+        globalInstructionPrefix: 'Steel prefix',
         sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
       });
 
-      expect(agent.instructions).toBe('Base');
+      expect(agent.instructions).toBe('Steel prefix\n\nBase');
       expect(agent.additional_instructions).toBe('Existing dynamic\n\nContext');
     });
   });
