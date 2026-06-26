@@ -70,6 +70,29 @@ const mockSteelNativeContext = {
 const mockBuildDefaultSteelGlobalAgentContext = jest
   .fn()
   .mockResolvedValue(mockSteelNativeContext);
+const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+      if (!part || typeof part !== 'object') {
+        return '';
+      }
+      if (typeof part.text === 'string') {
+        return part.text;
+      }
+      return typeof part.text?.value === 'string' ? part.text.value : '';
+    })
+    .filter(Boolean)
+    .join('');
+});
 const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
   const currentUserTurn = conversation.currentUserTurn
     ? { ...conversation.currentUserTurn, content: '' }
@@ -134,6 +157,7 @@ jest.mock('@librechat/api', () => ({
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
+  extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
   buildSteelNativeResponseMessageMetadata: (...args) =>
     mockBuildSteelNativeResponseMessageMetadata(...args),
   buildToolSet: jest.fn().mockReturnValue(new Set()),
@@ -730,6 +754,43 @@ describe('createResponse controller', () => {
           agentId: 'agent-123',
           globalInstructionPrefix: 'Steel global prefix',
           sharedRunContext: 'PDF context: drawing.pdf\n\nSteel runtime tail',
+        }),
+      );
+    });
+
+    it('preserves nested text content for Steel native Open Responses context', async () => {
+      const api = require('@librechat/api');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'new quote request',
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: {
+                value: 'nested quote request',
+              },
+            },
+          ],
+          messageId: 'user-2',
+        },
+      ]);
+
+      await createResponse(req, res);
+
+      expect(mockPrepareLibreChatSteelChatContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          currentUserTurn: {
+            role: 'user',
+            content: 'nested quote request',
+            messageId: 'user-2',
+          },
         }),
       );
     });

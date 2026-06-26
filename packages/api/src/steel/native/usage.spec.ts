@@ -3,7 +3,7 @@ import { getOpenAIOAuthUsageRemaining } from './usage';
 const primaryResetAt = 1782471969;
 const weeklyResetAt = 1782975152;
 
-function createUsagePayload() {
+function createUsagePayload(usedPercent = 20) {
   return {
     user_id: 'user_sensitive',
     account_id: 'acct_sensitive',
@@ -12,7 +12,7 @@ function createUsagePayload() {
       allowed: true,
       limit_reached: false,
       primary_window: {
-        used_percent: 20,
+        used_percent: usedPercent,
         limit_window_seconds: 18000,
         reset_after_seconds: 14685,
         reset_at: primaryResetAt,
@@ -124,6 +124,78 @@ describe('OpenAI OAuth usage remaining service', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps cached usage separate by auth file path', async () => {
+    const cache = {};
+    const loadAuthTokens = jest.fn(async ({ authFilePath }: { authFilePath?: string }) => ({
+      accessToken: `token_sensitive_${authFilePath}`,
+    }));
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(createUsagePayload(20))))
+      .mockResolvedValueOnce(new Response(JSON.stringify(createUsagePayload(70))));
+
+    const first = await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: fetchImpl,
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+    const second = await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-b.json',
+      cache,
+      fetch: fetchImpl,
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:30.000Z'),
+    });
+    const firstAgain = await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: fetchImpl,
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:45.000Z'),
+    });
+
+    expect(first.windows[0]?.remainingPercent).toBe(80);
+    expect(second.windows[0]?.remainingPercent).toBe(30);
+    expect(firstAgain.windows[0]?.remainingPercent).toBe(80);
+    expect(loadAuthTokens).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces concurrent usage requests for the same auth file path', async () => {
+    const cache = {};
+    let resolveFetch: (response: Response) => void = () => undefined;
+    const fetchResponse = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchImpl = jest.fn(() => fetchResponse);
+    const loadAuthTokens = jest.fn(async () => ({
+      accessToken: 'token_sensitive',
+    }));
+
+    const first = getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: fetchImpl,
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+    const second = getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: fetchImpl,
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+
+    resolveFetch(new Response(JSON.stringify(createUsagePayload())));
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(loadAuthTokens).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('returns sanitized unavailable state when OAuth auth cannot be loaded', async () => {
     const loadAuthTokens = jest.fn(async () => {
       throw new Error('token_sensitive in auth file');
@@ -145,6 +217,37 @@ describe('OpenAI OAuth usage remaining service', () => {
       windows: [],
     });
     expect(JSON.stringify(result)).not.toMatch(/token_sensitive|auth file/i);
+  });
+
+  it('caches unavailable auth state briefly', async () => {
+    const cache = {};
+    const loadAuthTokens = jest.fn(async () => {
+      throw new Error('token_sensitive in auth file');
+    });
+
+    await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: jest.fn(),
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+    await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: jest.fn(),
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:05.000Z'),
+    });
+    await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/auth-a.json',
+      cache,
+      fetch: jest.fn(),
+      loadAuthTokens,
+      now: () => new Date('2026-06-26T07:00:11.000Z'),
+    });
+
+    expect(loadAuthTokens).toHaveBeenCalledTimes(2);
   });
 
   it('returns sanitized unavailable state when usage payload shape is invalid', async () => {

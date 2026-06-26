@@ -597,7 +597,6 @@ function mergeSteelNativeToolDefinitions(result) {
   const merged = mergeSteelToolDefinitions({
     toolDefinitions: result.toolDefinitions ?? [],
     toolRegistry: result.toolRegistry,
-    contextMode: 'compact_workbook',
   });
 
   return {

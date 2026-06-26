@@ -98,6 +98,14 @@ function parseDataUrl(value: string): { data: string; mediaType: string } | unde
   return { data, mediaType };
 }
 
+function parseUrl(value: string): URL | undefined {
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function getTextFromContent(content: BaseMessage['content']): string {
   if (typeof content === 'string') {
     return content;
@@ -133,6 +141,11 @@ function createTextPart(text: string): LanguageModelV3TextPart | undefined {
   };
 }
 
+function createTextParts(text: string): LanguageModelV3TextPart[] {
+  const part = createTextPart(text);
+  return part ? [part] : [];
+}
+
 function createImageFilePart(part: Record<string, unknown>): LanguageModelV3FilePart | undefined {
   const imageUrl = part.image_url;
   const urlValue = isRecord(imageUrl) ? imageUrl.url : imageUrl;
@@ -158,10 +171,15 @@ function createImageFilePart(part: Record<string, unknown>): LanguageModelV3File
     };
   }
 
+  const url = parseUrl(urlValue);
+  if (!url) {
+    return undefined;
+  }
+
   return {
     type: 'file',
     mediaType: 'image/*',
-    data: new URL(urlValue),
+    data: url,
     providerOptions: {
       openai: {
         imageDetail: 'high',
@@ -235,7 +253,7 @@ function contentToUserParts(content: BaseMessage['content']): Array<
   LanguageModelV3TextPart | LanguageModelV3FilePart
 > {
   if (typeof content === 'string') {
-    return createTextPart(content) ? [createTextPart(content) as LanguageModelV3TextPart] : [];
+    return createTextParts(content);
   }
 
   if (!Array.isArray(content)) {
@@ -277,7 +295,7 @@ function contentToAssistantParts(content: BaseMessage['content']): Array<
   }
 
   const text = getTextFromContent(content);
-  return createTextPart(text) ? [createTextPart(text) as LanguageModelV3TextPart] : [];
+  return createTextParts(text);
 }
 
 function getMessageToolCalls(message: BaseMessage): ToolCall[] {
@@ -575,11 +593,13 @@ async function* toChunkStream({
   let response: LanguageModelV3GenerateResult['response'];
   let usage: LanguageModelV3Usage | undefined;
   let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
+  let completed = false;
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
+        completed = true;
         break;
       }
 
@@ -597,6 +617,9 @@ async function* toChunkStream({
       }
     }
   } finally {
+    if (!completed) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 
@@ -688,6 +711,7 @@ export function createOpenAIOAuthModel(
 }
 
 export interface OpenAIOAuthGraphModelOptions {
+  boundTools?: BindToolsInput[];
   getSystemRunnable?: () =>
     | Runnable<BaseMessage[], BaseMessage[], RunnableConfig<Record<string, unknown>>>
     | undefined;
@@ -720,10 +744,14 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     return systemRunnable.invoke(messages, config as RunnableConfig<Record<string, unknown>>);
   }
 
-  bindTools(tools: BindToolsInput[]): OpenAIOAuthModel {
-    return createOpenAIOAuthModel({
-      ...this.options.modelOptions,
-      tools,
+  private getTools(): BindToolsInput[] | undefined {
+    return this.options.boundTools ?? this.options.getTools?.();
+  }
+
+  bindTools(tools: BindToolsInput[]): OpenAIOAuthGraphModel {
+    return new OpenAIOAuthGraphModel({
+      ...this.options,
+      boundTools: tools,
     });
   }
 
@@ -731,7 +759,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     const preparedMessages = await this.prepareMessages(messages, config);
     return createOpenAIOAuthModel({
       ...this.options.modelOptions,
-      tools: this.options.getTools?.(),
+      tools: this.getTools(),
     }).invoke(preparedMessages, config);
   }
 
@@ -742,7 +770,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     const preparedMessages = await this.prepareMessages(messages, config);
     const stream = await createOpenAIOAuthModel({
       ...this.options.modelOptions,
-      tools: this.options.getTools?.(),
+      tools: this.getTools(),
     }).stream(preparedMessages, config);
 
     for await (const chunk of stream) {

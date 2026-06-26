@@ -12,6 +12,12 @@ export const MOCK_ENDPOINTS = [
 
 export type MockEndpoint = { label: string; model: string };
 
+export type UploadFixture = {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+};
+
 export const NEW_CHAT_PATH = '/c/new';
 
 type RefreshTokenBody = {
@@ -60,6 +66,33 @@ export async function selectModelSpec(page: Page, label: string) {
   await trigger.click();
   await page.getByRole('option', { name: new RegExp(`(^|\\s)${escapeRegExp(label)}\\b`) }).click();
   await expect(trigger).toContainText(label);
+}
+
+export async function openProviderFileChooser(page: Page) {
+  await page.getByRole('button', { name: 'Attach File Options' }).click();
+  await expect(page.getByText('Upload to Provider')).toBeVisible();
+
+  const fileChooserPromise = page.waitForEvent('filechooser');
+  await page.getByText('Upload to Provider').click();
+  const fileChooser = await fileChooserPromise;
+  expect(await fileChooser.element().getAttribute('type')).toBe('file');
+  return fileChooser;
+}
+
+export async function uploadProviderFile(page: Page, fixture: UploadFixture): Promise<Response> {
+  const fileChooser = await openProviderFileChooser(page);
+  const uploadResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/files') &&
+      response.request().method() === 'POST' &&
+      response.status() === 200,
+    { timeout: 30000 },
+  );
+  await fileChooser.setFiles(fixture);
+  const uploadResponse = await uploadResponsePromise;
+  expect(uploadResponse.ok()).toBeTruthy();
+  await expect(page.getByRole('button', { name: fixture.name })).toBeVisible();
+  return uploadResponse;
 }
 
 /** Enable the ephemeral Skills capability from the composer tool menu. */

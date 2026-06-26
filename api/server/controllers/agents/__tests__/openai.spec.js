@@ -32,6 +32,29 @@ const mockSteelNativeContext = {
 const mockBuildDefaultSteelGlobalAgentContext = jest
   .fn()
   .mockResolvedValue(mockSteelNativeContext);
+const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+      if (!part || typeof part !== 'object') {
+        return '';
+      }
+      if (typeof part.text === 'string') {
+        return part.text;
+      }
+      return typeof part.text?.value === 'string' ? part.text.value : '';
+    })
+    .filter(Boolean)
+    .join('');
+});
 const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
   const currentUserTurn = conversation.currentUserTurn
     ? { ...conversation.currentUserTurn, content: '' }
@@ -152,6 +175,7 @@ jest.mock('@librechat/api', () => ({
   recordCollectedUsage: mockRecordCollectedUsage,
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
+  extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
   applySteelNativeGlobalContextToAgentConfigs: mockApplySteelNativeGlobalContextToAgentConfigs,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
   extractManualSkills: jest.fn().mockReturnValue(undefined),
@@ -622,6 +646,40 @@ describe('OpenAIChatCompletionController', () => {
           fileAuthoringToolNames: ['create_file', 'edit_file'],
         },
       });
+    });
+
+    it('preserves nested text content for Steel native chat-completion context', async () => {
+      const { validateRequest } = require('@librechat/api');
+      validateRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: {
+                    value: 'nested quote request',
+                  },
+                },
+              ],
+            },
+          ],
+          stream: false,
+        },
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockPrepareLibreChatSteelChatContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          currentUserTurn: {
+            role: 'user',
+            content: 'nested quote request',
+          },
+        }),
+      );
     });
   });
 });

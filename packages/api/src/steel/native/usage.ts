@@ -31,6 +31,8 @@ type CachedUsage = {
 
 export type OpenAIOAuthUsageCache = {
   entry?: CachedUsage;
+  entries?: Map<string, CachedUsage>;
+  inflight?: Map<string, Promise<OpenAIOAuthUsageRemaining>>;
 };
 
 export type OpenAIOAuthUsageDeps = {
@@ -48,6 +50,7 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
 ) => Promise<OpenAIOAuthProviderModule>;
 
 const defaultCache: OpenAIOAuthUsageCache = {};
+const unavailableTtlMs = 10_000;
 
 async function loadDefaultAuthTokens(options: LoadAuthTokensOptions): Promise<EffectiveOpenAIOAuth> {
   const provider = await dynamicImport('openai-oauth-provider');
@@ -183,34 +186,58 @@ function parseUsagePayload({
 
 function getCachedResponse({
   cache,
+  key,
   nowMs,
 }: {
   cache: OpenAIOAuthUsageCache;
+  key: string;
   nowMs: number;
 }): OpenAIOAuthUsageRemaining | undefined {
-  const entry = cache.entry;
+  const entry = cache.entries?.get(key) ?? (key === 'default' ? cache.entry : undefined);
   if (!entry || entry.expiresAtMs <= nowMs) {
     return undefined;
   }
   return entry.response;
 }
 
-export async function getOpenAIOAuthUsageRemaining({
+function getCacheKey({ authFilePath }: Pick<OpenAIOAuthUsageDeps, 'authFilePath'>): string {
+  return authFilePath?.trim() || 'default';
+}
+
+function cacheResponse({
+  cache,
+  key,
+  nowMs,
+  response,
+  ttlMs,
+}: {
+  cache: OpenAIOAuthUsageCache;
+  key: string;
+  nowMs: number;
+  response: OpenAIOAuthUsageRemaining;
+  ttlMs: number;
+}): void {
+  const entry = {
+    expiresAtMs: nowMs + ttlMs,
+    response,
+  };
+  cache.entries ??= new Map();
+  cache.entries.set(key, entry);
+  if (key === 'default') {
+    cache.entry = entry;
+  }
+}
+
+async function loadOpenAIOAuthUsageRemaining({
   authFilePath,
-  cache = defaultCache,
   ensureFresh = true,
   fetch: fetchImpl = globalThis.fetch,
   loadAuthTokens = loadDefaultAuthTokens,
-  now = () => new Date(),
+  fetchedAt,
   ttlMs = defaultTtlMs,
-}: OpenAIOAuthUsageDeps = {}): Promise<OpenAIOAuthUsageRemaining> {
-  const fetchedAt = now();
-  const nowMs = fetchedAt.getTime();
-  const cachedResponse = getCachedResponse({ cache, nowMs });
-  if (cachedResponse) {
-    return cachedResponse;
-  }
-
+}: Omit<OpenAIOAuthUsageDeps, 'cache' | 'now'> & {
+  fetchedAt: Date;
+}): Promise<OpenAIOAuthUsageRemaining> {
   let auth: EffectiveOpenAIOAuth;
   try {
     auth = await loadAuthTokens({
@@ -250,10 +277,53 @@ export async function getOpenAIOAuthUsageRemaining({
     return createUnavailableResponse({ fetchedAt, reason: 'invalid_response' });
   }
 
-  cache.entry = {
-    expiresAtMs: nowMs + ttlMs,
-    response: parsed,
-  };
-
   return parsed;
+}
+
+export async function getOpenAIOAuthUsageRemaining({
+  authFilePath,
+  cache = defaultCache,
+  ensureFresh = true,
+  fetch: fetchImpl = globalThis.fetch,
+  loadAuthTokens = loadDefaultAuthTokens,
+  now = () => new Date(),
+  ttlMs = defaultTtlMs,
+}: OpenAIOAuthUsageDeps = {}): Promise<OpenAIOAuthUsageRemaining> {
+  const fetchedAt = now();
+  const nowMs = fetchedAt.getTime();
+  const key = getCacheKey({ authFilePath });
+  const cachedResponse = getCachedResponse({ cache, key, nowMs });
+  if (cachedResponse) {
+    return cachedResponse;
+  }
+
+  const inflight = cache.inflight?.get(key);
+  if (inflight) {
+    return inflight;
+  }
+
+  cache.inflight ??= new Map();
+  const request = loadOpenAIOAuthUsageRemaining({
+    authFilePath,
+    ensureFresh,
+    fetch: fetchImpl,
+    loadAuthTokens,
+    fetchedAt,
+    ttlMs,
+  });
+  cache.inflight.set(key, request);
+
+  try {
+    const response = await request;
+    cacheResponse({
+      cache,
+      key,
+      nowMs,
+      response,
+      ttlMs: response.status === 'available' ? ttlMs : Math.min(ttlMs, unavailableTtlMs),
+    });
+    return response;
+  } finally {
+    cache.inflight.delete(key);
+  }
 }

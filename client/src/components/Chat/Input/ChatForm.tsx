@@ -22,7 +22,7 @@ import {
   useAssistantsMapContext,
 } from '~/Providers';
 import PendingManualSkillsChips from './PendingManualSkillsChips';
-import { cn, forceResize, getModelSpec, removeFocusRings } from '~/utils';
+import { cn, getModelSpec, removeFocusRings } from '~/utils';
 import { useGetStartupConfig } from '~/data-provider';
 import { mainTextareaId, BadgeItem } from '~/common';
 import PendingQuoteChips from './PendingQuoteChips';
@@ -96,7 +96,6 @@ const ChatForm = memo(function ChatForm({
 
   const { requiresKey } = useRequiresKey();
   const methods = useChatFormContext();
-  const previousFilesCountRef = useRef(0);
   const {
     generateConversation,
     conversation: addedConvo,
@@ -205,29 +204,6 @@ const ChatForm = memo(function ChatForm({
 
   const textValue = useWatch({ control: methods.control, name: 'text' });
   const filesCount = files.size;
-  const fileOnlyDefaultPrompt = localize('com_ui_steel_file_ocr_default_prompt');
-
-  useEffect(() => {
-    const shouldFillDefaultPrompt = previousFilesCountRef.current === 0 && filesCount > 0;
-    previousFilesCountRef.current = filesCount;
-    if (!shouldFillDefaultPrompt) {
-      return;
-    }
-
-    const currentText = methods.getValues('text') ?? textAreaRef.current?.value ?? '';
-    if (currentText.trim().length > 0) {
-      return;
-    }
-
-    methods.setValue('text', fileOnlyDefaultPrompt, {
-      shouldDirty: true,
-      shouldValidate: true,
-    });
-    if (textAreaRef.current) {
-      textAreaRef.current.value = fileOnlyDefaultPrompt;
-      forceResize(textAreaRef.current);
-    }
-  }, [fileOnlyDefaultPrompt, filesCount, methods]);
 
   useEffect(() => {
     if (textAreaRef.current) {

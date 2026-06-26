@@ -97,5 +97,15 @@ describe('Steel native event mapping', () => {
         },
       }),
     ).toEqual([]);
+
+    expect(
+      buildSteelNativeEventEnvelopes({
+        source: 'tool_result',
+        capture: {
+          status: 'captured',
+          result: { savedCounts: { working_order_row: Number.POSITIVE_INFINITY } },
+        },
+      }),
+    ).toEqual([]);
   });
 });

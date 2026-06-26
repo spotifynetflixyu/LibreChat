@@ -83,10 +83,14 @@ function readThemeAttributes(): ThemeAttributes {
   };
 }
 
-function useThemeAttributes(): ThemeAttributes {
+function useThemeAttributes(enabled: boolean): ThemeAttributes {
   const [themeAttributes, setThemeAttributes] = useState(readThemeAttributes);
 
   useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+
     const updateThemeAttributes = () => setThemeAttributes(readThemeAttributes());
 
     if (typeof MutationObserver === 'undefined') {
@@ -103,7 +107,7 @@ function useThemeAttributes(): ThemeAttributes {
 
     updateThemeAttributes();
     return () => observer.disconnect();
-  }, []);
+  }, [enabled]);
 
   return themeAttributes;
 }
@@ -465,21 +469,47 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
 }: MarkdownTableActionsProps) {
   const tableRef = useRef<HTMLTableElement>(null);
   const modalTableRef = useRef<HTMLTableElement>(null);
+  const copiedResetTimerRef = useRef<number>();
+  const modalCopiedResetTimerRef = useRef<number>();
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [modalCopied, setModalCopied] = useState(false);
   const localize = useLocalize();
-  const themeAttributes = useThemeAttributes();
+  const themeAttributes = useThemeAttributes(isExpanded);
   const modalClassName = ['markdown-table-modal', themeAttributes.className].filter(Boolean).join(' ');
   const handleCopied = useCallback(() => {
+    if (copiedResetTimerRef.current) {
+      window.clearTimeout(copiedResetTimerRef.current);
+    }
     setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
+    copiedResetTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copiedResetTimerRef.current = undefined;
+    }, 1200);
   }, []);
   const handleModalCopied = useCallback(() => {
+    if (modalCopiedResetTimerRef.current) {
+      window.clearTimeout(modalCopiedResetTimerRef.current);
+    }
     setModalCopied(true);
-    window.setTimeout(() => setModalCopied(false), 1200);
+    modalCopiedResetTimerRef.current = window.setTimeout(() => {
+      setModalCopied(false);
+      modalCopiedResetTimerRef.current = undefined;
+    }, 1200);
   }, []);
   const closeModal = useCallback(() => setIsExpanded(false), []);
+
+  useEffect(
+    () => () => {
+      if (copiedResetTimerRef.current) {
+        window.clearTimeout(copiedResetTimerRef.current);
+      }
+      if (modalCopiedResetTimerRef.current) {
+        window.clearTimeout(modalCopiedResetTimerRef.current);
+      }
+    },
+    [],
+  );
 
   return (
     <div className="markdown-table-container">

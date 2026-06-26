@@ -1,7 +1,6 @@
 import path from 'path';
 import { readFileSync } from 'fs';
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -9,7 +8,9 @@ import {
   selectMockEndpoint,
   sendMessageByButton,
   sendMessage,
+  uploadProviderFile,
 } from './helpers';
+import type { UploadFixture } from './helpers';
 
 const STEEL_NATIVE_ASSERTION_MARKER = 'E2E_ASSERT_STEEL_NATIVE';
 const STEEL_NATIVE_ASSERTION_FINAL_TEXT = 'E2E Steel native assertion passed';
@@ -19,12 +20,6 @@ const STEEL_NATIVE_PL_OCR_MARKER = 'E2E_ASSERT_STEEL_NATIVE_PL_OCR:';
 const STEEL_NATIVE_PL_OCR_FINAL_TEXT = 'E2E Steel native PL OCR confirmation passed';
 const STEEL_NATIVE_PL_QUOTE_MARKER = 'E2E_ASSERT_STEEL_NATIVE_PL_QUOTE:';
 const STEEL_NATIVE_PL_QUOTE_FINAL_TEXT = 'E2E Steel native PL quote passed';
-
-type UploadFixture = {
-  name: string;
-  mimeType: string;
-  buffer: Buffer;
-};
 
 const pdfFixture: UploadFixture = {
   name: 'steel-native-provider-context.pdf',
@@ -49,32 +44,6 @@ const plPdfFixture: UploadFixture = {
   mimeType: 'application/pdf',
   buffer: readFileSync(path.resolve(process.cwd(), 'docs/reference/example/PL.pdf')),
 };
-
-async function openProviderFileChooser(page: Page) {
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  await expect(page.getByText('Upload to Provider')).toBeVisible();
-
-  const fileChooserPromise = page.waitForEvent('filechooser');
-  await page.getByText('Upload to Provider').click();
-  const fileChooser = await fileChooserPromise;
-  expect(await fileChooser.element().getAttribute('type')).toBe('file');
-  return fileChooser;
-}
-
-async function uploadProviderFile(page: Page, fixture: UploadFixture) {
-  const fileChooser = await openProviderFileChooser(page);
-  const uploadResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes('/api/files') &&
-      response.request().method() === 'POST' &&
-      response.status() === 200,
-    { timeout: 30000 },
-  );
-  await fileChooser.setFiles(fixture);
-  const uploadResponse = await uploadResponsePromise;
-  expect(uploadResponse.ok()).toBeTruthy();
-  await page.waitForTimeout(350);
-}
 
 test.describe('Steel native chat', () => {
   test('exposes Steel context/tools and renders native activity by default', async ({ page }) => {

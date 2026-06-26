@@ -5,7 +5,9 @@ import {
   steelNativeActivityByMessageId,
   type SteelNativeActivityEvent,
 } from '~/store/steel';
-import useSteelEventHandler from '~/hooks/SSE/useSteelEventHandler';
+import useSteelEventHandler, {
+  appendSteelNativeActivityEvent,
+} from '~/hooks/SSE/useSteelEventHandler';
 
 const createSubmission = (initialResponseId = 'assistant-1'): EventSubmission =>
   ({
@@ -166,5 +168,49 @@ describe('useSteelEventHandler', () => {
     expect((result.current.activity[0] as SteelNativeActivityEvent).savedCounts).toEqual({
       working_order_row: 2,
     });
+  });
+
+  it('retains more than twelve activity events for long Steel turns', () => {
+    const events = Array.from({ length: 13 }, (_, index) => ({
+      type: 'memory_saved' as const,
+      source: 'tool_result' as const,
+      message: `Saved ${index + 1}`,
+      savedCounts: { ocr_extract: index + 1 },
+      providerToolCallId: `call-${index + 1}`,
+    }));
+
+    const activity = events.reduce<SteelNativeActivityEvent[]>(
+      appendSteelNativeActivityEvent,
+      [],
+    );
+
+    expect(activity).toHaveLength(13);
+    expect(activity[0]?.providerToolCallId).toBe('call-1');
+    expect(activity[12]?.providerToolCallId).toBe('call-13');
+  });
+
+  it('ignores activity envelopes with non-finite saved counts', () => {
+    const { result } = renderHook(() => useHarness('assistant-1'), {
+      wrapper: RecoilRoot,
+    });
+
+    act(() => {
+      result.current.steelEventHandler(
+        {
+          event: 'steel_event',
+          data: {
+            type: 'memory_saved',
+            source: 'assistant_markdown',
+            conversationId: 'conversation-1',
+            messageId: 'assistant-1',
+            message: 'Working Order Memory saved',
+            savedCounts: { working_order_row: Number.NaN },
+          },
+        },
+        createSubmission(),
+      );
+    });
+
+    expect(result.current.activity).toEqual([]);
   });
 });

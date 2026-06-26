@@ -136,11 +136,20 @@ function getAiVisibleTools(input: MergeSteelToolDefinitionsInput): Set<string> {
   );
 }
 
+const jsonSchemaByToolName = new Map<SteelProviderToolName, JsonSchemaType>();
+
 function getJsonSchema(definition: SteelToolDefinition): JsonSchemaType {
-  return zodToJsonSchema(definition.argsSchema, {
+  const cached = jsonSchemaByToolName.get(definition.name);
+  if (cached) {
+    return cached;
+  }
+
+  const schema = zodToJsonSchema(definition.argsSchema, {
     name: definition.name,
     target: 'openApi3',
   }) as JsonSchemaType;
+  jsonSchemaByToolName.set(definition.name, schema);
+  return schema;
 }
 
 function getAvailableNativeToolName(steelToolName: SteelProviderToolName, usedNames: Set<string>) {

@@ -223,6 +223,71 @@ describe('OpenAI OAuth model adapter', () => {
     ]);
   });
 
+  it('preserves native graph system context after tools are bound', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '已查詢',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+        model: 'gpt-5.5',
+      },
+      getSystemRunnable: () =>
+        RunnableLambda.from((messages: BaseMessage[]) => [
+          new SystemMessage('Steel Runtime Context'),
+          ...messages,
+        ]),
+    });
+    const tool = {
+      type: 'function',
+      function: {
+        name: 'search_customers',
+        description: 'Search customers',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+          },
+          required: ['query'],
+        },
+      },
+    } as unknown as BindToolsInput;
+
+    await model.bindTools([tool]).invoke([new HumanMessage('查 ACME 客戶')]);
+
+    expect(getGenerateCall(doGenerate)).toEqual(
+      expect.objectContaining({
+        prompt: [
+          {
+            role: 'system',
+            content: 'Steel Runtime Context',
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '查 ACME 客戶',
+              },
+            ],
+          },
+        ],
+        toolChoice: { type: 'auto' },
+        tools: [
+          expect.objectContaining({
+            type: 'function',
+            name: 'search_customers',
+          }),
+        ],
+      }),
+    );
+  });
+
   it('passes native tools to the OAuth provider and maps tool calls back to AIMessageChunk', async () => {
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -345,6 +410,50 @@ describe('OpenAI OAuth model adapter', () => {
             filename: 'drawing.pdf',
             mediaType: 'application/pdf',
             data: 'PDF_DATA',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('ignores invalid image URLs instead of failing prompt conversion', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '已接收文字',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      model: 'gpt-5.5',
+    });
+
+    await model.invoke([
+      new HumanMessage({
+        content: [
+          {
+            type: 'text',
+            text: '只保留文字',
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: 'not a valid url',
+            },
+          },
+        ],
+      }),
+    ]);
+
+    expect(getGenerateCall(doGenerate).prompt).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '只保留文字',
           },
         ],
       },
@@ -533,5 +642,40 @@ describe('OpenAI OAuth model adapter', () => {
       output_tokens: 4,
       total_tokens: 16,
     });
+  });
+
+  it('cancels the provider stream when the native OAuth chunk consumer exits early', async () => {
+    const doGenerate = jest.fn();
+    const cancel = jest.fn();
+    const doStream = jest.fn(async () => ({
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'text_1',
+            delta: '第一段',
+          });
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'text_1',
+            delta: '第二段',
+          });
+        },
+        cancel,
+      }),
+      warnings: [],
+    }));
+    const model = createOpenAIOAuthModel({
+      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+      model: 'gpt-5.5',
+    });
+
+    const stream = await model.stream([new HumanMessage('輸出報價')]);
+    for await (const chunk of stream) {
+      expect(chunk.content).toBe('第一段');
+      break;
+    }
+
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });

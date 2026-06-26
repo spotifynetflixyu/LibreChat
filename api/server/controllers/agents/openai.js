@@ -35,6 +35,7 @@ const {
   resolveAgentScopedSkillIds,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
+  extractSteelNativeMarkdownText,
   createOpenAIContentAggregator,
   applySteelNativeGlobalContextToAgentConfigs,
   isChatCompletionValidationFailure,
@@ -139,29 +140,6 @@ function convertMessages(messages) {
 
 const steelNativeChatCompletionRoles = new Set(['system', 'user', 'assistant']);
 
-function extractSteelNativeTextContent(content) {
-  if (typeof content === 'string') {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return '';
-  }
-
-  return content
-    .map((part) => {
-      if (typeof part === 'string') {
-        return part;
-      }
-      if (part == null || typeof part !== 'object') {
-        return '';
-      }
-      return typeof part.text === 'string' ? part.text : '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
 function toSteelNativeChatCompletionMessages(messages) {
   return messages.flatMap((message) => {
     if (!steelNativeChatCompletionRoles.has(message.role)) {
@@ -171,7 +149,7 @@ function toSteelNativeChatCompletionMessages(messages) {
     return [
       {
         role: message.role,
-        content: extractSteelNativeTextContent(message.content),
+        content: extractSteelNativeMarkdownText({ content: message.content }),
       },
     ];
   });

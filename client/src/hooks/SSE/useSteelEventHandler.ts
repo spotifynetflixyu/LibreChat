@@ -4,7 +4,7 @@ import type { EventSubmission } from 'librechat-data-provider';
 import type { SteelNativeActivityEnvelope, SteelNativeActivityEvent } from '~/store/steel';
 import { steelNativeActivityByMessageId, steelNativeStreamEventName } from '~/store/steel';
 
-const MAX_STEEL_ACTIVITY_EVENTS = 12;
+const MAX_STEEL_ACTIVITY_EVENTS = 100;
 
 type MaybeSteelNativeActivityEnvelope = Partial<SteelNativeActivityEnvelope> & {
   data?: Partial<SteelNativeActivityEvent>;
@@ -18,7 +18,7 @@ function isSavedCounts(value: unknown): value is Record<string, number> {
     return false;
   }
 
-  return Object.values(value).every((count) => typeof count === 'number');
+  return Object.values(value).every((count) => typeof count === 'number' && Number.isFinite(count));
 }
 
 function normalizeSteelActivityEvent(

@@ -1,3 +1,112 @@
+# Active: Simplify Steel Native And OAuth Latest Changes
+
+Goal: review and simplify every module/file changed by
+`cfc463093b2178e8a921de91d26^..HEAD`, covering commits `cfc463093`,
+`c38550e2`, `f3b64adf`, and `3bf4f51d`, without changing public APIs,
+runtime contracts, database schema contracts, route payloads, event names, or
+Steel business rules.
+
+Target:
+
+- Git range: `cfc463093b2178e8a921de91d26^..HEAD`.
+- Scope size: 198 changed files, including docs/task cleanup, Steel native
+  backend modules, OpenAI OAuth provider modules, frontend Steel/OAuth UI, SSE
+  activity handling, data-provider contracts, E2E/mock fixtures, and focused
+  tests.
+- Constraints: no branch checkout/rebase/reset, no Prettier, preserve public
+  APIs and externally visible behavior, prefer deletion/local simplification
+  over new layers.
+
+Plan:
+
+- [x] Read repo instructions, `CLAUDE.md`, RTK rules, current lessons, and the
+      `/simplify` skill.
+- [x] Identify the exact changed-file target from the requested commits.
+- [x] Run three focused review passes for code reuse, code quality, and
+      efficiency across the target.
+- [x] Consolidate findings and inspect the directly affected code before each
+      edit.
+- [x] Apply local simplifications, deletions, and cleanup where benefit clearly
+      exceeds risk.
+- [x] Run targeted tests/build checks plus `git diff --check`; fix regressions
+      caused by this work.
+- [x] Add a review/results section here with what changed, what was skipped,
+      and verification evidence.
+
+Check-in - 2026-06-26:
+
+- This is a non-trivial simplify pass over the current `steel/v8.3` HEAD.
+- I will use the commit range itself as the explicit review target, not the
+  current working-tree diff.
+- I will not resurrect deleted planning docs or task packages unless a live
+  code/doc reference proves a deletion broke the current entrypoint contract.
+- I will treat existing Steel lessons as active constraints: native work starts
+  from the master framework, compact workbook/read_markdown contracts stay
+  intact, OpenAI OAuth names avoid new Steel prefixes, and no Prettier runs.
+
+Review - 2026-06-26 simplify pass:
+
+- Reviewed the full requested range `cfc463093^..HEAD` and applied local
+  simplifications in the changed Steel native/OAuth/backend/client/E2E test
+  surface without changing public event names, route payloads, workbook
+  contracts, database schema, or Steel business rules.
+- Removed duplicated Steel native text extraction in OpenAI Chat Completions and
+  Responses controllers by using the shared `extractSteelNativeMarkdownText`
+  helper, with tests for nested text payloads.
+- Removed attachment prompt pollution from `ChatForm`: file uploads no longer
+  prefill the visible OCR default prompt, while the submit fallback still
+  supports file-only OCR submission.
+- Preserved graph system context after OpenAI OAuth tools are bound, ignored
+  invalid image URLs instead of throwing during prompt conversion, and added
+  best-effort stream cancellation for early-exit provider/native OAuth readers.
+- Reworked OpenAI OAuth usage caching so cache entries are keyed by auth file,
+  unavailable auth responses are short-cached, and concurrent usage lookups are
+  coalesced.
+- Cached native Steel tool JSON schema conversion by tool name instead of
+  converting schemas on every request.
+- Tightened Steel saved-count event validation to finite positive numbers and
+  raised the client activity retention cap from 12 to 100 events.
+- Simplified Markdown table action state by clearing timers on unmount and only
+  attaching the theme observer while the expanded table modal is open.
+- Consolidated repeated Playwright mock upload helpers into
+  `e2e/specs/mock/helpers.ts` and replaced the fixed upload sleep with a
+  deterministic wait for the uploaded file chip.
+- Removed the dead `contextMode: 'compact_workbook'` argument from
+  `ToolService`.
+- Items intentionally not folded into this simplify pass because they need a
+  separate contract or data-model migration guardrail: moving the shared Steel
+  SSE event contract into data-provider, adding global-rule TTL/invalidation
+  caching, making delete/insert rule writes transactional/versioned, and
+  redesigning the client Steel activity atom-family registry.
+
+Verification:
+
+- `packages/api`: `rtk npx jest src/steel/native/oauth.spec.ts
+  src/steel/native/usage.spec.ts src/steel/native/events.spec.ts
+  src/steel/native/tools.spec.ts src/steel/ai/provider.spec.ts
+  --coverage=false --runInBand ...` passed: 5 suites, 42 tests.
+- `api`: `rtk npx jest
+  server/controllers/agents/__tests__/openai.spec.js
+  server/controllers/agents/__tests__/responses.unit.spec.js
+  server/services/__tests__/ToolService.spec.js --coverage=false --runInBand
+  ...` passed: 3 suites, 97 tests.
+- `client`: `rtk npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx
+  src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx
+  src/hooks/Messages/__tests__/useSubmitMessage.spec.ts
+  src/components/Chat/Input/__tests__/SendButton.spec.tsx --runInBand
+  --watch=false --coverage=false` passed: 4 suites, 19 tests.
+- `rtk npm run build:api` passed.
+- `client`: `rtk npm run typecheck` passed.
+- `rtk npx tsc --noEmit --pretty false --skipLibCheck --esModuleInterop
+  --moduleResolution node --target es2022 --module commonjs
+  e2e/specs/mock/helpers.ts e2e/specs/mock/chat.spec.ts
+  e2e/specs/mock/steel-native.spec.ts` passed.
+- `client`: `rtk npm run build` passed; existing direct-eval, large-chunk, and
+  PWA glob warnings remain build warnings.
+- `git diff --check` passed.
+
+Previous completed work:
+
 # Active: Compact Steel Runtime And Markdown Table Actions
 
 Goal: make compact workbook the only Steel runtime mode so `read_markdown` is

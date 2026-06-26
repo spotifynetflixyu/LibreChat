@@ -50,7 +50,7 @@ function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is St
     return false;
   }
 
-  return Object.values(savedCounts).some((count) => count > 0);
+  return Object.values(savedCounts).some((count) => Number.isFinite(count) && count > 0);
 }
 
 function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {

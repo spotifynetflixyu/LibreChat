@@ -6,17 +6,13 @@ import {
   NEW_CHAT_PATH,
   messagesView,
   mockReply,
+  uploadProviderFile,
   replyText,
   replyPrompt,
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
-
-type UploadFixture = {
-  name: string;
-  mimeType: string;
-  buffer: Buffer;
-};
+import type { UploadFixture } from './helpers';
 
 const pdfFixture: UploadFixture = {
   name: 'provider-context.pdf',
@@ -52,33 +48,6 @@ const imageFixture: UploadFixture = {
 };
 
 const composer = (page: Page) => page.locator('form');
-
-async function openProviderFileChooser(page: Page) {
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  await expect(page.getByText('Upload to Provider')).toBeVisible();
-
-  const fileChooserPromise = page.waitForEvent('filechooser');
-  await page.getByText('Upload to Provider').click();
-  const fileChooser = await fileChooserPromise;
-  expect(await fileChooser.element().getAttribute('type')).toBe('file');
-  return fileChooser;
-}
-
-async function uploadProviderFile(page: Page, fixture: UploadFixture) {
-  const fileChooser = await openProviderFileChooser(page);
-  const uploadResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes('/api/files') &&
-      response.request().method() === 'POST' &&
-      response.status() === 200,
-    { timeout: 30000 },
-  );
-  await fileChooser.setFiles(fixture);
-  const uploadResponse = await uploadResponsePromise;
-  expect(uploadResponse.ok()).toBeTruthy();
-  await page.waitForTimeout(350);
-  return uploadResponse;
-}
 
 test.describe('core chat loop', () => {
   test('streams a response, saves the conversation, and persists across reload', async ({

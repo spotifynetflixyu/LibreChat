@@ -32,6 +32,7 @@ const {
   createToolExecuteHandler,
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
+  extractSteelNativeMarkdownText,
   captureSteelNativeResponseOutput,
   buildSteelNativeResponseMessageMetadata,
   createMongooseSteelWorkingOrderMemoryWriter,
@@ -130,29 +131,6 @@ function convertToInternalMessages(input) {
 }
 
 const steelNativeResponseRoles = new Set(['system', 'user', 'assistant']);
-
-function extractSteelNativeTextContent(content) {
-  if (typeof content === 'string') {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return '';
-  }
-
-  return content
-    .map((part) => {
-      if (typeof part === 'string') {
-        return part;
-      }
-      if (part == null || typeof part !== 'object') {
-        return '';
-      }
-      return typeof part.text === 'string' ? part.text : '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
 
 function parseSteelNativeDataUrlMediaType(value) {
   if (typeof value !== 'string') {
@@ -261,7 +239,7 @@ function collectSteelNativeResponseMessages(messages) {
 
     const steelMessage = {
       role: message.role,
-      content: extractSteelNativeTextContent(message.content),
+      content: extractSteelNativeMarkdownText({ content: message.content }),
       ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
     };
     activeHistory.push(steelMessage);

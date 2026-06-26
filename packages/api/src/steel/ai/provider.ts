@@ -1225,10 +1225,12 @@ async function streamToGenerateResult({
   };
 
   const reader = stream.getReader();
+  let completed = false;
   try {
     while (true) {
       const next = await reader.read();
       if (next.done) {
+        completed = true;
         break;
       }
 
@@ -1266,6 +1268,9 @@ async function streamToGenerateResult({
       }
     }
   } finally {
+    if (!completed) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 
