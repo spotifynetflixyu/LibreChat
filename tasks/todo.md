@@ -1,3 +1,170 @@
+# Active: search_price_candidates tier output cleanup
+
+Goal: keep `search_price_candidates` AI-visible candidate pricing data on
+`tierPrices` only, remove duplicated `tierRatios` from tool output, and fix the
+output boundary that let internal tier-ratio fields leak into responses.
+
+Follow-up goal - 2026-06-27:
+
+Remove `tierRatios` / `ratio_a` / `ratio_b` / `ratio_c` / `ratio_f` from the
+internal import/repository model and from the Steel Supabase `steel.prices`
+table. `unit_price_a` / `unit_price_b` / `unit_price_c` / `unit_price_f`
+remain the only persisted tier price fields.
+
+Plan - 2026-06-27:
+
+- [x] Read project instructions, `CLAUDE.md`, current lessons, and relevant
+      Steel price-lookup memory.
+- [x] Add a regression test that fails while `search_price_candidates` returns
+      `tierRatios` beside `tierPrices`.
+- [x] Fix the tool output boundary so repository internals do not expose
+      `tierRatios` in `search_price_candidates` results.
+- [x] Run focused Steel tool/repository tests and `git diff --check`.
+- [x] Record the review result and root cause here.
+
+Review - 2026-06-27:
+
+- Root cause: `search_price_candidates` returned deduped `SteelPriceItem`
+  repository rows directly, and that internal row model includes both
+  `tierPrices` and DB ratio fields mapped as `tierRatios`.
+- Fix: added an explicit public price-candidate projection in
+  `packages/api/src/steel/tools/execute.ts`; AI-visible results now keep
+  `tierPrices` and no longer expose `tierRatios`.
+- Follow-up correction below removes repository/import/DB `tierRatios` entirely;
+  this first pass was tool-output-only and is superseded for internal storage.
+- Verification:
+  - Red test failed before the fix:
+    `cd packages/api && rtk npx jest src/steel/tools/execute.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "does not expose internal tier ratios"`.
+  - `cd packages/api && rtk npx jest src/steel/tools/execute.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 15 tests.
+  - `cd packages/api && rtk npx jest src/steel/repositories/prices.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 27 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`; detached npm PID `34257`,
+    server PID `34353`, and `curl` returned `200`.
+
+Follow-up plan - 2026-06-27:
+
+- [x] Add failing tests proving repository/import/schema no longer accept or
+      expose `tierRatios` / `ratio_*`.
+- [x] Remove `tierRatios` from `SteelPriceItem`, repository SQL selection,
+      import parser output, and import script insert columns.
+- [x] Add an explicit code/schema note that `比率A-F` source columns are
+      intentionally ignored and tier prices are stored only as `unit_price_*`.
+- [x] Create a Supabase migration with `npx supabase migration new`, update
+      `supabase/schema.sql`, and apply the migration to cloud `STEEL_POSTGRES_URL`.
+- [x] Verify tests, build, schema readback, and `git diff --check`.
+
+Follow-up review - 2026-06-27:
+
+- Removed import parser fields `ratioA-F`; source `比率A-F` remains present in
+  fixtures only to prove it is ignored.
+- Removed `ratio_a-f` from the price import script insert/update column list.
+- Removed repository `tierRatios`, `ratio_a-f` row fields, and SQL selection.
+- Removed `比率A-F` from schema mapping and added an ignored-source-column note.
+- Created `supabase/migration/20260627120916_drop_steel_price_ratio_columns.sql`
+  with `DROP COLUMN IF EXISTS ratio_a-f` and a `steel.prices` table comment.
+- Updated `supabase/schema.sql` so current schema contains only
+  `unit_price_a/b/c/f` for tier prices.
+- Applied migration to cloud `STEEL_POSTGRES_URL`; readback columns are
+  `unit_price_a,unit_price_b,unit_price_c,unit_price_f`, and migration history
+  contains version `20260627120916`.
+- Verification:
+  - Red tests failed before implementation for import `ratioA` and repository
+    SQL `ratio_a` selection.
+  - `cd packages/api && rtk npx jest src/steel/pricing/import.spec.ts src/steel/repositories/prices.spec.ts src/steel/tools/execute.spec.ts src/steel/schema/mapping.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 50 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.
+  - `rtk node packages/api/scripts/import-steel-price-v3.cjs --help` passed.
+  - Restarted backend on `http://localhost:3080/`; detached npm PID `75981`,
+    server PID `76067`, and `curl` returned `200`.
+
+Current simplify pass - 2026-06-27:
+
+- [x] Re-scanned the current working tree diff through code reuse, quality, and
+      efficiency angles.
+- [x] Removed the now-redundant public price-candidate projection in
+      `packages/api/src/steel/tools/execute.ts`; internal `tierRatios` no
+      longer exists in the import/repository/DB model, so the extra projection
+      was only duplicating `SteelPriceItem`.
+- [x] Updated PaddleOCR MCP initialization after user correction: conditionally
+      inject it only when the current request has OCR-capable files.
+- [x] Run targeted Steel/OCR/MCP tests, build, and diff checks after this
+      simplification.
+
+Current simplify review - 2026-06-27:
+
+- Removed the redundant `search_price_candidates` output projection that had
+  been added only to hide `tierRatios`; after the import/repository/DB cleanup,
+  direct deduped `SteelPriceItem` output no longer contains that field.
+- Applied the latest user correction for OCR MCP loading: no OCR-capable file
+  means no `PaddleOCR` MCP injection; current-turn PDF/image files and request
+  PDF/image attachments still inject it.
+- Updated `tasks/lessons.md` so future OCR MCP changes use conditional loading
+  instead of the earlier every-turn assumption.
+- Verification:
+  - Red test failed before the conditional-loading fix:
+    `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "does not inject PaddleOCR MCP during initialization without OCR-capable files"`.
+  - Same focused test passed after the fix.
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+    passed, 63 tests.
+  - `cd packages/api && rtk npx jest src/steel/pricing/import.spec.ts src/steel/repositories/prices.spec.ts src/steel/tools/execute.spec.ts src/steel/schema/mapping.spec.ts src/mcp/__tests__/utils.test.ts src/mcp/tools.spec.ts src/tools/definitions.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 177 tests.
+  - `cd api && rtk npx jest server/services/MCP.spec.js app/clients/tools/util/handleTools.test.js --runInBand --watch=false --coverage=false`
+    passed, 73 tests.
+  - `cd client && rtk npx jest src/utils/__tests__/validateFiles.spec.ts src/components/Chat/Input/Files/__tests__/AttachFileMenu.spec.tsx --runInBand --watch=false --coverage=false`
+    passed, 49 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `cd client && rtk npm run typecheck` passed.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`; detached npm PID `31376`,
+    server PID `31412`, and `curl` returned `200`.
+  - Backend log still shows configured MCP registry startup for `PaddleOCR`;
+    the conditional change is scoped to per-turn Agent tool injection.
+
+PaddleOCR MCP process lazy-load plan - 2026-06-27:
+
+- [x] Verify the existing MCP startup/config/reinit paths and confirm
+      `startup:false` keeps a YAML server known while skipping startup
+      capability/tool inspection.
+- [x] Add a red MCP initialization regression test proving `PaddleOCR` is
+      forced to process lazy loading before manager startup.
+- [x] Force `mcpServers.PaddleOCR.startup: false` before MCP manager
+      initialization, without mutating the loaded base config.
+- [x] Verify the red test turns green and focused OCR/MCP tool-loading tests
+      still pass.
+- [x] Rebuild/restart backend and confirm startup no longer launches the
+      PaddleOCR MCP stdio process before an OCR-capable turn.
+
+PaddleOCR MCP process lazy-load review - 2026-06-27:
+
+- Added `withLazyLoadedSteelMCPServers()` in
+  `api/server/services/initializeMCPs.js` so the `PaddleOCR` MCP server is
+  passed to `createMCPManager()` with `startup:false`, while other MCP servers
+  are left unchanged and the original app config object is not mutated.
+- This preserves the MCP registry/config entry but skips startup stdio
+  inspection, so `paddleocr_mcp` is not launched until an OCR-capable request
+  injects and uses the tool.
+- Kept the ignored local `librechat.yaml` aligned with `startup:false`, but the
+  tracked runtime guard does not depend on that local file being versioned.
+- Verification:
+  - Red test failed before implementation:
+    `cd api && rtk npx jest server/services/initializeMCPs.spec.js --runInBand --watch=false --coverage=false --testNamePattern "should force PaddleOCR MCP process lazy loading"`.
+  - Same focused test passed after implementation.
+  - `cd api && rtk npx jest server/services/initializeMCPs.spec.js server/services/__tests__/ToolService.spec.js server/services/MCP.spec.js app/clients/tools/util/handleTools.test.js --runInBand --watch=false --coverage=false`
+    passed, 152 tests.
+  - `cd packages/api && rtk npx jest src/mcp/registry/__tests__/MCPServerInspector.test.ts src/mcp/__tests__/MCPManager.test.ts src/mcp/tools.spec.ts src/tools/definitions.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 117 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`; detached npm PID `92630`,
+    server PID `92667`, and `curl` returned `200`.
+  - Startup log shows `[MCP] Initialized with 1 configured server and 0 tools.`
+    and the check returned `hasFastMcpBanner=false`,
+    `hasPaddleOcrToolsAtStartup=false`, `hasZeroToolInit=true`.
+
 # Active: Steel Direct MCP OCR
 
 Goal: remove `run_file_ocr` as an AI-visible/executable Steel tool and remove
@@ -6,6 +173,211 @@ OCR and assistant OCR Markdown auto-save to database.
 
 Implementation plan:
 `docs/plans/2026-06-27-steel-direct-mcp-ocr.md`.
+
+Simplify pass - 2026-06-27:
+
+- [x] Review the current working tree diff under `/simplify`.
+- [x] Run parallel reuse, quality, and efficiency checks over changed code.
+- [x] Apply only local simplifications that preserve public APIs and keep OCR
+      rules unchanged.
+- [x] Run targeted verification and record results.
+
+Simplify review - 2026-06-27:
+
+- Consolidated duplicated PaddleOCR request-file resolver tests in
+  `api/server/services/MCP.spec.js` with a local helper for filename and
+  `file_id` cases.
+- Tightened PaddleOCR resolver safety: request-supplied file refs are now used
+  only to collect current-turn file ids; downloadable records must come from
+  owner/tenant-checked `db.getFiles()` results.
+- Kept uploaded PDF media type precise when records are stored as
+  `application/octet-stream`; file extension fallback now produces
+  `data:application/pdf` for `.pdf`.
+- Added shared `splitMCPToolKey()` and reused it in legacy MCP tool loading /
+  execution so tool names containing `_mcp_` are parsed by the final delimiter.
+- Reused the existing MCP server-name fallback hash helper in both MCP server
+  name normalizers.
+- Updated after user correction: PaddleOCR MCP is injected only when the
+  current request has OCR-capable Steel files. The no-file case stays clean,
+  while PDF/image current-turn files and request attachments still trigger MCP
+  loading.
+- Verification:
+  - `cd packages/api && rtk npx jest src/mcp/__tests__/utils.test.ts --runInBand --watch=false --coverage=false`
+    passed, 79 tests.
+  - `cd packages/api && rtk npx jest src/mcp/tools.spec.ts src/tools/definitions.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 48 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false`
+    passed, 57 tests.
+  - `cd api && rtk npx jest app/clients/tools/util/handleTools.test.js --runInBand --watch=false --coverage=false`
+    passed, 16 tests.
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+    passed, 63 tests.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`, new PID `29803`, and
+    `curl` returned `200`; frontend dev server on `http://localhost:3090/`
+    also returned `200`.
+  - Backend log after restart shows `[MCP][PaddleOCR] Tools: paddleocr_vl` and
+    `[MCP] Initialized with 1 configured server and 1 tool.`
+
+Frontend PaddleOCR upload UI limits - 2026-06-27:
+
+- [x] Add chat file-input accept hints for PaddleOCR-supported UI formats.
+- [x] Add client-side preflight validation for PaddleOCR UI limits without
+      backend/YAML changes or PDF page-count checks.
+- [x] Run focused frontend validation tests and `git diff --check`.
+
+Frontend PaddleOCR upload UI limits review - 2026-06-27:
+
+- Scoped the change to frontend UI only. No backend validator,
+  `librechat.yaml`, or PDF page-count check was added.
+- OCR/Text upload selection now sets the file chooser accept hint to PDF, PNG,
+  JPG/JPEG, BMP, and CIF.
+- `validateFiles()` now applies PaddleOCR UI limits only when
+  `toolResource === context`: max 20 selected/attached files, max 200MB per
+  file, max 10MB for image files, and the same PDF/image format allowlist.
+- Normal provider upload, file search, and code environment upload still use
+  the existing endpoint file config path.
+- Verification:
+  - Initial repo-root Jest command failed because root Jest did not use the
+    client TypeScript transform; reran the same spec from `client/`.
+  - `cd client && rtk npx jest src/utils/__tests__/validateFiles.spec.ts --runInBand --watch=false --coverage=false`
+    passed, 23 tests.
+  - `cd client && rtk npx jest src/components/Chat/Input/Files/__tests__/AttachFileMenu.spec.tsx --runInBand --watch=false --coverage=false`
+    passed, 26 tests.
+  - `rtk git diff --check` passed.
+  - `curl http://localhost:3090/` returned `200`.
+
+Current correction - 2026-06-27 - PaddleOCR filename input and server key:
+
+- [x] Reproduce the reported `paddleocr_vl` failure pattern with a red test:
+      `input_data: "c.pdf"` was passed through unchanged, so MCP had no
+      downloadable file bytes.
+- [x] Rename the configured LibreChat MCP server key from `PaddleOCR-VL-1.6`
+      to `PaddleOCR` while keeping `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`.
+- [x] Resolve filename-only PaddleOCR `input_data` from current request
+      LibreChat attachments before calling MCP, using owner/tenant-checked file
+      records and existing storage download strategies.
+- [x] Keep the generic provider-safe dotted-server-name tests, because they
+      still protect other MCP server names even though current PaddleOCR uses
+      the simpler `PaddleOCR` key.
+- [x] Run full focused verification, direct `c.pdf` PaddleOCR manual check,
+      `git diff --check`, restart backend, and record evidence.
+
+Correction review - 2026-06-27 - PaddleOCR filename input and server key:
+
+- Root cause: the latest `paddleocr_vl` failure was a real MCP tool failure,
+  not an AI result-parsing failure. The model passed `input_data: "c.pdf"`;
+  PaddleOCR MCP supports absolute paths, URLs, raw Base64, or data URLs, and
+  does not know LibreChat attachment display names.
+- Runtime fix: `createMCPTool()` now captures the Express request. Before
+  `paddleocr_vl` calls MCP, filename-only `input_data` is matched against the
+  current request's LibreChat file refs, owner/tenant-checked through
+  `db.getFiles()`, downloaded through the existing file storage strategy, and
+  converted to a `data:<media-type>;base64,...` input.
+- Naming fix: `librechat.yaml` now uses MCP server key `PaddleOCR`; the actual
+  model setting remains `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`.
+- Verification:
+  - Red/green filename-only regression:
+    `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false --testNamePattern "filename-only"`.
+  - Full focused suites passed:
+    `MCP.spec.js` 53 tests, `handleTools.test.js` 16 tests,
+    `ToolService.spec.js` 63 tests.
+  - Direct `docs/reference/example/c.pdf` PaddleOCR MCP manual spec passed, 1
+    test in 16.2s.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`, new PID `47359`, and
+    `curl` returned `200`; frontend dev server on `http://localhost:3090/`
+    also returned `200`.
+  - Backend log after restart shows `PaddleOCR.timeout: 1200000`,
+    `[MCP][PaddleOCR] Tools: paddleocr_vl`, and `[MCP] Initialized with 1
+    configured server and 1 tool.`
+
+Current correction - 2026-06-27 - PaddleOCR file_id input:
+
+- [x] Reproduce the reported `paddleocr_vl` failure shape with a red test:
+      `input_data` was a LibreChat file id UUID, so the previous filename-only
+      resolver passed it through unchanged.
+- [x] Extend backend PaddleOCR argument resolution to match current-turn
+      attachments by `file_id` / `fileId` / `id` before falling back to filename
+      and filepath matching.
+- [x] Revert the attempted OCR rule wording change per user correction; this
+      issue is handled in backend tool argument normalization, not by changing
+      rules.
+- [x] Run focused verification, restart backend, and record evidence.
+
+Correction review - 2026-06-27 - PaddleOCR file_id input:
+
+- Root cause: the AI passed LibreChat file id
+  `48322107-fb71-4d2c-970a-669e15d14821` as `input_data`. PaddleOCR MCP does
+  not natively understand LibreChat UUIDs, and the previous backend resolver
+  only matched filenames / filepaths.
+- Runtime fix: PaddleOCR `input_data` normalization now matches current-turn
+  attachments by `file_id`, `fileId`, or `id`, then resolves the authorized
+  file record and converts it to a data URL before the MCP call.
+- Rule boundary: the attempted OCR rule wording change was reverted after the
+  user said not to change rules.
+- Verification:
+  - Red/green file-id regression:
+    `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false --testNamePattern "file_id input_data"`.
+  - Full `MCP.spec.js` passed, 54 tests.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`, new PID `66358`, and
+    `curl` returned `200`; frontend dev server on `http://localhost:3090/`
+    also returned `200`.
+  - Backend log after restart shows `[MCP][PaddleOCR] Tools: paddleocr_vl` and
+    `[MCP] Initialized with 1 configured server and 1 tool.`
+
+Current correction - 2026-06-27:
+
+- [x] Prove the screenshot "PaddleOCR 回傳 No text could be parsed" was not a
+      real `paddleocr_vl` result: the UI turn did not call PaddleOCR MCP.
+- [x] Add failing coverage for tool loading before `AgentClient` has populated
+      `req.steelNativeContext.currentTurnFiles`.
+- [x] Pass resolved request attachments from `initializeAgent()` into
+      `loadAgentTools()` for logging/context, and inject PaddleOCR MCP during
+      tool initialization on every turn so AI can use `paddleocr_vl` anytime.
+- [x] Update OCR rules from PaddleOCR-only stop behavior to
+      PaddleOCR-first with explicit AI OCR/vision fallback only after
+      PaddleOCR fails or returns no usable result.
+- [x] Run targeted ToolService / initializeAgent / AgentClient tests, sync
+      Steel rules, run direct `c.pdf` PaddleOCR manual verification, restart
+      backend, and record evidence.
+
+Correction review - 2026-06-27:
+
+- Root cause: the screenshot text `PaddleOCR 回傳 No text could be parsed` was
+  not a real PaddleOCR result. That UI turn never called `paddleocr_vl`; the
+  model attributed provider PDF/native parsing failure to PaddleOCR.
+- Runtime fix: `ToolService` now injects the PaddleOCR MCP server token during
+  initialization tool loading on every turn, even when there is no PDF/image
+  attachment. Resolved request attachments are still passed from
+  `initializeAgent()` to `loadAgentTools()` for logging/context.
+- Rule fix: OCR rules now say PaddleOCR MCP is always loaded, AI must call
+  `paddleocr_vl` first for OCR/PDF/image/file-content parsing, and AI
+  OCR/vision fallback is allowed only after PaddleOCR fails or returns no
+  usable text. Approximate values such as `約 600 × 300` remain forbidden.
+- Verification:
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+    passed, 63 tests.
+  - `cd packages/api && rtk npx jest src/agents/__tests__/initialize.test.ts --runInBand --watch=false --coverage=false --testNamePattern "attachment scoping|allowed-tools|does not invoke loadTools twice when the agent has no tools"`
+    passed, 11 focused tests.
+  - `cd api && rtk npx jest server/controllers/agents/client.test.js --runInBand --watch=false --coverage=false --testNamePattern "keeps OCR-capable request attachments|buildMessages with request and agent-scoped context attachments|titleConvo"`
+    passed, 84 tests.
+  - `rtk node packages/api/scripts/sync-steel-rules.cjs --apply` passed and
+    read back `steel-drawing-ocr-policy` SHA
+    `03f49e9eb428a3f3ac4112824ff876a978c8f89674387ab80ea27554d2137ab6`.
+  - Direct `docs/reference/example/c.pdf` PaddleOCR MCP manual OCR spec passed,
+    1 test in 16.2s.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.
+  - Restarted backend on `http://localhost:3080/`, new PID `78767`, and
+    `curl` returned `200`; frontend dev server on `http://localhost:3090/`
+    also returned `200`.
+  - Backend log after restart shows `PaddleOCR-VL-1.6.timeout: 1200000`,
+    `Tools: paddleocr_vl`, and `[MCP] Initialized with 1 configured server and
+    1 tool.`
 
 Plan:
 
@@ -3064,3 +3436,108 @@ Completion review - 2026-06-26:
   - `cd api && rtk npx jest server/controllers/agents/client.test.js --runInBand --watch=false --coverage=false` passed with 88 tests.
   - `cd packages/api && rtk npm run build` passed.
   - `rtk git diff --check` passed.
+
+## PaddleOCR MCP Live Server Check - 2026-06-27
+
+- [x] Raised PaddleOCR MCP timeout to 20 minutes (`1200000` ms) for both
+  LibreChat MCP config and Steel direct OCR helper defaults.
+- [x] Restarted the backend for local testing on port `3080`.
+- [x] Verified the running backend is serving `http://localhost:3080/`.
+- [x] Verified backend logs initialize `PaddleOCR-VL-1.6` and expose the
+  `paddleocr_vl` MCP tool.
+- [x] Started the Vite frontend dev server for browser testing on port `3090`.
+- Verification:
+  - `rtk lsof -nP -iTCP:3080 -sTCP:LISTEN` showed PID `18428` listening on
+    `[::1]:3080`.
+  - `rtk curl -sS -o /tmp/librechat-root.html -w "%{http_code}\n" http://localhost:3080/`
+    returned `200`.
+  - Backend log showed `PaddleOCR-VL-1.6.timeout: 1200000`, `Tools:
+    paddleocr_vl`, and `[MCP] Initialized with 1 configured server and 1 tool.`
+  - `rtk lsof -nP -iTCP:3090 -sTCP:LISTEN` showed PID `24348` listening on
+    `[::1]:3090`.
+  - `rtk curl -sS -o /tmp/librechat-vite.html -w "%{http_code}\n" http://localhost:3090/`
+    returned `200`.
+  - `rtk git diff --check` passed.
+
+## PaddleOCR MCP Env and Exact OCR Rules - 2026-06-27
+
+- [x] Trace whether the running backend and MCP subprocess receive
+  `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN` without printing the secret.
+- [x] Verify whether LibreChat expands `${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}`
+  in `librechat.yaml` before spawning the PaddleOCR MCP server.
+- [x] Fix PaddleOCR MCP tool exposure so it is loaded during initialization
+  every turn, not only after current-turn file propagation detects PDFs/images.
+- [x] Update OCR rules so dimensions/quantities/thicknesses must be exact from
+  OCR evidence and may not be written as approximate values such as `約 600 x
+  300`.
+- [x] Sync the updated OCR rule into cloud `steel.rules`.
+- [x] Rebuild/restart the local stack and verify both MCP availability and OCR
+  rule sync.
+- Evidence:
+  - `.env` readback showed `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=SET` with a
+    non-placeholder value; parsing `librechat.yaml` without dotenv leaves the
+    placeholder literal, so the token must be present before config parsing.
+  - `api/db/connect.js` loads dotenv during backend module import, so the
+    remaining live failure path was missing current-turn OCR file references,
+    not a missing repo `.env` value.
+  - Added AgentClient fallback from processed files to original request
+    attachments, covering uploaded PDFs reported as `application/octet-stream`
+    but named `*.pdf`.
+  - Added ToolService debug log when PaddleOCR MCP is injected during tool
+    initialization; OCR-capable file references are logged when present.
+  - `rtk node packages/api/scripts/sync-steel-rules.cjs --dry-run` passed.
+  - `rtk node packages/api/scripts/sync-steel-rules.cjs --apply` passed and
+    read back `steel-drawing-ocr-policy` SHA
+    `555f69058d36413996372006bdec58ec37c51f8734e9ccb86a6edfb0268fccec`.
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+    passed with 63 tests.
+  - `cd api && rtk npx jest server/controllers/agents/client.test.js --runInBand --watch=false --coverage=false --testNamePattern "buildMessages with request and agent-scoped context attachments"`
+    passed with 9 focused tests.
+  - Restarted backend on port `3080`; `rtk lsof -nP -iTCP:3080 -sTCP:LISTEN`
+    showed PID `54802`, and `curl http://localhost:3080/` returned `200`.
+  - Frontend dev server on port `3090` remained live and returned `200`.
+  - Backend log showed `PaddleOCR-VL-1.6` initialized with `Tools:
+    paddleocr_vl` and `[MCP] Initialized with 1 configured server and 1 tool.`
+  - Direct `docs/reference/example/c.pdf` PaddleOCR MCP manual OCR spec passed:
+    `cd packages/api && rtk env DOTENV_CONFIG_PATH=../../.env STEEL_PADDLEOCR_MCP_C_PDF_OCR_TEST=true node -r dotenv/config ../../node_modules/.bin/jest --runTestsByPath src/steel/vision/paddleocr.c-pdf-ocr.manual.spec.ts --testPathIgnorePatterns=/node_modules/ --testPathIgnorePatterns=/dist/ --testPathIgnorePatterns='\\.dev\\.ts$' --testPathIgnorePatterns='\\.helper\\.ts$' --testPathIgnorePatterns='\\.helper\\.d\\.ts$' --testPathIgnorePatterns=/__tests__/helpers/ --runInBand`
+    passed with 1 manual OCR test in 15.3s.
+
+## PaddleOCR MCP Provider Tool Name Fix - 2026-06-27
+
+- [x] Reproduce the provider rejection where the initialized PaddleOCR tool is
+  sent as `paddleocr_vl_mcp_PaddleOCR-VL-1.6`, which violates OpenAI tool-name
+  validation because of the `.` in the raw server name.
+- [x] Add provider-safe MCP tool-key tests so definitions use only
+  `^[a-zA-Z0-9_-]+$` names while keeping the raw MCP server name for config
+  lookup.
+- [x] Add execution-path coverage proving a safe provider suffix maps back to
+  the raw MCP server name before calling MCP config/connection code.
+- [x] Implement the smallest shared helper needed for provider-facing MCP tool
+  names and apply it to cached definitions plus runtime tool instances.
+- [x] Rebuild/restart the backend and verify the local UI still runs on
+  `http://localhost:3090/`.
+- Evidence:
+  - Red tests failed before the fix for `src/mcp/tools.spec.ts` and
+    `app/clients/tools/util/handleTools.test.js`; after the fix, the focused
+    provider-safe tests passed.
+  - `cd packages/api && rtk npx jest src/mcp/tools.spec.ts --runInBand --watch=false --coverage=false`
+    passed with 21 tests.
+  - `cd packages/api && rtk npx jest src/tools/definitions.spec.ts --runInBand --watch=false --coverage=false`
+    passed with 27 tests.
+  - `cd api && rtk npx jest app/clients/tools/util/handleTools.test.js --runInBand --watch=false --coverage=false`
+    passed with 16 tests.
+  - `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false`
+    passed with 52 tests.
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+    passed with 63 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.
+  - Runtime helper check returned `paddleocr_vl_mcp_PaddleOCR-VL-1_6` and
+    regex `true` for `^[a-zA-Z0-9_-]+$`.
+  - Backend restarted on `http://localhost:3080/` and returned `200`;
+    frontend dev UI remained on `http://localhost:3090/` and returned `200`.
+  - Live backend log after restart showed PaddleOCR MCP initialized, the LLM
+    call accepted tool definitions, `ON_TOOL_EXECUTE` loaded 1 MCP tool, and
+    `PaddleOCR-VL-1.6` received `tools/call`. No new `Invalid 'tools[0].name'`
+    error appeared after the fix; the remaining invalid-name log entry is from
+    the pre-fix 09:27 UTC request.

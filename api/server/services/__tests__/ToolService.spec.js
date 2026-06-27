@@ -367,12 +367,12 @@ describe('ToolService - Action Capability Gating', () => {
       expect(callArgs.tools).toEqual(
         expect.arrayContaining([
           regularTool,
-          `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR-VL-1.6`,
+          `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR`,
         ]),
       );
     });
 
-    it('does not inject PaddleOCR MCP for Steel native turns without OCR-capable files', async () => {
+    it('does not inject PaddleOCR MCP during initialization without OCR-capable files', async () => {
       const capabilities = [AgentCapabilities.tools];
       const req = createMockReq(capabilities);
       req.steelNativeContext = {
@@ -397,7 +397,37 @@ describe('ToolService - Action Capability Gating', () => {
       const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
       expect(callArgs.tools).toContain(regularTool);
       expect(callArgs.tools).not.toContain(
-        `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR-VL-1.6`,
+        `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR`,
+      );
+    });
+
+    it('injects PaddleOCR MCP during initialization tool loading for request PDF attachments', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [regularTool] },
+        requestAttachments: [
+          {
+            file_id: 'file-1',
+            filename: 'c.pdf',
+            filepath: '/uploads/user/file-1__c.pdf',
+            type: 'application/pdf',
+          },
+        ],
+        definitionsOnly: true,
+      });
+
+      expect(mockLoadToolDefinitions).toHaveBeenCalledTimes(1);
+      const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
+      expect(callArgs.tools).toEqual(
+        expect.arrayContaining([
+          regularTool,
+          `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR`,
+        ]),
       );
     });
 
@@ -684,7 +714,10 @@ describe('ToolService - Action Capability Gating', () => {
         serverName,
         expect.objectContaining({ requiresOAuth: true }),
       );
-      expect(reinitMCPServer).toHaveBeenCalledTimes(1);
+      const matchingServerCalls = reinitMCPServer.mock.calls.filter(
+        ([params]) => params?.serverName === serverName,
+      );
+      expect(matchingServerCalls).toHaveLength(1);
       expect(reinitMCPServer).toHaveBeenCalledWith(
         expect.objectContaining({
           serverName,

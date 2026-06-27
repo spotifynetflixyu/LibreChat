@@ -18,7 +18,7 @@ describe('Steel source schema mapping', () => {
       }),
     ).toMatchObject({
       canonicalKey: 'unit_price_by_tier.A',
-      target: 'steel.price_items.unit_price',
+      target: 'steel.prices.unit_price_*',
       customerTierCode: 'A',
     });
     expect(
@@ -81,6 +81,12 @@ describe('Steel source schema mapping', () => {
         sourceLabel: '售價A',
       }),
     ).toBeUndefined();
+    expect(
+      resolveSourceSchemaMapping({
+        sourceFile: '產品價格.xlsx',
+        sourceLabel: '比率A',
+      }),
+    ).toBeUndefined();
   });
 
   it('builds compact prompt context scoped by source files and target usage', () => {
@@ -90,7 +96,7 @@ describe('Steel source schema mapping', () => {
     });
 
     expect(context).toContain(
-      '產品價格.xlsx: 售價A -> unit_price_by_tier.A (steel.price_items.unit_price)',
+      '產品價格.xlsx: 售價A -> unit_price_by_tier.A (steel.prices.unit_price_*)',
     );
     expect(context).toContain(
       '產品價格.xlsx: 單位重 -> product_price_unit_weight (steel.price_items.product_price_unit_weight)',

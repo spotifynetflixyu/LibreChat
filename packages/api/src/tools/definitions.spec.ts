@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { Constants } from 'librechat-data-provider';
 import type {
   LoadToolDefinitionsParams,
   LoadToolDefinitionsDeps,
@@ -371,6 +372,41 @@ describe('definitions.ts', () => {
     });
 
     describe('MCP tool definitions with server name variants', () => {
+      it('should expose provider-safe MCP tool names for raw server names with dots', async () => {
+        const rawServerName = 'PaddleOCR-VL-1.6';
+        const expectedToolName = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR-VL-1_6`;
+        const mockServerTools = {
+          [expectedToolName]: {
+            function: {
+              name: expectedToolName,
+              description: 'Parse documents with PaddleOCR',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        };
+
+        mockGetOrFetchMCPServerTools.mockResolvedValue(mockServerTools);
+
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [`${Constants.mcp_all}${Constants.mcp_delimiter}${rawServerName}`],
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+
+        expect(mockGetOrFetchMCPServerTools).toHaveBeenCalledWith('user-123', rawServerName);
+        expect(result.toolDefinitions).toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: expectedToolName })]),
+        );
+        expect(result.toolRegistry.has(expectedToolName)).toBe(true);
+        expect(expectedToolName).toMatch(/^[a-zA-Z0-9_-]+$/);
+      });
+
       it('should load MCP tools with underscored server names (server_one)', async () => {
         const mockServerTools = {
           list_items_mcp_server_one: {

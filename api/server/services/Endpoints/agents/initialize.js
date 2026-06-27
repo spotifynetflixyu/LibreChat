@@ -71,6 +71,7 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
    * @param {string} params.provider
    * @param {string} params.model
    * @param {AgentToolResources} params.tool_resources
+   * @param {MongoFile[]} [params.requestAttachments]
    * @returns {Promise<{
    *   tools?: StructuredTool[],
    *   toolContextMap: Record<string, unknown>,
@@ -88,6 +89,7 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
     provider,
     tool_options,
     tool_resources,
+    requestAttachments,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
     try {
@@ -98,6 +100,7 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
         signal,
         streamId,
         tool_resources,
+        requestAttachments,
         definitionsOnly,
       });
     } catch (error) {

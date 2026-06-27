@@ -7,6 +7,8 @@ const {
   mcpToolPattern,
   loadWebSearchAuth,
   getCodeApiAuthHeaders,
+  normalizeMCPToolServerName,
+  splitMCPToolKey,
   buildImageToolContext,
   buildWebSearchContext,
   buildWebSearchDynamicContext,
@@ -49,6 +51,24 @@ const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
 const { getRoleByName } = require('~/models');
+
+function resolveRawMCPServerName(serverName, mcpAvailableTools, configServers) {
+  if (mcpAvailableTools?.[serverName] || configServers?.[serverName]) {
+    return serverName;
+  }
+
+  const availableServerName = Object.keys(mcpAvailableTools ?? {}).find(
+    (rawServerName) => normalizeMCPToolServerName(rawServerName) === serverName,
+  );
+  if (availableServerName) {
+    return availableServerName;
+  }
+
+  const configServerName = Object.keys(configServers ?? {}).find(
+    (rawServerName) => normalizeMCPToolServerName(rawServerName) === serverName,
+  );
+  return configServerName ?? serverName;
+}
 
 /**
  * Validates the availability and authentication of tools for a user based on environment variables or user-specific plugin authentication values.
@@ -368,7 +388,12 @@ const loadTools = async ({
         continue;
       }
 
-      const [toolName, serverName] = tool.split(Constants.mcp_delimiter);
+      const [toolName, requestedServerName] = splitMCPToolKey(tool);
+      const serverName = resolveRawMCPServerName(
+        requestedServerName,
+        options.mcpAvailableTools,
+        configServers,
+      );
       if (toolName === Constants.mcp_server) {
         /** Placeholder used for UI purposes */
         continue;
@@ -469,6 +494,7 @@ const loadTools = async ({
           index,
           signal,
           user: safeUser,
+          req: options.req,
           userMCPAuthMap,
           configServers,
           requestBody: options.req?.body,

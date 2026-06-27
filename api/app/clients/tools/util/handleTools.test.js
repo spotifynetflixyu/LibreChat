@@ -391,6 +391,64 @@ describe('Tool Handlers', () => {
       );
     });
 
+    it('maps provider-safe MCP server suffixes back to raw server names for execution', async () => {
+      const rawServerName = 'PaddleOCR-VL-1.6';
+      const safeServerName = 'PaddleOCR-VL-1_6';
+      const toolKey = `paddleocr_vl${Constants.mcp_delimiter}${safeServerName}`;
+      const requestBody = { conversationId: 'conv-ocr', messageId: 'msg-ocr' };
+      const serverConfig = {
+        type: 'stdio',
+        command: 'uvx',
+        args: ['--from', 'paddleocr-mcp', 'paddleocr_mcp'],
+        source: 'yaml',
+      };
+      const runScopedTools = {
+        [toolKey]: {
+          function: {
+            name: toolKey,
+            description: 'Parse documents with PaddleOCR',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      };
+
+      mockGetServerConfig.mockImplementation(async (serverName) =>
+        serverName === rawServerName ? serverConfig : null,
+      );
+      mockCreateMCPTool.mockResolvedValue({ name: 'loaded-paddleocr-tool' });
+
+      const result = await loadTools({
+        user: fakeUser._id.toString(),
+        tools: [toolKey],
+        options: {
+          mcpAvailableTools: {
+            [rawServerName]: runScopedTools,
+          },
+          req: {
+            user: { id: fakeUser._id.toString(), role: 'USER' },
+            body: requestBody,
+          },
+        },
+      });
+
+      expect(result.loadedTools).toEqual([{ name: 'loaded-paddleocr-tool' }]);
+      expect(mockGetServerConfig).toHaveBeenCalledWith(
+        rawServerName,
+        fakeUser._id.toString(),
+        expect.any(Object),
+      );
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+      expect(mockCreateMCPTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          availableTools: runScopedTools,
+          requestBody,
+          toolKey,
+          serverName: rawServerName,
+          config: serverConfig,
+        }),
+      );
+    });
+
     it('reuses discovered request-scoped MCP tool definitions within a server loop', async () => {
       const serverName = 'body-scoped';
       const firstToolKey = `search${Constants.mcp_delimiter}${serverName}`;

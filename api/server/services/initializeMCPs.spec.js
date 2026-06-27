@@ -183,6 +183,31 @@ describe('initializeMCPs', () => {
       expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers);
     });
 
+    it('should force PaddleOCR MCP process lazy loading before manager initialization', async () => {
+      const mcpServers = {
+        PaddleOCR: {
+          type: 'stdio',
+          command: 'uvx',
+          args: ['--from', 'paddleocr-mcp', 'paddleocr_mcp'],
+          timeout: 1200000,
+        },
+        'local-server': { type: 'stdio', command: 'node', args: ['server.js'] },
+      };
+      mockGetAppConfig.mockResolvedValue({ mcpConfig: mcpServers });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPManager).toHaveBeenCalledWith({
+        PaddleOCR: expect.objectContaining({
+          type: 'stdio',
+          command: 'uvx',
+          startup: false,
+        }),
+        'local-server': mcpServers['local-server'],
+      });
+      expect(mcpServers.PaddleOCR.startup).toBeUndefined();
+    });
+
     it('should throw and log error if MCPManager initialization fails', async () => {
       const managerError = new Error('Manager initialization failed');
       mockCreateMCPManager.mockRejectedValue(managerError);

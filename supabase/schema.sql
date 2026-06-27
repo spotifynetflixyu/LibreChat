@@ -221,10 +221,6 @@ CREATE TABLE IF NOT EXISTS steel.prices (
   unit_price_b NUMERIC(14, 4),
   unit_price_c NUMERIC(14, 4),
   unit_price_f NUMERIC(14, 4),
-  ratio_a NUMERIC(14, 4),
-  ratio_b NUMERIC(14, 4),
-  ratio_c NUMERIC(14, 4),
-  ratio_f NUMERIC(14, 4),
   product_price_unit_weight NUMERIC(14, 5),
   product_price_unit_weight_unit TEXT,
   active BOOLEAN NOT NULL DEFAULT true,
@@ -338,6 +334,8 @@ CREATE INDEX IF NOT EXISTS prices_source_spec_trgm_idx
 ON steel.prices USING GIN (source_spec gin_trgm_ops)
 WHERE source_spec IS NOT NULL;
 
+COMMENT ON TABLE steel.prices IS
+'Unified Steel price rows. Tier prices are stored only in unit_price_a, unit_price_b, unit_price_c, and unit_price_f; source 比率A-F columns are intentionally ignored and not persisted.';
 COMMENT ON COLUMN steel.prices.subcategory IS
 'Normalized price subcategory, primarily for cutting tables such as H型鋼, 工字鐵/H型鋼, 管, 角鐵, 槽鐵, 平鐵/扁鐵.';
 COMMENT ON COLUMN steel.prices.source_subcategory_label IS

@@ -110,7 +110,7 @@ function getPaddleOcrEnv() {
 }
 
 function getTimeoutMs() {
-  return Number(process.env.STEEL_PADDLEOCR_MCP_TIMEOUT_MS ?? 900000);
+  return Number(process.env.STEEL_PADDLEOCR_MCP_TIMEOUT_MS ?? 1200000);
 }
 
 function sanitizeError(error: unknown): string {

@@ -42,10 +42,6 @@ interface SteelPriceItemRow {
   unit_price_b: string | number | null;
   unit_price_c: string | number | null;
   unit_price_f: string | number | null;
-  ratio_a: string | number | null;
-  ratio_b: string | number | null;
-  ratio_c: string | number | null;
-  ratio_f: string | number | null;
   product_price_unit_weight: string | number | null;
   product_price_unit_weight_unit: string | null;
   currency: string;
@@ -84,7 +80,6 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   sourceSpec?: string;
   unit: string;
   tierPrices: SteelPriceTierValues;
-  tierRatios: SteelPriceTierValues;
   productPriceUnitWeight: number | null;
   productPriceUnitWeightUnit?: string;
   currency: string;
@@ -402,12 +397,6 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     c: row.unit_price_c,
     f: row.unit_price_f,
   });
-  const tierRatios = toTierValues({
-    a: row.ratio_a,
-    b: row.ratio_b,
-    c: row.ratio_c,
-    f: row.ratio_f,
-  });
 
   return {
     id: parseRequiredNumber(row.id),
@@ -423,7 +412,6 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     sourceSpec: parseNullableString(row.source_spec),
     unit: row.unit,
     tierPrices,
-    tierRatios,
     productPriceUnitWeight: parseNullableNumber(row.product_price_unit_weight),
     productPriceUnitWeightUnit: parseNullableString(row.product_price_unit_weight_unit),
     currency: row.currency,
@@ -481,10 +469,6 @@ SELECT
   unit_price_b,
   unit_price_c,
   unit_price_f,
-  ratio_a,
-  ratio_b,
-  ratio_c,
-  ratio_f,
   product_price_unit_weight,
   product_price_unit_weight_unit,
   currency,

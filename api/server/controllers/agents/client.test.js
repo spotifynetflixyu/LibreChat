@@ -2024,6 +2024,45 @@ describe('AgentClient - titleConvo', () => {
       expect(mockAgent.additional_instructions ?? '').not.toContain('Current turn file body');
       expect(result.prompt[0].content).toContain('Current turn file body');
     });
+
+    it('keeps OCR-capable request attachments in Steel context when provider processing filters them out', async () => {
+      const { buildDefaultSteelGlobalAgentContext } = require('@librechat/api');
+      const currentFile = makeUploadedFile('current-pdf', 'c.pdf', 'application/octet-stream');
+
+      client.options.attachments = [currentFile];
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: '請 OCR 這份 PDF。',
+            isCreatedByUser: true,
+          },
+        ],
+        'msg-1',
+        {},
+      );
+
+      const expectedReference = {
+        fileId: 'current-pdf',
+        source: 'librechat_file_record',
+        mediaType: 'application/octet-stream',
+        conversationId: 'convo-123',
+        messageId: 'msg-1',
+        filename: 'c.pdf',
+      };
+      expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachments: {
+            currentTurnFiles: [expectedReference],
+            priorActiveFileEvidence: [],
+          },
+        }),
+      );
+      expect(mockReq.steelNativeContext.currentTurnFiles).toEqual([expectedReference]);
+    });
   });
 
   describe('runMemory method', () => {

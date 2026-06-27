@@ -1,3 +1,4 @@
+const path = require('path');
 const { tool } = require('@librechat/agents/langchain/tools');
 const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Providers, Constants: AgentConstants } = require('@librechat/agents');
@@ -6,7 +7,8 @@ const {
   PENDING_STALE_MS,
   MCPOAuthHandler,
   isMCPDomainAllowed,
-  normalizeServerName,
+  buildMCPToolKey,
+  splitMCPToolKey,
   normalizeJsonSchema,
   GenerationJobManager,
   resolveJsonSchemaRefs,
@@ -26,6 +28,7 @@ const {
   Time,
   CacheKeys,
   Constants,
+  FileSources,
   Permissions,
   PermissionTypes,
   isAssistantsEndpoint,
@@ -44,10 +47,12 @@ const { createOboTrustChecker } = require('./OboPolicyService');
 const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 
 const MAX_CACHE_SIZE = 1000;
 const lastReconnectAttempts = new Map();
 const RECONNECT_THROTTLE_MS = 10_000;
+const PADDLEOCR_VL_TOOL_NAME = 'paddleocr_vl';
 
 const missingToolCache = new Map();
 const MISSING_TOOL_TTL_MS = 10_000;
@@ -209,7 +214,7 @@ async function isEarlyDomainAllowed({
  * @param {string} serverName
  */
 function createUnavailableToolStub(toolName, serverName) {
-  const normalizedToolKey = `${toolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`;
+  const normalizedToolKey = buildMCPToolKey(toolName, serverName);
   const _call = async () => [unavailableMsg, null];
   const toolInstance = tool(_call, {
     schema: {
@@ -228,6 +233,16 @@ function createUnavailableToolStub(toolName, serverName) {
   return toolInstance;
 }
 
+function getMCPToolDefinition(availableTools, toolKeys) {
+  for (const toolKey of toolKeys) {
+    const toolDefinition = availableTools?.[toolKey]?.function;
+    if (toolDefinition) {
+      return toolDefinition;
+    }
+  }
+  return undefined;
+}
+
 function isEmptyObjectSchema(jsonSchema) {
   return (
     jsonSchema != null &&
@@ -236,6 +251,224 @@ function isEmptyObjectSchema(jsonSchema) {
     (jsonSchema.properties == null || Object.keys(jsonSchema.properties).length === 0) &&
     !jsonSchema.additionalProperties
   );
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isLikelyBase64Input(value) {
+  const normalized = value.replace(/\s/g, '');
+  return normalized.length > 128 && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
+}
+
+function isExternalOrCompletePaddleInput(value) {
+  const trimmed = value.trim();
+  return (
+    path.isAbsolute(trimmed) ||
+    /^https?:\/\//i.test(trimmed) ||
+    /^data:/i.test(trimmed) ||
+    isLikelyBase64Input(trimmed)
+  );
+}
+
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeFileName(value) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return '';
+  }
+  const normalizedPath = safeDecode(value.trim().split(/[?#]/)[0]).replace(/\\/g, '/');
+  return path.basename(normalizedPath).toLowerCase();
+}
+
+function getFileId(file) {
+  return file?.file_id ?? file?.fileId ?? file?.id;
+}
+
+function collectRequestFileRefs(requestBody, req) {
+  const refs = [];
+  const addRefs = (value) => {
+    if (Array.isArray(value)) {
+      refs.push(...value.filter(Boolean));
+    }
+  };
+
+  addRefs(requestBody?.files);
+  addRefs(requestBody?.attachments);
+  addRefs(req?.body?.files);
+  addRefs(req?.body?.attachments);
+  addRefs(req?.steelNativeContext?.currentTurnFiles);
+  return refs;
+}
+
+function buildOwnerFileFilter(fileIds, req, userId) {
+  const ownerId = req?.user?.id ?? userId;
+  if (!ownerId || fileIds.length === 0) {
+    return null;
+  }
+
+  const filter = {
+    file_id: { $in: fileIds },
+    user: ownerId,
+  };
+  if (req?.user?.tenantId) {
+    filter.tenantId = req.user.tenantId;
+  }
+  return filter;
+}
+
+async function getRequestFileRecords({ req, userId, requestBody }) {
+  const refs = collectRequestFileRefs(requestBody, req);
+  const fileIds = new Set();
+
+  for (const ref of refs) {
+    if (!isPlainObject(ref)) {
+      continue;
+    }
+
+    const fileId = getFileId(ref);
+    if (fileId) {
+      fileIds.add(fileId);
+    }
+  }
+
+  const fileFilter = buildOwnerFileFilter(Array.from(fileIds), req, userId);
+  if (!fileFilter) {
+    return [];
+  }
+
+  const records = new Map();
+  const fetchedFiles = (await db.getFiles(fileFilter, {}, {})) ?? [];
+  for (const file of fetchedFiles) {
+    const fileId = getFileId(file);
+    const recordKey = fileId ?? `${file.filename ?? ''}:${file.filepath ?? ''}`;
+    records.set(recordKey, file);
+  }
+  return Array.from(records.values());
+}
+
+function fileMatchesInputName(file, inputData) {
+  const inputName = normalizeFileName(inputData);
+  if (!inputName) {
+    return false;
+  }
+
+  if (String(getFileId(file) ?? '').trim().toLowerCase() === inputName) {
+    return true;
+  }
+
+  return [file?.filename, file?.name, file?.originalname, file?.filepath].some(
+    (candidate) => normalizeFileName(candidate) === inputName,
+  );
+}
+
+function getMediaTypeForFile(file, inputData) {
+  const explicitType = file?.type ?? file?.mimetype ?? file?.mediaType;
+  const normalizedExplicitType =
+    typeof explicitType === 'string' ? explicitType.trim().toLowerCase() : '';
+  if (
+    normalizedExplicitType !== '' &&
+    normalizedExplicitType !== 'application/octet-stream'
+  ) {
+    return explicitType.trim();
+  }
+
+  const extensionSource =
+    file?.filename ?? file?.name ?? file?.originalname ?? file?.filepath ?? inputData;
+  const extension = path.extname(normalizeFileName(extensionSource)).toLowerCase();
+  if (extension === '.pdf') {
+    return 'application/pdf';
+  }
+  if (extension === '.png') {
+    return 'image/png';
+  }
+  if (extension === '.jpg' || extension === '.jpeg') {
+    return 'image/jpeg';
+  }
+  if (extension === '.webp') {
+    return 'image/webp';
+  }
+  return 'application/octet-stream';
+}
+
+async function streamToBuffer(stream) {
+  if (Buffer.isBuffer(stream)) {
+    return stream;
+  }
+  if (stream instanceof ArrayBuffer) {
+    return Buffer.from(stream);
+  }
+  if (typeof stream === 'string') {
+    return Buffer.from(stream);
+  }
+
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }) {
+  const trimmedInput = inputData.trim();
+  if (isExternalOrCompletePaddleInput(trimmedInput)) {
+    return inputData;
+  }
+
+  const files = await getRequestFileRecords({ req, userId, requestBody });
+  const matchedFile = files.find((file) => fileMatchesInputName(file, trimmedInput));
+  if (!matchedFile) {
+    return inputData;
+  }
+
+  if (!matchedFile.filepath) {
+    throw new Error(
+      `Matched attachment "${matchedFile.filename ?? trimmedInput}" has no downloadable filepath`,
+    );
+  }
+
+  const source = matchedFile.source ?? FileSources.local;
+  const { getDownloadStream } = getStrategyFunctions(source);
+  if (typeof getDownloadStream !== 'function') {
+    throw new Error(`Matched attachment "${matchedFile.filename ?? trimmedInput}" is not downloadable`);
+  }
+
+  const stream = await getDownloadStream(req, matchedFile.filepath);
+  const buffer = await streamToBuffer(stream);
+  const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);
+  logger.debug(
+    `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}".`,
+  );
+  return `data:${mediaType};base64,${buffer.toString('base64')}`;
+}
+
+async function prepareMCPToolArguments({ req, userId, requestBody, toolName, toolArguments }) {
+  if (
+    toolName !== PADDLEOCR_VL_TOOL_NAME ||
+    !isPlainObject(toolArguments) ||
+    typeof toolArguments.input_data !== 'string'
+  ) {
+    return toolArguments;
+  }
+
+  const inputData = toolArguments.input_data;
+  const resolvedInputData = await resolvePaddleOcrInputData({
+    req,
+    userId,
+    requestBody,
+    inputData,
+  });
+  if (resolvedInputData === inputData) {
+    return toolArguments;
+  }
+  return { ...toolArguments, input_data: resolvedInputData };
 }
 
 /**
@@ -499,6 +732,7 @@ async function reconnectServer({
  * i.e. `availableTools`, and will reinitialize the MCP server to ensure all tools are generated.
  *
  * @param {Object} params
+ * @param {ServerRequest} [params.req] - The Express request object for file-backed MCP tool calls.
  * @param {ServerResponse} params.res - The Express response object for sending events.
  * @param {{ canUseServers: (user?: IUser) => Promise<boolean> }} [params.mcpPermissionContext] - Request-scoped MCP permission context.
  * @param {IUser} params.user - The user from the request object.
@@ -515,6 +749,7 @@ async function reconnectServer({
  * @returns { Promise<Array<typeof tool | { _call: (toolInput: Object | string) => unknown}>> } An object with `_call` method to execute the tool input.
  */
 async function createMCPTools({
+  req,
   res,
   mcpPermissionContext,
   user,
@@ -580,6 +815,7 @@ async function createMCPTools({
   const serverTools = [];
   for (const tool of result.tools) {
     const toolInstance = await createMCPTool({
+      req,
       res,
       mcpPermissionContext,
       user,
@@ -588,7 +824,8 @@ async function createMCPTools({
       configServers,
       streamId,
       availableTools: result.availableTools,
-      toolKey: `${tool.name}${Constants.mcp_delimiter}${serverName}`,
+      toolKey: buildMCPToolKey(tool.name, serverName),
+      serverName,
       requestBody,
       requestScopedConnections,
       config: serverConfig,
@@ -604,10 +841,12 @@ async function createMCPTools({
 /**
  * Creates a single tool from the specified MCP Server via `toolKey`.
  * @param {Object} params
+ * @param {ServerRequest} [params.req] - The Express request object for file-backed MCP tool calls.
  * @param {ServerResponse} params.res - The Express response object for sending events.
  * @param {{ canUseServers: (user?: IUser) => Promise<boolean> }} [params.mcpPermissionContext] - Request-scoped MCP permission context.
  * @param {IUser} params.user - The user from the request object.
  * @param {string} params.toolKey - The toolKey for the tool.
+ * @param {string} [params.serverName] - Raw MCP server name for config/connection lookup.
  * @param {string} params.model - The model for the tool.
  * @param {number} [params.index]
  * @param {AbortSignal} [params.signal]
@@ -622,12 +861,14 @@ async function createMCPTools({
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
 async function createMCPTool({
+  req,
   res,
   mcpPermissionContext,
   user,
   index,
   signal,
   toolKey,
+  serverName: providedServerName,
   provider,
   userMCPAuthMap,
   availableTools,
@@ -638,7 +879,11 @@ async function createMCPTool({
   onAvailableTools,
   streamId = null,
 }) {
-  const [toolName, serverName] = toolKey.split(Constants.mcp_delimiter);
+  const [toolName, encodedServerName] = splitMCPToolKey(toolKey);
+  const serverName = providedServerName ?? encodedServerName;
+  const providerToolKey = buildMCPToolKey(toolName, serverName);
+  const rawToolKey = `${toolName}${Constants.mcp_delimiter}${serverName}`;
+  const toolDefinitionKeys = [providerToolKey, toolKey, rawToolKey];
 
   const serverConfig =
     config ?? (await getMCPServersRegistry().getServerConfig(serverName, user?.id, configServers));
@@ -669,9 +914,9 @@ async function createMCPTool({
   }
 
   /** @type {LCTool | undefined} */
-  let toolDefinition = availableTools?.[toolKey]?.function;
+  let toolDefinition = getMCPToolDefinition(availableTools, toolDefinitionKeys);
   if (!toolDefinition) {
-    const cachedAt = useMissingToolCache ? missingToolCache.get(toolKey) : undefined;
+    const cachedAt = useMissingToolCache ? missingToolCache.get(providerToolKey) : undefined;
     if (cachedAt && Date.now() - cachedAt < MISSING_TOOL_TTL_MS) {
       logger.debug(
         `[MCP][${serverName}][${toolName}] Tool in negative cache, returning unavailable stub.`,
@@ -698,10 +943,10 @@ async function createMCPTool({
     if (result?.availableTools) {
       onAvailableTools?.(result.availableTools);
     }
-    toolDefinition = result?.availableTools?.[toolKey]?.function;
+    toolDefinition = getMCPToolDefinition(result?.availableTools, toolDefinitionKeys);
 
     if (!toolDefinition && useMissingToolCache) {
-      missingToolCache.set(toolKey, Date.now());
+      missingToolCache.set(providerToolKey, Date.now());
       evictStale(missingToolCache, MISSING_TOOL_TTL_MS);
     }
   }
@@ -714,6 +959,7 @@ async function createMCPTool({
   }
 
   return createToolInstance({
+    req,
     res,
     mcpPermissionContext,
     user,
@@ -729,6 +975,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
+  req: capturedReq,
   res,
   mcpPermissionContext,
   user: capturedUser = null,
@@ -763,7 +1010,7 @@ function createToolInstance({
     };
   }
 
-  const normalizedToolKey = `${toolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`;
+  const normalizedToolKey = buildMCPToolKey(toolName, serverName);
 
   /** @type {(toolArguments: Object | string, config?: GraphRunnableConfig) => Promise<unknown>} */
   const _call = async (toolArguments, config) => {
@@ -816,18 +1063,26 @@ function createToolInstance({
 
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
+      const requestBody = config?.configurable?.requestBody ?? capturedRequestBody;
+      const toolArgumentsForCall = await prepareMCPToolArguments({
+        req: config?.configurable?.req ?? capturedReq,
+        userId,
+        requestBody,
+        toolName,
+        toolArguments,
+      });
 
       const result = await mcpManager.callTool({
         serverName,
         serverConfig: capturedServerConfig,
         toolName,
         provider,
-        toolArguments,
+        toolArguments: toolArgumentsForCall,
         options: {
           signal: derivedSignal,
         },
         user: effectiveUser,
-        requestBody: config?.configurable?.requestBody ?? capturedRequestBody,
+        requestBody,
         requestScopedConnections:
           config?.configurable?.requestScopedConnections ?? capturedRequestScopedConnections,
         customUserVars,

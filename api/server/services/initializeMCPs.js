@@ -3,6 +3,22 @@ const { logger } = require('@librechat/data-schemas');
 const { mergeAppTools, getAppConfig } = require('./Config');
 const { createMCPServersRegistry, createMCPManager } = require('~/config');
 
+const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
+
+function withLazyLoadedSteelMCPServers(mcpServers) {
+  if (!mcpServers?.[steelPaddleOcrMcpServerName]) {
+    return mcpServers;
+  }
+
+  return {
+    ...mcpServers,
+    [steelPaddleOcrMcpServerName]: {
+      ...mcpServers[steelPaddleOcrMcpServerName],
+      startup: false,
+    },
+  };
+}
+
 /**
  * Resolves the current request's effective MCP allowlists from the merged (tenant-scoped)
  * config. The registry calls this per inspection/connection so admin-panel `mcpSettings`
@@ -23,7 +39,7 @@ async function resolveMCPAllowlists(ctx) {
  */
 async function initializeMCPs() {
   const appConfig = await getAppConfig({ baseOnly: true });
-  const mcpServers = appConfig.mcpConfig;
+  const mcpServers = withLazyLoadedSteelMCPServers(appConfig.mcpConfig);
 
   try {
     createMCPServersRegistry(

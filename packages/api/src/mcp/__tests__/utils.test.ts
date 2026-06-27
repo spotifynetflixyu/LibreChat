@@ -16,6 +16,7 @@ import {
   getMissingRuntimeBodyPlaceholderFields,
   isUserSourced,
   requiresEphemeralUserConnection,
+  splitMCPToolKey,
 } from '~/mcp/utils';
 
 describe('normalizeServerName', () => {
@@ -85,6 +86,20 @@ describe('buildOAuthToolCallName', () => {
     // so the guard correctly does not fire and the prefix is added.
     const result = buildOAuthToolCallName('oauth@mcp@server');
     expect(result).toBe('oauth_mcp_oauth_mcp_server');
+  });
+});
+
+describe('splitMCPToolKey', () => {
+  it('splits MCP tool keys on the server suffix delimiter', () => {
+    expect(splitMCPToolKey('search_mcp_brave')).toEqual(['search', 'brave']);
+  });
+
+  it('preserves MCP delimiters inside tool names', () => {
+    expect(splitMCPToolKey('foo_mcp_bar_mcp_server')).toEqual(['foo_mcp_bar', 'server']);
+  });
+
+  it('returns an empty server name for non-MCP tool keys', () => {
+    expect(splitMCPToolKey('plain_tool')).toEqual(['plain_tool', '']);
   });
 });
 

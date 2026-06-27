@@ -104,10 +104,24 @@ function toSteelNativeFileReference(file, { conversationId, messageId } = {}) {
     mediaType: file.type ?? file.mimeType ?? file.mediaType ?? 'application/octet-stream',
     conversationId: file.conversationId ?? conversationId,
     messageId: file.messageId ?? messageId,
-    filename: file.filename,
+    filename: file.filename ?? file.name ?? file.originalname,
     width: file.width,
     height: file.height,
   });
+}
+
+function appendSteelNativeFileReferences(target, files, seenFileIds, options) {
+  for (const file of files ?? []) {
+    const reference = toSteelNativeFileReference(file, options);
+    if (!reference) {
+      continue;
+    }
+    if (seenFileIds.has(reference.fileId)) {
+      continue;
+    }
+    seenFileIds.add(reference.fileId);
+    target.push(reference);
+  }
 }
 
 function getAttachmentFilename(file) {
@@ -420,14 +434,23 @@ class AgentClient extends BaseClient {
 
       await this.addFileContextToMessage(latestMessage, attachments);
       const files = await this.processAttachments(latestMessage, attachments);
-      currentTurnSteelFileReferences = files
-        .map((file) =>
-          toSteelNativeFileReference(file, {
-            conversationId: this.conversationId,
-            messageId: latestMessage.messageId,
-          }),
-        )
-        .filter(Boolean);
+      const seenSteelFileIds = new Set();
+      const steelReferenceOptions = {
+        conversationId: this.conversationId,
+        messageId: latestMessage.messageId,
+      };
+      appendSteelNativeFileReferences(
+        currentTurnSteelFileReferences,
+        files,
+        seenSteelFileIds,
+        steelReferenceOptions,
+      );
+      appendSteelNativeFileReferences(
+        currentTurnSteelFileReferences,
+        attachments,
+        seenSteelFileIds,
+        steelReferenceOptions,
+      );
 
       this.options.attachments = files;
     }

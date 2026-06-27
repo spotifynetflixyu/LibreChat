@@ -840,6 +840,41 @@ describe('initializeAgent — attachment scoping', () => {
     expect(result.agentContextAttachments).toEqual([agentContextFile]);
   });
 
+  it('passes resolved request attachments into tool loading', async () => {
+    const { primeResources } = jest.requireMock('../resources') as {
+      primeResources: jest.Mock;
+    };
+    const requestFile = {
+      file_id: 'request-file',
+      filename: 'c.pdf',
+      type: 'application/pdf',
+    };
+    primeResources.mockResolvedValueOnce({
+      attachments: [requestFile],
+      requestAttachments: [requestFile],
+      agentContextAttachments: [],
+      tool_resources: undefined,
+    });
+
+    const { agent, req, res, loadTools, db } = createMocks();
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(loadTools).toHaveBeenCalledTimes(1);
+    expect(loadTools.mock.calls[0][0].requestAttachments).toEqual([requestFile]);
+  });
+
   it('owner-scopes request file usage updates while preserving trusted tool files', async () => {
     const requestFile = { file_id: 'request-file', filename: 'request.txt' } as IMongoFile;
     const toolFile = { file_id: 'tool-file', filename: 'tool.txt' } as IMongoFile;

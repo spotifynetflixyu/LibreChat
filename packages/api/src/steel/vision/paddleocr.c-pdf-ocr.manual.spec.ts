@@ -8,7 +8,7 @@ import expected from './fixtures/c.expected.json';
 
 const runCPdfOcr = process.env.STEEL_PADDLEOCR_MCP_C_PDF_OCR_TEST === 'true';
 const describeCPdfOcr = runCPdfOcr ? describe : describe.skip;
-const caseTimeoutMs = Number(process.env.STEEL_PADDLEOCR_MCP_TIMEOUT_MS ?? 900000);
+const caseTimeoutMs = Number(process.env.STEEL_PADDLEOCR_MCP_TIMEOUT_MS ?? 1200000);
 const expectedRows = expected.rows;
 const repoRoot = path.resolve(__dirname, '../../../../../');
 

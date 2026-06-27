@@ -1,8 +1,7 @@
 import { logger } from '@librechat/data-schemas';
-import { Constants } from 'librechat-data-provider';
 import type { JsonSchemaType } from '@librechat/agents';
 import type { LCAvailableTools, LCFunctionTool, ParsedServerConfig } from './types';
-import { requiresEphemeralUserConnection } from './utils';
+import { buildMCPToolKey, requiresEphemeralUserConnection } from './utils';
 
 export interface MCPToolInput {
   name: string;
@@ -81,15 +80,13 @@ export function createMCPToolCacheService(deps: MCPToolCacheDeps): MCPToolCacheS
     const { userId, serverName, tools, serverConfig } = params;
     try {
       const serverTools: LCAvailableTools = {};
-      const mcpDelimiter = Constants.mcp_delimiter;
-
       if (tools == null || tools.length === 0) {
         logger.debug(`[MCP Cache] No tools to update for server ${serverName} (user: ${userId})`);
         return serverTools;
       }
 
       for (const tool of tools) {
-        const name = `${tool.name}${mcpDelimiter}${serverName}`;
+        const name = buildMCPToolKey(tool.name, serverName);
         const entry: LCFunctionTool = {
           type: 'function',
           ['function']: {

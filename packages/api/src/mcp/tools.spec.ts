@@ -70,6 +70,36 @@ describe('createMCPToolCacheService', () => {
       });
     });
 
+    it('uses provider-safe tool names while caching by raw MCP server name', async () => {
+      const deps = createMockDeps();
+      const { updateMCPServerTools } = createMCPToolCacheService(deps);
+      const tools: MCPToolInput[] = [
+        {
+          name: 'paddleocr_vl',
+          description: 'Parse documents',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const result = await updateMCPServerTools({
+        userId: 'u1',
+        serverName: 'PaddleOCR-VL-1.6',
+        tools,
+      });
+
+      const expectedKey = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR-VL-1_6`;
+      const rawKey = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR-VL-1.6`;
+
+      expect(result[expectedKey]).toBeDefined();
+      expect(result[rawKey]).toBeUndefined();
+      expect(result[expectedKey]['function'].name).toBe(expectedKey);
+      expect(result[expectedKey]['function'].name).toMatch(/^[a-zA-Z0-9_-]+$/);
+      expect(deps.setCachedTools).toHaveBeenCalledWith(result, {
+        userId: 'u1',
+        serverName: 'PaddleOCR-VL-1.6',
+      });
+    });
+
     it('builds tool names without caching when the resolved config is request-scoped', async () => {
       const deps = createMockDeps({
         getServerConfig: jest.fn().mockResolvedValue(requestScopedConfig),

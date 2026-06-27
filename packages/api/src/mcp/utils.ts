@@ -4,6 +4,18 @@ import type { RequestBody } from '~/types';
 
 export const mcpToolPattern: RegExp = new RegExp(`^.+${Constants.mcp_delimiter}.+$`);
 
+export function splitMCPToolKey(toolKey: string): [toolName: string, serverName: string] {
+  const delimiterIndex = toolKey.lastIndexOf(Constants.mcp_delimiter);
+  if (delimiterIndex === -1) {
+    return [toolKey, ''];
+  }
+
+  return [
+    toolKey.slice(0, delimiterIndex),
+    toolKey.slice(delimiterIndex + Constants.mcp_delimiter.length),
+  ];
+}
+
 const RUNTIME_CONTEXT_PLACEHOLDER_PATTERN = /\{\{LIBRECHAT_(?:USER|OPENID|GRAPH|BODY)_[^}]+\}\}/;
 const RUNTIME_BODY_PLACEHOLDER_PATTERN = /\{\{LIBRECHAT_BODY_[^}]+\}\}/;
 const RUNTIME_BODY_PLACEHOLDER_CAPTURE_PATTERN = /\{\{LIBRECHAT_BODY_([^}]+)\}\}/g;
@@ -330,6 +342,15 @@ export function redactAllServerSecrets(
   return result;
 }
 
+function getServerNameFallback(serverName: string): string {
+  let hash = 0;
+  for (let i = 0; i < serverName.length; i++) {
+    hash = (hash << 5) - hash + serverName.charCodeAt(i);
+    hash |= 0;
+  }
+  return `server_${Math.abs(hash)}`;
+}
+
 /**
  * Normalizes a server name to match the pattern ^[a-zA-Z0-9_.-]+$
  * This is required for Azure OpenAI models with Tool Calling
@@ -349,16 +370,32 @@ export function normalizeServerName(serverName: string): string {
   // If the result is empty (e.g., all characters were non-ASCII and got trimmed),
   // generate a fallback name to ensure we always have a valid function name
   if (!normalized) {
-    /** Hash of the original name to ensure uniqueness */
-    let hash = 0;
-    for (let i = 0; i < serverName.length; i++) {
-      hash = (hash << 5) - hash + serverName.charCodeAt(i);
-      hash |= 0; // Convert to 32bit integer
-    }
-    return `server_${Math.abs(hash)}`;
+    return getServerNameFallback(serverName);
   }
 
   return normalized;
+}
+
+/**
+ * Normalizes only the MCP server-name suffix used inside provider-facing tool
+ * names. OpenAI tool names allow alphanumeric, `_`, and `-`; dots are valid in
+ * LibreChat MCP config names but invalid in provider function names.
+ */
+export function normalizeMCPToolServerName(serverName: string): string {
+  if (/^[a-zA-Z0-9_-]+$/.test(serverName)) {
+    return serverName;
+  }
+
+  const normalized = serverName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+  if (!normalized) {
+    return getServerNameFallback(serverName);
+  }
+
+  return normalized;
+}
+
+export function buildMCPToolKey(toolName: string, serverName: string): string {
+  return `${toolName}${Constants.mcp_delimiter}${normalizeMCPToolServerName(serverName)}`;
 }
 
 /**

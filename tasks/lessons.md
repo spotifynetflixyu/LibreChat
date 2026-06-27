@@ -231,6 +231,9 @@
   PDF/image turns inject the MCP server token before `loadToolDefinitions()`;
   otherwise the model falls back to provider file parsing and may report "No
   text could be parsed" without ever calling `paddleocr_vl`.
+- PaddleOCR MCP can take longer on real drawing PDFs. Keep the LibreChat MCP
+  server timeout and the direct Steel PaddleOCR helper default at 20 minutes
+  (`1200000` ms) unless the user explicitly asks for a shorter timeout.
 - Portal-based Markdown table modals must explicitly sync the active root theme
   class and `data-theme`; do not assume a body-level portal inherits the chat
   message theme scope.
@@ -296,3 +299,47 @@
   refresh, and external site navigation, but same-site route navigation such as
   `/c` to `/c/:conversationId` must not prompt. Do not condition browser unload
   warnings on pending Markdown table comments.
+- When the user asks to open LibreChat for browser testing, provide the
+  frontend dev UI at `http://localhost:3090/`. Backend
+  `http://localhost:3080/` may serve static production output, but it is not
+  the expected Vite dev URL for local UI testing.
+- If native Steel OCR still falls back to "No text could be parsed", do not
+  only inspect PaddleOCR MCP startup. Also verify the active request populated
+  `req.steelNativeContext.currentTurnFiles`; uploaded PDFs may arrive as
+  `application/octet-stream`, so filename extension fallback must keep them
+  OCR-capable for PaddleOCR MCP injection.
+- OCR output rules must forbid approximate drawing data. Dimensions, thickness,
+  quantities, holes, diameters, and weights must be exact from OCR/source
+  evidence; if unclear, output `未確認` or candidate values with low confidence,
+  not `約`/`大約` values.
+- For native Steel OCR, condition PaddleOCR MCP exposure on the current request
+  carrying OCR-capable files, not on AI pre-judgment. Check
+  `req.steelNativeContext.currentTurnFiles`, request attachments, body files,
+  and body attachments with filename-extension fallback for
+  `application/octet-stream`; do not inject PaddleOCR MCP on turns with no
+  PDF/image evidence unless the user explicitly asks for always-on loading.
+- PaddleOCR MCP process lazy-load must be enforced in the tracked MCP
+  initialization path, not only in ignored local `librechat.yaml`. Before
+  `createMCPManager()`, force the `PaddleOCR` server config to `startup:false`
+  so startup keeps the server known but does not launch the stdio process.
+- MCP server names may contain config-valid characters that provider tool names
+  reject. Keep raw server names for MCP registry/config lookup, but sanitize the
+  provider-facing MCP tool-name suffix to `^[a-zA-Z0-9_-]+$`; names such as
+  `PaddleOCR-VL-1.6` must not be sent to OpenAI as-is.
+- The current PaddleOCR MCP server key should be `PaddleOCR`; keep
+  `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6` as the model setting. Do not reuse the
+  model name as the LibreChat MCP server key.
+- PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
+  such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
+  `input_data` from the permission-checked current-turn LibreChat attachment
+  records into a MCP-readable absolute/data input.
+- When PaddleOCR MCP receives an invalid `input_data` shape such as a LibreChat
+  `file_id`, fix the backend argument resolver instead of changing OCR rules,
+  unless the user explicitly asks to revise rules.
+- When the user scopes PaddleOCR upload constraints to frontend UI only, do not
+  add backend validators, LibreChat YAML limits, or PDF page-count checks. Keep
+  the change to file input affordances and client-side preflight validation.
+- For Steel price lookup/import, `tierPrices` / `unit_price_a-b-c-f` are the
+  only tier price fields. Do not add `tierRatios`, `ratio_a-b-c-f`, parser
+  fields `ratioA-F`, or `比率A-F` schema mappings; source `比率A-F` columns are
+  intentionally ignored rather than stored or exposed.

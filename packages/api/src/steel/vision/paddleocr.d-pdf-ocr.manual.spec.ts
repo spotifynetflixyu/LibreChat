@@ -12,7 +12,7 @@ import { searchSteelAgentRules } from '../repositories';
 
 const runDPdfOcr = process.env.STEEL_PADDLEOCR_MCP_D_PDF_OCR_TEST === 'true';
 const describeDPdfOcr = runDPdfOcr ? describe : describe.skip;
-const caseTimeoutMs = Number(process.env.STEEL_PADDLEOCR_MCP_TIMEOUT_MS ?? 900000);
+const caseTimeoutMs = Number(process.env.STEEL_PADDLEOCR_MCP_TIMEOUT_MS ?? 1200000);
 const renderDpi = Number(process.env.STEEL_PADDLEOCR_MCP_D_PDF_DPI ?? 400);
 const minimumImageEdgePx = 2000;
 const expectedPageCount = 2;

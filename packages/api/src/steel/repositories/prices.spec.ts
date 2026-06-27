@@ -21,10 +21,6 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     unit_price_b: '110.0000',
     unit_price_c: '120.0000',
     unit_price_f: '130.0000',
-    ratio_a: null,
-    ratio_b: null,
-    ratio_c: null,
-    ratio_f: null,
     product_price_unit_weight: '12.34500',
     product_price_unit_weight_unit: 'kg_per_piece',
     currency: 'TWD',
@@ -82,6 +78,10 @@ describe('Steel price repositories', () => {
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('source_thickness = $5'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('steel.price_items'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tier_id'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('ratio_a'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('ratio_b'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('ratio_c'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('ratio_f'));
     expect(result).toEqual([
       {
         id: 10,
@@ -97,7 +97,6 @@ describe('Steel price repositories', () => {
         sourceSpec: '75*45',
         unit: 'piece',
         tierPrices: { A: 100, B: 110, C: 120, F: 130 },
-        tierRatios: { A: null, B: null, C: null, F: null },
         productPriceUnitWeight: 12.345,
         productPriceUnitWeightUnit: 'kg_per_piece',
         currency: 'TWD',

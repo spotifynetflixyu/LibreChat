@@ -1,4 +1,4 @@
-import { megabyte, fileConfig as defaultFileConfig } from 'librechat-data-provider';
+import { EToolResources, megabyte, fileConfig as defaultFileConfig } from 'librechat-data-provider';
 import type { EndpointFileConfig, FileConfig } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { validateFiles } from '../files';
@@ -19,6 +19,12 @@ function makeEndpointConfig(overrides: Partial<EndpointFileConfig> = {}): Endpoi
 function makeFile(name: string, type: string, size: number): File {
   const content = new ArrayBuffer(size);
   return new File([content], name, { type });
+}
+
+function makeSizedFile(name: string, type: string, size: number): File {
+  const file = makeFile(name, type, 1);
+  Object.defineProperty(file, 'size', { value: size });
+  return file;
 }
 
 function makeExtendedFile(overrides: Partial<ExtendedFile> = {}): ExtendedFile {
@@ -89,6 +95,130 @@ describe('validateFiles', () => {
     const fileList = [makeFile('a.pdf', 'application/pdf', 1024)];
     const result = validateFiles({ files, fileList, setError, endpointFileConfig, fileConfig });
     expect(result).toBe(true);
+  });
+
+  it('allows PaddleOCR UI uploads up to 20 files', () => {
+    endpointFileConfig = makeEndpointConfig({ fileLimit: 10 });
+    const fileList = Array.from({ length: 20 }, (_, index) =>
+      makeFile(`drawing-${index}.pdf`, 'application/pdf', 1024),
+    );
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('rejects PaddleOCR UI uploads above 20 files', () => {
+    const fileList = Array.from({ length: 21 }, (_, index) =>
+      makeFile(`drawing-${index}.pdf`, 'application/pdf', 1024),
+    );
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith('PaddleOCR batch file limit reached: 20 files');
+  });
+
+  it('rejects unsupported PaddleOCR UI file types', () => {
+    const fileList = [makeFile('notes.txt', 'text/plain', 1024)];
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith(
+      'PaddleOCR supports PDF, PNG, JPG, BMP, or CIF files only',
+    );
+  });
+
+  it('rejects PaddleOCR UI image files above 10MB', () => {
+    const fileList = [makeSizedFile('drawing.png', 'image/png', 10 * megabyte + 1)];
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith('PaddleOCR image size limit exceeded: 10 MB');
+  });
+
+  it('allows PaddleOCR UI image files at 10MB', () => {
+    const fileList = [makeSizedFile('drawing.jpg', 'image/jpeg', 10 * megabyte)];
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('rejects PaddleOCR UI PDF files above 200MB', () => {
+    const fileList = [makeSizedFile('drawing.pdf', 'application/pdf', 200 * megabyte + 1)];
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith('PaddleOCR file size limit exceeded: 200 MB');
+  });
+
+  it('allows PaddleOCR UI PDF files at 200MB', () => {
+    const fileList = [makeSizedFile('drawing.pdf', 'application/pdf', 200 * megabyte)];
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('infers BMP and CIF as PaddleOCR UI image files from extensions', () => {
+    const fileList = [
+      makeFile('drawing.bmp', '', 1024),
+      makeFile('drawing.cif', '', 1024),
+    ];
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+    expect(result).toBe(true);
+    expect(fileList[0].type).toBe('image/bmp');
+    expect(fileList[1].type).toBe('image/cif');
+    expect(setError).not.toHaveBeenCalled();
   });
 
   it('rejects unsupported MIME type', () => {

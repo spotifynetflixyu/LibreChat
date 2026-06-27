@@ -47,10 +47,6 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     unit_price_b: '42.0000',
     unit_price_c: '45.0000',
     unit_price_f: '50.0000',
-    ratio_a: null,
-    ratio_b: null,
-    ratio_c: null,
-    ratio_f: null,
     product_price_unit_weight: null,
     product_price_unit_weight_unit: null,
     currency: 'TWD',
@@ -208,6 +204,34 @@ describe('Steel minimal tool execution', () => {
         tierPrices: { A: 40, B: 42, C: 45, F: 50 },
       }),
     ]);
+  });
+
+  it('does not expose internal tier ratios in price candidate output', async () => {
+    const client = createClient([
+      [
+        createPriceRow({ id: '12' }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'OT板', limit: 5 }],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(result.data.priceCandidates).toEqual([
+      expect.objectContaining({
+        tierPrices: { A: 40, B: 42, C: 45, F: 50 },
+      }),
+    ]);
+    expect(JSON.stringify(result.data.priceCandidates)).not.toContain('tierRatios');
   });
 
   it('rejects customer tier props in price lookup arguments', async () => {

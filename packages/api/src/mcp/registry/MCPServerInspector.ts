@@ -1,5 +1,4 @@
 import { logger } from '@librechat/data-schemas';
-import { Constants } from 'librechat-data-provider';
 import type { JsonSchemaType } from '@librechat/data-schemas';
 import type { MCPConnection } from '~/mcp/connection';
 import type * as t from '~/mcp/types';
@@ -8,6 +7,7 @@ import {
   hasRuntimeContextPlaceholders,
   hasRuntimeUrlPlaceholders,
   isUserSourced,
+  buildMCPToolKey,
 } from '~/mcp/utils';
 import { isMCPDomainAllowed, extractMCPServerDomain } from '~/auth/domain';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
@@ -175,7 +175,7 @@ export class MCPServerInspector {
 
     const toolFunctions: t.LCAvailableTools = {};
     tools.forEach((tool) => {
-      const name = `${tool.name}${Constants.mcp_delimiter}${serverName}`;
+      const name = buildMCPToolKey(tool.name, serverName);
       toolFunctions[name] = {
         type: 'function',
         ['function']: {

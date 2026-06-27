@@ -30,10 +30,6 @@ export interface SteelPriceImportRow {
   unitPriceB: number | null;
   unitPriceC: number | null;
   unitPriceF: number | null;
-  ratioA: number | null;
-  ratioB: number | null;
-  ratioC: number | null;
-  ratioF: number | null;
   productPriceUnitWeight: number | null;
   productPriceUnitWeightUnit: string | null;
   active: boolean;
@@ -250,14 +246,11 @@ function toImportRow(input: SteelPriceWorkbookInputRow): SteelPriceImportRow | n
     sourceSpec,
     unit: normalizeUnit(readCell(input.row, '單位')),
     currency: 'TWD',
+    // Source 比率A-F columns are intentionally ignored; tier prices are stored only in unitPriceA-F.
     unitPriceA: hasPrice ? parseNumber(readCell(input.row, '售價A')) : null,
     unitPriceB: hasPrice ? parseNumber(readCell(input.row, '售價B')) : null,
     unitPriceC: hasPrice ? parseNumber(readCell(input.row, '售價C')) : null,
     unitPriceF: hasPrice ? parseNumber(readCell(input.row, '售價F')) : null,
-    ratioA: hasPrice ? parseNumber(readCell(input.row, '比率A')) : null,
-    ratioB: hasPrice ? parseNumber(readCell(input.row, '比率B')) : null,
-    ratioC: hasPrice ? parseNumber(readCell(input.row, '比率C')) : null,
-    ratioF: hasPrice ? parseNumber(readCell(input.row, '比率F')) : null,
     productPriceUnitWeight: unitWeight === 0 ? null : unitWeight,
     productPriceUnitWeightUnit: getProductWeightUnit(unitWeight === 0 ? null : unitWeight),
     active,

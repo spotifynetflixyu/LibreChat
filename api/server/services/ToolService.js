@@ -520,7 +520,7 @@ async function processRequiredActions(client, requiredActions) {
 /** Native LibreChat tools that are not in the manifest */
 const nativeTools = new Set([Tools.execute_code, Tools.file_search, Tools.web_search]);
 const defaultSteelNativeToolMaxCalls = 8;
-const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR-VL-1.6';
+const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 let defaultSteelNativeToolClient;
 
 /** Checks if a tool name is a known built-in tool */
@@ -544,8 +544,12 @@ function getRequestConversationId(req) {
 }
 
 function isOcrableSteelFile(file) {
-  const mediaType = typeof file?.mediaType === 'string' ? file.mediaType.toLowerCase() : '';
-  const filename = typeof file?.filename === 'string' ? file.filename.toLowerCase() : '';
+  const mediaType = [file?.mediaType, file?.type, file?.mimeType, file?.mimetype]
+    .find((value) => typeof value === 'string')
+    ?.toLowerCase() ?? '';
+  const filename = [file?.filename, file?.name, file?.originalname, file?.filepath, file?.path]
+    .find((value) => typeof value === 'string')
+    ?.toLowerCase() ?? '';
 
   return (
     mediaType === 'application/pdf' ||
@@ -554,21 +558,63 @@ function isOcrableSteelFile(file) {
   );
 }
 
-function shouldInjectSteelPaddleOcrMcp(req) {
-  const currentTurnFiles = req?.steelNativeContext?.currentTurnFiles;
-  return Array.isArray(currentTurnFiles) && currentTurnFiles.some(isOcrableSteelFile);
+function getSteelFileIdentity(file) {
+  return file?.fileId ?? file?.file_id ?? file?.id ?? file?.filepath ?? file?.path ?? file?.filename;
 }
 
-function addSteelPaddleOcrMcpTool(selectedTools, req) {
-  if (!shouldInjectSteelPaddleOcrMcp(req)) {
-    return selectedTools;
+function collectSteelOcrCandidateFiles(req, requestAttachments) {
+  const candidateGroups = [
+    req?.steelNativeContext?.currentTurnFiles,
+    requestAttachments,
+    req?.body?.files,
+    req?.body?.attachments,
+  ];
+  const candidates = [];
+  const seen = new Set();
+
+  for (const group of candidateGroups) {
+    if (!Array.isArray(group)) {
+      continue;
+    }
+    for (const file of group) {
+      if (!file || typeof file !== 'object') {
+        continue;
+      }
+      const identity = getSteelFileIdentity(file);
+      if (identity && seen.has(identity)) {
+        continue;
+      }
+      if (identity) {
+        seen.add(identity);
+      }
+      candidates.push(file);
+    }
   }
 
+  return candidates;
+}
+
+function addSteelPaddleOcrMcpTool(selectedTools, req, requestAttachments) {
   const serverToken = `${Constants.mcp_all}${Constants.mcp_delimiter}${steelPaddleOcrMcpServerName}`;
   if (selectedTools.some((tool) => tool === serverToken || tool?.endsWith(`${Constants.mcp_delimiter}${steelPaddleOcrMcpServerName}`))) {
     return selectedTools;
   }
 
+  const ocrableFiles = collectSteelOcrCandidateFiles(req, requestAttachments).filter(
+    isOcrableSteelFile,
+  );
+  if (ocrableFiles.length === 0) {
+    return selectedTools;
+  }
+
+  logger.debug('[Steel OCR] Injecting PaddleOCR MCP server during tool initialization', {
+    serverName: steelPaddleOcrMcpServerName,
+    files: ocrableFiles.map((file) => ({
+      fileId: file?.fileId ?? file?.file_id ?? file?.id,
+      filename: file?.filename ?? file?.name ?? file?.originalname,
+      mediaType: file?.mediaType ?? file?.type ?? file?.mimeType ?? file?.mimetype,
+    })),
+  });
   return [...selectedTools, serverToken];
 }
 
@@ -680,10 +726,21 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
  *   hasDeferredTools?: boolean;
  * }>}
  */
-async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, tool_resources }) {
+async function loadToolDefinitionsWrapper({
+  req,
+  res,
+  agent,
+  streamId = null,
+  tool_resources,
+  requestAttachments,
+}) {
   const appConfig = req.config;
   const enabledCapabilities = await resolveAgentCapabilities(req, appConfig, agent.id);
-  const selectedTools = addSteelPaddleOcrMcpTool(Array.isArray(agent.tools) ? agent.tools : [], req);
+  const selectedTools = addSteelPaddleOcrMcpTool(
+    Array.isArray(agent.tools) ? agent.tools : [],
+    req,
+    requestAttachments,
+  );
   const checkCapability = (capability) => enabledCapabilities.has(capability);
   const areToolsEnabled = checkCapability(AgentCapabilities.tools);
   const actionsEnabled = checkCapability(AgentCapabilities.actions);
@@ -1215,6 +1272,7 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
  * @param {Object} params.agent - The agent configuration
  * @param {AbortSignal} [params.signal] - Abort signal
  * @param {Object} [params.tool_resources] - Tool resources
+ * @param {Array<Object>} [params.requestAttachments] - Files attached to the current request
  * @param {string} [params.openAIApiKey] - OpenAI API key
  * @param {string|null} [params.streamId] - Stream ID for resumable mode
  * @param {boolean} [params.definitionsOnly=true] - When true, returns only serializable
@@ -1227,21 +1285,34 @@ async function loadAgentTools({
   agent,
   signal,
   tool_resources,
+  requestAttachments,
   openAIApiKey,
   streamId = null,
   definitionsOnly = true,
 }) {
   if (definitionsOnly) {
-    return loadToolDefinitionsWrapper({ req, res, agent, streamId, tool_resources });
+    return loadToolDefinitionsWrapper({
+      req,
+      res,
+      agent,
+      streamId,
+      tool_resources,
+      requestAttachments,
+    });
   }
 
-  if (!agent.tools || agent.tools.length === 0) {
+  const selectedTools = addSteelPaddleOcrMcpTool(
+    Array.isArray(agent.tools) ? agent.tools : [],
+    req,
+    requestAttachments,
+  );
+
+  if (selectedTools.length === 0) {
     return { toolDefinitions: [] };
   } else if (
-    agent.tools &&
-    agent.tools.length === 1 &&
+    selectedTools.length === 1 &&
     /** Legacy handling for `ocr` as may still exist in existing Agents */
-    (agent.tools[0] === AgentCapabilities.context || agent.tools[0] === AgentCapabilities.ocr)
+    (selectedTools[0] === AgentCapabilities.context || selectedTools[0] === AgentCapabilities.ocr)
   ) {
     return { toolDefinitions: [] };
   }
@@ -1265,12 +1336,12 @@ async function loadAgentTools({
   };
   const areToolsEnabled = checkCapability(AgentCapabilities.tools);
   const actionsEnabled = checkCapability(AgentCapabilities.actions);
-  const hasMCPTools = agent.tools?.some((tool) => tool?.includes(Constants.mcp_delimiter));
+  const hasMCPTools = selectedTools.some((tool) => tool?.includes(Constants.mcp_delimiter));
   const mcpPermissionContext = createMCPPermissionContext(req);
   const canUseMCP = hasMCPTools ? await mcpPermissionContext.canUseServers(req.user) : true;
 
   let includesWebSearch = false;
-  const _agentTools = agent.tools?.filter((tool) => {
+  const _agentTools = selectedTools.filter((tool) => {
     if (tool === Tools.file_search) {
       return checkCapability(AgentCapabilities.file_search);
     } else if (tool === Tools.execute_code) {

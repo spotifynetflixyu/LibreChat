@@ -372,6 +372,7 @@ export interface InitializeAgentParams {
     model: string | null;
     tool_options: AgentToolOptions | undefined;
     tool_resources: AgentToolResources | undefined;
+    requestAttachments?: IMongoFile[];
   }) => Promise<{
     /** Full tool instances (only present when definitionsOnly=false) */
     tools?: GenericTool[];
@@ -769,6 +770,9 @@ export async function initializeAgent(
     tool_resources: agent.tool_resources,
     requestFileSet: new Set(requestFiles?.map((file) => file.file_id)),
   });
+  const requestAttachmentsForToolLoading = (primedRequestAttachments ?? []).filter(
+    (file): file is TFile => file != null,
+  ) as unknown as IMongoFile[];
 
   /**
    * Pre-resolve manually-invoked + always-apply skill primes so their
@@ -912,6 +916,7 @@ export async function initializeAgent(
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources,
+      requestAttachments: requestAttachmentsForToolLoading,
     });
 
   let loadToolsResult;

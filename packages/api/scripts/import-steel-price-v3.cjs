@@ -238,6 +238,7 @@ function printSummary({ rows, mode, rawRows, nonEmptyRows, erpCodes, missingErpC
   );
 }
 
+// Source 比率A-F columns are intentionally ignored; steel.prices stores tier prices only in unit_price_*.
 const insertColumns = [
   'price_kind',
   'source_dataset',
@@ -259,10 +260,6 @@ const insertColumns = [
   'unit_price_b',
   'unit_price_c',
   'unit_price_f',
-  'ratio_a',
-  'ratio_b',
-  'ratio_c',
-  'ratio_f',
   'product_price_unit_weight',
   'product_price_unit_weight_unit',
   'active',
@@ -294,10 +291,6 @@ function toDbValues(row) {
     row.unitPriceB,
     row.unitPriceC,
     row.unitPriceF,
-    row.ratioA,
-    row.ratioB,
-    row.ratioC,
-    row.ratioF,
     row.productPriceUnitWeight,
     row.productPriceUnitWeightUnit,
     row.active,

@@ -19,6 +19,30 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { ExtendedFile } from '~/common';
 
 export const partialTypes = ['text/x-'];
+export const PADDLEOCR_UPLOAD_ACCEPT =
+  '.pdf,.png,.jpg,.jpeg,.bmp,.cif,application/pdf,image/png,image/jpeg,image/bmp,image/x-ms-bmp,image/cif';
+
+const PADDLEOCR_BATCH_FILE_LIMIT = 20;
+const PADDLEOCR_FILE_SIZE_LIMIT = 200 * megabyte;
+const PADDLEOCR_IMAGE_SIZE_LIMIT = 10 * megabyte;
+const paddleOCRSupportedMimeTypes = [
+  /^application\/pdf$/,
+  /^image\/(png|jpeg|jpg|bmp|x-ms-bmp|cif)$/,
+];
+const paddleOCRImageMimeTypes = [/^image\/(png|jpeg|jpg|bmp|x-ms-bmp|cif)$/];
+const paddleOCRExtensionMimeTypes: Record<string, string> = {
+  bmp: 'image/bmp',
+  cif: 'image/cif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  pdf: 'application/pdf',
+  png: 'image/png',
+};
+
+const getFileExtension = (fileName: string) => fileName.split('.').pop()?.toLowerCase() ?? '';
+
+const inferUploadMimeType = (file: File) =>
+  inferMimeType(file.name, file.type) || paddleOCRExtensionMimeTypes[getFileExtension(file.name)];
 
 const textDocument = {
   paths: TextPaths,
@@ -226,7 +250,6 @@ export const validateFiles = ({
   setError,
   endpointFileConfig,
   toolResource,
-  fileConfig,
 }: {
   fileList: File[];
   files: Map<string, ExtendedFile>;
@@ -237,6 +260,8 @@ export const validateFiles = ({
 }) => {
   const { fileLimit, fileSizeLimit, totalSizeLimit, supportedMimeTypes, disabled } =
     endpointFileConfig;
+  const isPaddleOCRUpload = toolResource === EToolResources.context;
+  const effectiveFileLimit = isPaddleOCRUpload ? PADDLEOCR_BATCH_FILE_LIMIT : fileLimit;
   /** Block all uploads if the endpoint is explicitly disabled */
   if (disabled === true) {
     setError('com_ui_attach_error_disabled');
@@ -250,14 +275,18 @@ export const validateFiles = ({
   }
   const currentTotalSize = existingFiles.reduce((total, file) => total + file.size, 0);
 
-  if (fileLimit && fileList.length + files.size > fileLimit) {
-    setError(`File limit reached: ${fileLimit} files`);
+  if (effectiveFileLimit && fileList.length + files.size > effectiveFileLimit) {
+    setError(
+      isPaddleOCRUpload
+        ? `PaddleOCR batch file limit reached: ${effectiveFileLimit} files`
+        : `File limit reached: ${effectiveFileLimit} files`,
+    );
     return false;
   }
 
   for (let i = 0; i < fileList.length; i++) {
     let originalFile = fileList[i];
-    const fileType = inferMimeType(originalFile.name, originalFile.type);
+    const fileType = inferUploadMimeType(originalFile);
 
     // Check if the file type is still empty after the extension check
     if (!fileType) {
@@ -273,26 +302,44 @@ export const validateFiles = ({
     }
 
     let mimeTypesToCheck = supportedMimeTypes;
-    if (toolResource === EToolResources.context) {
-      mimeTypesToCheck = [
-        ...(fileConfig?.text?.supportedMimeTypes || []),
-        ...(fileConfig?.ocr?.supportedMimeTypes || []),
-        ...(fileConfig?.stt?.supportedMimeTypes || []),
-      ];
+    if (isPaddleOCRUpload) {
+      mimeTypesToCheck = paddleOCRSupportedMimeTypes;
     }
 
     if (!checkType(originalFile.type, mimeTypesToCheck)) {
-      setError(`Unsupported file type: ${originalFile.type}`);
+      setError(
+        isPaddleOCRUpload
+          ? 'PaddleOCR supports PDF, PNG, JPG, BMP, or CIF files only'
+          : `Unsupported file type: ${originalFile.type}`,
+      );
       return false;
     }
 
-    if (fileSizeLimit && originalFile.size >= fileSizeLimit) {
+    if (
+      isPaddleOCRUpload &&
+      checkType(originalFile.type, paddleOCRImageMimeTypes) &&
+      originalFile.size > PADDLEOCR_IMAGE_SIZE_LIMIT
+    ) {
+      setError(`PaddleOCR image size limit exceeded: ${PADDLEOCR_IMAGE_SIZE_LIMIT / megabyte} MB`);
+      return false;
+    }
+
+    if (isPaddleOCRUpload && originalFile.size > PADDLEOCR_FILE_SIZE_LIMIT) {
+      setError(`PaddleOCR file size limit exceeded: ${PADDLEOCR_FILE_SIZE_LIMIT / megabyte} MB`);
+      return false;
+    }
+
+    if (!isPaddleOCRUpload && fileSizeLimit && originalFile.size >= fileSizeLimit) {
       setError(`File size limit exceeded: ${fileSizeLimit / megabyte} MB`);
       return false;
     }
   }
 
-  if (totalSizeLimit && currentTotalSize + incomingTotalSize > totalSizeLimit) {
+  if (
+    !isPaddleOCRUpload &&
+    totalSizeLimit &&
+    currentTotalSize + incomingTotalSize > totalSizeLimit
+  ) {
     setError(`Total file size limit exceeded: ${totalSizeLimit / megabyte} MB`);
     return false;
   }

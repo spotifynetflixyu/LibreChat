@@ -1,5 +1,9 @@
 // Mock all dependencies - define mocks before imports
+const { Readable } = require('stream');
+
 const mockGetTenantId = jest.fn();
+const mockGetFiles = jest.fn();
+const mockGetDownloadStream = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -71,12 +75,19 @@ jest.mock('~/cache', () => ({
   getLogStores: jest.fn(),
 }));
 
+jest.mock('~/server/services/Files/strategies', () => ({
+  getStrategyFunctions: jest.fn(() => ({
+    getDownloadStream: mockGetDownloadStream,
+  })),
+}));
+
 jest.mock('~/models', () => ({
   findToken: jest.fn(),
   createToken: jest.fn(),
   updateToken: jest.fn(),
   deleteTokens: jest.fn(),
   getRoleByName: jest.fn(),
+  getFiles: mockGetFiles,
 }));
 
 jest.mock('./Tools/mcp', () => ({
@@ -1005,6 +1016,300 @@ describe('User parameter passing tests', () => {
 
       // Verify reinitMCPServer was NOT called since tool was in cache
       expect(mockReinitMCPServer).not.toHaveBeenCalled();
+    });
+
+    it('should keep provider-safe tool names while calling the raw MCP server name', async () => {
+      const mockUser = { id: 'paddle-user', role: 'USER' };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const rawServerName = 'PaddleOCR-VL-1.6';
+      const safeToolKey = `paddleocr_vl${D}PaddleOCR-VL-1_6`;
+      const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
+
+      mockGetMCPManager.mockReturnValue({
+        callTool: mockCallTool,
+      });
+
+      const mcpTool = await createMCPTool({
+        mcpPermissionContext: {
+          canUseServers: jest.fn().mockResolvedValue(true),
+        },
+        res: mockRes,
+        user: mockUser,
+        toolKey: safeToolKey,
+        serverName: rawServerName,
+        config: { type: 'stdio' },
+        provider: 'openai',
+        userMCPAuthMap: {},
+        availableTools: {
+          [safeToolKey]: {
+            function: {
+              name: safeToolKey,
+              description: 'Parse documents with PaddleOCR',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      expect(mcpTool.name).toBe(safeToolKey);
+      await expect(
+        mcpTool.invoke(
+          {},
+          {
+            configurable: {
+              user: mockUser,
+            },
+            metadata: {
+              provider: 'openai',
+              thread_id: 'thread-1',
+              run_id: 'run-1',
+            },
+            toolCall: {},
+          },
+        ),
+      ).resolves.toBe('ok');
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: rawServerName,
+          toolName: 'paddleocr_vl',
+        }),
+      );
+    });
+
+    it('should parse MCP tool keys using the final delimiter as the server suffix', async () => {
+      const mockUser = { id: 'nested-mcp-user', role: 'USER' };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const toolName = 'foo_mcp_bar';
+      const serverName = 'nested-server';
+      const toolKey = `${toolName}${D}${serverName}`;
+      const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
+
+      mockGetMCPManager.mockReturnValue({
+        callTool: mockCallTool,
+      });
+
+      const mcpTool = await createMCPTool({
+        mcpPermissionContext: {
+          canUseServers: jest.fn().mockResolvedValue(true),
+        },
+        res: mockRes,
+        user: mockUser,
+        toolKey,
+        serverName,
+        config: { type: 'stdio' },
+        provider: 'openai',
+        userMCPAuthMap: {},
+        availableTools: {
+          [toolKey]: {
+            function: {
+              name: toolKey,
+              description: 'Nested delimiter tool',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      await expect(
+        mcpTool.invoke(
+          {},
+          {
+            configurable: {
+              user: mockUser,
+            },
+            metadata: {
+              provider: 'openai',
+              thread_id: 'thread-1',
+              run_id: 'run-1',
+            },
+            toolCall: {},
+          },
+        ),
+      ).resolves.toBe('ok');
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName,
+          toolName,
+        }),
+      );
+    });
+
+    async function invokePaddleOcrWithRequestFile({
+      fileId,
+      inputData,
+      dbFiles,
+      requestFiles,
+    }) {
+      const mockUser = { id: 'paddle-user', role: 'USER' };
+      const mockReq = {
+        user: mockUser,
+        body: {
+          files: requestFiles ?? [{ file_id: fileId }],
+        },
+        config: {
+          paths: {
+            uploads: '/uploads-root',
+            imageOutput: '/images-root',
+          },
+        },
+      };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const toolKey = `paddleocr_vl${D}PaddleOCR`;
+      const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
+
+      mockGetMCPManager.mockReturnValue({
+        callTool: mockCallTool,
+      });
+      mockGetFiles.mockResolvedValue(
+        dbFiles ?? [
+          {
+            file_id: fileId,
+            filename: 'c.pdf',
+            filepath: `/uploads/paddle-user/${fileId}__c.pdf`,
+            type: 'application/pdf',
+            source: 'local',
+          },
+        ],
+      );
+      mockGetDownloadStream.mockResolvedValue(Readable.from(Buffer.from('%PDF-1.4 test')));
+
+      const mcpTool = await createMCPTool({
+        mcpPermissionContext: {
+          canUseServers: jest.fn().mockResolvedValue(true),
+        },
+        req: mockReq,
+        res: mockRes,
+        user: mockUser,
+        requestBody: mockReq.body,
+        toolKey,
+        serverName: 'PaddleOCR',
+        config: { type: 'stdio' },
+        provider: 'openai',
+        userMCPAuthMap: {},
+        availableTools: {
+          [toolKey]: {
+            function: {
+              name: toolKey,
+              description: 'Parse documents with PaddleOCR',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      await mcpTool.invoke(
+        {
+          input_data: inputData,
+          file_type: 'pdf',
+          output_mode: 'detailed',
+          return_images: false,
+        },
+        {
+          configurable: {
+            user: mockUser,
+          },
+          metadata: {
+            provider: 'openai',
+            thread_id: 'thread-1',
+            run_id: 'run-1',
+          },
+          toolCall: {},
+        },
+      );
+
+      return { mockCallTool };
+    }
+
+    it('should resolve PaddleOCR filename-only input_data from current request files', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: 'file-c',
+        inputData: 'c.pdf',
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
+      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe('c.pdf');
+    });
+
+    it('should resolve PaddleOCR file_id input_data from current request files', async () => {
+      const fileId = '48322107-fb71-4d2c-970a-669e15d14821';
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId,
+        inputData: fileId,
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
+      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe(fileId);
+    });
+
+    it('should not download request-supplied PaddleOCR filepath without an owned DB file', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: undefined,
+        inputData: 'c.pdf',
+        requestFiles: [
+          {
+            filename: 'c.pdf',
+            filepath: '/uploads/attacker/c.pdf',
+            type: 'application/pdf',
+            source: 'local',
+          },
+        ],
+        dbFiles: [],
+      });
+
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            input_data: 'c.pdf',
+          }),
+        }),
+      );
+    });
+
+    it('should infer PDF media type for PaddleOCR data URLs when uploaded as octet-stream', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: 'file-c',
+        inputData: 'c.pdf',
+        dbFiles: [
+          {
+            file_id: 'file-c',
+            filename: 'c.pdf',
+            filepath: '/uploads/paddle-user/file-c__c.pdf',
+            type: 'application/octet-stream',
+            source: 'local',
+          },
+        ],
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
     });
 
     it('should reject tool execution when user lacks MCP server use permission', async () => {

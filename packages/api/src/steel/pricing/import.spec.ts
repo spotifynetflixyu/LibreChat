@@ -48,15 +48,15 @@ describe('Steel price v3 import normalization', () => {
       unitPriceB: 20,
       unitPriceC: 30,
       unitPriceF: 40,
-      ratioA: 1,
-      ratioB: 2,
-      ratioC: 3,
-      ratioF: 4,
       productPriceUnitWeight: 5,
       active: true,
       valueState: 'confirmed',
       reviewState: 'reviewed',
     });
+    expect(rows[0]).not.toHaveProperty('ratioA');
+    expect(rows[0]).not.toHaveProperty('ratioB');
+    expect(rows[0]).not.toHaveProperty('ratioC');
+    expect(rows[0]).not.toHaveProperty('ratioF');
   });
 
   it('maps requested material cleanup values and stores no-price rows as unknown null prices', () => {

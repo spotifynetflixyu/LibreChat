@@ -7,15 +7,16 @@
 3. 中文一律保留繁體中文，不得轉為簡體。
 4. 不得從檔名推論尺寸、規格、數量、價格或其他資料。
 5. 若中文字、數字或符號視覺上不明確，須列出候選值或標示「未確認」，不得自行猜測。
+6. OCR 數據必須精確抄錄來源；尺寸、厚度、數量、孔數、孔徑、重量等欄位不得寫成「約」、「大約」、「約略」、「大概」或類似近似值。例如不得輸出「約 600 × 300」。來源不清楚時填「未確認」或列候選值並標示低信心 / 人工複核。
 
 ## 二、OCR 工具使用規則
 
-1. 需要讀取 PDF、圖片或圖面文字 / 表格時，AI 必須使用 PaddleOCR MCP OCR（`paddleocr_vl`）解析文本與表格內容。
-2. PaddleOCR MCP OCR 是 Steel 表格 / 圖面文本解析的指定來源；AI 不得改用內建 OCR 作為主要 OCR。
+1. AI 需要 OCR、看到 PDF / 圖片 / 圖面附件、或使用者要求解析檔案內容時，第一步必須呼叫 PaddleOCR MCP OCR（`paddleocr_vl`）解析文本與表格內容。
+2. PaddleOCR MCP OCR 是 Steel 表格 / 圖面文本解析的第一順位來源；AI 不得先用 provider PDF 文字解析、內建 OCR 或 vision 自行取代 PaddleOCR MCP。
 3. PDF 必須以整份文件交給 PaddleOCR MCP OCR 解析，不得只擷取部分頁面。
 4. 圖片也須先用 PaddleOCR MCP OCR 取得文字 / 表格結果。
 5. 只有加工內容：孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才可由 AI 視覺判斷，且須標示信心程度。
-6. 若 PaddleOCR MCP OCR 無法執行或 OCR 失敗，須直接說明失敗來源、錯誤摘要與需人工補資料的位置，不得自行改用內建 OCR 補完結果。
+6. 若 PaddleOCR MCP OCR 無法執行、逾時、報錯或回傳無可用文字 / 表格，AI 可以改用自身 OCR / vision 解析作為 fallback，但必須明確標示「AI OCR fallback」、說明 PaddleOCR 失敗摘要，並將不確定欄位列為低信心或「未確認」。
 
 ## 三、輸出格式
 
