@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { MarkdownTableComment } from '~/common';
 import CommentableTableCell from './comments';
 
@@ -20,29 +21,34 @@ const baseComment: MarkdownTableComment = {
 function renderCell({
   comment,
   onCommit = jest.fn(),
+  withOutsideTarget = false,
 }: {
   comment?: MarkdownTableComment;
   onCommit?: jest.Mock;
+  withOutsideTarget?: boolean;
 } = {}) {
   render(
-    <table>
-      <tbody>
-        <tr>
-          <CommentableTableCell
-            cellProps={{}}
-            columnHeader="Qty"
-            columnIndex={3}
-            comment={comment}
-            commentLabel="Comment on table cell"
-            oldValue="10"
-            rowIndex={2}
-            onCommit={onCommit}
-          >
-            10
-          </CommentableTableCell>
-        </tr>
-      </tbody>
-    </table>,
+    <>
+      <table>
+        <tbody>
+          <tr>
+            <CommentableTableCell
+              cellProps={{}}
+              columnHeader="Qty"
+              columnIndex={3}
+              comment={comment}
+              commentLabel="Comment on table cell"
+              oldValue="10"
+              rowIndex={2}
+              onCommit={onCommit}
+            >
+              10
+            </CommentableTableCell>
+          </tr>
+        </tbody>
+      </table>
+      {withOutsideTarget && <button type="button">Outside target</button>}
+    </>,
   );
 
   return onCommit;
@@ -61,6 +67,7 @@ describe('CommentableTableCell', () => {
     });
 
     expect(onCommit).toHaveBeenCalledWith('改成 12');
+    expect(onCommit).toHaveBeenCalledTimes(1);
   });
 
   it('saves the draft on blur', () => {
@@ -73,6 +80,21 @@ describe('CommentableTableCell', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: 'Comment on table cell' }));
 
     expect(onCommit).toHaveBeenCalledWith('改成 15');
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves the draft when the popover closes from an outside interaction', async () => {
+    const user = userEvent.setup();
+    const onCommit = renderCell({ withOutsideTarget: true });
+
+    await user.click(screen.getByRole('button', { name: 'Comment on table cell' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment on table cell' }), {
+      target: { value: '改成 18' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Outside target' }));
+
+    expect(onCommit).toHaveBeenCalledWith('改成 18');
+    expect(onCommit).toHaveBeenCalledTimes(1);
   });
 
   it('cancels the draft on Escape', () => {
@@ -88,6 +110,16 @@ describe('CommentableTableCell', () => {
 
     expect(onCommit).not.toHaveBeenCalled();
     expect(screen.queryByRole('textbox', { name: 'Comment on table cell' })).toBeNull();
+  });
+
+  it('renders the editor in a viewport-aware popover layer', () => {
+    renderCell();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on table cell' }));
+
+    const editor = screen.getByRole('textbox', { name: 'Comment on table cell' });
+    expect(editor.closest('td')).toBeNull();
+    expect(editor.closest('.markdown-table-cell-comment-popover')).not.toBeNull();
   });
 
   it('does not render inline comment text when comment text is empty', () => {

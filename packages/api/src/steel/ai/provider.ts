@@ -28,7 +28,6 @@ import {
 } from '../tools/registry';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import { steelToolArgsSchemas } from '../tools/schemas';
-import { runSteelFileOcr } from '../vision/ocr';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -885,13 +884,11 @@ async function executeProviderBusinessToolCall({
 async function executeSteelBusinessToolCalls({
   calls,
   executeSteelToolCall,
-  files,
   onToolStatus,
   runState,
 }: {
   calls: SteelBusinessToolCall[];
   executeSteelToolCall: SteelProviderToolExecutor;
-  files: readonly SteelOAuthChatFile[];
   onToolStatus?: SteelProviderToolStatusCallback;
   runState: SteelToolRunState;
 }): Promise<ExecutedSteelToolCall[]> {
@@ -916,58 +913,6 @@ async function executeSteelBusinessToolCalls({
         input,
         result,
       });
-      continue;
-    }
-
-    if (call.toolName === 'run_file_ocr') {
-      const parsedOcrInput = steelToolArgsSchemas.run_file_ocr.safeParse(input);
-      if (!parsedOcrInput.success) {
-        result = createInvalidToolArgumentsResult(
-          call,
-          parsedOcrInput.error.issues.map((issue) => issue.message).join('; '),
-        );
-        executedCalls.push({
-          call,
-          input,
-          result,
-        });
-        continue;
-      }
-
-      result =
-        reserveProviderToolCall(call, runState) ??
-        (await (async () => {
-          await onToolStatus?.({
-            toolName: call.toolName,
-            status: 'started',
-            message: `${call.toolName} started`,
-          });
-          const toolResult = await runSteelFileOcr({
-            arguments: parsedOcrInput.data,
-            files,
-            providerToolCallId: call.toolCallId,
-          });
-          await onToolStatus?.({
-            toolName: call.toolName,
-            status: toolResult.ok ? 'completed' : 'failed',
-            message: toolResult.ok
-              ? `${call.toolName} completed`
-              : `${call.toolName} failed: ${toolResult.errorSummary}`,
-            result: toolResult,
-            errorSummary: toolResult.ok ? undefined : toolResult.errorSummary,
-          });
-          return toolResult;
-        })());
-
-      executedCalls.push({
-        call,
-        input: parsedOcrInput.data,
-        result,
-      });
-
-      if (isFatalSteelToolResult(result)) {
-        throw new Error(getFatalSteelToolErrorMessage(call, result));
-      }
       continue;
     }
 
@@ -1457,7 +1402,6 @@ export async function sendSteelOAuthChat({
     const executedCalls = await executeSteelBusinessToolCalls({
       calls: steelBusinessToolCalls,
       executeSteelToolCall,
-      files: allVisualEvidenceFiles,
       onToolStatus,
       runState,
     });

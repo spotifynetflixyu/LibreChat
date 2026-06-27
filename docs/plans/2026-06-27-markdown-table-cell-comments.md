@@ -19,13 +19,19 @@
 - Internal identity must still include stable fields: conversation id, message id, markdown index, source fingerprint, row index, and column index.
 - One cell can have only one pending comment. Saving the same cell again replaces the comment; saving blank text removes it.
 - Comment input is single-line. Enter and blur save. Escape cancels.
+- Comment input positioning must be viewport-aware. Use the existing
+  LibreChat/Radix popover positioning pattern with collision handling instead
+  of cell-relative absolute positioning.
 - Pending comments survive modal close/reopen, conversation navigation, browser
   refresh, and back-forward accidents through conversation-scoped
   `localStorage` until successful fresh submit clears them.
 - Successful fresh chat submit drains and clears pending comments, so the helper/count under the chat input becomes zero immediately.
-- LibreChat browser/route leave warnings are always enabled across the route
-  tree and do not depend on whether pending Markdown table comments exist.
+- LibreChat browser unload warnings are always enabled across the route tree and
+  do not depend on whether pending Markdown table comments exist. Same-site
+  route navigation must not prompt.
 - The submitted user message must visibly include the appended comments list.
+- The composer helper may stay concise, but hover/focus on that helper must
+  show the exact appended Markdown comments block that will be sent.
 - The appended comments list groups by message timestamp / Markdown index.
 - The appended comments list ends with: `請依照以上 comments，分別輸出每個 Markdown 的完整新表格；不要只輸出修改過的 cell 或 row。`
 

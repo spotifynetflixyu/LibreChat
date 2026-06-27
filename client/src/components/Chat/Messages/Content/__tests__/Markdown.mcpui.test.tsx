@@ -367,10 +367,13 @@ describe('Markdown table rendering', () => {
     expect(firstCommentButton).not.toHaveClass('markdown-table-cell-comment-button-active');
 
     fireEvent.click(firstCommentButton);
-    fireEvent.change(within(modal).getByRole('textbox', { name: commentLabel }), {
+    let commentEditor = screen.getByRole('textbox', { name: commentLabel });
+    expect(commentEditor.closest('td')).toBeNull();
+    expect(commentEditor.closest('.markdown-table-cell-comment-popover')).not.toBeNull();
+    fireEvent.change(commentEditor, {
       target: { value: '改成 12' },
     });
-    fireEvent.keyDown(within(modal).getByRole('textbox', { name: commentLabel }), {
+    fireEvent.keyDown(commentEditor, {
       key: 'Enter',
     });
 
@@ -404,10 +407,11 @@ describe('Markdown table rendering', () => {
     expect(firstCommentButton).toHaveClass('markdown-table-cell-comment-button-active');
 
     fireEvent.click(firstCommentButton);
-    fireEvent.change(within(modal).getByRole('textbox', { name: commentLabel }), {
+    commentEditor = screen.getByRole('textbox', { name: commentLabel });
+    fireEvent.change(commentEditor, {
       target: { value: '改成 13' },
     });
-    fireEvent.keyDown(within(modal).getByRole('textbox', { name: commentLabel }), {
+    fireEvent.keyDown(commentEditor, {
       key: 'Enter',
     });
 
@@ -424,10 +428,11 @@ describe('Markdown table rendering', () => {
     );
 
     fireEvent.click(within(modal).getAllByLabelText(commentLabel)[0]);
-    fireEvent.change(within(modal).getByRole('textbox', { name: commentLabel }), {
+    commentEditor = screen.getByRole('textbox', { name: commentLabel });
+    fireEvent.change(commentEditor, {
       target: { value: '   ' },
     });
-    fireEvent.keyDown(within(modal).getByRole('textbox', { name: commentLabel }), {
+    fireEvent.keyDown(commentEditor, {
       key: 'Enter',
     });
 

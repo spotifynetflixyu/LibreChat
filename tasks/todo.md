@@ -1,3 +1,62 @@
+# Active: Steel Direct MCP OCR
+
+Goal: remove `run_file_ocr` as an AI-visible/executable Steel tool and remove
+the rules that instruct the AI to call it, while keeping direct PaddleOCR MCP
+OCR and assistant OCR Markdown auto-save to database.
+
+Implementation plan:
+`docs/plans/2026-06-27-steel-direct-mcp-ocr.md`.
+
+Plan:
+
+- [x] Read project instructions, `CLAUDE.md`, memory, lessons, and current OCR
+      tool/rule paths.
+- [x] Dispatch focused explorer agents for tool exposure, OCR Markdown
+      autosave, and rule/document references.
+- [x] Write failing tests proving `run_file_ocr` is no longer exposed.
+- [x] Remove `run_file_ocr` from Steel tool schemas, registry, execution, and
+      runtime/native policy.
+- [x] Update AI-facing OCR rules and canonical docs to direct PaddleOCR MCP
+      semantics.
+- [x] Preserve assistant OCR Markdown auto-save and `read_markdown(scope:
+      "ocr")` recovery.
+- [x] Run targeted Jest tests, rules sync dry-run/apply where credentials
+      allow, `docs/reference/example/c.pdf` MCP verification where credentials
+      allow, and `git diff --check`.
+- [x] Add review evidence here before wrap-up.
+
+Check-in - 2026-06-27:
+
+- User decision locked: use PaddleOCR MCP directly, delete the
+  `run_file_ocr` tool path, delete `run_file_ocr` related AI-facing rules, and
+  keep AI-produced OCR Markdown auto-saving to the database.
+- Boundary: keep low-level PaddleOCR MCP helper code for direct/manual OCR
+  execution, but remove `run_file_ocr` from AI-visible provider tools and
+  executable `executeSteelTool` dispatch.
+
+Review - 2026-06-27:
+
+- Removed `run_file_ocr` from Steel provider schemas, registry, executable
+  dispatch, native/runtime tool policy, OAuth provider special handling, and
+  ToolService file-to-tool plumbing.
+- Updated OCR rules and canonical docs to explicitly require PaddleOCR MCP OCR
+  (`PaddleOCR-VL-1.6` / `paddleocr_vl`) for PDF/image text and table parsing.
+- Preserved assistant OCR Markdown persistence by saving detected OCR Markdown
+  tables as current `ocr_extract` rows with `kind:
+  "assistant_ocr_markdown"`; legacy `run_file_ocr` results no longer overwrite
+  active OCR Markdown.
+- Synced reviewed DB rules with
+  `rtk node packages/api/scripts/sync-steel-rules.cjs --apply`; updated
+  `steel-drawing-ocr-policy` source hash:
+  `3ed2158f480c9c1a36e7d5b5d4dda9ba04797e9cc252955bd840f8e4e5743a1a`.
+- Verification passed:
+  `rtk npm run build` in `packages/api`;
+  targeted Steel Jest suite, 12 suites / 112 tests;
+  `rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand`,
+  60 tests;
+  `docs/reference/example/c.pdf` direct PaddleOCR MCP manual spec, 1 test;
+  `rtk git diff --check`.
+
 # Active: Markdown Table Cell Comments
 
 Goal: add cell-level comments to expanded Markdown table modals so users can
@@ -29,8 +88,12 @@ Planning status:
 - [x] Add modal-only cell comment controls and input popover.
 - [x] Add composer helper text and make pending comments count as sendable
       content.
+- [x] Add hover/focus preview on the composer helper showing the exact Markdown
+      comments block that will be appended to the next user message.
 - [x] Drain pending comments on fresh submit and append them after typed chat
       input text in stable Markdown format.
+- [x] Make the modal cell comment input viewport-aware so it cannot overflow
+      the visible browser window near modal/table edges.
 - [x] Run targeted Jest tests, client typecheck, and `rtk git diff --check`.
 - [x] Add review evidence here before wrap-up.
 
@@ -210,9 +273,9 @@ Review - 2026-06-27:
   comments list after typed user text, and clear the helper/count plus
   `localStorage` entry for the next turn. Regenerate/edit/continue leave
   pending composer comments untouched.
-- LibreChat now mounts a router-level leave warning independent of pending
-  comments. Browser unload and route navigation warnings are always enabled
-  across the LibreChat route tree.
+- LibreChat now mounts a router-level browser unload warning independent of
+  pending comments. It uses `beforeunload` only, so same-site route navigation
+  stays uninterrupted.
 - The submitted list ends with the locked instruction asking the AI to output
   each affected Markdown as a separate complete updated table.
 - Verification:
@@ -230,12 +293,51 @@ Review - 2026-06-27:
     --runInBand --watch=false --coverage=false` passed: 2 suites, 19 tests.
     `cd client && rtk npm run typecheck` passed.
   - Follow-up data-loss protection added `localStorage` persistence for pending
-    comments and a global always-on LibreChat leave warning. `cd client && rtk
-    npx jest src/components/System/__tests__/LeaveSiteWarning.test.tsx
+    comments and a global browser-unload-only LibreChat leave warning.
+    `cd client && rtk npx jest
+    src/components/System/__tests__/LeaveSiteWarning.test.tsx
     src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx
     src/common/markdown.test.ts src/routes/__tests__/skillsRoutes.spec.tsx
     --runInBand --watch=false --coverage=false` passed: 4 suites, 13 tests.
     `cd client && rtk npm run typecheck` passed.
+  - Follow-up route-navigation correction keeps the global leave warning on
+    browser unload only, so same-site route changes such as `/c` to `/c/:id` do
+    not prompt. `cd client && rtk npx jest
+    src/components/System/__tests__/LeaveSiteWarning.test.tsx
+    src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx
+    src/common/markdown.test.ts src/routes/__tests__/skillsRoutes.spec.tsx
+    --runInBand --watch=false --coverage=false` passed: 4 suites, 13 tests.
+    `cd client && rtk npm run typecheck` passed. `rtk git diff --check` passed
+    for the leave-warning correction files.
+  - Follow-up viewport correction moved the cell comment editor from
+    cell-relative absolute positioning into a Radix Popover portal with
+    collision padding. This reuses the existing LibreChat/Radix positioning
+    pattern so the input can shift/flip inside the viewport near modal/table
+    edges. `cd client && rtk npx jest
+    src/components/Chat/Messages/Content/table/comments.test.tsx
+    src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx
+    --runInBand --watch=false --coverage=false` passed: 2 suites, 20 tests.
+    `cd client && rtk npm run typecheck` passed. `rtk git diff --check` passed
+    for the viewport correction files.
+  - Follow-up blur-save correction handles Radix Popover outside-dismiss as a
+    save path, so clicking away from the comment editor preserves the draft just
+    like input blur. Enter, blur, and outside-dismiss are guarded against
+    duplicate commits, while Escape still cancels. `cd client && rtk npx jest
+    src/components/Chat/Messages/Content/table/comments.test.tsx
+    src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx
+    --runInBand --watch=false --coverage=false` passed: 2 suites, 21 tests.
+  - Follow-up composer helper correction keeps the helper line as grouped
+    counts but shows the exact appended Markdown comments block on hover/focus,
+    using the same formatter as submit. `cd client && rtk npx jest
+    src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx
+    --runInBand --watch=false --coverage=false` passed: 1 suite, 4 tests.
+    `cd client && rtk npx jest
+    src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx
+    src/common/markdown.test.ts
+    src/hooks/Messages/__tests__/useSubmitMessage.spec.ts --runInBand
+    --watch=false --coverage=false` passed: 3 suites, 16 tests. `cd client &&
+    rtk npm run typecheck` passed. `rtk git diff --check` passed for the helper
+    preview correction files.
 
 # Active: Markdown Table Modal UX
 

@@ -17,7 +17,6 @@ export const steelRuntimeActiveOutputSheetIds = [
 export const steelRuntimeAiVisibleTools = [
   'search_customers',
   'search_price_candidates',
-  'run_file_ocr',
   'read_markdown',
 ] as const satisfies readonly SteelBusinessToolName[];
 
@@ -516,7 +515,7 @@ export async function prepareSteelRuntimeContext({
       aiVisibleTools: steelRuntimeAiVisibleTools,
       removedTools: steelRuntimeRemovedTools,
       ocrCorrectionPolicy:
-        'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not call run_file_ocr again unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
+        'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not rerun OCR unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
       readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };
@@ -594,7 +593,7 @@ export async function prepareLibreChatSteelRuntimeContext({
       aiVisibleTools: steelRuntimeAiVisibleTools,
       removedTools: steelRuntimeRemovedTools,
       ocrCorrectionPolicy:
-        'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not call run_file_ocr again unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
+        'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not rerun OCR unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
       readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };

@@ -19,7 +19,7 @@ describe('Steel native response metadata', () => {
           renderProfile: 'open_responses',
           globalApplied: true,
           attachmentBytePolicy: 'metadata_references_only',
-          ocrExecutionPolicy: 'agent_calls_run_file_ocr',
+          ocrExecutionPolicy: 'direct_paddleocr_mcp',
           rulePrefixOrder: steelNativeInstructionPrefixSections,
         },
       }),

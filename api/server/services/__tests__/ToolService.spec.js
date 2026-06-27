@@ -49,8 +49,12 @@ jest.mock('@librechat/api', () => ({
   }),
   executeSteelTool: (...args) => mockExecuteSteelTool(...args),
   captureSteelNativeToolResult: (...args) => mockCaptureSteelNativeToolResult(...args),
-  resolveSteelProviderToolName: (name) =>
-    name === 'run_file_ocr' || name === 'steel_run_file_ocr' ? 'run_file_ocr' : undefined,
+  resolveSteelProviderToolName: (name) => {
+    const normalized = name.startsWith('steel_') ? name.slice('steel_'.length) : name;
+    return ['search_customers', 'search_price_candidates', 'read_markdown'].includes(normalized)
+      ? normalized
+      : undefined;
+  },
   resolveEvidenceFileForProvider: (...args) => mockResolveEvidenceFileForProvider(...args),
   sendEvent: (...args) => mockSendEvent(...args),
   GenerationJobManager: {
@@ -153,7 +157,6 @@ function createEndpointsConfig(capabilities) {
 const steelNativeToolNames = new Set([
   'search_customers',
   'search_price_candidates',
-  'run_file_ocr',
   'read_markdown',
 ]);
 
@@ -172,7 +175,6 @@ function getNonSteelToolDefinitions(definitions) {
 function expectSteelNativeToolDefinitions(definitions) {
   expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual([
     'read_markdown',
-    'run_file_ocr',
     'search_customers',
     'search_price_candidates',
   ]);
@@ -196,8 +198,8 @@ describe('ToolService - Action Capability Gating', () => {
     mockResolveConfigServers.mockResolvedValue({});
     mockExecuteSteelTool.mockResolvedValue({
       ok: true,
-      toolName: 'run_file_ocr',
-      data: { text: 'OCR' },
+      toolName: 'search_customers',
+      data: { customers: [] },
       sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1,
@@ -337,6 +339,66 @@ describe('ToolService - Action Capability Gating', () => {
       const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
       expect(callArgs.tools).toContain(mcpToolWithAction);
       expect(callArgs.tools).toContain(regularTool);
+    });
+
+    it('injects PaddleOCR MCP for Steel native PDF/image turns before tool definitions load', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      req.steelNativeContext = {
+        currentTurnFiles: [
+          {
+            fileId: 'file-1',
+            filename: 'c.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [regularTool] },
+        definitionsOnly: true,
+      });
+
+      expect(mockLoadToolDefinitions).toHaveBeenCalledTimes(1);
+      const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
+      expect(callArgs.tools).toEqual(
+        expect.arrayContaining([
+          regularTool,
+          `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR-VL-1.6`,
+        ]),
+      );
+    });
+
+    it('does not inject PaddleOCR MCP for Steel native turns without OCR-capable files', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      req.steelNativeContext = {
+        currentTurnFiles: [
+          {
+            fileId: 'file-1',
+            filename: 'notes.txt',
+            mediaType: 'text/plain',
+          },
+        ],
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [regularTool] },
+        definitionsOnly: true,
+      });
+
+      expect(mockLoadToolDefinitions).toHaveBeenCalledTimes(1);
+      const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
+      expect(callArgs.tools).toContain(regularTool);
+      expect(callArgs.tools).not.toContain(
+        `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR-VL-1.6`,
+      );
     });
 
     it('should filter MCP tool definitions when user lacks MCP server use permission', async () => {
@@ -1237,7 +1299,7 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockLoadActionSets).not.toHaveBeenCalled();
     });
 
-    it('passes request-scoped Steel OCR files into native run_file_ocr execution', async () => {
+    it('does not expose removed run_file_ocr through native Steel tool execution', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.body = { conversationId: 'convo-1' };
       req.steelNativeContext = {
@@ -1267,44 +1329,18 @@ describe('ToolService - Action Capability Gating', () => {
         actionsEnabled: false,
       });
       const ocrTool = result.loadedTools.find((tool) => tool.name === 'run_file_ocr');
-      await ocrTool.invoke(
-        { filename: 'drawing.pdf', output_mode: 'markdown' },
-        { toolCall: { id: 'call_ocr' } },
-      );
 
-      expect(mockResolveEvidenceFileForProvider).toHaveBeenCalledWith(
+      expect(ocrTool).toBeUndefined();
+      expect(mockResolveEvidenceFileForProvider).not.toHaveBeenCalled();
+      expect(mockExecuteSteelTool).not.toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'run_file_ocr' }),
+      );
+      expect(mockEmitChunk).not.toHaveBeenCalledWith(
+        'stream-1',
         expect.objectContaining({
-          fileId: 'file-1',
-          userId: 'user_123',
-          conversationId: 'convo-1',
+          data: expect.objectContaining({ toolName: 'run_file_ocr' }),
         }),
       );
-      expect(mockExecuteSteelTool).toHaveBeenCalledWith(
-        expect.objectContaining({
-          toolName: 'run_file_ocr',
-          providerToolCallId: 'call_ocr',
-          ocrFiles: [
-            {
-              filename: 'drawing.pdf',
-              mediaType: 'application/pdf',
-              data: new Uint8Array([1, 2, 3]),
-            },
-          ],
-        }),
-      );
-      expect(mockEmitChunk).toHaveBeenCalledWith('stream-1', {
-        event: 'steel_event',
-        data: {
-          type: 'memory_saved',
-          message: 'Working Order Memory saved',
-          savedCounts: { ocr_extract: 1 },
-          source: 'tool_result',
-          conversationId: 'convo-1',
-          requestId: 'resp-1',
-          toolName: 'run_file_ocr',
-          providerToolCallId: 'call_ocr',
-        },
-      });
     });
   });
 

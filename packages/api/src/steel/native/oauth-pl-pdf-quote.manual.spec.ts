@@ -27,7 +27,6 @@ import type { SteelOAuthChatFile } from '../ai/provider';
 import type { SteelToolResult } from '../tools/results';
 import type { SteelNativeFileReference, SteelNativeMessage } from './context';
 import type { SteelProviderToolName } from '../tools/registry';
-import type { SteelRuntimeJsonObject } from '../runtime/context';
 
 const runNativePLQuoteLive =
   process.env.STEEL_NATIVE_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST === 'true';
@@ -114,7 +113,7 @@ function createPLConfirmedQuoteUserPrompt(): string {
 }
 
 function hasEmbeddedRuleInstruction(prompt: string): boolean {
-  return /run_file_ocr|search_price_candidates|system_order|customer_quote|第一輪|不得|不要重新 OCR|工具/iu.test(
+  return /PaddleOCR|paddleocr_vl|search_price_candidates|system_order|customer_quote|第一輪|不得|不要重新 OCR|工具/iu.test(
     prompt,
   );
 }
@@ -273,22 +272,6 @@ function summarizeToolResult(result: SteelToolResult) {
       durationMs: result.durationMs,
     };
   }
-  if (result.toolName === 'run_file_ocr') {
-    return {
-      ok: true,
-      toolName: result.toolName,
-      durationMs: result.durationMs,
-      data: {
-        filename: typeof result.data.filename === 'string' ? result.data.filename : undefined,
-        mediaType: typeof result.data.mediaType === 'string' ? result.data.mediaType : undefined,
-        fileType: typeof result.data.fileType === 'string' ? result.data.fileType : undefined,
-        outputMode:
-          typeof result.data.outputMode === 'string' ? result.data.outputMode : undefined,
-        ocrEngine: typeof result.data.ocrEngine === 'string' ? result.data.ocrEngine : undefined,
-      },
-    };
-  }
-
   return {
     ok: true,
     toolName: result.toolName,
@@ -314,7 +297,7 @@ function summarizeMessages(messages: readonly BaseMessage[]) {
   }));
 }
 
-function isOcrCall(call: CapturedNativeToolCall): boolean {
+function isRemovedOcrCall(call: CapturedNativeToolCall): boolean {
   return call.toolName === 'run_file_ocr';
 }
 
@@ -322,28 +305,14 @@ function isPriceLookupCall(call: CapturedNativeToolCall): boolean {
   return call.toolName === 'search_price_candidates';
 }
 
-function getSuccessfulOcrEvidence(
-  calls: readonly CapturedNativeToolCall[],
-): SteelRuntimeJsonObject[] {
-  return calls.flatMap((call) => {
-    if (call.toolName !== 'run_file_ocr' || !call.result.ok) {
-      return [];
-    }
-
-    return [call.result.data as SteelRuntimeJsonObject];
-  });
-}
-
 async function executeNativeToolCall({
   call,
   capturedCalls,
-  ocrFiles,
   pool,
   runState,
 }: {
   call: ToolCall;
   capturedCalls: CapturedNativeToolCall[];
-  ocrFiles: readonly SteelOAuthChatFile[];
   pool: ReturnType<typeof createSteelPostgresPool>;
   runState: ReturnType<typeof createSteelToolRunState>;
 }): Promise<ToolMessage> {
@@ -359,7 +328,6 @@ async function executeNativeToolCall({
     arguments: call.args,
     providerToolCallId,
     runState,
-    ocrFiles,
     outputSheetMemoryReader: {
       readOutputSheetMemory: async () => createEmptySteelOutputSheetMemorySnapshot(),
     },
@@ -380,13 +348,11 @@ async function runNativeToolLoop({
   initialMessages,
   maxToolRounds,
   model,
-  ocrFiles,
   pool,
 }: {
   initialMessages: BaseMessage[];
   maxToolRounds: number;
   model: ReturnType<typeof createOpenAIOAuthModel>;
-  ocrFiles: readonly SteelOAuthChatFile[];
   pool: ReturnType<typeof createSteelPostgresPool>;
 }): Promise<NativeTurnResult> {
   const messages = [...initialMessages];
@@ -417,7 +383,6 @@ async function runNativeToolLoop({
         await executeNativeToolCall({
           call,
           capturedCalls,
-          ocrFiles,
           pool,
           runState,
         }),
@@ -482,10 +447,8 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
           initialMessages: ocrInitialMessages,
           maxToolRounds: 8,
           model: ocrModel,
-          ocrFiles: [plFile],
           pool,
         });
-        const priorOcrEvidence = getSuccessfulOcrEvidence(ocrResult.capturedCalls);
         const quoteContext = await buildSteelGlobalAgentContext({
           conversation: {
             conversationId,
@@ -498,9 +461,6 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
               }),
             ],
             currentUserTurn: quoteUserTurn,
-          },
-          attachments: {
-            priorActiveFileEvidence: priorOcrEvidence,
           },
           dependencies: createSteelContextDependencies({
             runtimeRulesClient: pool,
@@ -525,7 +485,6 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
           initialMessages: quoteInitialMessages,
           maxToolRounds: 8,
           model: quoteModel,
-          ocrFiles: [plFile],
           pool,
         });
         const evidence = {
@@ -547,7 +506,6 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
             instructionPrefixLength: quoteContext.instructionPrefix.length,
             runtimeContextTextLength: quoteContext.runtimeContextText.length,
             attachmentReferenceCount: quoteContext.attachmentReferences.length,
-            priorOcrEvidenceCount: priorOcrEvidence.length,
             aiVisibleTools: quoteContext.runtimeContext.toolPolicy.aiVisibleTools,
           },
           ocrMessages: summarizeMessages(ocrInitialMessages),
@@ -587,8 +545,8 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
           evidence,
         );
         assertWithEvidence(
-          ocrResult.capturedCalls.some(isOcrCall),
-          'Native PL.pdf first turn did not call run_file_ocr.',
+          !ocrResult.capturedCalls.some(isRemovedOcrCall),
+          'Native PL.pdf first turn called removed run_file_ocr.',
           evidence,
         );
         assertWithEvidence(
@@ -597,18 +555,13 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
           evidence,
         );
         assertWithEvidence(
-          priorOcrEvidence.length > 0,
-          'Native PL.pdf first OCR turn did not produce reusable OCR evidence.',
-          evidence,
-        );
-        assertWithEvidence(
           hasOcrConfirmationTable(ocrResult.text),
           'Native PL.pdf first turn did not return an OCR confirmation table.',
           evidence,
         );
         assertWithEvidence(
-          !quoteResult.capturedCalls.some(isOcrCall),
-          'Native PL.pdf confirmed quote turn reran OCR.',
+          !quoteResult.capturedCalls.some(isRemovedOcrCall),
+          'Native PL.pdf confirmed quote turn called removed run_file_ocr.',
           evidence,
         );
         assertWithEvidence(

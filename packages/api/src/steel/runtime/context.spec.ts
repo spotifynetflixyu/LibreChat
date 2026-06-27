@@ -473,7 +473,6 @@ describe('Steel runtime context', () => {
     expect(context.toolPolicy.aiVisibleTools).toEqual([
       'search_customers',
       'search_price_candidates',
-      'run_file_ocr',
       'read_markdown',
     ]);
     expect(context.toolPolicy.removedTools).toEqual([]);
@@ -506,7 +505,6 @@ describe('Steel runtime context', () => {
     expect(serialized.toolPolicy.aiVisibleTools).toEqual([
       'search_customers',
       'search_price_candidates',
-      'run_file_ocr',
       'read_markdown',
     ]);
     expect(serialized.toolPolicy.readMarkdownUsagePolicy).toEqual({

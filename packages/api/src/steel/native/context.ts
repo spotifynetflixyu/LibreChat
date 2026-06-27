@@ -92,7 +92,7 @@ export interface SteelNativeContextMetadata {
   renderProfile: SteelNativeRenderProfile;
   globalApplied: true;
   attachmentBytePolicy: 'metadata_references_only';
-  ocrExecutionPolicy: 'agent_calls_run_file_ocr';
+  ocrExecutionPolicy: 'direct_paddleocr_mcp';
   rulePrefixOrder: typeof steelNativeInstructionPrefixSections;
 }
 
@@ -361,7 +361,7 @@ export function createSteelNativeContextMetadata({
     renderProfile,
     globalApplied: true,
     attachmentBytePolicy: 'metadata_references_only',
-    ocrExecutionPolicy: 'agent_calls_run_file_ocr',
+    ocrExecutionPolicy: 'direct_paddleocr_mcp',
     rulePrefixOrder: steelNativeInstructionPrefixSections,
   };
 }

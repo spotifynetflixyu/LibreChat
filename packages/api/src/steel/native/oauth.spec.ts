@@ -484,20 +484,6 @@ describe('OpenAI OAuth model adapter', () => {
       {
         type: 'function',
         function: {
-          name: 'run_file_ocr',
-          description: 'Extract OCR rows from a permitted LibreChat file.',
-          parameters: {
-            type: 'object',
-            properties: {
-              fileIndex: { type: 'number' },
-            },
-            required: ['fileIndex'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
           name: 'search_price_candidates',
           description: 'Search price candidates for confirmed quote rows.',
           parameters: {
@@ -563,10 +549,6 @@ describe('OpenAI OAuth model adapter', () => {
         ],
         toolChoice: { type: 'auto' },
         tools: [
-          expect.objectContaining({
-            type: 'function',
-            name: 'run_file_ocr',
-          }),
           expect.objectContaining({
             type: 'function',
             name: 'search_price_candidates',

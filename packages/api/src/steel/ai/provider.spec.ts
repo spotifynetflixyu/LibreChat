@@ -112,7 +112,7 @@ function createAgentRuleRow(prompt: string): AgentRuleRowFixture {
     selectors: { appliesTo: ['steel_quote_runtime'], locale: 'zh-TW' },
     prompt,
     tool_policy: {
-      availableTools: ['search_customers', 'search_price_candidates', 'run_file_ocr'],
+      availableTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
     },
     output_policy: { answerLanguage: 'zh-TW' },
     priority: '10',
@@ -215,7 +215,6 @@ const defaultAgentRulePrompt = [
 const steelBusinessToolNames = [
   'search_customers',
   'search_price_candidates',
-  'run_file_ocr',
   'read_markdown',
 ] as const;
 
@@ -454,12 +453,7 @@ function createProviderRuntimeContext({
       priorActiveFileEvidence: [],
     },
     toolPolicy: {
-      aiVisibleTools: [
-        'search_customers',
-        'search_price_candidates',
-        'run_file_ocr',
-        'read_markdown',
-      ],
+      aiVisibleTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
       removedTools: [],
       ocrCorrectionPolicy: 'Do not rerun OCR for user corrections.',
       readMarkdownUsagePolicy: {
@@ -1023,7 +1017,6 @@ describe('OpenAI OAuth provider adapter', () => {
     expect(compactGenerateOptions.tools?.map((tool) => tool.name)).toEqual([
       'search_customers',
       'search_price_candidates',
-      'run_file_ocr',
       'read_markdown',
     ]);
     expect(JSON.stringify(compactGenerateOptions.prompt[0])).not.toContain(

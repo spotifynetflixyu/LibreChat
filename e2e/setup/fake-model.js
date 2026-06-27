@@ -55,7 +55,7 @@ const MODEL_SPEC_ACCESSIBLE_SKILL = 'e2e-model-spec-allowed';
 const MODEL_SPEC_MISSING_SKILL = 'e2e-model-spec-missing';
 const MODEL_SPEC_INACCESSIBLE_SKILL = 'e2e-model-spec-inaccessible';
 const ALWAYS_APPLY_BODY_MARKER = 'E2E_ALWAYS_APPLY_BODY_MARKER';
-const STEEL_NATIVE_REQUIRED_TOOL_NAMES = ['search_price_candidates', 'run_file_ocr'];
+const STEEL_NATIVE_REQUIRED_TOOL_NAMES = ['search_price_candidates', 'read_markdown'];
 const STEEL_NATIVE_CONTEXT_MARKERS = [
   'Steel Native Context Metadata',
   'Steel Runtime Context',

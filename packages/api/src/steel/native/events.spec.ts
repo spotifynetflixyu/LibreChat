@@ -53,12 +53,12 @@ describe('Steel native event mapping', () => {
       source: 'tool_result',
       conversationId: 'conversation_1',
       requestId: 'request_1',
-      toolName: 'run_file_ocr',
-      providerToolCallId: 'call_ocr',
+      toolName: 'search_price_candidates',
+      providerToolCallId: 'call_price',
       capture: {
         status: 'captured',
         result: {
-          savedCounts: { ocr_extract: 1 },
+          savedCounts: { price_evidence: 1 },
         },
       },
     });
@@ -69,12 +69,12 @@ describe('Steel native event mapping', () => {
         data: {
           type: 'memory_saved',
           message: 'Working Order Memory saved',
-          savedCounts: { ocr_extract: 1 },
+          savedCounts: { price_evidence: 1 },
           source: 'tool_result',
           conversationId: 'conversation_1',
           requestId: 'request_1',
-          toolName: 'run_file_ocr',
-          providerToolCallId: 'call_ocr',
+          toolName: 'search_price_candidates',
+          providerToolCallId: 'call_price',
         },
       },
     ]);

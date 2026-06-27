@@ -245,12 +245,7 @@ function createTestRuntimeContext(
       priorActiveFileEvidence: [],
     },
     toolPolicy: {
-      aiVisibleTools: [
-        'search_customers',
-        'search_price_candidates',
-        'run_file_ocr',
-        'read_markdown',
-      ],
+      aiVisibleTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
       removedTools: [],
       ocrCorrectionPolicy: 'Do not rerun OCR for user corrections.',
       readMarkdownUsagePolicy: {
@@ -1028,7 +1023,7 @@ describe('createSteelHandlers', () => {
     );
   });
 
-  it('captures non-stream provider tool-status OCR results into Working Order Memory', async () => {
+  it('ignores removed non-stream provider tool-status OCR results', async () => {
     const historyService = {
       appendTurn: jest.fn(async (turn) => ({
         ...turn,
@@ -1045,7 +1040,7 @@ describe('createSteelHandlers', () => {
         savedCounts: {},
       })),
       captureToolResult: jest.fn(async () => ({
-        savedCounts: { ocr_extract: 1 },
+        savedCounts: {},
       })),
     };
     const sendChat = jest.fn(async (options) => {
@@ -1084,13 +1079,7 @@ describe('createSteelHandlers', () => {
 
     await handlers.chat(req, res);
 
-    expect(workingOrderMemoryWriter.captureToolResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationId: expect.stringMatching(/^steel-chat-/),
-        toolName: 'run_file_ocr',
-        data: { filename: 'a.pdf', pageResults: [{ page: 1, text: 'OCR' }] },
-      }),
-    );
+    expect(workingOrderMemoryWriter.captureToolResult).not.toHaveBeenCalled();
   });
 
   it('reconstructs confirmed PL.pdf OCR follow-up from history and stored OCR evidence without runtime gates', async () => {
@@ -1136,29 +1125,7 @@ describe('createSteelHandlers', () => {
       });
       const sendChat = jest
         .fn()
-        .mockImplementationOnce(async (options: SendSteelOAuthChatOptions) => {
-          await options.onToolStatus?.({
-            toolName: 'run_file_ocr',
-            status: 'completed',
-            message: 'run_file_ocr completed',
-            result: {
-              ok: true,
-              toolName: 'run_file_ocr',
-              data: {
-                filename: 'PL.pdf',
-                pageResults: [
-                  {
-                    page: 1,
-                    text: 'PL6*80*1000 孔數 4 每件，數量 2，總孔數 8',
-                  },
-                ],
-              },
-              sourceRefs: [],
-              durationMs: 1,
-              redactionVersion: 1,
-            },
-          });
-
+        .mockImplementationOnce(async (_options: SendSteelOAuthChatOptions) => {
           return {
             provider: 'openai_oauth_responses' as const,
             model: 'gpt-5.5',
@@ -1249,13 +1216,15 @@ describe('createSteelHandlers', () => {
         secondOptions?.steelRuntimeContext?.attachments.priorActiveFileEvidence,
       ).toEqual([
         expect.objectContaining({
-          filename: 'PL.pdf',
-          page: 1,
-          text: 'PL6*80*1000 孔數 4 每件，數量 2，總孔數 8',
+          kind: 'assistant_ocr_markdown',
+          markdown: expect.stringContaining('PL6*80*1000'),
         }),
       ]);
       expect(secondOptions?.steelRuntimeContext?.toolPolicy.aiVisibleTools).toEqual(
-        expect.arrayContaining(['search_price_candidates', 'run_file_ocr']),
+        expect.arrayContaining(['search_price_candidates', 'read_markdown']),
+      );
+      expect(secondOptions?.steelRuntimeContext?.toolPolicy.aiVisibleTools).not.toContain(
+        'run_file_ocr',
       );
       const serializedRuntimeContext = JSON.stringify(secondOptions?.steelRuntimeContext);
       expect(serializedRuntimeContext).not.toContain('ocrWorkflow');
@@ -1478,10 +1447,7 @@ describe('createSteelHandlers', () => {
         parseStatus: 'skipped' as const,
         savedCounts: {},
       })),
-      captureToolResult: jest
-        .fn()
-        .mockResolvedValueOnce({ savedCounts: { customer_fact: 1 } })
-        .mockResolvedValueOnce({ savedCounts: { ocr_extract: 1 } }),
+      captureToolResult: jest.fn().mockResolvedValueOnce({ savedCounts: { customer_fact: 1 } }),
     };
     const handlers = createSteelHandlers({
       executeToolCall,
@@ -1493,19 +1459,6 @@ describe('createSteelHandlers', () => {
           arguments: { keywords: ['龍頂'] },
           providerToolCallId: 'call_customer_1',
           runState: { maxCalls: 8, callsUsed: 0 },
-        });
-        await options.onToolStatus?.({
-          toolName: 'run_file_ocr',
-          status: 'completed',
-          message: 'run_file_ocr completed',
-          result: {
-            ok: true,
-            toolName: 'run_file_ocr',
-            data: { filename: 'a.pdf', pageResults: [{ page: 1, text: 'OCR' }] },
-            sourceRefs: [],
-            durationMs: 1,
-            redactionVersion: 1,
-          },
         });
         return {
           provider: 'openai_oauth_responses' as const,
@@ -1535,22 +1488,12 @@ describe('createSteelHandlers', () => {
         data: { customers: [{ displayName: '龍頂' }] },
       }),
     );
-    expect(workingOrderMemoryWriter.captureToolResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationId: 'steel_conversation_1',
-        toolName: 'run_file_ocr',
-        data: { filename: 'a.pdf', pageResults: [{ page: 1, text: 'OCR' }] },
-      }),
-    );
+    expect(workingOrderMemoryWriter.captureToolResult).toHaveBeenCalledTimes(1);
     expect(parseStreamChunks(chunks)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'memory_saved',
           savedCounts: { customer_fact: 1 },
-        }),
-        expect.objectContaining({
-          type: 'memory_saved',
-          savedCounts: { ocr_extract: 1 },
         }),
       ]),
     );

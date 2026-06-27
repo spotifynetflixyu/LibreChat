@@ -265,7 +265,6 @@ function buildRules(repoRoot) {
         availableTools: [
           'search_customers',
           'search_price_candidates',
-          'run_file_ocr',
           'read_markdown',
         ],
       },
@@ -304,7 +303,6 @@ function buildRules(repoRoot) {
         availableTools: [
           'search_customers',
           'search_price_candidates',
-          'run_file_ocr',
           'read_markdown',
         ],
       },
@@ -343,8 +341,8 @@ function buildRules(repoRoot) {
       },
       prompt: ocr.prompt,
       toolPolicy: {
-        availableTools: ['run_file_ocr'],
-        requiredToolOrder: ['run_file_ocr'],
+        ocrEngine: 'PaddleOCR MCP OCR',
+        requiredMcpTool: 'paddleocr_vl',
         requiredBefore: ['drawing_evidence_extraction'],
         mustMarkLowConfidence: true,
       },

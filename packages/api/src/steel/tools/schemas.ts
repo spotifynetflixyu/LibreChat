@@ -85,13 +85,6 @@ interface SearchCustomersInput {
   limit?: number;
 }
 
-export interface RunFileOcrInput {
-  filename?: string;
-  fileIndex?: number;
-  output_mode?: 'markdown' | 'detailed' | 'json';
-  dpi?: number;
-}
-
 export interface ReadMarkdownInput {
   scope: 'workbook' | 'ocr';
   reason?: string;
@@ -228,25 +221,6 @@ const searchPriceCandidatesSchema: z.ZodType<
   })
   .strict();
 
-const runFileOcrSchema: z.ZodType<RunFileOcrInput> = z
-  .object({
-    filename: nonEmptyString.optional(),
-    fileIndex: z.number().int().min(0).optional(),
-    output_mode: z.enum(['markdown', 'detailed', 'json']).optional(),
-    dpi: z.number().int().min(150).max(600).optional(),
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (input.filename !== undefined || input.fileIndex !== undefined) {
-      return;
-    }
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Provide filename or fileIndex',
-    });
-  });
-
 const readMarkdownSchema: z.ZodType<ReadMarkdownInput> = z
   .object({
     scope: z.enum(['workbook', 'ocr']),
@@ -297,12 +271,10 @@ const searchCustomersSchema: z.ZodType<SearchCustomersInput> = z.object({
 export const steelToolArgsSchemas: {
   readonly search_customers: z.ZodType<SearchCustomersInput>;
   readonly search_price_candidates: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown>;
-  readonly run_file_ocr: z.ZodType<RunFileOcrInput>;
   readonly read_markdown: z.ZodType<ReadMarkdownInput>;
 } = {
   search_customers: searchCustomersSchema,
   search_price_candidates: searchPriceCandidatesSchema,
-  run_file_ocr: runFileOcrSchema,
   read_markdown: readMarkdownSchema,
 } as const;
 

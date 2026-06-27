@@ -339,15 +339,6 @@ function hasPositiveQuoteAmount(row: TablePayload): boolean {
   });
 }
 
-function getOcrTextLength(result: SteelToolResult | undefined): number {
-  if (!result?.ok) {
-    return 0;
-  }
-
-  const text = result.data.text;
-  return typeof text === 'string' ? text.length : 0;
-}
-
 function summarizeToolResult(result: SteelToolResult | undefined) {
   if (!result) {
     return undefined;
@@ -361,22 +352,6 @@ function summarizeToolResult(result: SteelToolResult | undefined) {
       durationMs: result.durationMs,
     };
   }
-  if (result.toolName === 'run_file_ocr') {
-    return {
-      ok: true,
-      toolName: result.toolName,
-      durationMs: result.durationMs,
-      data: {
-        filename: readString(result.data.filename),
-        mediaType: readString(result.data.mediaType),
-        fileType: readString(result.data.fileType),
-        outputMode: readString(result.data.outputMode),
-        ocrEngine: readString(result.data.ocrEngine),
-        textLength: getOcrTextLength(result),
-      },
-    };
-  }
-
   return {
     ok: true,
     toolName: result.toolName,
@@ -430,7 +405,7 @@ function createPBConfirmedQuoteUserPrompt(): string {
 }
 
 function hasEmbeddedRuleInstruction(prompt: string): boolean {
-  return /run_file_ocr|search_price_candidates|system_order|customer_quote|第一輪|不得|不要重新 OCR|每一筆|獨立報價列/iu.test(
+  return /PaddleOCR|paddleocr_vl|search_price_candidates|system_order|customer_quote|第一輪|不得|不要重新 OCR|每一筆|獨立報價列/iu.test(
     prompt,
   );
 }
@@ -703,13 +678,9 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
             );
           }
         })();
-        const ocrStartedEvents = ocrToolEvents.filter(
-          (event) => event.toolName === 'run_file_ocr' && event.status === 'started',
+        const removedOcrEvents = ocrToolEvents.filter(
+          (event) => event.toolName === 'run_file_ocr',
         );
-        const ocrCompletedEvents = ocrToolEvents.filter(
-          (event) => event.toolName === 'run_file_ocr' && event.status === 'completed',
-        );
-        const ocrResult = ocrCompletedEvents[0]?.result;
         const ocrProductRowCount = countOcrProductRows(ocrResponse.text);
         const ocrHoleCountSummary = getOcrHoleCountSummary(ocrResponse.text);
         const quoteRuntimeContext = await createRuntimeContext({
@@ -813,13 +784,8 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
         );
         expect(hasPerRoundTimings(ocrResponse)).toBe(true);
         expect(hasPerRoundTimings(quoteResponse)).toBe(true);
-        expect(ocrStartedEvents).toHaveLength(1);
-        expect(ocrCompletedEvents).toHaveLength(1);
+        expect(removedOcrEvents).toHaveLength(0);
         expect(ocrCapturedCalls.some(isPriceLookupCall)).toBe(false);
-        assertWithEvidence(ocrResult?.ok, 'PB.pdf OCR did not complete successfully.', evidence);
-        expect(readString(ocrResult.data.filename)).toBe('PB.pdf');
-        expect(readString(ocrResult.data.fileType)).toBe('pdf');
-        expect(getOcrTextLength(ocrResult)).toBeGreaterThan(0);
         expect(ocrProductRowCount).toBeGreaterThan(0);
         assertWithEvidence(
           ocrHoleCountSummary.hasPerPieceColumn &&

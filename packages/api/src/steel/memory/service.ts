@@ -232,6 +232,32 @@ function isCalculationTable(headers: readonly string[]): boolean {
   return headers.some((header) => ['公式', '小計', '總計', '金額', '項目'].includes(header));
 }
 
+function normalizeHeader(header: string): string {
+  return header.replace(/\s+/g, '');
+}
+
+function isOcrTable(headers: readonly string[]): boolean {
+  const normalizedHeaders = headers.map(normalizeHeader);
+  const signalCount = normalizedHeaders.filter((header) =>
+    [
+      '來源檔案',
+      '來源標籤',
+      '來源頁',
+      '品名/材料名稱',
+      '加工內容',
+      '孔數',
+      '折邊',
+      '切角',
+      '缺口',
+      '開槽',
+      '信心程度',
+      '是否需人工複核',
+    ].some((signal) => header.includes(signal)),
+  ).length;
+
+  return signalCount >= 2;
+}
+
 function parseNumber(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === '') {
     return undefined;
@@ -311,6 +337,39 @@ function getParsedTables(content: string) {
 
 function toPayloads(headers: readonly string[], rows: readonly string[][]): SteelJsonObject[] {
   return rows.map((cells) => toPayload(headers, cells));
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replace(/\|/gu, '\\|').replace(/\r?\n/gu, '<br>');
+}
+
+function renderMarkdownTable(headers: readonly string[], rows: readonly string[][]): string {
+  return [
+    `| ${headers.map(escapeMarkdownTableCell).join(' |')} |`,
+    `| ${headers.map(() => '---').join(' |')} |`,
+    ...rows.map((row) => `| ${row.map(escapeMarkdownTableCell).join(' |')} |`),
+  ].join('\n');
+}
+
+function toOcrMarkdownPayload(
+  headers: readonly string[],
+  rows: readonly string[][],
+  tableIndex: number,
+): SteelJsonObject {
+  return {
+    kind: 'assistant_ocr_markdown',
+    tableIndex,
+    headers: [...headers],
+    rows: rows.map((row) => [...row]),
+    markdown: renderMarkdownTable(headers, rows),
+  };
+}
+
+function getOcrMarkdownSummary(payload: SteelJsonObject): string {
+  const markdown = getStringProperty(payload, 'markdown') ?? '';
+  return ['OCR Markdown', markdown.replace(/\s+/g, ' ').slice(0, 100)]
+    .filter((entry) => entry.trim() !== '')
+    .join(' ');
 }
 
 function incrementSavedCount(savedCounts: { [key: string]: number }, key: string, count: number) {
@@ -498,35 +557,6 @@ function getToolCaptureDocuments(input: CaptureToolResultInput) {
         }),
       }),
     );
-  }
-
-  if (input.toolName === 'run_file_ocr') {
-    const filename = getStringProperty(data, 'filename');
-    return getArrayProperty(data, 'pageResults').filter(isJsonObject).map((page) => {
-      const pageNumber = getNumberProperty(page, 'page') ?? getNumberProperty(page, 'pageNumber');
-      const payload: SteelJsonObject = { ...page };
-      const sourceRef: MemorySourceRef = {
-        sourceKind: 'ocr_result',
-        sourceId: input.providerToolCallId,
-      };
-      if (filename !== undefined) {
-        payload.filename = filename;
-        sourceRef.filename = filename;
-      }
-      if (pageNumber !== undefined) {
-        sourceRef.pageNumber = pageNumber;
-      }
-      return createToolMemoryDocument({
-        ...input,
-        memoryKind: 'ocr_extract',
-        sourceKind: 'ocr_result',
-        payload,
-        summary: [filename, pageNumber !== undefined ? `page ${pageNumber}` : undefined, 'OCR']
-          .filter((entry): entry is string => entry !== undefined)
-          .join(' '),
-        sourceRefs: [sourceRef],
-      });
-    });
   }
 
   return [];
@@ -837,12 +867,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         return { savedCounts: {} };
       }
 
-      if (input.toolName === 'run_file_ocr') {
-        await SteelWorkingOrderMemory.deleteMany({
-          conversationId: input.conversationId,
-          memoryKind: 'ocr_extract',
-        });
-      }
       await SteelWorkingOrderMemory.insertMany(documents);
       return {
         savedCounts: summarizeByKind(documents),
@@ -860,9 +884,36 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
       const tables = getParsedTables(content);
       const savedCounts: { [key: string]: number } = {};
       let sawUnclassifiedTable = false;
+      const ocrPayloads = tables
+        .map((table, index) =>
+          isOcrTable(table.headers)
+            ? toOcrMarkdownPayload(table.headers, table.rows, index + 1)
+            : undefined,
+        )
+        .filter((payload): payload is SteelJsonObject => payload !== undefined);
+
+      if (ocrPayloads.length > 0) {
+        await replaceActiveMarkdownRows({
+          SteelWorkingOrderMemory,
+          conversationId,
+          requestId,
+          messageId,
+          turnIndex,
+          checkpointTurnIndex,
+          memoryKind: 'ocr_extract',
+          payloads: ocrPayloads,
+          summaryForPayload: getOcrMarkdownSummary,
+          locatorPrefix: 'table:ocr_extract',
+        });
+        incrementSavedCount(savedCounts, 'ocr_extract', ocrPayloads.length);
+      }
 
       for (const table of tables) {
         const payloads = toPayloads(table.headers, table.rows);
+
+        if (isOcrTable(table.headers)) {
+          continue;
+        }
 
         if (isWorkingOrderTable(table.headers)) {
           const rows = canonicalizeSystemOrderItemNumbers(

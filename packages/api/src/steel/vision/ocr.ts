@@ -5,8 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-import type { SteelToolResult } from '../tools/results';
-import type { RunFileOcrInput, RunVisualInspectionInput } from '../tools/schemas';
+import type { RunVisualInspectionInput } from '../tools/schemas';
 
 type PaddleOcrToolResult = Awaited<ReturnType<Client['callTool']>>;
 type CanvasModule = typeof import('@napi-rs/canvas');
@@ -24,11 +23,45 @@ export interface SteelFileOcrSourceFile {
   pageCount?: number;
 }
 
+export interface SteelFileOcrInput {
+  filename?: string;
+  fileIndex?: number;
+  output_mode?: 'markdown' | 'detailed' | 'json';
+  dpi?: number;
+}
+
 export interface SteelFileOcrOptions {
-  arguments: RunFileOcrInput;
+  arguments: SteelFileOcrInput;
   files: readonly SteelFileOcrSourceFile[];
   providerToolCallId: string;
 }
+
+export type SteelFileOcrResult =
+  | {
+      ok: true;
+      source: 'paddleocr_mcp';
+      data: {
+        filename: string;
+        mediaType: string;
+        fileType: 'image' | 'pdf';
+        outputMode: 'markdown' | 'detailed' | 'json';
+        ocrEngine: 'PaddleOCR MCP';
+        model: string;
+        text: string;
+        imageIndex?: number;
+      };
+      sourceRefs: [];
+      durationMs: number;
+      redactionVersion: 1;
+    }
+  | {
+      ok: false;
+      source: 'paddleocr_mcp';
+      errorCategory: 'repository_error';
+      errorSummary: string;
+      durationMs: number;
+      redactionVersion: 1;
+    };
 
 export interface SteelPreparedImagePage {
   filename: string;
@@ -114,7 +147,7 @@ function sanitizeLocalFilename(value: string): string {
 
 export function findSteelSourceFile(
   files: readonly SteelFileOcrSourceFile[],
-  input: RunFileOcrInput | RunVisualInspectionInput,
+  input: SteelFileOcrInput | RunVisualInspectionInput,
 ): SteelFileOcrSourceFile {
   if (input.fileIndex !== undefined) {
     const file = files[input.fileIndex];
@@ -264,7 +297,7 @@ async function callPaddleOcr({
   }
 }
 
-function getDpi(input: RunFileOcrInput | RunVisualInspectionInput): number {
+function getDpi(input: SteelFileOcrInput | RunVisualInspectionInput): number {
   return input.dpi ?? Number(process.env.STEEL_PADDLEOCR_MCP_D_PDF_DPI ?? 400);
 }
 
@@ -274,7 +307,7 @@ export async function prepareSteelImagePage({
   outputDir,
 }: {
   files: readonly SteelFileOcrSourceFile[];
-  input: RunFileOcrInput | RunVisualInspectionInput;
+  input: SteelFileOcrInput | RunVisualInspectionInput;
   outputDir: string;
 }): Promise<SteelPreparedImagePage> {
   const file = findSteelSourceFile(files, input);
@@ -301,7 +334,7 @@ export async function prepareSteelImagePage({
   };
 }
 
-export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<SteelToolResult> {
+export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<SteelFileOcrResult> {
   const startTime = Date.now();
   const outputMode = options.arguments.output_mode ?? 'detailed';
   let tempDir: string | undefined;
@@ -330,7 +363,7 @@ export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<Ste
 
       return {
         ok: true,
-        toolName: 'run_file_ocr',
+        source: 'paddleocr_mcp',
         data: {
           filename: prepared.filename,
           mediaType: prepared.mediaType,
@@ -356,7 +389,7 @@ export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<Ste
 
     return {
       ok: true,
-      toolName: 'run_file_ocr',
+      source: 'paddleocr_mcp',
       data: {
         filename: prepared.filename,
         mediaType: prepared.mediaType,
@@ -374,7 +407,7 @@ export async function runSteelFileOcr(options: SteelFileOcrOptions): Promise<Ste
   } catch (error) {
     return {
       ok: false,
-      toolName: 'run_file_ocr',
+      source: 'paddleocr_mcp',
       errorCategory: 'repository_error',
       errorSummary: sanitizeError(error),
       durationMs: getDurationMs(startTime),

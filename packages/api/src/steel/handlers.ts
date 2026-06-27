@@ -635,7 +635,7 @@ async function captureSuccessfulToolResult({
   checkpointTurnIndex?: number;
   workingOrderMemoryWriter: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
 }) {
-  if (!conversationId || !toolResult?.ok || turnIndex === undefined) {
+  if (!conversationId || !toolResult?.ok || turnIndex === undefined || toolName === 'run_file_ocr') {
     return undefined;
   }
 

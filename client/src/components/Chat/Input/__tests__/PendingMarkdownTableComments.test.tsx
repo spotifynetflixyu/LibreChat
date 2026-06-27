@@ -1,5 +1,6 @@
 import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { writeStoredMarkdownTableComments } from '~/common';
 import type { MarkdownTableComment } from '~/common';
 import store from '~/store';
@@ -72,6 +73,35 @@ describe('PendingMarkdownTableComments', () => {
     expect(helper).toHaveTextContent('com_ui_markdown_table_comments_pending:');
     expect(helper).toHaveTextContent('2026-06-27 14:32 / Markdown 1: 2');
     expect(helper).toHaveTextContent('2026-06-27 14:32 / Markdown 2: 1');
+  });
+
+  it('shows the exact appended comments block on hover', async () => {
+    const user = userEvent.setup();
+
+    renderWithComments([
+      comment(),
+      comment({
+        id: 'message-1:2:2:3',
+        markdownIndex: 2,
+        markdownLabel: '2026-06-27 14:32 / Markdown 2',
+        oldValue: '8',
+        comment: '改成 10',
+      }),
+    ]);
+
+    await user.hover(screen.getByTestId('pending-markdown-table-comments'));
+
+    const preview = await screen.findByTestId('pending-markdown-table-comments-preview');
+    expect(preview).toHaveTextContent('Markdown table comments:');
+    expect(preview).toHaveTextContent('### 2026-06-27 14:32 / Markdown 1');
+    expect(preview).toHaveTextContent('Old value: 10');
+    expect(preview).toHaveTextContent('Comment: 改成 12');
+    expect(preview).toHaveTextContent('### 2026-06-27 14:32 / Markdown 2');
+    expect(preview).toHaveTextContent('Old value: 8');
+    expect(preview).toHaveTextContent('Comment: 改成 10');
+    expect(preview).toHaveTextContent(
+      '請依照以上 comments，分別輸出每個 Markdown 的完整新表格；不要只輸出修改過的 cell 或 row。',
+    );
   });
 
   it('restores pending comments from localStorage', () => {

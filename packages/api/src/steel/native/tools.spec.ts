@@ -26,19 +26,13 @@ describe('Steel native tool adapter', () => {
     const result = mergeSteelToolDefinitions({
       toolDefinitions: [existingTool],
       toolRegistry: registry,
-      aiVisibleTools: [
-        'search_customers',
-        'search_price_candidates',
-        'run_file_ocr',
-        'read_markdown',
-      ],
+      aiVisibleTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
     });
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'web_search',
       'search_customers',
       'search_price_candidates',
-      'run_file_ocr',
       'read_markdown',
     ]);
     expect(result.toolRegistry.get('web_search')).toBe(existingTool);
@@ -52,18 +46,12 @@ describe('Steel native tool adapter', () => {
 
   it('limits Steel tools to the runtime policy while read_markdown remains globally available', () => {
     const result = mergeSteelToolDefinitions({
-      aiVisibleTools: [
-        'search_customers',
-        'search_price_candidates',
-        'run_file_ocr',
-        'read_markdown',
-      ],
+      aiVisibleTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
     });
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'search_customers',
       'search_price_candidates',
-      'run_file_ocr',
       'read_markdown',
     ]);
     expect(result.toolRegistry.has('read_markdown')).toBe(true);

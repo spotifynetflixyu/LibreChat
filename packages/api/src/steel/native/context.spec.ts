@@ -330,11 +330,11 @@ describe('Steel native context adapter', () => {
       expect.objectContaining({
         nativeContextVersion: 1,
         contextMode: 'compact_workbook',
-        renderProfile: 'agent_client',
-        globalApplied: true,
-        attachmentBytePolicy: 'metadata_references_only',
-        ocrExecutionPolicy: 'agent_calls_run_file_ocr',
-      }),
+          renderProfile: 'agent_client',
+          globalApplied: true,
+          attachmentBytePolicy: 'metadata_references_only',
+          ocrExecutionPolicy: 'direct_paddleocr_mcp',
+        }),
     );
     expect(context.contextSlots).toEqual({
       instructionPrefix: 'top_of_context',
@@ -359,7 +359,7 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContext.attachments.currentTurnFiles).toHaveLength(0);
     expect(context.attachmentReferences).toEqual([fileReference]);
     expect(Object.keys(context.attachmentReferences[0])).not.toContain('data');
-    expect(context.runtimeContext.toolPolicy.aiVisibleTools).toContain('run_file_ocr');
+    expect(context.runtimeContext.toolPolicy.aiVisibleTools).not.toContain('run_file_ocr');
   });
 
   it('builds default native context with injected dependencies for JS callers', async () => {
@@ -439,7 +439,7 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContext.rules.steelGlobalRules.instructionPackets).toHaveLength(0);
     expect(context.runtimeContext.rules.steelGlobalRules.quoteDefaults).toHaveLength(0);
     expect(context.runtimeContext.rules.steelGlobalRules.quoteRules).toHaveLength(0);
-    expect(context.runtimeContext.toolPolicy.aiVisibleTools).toContain('run_file_ocr');
+    expect(context.runtimeContext.toolPolicy.aiVisibleTools).not.toContain('run_file_ocr');
     expect(context.instructionPrefix).not.toContain('Steel Tool Policy');
     expect(context.runtimeContextText).not.toContain('instructionPackets');
   });

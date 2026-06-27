@@ -25,9 +25,9 @@
 - LibreChat file records and permissions remain canonical. When Steel needs
   provider vision for drawings/images/PDFs, keep the native file/vision path
   intact. When Steel needs OCR/table extraction or durable drawing evidence,
-  route permitted file bytes/metadata through `run_file_ocr` backed by
-  PaddleOCR MCP (`PaddleOCR-VL-1.6` / `paddleocr_vl`), then reuse persisted
-  OCR/file-analysis state on follow-up turns by default.
+  use PaddleOCR MCP OCR (`PaddleOCR-VL-1.6` / `paddleocr_vl`) directly, then
+  reuse persisted assistant OCR Markdown/file-analysis state on follow-up
+  turns by default.
 - `/steel/oauth-chat` is dev-only for smoke tests and activity-log inspection.
   Product behavior must live in native LibreChat hooks.
 - Normal LibreChat chat must support OpenAI OAuth API through the native Steel
@@ -61,11 +61,12 @@
   metadata/references, not duplicate uploaded file bytes or base64 bodies in
   prompt text. This does not mean hiding files from the AI; attachments still
   pass through LibreChat's native provider file/vision pipeline when supported,
-  and OCR/tool byte access uses the permission-checked file path.
-- `run_file_ocr` is an AI-visible Steel tool. Do not design LibreChat file
-  loading/upload as automatic OCR plus prompt injection by default; the agent
-  calls the tool when structured OCR/table extraction or durable drawing
-  evidence is needed.
+  and PaddleOCR MCP OCR must use the permission-checked file path when
+  structured OCR/table extraction is required.
+- `run_file_ocr` is obsolete and must not be AI-visible. Do not design
+  LibreChat file loading/upload as automatic OCR plus prompt injection by
+  default; the agent uses PaddleOCR MCP OCR directly when structured OCR/table
+  extraction or durable drawing evidence is needed.
 - Do not add runtime OCR workflow gates such as `ocrWorkflow` or
   `policy_blocked` for `/steel/oauth-chat` or native Steel provider flows. OCR
   PDF quote flow is prompt/rule-guided: first turn AI returns OCR form results,
@@ -119,10 +120,10 @@
   forward from the database. Do not infer row deletes/updates/retains inside a
   sheet.
 - When the user confirms or corrects prior OCR/table content, the AI should not
-  call `run_file_ocr` again unless the user explicitly asks to rerun OCR or
+  rerun PaddleOCR MCP OCR unless the user explicitly asks to rerun OCR or
   attaches new/changed file evidence. The AI should update the OCR/quote
-  Markdown directly from chat history plus user corrections, return the complete
-  latest OCR/quote table, and let backend auto parse/save update the
+  Markdown directly from chat history plus user corrections, return the
+  complete latest OCR/quote table, and let backend auto parse/save update the
   conversation singleton.
 - `read_markdown` is a recovery tool, not a per-turn default. The AI must first
   use LibreChat provider chat history when the needed OCR/workbook Markdown is
@@ -216,6 +217,20 @@
   `npm run e2e:prepare` before judging Playwright UI failures; a stale bundle
   can make frontend changes look broken even when backend SSE events are
   correct.
+- When the user explicitly says Steel OCR should directly use PaddleOCR MCP and
+  delete `run_file_ocr`, remove that name from AI-visible tools, executable
+  Steel tool dispatch, runtime tool policy, and AI-facing rules. Keep
+  assistant OCR Markdown auto-save and `read_markdown(scope: "ocr")` recovery
+  as the durable database path.
+- When rewriting Steel OCR rules after removing `run_file_ocr`, explicitly name
+  PaddleOCR MCP OCR as the required parser for PDF/image text and table
+  content. Do not replace it with vague provider vision or built-in OCR
+  wording.
+- Steel OCR rules that name PaddleOCR MCP are insufficient by themselves. Also
+  register the PaddleOCR MCP server in `librechat.yaml` and ensure native Steel
+  PDF/image turns inject the MCP server token before `loadToolDefinitions()`;
+  otherwise the model falls back to provider file parsing and may report "No
+  text could be parsed" without ever calling `paddleocr_vl`.
 - Portal-based Markdown table modals must explicitly sync the active root theme
   class and `data-theme`; do not assume a body-level portal inherits the chat
   message theme scope.
@@ -235,6 +250,12 @@
 - Markdown table modal comment icon buttons belong in the cell's top-right
   corner. Reserve right-side cell padding so the icon does not cover text, and
   align the single-line comment input from that same right edge.
+- Markdown table modal comment inputs must be viewport-aware. Do not anchor the
+  editor with plain cell-relative absolute positioning; use LibreChat's existing
+  Radix/Ariakit popover positioning patterns with collision handling.
+- After moving a Markdown table comment input into a Radix Popover, blur-save
+  must also handle popover dismiss paths such as outside click/onOpenChange.
+  Test the outside-click path directly, not only a synthetic input blur.
 - Markdown table modal column selector belongs on the left side of the toolbar;
   keep copy/download/close actions grouped on the right.
 - Markdown table modals should widen columns with long body text, such as
@@ -265,8 +286,13 @@
   appended list with an instruction for the AI to output a separate complete
   updated table for each affected Markdown. Use the AI message timestamp plus
   Markdown index as the visible group label; do not show role.
+- Pending Markdown table comments helper text can stay a concise grouped count,
+  but hover/focus must show the exact Markdown block that will be appended to
+  the next user message. Reuse the shared append formatter for that preview.
 - Pending Markdown table comments must be backed by conversation-scoped
   `localStorage` until successful fresh submit. Do not tie restore behavior to
   the mounted chat input only; refresh/back-forward should restore the queue.
-- LibreChat leave warnings are global and always on for the route tree. Do not
-  condition browser/route leave warnings on pending Markdown table comments.
+- LibreChat leave warnings are global and always on for browser unload, close,
+  refresh, and external site navigation, but same-site route navigation such as
+  `/c` to `/c/:conversationId` must not prompt. Do not condition browser unload
+  warnings on pending Markdown table comments.

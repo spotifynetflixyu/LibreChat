@@ -106,7 +106,7 @@ function createPLConfirmedQuoteUserPrompt(): string {
 }
 
 function hasEmbeddedRuleInstruction(prompt: string): boolean {
-  return /run_file_ocr|search_price_candidates|system_order|customer_quote|第一輪|不得|不要重新 OCR|工具/iu.test(
+  return /PaddleOCR|paddleocr_vl|search_price_candidates|system_order|customer_quote|第一輪|不得|不要重新 OCR|工具/iu.test(
     prompt,
   );
 }
@@ -119,7 +119,7 @@ function isPriceLookupCall(call: CapturedToolCall): boolean {
   return call.toolName === 'search_price_candidates';
 }
 
-function isOcrToolEvent(event: ToolStatusEvent): boolean {
+function isRemovedOcrToolEvent(event: ToolStatusEvent): boolean {
   return event.toolName === 'run_file_ocr';
 }
 
@@ -136,21 +136,6 @@ function summarizeToolResult(result: SteelToolResult | undefined) {
       durationMs: result.durationMs,
     };
   }
-  if (result.toolName === 'run_file_ocr') {
-    return {
-      ok: true,
-      toolName: result.toolName,
-      durationMs: result.durationMs,
-      data: {
-        filename: readString(result.data.filename),
-        mediaType: readString(result.data.mediaType),
-        fileType: readString(result.data.fileType),
-        outputMode: readString(result.data.outputMode),
-        ocrEngine: readString(result.data.ocrEngine),
-      },
-    };
-  }
-
   return {
     ok: true,
     toolName: result.toolName,
@@ -180,19 +165,6 @@ function hasQuoteTable(text: string): boolean {
     const headers = new Set(table.headers);
     return headers.has('項次') && headers.has('型號') && headers.has('品名規格') && table.rows.length > 0;
   });
-}
-
-function getSuccessfulOcrEvidence(events: readonly ToolStatusEvent[]): SteelRuntimeJsonObject[] {
-  return events
-    .filter((event) => event.toolName === 'run_file_ocr' && event.status === 'completed')
-    .flatMap((event) => {
-      const result = event.result;
-      if (!result?.ok || result.toolName !== 'run_file_ocr') {
-        return [];
-      }
-
-      return [result.data as SteelRuntimeJsonObject];
-    });
 }
 
 function createCapturingToolExecutor(
@@ -314,13 +286,11 @@ describePLQuoteLive('Steel live PL.pdf OCR confirmation and quote flow', () => {
           steelRuntimePolicy: true,
           steelToolMaxCalls: 10,
         });
-        const priorOcrEvidence = getSuccessfulOcrEvidence(ocrToolEvents);
         const quoteRuntimeContext = await createRuntimeContext({
           activeHistory: [{ role: 'assistant', content: ocrResponse.text }],
           conversationId,
           currentUserTurn: quoteUserMessage,
           pool,
-          priorActiveFileEvidence: priorOcrEvidence,
           requestId: `steel_live_pl_pdf_quote_${Date.now()}`,
         });
         const quoteResponse = await sendSteelOAuthChat({
@@ -362,7 +332,6 @@ describePLQuoteLive('Steel live PL.pdf OCR confirmation and quote flow', () => {
             arguments: call.arguments,
             result: summarizeToolResult(call.result),
           })),
-          priorOcrEvidenceCount: priorOcrEvidence.length,
           ocrResponseTextPreview: ocrResponse.text.slice(0, 1200),
           ocrResponseText: ocrResponse.text,
           quoteResponseTextLength: quoteResponse.text.length,
@@ -385,9 +354,8 @@ describePLQuoteLive('Steel live PL.pdf OCR confirmation and quote flow', () => {
           evidence,
         );
         assertWithEvidence(
-          ocrToolEvents.filter(isOcrToolEvent).some((event) => event.status === 'started') &&
-            ocrToolEvents.filter(isOcrToolEvent).some((event) => event.status === 'completed'),
-          'PL.pdf first turn did not complete OCR.',
+          !ocrToolEvents.some(isRemovedOcrToolEvent),
+          'PL.pdf first turn called removed run_file_ocr.',
           evidence,
         );
         assertWithEvidence(
@@ -396,18 +364,13 @@ describePLQuoteLive('Steel live PL.pdf OCR confirmation and quote flow', () => {
           evidence,
         );
         assertWithEvidence(
-          priorOcrEvidence.length > 0,
-          'PL.pdf first OCR turn did not produce reusable OCR evidence.',
-          evidence,
-        );
-        assertWithEvidence(
           hasOcrConfirmationTable(ocrResponse.text),
           'PL.pdf first turn did not return an OCR confirmation table.',
           evidence,
         );
         assertWithEvidence(
-          quoteToolEvents.filter(isOcrToolEvent).length === 0,
-          'PL.pdf confirmed quote turn reran OCR.',
+          !quoteToolEvents.some(isRemovedOcrToolEvent),
+          'PL.pdf confirmed quote turn called removed run_file_ocr.',
           evidence,
         );
         assertWithEvidence(

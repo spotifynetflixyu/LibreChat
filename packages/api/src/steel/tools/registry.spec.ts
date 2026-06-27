@@ -12,9 +12,9 @@ describe('Steel tool registry', () => {
     expect(toolNames).toEqual([
       'search_customers',
       'search_price_candidates',
-      'run_file_ocr',
       'read_markdown',
     ]);
+    expect(toolNames).not.toContain('run_file_ocr');
     expect(toolNames).not.toContain('lookup_quote_rules');
     expect(toolNames).not.toContain('read_working_order_items');
     expect(toolNames).not.toContain('save_working_order_items');
@@ -30,8 +30,13 @@ describe('Steel tool registry', () => {
   });
 
   it('deletes context-injected and duplicate read tools from schema and executable registry', () => {
+    expect(Object.keys(steelToolArgsSchemas)).not.toContain('run_file_ocr');
     expect(Object.keys(steelToolArgsSchemas)).not.toContain('lookup_quote_rules');
     expect(Object.keys(steelToolArgsSchemas)).not.toContain('read_working_order_items');
+    expect(() => {
+      // @ts-expect-error exercising a deleted executable tool name.
+      getExecutableSteelToolDefinition('run_file_ocr');
+    }).toThrow('Unknown Steel executable tool');
     expect(() => {
       // @ts-expect-error exercising a deleted executable tool name.
       getExecutableSteelToolDefinition('lookup_quote_rules');
@@ -280,31 +285,16 @@ describe('Steel tool registry', () => {
     ).toThrow();
   });
 
-  it('lets AI trigger whole-file OCR without page-level arguments', () => {
-    const definition = getSteelToolDefinition('run_file_ocr');
-
-    expect(definition.name).toBe('run_file_ocr');
-    expect(
-      definition.argsSchema.parse({
-        fileIndex: 0,
-        output_mode: 'markdown',
-      }),
-    ).toEqual({
-      fileIndex: 0,
-      output_mode: 'markdown',
-    });
-    expect(() =>
-      definition.argsSchema.parse({
-        fileIndex: 0,
-        page: 1,
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        fileIndex: 0,
-        imageIndex: 1,
-      }),
-    ).toThrow();
+  it('does not expose OCR as a provider or executable Steel tool', () => {
+    expect(getSteelToolDefinitions().map((entry) => entry.name)).not.toContain('run_file_ocr');
+    expect(() => {
+      // @ts-expect-error exercising a removed provider-visible tool name.
+      getSteelToolDefinition('run_file_ocr');
+    }).toThrow('Unknown Steel provider tool');
+    expect(() => {
+      // @ts-expect-error exercising a removed executable tool name.
+      getExecutableSteelToolDefinition('run_file_ocr');
+    }).toThrow('Unknown Steel executable tool');
     expect(() => {
       // @ts-expect-error exercising a removed public tool name.
       getSteelToolDefinition('lookup_catalog_families');

@@ -637,27 +637,7 @@ describe('Steel minimal tool execution', () => {
     expect(outputSheetMemoryReader.readOutputSheetMemory).not.toHaveBeenCalled();
   });
 
-  it('runs OCR only when run_file_ocr is explicitly called with uploaded files', async () => {
-    const files = [
-      {
-        filename: 'drawing.pdf',
-        mediaType: 'application/pdf',
-        data: new Uint8Array([1, 2, 3]),
-      },
-    ];
-    const runFileOcr = jest.fn(async ({ arguments: args, files: inputFiles }) => ({
-      ok: true as const,
-      toolName: 'run_file_ocr' as const,
-      data: {
-        filename: inputFiles[0]?.filename,
-        outputMode: args.output_mode,
-        text: 'OCR result',
-      },
-      sourceRefs: [],
-      durationMs: 12,
-      redactionVersion: 1,
-    }));
-
+  it('rejects the removed run_file_ocr executable tool path', async () => {
     const result = await executeSteelTool({
       client: createClient([]),
       providerToolCallId: 'call_ocr',
@@ -666,29 +646,15 @@ describe('Steel minimal tool execution', () => {
         filename: 'drawing.pdf',
         output_mode: 'markdown',
       },
-      ocrFiles: files,
-      runFileOcr,
-    } as Parameters<typeof executeSteelTool>[0] & {
-      ocrFiles: typeof files;
-      runFileOcr: typeof runFileOcr;
     });
 
-    expect(runFileOcr).toHaveBeenCalledWith({
-      arguments: {
-        filename: 'drawing.pdf',
-        output_mode: 'markdown',
-      },
-      files,
-      providerToolCallId: 'call_ocr',
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-    expect(result.data).toEqual({
-      filename: 'drawing.pdf',
-      outputMode: 'markdown',
-      text: 'OCR result',
+    expect(result).toEqual({
+      ok: false,
+      toolName: 'run_file_ocr',
+      errorCategory: 'unknown_tool',
+      errorSummary: 'Unknown Steel tool: run_file_ocr',
+      durationMs: expect.any(Number),
+      redactionVersion: 1,
     });
   });
 

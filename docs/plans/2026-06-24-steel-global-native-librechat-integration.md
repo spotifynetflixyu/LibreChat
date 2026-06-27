@@ -84,7 +84,7 @@ Before implementing any phase, preserve these audited constraints:
 - Steel-enabled Open Responses must be durable and LibreChat-managed, equivalent to `store:true`; do not add a Steel `store:false` branch.
 - Keep LibreChat user Memory separate from Steel structured quote/workbook state, even when existing Steel service names contain `Memory`.
 - Final assistant Markdown capture must run after assistant message persistence succeeds. Use a native UI post-save hook around the assistant `databasePromise`, and use `responses.js` `saveResponseOutput()` after `db.saveMessage` for Open Responses.
-- LibreChat file records and permissions remain canonical. Native provider vision/file inputs must still be available to the AI agent for drawing reasoning such as holes, bends, slots, and cut marks. When OCR/table extraction is needed, route permitted file bytes/metadata through `run_file_ocr` to PaddleOCR MCP (`PaddleOCR-VL-1.6` / `paddleocr_vl`), and reuse persisted OCR/file-analysis state on follow-up turns.
+- LibreChat file records and permissions remain canonical. Native provider vision/file inputs must still be available to the AI agent for drawing reasoning such as holes, bends, slots, and cut marks. When OCR/table extraction is needed, use PaddleOCR MCP OCR (`PaddleOCR-VL-1.6` / `paddleocr_vl`) to parse text/table content, and reuse persisted OCR Markdown state on follow-up turns.
 - `/steel/oauth-chat` is dev-only. It may provide fixture smoke evidence and activity-log comparison, but product behavior must be implemented in native LibreChat hooks.
 
 ## Module And Entrypoint Map
@@ -245,7 +245,7 @@ Current audit result:
 | MCP | Native MCP server/tool/OAuth flow exists | Add Steel MCP as config/permission-aware MCP entries or native tool wrappers, not a separate auth path |
 | Skills | Native catalog, manual primes, always-apply primes exist | Add Steel skills/rules as additive always-apply primes or instruction prefix while preserving user skills |
 | LibreChat user Memory | `AgentClient.useMemory()` and memory agent exist | Keep it intact; Steel structured state is separate and must not mutate LibreChat user Memory |
-| File handling | Native file context and Responses `input_file` encoding exist | Bridge Steel OCR/file evidence to LibreChat file records and existing `fileAnalysis.instructions`; OCR/table extraction should route through `run_file_ocr` backed by PaddleOCR MCP |
+| File handling | Native file context and Responses `input_file` encoding exist | Bridge Steel OCR/file evidence to LibreChat file records; OCR/table extraction should use PaddleOCR MCP OCR and persist assistant OCR Markdown |
 | Streaming | Native resumable SSE via `GenerationJobManager` exists | Map Steel progress/tool/memory events into existing run-step/custom events, not NDJSON |
 | Abort/resume | Native job manager supports abort/resume | Use native lifecycle; standalone Steel close handler is not enough |
 | Settings/model specs | Existing modelSpecs/presets and `useResponsesApi` setting exist | Add Steel defaults through modelSpecs/config, preserve explicit user choices unless admin enforces |
@@ -332,10 +332,10 @@ Tasks:
   LibreChat file metadata/references there. The actual attachment should still
   flow through LibreChat's native provider file/vision path when supported, and
   OCR/tool byte access should use the permission-checked file pipeline.
-- Do not auto-run OCR when LibreChat receives or loads a file, and do not inject
-  OCR text into every prompt by default. `run_file_ocr` is an AI-visible Steel
-  tool that the agent calls when structured OCR/table extraction or durable
-  drawing evidence is needed.
+- Do not auto-inject OCR text into every prompt when LibreChat receives or loads
+  a file. When structured OCR/table extraction or durable drawing evidence is
+  needed, use PaddleOCR MCP OCR (`paddleocr_vl`) and persist the assistant's OCR
+  confirmation Markdown.
 - Do not introduce a Phase 1 runtime disable switch. Tests should use dependency
   injection, no-op dependencies, or mocks to verify behavior without adding a
   product path that disables global Steel.
@@ -541,10 +541,10 @@ Tasks:
   duplicate that policy through `fileAnalysis.instructions`; if the YAML field is
   retained for non-Steel compatibility, keep it as a short generic
   provider-vision hint.
-- Route OCR tool calls through Steel `run_file_ocr`.
-- Keep `run_file_ocr` as an agent-called tool. File upload/loading alone should
-  not trigger automatic OCR text injection.
-- Default Steel table/drawing OCR to the configured PaddleOCR MCP implementation, currently `PaddleOCR-VL-1.6` / `paddleocr_vl`; provider vision may still inspect attachments directly, but it is not the durable structured-state writer by itself.
+- Default Steel table/drawing OCR to the configured PaddleOCR MCP OCR
+  implementation, currently `PaddleOCR-VL-1.6` / `paddleocr_vl`; provider
+  vision may still inspect attachments directly, but it is not the durable
+  structured-state writer by itself.
 - Ensure prior OCR/file evidence is read from Steel structured state, not prompt-inlined forever.
 - Do not re-OCR the same file on later turns when persisted OCR/file-analysis state is already available, unless the user explicitly asks to re-read/re-analyze or the stored state is missing/incomplete.
 
@@ -553,11 +553,11 @@ Tests:
 - PDF/image upload in native chat keeps OCR/file rules available and passes
   permitted attachments through the native provider file/vision path when
   supported.
-- OCR runs only when the AI agent calls `run_file_ocr` or a later explicit
-  product decision adds a separate pre-processing path.
-- LibreChat PDF/image attachment requiring OCR invokes `run_file_ocr` with the native file bytes/metadata and reaches the PaddleOCR MCP-backed executor.
+- OCR text/table parsing uses PaddleOCR MCP OCR (`paddleocr_vl`) when needed,
+  then the assistant outputs an OCR confirmation Markdown table.
+- LibreChat PDF/image attachment requiring OCR reaches the PaddleOCR MCP OCR path.
 - Previous file evidence can be used on follow-up turns.
-- Follow-up turns use persisted OCR/file-analysis state without calling `run_file_ocr` again by default.
+- Follow-up turns use persisted OCR Markdown state without re-running OCR by default.
 - Unauthorized file ids are rejected by native permissions before Steel sees bytes.
 
 Current implementation status:
@@ -565,19 +565,16 @@ Current implementation status:
 - Native `AgentClient` stores current-turn Steel file references on
   `req.steelNativeContext.currentTurnFiles` after LibreChat attachment
   processing keeps provider file/vision inputs intact.
-- Native `ToolService` resolves those file references through LibreChat Mongo
-  file records and storage streams only when the AI calls `run_file_ocr`, then
-  passes resolved bytes into `executeSteelTool({ ocrFiles })`.
-- `executeSteelTool()` now dispatches `run_file_ocr` to the PaddleOCR-backed
-  file OCR runner through injectable dependencies for tests.
+- Native OCR table/text parsing is handled through PaddleOCR MCP OCR
+  (`paddleocr_vl`) rather than the Steel `executeSteelTool()` business-tool
+  dispatcher.
 - Open Responses `convertInputToMessages()` preserves `input_file` blocks
   instead of degrading them to text placeholders, so Responses file inputs can
   continue through the model/provider path.
 - Open Responses `responses.js` collects current-turn `input_file.file_id`
   references into `req.steelNativeContext.currentTurnFiles`, attaches them to
-  the native Steel context input, and lets the same `run_file_ocr` ToolService
-  path resolve permitted LibreChat file records only when the agent calls the
-  tool. Inline `file_data` stays provider-visible and is not copied into Steel
+  the native Steel context input, and keeps inline `file_data` provider-visible
+  without copying it into Steel
   context bytes.
 - Runtime context now reuses active OCR extracts from Steel structured state:
   `prepareSteelRuntimeContext()` reads `Output Sheet Memory`
@@ -585,8 +582,8 @@ Current implementation status:
   `attachments.priorActiveFileEvidence`, and keeps OCR/file rules available on
   follow-up turns even when there is no new attachment.
 - Live no-re-OCR follow-up behavior remains a Phase 7 evidence gap: the model
-  should use the persisted file evidence by default and call `run_file_ocr`
-  again only when the user asks to re-read/re-analyze or stored evidence is
+  should use the persisted file evidence by default and rerun PaddleOCR MCP OCR
+  only when the user asks to re-read/re-analyze or stored evidence is
   missing/incomplete.
 
 ### Phase 8 - Event Mapping And UI Persistence

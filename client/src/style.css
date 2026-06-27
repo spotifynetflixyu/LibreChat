@@ -1696,20 +1696,23 @@ button {
   box-shadow: 0 0 0 2px var(--ring-primary);
 }
 
-.markdown-table-cell-comment-input {
+.markdown-table-cell-comment-popover {
   background-color: var(--surface-primary);
   border: 1px solid var(--border-medium);
   border-radius: 0.5rem;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+  padding: 0.25rem;
+  width: min(18rem, calc(100vw - 1.5rem));
+  z-index: 1002;
+}
+
+.markdown-table-cell-comment-input {
   color: var(--text-primary);
   font-size: 0.875rem;
   line-height: 1.25rem;
-  min-width: min(18rem, 70vw);
+  min-width: 0;
   padding: 0.45rem 0.6rem;
-  position: absolute;
-  right: 0;
-  top: 1.55rem;
-  z-index: 8;
+  width: 100%;
 }
 
 .markdown-table-cell-comment-input:focus {

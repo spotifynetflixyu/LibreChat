@@ -3,12 +3,10 @@ import {
   discoverSteelPriceCategories,
   searchSteelPriceItems,
 } from '../repositories';
-import { runSteelFileOcr } from '../vision/ocr';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas } from './schemas';
 
-import type { SteelFileOcrOptions, SteelFileOcrSourceFile } from '../vision/ocr';
 import type {
   SteelOutputSheetMemorySnapshot,
   SteelRuntimeActiveOutputSheetId,
@@ -30,15 +28,11 @@ type SearchCustomersInput = ReturnType<typeof steelToolArgsSchemas.search_custom
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
-type RunFileOcrInput = ReturnType<typeof steelToolArgsSchemas.run_file_ocr.parse>;
 type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
 type DispatchSteelToolArgs =
   | SearchCustomersInput
   | SearchPriceCandidatesInput
-  | RunFileOcrInput
   | ReadMarkdownInput;
-
-type RunSteelFileOcr = (options: SteelFileOcrOptions) => Promise<SteelToolResult>;
 
 const workbookSheetOrder = [
   'system_order',
@@ -88,8 +82,6 @@ export interface ExecuteSteelToolOptions {
   toolName: string;
   arguments: unknown;
   outputSheetMemoryReader?: SteelOutputSheetMemoryReader;
-  ocrFiles?: readonly SteelFileOcrSourceFile[];
-  runFileOcr?: RunSteelFileOcr;
   providerToolCallId?: string;
   runState?: SteelToolRunState;
   log?: SteelToolLogger;
@@ -438,21 +430,6 @@ async function dispatchSteelTool(
       const input = args as SearchPriceCandidatesInput;
 
       return searchPriceCandidates(client, input);
-    }
-    case 'run_file_ocr': {
-      const input = args as RunFileOcrInput;
-      const files = options.ocrFiles ?? [];
-      const result = await (options.runFileOcr ?? runSteelFileOcr)({
-        arguments: input,
-        files,
-        providerToolCallId: options.providerToolCallId ?? 'run_file_ocr',
-      });
-
-      if (!result.ok) {
-        throw new Error(result.errorSummary);
-      }
-
-      return result.data as SteelRawToolOutput;
     }
     case 'read_markdown': {
       const input = args as ReadMarkdownInput;

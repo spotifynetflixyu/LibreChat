@@ -4,7 +4,7 @@ import type { ZodType } from 'zod';
 
 export type SteelProviderToolName = Extract<
   SteelToolName,
-  'search_customers' | 'search_price_candidates' | 'run_file_ocr' | 'read_markdown'
+  'search_customers' | 'search_price_candidates' | 'read_markdown'
 >;
 
 export interface SteelToolDefinition<Name extends SteelToolName = SteelProviderToolName> {
@@ -31,7 +31,6 @@ export const steelReadMarkdownUsagePolicy = {
 const providerToolNames = new Set<SteelProviderToolName>([
   'search_customers',
   'search_price_candidates',
-  'run_file_ocr',
   'read_markdown',
 ]);
 
@@ -47,12 +46,6 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
     description:
       'Search unified Steel price candidates with AI-derived query objects. Send only top-level queries. Each lookup query omits mode or uses mode=lookup, includes a visible category enum value, and may include material keyword enum value: 黑鐵, 白鐵, 錏, 鋁, or 鋅. It may also include thicknessMm string array, keyword text, and per-query limit defaulting to 30. If category is unclear, add a query with mode=category_discovery and keyword first instead of guessing.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
-  },
-  {
-    name: 'run_file_ocr',
-    description:
-      'Run PaddleOCR MCP on an uploaded image or whole PDF when the AI decides OCR is needed; PDFs are sent as one document, not page-by-page. Do not call this for user confirmations or corrections of prior OCR/table content unless the user explicitly requests rerun OCR or provides new/changed file evidence.',
-    argsSchema: steelToolArgsSchemas.run_file_ocr,
   },
   {
     name: 'read_markdown',
