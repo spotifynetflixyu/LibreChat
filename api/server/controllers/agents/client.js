@@ -90,6 +90,7 @@ const db = require('~/models');
 const loadAgent = (params) => loadAgentFn(params, { getAgent: db.getAgent, getMCPServerTools });
 
 const MEMORY_INPUT_CHARS_PER_TOKEN = 8;
+const steelOcrReviewPromptPattern = /OCR檔案內容.*核對/;
 
 function toSteelNativeFileReference(file, { conversationId, messageId } = {}) {
   const fileId = file?.file_id ?? file?.fileId ?? file?.id;
@@ -107,6 +108,44 @@ function toSteelNativeFileReference(file, { conversationId, messageId } = {}) {
     width: file.width,
     height: file.height,
   });
+}
+
+function getAttachmentFilename(file) {
+  const filename = file?.filename ?? file?.name ?? file?.originalname;
+  if (typeof filename !== 'string') {
+    return;
+  }
+  const trimmed = filename.trim();
+  return trimmed || undefined;
+}
+
+function appendTitleGuidance(titlePrompt, guidance) {
+  if (!guidance) {
+    return titlePrompt;
+  }
+  return [titlePrompt, guidance].filter(Boolean).join('\n\n');
+}
+
+async function createTitleContext({ attachments, text }) {
+  if (!steelOcrReviewPromptPattern.test(text)) {
+    return {};
+  }
+
+  const resolvedAttachments = await Promise.resolve(attachments).catch(() => undefined);
+  const filenames = Array.isArray(resolvedAttachments)
+    ? [...new Set(resolvedAttachments.map(getAttachmentFilename).filter(Boolean))]
+    : [];
+  if (filenames.length === 0) {
+    return {};
+  }
+
+  const filenameText = filenames.join('、');
+  return {
+    guidance: [
+      `File name(s): ${filenameText}`,
+      'Title rule: For OCR or file-content review conversations, include the file name in the title and describe the review intent. Example: "PL.pdf 內容核對".',
+    ].join('\n'),
+  };
 }
 
 function toSteelNativeMessage(message, conversationId) {
@@ -1777,12 +1816,16 @@ class AgentClient extends BaseClient {
 
     if (endpoint === EModelEndpoint.openAIOAuth) {
       try {
+        const titleContext = await createTitleContext({
+          attachments: this.options.attachments,
+          text,
+        });
         const titleResult = await generateOpenAIOAuthTitle({
           contentParts: immediate ? [] : this.contentParts,
           inputText: text,
           model: clientOptions.model,
           signal: abortController.signal,
-          titlePrompt: endpointConfig?.titlePrompt,
+          titlePrompt: appendTitleGuidance(endpointConfig?.titlePrompt, titleContext.guidance),
           titlePromptTemplate: endpointConfig?.titlePromptTemplate,
         });
         const balanceConfig = getBalanceConfig(appConfig);

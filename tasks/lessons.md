@@ -219,6 +219,26 @@
 - Portal-based Markdown table modals must explicitly sync the active root theme
   class and `data-theme`; do not assume a body-level portal inherits the chat
   message theme scope.
+- Markdown table modal cell colors need intentional review styling: use subtle
+  row/header/pinned-column color variables with light/dark variants instead of
+  plain inherited surface colors.
+- In Markdown table modals, selected sticky columns should not change cell
+  color; preserve row zebra color and use only a subtle divider/shadow for the
+  pinned state. Zebra row contrast should stay low.
+- Markdown table modal controls must reuse LibreChat's existing selector
+  components such as `ControlCombobox`; do not ship native `<select>` controls
+  that visually diverge from Agent Builder and prompt category selectors.
+- Markdown table modal column selector belongs on the left side of the toolbar;
+  keep copy/download/close actions grouped on the right.
+- Markdown table modals should widen columns with long body text, such as
+  `備註`, instead of forcing all columns into similar widths that make review
+  text wrap too aggressively.
+- Markdown table modals should support Escape to close, with the keydown
+  listener attached only while the modal is open and removed on close.
 - When compact workbook is the only supported Steel runtime mode, remove mode
   inputs and tool-registry branches instead of keeping no-op `contextMode`
   parameters that imply a hidden full-mode path.
+- For file-only Steel OCR title generation, pass the uploaded filename and a
+  simple title rule into the OpenAI OAuth title prompt. Do not add hard
+  `preferredTitle` override logic; let the AI generate the final title from the
+  filename and rule.

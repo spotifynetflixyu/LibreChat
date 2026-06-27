@@ -1,4 +1,5 @@
 import { act, render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import ControlCombobox from './ControlCombobox';
 
 type CapturedObserver = {
@@ -44,7 +45,13 @@ const items = [
   { label: 'Option B', value: 'b' },
 ];
 
-const renderCombobox = (initialButtonWidth: number, isCollapsed = false) => {
+type ControlComboboxProps = ComponentProps<typeof ControlCombobox>;
+
+const renderCombobox = (
+  initialButtonWidth: number,
+  isCollapsed = false,
+  props: Partial<ControlComboboxProps> = {},
+) => {
   const offsetWidthSpy = jest
     .spyOn(HTMLElement.prototype, 'offsetWidth', 'get')
     .mockReturnValue(initialButtonWidth);
@@ -58,6 +65,7 @@ const renderCombobox = (initialButtonWidth: number, isCollapsed = false) => {
       ariaLabel="Test combobox"
       isCollapsed={isCollapsed}
       showCarat
+      {...props}
     />,
   );
 
@@ -81,6 +89,13 @@ describe('ControlCombobox popover sizing', () => {
     renderCombobox(275);
     openPopover();
     expect(getPopoverWidth()).toBe('275px');
+  });
+
+  it('applies custom popover class names for portal stacking contexts', () => {
+    renderCombobox(275, false, { popoverClassName: 'modal-popover-z-index' });
+    openPopover();
+
+    expect(document.querySelector('.animate-popover')).toHaveClass('modal-popover-z-index');
   });
 
   it('updates the popover width when the trigger resizes after mount (regression: agent select dropdown rendering at narrow width)', () => {

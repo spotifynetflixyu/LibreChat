@@ -26,6 +26,7 @@ interface ControlComboboxProps {
   iconSide?: 'left' | 'right';
   selectId?: string;
   placement?: Ariakit.SelectStoreProps['placement'];
+  popoverClassName?: string;
 }
 
 const ROW_HEIGHT = 36;
@@ -48,6 +49,7 @@ function ControlCombobox({
   iconSide = 'left',
   selectId,
   placement,
+  popoverClassName,
 }: ControlComboboxProps): JSX.Element {
   const [searchValue, setSearchValue] = useState('');
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -160,6 +162,7 @@ function ControlCombobox({
         portal
         className={cn(
           'animate-popover z-40 overflow-hidden rounded-xl border border-border-light bg-surface-secondary shadow-lg',
+          popoverClassName,
         )}
         style={{ width: isCollapsed ? '300px' : (buttonWidth ?? '300px') }}
       >

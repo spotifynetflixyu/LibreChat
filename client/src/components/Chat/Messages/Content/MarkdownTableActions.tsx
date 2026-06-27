@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { ControlCombobox } from '@librechat/client';
 import { Check, Copy, Download, Maximize2, X } from 'lucide-react';
 import { useLocalize } from '~/hooks';
 
@@ -18,9 +19,12 @@ type TableToolbarProps = {
   tableRef: React.RefObject<HTMLTableElement>;
   copied: boolean;
   expanded: boolean;
+  headerOptions?: readonly TableHeaderOption[];
   onClose?: () => void;
   onCopied: () => void;
   onExpand?: () => void;
+  onStickyColumnChange?: (columnIndex: number | undefined) => void;
+  stickyColumnIndex?: number;
 };
 
 type ZipFile = {
@@ -34,7 +38,13 @@ type ZipEntry = ZipFile & {
   pathBytes: Uint8Array;
 };
 
+type TableHeaderOption = {
+  index: number;
+  label: string;
+};
+
 const xlsxMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const wideColumnTextThreshold = 36;
 
 function encodeText(value: string): Uint8Array {
   if (typeof TextEncoder !== 'undefined') {
@@ -116,14 +126,90 @@ function normalizeCellText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function getNormalizedCellText(cell: HTMLTableCellElement): string {
+  return normalizeCellText(cell.textContent ?? '');
+}
+
 function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
   if (!table) {
     return [];
   }
 
   return Array.from(table.rows).map((row) =>
-    Array.from(row.cells).map((cell) => normalizeCellText(cell.innerText || cell.textContent || '')),
+    Array.from(row.cells).map(getNormalizedCellText),
   );
+}
+
+function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOption[] {
+  const headerCells = table?.tHead?.rows[0]?.cells ?? table?.rows[0]?.cells;
+
+  if (!headerCells) {
+    return [];
+  }
+
+  return Array.from(headerCells).map((cell, index) => ({
+    index,
+    label: getNormalizedCellText(cell) || `Column ${index + 1}`,
+  }));
+}
+
+function areHeaderOptionsEqual(
+  previous: readonly TableHeaderOption[],
+  next: readonly TableHeaderOption[],
+): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((option, index) => {
+      const nextOption = next[index];
+      return nextOption?.index === option.index && nextOption.label === option.label;
+    })
+  );
+}
+
+function setStickyColumn(cell: HTMLTableCellElement, enabled: boolean): void {
+  cell.classList.toggle('markdown-table-sticky-column', enabled);
+  if (enabled) {
+    cell.setAttribute('data-sticky-column', 'true');
+    return;
+  }
+
+  cell.removeAttribute('data-sticky-column');
+}
+
+function getWideColumnIndexes(table: HTMLTableElement): Set<number> {
+  const wideColumnIndexes = new Set<number>();
+
+  Array.from(table.rows).forEach((row, rowIndex) => {
+    if (rowIndex === 0) {
+      return;
+    }
+
+    Array.from(row.cells).forEach((cell, cellIndex) => {
+      if (getNormalizedCellText(cell).length >= wideColumnTextThreshold) {
+        wideColumnIndexes.add(cellIndex);
+      }
+    });
+  });
+
+  return wideColumnIndexes;
+}
+
+function applyStaticModalTableClasses(table: HTMLTableElement): void {
+  const wideColumnIndexes = getWideColumnIndexes(table);
+
+  Array.from(table.rows).forEach((row) => {
+    Array.from(row.cells).forEach((cell, cellIndex) => {
+      cell.classList.toggle('markdown-table-wide-column', wideColumnIndexes.has(cellIndex));
+    });
+  });
+}
+
+function applyStickyColumnClasses(table: HTMLTableElement, stickyColumnIndex?: number): void {
+  Array.from(table.rows).forEach((row) => {
+    Array.from(row.cells).forEach((cell, cellIndex) => {
+      setStickyColumn(cell, stickyColumnIndex === cellIndex);
+    });
+  });
 }
 
 function escapeMarkdownCell(value: string): string {
@@ -423,24 +509,79 @@ function TableToolbar({
   tableRef,
   copied,
   expanded,
+  headerOptions = [],
   onClose,
   onCopied,
   onExpand,
+  onStickyColumnChange,
+  stickyColumnIndex,
 }: TableToolbarProps) {
   const localize = useLocalize();
   const copyLabel = localize('com_ui_copy_markdown_table');
   const downloadLabel = localize('com_ui_download_table_xlsx');
   const expandLabel = localize('com_ui_expand_table');
   const closeLabel = localize('com_ui_close_table');
+  const showStickyColumnSelector = expanded && headerOptions.length > 0;
+  const stickyColumnLabel = showStickyColumnSelector
+    ? localize('com_ui_sticky_table_column')
+    : '';
+  const noStickyColumnLabel = showStickyColumnSelector
+    ? localize('com_ui_no_sticky_table_column')
+    : '';
+  const stickyColumnSearchLabel = showStickyColumnSelector
+    ? localize('com_ui_search_table_columns')
+    : '';
+  const stickyColumnValue = stickyColumnIndex === undefined ? '' : String(stickyColumnIndex);
+  const stickyColumnItems = showStickyColumnSelector
+    ? [
+        { value: '', label: noStickyColumnLabel },
+        ...headerOptions.map((header) => ({
+          value: String(header.index),
+          label: header.label,
+        })),
+      ]
+    : [];
+  const stickyColumnDisplayValue = showStickyColumnSelector
+    ? (stickyColumnItems.find((item) => item.value === stickyColumnValue)?.label ??
+      noStickyColumnLabel)
+    : '';
   const handleCopy = useCallback(() => {
     void writeClipboardText(tableMatrixToMarkdown(getTableMatrix(tableRef.current))).then(onCopied);
   }, [onCopied, tableRef]);
   const handleDownload = useCallback(() => {
     downloadBlob(createXlsxBlob(getTableMatrix(tableRef.current)), 'markdown-table.xlsx');
   }, [tableRef]);
+  const handleStickyColumnChange = useCallback(
+    (value: string) => {
+      onStickyColumnChange?.(value === '' ? undefined : Number(value));
+    },
+    [onStickyColumnChange],
+  );
 
   return (
-    <div className="markdown-table-toolbar">
+    <div
+      className={
+        expanded ? 'markdown-table-toolbar markdown-table-toolbar-expanded' : 'markdown-table-toolbar'
+      }
+    >
+      {showStickyColumnSelector && (
+        <div className="markdown-table-selector">
+          <ControlCombobox
+            selectedValue={stickyColumnValue}
+            displayValue={stickyColumnDisplayValue}
+            searchPlaceholder={stickyColumnSearchLabel}
+            setValue={handleStickyColumnChange}
+            items={stickyColumnItems}
+            className="h-8 rounded-xl"
+            containerClassName="px-0"
+            ariaLabel={stickyColumnLabel}
+            isCollapsed={false}
+            showCarat={true}
+            placement="bottom-end"
+            popoverClassName="markdown-table-selector-popover"
+          />
+        </div>
+      )}
       <TableActionButton label={copyLabel} onClick={handleCopy}>
         {copied ? (
           <Check className="size-4" aria-hidden="true" />
@@ -472,6 +613,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const copiedResetTimerRef = useRef<number>();
   const modalCopiedResetTimerRef = useRef<number>();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [headerOptions, setHeaderOptions] = useState<TableHeaderOption[]>([]);
+  const [stickyColumnIndex, setStickyColumnIndex] = useState<number>();
   const [copied, setCopied] = useState(false);
   const [modalCopied, setModalCopied] = useState(false);
   const localize = useLocalize();
@@ -498,6 +641,58 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     }, 1200);
   }, []);
   const closeModal = useCallback(() => setIsExpanded(false), []);
+  const openModal = useCallback(() => {
+    setHeaderOptions(getTableHeaderOptions(tableRef.current));
+    setStickyColumnIndex(undefined);
+    setIsExpanded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isExpanded || !modalTableRef.current) {
+      return undefined;
+    }
+
+    const table = modalTableRef.current;
+    const nextHeaderOptions = getTableHeaderOptions(table);
+
+    applyStaticModalTableClasses(table);
+    setHeaderOptions((current) =>
+      areHeaderOptionsEqual(current, nextHeaderOptions) ? current : nextHeaderOptions,
+    );
+    setStickyColumnIndex((current) =>
+      current !== undefined && current >= nextHeaderOptions.length ? undefined : current,
+    );
+
+    return undefined;
+  }, [children, isExpanded]);
+
+  useEffect(() => {
+    if (!isExpanded || !modalTableRef.current) {
+      return undefined;
+    }
+
+    applyStickyColumnClasses(modalTableRef.current, stickyColumnIndex);
+
+    return undefined;
+  }, [children, isExpanded, stickyColumnIndex]);
+
+  useEffect(() => {
+    if (!isExpanded) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.stopPropagation();
+      setIsExpanded(false);
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isExpanded]);
 
   useEffect(
     () => () => {
@@ -518,7 +713,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         copied={copied}
         expanded={false}
         onCopied={handleCopied}
-        onExpand={() => setIsExpanded(true)}
+        onExpand={openModal}
       />
       <div className="markdown-table-wrapper w-full max-w-full">
         <table ref={tableRef}>{children}</table>
@@ -537,8 +732,11 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 tableRef={modalTableRef}
                 copied={modalCopied}
                 expanded={true}
+                headerOptions={headerOptions}
                 onClose={closeModal}
                 onCopied={handleModalCopied}
+                onStickyColumnChange={setStickyColumnIndex}
+                stickyColumnIndex={stickyColumnIndex}
               />
               <div className="markdown-table-modal-scroll">
                 <table ref={modalTableRef}>{children}</table>

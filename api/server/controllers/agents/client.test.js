@@ -552,6 +552,40 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it('passes the current OCR filename and title rule to OpenAI OAuth title generation', async () => {
+      mockAgent.endpoint = EModelEndpoint.openAIOAuth;
+      mockAgent.provider = EModelEndpoint.openAIOAuth;
+      client.options.attachments = [{ filename: 'PL.pdf' }];
+      require('@librechat/api').generateOpenAIOAuthTitle.mockResolvedValueOnce({
+        model: 'gpt-5.5',
+        title: 'PL.pdf 內容核對',
+        usage: {
+          input_tokens: 9,
+          output_tokens: 4,
+        },
+      });
+
+      const result = await client.titleConvo({
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        abortController: new AbortController(),
+        immediate: true,
+      });
+
+      expect(result).toBe('PL.pdf 內容核對');
+      expect(require('@librechat/api').generateOpenAIOAuthTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contentParts: [],
+          inputText: 'OCR檔案內容，逐一列表給我核對。',
+          titlePrompt: expect.stringContaining('File name(s): PL.pdf'),
+        }),
+      );
+      expect(require('@librechat/api').generateOpenAIOAuthTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          titlePrompt: expect.stringContaining('Example: "PL.pdf 內容核對"'),
+        }),
+      );
+    });
+
     it('should skip title generation for temporary chats', async () => {
       // Set isTemporary to true
       mockReq.body.isTemporary = true;

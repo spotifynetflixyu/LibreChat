@@ -22,6 +22,52 @@ jest.mock('~/Providers', () => ({
 }));
 jest.mock('~/data-provider');
 jest.mock('~/hooks');
+jest.mock('@librechat/client', () => {
+  const actual = jest.requireActual('@librechat/client');
+  const ReactActual = jest.requireActual('react');
+
+  return {
+    ...actual,
+    ControlCombobox: ({
+      ariaLabel,
+      displayValue,
+      items,
+      searchPlaceholder,
+      setValue,
+    }: {
+      ariaLabel: string;
+      displayValue: string;
+      items: { value: string; label: string }[];
+      searchPlaceholder: string;
+      setValue: (value: string) => void;
+    }) => {
+      const [isOpen, setIsOpen] = ReactActual.useState(false);
+
+      return ReactActual.createElement(
+        'div',
+        { className: 'mock-control-combobox' },
+        ReactActual.createElement(
+          'button',
+          { type: 'button', 'aria-label': ariaLabel, onClick: () => setIsOpen(true) },
+          displayValue,
+        ),
+        isOpen &&
+          ReactActual.createElement(
+            ReactActual.Fragment,
+            null,
+            ReactActual.createElement('input', { placeholder: searchPlaceholder, readOnly: true }),
+            items.map((item) =>
+              ReactActual.createElement(
+                'button',
+                { key: item.value, type: 'button', onClick: () => setValue(item.value) },
+                item.label,
+              ),
+            ),
+          ),
+      );
+    },
+  };
+});
 
 // Mock @mcp-ui/client to render identifiable elements for assertions
 jest.mock('@mcp-ui/client', () => ({
@@ -115,6 +161,7 @@ describe('Markdown table rendering', () => {
     '| Alpha | Bravo | Charlie | Delta | Echo | Foxtrot | Golf | Hotel |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
     '| one | two | three | four | five | six | seven | eight |',
+    '| nine | ten | eleven | twelve | thirteen | fourteen | fifteen | sixteen |',
   ].join('\n');
   let writeClipboardText: jest.Mock;
   let createObjectURL: jest.Mock;
@@ -196,6 +243,7 @@ describe('Markdown table rendering', () => {
         '| Alpha | Bravo | Charlie | Delta | Echo | Foxtrot | Golf | Hotel |',
         '| --- | --- | --- | --- | --- | --- | --- | --- |',
         '| one | two | three | four | five | six | seven | eight |',
+        '| nine | ten | eleven | twelve | thirteen | fourteen | fifteen | sixteen |',
       ].join('\n'),
     );
   });
@@ -243,5 +291,98 @@ describe('Markdown table rendering', () => {
     fireEvent.click(within(modal).getByLabelText('com_ui_close_table'));
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('closes the expanded table modal with Escape', () => {
+    render(
+      <RecoilRoot>
+        <Markdown content={tableMarkdown} isLatestMessage={false} />
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('renders expanded modal tables with sticky headers and alternating rows', () => {
+    render(
+      <RecoilRoot>
+        <Markdown content={tableMarkdown} isLatestMessage={false} />
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    const modal = screen.getByRole('dialog');
+    const scrollRegion = modal.querySelector('.markdown-table-modal-scroll');
+    const rows = within(modal).getAllByRole('row');
+
+    expect(scrollRegion).toHaveClass('markdown-table-modal-scroll');
+    expect(scrollRegion?.querySelector('thead th')).toHaveTextContent('Alpha');
+    expect(rows).toHaveLength(3);
+  });
+
+  it('widens modal columns with long cell content', () => {
+    const longCellMarkdown = [
+      '| 類別 | 交貨日期 | 備註 |',
+      '| --- | --- | --- |',
+      '| 鐵板/鋼板 |  | 來源 PL.pdf 第1頁；件號 D3；PL15*500；材料 A36；暫依 OT 黑鐵板雷射切割報價 |',
+      '| 孔 |  | D3 孔加工；10件 × 每件6孔 = 60孔；孔型 2-Ø30、4-Ø24 |',
+    ].join('\n');
+
+    render(
+      <RecoilRoot>
+        <Markdown content={longCellMarkdown} isLatestMessage={false} />
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    const rows = within(screen.getByRole('dialog')).getAllByRole('row');
+    const headerCells = within(rows[0]).getAllByRole('columnheader');
+    const dataCells = within(rows[1]).getAllByRole('cell');
+
+    expect(headerCells[2]).toHaveClass('markdown-table-wide-column');
+    expect(dataCells[2]).toHaveClass('markdown-table-wide-column');
+    expect(dataCells[0]).not.toHaveClass('markdown-table-wide-column');
+  });
+
+  it('pins a selected modal column to the left by header name', () => {
+    render(
+      <RecoilRoot>
+        <Markdown content={tableMarkdown} isLatestMessage={false} />
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    const modal = screen.getByRole('dialog');
+    const selector = within(modal).getByLabelText('com_ui_sticky_table_column');
+
+    expect(screen.queryByPlaceholderText('com_ui_search_table_columns')).not.toBeInTheDocument();
+
+    fireEvent.click(selector);
+
+    const searchInput = screen.getByPlaceholderText('com_ui_search_table_columns');
+    expect(searchInput).toBeInTheDocument();
+
+    const selectorWrapper = selector.closest('.mock-control-combobox');
+    expect(selectorWrapper).not.toBeNull();
+
+    fireEvent.click(within(selectorWrapper as HTMLElement).getByText('Bravo'));
+
+    const rows = within(modal).getAllByRole('row');
+    const headerCells = within(rows[0]).getAllByRole('columnheader');
+    const dataCells = within(rows[1]).getAllByRole('cell');
+
+    expect(headerCells[1]).toHaveClass('markdown-table-sticky-column');
+    expect(headerCells[1]).toHaveAttribute('data-sticky-column', 'true');
+    expect(dataCells[1]).toHaveClass('markdown-table-sticky-column');
+    expect(dataCells[0]).not.toHaveClass('markdown-table-sticky-column');
   });
 });

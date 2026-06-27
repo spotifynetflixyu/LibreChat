@@ -1,3 +1,70 @@
+# Active: Markdown Table Modal UX
+
+Goal: improve Markdown table review in the expanded modal by making large
+tables easier to scan without changing Markdown parsing, Steel storage, export
+payloads, or normal chat layout.
+
+Plan:
+
+- [x] Add focused frontend tests for zebra rows, sticky header cells, and the
+      selected sticky-left modal column.
+- [x] Read table headers from the rendered modal table and add a selector UI
+      that can pin one header column to the left.
+- [x] Style expanded Markdown tables with alternating row backgrounds, sticky
+      header row, and sticky selected column with readable overlap layering.
+- [x] Run targeted Jest tests, frontend typecheck, and `git diff --check`.
+- [x] Add review evidence here before wrap-up.
+
+Check-in - 2026-06-27:
+
+- Scope is limited to the existing Markdown table action/modal component and
+  stylesheet.
+- No backend, parser, export, database, or Steel business-rule contracts should
+  change.
+- Selector applies only in the expanded modal so normal chat table rendering
+  remains lightweight.
+
+Review - 2026-06-27:
+
+- Expanded Markdown table modals now render zebra data rows and apply sticky
+  header styling for the header row.
+- Modal cell colors now use a localized light/dark palette for odd/even rows,
+  header cells, and pinned columns so large tables scan more clearly.
+- Sticky selected columns no longer change cell color; the selected column now
+  keeps the row background and uses only a subtle divider/shadow. Zebra row
+  contrast was reduced.
+- Added a modal-only column selector populated from rendered table header text.
+  Selecting a header pins that column to the left; selecting the empty option
+  clears pinned-column state.
+- Replaced the modal selector's native `<select>` with LibreChat's shared
+  `ControlCombobox`, matching the Agent Builder category selector style and
+  keeping searchable column selection.
+- Fixed the selector popup not appearing inside the Markdown modal. Root cause:
+  `ControlCombobox` portals its popover to `body` with the default `z-40`, which
+  rendered behind the `z-index: 1000` modal. `ControlCombobox` now accepts a
+  scoped `popoverClassName`, and the Markdown modal selector uses
+  `markdown-table-selector-popover` at `z-index: 1001`.
+- Simplify pass:
+  - Reused one normalized cell-text helper for copy, selector headers, and wide
+    column detection.
+  - Removed duplicate JS row striping/header-sticky class ownership and left
+    those static table styles to CSS selectors.
+  - Split static modal table decoration from sticky-column updates so changing
+    the pinned column no longer recomputes long-column widths.
+  - Avoided building modal-only sticky selector labels/items in collapsed table
+    toolbars.
+  - Tightened the Markdown table combobox mock so selector options only appear
+    after the trigger is clicked.
+- Kept copy Markdown and XLSX download behavior on the rendered table matrix,
+  so export output remains unchanged.
+- Verification:
+  - `cd packages/client && rtk npx jest src/components/ControlCombobox.spec.tsx --runInBand --watch=false --coverage=false` passed: 1 suite, 8 tests.
+  - `cd client && rtk npx jest src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx --runInBand --watch=false --coverage=false` passed: 1 suite, 9 tests.
+  - `cd client && rtk npm run typecheck` passed.
+  - `rtk git diff --check` passed.
+
+Previous active work:
+
 # Active: Simplify Steel Native And OAuth Latest Changes
 
 Goal: review and simplify every module/file changed by
@@ -2615,3 +2682,24 @@ Completion review - 2026-06-26:
     `ReadWorkingOrderItemsInput`, `createWorkingOrderMemoryReader`, or
     `memoryReader:` matches.
   - `git diff --check` passed.
+
+## OpenAI OAuth File OCR Title Generation - 2026-06-27
+
+- [x] Reproduced the title-input issue at the backend title-generation seam:
+  file-only OCR turns submit the generic OCR review prompt, so immediate title
+  generation can lose the uploaded filename.
+- [x] Updated `AgentClient#titleConvo` OpenAI OAuth path to pass the current
+  OCR attachment filename plus a title-generation rule to the AI, without
+  changing the actual chat message text.
+- [x] Kept `generateOpenAIOAuthTitle` model-driven: it now returns the model
+  title directly and does not apply a `preferredTitle` override.
+- [x] Added regression tests for:
+  - passing `PL.pdf` and the file-review title rule into OpenAI OAuth title
+    generation;
+  - preserving model-driven title output while verifying the filename guidance
+    is present in the prompt.
+- Verification:
+  - `cd packages/api && rtk npx jest src/steel/native/title.spec.ts --runInBand --watch=false --coverage=false` passed with 2 tests.
+  - `cd api && rtk npx jest server/controllers/agents/client.test.js --runInBand --watch=false --coverage=false` passed with 88 tests.
+  - `cd packages/api && rtk npm run build` passed.
+  - `rtk git diff --check` passed.

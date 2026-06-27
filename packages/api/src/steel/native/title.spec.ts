@@ -80,4 +80,48 @@ describe('generateOpenAIOAuthTitle', () => {
       }),
     );
   });
+
+  it('adds file review guidance to the title prompt without overriding the model title', async () => {
+    const doGenerate = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'PL.pdf 內容核對' }],
+      finishReason: {
+        unified: 'stop',
+        raw: 'stop',
+      },
+      response: {
+        id: 'resp_title',
+        modelId: 'gpt-5.5',
+      },
+      usage: createUsage(),
+      warnings: [],
+    } satisfies LanguageModelV3GenerateResult);
+
+    const createOpenAIOAuth = createFakeOpenAIOAuth(doGenerate);
+
+    const result = await generateOpenAIOAuthTitle({
+      contentParts: [],
+      createOpenAIOAuth,
+      inputText: 'OCR檔案內容，逐一列表給我核對。',
+      model: 'gpt-5.5',
+      titlePrompt: [
+        'Only return a concise title.',
+        'File name(s): PL.pdf',
+        'Title rule: For OCR or file-content review conversations, include the file name.',
+      ].join('\n'),
+    });
+    const callOptions = doGenerate.mock.calls[0][0];
+    const promptText = JSON.stringify(callOptions.prompt);
+
+    expect(result).toEqual({
+      model: 'gpt-5.5',
+      title: 'PL.pdf 內容核對',
+      usage: {
+        input_tokens: 21,
+        output_tokens: 5,
+      },
+    });
+    expect(promptText).toContain('File name(s): PL.pdf');
+    expect(promptText).toContain('include the file name');
+    expect(promptText).toContain('OCR檔案內容，逐一列表給我核對。');
+  });
 });

@@ -1510,6 +1510,21 @@ button {
   margin-bottom: 0.35rem;
 }
 
+.markdown-table-toolbar-expanded {
+  justify-content: flex-end;
+}
+
+.markdown-table-selector {
+  margin-left: 0;
+  margin-right: 0.25rem;
+  margin-inline-end: auto;
+  width: min(13rem, 52vw);
+}
+
+.markdown-table-selector-popover {
+  z-index: 1001;
+}
+
 .markdown-table-action {
   align-items: center;
   border: 1px solid var(--border-light);
@@ -1569,6 +1584,9 @@ button {
 }
 
 .markdown-table-modal-surface {
+  --markdown-table-header-bg: color-mix(in srgb, var(--surface-primary) 84%, var(--border-medium));
+  --markdown-table-row-even-bg: color-mix(in srgb, var(--surface-primary) 96%, var(--border-medium));
+  --markdown-table-row-odd-bg: var(--surface-primary);
   background-color: var(--surface-primary);
   border: 1px solid var(--border-medium);
   border-radius: 0.5rem;
@@ -1580,6 +1598,12 @@ button {
   overflow: hidden;
   padding: 0.75rem;
   width: 100%;
+}
+
+.dark .markdown-table-modal-surface {
+  --markdown-table-header-bg: color-mix(in srgb, var(--surface-primary) 58%, var(--surface-hover));
+  --markdown-table-row-even-bg: color-mix(in srgb, var(--surface-primary) 90%, var(--surface-hover));
+  --markdown-table-row-odd-bg: var(--surface-primary);
 }
 
 .markdown-table-modal-scroll {
@@ -1608,6 +1632,41 @@ button {
 .markdown-table-modal-scroll th:first-child,
 .markdown-table-modal-scroll td:first-child {
   min-width: 6rem;
+}
+
+.markdown-table-modal-scroll .markdown-table-wide-column {
+  max-width: 44rem;
+  min-width: 22rem;
+}
+
+.markdown-table-modal-scroll tbody tr:nth-child(odd) {
+  background-color: var(--markdown-table-row-odd-bg);
+}
+
+.markdown-table-modal-scroll tbody tr:nth-child(even) {
+  background-color: var(--markdown-table-row-even-bg);
+}
+
+.markdown-table-modal-scroll thead th {
+  background-color: var(--markdown-table-header-bg);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.markdown-table-modal-scroll .markdown-table-sticky-column {
+  background-color: inherit;
+  box-shadow:
+    1px 0 0 var(--border-light),
+    10px 0 18px -18px rgba(0, 0, 0, 0.55);
+  left: 0;
+  position: sticky;
+  z-index: 2;
+}
+
+.markdown-table-modal-scroll thead th.markdown-table-sticky-column {
+  background-color: var(--markdown-table-header-bg);
+  z-index: 4;
 }
 
 .markdown-table-wrapper::-webkit-scrollbar {
