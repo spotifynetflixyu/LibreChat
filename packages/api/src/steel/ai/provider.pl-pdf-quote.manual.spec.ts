@@ -251,12 +251,12 @@ async function createRuntimeContext({
       listReviewedQuoteDefaults: async () => [],
       listReviewedQuoteRules: () => listReviewedSteelQuoteRules(pool),
       listOutputRules: () => listReviewedSteelOutputRules(pool),
-      listOtherGlobalRules: async ({ includeOcrRules }) => {
+      listOtherGlobalRules: async () => {
         const rules = await listReviewedSteelOtherRules(pool);
         const ocrRules = rules.filter(isOcrRule);
 
         return {
-          ocrRules: includeOcrRules ? ocrRules : undefined,
+          ocrRules,
           fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
           sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
           markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),

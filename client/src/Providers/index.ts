@@ -17,6 +17,7 @@ export * from './AnnouncerContext';
 export * from './AgentsMapContext';
 export * from './ArtifactContext';
 export * from './CodeBlockContext';
+export * from './MarkdownTableContext';
 export * from './ToolCallsMapContext';
 export * from './SetConvoContext';
 export * from './SearchContext';

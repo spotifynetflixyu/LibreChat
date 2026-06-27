@@ -129,17 +129,15 @@ function createRuntimeDependencies(): SteelRuntimeContextDependencies {
         ruleSections: ['workbook_output'],
       }),
     ]),
-    listOtherGlobalRules: jest.fn(async ({ includeOcrRules }: { includeOcrRules: boolean }) => ({
-      ocrRules: includeOcrRules
-        ? [
-            createAgentRule({
-              id: 6,
-              slug: 'steel-drawing-ocr-policy',
-              ruleType: 'other',
-              ruleSections: ['file_ocr', 'drawing_ocr'],
-            }),
-          ]
-        : undefined,
+    listOtherGlobalRules: jest.fn(async () => ({
+      ocrRules: [
+        createAgentRule({
+          id: 6,
+          slug: 'steel-drawing-ocr-policy',
+          ruleType: 'other',
+          ruleSections: ['file_ocr', 'drawing_ocr'],
+        }),
+      ],
       fileRules: [
         createAgentRule({
           id: 7,
@@ -356,8 +354,8 @@ describe('Steel native context adapter', () => {
     };
     const { context, dependencies } = await buildFixtureContext({ fileReference });
 
-    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith({ includeOcrRules: true });
-    expect(context.runtimeContext.attachments.includeOcrRules).toBe(true);
+    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
+    expect(context.runtimeContext.attachments).not.toHaveProperty('includeOcrRules');
     expect(context.runtimeContext.attachments.currentTurnFiles).toHaveLength(0);
     expect(context.attachmentReferences).toEqual([fileReference]);
     expect(Object.keys(context.attachmentReferences[0])).not.toContain('data');
@@ -396,7 +394,7 @@ describe('Steel native context adapter', () => {
         contextMode: 'compact_workbook',
       }),
     );
-    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith({ includeOcrRules: true });
+    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
   });
 
   it('fails open when the Steel rules database is unavailable during global context injection', async () => {

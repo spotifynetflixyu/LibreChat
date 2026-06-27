@@ -151,6 +151,8 @@ const MessageRender = memo(function MessageRender({
 
   const { hasParallelContent } = useContentMetadata(msg);
   const messageId = msg?.messageId ?? '';
+  const messageTimestamp = msg?.createdAt ?? msg?.clientTimestamp;
+  const isCreatedByUser = msg?.isCreatedByUser ?? false;
   const messageContextValue = useMemo(
     () => ({
       messageId,
@@ -158,8 +160,18 @@ const MessageRender = memo(function MessageRender({
       isExpanded: false as const,
       isSubmitting,
       conversationId: conversation?.conversationId,
+      messageTimestamp,
+      isCreatedByUser,
+      markdownTableBaseIndex: 0,
     }),
-    [messageId, conversation?.conversationId, isSubmitting, isLatestMessage],
+    [
+      messageId,
+      conversation?.conversationId,
+      isSubmitting,
+      isLatestMessage,
+      messageTimestamp,
+      isCreatedByUser,
+    ],
   );
 
   if (!msg) {

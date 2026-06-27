@@ -25,7 +25,8 @@ import type {
   EndpointSchemaKey,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
-import type { TAskFunction, ExtendedFile } from '~/common';
+import { appendMarkdownTableComments } from '~/common';
+import type { TAskFunction, ExtendedFile, MarkdownTableComment } from '~/common';
 import {
   logger,
   hasStreamStartFailed,
@@ -258,6 +259,25 @@ export default function useChatFunctions({
     [],
   );
 
+  /**
+   * Atomically read + reset pending markdown table cell comments for the next
+   * fresh user turn. Regenerate / continue / edit replay existing content, so
+   * they deliberately leave this compose-time queue untouched.
+   */
+  const drainPendingMarkdownTableComments = useRecoilCallback(
+    ({ snapshot, reset }) =>
+      (convoId: string): MarkdownTableComment[] => {
+        const loadable = snapshot.getLoadable(store.pendingMarkdownTableCommentsByConvoId(convoId));
+        const comments =
+          loadable.state === 'hasValue' ? (loadable.contents as MarkdownTableComment[]) : [];
+        if (comments.length > 0) {
+          reset(store.pendingMarkdownTableCommentsByConvoId(convoId));
+        }
+        return comments;
+      },
+    [],
+  );
+
   const ask: TAskFunction = (
     {
       text,
@@ -284,7 +304,7 @@ export default function useChatFunctions({
     setShowStopButton(false);
 
     text = text.trim();
-    if (!!isSubmitting || text === '') {
+    if (!!isSubmitting) {
       return;
     }
 
@@ -312,6 +332,17 @@ export default function useChatFunctions({
         '[useChatFunctions] Refusing to append to a preliminary assistant message',
         latestMessage,
       );
+      return false;
+    }
+
+    let markdownTableComments: MarkdownTableComment[] = [];
+    if (!isRegenerate && !isContinued && !isEdited) {
+      markdownTableComments = drainPendingMarkdownTableComments(
+        conversationId ?? Constants.NEW_CONVO,
+      );
+    }
+    text = appendMarkdownTableComments(text, markdownTableComments).trim();
+    if (text === '') {
       return false;
     }
 

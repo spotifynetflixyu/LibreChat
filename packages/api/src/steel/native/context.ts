@@ -20,7 +20,6 @@ import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
 import type { SteelOutputSheetMemoryReader } from '../memory/service';
 import type { SteelRepositoryClient } from '../repositories';
 import type {
-  ListSteelOtherGlobalRulesInput,
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
   SteelRuntimeContextDependencies,
@@ -262,14 +261,11 @@ function isOcrRule(rule: SteelAgentRule): boolean {
   return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
 }
 
-function filterOtherGlobalRules(
-  rules: readonly SteelAgentRule[],
-  { includeOcrRules }: ListSteelOtherGlobalRulesInput,
-) {
+function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
   const ocrRules = rules.filter(isOcrRule);
 
   return {
-    ocrRules: includeOcrRules ? ocrRules : undefined,
+    ocrRules,
     fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
     sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
     markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
@@ -336,11 +332,11 @@ export function createSteelContextDependencies({
       );
       return outputRulesPromise;
     },
-    async listOtherGlobalRules(input) {
+    async listOtherGlobalRules() {
       otherRulesPromise ??= resolveSteelNativeContextList(() =>
         listReviewedSteelOtherRules(getClient()),
       );
-      return filterOtherGlobalRules(await otherRulesPromise, input);
+      return filterOtherGlobalRules(await otherRulesPromise);
     },
     async readOutputSheetMemory() {
       if (!conversationId) {
@@ -461,25 +457,6 @@ function collectAttachmentReferences({
   return [...filesByKey.values()];
 }
 
-function createNativeRuntimeDependencies(
-  dependencies: SteelRuntimeContextDependencies,
-): SteelRuntimeContextDependencies {
-  return {
-    ...dependencies,
-    listOtherGlobalRules: () => dependencies.listOtherGlobalRules({ includeOcrRules: true }),
-  };
-}
-
-function markNativeGlobalAttachments(runtimeContext: SteelRuntimeContext): SteelRuntimeContext {
-  return {
-    ...runtimeContext,
-    attachments: {
-      ...runtimeContext.attachments,
-      includeOcrRules: true,
-    },
-  };
-}
-
 function toSerializableFileReference(file: SteelNativeFileReference): SteelRuntimeJsonObject {
   return {
     fileId: file.fileId,
@@ -534,9 +511,9 @@ export async function buildSteelGlobalAgentContext({
           ? [...attachments.priorActiveFileEvidence]
           : undefined,
     },
-    dependencies: createNativeRuntimeDependencies(dependencies),
+    dependencies,
   });
-  const runtimeContext = markNativeGlobalAttachments(preparedRuntimeContext);
+  const runtimeContext = preparedRuntimeContext;
   const metadata = createSteelNativeContextMetadata({
     contextMode: runtimeContext.outputSheets.contextMode,
     renderProfile,

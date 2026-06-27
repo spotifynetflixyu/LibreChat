@@ -13,6 +13,8 @@ export type MarkdownBlock = {
   codeBlockCount: number;
   /** Artifact containers within this block. */
   artifactCount: number;
+  /** GFM tables within this block, used for stable table/Markdown labels. */
+  tableCount: number;
 };
 
 type MdastNode = {
@@ -57,7 +59,10 @@ const containsDefinition = (node: MdastNode): boolean => {
 
 const ARTIFACT_DIRECTIVE_TYPES = new Set(['containerDirective', 'leafDirective']);
 
-const countWithin = (node: MdastNode, counts: { code: number; artifact: number }): void => {
+const countWithin = (
+  node: MdastNode,
+  counts: { code: number; artifact: number; table: number },
+): void => {
   if (ARTIFACT_DIRECTIVE_TYPES.has(node.type) && node.name === 'artifact') {
     // artifactPlugin renders container (`:::artifact:::`) and leaf
     // (`::artifact{}`) artifact directives as an Artifact, each consuming one
@@ -70,6 +75,9 @@ const countWithin = (node: MdastNode, counts: { code: number; artifact: number }
   }
   if (node.type === 'code' && isExecutableCode(node.lang ?? '')) {
     counts.code += 1;
+  }
+  if (node.type === 'table') {
+    counts.table += 1;
   }
   if (node.children) {
     for (const child of node.children) {
@@ -111,7 +119,7 @@ export function splitMarkdownIntoBlocks(content: string): MarkdownBlock[] {
   const children = tree.children ?? [];
 
   if (children.length === 0) {
-    return [{ raw: content, codeBlockCount: 0, artifactCount: 0 }];
+    return [{ raw: content, codeBlockCount: 0, artifactCount: 0, tableCount: 0 }];
   }
 
   // Per-block rendering loses document-global context, so render the whole
@@ -136,22 +144,25 @@ export function splitMarkdownIntoBlocks(content: string): MarkdownBlock[] {
     if (start == null || end == null) {
       return [{ raw: content, ...blockCounts(children) }];
     }
-    const counts = { code: 0, artifact: 0 };
+    const counts = { code: 0, artifact: 0, table: 0 };
     countWithin(node, counts);
     blocks.push({
       raw: content.slice(start, end),
       codeBlockCount: counts.code,
       artifactCount: counts.artifact,
+      tableCount: counts.table,
     });
   }
 
   return blocks;
 }
 
-const blockCounts = (children: MdastNode[]): { codeBlockCount: number; artifactCount: number } => {
-  const counts = { code: 0, artifact: 0 };
+const blockCounts = (
+  children: MdastNode[],
+): { codeBlockCount: number; artifactCount: number; tableCount: number } => {
+  const counts = { code: 0, artifact: 0, table: 0 };
   for (const node of children) {
     countWithin(node, counts);
   }
-  return { codeBlockCount: counts.code, artifactCount: counts.artifact };
+  return { codeBlockCount: counts.code, artifactCount: counts.artifact, tableCount: counts.table };
 };

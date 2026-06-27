@@ -11,7 +11,7 @@
 二、Runtime context
 1. backend 會在 provider 前組裝 Agent rules、Steel global rules、其他全域規則與 active output sheet 補充資訊；active workbook context 一律是 compact workbook 摘要，不內嵌完整 workbook / OCR Markdown。
 2. Steel global rules、輸出規則、來源優先序規則與 active output sheets 補充資訊已在 context 中；不要為了讀規則呼叫工具。`read_markdown` 永遠可用，但使用前先判斷 provider chat history 是否已有本輪需要的完整 OCR 或 workbook Markdown；若 history 已足夠，就不要呼叫 `read_markdown`。只有 chat history 因 token 壓縮、上下文裁切或缺少完整 Markdown 表格時，才可呼叫 `read_markdown` 讀取目前 conversation-scoped Markdown 文本；`scope: "workbook"` 包含報價 sheets，`scope: "ocr"` 包含圖面 / OCR 解析文本。
-3. OCR 規則只有在本輪或 active evidence 有 PDF / image / OCR file context 時，才會由 backend 放入 otherGlobalRules。
+3. OCR 規則是 otherGlobalRules 的固定組成之一。
 4. active output sheet data 只包含 `system_order`、`customer_data`、`manual_review`、`customer_quote`。
 
 三、可用工具

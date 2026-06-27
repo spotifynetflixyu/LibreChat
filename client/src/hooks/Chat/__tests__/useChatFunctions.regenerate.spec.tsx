@@ -11,6 +11,8 @@ const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockGetQueryData = jest.fn(() => ({}));
+const mockResetRecoil = jest.fn();
+let mockRecoilLoadables: Record<string, unknown[]> = {};
 
 jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
@@ -29,10 +31,13 @@ jest.mock('recoil', () => ({
   useRecoilCallback: (factory: any) =>
     factory({
       snapshot: {
-        getLoadable: () => ({ state: 'hasValue', contents: [] }),
+        getLoadable: (atom: unknown) => ({
+          state: 'hasValue',
+          contents: mockRecoilLoadables[String(atom)] ?? [],
+        }),
       },
       set: jest.fn(),
-      reset: jest.fn(),
+      reset: mockResetRecoil,
     }),
 }));
 
@@ -49,6 +54,8 @@ jest.mock('~/store', () => ({
     isSubmittingFamily: () => 'isSubmitting',
     showStopButtonByIndex: () => 'showStopButton',
     pendingManualSkillsByConvoId: () => 'pendingManualSkills',
+    pendingQuotesByConvoId: () => 'pendingQuotes',
+    pendingMarkdownTableCommentsByConvoId: () => 'pendingMarkdownTableComments',
     messagesSiblingIdxFamily: () => 'messagesSiblingIdx',
   },
   useGetEphemeralAgent: () => mockGetEphemeralAgent,
@@ -57,7 +64,9 @@ jest.mock('~/utils', () => ({
   logger: {
     log: jest.fn(),
     dir: jest.fn(),
+    warn: jest.fn(),
   },
+  hasStreamStartFailed: jest.fn(() => false),
   createDualMessageContent: jest.fn(() => []),
   getRouteChatProjectId: jest.fn(() => null),
 }));
@@ -85,6 +94,7 @@ const assistantMessage = (messageId: string, parentMessageId: string) =>
 describe('useChatFunctions regenerate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRecoilLoadables = {};
     mockGetQueryData.mockReturnValue({});
   });
 
@@ -141,5 +151,59 @@ describe('useChatFunctions regenerate', () => {
       setMessages.mock.calls.at(-1)?.[0].map((message: TMessage) => message.messageId),
     ).toEqual(['user-1', 'assistant-1_']);
     expect(messages.at(-1)?.messageId).toBe('assistant-1_');
+  });
+
+  it('appends and clears pending markdown table comments on a fresh submit', () => {
+    const messages = [userMessage('user-1'), assistantMessage('assistant-1', 'user-1')];
+    const setMessages = jest.fn((nextMessages: TMessage[]) => {
+      messages.splice(0, messages.length, ...nextMessages);
+    });
+    const setSubmission = jest.fn();
+    const conversation = {
+      conversationId: 'conversation-1',
+      endpoint: EModelEndpoint.agents,
+      model: 'gpt-4o',
+      agent_id: 'agent-1',
+    } as TConversation;
+    mockRecoilLoadables.pendingMarkdownTableComments = [
+      {
+        id: 'assistant-1:1:2:3',
+        conversationId: 'conversation-1',
+        messageId: 'assistant-1',
+        messageTimestampLabel: '2026-06-27 14:32',
+        markdownIndex: 1,
+        markdownLabel: '2026-06-27 14:32 / Markdown 1',
+        tableFingerprint: '| A | B |',
+        rowIndex: 2,
+        columnIndex: 3,
+        columnHeader: 'Qty',
+        oldValue: '10',
+        comment: '改成 12',
+      },
+    ];
+
+    const { result } = renderHook(() =>
+      useChatFunctions({
+        isSubmitting: false,
+        latestMessage: messages[1],
+        conversation,
+        getMessages: () => messages,
+        setMessages,
+        setSubmission,
+      }),
+    );
+
+    act(() => {
+      result.current.ask({ text: '請更新表格' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.text).toContain('請更新表格');
+    expect(submission.userMessage.text).toContain('### 2026-06-27 14:32 / Markdown 1');
+    expect(submission.userMessage.text).toContain('1. Cell: row 2, column "Qty"');
+    expect(submission.userMessage.text).toContain('Old value: 10');
+    expect(submission.userMessage.text).toContain('Comment: 改成 12');
+    expect(submission.userMessage.text).toContain('分別輸出每個 Markdown 的完整新表格');
+    expect(mockResetRecoil).toHaveBeenCalledWith('pendingMarkdownTableComments');
   });
 });

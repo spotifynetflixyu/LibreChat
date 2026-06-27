@@ -22,6 +22,7 @@ import {
   useAssistantsMapContext,
 } from '~/Providers';
 import PendingManualSkillsChips from './PendingManualSkillsChips';
+import PendingMarkdownTableComments from './PendingMarkdownTableComments';
 import { cn, getModelSpec, removeFocusRings } from '~/utils';
 import { useGetStartupConfig } from '~/data-provider';
 import { mainTextareaId, BadgeItem } from '~/common';
@@ -117,6 +118,10 @@ const ChatForm = memo(function ChatForm({
     () => conversation?.conversationId ?? Constants.NEW_CONVO,
     [conversation?.conversationId],
   );
+  const pendingMarkdownTableComments = useRecoilValue(
+    store.pendingMarkdownTableCommentsByConvoId(conversationId),
+  );
+  const hasPendingMarkdownTableComments = pendingMarkdownTableComments.length > 0;
   /**
    * The quote feature merges excerpts server-side in `BaseClient.sendMessage`,
    * which the Assistants endpoints bypass — so hide the UI there rather than
@@ -194,7 +199,8 @@ const ChatForm = memo(function ChatForm({
   useQueryParams({ textAreaRef });
 
   const { ref, ...registerProps } = methods.register('text', {
-    validate: (value) => value.trim().length > 0 || files.size > 0,
+    validate: (value) =>
+      value.trim().length > 0 || files.size > 0 || hasPendingMarkdownTableComments,
     onChange: useCallback(
       (e: React.ChangeEvent<HTMLTextAreaElement>) =>
         methods.setValue('text', e.target.value, { shouldValidate: true }),
@@ -297,6 +303,7 @@ const ChatForm = memo(function ChatForm({
             <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
             <PendingManualSkillsChips conversationId={conversationId} />
             {quotesEnabled && <PendingQuoteChips conversationId={conversationId} />}
+            <PendingMarkdownTableComments conversationId={conversationId} />
             {/* WIP */}
             <EditBadges
               isEditingChatBadges={isEditingBadges}
@@ -410,6 +417,7 @@ const ChatForm = memo(function ChatForm({
                       ref={submitButtonRef}
                       control={methods.control}
                       hasFiles={filesCount > 0}
+                      hasPendingMarkdownTableComments={hasPendingMarkdownTableComments}
                       disabled={filesLoading || isSubmitting || disableInputs || isNotAppendable}
                     />
                   )

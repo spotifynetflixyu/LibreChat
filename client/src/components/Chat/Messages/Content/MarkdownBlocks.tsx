@@ -2,7 +2,7 @@ import React, { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { PluggableList } from 'unified';
 import type { ElementType } from 'react';
-import { ArtifactProvider, CodeBlockProvider } from '~/Providers';
+import { ArtifactProvider, CodeBlockProvider, MarkdownTableProvider } from '~/Providers';
 import { splitMarkdownIntoBlocks } from './splitMarkdown';
 
 type SharedProps = {
@@ -15,6 +15,7 @@ type MarkdownBlockProps = SharedProps & {
   content: string;
   codeBaseIndex: number;
   artifactBaseIndex: number;
+  tableBaseIndex: number;
 };
 
 /**
@@ -29,35 +30,40 @@ const MarkdownBlock = memo(
     content,
     codeBaseIndex,
     artifactBaseIndex,
+    tableBaseIndex,
     remarkPlugins,
     rehypePlugins,
     components,
   }: MarkdownBlockProps) {
     return (
-      <ArtifactProvider baseIndex={artifactBaseIndex}>
-        <CodeBlockProvider baseIndex={codeBaseIndex}>
-          <ReactMarkdown
-            /** @ts-ignore */
-            remarkPlugins={remarkPlugins}
-            /** @ts-ignore */
-            rehypePlugins={rehypePlugins}
-            components={components}
-          >
-            {content}
-          </ReactMarkdown>
-        </CodeBlockProvider>
-      </ArtifactProvider>
+      <MarkdownTableProvider baseIndex={tableBaseIndex}>
+        <ArtifactProvider baseIndex={artifactBaseIndex}>
+          <CodeBlockProvider baseIndex={codeBaseIndex}>
+            <ReactMarkdown
+              /** @ts-ignore */
+              remarkPlugins={remarkPlugins}
+              /** @ts-ignore */
+              rehypePlugins={rehypePlugins}
+              components={components}
+            >
+              {content}
+            </ReactMarkdown>
+          </CodeBlockProvider>
+        </ArtifactProvider>
+      </MarkdownTableProvider>
     );
   },
   (prev, next) =>
     prev.content === next.content &&
     prev.codeBaseIndex === next.codeBaseIndex &&
-    prev.artifactBaseIndex === next.artifactBaseIndex,
+    prev.artifactBaseIndex === next.artifactBaseIndex &&
+    prev.tableBaseIndex === next.tableBaseIndex,
 );
 MarkdownBlock.displayName = 'MarkdownBlock';
 
 type MarkdownBlocksProps = SharedProps & {
   content: string;
+  tableBaseIndex?: number;
 };
 
 /**
@@ -69,6 +75,7 @@ type MarkdownBlocksProps = SharedProps & {
  */
 const MarkdownBlocks = memo(function MarkdownBlocks({
   content,
+  tableBaseIndex: initialTableBaseIndex = 0,
   remarkPlugins,
   rehypePlugins,
   components,
@@ -76,13 +83,15 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
   const blocks = useMemo(() => {
     let codeBaseIndex = 0;
     let artifactBaseIndex = 0;
+    let tableBaseIndex = initialTableBaseIndex;
     return splitMarkdownIntoBlocks(content).map((block) => {
-      const entry = { raw: block.raw, codeBaseIndex, artifactBaseIndex };
+      const entry = { raw: block.raw, codeBaseIndex, artifactBaseIndex, tableBaseIndex };
       codeBaseIndex += block.codeBlockCount;
       artifactBaseIndex += block.artifactCount;
+      tableBaseIndex += block.tableCount;
       return entry;
     });
-  }, [content]);
+  }, [content, initialTableBaseIndex]);
 
   return (
     <>
@@ -93,10 +102,11 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
         // ref. During append-only streaming these stay constant, so completed
         // blocks keep a stable key and are not remounted.
         <MarkdownBlock
-          key={`${index}-${block.codeBaseIndex}-${block.artifactBaseIndex}`}
+          key={`${index}-${block.codeBaseIndex}-${block.artifactBaseIndex}-${block.tableBaseIndex}`}
           content={block.raw}
           codeBaseIndex={block.codeBaseIndex}
           artifactBaseIndex={block.artifactBaseIndex}
+          tableBaseIndex={block.tableBaseIndex}
           remarkPlugins={remarkPlugins}
           rehypePlugins={rehypePlugins}
           components={components}

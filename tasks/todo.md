@@ -1,3 +1,242 @@
+# Active: Markdown Table Cell Comments
+
+Goal: add cell-level comments to expanded Markdown table modals so users can
+mark table corrections, keep those comments visible as pending composer
+context, and append the structured comments to the next chat turn without
+changing normal chat layout, Markdown parsing output, Steel storage, or export
+payloads.
+
+Independent implementation plan:
+`docs/plans/2026-06-27-markdown-table-cell-comments.md`.
+
+Planning status:
+
+- [x] Read project instructions, `CLAUDE.md`, RTK rule, current lessons, and
+      the existing Markdown table modal implementation.
+- [x] Locate the current table wrapper/modal surface:
+      `client/src/components/Chat/Messages/Content/MarkdownTableActions.tsx`
+      and `client/src/style.css`.
+- [x] Locate the composer submit path:
+      `client/src/components/Chat/Input/ChatForm.tsx`,
+      `client/src/components/Chat/Input/SendButton.tsx`,
+      `client/src/hooks/Messages/useSubmitMessage.ts`, and
+      `client/src/hooks/Chat/useChatFunctions.ts`.
+- [x] Confirm the open product questions below before implementation.
+- [x] Write focused tests for formatter grouping, cell comment input behavior,
+      inline comment display behavior, composer helper text, send-button
+      enablement, and submit payload formatting.
+- [x] Add the minimal shared pending-comment type/state.
+- [x] Add modal-only cell comment controls and input popover.
+- [x] Add composer helper text and make pending comments count as sendable
+      content.
+- [x] Drain pending comments on fresh submit and append them after typed chat
+      input text in stable Markdown format.
+- [x] Run targeted Jest tests, client typecheck, and `rtk git diff --check`.
+- [x] Add review evidence here before wrap-up.
+
+Proposed architecture:
+
+- Keep this as a client-side pending-submit feature, similar to
+  `pendingQuotesByConvoId` and `pendingManualSkillsByConvoId`.
+- Add a typed Recoil atom family such as `pendingMarkdownTableCommentsByConvoId`
+  keyed by conversation id. Each item should carry:
+  - markdown identity: conversation id, assistant message id, assistant message
+    timestamp label, content part index / markdown index within that message,
+    table source fingerprint, and a user-visible markdown label. A rendered
+    Markdown table is treated as one Markdown unit containing one table. The
+    role is always AI for this feature and should not be included in the label.
+  - cell identity: row index, column index, column header/field name, row label
+    when available, and old cell value.
+  - comment text: the user-entered correction or note.
+- Treat `(markdown identity, row index, column index)` as a
+  unique key. One cell can have only one pending comment; saving that cell again
+  updates/replaces the existing comment instead of appending a second entry.
+- Keep comment UI inside the expanded Markdown table modal only. Normal inline
+  chat tables keep existing copy/download/expand behavior unchanged.
+- Render a small top-right `MessageCircle` icon button inside each modal
+  cell. Empty cells show the button only on cell hover/focus. Commented cells
+  keep the button visible, show the comment text directly in the cell, and
+  fade the original cell value.
+- On click, open a compact text input/popover styled with existing LibreChat
+  surface, border, text, and focus classes. Saving blank text removes that
+  pending comment.
+- Add a composer helper row below the textarea area, showing grouped counts such
+  as `Markdown table comments: 2026-06-27 14:32 / Markdown 2: 2`.
+  The helper must be localized through `useLocalize()`.
+- Treat pending comments as submit content without mutating the visible textarea:
+  update form validation/send-button logic to consider `pendingComments.length`
+  so the user can send with no typed text.
+- On fresh submit only, drain pending comments atomically in `useChatFunctions`
+  or immediately before `ask()`, append formatted Markdown after the typed user
+  text, then clear the pending queue. The composer helper text/count under chat
+  input must disappear immediately after successful submit because the next turn
+  has zero pending comments. Regenerate/edit/continue should not drain unrelated
+  composer comments.
+
+Proposed submit format:
+
+```markdown
+<typed user message, if any>
+
+---
+
+Markdown table comments:
+
+### <message timestamp> / Markdown <m>
+
+1. Cell: row <n>, column "<header>"
+   Old value: <old cell value>
+   Comment: <comment text>
+
+2. Cell: row <n>, column "<header>"
+   Old value: <old cell value>
+   Comment: <comment text>
+
+### <message timestamp> / Markdown <m>
+
+1. Cell: row <n>, column "<header>"
+   Old value: <old cell value>
+   Comment: <comment text>
+
+請依照以上 comments，分別輸出每個 Markdown 的完整新表格；不要只輸出修改過的 cell 或 row。
+```
+
+This format keeps comments model-visible as normal user text, ordered after the
+typed message as requested, visible on the submitted user message, and avoids a
+backend schema change in the first slice. Comments from the same
+message/Markdown must be grouped under one heading before listing the cell-level
+comments. The final instruction tells the AI to output each affected Markdown as
+a separate complete updated table, not partial changed cells/rows.
+
+Verification plan:
+
+- Unit/UI tests in
+  `client/src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx`:
+  open modal, hover/focus a cell, add a comment, verify icon visibility and
+  inline comment display, edit the same cell and verify it replaces the old
+  comment rather than creating a duplicate, edit to blank, and verify removal.
+- Composer tests in `client/src/components/Chat/Input/__tests__/...`: pending
+  comments render helper text, enable send with empty textarea, and the helper
+  text/count clears to zero immediately after submit.
+- Submit-path tests in `client/src/hooks/Chat/__tests__/...` or
+  `client/src/hooks/Messages/__tests__/useSubmitMessage.spec.ts`: typed text
+  plus comments are appended in order; empty typed text still sends only the
+  comment block; the submitted user message shows the appended comment list;
+  comments from the same message/Markdown are grouped under one heading;
+  multiple Markdown tables in the same message can be distinguished by their
+  `Markdown <m>` labels; the final instruction asks for separate complete new
+  tables for each affected Markdown; regenerate/edit/continue do not drain
+  pending comments.
+- Localization check: add only English keys in
+  `client/src/locales/en/translation.json`.
+- Run:
+  - `cd client && rtk npx jest src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx --runInBand --watch=false --coverage=false`
+  - targeted composer/submit Jest tests added by the implementation
+  - `cd client && rtk npm run typecheck`
+  - `rtk git diff --check`
+
+Locked decisions:
+
+- User-visible labels use message timestamp plus Markdown index, e.g.
+  `2026-06-27 14:32 / Markdown 2`; internal state still carries message id,
+  part index or markdown index, and source fingerprint. The role is always AI
+  and is not shown.
+- The comment button appears only inside the expanded modal.
+- Comment input is single-line. Enter and blur save; Escape cancels.
+- Pending comments survive closing/reopening the modal and conversation
+  navigation during the same app session, but successful chat submit clears the
+  pending queue and the chat-input helper/count.
+- Scope is all rendered Markdown tables, not only Steel/OCR/workbook-looking
+  tables.
+- The stored old cell value is the value at the moment the comment is created.
+  If the AI replies with a complete updated Markdown table later, that reply is
+  treated as the latest table.
+- First version sends comments as appended normal user text, not separate
+  message metadata. Therefore the submitted user message should visibly include
+  the appended comments list.
+- Submitted comments list must group comments by message/Markdown. Multiple
+  comments from the same Markdown table appear under one
+  `<message timestamp> / Markdown <m>` heading instead of repeating the label
+  per cell.
+- The appended comments list must end with an explicit instruction asking the AI
+  to output complete updated tables separately for each affected Markdown.
+- A single cell can have only one comment. Editing a commented cell replaces
+  that cell's existing pending comment; clearing the input removes it.
+
+Check-in - 2026-06-27:
+
+- This is a planning-only pass. No implementation files were changed.
+- The simple/elegant path is to reuse the existing pending-submit pattern and
+  avoid backend schema work until there is a clear need to persist comment
+  metadata beyond the next send.
+- Implementation should stay additive to the current modal and composer paths,
+  preserving existing table copy/download/XLSX behavior and normal LibreChat
+  chat layout.
+- User decisions locked on 2026-06-27: modal-only comment button, single-line
+  Enter/blur-save input, Escape cancel, all Markdown tables in scope, old value
+  captured at comment creation, pending comments retained only until successful
+  submit, appended comments visible in the submitted user message, and comments
+  grouped by message timestamp/Markdown in the appended list. Same-cell comments
+  are one-to-one and use replace/remove semantics, not duplicate entries. The
+  appended list ends by asking the AI to output each affected Markdown as a
+  separate complete updated table. Role is not shown because comments only
+  target AI Markdown tables.
+
+Review - 2026-06-27:
+
+- Added client-only `MarkdownTableComment` formatting helpers and Recoil
+  pending state keyed by conversation.
+- Added a Markdown table index provider so multiple tables in the same AI
+  message label as separate `Markdown <n>` units while keeping the user-visible
+  label as message timestamp plus Markdown index.
+- Added modal-only cell comment controls inside expanded Markdown tables. The
+  `MessageCircle` button stays hidden until hover/focus for empty cells, stays
+  visible for commented cells, opens a single-line input, saves on Enter/blur,
+  cancels on Escape, replaces same-cell comments, and removes the comment when
+  saved blank.
+- The comment controls use LibreChat shared UI components: `Button` for the
+  icon action and `Input` for the compact single-line editor. Saved comments
+  are rendered directly in the cell, while the original cell value is faded.
+- Kept comment controls AI-only. User-authored Markdown tables can still use
+  normal table actions, but they do not render cell comment buttons.
+- Content-part messages now carry a Markdown table base index so multiple text
+  parts in the same AI message keep distinct `Markdown <n>` labels.
+- Added composer helper text grouped by message timestamp/Markdown label, and
+  made pending comments count as sendable content without mutating the visible
+  textarea.
+- Pending Markdown table comments now persist to `localStorage` by conversation
+  id, so refresh/back-forward mistakes do not drop the queue before submit.
+- Fresh submits now drain pending Markdown table comments, append the grouped
+  comments list after typed user text, and clear the helper/count plus
+  `localStorage` entry for the next turn. Regenerate/edit/continue leave
+  pending composer comments untouched.
+- LibreChat now mounts a router-level leave warning independent of pending
+  comments. Browser unload and route navigation warnings are always enabled
+  across the LibreChat route tree.
+- The submitted list ends with the locked instruction asking the AI to output
+  each affected Markdown as a separate complete updated table.
+- Verification:
+  - `cd client && rtk npx jest src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx src/components/Chat/Input/__tests__/SendButton.spec.tsx src/components/Chat/Messages/Content/table/comments.test.tsx src/common/markdown.test.ts src/hooks/Messages/__tests__/useSubmitMessage.spec.ts src/hooks/Chat/__tests__/useChatFunctions.regenerate.spec.tsx --runInBand --watch=false --coverage=false` passed: 7 suites, 36 tests.
+  - `cd client && rtk npm run typecheck` passed.
+  - `cd client && rtk npm run build:ci` passed, with existing Vite/PWA warnings
+    about direct eval in `vm-browserify`, large chunks, and missing icon globs.
+  - `rtk git diff --check -- <markdown-comment-related files>` passed.
+  - `git diff --no-index --check /dev/null <new markdown-comment files>` passed
+    for untracked/new files.
+  - Follow-up UI correction removed saved-comment hover popups in favor of inline
+    cell comment text with faded original values. `cd client && rtk npx jest
+    src/components/Chat/Messages/Content/table/comments.test.tsx
+    src/components/Chat/Messages/Content/__tests__/Markdown.mcpui.test.tsx
+    --runInBand --watch=false --coverage=false` passed: 2 suites, 19 tests.
+    `cd client && rtk npm run typecheck` passed.
+  - Follow-up data-loss protection added `localStorage` persistence for pending
+    comments and a global always-on LibreChat leave warning. `cd client && rtk
+    npx jest src/components/System/__tests__/LeaveSiteWarning.test.tsx
+    src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx
+    src/common/markdown.test.ts src/routes/__tests__/skillsRoutes.spec.tsx
+    --runInBand --watch=false --coverage=false` passed: 4 suites, 13 tests.
+    `cd client && rtk npm run typecheck` passed.
+
 # Active: Markdown Table Modal UX
 
 Goal: improve Markdown table review in the expanded modal by making large
@@ -749,9 +988,8 @@ Review - 2026-06-25:
     execution policy, and fixed prefix order.
 - Added `packages/api/src/steel/native/index.ts` and exported the native adapter
   through `packages/api/src/steel/index.ts` and `packages/api/src/index.ts`.
-- Native adapter wraps runtime context dependencies so other global rules are
-  loaded with `includeOcrRules: true`, matching the fixed global OCR/file rule
-  decision without adding a product disable/enable path.
+- Native adapter loads other global rules directly; OCR rules are a fixed
+  `otherGlobalRules` subset and do not use an `includeOcrRules` runtime gate.
 - Verification:
   - `cd packages/api && npx jest src/steel/native/context.spec.ts --coverage=false --runInBand`
     passed.
@@ -762,6 +1000,28 @@ Review - 2026-06-25:
     existing project errors in cache/openai endpoint/manual Steel specs/rules
     tooling, but the native context files are no longer in the TypeScript error
     list after fixing the readonly attachment evidence mismatch.
+
+Review - 2026-06-27 OCR rule loading correction:
+
+- Confirmed `steel-drawing-ocr-policy` is an active reviewed `other` rule in
+  `steel.rules`, with `file_ocr`, `drawing_ocr`, and `vision_evidence`
+  sections.
+- Removed the `includeOcrRules` runtime gate from Steel runtime context,
+  handlers, and native context injection. `listOtherGlobalRules()` is now a
+  no-argument dependency. OCR rules are not loaded through a separate path; they
+  are classified from the loaded `otherGlobalRules` rows into the fixed
+  `otherGlobalRules.ocrRules` subset.
+- Confirmed the existing OCR persistence path stores `run_file_ocr` output as
+  current conversation `ocr_extract` memory rows, replaces prior active OCR
+  extracts for the conversation, and reads them back through
+  `derivedIndex.ocrExtracts`.
+- Verification:
+  - `cd packages/api && rtk npx jest src/steel/runtime/context.spec.ts src/steel/native/context.spec.ts --coverage=false --runInBand`
+    passed.
+  - `cd packages/api && rtk npx jest src/steel/ai/provider.spec.ts src/steel/handlers.spec.ts src/steel/memory/service.spec.ts src/steel/tools/execute.spec.ts --coverage=false --runInBand`
+    passed.
+  - `rtk npm run build:api` passed.
+  - `git diff --check` passed.
 
 # Active: OpenAI OAuth API Native Chat Plan Documentation
 
@@ -1594,8 +1854,7 @@ Prior OCR evidence reuse addendum - 2026-06-25:
 - [x] Add a failing runtime context test proving active OCR extracts from Steel
       structured state are reused on follow-up turns.
 - [x] Update `prepareSteelRuntimeContext()` so it reads `Output Sheet Memory`
-      before deciding OCR rule inclusion, derives
-      `attachments.priorActiveFileEvidence` from active
+      before deriving `attachments.priorActiveFileEvidence` from active
       `derivedIndex.ocrExtracts`, and still keeps explicit prior evidence.
 - [x] Keep current-turn file bytes out of runtime context; this change only
       replays persisted structured OCR evidence.

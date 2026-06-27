@@ -135,7 +135,6 @@ export interface SteelRuntimeContext {
   attachments: {
     currentTurnFiles: SteelOAuthChatFile[];
     priorActiveFileEvidence: SteelRuntimeJsonObject[];
-    includeOcrRules: boolean;
   };
   toolPolicy: {
     aiVisibleTools: readonly SteelRuntimeAiVisibleToolName[];
@@ -161,19 +160,13 @@ export interface SteelRuntimeContextAttachmentsInput {
   priorActiveFileEvidence?: SteelRuntimeJsonObject[];
 }
 
-export interface ListSteelOtherGlobalRulesInput {
-  includeOcrRules: boolean;
-}
-
 export interface SteelRuntimeContextDependencies {
   listAgentRules(): Promise<SteelAgentRule[]>;
   listReviewedInstructionPackets(): Promise<SteelInstructionPacket[]>;
   listReviewedQuoteDefaults(): Promise<SteelQuoteDefault[]>;
   listReviewedQuoteRules(): Promise<SteelQuoteRule[]>;
   listOutputRules(): Promise<SteelAgentRule[]>;
-  listOtherGlobalRules(
-    input: ListSteelOtherGlobalRulesInput,
-  ): Promise<SteelRuntimeOtherGlobalRules>;
+  listOtherGlobalRules(): Promise<SteelRuntimeOtherGlobalRules>;
   readOutputSheetMemory(conversationId?: string): Promise<SteelOutputSheetMemorySnapshot>;
 }
 
@@ -203,35 +196,6 @@ interface SerializableSteelOAuthChatMessage {
 
 function uniqueStrings(values: readonly (string | undefined)[]): string[] {
   return [...new Set(values.filter((value): value is string => value !== undefined))];
-}
-
-function hasOcrRelevantMediaType(file: SteelOAuthChatFile): boolean {
-  const mediaType = file.mediaType.trim().toLowerCase();
-
-  return mediaType.startsWith('image/') || mediaType === 'application/pdf';
-}
-
-function hasOcrRelevantMessageFile(message: SteelOAuthChatMessage | undefined): boolean {
-  return message?.files?.some(hasOcrRelevantMediaType) ?? false;
-}
-
-function shouldIncludeOcrRules({
-  activeHistory,
-  currentTurnFiles,
-  currentUserTurn,
-  priorActiveFileEvidence,
-}: {
-  activeHistory: readonly SteelOAuthChatMessage[];
-  currentTurnFiles: readonly SteelOAuthChatFile[];
-  currentUserTurn?: SteelOAuthChatMessage;
-  priorActiveFileEvidence: readonly SteelRuntimeJsonObject[];
-}): boolean {
-  return (
-    currentTurnFiles.some(hasOcrRelevantMediaType) ||
-    activeHistory.some(hasOcrRelevantMessageFile) ||
-    hasOcrRelevantMessageFile(currentUserTurn) ||
-    priorActiveFileEvidence.length > 0
-  );
 }
 
 function collectPriorActiveFileEvidence({
@@ -497,12 +461,6 @@ export async function prepareSteelRuntimeContext({
     explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
     outputSheetMemory,
   });
-  const includeOcrRules = shouldIncludeOcrRules({
-    activeHistory: conversation.activeHistory,
-    currentTurnFiles,
-    currentUserTurn: conversation.currentUserTurn,
-    priorActiveFileEvidence,
-  });
   const [
     agentRules,
     instructionPackets,
@@ -516,7 +474,7 @@ export async function prepareSteelRuntimeContext({
     dependencies.listReviewedQuoteDefaults(),
     dependencies.listReviewedQuoteRules(),
     dependencies.listOutputRules(),
-    dependencies.listOtherGlobalRules({ includeOcrRules }),
+    dependencies.listOtherGlobalRules(),
   ]);
 
   return {
@@ -553,7 +511,6 @@ export async function prepareSteelRuntimeContext({
     attachments: {
       currentTurnFiles,
       priorActiveFileEvidence,
-      includeOcrRules,
     },
     toolPolicy: {
       aiVisibleTools: steelRuntimeAiVisibleTools,
@@ -582,12 +539,6 @@ export async function prepareLibreChatSteelRuntimeContext({
     explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
     outputSheetMemory,
   });
-  const includeOcrRules = shouldIncludeOcrRules({
-    activeHistory: runtimeConversation.activeHistory,
-    currentTurnFiles,
-    currentUserTurn: runtimeConversation.currentUserTurn,
-    priorActiveFileEvidence,
-  });
   const [
     agentRules,
     instructionPackets,
@@ -601,7 +552,7 @@ export async function prepareLibreChatSteelRuntimeContext({
     dependencies.listReviewedQuoteDefaults(),
     dependencies.listReviewedQuoteRules(),
     dependencies.listOutputRules(),
-    dependencies.listOtherGlobalRules({ includeOcrRules }),
+    dependencies.listOtherGlobalRules(),
   ]);
 
   return {
@@ -638,7 +589,6 @@ export async function prepareLibreChatSteelRuntimeContext({
     attachments: {
       currentTurnFiles,
       priorActiveFileEvidence,
-      includeOcrRules,
     },
     toolPolicy: {
       aiVisibleTools: steelRuntimeAiVisibleTools,

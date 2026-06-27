@@ -12,6 +12,7 @@ import { mapAttachments, groupSequentialToolCalls } from '~/utils';
 import { MessageContext, SearchContext } from '~/Providers';
 import PendingSkillCall from './Parts/PendingSkillCall';
 import { EditTextPart, EmptyText } from './Parts';
+import { splitMarkdownIntoBlocks } from './splitMarkdown';
 import MemoryArtifacts from './MemoryArtifacts';
 import ToolCallGroup from './ToolCallGroup';
 import SteelActivity from './SteelActivity';
@@ -20,6 +21,32 @@ import Part from './Part';
 
 const getToolCallId = (part: TMessageContentParts): string =>
   (part?.[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined)?.id ?? '';
+
+type TextPartLike = {
+  text?: string | { value?: string };
+};
+
+const getTextPartText = (part: TMessageContentParts): string => {
+  const text = (part as TextPartLike).text;
+  return typeof text === 'string' ? text : (text?.value ?? '');
+};
+
+const isTextContentPart = (part: TMessageContentParts): boolean => {
+  const text = (part as TextPartLike).text;
+  return (
+    part.type === ContentTypes.TEXT ||
+    typeof text === 'string' ||
+    typeof text?.value === 'string'
+  );
+};
+
+const countMarkdownTables = (text: string): number => {
+  try {
+    return splitMarkdownIntoBlocks(text).reduce((total, block) => total + block.tableCount, 0);
+  } catch {
+    return 0;
+  }
+};
 
 const getToolGroupId = (parts: PartWithIndex[], fallbackScope: number): string => {
   const firstPart = parts[0];
@@ -39,6 +66,8 @@ type PartWithContextProps = {
   isLastPart: boolean;
   messageId: string;
   conversationId?: string | null;
+  messageTimestamp?: string | null;
+  markdownTableBaseIndex: number;
   nextType?: string;
   isSubmitting: boolean;
   isLatestMessage?: boolean;
@@ -55,6 +84,8 @@ const PartWithContext = memo(function PartWithContext({
   isLastPart,
   messageId,
   conversationId,
+  messageTimestamp,
+  markdownTableBaseIndex,
   nextType,
   isSubmitting,
   isLatestMessage,
@@ -69,12 +100,25 @@ const PartWithContext = memo(function PartWithContext({
       messageId,
       isExpanded: true as const,
       conversationId,
+      messageTimestamp,
+      markdownTableBaseIndex,
       partIndex: idx,
       nextType,
       isSubmitting,
       isLatestMessage,
+      isCreatedByUser,
     }),
-    [messageId, conversationId, idx, nextType, isSubmitting, isLatestMessage],
+    [
+      messageId,
+      conversationId,
+      messageTimestamp,
+      markdownTableBaseIndex,
+      idx,
+      nextType,
+      isSubmitting,
+      isLatestMessage,
+      isCreatedByUser,
+    ],
   );
 
   return (
@@ -217,11 +261,25 @@ const ContentParts = memo(function ContentParts({
         if (part.type !== ContentTypes.TEXT) {
           return true;
         }
-        const text = typeof part.text === 'string' ? part.text : (part.text?.value ?? '');
-        return text.length > 0;
+        return getTextPartText(part).length > 0;
       }),
     [content],
   );
+  const markdownTableBaseIndexByPart = useMemo(() => {
+    const baseIndexByPart = new Map<number, number>();
+    let tableBaseIndex = 0;
+
+    (content ?? []).forEach((part, idx) => {
+      if (!part || !isTextContentPart(part)) {
+        return;
+      }
+
+      baseIndexByPart.set(idx, tableBaseIndex);
+      tableBaseIndex += countMarkdownTables(getTextPartText(part));
+    });
+
+    return baseIndexByPart;
+  }, [content]);
 
   const renderPendingSkills = () =>
     pendingSkills.map((name) => (
@@ -240,6 +298,8 @@ const ContentParts = memo(function ContentParts({
           part={part}
           isLast={isLast}
           messageId={messageId}
+          messageTimestamp={createdAt}
+          markdownTableBaseIndex={markdownTableBaseIndexByPart.get(idx) ?? 0}
           isLastPart={isLastPart}
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
@@ -258,7 +318,9 @@ const ContentParts = memo(function ContentParts({
       isCreatedByUser,
       isLast,
       isLatestMessage,
+      markdownTableBaseIndexByPart,
       messageId,
+      createdAt,
     ],
   );
 
@@ -271,6 +333,8 @@ const ContentParts = memo(function ContentParts({
           part={part}
           isLast={isLast}
           messageId={messageId}
+          messageTimestamp={createdAt}
+          markdownTableBaseIndex={markdownTableBaseIndexByPart.get(idx) ?? 0}
           isLastPart={isLastPart}
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
@@ -291,7 +355,9 @@ const ContentParts = memo(function ContentParts({
       isCreatedByUser,
       isLast,
       isLatestMessage,
+      markdownTableBaseIndexByPart,
       messageId,
+      createdAt,
     ],
   );
 

@@ -2,21 +2,22 @@ import React from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import Markdown from '../Markdown';
 import MarkdownLite from '../MarkdownLite';
-import { RecoilRoot } from 'recoil';
+import { RecoilRoot, useRecoilValue } from 'recoil';
+import type { MarkdownTableComment } from '~/common';
 import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
 import {
-  useMessageContext,
+  MessageContext,
   useOptionalMessagesConversation,
   useOptionalMessagesOperations,
 } from '~/Providers';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import store from '~/store';
 
 // Mocks for hooks used by MCPUIResource when rendered inside Markdown.
 // Keep Provider components intact while mocking only the hooks we use.
 jest.mock('~/Providers', () => ({
   ...jest.requireActual('~/Providers'),
-  useMessageContext: jest.fn(),
   useOptionalMessagesConversation: jest.fn(),
   useOptionalMessagesOperations: jest.fn(),
 }));
@@ -76,7 +77,6 @@ jest.mock('@mcp-ui/client', () => ({
   ),
 }));
 
-const mockUseMessageContext = useMessageContext as jest.MockedFunction<typeof useMessageContext>;
 const mockUseMessagesConversation = useOptionalMessagesConversation as jest.MockedFunction<
   typeof useOptionalMessagesConversation
 >;
@@ -88,6 +88,53 @@ const mockUseGetMessagesByConvoId = useGetMessagesByConvoId as jest.MockedFuncti
 >;
 const mockUseLocalize = useLocalize as jest.MockedFunction<typeof useLocalize>;
 
+function PendingCommentsProbe({
+  conversationId,
+  onChange,
+}: {
+  conversationId: string;
+  onChange: (comments: MarkdownTableComment[]) => void;
+}) {
+  const comments = useRecoilValue(store.pendingMarkdownTableCommentsByConvoId(conversationId));
+
+  React.useEffect(() => {
+    onChange(comments);
+  }, [comments, onChange]);
+
+  return null;
+}
+
+function renderMarkdownWithMessageContext({
+  children,
+  content,
+  messageContext,
+}: {
+  children?: React.ReactNode;
+  content: string;
+  messageContext?: Record<string, unknown>;
+}) {
+  return render(
+    <RecoilRoot>
+      <MessageContext.Provider
+        value={
+          {
+            messageId: 'msg-table',
+            isExpanded: true,
+            conversationId: 'conv1',
+            isCreatedByUser: false,
+            messageTimestamp: '2026-06-27T14:32:00.000Z',
+            markdownTableBaseIndex: 0,
+            ...messageContext,
+          } as any
+        }
+      >
+        <Markdown content={content} isLatestMessage={false} />
+      </MessageContext.Provider>
+      {children}
+    </RecoilRoot>,
+  );
+}
+
 describe('Markdown with MCP UI markers (resource IDs)', () => {
   let currentTestMessages: any[] = [];
 
@@ -95,7 +142,6 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
     jest.clearAllMocks();
     currentTestMessages = [];
 
-    mockUseMessageContext.mockReturnValue({ messageId: 'msg-weather' } as any);
     mockUseMessagesConversation.mockReturnValue({
       conversation: { conversationId: 'conv1' },
       conversationId: 'conv1',
@@ -143,11 +189,10 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       `Browse these weather cards for more details ${UI_RESOURCE_MARKER}{abc123} ${UI_RESOURCE_MARKER}{def456}`,
     ].join('\n');
 
-    render(
-      <RecoilRoot>
-        <Markdown content={content} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({
+      content,
+      messageContext: { messageId: 'msg-weather' },
+    });
 
     const renderers = screen.getAllByTestId('ui-resource-renderer');
     expect(renderers).toHaveLength(2);
@@ -192,11 +237,7 @@ describe('Markdown table rendering', () => {
   });
 
   it('wraps GFM tables in a horizontally scrollable container', () => {
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     expect(screen.getByRole('table').parentElement).toHaveClass(
       'markdown-table-wrapper',
@@ -206,7 +247,11 @@ describe('Markdown table rendering', () => {
   });
 
   it('wraps lightweight Markdown tables in a horizontally scrollable container', () => {
-    render(<MarkdownLite content={tableMarkdown} />);
+    render(
+      <RecoilRoot>
+        <MarkdownLite content={tableMarkdown} />
+      </RecoilRoot>,
+    );
 
     expect(screen.getByRole('table').parentElement).toHaveClass(
       'markdown-table-wrapper',
@@ -216,23 +261,24 @@ describe('Markdown table rendering', () => {
   });
 
   it('adds copy, download, and expand actions above Markdown tables', () => {
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     expect(screen.getByLabelText('com_ui_copy_markdown_table')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_download_table_xlsx')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_expand_table')).toBeInTheDocument();
   });
 
+  it('uses the message context table base index for Markdown table labels', () => {
+    const { container } = renderMarkdownWithMessageContext({
+      content: tableMarkdown,
+      messageContext: { markdownTableBaseIndex: 1 },
+    });
+
+    expect(container.querySelector('[data-markdown-index="2"]')).toBeInTheDocument();
+  });
+
   it('copies the rendered table as Markdown text', async () => {
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table'));
@@ -251,11 +297,7 @@ describe('Markdown table rendering', () => {
   it('downloads the rendered table as an XLSX blob', () => {
     const clickAnchor = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation();
 
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     fireEvent.click(screen.getByLabelText('com_ui_download_table_xlsx'));
 
@@ -273,11 +315,7 @@ describe('Markdown table rendering', () => {
     document.documentElement.classList.add('dark');
     document.documentElement.setAttribute('data-theme', 'dark');
 
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
 
@@ -293,12 +331,116 @@ describe('Markdown table rendering', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('closes the expanded table modal with Escape', () => {
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
+  it('does not show cell comment buttons for user-authored Markdown tables', () => {
+    renderMarkdownWithMessageContext({
+      content: tableMarkdown,
+      messageContext: { isCreatedByUser: true, messageId: 'user-table' },
+    });
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    expect(
+      within(screen.getByRole('dialog')).queryByLabelText('com_ui_markdown_table_cell_comment'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('adds, persists, replaces, and removes pending modal cell comments', () => {
+    const commentLabel = 'com_ui_markdown_table_cell_comment';
+    const observedComments: MarkdownTableComment[][] = [];
+
+    renderMarkdownWithMessageContext({
+      content: tableMarkdown,
+      children: (
+        <PendingCommentsProbe
+          conversationId="conv1"
+          onChange={(comments) => observedComments.push(comments)}
+        />
+      ),
+    });
+
+    expect(screen.queryByLabelText(commentLabel)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    let modal = screen.getByRole('dialog');
+    let firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
+    expect(firstCommentButton).not.toHaveClass('markdown-table-cell-comment-button-active');
+
+    fireEvent.click(firstCommentButton);
+    fireEvent.change(within(modal).getByRole('textbox', { name: commentLabel }), {
+      target: { value: '改成 12' },
+    });
+    fireEvent.keyDown(within(modal).getByRole('textbox', { name: commentLabel }), {
+      key: 'Enter',
+    });
+
+    firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
+    expect(firstCommentButton).toHaveClass('markdown-table-cell-comment-button-active');
+    expect(firstCommentButton).not.toHaveAttribute('title');
+    expect(within(modal).getByText('改成 12')).toHaveClass(
+      'markdown-table-comment-cell-comment-text',
     );
+
+    let latestComments = observedComments.at(-1) ?? [];
+    expect(latestComments).toHaveLength(1);
+    expect(latestComments[0]).toMatchObject({
+      conversationId: 'conv1',
+      messageId: 'msg-table',
+      markdownIndex: 1,
+      markdownLabel: expect.stringContaining('Markdown 1'),
+      rowIndex: 1,
+      columnIndex: 0,
+      columnHeader: 'Alpha',
+      oldValue: 'one',
+      comment: '改成 12',
+    });
+    expect(latestComments[0].tableFingerprint).toContain('| Alpha | Bravo |');
+
+    fireEvent.click(within(modal).getByLabelText('com_ui_close_table'));
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+
+    modal = screen.getByRole('dialog');
+    firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
+    expect(firstCommentButton).toHaveClass('markdown-table-cell-comment-button-active');
+
+    fireEvent.click(firstCommentButton);
+    fireEvent.change(within(modal).getByRole('textbox', { name: commentLabel }), {
+      target: { value: '改成 13' },
+    });
+    fireEvent.keyDown(within(modal).getByRole('textbox', { name: commentLabel }), {
+      key: 'Enter',
+    });
+
+    latestComments = observedComments.at(-1) ?? [];
+    expect(latestComments).toHaveLength(1);
+    expect(latestComments[0].comment).toBe('改成 13');
+    expect(latestComments[0].oldValue).toBe('one');
+    expect(within(modal).queryByText('改成 12')).toBeNull();
+    expect(within(modal).getByText('改成 13')).toHaveClass(
+      'markdown-table-comment-cell-comment-text',
+    );
+    expect(within(modal).getAllByLabelText(commentLabel)[0]).toHaveClass(
+      'markdown-table-cell-comment-button-active',
+    );
+
+    fireEvent.click(within(modal).getAllByLabelText(commentLabel)[0]);
+    fireEvent.change(within(modal).getByRole('textbox', { name: commentLabel }), {
+      target: { value: '   ' },
+    });
+    fireEvent.keyDown(within(modal).getByRole('textbox', { name: commentLabel }), {
+      key: 'Enter',
+    });
+
+    latestComments = observedComments.at(-1) ?? [];
+    expect(latestComments).toHaveLength(0);
+    expect(within(modal).queryByText('改成 13')).toBeNull();
+    firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
+    expect(firstCommentButton).not.toHaveClass('markdown-table-cell-comment-button-active');
+    expect(firstCommentButton).not.toHaveAttribute('title');
+  });
+
+  it('closes the expanded table modal with Escape', () => {
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
 
@@ -310,11 +452,7 @@ describe('Markdown table rendering', () => {
   });
 
   it('renders expanded modal tables with sticky headers and alternating rows', () => {
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
 
@@ -335,11 +473,7 @@ describe('Markdown table rendering', () => {
       '| 孔 |  | D3 孔加工；10件 × 每件6孔 = 60孔；孔型 2-Ø30、4-Ø24 |',
     ].join('\n');
 
-    render(
-      <RecoilRoot>
-        <Markdown content={longCellMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: longCellMarkdown });
 
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
 
@@ -353,11 +487,7 @@ describe('Markdown table rendering', () => {
   });
 
   it('pins a selected modal column to the left by header name', () => {
-    render(
-      <RecoilRoot>
-        <Markdown content={tableMarkdown} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
 

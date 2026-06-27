@@ -56,7 +56,6 @@ import { getOpenAIOAuthUsageRemaining } from './native/usage';
 
 import type { Request, Response } from 'express';
 import type {
-  ListSteelOtherGlobalRulesInput,
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
   SteelRuntimeContextDependencies,
@@ -288,14 +287,11 @@ function isOcrRule(rule: SteelAgentRule): boolean {
   return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
 }
 
-function filterOtherGlobalRules(
-  rules: readonly SteelAgentRule[],
-  { includeOcrRules }: ListSteelOtherGlobalRulesInput,
-) {
+function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
   const ocrRules = rules.filter(isOcrRule);
 
   return {
-    ocrRules: includeOcrRules ? ocrRules : undefined,
+    ocrRules,
     fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
     sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
     markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
@@ -338,8 +334,8 @@ function createRuntimeContextDependencies({
     listReviewedQuoteDefaults: async () => [],
     listReviewedQuoteRules: () => listReviewedSteelQuoteRules(getClient()),
     listOutputRules: listOutputRuleRows,
-    async listOtherGlobalRules(input) {
-      return filterOtherGlobalRules(await listOtherRuleRows(), input);
+    async listOtherGlobalRules() {
+      return filterOtherGlobalRules(await listOtherRuleRows());
     },
     async readOutputSheetMemory() {
       if (!conversationId) {

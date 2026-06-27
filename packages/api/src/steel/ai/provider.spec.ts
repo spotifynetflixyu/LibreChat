@@ -221,11 +221,9 @@ const steelBusinessToolNames = [
 
 function createProviderRuntimeContext({
   agentPrompt = defaultAgentRulePrompt,
-  includeOcrRules = false,
   workbookPrompt,
 }: {
   agentPrompt?: string;
-  includeOcrRules?: boolean;
   workbookPrompt?: string;
 } = {}): SteelRuntimeContext {
   const compactWorkbook = {
@@ -304,28 +302,26 @@ function createProviderRuntimeContext({
         },
       ]
     : [];
-  const ocrRules = includeOcrRules
-    ? [
-        {
-          id: 3,
-          slug: 'steel-drawing-ocr-policy',
-          version: 1,
-          ruleType: 'inference_order_rule',
-          title: 'Steel OCR policy',
-          locale: 'zh-TW',
-          ruleSections: ['file_ocr'],
-          selectors: { sourceKinds: ['image', 'pdf'] },
-          prompt: 'OCR_RULE_SENTINEL',
-          toolPolicy: {},
-          outputPolicy: null,
-          priority: 30,
-          confidence: 'high',
-          active: true,
-          reviewState: 'reviewed' as const,
-          sourceRefs: [],
-        },
-      ]
-    : undefined;
+  const ocrRules = [
+    {
+      id: 3,
+      slug: 'steel-drawing-ocr-policy',
+      version: 1,
+      ruleType: 'inference_order_rule',
+      title: 'Steel OCR policy',
+      locale: 'zh-TW',
+      ruleSections: ['file_ocr'],
+      selectors: { sourceKinds: ['image', 'pdf'] },
+      prompt: 'OCR_RULE_SENTINEL',
+      toolPolicy: {},
+      outputPolicy: null,
+      priority: 30,
+      confidence: 'high',
+      active: true,
+      reviewState: 'reviewed' as const,
+      sourceRefs: [],
+    },
+  ];
 
   return {
     conversation: {
@@ -456,7 +452,6 @@ function createProviderRuntimeContext({
     attachments: {
       currentTurnFiles: [],
       priorActiveFileEvidence: [],
-      includeOcrRules: includeOcrRules,
     },
     toolPolicy: {
       aiVisibleTools: [
@@ -999,7 +994,7 @@ describe('OpenAI OAuth provider adapter', () => {
     expect(systemPrompt.content).toContain('DB_WORKBOOK_RULE_SENTINEL');
     expect(systemPrompt.content).toContain('Output Sheet Memory');
     expect(systemPrompt.content).toContain('CCG075');
-    expect(systemPrompt.content).not.toContain('OCR_RULE_SENTINEL');
+    expect(systemPrompt.content).toContain('OCR_RULE_SENTINEL');
     expect(systemPrompt.content).not.toContain('VISION_RULE_SENTINEL');
   });
 

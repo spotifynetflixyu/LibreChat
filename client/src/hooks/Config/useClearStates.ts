@@ -33,8 +33,9 @@ export default function useClearStates() {
           reset(store.showSkillsPopoverFamily(key));
           reset(store.pendingManualSkillsByConvoId(key.toString()));
           reset(store.pendingQuotesByConvoId(key.toString()));
+          reset(store.pendingMarkdownTableCommentsByConvoId(key.toString()));
           /**
-           * Pending skill/quote queues are keyed by the conversation id the
+           * Pending composer queues are keyed by the conversation id the
            * composer wrote under, not this UI index — also clear by the resolved
            * id so queued-but-unsent selections don't linger in Recoil.
            */
@@ -43,6 +44,7 @@ export default function useClearStates() {
           if (convoId != null) {
             reset(store.pendingManualSkillsByConvoId(convoId));
             reset(store.pendingQuotesByConvoId(convoId));
+            reset(store.pendingMarkdownTableCommentsByConvoId(convoId));
           }
           reset(store.activePromptByIndex(key));
           reset(store.globalAudioURLFamily(key));

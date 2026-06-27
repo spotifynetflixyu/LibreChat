@@ -8,6 +8,7 @@ import { cn } from '~/utils';
 type SendButtonProps = {
   disabled: boolean;
   hasFiles?: boolean;
+  hasPendingMarkdownTableComments?: boolean;
   control: Control<{ text: string }>;
 };
 
@@ -43,7 +44,15 @@ const SendButton = React.memo(
   forwardRef((props: SendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
     const data = useWatch({ control: props.control });
     const content = data?.text?.trim();
-    return <SubmitButton ref={ref} disabled={props.disabled || (!content && !props.hasFiles)} />;
+    return (
+      <SubmitButton
+        ref={ref}
+        disabled={
+          props.disabled ||
+          (!content && !props.hasFiles && !props.hasPendingMarkdownTableComments)
+        }
+      />
+    );
   }),
 );
 

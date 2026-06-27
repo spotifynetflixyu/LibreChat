@@ -1,13 +1,22 @@
-import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ControlCombobox } from '@librechat/client';
 import { Check, Copy, Download, Maximize2, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { useRecoilState } from 'recoil';
+import { buildMarkdownTableCommentId } from '~/common';
+import type { MarkdownTableComment } from '~/common';
+import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
+import { getMessageTimestamp } from '~/utils';
+import store from '~/store';
+import CommentableTableCell, { getReactNodeText } from './table/comments';
 
 type TableMatrix = string[][];
 
 type MarkdownTableActionsProps = {
   children: React.ReactNode;
+  markdownIndex: number;
 };
 
 type ThemeAttributes = {
@@ -41,6 +50,32 @@ type ZipEntry = ZipFile & {
 type TableHeaderOption = {
   index: number;
   label: string;
+};
+
+type TableSectionProps = React.HTMLAttributes<HTMLTableSectionElement> & {
+  children?: React.ReactNode;
+};
+
+type TableRowProps = React.HTMLAttributes<HTMLTableRowElement> & {
+  children?: React.ReactNode;
+};
+
+type TableCellProps = React.TdHTMLAttributes<HTMLTableCellElement> & {
+  children?: React.ReactNode;
+};
+
+type CommentableTableChildrenInput = {
+  children: React.ReactNode;
+  columnHeaders: readonly TableHeaderOption[];
+  commentsByCell: ReadonlyMap<string, MarkdownTableComment>;
+  commentLabel: string;
+  onCommit: (input: {
+    columnHeader: string;
+    columnIndex: number;
+    comment: string;
+    oldValue: string;
+    rowIndex: number;
+  }) => void;
 };
 
 const xlsxMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -130,6 +165,10 @@ function getNormalizedCellText(cell: HTMLTableCellElement): string {
   return normalizeCellText(cell.textContent ?? '');
 }
 
+function getCellCommentKey(rowIndex: number, columnIndex: number): string {
+  return `${rowIndex}:${columnIndex}`;
+}
+
 function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
   if (!table) {
     return [];
@@ -151,6 +190,93 @@ function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOptio
     index,
     label: getNormalizedCellText(cell) || `Column ${index + 1}`,
   }));
+}
+
+function getColumnHeader(
+  columnHeaders: readonly TableHeaderOption[],
+  columnIndex: number,
+): string {
+  return (
+    columnHeaders.find((header) => header.index === columnIndex)?.label ||
+    `Column ${columnIndex + 1}`
+  );
+}
+
+function getElementTagName(element: React.ReactElement): string | undefined {
+  if (typeof element.type === 'string') {
+    return element.type.toLowerCase();
+  }
+
+  const node = (element.props as { node?: { tagName?: string } }).node;
+  return node?.tagName?.toLowerCase();
+}
+
+function renderCommentableTableChildren({
+  children,
+  columnHeaders,
+  commentsByCell,
+  commentLabel,
+  onCommit,
+}: CommentableTableChildrenInput): React.ReactNode {
+  let dataRowIndex = 0;
+
+  const renderNode = (node: React.ReactNode, inTableBody: boolean): React.ReactNode => {
+    if (!React.isValidElement<TableSectionProps | TableRowProps | TableCellProps>(node)) {
+      return node;
+    }
+
+    const tagName = getElementTagName(node);
+    const isTableBody = tagName === 'tbody';
+
+    if (inTableBody && tagName === 'tr') {
+      dataRowIndex += 1;
+      const rowIndex = dataRowIndex;
+      const cells = React.Children.map(node.props.children, (cell, columnIndex) => {
+        if (!React.isValidElement<TableCellProps>(cell) || getElementTagName(cell) !== 'td') {
+          return cell;
+        }
+
+        const { children: cellChildren, ...cellProps } = cell.props;
+        const oldValue = normalizeCellText(getReactNodeText(cellChildren));
+        const columnHeader = getColumnHeader(columnHeaders, columnIndex);
+        const key = getCellCommentKey(rowIndex, columnIndex);
+
+        return (
+          <CommentableTableCell
+            key={`commentable-${rowIndex}-${columnIndex}`}
+            cellProps={cellProps}
+            columnHeader={columnHeader}
+            columnIndex={columnIndex}
+            comment={commentsByCell.get(key)}
+            commentLabel={commentLabel}
+            oldValue={oldValue}
+            rowIndex={rowIndex}
+            onCommit={(comment) =>
+              onCommit({
+                columnHeader,
+                columnIndex,
+                comment,
+                oldValue,
+                rowIndex,
+              })
+            }
+          >
+            {cellChildren}
+          </CommentableTableCell>
+        );
+      });
+
+      return React.cloneElement(node, node.props, cells);
+    }
+
+    const nextChildren = React.Children.map(node.props.children, (child) =>
+      renderNode(child, inTableBody || isTableBody),
+    );
+
+    return React.cloneElement(node, node.props, nextChildren);
+  };
+
+  return React.Children.map(children, (child) => renderNode(child, false));
 }
 
 function areHeaderOptionsEqual(
@@ -607,6 +733,7 @@ function TableToolbar({
 
 const MarkdownTableActions = memo(function MarkdownTableActions({
   children,
+  markdownIndex,
 }: MarkdownTableActionsProps) {
   const tableRef = useRef<HTMLTableElement>(null);
   const modalTableRef = useRef<HTMLTableElement>(null);
@@ -618,8 +745,112 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const [copied, setCopied] = useState(false);
   const [modalCopied, setModalCopied] = useState(false);
   const localize = useLocalize();
+  const { i18n } = useTranslation();
+  const { conversationId, isCreatedByUser, messageId, messageTimestamp } =
+    useMessageContext() ?? {};
+  const commentConversationId = conversationId ?? '';
+  const [pendingComments, setPendingComments] = useRecoilState(
+    store.pendingMarkdownTableCommentsByConvoId(commentConversationId),
+  );
   const themeAttributes = useThemeAttributes(isExpanded);
   const modalClassName = ['markdown-table-modal', themeAttributes.className].filter(Boolean).join(' ');
+  const commentLabel = localize('com_ui_markdown_table_cell_comment');
+  const messageTimestampLabel = useMemo(() => {
+    const formatted = getMessageTimestamp(messageTimestamp, i18n.language);
+    return formatted?.absolute ?? messageTimestamp ?? 'Unknown time';
+  }, [i18n.language, messageTimestamp]);
+  const markdownLabel = `${messageTimestampLabel} / Markdown ${markdownIndex}`;
+  const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;
+  const commentsByCell = useMemo(() => {
+    const comments = new Map<string, MarkdownTableComment>();
+
+    if (!canComment) {
+      return comments;
+    }
+
+    pendingComments.forEach((comment) => {
+      if (comment.messageId !== messageId || comment.markdownIndex !== markdownIndex) {
+        return;
+      }
+
+      comments.set(getCellCommentKey(comment.rowIndex, comment.columnIndex), comment);
+    });
+
+    return comments;
+  }, [canComment, markdownIndex, messageId, pendingComments]);
+  const getTableFingerprint = useCallback(
+    () => tableMatrixToMarkdown(getTableMatrix(tableRef.current)),
+    [],
+  );
+  const handleCommitCellComment = useCallback(
+    ({
+      columnHeader,
+      columnIndex,
+      comment,
+      oldValue,
+      rowIndex,
+    }: {
+      columnHeader: string;
+      columnIndex: number;
+      comment: string;
+      oldValue: string;
+      rowIndex: number;
+    }) => {
+      if (!canComment || !messageId) {
+        return;
+      }
+
+      const id = buildMarkdownTableCommentId({
+        messageId,
+        markdownIndex,
+        rowIndex,
+        columnIndex,
+      });
+      const normalizedComment = comment.trim();
+
+      setPendingComments((current) => {
+        const existing = current.find((entry) => entry.id === id);
+
+        if (!normalizedComment) {
+          return current.filter((entry) => entry.id !== id);
+        }
+
+        if (existing) {
+          return current.map((entry) =>
+            entry.id === id ? { ...entry, comment: normalizedComment } : entry,
+          );
+        }
+
+        return [
+          ...current,
+          {
+            id,
+            conversationId: commentConversationId,
+            messageId,
+            messageTimestampLabel,
+            markdownIndex,
+            markdownLabel,
+            tableFingerprint: getTableFingerprint(),
+            rowIndex,
+            columnIndex,
+            columnHeader,
+            oldValue,
+            comment: normalizedComment,
+          },
+        ];
+      });
+    },
+    [
+      canComment,
+      commentConversationId,
+      getTableFingerprint,
+      markdownIndex,
+      markdownLabel,
+      messageId,
+      messageTimestampLabel,
+      setPendingComments,
+    ],
+  );
   const handleCopied = useCallback(() => {
     if (copiedResetTimerRef.current) {
       window.clearTimeout(copiedResetTimerRef.current);
@@ -706,8 +937,22 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     [],
   );
 
+  const modalChildren = useMemo(() => {
+    if (!canComment) {
+      return children;
+    }
+
+    return renderCommentableTableChildren({
+      children,
+      columnHeaders: headerOptions,
+      commentsByCell,
+      commentLabel,
+      onCommit: handleCommitCellComment,
+    });
+  }, [canComment, children, commentLabel, commentsByCell, handleCommitCellComment, headerOptions]);
+
   return (
-    <div className="markdown-table-container">
+    <div className="markdown-table-container" data-markdown-index={markdownIndex}>
       <TableToolbar
         tableRef={tableRef}
         copied={copied}
@@ -739,7 +984,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 stickyColumnIndex={stickyColumnIndex}
               />
               <div className="markdown-table-modal-scroll">
-                <table ref={modalTableRef}>{children}</table>
+                <table ref={modalTableRef}>{modalChildren}</table>
               </div>
             </div>
           </div>,

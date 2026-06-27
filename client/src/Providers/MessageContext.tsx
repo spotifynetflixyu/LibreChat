@@ -6,6 +6,9 @@ type MessageContext = {
   partIndex?: number;
   isExpanded: boolean;
   conversationId?: string | null;
+  messageTimestamp?: string | null;
+  isCreatedByUser?: boolean;
+  markdownTableBaseIndex?: number;
   /** Submission state for cursor display - only true for latest message when submitting */
   isSubmitting?: boolean;
   /** Whether this is the latest message in the conversation */

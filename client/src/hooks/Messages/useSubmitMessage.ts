@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
-import { replaceSpecialVars } from 'librechat-data-provider';
+import { Constants, replaceSpecialVars } from 'librechat-data-provider';
 import { useChatContext, useChatFormContext, useAddedChatContext } from '~/Providers';
 import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -15,11 +15,17 @@ export default function useSubmitMessage() {
   const localize = useLocalize();
   const methods = useChatFormContext();
   const { conversation: addedConvo } = useAddedChatContext();
-  const { ask, index, getMessages, setMessages, files = emptyFiles } = useChatContext();
+  const { ask, index, getMessages, setMessages, conversation, files = emptyFiles } =
+    useChatContext();
   const latestMessage = useLatestMessage(index);
 
   const autoSendPrompts = useRecoilValue(store.autoSendPrompts);
   const setActivePrompt = useSetRecoilState(store.activePromptByIndex(index));
+  const conversationId = conversation?.conversationId ?? Constants.NEW_CONVO;
+  const pendingMarkdownTableComments = useRecoilValue(
+    store.pendingMarkdownTableCommentsByConvoId(conversationId),
+  );
+  const hasPendingMarkdownTableComments = pendingMarkdownTableComments.length > 0;
 
   const submitMessage = useCallback(
     (data?: { text: string }) => {
@@ -31,7 +37,7 @@ export default function useSubmitMessage() {
         : files.size > 0
           ? localize('com_ui_steel_file_ocr_default_prompt')
           : '';
-      if (!text.trim()) {
+      if (!text.trim() && !hasPendingMarkdownTableComments) {
         return false;
       }
       const rootMessages = getMessages();
@@ -55,7 +61,17 @@ export default function useSubmitMessage() {
       }
       methods.reset();
     },
-    [ask, methods, addedConvo, setMessages, getMessages, latestMessage, files, localize],
+    [
+      ask,
+      methods,
+      addedConvo,
+      setMessages,
+      getMessages,
+      latestMessage,
+      files,
+      localize,
+      hasPendingMarkdownTableComments,
+    ],
   );
 
   const submitPrompt = useCallback(

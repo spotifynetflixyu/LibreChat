@@ -13,6 +13,9 @@ jest.mock('recoil', () => ({
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  Constants: {
+    NEW_CONVO: 'new',
+  },
   replaceSpecialVars: jest.fn(({ text }) => text),
 }));
 
@@ -43,6 +46,7 @@ jest.mock('~/store', () => ({
   default: {
     autoSendPrompts: 'autoSendPrompts',
     activePromptByIndex: jest.fn(() => 'activePromptByIndex'),
+    pendingMarkdownTableCommentsByConvoId: jest.fn(() => 'pendingMarkdownTableComments'),
   },
 }));
 
@@ -66,7 +70,9 @@ describe('useSubmitMessage', () => {
     ask.mockReset();
     ask.mockReturnValue(undefined);
     files = new Map();
-    mockUseRecoilValue.mockReturnValue(false);
+    mockUseRecoilValue.mockImplementation((atom) =>
+      atom === 'pendingMarkdownTableComments' ? [] : false,
+    );
     mockUseSetRecoilState.mockReturnValue(mockSetActivePrompt);
     mockUseAuthContext.mockReturnValue({ user: { id: 'user-1' } });
     mockUseAddedChatContext.mockReturnValue({ conversation: null });
@@ -79,6 +85,7 @@ describe('useSubmitMessage', () => {
       files,
       getMessages,
       setMessages,
+      conversation: { conversationId: 'conversation-1' },
     });
   });
 
@@ -123,5 +130,20 @@ describe('useSubmitMessage', () => {
     expect(submitted).toBe(false);
     expect(ask).not.toHaveBeenCalled();
     expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('allows an empty submit when markdown table comments are pending', () => {
+    mockUseRecoilValue.mockImplementation((atom) =>
+      atom === 'pendingMarkdownTableComments' ? [{ id: 'comment-1' }] : false,
+    );
+
+    const { result } = renderHook(() => useSubmitMessage());
+
+    act(() => {
+      result.current.submitMessage({ text: '   ' });
+    });
+
+    expect(ask).toHaveBeenCalledWith({ text: '' }, { addedConvo: undefined });
+    expect(reset).toHaveBeenCalledTimes(1);
   });
 });

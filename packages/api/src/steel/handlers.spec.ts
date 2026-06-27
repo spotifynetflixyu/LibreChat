@@ -243,7 +243,6 @@ function createTestRuntimeContext(
     attachments: overrides.attachments ?? {
       currentTurnFiles: [],
       priorActiveFileEvidence: [],
-      includeOcrRules: false,
     },
     toolPolicy: {
       aiVisibleTools: [
@@ -1129,7 +1128,6 @@ describe('createSteelHandlers', () => {
           attachments: {
             currentTurnFiles,
             priorActiveFileEvidence,
-            includeOcrRules: currentTurnFiles.length > 0 || priorActiveFileEvidence.length > 0,
           },
           outputSheets: {
             derivedIndex: outputSheetMemory.derivedIndex,

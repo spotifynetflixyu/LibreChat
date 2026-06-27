@@ -228,6 +228,13 @@
 - Markdown table modal controls must reuse LibreChat's existing selector
   components such as `ControlCombobox`; do not ship native `<select>` controls
   that visually diverge from Agent Builder and prompt category selectors.
+- Markdown table modal comment controls should use LibreChat shared UI
+  components first: `Button` for icon actions and `Input` for compact text
+  entry. Saved comments should render as inline text in the cell instead of a
+  hover popup; fade the original cell value when an inline comment is present.
+- Markdown table modal comment icon buttons belong in the cell's top-right
+  corner. Reserve right-side cell padding so the icon does not cover text, and
+  align the single-line comment input from that same right edge.
 - Markdown table modal column selector belongs on the left side of the toolbar;
   keep copy/download/close actions grouped on the right.
 - Markdown table modals should widen columns with long body text, such as
@@ -238,7 +245,28 @@
 - When compact workbook is the only supported Steel runtime mode, remove mode
   inputs and tool-registry branches instead of keeping no-op `contextMode`
   parameters that imply a hidden full-mode path.
+- Steel OCR rules are a fixed `otherGlobalRules` subset from `steel.rules`.
+  Do not add `includeOcrRules`, attachment/evidence runtime gates, or a separate
+  OCR rule loading path; load `otherGlobalRules` once and classify OCR rules by
+  `rule_sections`. Attachments should stay metadata/evidence only.
 - For file-only Steel OCR title generation, pass the uploaded filename and a
   simple title rule into the OpenAI OAuth title prompt. Do not add hard
   `preferredTitle` override logic; let the AI generate the final title from the
   filename and rule.
+- Markdown table modal comments are pending next-turn user text. After a
+  successful fresh chat submit, drain and clear the pending comment queue so the
+  chat-input helper/count disappears, the `localStorage` backup is removed, and
+  the next turn starts with zero pending comments; the submitted user message
+  itself should visibly include the appended comment list. In that appended
+  list, group comments by message/Markdown, because one message can contain
+  multiple Markdown tables and each rendered Markdown table is one Markdown
+  unit. A single table cell has at most one pending comment; editing the same
+  cell replaces that comment, and blanking the input removes it. End the
+  appended list with an instruction for the AI to output a separate complete
+  updated table for each affected Markdown. Use the AI message timestamp plus
+  Markdown index as the visible group label; do not show role.
+- Pending Markdown table comments must be backed by conversation-scoped
+  `localStorage` until successful fresh submit. Do not tie restore behavior to
+  the mounted chat input only; refresh/back-forward should restore the queue.
+- LibreChat leave warnings are global and always on for the route tree. Do not
+  condition browser/route leave warnings on pending Markdown table comments.

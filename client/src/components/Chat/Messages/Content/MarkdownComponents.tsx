@@ -7,7 +7,7 @@ import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import MarkdownTableActions from './MarkdownTableActions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { useFileDownload } from '~/data-provider';
-import { useCodeBlockContext } from '~/Providers';
+import { useCodeBlockContext, useMarkdownTableContext } from '~/Providers';
 import { handleDoubleClick, triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
@@ -191,7 +191,10 @@ type TTableProps = {
 };
 
 export const table: React.ElementType = memo(function MarkdownTable({ children }: TTableProps) {
-  return <MarkdownTableActions>{children}</MarkdownTableActions>;
+  const { getNextIndex } = useMarkdownTableContext();
+  const markdownIndex = useRef(getNextIndex() + 1).current;
+
+  return <MarkdownTableActions markdownIndex={markdownIndex}>{children}</MarkdownTableActions>;
 });
 table.displayName = 'MarkdownTable';
 

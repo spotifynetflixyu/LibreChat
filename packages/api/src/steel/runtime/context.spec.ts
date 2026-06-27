@@ -277,8 +277,8 @@ function createRuntimeDependencies(
     listReviewedQuoteDefaults: jest.fn(async () => [createQuoteDefault()]),
     listReviewedQuoteRules: jest.fn(async () => [createQuoteRule()]),
     listOutputRules: jest.fn(async () => [createWorkbookOutputRule()]),
-    listOtherGlobalRules: jest.fn(async ({ includeOcrRules }: { includeOcrRules: boolean }) => ({
-      ocrRules: includeOcrRules ? [createOcrRule()] : undefined,
+    listOtherGlobalRules: jest.fn(async () => ({
+      ocrRules: [createOcrRule()],
       fileRules: [createAgentRule({ id: 61, slug: 'steel-file-policy' })],
       sourcePriorityRules: [createAgentRule({ id: 62, slug: 'steel-source-priority' })],
       markdownOutputRules: [createAgentRule({ id: 63, slug: 'steel-markdown-output-policy' })],
@@ -371,7 +371,7 @@ describe('Steel runtime context', () => {
     ]);
   });
 
-  it('keeps OCR rules when current files, previous files, or active evidence require OCR context', async () => {
+  it('loads OCR rules as part of other global rules regardless of attachment evidence', async () => {
     const noFileResult = await prepareContext();
     const pdfFile: SteelOAuthChatFile = {
       filename: 'drawing.pdf',
@@ -382,23 +382,21 @@ describe('Steel runtime context', () => {
     const historyFileResult = await prepareContext([], undefined, [pdfFile]);
     const evidenceResult = await prepareContext([], undefined, [], [{ filename: 'drawing.pdf' }]);
 
-    expect(noFileResult.context.attachments.includeOcrRules).toBe(false);
-    expect(noFileResult.context.rules.otherGlobalRules.ocrRules).toBeUndefined();
-    expect(noFileResult.dependencies.listOtherGlobalRules).toHaveBeenCalledWith({
-      includeOcrRules: false,
-    });
-    expect(fileResult.context.attachments.includeOcrRules).toBe(true);
+    expect(noFileResult.context.attachments).not.toHaveProperty('includeOcrRules');
+    expect(noFileResult.context.rules.otherGlobalRules.ocrRules.map((rule) => rule.slug)).toEqual([
+      'steel-drawing-ocr-policy',
+    ]);
+    expect(noFileResult.dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
+    expect(fileResult.context.attachments).not.toHaveProperty('includeOcrRules');
     expect(fileResult.context.rules.otherGlobalRules.ocrRules?.map((rule) => rule.slug)).toEqual([
       'steel-drawing-ocr-policy',
     ]);
-    expect(fileResult.dependencies.listOtherGlobalRules).toHaveBeenCalledWith({
-      includeOcrRules: true,
-    });
-    expect(historyFileResult.context.attachments.includeOcrRules).toBe(true);
+    expect(fileResult.dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
+    expect(historyFileResult.context.attachments).not.toHaveProperty('includeOcrRules');
     expect(
       historyFileResult.context.rules.otherGlobalRules.ocrRules?.map((rule) => rule.slug),
     ).toEqual(['steel-drawing-ocr-policy']);
-    expect(evidenceResult.context.attachments.includeOcrRules).toBe(true);
+    expect(evidenceResult.context.attachments).not.toHaveProperty('includeOcrRules');
   });
 
   it('reuses active OCR extracts from structured state on follow-up turns', async () => {
@@ -426,11 +424,11 @@ describe('Steel runtime context', () => {
         ocrEngine: 'PaddleOCR MCP',
       }),
     ]);
-    expect(context.attachments.includeOcrRules).toBe(true);
+    expect(context.attachments).not.toHaveProperty('includeOcrRules');
     expect(context.rules.otherGlobalRules.ocrRules?.map((rule) => rule.slug)).toEqual([
       'steel-drawing-ocr-policy',
     ]);
-    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith({ includeOcrRules: true });
+    expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
   });
 
   it('serializes workbook output rules as backend sheet carry-forward and emitted-sheet replacement policy', async () => {
