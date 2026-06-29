@@ -1,4 +1,187 @@
-# Active: Render manual state sync documentation
+# Active: GitHub Actions production deploy workflow
+
+Goal: add a `master` push workflow that builds the customized LibreChat
+production image, pushes it to GHCR, SSHes to the DigitalOcean Droplet, and
+redeploys the Compose stack.
+
+Plan - 2026-06-29:
+
+- [x] Add `.github/workflows/deploy-prod.yml`.
+- [x] Build `Dockerfile.multi` target `api-build` for `linux/amd64`.
+- [x] Push GHCR tags `master` and `${{ github.sha }}`.
+- [x] Use the existing Droplet SSH secrets to upload Compose/Caddy/start files.
+- [x] Use the job-scoped `GITHUB_TOKEN` for remote GHCR login instead of adding
+      a long-lived `GHCR_READ_TOKEN`.
+- [x] Redeploy the Droplet with `docker compose up -d --remove-orphans`.
+- [x] Verify local Droplet health and run a best-effort public URL smoke check.
+- [x] Validate workflow syntax and action semantics before commit.
+
+Review - 2026-06-29:
+
+- Added `.github/workflows/deploy-prod.yml` with `push` on `master` and manual
+  `workflow_dispatch`.
+- Workflow permissions are limited to `contents: read` and `packages: write`.
+- Workflow builds/pushes `ghcr.io/spotifynetflixyu/librechat-prod-api:master`
+  and `ghcr.io/spotifynetflixyu/librechat-prod-api:${{ github.sha }}`.
+- Workflow uploads `deploy-compose.prod.yml`, `deploy/host/start.sh`, and
+  `deploy/digitalocean/Caddyfile` to `/srv/librechat/app` on the Droplet.
+- Workflow logs the Droplet into GHCR with the job-scoped `GITHUB_TOKEN` for
+  the immediate pull, avoiding a long-lived `GHCR_READ_TOKEN`.
+- Workflow checks `http://127.0.0.1:3080/health` on the Droplet as the required
+  deploy gate and runs `https://chat.longdin.org/health` as a best-effort
+  public smoke check.
+- Updated `docs/deployment/digitalocean-droplet-prod-runbook.md` to reference
+  the workflow and its GHCR token behavior.
+- Verification:
+  - `rtk ruby -e "require 'yaml'; YAML.load_file('.github/workflows/deploy-prod.yml'); puts 'yaml-ok'"`
+    returned `yaml-ok`.
+  - `rtk actionlint .github/workflows/deploy-prod.yml` passed.
+  - `rtk env LIBRECHAT_ENV_FILE=.env.prod.example LIBRECHAT_IMAGE=ghcr.io/spotifynetflixyu/librechat-prod-api:test PORT=3080 docker compose -f deploy-compose.prod.yml config --quiet`
+    passed.
+  - `rtk sh -n deploy/host/start.sh && rtk bash -n deploy/host/start.sh`
+    passed.
+
+---
+
+# Previous: GitHub Actions production deploy secrets
+
+Goal: configure GitHub Actions repository secrets so the future production
+workflow can SSH to the DigitalOcean Droplet as `deploy`.
+
+Plan - 2026-06-29:
+
+- [x] Install GitHub CLI.
+- [x] Log out of the wrong GitHub account and log in as `spotifynetflixyu`.
+- [x] Confirm `spotifynetflixyu` has admin permission on
+      `spotifynetflixyu/LibreChat`.
+- [x] Generate a GitHub Actions-only SSH deploy key.
+- [x] Install the deploy key public key on the Droplet `deploy` user.
+- [x] Create required GitHub Actions secrets.
+- [x] Verify the deploy key can SSH and run remote Compose config.
+
+Review - 2026-06-29:
+
+- Installed GitHub CLI `gh` with Homebrew.
+- Logged out `nevenhsu` and logged in as `spotifynetflixyu`.
+- Confirmed `spotifynetflixyu/LibreChat` permission is `ADMIN`.
+- Generated local private key
+  `~/.ssh/librechat_do_prod_deploy_ed25519` and installed the matching public
+  key on the Droplet `deploy` user's `authorized_keys`.
+- Created GitHub Actions secrets in `spotifynetflixyu/LibreChat`:
+  `DO_PROD_HOST`, `DO_PROD_USER`, and `DO_PROD_SSH_KEY`.
+- Did not create `GHCR_READ_TOKEN` yet; decide after the production workflow
+  confirms whether the package pull needs a private GHCR token.
+- Verification:
+  - `gh secret list --repo spotifynetflixyu/LibreChat --app actions` shows the
+    three required secrets.
+  - SSH with `~/.ssh/librechat_do_prod_deploy_ed25519` to
+    `deploy@139.59.110.150` succeeded.
+  - Remote `docker compose -f deploy-compose.prod.yml config --quiet` passed.
+
+---
+
+# Previous: DigitalOcean Droplet host bootstrap
+
+Goal: prepare the DigitalOcean Droplet at `139.59.110.150` to run the
+customized LibreChat production app under `chat.longdin.org`.
+
+Plan - 2026-06-29:
+
+- [x] Verify root SSH access to the Droplet.
+- [x] Create the `deploy` user, copy SSH access, and grant sudo/docker access.
+- [x] Install Docker Engine, Docker Compose plugin, and UFW.
+- [x] Create `/srv/librechat/app`, `/etc/librechat`, and `/data` runtime
+      directories with production-safe ownership.
+- [x] Enable firewall rules for SSH, HTTP, and HTTPS only.
+- [x] Add a 2 GB swap file for the 2 GB RAM Droplet.
+- [x] Upload local `.env.prod`, `librechat.yaml`, and OpenAI OAuth `auth.json`
+      to the host without printing secret contents.
+- [x] Add and upload production Compose, Caddy, and provider-neutral startup
+      files.
+- [x] Verify Docker, deploy-user SSH, firewall status, host resources,
+      `auth.json` JSON validity, and remote Compose config.
+
+Review - 2026-06-29:
+
+- Root SSH to `139.59.110.150` succeeded; host reports `librechat-prod`.
+- Created `deploy` user, copied authorized SSH keys, and added it to `sudo` and
+  `docker` groups.
+- Installed Docker `29.6.1` and Docker Compose plugin `v5.2.0`.
+- Enabled UFW with only `OpenSSH`, `80/tcp`, and `443/tcp` allowed.
+- Created a persistent 2 GB `/swapfile` and added it to `/etc/fstab`.
+- Created `/srv/librechat/app`, `/etc/librechat`, `/data/uploads`,
+  `/data/images`, `/data/logs`, `/data/skill`, and `/data/openai-oauth`.
+- Uploaded `/etc/librechat/.env.prod`, `/data/librechat.yaml`, and
+  `/data/openai-oauth/auth.json`; verified `auth.json` parses as JSON without
+  printing secret contents.
+- Added `deploy-compose.prod.yml`, `deploy/host/start.sh`, and
+  `deploy/digitalocean/Caddyfile`; copied them to `/srv/librechat/app`.
+- Updated `Dockerfile.multi` so the production image includes
+  `deploy/host/start.sh`.
+- Updated `.env.prod.example` and the host `.env.prod` with
+  `NODE_OPTIONS=--max-old-space-size=1536` and Droplet `PORT=3080`.
+- Verification:
+  - `deploy@139.59.110.150` can SSH and run Docker commands.
+  - `systemctl is-active docker` returned `active`.
+  - `docker compose -f deploy-compose.prod.yml config --quiet` passed on the
+    Droplet.
+  - Public DNS is still propagating: DigitalOcean authoritative DNS has
+    `chat.longdin.org -> 139.59.110.150`, while public resolvers still showed
+    Namecheap nameservers at check time.
+
+---
+
+# Previous: DigitalOcean Droplet production deployment
+
+Goal: move the approved production host from Render to a DigitalOcean Droplet
+with a user-owned domain, while keeping MongoDB Atlas and Supabase as managed
+production databases.
+
+Plan - 2026-06-29:
+
+- [x] Document the DigitalOcean Droplet production shape, including Droplet
+      size, domain/DNS, Caddy HTTPS, Docker Compose, persistent data paths,
+      external databases, and manual secret files.
+- [x] Add an implementation plan for the future compose/workflow/host setup
+      work without enabling a broken GitHub Actions production deploy before
+      the Droplet exists.
+- [x] Mark the Render runbook as a rollback/historical option so it is not
+      mistaken for the current production target.
+- [x] Update the local account-bootstrap and env-template wording away from
+      Render-specific assumptions.
+- [x] Capture the provider correction in lessons and verify docs for secret
+      leaks and whitespace.
+
+Review - 2026-06-29:
+
+- Added `docs/deployment/digitalocean-droplet-prod-runbook.md` as the current
+  production deployment runbook for a DigitalOcean Droplet with a user-owned
+  domain, Caddy HTTPS, Docker Compose, `/data` persistence, host-side
+  `.env.prod`, uploaded `librechat.yaml`, uploaded OpenAI OAuth `auth.json`,
+  MongoDB Atlas IP allowlist, and GitHub Actions deploy shape.
+- Added `docs/plans/2026-06-29-digitalocean-droplet-production-deployment.md`
+  with the follow-up implementation plan for compose, Caddy, host setup,
+  GitHub Actions, smoke checks, and Render decommission timing.
+- Marked `docs/deployment/render-prod-runbook.md` as rollback/historical
+  documentation because the selected production target is now DigitalOcean
+  Droplet.
+- Updated `docs/deployment/local-terminal-user-bootstrap.md` so local account
+  creation applies to Render, DigitalOcean Droplet, or another production host.
+- Updated `.env.prod.example` away from Render generated-domain placeholders
+  and toward `chat.<your-domain>` with `PORT=3080` for the Droplet app.
+- Updated `tasks/lessons.md` with the Render-to-Droplet correction and the rule
+  to delay enabling SSH auto-deploy until Droplet/GitHub secrets exist.
+- Verification:
+  - Secret-pattern scan over deployment docs, the new implementation plan,
+    `.env.prod.example`, and task files returned only placeholders and the
+    documented scan command itself, not real secrets.
+  - Trailing-whitespace scan over the updated files returned no output.
+  - `rtk git diff --check -- docs/deployment/digitalocean-droplet-prod-runbook.md docs/plans/2026-06-29-digitalocean-droplet-production-deployment.md docs/deployment/render-prod-runbook.md docs/deployment/local-terminal-user-bootstrap.md .env.prod.example tasks/todo.md tasks/lessons.md`
+    passed.
+
+---
+
+# Previous: Render manual state sync documentation
 
 Goal: document every production value/file that must be manually configured in
 Render or external services, including `librechat.yaml` and OpenAI OAuth

@@ -229,6 +229,21 @@
   `/data/openai-oauth/auth.json`, configure SSH public keys in Render, and
   maintain MongoDB Atlas/Supabase state outside Render. Restart Render after
   replacing config or OAuth auth files.
+- When Render Standard cost is rejected for production, switch the primary
+  runbook to DigitalOcean Droplet instead of continuing Render-specific setup.
+  Keep MongoDB Atlas and Supabase managed externally, use a user-owned domain
+  such as `chat.<domain>`, run only the app plus Caddy on the Droplet, store
+  production files under `/data` and `/etc/librechat`, and delay enabling a
+  GitHub Actions SSH redeploy workflow until the Droplet, SSH key, and GitHub
+  secrets exist.
+- In the DigitalOcean Droplet compose stack, do not give the Caddy container
+  the full app `.env.prod` file. Caddy only needs `LIBRECHAT_DOMAIN` and
+  `PORT`; DB URLs, JWT secrets, OAuth paths, and app credentials should stay in
+  the API container environment only.
+- For the DigitalOcean production deploy workflow, prefer the job-scoped
+  GitHub `GITHUB_TOKEN` for GHCR push and immediate remote pull before adding a
+  long-lived `GHCR_READ_TOKEN`. Only introduce a PAT if package visibility or
+  cross-repo ownership actually requires it.
 - For Steel price lookup material simplification, only unify the query/tool
   input enum into simple material keywords such as `黑鐵`, `白鐵`, `錏`, `鋁`, and
   `鋅`. Keep import/storage canonical material values such as `No1 白鐵`,

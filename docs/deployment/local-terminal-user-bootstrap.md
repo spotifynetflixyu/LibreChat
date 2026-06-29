@@ -1,11 +1,12 @@
 # Local Terminal User Bootstrap
 
 Use this procedure to create production LibreChat accounts from a local Mac
-terminal while the production app runs on Render.
+terminal while the production app runs on Render, DigitalOcean Droplet, or
+another production host.
 
-This is preferred over running `create-user` through Render SSH on the low-cost
-Starter instance. The script opens a separate Node process, and the 512 MB
-runtime can terminate the SSH session before the password prompt appears.
+This is preferred over running `create-user` through a constrained production
+host shell. The script opens a separate Node process, and small production
+instances can terminate the SSH session before the password prompt appears.
 
 ## Prerequisites
 
@@ -94,12 +95,12 @@ through an admin path.
 
 After creating an account:
 
-1. Open the Render production URL.
+1. Open the production URL.
 2. Sign in with the created email and password.
 3. Confirm the user reaches LibreChat.
 
-This does not require restarting Render because the account is written directly
-to production MongoDB.
+This does not require restarting the production host because the account is
+written directly to production MongoDB.
 
 ## Troubleshooting
 
@@ -127,7 +128,7 @@ to production MongoDB.
 - Use a different email/username, or reset the existing user's password through
   a controlled admin procedure.
 
-Render SSH closes before password prompt
+Production SSH closes before password prompt
 
-- Do not keep retrying on the Starter instance.
+- Do not keep retrying on the constrained production instance.
 - Run the local terminal command in this document instead.

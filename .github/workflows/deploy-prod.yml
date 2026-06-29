@@ -1,0 +1,134 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-production-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/librechat-prod-api
+
+jobs:
+  deploy:
+    name: Build image and deploy to DigitalOcean
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        run: |
+          set -euo pipefail
+          {
+            printf 'BUILD_COMMIT=%s\n' "$GITHUB_SHA"
+            printf 'BUILD_BRANCH=%s\n' "$GITHUB_REF_NAME"
+            printf 'BUILD_DATE=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push production image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.multi
+          target: api-build
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:master
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            BUILD_COMMIT=${{ env.BUILD_COMMIT }}
+            BUILD_BRANCH=${{ env.BUILD_BRANCH }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+          cache-from: type=gha,scope=prod-api
+          cache-to: type=gha,mode=max,scope=prod-api
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DO_PROD_SSH_KEY }}" > ~/.ssh/do_prod_key
+          chmod 600 ~/.ssh/do_prod_key
+          ssh-keyscan -H "${{ secrets.DO_PROD_HOST }}" >> ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host prod
+            HostName ${{ secrets.DO_PROD_HOST }}
+            User ${{ secrets.DO_PROD_USER }}
+            IdentityFile ~/.ssh/do_prod_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload deployment files
+        run: |
+          set -euo pipefail
+          ssh prod 'mkdir -p /srv/librechat/app/deploy/host /srv/librechat/app/deploy/digitalocean'
+          scp deploy-compose.prod.yml prod:/srv/librechat/app/deploy-compose.prod.yml
+          scp deploy/host/start.sh prod:/srv/librechat/app/deploy/host/start.sh
+          scp deploy/digitalocean/Caddyfile prod:/srv/librechat/app/deploy/digitalocean/Caddyfile
+          ssh prod 'chmod +x /srv/librechat/app/deploy/host/start.sh'
+
+      - name: Deploy on Droplet
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2029
+          printf '%s' "$GHCR_TOKEN" | ssh prod "docker login ghcr.io -u '$GHCR_ACTOR' --password-stdin"
+          # shellcheck disable=SC2029
+          ssh prod "IMAGE_NAME='${IMAGE_NAME}' bash -se" <<'REMOTE'
+          set -euo pipefail
+          cd /srv/librechat/app
+          LIBRECHAT_IMAGE="${IMAGE_NAME}:master" docker compose -f deploy-compose.prod.yml pull api caddy
+          LIBRECHAT_IMAGE="${IMAGE_NAME}:master" docker compose -f deploy-compose.prod.yml up -d --remove-orphans
+          docker image prune -f
+          REMOTE
+
+      - name: Verify Droplet health
+        run: |
+          set -euo pipefail
+          ssh prod bash -se <<'REMOTE'
+          set -euo pipefail
+          cd /srv/librechat/app
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3080/health >/dev/null; then
+              echo "local health OK"
+              exit 0
+            fi
+            if [ "$attempt" = "60" ]; then
+              echo "::error::LibreChat did not become healthy on 127.0.0.1:3080"
+              docker compose -f deploy-compose.prod.yml ps
+              docker compose -f deploy-compose.prod.yml logs --tail=120 api
+              exit 1
+            fi
+            sleep 2
+          done
+          REMOTE
+
+      - name: Public URL smoke check
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          curl -fsS https://chat.longdin.org/health

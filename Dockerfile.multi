@@ -110,6 +110,7 @@ RUN attempt=1; \
 COPY api ./api
 COPY config ./config
 COPY skill ./skill
+COPY deploy/host ./deploy/host
 COPY deploy/render ./deploy/render
 COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data-provider/dist
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist

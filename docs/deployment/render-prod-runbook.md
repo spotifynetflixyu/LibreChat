@@ -1,5 +1,9 @@
 # Render Production Runbook
 
+Status: retained as rollback and historical setup documentation. The current
+selected production target is DigitalOcean Droplet with a user-owned domain;
+see `docs/deployment/digitalocean-droplet-prod-runbook.md`.
+
 This runbook deploys the customized LibreChat/Steel production app on Render.
 Render replaces the earlier Lightsail host automation: Render watches the
 GitHub `master` branch, builds `Dockerfile.multi`, and redeploys automatically
