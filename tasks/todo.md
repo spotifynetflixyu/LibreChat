@@ -1,4 +1,59 @@
-# Active: AWS Lightsail production deployment implementation
+# Active: Render production deployment transition
+
+Goal: switch the approved production deployment path from AWS Lightsail host
+automation to Render Web Service deployment while keeping the already-created
+production MongoDB, Supabase, and `.env.prod` decisions.
+
+Plan - 2026-06-29:
+
+- [x] Disable the Lightsail SSH GitHub Actions production redeploy path so
+      `master` pushes do not target a missing VPS.
+- [x] Add a Render runtime startup script that maps uploads, generated images,
+      logs, skills, and OpenAI OAuth `auth.json` to Render Persistent Disk.
+- [x] Add a Render production runbook covering Web Service setup, default
+      `onrender.com` domain, environment variables, persistent disk, OpenAI
+      OAuth auth-file installation, admin bootstrap, auto deploy, and smoke
+      verification.
+- [x] Update `.env.prod.example` so placeholders match Render and keep real
+      production values in ignored `.env.prod` / Render dashboard secrets.
+- [x] Record the deployment-provider correction in `tasks/lessons.md`.
+- [x] Verify script syntax, committed-secret patterns, diff hygiene, commit the
+      transition, and move local `master` to the verified commit.
+
+Review - 2026-06-29:
+
+- Removed `.github/workflows/deploy-prod.yml`; production `master` pushes no
+  longer run the Lightsail/GHCR/SSH redeploy workflow.
+- Added `deploy/render/start.sh` and copied `deploy/render` into the final
+  `Dockerfile.multi` image so Render can use
+  `sh /app/deploy/render/start.sh` as the Docker Command.
+- Render startup now defaults `HOST=0.0.0.0`,
+  `CONFIG_PATH=/data/librechat.yaml`, and
+  `OPENAI_OAUTH_AUTH_FILE=/data/openai-oauth/auth.json`; it creates a minimal
+  `librechat.yaml`, seeds `/data/skill` once from image `/app/skill`, and maps
+  uploads/images/logs/skills/OAuth state to the `/data` Persistent Disk.
+- Added `docs/deployment/render-prod-runbook.md` with Render Web Service
+  setup, generated `onrender.com` domain usage, env vars, disk mount,
+  OpenAI OAuth auth-file installation, admin bootstrap, auto deploy, smoke
+  verification, troubleshooting, and backup notes.
+- Added `docs/plans/2026-06-29-render-production-deployment.md` to capture the
+  implementation plan.
+- Updated `.env.prod.example` for Render placeholders and kept real production
+  values out of git.
+- Updated `tasks/lessons.md` with the Render/VPS deployment-provider
+  correction.
+- Verification:
+  - `rtk sh -n deploy/render/start.sh` passed.
+  - `rtk bash -n deploy/render/start.sh` passed.
+  - `rtk rg -n "LIGHTSAIL_|Redeploy on Lightsail|deploy-compose.prod.yml|deploy/lightsail" .github/workflows`
+    returned no matches.
+  - Secret-pattern scan over `.env.prod.example`, Render deploy docs/scripts,
+    and task files returned no matches.
+  - `rtk git diff --check` passed.
+
+---
+
+# Previous: AWS Lightsail production deployment implementation
 
 Goal: implement the approved AWS Lightsail low-cost production deployment path,
 verify it locally, then create `master` for production use.

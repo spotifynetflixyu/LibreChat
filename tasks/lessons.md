@@ -202,6 +202,12 @@
 - `ALLOW_REGISTRATION=false` should not be treated as blocking production admin
   bootstrap. Use LibreChat's trusted `create-user` script; in a clean MongoDB,
   the first registered user becomes `ADMIN`.
+- When production deployment moves from a VPS/Lightsail host to Render, disable
+  the host SSH redeploy workflow before pushing `master`. Render should own
+  auto deploy from GitHub, use the generated `onrender.com` domain until a
+  custom domain is added, and store uploads plus OpenAI OAuth `auth.json` on a
+  writable Persistent Disk such as `/data`, not in the image or a read-only
+  secret file.
 - For Steel price lookup material simplification, only unify the query/tool
   input enum into simple material keywords such as `黑鐵`, `白鐵`, `錏`, `鋁`, and
   `鋅`. Keep import/storage canonical material values such as `No1 白鐵`,
