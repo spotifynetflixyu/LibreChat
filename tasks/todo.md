@@ -1,4 +1,51 @@
-# Active: Fix production PaddleOCR MCP runtime
+# Active: Production PaddleOCR persistent venv and c.pdf smoke
+
+Goal: move production PaddleOCR MCP from image-build `uvx` prewarm to a
+persistent `/data/paddleocr/venv` on the Droplet, prove the MCP server starts
+without crashing, and run a live `c.pdf` smoke check.
+
+Plan - 2026-06-29:
+
+- [x] Remove the Docker build-time `uvx` PaddleOCR prewarm layer while keeping
+      Debian/glibc, `uv`, Python 3.12 defaults, and OpenCV runtime libraries.
+- [x] Add production startup preparation for `/data/paddleocr/venv`, including
+      install-on-missing, import prewarm, and a short MCP server start check.
+- [x] Add a host-run `c.pdf` smoke script that connects to the persistent MCP
+      server command through stdio and calls `paddleocr_vl`.
+- [x] Update the deploy workflow to upload the smoke script and allow the
+      longer first startup caused by venv creation.
+- [x] Update local/host-managed MCP config and deployment docs for the
+      persistent venv boundary.
+- [ ] Verify locally, push `master`, update the Droplet config, wait for
+      production deploy, then run short-start and `c.pdf` smoke checks on the
+      Droplet.
+
+Local review - 2026-06-29:
+
+- Removed the build-time `uvx --python 3.12 --from paddleocr-mcp` prewarm from
+  `Dockerfile.multi`; the image still includes Debian/glibc runtime libraries
+  and `uv`.
+- Added `/data/paddleocr/venv` startup preparation to `deploy/host/start.sh`,
+  including install-on-missing, import prewarm, and a short MCP server startup
+  smoke.
+- Added `deploy/host/paddleocr-smoke.sh` for manual live `c.pdf` MCP smoke on
+  the Droplet.
+- Updated the production workflow to upload the smoke script and `c.pdf`, and
+  extended the health loop for first-time venv creation.
+- Updated `deploy-compose.prod.yml` health start period, `.env.prod.example`,
+  `.mcp.json`, ignored local `librechat.yaml`, deployment docs, plan docs, and
+  lessons for the persistent venv production boundary.
+- Local verification passed:
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+  - `.mcp.json` JSON parse
+  - `librechat.yaml` and workflow YAML parse
+  - `docker compose -f deploy-compose.prod.yml config --quiet`
+  - `rtk actionlint .github/workflows/deploy-prod.yml`
+  - `rtk git diff --check`
+
+---
+
+# Previous: Fix production PaddleOCR MCP runtime
 
 Goal: make the DigitalOcean production API image able to start PaddleOCR MCP
 reliably for Steel PDF/image OCR instead of falling back to native PDF text

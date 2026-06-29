@@ -2,7 +2,7 @@
   "mcpServers": {
     "PaddleOCR": {
       "command": "uvx",
-      "args": ["--from", "paddleocr-mcp", "paddleocr_mcp"],
+      "args": ["--python", "3.12", "--from", "paddleocr-mcp", "paddleocr_mcp"],
       "env": {
         "PADDLEOCR_MCP_MODEL": "PaddleOCR-VL-1.6",
         "PADDLEOCR_MCP_PPOCR_SOURCE": "aistudio",

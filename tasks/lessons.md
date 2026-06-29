@@ -391,6 +391,12 @@
 - The current PaddleOCR MCP server key should be `PaddleOCR`; keep
   `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6` as the model setting. Do not reuse the
   model name as the LibreChat MCP server key.
+- On low-cost DigitalOcean production, keep PaddleOCR MCP's Python environment
+  in a persistent `/data/paddleocr/venv` prepared at container startup. The
+  Docker image should carry Debian/glibc runtime libraries and `uv`, but not a
+  build-time `uvx` PaddleOCR environment layer. Production `/data/librechat.yaml`
+  should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp`; repo
+  `.mcp.json` remains local MCP client config.
 - PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
   such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
   `input_data` from the permission-checked current-turn LibreChat attachment

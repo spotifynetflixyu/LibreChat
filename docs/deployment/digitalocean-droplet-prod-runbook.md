@@ -299,6 +299,7 @@ The Droplet runs a minimal stack from the repo root files:
 |---|---|
 | `deploy-compose.prod.yml` | Production Compose stack |
 | `deploy/host/start.sh` | Provider-neutral container startup script that maps `/data` |
+| `deploy/host/paddleocr-smoke.sh` | Manual PaddleOCR MCP `c.pdf` smoke script |
 | `deploy/digitalocean/Caddyfile` | Caddy HTTPS reverse proxy config |
 
 Do not run MongoDB, Postgres, MeiliSearch, RAG API, or vector DB on the first
@@ -319,6 +320,59 @@ ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-com
 
 The Caddy container receives only `LIBRECHAT_DOMAIN` and `PORT`, not the full
 application `.env.prod` secret set.
+
+## PaddleOCR MCP Runtime
+
+Production PaddleOCR MCP uses a persistent Python venv on the host-mounted
+`/data` volume:
+
+```text
+/data/paddleocr/venv
+```
+
+The API image includes Debian/glibc runtime libraries and `uv`, but it does not
+embed the full `paddleocr-mcp` Python environment. On container startup,
+`deploy/host/start.sh` creates or reuses the persistent venv, installs
+`paddleocr-mcp` if missing, imports `paddleocr_mcp`, and starts the MCP command
+briefly to prove it does not crash.
+
+Production `/data/librechat.yaml` must use the persistent command:
+
+```yaml
+mcpServers:
+  PaddleOCR:
+    type: stdio
+    startup: false
+    command: /data/paddleocr/venv/bin/paddleocr_mcp
+```
+
+Keep the long LibreChat and PaddleOCR AI Studio timeouts for drawing PDFs:
+
+```yaml
+timeout: 1200000
+env:
+  PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "600"
+  PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "1200"
+  PADDLEOCR_MCP_HTTP_TIMEOUT: "1200"
+```
+
+Useful startup controls in `/etc/librechat/.env.prod`:
+
+```bash
+PADDLEOCR_PREPARE_ON_STARTUP=true
+PADDLEOCR_PREWARM_STRICT=true
+PADDLEOCR_MCP_STARTUP_SMOKE_TIMEOUT_SECONDS=8
+PADDLEOCR_FORCE_REINSTALL=false
+```
+
+Run the live production `c.pdf` smoke manually after deploy:
+
+```bash
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/c.pdf'
+```
+
+This smoke calls AI Studio and can take several minutes, so it is not a
+required GitHub Actions gate on every `master` push.
 
 ## GitHub Actions Auto Deploy
 

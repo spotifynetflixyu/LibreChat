@@ -84,10 +84,13 @@ jobs:
         run: |
           set -euo pipefail
           ssh prod 'mkdir -p /srv/librechat/app/deploy/host /srv/librechat/app/deploy/digitalocean'
+          ssh prod 'mkdir -p /data/smoke'
           scp deploy-compose.prod.yml prod:/srv/librechat/app/deploy-compose.prod.yml
           scp deploy/host/start.sh prod:/srv/librechat/app/deploy/host/start.sh
+          scp deploy/host/paddleocr-smoke.sh prod:/srv/librechat/app/deploy/host/paddleocr-smoke.sh
           scp deploy/digitalocean/Caddyfile prod:/srv/librechat/app/deploy/digitalocean/Caddyfile
-          ssh prod 'chmod +x /srv/librechat/app/deploy/host/start.sh'
+          scp docs/reference/example/c.pdf prod:/data/smoke/c.pdf
+          ssh prod 'chmod +x /srv/librechat/app/deploy/host/start.sh /srv/librechat/app/deploy/host/paddleocr-smoke.sh'
 
       - name: Deploy on Droplet
         env:
@@ -112,12 +115,12 @@ jobs:
           ssh prod bash -se <<'REMOTE'
           set -euo pipefail
           cd /srv/librechat/app
-          for attempt in $(seq 1 60); do
+          for attempt in $(seq 1 300); do
             if docker compose -f deploy-compose.prod.yml exec -T api curl -fsS http://127.0.0.1:3080/health >/dev/null; then
               echo "local health OK"
               exit 0
             fi
-            if [ "$attempt" = "60" ]; then
+            if [ "$attempt" = "300" ]; then
               echo "::error::LibreChat did not become healthy inside the API container"
               docker compose -f deploy-compose.prod.yml ps
               docker compose -f deploy-compose.prod.yml logs --tail=120 api
