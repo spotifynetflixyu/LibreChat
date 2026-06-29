@@ -1,7 +1,0 @@
-{$LIBRECHAT_DOMAIN} {
-	encode zstd gzip
-
-	respond /steel/oauth-chat* 404
-
-	reverse_proxy api:3080
-}

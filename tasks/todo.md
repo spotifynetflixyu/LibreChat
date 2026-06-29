@@ -1,4 +1,49 @@
-# Active: Render production deployment transition
+# Active: Render service creation documentation update
+
+Goal: update the production deployment documentation with the actual Render
+service creation and troubleshooting steps used during setup.
+
+Plan - 2026-06-29:
+
+- [x] Add exact Render UI field values for service creation, Docker settings,
+      health checks, auto deploy, and build filters.
+- [x] Document the low-budget 1 GB disk option while keeping `/data` as the
+      required mount path and explaining upgrade limits.
+- [x] Add MongoDB Atlas Network Access guidance for Render outbound access.
+- [x] Clarify OpenAI OAuth `auth.json` installation: prefer Render Shell after
+      the service is live, and use Secret File only as a temporary bootstrap
+      copy into `/data`.
+- [x] Update lessons for the Render setup corrections and verify docs for
+      secret leaks and whitespace issues.
+
+Review - 2026-06-29:
+
+- Updated `docs/deployment/render-prod-runbook.md` with the actual Render Web
+  Service creation fields used during setup: `Docker`, `master`, blank Root
+  Directory, `/health`, Docker context `.`, `Dockerfile.multi`, Docker Command
+  `sh /app/deploy/render/start.sh`, blank Pre-Deploy Command, Auto-Deploy
+  `On Commit`, and blank Build Filters.
+- Documented that Starter plus a 1 GB `/data` disk is acceptable for a
+  budget-first smoke deployment, while 10 GB remains the safer sustained
+  production starting point.
+- Added MongoDB Atlas Network Access recovery for Render outbound IP blocking,
+  including temporary `0.0.0.0/0` unblock and later tightening to Render
+  outbound IPs/CIDRs.
+- Clarified OpenAI OAuth `auth.json`: use Render Shell after the service is
+  live when possible; use Render Secret File only as a temporary copy source
+  into `/data/openai-oauth/auth.json`, then restore the normal Docker Command.
+- Updated `tasks/lessons.md` with the Render UI/setup corrections.
+- Verification:
+  - Secret-pattern scan over the updated runbook, todo, and lessons returned no
+    matches.
+  - `rtk git diff --check -- docs/deployment/render-prod-runbook.md tasks/todo.md tasks/lessons.md`
+    passed.
+  - `rtk rg` confirmed the updated runbook contains the required Render field
+    values and Mongo/OAuth troubleshooting entries.
+
+---
+
+# Previous: Render production deployment transition
 
 Goal: switch the approved production deployment path from AWS Lightsail host
 automation to Render Web Service deployment while keeping the already-created

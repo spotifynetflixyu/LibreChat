@@ -208,6 +208,14 @@
   custom domain is added, and store uploads plus OpenAI OAuth `auth.json` on a
   writable Persistent Disk such as `/data`, not in the image or a read-only
   secret file.
+- Render production setup docs must mirror the actual Render UI fields: leave
+  Root Directory blank, set Docker Build Context Directory to `.`, Dockerfile
+  Path to `Dockerfile.multi`, Docker Command to
+  `sh /app/deploy/render/start.sh`, Health Check Path to `/health`, Pre-Deploy
+  Command blank, and Auto-Deploy to On Commit. A 1 GB disk is acceptable for a
+  low-cost smoke deployment, but the mount path must still be `/data`. Use
+  Secret Files only as a temporary bootstrap copy source for `auth.json`; the
+  final OAuth file must live on the writable disk.
 - For Steel price lookup material simplification, only unify the query/tool
   input enum into simple material keywords such as `黑鐵`, `白鐵`, `錏`, `鋁`, and
   `鋅`. Keep import/storage canonical material values such as `No1 白鐵`,

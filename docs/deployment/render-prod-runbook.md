@@ -18,6 +18,8 @@ References:
 - Render service type: Web Service.
 - Runtime: Docker.
 - Branch: `master`.
+- Root Directory: blank.
+- Health Check Path: `/health`.
 - Dockerfile path: `Dockerfile.multi`.
 - Docker context directory: repository root.
 - Docker Command: `sh /app/deploy/render/start.sh`.
@@ -51,9 +53,11 @@ The startup script maps these app paths to the disk:
 | `/data/librechat.yaml` | `/data/librechat.yaml` | LibreChat config via `CONFIG_PATH` |
 | `/data/openai-oauth/auth.json` | `/data/openai-oauth/auth.json` | Writable OpenAI OAuth auth file |
 
-Start with the smallest disk size that comfortably covers uploads. For an
-internal 10-account deployment, 10 GB is a reasonable starting point; increase
-later if uploads grow. Render disks can grow but not shrink.
+Start with the smallest disk size that comfortably covers uploads. For a
+budget-first smoke deployment, 1 GB is acceptable because `auth.json` is tiny
+and only uploads/images/logs consume meaningful disk space. For sustained
+internal production use, 10 GB is a safer starting point. Render disks can grow
+but not shrink.
 
 ## Create The Render Service
 
@@ -64,29 +68,52 @@ later if uploads grow. Render disks can grow but not shrink.
    ```
 
 2. In Render, create a new Web Service from the GitHub repository.
-3. Use these settings:
+3. Use these top-level settings:
 
    ```text
    Name: librechat-prod
+   Language / Runtime: Docker
    Branch: master
-   Runtime / Language: Docker
-   Dockerfile Path: Dockerfile.multi
-   Docker Context Directory: .
-   Docker Command: sh /app/deploy/render/start.sh
-   Auto-Deploy: Yes
+   Region: US East if available; Oregon is acceptable if that is the available option
+   Root Directory: leave blank
    ```
 
-4. Pick the lowest paid instance that supports your workload. Persistent Disks
-   require a paid service, so do not use a free instance for production uploads
-   or OpenAI OAuth.
-5. Under advanced disk settings, add a Persistent Disk:
+4. Choose the instance type:
+
+   ```text
+   Starter: lowest-cost paid option for initial production smoke
+   Standard: upgrade target if builds or runtime are killed for memory
+   Free: do not use for production, because it does not support the required disk
+   ```
+
+5. Under Environment Variables, use **Add from .env** and paste the production
+   values from local `.env.prod`. Do not paste `auth.json` into environment
+   variables.
+
+6. Under Advanced > Disk, add a Persistent Disk:
 
    ```text
    Mount Path: /data
-   Size: 10 GB
+   Size: 1 GB for the lowest-cost smoke deployment, or 10 GB for safer production headroom
    ```
 
-6. Create the service. The first deploy can use placeholder domain values; once
+   The mount path must be exactly `/data`. Do not keep Render's default
+   `/var/data`, because the app env and startup script expect `/data`.
+
+7. Under Advanced, set:
+
+   ```text
+   Health Check Path: /health
+   Registry Credential: No credential
+   Docker Build Context Directory: .
+   Dockerfile Path: Dockerfile.multi
+   Docker Command: sh /app/deploy/render/start.sh
+   Pre-Deploy Command: leave blank
+   Auto-Deploy: On Commit
+   Build Filters: leave blank
+   ```
+
+8. Create the service. The first deploy can use placeholder domain values; once
    Render shows the actual URL, update the domain env values and redeploy.
 
 ## Environment Variables
@@ -137,14 +164,46 @@ PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=<optional-token>
 Do not add `OPENAI_PROVIDER`. The frontend/provider selection distinguishes
 OpenAI OAuth from the normal OpenAI API-key flow.
 
+## MongoDB Atlas Network Access
+
+If the first Render runtime log says:
+
+```text
+Could not connect to any servers in your MongoDB Atlas cluster.
+One common reason is that you're trying to access the database from an IP that isn't whitelisted.
+```
+
+the Render service is running, but Atlas is blocking Render's outbound IP.
+
+For the fastest first deploy:
+
+1. Open MongoDB Atlas for the production project.
+2. Go to Security > Network Access.
+3. Add this temporary IP access list entry:
+
+   ```text
+   0.0.0.0/0
+   ```
+
+4. Comment it as `temporary Render production deploy`.
+5. Wait 1-3 minutes.
+6. Restart or manually redeploy the Render service.
+
+After the service is live, tighten the rule:
+
+1. In Render, open the service's connection or outbound networking details.
+2. Copy the Render outbound IPs/CIDRs.
+3. Add those IPs/CIDRs to MongoDB Atlas Network Access.
+4. Remove the temporary `0.0.0.0/0` entry.
+
 ## Install OpenAI OAuth Auth File
 
 `OPENAI_OAUTH_AUTH_FILE` must point to a writable file. Do not rely on a
 read-only secret file as the final auth path, because `openai-oauth-provider`
 refreshes access tokens and writes updated token data back to `auth.json`.
 
-After the service is deployed and the `/data` disk exists, open Render Shell for
-the service and run:
+Preferred path: after the service is deployed, live, and the `/data` disk
+exists, open Render Shell for the service and run:
 
 ```bash
 mkdir -p /data/openai-oauth
@@ -155,6 +214,28 @@ chmod 600 /data/openai-oauth/auth.json
 ```
 
 Then redeploy or restart the service from Render.
+
+Temporary bootstrap path: if the service is not live yet but the disk is
+attached, use Render Secret File only as a one-time copy source:
+
+1. Add a Secret File named `openai-auth.json`.
+2. Paste the trusted-machine `auth.json` content into that secret file.
+3. Temporarily set Docker Command to:
+
+   ```bash
+   sh -c 'mkdir -p /data/openai-oauth && if [ ! -f /data/openai-oauth/auth.json ] && [ -f /etc/secrets/openai-auth.json ]; then cp /etc/secrets/openai-auth.json /data/openai-oauth/auth.json && chmod 600 /data/openai-oauth/auth.json; fi; exec sh /app/deploy/render/start.sh'
+   ```
+
+4. Deploy once.
+5. Change Docker Command back to:
+
+   ```bash
+   sh /app/deploy/render/start.sh
+   ```
+
+6. Remove the Secret File after confirming `/data/openai-oauth/auth.json`
+   exists. The final runtime file must be the writable disk file, not the
+   read-only secret file.
 
 If OAuth calls later fail with an auth/refresh error, re-run the trusted
 OpenAI/Codex login flow, replace `/data/openai-oauth/auth.json`, and restart
@@ -225,11 +306,31 @@ upstream reconciliation work.
 
 ## Troubleshooting
 
+Failed deploy with missing newer logs:
+
+- Open the Render service Events page and inspect the latest failed deploy.
+- Copy the final build/runtime log lines, redacting `MONGO_URI`,
+  `STEEL_POSTGRES_URL`, tokens, and `auth.json`.
+- Common causes are wrong Dockerfile path, wrong Docker Command, MongoDB Atlas
+  IP access list, health check path, or instance memory.
+
 Port bind failure:
 
 - Confirm `HOST=0.0.0.0`.
 - Use Render's default `PORT=10000`, or let Render inject `PORT`.
 - The app must listen on `process.env.PORT`.
+
+Health check failure:
+
+- Confirm Health Check Path is `/health`, not `/healthz`.
+- Confirm the app has reached the runtime stage and is not crashing before
+  Express starts.
+
+Docker build or start command failure:
+
+- Confirm Docker Build Context Directory is `.`.
+- Confirm Dockerfile Path is `Dockerfile.multi`, not `.`.
+- Confirm Docker Command is `sh /app/deploy/render/start.sh`.
 
 Lost uploads or missing OAuth auth file after redeploy:
 
@@ -245,7 +346,7 @@ Supabase connection failure:
 
 Out-of-memory restarts:
 
-- Upgrade the Render instance size before changing app behavior.
+- Upgrade from Starter to Standard before changing app behavior.
 - Keep Meili/search disabled in the low-cost production shape unless search is
   explicitly required.
 
