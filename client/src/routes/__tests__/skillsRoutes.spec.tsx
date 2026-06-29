@@ -47,7 +47,7 @@ jest.mock('../Root', () => ({
   default: () => null,
 }));
 
-import { router } from '../index';
+import { router, shouldRegisterSteelOAuthChatRoute } from '../index';
 
 type RouteNode = {
   path?: string;
@@ -66,5 +66,15 @@ describe('skills routes', () => {
     const paths = flattenPaths((router as unknown as { routes: RouteNode[] }).routes);
 
     expect(paths).toContain('skills/new');
+  });
+});
+
+describe('Steel OAuth chat route gate', () => {
+  it('registers the route in development', () => {
+    expect(shouldRegisterSteelOAuthChatRoute(true)).toBe(true);
+  });
+
+  it('does not register the route in production', () => {
+    expect(shouldRegisterSteelOAuthChatRoute(false)).toBe(false);
   });
 });

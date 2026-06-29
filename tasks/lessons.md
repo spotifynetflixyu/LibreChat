@@ -192,6 +192,16 @@
   `Steel` prefix. Reserve `Steel` naming for quote/OCR/rules/runtime context,
   Markdown capture, auto-parse/save, and other steel-business modules. Existing
   `STEEL_OPENAI_*` env names may stay only as backwards-compatible fallbacks.
+- Do not add `OPENAI_PROVIDER` to production env templates for OpenAI OAuth.
+  LibreChat's frontend/provider selection owns the OAuth vs API-key distinction;
+  production env should carry actual runtime values such as model defaults and
+  `OPENAI_OAUTH_AUTH_FILE`.
+- Production deployment env should use a real `.env.prod` file that remains
+  ignored by git, with only root `.env.prod.example` tracked as the placeholder
+  template.
+- `ALLOW_REGISTRATION=false` should not be treated as blocking production admin
+  bootstrap. Use LibreChat's trusted `create-user` script; in a clean MongoDB,
+  the first registered user becomes `ADMIN`.
 - For Steel price lookup material simplification, only unify the query/tool
   input enum into simple material keywords such as `黑鐵`, `白鐵`, `錏`, `鋁`, and
   `鋅`. Keep import/storage canonical material values such as `No1 白鐵`,

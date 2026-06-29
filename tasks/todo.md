@@ -1,4 +1,110 @@
-# Active: search_price_candidates tier output cleanup
+# Active: AWS Lightsail production deployment implementation
+
+Goal: implement the approved AWS Lightsail low-cost production deployment path,
+verify it locally, then create `master` for production use.
+
+Plan - 2026-06-29:
+
+- [x] Re-read the production design, route shells, current compose, Dockerfile,
+      existing workflow patterns, project instructions, and lessons.
+- [x] Add backend production gating for standalone `/steel/oauth-chat` backing
+      APIs while keeping OpenAI OAuth usage endpoints available.
+- [x] Add frontend production route registration gating for `/steel/oauth-chat`.
+- [x] Add minimal production compose and Caddy config for Lightsail.
+- [x] Add production env template, Lightsail runbook, OpenAI OAuth auth-file
+      instructions, and separate-prod-DB guidance.
+- [x] Add GitHub Actions workflow for `master` production image build and host
+      redeploy.
+- [x] Add production smoke script for `/api/config`, `/steel/oauth-chat`, and
+      `/api/steel/ai/chat`.
+- [x] Run final focused tests, builds, compose validation, Docker image sanity
+      check, secret scan, and diff hygiene.
+- [x] Commit the implementation and create `master` after verification.
+
+Review - 2026-06-29:
+
+- Added backend production gating so standalone `/steel/oauth-chat` backing APIs
+  return 404 when `NODE_ENV=production`; authenticated OAuth usage stays
+  available.
+- Added frontend route registration gating so production does not register the
+  `/steel/oauth-chat` route.
+- Added `deploy-compose.prod.yml` with only `api` and `caddy`, external
+  production DB env values, host-persisted uploads/images/logs/skills, and a
+  writable OpenAI OAuth auth-file mount.
+- Added Caddy config that returns 404 for `/steel/oauth-chat*` before proxying
+  normal LibreChat traffic.
+- Added `.env.prod.example` and
+  `docs/deployment/aws-lightsail-prod-runbook.md`, including the recommendation
+  to use separate production MongoDB Atlas and Supabase resources.
+- Kept the real production env as ignored `/etc/librechat/.env.prod`, tracked
+  only the placeholder `.env.prod.example`, and removed the unnecessary
+  `OPENAI_PROVIDER` value because the frontend distinguishes OAuth/API-key
+  providers.
+- Documented first-admin bootstrap with `npm run create-user` from the running
+  API container while keeping `ALLOW_REGISTRATION=false`.
+- Added `.github/workflows/deploy-prod.yml` so pushes to `master` build the
+  production GHCR image and redeploy the Lightsail compose stack over SSH.
+- Added `scripts/prod-smoke.sh` for `/api/config`, `/steel/oauth-chat`, and
+  `/api/steel/ai/chat` production checks.
+- Verification:
+  - `cd api && rtk npx jest server/routes/__tests__/steel.spec.js --runInBand --watch=false --coverage=false`
+    passed, 15 tests.
+  - `cd client && rtk npx jest src/routes/__tests__/skillsRoutes.spec.tsx --runInBand --watch=false --coverage=false`
+    passed, 3 tests.
+  - `rtk npm run build:api` passed.
+  - `rtk npm run build:client` passed with existing bundle-size,
+    `vm-browserify` eval, and PWA glob warnings.
+  - Workflow YAML parsed with Ruby YAML.
+  - Production compose rendered services `api` and `caddy` only.
+  - `rtk bash -n scripts/prod-smoke.sh` passed.
+  - Secret-pattern scan found no committed production secrets.
+  - `rtk git diff --check` passed.
+  - Local Docker image build was attempted but could not run because the Docker
+    daemon was not available at `/Users/neven/.docker/run/docker.sock`; GitHub
+    Actions remains the authoritative image build path.
+
+---
+
+# Previous: AWS Lightsail low-cost production deployment design
+
+Goal: document the selected low-cost production deployment shape for internal
+LibreChat/Steel use: AWS Lightsail host, external prod databases, host-persisted
+uploads, OpenAI OAuth setup, `master` production branch, and automatic redeploy
+on `master` pushes.
+
+Plan - 2026-06-29:
+
+- [x] Capture the selected AWS Lightsail low-cost host design.
+- [x] Record prod DB boundaries: cloud MongoDB through `MONGO_URI` and Supabase
+      cloud Postgres through `STEEL_POSTGRES_URL`.
+- [x] Document host-persisted uploads so files are not stored in Docker images
+      or container writable layers.
+- [x] Document OpenAI OAuth host-secret setup and keep `/steel/oauth-chat`
+      development-only.
+- [x] List next implementation tasks for prod compose, GitHub Actions redeploy,
+      host setup, and verification.
+
+Review - 2026-06-29:
+
+- Added `docs/plans/2026-06-29-aws-lightsail-low-cost-prod-design.md`.
+- The design starts with AWS Lightsail Small, 2 vCPU / 2 GB RAM / 60 GB SSD,
+  plus swap, and defines 4 GB upgrade triggers.
+- Production app runtime is intentionally minimal: custom image, reverse proxy,
+  persistent host directories, external MongoDB, external Supabase, and no local
+  Meili/RAG/vector DB in the low-cost starting shape.
+- Uploads are bound to `/srv/librechat/uploads`, not stored in the image.
+- OpenAI OAuth uses `/var/secrets/openai-oauth/auth.json` via
+  `OPENAI_OAUTH_AUTH_FILE`; product traffic uses native LibreChat chat rather
+  than `/steel/oauth-chat`.
+- OAuth access tokens expire; `openai-oauth-provider` refreshes with the
+  refresh token and writes updated token data back to `auth.json`, so the
+  production mount must allow app-container writes and the file must be replaced
+  when refresh auth fails.
+- `master` is the production branch; `main` remains upstream-only.
+
+---
+
+# Previous: search_price_candidates tier output cleanup
 
 Goal: keep `search_price_candidates` AI-visible candidate pricing data on
 `tierPrices` only, remove duplicated `tierRatios` from tool output, and fix the

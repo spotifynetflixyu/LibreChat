@@ -1,0 +1,41 @@
+services:
+  api:
+    image: ${LIBRECHAT_IMAGE:-ghcr.io/spotifynetflixyu/librechat-prod-api:master}
+    container_name: librechat-prod-api
+    restart: unless-stopped
+    env_file:
+      - ${LIBRECHAT_ENV_FILE:-/etc/librechat/.env.prod}
+    environment:
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+      - PORT=3080
+      - SEARCH=false
+      - MEILI_HOST=
+      - MEILI_MASTER_KEY=
+      - MEILI_NO_SYNC=true
+      - OPENAI_OAUTH_AUTH_FILE=/var/secrets/openai-oauth/auth.json
+    expose:
+      - "3080"
+    volumes:
+      - /etc/librechat/librechat.yaml:/app/librechat.yaml:ro
+      - /srv/librechat/uploads:/app/uploads
+      - /srv/librechat/images:/app/client/public/images
+      - /srv/librechat/logs:/app/api/logs
+      - /srv/librechat/skill:/app/skill
+      - /var/secrets/openai-oauth:/var/secrets/openai-oauth
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: librechat-prod-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - LIBRECHAT_DOMAIN=${LIBRECHAT_DOMAIN}
+    volumes:
+      - ./deploy/lightsail/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/librechat/caddy/data:/data
+      - /srv/librechat/caddy/config:/config

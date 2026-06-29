@@ -22,7 +22,6 @@ import ShareRoute from './ShareRoute';
 import ChatRoute from './ChatRoute';
 import Search from './Search';
 import Root from './Root';
-import SteelOAuthChat from './SteelOAuthChat';
 
 const AuthLayout = () => (
   <AuthContextProvider>
@@ -59,6 +58,24 @@ const loadProjectWorkspace = () =>
   import('~/components/Projects').then((m) => ({
     Component: m.ProjectWorkspace,
   }));
+
+const loadSteelOAuthChat = () =>
+  import('./SteelOAuthChat').then((m) => ({
+    Component: m.default,
+  }));
+
+export function shouldRegisterSteelOAuthChatRoute(isDevelopment = import.meta.env.DEV): boolean {
+  return isDevelopment;
+}
+
+const steelOAuthChatRoutes = shouldRegisterSteelOAuthChatRoute()
+  ? [
+      {
+        path: 'steel/oauth-chat',
+        lazy: loadSteelOAuthChat,
+      },
+    ]
+  : [];
 
 const baseEl = document.querySelector('base');
 const baseHref = baseEl?.getAttribute('href') || '/';
@@ -146,10 +163,7 @@ export const router = createBrowserRouter(
                   path: 'search',
                   element: <Search />,
                 },
-                {
-                  path: 'steel/oauth-chat',
-                  element: <SteelOAuthChat />,
-                },
+                ...steelOAuthChatRoutes,
                 {
                   path: 'prompts',
                   element: <Navigate to="/prompts/new" replace={true} />,

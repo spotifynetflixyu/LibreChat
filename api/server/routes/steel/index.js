@@ -91,26 +91,47 @@ function requireJwtUnlessGuestToken(req, res, next) {
   requireJwtAuth(req, res, next);
 }
 
+function isSteelOAuthChatDevRouteEnabled(env = process.env) {
+  return env.NODE_ENV !== 'production';
+}
+
+function requireSteelOAuthChatDevRoute(_req, res, next) {
+  if (isSteelOAuthChatDevRouteEnabled()) {
+    next();
+    return;
+  }
+
+  res.status(404).json({ message: 'Not found' });
+}
+
 router.post(
   '/conversations/authenticated',
+  requireSteelOAuthChatDevRoute,
   requireJwtAuth,
   handlers.createAuthenticatedConversation,
 );
-router.post('/conversations/guest', handlers.createGuestConversation);
+router.post('/conversations/guest', requireSteelOAuthChatDevRoute, handlers.createGuestConversation);
 router.get(
   '/conversations/:conversationId/messages',
+  requireSteelOAuthChatDevRoute,
   requireJwtAuth,
   handlers.readConversationMessages,
 );
 router.get(
   '/conversations/:conversationMetaId',
+  requireSteelOAuthChatDevRoute,
   requireJwtUnlessGuestToken,
   handlers.readConversation,
 );
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.get('/ai/oauth-usage', requireJwtAuth, handlers.readOpenAIOAuthUsage);
-router.post('/ai/chat', requireJwtAuth, handlers.chat);
-router.post('/ai/chat/stream', requireJwtAuth, steelAsyncRoute(handlers.streamChat));
+router.post('/ai/chat', requireSteelOAuthChatDevRoute, requireJwtAuth, handlers.chat);
+router.post(
+  '/ai/chat/stream',
+  requireSteelOAuthChatDevRoute,
+  requireJwtAuth,
+  steelAsyncRoute(handlers.streamChat),
+);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 
 module.exports = router;

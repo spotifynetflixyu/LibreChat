@@ -114,6 +114,20 @@ jest.mock('~/server/controllers/ModelController', () => ({
 const steelRouter = require('../steel');
 const adminSteelRouter = require('../admin/steel');
 
+async function withNodeEnv(value, testFn) {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = value;
+  try {
+    return await testFn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previous;
+    }
+  }
+}
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -128,9 +142,7 @@ function createApp() {
 
 describe('Steel route shells', () => {
   beforeEach(() => {
-    mockRequireJwtAuth.mockClear();
-    mockReadOpenAIOAuthUsage.mockClear();
-    mockReadConversationMessages.mockClear();
+    jest.clearAllMocks();
   });
 
   it('registers user-facing Steel model options under /api/steel', async () => {
@@ -174,6 +186,49 @@ describe('Steel route shells', () => {
       warnings: [],
     });
   });
+
+  it('blocks standalone Steel OAuth chat APIs in production', async () =>
+    withNodeEnv('production', async () => {
+      const app = createApp();
+
+      const chatRes = await request(app)
+        .post('/api/steel/ai/chat')
+        .send({ messages: [{ role: 'user', content: 'dev probe' }] });
+      const streamRes = await request(app)
+        .post('/api/steel/ai/chat/stream')
+        .send({ messages: [{ role: 'user', content: 'dev probe' }] });
+      const createRes = await request(app)
+        .post('/api/steel/conversations/authenticated')
+        .send({ libreChatConversationId: 'lc_1' });
+      const guestRes = await request(app)
+        .post('/api/steel/conversations/guest')
+        .send({ libreChatConversationId: 'lc_guest_1' });
+      const readRes = await request(app).get('/api/steel/conversations/steel_meta_1');
+      const messagesRes = await request(app).get('/api/steel/conversations/steel-chat-1/messages');
+
+      expect(chatRes.status).toBe(404);
+      expect(streamRes.status).toBe(404);
+      expect(createRes.status).toBe(404);
+      expect(guestRes.status).toBe(404);
+      expect(readRes.status).toBe(404);
+      expect(messagesRes.status).toBe(404);
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockStreamChat).not.toHaveBeenCalled();
+      expect(mockCreateAuthenticatedConversation).not.toHaveBeenCalled();
+      expect(mockCreateGuestConversation).not.toHaveBeenCalled();
+      expect(mockReadConversation).not.toHaveBeenCalled();
+      expect(mockReadConversationMessages).not.toHaveBeenCalled();
+    }));
+
+  it('keeps OpenAI OAuth usage available in production', async () =>
+    withNodeEnv('production', async () => {
+      const app = createApp();
+
+      const res = await request(app).get('/api/steel/ai/oauth-usage');
+
+      expect(res.status).toBe(200);
+      expect(mockReadOpenAIOAuthUsage).toHaveBeenCalledTimes(1);
+    }));
 
   it('registers authenticated Steel streaming chat under /api/steel', async () => {
     const app = createApp();
