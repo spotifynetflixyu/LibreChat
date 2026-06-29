@@ -1,4 +1,95 @@
-# Active: Render service creation documentation update
+# Active: Render manual state sync documentation
+
+Goal: document every production value/file that must be manually configured in
+Render or external services, including `librechat.yaml` and OpenAI OAuth
+`auth.json`.
+
+Plan - 2026-06-29:
+
+- [x] Add a Render manual sync checklist that separates dashboard env vars,
+      persistent-disk files, SSH setup, and external-service allowlists.
+- [x] Document that Render auto-creates only a minimal `/data/librechat.yaml`;
+      the real local `librechat.yaml` must be uploaded to Render manually after
+      local changes.
+- [x] Document that OpenAI OAuth `auth.json` must be uploaded to the writable
+      Render disk and refreshed manually when local OAuth auth changes.
+- [x] List what should not be pasted to Render, and what is managed outside
+      Render such as Steel rules sync and Mongo/Supabase data.
+- [x] Update lessons and verify the docs for secret leaks and whitespace.
+
+Review - 2026-06-29:
+
+- Added `Manual Render Sync Checklist` to
+  `docs/deployment/render-prod-runbook.md`, separating Render Dashboard env
+  vars, `/data` persistent-disk files, SSH setup, MongoDB Atlas allowlist, and
+  Supabase-managed data/schema/rules.
+- Documented that Render's startup script only creates a minimal
+  `/data/librechat.yaml`; the real local `librechat.yaml` must be uploaded to
+  Render manually with SSH pipe and followed by a service restart.
+- Documented that local `~/.codex/auth.json` must be uploaded to
+  `/data/openai-oauth/auth.json`, verified as JSON, and followed by a service
+  restart whenever local OAuth auth changes.
+- Added a "do not paste into Render Environment" list for `auth.json`,
+  full `librechat.yaml`, password command arguments, and local-only paths.
+- Clarified that Steel rules/data sync and MongoDB/Supabase state are managed
+  outside Render rather than pasted into the Render dashboard.
+- Updated `tasks/lessons.md` with the manual Render state-sync boundary.
+- Verification:
+  - Secret-pattern scan over the updated deployment docs and task files
+    returned no matches.
+  - Trailing-whitespace scan over the updated deployment docs and task files
+    returned no matches.
+  - `rtk git diff --check -- docs/deployment/render-prod-runbook.md tasks/todo.md tasks/lessons.md`
+    passed.
+  - `rtk rg` confirmed the runbook contains the manual sync checklist,
+    `/data/librechat.yaml`, `/data/openai-oauth/auth.json`, Render Environment,
+    MongoDB Atlas, and Supabase-managed state entries.
+
+---
+
+# Previous: Local terminal account bootstrap documentation
+
+Goal: document how to create production LibreChat accounts from the local
+terminal using `.env.prod`, instead of relying on Render SSH on the low-cost
+Starter instance.
+
+Plan - 2026-06-29:
+
+- [x] Add a standalone local-terminal user bootstrap runbook with prerequisites,
+      first-admin creation, internal-user creation, verification, and
+      troubleshooting.
+- [x] Update the Render production runbook to point admin/internal user
+      creation at the local-terminal workflow.
+- [x] Capture the Render Starter SSH failure lesson and the safer local
+      `create-user` command shape.
+- [x] Verify the updated docs for secret leaks, command accuracy, and diff
+      hygiene.
+
+Review - 2026-06-29:
+
+- Added `docs/deployment/local-terminal-user-bootstrap.md` with the local Mac
+  terminal procedure for creating production accounts through `.env.prod` and
+  `config/create-user.js`.
+- Updated `docs/deployment/render-prod-runbook.md` so admin/internal user
+  creation points to the local-terminal workflow instead of Render SSH.
+- Documented the safer command shape:
+  `DOTENV_CONFIG_PATH=.env.prod CONFIG_PATH=librechat.yaml node -r dotenv/config config/create-user.js ...`.
+- Documented that passwords should be entered at the prompt, not passed as
+  command arguments.
+- Updated `tasks/lessons.md` with the Render Starter/SSH account-bootstrap
+  correction.
+- Verification:
+  - Secret-pattern scan over the new/updated docs and task files returned no
+    matches.
+  - `rtk git diff --check -- docs/deployment/render-prod-runbook.md tasks/todo.md tasks/lessons.md`
+    passed for tracked files, and trailing-whitespace scan over the new/updated
+    docs and task files returned no matches.
+  - `rtk rg` confirmed the local bootstrap command, password warning, runbook
+    link, and Render SSH troubleshooting text are present.
+
+---
+
+# Previous: Render service creation documentation update
 
 Goal: update the production deployment documentation with the actual Render
 service creation and troubleshooting steps used during setup.

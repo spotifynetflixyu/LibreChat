@@ -216,6 +216,19 @@
   low-cost smoke deployment, but the mount path must still be `/data`. Use
   Secret Files only as a temporary bootstrap copy source for `auth.json`; the
   final OAuth file must live on the writable disk.
+- For low-cost Render Starter production, create LibreChat users from the local
+  terminal with `.env.prod` loaded instead of running `create-user` through
+  Render SSH. Use
+  `DOTENV_CONFIG_PATH=.env.prod CONFIG_PATH=librechat.yaml node -r dotenv/config config/create-user.js ...`
+  so the script connects to production MongoDB without pointing local config at
+  `/data/librechat.yaml`, and never pass passwords as command arguments.
+- Render auto-deploy only updates tracked code from `master`. Production
+  runtime state must be documented as manual sync boundaries: paste `.env.prod`
+  values into Render Environment, upload local `librechat.yaml` to
+  `/data/librechat.yaml`, upload local `~/.codex/auth.json` to
+  `/data/openai-oauth/auth.json`, configure SSH public keys in Render, and
+  maintain MongoDB Atlas/Supabase state outside Render. Restart Render after
+  replacing config or OAuth auth files.
 - For Steel price lookup material simplification, only unify the query/tool
   input enum into simple material keywords such as `黑鐵`, `白鐵`, `錏`, `鋁`, and
   `鋅`. Keep import/storage canonical material values such as `No1 白鐵`,

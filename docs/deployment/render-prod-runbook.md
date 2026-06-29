@@ -164,6 +164,75 @@ PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=<optional-token>
 Do not add `OPENAI_PROVIDER`. The frontend/provider selection distinguishes
 OpenAI OAuth from the normal OpenAI API-key flow.
 
+## Manual Render Sync Checklist
+
+Render auto-deploys code from `master`, but it does not automatically receive
+ignored local files or external-service allowlist changes. Keep this checklist
+current whenever production settings change.
+
+| Item | Where it lives | How to update | Restart needed |
+|---|---|---|---|
+| Production env vars | Render Dashboard > Environment | Paste values from local `.env.prod` | Yes, Render redeploys/restarts after env changes |
+| `librechat.yaml` | Render disk `/data/librechat.yaml` | Upload from local terminal with SSH pipe | Yes |
+| OpenAI OAuth `auth.json` | Render disk `/data/openai-oauth/auth.json` | Upload from local `~/.codex/auth.json` with SSH pipe | Yes |
+| User uploads/images/logs/skills | Render disk under `/data` | Created by the app/start script | No, unless changing config |
+| SSH public key | Render account settings | Paste local `~/.ssh/id_ed25519.pub` | No |
+| MongoDB Atlas Network Access | MongoDB Atlas | Add Render outbound IPs/CIDRs and local IP for bootstrap | Retry/restart only if connection had failed |
+| Supabase prod data/schema | Supabase | Apply schema/data/rules sync from local terminal | No Render restart for data-only changes |
+
+Do not paste these into Render Environment variables:
+
+- `auth.json` contents.
+- Full `librechat.yaml` contents.
+- Passwords as command arguments.
+- Local-only paths such as `$HOME/.codex/auth.json`; Render needs absolute
+  paths inside its container/disk, for example `/data/openai-oauth/auth.json`.
+
+Do not rely on the Docker image for these files:
+
+- `.env.prod` is ignored and must be represented by Render Dashboard env vars.
+- Local `librechat.yaml` is ignored and must be uploaded to `/data/librechat.yaml`.
+- Local `~/.codex/auth.json` is outside the repo and must be uploaded to
+  `/data/openai-oauth/auth.json`.
+
+## Upload LibreChat Config To Render
+
+The Render startup script creates a minimal config only when the disk file does
+not exist:
+
+```yaml
+version: 1.3.11
+```
+
+That file is not equivalent to your local `librechat.yaml`. If local
+`librechat.yaml` contains model specs, endpoints, permissions, MCP settings,
+or OpenAI OAuth display/configuration, upload it manually.
+
+Before uploading, inspect the local file and avoid hardcoded secrets. Prefer
+environment-variable references for secret values.
+
+Upload from the local repo root. Render's Connect > SSH command gives the
+target after `ssh`, for example
+`srv-d9135vo0697c73b5p0u0@ssh.virginia.render.com`.
+
+```bash
+ssh <render-ssh-target> 'cat > /data/librechat.yaml && chmod 644 /data/librechat.yaml' < librechat.yaml
+```
+
+For this service, the command shape is:
+
+```bash
+ssh srv-d9135vo0697c73b5p0u0@ssh.virginia.render.com 'cat > /data/librechat.yaml && chmod 644 /data/librechat.yaml' < librechat.yaml
+```
+
+Verify:
+
+```bash
+ssh srv-d9135vo0697c73b5p0u0@ssh.virginia.render.com 'ls -l /data/librechat.yaml && sed -n "1,80p" /data/librechat.yaml'
+```
+
+Restart the Render service after replacing `/data/librechat.yaml`.
+
 ## MongoDB Atlas Network Access
 
 If the first Render runtime log says:
@@ -203,7 +272,21 @@ read-only secret file as the final auth path, because `openai-oauth-provider`
 refreshes access tokens and writes updated token data back to `auth.json`.
 
 Preferred path: after the service is deployed, live, and the `/data` disk
-exists, open Render Shell for the service and run:
+exists, upload from the local terminal with SSH pipe:
+
+```bash
+ssh srv-d9135vo0697c73b5p0u0@ssh.virginia.render.com 'mkdir -p /data/openai-oauth && umask 077 && cat > /data/openai-oauth/auth.json && chmod 600 /data/openai-oauth/auth.json' < ~/.codex/auth.json
+```
+
+Verify:
+
+```bash
+ssh srv-d9135vo0697c73b5p0u0@ssh.virginia.render.com 'node -e '\''const fs=require("fs"); const p="/data/openai-oauth/auth.json"; JSON.parse(fs.readFileSync(p,"utf8")); console.log("auth.json OK", fs.statSync(p).size, "bytes")'\'''
+```
+
+Then restart the Render service so the OAuth provider reloads the file.
+
+Render Shell fallback, if paste works in your browser:
 
 ```bash
 mkdir -p /data/openai-oauth
@@ -212,8 +295,6 @@ cat > /data/openai-oauth/auth.json <<'JSON'
 JSON
 chmod 600 /data/openai-oauth/auth.json
 ```
-
-Then redeploy or restart the service from Render.
 
 Temporary bootstrap path: if the service is not live yet but the disk is
 attached, use Render Secret File only as a one-time copy source:
@@ -241,26 +322,36 @@ If OAuth calls later fail with an auth/refresh error, re-run the trusted
 OpenAI/Codex login flow, replace `/data/openai-oauth/auth.json`, and restart
 the service.
 
+If local `~/.codex/auth.json` changes, Render does not know automatically.
+Upload it again with the SSH pipe command and restart the service.
+
 ## Admin And Internal Users
 
 `ALLOW_REGISTRATION=false` keeps public registration closed. It does not block
 LibreChat's trusted server-side user script.
 
-For a clean production MongoDB, create the first admin from Render Shell:
+Use the local terminal bootstrap flow in
+[`local-terminal-user-bootstrap.md`](./local-terminal-user-bootstrap.md). This
+connects directly to production MongoDB with local `.env.prod` and avoids
+running an extra Node process inside the low-memory Render Starter instance.
+
+For a clean production MongoDB, create the first admin from the local repo root:
 
 ```bash
-cd /app/api
-npm run create-user -- admin@example.com "Admin" admin
+DOTENV_CONFIG_PATH=.env.prod CONFIG_PATH=librechat.yaml \
+  node -r dotenv/config config/create-user.js \
+  admin@example.com "Admin" admin --email-verified=true
 ```
 
 Let the script prompt for the password. The first user in a clean MongoDB
 becomes `ADMIN`.
 
-Create the remaining internal users the same way:
+Create the remaining internal users the same way from the local terminal:
 
 ```bash
-cd /app/api
-npm run create-user -- user01@example.com "User 01" user01
+DOTENV_CONFIG_PATH=.env.prod CONFIG_PATH=librechat.yaml \
+  node -r dotenv/config config/create-user.js \
+  user01@example.com "User 01" user01 --email-verified=true
 ```
 
 If production MongoDB already contains users and none of them is admin, promote
