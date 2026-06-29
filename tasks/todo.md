@@ -1,4 +1,24 @@
-# Active: GitHub Actions production deploy workflow
+# Active: Fix production PaddleOCR MCP runtime
+
+Goal: make the DigitalOcean production API image able to start PaddleOCR MCP
+reliably for Steel PDF/image OCR instead of falling back to native PDF text
+parsing only.
+
+Plan - 2026-06-29:
+
+- [x] Confirm the production failure mode from host/container state and logs.
+- [x] Move the production API runtime image off Alpine/musl so
+      `opencv-contrib-python` can use prebuilt wheels.
+- [x] Pin PaddleOCR MCP to Python 3.12 and prewarm the `uvx` environment during
+      image build to avoid first-request connection timeout.
+- [x] Upload the updated `librechat.yaml` to the Droplet because `/data` config
+      is intentionally host-managed.
+- [ ] Build/deploy through GitHub Actions and verify PaddleOCR MCP can start.
+- [ ] Smoke-check `https://chat.longdin.org/health` after deploy.
+
+---
+
+# Previous: GitHub Actions production deploy workflow
 
 Goal: add a `master` push workflow that builds the customized LibreChat
 production image, pushes it to GHCR, SSHes to the DigitalOcean Droplet, and

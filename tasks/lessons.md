@@ -378,6 +378,10 @@
   reject. Keep raw server names for MCP registry/config lookup, but sanitize the
   provider-facing MCP tool-name suffix to `^[a-zA-Z0-9_-]+$`; names such as
   `PaddleOCR-VL-1.6` must not be sent to OpenAI as-is.
+- Production LibreChat MCP runtime config comes from host-managed
+  `/data/librechat.yaml` through `CONFIG_PATH`, not repo `.mcp.json`. Treat
+  `.mcp.json` as local Codex/MCP client config unless a task explicitly targets
+  local MCP tooling.
 - The current PaddleOCR MCP server key should be `PaddleOCR`; keep
   `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6` as the model setting. Do not reuse the
   model name as the LibreChat MCP server key.

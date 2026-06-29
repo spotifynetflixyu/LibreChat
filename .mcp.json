@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "PaddleOCR-VL-1.6": {
+    "PaddleOCR": {
       "command": "uvx",
       "args": ["--from", "paddleocr-mcp", "paddleocr_mcp"],
       "env": {

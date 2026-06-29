@@ -87,13 +87,42 @@ ARG NODE_MAX_OLD_SPACE_SIZE
 ENV NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}"
 RUN npm run build
 
+# API runtime uses Debian/glibc so PaddleOCR's OpenCV dependency can use
+# prebuilt manylinux wheels instead of failing source builds on Alpine/musl.
+FROM node:24.16.0-bookworm-slim AS api-runtime-base
+ARG NPM_CI_TIMEOUT_SECONDS=1500
+ARG NPM_CI_ATTEMPTS=2
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      libgl1 \
+      libglib2.0-0 \
+      libgomp1 \
+      libjemalloc2 && \
+    rm -rf /var/lib/apt/lists/*
+ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
+WORKDIR /app
+RUN npm config set fetch-retry-maxtimeout 600000 && \
+    npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 15000
+COPY package*.json ./
+COPY packages/data-provider/package*.json ./packages/data-provider/
+COPY packages/api/package*.json ./packages/api/
+COPY packages/data-schemas/package*.json ./packages/data-schemas/
+COPY packages/client/package*.json ./packages/client/
+COPY client/package*.json ./client/
+COPY api/package*.json ./api/
+
 # API setup (including client dist)
-FROM base-min AS api-build
+FROM api-runtime-base AS api-build
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
 # Add `uv` for extended MCP support
-COPY --from=ghcr.io/astral-sh/uv:0.6.13 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /uvx /bin/
 RUN uv --version
+ENV UV_PYTHON=3.12
+RUN uvx --python 3.12 --from paddleocr-mcp python -c "import paddleocr_mcp; print('paddleocr-mcp ready')"
 WORKDIR /app
 # Install only production deps
 RUN attempt=1; \
