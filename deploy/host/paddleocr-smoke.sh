@@ -33,8 +33,11 @@ const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio
 const pdfPath = process.argv[2];
 const command = process.env.PADDLEOCR_MCP_COMMAND;
 const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? 1200000);
+const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 100);
+const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
+const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 12000);
 const expectedMarkers = String(
-  process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS || 'BP1,BP2,PL1,柱底板,連接板',
+  process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? 'BP1,BP2,PL1,柱底板,連接板',
 )
   .split(',')
   .map((marker) => marker.trim())
@@ -61,6 +64,16 @@ function normalize(value) {
     .replace(/\s+/g, '');
 }
 
+function boolEnv(name, defaultValue) {
+  const value = process.env[name];
+
+  if (value == null || value === '') {
+    return defaultValue;
+  }
+
+  return /^(1|true|yes|on)$/i.test(value);
+}
+
 function extractText(result) {
   const content = Array.isArray(result?.content) ? result.content : [];
 
@@ -84,6 +97,11 @@ async function main() {
       ...inheritedEnv(),
       PADDLEOCR_MCP_MODEL: process.env.PADDLEOCR_MCP_MODEL || 'PaddleOCR-VL-1.6',
       PADDLEOCR_MCP_PPOCR_SOURCE: process.env.PADDLEOCR_MCP_PPOCR_SOURCE || 'aistudio',
+      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT:
+        process.env.PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT || '600',
+      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT:
+        process.env.PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT || '1200',
+      PADDLEOCR_MCP_HTTP_TIMEOUT: process.env.PADDLEOCR_MCP_HTTP_TIMEOUT || '1200',
     },
     stderr: 'pipe',
   });
@@ -112,14 +130,17 @@ async function main() {
         name: 'paddleocr_vl',
         arguments: {
           input_data: pdfPath,
-          output_mode: 'detailed',
+          output_mode: outputMode,
           file_type: 'pdf',
           return_images: false,
           runtime_params: {
-            max_new_tokens: 12000,
-            use_doc_orientation_classify: true,
-            use_doc_unwarping: true,
-            use_layout_detection: true,
+            max_new_tokens: maxNewTokens,
+            use_doc_orientation_classify: boolEnv(
+              'PADDLEOCR_SMOKE_USE_DOC_ORIENTATION_CLASSIFY',
+              true,
+            ),
+            use_doc_unwarping: boolEnv('PADDLEOCR_SMOKE_USE_DOC_UNWARPING', true),
+            use_layout_detection: boolEnv('PADDLEOCR_SMOKE_USE_LAYOUT_DETECTION', true),
           },
         },
       },
@@ -129,13 +150,22 @@ async function main() {
     const text = extractText(response);
     const normalized = normalize(text);
     const matchedMarkers = expectedMarkers.filter((marker) => normalized.includes(normalize(marker)));
+    const stderrPreview = stderrChunks.join('').slice(-2000);
 
     if (timedOut) {
       throw new Error(`PaddleOCR smoke timed out after ${timeoutMs} ms`);
     }
 
-    if (text.length < 100) {
-      throw new Error(`PaddleOCR smoke returned too little text: ${text.length} chars`);
+    if (response?.isError === true || /Error calling tool/i.test(text)) {
+      throw new Error(
+        `PaddleOCR smoke tool returned an error. Preview: ${normalized.slice(0, 600)}. Stderr: ${redact(stderrPreview)}`,
+      );
+    }
+
+    if (text.length < minTextChars) {
+      throw new Error(
+        `PaddleOCR smoke returned too little text: ${text.length} chars, minimum ${minTextChars}. Preview: ${normalized.slice(0, 600)}`,
+      );
     }
 
     if (/No text could be parsed/i.test(text)) {
@@ -143,7 +173,9 @@ async function main() {
     }
 
     if (expectedMarkers.length > 0 && matchedMarkers.length === 0) {
-      throw new Error(`PaddleOCR smoke found none of the expected markers: ${expectedMarkers.join(', ')}`);
+      throw new Error(
+        `PaddleOCR smoke found none of the expected markers: ${expectedMarkers.join(', ')}. Preview: ${normalized.slice(0, 600)}`,
+      );
     }
 
     const summary = {
@@ -151,9 +183,12 @@ async function main() {
       pdfPath,
       command,
       elapsedMs: Date.now() - startedAt,
+      outputMode,
+      maxNewTokens,
       textChars: text.length,
       matchedMarkers,
       preview: normalized.slice(0, 600),
+      stderrPreview: redact(stderrPreview),
     };
 
     console.log(JSON.stringify(summary, null, 2));

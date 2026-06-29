@@ -16,7 +16,7 @@ Plan - 2026-06-29:
       longer first startup caused by venv creation.
 - [x] Update local/host-managed MCP config and deployment docs for the
       persistent venv boundary.
-- [ ] Verify locally, push `master`, update the Droplet config, wait for
+- [x] Verify locally, push `master`, update the Droplet config, wait for
       production deploy, then run short-start and `c.pdf` smoke checks on the
       Droplet.
 
@@ -50,6 +50,29 @@ Local review - 2026-06-29:
   - `docker compose -f deploy-compose.prod.yml config --quiet`
   - `rtk actionlint .github/workflows/deploy-prod.yml`
   - `rtk git diff --check`
+- Droplet verification:
+  - Uploaded host-managed `/data/librechat.yaml` with
+    `command: /data/paddleocr/venv/bin/paddleocr_mcp` and required `args: []`.
+  - Added a host bind mount for `deploy/host` so startup and smoke scripts can
+    be hotfixed without waiting for a full image rebuild.
+  - Fixed startup prewarm env so direct MCP startup uses AI Studio instead of
+    defaulting to local PaddleOCR inference.
+  - Persisted uv's Python install dir under `/data/paddleocr/python`; verified
+    `/data/paddleocr/venv/bin/python` resolves there and `import paddleocr_mcp`
+    succeeds.
+  - Verified startup creates/reuses `/data/paddleocr/venv` and the short MCP
+    server smoke survives until timeout status `124`.
+  - Verified container and public health return `OK`.
+  - Verified lightweight real PaddleOCR OCR smoke on
+    `/data/smoke/workflow-smoke.pdf` passes in `213519` ms and matches
+    `Workflow` / `Upload`.
+  - Uploaded local ignored `docs/reference/example/c.pdf` to
+    `/data/smoke/c.pdf` and verified SHA256
+    `85797cab1061081acbd03ad3ea94bef7c7fce2cc7b155b8f5229ed829dd234a2`.
+  - Full `c.pdf` smoke does not pass through `paddleocr-mcp` AI Studio API:
+    lighter markdown mode returned `Error calling tool 'paddleocr_vl'` after
+    about `190450` ms, and detailed error capture showed aiohttp
+    `ClientOSError: [Errno 32] Broken pipe`.
 
 ---
 

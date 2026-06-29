@@ -395,14 +395,25 @@
   in a persistent `/data/paddleocr/venv` prepared at container startup. The
   Docker image should carry Debian/glibc runtime libraries and `uv`, but not a
   build-time `uvx` PaddleOCR environment layer. Production `/data/librechat.yaml`
-  should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp`; repo
-  `.mcp.json` remains local MCP client config.
+  should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp` and
+  still include `args: []` for LibreChat's stdio MCP schema; repo `.mcp.json`
+  remains local MCP client config.
+- When creating a persistent uv-managed venv inside a container, also persist
+  uv's Python install directory under `/data` such as `/data/paddleocr/python`.
+  Otherwise the venv's `bin/python` symlink can point at container-local
+  `/root/.local/share/uv/...` and break or force recreation after container
+  replacement.
 - `docs/reference/example/c.pdf` is an ignored local reference fixture under
   `docs/reference/`. Do not make GitHub Actions require that file from a clean
   checkout; upload it manually to `/data/smoke/c.pdf` when running the full
   Droplet PaddleOCR drawing smoke. GitHub Actions should still run a real
   PaddleOCR OCR smoke after deploy, but with a small tracked PDF fixture and
   simple expected markers.
+- Do not assume AI Studio website OCR speed matches `paddleocr-mcp` AI Studio
+  API behavior. On production, the simple tracked PDF completed through
+  `paddleocr_vl` in about 214 seconds, while `docs/reference/example/c.pdf`
+  returned `Error calling tool 'paddleocr_vl'` with aiohttp
+  `ClientOSError: [Errno 32] Broken pipe` after several minutes.
 - PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
   such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
   `input_data` from the permission-checked current-turn LibreChat attachment

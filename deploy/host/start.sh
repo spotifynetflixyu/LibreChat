@@ -13,12 +13,20 @@ PADDLEOCR_PREPARE_ON_STARTUP="${PADDLEOCR_PREPARE_ON_STARTUP:-true}"
 PADDLEOCR_DIR="${PADDLEOCR_DIR:-$DATA_DIR/paddleocr}"
 PADDLEOCR_VENV_DIR="${PADDLEOCR_VENV_DIR:-$PADDLEOCR_DIR/venv}"
 PADDLEOCR_UV_CACHE_DIR="${PADDLEOCR_UV_CACHE_DIR:-$PADDLEOCR_DIR/uv-cache}"
+PADDLEOCR_UV_PYTHON_INSTALL_DIR="${PADDLEOCR_UV_PYTHON_INSTALL_DIR:-$PADDLEOCR_DIR/python}"
 PADDLEOCR_PYTHON_VERSION="${PADDLEOCR_PYTHON_VERSION:-3.12}"
 PADDLEOCR_MCP_PACKAGE="${PADDLEOCR_MCP_PACKAGE:-paddleocr-mcp}"
 PADDLEOCR_MCP_BIN="${PADDLEOCR_MCP_BIN:-$PADDLEOCR_VENV_DIR/bin/paddleocr_mcp}"
 PADDLEOCR_MCP_STARTUP_SMOKE_TIMEOUT_SECONDS="${PADDLEOCR_MCP_STARTUP_SMOKE_TIMEOUT_SECONDS:-8}"
 PADDLEOCR_PREWARM_STRICT="${PADDLEOCR_PREWARM_STRICT:-true}"
 PADDLEOCR_FORCE_REINSTALL="${PADDLEOCR_FORCE_REINSTALL:-false}"
+
+export PADDLEOCR_MCP_MODEL="${PADDLEOCR_MCP_MODEL:-PaddleOCR-VL-1.6}"
+export PADDLEOCR_MCP_PPOCR_SOURCE="${PADDLEOCR_MCP_PPOCR_SOURCE:-aistudio}"
+export PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT="${PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT:-600}"
+export PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT="${PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT:-1200}"
+export PADDLEOCR_MCP_HTTP_TIMEOUT="${PADDLEOCR_MCP_HTTP_TIMEOUT:-1200}"
+export UV_PYTHON_INSTALL_DIR="$PADDLEOCR_UV_PYTHON_INSTALL_DIR"
 
 paddleocr_log() {
   printf '[paddleocr] %s\n' "$*" >&2
@@ -78,6 +86,7 @@ ensure_paddleocr_venv() {
   marker="$PADDLEOCR_DIR/package.txt"
   python_bin="$PADDLEOCR_VENV_DIR/bin/python"
   needs_install=false
+  needs_venv=false
 
   if ! command -v uv >/dev/null 2>&1; then
     fail_or_warn_paddleocr "uv is not available; cannot prepare PaddleOCR MCP venv"
@@ -91,12 +100,25 @@ ensure_paddleocr_venv() {
       ;;
   esac
 
-  mkdir -p "$PADDLEOCR_DIR" "$PADDLEOCR_UV_CACHE_DIR"
+  mkdir -p "$PADDLEOCR_DIR" "$PADDLEOCR_UV_CACHE_DIR" "$PADDLEOCR_UV_PYTHON_INSTALL_DIR"
 
   if [ ! -x "$python_bin" ]; then
+    needs_venv=true
+  elif [ -L "$python_bin" ]; then
+    python_target="$(readlink "$python_bin")"
+    case "$python_target" in
+      "$PADDLEOCR_UV_PYTHON_INSTALL_DIR"/*)
+        ;;
+      *)
+        needs_venv=true
+        ;;
+    esac
+  fi
+
+  if [ "$needs_venv" = "true" ]; then
     paddleocr_log "creating persistent venv at $PADDLEOCR_VENV_DIR"
     rm -rf "$PADDLEOCR_VENV_DIR"
-    UV_CACHE_DIR="$PADDLEOCR_UV_CACHE_DIR" uv venv --python "$PADDLEOCR_PYTHON_VERSION" "$PADDLEOCR_VENV_DIR"
+    UV_CACHE_DIR="$PADDLEOCR_UV_CACHE_DIR" UV_PYTHON_INSTALL_DIR="$PADDLEOCR_UV_PYTHON_INSTALL_DIR" uv venv --python "$PADDLEOCR_PYTHON_VERSION" "$PADDLEOCR_VENV_DIR"
   fi
 
   if is_truthy "$PADDLEOCR_FORCE_REINSTALL"; then

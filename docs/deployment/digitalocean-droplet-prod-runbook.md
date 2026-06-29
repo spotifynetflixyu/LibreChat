@@ -344,6 +344,7 @@ mcpServers:
     type: stdio
     startup: false
     command: /data/paddleocr/venv/bin/paddleocr_mcp
+    args: []
 ```
 
 Keep the long LibreChat and PaddleOCR AI Studio timeouts for drawing PDFs:
@@ -363,6 +364,7 @@ PADDLEOCR_PREPARE_ON_STARTUP=true
 PADDLEOCR_PREWARM_STRICT=true
 PADDLEOCR_MCP_STARTUP_SMOKE_TIMEOUT_SECONDS=8
 PADDLEOCR_FORCE_REINSTALL=false
+PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
 ```
 
 GitHub Actions runs a lightweight real PaddleOCR OCR smoke after deploy with
@@ -390,6 +392,16 @@ ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-com
 
 Both smokes call AI Studio. The workflow uses the simple PDF to keep each
 deploy check lighter; `c.pdf` remains the full drawing OCR smoke.
+
+Current production observation:
+
+- `workflow-smoke.pdf` completed through `paddleocr_vl` in about 214 seconds.
+- `docs/reference/example/c.pdf` uploaded to `/data/smoke/c.pdf` currently
+  fails through `paddleocr-mcp` AI Studio API with
+  `ClientOSError: [Errno 32] Broken pipe` after several minutes, even though
+  the AI Studio website may parse the same file much faster. Treat this as a
+  provider/API-path issue to investigate separately, not as an MCP startup or
+  host health failure.
 
 ## GitHub Actions Auto Deploy
 

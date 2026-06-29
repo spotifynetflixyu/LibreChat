@@ -37,6 +37,7 @@ mcpServers:
     type: stdio
     startup: false
     command: /data/paddleocr/venv/bin/paddleocr_mcp
+    args: []
 ```
 
 The API startup script prepares the venv before `node server/index.js` starts:
@@ -85,3 +86,14 @@ If persistent venv startup fails:
 - GitHub Actions live PaddleOCR OCR smoke on the tracked lightweight PDF.
 - Manual Droplet live `c.pdf` smoke after uploading local
   `docs/reference/example/c.pdf` to `/data/smoke/c.pdf`.
+
+## Current Result
+
+The persistent venv and MCP startup check pass on the Droplet. The lightweight
+real OCR smoke also passes against `workflow-smoke.pdf`.
+
+The full `docs/reference/example/c.pdf` smoke reaches `paddleocr_vl` but does
+not currently return usable OCR through `paddleocr-mcp` AI Studio API. The
+observed failure is `Error calling tool 'paddleocr_vl'` with aiohttp
+`ClientOSError: [Errno 32] Broken pipe` after several minutes. This is a
+provider/API-path issue to investigate separately from production host startup.

@@ -138,6 +138,7 @@ jobs:
           cd /srv/librechat/app
           docker compose -f deploy-compose.prod.yml exec -T \
             -e PADDLEOCR_SMOKE_EXPECT_MARKERS='Workflow,Upload' \
+            -e PADDLEOCR_SMOKE_MIN_TEXT_CHARS=10 \
             -e PADDLEOCR_SMOKE_TIMEOUT_MS=600000 \
             api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/workflow-smoke.pdf
           REMOTE

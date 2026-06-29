@@ -13,6 +13,7 @@ services:
       OPENAI_OAUTH_AUTH_FILE: /data/openai-oauth/auth.json
     volumes:
       - /data:/data
+      - ./deploy/host:/app/deploy/host:ro
     command: sh /app/deploy/host/start.sh
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${PORT:-3080}/health || exit 1"]
