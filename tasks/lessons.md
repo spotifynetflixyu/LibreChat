@@ -397,6 +397,12 @@
   build-time `uvx` PaddleOCR environment layer. Production `/data/librechat.yaml`
   should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp`; repo
   `.mcp.json` remains local MCP client config.
+- `docs/reference/example/c.pdf` is an ignored local reference fixture under
+  `docs/reference/`. Do not make GitHub Actions require that file from a clean
+  checkout; upload it manually to `/data/smoke/c.pdf` when running the full
+  Droplet PaddleOCR drawing smoke. GitHub Actions should still run a real
+  PaddleOCR OCR smoke after deploy, but with a small tracked PDF fixture and
+  simple expected markers.
 - PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
   such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
   `input_data` from the permission-checked current-turn LibreChat attachment

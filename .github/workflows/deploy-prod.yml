@@ -88,8 +88,8 @@ jobs:
           scp deploy-compose.prod.yml prod:/srv/librechat/app/deploy-compose.prod.yml
           scp deploy/host/start.sh prod:/srv/librechat/app/deploy/host/start.sh
           scp deploy/host/paddleocr-smoke.sh prod:/srv/librechat/app/deploy/host/paddleocr-smoke.sh
+          scp deploy/host/fixtures/workflow-smoke.pdf prod:/data/smoke/workflow-smoke.pdf
           scp deploy/digitalocean/Caddyfile prod:/srv/librechat/app/deploy/digitalocean/Caddyfile
-          scp docs/reference/example/c.pdf prod:/data/smoke/c.pdf
           ssh prod 'chmod +x /srv/librechat/app/deploy/host/start.sh /srv/librechat/app/deploy/host/paddleocr-smoke.sh'
 
       - name: Deploy on Droplet
@@ -128,6 +128,18 @@ jobs:
             fi
             sleep 2
           done
+          REMOTE
+
+      - name: PaddleOCR simple PDF smoke check
+        run: |
+          set -euo pipefail
+          ssh prod bash -se <<'REMOTE'
+          set -euo pipefail
+          cd /srv/librechat/app
+          docker compose -f deploy-compose.prod.yml exec -T \
+            -e PADDLEOCR_SMOKE_EXPECT_MARKERS='Workflow,Upload' \
+            -e PADDLEOCR_SMOKE_TIMEOUT_MS=600000 \
+            api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/workflow-smoke.pdf
           REMOTE
 
       - name: Public URL smoke check

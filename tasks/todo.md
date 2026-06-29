@@ -32,6 +32,14 @@ Local review - 2026-06-29:
   the Droplet.
 - Updated the production workflow to upload the smoke script and `c.pdf`, and
   extended the health loop for first-time venv creation.
+- First GitHub Actions deploy run `28376451869` built and pushed the image, but
+  failed in the upload step because `docs/reference/example/c.pdf` is ignored
+  by git and unavailable in a clean checkout.
+- Updated after user correction: workflow still runs a real PaddleOCR OCR smoke
+  after deploy, but uses the tracked lightweight
+  `deploy/host/fixtures/workflow-smoke.pdf`; the full `c.pdf` drawing smoke
+  uses the local ignored `docs/reference/example/c.pdf` uploaded manually to
+  `/data/smoke/c.pdf`.
 - Updated `deploy-compose.prod.yml` health start period, `.env.prod.example`,
   `.mcp.json`, ignored local `librechat.yaml`, deployment docs, plan docs, and
   lessons for the persistent venv production boundary.

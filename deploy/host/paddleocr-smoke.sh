@@ -33,6 +33,12 @@ const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio
 const pdfPath = process.argv[2];
 const command = process.env.PADDLEOCR_MCP_COMMAND;
 const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? 1200000);
+const expectedMarkers = String(
+  process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS || 'BP1,BP2,PL1,柱底板,連接板',
+)
+  .split(',')
+  .map((marker) => marker.trim())
+  .filter(Boolean);
 const startedAt = Date.now();
 
 function inheritedEnv() {
@@ -122,8 +128,7 @@ async function main() {
     );
     const text = extractText(response);
     const normalized = normalize(text);
-    const requiredAnyMarkers = ['BP1', 'BP2', 'PL1', '柱底板', '連接板'];
-    const matchedMarkers = requiredAnyMarkers.filter((marker) => normalized.includes(normalize(marker)));
+    const matchedMarkers = expectedMarkers.filter((marker) => normalized.includes(normalize(marker)));
 
     if (timedOut) {
       throw new Error(`PaddleOCR smoke timed out after ${timeoutMs} ms`);
@@ -137,8 +142,8 @@ async function main() {
       throw new Error('PaddleOCR smoke returned "No text could be parsed"');
     }
 
-    if (matchedMarkers.length === 0) {
-      throw new Error(`PaddleOCR smoke found no c.pdf markers from: ${requiredAnyMarkers.join(', ')}`);
+    if (expectedMarkers.length > 0 && matchedMarkers.length === 0) {
+      throw new Error(`PaddleOCR smoke found none of the expected markers: ${expectedMarkers.join(', ')}`);
     }
 
     const summary = {

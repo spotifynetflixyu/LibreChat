@@ -50,16 +50,19 @@ The API startup script prepares the venv before `node server/index.js` starts:
 
 ## Production Smoke
 
-`deploy/host/paddleocr-smoke.sh` is a manual host smoke. It:
+`deploy/host/paddleocr-smoke.sh` is the production PaddleOCR MCP smoke. It:
 
 1. Connects to `/data/paddleocr/venv/bin/paddleocr_mcp` through the MCP SDK.
 2. Confirms `paddleocr_vl` is listed.
-3. Calls `paddleocr_vl` against `/data/smoke/c.pdf`.
-4. Fails if OCR returns no useful text or the old
+3. Calls `paddleocr_vl` against the selected PDF path.
+4. Fails if OCR returns no useful text, misses the configured marker set, or
+   returns the old
    `No text could be parsed` failure.
 
-This smoke is intentionally not a required GitHub Actions gate on every
-`master` push because it calls AI Studio and can take several minutes.
+GitHub Actions runs this smoke after deploy with the tracked lightweight
+`deploy/host/fixtures/workflow-smoke.pdf` file and simple expected markers.
+The heavier local `docs/reference/example/c.pdf` file is ignored by git and is
+uploaded manually to `/data/smoke/c.pdf` for full drawing OCR smoke checks.
 
 ## Rollback
 
@@ -79,4 +82,6 @@ If persistent venv startup fails:
 - GitHub Actions deploy from `master`.
 - Droplet health check after deploy.
 - Droplet short-start MCP check logs from container startup.
-- Droplet live `c.pdf` smoke.
+- GitHub Actions live PaddleOCR OCR smoke on the tracked lightweight PDF.
+- Manual Droplet live `c.pdf` smoke after uploading local
+  `docs/reference/example/c.pdf` to `/data/smoke/c.pdf`.

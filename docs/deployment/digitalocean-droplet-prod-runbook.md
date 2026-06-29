@@ -365,14 +365,31 @@ PADDLEOCR_MCP_STARTUP_SMOKE_TIMEOUT_SECONDS=8
 PADDLEOCR_FORCE_REINSTALL=false
 ```
 
-Run the live production `c.pdf` smoke manually after deploy:
+GitHub Actions runs a lightweight real PaddleOCR OCR smoke after deploy with
+the tracked fixture:
+
+```text
+deploy/host/fixtures/workflow-smoke.pdf -> /data/smoke/workflow-smoke.pdf
+```
+
+That smoke calls `paddleocr_vl` through the persistent MCP command and checks
+for simple markers from the PDF.
+
+For the heavier drawing smoke, upload the ignored local reference PDF manually
+from your workstation:
+
+```bash
+scp docs/reference/example/c.pdf deploy@<droplet-ipv4>:/data/smoke/c.pdf
+```
+
+Then run the live production `c.pdf` smoke manually after deploy:
 
 ```bash
 ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/c.pdf'
 ```
 
-This smoke calls AI Studio and can take several minutes, so it is not a
-required GitHub Actions gate on every `master` push.
+Both smokes call AI Studio. The workflow uses the simple PDF to keep each
+deploy check lighter; `c.pdf` remains the full drawing OCR smoke.
 
 ## GitHub Actions Auto Deploy
 
