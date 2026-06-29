@@ -382,6 +382,12 @@
   `/data/librechat.yaml` through `CONFIG_PATH`, not repo `.mcp.json`. Treat
   `.mcp.json` as local Codex/MCP client config unless a task explicitly targets
   local MCP tooling.
+- PaddleOCR has nested timeouts: LibreChat MCP `timeout` controls tool
+  execution from LibreChat's side, while `PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT`
+  and `PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT` control AI Studio calls inside
+  `paddleocr-mcp`. For real drawing PDFs, raise both inner AI Studio timeouts;
+  increasing only LibreChat's MCP timeout will not prevent `paddleocr_vl`
+  `TimeoutError`.
 - The current PaddleOCR MCP server key should be `PaddleOCR`; keep
   `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6` as the model setting. Do not reuse the
   model name as the LibreChat MCP server key.

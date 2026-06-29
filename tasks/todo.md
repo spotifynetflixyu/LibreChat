@@ -13,8 +13,29 @@ Plan - 2026-06-29:
       image build to avoid first-request connection timeout.
 - [x] Upload the updated `librechat.yaml` to the Droplet because `/data` config
       is intentionally host-managed.
-- [ ] Build/deploy through GitHub Actions and verify PaddleOCR MCP can start.
-- [ ] Smoke-check `https://chat.longdin.org/health` after deploy.
+- [x] Build/deploy through GitHub Actions and verify PaddleOCR MCP can start.
+- [x] Smoke-check `https://chat.longdin.org/health` after deploy.
+- [x] Raise PaddleOCR AI Studio request/poll/http timeouts after `c.pdf`
+      exceeded the package default request timeout.
+
+Review - 2026-06-29:
+
+- Production logs showed the original startup failure was Alpine/musl forcing
+  `opencv-contrib-python` source builds inside `paddleocr-mcp`.
+- Switched the production API runtime stage in `Dockerfile.multi` to Debian
+  bookworm slim and prewarmed `uvx --python 3.12 --from paddleocr-mcp`.
+- Uploaded host-managed `/data/librechat.yaml` with `--python 3.12`.
+- GitHub Actions production deploy `28371678489` completed successfully for
+  commit `ee1a63974`.
+- Verified `https://chat.longdin.org/health` returned `OK`.
+- Verified the production container imports `paddleocr_mcp` and can start the
+  MCP stdio command without OpenCV/distutils errors.
+- Follow-up `paddleocr_vl` call reached AI Studio but timed out around the
+  package default `PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT=120` seconds on
+  `c.pdf`.
+- Raised host-managed PaddleOCR timeout config to request `600` seconds,
+  poll `1200` seconds, and HTTP `1200` seconds, then recreated the API
+  container and verified health returned `OK`.
 
 ---
 
