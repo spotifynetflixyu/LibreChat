@@ -367,15 +367,10 @@ PADDLEOCR_FORCE_REINSTALL=false
 PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
 ```
 
-GitHub Actions runs a lightweight real PaddleOCR OCR smoke after deploy with
-the tracked fixture:
-
-```text
-deploy/host/fixtures/workflow-smoke.pdf -> /data/smoke/workflow-smoke.pdf
-```
-
-That smoke calls `paddleocr_vl` through the persistent MCP command and checks
-for simple markers from the PDF.
+GitHub Actions does not run PaddleOCR OCR as a deploy gate. Production deploy
+is gated only by LibreChat container health because PaddleOCR depends on the
+external AI Studio API path and can fail due to provider or network conditions
+that should not block app rollout.
 
 For the heavier drawing smoke, upload the ignored local reference PDF manually
 from your workstation:
@@ -390,18 +385,25 @@ Then run the live production `c.pdf` smoke manually after deploy:
 ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/c.pdf'
 ```
 
-Both smokes call AI Studio. The workflow uses the simple PDF to keep each
-deploy check lighter; `c.pdf` remains the full drawing OCR smoke.
+The smoke calls AI Studio and is intentionally manual. Keep it for diagnosing
+OCR provider/runtime health after deploy; do not treat it as the production
+deployment gate.
 
 Current production observation:
 
-- `workflow-smoke.pdf` completed through `paddleocr_vl` in about 214 seconds.
+- `workflow-smoke.pdf` previously completed through `paddleocr_vl` in about
+  214 seconds, but later checks showed intermittent AI Studio connectivity from
+  the Droplet.
 - `docs/reference/example/c.pdf` uploaded to `/data/smoke/c.pdf` currently
-  fails through `paddleocr-mcp` AI Studio API with
-  `ClientOSError: [Errno 32] Broken pipe` after several minutes, even though
-  the AI Studio website may parse the same file much faster. Treat this as a
-  provider/API-path issue to investigate separately, not as an MCP startup or
-  host health failure.
+  fails before OCR processing: the Droplet cannot reliably multipart-upload
+  the 7.6 MB PDF to `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`.
+  Treat this as an AI Studio network/API upload-path issue, not as an MCP
+  startup or LibreChat host health failure.
+- `docs/reference/example/b.png` uploaded to `/data/smoke/b.png` also fails
+  before OCR job creation. The 296,377 byte PNG timed out during multipart
+  upload from the Singapore Droplet, and a valid S3 presigned `fileUrl` returned
+  AI Studio `HTTP 400` code `10000` with `文件 URL 访问超时`. Treat this as a
+  current AI Studio API path issue, not only a large-PDF issue.
 
 ## GitHub Actions Auto Deploy
 

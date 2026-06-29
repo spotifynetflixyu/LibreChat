@@ -1,4 +1,112 @@
-# Active: Production PaddleOCR persistent venv and c.pdf smoke
+# Active: PaddleOCR MCP AI Studio parameter diagnosis
+
+Goal: determine whether `paddleocr-mcp` exposes AI Studio endpoint or runtime
+parameters that make the API path behave closer to the fast
+`aistudio.baidu.com` website OCR path, and identify whether `c.pdf` failure is
+configurable or provider/API-path specific.
+
+Plan - 2026-06-29:
+
+- [x] Inspect the installed production `paddleocr-mcp` package source and
+      metadata for supported AI Studio env vars, base URLs, endpoints, polling,
+      output modes, and runtime params.
+- [x] Cross-check package documentation/source from public sources when
+      available so the diagnosis is not based only on local guesses.
+- [x] Run controlled smoke variants through the same MCP stdio path:
+      lightweight tracked PDF first, then `/data/smoke/c.pdf` only for
+      candidate settings that could plausibly change behavior.
+- [x] Record timings, error text, and whether each setting changes the
+      `Error calling tool 'paddleocr_vl'` / `Broken pipe` failure mode.
+- [x] Remove PaddleOCR OCR from the GitHub Actions production deploy gate;
+      deploy is gated by LibreChat health only.
+- [x] Update deployment docs and lessons with the supported configuration
+      boundary and the recommended next step.
+
+Review - 2026-06-29:
+
+- Production `paddleocr-mcp` is version `0.8.5`.
+- The package supports `PADDLEOCR_MCP_AISTUDIO_BASE_URL`,
+  `PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT`,
+  `PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT`, and runtime params such as
+  `max_pixels`, `max_new_tokens`, `use_layout_detection`,
+  `use_chart_recognition`, and `use_seal_recognition`.
+- The default AI Studio API endpoint is
+  `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`.
+- Droplet TLS checks to `paddleocr.aistudio-app.com` are intermittent: some
+  handshakes time out, while successful handshakes can still take several
+  seconds.
+- A no-token `POST /api/v2/ocr/jobs` returns `401`, proving the endpoint is
+  reachable in principle.
+- A `curl -F file=@/data/smoke/workflow-smoke.pdf` submit succeeds and returns
+  a job id.
+- The async `paddleocr-mcp` / `AsyncPaddleOCRClient` path can timeout before
+  receiving a job id even on the tiny workflow PDF.
+- The synchronous PaddleOCR SDK path can submit and finish the tiny workflow
+  PDF quickly, proving the token, model, endpoint, and simple payload are valid.
+- For the real `docs/reference/example/c.pdf` file, `curl -F
+  file=@/data/smoke/c.pdf` timed out after 180 seconds with `0 bytes received`,
+  and the sync SDK failed with `TimeoutError('The write operation timed out')`.
+  This means the current failure is the Droplet multipart upload path to AI
+  Studio, not PaddleOCR downloading a URL.
+- NYC3 temporary Droplet `64.225.5.250` probe:
+  - SSH and local upload of the same `c.pdf` succeeded; SHA256 matched
+    `85797cab1061081acbd03ad3ea94bef7c7fce2cc7b155b8f5229ed829dd234a2`.
+  - Basic AI Studio GET probes were stable at about `0.86` to `1.93` seconds,
+    and an authenticated empty POST returned a model-parameter error in about
+    `1.79` seconds.
+  - The full `curl -F file=@/root/paddleocr-probe/c.pdf` submit still timed
+    out after 180 seconds with no response body. It uploaded about `2031616`
+    bytes before timeout, which is better than SGP1's previous zero-byte
+    response but still not enough to return a job id.
+  - Conclusion: NYC improves basic connectivity but does not solve the 7.6 MB
+    `c.pdf` multipart upload path to AI Studio.
+- Singapore `fileUrl` probe:
+  - Temporarily served `/data/smoke/c.pdf` from
+    `http://139.59.110.150:8000/c.pdf` and verified the URL was externally
+    readable with `Content-Length: 7936604`.
+  - AI Studio did connect back from `180.76.112.10` and requested `GET /c.pdf`.
+  - The submit request using JSON `fileUrl` returned `HTTP 408 Request Timeout`
+    after about `69301` ms and did not return a job id.
+  - The temporary file server logged `BrokenPipeError: [Errno 32] Broken pipe`
+    while serving AI Studio's download, meaning AI Studio disconnected during
+    the 7.6 MB file download.
+  - The temporary server and `8000/tcp` firewall allow rule were removed after
+    the test.
+- S3 presigned `fileUrl` probe:
+  - The first S3 presigned URL returned `InvalidToken`, so it was not a valid
+    download URL.
+  - The second full S3 presigned URL was valid: `GET` with `Range: bytes=0-0`
+    returned `206 Partial Content`, `Content-Range: bytes 0-0/7936604`, and
+    `Content-Type: application/pdf`.
+  - Submitting that S3 URL as AI Studio `fileUrl` still did not return a job id.
+    The request timed out after about `194194` ms with
+    `HTTPSConnectionPool(host='paddleocr.aistudio-app.com', port=443): Read
+    timed out`.
+  - Conclusion: S3 in `ap-southeast-2` avoids Droplet file serving but does not
+    make AI Studio reliably accept this 7.6 MB `c.pdf` through `fileUrl`.
+- `docs/reference/example/b.png` probe:
+  - Local and Droplet `/data/smoke/b.png` copies matched SHA256
+    `6aa735b128037f58cf6542936a1868cd4fba48c7c8b20bb769aa16ecbccec306`.
+    The file is a 296,377 byte PNG, 1132 x 788, 8-bit RGBA.
+  - Direct multipart submit from the Singapore Droplet through the synchronous
+    PaddleOCR SDK still failed before a job id after about `122020` ms with
+    `NetworkError: Connection failed: ('Connection aborted.',
+    TimeoutError('The write operation timed out'))`.
+  - The user-provided S3 presigned URL was valid from our side: signed `GET`
+    with `Range: bytes=0-0` returned `206 Partial Content`, `Content-Range:
+    bytes 0-0/296377`, and `Content-Type: image/png`.
+  - AI Studio `fileUrl` submit for that S3 PNG returned `HTTP 400` after about
+    `24170` ms with code `10000` and message `文件 URL 访问超时`.
+  - Conclusion: the current AI Studio API path is not failing only because
+    `c.pdf` is large. Even a small valid PNG can fail from the current
+    SGP1/S3-to-AI-Studio path before OCR job creation.
+- GitHub Actions deploy no longer uploads `workflow-smoke.pdf` or runs the
+  PaddleOCR smoke gate. `deploy/host/paddleocr-smoke.sh` remains available for
+  manual diagnosis.
+
+---
+
+# Previous: Production PaddleOCR persistent venv and c.pdf smoke
 
 Goal: move production PaddleOCR MCP from image-build `uvx` prewarm to a
 persistent `/data/paddleocr/venv` on the Droplet, prove the MCP server starts
@@ -35,11 +143,9 @@ Local review - 2026-06-29:
 - First GitHub Actions deploy run `28376451869` built and pushed the image, but
   failed in the upload step because `docs/reference/example/c.pdf` is ignored
   by git and unavailable in a clean checkout.
-- Updated after user correction: workflow still runs a real PaddleOCR OCR smoke
-  after deploy, but uses the tracked lightweight
-  `deploy/host/fixtures/workflow-smoke.pdf`; the full `c.pdf` drawing smoke
-  uses the local ignored `docs/reference/example/c.pdf` uploaded manually to
-  `/data/smoke/c.pdf`.
+- Updated after user correction: workflow no longer runs a PaddleOCR OCR smoke
+  gate after deploy. The full `c.pdf` drawing smoke uses the local ignored
+  `docs/reference/example/c.pdf` uploaded manually to `/data/smoke/c.pdf`.
 - Updated `deploy-compose.prod.yml` health start period, `.env.prod.example`,
   `.mcp.json`, ignored local `librechat.yaml`, deployment docs, plan docs, and
   lessons for the persistent venv production boundary.

@@ -36,6 +36,7 @@ const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? 1200000);
 const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 100);
 const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
 const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 12000);
+const toolName = process.env.PADDLEOCR_SMOKE_TOOL_NAME || 'paddleocr_vl';
 const expectedMarkers = String(
   process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? 'BP1,BP2,PL1,柱底板,連接板',
 )
@@ -72,6 +73,22 @@ function boolEnv(name, defaultValue) {
   }
 
   return /^(1|true|yes|on)$/i.test(value);
+}
+
+function jsonEnv(name, defaultValue) {
+  const value = process.env[name];
+
+  if (value == null || value === '') {
+    return defaultValue;
+  }
+
+  const parsed = JSON.parse(value);
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON object`);
+  }
+
+  return parsed;
 }
 
 function extractText(result) {
@@ -121,27 +138,30 @@ async function main() {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((tool) => tool.name);
 
-    if (!toolNames.includes('paddleocr_vl')) {
-      throw new Error(`paddleocr_vl not found. Tools: ${toolNames.join(', ')}`);
+    if (!toolNames.includes(toolName)) {
+      throw new Error(`${toolName} not found. Tools: ${toolNames.join(', ')}`);
     }
 
+    const extraRuntimeParams = jsonEnv('PADDLEOCR_SMOKE_RUNTIME_PARAMS_JSON', {});
+    const runtimeParams = {
+      max_new_tokens: maxNewTokens,
+      use_doc_orientation_classify: boolEnv(
+        'PADDLEOCR_SMOKE_USE_DOC_ORIENTATION_CLASSIFY',
+        true,
+      ),
+      use_doc_unwarping: boolEnv('PADDLEOCR_SMOKE_USE_DOC_UNWARPING', true),
+      use_layout_detection: boolEnv('PADDLEOCR_SMOKE_USE_LAYOUT_DETECTION', true),
+      ...extraRuntimeParams,
+    };
     const response = await client.callTool(
       {
-        name: 'paddleocr_vl',
+        name: toolName,
         arguments: {
           input_data: pdfPath,
           output_mode: outputMode,
           file_type: 'pdf',
           return_images: false,
-          runtime_params: {
-            max_new_tokens: maxNewTokens,
-            use_doc_orientation_classify: boolEnv(
-              'PADDLEOCR_SMOKE_USE_DOC_ORIENTATION_CLASSIFY',
-              true,
-            ),
-            use_doc_unwarping: boolEnv('PADDLEOCR_SMOKE_USE_DOC_UNWARPING', true),
-            use_layout_detection: boolEnv('PADDLEOCR_SMOKE_USE_LAYOUT_DETECTION', true),
-          },
+          runtime_params: runtimeParams,
         },
       },
       undefined,
@@ -182,9 +202,11 @@ async function main() {
       ok: true,
       pdfPath,
       command,
+      toolName,
       elapsedMs: Date.now() - startedAt,
       outputMode,
       maxNewTokens,
+      runtimeParams,
       textChars: text.length,
       matchedMarkers,
       preview: normalized.slice(0, 600),

@@ -60,9 +60,11 @@ The API startup script prepares the venv before `node server/index.js` starts:
    returns the old
    `No text could be parsed` failure.
 
-GitHub Actions runs this smoke after deploy with the tracked lightweight
-`deploy/host/fixtures/workflow-smoke.pdf` file and simple expected markers.
-The heavier local `docs/reference/example/c.pdf` file is ignored by git and is
+GitHub Actions does not run this smoke as a deploy gate. The deploy gate stays
+limited to LibreChat container health because PaddleOCR depends on the external
+AI Studio API path and can fail due to provider or network conditions unrelated
+to app rollout. Run the smoke manually when diagnosing OCR provider/runtime
+health. The local `docs/reference/example/c.pdf` file is ignored by git and is
 uploaded manually to `/data/smoke/c.pdf` for full drawing OCR smoke checks.
 
 ## Rollback
@@ -83,17 +85,23 @@ If persistent venv startup fails:
 - GitHub Actions deploy from `master`.
 - Droplet health check after deploy.
 - Droplet short-start MCP check logs from container startup.
-- GitHub Actions live PaddleOCR OCR smoke on the tracked lightweight PDF.
 - Manual Droplet live `c.pdf` smoke after uploading local
   `docs/reference/example/c.pdf` to `/data/smoke/c.pdf`.
 
 ## Current Result
 
-The persistent venv and MCP startup check pass on the Droplet. The lightweight
-real OCR smoke also passes against `workflow-smoke.pdf`.
+The persistent venv and MCP startup check pass on the Droplet. Production
+deploy no longer gates on live PaddleOCR OCR.
 
-The full `docs/reference/example/c.pdf` smoke reaches `paddleocr_vl` but does
-not currently return usable OCR through `paddleocr-mcp` AI Studio API. The
-observed failure is `Error calling tool 'paddleocr_vl'` with aiohttp
-`ClientOSError: [Errno 32] Broken pipe` after several minutes. This is a
-provider/API-path issue to investigate separately from production host startup.
+The full `docs/reference/example/c.pdf` smoke does not currently return usable
+OCR through the AI Studio API path. The latest diagnosis shows the Droplet
+cannot reliably multipart-upload the 7.6 MB PDF to
+`https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`; this is an AI Studio
+network/API upload-path issue to investigate separately from production host
+startup.
+
+The same API-path problem is not limited to the large PDF. A 296,377 byte
+`docs/reference/example/b.png` copied to `/data/smoke/b.png` timed out during
+multipart submit from the Singapore Droplet, and a valid S3 presigned `fileUrl`
+for the same PNG returned AI Studio `HTTP 400` code `10000` with
+`文件 URL 访问超时`.

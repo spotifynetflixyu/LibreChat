@@ -406,14 +406,34 @@
 - `docs/reference/example/c.pdf` is an ignored local reference fixture under
   `docs/reference/`. Do not make GitHub Actions require that file from a clean
   checkout; upload it manually to `/data/smoke/c.pdf` when running the full
-  Droplet PaddleOCR drawing smoke. GitHub Actions should still run a real
-  PaddleOCR OCR smoke after deploy, but with a small tracked PDF fixture and
-  simple expected markers.
+  Droplet PaddleOCR drawing smoke. Do not make GitHub Actions production deploy
+  gate on live PaddleOCR OCR; AI Studio provider/network failures should not
+  block LibreChat app rollout. Keep PaddleOCR smoke as a manual diagnostic.
 - Do not assume AI Studio website OCR speed matches `paddleocr-mcp` AI Studio
   API behavior. On production, the simple tracked PDF completed through
   `paddleocr_vl` in about 214 seconds, while `docs/reference/example/c.pdf`
   returned `Error calling tool 'paddleocr_vl'` with aiohttp
   `ClientOSError: [Errno 32] Broken pipe` after several minutes.
+- When production PaddleOCR fails from a VPS, distinguish upload from provider
+  download. For `file_path` inputs, `paddleocr-mcp` multipart-uploads the file
+  from the host to `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`; the
+  provider is not downloading a URL. On DigitalOcean SGP1, the 7.6 MB `c.pdf`
+  upload timed out before any OCR job id was returned.
+- `fileUrl` is not automatically a fix for AI Studio from DigitalOcean SGP1.
+  AI Studio can connect back to the Droplet and start `GET /c.pdf`, but the
+  7.6 MB download still returned `HTTP 408 Request Timeout` and the temporary
+  file server logged `BrokenPipeError`; use this as evidence for provider-side
+  download/path instability before investing in file-url integration.
+- S3 presigned URLs must be validated with a signed `GET`, not only `HEAD`;
+  `GET` with `Range: bytes=0-0` should return `206 Partial Content`. Even a
+  valid S3 `fileUrl` in `ap-southeast-2` did not make AI Studio accept the 7.6
+  MB `c.pdf`; the AI Studio submit request still timed out before returning a
+  job id.
+- Do not reduce the AI Studio production issue to only large drawing PDFs.
+  From DigitalOcean SGP1, a 296,377 byte `docs/reference/example/b.png`
+  uploaded via multipart still timed out during write, and the same PNG through
+  a valid S3 presigned `fileUrl` returned AI Studio `HTTP 400` code `10000`
+  with `文件 URL 访问超时`.
 - PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
   such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
   `input_data` from the permission-checked current-turn LibreChat attachment
