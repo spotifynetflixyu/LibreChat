@@ -28,8 +28,8 @@ Review - 2026-06-29:
 - Workflow logs the Droplet into GHCR with the job-scoped `GITHUB_TOKEN` for
   the immediate pull, avoiding a long-lived `GHCR_READ_TOKEN`.
 - Workflow checks `http://127.0.0.1:3080/health` on the Droplet as the required
-  deploy gate and runs `https://chat.longdin.org/health` as a best-effort
-  public smoke check.
+  deploy gate from inside the API container and runs
+  `https://chat.longdin.org/health` as a best-effort public smoke check.
 - Updated `docs/deployment/digitalocean-droplet-prod-runbook.md` to reference
   the workflow and its GHCR token behavior.
 - Verification:
@@ -40,6 +40,11 @@ Review - 2026-06-29:
     passed.
   - `rtk sh -n deploy/host/start.sh && rtk bash -n deploy/host/start.sh`
     passed.
+  - First workflow run proved build/push/upload/deploy worked, but exposed that
+    host port `3080` is intentionally not published. The workflow health gate
+    was corrected to run `docker compose exec -T api curl ...` inside the API
+    container.
+  - `https://chat.longdin.org/health` returned `OK` after the first deploy.
 
 ---
 

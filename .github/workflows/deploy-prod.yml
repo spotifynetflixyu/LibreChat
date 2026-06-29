@@ -113,12 +113,12 @@ jobs:
           set -euo pipefail
           cd /srv/librechat/app
           for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3080/health >/dev/null; then
+            if docker compose -f deploy-compose.prod.yml exec -T api curl -fsS http://127.0.0.1:3080/health >/dev/null; then
               echo "local health OK"
               exit 0
             fi
             if [ "$attempt" = "60" ]; then
-              echo "::error::LibreChat did not become healthy on 127.0.0.1:3080"
+              echo "::error::LibreChat did not become healthy inside the API container"
               docker compose -f deploy-compose.prod.yml ps
               docker compose -f deploy-compose.prod.yml logs --tail=120 api
               exit 1
