@@ -14,7 +14,7 @@ Plan - 2026-06-30:
       `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`.
 - [x] Keep non-Qianfan startup defaults and manual smoke improvements.
 - [x] Run shell/JSON/YAML checks and focused Steel OCR tests.
-- [ ] Commit, push `master`, and verify production deploy health.
+- [x] Commit, push `master`, and verify production deploy health.
 
 Review - 2026-06-30:
 
@@ -35,6 +35,9 @@ Review - 2026-06-30:
   - `.mcp.json` JSON parse
   - `rtk git diff --check`
   - `cd packages/api && rtk npx jest src/steel/vision/ocr.spec.ts --runInBand --coverage=false`
+- Committed as `d32e3451e` and pushed to `master`.
+- GitHub Actions production deploy `28415411847` passed, including Droplet
+  health and public URL smoke.
 
 ---
 
