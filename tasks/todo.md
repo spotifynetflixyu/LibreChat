@@ -14,7 +14,7 @@ Plan - 2026-06-30:
       `input_data` resolver, with local files still using the existing
       download-stream-to-data-URL path.
 - [x] Verify focused MCP tests, existing Steel OCR tests, and `git diff --check`.
-- [ ] Push/deploy production, upload or reuse an S3-backed small OCR file, and
+- [x] Push/deploy production, upload or reuse an S3-backed small OCR file, and
       run production PaddleOCR S3 smoke without logging presigned URL secrets.
 
 Progress - 2026-06-30:
@@ -29,6 +29,19 @@ Progress - 2026-06-30:
       - `api`: `rtk npx jest server/services/MCP.spec.js --runInBand`
       - `packages/api`: `rtk npx jest src/steel/vision/ocr.spec.ts --runInBand --coverage=false`
       - root: `rtk git diff --check`
+- [x] Pushed `master` commit
+      `e3d0dfae7 feat: route PaddleOCR S3 attachments through presigned URLs`.
+- [x] GitHub Actions production deploy run `28418474680` passed:
+      build/push image, upload deployment files, deploy on Droplet, container
+      health check, and public `https://chat.longdin.org/health` smoke.
+- [x] Production container reports `BUILD_COMMIT=e3d0dfae7...` and
+      `S3_URL_EXPIRY_SECONDS=43200`.
+- [x] Production S3 OCR smoke passed with private bucket:
+      - Uploaded `/data/smoke/b.png` to temporary S3 key under `uploads/smoke/`.
+      - Generated a presigned URL with `X-Amz-Expires=43200`.
+      - Called `paddleocr_vl` from the production container using that URL.
+      - OCR returned `2664` chars in `17774` ms.
+      - Deleted the temporary S3 object.
 
 ---
 
