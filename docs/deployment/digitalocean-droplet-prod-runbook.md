@@ -360,20 +360,16 @@ env:
 Useful startup controls in `/etc/librechat/.env.prod`:
 
 ```bash
-PADDLEOCR_MCP_PPOCR_SOURCE=
+PADDLEOCR_MCP_PPOCR_SOURCE=aistudio
 PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=
-PADDLEOCR_MCP_QIANFAN_API_KEY=
 PADDLEOCR_FORCE_REINSTALL=false
 PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
 ```
 
-Leave `PADDLEOCR_MCP_PPOCR_SOURCE` blank for automatic provider selection:
-production chooses `qianfan` when `PADDLEOCR_MCP_QIANFAN_API_KEY` is set, and
-falls back to `aistudio` otherwise. Startup preparation defaults live in
-`deploy/host/start.sh`: prepare on startup is enabled, strict prewarm is
-enabled, and the short MCP startup smoke timeout defaults to 10 seconds.
-The default model is also provider-aware: `qianfan` uses `PaddleOCR-VL`, while
-`aistudio` uses `PaddleOCR-VL-1.6`.
+Production uses the AI Studio provider with `PaddleOCR-VL-1.6`. Startup
+preparation defaults live in `deploy/host/start.sh`: prepare on startup is
+enabled, strict prewarm is enabled, and the short MCP startup smoke timeout
+defaults to 10 seconds.
 
 GitHub Actions does not run PaddleOCR OCR as a deploy gate. Production deploy
 is gated only by LibreChat container health because PaddleOCR depends on the

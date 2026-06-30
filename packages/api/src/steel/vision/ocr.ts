@@ -94,47 +94,13 @@ function getInheritedEnv() {
   );
 }
 
-function getPaddleOcrSource(): string {
-  const source = process.env.PADDLEOCR_MCP_PPOCR_SOURCE?.trim();
-  if (source) {
-    return source;
-  }
-
-  if (process.env.PADDLEOCR_MCP_QIANFAN_API_KEY?.trim()) {
-    return 'qianfan';
-  }
-
-  return 'aistudio';
-}
-
-function getPaddleOcrModel(source: string): string {
-  const model = process.env.PADDLEOCR_MCP_MODEL?.trim();
-  if (model) {
-    return model;
-  }
-
-  return source === 'qianfan' ? 'PaddleOCR-VL' : 'PaddleOCR-VL-1.6';
-}
-
 function getPaddleOcrEnv() {
-  const source = getPaddleOcrSource();
+  const source = process.env.PADDLEOCR_MCP_PPOCR_SOURCE?.trim() || 'aistudio';
   const env = {
     ...getInheritedEnv(),
-    PADDLEOCR_MCP_MODEL: getPaddleOcrModel(source),
+    PADDLEOCR_MCP_MODEL: process.env.PADDLEOCR_MCP_MODEL ?? 'PaddleOCR-VL-1.6',
     PADDLEOCR_MCP_PPOCR_SOURCE: source,
   };
-
-  if (source === 'qianfan') {
-    const apiKey = process.env.PADDLEOCR_MCP_QIANFAN_API_KEY?.trim();
-    if (!apiKey) {
-      throw new Error('PADDLEOCR_MCP_QIANFAN_API_KEY is required for Steel OCR.');
-    }
-
-    return {
-      ...env,
-      PADDLEOCR_MCP_QIANFAN_API_KEY: apiKey,
-    };
-  }
 
   if (source === 'self_hosted') {
     const baseUrl = process.env.PADDLEOCR_MCP_SELF_HOSTED_BASE_URL?.trim();
@@ -171,7 +137,7 @@ function sanitizeError(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Steel OCR execution failed.';
 
   return message.replace(
-    /PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN|PADDLEOCR_MCP_QIANFAN_API_KEY|PADDLEOCR_MCP_SELF_HOSTED_BASE_URL|access_token|authorization|api_key|Bearer\s+\S+/gi,
+    /PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN|PADDLEOCR_MCP_SELF_HOSTED_BASE_URL|access_token|authorization|api_key|Bearer\s+\S+/gi,
     '[redacted]',
   );
 }

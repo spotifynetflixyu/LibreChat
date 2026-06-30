@@ -7,10 +7,6 @@ PADDLEOCR_VENV_DIR="${PADDLEOCR_VENV_DIR:-$PADDLEOCR_DIR/venv}"
 PADDLEOCR_MCP_COMMAND="${PADDLEOCR_MCP_COMMAND:-$PADDLEOCR_VENV_DIR/bin/paddleocr_mcp}"
 PADDLEOCR_SMOKE_TIMEOUT_MS="${PADDLEOCR_SMOKE_TIMEOUT_MS:-1200000}"
 
-if [ -z "${PADDLEOCR_MCP_PPOCR_SOURCE:-}" ] && [ -n "${PADDLEOCR_MCP_QIANFAN_API_KEY:-}" ]; then
-  PADDLEOCR_MCP_PPOCR_SOURCE="qianfan"
-fi
-
 export PADDLEOCR_MCP_PPOCR_SOURCE="${PADDLEOCR_MCP_PPOCR_SOURCE:-aistudio}"
 
 export PADDLEOCR_MCP_COMMAND
@@ -30,12 +26,6 @@ case "$PADDLEOCR_MCP_PPOCR_SOURCE" in
   aistudio)
     if [ -z "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN:-}" ]; then
       printf 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required for AI Studio PaddleOCR smoke.\n' >&2
-      exit 1
-    fi
-    ;;
-  qianfan)
-    if [ -z "${PADDLEOCR_MCP_QIANFAN_API_KEY:-}" ]; then
-      printf 'PADDLEOCR_MCP_QIANFAN_API_KEY is required for Qianfan PaddleOCR smoke.\n' >&2
       exit 1
     fi
     ;;
@@ -72,10 +62,8 @@ const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 100);
 const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
 const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 12000);
 const toolName = process.env.PADDLEOCR_SMOKE_TOOL_NAME || 'paddleocr_vl';
-const source =
-  process.env.PADDLEOCR_MCP_PPOCR_SOURCE ||
-  (process.env.PADDLEOCR_MCP_QIANFAN_API_KEY ? 'qianfan' : 'aistudio');
-const model = process.env.PADDLEOCR_MCP_MODEL || (source === 'qianfan' ? 'PaddleOCR-VL' : 'PaddleOCR-VL-1.6');
+const source = process.env.PADDLEOCR_MCP_PPOCR_SOURCE || 'aistudio';
+const model = process.env.PADDLEOCR_MCP_MODEL || 'PaddleOCR-VL-1.6';
 const fileType = process.env.PADDLEOCR_SMOKE_FILE_TYPE || 'pdf';
 const expectedMarkers = String(
   process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? 'BP1,BP2,PL1,柱底板,連接板',
@@ -95,8 +83,7 @@ function redact(value) {
   return String(value ?? '')
     .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [redacted]')
     .replace(/access[_-]?token["'=:\s]+[A-Za-z0-9._-]+/gi, 'access_token=[redacted]')
-    .replace(/PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=[redacted]')
-    .replace(/PADDLEOCR_MCP_QIANFAN_API_KEY["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_QIANFAN_API_KEY=[redacted]');
+    .replace(/PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=[redacted]');
 }
 
 function normalize(value) {

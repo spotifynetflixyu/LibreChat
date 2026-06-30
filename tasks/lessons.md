@@ -398,18 +398,11 @@
   should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp` and
   still include `args: []` for LibreChat's stdio MCP schema; repo `.mcp.json`
   remains local MCP client config.
-- Do not hard-code `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` in production MCP
-  config. Leave the provider blank in env examples and let startup/runtime code
-  select `qianfan` when `PADDLEOCR_MCP_QIANFAN_API_KEY` is set, otherwise
-  `aistudio`. Keep startup defaults such as prepare-on-startup, strict prewarm,
-  and the 10-second MCP startup smoke timeout in code, not required prod env.
-- Qianfan PaddleOCR currently rejects `PaddleOCR-VL-1.6`; use
-  `PaddleOCR-VL` by default for `PADDLEOCR_MCP_PPOCR_SOURCE=qianfan`, while
-  keeping `PaddleOCR-VL-1.6` as the AI Studio default.
-- If Qianfan returns `HTTP 401 Unauthorized` from
-  `https://qianfan.baidubce.com/v2/ocr/paddleocr`, treat it as a credential or
-  service-entitlement problem, not as the AI Studio upload/download timeout
-  problem. The endpoint is reachable in that case.
+- Keep PaddleOCR MCP config explicit for the current AI Studio provider:
+  `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`,
+  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`, and
+  `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`. When testing a different cloud file
+  host for `fileUrl`, do not introduce unrelated provider credential envs.
 - When creating a persistent uv-managed venv inside a container, also persist
   uv's Python install directory under `/data` such as `/data/paddleocr/python`.
   Otherwise the venv's `bin/python` symlink can point at container-local
