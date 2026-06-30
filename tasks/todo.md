@@ -1,43 +1,131 @@
-# Active: Remove PaddleOCR Qianfan provider changes
+# Active: Production OCR S3 presigned URL smoke
 
-Goal: remove Qianfan-specific PaddleOCR changes and restore the MCP config to
-explicit AI Studio values while keeping the existing production/manual smoke
-workflow.
+Goal: make PaddleOCR OCR use private S3 presigned URLs for S3-backed
+LibreChat attachments, then deploy and verify production OCR through the S3 URL
+path.
 
 Plan - 2026-06-30:
 
-- [x] Remove `PADDLEOCR_MCP_QIANFAN_API_KEY` from env examples, runtime code,
-      smoke script, tests, and docs.
-- [x] Restore `.mcp.json` and host-managed `librechat.yaml` MCP env to
-      `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`,
-      `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`, and
-      `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`.
-- [x] Keep non-Qianfan startup defaults and manual smoke improvements.
-- [x] Run shell/JSON/YAML checks and focused Steel OCR tests.
-- [x] Commit, push `master`, and verify production deploy health.
+- [x] Add failing MCP resolver tests proving S3 PaddleOCR attachments use a
+      signed download URL instead of base64 `data:` payloads.
+- [x] Preserve the existing owned-file safety check: request-supplied paths or
+      filenames must only resolve when they match an owned DB file record.
+- [x] Implement S3/CloudFront download URL preference in the PaddleOCR MCP
+      `input_data` resolver, with local files still using the existing
+      download-stream-to-data-URL path.
+- [x] Verify focused MCP tests, existing Steel OCR tests, and `git diff --check`.
+- [ ] Push/deploy production, upload or reuse an S3-backed small OCR file, and
+      run production PaddleOCR S3 smoke without logging presigned URL secrets.
+
+Progress - 2026-06-30:
+
+- [x] Added a failing `MCP.spec.js` test for S3-backed PaddleOCR attachments.
+      The red test proved current code did not call `getDownloadURL`.
+- [x] Implemented `s3` / `cloudfront` PaddleOCR `input_data` resolution through
+      storage `getDownloadURL`; local attachments still resolve to data URLs.
+- [x] Added a log-safety assertion that the presigned URL signature is not
+      written through `logger.debug`.
+- [x] Verified:
+      - `api`: `rtk npx jest server/services/MCP.spec.js --runInBand`
+      - `packages/api`: `rtk npx jest src/steel/vision/ocr.spec.ts --runInBand --coverage=false`
+      - root: `rtk git diff --check`
+
+---
+
+# Active: Configure S3 Hong Kong file storage
+
+Goal: use AWS S3 Hong Kong `ap-east-1` as the production LibreChat file
+repository while keeping AWS credentials server-side only and preserving the
+existing host-managed deployment model.
+
+Plan - 2026-06-30:
+
+- [x] Confirm LibreChat already supports S3 through `fileStrategy: "s3"` and
+      `AWS_REGION` / `AWS_BUCKET_NAME` / AWS credentials.
+- [x] Confirm production host has not yet installed S3 env values or enabled
+      `fileStrategy`, so live should not be switched until credentials are in
+      `/etc/librechat/.env.prod`.
+- [x] Add S3 Hong Kong env placeholders to `.env.prod.example`.
+- [x] Update the DigitalOcean runbook with IAM policy, host env, YAML, restart,
+      and verification steps.
+- [x] Record that S3 storage alone does not yet make Steel OCR call PaddleOCR
+      with `fileUrl`; that is a follow-up runtime change.
+- [x] Upload the populated production S3 env values to
+      `/etc/librechat/.env.prod` without printing secrets.
+- [x] Enable `fileStrategy: "s3"` in host-managed `/data/librechat.yaml`.
+- [x] Restart production and verify public health plus an in-container S3
+      put/get/delete smoke test.
+- [x] Raise S3 presigned URL expiry to at least 12 hours for PaddleOCR
+      download windows.
 
 Review - 2026-06-30:
 
-- Removed Qianfan-specific env/runtime logic from `.env.example`,
-  `.env.prod.example`, `deploy/host/start.sh`, `deploy/host/paddleocr-smoke.sh`,
-  and `packages/api/src/steel/vision/ocr.ts`.
-- Restored the MCP env block in `.mcp.json` and ignored `librechat.yaml` to:
-  `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`,
-  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`, and
-  `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`.
-- Kept manual smoke script improvements that are not provider-specific:
-  `INPUT_PATH`, image/pdf file-type inference, and self-hosted support.
-- Uploaded the restored AI Studio `librechat.yaml` to the Droplet
-  `/data/librechat.yaml`; readback shows the MCP env block has
-  `PaddleOCR-VL-1.6`, `aistudio`, and `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`.
+- Production host check showed `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_REGION`, and `AWS_BUCKET_NAME` are missing from
+  `/etc/librechat/.env.prod`; `/data/librechat.yaml` also has no `fileStrategy`
+  yet.
+- `.env.prod.example` now includes AWS S3 Hong Kong values with
+  `AWS_REGION=ap-east-1`, bucket placeholder, server-side credentials, and
+  `S3_URL_EXPIRY_SECONDS=43200`.
+- The DigitalOcean runbook now documents the recommended bucket
+  `amzn-s3-longdin-ap-east`, a least-privilege IAM policy, the required
+  `/etc/librechat/.env.prod` entries, `fileStrategy: "s3"` in
+  `/data/librechat.yaml`, restart command, and smoke checks.
+- Boundary: this config changes where new LibreChat uploads are stored. Steel
+  OCR currently resolves stored files to bytes and sends them to PaddleOCR MCP;
+  direct S3 Hong Kong `fileUrl` OCR requires a separate runtime change.
+- Live activation completed after credentials were added locally:
+  `/etc/librechat/.env.prod` was replaced on the Droplet with mode `600`,
+  `/data/librechat.yaml` now includes `fileStrategy: "s3"`, and the API was
+  restarted.
+- Production verification passed:
+  - `https://chat.longdin.org/health` returned `OK`.
+  - Container logs show `[initializeS3] S3 initialized with provided credentials.`
+  - In-container AWS SDK smoke wrote, read, compared, and deleted an object
+    under `uploads/smoke/` in bucket `amzn-s3-longdin-ap-east`.
+- Existing files already stored under `/data/uploads` remain local legacy files
+  until migrated or no longer needed. New LibreChat uploads should use S3.
+- Presigned URL expiry is now standardized at `43200` seconds, equal to 12
+  hours, while the S3 bucket remains private.
+- Production API was restarted after the env change. Public health returned
+  `OK`, the running container reports `S3_URL_EXPIRY_SECONDS=43200`, and S3
+  initialization still succeeds.
+
+---
+
+# Active: Remove PaddleOCR source selector from user env
+
+Goal: keep PaddleOCR on the AI Studio MCP provider, but remove
+`PADDLEOCR_MCP_PPOCR_SOURCE` from user-filled env examples and docs. The MCP
+process still receives fixed `aistudio` internally so the provider does not
+depend on external env.
+
+Plan - 2026-06-30:
+
+- [x] Remove `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` from `.env.example`,
+      `.env.prod.example`, and the production runbook startup controls.
+- [x] Stop reading `PADDLEOCR_MCP_PPOCR_SOURCE` from runtime env; hardcode the
+      current provider as `aistudio` when launching PaddleOCR MCP.
+- [x] Keep `.mcp.json` and host-managed `librechat.yaml` passing fixed
+      `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` to the MCP process.
+- [x] Run shell checks and focused Steel OCR tests.
+
+Review - 2026-06-30:
+
+- Removed `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` from `.env.example`,
+  `.env.prod.example`, and the DigitalOcean production runbook's startup env
+  controls.
+- Updated Steel OCR runtime to stop reading `process.env.PADDLEOCR_MCP_PPOCR_SOURCE`;
+  it now launches PaddleOCR MCP with fixed provider `aistudio`.
+- Updated host startup and manual smoke scripts so the provider is hardcoded
+  internally instead of externally configurable through `.env`.
+- Kept `.mcp.json` and host-managed `librechat.yaml` passing
+  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` inside the MCP env block, because the
+  MCP server still expects that launch parameter.
 - Verification passed:
   - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
-  - `.mcp.json` JSON parse
   - `rtk git diff --check`
   - `cd packages/api && rtk npx jest src/steel/vision/ocr.spec.ts --runInBand --coverage=false`
-- Committed as `d32e3451e` and pushed to `master`.
-- GitHub Actions production deploy `28415411847` passed, including Droplet
-  health and public URL smoke.
 
 ---
 
@@ -152,9 +240,40 @@ Review - 2026-06-29:
     bytes 0-0/296377`, and `Content-Type: image/png`.
   - AI Studio `fileUrl` submit for that S3 PNG returned `HTTP 400` after about
     `24170` ms with code `10000` and message `文件 URL 访问超时`.
-  - Conclusion: the current AI Studio API path is not failing only because
-    `c.pdf` is large. Even a small valid PNG can fail from the current
-    SGP1/S3-to-AI-Studio path before OCR job creation.
+  - Retesting the same `b.png` from AWS S3 Hong Kong `ap-east-1` changed the
+    result: the production container could signed-GET the file in about
+    `195` ms, AI Studio `fileUrl` submit returned `HTTP 200` with `jobId` in
+    about `15462` ms, polling reached `done`, and the JSON result downloaded
+    successfully with one `layoutParsingResults` entry containing a table block.
+  - Conclusion: the current failure is not S3 presigned URLs in general. AWS S3
+    Sydney `ap-southeast-2` failed for AI Studio `fileUrl`, but AWS S3 Hong
+    Kong `ap-east-1` works for the small PNG and should be tested next with the
+    full `c.pdf`.
+- `docs/reference/example/c.pdf` AWS S3 Hong Kong `ap-east-1` probe:
+  - The user-provided Hong Kong S3 presigned URL was valid from the production
+    container: signed `GET` with `Range: bytes=0-0` returned `206 Partial
+    Content`, `Content-Range: bytes 0-0/7936604`, and `Content-Type:
+    application/pdf` in about `249` ms.
+  - AI Studio `fileUrl` submit returned `HTTP 408` after about `70225` ms with
+    code `408`, message `Request Timeout`, and no job id.
+  - Conclusion: AWS S3 Hong Kong `ap-east-1` solves the small PNG path but does
+    not make the 7.6 MB `c.pdf` acceptable as a single AI Studio `fileUrl`.
+    Next probes should reduce the file unit first: compress the PDF, rasterize
+    the page to a smaller image, or split PDF pages/images before submit.
+- `d.pdf` AWS S3 Hong Kong `ap-east-1` probe:
+  - The user-provided Hong Kong S3 presigned URL was valid from the production
+    container: signed `GET` with `Range: bytes=0-0` returned `206 Partial
+    Content`, `Content-Range: bytes 0-0/454807`, and `Content-Type:
+    application/pdf` in about `236` ms.
+  - AI Studio `fileUrl` submit returned `HTTP 200` with code `0`, message
+    `Success`, and a job id in about `19380` ms.
+  - Polling reached `done`; the JSON result downloaded in about `756` ms, was
+    `73031` bytes, and contained `layoutParsingResults: 2`. The first result
+    had `23` parsed blocks including `table`, `text`, and `paragraph_title`;
+    the first table block contained customer/order text.
+  - Conclusion: compressed/smaller PDFs can work through AWS S3 Hong Kong
+    `fileUrl`. The production OCR path should prefer reducing large drawing
+    PDFs before calling AI Studio instead of sending the original 7.6 MB PDF.
 - GitHub Actions deploy no longer uploads `workflow-smoke.pdf` or runs the
   PaddleOCR smoke gate. `deploy/host/paddleocr-smoke.sh` remains available for
   manual diagnosis.

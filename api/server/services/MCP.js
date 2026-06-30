@@ -416,6 +416,10 @@ async function streamToBuffer(stream) {
   return Buffer.concat(chunks);
 }
 
+function shouldResolvePaddleInputAsDownloadUrl(source) {
+  return source === FileSources.s3 || source === FileSources.cloudfront;
+}
+
 async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }) {
   const trimmedInput = inputData.trim();
   if (isExternalOrCompletePaddleInput(trimmedInput)) {
@@ -435,14 +439,35 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
   }
 
   const source = matchedFile.source ?? FileSources.local;
-  const { getDownloadStream } = getStrategyFunctions(source);
+  const { getDownloadStream, getDownloadURL } = getStrategyFunctions(source);
+  const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);
+
+  if (shouldResolvePaddleInputAsDownloadUrl(source)) {
+    if (typeof getDownloadURL !== 'function') {
+      throw new Error(
+        `Matched attachment "${matchedFile.filename ?? trimmedInput}" cannot create a download URL`,
+      );
+    }
+
+    const customFilename = matchedFile.filename ?? normalizeFileName(trimmedInput);
+    const downloadUrl = await getDownloadURL({
+      req,
+      file: matchedFile,
+      customFilename: customFilename || null,
+      contentType: mediaType,
+    });
+    logger.debug(
+      `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}" using a storage download URL.`,
+    );
+    return downloadUrl;
+  }
+
   if (typeof getDownloadStream !== 'function') {
     throw new Error(`Matched attachment "${matchedFile.filename ?? trimmedInput}" is not downloadable`);
   }
 
   const stream = await getDownloadStream(req, matchedFile.filepath);
   const buffer = await streamToBuffer(stream);
-  const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);
   logger.debug(
     `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}".`,
   );

@@ -21,12 +21,10 @@ describe('Steel OCR file bytes', () => {
     mockClose.mockReset();
     mockConnect.mockReset();
     process.env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN = 'test-token';
-    delete process.env.PADDLEOCR_MCP_PPOCR_SOURCE;
   });
 
   afterEach(() => {
     delete process.env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN;
-    delete process.env.PADDLEOCR_MCP_PPOCR_SOURCE;
   });
 
   it('copies Uint8Array source bytes before OCR processing can transfer them', () => {

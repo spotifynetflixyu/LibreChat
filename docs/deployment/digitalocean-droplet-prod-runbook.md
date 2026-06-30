@@ -262,6 +262,14 @@ JWT_SECRET=<generate-strong-secret>
 JWT_REFRESH_SECRET=<generate-strong-secret>
 CREDS_KEY=<generate-32-byte-base64>
 CREDS_IV=<generate-16-byte-base64>
+
+AWS_REGION=ap-east-1
+AWS_BUCKET_NAME=amzn-s3-longdin-ap-east
+AWS_ACCESS_KEY_ID=<prod-s3-access-key-id>
+AWS_SECRET_ACCESS_KEY=<prod-s3-secret-access-key>
+AWS_ENDPOINT_URL=
+AWS_FORCE_PATH_STYLE=false
+S3_URL_EXPIRY_SECONDS=43200
 ```
 
 `RENDER_DATA_DIR` is currently used by the existing production startup script
@@ -270,6 +278,108 @@ is later generalized.
 
 Do not add `OPENAI_PROVIDER`. LibreChat's frontend/provider selection owns the
 OAuth versus API-key distinction.
+
+## AWS S3 Hong Kong File Storage
+
+Use AWS S3 Hong Kong `ap-east-1` as the production file repository. Keep the
+bucket private and use backend-generated presigned URLs; do not expose permanent
+AWS keys to the browser.
+Use `S3_URL_EXPIRY_SECONDS=43200` for 12-hour presigned URLs when PaddleOCR or
+other backend-only integrations need enough time to fetch private S3 objects.
+
+Recommended bucket:
+
+```text
+amzn-s3-longdin-ap-east
+```
+
+AWS IAM should use a dedicated production user or role. Minimum policy shape:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListLibreChatBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::amzn-s3-longdin-ap-east"
+    },
+    {
+      "Sid": "ManageLibreChatObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::amzn-s3-longdin-ap-east/*"
+    }
+  ]
+}
+```
+
+Install AWS values in `/etc/librechat/.env.prod`:
+
+```bash
+ssh deploy@<droplet-ipv4> 'sudoedit /etc/librechat/.env.prod'
+```
+
+Required values:
+
+```bash
+AWS_REGION=ap-east-1
+AWS_BUCKET_NAME=amzn-s3-longdin-ap-east
+AWS_ACCESS_KEY_ID=<prod-s3-access-key-id>
+AWS_SECRET_ACCESS_KEY=<prod-s3-secret-access-key>
+AWS_ENDPOINT_URL=
+AWS_FORCE_PATH_STYLE=false
+S3_URL_EXPIRY_SECONDS=43200
+```
+
+Enable S3 storage in host-managed `/data/librechat.yaml`:
+
+```yaml
+version: 1.3.13
+fileStrategy: "s3"
+```
+
+Preserve the existing MCP server configuration in that file. Add only
+`fileStrategy: "s3"` if the rest of the YAML is already correct.
+
+Restart the API service after both files are updated:
+
+```bash
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml up -d api'
+```
+
+Verify without printing secrets:
+
+```bash
+ssh deploy@<droplet-ipv4> 'grep -E "^(AWS_REGION|AWS_BUCKET_NAME|AWS_ENDPOINT_URL|AWS_FORCE_PATH_STYLE|S3_URL_EXPIRY_SECONDS)=" /etc/librechat/.env.prod'
+ssh deploy@<droplet-ipv4> 'grep -n "^fileStrategy" /data/librechat.yaml'
+curl -fsS https://chat.longdin.org/health
+```
+
+Existing local files in `/data/uploads` remain local. New uploads after the
+restart use S3 and Mongo file records should store `source: s3` plus
+`storageKey`.
+
+PaddleOCR MCP input resolution:
+
+- For current-request LibreChat attachments stored in S3, the API resolves
+  `paddleocr_vl.input_data` to a backend-generated S3 download URL through the
+  storage strategy's `getDownloadURL`.
+- The generated URL uses `S3_URL_EXPIRY_SECONDS`, currently `43200` seconds.
+- The API must not log the presigned URL. Logs should mention only that a
+  storage download URL was used.
+- Local/non-URL storage sources continue to resolve through the existing
+  server-side download stream and `data:<mime>;base64,...` path.
 
 ## External Service Allowlist
 
@@ -360,7 +470,6 @@ env:
 Useful startup controls in `/etc/librechat/.env.prod`:
 
 ```bash
-PADDLEOCR_MCP_PPOCR_SOURCE=aistudio
 PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=
 PADDLEOCR_FORCE_REINSTALL=false
 PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
@@ -405,9 +514,21 @@ Current production observation:
   startup or LibreChat host health failure.
 - `docs/reference/example/b.png` uploaded to `/data/smoke/b.png` also fails
   before OCR job creation. The 296,377 byte PNG timed out during multipart
-  upload from the Singapore Droplet, and a valid S3 presigned `fileUrl` returned
-  AI Studio `HTTP 400` code `10000` with `文件 URL 访问超时`. Treat this as a
-  current AI Studio API path issue, not only a large-PDF issue.
+  upload from the Singapore Droplet, and a valid AWS S3 Sydney
+  `ap-southeast-2` presigned `fileUrl` returned AI Studio `HTTP 400` code
+  `10000` with `文件 URL 访问超时`.
+- AWS S3 Hong Kong `ap-east-1` succeeded for the same `b.png`: AI Studio
+  accepted the `fileUrl`, returned a job id, reached `done`, and exposed a JSON
+  result with one parsed table block.
+- AWS S3 Hong Kong `ap-east-1` did not solve the full `c.pdf`: the production
+  container could signed-range-GET the 7.6 MB PDF, but AI Studio `fileUrl`
+  submit returned `HTTP 408 Request Timeout` after about 70 seconds with no job
+  id. Keep `ap-east-1` for small OCR assets, but reduce large drawing PDFs
+  before submitting them to AI Studio.
+- A smaller `d.pdf` in AWS S3 Hong Kong `ap-east-1` did work: the 454,807 byte
+  PDF returned an AI Studio job id in about 19 seconds, reached `done`, and
+  produced a 73 KB JSON result with parsed table/text blocks. This makes
+  PDF-size reduction the preferred next production path.
 
 ## GitHub Actions Auto Deploy
 
@@ -502,4 +623,6 @@ At minimum, back up:
 ```
 
 Do not store those backups in git. Use encrypted local backup, DigitalOcean
-Snapshots, or a private backup target.
+Snapshots, or a private backup target. After switching new uploads to S3, keep
+backing up `/data/uploads` for legacy local files until they are migrated or no
+longer needed.

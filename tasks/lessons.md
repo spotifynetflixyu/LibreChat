@@ -1,5 +1,16 @@
 # Lessons
 
+- When switching LibreChat production file storage to S3, verify the running
+  container with a server-side put/get/delete smoke test and log
+  `[initializeS3]` before claiming uploads are backed by S3. Never print AWS
+  secret values during this check.
+- For PaddleOCR `fileUrl` downloads from private S3, use long enough
+  presigned URLs for async OCR and retry windows. Current production standard is
+  `S3_URL_EXPIRY_SECONDS=43200` for 12 hours, without making the bucket public.
+- PaddleOCR MCP attachment resolution must prefer storage `getDownloadURL` for
+  S3/CloudFront current-request files and must not log the generated presigned
+  URL. Keep the existing owned-file DB lookup before resolution; never trust a
+  request-supplied filepath directly.
 - Future Steel native LibreChat work must start from
   `docs/steel-native-librechat-master-framework.md`, then use
   `docs/plans/2026-06-24-steel-global-native-librechat-integration.md` for phase
@@ -398,11 +409,12 @@
   should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp` and
   still include `args: []` for LibreChat's stdio MCP schema; repo `.mcp.json`
   remains local MCP client config.
-- Keep PaddleOCR MCP config explicit for the current AI Studio provider:
-  `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`,
-  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`, and
-  `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`. When testing a different cloud file
-  host for `fileUrl`, do not introduce unrelated provider credential envs.
+- Keep PaddleOCR's provider selector as code/config logic, not a user-filled
+  `.env` key: production should require `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`
+  for the current AI Studio provider, while MCP launch config passes fixed
+  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` internally. When testing a different
+  cloud file host for `fileUrl`, do not introduce unrelated provider
+  credential envs.
 - When creating a persistent uv-managed venv inside a container, also persist
   uv's Python install directory under `/data` such as `/data/paddleocr/python`.
   Otherwise the venv's `bin/python` symlink can point at container-local
@@ -438,7 +450,28 @@
   From DigitalOcean SGP1, a 296,377 byte `docs/reference/example/b.png`
   uploaded via multipart still timed out during write, and the same PNG through
   a valid S3 presigned `fileUrl` returned AI Studio `HTTP 400` code `10000`
-  with `文件 URL 访问超时`.
+  with `文件 URL 访问超时` when stored in AWS S3 Sydney `ap-southeast-2`.
+- AWS S3 Hong Kong `ap-east-1` is the first confirmed working external
+  `fileUrl` path for AI Studio from production: the same 296,377 byte
+  `docs/reference/example/b.png` returned an AI Studio job id in about 15
+  seconds, reached `done`, and produced a downloadable JSON result with a table
+  block.
+- Do not assume AWS S3 Hong Kong `ap-east-1` solves large files. The 7.6 MB
+  `docs/reference/example/c.pdf` was readable from the production container via
+  signed range GET, but AI Studio `fileUrl` submit returned `HTTP 408 Request
+  Timeout` after about 70 seconds with no job id. For `c.pdf`, test smaller
+  submit units before changing app architecture: compressed PDF, rasterized
+  image, or split pages/images.
+- Smaller PDFs can succeed through AWS S3 Hong Kong `ap-east-1` and AI Studio
+  `fileUrl`: a 454,807 byte `d.pdf` returned a job id in about 19 seconds,
+  reached `done`, and produced a 73 KB JSON OCR result with parsed table/text
+  blocks. Treat file reduction as the first production design path before
+  self-hosting OCR.
+- LibreChat S3 file storage is a configuration switch, not the same as direct
+  PaddleOCR `fileUrl` OCR. Setting production `fileStrategy: "s3"` plus
+  `AWS_REGION=ap-east-1` stores new uploads in S3, but Steel OCR still resolves
+  files to bytes unless the runtime is explicitly changed to pass S3 presigned
+  URLs to PaddleOCR.
 - PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
   such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
   `input_data` from the permission-checked current-turn LibreChat attachment

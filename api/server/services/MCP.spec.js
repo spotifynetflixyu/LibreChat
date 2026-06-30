@@ -4,6 +4,7 @@ const { Readable } = require('stream');
 const mockGetTenantId = jest.fn();
 const mockGetFiles = jest.fn();
 const mockGetDownloadStream = jest.fn();
+const mockGetDownloadURL = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -78,6 +79,7 @@ jest.mock('~/cache', () => ({
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(() => ({
     getDownloadStream: mockGetDownloadStream,
+    getDownloadURL: mockGetDownloadURL,
   })),
 }));
 
@@ -1174,6 +1176,9 @@ describe('User parameter passing tests', () => {
         ],
       );
       mockGetDownloadStream.mockResolvedValue(Readable.from(Buffer.from('%PDF-1.4 test')));
+      mockGetDownloadURL.mockResolvedValue(
+        'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/uploads/paddle-user/c.pdf?X-Amz-Expires=43200&X-Amz-Signature=test',
+      );
 
       const mcpTool = await createMCPTool({
         mcpPermissionContext: {
@@ -1221,6 +1226,54 @@ describe('User parameter passing tests', () => {
 
       return { mockCallTool };
     }
+
+    it('should resolve S3 PaddleOCR attachments to a presigned file URL', async () => {
+      const fileId = 's3-file-c';
+      const signedUrl =
+        'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/uploads/paddle-user/s3-file-c__c.pdf?X-Amz-Expires=43200&X-Amz-Signature=test';
+      mockGetDownloadURL.mockResolvedValueOnce(signedUrl);
+
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId,
+        inputData: 'c.pdf',
+        dbFiles: [
+          {
+            file_id: fileId,
+            filename: 'c.pdf',
+            filepath:
+              'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/uploads/paddle-user/s3-file-c__c.pdf?X-Amz-Expires=60&X-Amz-Signature=old',
+            storageKey: 'uploads/paddle-user/s3-file-c__c.pdf',
+            type: 'application/pdf',
+            source: 's3',
+          },
+        ],
+      });
+
+      expect(mockGetDownloadURL).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: expect.objectContaining({
+            file_id: fileId,
+            storageKey: 'uploads/paddle-user/s3-file-c__c.pdf',
+            source: 's3',
+          }),
+          customFilename: 'c.pdf',
+          contentType: 'application/pdf',
+        }),
+      );
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: signedUrl,
+          }),
+        }),
+      );
+      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toMatch(/^data:/);
+      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('X-Amz-Signature'));
+    });
 
     it('should resolve PaddleOCR filename-only input_data from current request files', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({

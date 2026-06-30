@@ -104,6 +104,22 @@ startup.
 
 The same API-path problem is not limited to the large PDF. A 296,377 byte
 `docs/reference/example/b.png` copied to `/data/smoke/b.png` timed out during
-multipart submit from the Singapore Droplet, and a valid S3 presigned `fileUrl`
-for the same PNG returned AI Studio `HTTP 400` code `10000` with
-`文件 URL 访问超时`.
+multipart submit from the Singapore Droplet, and a valid AWS S3 Sydney
+`ap-southeast-2` presigned `fileUrl` for the same PNG returned AI Studio
+`HTTP 400` code `10000` with `文件 URL 访问超时`.
+
+AWS S3 Hong Kong `ap-east-1` did work for the same `b.png`: AI Studio accepted
+the `fileUrl`, returned a job id, reached `done`, and exposed a JSON result
+with one parsed table block.
+
+AWS S3 Hong Kong `ap-east-1` did not solve the full `c.pdf`: the production
+container could signed-range-GET the 7.6 MB PDF, but AI Studio `fileUrl` submit
+returned `HTTP 408 Request Timeout` after about 70 seconds with no job id. The
+next provider-path probe should reduce the submit unit first: compressed PDF,
+rasterized image, or split pages/images.
+
+A smaller `d.pdf` in AWS S3 Hong Kong `ap-east-1` did work: the 454,807 byte
+PDF returned an AI Studio job id in about 19 seconds, reached `done`, and
+produced a 73 KB JSON result with parsed table/text blocks. This supports
+adding a production pre-processing step that reduces large drawing PDFs before
+calling AI Studio.

@@ -12,6 +12,8 @@ type CanvasModule = typeof import('@napi-rs/canvas');
 type PdfJsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
 type McpTextContent = { type: 'text'; text: string };
 
+const paddleOcrProvider = 'aistudio';
+
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<CanvasModule | PdfJsModule>;
@@ -95,38 +97,21 @@ function getInheritedEnv() {
 }
 
 function getPaddleOcrEnv() {
-  const source = process.env.PADDLEOCR_MCP_PPOCR_SOURCE?.trim() || 'aistudio';
   const env = {
     ...getInheritedEnv(),
     PADDLEOCR_MCP_MODEL: process.env.PADDLEOCR_MCP_MODEL ?? 'PaddleOCR-VL-1.6',
-    PADDLEOCR_MCP_PPOCR_SOURCE: source,
+    PADDLEOCR_MCP_PPOCR_SOURCE: paddleOcrProvider,
   };
 
-  if (source === 'self_hosted') {
-    const baseUrl = process.env.PADDLEOCR_MCP_SELF_HOSTED_BASE_URL?.trim();
-    if (!baseUrl) {
-      throw new Error('PADDLEOCR_MCP_SELF_HOSTED_BASE_URL is required for Steel OCR.');
-    }
-
-    return {
-      ...env,
-      PADDLEOCR_MCP_SELF_HOSTED_BASE_URL: baseUrl,
-    };
+  const accessToken = process.env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN?.trim();
+  if (!accessToken) {
+    throw new Error('PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required for Steel OCR.');
   }
 
-  if (source !== 'local') {
-    const accessToken = process.env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN?.trim();
-    if (!accessToken) {
-      throw new Error('PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required for Steel OCR.');
-    }
-
-    return {
-      ...env,
-      PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN: accessToken,
-    };
-  }
-
-  return env;
+  return {
+    ...env,
+    PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN: accessToken,
+  };
 }
 
 function getTimeoutMs() {
@@ -137,7 +122,7 @@ function sanitizeError(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Steel OCR execution failed.';
 
   return message.replace(
-    /PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN|PADDLEOCR_MCP_SELF_HOSTED_BASE_URL|access_token|authorization|api_key|Bearer\s+\S+/gi,
+    /PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN|access_token|authorization|api_key|Bearer\s+\S+/gi,
     '[redacted]',
   );
 }
