@@ -9,11 +9,28 @@ Status - 2026-06-30:
 - [x] Confirm production deploy is triggered by pushes to `master` through
       `.github/workflows/deploy-prod.yml`.
 - [x] Run fresh focused verification before committing.
-- [ ] Commit tracked changes without adding ignored `.env` or `librechat.yaml`.
-- [ ] Merge the feature branch into `master` and push `master`.
-- [ ] Verify GitHub Actions production deploy completes.
-- [ ] Confirm private server runtime config uses `/etc/librechat/.env.prod`
+- [x] Commit tracked changes without adding ignored `.env` or `librechat.yaml`.
+- [x] Merge the feature branch into `master` and push `master`.
+- [x] Verify GitHub Actions production deploy completes.
+- [x] Confirm private server runtime config uses `/etc/librechat/.env.prod`
       with `S3_KEY_PREFIX=prod` and `/data/librechat.yaml` with S3 storage.
+
+Review - 2026-06-30:
+
+- Committed S3 image compression and S3 key namespace changes as
+  `d697272b0 feat: preprocess S3 uploads and namespace keys`.
+- Fast-forward merged `feat/v8.4` into `master` and pushed `master`.
+- Production deploy run `28422127369` initially failed health because
+  `/etc/librechat/.env.prod` lacked `S3_KEY_PREFIX=prod` and strict PaddleOCR
+  startup smoke blocked API boot on an AI Studio dependency failure.
+- Installed the ignored local `.env.prod` to the private server env path,
+  confirmed `S3_KEY_PREFIX=prod`, then set `PADDLEOCR_PREWARM_STRICT=false`
+  so PaddleOCR startup smoke warns without blocking LibreChat API rollout.
+- Reran production deploy run `28422127369`; the rerun passed image build,
+  Droplet deploy, container health, and public `https://chat.longdin.org/health`
+  smoke.
+- Server readback confirmed `BUILD_COMMIT=d697272b0...`, `BUILD_BRANCH=master`,
+  `fileStrategy: "s3"`, `S3_KEY_PREFIX=prod`, and public health `200 OK`.
 
 ---
 

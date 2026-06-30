@@ -480,6 +480,7 @@ Useful startup controls in `/etc/librechat/.env.prod`:
 ```bash
 PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=
 PADDLEOCR_FORCE_REINSTALL=false
+PADDLEOCR_PREWARM_STRICT=false
 PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
 ```
 
@@ -492,8 +493,10 @@ requests return `429`. There is no documented single-file size limit, but keep
 PDF inputs within 100 pages to avoid timeout; pages beyond the limit are
 ignored.
 
-Startup preparation defaults live in `deploy/host/start.sh`: prepare on startup
-is enabled, strict prewarm is enabled, and the short MCP startup smoke timeout
+Startup preparation defaults live in `deploy/host/start.sh`. Production should
+keep prepare-on-startup enabled, but set `PADDLEOCR_PREWARM_STRICT=false` so a
+PaddleOCR AI Studio dependency or network failure is logged as a warning instead
+of blocking the LibreChat API from starting. The short MCP startup smoke timeout
 defaults to 10 seconds.
 
 GitHub Actions does not run PaddleOCR OCR as a deploy gate. Production deploy

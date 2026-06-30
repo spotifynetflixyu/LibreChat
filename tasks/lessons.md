@@ -6,6 +6,9 @@
   `.env.prod` installed as `/etc/librechat/.env.prod`, and should use
   `fileStrategy: "s3"` plus `S3_KEY_PREFIX=prod` when sharing the bucket with
   dev/test.
+- Production PaddleOCR startup smoke must not block LibreChat rollout. Keep
+  `PADDLEOCR_PREWARM_STRICT=false` in `.env.prod` and `/etc/librechat/.env.prod`
+  so AI Studio dependency failures remain warnings while `/health` can recover.
 - When switching LibreChat production file storage to S3, verify the running
   container with a server-side put/get/delete smoke test and log
   `[initializeS3]` before claiming uploads are backed by S3. Never print AWS
