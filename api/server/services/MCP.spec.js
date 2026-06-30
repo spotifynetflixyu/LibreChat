@@ -47,6 +47,10 @@ const { logger } = require('@librechat/data-schemas');
 const { MCPOAuthHandler } = require('@librechat/api');
 const { CacheKeys, Constants, Permissions, PermissionTypes } = require('librechat-data-provider');
 const D = Constants.mcp_delimiter;
+const SIGNED_PADDLEOCR_URL =
+  'https://files.example.test/uploads/paddle-user/s3-file-drawing__drawing.pdf?X-Amz-Expires=43200&X-Amz-Credential=test&X-Amz-Signature=test';
+const OLD_SIGNED_PADDLEOCR_URL =
+  'https://files.example.test/uploads/paddle-user/s3-file-drawing__drawing.pdf?X-Amz-Expires=60&X-Amz-Signature=old';
 const {
   createMCPTool,
   createMCPTools,
@@ -99,6 +103,16 @@ jest.mock('./Tools/mcp', () => ({
 jest.mock('./GraphTokenService', () => ({
   getGraphApiToken: jest.fn(),
 }));
+
+function expectLoggerNotToContainSignedUrlSecrets() {
+  const logged = ['debug', 'info', 'warn', 'error']
+    .flatMap((level) => logger[level].mock.calls.flatMap((args) => args.map((arg) => String(arg))))
+    .join('\n');
+
+  expect(logged).not.toMatch(/X-Amz-Signature/i);
+  expect(logged).not.toMatch(/X-Amz-Credential/i);
+  expect(logged).not.toMatch(/AWSAccessKeyId/i);
+}
 
 describe('tests for the new helper functions used by the MCP connection status endpoints', () => {
   let mockGetMCPManager;
@@ -1143,6 +1157,7 @@ describe('User parameter passing tests', () => {
       inputData,
       dbFiles,
       requestFiles,
+      fileType = 'pdf',
     }) {
       const mockUser = { id: 'paddle-user', role: 'USER' };
       const mockReq = {
@@ -1168,17 +1183,15 @@ describe('User parameter passing tests', () => {
         dbFiles ?? [
           {
             file_id: fileId,
-            filename: 'c.pdf',
-            filepath: `/uploads/paddle-user/${fileId}__c.pdf`,
+            filename: 'drawing.pdf',
+            filepath: `/uploads/paddle-user/${fileId}__drawing.pdf`,
             type: 'application/pdf',
             source: 'local',
           },
         ],
       );
       mockGetDownloadStream.mockResolvedValue(Readable.from(Buffer.from('%PDF-1.4 test')));
-      mockGetDownloadURL.mockResolvedValue(
-        'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/uploads/paddle-user/c.pdf?X-Amz-Expires=43200&X-Amz-Signature=test',
-      );
+      mockGetDownloadURL.mockResolvedValue(SIGNED_PADDLEOCR_URL);
 
       const mcpTool = await createMCPTool({
         mcpPermissionContext: {
@@ -1207,7 +1220,7 @@ describe('User parameter passing tests', () => {
       await mcpTool.invoke(
         {
           input_data: inputData,
-          file_type: 'pdf',
+          file_type: fileType,
           output_mode: 'detailed',
           return_images: false,
         },
@@ -1228,21 +1241,18 @@ describe('User parameter passing tests', () => {
     }
 
     it('should resolve S3 PaddleOCR attachments to a presigned file URL', async () => {
-      const fileId = 's3-file-c';
-      const signedUrl =
-        'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/uploads/paddle-user/s3-file-c__c.pdf?X-Amz-Expires=43200&X-Amz-Signature=test';
-      mockGetDownloadURL.mockResolvedValueOnce(signedUrl);
+      const fileId = 's3-file-drawing';
+      mockGetDownloadURL.mockResolvedValueOnce(SIGNED_PADDLEOCR_URL);
 
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
         fileId,
-        inputData: 'c.pdf',
+        inputData: 'drawing.pdf',
         dbFiles: [
           {
             file_id: fileId,
-            filename: 'c.pdf',
-            filepath:
-              'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/uploads/paddle-user/s3-file-c__c.pdf?X-Amz-Expires=60&X-Amz-Signature=old',
-            storageKey: 'uploads/paddle-user/s3-file-c__c.pdf',
+            filename: 'drawing.pdf',
+            filepath: OLD_SIGNED_PADDLEOCR_URL,
+            storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
             type: 'application/pdf',
             source: 's3',
           },
@@ -1253,10 +1263,10 @@ describe('User parameter passing tests', () => {
         expect.objectContaining({
           file: expect.objectContaining({
             file_id: fileId,
-            storageKey: 'uploads/paddle-user/s3-file-c__c.pdf',
+            storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
             source: 's3',
           }),
-          customFilename: 'c.pdf',
+          customFilename: 'drawing.pdf',
           contentType: 'application/pdf',
         }),
       );
@@ -1267,18 +1277,49 @@ describe('User parameter passing tests', () => {
           toolName: 'paddleocr_vl',
           toolArguments: expect.objectContaining({
             file_type: 'pdf',
-            input_data: signedUrl,
+            input_data: SIGNED_PADDLEOCR_URL,
           }),
         }),
       );
       expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toMatch(/^data:/);
-      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('X-Amz-Signature'));
+      expectLoggerNotToContainSignedUrlSecrets();
+    });
+
+    it('should keep CloudFront PaddleOCR attachments on the stream fallback path', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: 'cloudfront-file-drawing',
+        inputData: 'drawing.pdf',
+        dbFiles: [
+          {
+            file_id: 'cloudfront-file-drawing',
+            filename: 'drawing.pdf',
+            filepath: 'https://cdn.example.test/uploads/paddle-user/cloudfront-file-drawing__drawing.pdf',
+            storageKey: 'uploads/paddle-user/cloudfront-file-drawing__drawing.pdf',
+            type: 'application/pdf',
+            source: 'cloudfront',
+          },
+        ],
+      });
+
+      expect(mockGetDownloadURL).not.toHaveBeenCalled();
+      expect(mockGetDownloadStream).toHaveBeenCalledWith(
+        expect.any(Object),
+        'https://cdn.example.test/uploads/paddle-user/cloudfront-file-drawing__drawing.pdf',
+      );
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
     });
 
     it('should resolve PaddleOCR filename-only input_data from current request files', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
-        fileId: 'file-c',
-        inputData: 'c.pdf',
+        fileId: 'file-drawing',
+        inputData: 'drawing.pdf',
       });
 
       expect(mockCallTool).toHaveBeenCalledWith(
@@ -1291,7 +1332,7 @@ describe('User parameter passing tests', () => {
           }),
         }),
       );
-      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe('c.pdf');
+      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe('drawing.pdf');
     });
 
     it('should resolve PaddleOCR file_id input_data from current request files', async () => {
@@ -1317,11 +1358,11 @@ describe('User parameter passing tests', () => {
     it('should not download request-supplied PaddleOCR filepath without an owned DB file', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
         fileId: undefined,
-        inputData: 'c.pdf',
+        inputData: 'drawing.pdf',
         requestFiles: [
           {
-            filename: 'c.pdf',
-            filepath: '/uploads/attacker/c.pdf',
+            filename: 'drawing.pdf',
+            filepath: '/uploads/attacker/drawing.pdf',
             type: 'application/pdf',
             source: 'local',
           },
@@ -1335,7 +1376,7 @@ describe('User parameter passing tests', () => {
           serverName: 'PaddleOCR',
           toolName: 'paddleocr_vl',
           toolArguments: expect.objectContaining({
-            input_data: 'c.pdf',
+            input_data: 'drawing.pdf',
           }),
         }),
       );
@@ -1343,13 +1384,13 @@ describe('User parameter passing tests', () => {
 
     it('should infer PDF media type for PaddleOCR data URLs when uploaded as octet-stream', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
-        fileId: 'file-c',
-        inputData: 'c.pdf',
+        fileId: 'file-drawing',
+        inputData: 'drawing.pdf',
         dbFiles: [
           {
-            file_id: 'file-c',
-            filename: 'c.pdf',
-            filepath: '/uploads/paddle-user/file-c__c.pdf',
+            file_id: 'file-drawing',
+            filename: 'drawing.pdf',
+            filepath: '/uploads/paddle-user/file-drawing__drawing.pdf',
             type: 'application/octet-stream',
             source: 'local',
           },
@@ -1360,6 +1401,58 @@ describe('User parameter passing tests', () => {
         expect.objectContaining({
           toolArguments: expect.objectContaining({
             input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
+    });
+
+    it('should infer BMP media type for PaddleOCR image data URLs', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: 'file-drawing-bmp',
+        inputData: 'drawing.bmp',
+        fileType: 'image',
+        dbFiles: [
+          {
+            file_id: 'file-drawing-bmp',
+            filename: 'drawing.bmp',
+            filepath: '/uploads/paddle-user/file-drawing-bmp__drawing.bmp',
+            type: 'application/octet-stream',
+            source: 'local',
+          },
+        ],
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            file_type: 'image',
+            input_data: expect.stringMatching(/^data:image\/bmp;base64,/),
+          }),
+        }),
+      );
+    });
+
+    it('should infer CIF media type for PaddleOCR image data URLs', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: 'file-drawing-cif',
+        inputData: 'drawing.cif',
+        fileType: 'image',
+        dbFiles: [
+          {
+            file_id: 'file-drawing-cif',
+            filename: 'drawing.cif',
+            filepath: '/uploads/paddle-user/file-drawing-cif__drawing.cif',
+            type: 'application/octet-stream',
+            source: 'local',
+          },
+        ],
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            file_type: 'image',
+            input_data: expect.stringMatching(/^data:image\/cif;base64,/),
           }),
         }),
       );

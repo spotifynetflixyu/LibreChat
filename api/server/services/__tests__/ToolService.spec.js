@@ -348,7 +348,7 @@ describe('ToolService - Action Capability Gating', () => {
         currentTurnFiles: [
           {
             fileId: 'file-1',
-            filename: 'c.pdf',
+            filename: 'drawing.pdf',
             mediaType: 'application/pdf',
           },
         ],
@@ -413,8 +413,8 @@ describe('ToolService - Action Capability Gating', () => {
         requestAttachments: [
           {
             file_id: 'file-1',
-            filename: 'c.pdf',
-            filepath: '/uploads/user/file-1__c.pdf',
+            filename: 'drawing.pdf',
+            filepath: '/uploads/user/file-1__drawing.pdf',
             type: 'application/pdf',
           },
         ],

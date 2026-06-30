@@ -709,7 +709,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       '',
       '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
       '|---|---|---|---:|---:|---|---|',
-      '| c.pdf | BP1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
+      '| drawing.pdf | P1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
     ].join('\n');
     const result = await writer.captureAssistantFinalMarkdown({
       conversationId: 'steel_conversation_1',

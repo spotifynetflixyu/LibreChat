@@ -40,7 +40,6 @@ function getPaddleOcrEnv() {
   return {
     ...getInheritedEnv(),
     PADDLEOCR_MCP_MODEL: 'PaddleOCR-VL-1.6',
-    PADDLEOCR_MCP_PPOCR_SOURCE: 'aistudio',
     PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN: accessToken,
   };
 }

@@ -268,7 +268,6 @@ AWS_BUCKET_NAME=amzn-s3-longdin-ap-east
 AWS_ACCESS_KEY_ID=<prod-s3-access-key-id>
 AWS_SECRET_ACCESS_KEY=<prod-s3-secret-access-key>
 AWS_ENDPOINT_URL=
-AWS_FORCE_PATH_STYLE=false
 S3_URL_EXPIRY_SECONDS=43200
 ```
 
@@ -338,7 +337,6 @@ AWS_BUCKET_NAME=amzn-s3-longdin-ap-east
 AWS_ACCESS_KEY_ID=<prod-s3-access-key-id>
 AWS_SECRET_ACCESS_KEY=<prod-s3-secret-access-key>
 AWS_ENDPOINT_URL=
-AWS_FORCE_PATH_STYLE=false
 S3_URL_EXPIRY_SECONDS=43200
 ```
 
@@ -361,7 +359,7 @@ ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-com
 Verify without printing secrets:
 
 ```bash
-ssh deploy@<droplet-ipv4> 'grep -E "^(AWS_REGION|AWS_BUCKET_NAME|AWS_ENDPOINT_URL|AWS_FORCE_PATH_STYLE|S3_URL_EXPIRY_SECONDS)=" /etc/librechat/.env.prod'
+ssh deploy@<droplet-ipv4> 'grep -E "^(AWS_REGION|AWS_BUCKET_NAME|AWS_ENDPOINT_URL|S3_URL_EXPIRY_SECONDS)=" /etc/librechat/.env.prod'
 ssh deploy@<droplet-ipv4> 'grep -n "^fileStrategy" /data/librechat.yaml'
 curl -fsS https://chat.longdin.org/health
 ```
@@ -409,7 +407,7 @@ The Droplet runs a minimal stack from the repo root files:
 |---|---|
 | `deploy-compose.prod.yml` | Production Compose stack |
 | `deploy/host/start.sh` | Provider-neutral container startup script that maps `/data` |
-| `deploy/host/paddleocr-smoke.sh` | Manual PaddleOCR MCP `c.pdf` smoke script |
+| `deploy/host/paddleocr-smoke.sh` | Manual PaddleOCR MCP smoke script |
 | `deploy/digitalocean/Caddyfile` | Caddy HTTPS reverse proxy config |
 
 Do not run MongoDB, Postgres, MeiliSearch, RAG API, or vector DB on the first
@@ -457,7 +455,7 @@ mcpServers:
     args: []
 ```
 
-Keep the long LibreChat and PaddleOCR API timeouts for drawing PDFs:
+Keep the long LibreChat and PaddleOCR API timeouts for drawing PDF/image inputs:
 
 ```yaml
 timeout: 1200000
@@ -475,31 +473,39 @@ PADDLEOCR_FORCE_REINSTALL=false
 PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
 ```
 
-Production uses the AI Studio provider with `PaddleOCR-VL-1.6`. Startup
-preparation defaults live in `deploy/host/start.sh`: prepare on startup is
-enabled, strict prewarm is enabled, and the short MCP startup smoke timeout
+Production uses PaddleOCR-VL through the AI Studio API. PaddleOCR supports PDF
+and image inputs such as PNG, JPG/JPEG, BMP, and CIF. Treat this as a single API
+path: do not expose source/provider selection in env or host scripts.
+
+PaddleOCR API limits: after a model reaches its daily parsing limit, exceeded
+requests return `429`. There is no documented single-file size limit, but keep
+PDF inputs within 100 pages to avoid timeout; pages beyond the limit are
+ignored.
+
+Startup preparation defaults live in `deploy/host/start.sh`: prepare on startup
+is enabled, strict prewarm is enabled, and the short MCP startup smoke timeout
 defaults to 10 seconds.
 
 GitHub Actions does not run PaddleOCR OCR as a deploy gate. Production deploy
 is gated only by LibreChat container health because PaddleOCR depends on the
-external AI Studio API path and can fail due to provider or network conditions
-that should not block app rollout.
+external AI Studio API path and can fail due to API or network conditions that
+should not block app rollout.
 
-For the heavier drawing smoke, upload the ignored local reference PDF manually
-from your workstation:
+For a heavier drawing smoke, upload the selected local smoke input manually from
+your workstation:
 
 ```bash
-scp docs/reference/example/c.pdf deploy@<droplet-ipv4>:/data/smoke/c.pdf
+scp <local-smoke-input> deploy@<droplet-ipv4>:/data/smoke/<input-file>
 ```
 
-Then run the live production `c.pdf` smoke manually after deploy:
+Then run the live production smoke manually after deploy:
 
 ```bash
-ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/c.pdf'
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/<input-file>'
 ```
 
 The smoke calls AI Studio and is intentionally manual. Keep it for diagnosing
-OCR provider/runtime health after deploy; do not treat it as the production
+OCR API/runtime health after deploy; do not treat it as the production
 deployment gate.
 
 Current production observation:
@@ -507,11 +513,6 @@ Current production observation:
 - `workflow-smoke.pdf` previously completed through `paddleocr_vl` in about
   214 seconds, but later checks showed intermittent AI Studio connectivity from
   the Droplet.
-- `docs/reference/example/c.pdf` uploaded to `/data/smoke/c.pdf` currently
-  fails before OCR processing: the Droplet cannot reliably multipart-upload
-  the 7.6 MB PDF to `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`.
-  Treat this as an AI Studio network/API upload-path issue, not as an MCP
-  startup or LibreChat host health failure.
 - `docs/reference/example/b.png` uploaded to `/data/smoke/b.png` also fails
   before OCR job creation. The 296,377 byte PNG timed out during multipart
   upload from the Singapore Droplet, and a valid AWS S3 Sydney
@@ -520,11 +521,6 @@ Current production observation:
 - AWS S3 Hong Kong `ap-east-1` succeeded for the same `b.png`: AI Studio
   accepted the `fileUrl`, returned a job id, reached `done`, and exposed a JSON
   result with one parsed table block.
-- AWS S3 Hong Kong `ap-east-1` did not solve the full `c.pdf`: the production
-  container could signed-range-GET the 7.6 MB PDF, but AI Studio `fileUrl`
-  submit returned `HTTP 408 Request Timeout` after about 70 seconds with no job
-  id. Keep `ap-east-1` for small OCR assets, but reduce large drawing PDFs
-  before submitting them to AI Studio.
 - A smaller `d.pdf` in AWS S3 Hong Kong `ap-east-1` did work: the 454,807 byte
   PDF returned an AI Studio job id in about 19 seconds, reached `done`, and
   produced a 73 KB JSON result with parsed table/text blocks. This makes

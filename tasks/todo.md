@@ -1,3 +1,67 @@
+# Active: Simplify PaddleOCR S3/OCR range from 53adb6f084566471c0a72969
+
+Goal: simplify the committed changes from
+`53adb6f084566471c0a72969..HEAD` without changing public contracts and without
+auto-committing.
+
+Plan - 2026-06-30:
+
+- [x] Confirm the exact changed-file target from
+      `git diff --name-only 53adb6f084566471c0a72969..HEAD`.
+- [x] Review code reuse opportunities across the changed runtime, tests,
+      scripts, docs, lessons, and task notes.
+- [x] Review code quality issues such as stale branches, duplicated constants,
+      misleading naming, unsafe shell behavior, and unnecessary comments.
+- [x] Review efficiency issues such as repeated work, avoidable startup/smoke
+      cost, or unnecessary file/network operations.
+- [x] Apply only local simplifications that preserve the env keys, MCP tool
+      behavior, deployment contracts, and test intent.
+- [x] Run focused verification for touched code and shell scripts.
+- [x] Record the final review result and skipped items here.
+
+Changed-file target:
+
+- `.env.example`
+- `.env.prod.example`
+- `api/server/services/MCP.js`
+- `api/server/services/MCP.spec.js`
+- `deploy/host/paddleocr-smoke.sh`
+- `deploy/host/start.sh`
+- `docs/deployment/digitalocean-droplet-prod-runbook.md`
+- `docs/plans/2026-06-29-paddleocr-persistent-venv-prewarm.md`
+- `packages/api/src/steel/vision/ocr.spec.ts`
+- `packages/api/src/steel/vision/ocr.ts`
+- `tasks/lessons.md`
+- `tasks/todo.md`
+
+Review - 2026-06-30:
+
+- Removed stale fixture-specific PaddleOCR code, manual spec, expected marker
+  fixture, and the obsolete OCR launcher module that still carried its own MCP
+  process path.
+- Removed the legacy PPOCR source selector from MCP config, env examples, host
+  startup, smoke script, and manual PaddleOCR specs. PaddleOCR now documents the
+  single AI Studio API path instead of multiple providers.
+- Made production smoke format-neutral: the smoke script now requires an
+  explicit input path, infers PDF versus image, supports PDF/PNG/JPG/BMP/CIF
+  style inputs, and only validates markers when the caller provides marker env.
+- Simplified PaddleOCR S3 resolution to use presigned URLs only for S3 records;
+  CloudFront and local records stay on the stream/data URL fallback unless a
+  signed URL path is explicitly verified later.
+- Removed the explicit path-style S3 setting from production examples and
+  runbook checks; AWS S3 Hong Kong does not require path-style URLs.
+- Added PaddleOCR API usage guidance: daily parsing limit returns `429`, no
+  single-file size limit is documented, keep PDFs within 100 pages to avoid
+  timeout, and pages beyond the limit are ignored.
+- Verification passed:
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+  - `cd api && rtk npx jest server/services/MCP.spec.js server/services/__tests__/ToolService.spec.js server/controllers/agents/client.test.js --runInBand`
+  - `cd packages/api && rtk npx jest src/steel/vision/attachments.spec.ts src/steel/vision/resolver.spec.ts src/steel/vision/service.spec.ts src/steel/vision/compare.spec.ts src/steel/memory/service.spec.ts --runInBand --coverage=false`
+  - `rtk npm run build:api`
+  - `rtk git diff --check`
+
+---
+
 # Active: Production OCR S3 presigned URL smoke
 
 Goal: make PaddleOCR OCR use private S3 presigned URLs for S3-backed
@@ -106,35 +170,29 @@ Review - 2026-06-30:
 
 ---
 
-# Active: Remove PaddleOCR source selector from user env
+# Previous: Remove obsolete PaddleOCR source selector
 
-Goal: keep PaddleOCR on the AI Studio MCP provider, but remove
-`PADDLEOCR_MCP_PPOCR_SOURCE` from user-filled env examples and docs. The MCP
-process still receives fixed `aistudio` internally so the provider does not
-depend on external env.
+Goal: keep PaddleOCR on the single supported AI Studio API path and remove the
+obsolete PPOCR source selector from env examples, host scripts, MCP config,
+tests, and docs.
 
 Plan - 2026-06-30:
 
-- [x] Remove `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` from `.env.example`,
-      `.env.prod.example`, and the production runbook startup controls.
-- [x] Stop reading `PADDLEOCR_MCP_PPOCR_SOURCE` from runtime env; hardcode the
-      current provider as `aistudio` when launching PaddleOCR MCP.
-- [x] Keep `.mcp.json` and host-managed `librechat.yaml` passing fixed
-      `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` to the MCP process.
+- [x] Remove the legacy source selector from `.env.example`, `.env.prod.example`,
+      `.mcp.json`, host scripts, and docs.
+- [x] Remove source-selector env injection from production startup, manual
+      smoke, and manual OCR specs.
+- [x] Keep only real PaddleOCR controls: access token, model, timeouts,
+      persistent venv, and smoke input path.
 - [x] Run shell checks and focused Steel OCR tests.
 
 Review - 2026-06-30:
 
-- Removed `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` from `.env.example`,
-  `.env.prod.example`, and the DigitalOcean production runbook's startup env
-  controls.
-- Updated Steel OCR runtime to stop reading `process.env.PADDLEOCR_MCP_PPOCR_SOURCE`;
-  it now launches PaddleOCR MCP with fixed provider `aistudio`.
-- Updated host startup and manual smoke scripts so the provider is hardcoded
-  internally instead of externally configurable through `.env`.
-- Kept `.mcp.json` and host-managed `librechat.yaml` passing
-  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` inside the MCP env block, because the
-  MCP server still expects that launch parameter.
+- Removed the legacy source selector from `.env.example`, `.env.prod.example`,
+  `.mcp.json`, host startup, manual smoke, manual OCR spec, and the
+  DigitalOcean production runbook's startup env controls.
+- Updated PaddleOCR runtime docs to describe the single AI Studio API path
+  without exposing a source selector.
 - Verification passed:
   - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
   - `rtk git diff --check`

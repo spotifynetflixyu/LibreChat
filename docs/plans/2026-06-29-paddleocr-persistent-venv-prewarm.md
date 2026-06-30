@@ -55,17 +55,18 @@ The API startup script prepares the venv before `node server/index.js` starts:
 
 1. Connects to `/data/paddleocr/venv/bin/paddleocr_mcp` through the MCP SDK.
 2. Confirms `paddleocr_vl` is listed.
-3. Calls `paddleocr_vl` against the selected PDF path.
+3. Calls `paddleocr_vl` against the selected PDF/image input path.
 4. Fails if OCR returns no useful text, misses the configured marker set, or
    returns the old
    `No text could be parsed` failure.
 
 GitHub Actions does not run this smoke as a deploy gate. The deploy gate stays
 limited to LibreChat container health because PaddleOCR depends on the external
-AI Studio API path and can fail due to provider or network conditions unrelated
-to app rollout. Run the smoke manually when diagnosing OCR provider/runtime
-health. The local `docs/reference/example/c.pdf` file is ignored by git and is
-uploaded manually to `/data/smoke/c.pdf` for full drawing OCR smoke checks.
+AI Studio API path and can fail due to API or network conditions unrelated to
+app rollout. Run the smoke manually when diagnosing OCR API/runtime health. The
+smoke does not ship an implicit drawing fixture; pass an explicit PDF/image path
+or `PADDLEOCR_SMOKE_INPUT_PATH`, and set marker checks only with
+`PADDLEOCR_SMOKE_EXPECT_MARKERS`.
 
 ## Rollback
 
@@ -87,17 +88,17 @@ If persistent venv startup fails:
 - GitHub Actions deploy from `master`.
 - Droplet health check after deploy.
 - Droplet short-start MCP check logs from container startup.
-- Manual Droplet live `c.pdf` smoke after uploading local
-  `docs/reference/example/c.pdf` to `/data/smoke/c.pdf`.
+- Manual Droplet live smoke after uploading an explicit PDF/image input to
+  `/data/smoke/`.
 
 ## Current Result
 
 The persistent venv and MCP startup check pass on the Droplet. Production
 deploy no longer gates on live PaddleOCR OCR.
 
-The full `docs/reference/example/c.pdf` smoke does not currently return usable
-OCR through the AI Studio API path. The latest diagnosis shows the Droplet
-cannot reliably multipart-upload the 7.6 MB PDF to
+A larger ignored drawing PDF smoke does not currently return usable OCR through
+the AI Studio API path. The latest diagnosis shows the Droplet cannot reliably
+multipart-upload a 7.6 MB PDF to
 `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`; this is an AI Studio
 network/API upload-path issue to investigate separately from production host
 startup.
@@ -112,11 +113,11 @@ AWS S3 Hong Kong `ap-east-1` did work for the same `b.png`: AI Studio accepted
 the `fileUrl`, returned a job id, reached `done`, and exposed a JSON result
 with one parsed table block.
 
-AWS S3 Hong Kong `ap-east-1` did not solve the full `c.pdf`: the production
-container could signed-range-GET the 7.6 MB PDF, but AI Studio `fileUrl` submit
-returned `HTTP 408 Request Timeout` after about 70 seconds with no job id. The
-next provider-path probe should reduce the submit unit first: compressed PDF,
-rasterized image, or split pages/images.
+AWS S3 Hong Kong `ap-east-1` did not solve the larger drawing PDF: the
+production container could signed-range-GET the 7.6 MB PDF, but AI Studio
+`fileUrl` submit returned `HTTP 408 Request Timeout` after about 70 seconds with
+no job id. The next API-path probe should reduce the submit unit first:
+compressed PDF, rasterized image, or split pages/images.
 
 A smaller `d.pdf` in AWS S3 Hong Kong `ap-east-1` did work: the 454,807 byte
 PDF returned an AI Studio job id in about 19 seconds, reached `done`, and

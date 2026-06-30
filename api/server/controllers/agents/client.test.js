@@ -2027,7 +2027,7 @@ describe('AgentClient - titleConvo', () => {
 
     it('keeps OCR-capable request attachments in Steel context when provider processing filters them out', async () => {
       const { buildDefaultSteelGlobalAgentContext } = require('@librechat/api');
-      const currentFile = makeUploadedFile('current-pdf', 'c.pdf', 'application/octet-stream');
+      const currentFile = makeUploadedFile('current-pdf', 'drawing.pdf', 'application/octet-stream');
 
       client.options.attachments = [currentFile];
 
@@ -2051,7 +2051,7 @@ describe('AgentClient - titleConvo', () => {
         mediaType: 'application/octet-stream',
         conversationId: 'convo-123',
         messageId: 'msg-1',
-        filename: 'c.pdf',
+        filename: 'drawing.pdf',
       };
       expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
         expect.objectContaining({

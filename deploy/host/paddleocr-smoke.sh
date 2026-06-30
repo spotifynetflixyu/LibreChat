@@ -1,16 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-INPUT_PATH="${1:-${PADDLEOCR_SMOKE_INPUT_PATH:-${PADDLEOCR_SMOKE_PDF_PATH:-/data/smoke/c.pdf}}}"
+INPUT_PATH="${1:-${PADDLEOCR_SMOKE_INPUT_PATH:-}}"
 PADDLEOCR_DIR="${PADDLEOCR_DIR:-/data/paddleocr}"
 PADDLEOCR_VENV_DIR="${PADDLEOCR_VENV_DIR:-$PADDLEOCR_DIR/venv}"
 PADDLEOCR_MCP_COMMAND="${PADDLEOCR_MCP_COMMAND:-$PADDLEOCR_VENV_DIR/bin/paddleocr_mcp}"
 PADDLEOCR_SMOKE_TIMEOUT_MS="${PADDLEOCR_SMOKE_TIMEOUT_MS:-1200000}"
 
-export PADDLEOCR_MCP_PPOCR_SOURCE="aistudio"
-
 export PADDLEOCR_MCP_COMMAND
 export PADDLEOCR_SMOKE_TIMEOUT_MS
+
+if [ -z "$INPUT_PATH" ]; then
+  printf 'PaddleOCR smoke input path is required. Pass a path or set PADDLEOCR_SMOKE_INPUT_PATH.\n' >&2
+  exit 1
+fi
 
 if [ ! -f "$INPUT_PATH" ]; then
   printf 'PaddleOCR smoke input not found: %s\n' "$INPUT_PATH" >&2
@@ -27,19 +30,6 @@ if [ -z "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN:-}" ]; then
   exit 1
 fi
 
-if [ -z "${PADDLEOCR_SMOKE_FILE_TYPE:-}" ]; then
-  case "$(printf '%s' "$INPUT_PATH" | tr '[:upper:]' '[:lower:]')" in
-    *.png|*.jpg|*.jpeg|*.webp|*.bmp|*.tif|*.tiff)
-      PADDLEOCR_SMOKE_FILE_TYPE="image"
-      ;;
-    *)
-      PADDLEOCR_SMOKE_FILE_TYPE="pdf"
-      ;;
-  esac
-fi
-
-export PADDLEOCR_SMOKE_FILE_TYPE
-
 node - "$INPUT_PATH" <<'NODE'
 const fs = require('fs');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
@@ -52,12 +42,8 @@ const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 100);
 const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
 const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 12000);
 const toolName = process.env.PADDLEOCR_SMOKE_TOOL_NAME || 'paddleocr_vl';
-const source = 'aistudio';
 const model = process.env.PADDLEOCR_MCP_MODEL || 'PaddleOCR-VL-1.6';
-const fileType = process.env.PADDLEOCR_SMOKE_FILE_TYPE || 'pdf';
-const expectedMarkers = String(
-  process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? 'BP1,BP2,PL1,柱底板,連接板',
-)
+const expectedMarkers = String(process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? '')
   .split(',')
   .map((marker) => marker.trim())
   .filter(Boolean);
@@ -119,19 +105,27 @@ function extractText(result) {
     .trim();
 }
 
+function appendTail(current, chunk, limit = 2000) {
+  return `${current}${String(chunk)}`.slice(-limit);
+}
+
+function inferFileType(value) {
+  return /\.(png|jpe?g|bmp|cif|gif|webp|tiff?)$/i.test(value) ? 'image' : 'pdf';
+}
+
 async function main() {
   if (!fs.existsSync(inputPath)) {
     throw new Error(`PaddleOCR smoke input does not exist: ${inputPath}`);
   }
 
-  const stderrChunks = [];
+  const fileType = process.env.PADDLEOCR_SMOKE_FILE_TYPE || inferFileType(inputPath);
+  let stderrPreview = '';
   const transport = new StdioClientTransport({
     command,
     args: [],
     env: {
       ...inheritedEnv(),
       PADDLEOCR_MCP_MODEL: model,
-      PADDLEOCR_MCP_PPOCR_SOURCE: source,
       PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT:
         process.env.PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT || '600',
       PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT:
@@ -148,7 +142,7 @@ async function main() {
   }, timeoutMs);
 
   transport.stderr?.on('data', (chunk) => {
-    stderrChunks.push(String(chunk));
+    stderrPreview = appendTail(stderrPreview, chunk);
   });
 
   try {
@@ -188,8 +182,6 @@ async function main() {
     const text = extractText(response);
     const normalized = normalize(text);
     const matchedMarkers = expectedMarkers.filter((marker) => normalized.includes(normalize(marker)));
-    const stderrPreview = stderrChunks.join('').slice(-2000);
-
     if (timedOut) {
       throw new Error(`PaddleOCR smoke timed out after ${timeoutMs} ms`);
     }
@@ -220,7 +212,6 @@ async function main() {
       ok: true,
       inputPath,
       command,
-      source,
       model,
       fileType,
       toolName,
@@ -236,8 +227,6 @@ async function main() {
 
     console.log(JSON.stringify(summary, null, 2));
   } catch (error) {
-    const stderrPreview = stderrChunks.join('').slice(-2000);
-
     console.error(redact(error?.stack || error?.message || error));
     if (stderrPreview) {
       console.error(redact(stderrPreview));

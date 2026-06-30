@@ -32,6 +32,7 @@ const {
   Permissions,
   PermissionTypes,
   isAssistantsEndpoint,
+  inferMimeType,
 } = require('librechat-data-provider');
 const {
   getOAuthReconnectionManager,
@@ -53,6 +54,18 @@ const MAX_CACHE_SIZE = 1000;
 const lastReconnectAttempts = new Map();
 const RECONNECT_THROTTLE_MS = 10_000;
 const PADDLEOCR_VL_TOOL_NAME = 'paddleocr_vl';
+const PADDLEOCR_MEDIA_TYPES_BY_EXTENSION = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.bmp': 'image/bmp',
+  '.cif': 'image/cif',
+  '.gif': 'image/gif',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+  '.webp': 'image/webp',
+};
 
 const missingToolCache = new Map();
 const MISSING_TOOL_TTL_MS = 10_000;
@@ -382,20 +395,13 @@ function getMediaTypeForFile(file, inputData) {
 
   const extensionSource =
     file?.filename ?? file?.name ?? file?.originalname ?? file?.filepath ?? inputData;
-  const extension = path.extname(normalizeFileName(extensionSource)).toLowerCase();
-  if (extension === '.pdf') {
-    return 'application/pdf';
-  }
-  if (extension === '.png') {
-    return 'image/png';
-  }
-  if (extension === '.jpg' || extension === '.jpeg') {
-    return 'image/jpeg';
-  }
-  if (extension === '.webp') {
-    return 'image/webp';
-  }
-  return 'application/octet-stream';
+  const fileName = normalizeFileName(extensionSource);
+  const extension = path.extname(fileName).toLowerCase();
+  return (
+    inferMimeType(fileName, '') ||
+    PADDLEOCR_MEDIA_TYPES_BY_EXTENSION[extension] ||
+    'application/octet-stream'
+  );
 }
 
 async function streamToBuffer(stream) {
@@ -417,7 +423,7 @@ async function streamToBuffer(stream) {
 }
 
 function shouldResolvePaddleInputAsDownloadUrl(source) {
-  return source === FileSources.s3 || source === FileSources.cloudfront;
+  return source === FileSources.s3;
 }
 
 async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }) {

@@ -8,9 +8,10 @@
   presigned URLs for async OCR and retry windows. Current production standard is
   `S3_URL_EXPIRY_SECONDS=43200` for 12 hours, without making the bucket public.
 - PaddleOCR MCP attachment resolution must prefer storage `getDownloadURL` for
-  S3/CloudFront current-request files and must not log the generated presigned
-  URL. Keep the existing owned-file DB lookup before resolution; never trust a
-  request-supplied filepath directly.
+  S3 current-request files and must not log the generated presigned URL.
+  CloudFront should stay on the stream fallback unless signed URL mode is
+  explicitly verified. Keep the existing owned-file DB lookup before
+  resolution; never trust a request-supplied filepath directly.
 - Future Steel native LibreChat work must start from
   `docs/steel-native-librechat-master-framework.md`, then use
   `docs/plans/2026-06-24-steel-global-native-librechat-integration.md` for phase
@@ -409,43 +410,53 @@
   should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp` and
   still include `args: []` for LibreChat's stdio MCP schema; repo `.mcp.json`
   remains local MCP client config.
-- Keep PaddleOCR's provider selector as code/config logic, not a user-filled
-  `.env` key: production should require `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`
-  for the current AI Studio provider, while MCP launch config passes fixed
-  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` internally. When testing a different
-  cloud file host for `fileUrl`, do not introduce unrelated provider
-  credential envs.
+- Do not keep PaddleOCR source/provider branching when there is only one
+  supported OCR API path. Production should require
+  `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`, model, and timeout settings only; do
+  not pass a legacy PPOCR source selector from `.env`, host scripts, MCP
+  config, smoke scripts, or tests.
+- Keep PaddleOCR smoke and resolver handling format-neutral. PaddleOCR supports
+  PDF and image inputs such as PNG, JPG/JPEG, BMP, and CIF, so generic OCR code
+  must not assume only PDF/PNG/JPG or bake a fixture-specific marker set.
+- PaddleOCR API usage limits should be reflected in docs and operator guidance:
+  after a model reaches its daily parsing limit, exceeded requests return `429`;
+  there is no documented single-file size limit, but keep PDF inputs within 100
+  pages to avoid timeout, and expect pages beyond the limit to be ignored.
 - When creating a persistent uv-managed venv inside a container, also persist
   uv's Python install directory under `/data` such as `/data/paddleocr/python`.
   Otherwise the venv's `bin/python` symlink can point at container-local
   `/root/.local/share/uv/...` and break or force recreation after container
   replacement.
-- `docs/reference/example/c.pdf` is an ignored local reference fixture under
-  `docs/reference/`. Do not make GitHub Actions require that file from a clean
-  checkout; upload it manually to `/data/smoke/c.pdf` when running the full
-  Droplet PaddleOCR drawing smoke. Do not make GitHub Actions production deploy
-  gate on live PaddleOCR OCR; AI Studio provider/network failures should not
+- Do not bake a specific ignored drawing fixture, path, or expected marker set
+  into generic PaddleOCR smoke code. The smoke script should require an explicit
+  input path and only check fixture markers when the caller provides
+  `PADDLEOCR_SMOKE_EXPECT_MARKERS`. Do not make GitHub Actions production deploy
+  gate on live PaddleOCR OCR; AI Studio API/network failures should not
   block LibreChat app rollout. Keep PaddleOCR smoke as a manual diagnostic.
 - Do not assume AI Studio website OCR speed matches `paddleocr-mcp` AI Studio
-  API behavior. On production, the simple tracked PDF completed through
-  `paddleocr_vl` in about 214 seconds, while `docs/reference/example/c.pdf`
-  returned `Error calling tool 'paddleocr_vl'` with aiohttp
-  `ClientOSError: [Errno 32] Broken pipe` after several minutes.
+  API behavior. On production, a simple tracked PDF completed through
+  `paddleocr_vl` in about 214 seconds, while a larger drawing PDF returned
+  `Error calling tool 'paddleocr_vl'` with aiohttp `ClientOSError: [Errno 32]
+  Broken pipe` after several minutes.
 - When production PaddleOCR fails from a VPS, distinguish upload from provider
   download. For `file_path` inputs, `paddleocr-mcp` multipart-uploads the file
   from the host to `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`; the
-  provider is not downloading a URL. On DigitalOcean SGP1, the 7.6 MB `c.pdf`
+  provider is not downloading a URL. On DigitalOcean SGP1, a larger drawing PDF
   upload timed out before any OCR job id was returned.
 - `fileUrl` is not automatically a fix for AI Studio from DigitalOcean SGP1.
-  AI Studio can connect back to the Droplet and start `GET /c.pdf`, but the
-  7.6 MB download still returned `HTTP 408 Request Timeout` and the temporary
-  file server logged `BrokenPipeError`; use this as evidence for provider-side
-  download/path instability before investing in file-url integration.
+  AI Studio can connect back to a Droplet-hosted file, but larger downloads can
+  still return `HTTP 408 Request Timeout` and make the temporary file server log
+  `BrokenPipeError`; use this as evidence for provider-side download/path
+  instability before investing in file-url integration.
 - S3 presigned URLs must be validated with a signed `GET`, not only `HEAD`;
   `GET` with `Range: bytes=0-0` should return `206 Partial Content`. Even a
-  valid S3 `fileUrl` in `ap-southeast-2` did not make AI Studio accept the 7.6
-  MB `c.pdf`; the AI Studio submit request still timed out before returning a
+  valid S3 `fileUrl` in `ap-southeast-2` did not make AI Studio accept a larger
+  drawing PDF; the AI Studio submit request still timed out before returning a
   job id.
+- For official AWS S3 production storage, do not add explicit path-style env in
+  production examples or runbooks. Leave generic S3-compatible storage support
+  in code, but keep AWS S3 Hong Kong config to region, bucket, credentials,
+  optional endpoint, and `S3_URL_EXPIRY_SECONDS`.
 - Do not reduce the AI Studio production issue to only large drawing PDFs.
   From DigitalOcean SGP1, a 296,377 byte `docs/reference/example/b.png`
   uploaded via multipart still timed out during write, and the same PNG through
@@ -457,11 +468,11 @@
   seconds, reached `done`, and produced a downloadable JSON result with a table
   block.
 - Do not assume AWS S3 Hong Kong `ap-east-1` solves large files. The 7.6 MB
-  `docs/reference/example/c.pdf` was readable from the production container via
-  signed range GET, but AI Studio `fileUrl` submit returned `HTTP 408 Request
-  Timeout` after about 70 seconds with no job id. For `c.pdf`, test smaller
-  submit units before changing app architecture: compressed PDF, rasterized
-  image, or split pages/images.
+  drawing PDF tested from production was readable from the container via signed
+  range GET, but AI Studio `fileUrl` submit returned `HTTP 408 Request Timeout`
+  after about 70 seconds with no job id. Test smaller submit units before
+  changing app architecture: compressed PDF, rasterized image, or split
+  pages/images.
 - Smaller PDFs can succeed through AWS S3 Hong Kong `ap-east-1` and AI Studio
   `fileUrl`: a 454,807 byte `d.pdf` returned a job id in about 19 seconds,
   reached `done`, and produced a 73 KB JSON OCR result with parsed table/text
@@ -472,8 +483,8 @@
   `AWS_REGION=ap-east-1` stores new uploads in S3, but Steel OCR still resolves
   files to bytes unless the runtime is explicitly changed to pass S3 presigned
   URLs to PaddleOCR.
-- PaddleOCR MCP tool calls must not rely on model-supplied relative filenames
-  such as `c.pdf`. Before calling `paddleocr_vl`, resolve filename-only
+- PaddleOCR MCP tool calls must not rely on model-supplied relative filenames.
+  Before calling `paddleocr_vl`, resolve filename-only
   `input_data` from the permission-checked current-turn LibreChat attachment
   records into a MCP-readable absolute/data input.
 - When PaddleOCR MCP receives an invalid `input_data` shape such as a LibreChat

@@ -22,7 +22,6 @@ PADDLEOCR_PREWARM_STRICT="${PADDLEOCR_PREWARM_STRICT:-true}"
 PADDLEOCR_FORCE_REINSTALL="${PADDLEOCR_FORCE_REINSTALL:-false}"
 
 export PADDLEOCR_MCP_MODEL="${PADDLEOCR_MCP_MODEL:-PaddleOCR-VL-1.6}"
-export PADDLEOCR_MCP_PPOCR_SOURCE="aistudio"
 export PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT="${PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT:-600}"
 export PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT="${PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT:-1200}"
 export PADDLEOCR_MCP_HTTP_TIMEOUT="${PADDLEOCR_MCP_HTTP_TIMEOUT:-1200}"
@@ -87,6 +86,7 @@ ensure_paddleocr_venv() {
   python_bin="$PADDLEOCR_VENV_DIR/bin/python"
   needs_install=false
   needs_venv=false
+  mcp_import_checked=false
 
   if ! command -v uv >/dev/null 2>&1; then
     fail_or_warn_paddleocr "uv is not available; cannot prepare PaddleOCR MCP venv"
@@ -129,15 +129,20 @@ ensure_paddleocr_venv() {
     needs_install=true
   elif ! "$python_bin" -c 'import paddleocr_mcp' >/dev/null 2>&1; then
     needs_install=true
+  else
+    mcp_import_checked=true
   fi
 
   if [ "$needs_install" = "true" ]; then
     paddleocr_log "installing $PADDLEOCR_MCP_PACKAGE into $PADDLEOCR_VENV_DIR"
     UV_CACHE_DIR="$PADDLEOCR_UV_CACHE_DIR" uv pip install --python "$python_bin" "$PADDLEOCR_MCP_PACKAGE"
     printf '%s\n' "$PADDLEOCR_MCP_PACKAGE" >"$marker"
+    mcp_import_checked=false
   fi
 
-  "$python_bin" -c 'import paddleocr_mcp'
+  if [ "$mcp_import_checked" != "true" ]; then
+    "$python_bin" -c 'import paddleocr_mcp'
+  fi
 
   if [ ! -x "$PADDLEOCR_MCP_BIN" ]; then
     fail_or_warn_paddleocr "PaddleOCR MCP executable is missing: $PADDLEOCR_MCP_BIN"
@@ -181,7 +186,6 @@ prepare_paddleocr() {
     return 0
   fi
 
-  paddleocr_log "using provider aistudio"
   ensure_paddleocr_venv
   smoke_paddleocr_startup
 }
