@@ -1,17 +1,23 @@
 #!/usr/bin/env sh
 set -eu
 
-PDF_PATH="${1:-${PADDLEOCR_SMOKE_PDF_PATH:-/data/smoke/c.pdf}}"
+INPUT_PATH="${1:-${PADDLEOCR_SMOKE_INPUT_PATH:-${PADDLEOCR_SMOKE_PDF_PATH:-/data/smoke/c.pdf}}}"
 PADDLEOCR_DIR="${PADDLEOCR_DIR:-/data/paddleocr}"
 PADDLEOCR_VENV_DIR="${PADDLEOCR_VENV_DIR:-$PADDLEOCR_DIR/venv}"
 PADDLEOCR_MCP_COMMAND="${PADDLEOCR_MCP_COMMAND:-$PADDLEOCR_VENV_DIR/bin/paddleocr_mcp}"
 PADDLEOCR_SMOKE_TIMEOUT_MS="${PADDLEOCR_SMOKE_TIMEOUT_MS:-1200000}"
 
+if [ -z "${PADDLEOCR_MCP_PPOCR_SOURCE:-}" ] && [ -n "${PADDLEOCR_MCP_QIANFAN_API_KEY:-}" ]; then
+  PADDLEOCR_MCP_PPOCR_SOURCE="qianfan"
+fi
+
+export PADDLEOCR_MCP_PPOCR_SOURCE="${PADDLEOCR_MCP_PPOCR_SOURCE:-aistudio}"
+
 export PADDLEOCR_MCP_COMMAND
 export PADDLEOCR_SMOKE_TIMEOUT_MS
 
-if [ ! -f "$PDF_PATH" ]; then
-  printf 'PaddleOCR smoke PDF not found: %s\n' "$PDF_PATH" >&2
+if [ ! -f "$INPUT_PATH" ]; then
+  printf 'PaddleOCR smoke input not found: %s\n' "$INPUT_PATH" >&2
   exit 1
 fi
 
@@ -20,23 +26,57 @@ if [ ! -x "$PADDLEOCR_MCP_COMMAND" ]; then
   exit 1
 fi
 
-if [ -z "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN:-}" ]; then
-  printf 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required for live PaddleOCR smoke.\n' >&2
-  exit 1
+case "$PADDLEOCR_MCP_PPOCR_SOURCE" in
+  aistudio)
+    if [ -z "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN:-}" ]; then
+      printf 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required for AI Studio PaddleOCR smoke.\n' >&2
+      exit 1
+    fi
+    ;;
+  qianfan)
+    if [ -z "${PADDLEOCR_MCP_QIANFAN_API_KEY:-}" ]; then
+      printf 'PADDLEOCR_MCP_QIANFAN_API_KEY is required for Qianfan PaddleOCR smoke.\n' >&2
+      exit 1
+    fi
+    ;;
+  self_hosted)
+    if [ -z "${PADDLEOCR_MCP_SELF_HOSTED_BASE_URL:-}" ]; then
+      printf 'PADDLEOCR_MCP_SELF_HOSTED_BASE_URL is required for self-hosted PaddleOCR smoke.\n' >&2
+      exit 1
+    fi
+    ;;
+esac
+
+if [ -z "${PADDLEOCR_SMOKE_FILE_TYPE:-}" ]; then
+  case "$(printf '%s' "$INPUT_PATH" | tr '[:upper:]' '[:lower:]')" in
+    *.png|*.jpg|*.jpeg|*.webp|*.bmp|*.tif|*.tiff)
+      PADDLEOCR_SMOKE_FILE_TYPE="image"
+      ;;
+    *)
+      PADDLEOCR_SMOKE_FILE_TYPE="pdf"
+      ;;
+  esac
 fi
 
-node - "$PDF_PATH" <<'NODE'
+export PADDLEOCR_SMOKE_FILE_TYPE
+
+node - "$INPUT_PATH" <<'NODE'
 const fs = require('fs');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 
-const pdfPath = process.argv[2];
+const inputPath = process.argv[2];
 const command = process.env.PADDLEOCR_MCP_COMMAND;
 const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? 1200000);
 const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 100);
 const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
 const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 12000);
 const toolName = process.env.PADDLEOCR_SMOKE_TOOL_NAME || 'paddleocr_vl';
+const source =
+  process.env.PADDLEOCR_MCP_PPOCR_SOURCE ||
+  (process.env.PADDLEOCR_MCP_QIANFAN_API_KEY ? 'qianfan' : 'aistudio');
+const model = process.env.PADDLEOCR_MCP_MODEL || (source === 'qianfan' ? 'PaddleOCR-VL' : 'PaddleOCR-VL-1.6');
+const fileType = process.env.PADDLEOCR_SMOKE_FILE_TYPE || 'pdf';
 const expectedMarkers = String(
   process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? 'BP1,BP2,PL1,柱底板,連接板',
 )
@@ -55,7 +95,8 @@ function redact(value) {
   return String(value ?? '')
     .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [redacted]')
     .replace(/access[_-]?token["'=:\s]+[A-Za-z0-9._-]+/gi, 'access_token=[redacted]')
-    .replace(/PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=[redacted]');
+    .replace(/PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=[redacted]')
+    .replace(/PADDLEOCR_MCP_QIANFAN_API_KEY["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_QIANFAN_API_KEY=[redacted]');
 }
 
 function normalize(value) {
@@ -102,8 +143,8 @@ function extractText(result) {
 }
 
 async function main() {
-  if (!fs.existsSync(pdfPath)) {
-    throw new Error(`PDF path does not exist: ${pdfPath}`);
+  if (!fs.existsSync(inputPath)) {
+    throw new Error(`PaddleOCR smoke input does not exist: ${inputPath}`);
   }
 
   const stderrChunks = [];
@@ -112,8 +153,8 @@ async function main() {
     args: [],
     env: {
       ...inheritedEnv(),
-      PADDLEOCR_MCP_MODEL: process.env.PADDLEOCR_MCP_MODEL || 'PaddleOCR-VL-1.6',
-      PADDLEOCR_MCP_PPOCR_SOURCE: process.env.PADDLEOCR_MCP_PPOCR_SOURCE || 'aistudio',
+      PADDLEOCR_MCP_MODEL: model,
+      PADDLEOCR_MCP_PPOCR_SOURCE: source,
       PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT:
         process.env.PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT || '600',
       PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT:
@@ -157,9 +198,9 @@ async function main() {
       {
         name: toolName,
         arguments: {
-          input_data: pdfPath,
+          input_data: inputPath,
           output_mode: outputMode,
-          file_type: 'pdf',
+          file_type: fileType,
           return_images: false,
           runtime_params: runtimeParams,
         },
@@ -200,8 +241,11 @@ async function main() {
 
     const summary = {
       ok: true,
-      pdfPath,
+      inputPath,
       command,
+      source,
+      model,
+      fileType,
       toolName,
       elapsedMs: Date.now() - startedAt,
       outputMode,

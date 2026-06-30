@@ -1,4 +1,62 @@
-# Active: PaddleOCR MCP AI Studio parameter diagnosis
+# Active: PaddleOCR Qianfan provider env cleanup and smoke
+
+Goal: make production PaddleOCR provider selection work without hard-coded
+`aistudio` env values, document the minimal env keys, and verify the configured
+Qianfan key can run the same production smoke path.
+
+Plan - 2026-06-30:
+
+- [x] Update `.env.example` and `.env.prod.example` so only provider credentials
+      and force-reinstall remain user-facing.
+- [x] Move startup defaults into code: prepare on startup, strict prewarm,
+      startup smoke timeout, and provider auto-selection.
+- [x] Remove hard-coded `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` from tracked MCP
+      configs so Qianfan can be selected from runtime env.
+- [x] Update the manual PaddleOCR smoke script to validate credentials based on
+      the selected provider instead of always requiring AI Studio.
+- [x] Run syntax/config checks and a focused Steel OCR env test.
+- [x] Run a production Qianfan smoke using the configured
+      `PADDLEOCR_MCP_QIANFAN_API_KEY`.
+
+Review - 2026-06-30:
+
+- `.env.example` and `.env.prod.example` now expose
+  `PADDLEOCR_MCP_PPOCR_SOURCE=`, `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=`,
+  `PADDLEOCR_MCP_QIANFAN_API_KEY=`, and `PADDLEOCR_FORCE_REINSTALL=`, with
+  startup-prep defaults kept in code.
+- `deploy/host/start.sh` now auto-selects `qianfan` when a Qianfan key is
+  present and no explicit provider is set; otherwise it falls back to
+  `aistudio`. Startup smoke defaults to 10 seconds in code.
+- Provider-aware model default is required: `qianfan` defaults to
+  `PaddleOCR-VL`, while `aistudio` defaults to `PaddleOCR-VL-1.6`.
+- `.mcp.json` and the local ignored `librechat.yaml` no longer hard-code
+  `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` or `PADDLEOCR_MCP_MODEL`.
+- `deploy/host/paddleocr-smoke.sh` now validates credentials based on the
+  selected provider and infers `image` vs `pdf` from the input extension.
+- Verification passed:
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+  - `.mcp.json` JSON parse
+  - `rtk git diff --check`
+  - `cd packages/api && rtk npx jest src/steel/vision/ocr.spec.ts --runInBand --coverage=false`
+- Production Qianfan probe:
+  - Droplet host/container env did not yet contain
+    `PADDLEOCR_MCP_QIANFAN_API_KEY`; local `.env.prod` did.
+  - One-shot smoke injected the local Qianfan key into the production
+    container for `/data/smoke/b.png`.
+  - First run with `PaddleOCR-VL-1.6` failed fast because Qianfan supports
+    `PP-StructureV3` and `PaddleOCR-VL`, not `PaddleOCR-VL-1.6`.
+  - Retest with provider-aware default `PaddleOCR-VL` reached
+    `https://qianfan.baidubce.com/v2/ocr/paddleocr` and returned
+    `HTTP 401 Unauthorized`, so network routing is working but the provided
+    Qianfan credential is not accepted by that API endpoint yet.
+- Uploaded the provider-neutral host-managed `librechat.yaml` to
+  `/data/librechat.yaml` on the Droplet. It no longer hard-codes
+  `PADDLEOCR_MCP_MODEL`, `PADDLEOCR_MCP_PPOCR_SOURCE`, or provider credentials;
+  the container env/startup logic owns those values.
+
+---
+
+# Previous: PaddleOCR MCP AI Studio parameter diagnosis
 
 Goal: determine whether `paddleocr-mcp` exposes AI Studio endpoint or runtime
 parameters that make the API path behave closer to the fast

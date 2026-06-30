@@ -4,9 +4,6 @@
       "command": "uvx",
       "args": ["--python", "3.12", "--from", "paddleocr-mcp", "paddleocr_mcp"],
       "env": {
-        "PADDLEOCR_MCP_MODEL": "PaddleOCR-VL-1.6",
-        "PADDLEOCR_MCP_PPOCR_SOURCE": "aistudio",
-        "PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN": "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}",
         "PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT": "600",
         "PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT": "1200",
         "PADDLEOCR_MCP_HTTP_TIMEOUT": "1200"

@@ -71,8 +71,10 @@ uploaded manually to `/data/smoke/c.pdf` for full drawing OCR smoke checks.
 
 If persistent venv startup fails:
 
-1. Set `PADDLEOCR_PREPARE_ON_STARTUP=false` in `/etc/librechat/.env.prod` to
-   let LibreChat start without the prewarm gate.
+1. Temporarily set `PADDLEOCR_PREPARE_ON_STARTUP=false` in
+   `/etc/librechat/.env.prod` to let LibreChat start without the prewarm gate.
+   This is a break-glass override; normal production defaults live in
+   `deploy/host/start.sh`.
 2. Revert production `librechat.yaml` to the previous `uvx --python 3.12
    --from paddleocr-mcp paddleocr_mcp` command.
 3. Redeploy the previous GHCR image tag if needed.
