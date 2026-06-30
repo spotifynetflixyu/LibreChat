@@ -4,7 +4,6 @@ import sharp from 'sharp';
 import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
-import type { FormatEnum } from 'sharp';
 import type {
   SaveBufferFn,
   UploadImageParams,
@@ -13,12 +12,51 @@ import type {
 } from '~/storage/types';
 import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
 
+const JPEG_CONTENT_TYPE = 'image/jpeg';
+const JPEG_EXTENSION = '.jpg';
+const MAX_IMAGE_DIMENSION = 4096;
+const MAX_JPEG_UPLOAD_BYTES = 5 * 1024 * 1024;
+const JPEG_QUALITY_START = 85;
+const JPEG_QUALITY_MIN = 35;
+const JPEG_QUALITY_STEP = 5;
+
+const replaceExtension = (fileName: string, extension: string): string => {
+  const currentExtension = path.extname(fileName);
+  if (!currentExtension) {
+    return `${fileName}${extension}`;
+  }
+  return `${fileName.slice(0, -currentExtension.length)}${extension}`;
+};
+
+const compressImageToJpeg = async (
+  inputBuffer: Buffer,
+): Promise<{ buffer: Buffer; width: number; height: number }> => {
+  const image = sharp(inputBuffer).rotate().resize({
+    width: MAX_IMAGE_DIMENSION,
+    height: MAX_IMAGE_DIMENSION,
+    fit: 'inside',
+    withoutEnlargement: true,
+  });
+
+  for (let quality = JPEG_QUALITY_START; quality >= JPEG_QUALITY_MIN; quality -= JPEG_QUALITY_STEP) {
+    const { data, info } = await image
+      .clone()
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer({ resolveWithObject: true });
+
+    if (data.length <= MAX_JPEG_UPLOAD_BYTES) {
+      return {
+        buffer: data,
+        width: info.width,
+        height: info.height,
+      };
+    }
+  }
+
+  throw new Error('Processed image exceeds 5 MB after JPEG compression');
+};
+
 export interface ImageServiceDeps {
-  resizeImageBuffer: (
-    buffer: Buffer,
-    resolution: string,
-    endpoint: string,
-  ) => Promise<{ buffer: Buffer; width: number; height: number }>;
   updateUser: (userId: string, update: { avatar: string }) => Promise<IUser | null>;
   updateFile: (params: { file_id: string }) => Promise<TFile>;
 }
@@ -54,8 +92,6 @@ export class ImageService {
     req,
     file,
     file_id,
-    endpoint,
-    resolution = 'high',
     basePath = defaultBasePath,
   }: UploadImageParams): Promise<ImageUploadResult> {
     const inputFilePath = file.path;
@@ -64,43 +100,24 @@ export class ImageService {
         throw new Error('[ImageService.uploadImage] User not authenticated');
       }
 
-      const appConfig = req.config;
       const inputBuffer = await fs.promises.readFile(inputFilePath);
+      const { buffer: processedBuffer, width, height } = await compressImageToJpeg(inputBuffer);
 
-      const {
-        buffer: resizedBuffer,
-        width,
-        height,
-      } = await this.deps.resizeImageBuffer(inputBuffer, resolution, endpoint);
-
-      const extension = path.extname(inputFilePath);
       const userId = req.user.id;
-      const outputType = appConfig?.imageOutputType ?? 'webp';
-      const targetExtension = `.${outputType}`;
-
-      let processedBuffer: Buffer;
-      let fileName = `${file_id}__${path.basename(inputFilePath)}`;
-
-      if (extension.toLowerCase() === targetExtension) {
-        processedBuffer = resizedBuffer;
-      } else {
-        const outputFormat = outputType as keyof FormatEnum;
-        processedBuffer = await sharp(resizedBuffer).toFormat(outputFormat).toBuffer();
-        fileName = fileName.replace(new RegExp(path.extname(fileName) + '$'), targetExtension);
-        if (!path.extname(fileName)) {
-          fileName += targetExtension;
-        }
-      }
+      const sourceName = path.basename(file.originalname || inputFilePath);
+      const filename = replaceExtension(sourceName, JPEG_EXTENSION);
+      const fileName = `${file_id}__${filename}`;
 
       const downloadURL = await this.saveBuffer({
         userId,
         buffer: processedBuffer,
         fileName,
         basePath,
+        contentType: JPEG_CONTENT_TYPE,
         tenantId: req.user.tenantId ?? null,
       });
       const bytes = processedBuffer.length;
-      return { filepath: downloadURL, bytes, width, height };
+      return { filepath: downloadURL, bytes, width, height, filename, type: JPEG_CONTENT_TYPE };
     } catch (error) {
       logger.error('[ImageService.uploadImage] Error uploading image:', (error as Error).message);
       throw error;

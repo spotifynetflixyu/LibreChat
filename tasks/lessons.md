@@ -1,5 +1,11 @@
 # Lessons
 
+- When enabling S3 storage, update both the code/env path and the ignored
+  runtime `librechat.yaml` source. Local/dev should use `fileStrategy: "s3"`
+  plus `.env` `S3_KEY_PREFIX=dev`; the private production server uses
+  `.env.prod` installed as `/etc/librechat/.env.prod`, and should use
+  `fileStrategy: "s3"` plus `S3_KEY_PREFIX=prod` when sharing the bucket with
+  dev/test.
 - When switching LibreChat production file storage to S3, verify the running
   container with a server-side put/get/delete smoke test and log
   `[initializeS3]` before claiming uploads are backed by S3. Never print AWS

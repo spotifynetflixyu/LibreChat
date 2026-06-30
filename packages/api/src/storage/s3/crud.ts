@@ -65,6 +65,7 @@ interface S3KeyBase {
   basePath: string;
   userId: string;
   fileName: string;
+  keyPrefix?: string | null;
   includeRegionInPath?: boolean;
   useInlinePath?: boolean;
 }
@@ -108,6 +109,14 @@ const getParsedPathFlags = (
 
 const getDefaultStorageRegion = (): string | null =>
   s3Config.AWS_REGION || process.env.AWS_REGION || null;
+
+const getConfiguredKeyPrefix = (): string | null => {
+  const keyPrefix = process.env.S3_KEY_PREFIX ?? s3Config.S3_KEY_PREFIX;
+  if (!keyPrefix) {
+    return null;
+  }
+  return assertPathSegment('keyPrefix', keyPrefix, 'getS3Key');
+};
 
 const getInlinePathPrefix = ({
   basePath,
@@ -160,12 +169,21 @@ export function getS3Key(
   const safeBasePath = assertPathSegment('basePath', options.basePath, 'getS3Key');
   const safeUserId = assertPathSegment('userId', options.userId, 'getS3Key');
   const safeFileName = assertS3FileName('fileName', options.fileName, 'getS3Key');
+  const safeKeyPrefix =
+    options.keyPrefix === undefined
+      ? getConfiguredKeyPrefix()
+      : options.keyPrefix
+        ? assertPathSegment('keyPrefix', options.keyPrefix, 'getS3Key')
+        : null;
   const inlinePathPrefix = getInlinePathPrefix({
     ...options,
     basePath: safeBasePath,
   });
 
   const pathParts: string[] = [];
+  if (safeKeyPrefix) {
+    pathParts.push(safeKeyPrefix);
+  }
   if (inlinePathPrefix) {
     pathParts.push(inlinePathPrefix);
   }
@@ -182,6 +200,7 @@ export function getS3Key(
 
 const parseS3KeyParts = (
   keyParts: string[],
+  keyPrefix?: string,
   storageRegion?: string,
   inlinePathPrefix?: string,
 ): S3KeyParts | null => {
@@ -202,6 +221,7 @@ const parseS3KeyParts = (
       return null;
     }
     return {
+      ...(keyPrefix ? { keyPrefix } : {}),
       ...(storageRegion ? { storageRegion } : {}),
       ...(storageRegion ? { includeRegionInPath: true } : {}),
       ...getParsedPathFlags(storageRegion, inlinePathPrefix),
@@ -227,6 +247,7 @@ const parseS3KeyParts = (
     return null;
   }
   return {
+    ...(keyPrefix ? { keyPrefix } : {}),
     ...(storageRegion ? { storageRegion } : {}),
     ...(storageRegion ? { includeRegionInPath: true } : {}),
     ...getParsedPathFlags(storageRegion, inlinePathPrefix),
@@ -239,6 +260,9 @@ const parseS3KeyParts = (
 export const parseS3Key = (key: string): S3KeyParts | null => {
   const normalizedKey = key.replace(/^\/+/, '');
   const keyParts = normalizedKey.split('/');
+  const configuredKeyPrefix = getConfiguredKeyPrefix();
+  const keyPrefix =
+    configuredKeyPrefix && keyParts[0] === configuredKeyPrefix ? keyParts.shift() : undefined;
   const inlinePathPrefix =
     keyParts[0] === INLINE_IMAGE_PATH_PREFIX || keyParts[0] === INLINE_AVATAR_PATH_PREFIX
       ? keyParts.shift()
@@ -253,10 +277,10 @@ export const parseS3Key = (key: string): S3KeyParts | null => {
     if (!safeStorageRegion) {
       return null;
     }
-    return parseS3KeyParts(remainingParts, safeStorageRegion, inlinePathPrefix);
+    return parseS3KeyParts(remainingParts, keyPrefix, safeStorageRegion, inlinePathPrefix);
   }
 
-  return parseS3KeyParts(keyParts, undefined, inlinePathPrefix);
+  return parseS3KeyParts(keyParts, keyPrefix, undefined, inlinePathPrefix);
 };
 
 export function getStorageMetadataForKey(
@@ -319,6 +343,7 @@ export async function getS3URL({
   contentType = null,
   tenantId = null,
   storageRegion = null,
+  keyPrefix,
   includeRegionInPath = false,
   useInlinePath,
 }: GetURLParams): Promise<string> {
@@ -328,6 +353,7 @@ export async function getS3URL({
     fileName,
     tenantId,
     storageRegion,
+    keyPrefix,
     includeRegionInPath,
     useInlinePath,
   });
@@ -341,6 +367,7 @@ export async function saveBufferToS3({
   basePath = defaultBasePath,
   tenantId = null,
   storageRegion = null,
+  contentType = null,
   includeRegionInPath = false,
   useInlinePath,
   urlBuilder,
@@ -354,7 +381,10 @@ export async function saveBufferToS3({
     includeRegionInPath,
     useInlinePath,
   });
-  const params = { Bucket: bucketName, Key: key, Body: buffer };
+  const params: PutObjectCommandInput = { Bucket: bucketName, Key: key, Body: buffer };
+  if (contentType) {
+    params.ContentType = contentType;
+  }
 
   try {
     const s3 = initializeS3();
@@ -927,7 +957,7 @@ export async function getNewS3URL(
       return;
     }
 
-    return getS3URL(parsedKey);
+    return getS3URLForKey({ key: s3Key });
   } catch (error) {
     logger.error('Error getting new S3 URL:', error);
   }
@@ -1013,7 +1043,7 @@ export async function refreshS3Url(fileObj: S3FileRef, bufferSeconds = 3600): Pr
       return fileObj.filepath;
     }
 
-    const newUrl = await getS3URL(parsedKey);
+    const newUrl = await getS3URLForKey({ key: s3Key });
     logger.debug(`Refreshed S3 URL for key: ${s3Key}`);
     return newUrl;
   } catch (error) {

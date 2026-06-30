@@ -52,6 +52,8 @@ export const s3Config: {
   S3_URL_EXPIRY_SECONDS: number;
   /** Custom refresh expiry in milliseconds (null = use default buffer logic) */
   S3_REFRESH_EXPIRY_MS: number | null;
+  /** Optional first path segment for dev/prod S3 key namespaces */
+  S3_KEY_PREFIX: string;
   /** Default base path for file storage */
   DEFAULT_BASE_PATH: string;
 } = {
@@ -67,6 +69,10 @@ export const s3Config: {
   S3_URL_EXPIRY_SECONDS: parseUrlExpiry(),
   /** Custom refresh expiry in milliseconds (null = use default buffer logic) */
   S3_REFRESH_EXPIRY_MS: parseRefreshExpiry(),
+  /** Optional first path segment for dev/prod S3 key namespaces */
+  get S3_KEY_PREFIX() {
+    return process.env.S3_KEY_PREFIX ?? '';
+  },
   /** Default base path for file storage */
   DEFAULT_BASE_PATH,
 };

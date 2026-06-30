@@ -418,11 +418,6 @@ describe('S3 Integration Tests', () => {
       const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
-        resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
-          buffer,
-          width: 100,
-          height: 100,
-        })),
         updateUser: jest.fn().mockResolvedValue(undefined),
         updateFile: jest.fn().mockResolvedValue(null),
       };
@@ -448,11 +443,6 @@ describe('S3 Integration Tests', () => {
       const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
-        resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
-          buffer,
-          width: 100,
-          height: 100,
-        })),
         updateUser: jest.fn().mockResolvedValue(undefined),
         updateFile: jest.fn().mockResolvedValue(null),
       };
@@ -479,11 +469,6 @@ describe('S3 Integration Tests', () => {
       const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
-        resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
-          buffer,
-          width: 100,
-          height: 100,
-        })),
         updateUser: jest.fn().mockResolvedValue(undefined),
         updateFile: jest.fn().mockResolvedValue(null),
       };
@@ -508,11 +493,6 @@ describe('S3 Integration Tests', () => {
       const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
-        resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
-          buffer,
-          width: 100,
-          height: 100,
-        })),
         updateUser: jest.fn().mockResolvedValue(undefined),
         updateFile: jest.fn().mockResolvedValue(null),
       };

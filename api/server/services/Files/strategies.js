@@ -42,11 +42,9 @@ const {
   processLocalAvatar,
   getLocalFileStream,
 } = require('./Local');
-const { resizeImageBuffer } = require('./images/resize');
 const { updateUser, updateFile } = require('~/models');
 
 const imageServiceDeps = {
-  resizeImageBuffer,
   updateUser,
   updateFile,
 };

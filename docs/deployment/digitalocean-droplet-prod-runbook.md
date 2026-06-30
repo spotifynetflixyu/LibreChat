@@ -269,6 +269,7 @@ AWS_ACCESS_KEY_ID=<prod-s3-access-key-id>
 AWS_SECRET_ACCESS_KEY=<prod-s3-secret-access-key>
 AWS_ENDPOINT_URL=
 S3_URL_EXPIRY_SECONDS=43200
+S3_KEY_PREFIX=prod
 ```
 
 `RENDER_DATA_DIR` is currently used by the existing production startup script
@@ -285,6 +286,9 @@ bucket private and use backend-generated presigned URLs; do not expose permanent
 AWS keys to the browser.
 Use `S3_URL_EXPIRY_SECONDS=43200` for 12-hour presigned URLs when PaddleOCR or
 other backend-only integrations need enough time to fetch private S3 objects.
+Use `S3_KEY_PREFIX=prod` when production shares a bucket with dev/test so new
+objects are stored under `prod/uploads/...`, `prod/images/...`, and related
+paths.
 
 Recommended bucket:
 
@@ -338,6 +342,7 @@ AWS_ACCESS_KEY_ID=<prod-s3-access-key-id>
 AWS_SECRET_ACCESS_KEY=<prod-s3-secret-access-key>
 AWS_ENDPOINT_URL=
 S3_URL_EXPIRY_SECONDS=43200
+S3_KEY_PREFIX=prod
 ```
 
 Enable S3 storage in host-managed `/data/librechat.yaml`:
@@ -359,7 +364,7 @@ ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-com
 Verify without printing secrets:
 
 ```bash
-ssh deploy@<droplet-ipv4> 'grep -E "^(AWS_REGION|AWS_BUCKET_NAME|AWS_ENDPOINT_URL|S3_URL_EXPIRY_SECONDS)=" /etc/librechat/.env.prod'
+ssh deploy@<droplet-ipv4> 'grep -E "^(AWS_REGION|AWS_BUCKET_NAME|AWS_ENDPOINT_URL|S3_URL_EXPIRY_SECONDS|S3_KEY_PREFIX)=" /etc/librechat/.env.prod'
 ssh deploy@<droplet-ipv4> 'grep -n "^fileStrategy" /data/librechat.yaml'
 curl -fsS https://chat.longdin.org/health
 ```
@@ -367,6 +372,11 @@ curl -fsS https://chat.longdin.org/health
 Existing local files in `/data/uploads` remain local. New uploads after the
 restart use S3 and Mongo file records should store `source: s3` plus
 `storageKey`.
+
+If dev/test uses the same bucket, set its local `.env` to `S3_KEY_PREFIX=dev`.
+Do not set `fileStrategy` paths such as `uploads/dev`; S3 key prefixes are
+validated as a single path segment and applied before LibreChat's existing
+`uploads/<user>/<file>` and `images/<user>/<file>` layout.
 
 PaddleOCR MCP input resolution:
 

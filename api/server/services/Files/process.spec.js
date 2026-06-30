@@ -140,13 +140,16 @@ const {
 } = require('librechat-data-provider');
 const { mergeFileConfig } = require('librechat-data-provider');
 const { checkCapability } = require('~/server/services/Config');
+const { getFileStrategy } = require('~/server/utils/getFileStrategy');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { uploadVectors } = require('./VectorDB/crud');
 const db = require('~/models');
 const {
   processAgentFileUpload,
   processDeleteRequest,
+  processFileUpload,
   processFileURL,
+  processImageFile,
   sweepExpiredFiles,
   startExpiredFileSweep,
 } = require('./process');
@@ -205,6 +208,133 @@ const setupStoredFileUpload = (result = {}) => {
   getStrategyFunctions.mockReturnValue({ handleFileUpload });
   return handleFileUpload;
 };
+
+describe('processImageFile', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRes.status.mockReturnThis();
+    mockRes.json.mockReturnValue({});
+  });
+
+  it('persists the processed JPG filename and MIME type returned by storage', async () => {
+    const handleImageUpload = jest.fn().mockResolvedValue({
+      filepath: 'https://storage.example.com/images/user-123/file-id__photo.jpg',
+      bytes: 1024,
+      width: 1600,
+      height: 1200,
+      filename: 'photo.jpg',
+      type: 'image/jpeg',
+      storageKey: 'images/user-123/file-id__photo.jpg',
+      storageRegion: 'ap-east-1',
+    });
+    getFileStrategy.mockReturnValue(FileSources.s3);
+    getStrategyFunctions.mockReturnValue({ handleImageUpload });
+
+    await processImageFile({
+      req: {
+        user: { id: 'user-123', tenantId: 'tenant-a' },
+        file: {
+          path: '/tmp/upload.png',
+          originalname: 'photo.png',
+          mimetype: 'image/png',
+        },
+        config: {
+          fileStrategy: FileSources.s3,
+          imageOutputType: 'webp',
+        },
+      },
+      res: mockRes,
+      metadata: {
+        file_id: 'file-id',
+        temp_file_id: 'temp-file-id',
+        endpoint: 'openAI',
+      },
+    });
+
+    expect(handleImageUpload).toHaveBeenCalledWith({
+      req: expect.any(Object),
+      file: expect.objectContaining({ originalname: 'photo.png' }),
+      file_id: 'file-id',
+      endpoint: 'openAI',
+    });
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bytes: 1024,
+        filename: 'photo.jpg',
+        filepath: 'https://storage.example.com/images/user-123/file-id__photo.jpg',
+        height: 1200,
+        source: FileSources.s3,
+        temp_file_id: 'temp-file-id',
+        tenantId: 'tenant-a',
+        type: 'image/jpeg',
+        user: 'user-123',
+        width: 1600,
+      }),
+      true,
+    );
+  });
+});
+
+describe('processFileUpload', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRes.status.mockReturnThis();
+    mockRes.json.mockReturnValue({});
+  });
+
+  it('keeps PDF uploads on the file path with PDF filename and MIME type', async () => {
+    const handleFileUpload = jest.fn().mockResolvedValue({
+      bytes: 2048,
+      filename: 'report.pdf',
+      filepath: 'https://storage.example.com/uploads/user-123/file-id__report.pdf',
+      storageKey: 'uploads/user-123/file-id__report.pdf',
+      storageRegion: 'ap-east-1',
+    });
+    getStrategyFunctions.mockReturnValue({ handleFileUpload });
+
+    await processFileUpload({
+      req: {
+        user: { id: 'user-123', tenantId: 'tenant-a' },
+        file: {
+          path: '/tmp/report.pdf',
+          originalname: 'report.pdf',
+          mimetype: PDF_MIME,
+        },
+        body: {},
+        config: {
+          fileStrategy: FileSources.s3,
+        },
+      },
+      res: mockRes,
+      metadata: {
+        file_id: 'file-id',
+        temp_file_id: 'temp-file-id',
+        endpoint: 'openAI',
+      },
+    });
+
+    expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.s3);
+    expect(handleFileUpload).toHaveBeenCalledWith({
+      req: expect.any(Object),
+      file: expect.objectContaining({ originalname: 'report.pdf', mimetype: PDF_MIME }),
+      file_id: 'file-id',
+      openai: undefined,
+    });
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bytes: 2048,
+        filename: 'report.pdf',
+        filepath: 'https://storage.example.com/uploads/user-123/file-id__report.pdf',
+        source: FileSources.s3,
+        temp_file_id: 'temp-file-id',
+        tenantId: 'tenant-a',
+        type: PDF_MIME,
+        user: 'user-123',
+      }),
+      true,
+    );
+  });
+});
 
 describe('processAgentFileUpload', () => {
   beforeEach(() => {

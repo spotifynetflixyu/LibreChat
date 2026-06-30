@@ -455,12 +455,16 @@ const processImageFile = async ({ req, res, metadata, returnFile = false }) => {
   const { handleImageUpload } = getStrategyFunctions(source);
   const { file_id, temp_file_id, endpoint } = metadata;
 
-  const { filepath, bytes, width, height, storageKey, storageRegion } = await handleImageUpload({
-    req,
-    file,
-    file_id,
-    endpoint,
-  });
+  const {
+    filepath,
+    bytes,
+    width,
+    height,
+    storageKey,
+    storageRegion,
+    filename,
+    type,
+  } = await handleImageUpload({ req, file, file_id, endpoint });
   const storageMetadata = getStorageMetadata({ filepath, source, storageKey, storageRegion });
 
   const result = await db.createFile(
@@ -471,10 +475,10 @@ const processImageFile = async ({ req, res, metadata, returnFile = false }) => {
       bytes,
       filepath,
       ...storageMetadata,
-      filename: file.originalname,
+      filename: filename ?? file.originalname,
       context: FileContext.message_attachment,
       source,
-      type: `image/${appConfig.imageOutputType}`,
+      type: type ?? `image/${appConfig.imageOutputType}`,
       ...(await getRetentionExpiry(req)),
       width,
       height,

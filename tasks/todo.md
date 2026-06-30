@@ -1,3 +1,153 @@
+# Active: Merge and deploy S3 upload changes
+
+Goal: commit the completed S3 image compression and S3 namespace work, merge it
+to `master`, push production, and verify the server update.
+
+Status - 2026-06-30:
+
+- [x] Confirm current branch is `feat/v8.4` and `master` is an ancestor.
+- [x] Confirm production deploy is triggered by pushes to `master` through
+      `.github/workflows/deploy-prod.yml`.
+- [x] Run fresh focused verification before committing.
+- [ ] Commit tracked changes without adding ignored `.env` or `librechat.yaml`.
+- [ ] Merge the feature branch into `master` and push `master`.
+- [ ] Verify GitHub Actions production deploy completes.
+- [ ] Confirm private server runtime config uses `/etc/librechat/.env.prod`
+      with `S3_KEY_PREFIX=prod` and `/data/librechat.yaml` with S3 storage.
+
+---
+
+# Active: S3 environment namespace and dev storage design
+
+Goal: allow dev/test and production uploads to share S3 safely without mixing
+objects, while keeping existing S3 key validation and object ownership checks.
+
+Status - 2026-06-30:
+
+- [x] Confirm current S3 key generation uses `getS3Key()` in
+      `packages/api/src/storage/s3/crud.ts`.
+- [x] Confirm `basePath` is intentionally validated as a single path segment by
+      `assertPathSegment()`, so values like `uploads/dev` are currently rejected.
+- [x] Confirm existing keys are organized by semantic base path first, such as
+      `uploads/<user>/<file>`, `images/<user>/<file>`, and optional
+      `r/<region>/t/<tenant>/...` prefixes.
+- [x] Confirm desired environment namespace shape before implementation.
+- [x] After approval, write tests for new namespaced S3 keys, parse/delete/read
+      compatibility, and dev/prod env examples.
+- [x] Implement namespace support without weakening slash/path traversal
+      validation.
+- [x] Document local/dev S3 setup and verification commands.
+
+Recommended design:
+
+- Add a new env/config field such as `S3_KEY_PREFIX=dev` or
+  `S3_KEY_PREFIX=prod`.
+- Apply it as a validated namespace before existing storage paths, producing
+  `dev/uploads/<user>/<file>` and `prod/uploads/<user>/<file>`.
+- Keep `basePath` as `uploads`, `images`, or `avatars`; do not allow
+  `uploads/dev` directly.
+- Configure dev/test with the same S3 bucket and credentials if desired, but
+  use `S3_KEY_PREFIX=dev` so test objects never collide with production
+  objects.
+- Production should use `S3_KEY_PREFIX=prod` if dev shares the same bucket, or
+  omit the prefix only if the bucket is production-only.
+
+Decision:
+
+- Use `dev/uploads/...` / `prod/uploads/...`.
+- Configure root `librechat.yaml` with `fileStrategy: "s3"` for local/dev S3
+  storage.
+
+Review - 2026-06-30:
+
+- Added `S3_KEY_PREFIX` as a validated single-segment namespace before existing
+  S3 keys, so `S3_KEY_PREFIX=dev` produces `dev/uploads/...`,
+  `dev/images/...`, and `dev/avatars/...`.
+- Kept `basePath` validation strict; slash-based values such as `uploads/dev`
+  still fail instead of becoming path traversal surfaces.
+- Updated S3 key parsing, upload metadata, delete owner checks, direct download
+  signing, and refresh logic for environment-prefixed keys.
+- Kept refresh signing on the original stored key after validation, so legacy
+  unprefixed S3 objects are not accidentally re-signed as `dev/...` after a
+  prefix is configured.
+- Updated local/dev and production docs/env examples for `S3_KEY_PREFIX=dev`
+  and `S3_KEY_PREFIX=prod`; the ignored local `librechat.yaml` now uses
+  `fileStrategy: "s3"`, and the private server must use `.env.prod` installed
+  as `/etc/librechat/.env.prod`.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/storage/s3/__tests__/crud.test.ts --runInBand --coverage=false`
+  - `cd packages/api && rtk npx jest src/storage/__tests__/images.test.ts src/storage/s3/__tests__/crud.test.ts --runInBand --coverage=false`
+  - `cd api && rtk npx jest server/services/Files/process.spec.js --runInBand`
+  - `rtk npm run build:api`
+  - `rtk git diff --check`
+
+---
+
+# Active: S3 image JPEG 4K preprocessing
+
+Goal: before S3-backed image uploads are persisted, convert images to JPG and
+downscale only when either dimension exceeds the agreed 4K cap; keep PDFs and
+other documents byte-for-byte on the existing file upload path.
+
+Status - 2026-06-30:
+
+- [x] Read `CLAUDE.md`, `tasks/lessons.md`, and relevant memory before
+      changing behavior.
+- [x] Locate the current upload split:
+      `api/server/services/Files/process.js` routes images through
+      `processImageFile()` / `handleImageUpload()`, while PDFs and regular
+      files use `processFileUpload()` / `handleFileUpload()`.
+- [x] Locate the S3 image implementation:
+      `api/server/services/Files/strategies.js` maps S3 images to
+      `ImageService.uploadImage()` in `packages/api/src/storage/images.ts`.
+- [x] Confirm `sharp` is already available in `api` and `packages/api`; no new
+      image processing dependency is needed.
+- [x] Confirm the exact 4K cap semantics before implementation.
+- [x] After approval, write tests for JPG conversion, no-upscale behavior,
+      aspect-ratio preservation, and PDF pass-through.
+- [x] Implement the smallest backend change in the S3-backed image upload path.
+- [x] Run focused image/storage tests, `git diff --check`, and any affected
+      build/type checks.
+
+Recommended design:
+
+- Keep PDF handling in the existing `handleFileUpload()` path so PDF bytes,
+  filename, MIME type, and storage metadata remain unchanged.
+- Process only uploaded images before the storage `saveBuffer()` call.
+- Use `sharp(input).rotate().resize({ width: 4096, height: 4096, fit: "inside",
+  withoutEnlargement: true }).jpeg({ quality: 82-85 })` style behavior.
+- Preserve aspect ratio through `fit: "inside"`.
+- Preserve resolution for images already under the cap through
+  `withoutEnlargement: true`.
+- Store the resulting object with `.jpg` extension and `image/jpeg` metadata in
+  the LibreChat file record.
+
+Design caveat:
+
+- `ImageService.uploadImage()` currently follows `appConfig.imageOutputType`
+  and the existing `high` resolution path can downscale images far below 4K.
+  The implementation should avoid accidentally reusing that old `high`
+  behavior for this S3 compression policy.
+
+Review - 2026-06-30:
+
+- Implemented S3/CloudFront image uploads through `sharp` JPEG output with
+  max dimensions `4096x4096`, `fit: "inside"`, and `withoutEnlargement: true`.
+- Added a JPEG quality loop from 85 down to 35 in 5-point steps; the processed
+  image must be no larger than 5 MB or upload fails instead of storing an
+  oversized object.
+- Persisted processed image metadata as `.jpg` / `image/jpeg`, and passed
+  `ContentType: image/jpeg` to S3 `PutObjectCommand` for typed buffer uploads.
+- Preserved PDF uploads on the normal file path; PDF filename and
+  `application/pdf` MIME type are not altered by the image pipeline.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/storage/__tests__/images.test.ts src/storage/s3/__tests__/crud.test.ts --runInBand --coverage=false`
+  - `cd api && rtk npx jest server/services/Files/process.spec.js --runInBand`
+  - `rtk git diff --check`
+  - `rtk npm run build:api`
+
+---
+
 # Active: Simplify PaddleOCR S3/OCR range from 53adb6f084566471c0a72969
 
 Goal: simplify the committed changes from

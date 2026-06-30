@@ -64,6 +64,7 @@ describe('S3 CRUD', () => {
   });
 
   beforeEach(() => {
+    delete process.env.S3_KEY_PREFIX;
     s3Mock.reset();
     s3Mock.on(PutObjectCommand).resolves({});
     s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: 'upload-123' });
@@ -211,6 +212,35 @@ describe('S3 CRUD', () => {
       expect(key).toBe('r/eu-central-1/t/tenantA/uploads/user123/report.pdf');
     });
 
+    it('applies the configured environment prefix before existing key parts', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const { getS3Key } = await import('../crud');
+
+      expect(getS3Key('uploads', 'user123', 'report.pdf')).toBe(
+        'dev/uploads/user123/report.pdf',
+      );
+      expect(
+        getS3Key({
+          basePath: 'images',
+          userId: 'user123',
+          fileName: 'file.png',
+          tenantId: 'tenantA',
+          storageRegion: 'eu-central-1',
+          includeRegionInPath: true,
+          useInlinePath: true,
+        }),
+      ).toBe('dev/i/r/eu-central-1/t/tenantA/images/user123/file.png');
+    });
+
+    it('rejects unsafe configured environment prefixes', async () => {
+      process.env.S3_KEY_PREFIX = 'uploads/dev';
+      const { getS3Key } = await import('../crud');
+
+      expect(() => getS3Key('uploads', 'user123', 'report.pdf')).toThrow(
+        '[getS3Key] keyPrefix must not contain slashes: "uploads/dev"',
+      );
+    });
+
     it('throws if storageRegion contains unsafe path characters', async () => {
       const { getS3Key } = await import('../crud');
       expect(() =>
@@ -351,6 +381,30 @@ describe('S3 CRUD', () => {
       });
     });
 
+    it('parses configured environment-prefixed keys', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const { parseS3Key } = await import('../crud');
+
+      expect(parseS3Key('dev/uploads/user123/report.pdf')).toEqual({
+        keyPrefix: 'dev',
+        useInlinePath: false,
+        basePath: 'uploads',
+        userId: 'user123',
+        fileName: 'report.pdf',
+      });
+      expect(parseS3Key('dev/i/r/us-east-2/t/tenantA/images/user123/file.png')).toEqual({
+        keyPrefix: 'dev',
+        storageRegion: 'us-east-2',
+        includeRegionInPath: true,
+        useInlinePath: true,
+        inlinePathPrefix: 'i',
+        tenantId: 'tenantA',
+        basePath: 'images',
+        userId: 'user123',
+        fileName: 'file.png',
+      });
+    });
+
     it('rejects malformed inline-prefixed keys', async () => {
       const { parseS3Key } = await import('../crud');
       expect(parseS3Key('i/r/us-east-2/uploads/user123/file.pdf')).toBeNull();
@@ -400,6 +454,25 @@ describe('S3 CRUD', () => {
         Bucket: 'test-bucket',
         Key: 'documents/user123/document.pdf',
         Body: Buffer.from('test content'),
+      });
+    });
+
+    it('sets ContentType when uploading a typed buffer', async () => {
+      const { saveBufferToS3 } = await import('../crud');
+      await saveBufferToS3({
+        userId: 'user123',
+        buffer: Buffer.from('jpeg data'),
+        fileName: 'photo.jpg',
+        basePath: 'images',
+        contentType: 'image/jpeg',
+      });
+
+      const calls = s3Mock.commandCalls(PutObjectCommand);
+      expect(calls[0].args[0].input).toEqual({
+        Bucket: 'test-bucket',
+        Key: 'images/user123/photo.jpg',
+        Body: Buffer.from('jpeg data'),
+        ContentType: 'image/jpeg',
       });
     });
 
@@ -948,6 +1021,23 @@ describe('S3 CRUD', () => {
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile)).rejects.toThrow('File record has no owner');
     });
+
+    it('validates and deletes environment-prefixed file records', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const mockFile = {
+        filepath: 'https://bucket.s3.amazonaws.com/dev/images/user123/file.jpg',
+        file_id: 'file123',
+        user: 'user123',
+      } as TFile;
+
+      s3Mock.on(HeadObjectCommand).resolvesOnce({});
+
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile)).resolves.toBeUndefined();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.Key).toBe(
+        'dev/images/user123/file.jpg',
+      );
+    });
   });
 
   describe('uploadFileToS3', () => {
@@ -1028,6 +1118,31 @@ describe('S3 CRUD', () => {
       expect(result).toMatchObject({
         storageKey: 'r/us-east-2/images/user123/file123__photo.jpg',
         storageRegion: 'us-east-2',
+      });
+    });
+
+    it('uploads files under the configured environment prefix', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const mockFile = {
+        path: '/tmp/upload.pdf',
+        originalname: 'report.pdf',
+      } as Express.Multer.File;
+
+      (fs.promises.stat as jest.Mock).mockResolvedValue({ size: 1024 });
+      (fs.createReadStream as jest.Mock).mockReturnValue(new Readable());
+
+      const { uploadFileToS3 } = await import('../crud');
+      const result = await uploadFileToS3({
+        req: mockReq,
+        file: mockFile,
+        file_id: 'file123',
+        basePath: 'uploads',
+      });
+
+      const calls = s3Mock.commandCalls(PutObjectCommand);
+      expect(calls[0].args[0].input.Key).toBe('dev/uploads/user123/file123__report.pdf');
+      expect(result).toMatchObject({
+        storageKey: 'dev/uploads/user123/file123__report.pdf',
       });
     });
 
@@ -1134,6 +1249,30 @@ describe('S3 CRUD', () => {
         expect.anything(),
       );
     });
+
+    it('uses environment-prefixed keys when signing download URLs', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const mockFile = {
+        filepath: 'https://bucket.s3.amazonaws.com/dev/uploads/user123/file.pdf',
+        filename: 'file.pdf',
+      } as TFile;
+
+      const { getS3DownloadURL } = await import('../crud');
+      await getS3DownloadURL({
+        req: {} as ServerRequest,
+        file: mockFile,
+      });
+
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          input: expect.objectContaining({
+            Key: 'dev/uploads/user123/file.pdf',
+          }),
+        }),
+        expect.anything(),
+      );
+    });
   });
 
   describe('needsRefresh', () => {
@@ -1188,6 +1327,43 @@ describe('S3 CRUD', () => {
         expect.objectContaining({
           input: expect.objectContaining({
             Key: 'images/user123/file.jpg',
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('keeps refreshing legacy keys without adding the configured environment prefix', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const { getNewS3URL } = await import('../crud');
+      const result = await getNewS3URL(
+        'https://bucket.s3.amazonaws.com/images/user123/file.jpg?signature=old',
+      );
+
+      expect(result).toContain('signed=true');
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          input: expect.objectContaining({
+            Key: 'images/user123/file.jpg',
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('generates a new URL from an environment-prefixed S3 URL', async () => {
+      process.env.S3_KEY_PREFIX = 'dev';
+      const { getNewS3URL } = await import('../crud');
+      await getNewS3URL(
+        'https://bucket.s3.amazonaws.com/dev/images/user123/file.jpg?signature=old',
+      );
+
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          input: expect.objectContaining({
+            Key: 'dev/images/user123/file.jpg',
           }),
         }),
         expect.anything(),

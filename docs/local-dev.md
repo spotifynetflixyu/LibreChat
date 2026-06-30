@@ -12,6 +12,38 @@ Use `librechat.example.yaml` as the reference when you need to enable optional f
 
 The backend also expects `.env` to include the database URLs required by your local setup, including `MONGO_URI` and any project-specific Postgres URL such as `STEEL_POSTGRES_URL`.
 
+## Local S3 Storage
+
+For dev/test uploads backed by S3, set the root `librechat.yaml` storage strategy:
+
+```yaml
+version: 1.3.11
+fileStrategy: "s3"
+```
+
+Configure `.env` with the S3 bucket values. Do not print or commit access keys.
+
+```env
+AWS_REGION=ap-east-1
+AWS_BUCKET_NAME=amzn-s3-longdin-ap-east
+AWS_ENDPOINT_URL=
+S3_URL_EXPIRY_SECONDS=43200
+S3_KEY_PREFIX=dev
+```
+
+`S3_KEY_PREFIX=dev` stores new local/dev objects under `dev/uploads/...`,
+`dev/images/...`, and `dev/avatars/...`. Production should use
+`S3_KEY_PREFIX=prod` when sharing the same bucket. Keep `basePath` values such
+as `uploads`, `images`, and `avatars` unchanged; prefixes with slashes such as
+`uploads/dev` are rejected.
+
+Verify the non-secret local S3 settings with:
+
+```bash
+grep -E "^(AWS_REGION|AWS_BUCKET_NAME|AWS_ENDPOINT_URL|S3_URL_EXPIRY_SECONDS|S3_KEY_PREFIX)=" .env
+grep -n "^fileStrategy" librechat.yaml
+```
+
 For Steel development, `STEEL_POSTGRES_URL` is the runtime source of truth. Use
 the Supabase direct database URL when your network supports it:
 

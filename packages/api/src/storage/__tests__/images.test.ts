@@ -5,6 +5,23 @@ import type { SaveBufferFn } from '~/storage/types';
 import type { ImageServiceDeps } from '~/storage/images';
 import { ImageService } from '~/storage/images';
 
+const maxImageBytes = 5 * 1024 * 1024;
+const mockSharpState: {
+  instances: Array<{
+    rotate: jest.Mock;
+    resize: jest.Mock;
+    jpeg: jest.Mock;
+    toFormat: jest.Mock;
+    toBuffer: jest.Mock;
+    metadata: jest.Mock;
+    clone: jest.Mock;
+  }>;
+  outputs: Array<{ buffer: Buffer; width: number; height: number }>;
+} = {
+  instances: [],
+  outputs: [],
+};
+
 jest.mock('fs', () => {
   const actualFs = jest.requireActual<typeof import('fs')>('fs');
   return {
@@ -17,12 +34,44 @@ jest.mock('fs', () => {
   };
 });
 
+jest.mock('@librechat/data-schemas', () => ({
+  logger: { error: jest.fn() },
+}));
+
 jest.mock('sharp', () => {
-  const mockSharp = jest.fn(() => ({
-    metadata: jest.fn().mockResolvedValue({ format: 'png', width: 100, height: 100 }),
-    toFormat: jest.fn().mockReturnThis(),
-    toBuffer: jest.fn().mockResolvedValue(Buffer.from('processed')),
-  }));
+  const mockSharp = jest.fn(() => {
+    const instance = {
+      rotate: jest.fn().mockReturnThis(),
+      resize: jest.fn().mockReturnThis(),
+      jpeg: jest.fn().mockReturnThis(),
+      toFormat: jest.fn().mockReturnThis(),
+      metadata: jest.fn().mockResolvedValue({ format: 'png', width: 100, height: 100 }),
+      toBuffer: jest.fn(async (options?: { resolveWithObject?: boolean }) => {
+        const output = mockSharpState.outputs.shift() ?? {
+          buffer: Buffer.from('processed'),
+          width: 1600,
+          height: 1200,
+        };
+
+        if (options?.resolveWithObject) {
+          return {
+            data: output.buffer,
+            info: {
+              width: output.width,
+              height: output.height,
+              size: output.buffer.length,
+            },
+          };
+        }
+
+        return output.buffer;
+      }),
+      clone: jest.fn(),
+    };
+    instance.clone.mockReturnValue(instance);
+    mockSharpState.instances.push(instance);
+    return instance;
+  });
   return mockSharp;
 });
 
@@ -33,17 +82,20 @@ describe('ImageService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSharpState.instances = [];
+    mockSharpState.outputs = [
+      {
+        buffer: Buffer.from('processed-jpeg'),
+        width: 1600,
+        height: 1200,
+      },
+    ];
 
     mockSaveBuffer = jest
       .fn()
-      .mockResolvedValue('https://storage.example.com/images/user123/file.webp');
+      .mockResolvedValue('https://storage.example.com/images/user123/file.jpg');
 
     mockDeps = {
-      resizeImageBuffer: jest.fn().mockResolvedValue({
-        buffer: Buffer.from('resized'),
-        width: 800,
-        height: 600,
-      }),
       updateUser: jest.fn().mockResolvedValue(undefined),
       updateFile: jest.fn().mockResolvedValue(null),
     };
@@ -67,7 +119,15 @@ describe('ImageService', () => {
       (fs.promises.unlink as jest.Mock).mockResolvedValue(undefined);
     });
 
-    it('uploads and processes an image successfully', async () => {
+    it('converts uploaded images to JPG capped at 4K and 5 MB', async () => {
+      mockSharpState.outputs = [
+        {
+          buffer: Buffer.alloc(maxImageBytes),
+          width: 4096,
+          height: 2304,
+        },
+      ];
+
       const result = await service.uploadImage({
         req: mockReq as ServerRequest,
         file: mockFile,
@@ -76,19 +136,34 @@ describe('ImageService', () => {
       });
 
       expect(result).toEqual({
-        filepath: 'https://storage.example.com/images/user123/file.webp',
-        bytes: expect.any(Number),
-        width: 800,
-        height: 600,
+        filepath: 'https://storage.example.com/images/user123/file.jpg',
+        bytes: maxImageBytes,
+        width: 4096,
+        height: 2304,
+        filename: 'photo.jpg',
+        type: 'image/jpeg',
       });
 
-      expect(mockDeps.resizeImageBuffer).toHaveBeenCalledWith(expect.any(Buffer), 'high', 'openAI');
+      expect(mockSharpState.instances[0].rotate).toHaveBeenCalledTimes(1);
+      expect(mockSharpState.instances[0].resize).toHaveBeenCalledWith({
+        width: 4096,
+        height: 4096,
+        fit: 'inside',
+        withoutEnlargement: true,
+      });
+      expect(mockSharpState.instances[0].jpeg).toHaveBeenCalledWith({
+        quality: 85,
+        mozjpeg: true,
+      });
 
-      expect(mockSaveBuffer).toHaveBeenCalledWith({
+      const saveBufferArgs = mockSaveBuffer.mock.calls[0][0];
+      expect(saveBufferArgs.buffer).toHaveLength(maxImageBytes);
+      expect(saveBufferArgs).toEqual({
         userId: 'user123',
-        buffer: expect.any(Buffer),
-        fileName: expect.stringContaining('file-456__'),
+        buffer: saveBufferArgs.buffer,
+        fileName: expect.stringMatching(/^file-456__.+\.jpg$/),
         basePath: 'images',
+        contentType: 'image/jpeg',
         tenantId: null,
       });
 
@@ -108,32 +183,79 @@ describe('ImageService', () => {
       ).rejects.toThrow('User not authenticated');
     });
 
-    it('skips format conversion when extension matches target', async () => {
-      const webpFile = {
-        path: '/tmp/upload-123.webp',
-        originalname: 'photo.webp',
+    it('preserves image dimensions below 4K through no-upscale resize options', async () => {
+      mockSharpState.outputs = [
+        {
+          buffer: Buffer.from('small-jpeg'),
+          width: 1600,
+          height: 1200,
+        },
+      ];
+      const pngFile = {
+        path: '/tmp/upload-123.png',
+        originalname: 'photo.png',
       } as Express.Multer.File;
 
-      await service.uploadImage({
+      const result = await service.uploadImage({
         req: mockReq as ServerRequest,
-        file: webpFile,
+        file: pngFile,
         file_id: 'file-456',
         endpoint: 'openAI',
       });
 
-      expect(sharp).not.toHaveBeenCalled();
+      expect(result).toEqual(
+        expect.objectContaining({
+          bytes: Buffer.byteLength('small-jpeg'),
+          width: 1600,
+          height: 1200,
+          filename: 'photo.jpg',
+          type: 'image/jpeg',
+        }),
+      );
+      expect(mockSharpState.instances[0].resize).toHaveBeenCalledWith(
+        expect.objectContaining({ withoutEnlargement: true }),
+      );
+      expect(mockSaveBuffer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fileName: expect.stringMatching(/^file-456__.+\.jpg$/),
+        }),
+      );
     });
 
-    it('uses custom resolution when provided', async () => {
+    it('reduces JPEG quality until the image fits under 5 MB', async () => {
+      mockSharpState.outputs = [
+        {
+          buffer: Buffer.alloc(maxImageBytes + 1),
+          width: 4096,
+          height: 2304,
+        },
+        {
+          buffer: Buffer.alloc(maxImageBytes - 1),
+          width: 4096,
+          height: 2304,
+        },
+      ];
+
       await service.uploadImage({
         req: mockReq as ServerRequest,
         file: mockFile,
         file_id: 'file-456',
         endpoint: 'openAI',
-        resolution: 'low',
       });
 
-      expect(mockDeps.resizeImageBuffer).toHaveBeenCalledWith(expect.any(Buffer), 'low', 'openAI');
+      expect(mockSharpState.instances[0].jpeg).toHaveBeenNthCalledWith(1, {
+        quality: 85,
+        mozjpeg: true,
+      });
+      expect(mockSharpState.instances[0].jpeg).toHaveBeenNthCalledWith(2, {
+        quality: 80,
+        mozjpeg: true,
+      });
+      expect(mockSaveBuffer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          buffer: expect.objectContaining({ length: maxImageBytes - 1 }),
+        }),
+      );
     });
 
     it('uses custom basePath when provided', async () => {
@@ -148,7 +270,7 @@ describe('ImageService', () => {
       expect(mockSaveBuffer).toHaveBeenCalledWith(expect.objectContaining({ basePath: 'avatars' }));
     });
 
-    it('defaults to webp when imageOutputType not configured', async () => {
+    it('uses JPG even when imageOutputType is not configured', async () => {
       const reqNoConfig = { user: { id: 'user123' }, config: {} };
 
       await service.uploadImage({
@@ -160,7 +282,7 @@ describe('ImageService', () => {
 
       expect(mockSaveBuffer).toHaveBeenCalledWith(
         expect.objectContaining({
-          fileName: expect.stringContaining('.webp'),
+          fileName: expect.stringMatching(/\.jpg$/),
         }),
       );
     });
@@ -180,9 +302,12 @@ describe('ImageService', () => {
       expect(fs.promises.unlink).toHaveBeenCalledWith('/tmp/upload-123.jpg');
     });
 
-    it('deletes temp file when resize throws', async () => {
+    it('deletes temp file when compression throws', async () => {
       (fs.promises.readFile as jest.Mock).mockResolvedValueOnce(Buffer.from('raw'));
-      (mockDeps.resizeImageBuffer as jest.Mock).mockRejectedValueOnce(new Error('Resize failed'));
+      mockSharpState.outputs = [];
+      (sharp as unknown as jest.Mock).mockImplementationOnce(() => {
+        throw new Error('Compression failed');
+      });
 
       await expect(
         service.uploadImage({
@@ -191,7 +316,7 @@ describe('ImageService', () => {
           file_id: 'file-456',
           endpoint: 'openAI',
         }),
-      ).rejects.toThrow('Resize failed');
+      ).rejects.toThrow('Compression failed');
 
       expect(fs.promises.unlink).toHaveBeenCalledWith('/tmp/upload-123.jpg');
     });
@@ -229,7 +354,7 @@ describe('ImageService', () => {
         manual: 'true',
       });
 
-      expect(result).toBe('https://storage.example.com/images/user123/file.webp');
+      expect(result).toBe('https://storage.example.com/images/user123/file.jpg');
       expect(mockSaveBuffer).toHaveBeenCalledWith({
         userId: 'user123',
         buffer,
@@ -238,7 +363,7 @@ describe('ImageService', () => {
         tenantId: null,
       });
       expect(mockDeps.updateUser).toHaveBeenCalledWith('user123', {
-        avatar: 'https://storage.example.com/images/user123/file.webp',
+        avatar: 'https://storage.example.com/images/user123/file.jpg',
       });
     });
 
@@ -303,7 +428,7 @@ describe('ImageService', () => {
         manual: 'true',
       });
 
-      expect(result).toBe('https://storage.example.com/images/user123/file.webp?manual=true');
+      expect(result).toBe('https://storage.example.com/images/user123/file.jpg?manual=true');
     });
 
     it('uses gif extension for animated images', async () => {

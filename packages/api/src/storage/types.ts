@@ -8,6 +8,7 @@ export interface SaveBufferParams {
   basePath?: string;
   tenantId?: string | null;
   storageRegion?: string | null;
+  contentType?: string | null;
   includeRegionInPath?: boolean;
   useInlinePath?: boolean;
 }
@@ -20,6 +21,7 @@ export interface GetURLParams {
   contentType?: string | null;
   tenantId?: string | null;
   storageRegion?: string | null;
+  keyPrefix?: string | null;
   includeRegionInPath?: boolean;
   useInlinePath?: boolean;
 }
@@ -80,6 +82,8 @@ export interface UploadResult {
 export interface ImageUploadResult extends UploadResult {
   width: number;
   height: number;
+  filename?: string;
+  type?: string;
 }
 
 export interface ProcessAvatarParams {
