@@ -1240,7 +1240,7 @@ describe('User parameter passing tests', () => {
       return { mockCallTool };
     }
 
-    it('should resolve S3 PaddleOCR attachments to a presigned file URL', async () => {
+    it('should resolve S3 PaddleOCR attachments to a clean presigned file URL', async () => {
       const fileId = 's3-file-drawing';
       mockGetDownloadURL.mockResolvedValueOnce(SIGNED_PADDLEOCR_URL);
 
@@ -1266,10 +1266,10 @@ describe('User parameter passing tests', () => {
             storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
             source: 's3',
           }),
-          customFilename: 'drawing.pdf',
-          contentType: 'application/pdf',
         }),
       );
+      expect(mockGetDownloadURL.mock.calls[0][0]).not.toHaveProperty('customFilename');
+      expect(mockGetDownloadURL.mock.calls[0][0]).not.toHaveProperty('contentType');
       expect(mockGetDownloadStream).not.toHaveBeenCalled();
       expect(mockCallTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1311,10 +1311,10 @@ describe('User parameter passing tests', () => {
             storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
             source: 's3',
           }),
-          customFilename: 'drawing.pdf',
-          contentType: 'application/pdf',
         }),
       );
+      expect(mockGetDownloadURL.mock.calls[0][0]).not.toHaveProperty('customFilename');
+      expect(mockGetDownloadURL.mock.calls[0][0]).not.toHaveProperty('contentType');
       expect(mockGetDownloadStream).not.toHaveBeenCalled();
       expect(mockCallTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1325,6 +1325,118 @@ describe('User parameter passing tests', () => {
         }),
       );
       expectLoggerNotToContainSignedUrlSecrets();
+    });
+
+    it('should resolve PaddleOCR filename input from Steel currentTurnFiles when run config requestBody has no files', async () => {
+      const fileId = 's3-file-drawing';
+      const mockUser = { id: 'paddle-user', role: 'USER' };
+      const mockReq = {
+        user: mockUser,
+        body: {
+          messageId: 'response-1',
+          conversationId: 'conversation-1',
+        },
+        steelNativeContext: {
+          currentTurnFiles: [
+            {
+              fileId,
+              filename: 'drawing.pdf',
+              mediaType: 'application/pdf',
+            },
+          ],
+        },
+        config: {
+          paths: {
+            uploads: '/uploads-root',
+            imageOutput: '/images-root',
+          },
+        },
+      };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const toolKey = `paddleocr_vl${D}PaddleOCR`;
+      const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
+
+      mockGetMCPManager.mockReturnValue({
+        callTool: mockCallTool,
+      });
+      mockGetFiles.mockResolvedValue([
+        {
+          file_id: fileId,
+          filename: 'drawing.pdf',
+          filepath: OLD_SIGNED_PADDLEOCR_URL,
+          storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
+          type: 'application/pdf',
+          source: 's3',
+        },
+      ]);
+      mockGetDownloadURL.mockResolvedValueOnce(SIGNED_PADDLEOCR_URL);
+
+      const mcpTool = await createMCPTool({
+        mcpPermissionContext: {
+          canUseServers: jest.fn().mockResolvedValue(true),
+        },
+        req: mockReq,
+        res: mockRes,
+        user: mockUser,
+        requestBody: mockReq.body,
+        toolKey,
+        serverName: 'PaddleOCR',
+        config: { type: 'stdio' },
+        provider: 'openai',
+        userMCPAuthMap: {},
+        availableTools: {
+          [toolKey]: {
+            function: {
+              name: toolKey,
+              description: 'Parse documents with PaddleOCR',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      await mcpTool.invoke(
+        {
+          input_data: 'drawing.pdf',
+          file_type: 'pdf',
+          output_mode: 'detailed',
+          return_images: false,
+        },
+        {
+          configurable: {
+            user: mockUser,
+            req: mockReq,
+            requestBody: {
+              messageId: 'response-1',
+              conversationId: 'conversation-1',
+            },
+          },
+          metadata: {
+            provider: 'openai',
+            thread_id: 'thread-1',
+            run_id: 'run-1',
+          },
+          toolCall: {},
+        },
+      );
+
+      expect(mockGetDownloadURL).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: expect.objectContaining({
+            file_id: fileId,
+            source: 's3',
+          }),
+        }),
+      );
+      expect(mockGetDownloadURL.mock.calls[0][0]).not.toHaveProperty('customFilename');
+      expect(mockGetDownloadURL.mock.calls[0][0]).not.toHaveProperty('contentType');
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            input_data: SIGNED_PADDLEOCR_URL,
+          }),
+        }),
+      );
     });
 
     it('should keep CloudFront PaddleOCR attachments on the stream fallback path', async () => {

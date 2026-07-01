@@ -441,7 +441,6 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
 
   const source = matchedFile.source ?? FileSources.local;
   const { getDownloadStream, getDownloadURL } = getStrategyFunctions(source);
-  const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);
 
   if (shouldResolvePaddleInputAsDownloadUrl(source)) {
     if (typeof getDownloadURL !== 'function') {
@@ -450,15 +449,9 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
       );
     }
 
-    const customFilename = matchedFile.filename ?? normalizeFileName(trimmedInput);
-    const downloadUrl = await getDownloadURL({
-      req,
-      file: matchedFile,
-      customFilename: customFilename || null,
-      contentType: mediaType,
-    });
+    const downloadUrl = await getDownloadURL({ req, file: matchedFile });
     logger.debug(
-      `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}" using a storage download URL.`,
+      `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}" using a clean storage download URL.`,
     );
     return downloadUrl;
   }
@@ -467,6 +460,7 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
     throw new Error(`Matched attachment "${matchedFile.filename ?? trimmedInput}" is not downloadable`);
   }
 
+  const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);
   const stream = await getDownloadStream(req, matchedFile.filepath);
   const buffer = await streamToBuffer(stream);
   logger.debug(
