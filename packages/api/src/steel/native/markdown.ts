@@ -3,6 +3,7 @@ import type {
   CaptureAssistantFinalMarkdownResult,
   CaptureToolResultInput,
   CaptureToolResultResult,
+  SteelOcrFileReference,
 } from '../memory/service';
 import type { Response } from '../../agents/responses/types';
 import type { SteelToolResult } from '../tools/results';
@@ -38,6 +39,7 @@ export interface SteelNativeAssistantMarkdownMessage {
   unfinished?: boolean;
   error?: unknown;
   temporary?: boolean;
+  currentTurnFiles?: readonly SteelOcrFileReference[];
 }
 
 export interface CaptureSteelNativeAssistantMarkdownInput
@@ -62,6 +64,7 @@ export interface CaptureSteelNativeResponseOutputInput {
   responseId?: string;
   turnIndex?: number;
   checkpointTurnIndex?: number;
+  currentTurnFiles?: readonly SteelOcrFileReference[];
   response: Pick<Response, 'id' | 'status' | 'output' | 'error'>;
 }
 
@@ -171,6 +174,7 @@ export async function captureSteelNativeAssistantMarkdown({
   unfinished,
   error,
   temporary,
+  currentTurnFiles,
 }: CaptureSteelNativeAssistantMarkdownInput): Promise<CaptureSteelNativeAssistantMarkdownResult> {
   if (isCreatedByUser) {
     return { status: 'skipped', reason: 'user_message' };
@@ -206,6 +210,7 @@ export async function captureSteelNativeAssistantMarkdown({
     turnIndex,
     checkpointTurnIndex: getCheckpointTurnIndex({ checkpointTurnIndex, turnIndex }),
     content: markdown,
+    ...(currentTurnFiles !== undefined ? { currentTurnFiles } : {}),
   });
 
   return { status: 'captured', result };
@@ -217,6 +222,7 @@ export async function captureSteelNativeResponseOutput({
   responseId,
   turnIndex,
   checkpointTurnIndex,
+  currentTurnFiles,
   response,
 }: CaptureSteelNativeResponseOutputInput): Promise<CaptureSteelNativeAssistantMarkdownResult> {
   const messageId = responseId ?? response.id;
@@ -228,6 +234,7 @@ export async function captureSteelNativeResponseOutput({
     messageId,
     turnIndex,
     checkpointTurnIndex,
+    currentTurnFiles,
     text: extractSteelNativeResponseOutputText(response),
     unfinished: response.status === 'in_progress' || response.status === 'incomplete',
     error: response.error ?? (response.status === 'failed' ? true : undefined),

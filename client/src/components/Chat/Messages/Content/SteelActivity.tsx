@@ -11,6 +11,7 @@ type SteelActivityProps = {
 };
 
 const ocrSavedCountKeys = new Set(['ocr_extract']);
+const paddleOcrSavedCountKeys = new Set(['paddleocr_preflight']);
 const workbookSavedCountKeys = new Set([
   'calculation_fact',
   'customer_fact',
@@ -37,6 +38,24 @@ function getSavedCountForKeys(savedCounts: SteelNativeSavedCounts | undefined, k
 }
 
 function getActivityLabel(event: SteelNativeActivityEvent, localize: ReturnType<typeof useLocalize>) {
+  if (event.source === 'paddleocr_preflight') {
+    if (event.type === 'memory_saved') {
+      return localize('com_ui_steel_activity_paddleocr_saved');
+    }
+
+    if (event.parseStatus === 'saved') {
+      return localize('com_ui_steel_activity_paddleocr_saved');
+    }
+
+    if (event.parseStatus === 'partial') {
+      return localize('com_ui_steel_activity_paddleocr_partial');
+    }
+
+    if (event.parseStatus === 'skipped') {
+      return localize('com_ui_steel_activity_paddleocr_skipped');
+    }
+  }
+
   if (event.type === 'memory_saved') {
     return localize('com_ui_steel_activity_state_saved');
   }
@@ -57,12 +76,19 @@ function getSavedCountText(
   localize: ReturnType<typeof useLocalize>,
 ) {
   const ocrCount = getSavedCountForKeys(event.savedCounts, ocrSavedCountKeys);
+  const paddleOcrCount = getSavedCountForKeys(event.savedCounts, paddleOcrSavedCountKeys);
   const workbookCount = getSavedCountForKeys(event.savedCounts, workbookSavedCountKeys);
   const sourceCounts = [
     ocrCount > 0
       ? localize('com_ui_steel_activity_source_count', {
           source: localize('com_ui_steel_activity_source_ocr'),
           count: ocrCount,
+        })
+      : null,
+    paddleOcrCount > 0
+      ? localize('com_ui_steel_activity_source_count', {
+          source: localize('com_ui_steel_activity_source_paddleocr'),
+          count: paddleOcrCount,
         })
       : null,
     workbookCount > 0

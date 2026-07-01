@@ -15,6 +15,7 @@ export const steelWorkingOrderMemoryKindEnum = [
   'price_evidence',
   'rule_evidence',
   'ocr_extract',
+  'paddleocr_preflight',
   'calculation_fact',
 ] as const;
 export const steelWorkingOrderMemorySourceKindEnum = [

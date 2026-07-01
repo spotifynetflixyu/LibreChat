@@ -119,7 +119,7 @@ async function emitSteelNativeEvents({ events, res, streamId }) {
   }
 }
 
-function createSteelNativeResponseSaveHook({ res, streamId }) {
+function createSteelNativeResponseSaveHook({ req, res, streamId }) {
   const workingOrderMemoryWriter = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
 
   return async function onResponseMessageSaved({ responseMessage, turnIndex }) {
@@ -135,6 +135,7 @@ function createSteelNativeResponseSaveHook({ res, streamId }) {
       unfinished: responseMessage?.unfinished,
       error: responseMessage?.error,
       temporary: responseMessage?.temporary,
+      currentTurnFiles: req?.steelNativeContext?.currentTurnFiles,
     });
 
     logger.debug('[AgentClient] Steel native response capture', {
@@ -1032,7 +1033,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
-    onResponseMessageSaved: createSteelNativeResponseSaveHook({ res, streamId }),
+    onResponseMessageSaved: createSteelNativeResponseSaveHook({ req, res, streamId }),
     steelProviderMetadata: steelProviderPolicy
       ? toSteelNativeProviderMetadata(steelProviderPolicy)
       : undefined,

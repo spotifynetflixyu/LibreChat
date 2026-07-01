@@ -16,7 +16,7 @@
 3. PDF 必須以整份文件交給 PaddleOCR MCP OCR 解析，不得只擷取部分頁面。
 4. 圖片也須先用 PaddleOCR MCP OCR 取得文字 / 表格結果。
 5. 只有加工內容：孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才可由 AI 視覺判斷，且須標示信心程度。
-6. 若 PaddleOCR MCP OCR 無法執行、逾時、報錯或回傳無可用文字 / 表格，AI 可以改用自身 OCR / vision 解析作為 fallback，但必須明確標示「AI OCR fallback」、說明 PaddleOCR 失敗摘要，並將不確定欄位列為低信心或「未確認」。
+6. 若 PaddleOCR MCP OCR 無法執行、逾時、報錯或回傳無可用文字 / 表格，AI 可以改用自身 OCR / vision 解析作為 fallback，但必須明確標示「AI OCR fallback」、說明 PaddleOCR 失敗摘要，並將不確定欄位列為低信心或「未確認」。AI OCR fallback 不是 PaddleOCR MCP OCR 成功結果；同一檔案下輪仍須先重試 PaddleOCR MCP OCR。
 
 ## 三、輸出格式
 
@@ -70,4 +70,4 @@ AI 回覆須使用繁體中文，並以 Markdown 表格整理：
 4. 公式重新計算後，來源數字仍可能有誤。
 5. 表格列數無法與原圖完全對應。
 6. 孔數、折邊、切角、缺口、開槽、輪廓等需由 AI 視覺判斷。
-7. 使用者後續更正 OCR 表格資料時，須以最新使用者訊息為準重新整理，不再重新執行 PaddleOCR MCP OCR，除非使用者明確要求重讀附件或提供新檔案。
+7. 使用者後續更正 OCR 表格資料時，須以最新使用者訊息為準重新整理。只有同一 file key 已有 active PaddleOCR MCP OCR 結果時，才不要重新執行 PaddleOCR MCP OCR；若目前只有 AI OCR fallback 資料、使用者明確要求重讀附件、或提供新 PDF / image 附件，仍須先執行或重試 PaddleOCR MCP OCR。

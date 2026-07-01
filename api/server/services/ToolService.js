@@ -25,11 +25,13 @@ const {
   getMCPServerNamesFromTools,
   buildMCPAuthToolCall,
   buildMCPAuthStepId,
+  buildMCPToolKey,
   buildMCPAuthRunStepEvent,
   buildMCPAuthRunStepDeltaEvent,
   buildMCPAuthRunStepCompletedEvent,
   captureSteelNativeToolResult,
   buildSteelNativeEventEnvelopes,
+  buildSteelPaddleOcrPreflightEventEnvelopes,
   isFileAuthoringToolDefinition,
   createSteelNativeTool,
   createSteelPostgresPool,
@@ -47,9 +49,12 @@ const {
   CacheKeys,
   ErrorTypes,
   ContentTypes,
+  StepEvents,
+  StepTypes,
   imageGenTools,
   EModelEndpoint,
   EToolResources,
+  ToolCallTypes,
   isActionTool,
   actionDelimiter,
   ImageVisionTool,
@@ -521,6 +526,7 @@ async function processRequiredActions(client, requiredActions) {
 const nativeTools = new Set([Tools.execute_code, Tools.file_search, Tools.web_search]);
 const defaultSteelNativeToolMaxCalls = 8;
 const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
+const steelPaddleOcrToolName = 'paddleocr_vl';
 let defaultSteelNativeToolClient;
 
 /** Checks if a tool name is a known built-in tool */
@@ -707,6 +713,413 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
 
     return result;
   };
+}
+
+function getSteelPaddleOcrInputData(file) {
+  return file?.fileId ?? file?.storageKey ?? file?.filename ?? file?.ocrFileKey;
+}
+
+function getSteelPaddleOcrPreflightToolCallId(ocrFileKey) {
+  return `steel_paddleocr_preflight_${String(ocrFileKey).replace(/[^A-Za-z0-9_-]+/g, '_')}`;
+}
+
+function getSteelPaddleOcrPreflightStepId(providerToolCallId) {
+  return `${providerToolCallId}_step`;
+}
+
+function stringifySteelPaddleOcrPayload(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return JSON.stringify({
+      error: 'PaddleOCR payload could not be serialized',
+      message: error?.message,
+    });
+  }
+}
+
+function createSteelPaddleOcrToolCall({ providerToolCallId, toolName, args, output }) {
+  return {
+    id: providerToolCallId,
+    name: toolName,
+    args: stringifySteelPaddleOcrPayload(args),
+    ...(output !== undefined ? { output: stringifySteelPaddleOcrPayload(output) } : {}),
+    type: ToolCallTypes.TOOL_CALL,
+  };
+}
+
+function createSteelPaddleOcrRunStepEvent({
+  requestId,
+  stepId,
+  providerToolCallId,
+  toolName,
+  index,
+}) {
+  const toolCall = createSteelPaddleOcrToolCall({
+    providerToolCallId,
+    toolName,
+    args: '',
+  });
+
+  return {
+    event: StepEvents.ON_RUN_STEP,
+    data: {
+      runId: requestId ?? Constants.USE_PRELIM_RESPONSE_MESSAGE_ID,
+      id: stepId,
+      type: StepTypes.TOOL_CALLS,
+      index,
+      stepDetails: {
+        type: StepTypes.TOOL_CALLS,
+        tool_calls: [toolCall],
+      },
+    },
+  };
+}
+
+function createSteelPaddleOcrRunStepDeltaEvent({
+  stepId,
+  providerToolCallId,
+  toolName,
+  args,
+  index,
+}) {
+  return {
+    event: StepEvents.ON_RUN_STEP_DELTA,
+    data: {
+      id: stepId,
+      delta: {
+        type: StepTypes.TOOL_CALLS,
+        tool_calls: [
+          {
+            index,
+            id: providerToolCallId,
+            name: toolName,
+            args: stringifySteelPaddleOcrPayload(args),
+            type: ToolCallTypes.TOOL_CALL,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function createSteelPaddleOcrRunStepCompletedEvent({
+  stepId,
+  providerToolCallId,
+  toolName,
+  args,
+  output,
+  index,
+}) {
+  return {
+    event: StepEvents.ON_RUN_STEP_COMPLETED,
+    data: {
+      result: {
+        id: stepId,
+        index,
+        tool_call: {
+          ...createSteelPaddleOcrToolCall({
+            providerToolCallId,
+            toolName,
+            args,
+            output,
+          }),
+          progress: 1,
+        },
+      },
+    },
+  };
+}
+
+async function emitSteelPaddleOcrToolStart({
+  res,
+  streamId,
+  requestId,
+  stepId,
+  providerToolCallId,
+  toolName,
+  args,
+  index,
+}) {
+  await emitSteelNativeEvents({
+    res,
+    streamId,
+    events: [
+      createSteelPaddleOcrRunStepEvent({
+        requestId,
+        stepId,
+        providerToolCallId,
+        toolName,
+        index,
+      }),
+      createSteelPaddleOcrRunStepDeltaEvent({
+        stepId,
+        providerToolCallId,
+        toolName,
+        args,
+        index,
+      }),
+    ],
+  });
+}
+
+async function emitSteelPaddleOcrToolCompleted({
+  res,
+  streamId,
+  stepId,
+  providerToolCallId,
+  toolName,
+  args,
+  output,
+  index,
+}) {
+  await emitSteelNativeEvents({
+    res,
+    streamId,
+    events: [
+      createSteelPaddleOcrRunStepCompletedEvent({
+        stepId,
+        providerToolCallId,
+        toolName,
+        args,
+        output,
+        index,
+      }),
+    ],
+  });
+}
+
+async function invokeLoadedTool(tool, args, config) {
+  if (typeof tool?.invoke === 'function') {
+    return await tool.invoke(args, config);
+  }
+  if (typeof tool?._call === 'function') {
+    return await tool._call(args, config);
+  }
+  throw new Error(`Loaded tool "${tool?.name ?? 'unknown'}" is not invokable`);
+}
+
+function createPreflightResult({
+  status,
+  completedKeys,
+  attemptedKeys,
+  failedKeys,
+  skippedReason,
+  currentPaddleOcrResults = [],
+}) {
+  return {
+    status,
+    completedKeys,
+    attemptedKeys,
+    failedKeys,
+    skippedReason,
+    currentPaddleOcrResults,
+  };
+}
+
+async function runSteelPaddleOcrPreflight({
+  req,
+  res,
+  signal,
+  agent,
+  streamId = null,
+  userMCPAuthMap,
+  requestScopedConnections,
+}) {
+  const conversationId = getRequestConversationId(req);
+  const turnIndex = req?.steelNativeContext?.assistantTurnIndex;
+  const checkpointTurnIndex = req?.steelNativeContext?.memoryCheckpointTurnIndex;
+  const requestId = req?.steelNativeContext?.requestId;
+  const files = req?.steelNativeContext?.currentTurnFiles ?? [];
+  const attemptedKeys = [];
+  const failedKeys = [];
+  const currentPaddleOcrResults = [];
+  const finishPreflight = async (result) => {
+    await emitSteelNativeEvents({
+      res,
+      streamId,
+      events: buildSteelPaddleOcrPreflightEventEnvelopes({
+        conversationId,
+        requestId,
+        messageId: requestId,
+        preflight: result,
+      }),
+    });
+    return result;
+  };
+
+  if (!conversationId) {
+    return finishPreflight(createPreflightResult({
+      status: 'skipped',
+      completedKeys: [],
+      attemptedKeys,
+      failedKeys,
+      skippedReason: 'missing_conversation_id',
+    }));
+  }
+  if (turnIndex === undefined) {
+    return finishPreflight(createPreflightResult({
+      status: 'skipped',
+      completedKeys: [],
+      attemptedKeys,
+      failedKeys,
+      skippedReason: 'missing_turn_index',
+    }));
+  }
+  if (!Array.isArray(files) || files.length === 0) {
+    return finishPreflight(createPreflightResult({
+      status: 'skipped',
+      completedKeys: [],
+      attemptedKeys,
+      failedKeys,
+      skippedReason: 'no_current_files',
+    }));
+  }
+
+  const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+  const missing = await writer.findMissingPaddleOcrFileKeys({
+    conversationId,
+    files,
+  });
+  if (missing.missingFiles.length === 0) {
+    return finishPreflight(createPreflightResult({
+      status: 'skipped',
+      completedKeys: missing.completedKeys,
+      attemptedKeys,
+      failedKeys,
+      skippedReason: 'all_files_already_have_paddleocr',
+    }));
+  }
+
+  const toolName = buildMCPToolKey(steelPaddleOcrToolName, steelPaddleOcrMcpServerName);
+  const { loadedTools, configurable } = await loadToolsForExecution({
+    req,
+    res,
+    signal,
+    agent,
+    toolNames: [toolName],
+    streamId,
+    actionsEnabled: false,
+    ...(userMCPAuthMap ? { userMCPAuthMap } : {}),
+    ...(requestScopedConnections ? { requestScopedConnections } : {}),
+  });
+  const paddleTool = loadedTools.find((tool) => tool.name === toolName);
+  if (!paddleTool) {
+    return finishPreflight(createPreflightResult({
+      status: 'partial',
+      completedKeys: missing.completedKeys,
+      attemptedKeys: missing.missingKeys,
+      failedKeys: missing.missingKeys,
+      skippedReason: 'missing_paddleocr_tool',
+    }));
+  }
+
+  for (const file of missing.missingFiles) {
+    const providerToolCallId = getSteelPaddleOcrPreflightToolCallId(file.ocrFileKey);
+    const stepId = getSteelPaddleOcrPreflightStepId(providerToolCallId);
+    const index = attemptedKeys.length;
+    attemptedKeys.push(file.ocrFileKey);
+    const args = {
+      input_data: getSteelPaddleOcrInputData(file),
+      output_mode: 'detailed',
+      return_images: false,
+    };
+
+    try {
+      await emitSteelPaddleOcrToolStart({
+        res,
+        streamId,
+        requestId,
+        stepId,
+        providerToolCallId,
+        toolName,
+        args,
+        index,
+      });
+      const result = await invokeLoadedTool(paddleTool, args, {
+        configurable: {
+          ...configurable,
+          req,
+          user: req.user,
+          user_id: req.user?.id,
+          requestBody: {
+            messageId: requestId,
+            conversationId,
+          },
+        },
+        metadata: {
+          provider: agent?.provider,
+          thread_id: conversationId,
+          run_id: requestId ?? conversationId,
+        },
+        signal,
+        toolCall: {
+          id: providerToolCallId,
+          name: toolName,
+          args,
+        },
+      });
+
+      await writer.capturePaddleOcrResult({
+        conversationId,
+        requestId,
+        providerToolCallId,
+        turnIndex,
+        checkpointTurnIndex: checkpointTurnIndex ?? Math.max(0, turnIndex - 1),
+        file,
+        data: result,
+      });
+      currentPaddleOcrResults.push({
+        ...file,
+        ocrSource: 'paddleocr_mcp',
+        result,
+      });
+      await emitSteelPaddleOcrToolCompleted({
+        res,
+        streamId,
+        stepId,
+        providerToolCallId,
+        toolName,
+        args,
+        output: result,
+        index,
+      });
+    } catch (error) {
+      failedKeys.push(file.ocrFileKey);
+      logger.warn('[Steel OCR] PaddleOCR preflight failed for current file', {
+        conversationId,
+        requestId,
+        ocrFileKey: file.ocrFileKey,
+        error: error?.message,
+      });
+      await emitSteelPaddleOcrToolCompleted({
+        res,
+        streamId,
+        stepId,
+        providerToolCallId,
+        toolName,
+        args,
+        output: `Error: ${redactMessage(error?.message ?? 'PaddleOCR preflight failed')}`,
+        index,
+      });
+    }
+  }
+
+  return finishPreflight(createPreflightResult({
+    status: failedKeys.length > 0 ? 'partial' : 'completed',
+    completedKeys: [
+      ...missing.completedKeys,
+      ...attemptedKeys.filter((key) => !failedKeys.includes(key)),
+    ],
+    attemptedKeys,
+    failedKeys,
+    skippedReason: undefined,
+    currentPaddleOcrResults,
+  }));
 }
 
 /**
@@ -2026,6 +2439,7 @@ module.exports = {
   getToolkitKey,
   loadAgentTools,
   loadToolsForExecution,
+  runSteelPaddleOcrPreflight,
   processRequiredActions,
   resolveAgentCapabilities,
 };

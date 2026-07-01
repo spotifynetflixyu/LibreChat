@@ -1,3 +1,68 @@
+# Active: Steel OCR preflight activity indicator
+
+Goal: surface automatic PaddleOCR preflight results in the existing Steel chat
+activity UI so users can see OCR save/partial/skipped status without relying on
+the AI to mention it.
+
+Status - 2026-07-01:
+
+- [x] Add failing backend tests for preflight event envelopes on completed,
+      partial, and skipped PaddleOCR preflight results.
+- [x] Emit preflight Steel activity events from both Responses and AgentClient
+      paths after automatic PaddleOCR preflight finishes.
+- [x] Emit MCP-style `on_run_step`, args delta, and completion events while
+      automatic PaddleOCR preflight is running.
+- [x] Keep PaddleOCR raw preflight data separate from
+      `read_markdown(scope: "ocr")`, while passing same-turn raw results into
+      Steel runtime context.
+- [x] Allow the frontend Steel activity handler/store to accept
+      `paddleocr_preflight` as a source.
+- [x] Add frontend tests proving preflight events render `PaddleOCR: n`.
+- [x] Fix duplicate preflight Parameters display by sending tool-call args only
+      through the delta event.
+- [x] Run targeted backend/frontend tests, package builds where needed, and
+      `git diff --check`.
+
+Review - 2026-07-01:
+
+- Automatic PaddleOCR preflight now streams MCP-style tool-call events before
+  the AI response: start, args delta, completion output, and error output are
+  emitted with stable preflight tool call ids.
+- Open Responses streaming initializes the SSE response before automatic
+  PaddleOCR preflight, so preflight tool-call events are visible while OCR is
+  running instead of being written before stream setup.
+- Raw PaddleOCR preflight saves use `memoryKind: "paddleocr_preflight"` and
+  `savedCounts.paddleocr_preflight`, so they do not enter
+  `derivedIndex.ocrExtracts` or `read_markdown(scope: "ocr")`.
+- Same-turn raw PaddleOCR results are passed through
+  `attachments.currentPaddleOcrResults`; follow-up turns still recover
+  organized OCR Markdown through `read_markdown(scope: "ocr")` when needed.
+- Chat Steel activity accepts and renders `paddleocr_preflight` separately as
+  `PaddleOCR: n`, while assistant-organized OCR Markdown remains `OCR: n`.
+- The duplicated Parameters UI was not two PaddleOCR calls. The synthetic
+  preflight start event and delta event both carried the same args, and the
+  frontend concatenated them. The start event now carries empty args, matching
+  normal streamed tool-call behavior, and the delta carries the JSON once.
+- Manual UI smoke uses a text-bearing engineering drawing image
+  `docs/reference/example/a.png`, not a decorative icon. The smoke conversation
+  showed `Ran paddleocr_vl in PaddleOCR`, `PaddleOCR preflight saved
+  PaddleOCR: 1`, and no adjacent duplicate parameter JSON.
+- Verification passed:
+  - `cd packages/data-schemas && rtk npx jest src/schema/steel.spec.ts --runInBand --watch=false --coverage=false --silent`
+  - `cd packages/data-schemas && rtk npm run build`
+  - `cd packages/api && rtk npx jest src/steel/native/events.spec.ts src/steel/native/context.spec.ts src/steel/memory/service.spec.ts src/steel/runtime/context.spec.ts --runInBand --watch=false --coverage=false --silent`
+  - `cd packages/api && rtk npm run build`
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --watch=false --coverage=false --silent`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --silent`
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/responses.unit.spec.js server/controllers/agents/client.test.js --runInBand --watch=false --coverage=false --silent`
+  - `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false --silent`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --silent` after the duplicate-args regression
+  - Local UI smoke at `http://localhost:3090/c/3644c2df-b2ed-4058-b31b-8c54261132ee?endpoint=openai_oauth_responses&model=gpt-5.5`
+    with `docs/reference/example/a.png`
+  - `rtk git diff --check`
+
+---
+
 # Active: Steel OCR preflight file-key dedupe
 
 Goal: make native Steel PDF/image turns deterministically run PaddleOCR once per
@@ -9,21 +74,40 @@ Status - 2026-07-01:
 - [x] Clarify that OCR dedupe must be per file/image, not per conversation turn.
 - [x] Confirm current `ocr_extract` does not reliably persist `file_id` or
       storage identity, so filename-only lookup is not sufficient.
-- [ ] Design a stable `ocrFileKey` contract for multiple current attachments:
+- [x] Design a stable `ocrFileKey` contract for multiple current attachments:
       `file_id` first, `storageKey` second, hash/filename fallback only when no
       stronger key exists.
-- [ ] Persist `ocrFileKey`, `fileId`, `storageKey`, `filename`, MIME/type, and
+- [x] Persist `ocrFileKey`, `fileId`, `storageKey`, `filename`, MIME/type, and
       page/image metadata with each `ocr_extract` payload or sourceRef.
-- [ ] Change OCR save/merge from conversation-wide replacement to per-file-key
+- [x] Change OCR save/merge from conversation-wide replacement to per-file-key
       replacement: updating one `ocrFileKey` must supersede only that file's
       active OCR rows and must not delete or replace other active file OCR.
-- [ ] Add a preflight query that returns missing OCR file keys for all current
+- [x] Add a preflight query that returns missing OCR file keys for all current
       OCR-capable attachments in one pass.
-- [ ] Enforce PaddleOCR for every missing current file/image before free-form AI
+- [x] Enforce PaddleOCR for every missing current file/image before free-form AI
       answering; skip only keys already present in active `ocr_extract`.
-- [ ] Add tests for multi-file turns: all new files OCR, mixed already/new OCR
+- [x] Add tests for multi-file turns: all new files OCR, mixed already/new OCR
       only for missing keys, all already OCR no rerun, and explicit rerun
       overwrites only the rerun file key's current OCR state.
+
+Review - 2026-07-01:
+
+- Added `ocrFileKey` metadata for OCR-capable current files: `fileId` first,
+  then `storageKey`, path, and filename fallback.
+- `ocr_extract` now distinguishes `ocrSource: "paddleocr_mcp"` from
+  `ocrSource: "assistant_ocr"`; assistant fallback OCR is saved for user
+  review but does not satisfy PaddleOCR dedupe.
+- PaddleOCR preflight runs before Steel runtime context construction in both
+  Open Responses and AgentClient paths, so newly saved PaddleOCR OCR can be
+  read into the same turn's runtime context.
+- Multi-file preflight only runs missing file keys, skips keys with active
+  PaddleOCR OCR, and captures failures without writing completed OCR state so
+  the next turn retries PaddleOCR.
+- OCR save/merge is key-scoped: rerunning or updating OCR for one file key does
+  not delete other active file OCR.
+- Updated and applied reviewed AI rules so "do not re-OCR" only applies when
+  the same file key already has active PaddleOCR MCP OCR; AI OCR fallback still
+  requires a PaddleOCR retry.
 
 Design notes:
 

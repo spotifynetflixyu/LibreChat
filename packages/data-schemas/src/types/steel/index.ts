@@ -13,6 +13,7 @@ export type SteelWorkingOrderMemoryKind =
   | 'price_evidence'
   | 'rule_evidence'
   | 'ocr_extract'
+  | 'paddleocr_preflight'
   | 'calculation_fact';
 export type SteelWorkingOrderMemorySourceKind =
   | 'assistant_final_markdown'
@@ -163,6 +164,10 @@ export interface SteelWorkingOrderMemorySourceRef {
   sourceKind: string;
   sourceId?: string;
   filename?: string;
+  fileId?: string;
+  storageKey?: string;
+  mediaType?: string;
+  ocrFileKey?: string;
   pageNumber?: number;
   imageIndex?: number;
   locator?: string;

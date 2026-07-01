@@ -16,6 +16,15 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_activity_state_saved') {
       return 'Steel quote state saved';
     }
+    if (key === 'com_ui_steel_activity_paddleocr_saved') {
+      return 'PaddleOCR preflight saved';
+    }
+    if (key === 'com_ui_steel_activity_paddleocr_partial') {
+      return 'PaddleOCR preflight partial';
+    }
+    if (key === 'com_ui_steel_activity_paddleocr_skipped') {
+      return 'PaddleOCR preflight skipped';
+    }
     if (key === 'com_ui_steel_activity_records_saved') {
       return `${options?.count ?? 0} records`;
     }
@@ -27,6 +36,9 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_activity_source_workbook') {
       return 'Workbook';
+    }
+    if (key === 'com_ui_steel_activity_source_paddleocr') {
+      return 'PaddleOCR';
     }
     return key;
   },
@@ -117,6 +129,55 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getByText('OCR: 1, Workbook: 2')).toBeInTheDocument();
+  });
+
+  it('renders PaddleOCR preflight saved activity with OCR source counts', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-preflight'), [
+            {
+              type: 'memory_saved',
+              source: 'paddleocr_preflight',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-preflight',
+              message: 'PaddleOCR preflight saved',
+              savedCounts: { paddleocr_preflight: 1 },
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-preflight" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('PaddleOCR preflight saved')).toBeInTheDocument();
+    expect(screen.getByText('PaddleOCR: 1')).toBeInTheDocument();
+  });
+
+  it('renders PaddleOCR preflight partial activity with OCR source counts', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-preflight-partial'), [
+            {
+              type: 'parse_status',
+              source: 'paddleocr_preflight',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-preflight-partial',
+              message: 'PaddleOCR preflight partial',
+              parseStatus: 'partial',
+              savedCounts: { paddleocr_preflight: 1 },
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-preflight-partial" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('PaddleOCR preflight partial')).toBeInTheDocument();
+    expect(screen.getByText('PaddleOCR: 1')).toBeInTheDocument();
   });
 
   it('does not render Steel activity on user messages', () => {

@@ -83,6 +83,7 @@ const { encodeAndFormat } = require('~/server/services/Files/images/encode');
 const { createContextHandlers } = require('~/app/clients/prompts');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPServerTools } = require('~/server/services/Config');
+const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
 const BaseClient = require('~/app/clients/BaseClient');
 const { getMCPManager } = require('~/config');
 const db = require('~/models');
@@ -642,14 +643,7 @@ class AgentClient extends BaseClient {
         ? toSteelNativeMessage(latestOrdered, this.conversationId)
         : undefined,
     });
-    const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
-      conversation: steelConversation,
-      attachments: {
-        currentTurnFiles: currentTurnSteelFileReferences,
-        priorActiveFileEvidence: [],
-      },
-      renderProfile: 'agent_client',
-    });
+    let paddleOcrPreflight;
     if (this.options.req) {
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
@@ -658,6 +652,34 @@ class AgentClient extends BaseClient {
         assistantTurnIndex: orderedMessages.length,
         memoryCheckpointTurnIndex: Math.max(0, orderedMessages.length - 1),
         currentTurnFiles: currentTurnSteelFileReferences,
+      };
+      paddleOcrPreflight = await runSteelPaddleOcrPreflight({
+        req: this.options.req,
+        res: this.options.res,
+        agent: this.options.agent,
+        signal: opts?.abortController?.signal,
+        streamId: this.options.req?._resumableStreamId || null,
+      });
+      this.options.req.steelNativeContext = {
+        ...(this.options.req.steelNativeContext ?? {}),
+        paddleOcrPreflight,
+      };
+    }
+    const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+      conversation: steelConversation,
+      attachments: {
+        currentTurnFiles: currentTurnSteelFileReferences,
+        ...(paddleOcrPreflight?.currentPaddleOcrResults?.length > 0
+          ? { currentPaddleOcrResults: paddleOcrPreflight.currentPaddleOcrResults }
+          : {}),
+        priorActiveFileEvidence: [],
+      },
+      renderProfile: 'agent_client',
+    });
+    if (this.options.req) {
+      this.options.req.steelNativeContext = {
+        ...(this.options.req.steelNativeContext ?? {}),
+        contextMetadata: steelNativeContext.metadata,
       };
     }
     if (steelNativeContext.runtimeContextText) {

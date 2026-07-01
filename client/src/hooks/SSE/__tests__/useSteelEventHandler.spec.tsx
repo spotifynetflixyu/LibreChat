@@ -125,7 +125,7 @@ describe('useSteelEventHandler', () => {
             toolName: 'run_file_ocr',
             providerToolCallId: 'call-ocr',
             message: 'Working Order Memory saved',
-            savedCounts: { ocr_extract: 1 },
+            savedCounts: { paddleocr_preflight: 1 },
           },
         },
         createSubmission('assistant-live'),
@@ -138,6 +138,37 @@ describe('useSteelEventHandler', () => {
         source: 'tool_result',
         toolName: 'run_file_ocr',
         providerToolCallId: 'call-ocr',
+        savedCounts: { paddleocr_preflight: 1 },
+      }),
+    ]);
+  });
+
+  it('stores PaddleOCR preflight activity under the current assistant response id', () => {
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: RecoilRoot,
+    });
+
+    act(() => {
+      result.current.steelEventHandler(
+        {
+          event: 'steel_event',
+          data: {
+            type: 'memory_saved',
+            source: 'paddleocr_preflight',
+            conversationId: 'conversation-1',
+            requestId: 'request-1',
+            message: 'PaddleOCR preflight saved',
+            savedCounts: { ocr_extract: 1 },
+          },
+        },
+        createSubmission('assistant-live'),
+      );
+    });
+
+    expect(result.current.activity).toEqual([
+      expect.objectContaining({
+        type: 'memory_saved',
+        source: 'paddleocr_preflight',
         savedCounts: { ocr_extract: 1 },
       }),
     ]);

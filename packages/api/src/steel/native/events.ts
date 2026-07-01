@@ -7,6 +7,7 @@ export const steelNativeStreamEventName = 'steel_event' as const;
 
 export type SteelNativeEventSource =
   | 'assistant_markdown'
+  | 'paddleocr_preflight'
   | 'responses_output'
   | 'tool_result';
 
@@ -43,6 +44,19 @@ export interface SteelNativeEventEnvelope {
 
 export interface BuildSteelNativeEventEnvelopesInput extends SteelNativeEventBase {
   capture: CaptureSteelNativeAssistantMarkdownResult | CaptureSteelNativeToolResultResult;
+}
+
+export interface SteelPaddleOcrPreflightActivityResult {
+  status: 'completed' | 'partial' | 'skipped';
+  completedKeys?: readonly string[];
+  attemptedKeys?: readonly string[];
+  failedKeys?: readonly string[];
+  skippedReason?: string;
+}
+
+export interface BuildSteelPaddleOcrPreflightEventEnvelopesInput
+  extends Omit<SteelNativeEventBase, 'source'> {
+  preflight: SteelPaddleOcrPreflightActivityResult;
 }
 
 function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is SteelNativeSavedCounts {
@@ -98,6 +112,67 @@ export function buildSteelNativeEventEnvelopes({
         type: 'memory_saved',
         message: 'Working Order Memory saved',
         savedCounts: capture.result.savedCounts,
+        ...eventBase,
+      },
+    });
+  }
+
+  return events;
+}
+
+function getPaddleOcrSavedCount(preflight: SteelPaddleOcrPreflightActivityResult): number {
+  const failedKeys = new Set(preflight.failedKeys ?? []);
+  return (preflight.attemptedKeys ?? []).filter((key) => !failedKeys.has(key)).length;
+}
+
+function getPaddleOcrParseStatus(
+  preflight: SteelPaddleOcrPreflightActivityResult,
+): SteelNativeParseStatusEvent['parseStatus'] | undefined {
+  if (preflight.status === 'completed') {
+    return undefined;
+  }
+
+  if (preflight.status === 'partial') {
+    return 'partial';
+  }
+
+  if (preflight.skippedReason === 'all_files_already_have_paddleocr') {
+    return 'skipped';
+  }
+
+  return undefined;
+}
+
+export function buildSteelPaddleOcrPreflightEventEnvelopes({
+  preflight,
+  ...input
+}: BuildSteelPaddleOcrPreflightEventEnvelopesInput): SteelNativeEventEnvelope[] {
+  const savedCount = getPaddleOcrSavedCount(preflight);
+  const parseStatus = getPaddleOcrParseStatus(preflight);
+  const eventBase = baseEvent({ ...input, source: 'paddleocr_preflight' });
+  const savedCounts = savedCount > 0 ? { paddleocr_preflight: savedCount } : undefined;
+  const events: SteelNativeEventEnvelope[] = [];
+
+  if (parseStatus) {
+    events.push({
+      event: steelNativeStreamEventName,
+      data: {
+        type: 'parse_status',
+        message: `PaddleOCR preflight ${parseStatus}`,
+        parseStatus,
+        ...(savedCounts ? { savedCounts } : {}),
+        ...eventBase,
+      },
+    });
+  }
+
+  if (savedCounts) {
+    events.push({
+      event: steelNativeStreamEventName,
+      data: {
+        type: 'memory_saved',
+        message: 'PaddleOCR preflight saved',
+        savedCounts,
         ...eventBase,
       },
     });

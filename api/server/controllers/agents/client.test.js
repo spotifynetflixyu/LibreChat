@@ -1,5 +1,18 @@
 const { Providers } = require('@librechat/agents');
 const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
+
+const mockRunSteelPaddleOcrPreflight = jest.fn().mockResolvedValue({
+  status: 'skipped',
+  completedKeys: [],
+  attemptedKeys: [],
+  failedKeys: [],
+  skippedReason: 'no_current_files',
+  currentPaddleOcrResults: [],
+});
+jest.mock('~/server/services/ToolService', () => ({
+  runSteelPaddleOcrPreflight: (...args) => mockRunSteelPaddleOcrPreflight(...args),
+}));
+
 const AgentClient = require('./client');
 
 jest.mock('@librechat/agents', () => ({
@@ -2053,6 +2066,16 @@ describe('AgentClient - titleConvo', () => {
         messageId: 'msg-1',
         filename: 'drawing.pdf',
       };
+      expect(mockRunSteelPaddleOcrPreflight).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req: mockReq,
+          res: mockRes,
+          agent: mockAgent,
+        }),
+      );
+      expect(mockRunSteelPaddleOcrPreflight.mock.invocationCallOrder[0]).toBeLessThan(
+        buildDefaultSteelGlobalAgentContext.mock.invocationCallOrder[0],
+      );
       expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
         expect.objectContaining({
           attachments: {

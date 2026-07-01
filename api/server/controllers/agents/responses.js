@@ -61,7 +61,11 @@ const {
   createToolEndCallback,
   agentLogHandlerObj,
 } = require('~/server/controllers/agents/callbacks');
-const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
+const {
+  loadAgentTools,
+  loadToolsForExecution,
+  runSteelPaddleOcrPreflight,
+} = require('~/server/services/ToolService');
 const {
   findAccessibleResources,
   getEffectivePermissions,
@@ -416,6 +420,7 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
     responseId,
     turnIndex: req.steelNativeContext?.assistantTurnIndex,
     checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
+    currentTurnFiles: req.steelNativeContext?.currentTurnFiles,
     response,
   });
 
@@ -824,6 +829,22 @@ const createResponse = async (req, res) => {
     // Merge previous messages with new input
     const allMessages = [...previousMessages, ...inputMessages];
     const assistantTurnIndex = allMessages.length;
+    const tracker = actuallyStreaming ? createResponseTracker() : null;
+    const aggregator = actuallyStreaming ? null : createResponseAggregator();
+    const handlerConfig = actuallyStreaming
+      ? {
+          res,
+          context,
+          tracker,
+        }
+      : null;
+
+    if (handlerConfig) {
+      setupStreamingResponse(res);
+      emitResponseCreated(handlerConfig);
+      emitResponseInProgress(handlerConfig);
+    }
+
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
       conversationId,
@@ -834,6 +855,18 @@ const createResponse = async (req, res) => {
       store: shouldStoreResponse,
       providerStateMode: 'openai_responses_reconstructed',
       currentTurnFiles,
+    };
+    const paddleOcrPreflight = await runSteelPaddleOcrPreflight({
+      req,
+      res,
+      agent: primaryConfig,
+      signal: abortController.signal,
+      streamId: req._resumableStreamId || null,
+      userMCPAuthMap: mergedMCPAuthMap,
+    });
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      paddleOcrPreflight,
     };
     const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(allMessages);
     if (currentUserTurn && currentTurnFiles.length > 0) {
@@ -847,7 +880,16 @@ const createResponse = async (req, res) => {
     });
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
-      ...(currentTurnFiles.length > 0 ? { attachments: { currentTurnFiles } } : {}),
+      ...(currentTurnFiles.length > 0 || paddleOcrPreflight.currentPaddleOcrResults.length > 0
+        ? {
+            attachments: {
+              ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
+              ...(paddleOcrPreflight.currentPaddleOcrResults.length > 0
+                ? { currentPaddleOcrResults: paddleOcrPreflight.currentPaddleOcrResults }
+                : {}),
+            },
+          }
+        : {}),
       renderProfile: 'open_responses',
     });
     req.steelNativeContext = {
@@ -917,25 +959,7 @@ const createResponse = async (req, res) => {
        agent's `tools` list includes `execute_code`) — a skills-only
        agent never gains sandbox access even if the admin enabled the
        capability globally. */
-    // Create tracker for streaming or aggregator for non-streaming
-    const tracker = actuallyStreaming ? createResponseTracker() : null;
-    const aggregator = actuallyStreaming ? null : createResponseAggregator();
-
-    // Set up response for streaming
     if (actuallyStreaming) {
-      setupStreamingResponse(res);
-
-      // Create handler config
-      const handlerConfig = {
-        res,
-        context,
-        tracker,
-      };
-
-      // Emit response.created then response.in_progress per Open Responses spec
-      emitResponseCreated(handlerConfig);
-      emitResponseInProgress(handlerConfig);
-
       // Create event handlers
       const { handlers: responsesHandlers, finalizeStream } =
         createResponsesEventHandlers(handlerConfig);

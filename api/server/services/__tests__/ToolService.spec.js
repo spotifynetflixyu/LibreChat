@@ -7,6 +7,9 @@ const {
   actionDelimiter,
   AgentCapabilities,
   defaultAgentCapabilities,
+  StepEvents,
+  StepTypes,
+  ToolCallTypes,
 } = require('librechat-data-provider');
 
 const mockGetEndpointsConfig = jest.fn();
@@ -27,6 +30,19 @@ const mockCaptureSteelNativeToolResult = jest.fn().mockResolvedValue({
   status: 'skipped',
   reason: 'missing_conversation_id',
 });
+const mockFindMissingPaddleOcrFileKeys = jest.fn();
+const mockCapturePaddleOcrResult = jest.fn();
+const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
+  {
+    event: 'steel_event',
+    data: {
+      type: 'memory_saved',
+      source: 'paddleocr_preflight',
+      message: 'PaddleOCR preflight saved',
+      savedCounts: { paddleocr_preflight: 1 },
+    },
+  },
+]);
 const mockResolveEvidenceFileForProvider = jest.fn();
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
@@ -37,6 +53,8 @@ jest.mock('@librechat/api', () => ({
   createMongooseSteelOutputSheetMemoryReader: jest.fn(() => ({ readOutputSheetMemory: jest.fn() })),
   createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({
     captureToolResult: jest.fn(),
+    findMissingPaddleOcrFileKeys: (...args) => mockFindMissingPaddleOcrFileKeys(...args),
+    capturePaddleOcrResult: (...args) => mockCapturePaddleOcrResult(...args),
   })),
   createSteelNativeTool: ({ nativeToolName, steelToolName, execute }) => ({
     name: nativeToolName,
@@ -49,6 +67,8 @@ jest.mock('@librechat/api', () => ({
   }),
   executeSteelTool: (...args) => mockExecuteSteelTool(...args),
   captureSteelNativeToolResult: (...args) => mockCaptureSteelNativeToolResult(...args),
+  buildSteelPaddleOcrPreflightEventEnvelopes: (...args) =>
+    mockBuildSteelPaddleOcrPreflightEventEnvelopes(...args),
   resolveSteelProviderToolName: (name) => {
     const normalized = name.startsWith('steel_') ? name.slice('steel_'.length) : name;
     return ['search_customers', 'search_price_candidates', 'read_markdown'].includes(normalized)
@@ -130,6 +150,7 @@ const {
   loadAgentTools,
   loadToolsForExecution,
   processRequiredActions,
+  runSteelPaddleOcrPreflight,
   resolveAgentCapabilities,
 } = require('../ToolService');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
@@ -196,6 +217,12 @@ describe('ToolService - Action Capability Gating', () => {
     mockGetServerConfig.mockResolvedValue(undefined);
     mockFlowManager.getFlowState.mockResolvedValue(undefined);
     mockResolveConfigServers.mockResolvedValue({});
+    mockFindMissingPaddleOcrFileKeys.mockResolvedValue({
+      completedKeys: [],
+      missingFiles: [],
+      missingKeys: [],
+    });
+    mockCapturePaddleOcrResult.mockResolvedValue({ savedCounts: { paddleocr_preflight: 1 } });
     mockExecuteSteelTool.mockResolvedValue({
       ok: true,
       toolName: 'search_customers',
@@ -429,6 +456,296 @@ describe('ToolService - Action Capability Gating', () => {
           `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR`,
         ]),
       );
+    });
+
+    it('preflights PaddleOCR only for current files missing active PaddleOCR OCR', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
+          { fileId: 'file-b', filename: 'b.png', mediaType: 'image/png' },
+          { fileId: 'file-c', filename: 'c.pdf', mediaType: 'application/pdf' },
+        ],
+      };
+      const paddleInvoke = jest
+        .fn()
+        .mockResolvedValueOnce({ text: 'B OCR' })
+        .mockResolvedValueOnce({ text: 'C OCR' });
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: ['file:file-a'],
+        missingFiles: [
+          { ocrFileKey: 'file:file-b', fileId: 'file-b', filename: 'b.png', mediaType: 'image/png' },
+          { ocrFileKey: 'file:file-c', fileId: 'file-c', filename: 'c.pdf', mediaType: 'application/pdf' },
+        ],
+        missingKeys: ['file:file-b', 'file:file-c'],
+      });
+      mockLoadToolsUtil.mockResolvedValueOnce({
+        loadedTools: [
+          {
+            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+            invoke: paddleInvoke,
+          },
+        ],
+        toolContextMap: {},
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+      const emittedEvents = mockEmitChunk.mock.calls.map(([, event]) => event);
+
+      expect(mockFindMissingPaddleOcrFileKeys).toHaveBeenCalledWith({
+        conversationId: 'convo-1',
+        files: req.steelNativeContext.currentTurnFiles,
+      });
+      expect(emittedEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: StepEvents.ON_RUN_STEP,
+            data: expect.objectContaining({
+              id: 'steel_paddleocr_preflight_file_file-b_step',
+              runId: 'resp-1',
+              type: StepTypes.TOOL_CALLS,
+              stepDetails: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [
+                  expect.objectContaining({
+                    id: 'steel_paddleocr_preflight_file_file-b',
+                    name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+                    args: '',
+                    type: ToolCallTypes.TOOL_CALL,
+                  }),
+                ],
+              },
+            }),
+          }),
+          expect.objectContaining({
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'steel_paddleocr_preflight_file_file-b_step',
+                index: 0,
+                tool_call: expect.objectContaining({
+                  id: 'steel_paddleocr_preflight_file_file-b',
+                  name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+                  output: JSON.stringify({ text: 'B OCR' }),
+                  progress: 1,
+                  type: ToolCallTypes.TOOL_CALL,
+                }),
+              },
+            },
+          }),
+          expect.objectContaining({
+            event: StepEvents.ON_RUN_STEP_DELTA,
+            data: {
+              id: 'steel_paddleocr_preflight_file_file-b_step',
+              delta: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'steel_paddleocr_preflight_file_file-b',
+                    name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+                    args: JSON.stringify({
+                      input_data: 'file-b',
+                      output_mode: 'detailed',
+                      return_images: false,
+                    }),
+                    type: ToolCallTypes.TOOL_CALL,
+                  },
+                ],
+              },
+            },
+          }),
+          {
+            event: 'steel_event',
+            data: {
+              type: 'memory_saved',
+              source: 'paddleocr_preflight',
+              message: 'PaddleOCR preflight saved',
+              savedCounts: { paddleocr_preflight: 1 },
+            },
+          },
+        ]),
+      );
+      expect(paddleInvoke.mock.calls.map(([args]) => args)).toEqual([
+        { input_data: 'file-b', output_mode: 'detailed', return_images: false },
+        { input_data: 'file-c', output_mode: 'detailed', return_images: false },
+      ]);
+      expect(mockCapturePaddleOcrResult.mock.calls.map(([input]) => ({
+        providerToolCallId: input.providerToolCallId,
+        file: input.file,
+        data: input.data,
+      }))).toEqual([
+        {
+          providerToolCallId: 'steel_paddleocr_preflight_file_file-b',
+          file: {
+            ocrFileKey: 'file:file-b',
+            fileId: 'file-b',
+            filename: 'b.png',
+            mediaType: 'image/png',
+          },
+          data: { text: 'B OCR' },
+        },
+        {
+          providerToolCallId: 'steel_paddleocr_preflight_file_file-c',
+          file: {
+            ocrFileKey: 'file:file-c',
+            fileId: 'file-c',
+            filename: 'c.pdf',
+            mediaType: 'application/pdf',
+          },
+          data: { text: 'C OCR' },
+        },
+      ]);
+      expect(result).toEqual({
+        status: 'completed',
+        completedKeys: ['file:file-a', 'file:file-b', 'file:file-c'],
+        attemptedKeys: ['file:file-b', 'file:file-c'],
+        failedKeys: [],
+        skippedReason: undefined,
+        currentPaddleOcrResults: [
+          {
+            ocrFileKey: 'file:file-b',
+            fileId: 'file-b',
+            filename: 'b.png',
+            mediaType: 'image/png',
+            ocrSource: 'paddleocr_mcp',
+            result: { text: 'B OCR' },
+          },
+          {
+            ocrFileKey: 'file:file-c',
+            fileId: 'file-c',
+            filename: 'c.pdf',
+            mediaType: 'application/pdf',
+            ocrSource: 'paddleocr_mcp',
+            result: { text: 'C OCR' },
+          },
+        ],
+      });
+    });
+
+    it('skips PaddleOCR preflight tool loading when every current file already has PaddleOCR OCR', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
+        ],
+      };
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: ['file:file-a'],
+        missingFiles: [],
+        missingKeys: [],
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        status: 'skipped',
+        completedKeys: ['file:file-a'],
+        attemptedKeys: [],
+        failedKeys: [],
+        skippedReason: 'all_files_already_have_paddleocr',
+        currentPaddleOcrResults: [],
+      });
+    });
+
+    it('does not save PaddleOCR preflight failures as completed OCR', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-fallback', filename: 'fallback.pdf', mediaType: 'application/pdf' },
+        ],
+      };
+      const paddleInvoke = jest.fn().mockRejectedValueOnce(new Error('provider timeout'));
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: [],
+        missingFiles: [
+          {
+            ocrFileKey: 'file:file-fallback',
+            fileId: 'file-fallback',
+            filename: 'fallback.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+        missingKeys: ['file:file-fallback'],
+      });
+      mockLoadToolsUtil.mockResolvedValueOnce({
+        loadedTools: [
+          {
+            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+            invoke: paddleInvoke,
+          },
+        ],
+        toolContextMap: {},
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+      const emittedEvents = mockEmitChunk.mock.calls.map(([, event]) => event);
+
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(emittedEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: StepEvents.ON_RUN_STEP,
+            data: expect.objectContaining({
+              id: 'steel_paddleocr_preflight_file_file-fallback_step',
+              runId: 'resp-1',
+            }),
+          }),
+          expect.objectContaining({
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'steel_paddleocr_preflight_file_file-fallback_step',
+                index: 0,
+                tool_call: expect.objectContaining({
+                  id: 'steel_paddleocr_preflight_file_file-fallback',
+                  output: expect.stringContaining('provider timeout'),
+                  progress: 1,
+                }),
+              },
+            },
+          }),
+        ]),
+      );
+      expect(result).toEqual({
+        status: 'partial',
+        completedKeys: [],
+        attemptedKeys: ['file:file-fallback'],
+        failedKeys: ['file:file-fallback'],
+        skippedReason: undefined,
+        currentPaddleOcrResults: [],
+      });
     });
 
     it('should filter MCP tool definitions when user lacks MCP server use permission', async () => {

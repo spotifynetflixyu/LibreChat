@@ -11,7 +11,12 @@ type MaybeSteelNativeActivityEnvelope = Partial<SteelNativeActivityEnvelope> & {
 };
 
 const steelActivityEventTypes = new Set(['parse_status', 'memory_saved']);
-const steelActivitySources = new Set(['assistant_markdown', 'responses_output', 'tool_result']);
+const steelActivitySources = new Set([
+  'assistant_markdown',
+  'paddleocr_preflight',
+  'responses_output',
+  'tool_result',
+]);
 
 function isSavedCounts(value: unknown): value is Record<string, number> {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) {

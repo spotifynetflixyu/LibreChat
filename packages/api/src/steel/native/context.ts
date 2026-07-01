@@ -83,6 +83,7 @@ export interface SteelNativeConversationInput {
 
 export interface SteelNativeContextAttachmentsInput {
   currentTurnFiles?: readonly SteelNativeFileReference[];
+  currentPaddleOcrResults?: readonly SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 }
 
@@ -506,6 +507,10 @@ export async function buildSteelGlobalAgentContext({
   const preparedRuntimeContext = await prepareRuntimeContext({
     conversation: toRuntimeConversationInput(conversation),
     attachments: {
+      currentPaddleOcrResults:
+        attachments?.currentPaddleOcrResults !== undefined
+          ? [...attachments.currentPaddleOcrResults]
+          : undefined,
       priorActiveFileEvidence:
         attachments?.priorActiveFileEvidence !== undefined
           ? [...attachments.priorActiveFileEvidence]

@@ -106,6 +106,7 @@ describe('Steel Mongo schemas', () => {
       'price_evidence',
       'rule_evidence',
       'ocr_extract',
+      'paddleocr_preflight',
       'calculation_fact',
     ]);
     expect(SteelWorkingOrderMemory.schema.path('sourceKind').options.enum).toEqual([

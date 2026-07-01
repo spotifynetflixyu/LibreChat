@@ -28,6 +28,7 @@ export interface CaptureAssistantFinalMarkdownInput {
   turnIndex: number;
   checkpointTurnIndex: number;
   content: string;
+  currentTurnFiles?: readonly SteelOcrFileReference[];
 }
 
 export interface CaptureAssistantFinalMarkdownResult {
@@ -49,6 +50,62 @@ export interface CaptureToolResultResult {
   savedCounts: { [key: string]: number };
 }
 
+export type SteelOcrSource = 'assistant_ocr' | 'paddleocr_mcp';
+
+export interface SteelOcrFileReference {
+  fileId?: string;
+  file_id?: string;
+  id?: string;
+  storageKey?: string;
+  storage_key?: string;
+  filepath?: string;
+  path?: string;
+  filename?: string;
+  name?: string;
+  originalname?: string;
+  mediaType?: string;
+  type?: string;
+  mimeType?: string;
+  mimetype?: string;
+  pageNumber?: number;
+  imageIndex?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface SteelOcrFileDescriptor {
+  ocrFileKey: string;
+  fileId?: string;
+  storageKey?: string;
+  filename?: string;
+  mediaType?: string;
+  pageNumber?: number;
+  imageIndex?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface FindMissingPaddleOcrFileKeysInput {
+  conversationId: string;
+  files: readonly SteelOcrFileReference[];
+}
+
+export interface FindMissingPaddleOcrFileKeysResult {
+  completedKeys: string[];
+  missingFiles: SteelOcrFileDescriptor[];
+  missingKeys: string[];
+}
+
+export interface CapturePaddleOcrResultInput {
+  conversationId: string;
+  requestId?: string;
+  providerToolCallId?: string;
+  turnIndex: number;
+  checkpointTurnIndex: number;
+  file: SteelOcrFileReference;
+  data: unknown;
+}
+
 interface SteelWorkingOrderMemoryDocument {
   _id?: unknown;
   memoryKind: string;
@@ -61,6 +118,10 @@ interface SteelWorkingOrderMemoryDocument {
     sourceKind: string;
     sourceId?: string;
     filename?: string;
+    fileId?: string;
+    storageKey?: string;
+    mediaType?: string;
+    ocrFileKey?: string;
     pageNumber?: number;
     imageIndex?: number;
     locator?: string;
@@ -71,6 +132,10 @@ interface MemorySourceRef {
   sourceKind: string;
   sourceId?: string;
   filename?: string;
+  fileId?: string;
+  storageKey?: string;
+  mediaType?: string;
+  ocrFileKey?: string;
   pageNumber?: number;
   imageIndex?: number;
   locator?: string;
@@ -255,6 +320,97 @@ function isOcrTable(headers: readonly string[]): boolean {
   return signalCount >= 2;
 }
 
+function getFirstText(values: readonly (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function normalizeOcrLookupValue(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? '';
+}
+
+function normalizeOcrFilename(value: string | undefined): string {
+  const lookupValue = normalizeOcrLookupValue(value).replace(/\\/gu, '/').split(/[?#]/u)[0];
+  return lookupValue.split('/').filter((part) => part !== '').pop() ?? lookupValue;
+}
+
+export function isSteelOcrCapableFile(file: SteelOcrFileReference): boolean {
+  const mediaType = normalizeOcrLookupValue(
+    getFirstText([file.mediaType, file.type, file.mimeType, file.mimetype]),
+  );
+  const filename = normalizeOcrFilename(
+    getFirstText([file.filename, file.name, file.originalname, file.filepath, file.path]),
+  );
+
+  return (
+    mediaType === 'application/pdf' ||
+    mediaType.startsWith('image/') ||
+    /\.(pdf|png|jpe?g|webp|bmp|gif|tiff?)$/iu.test(filename)
+  );
+}
+
+export function getSteelOcrFileDescriptor(
+  file: SteelOcrFileReference,
+): SteelOcrFileDescriptor | undefined {
+  if (!isSteelOcrCapableFile(file)) {
+    return undefined;
+  }
+
+  const fileId = getFirstText([file.fileId, file.file_id, file.id]);
+  const storageKey = getFirstText([file.storageKey, file.storage_key]);
+  const pathKey = getFirstText([file.filepath, file.path]);
+  const filename = getFirstText([file.filename, file.name, file.originalname]);
+  const mediaType = getFirstText([file.mediaType, file.type, file.mimeType, file.mimetype]);
+  const ocrFileKey =
+    fileId !== undefined
+      ? `file:${fileId}`
+      : storageKey !== undefined
+        ? `storage:${storageKey}`
+        : pathKey !== undefined
+          ? `path:${pathKey}`
+          : filename !== undefined
+            ? `filename:${normalizeOcrFilename(filename)}`
+            : undefined;
+
+  if (ocrFileKey === undefined) {
+    return undefined;
+  }
+
+  return {
+    ocrFileKey,
+    ...(fileId !== undefined ? { fileId } : {}),
+    ...(storageKey !== undefined ? { storageKey } : {}),
+    ...(filename !== undefined ? { filename } : {}),
+    ...(mediaType !== undefined ? { mediaType } : {}),
+    ...(file.pageNumber !== undefined ? { pageNumber: file.pageNumber } : {}),
+    ...(file.imageIndex !== undefined ? { imageIndex: file.imageIndex } : {}),
+    ...(file.width !== undefined ? { width: file.width } : {}),
+    ...(file.height !== undefined ? { height: file.height } : {}),
+  };
+}
+
+function getUniqueOcrFileDescriptors(
+  files: readonly SteelOcrFileReference[] | undefined,
+): SteelOcrFileDescriptor[] {
+  const descriptors: SteelOcrFileDescriptor[] = [];
+  const seen = new Set<string>();
+
+  for (const file of files ?? []) {
+    const descriptor = getSteelOcrFileDescriptor(file);
+    if (!descriptor || seen.has(descriptor.ocrFileKey)) {
+      continue;
+    }
+    seen.add(descriptor.ocrFileKey);
+    descriptors.push(descriptor);
+  }
+
+  return descriptors;
+}
+
 function parseNumber(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === '') {
     return undefined;
@@ -409,14 +565,68 @@ function renderMarkdownTable(headers: readonly string[], rows: readonly string[]
   ].join('\n');
 }
 
+function descriptorMatchesTable(
+  descriptor: SteelOcrFileDescriptor,
+  rows: readonly string[][],
+): boolean {
+  const tableText = rows.flat().map(normalizeOcrLookupValue).join('\n');
+  const filename = normalizeOcrFilename(descriptor.filename);
+  const candidates = [descriptor.fileId, filename].filter(
+    (value): value is string => value !== undefined && value !== '',
+  );
+
+  return candidates.some((candidate) => tableText.includes(normalizeOcrLookupValue(candidate)));
+}
+
+function getOcrDescriptorsForTable({
+  rows,
+  currentTurnFiles,
+}: {
+  rows: readonly string[][];
+  currentTurnFiles?: readonly SteelOcrFileReference[];
+}): SteelOcrFileDescriptor[] {
+  const descriptors = getUniqueOcrFileDescriptors(currentTurnFiles);
+  if (descriptors.length <= 1) {
+    return descriptors;
+  }
+
+  return descriptors.filter((descriptor) => descriptorMatchesTable(descriptor, rows));
+}
+
+function toOcrFileMetadataPayload(descriptor: SteelOcrFileDescriptor): SteelJsonObject {
+  return {
+    ocrFileKey: descriptor.ocrFileKey,
+    ...(descriptor.fileId !== undefined ? { fileId: descriptor.fileId } : {}),
+    ...(descriptor.storageKey !== undefined ? { storageKey: descriptor.storageKey } : {}),
+    ...(descriptor.filename !== undefined ? { filename: descriptor.filename } : {}),
+    ...(descriptor.mediaType !== undefined ? { mediaType: descriptor.mediaType } : {}),
+    ...(descriptor.pageNumber !== undefined ? { pageNumber: descriptor.pageNumber } : {}),
+    ...(descriptor.imageIndex !== undefined ? { imageIndex: descriptor.imageIndex } : {}),
+    ...(descriptor.width !== undefined ? { width: descriptor.width } : {}),
+    ...(descriptor.height !== undefined ? { height: descriptor.height } : {}),
+  };
+}
+
 function toOcrMarkdownPayload(
   headers: readonly string[],
   rows: readonly string[][],
   tableIndex: number,
   title: string,
+  descriptors: readonly SteelOcrFileDescriptor[],
 ): SteelJsonObject {
+  const singleDescriptor = descriptors.length === 1 ? descriptors[0] : undefined;
+
   return {
     kind: 'assistant_ocr_markdown',
+    ocrSource: 'assistant_ocr',
+    ocrEngine: 'assistant',
+    ...(singleDescriptor !== undefined ? toOcrFileMetadataPayload(singleDescriptor) : {}),
+    ...(descriptors.length > 1
+      ? {
+          ocrFileKeys: descriptors.map((descriptor) => descriptor.ocrFileKey),
+          files: descriptors.map(toOcrFileMetadataPayload),
+        }
+      : {}),
     tableIndex,
     title,
     headers: [...headers],
@@ -440,12 +650,17 @@ function incrementSavedCount(savedCounts: { [key: string]: number }, key: string
   savedCounts[key] = (savedCounts[key] ?? 0) + count;
 }
 
-function createSourceRef(messageId: string, locator: string) {
+function createSourceRef(
+  messageId: string,
+  locator: string,
+  descriptor?: SteelOcrFileDescriptor,
+) {
   return [
     {
       sourceKind: 'assistant_final_markdown',
       sourceId: messageId,
       locator,
+      ...(descriptor !== undefined ? toOcrFileMetadataPayload(descriptor) : {}),
     },
   ];
 }
@@ -501,6 +716,43 @@ function getNumberProperty(value: SteelJsonValue, key: string): number | undefin
   return typeof property === 'number' ? property : undefined;
 }
 
+function getOcrDescriptorFromPayload(
+  payload: SteelJsonObject,
+): SteelOcrFileDescriptor | undefined {
+  const ocrFileKey = getStringProperty(payload, 'ocrFileKey');
+  if (ocrFileKey === undefined) {
+    return undefined;
+  }
+
+  return {
+    ocrFileKey,
+    ...(getStringProperty(payload, 'fileId') !== undefined
+      ? { fileId: getStringProperty(payload, 'fileId') }
+      : {}),
+    ...(getStringProperty(payload, 'storageKey') !== undefined
+      ? { storageKey: getStringProperty(payload, 'storageKey') }
+      : {}),
+    ...(getStringProperty(payload, 'filename') !== undefined
+      ? { filename: getStringProperty(payload, 'filename') }
+      : {}),
+    ...(getStringProperty(payload, 'mediaType') !== undefined
+      ? { mediaType: getStringProperty(payload, 'mediaType') }
+      : {}),
+    ...(getNumberProperty(payload, 'pageNumber') !== undefined
+      ? { pageNumber: getNumberProperty(payload, 'pageNumber') }
+      : {}),
+    ...(getNumberProperty(payload, 'imageIndex') !== undefined
+      ? { imageIndex: getNumberProperty(payload, 'imageIndex') }
+      : {}),
+    ...(getNumberProperty(payload, 'width') !== undefined
+      ? { width: getNumberProperty(payload, 'width') }
+      : {}),
+    ...(getNumberProperty(payload, 'height') !== undefined
+      ? { height: getNumberProperty(payload, 'height') }
+      : {}),
+  };
+}
+
 function toMemorySourceRefs({
   providerToolCallId,
   sourceRefs,
@@ -517,6 +769,10 @@ function toMemorySourceRefs({
         .join(':') || 'tool_result',
       sourceId: providerToolCallId,
       filename: getStringProperty(ref, 'filename') ?? getStringProperty(ref, 'sourceFile'),
+      fileId: getStringProperty(ref, 'fileId') ?? getStringProperty(ref, 'file_id'),
+      storageKey: getStringProperty(ref, 'storageKey') ?? getStringProperty(ref, 'storage_key'),
+      mediaType: getStringProperty(ref, 'mediaType') ?? getStringProperty(ref, 'mimeType'),
+      ocrFileKey: getStringProperty(ref, 'ocrFileKey'),
       pageNumber: getNumberProperty(ref, 'pageNumber') ?? getNumberProperty(ref, 'page'),
       imageIndex: getNumberProperty(ref, 'imageIndex'),
       locator: getStringProperty(ref, 'locator'),
@@ -643,7 +899,11 @@ function createMemoryDocuments(input: {
     state: 'active',
     summary: input.summaryForPayload(payload),
     payload,
-    sourceRefs: createSourceRef(input.messageId, `${input.locatorPrefix},row:${index + 1}`),
+    sourceRefs: createSourceRef(
+      input.messageId,
+      `${input.locatorPrefix},row:${index + 1}`,
+      getOcrDescriptorFromPayload(payload),
+    ),
   }));
 }
 
@@ -700,6 +960,33 @@ async function replaceActiveMarkdownRows({
       locatorPrefix,
     }),
   );
+}
+
+function getAssistantOcrReplacementFilter(
+  ocrFileKey: string | undefined,
+): FilterQuery<ISteelWorkingOrderMemory> {
+  return {
+    ...(ocrFileKey !== undefined
+      ? { 'payload.ocrFileKey': ocrFileKey }
+      : { 'payload.ocrFileKey': { $exists: false } }),
+    $or: [
+      { 'payload.ocrSource': 'assistant_ocr' },
+      { 'payload.ocrSource': { $exists: false } },
+    ],
+  };
+}
+
+function groupOcrPayloadsByFileKey(
+  payloads: readonly SteelJsonObject[],
+): Map<string, SteelJsonObject[]> {
+  const groups = new Map<string, SteelJsonObject[]>();
+
+  for (const payload of payloads) {
+    const key = getStringProperty(payload, 'ocrFileKey') ?? '';
+    groups.set(key, [...(groups.get(key) ?? []), payload]);
+  }
+
+  return groups;
 }
 
 function hasSimpleSequentialItemNumbers(payloads: readonly SteelJsonObject[]): boolean {
@@ -823,6 +1110,55 @@ function toOutputSheetMemorySnapshot(
   };
 }
 
+function getPaddleOcrSummary(payload: SteelJsonObject): string {
+  const filename = getStringProperty(payload, 'filename');
+  const result = isJsonObject(payload.result) ? payload.result : undefined;
+  const text =
+    (result ? getStringProperty(result, 'text') : undefined) ??
+    (result ? getStringProperty(result, 'markdown') : undefined) ??
+    getFactSummary(payload);
+
+  return ['PaddleOCR', filename, text?.replace(/\s+/gu, ' ').slice(0, 100)]
+    .filter((entry): entry is string => entry !== undefined && entry.trim() !== '')
+    .join(' ');
+}
+
+function createPaddleOcrPayload({
+  file,
+  data,
+}: Pick<CapturePaddleOcrResultInput, 'file' | 'data'>): SteelJsonObject | undefined {
+  const descriptor = getSteelOcrFileDescriptor(file);
+  if (!descriptor) {
+    return undefined;
+  }
+
+  return {
+    kind: 'paddleocr_mcp_result',
+    ocrSource: 'paddleocr_mcp',
+    ocrEngine: 'paddleocr_vl',
+    ...toOcrFileMetadataPayload(descriptor),
+    result: toBoundedJsonValue(data),
+  };
+}
+
+function createPaddleOcrSourceRef({
+  providerToolCallId,
+  payload,
+}: {
+  providerToolCallId?: string;
+  payload: SteelJsonObject;
+}): MemorySourceRef[] {
+  const descriptor = getOcrDescriptorFromPayload(payload);
+
+  return [
+    {
+      sourceKind: 'paddleocr_mcp',
+      sourceId: providerToolCallId,
+      ...(descriptor !== undefined ? toOcrFileMetadataPayload(descriptor) : {}),
+    },
+  ];
+}
+
 export function createMongooseSteelWorkingOrderMemoryReader(
   mongoose: Mongoose,
   conversationId: string,
@@ -911,6 +1247,81 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
       };
     },
 
+    async findMissingPaddleOcrFileKeys({
+      conversationId,
+      files,
+    }: FindMissingPaddleOcrFileKeysInput): Promise<FindMissingPaddleOcrFileKeysResult> {
+      const descriptors = getUniqueOcrFileDescriptors(files);
+      const keys = descriptors.map((descriptor) => descriptor.ocrFileKey);
+      if (keys.length === 0) {
+        return {
+          completedKeys: [],
+          missingFiles: [],
+          missingKeys: [],
+        };
+      }
+
+      const documents = await SteelWorkingOrderMemory.find({
+        conversationId,
+        state: 'active',
+        memoryKind: 'paddleocr_preflight',
+        'payload.ocrFileKey': { $in: keys },
+        'payload.ocrSource': 'paddleocr_mcp',
+      }).lean<SteelWorkingOrderMemoryDocument[]>();
+      const completedSet = new Set(
+        documents
+          .map((document) =>
+            isJsonObject(document.payload)
+              ? getStringProperty(document.payload, 'ocrFileKey')
+              : undefined,
+          )
+          .filter((key): key is string => key !== undefined),
+      );
+      const missingFiles = descriptors.filter(
+        (descriptor) => !completedSet.has(descriptor.ocrFileKey),
+      );
+
+      return {
+        completedKeys: keys.filter((key) => completedSet.has(key)),
+        missingFiles,
+        missingKeys: missingFiles.map((descriptor) => descriptor.ocrFileKey),
+      };
+    },
+
+    async capturePaddleOcrResult(
+      input: CapturePaddleOcrResultInput,
+    ): Promise<CaptureToolResultResult> {
+      const payload = createPaddleOcrPayload(input);
+      if (!payload) {
+        return { savedCounts: {} };
+      }
+
+      await SteelWorkingOrderMemory.deleteMany({
+        conversationId: input.conversationId,
+        memoryKind: 'paddleocr_preflight',
+        'payload.ocrFileKey': getStringProperty(payload, 'ocrFileKey'),
+      });
+      await SteelWorkingOrderMemory.create(
+        createToolMemoryDocument({
+          conversationId: input.conversationId,
+          requestId: input.requestId,
+          providerToolCallId: input.providerToolCallId,
+          turnIndex: input.turnIndex,
+          checkpointTurnIndex: input.checkpointTurnIndex,
+          memoryKind: 'paddleocr_preflight',
+          sourceKind: 'ocr_result',
+          payload,
+          summary: getPaddleOcrSummary(payload),
+          sourceRefs: createPaddleOcrSourceRef({
+            providerToolCallId: input.providerToolCallId,
+            payload,
+          }),
+        }),
+      );
+
+      return { savedCounts: { paddleocr_preflight: 1 } };
+    },
+
     async captureAssistantFinalMarkdown({
       conversationId,
       requestId,
@@ -918,30 +1329,46 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
       turnIndex,
       checkpointTurnIndex,
       content,
+      currentTurnFiles,
     }: CaptureAssistantFinalMarkdownInput): Promise<CaptureAssistantFinalMarkdownResult> {
       const tables = getParsedTables(content);
       const savedCounts: { [key: string]: number } = {};
       const ocrPayloads = tables
-        .map((table, index) =>
-          getTableTitleType(table.title) === 'ocr' && isOcrTable(table.headers)
-            ? toOcrMarkdownPayload(table.headers, table.rows, index + 1, table.title)
-            : undefined,
-        )
+        .map((table, index) => {
+          if (getTableTitleType(table.title) !== 'ocr' || !isOcrTable(table.headers)) {
+            return undefined;
+          }
+
+          return toOcrMarkdownPayload(
+            table.headers,
+            table.rows,
+            index + 1,
+            table.title,
+            getOcrDescriptorsForTable({
+              rows: table.rows,
+              currentTurnFiles,
+            }),
+          );
+        })
         .filter((payload): payload is SteelJsonObject => payload !== undefined);
 
       if (ocrPayloads.length > 0) {
-        await replaceActiveMarkdownRows({
-          SteelWorkingOrderMemory,
-          conversationId,
-          requestId,
-          messageId,
-          turnIndex,
-          checkpointTurnIndex,
-          memoryKind: 'ocr_extract',
-          payloads: ocrPayloads,
-          summaryForPayload: getOcrMarkdownSummary,
-          locatorPrefix: 'table:ocr_extract',
-        });
+        const groupedOcrPayloads = groupOcrPayloadsByFileKey(ocrPayloads);
+        for (const [key, payloads] of groupedOcrPayloads) {
+          await replaceActiveMarkdownRows({
+            SteelWorkingOrderMemory,
+            conversationId,
+            requestId,
+            messageId,
+            turnIndex,
+            checkpointTurnIndex,
+            memoryKind: 'ocr_extract',
+            payloads,
+            summaryForPayload: getOcrMarkdownSummary,
+            locatorPrefix: 'table:ocr_extract',
+            replacementFilter: getAssistantOcrReplacementFilter(key === '' ? undefined : key),
+          });
+        }
         incrementSavedCount(savedCounts, 'ocr_extract', ocrPayloads.length);
       }
 

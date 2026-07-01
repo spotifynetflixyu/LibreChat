@@ -255,6 +255,14 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn().mockResolvedValue([]),
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
+  runSteelPaddleOcrPreflight: jest.fn().mockResolvedValue({
+    status: 'skipped',
+    completedKeys: [],
+    attemptedKeys: [],
+    failedKeys: [],
+    skippedReason: 'no_current_files',
+    currentPaddleOcrResults: [],
+  }),
 }));
 
 const mockGetMultiplier = jest.fn().mockReturnValue(1);
@@ -797,6 +805,7 @@ describe('createResponse controller', () => {
 
     it('passes Open Responses input_file references into Steel native OCR context', async () => {
       const api = require('@librechat/api');
+      const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
       api.validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -827,6 +836,16 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
+      expect(runSteelPaddleOcrPreflight).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req,
+          res,
+          agent: expect.objectContaining({ id: 'agent-123' }),
+        }),
+      );
+      expect(runSteelPaddleOcrPreflight.mock.invocationCallOrder[0]).toBeLessThan(
+        api.buildDefaultSteelGlobalAgentContext.mock.invocationCallOrder[0],
+      );
       expect(req.steelNativeContext.currentTurnFiles).toEqual([
         {
           fileId: 'file-drawing',
@@ -996,6 +1015,39 @@ describe('createResponse controller', () => {
         expect.any(Object),
       );
       expect(saveMessage).toHaveBeenCalled();
+    });
+
+    it('initializes streaming before PaddleOCR preflight emits tool-call events', async () => {
+      const api = require('@librechat/api');
+      const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' }],
+            },
+          ],
+          stream: true,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        {
+          role: 'user',
+          content: [{ type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' }],
+        },
+      ]);
+
+      await createResponse(req, res);
+
+      expect(api.setupStreamingResponse.mock.invocationCallOrder[0]).toBeLessThan(
+        runSteelPaddleOcrPreflight.mock.invocationCallOrder[0],
+      );
+      expect(runSteelPaddleOcrPreflight.mock.invocationCallOrder[0]).toBeLessThan(
+        api.buildDefaultSteelGlobalAgentContext.mock.invocationCallOrder[0],
+      );
     });
   });
 

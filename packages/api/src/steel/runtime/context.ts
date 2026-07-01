@@ -133,6 +133,7 @@ export interface SteelRuntimeContext {
   };
   attachments: {
     currentTurnFiles: SteelOAuthChatFile[];
+    currentPaddleOcrResults: SteelRuntimeJsonObject[];
     priorActiveFileEvidence: SteelRuntimeJsonObject[];
   };
   toolPolicy: {
@@ -156,6 +157,7 @@ export interface SteelRuntimeContextConversationInput {
 
 export interface SteelRuntimeContextAttachmentsInput {
   currentTurnFiles?: SteelOAuthChatFile[];
+  currentPaddleOcrResults?: SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: SteelRuntimeJsonObject[];
 }
 
@@ -454,6 +456,7 @@ export async function prepareSteelRuntimeContext({
   dependencies,
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
+  const currentPaddleOcrResults = attachments?.currentPaddleOcrResults ?? [];
   const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(conversation.conversationId);
   const outputSheetMemory = await outputSheetMemoryPromise;
   const priorActiveFileEvidence = collectPriorActiveFileEvidence({
@@ -509,6 +512,7 @@ export async function prepareSteelRuntimeContext({
     },
     attachments: {
       currentTurnFiles,
+      currentPaddleOcrResults,
       priorActiveFileEvidence,
     },
     toolPolicy: {
@@ -528,6 +532,7 @@ export async function prepareLibreChatSteelRuntimeContext({
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const runtimeConversation = prepareLibreChatRuntimeConversation(conversation);
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
+  const currentPaddleOcrResults = attachments?.currentPaddleOcrResults ?? [];
   const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(
     runtimeConversation.conversationId,
   );
@@ -587,6 +592,7 @@ export async function prepareLibreChatSteelRuntimeContext({
     },
     attachments: {
       currentTurnFiles,
+      currentPaddleOcrResults,
       priorActiveFileEvidence,
     },
     toolPolicy: {

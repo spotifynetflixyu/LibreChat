@@ -40,7 +40,7 @@
 3. OCR 結果確認表必須包含孔數資料：每件孔數、總孔數、孔徑或孔型、來源頁 / 件號與信心。孔數若不是文字表格可直接讀出，必須由 AI 依圖面標註與可見孔位進行 vision 統計；不確定時填「未確認」並說明原因，不可省略孔數欄位。
 4. OCR 結果確認階段不得查價、不得呼叫 `search_price_candidates`、不得輸出正式 `system_order` / `customer_quote` 報價表，也不得把 OCR 彙總成最終報價。
 5. 使用者在後續訊息明確確認 OCR 資料正確，或直接提供修正後 OCR 資料時，才進入報價階段。報價階段以使用者確認 / 修正後的 OCR 資料為準。
-6. 後續確認或修正 OCR 資料時，不要再次執行 PaddleOCR MCP OCR，除非使用者明確要求重新 OCR、重新讀檔、重新判讀附件或提供了新的 PDF / image 附件。
+6. 後續確認或修正 OCR 資料時，只有同一 file key 已有 active PaddleOCR MCP OCR 結果，才不要再次執行 PaddleOCR MCP OCR；若目前只有 AI OCR fallback 資料、使用者明確要求重新 OCR / 重新讀檔 / 重新判讀附件，或提供新的 PDF / image 附件，仍須先執行或重試 PaddleOCR MCP OCR。
 7. 若 OCR 結果太長，可分多張同欄位 Markdown 表格呈現，但不可省略可辨識資料列；不確定欄位填「未確認」或低信心，不可自行猜成報價資料。
 
 五、資料優先順序

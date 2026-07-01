@@ -21,6 +21,18 @@ const steelWorkingOrderMemorySourceRefSchema: Schema<SteelWorkingOrderMemorySour
     filename: {
       type: String,
     },
+    fileId: {
+      type: String,
+    },
+    storageKey: {
+      type: String,
+    },
+    mediaType: {
+      type: String,
+    },
+    ocrFileKey: {
+      type: String,
+    },
     pageNumber: {
       type: Number,
     },
@@ -98,6 +110,13 @@ steelWorkingOrderMemorySchema.index({
   state: 1,
   memoryKind: 1,
   turnIndex: 1,
+});
+steelWorkingOrderMemorySchema.index({
+  conversationId: 1,
+  state: 1,
+  memoryKind: 1,
+  'payload.ocrFileKey': 1,
+  'payload.ocrSource': 1,
 });
 steelWorkingOrderMemorySchema.index({ conversationId: 1, checkpointTurnIndex: 1, state: 1 });
 

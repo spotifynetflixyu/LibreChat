@@ -176,6 +176,41 @@ describe('Steel native Markdown adapter', () => {
     });
   });
 
+  it('forwards current turn files to assistant Markdown capture', async () => {
+    const captureAssistantFinalMarkdown = jest.fn(
+      async (
+        _input: CaptureAssistantFinalMarkdownInput,
+      ): Promise<CaptureAssistantFinalMarkdownResult> => ({
+        parseStatus: 'saved',
+        savedCounts: { ocr_extract: 1 },
+      }),
+    );
+    const currentTurnFiles = [
+      {
+        fileId: 'file-ocr',
+        filename: 'drawing.pdf',
+        mediaType: 'application/pdf',
+      },
+    ];
+
+    await captureSteelNativeAssistantMarkdown({
+      writer: { captureAssistantFinalMarkdown },
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_ocr',
+      turnIndex: 4,
+      text: '| 來源檔案 | 規格 |\n| --- | --- |\n| drawing.pdf | PL6 |\n',
+      currentTurnFiles,
+    });
+
+    expect(captureAssistantFinalMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation_1',
+        currentTurnFiles,
+      }),
+    );
+  });
+
   it('skips assistant messages that are unsafe or irrelevant to persist', async () => {
     const captureAssistantFinalMarkdown = jest.fn();
 

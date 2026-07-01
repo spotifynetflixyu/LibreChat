@@ -25,6 +25,20 @@
   CloudFront should stay on the stream fallback unless signed URL mode is
   explicitly verified. Keep the existing owned-file DB lookup before
   resolution; never trust a request-supplied filepath directly.
+- OCR dedupe must be source-aware per file key. `ocr_extract` rows from
+  assistant Markdown / AI OCR fallback are useful review state, but only
+  active rows with `ocrSource: "paddleocr_mcp"` may skip future PaddleOCR
+  preflight for the same `ocrFileKey`; PaddleOCR failures must not write
+  completed OCR state so the next turn retries.
+- PaddleOCR preflight raw result is not `read_markdown(scope: "ocr")` data.
+  Store and label raw automatic PaddleOCR output as `paddleocr_preflight`; only
+  assistant-organized OCR Markdown confirmation tables are `ocr_extract`.
+  Same-turn raw preflight may enter `attachments.currentPaddleOcrResults`, but
+  follow-up turns should use `read_markdown(scope: "ocr")` only when organized
+  OCR Markdown is missing from normal chat history.
+- Manual PaddleOCR UI smoke must use a text-bearing image or PDF. Decorative
+  icons such as favicons are only suitable for checking that a preflight tool
+  indicator appears; they do not verify OCR content or useful PaddleOCR output.
 - Future Steel native LibreChat work must start from
   `docs/steel-native-librechat-master-framework.md`, then use
   `docs/plans/2026-06-24-steel-global-native-librechat-integration.md` for phase

@@ -1,5 +1,6 @@
 import {
   buildSteelNativeEventEnvelopes,
+  buildSteelPaddleOcrPreflightEventEnvelopes,
   steelNativeStreamEventName,
 } from './events';
 
@@ -107,5 +108,106 @@ describe('Steel native event mapping', () => {
         },
       }),
     ).toEqual([]);
+  });
+
+  it('maps completed PaddleOCR preflight into OCR saved activity', () => {
+    const events = buildSteelPaddleOcrPreflightEventEnvelopes({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_2',
+      preflight: {
+        status: 'completed',
+        completedKeys: ['file:file-a'],
+        attemptedKeys: ['file:file-a'],
+        failedKeys: [],
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        event: steelNativeStreamEventName,
+        data: {
+          type: 'memory_saved',
+          message: 'PaddleOCR preflight saved',
+          savedCounts: { paddleocr_preflight: 1 },
+          source: 'paddleocr_preflight',
+          conversationId: 'conversation_1',
+          requestId: 'request_1',
+          messageId: 'message_2',
+        },
+      },
+    ]);
+  });
+
+  it('maps partial PaddleOCR preflight into partial activity and saved OCR count', () => {
+    const events = buildSteelPaddleOcrPreflightEventEnvelopes({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_2',
+      preflight: {
+        status: 'partial',
+        completedKeys: ['file:file-a'],
+        attemptedKeys: ['file:file-a', 'file:file-b'],
+        failedKeys: ['file:file-b'],
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        event: steelNativeStreamEventName,
+        data: {
+          type: 'parse_status',
+          message: 'PaddleOCR preflight partial',
+          parseStatus: 'partial',
+          savedCounts: { paddleocr_preflight: 1 },
+          source: 'paddleocr_preflight',
+          conversationId: 'conversation_1',
+          requestId: 'request_1',
+          messageId: 'message_2',
+        },
+      },
+      {
+        event: steelNativeStreamEventName,
+        data: {
+          type: 'memory_saved',
+          message: 'PaddleOCR preflight saved',
+          savedCounts: { paddleocr_preflight: 1 },
+          source: 'paddleocr_preflight',
+          conversationId: 'conversation_1',
+          requestId: 'request_1',
+          messageId: 'message_2',
+        },
+      },
+    ]);
+  });
+
+  it('maps already-completed PaddleOCR preflight into skipped activity', () => {
+    const events = buildSteelPaddleOcrPreflightEventEnvelopes({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_2',
+      preflight: {
+        status: 'skipped',
+        completedKeys: ['file:file-a'],
+        attemptedKeys: [],
+        failedKeys: [],
+        skippedReason: 'all_files_already_have_paddleocr',
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        event: steelNativeStreamEventName,
+        data: {
+          type: 'parse_status',
+          message: 'PaddleOCR preflight skipped',
+          parseStatus: 'skipped',
+          source: 'paddleocr_preflight',
+          conversationId: 'conversation_1',
+          requestId: 'request_1',
+          messageId: 'message_2',
+        },
+      },
+    ]);
   });
 });

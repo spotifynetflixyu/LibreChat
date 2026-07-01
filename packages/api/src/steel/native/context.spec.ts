@@ -173,17 +173,22 @@ function createRuntimeDependencies(): SteelRuntimeContextDependencies {
 async function buildFixtureContext({
   fileReference,
   currentUserContent = '請依附件報價',
+  currentPaddleOcrResults,
   priorActiveFileEvidence,
 }: {
   fileReference?: SteelNativeFileReference;
   currentUserContent?: string;
+  currentPaddleOcrResults?: readonly SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 } = {}) {
   const dependencies = createRuntimeDependencies();
   const attachments =
-    fileReference !== undefined || priorActiveFileEvidence !== undefined
+    fileReference !== undefined ||
+    currentPaddleOcrResults !== undefined ||
+    priorActiveFileEvidence !== undefined
       ? {
           ...(fileReference ? { currentTurnFiles: [fileReference] } : {}),
+          ...(currentPaddleOcrResults ? { currentPaddleOcrResults } : {}),
           ...(priorActiveFileEvidence ? { priorActiveFileEvidence } : {}),
         }
       : undefined;
@@ -360,6 +365,27 @@ describe('Steel native context adapter', () => {
     expect(context.attachmentReferences).toEqual([fileReference]);
     expect(Object.keys(context.attachmentReferences[0])).not.toContain('data');
     expect(context.runtimeContext.toolPolicy.aiVisibleTools).not.toContain('run_file_ocr');
+  });
+
+  it('passes same-turn PaddleOCR raw preflight results through native runtime context only', async () => {
+    const currentPaddleOcrResults = [
+      {
+        ocrFileKey: 'file:file_1',
+        filename: 'drawing.pdf',
+        ocrSource: 'paddleocr_mcp',
+        result: { text: 'raw OCR text' },
+      },
+    ];
+    const { context } = await buildFixtureContext({ currentPaddleOcrResults });
+    const serialized = JSON.parse(serializeSteelRuntimeContext(context.runtimeContext));
+
+    expect(context.runtimeContext.attachments.currentPaddleOcrResults).toEqual(
+      currentPaddleOcrResults,
+    );
+    expect(context.runtimeContext.attachments.priorActiveFileEvidence).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ ocrSource: 'paddleocr_mcp' })]),
+    );
+    expect(serialized.attachments.currentPaddleOcrResults).toEqual(currentPaddleOcrResults);
   });
 
   it('builds default native context with injected dependencies for JS callers', async () => {

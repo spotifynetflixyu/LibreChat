@@ -4,6 +4,7 @@ export const steelNativeStreamEventName = 'steel_event' as const;
 
 export type SteelNativeActivitySource =
   | 'assistant_markdown'
+  | 'paddleocr_preflight'
   | 'responses_output'
   | 'tool_result';
 

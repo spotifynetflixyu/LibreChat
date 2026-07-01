@@ -813,6 +813,243 @@ describe('Mongoose Steel working-order memory reader', () => {
     ]);
   });
 
+  it('keeps assistant OCR file-keyed but still missing for PaddleOCR preflight', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_1',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentTurnFiles: [
+        {
+          fileId: 'file-ai-fallback',
+          filename: 'fallback.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
+      content: [
+        '## OCR 結果確認表',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        '| fallback.pdf | P1 | PL6*80*1000 | 4 | 8 | 中 | 是 |',
+      ].join('\n'),
+    });
+    const missing = await writer.findMissingPaddleOcrFileKeys({
+      conversationId: 'steel_conversation_1',
+      files: [
+        {
+          fileId: 'file-ai-fallback',
+          filename: 'fallback.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
+    });
+    const [entry] = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+    }).lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 1 },
+    });
+    expect(entry).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          ocrFileKey: 'file:file-ai-fallback',
+          fileId: 'file-ai-fallback',
+          filename: 'fallback.pdf',
+          mediaType: 'application/pdf',
+          ocrSource: 'assistant_ocr',
+          ocrEngine: 'assistant',
+        }),
+      }),
+    );
+    expect(missing).toEqual({
+      completedKeys: [],
+      missingFiles: [
+        expect.objectContaining({
+          ocrFileKey: 'file:file-ai-fallback',
+          fileId: 'file-ai-fallback',
+        }),
+      ],
+      missingKeys: ['file:file-ai-fallback'],
+    });
+  });
+
+  it('finds only files without active PaddleOCR OCR', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'PaddleOCR A',
+        payload: {
+          ocrFileKey: 'file:file-a',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 3,
+        checkpointTurnIndex: 2,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'assistant B',
+        payload: {
+          ocrFileKey: 'file:file-b',
+          ocrSource: 'assistant_ocr',
+          ocrEngine: 'assistant',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'superseded',
+        summary: 'old PaddleOCR C',
+        payload: {
+          ocrFileKey: 'file:file-c',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+        },
+      },
+    ]);
+
+    const result = await writer.findMissingPaddleOcrFileKeys({
+      conversationId: 'steel_conversation_1',
+      files: [
+        { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
+        { fileId: 'file-b', filename: 'b.png', mediaType: 'image/png' },
+        { fileId: 'file-c', filename: 'c.pdf', mediaType: 'application/pdf' },
+        { fileId: 'file-d', filename: 'd.txt', mediaType: 'text/plain' },
+      ],
+    });
+
+    expect(result).toEqual({
+      completedKeys: ['file:file-a'],
+      missingFiles: [
+        expect.objectContaining({ ocrFileKey: 'file:file-b', fileId: 'file-b' }),
+        expect.objectContaining({ ocrFileKey: 'file:file-c', fileId: 'file-c' }),
+      ],
+      missingKeys: ['file:file-b', 'file:file-c'],
+    });
+  });
+
+  it('replaces PaddleOCR OCR only for the matching file key', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const outputReader = createMongooseSteelOutputSheetMemoryReader(
+      mongoose,
+      'steel_conversation_1',
+    );
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'old A',
+        payload: {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          text: 'old A',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'current B',
+        payload: {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          text: 'current B',
+        },
+      },
+    ]);
+
+    const result = await writer.capturePaddleOcrResult({
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_ocr',
+      providerToolCallId: 'preflight_file_a',
+      turnIndex: 5,
+      checkpointTurnIndex: 4,
+      file: {
+        fileId: 'file-a',
+        filename: 'a.pdf',
+        mediaType: 'application/pdf',
+      },
+      data: {
+        text: 'new A',
+      },
+    });
+    const activeEntries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'paddleocr_preflight',
+      state: 'active',
+    })
+      .sort({ 'payload.ocrFileKey': 1 })
+      .lean();
+    const snapshot = await outputReader.readOutputSheetMemory();
+
+    expect(result).toEqual({ savedCounts: { paddleocr_preflight: 1 } });
+    expect(activeEntries).toHaveLength(2);
+    expect(snapshot.derivedIndex.ocrExtracts).toEqual([]);
+    expect(activeEntries).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          mediaType: 'application/pdf',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          result: expect.objectContaining({ text: 'new A' }),
+        }),
+        sourceRefs: [
+          expect.objectContaining({
+            sourceKind: 'paddleocr_mcp',
+            sourceId: 'preflight_file_a',
+            ocrFileKey: 'file:file-a',
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          text: 'current B',
+        }),
+      }),
+    ]);
+  });
+
   it('does not save OCR confirmation helper tables as workbook state', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);

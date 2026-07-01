@@ -293,6 +293,7 @@ async function prepareContext(
   historyFiles: SteelOAuthChatFile[] = [],
   priorActiveFileEvidence: Record<string, string>[] = [],
   memorySnapshot: SteelOutputSheetMemorySnapshot = createRuntimeMemorySnapshot(),
+  currentPaddleOcrResults: Record<string, unknown>[] = [],
 ) {
   const dependencies = createRuntimeDependencies(memorySnapshot);
   const input: PrepareSteelRuntimeContextInput = {
@@ -311,6 +312,7 @@ async function prepareContext(
     attachments: {
       currentTurnFiles: files,
       priorActiveFileEvidence,
+      currentPaddleOcrResults,
     },
     dependencies,
   };
@@ -429,6 +431,32 @@ describe('Steel runtime context', () => {
       'steel-drawing-ocr-policy',
     ]);
     expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
+  });
+
+  it('includes current PaddleOCR raw preflight results without relying on follow-up memory context', async () => {
+    const currentPaddleOcrResults = [
+      {
+        ocrFileKey: 'file:file-a',
+        filename: 'drawing.pdf',
+        ocrSource: 'paddleocr_mcp',
+        result: { text: 'raw paddleocr text' },
+      },
+    ];
+    const { context } = await prepareContext(
+      [],
+      undefined,
+      [],
+      [],
+      createRuntimeMemorySnapshot(),
+      currentPaddleOcrResults,
+    );
+    const serialized = JSON.parse(serializeSteelRuntimeContext(context));
+
+    expect(context.attachments.currentPaddleOcrResults).toEqual(currentPaddleOcrResults);
+    expect(context.attachments.priorActiveFileEvidence).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ ocrSource: 'paddleocr_mcp' })]),
+    );
+    expect(serialized.attachments.currentPaddleOcrResults).toEqual(currentPaddleOcrResults);
   });
 
   it('serializes workbook output rules as backend sheet carry-forward and emitted-sheet replacement policy', async () => {
