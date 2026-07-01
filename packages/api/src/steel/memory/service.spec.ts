@@ -1315,6 +1315,11 @@ describe('Mongoose Steel working-order memory reader', () => {
       mongoose,
       'steel_conversation_paddleocr_read_markdown',
     );
+    const rawContent = `PaddleOCR raw content for d.pdf ${'x'.repeat(1500)}`;
+    const pages = Array.from({ length: 25 }, (_, index) => ({
+      page: index + 1,
+      text: `page-${index + 1}`,
+    }));
 
     await writer.capturePaddleOcrResult({
       conversationId: 'steel_conversation_paddleocr_read_markdown',
@@ -1327,7 +1332,8 @@ describe('Mongoose Steel working-order memory reader', () => {
         type: 'tool',
         status: 'success',
         name: 'paddleocr_vl_mcp_PaddleOCR',
-        content: 'PaddleOCR raw content for d.pdf page 1 and page 2',
+        content: rawContent,
+        pages,
       },
     });
 
@@ -1343,7 +1349,11 @@ describe('Mongoose Steel working-order memory reader', () => {
         fileId: 'file-d',
         filename: 'd.pdf',
         mediaType: 'application/pdf',
-        content: 'PaddleOCR raw content for d.pdf page 1 and page 2',
+        content: rawContent,
+        result: expect.objectContaining({
+          content: rawContent,
+          pages,
+        }),
       }),
     ]);
   });
@@ -1583,7 +1593,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
   });
 
-  it('captures customer and price tool results as bounded memory entries', async () => {
+  it('captures customer and price tool results as complete memory entries', async () => {
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');
 
@@ -1650,6 +1660,56 @@ describe('Mongoose Steel working-order memory reader', () => {
           expect.objectContaining({ memoryKind: 'customer_fact', summary: expect.stringContaining('龍頂') }),
           expect.objectContaining({ memoryKind: 'price_evidence', summary: expect.stringContaining('CCG075') }),
         ]),
+      }),
+    );
+  });
+
+  it('captures complete tool results without bounded JSON truncation', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const longProductName = `錏輕型鋼 ${'x'.repeat(1500)}`;
+    const searchQueries = Array.from({ length: 25 }, (_, index) => `query-${index + 1}`);
+
+    await expect(
+      writer.captureToolResult({
+        conversationId: 'steel_conversation_complete_tool_memory',
+        requestId: 'request_complete_tool_memory',
+        toolName: 'search_price_candidates',
+        providerToolCallId: 'call_complete_price',
+        turnIndex: 8,
+        checkpointTurnIndex: 7,
+        data: {
+          customerTierId: 2,
+          searchQueries,
+          priceCandidates: Array.from({ length: 25 }, (_, index) => ({
+            id: index + 1,
+            erpItemCode: `ITEM-${index + 1}`,
+            productName: index === 24 ? longProductName : '錏輕型鋼',
+            specKey: `${index + 1}x${index + 1}`,
+            unitPrice: 26.8,
+          })),
+        },
+      }),
+    ).resolves.toEqual({
+      savedCounts: { price_evidence: 25 },
+      totalSavedCounts: { price_evidence: 25 },
+      totalTableCounts: {},
+    });
+
+    const documents = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_complete_tool_memory',
+      memoryKind: 'price_evidence',
+    })
+      .sort({ 'payload.id': 1 })
+      .lean();
+
+    expect(documents).toHaveLength(25);
+    expect(documents[24]?.payload).toEqual(
+      expect.objectContaining({
+        id: 25,
+        erpItemCode: 'ITEM-25',
+        productName: longProductName,
+        searchQueries,
       }),
     );
   });

@@ -507,6 +507,10 @@ export async function buildSteelGlobalAgentContext({
   const preparedRuntimeContext = await prepareRuntimeContext({
     conversation: toRuntimeConversationInput(conversation),
     attachments: {
+      currentTurnFiles:
+        attachments?.currentTurnFiles !== undefined
+          ? attachments.currentTurnFiles.map((file) => ({ ...file }))
+          : undefined,
       currentPaddleOcrResults:
         attachments?.currentPaddleOcrResults !== undefined
           ? [...attachments.currentPaddleOcrResults]

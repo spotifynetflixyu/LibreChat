@@ -539,7 +539,6 @@ function getFactSummary(payload: SteelJsonObject): string {
     })
     .map(String)
     .filter((value) => value.trim() !== '')
-    .slice(0, 4)
     .join(' ');
 }
 
@@ -709,7 +708,7 @@ function toOcrMarkdownPayload(
 
 function getOcrMarkdownSummary(payload: SteelJsonObject): string {
   const markdown = getStringProperty(payload, 'markdown') ?? '';
-  return ['OCR Markdown', markdown.replace(/\s+/g, ' ').slice(0, 100)]
+  return ['OCR Markdown', markdown.replace(/\s+/g, ' ')]
     .filter((entry) => entry.trim() !== '')
     .join(' ');
 }
@@ -737,30 +736,38 @@ function createSourceRef(
   ];
 }
 
-function toBoundedJsonValue(value: unknown, depth = 0): SteelJsonValue {
+function toJsonValue(value: unknown, seen = new WeakSet<object>()): SteelJsonValue {
   if (value === null) {
     return null;
   }
   if (typeof value === 'string') {
-    return value.length > 1200 ? `${value.slice(0, 1200)}...` : value;
+    return value;
   }
   if (typeof value === 'number' || typeof value === 'boolean') {
     return value;
   }
-  if (Array.isArray(value)) {
-    if (depth >= 6) {
-      return [];
-    }
-    return value.slice(0, 20).map((entry) => toBoundedJsonValue(entry, depth + 1));
-  }
-  if (typeof value !== 'object' || depth >= 6) {
+  if (typeof value !== 'object') {
     return String(value);
   }
-
-  const output: SteelJsonObject = {};
-  for (const [key, entry] of Object.entries(value).slice(0, 40)) {
-    output[key] = toBoundedJsonValue(entry, depth + 1);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return '[circular]';
+    }
+    seen.add(value);
+    const output = value.map((entry) => toJsonValue(entry, seen));
+    seen.delete(value);
+    return output;
   }
+
+  if (seen.has(value)) {
+    return '[circular]';
+  }
+  seen.add(value);
+  const output: SteelJsonObject = {};
+  for (const [key, entry] of Object.entries(value)) {
+    output[key] = toJsonValue(entry, seen);
+  }
+  seen.delete(value);
   return output;
 }
 
@@ -834,7 +841,6 @@ function toMemorySourceRefs({
 }): MemorySourceRef[] {
   return sourceRefs
     .filter(isJsonObject)
-    .slice(0, 10)
     .map((ref) => ({
       sourceKind: [getStringProperty(ref, 'channel'), getStringProperty(ref, 'factType')]
         .filter((entry): entry is string => entry !== undefined)
@@ -906,7 +912,7 @@ function createToolMemoryDocument(input: {
 }
 
 function getToolCaptureDocuments(input: CaptureToolResultInput) {
-  const data = toBoundedJsonValue(input.data);
+  const data = toJsonValue(input.data);
   if (!isJsonObject(data)) {
     return [];
   }
@@ -1268,7 +1274,7 @@ function getPaddleOcrSummary(payload: SteelJsonObject): string {
     (result ? getStringProperty(result, 'markdown') : undefined) ??
     getFactSummary(payload);
 
-  return ['PaddleOCR', filename, text?.replace(/\s+/gu, ' ').slice(0, 100)]
+  return ['PaddleOCR', filename, text?.replace(/\s+/gu, ' ')]
     .filter((entry): entry is string => entry !== undefined && entry.trim() !== '')
     .join(' ');
 }
@@ -1287,7 +1293,7 @@ function createPaddleOcrPayload({
     ocrSource: 'paddleocr_mcp',
     ocrEngine: 'paddleocr_vl',
     ...toOcrFileMetadataPayload(descriptor),
-    result: toBoundedJsonValue(data),
+    result: toJsonValue(data),
   };
 }
 

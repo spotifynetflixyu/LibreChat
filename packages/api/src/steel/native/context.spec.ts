@@ -361,7 +361,7 @@ describe('Steel native context adapter', () => {
 
     expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
     expect(context.runtimeContext.attachments).not.toHaveProperty('includeOcrRules');
-    expect(context.runtimeContext.attachments.currentTurnFiles).toHaveLength(0);
+    expect(context.runtimeContext.attachments.currentTurnFiles).toEqual([fileReference]);
     expect(context.attachmentReferences).toEqual([fileReference]);
     expect(Object.keys(context.attachmentReferences[0])).not.toContain('data');
     expect(context.runtimeContext.toolPolicy.aiVisibleTools).not.toContain('run_file_ocr');

@@ -125,8 +125,12 @@ function isSourceRef(value: unknown): value is SteelSourceRef {
   return typeof entry.channel === 'string' && typeof entry.factType === 'string';
 }
 
-function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSourceRef[] {
-  if (refs.length >= 100 || value === null || value === undefined) {
+function collectSourceRefs(
+  value: unknown,
+  refs: SteelSourceRef[] = [],
+  seen = new WeakSet<object>(),
+): SteelSourceRef[] {
+  if (value === null || value === undefined) {
     return refs;
   }
 
@@ -136,7 +140,12 @@ function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSo
   }
 
   if (Array.isArray(value)) {
-    value.slice(0, 100).forEach((entry) => collectSourceRefs(entry, refs));
+    if (seen.has(value)) {
+      return refs;
+    }
+    seen.add(value);
+    value.forEach((entry) => collectSourceRefs(entry, refs, seen));
+    seen.delete(value);
     return refs;
   }
 
@@ -144,9 +153,14 @@ function collectSourceRefs(value: unknown, refs: SteelSourceRef[] = []): SteelSo
     return refs;
   }
 
+  if (seen.has(value)) {
+    return refs;
+  }
+  seen.add(value);
   Object.values(value as { [key: string]: unknown }).forEach((entry) => {
-    collectSourceRefs(entry, refs);
+    collectSourceRefs(entry, refs, seen);
   });
+  seen.delete(value);
 
   return refs;
 }

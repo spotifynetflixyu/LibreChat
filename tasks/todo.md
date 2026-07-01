@@ -1,3 +1,63 @@
+# Active: Production OCR preflight read_markdown regression check - 2026-07-02
+
+Goal: diagnose and fix conversation
+`72502043-ef9b-42c8-94ff-c5f8b1cbf5f0`, where `d.pdf` has PaddleOCR output
+but the assistant still calls `read_markdown`.
+
+Status:
+
+- [x] Inspect production conversation and current deployed build without
+      leaking secrets.
+- [x] Compare the current local runtime policy with the message/tool evidence.
+- [x] Identify whether this is an already-fixed-but-not-deployed issue, a
+      missing context/prompt path, or a remaining tool-policy gap.
+- [x] Add a red regression for the exact remaining gap before changing runtime
+      code.
+- [x] Implement the smallest fix at the owning seam.
+- [x] Run focused tests/build/checks and document evidence.
+
+Review:
+
+- Production Mongo showed `d.pdf` had active `paddleocr_preflight` before the
+  assistant response, and production `/api/config` reported deployed commit
+  `038f65c`.
+- The assistant called only `read_markdown(scope:"ocr", ocrFileKey:"file:15d...")`;
+  the visible PaddleOCR step was automatic preflight, not a model-requested
+  second OCR run.
+- Root cause: `toBoundedSteelPaddleOcrValue()` hard-truncated same-turn OCR
+  strings to 1200 characters and arrays to 20 items before runtime context
+  injection, so the AI saw incomplete OCR evidence and used `read_markdown` to
+  recover full content.
+- Additional context gap: native context preserved current files only under
+  `Steel Native File References`; `Steel Runtime Context.attachments.currentTurnFiles`
+  was empty, weakening the same-turn OCR policy's current-file matching.
+- Follow-up fix: removed remaining hard truncation from Steel tool output and
+  memory capture paths, including `sanitizeSteelToolOutput()` caps and
+  `toBoundedJsonValue()`.
+- Red/green evidence:
+  - `api/server/services/__tests__/ToolService.spec.js` failed before the fix
+    because long PaddleOCR text was truncated to 1200 characters and page
+    results were capped to 20 entries; after the fix the complete result is
+    preserved.
+  - `packages/api/src/steel/native/context.spec.ts` failed before the fix
+    because runtime `attachments.currentTurnFiles` was `[]`; after the fix it
+    contains the current file metadata.
+  - `packages/api/src/steel/tools/sanitize.spec.ts` failed before the fix
+    because `sanitizeSteelToolOutput()` truncated long strings and arrays;
+    after the fix it preserves complete tool output while still redacting
+    instruction-like text.
+  - `packages/api/src/steel/memory/service.spec.ts` failed before the fix
+    because `toBoundedJsonValue()` truncated PaddleOCR content and limited
+    tool-result arrays; after the fix memory payloads keep complete JSON.
+- Verification passed:
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|preflight"`
+  - `cd packages/api && rtk npx jest src/steel/tools/sanitize.spec.ts src/steel/tools/execute.spec.ts src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - `rtk git diff --check`
+
+---
+
 # Active: Production third-turn PaddleOCR preflight reuse bug - 2026-07-02
 
 Goal: diagnose and fix conversation

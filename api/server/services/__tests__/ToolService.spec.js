@@ -906,7 +906,7 @@ describe('ToolService - Action Capability Gating', () => {
       });
     });
 
-    it('bounds same-turn PaddleOCR preflight results before runtime context injection', async () => {
+    it('keeps complete same-turn PaddleOCR preflight results for runtime context injection', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.body = { conversationId: 'convo-1' };
       req.steelNativeContext = {
@@ -955,10 +955,7 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(mockCapturePaddleOcrResult.mock.calls[0][0].data).toBe(paddleResult);
-      expect(result.currentPaddleOcrResults[0].result).toEqual({
-        text: `${'x'.repeat(1200)}...`,
-        pages: paddleResult.pages.slice(0, 20),
-      });
+      expect(result.currentPaddleOcrResults[0].result).toEqual(paddleResult);
     });
 
     it('rethrows aborted PaddleOCR preflight calls instead of saving partial failure state', async () => {

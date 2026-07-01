@@ -36,6 +36,18 @@
   runtime policy should tell AI not to call `read_markdown` or rerun
   `paddleocr_vl` for that file unless the user explicitly asks to rerun OCR or
   the result is absent/failed.
+- Same-turn `attachments.currentPaddleOcrResults` must preserve the full
+  PaddleOCR result. Do not token-limit or hard-truncate
+  `toBoundedSteelPaddleOcrValue`; otherwise the AI sees incomplete OCR evidence
+  and incorrectly calls `read_markdown` for the current file.
+- Native Steel context must pass current file metadata into both
+  `Steel Native File References` and
+  `Steel Runtime Context.attachments.currentTurnFiles`; leaving runtime
+  `currentTurnFiles` empty weakens the current-file OCR policy.
+- Steel AI-visible tool output and tool-result memory must not hard-truncate
+  strings, arrays, object keys, or nested JSON. Remove helpers such as
+  `toBoundedJsonValue` and sanitizer caps; keep only safety redaction and
+  circular-reference guards.
 - OCR dedupe must be source-aware per file key. `ocr_extract` rows from
   assistant Markdown / AI OCR fallback are useful review state, but only
   active rows with `ocrSource: "paddleocr_mcp"` may skip future PaddleOCR

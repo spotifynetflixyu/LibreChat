@@ -957,33 +957,6 @@ async function rebuildSteelPaddleOcrPreflightTool({
   });
 }
 
-function toBoundedSteelPaddleOcrValue(value, depth = 0) {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value === 'string') {
-    return value.length > 1200 ? `${value.slice(0, 1200)}...` : value;
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    if (depth >= 6) {
-      return [];
-    }
-    return value.slice(0, 20).map((entry) => toBoundedSteelPaddleOcrValue(entry, depth + 1));
-  }
-  if (typeof value !== 'object' || depth >= 6) {
-    return String(value);
-  }
-
-  return Object.fromEntries(
-    Object.entries(value)
-      .slice(0, 40)
-      .map(([key, entry]) => [key, toBoundedSteelPaddleOcrValue(entry, depth + 1)]),
-  );
-}
-
 function createSteelPaddleOcrToolCall({ providerToolCallId, toolName, args, output }) {
   return {
     id: providerToolCallId,
@@ -1363,7 +1336,7 @@ async function runSteelPaddleOcrPreflight({
       currentPaddleOcrResults.push({
         ...file,
         ocrSource: 'paddleocr_mcp',
-        result: toBoundedSteelPaddleOcrValue(result),
+        result,
       });
       await emitSteelPaddleOcrToolCompleted({
         res,

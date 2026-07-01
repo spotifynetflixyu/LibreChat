@@ -31,6 +31,20 @@ export interface SteelRuntimeJsonObject {
   [key: string]: SteelJsonValue | undefined;
 }
 
+export interface SteelRuntimeAttachmentFile {
+  filename?: string;
+  mediaType: string;
+  data?: SteelOAuthChatFile['data'];
+  pageCount?: number;
+  fileId?: string;
+  source?: string;
+  conversationId?: string;
+  messageId?: string;
+  providerFileId?: string;
+  width?: number;
+  height?: number;
+}
+
 export interface SteelRuntimeOutputSheetRow {
   rowId: string;
   cells: SteelRuntimeJsonObject;
@@ -132,7 +146,7 @@ export interface SteelRuntimeContext {
     compactWorkbook: SteelRuntimeCompactWorkbookContext;
   };
   attachments: {
-    currentTurnFiles: SteelOAuthChatFile[];
+    currentTurnFiles: SteelRuntimeAttachmentFile[];
     currentPaddleOcrResults: SteelRuntimeJsonObject[];
     priorActiveFileEvidence: SteelRuntimeJsonObject[];
   };
@@ -157,7 +171,7 @@ export interface SteelRuntimeContextConversationInput {
 }
 
 export interface SteelRuntimeContextAttachmentsInput {
-  currentTurnFiles?: SteelOAuthChatFile[];
+  currentTurnFiles?: SteelRuntimeAttachmentFile[];
   currentPaddleOcrResults?: SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: SteelRuntimeJsonObject[];
 }
@@ -394,7 +408,7 @@ export function resolveNextSteelOutputSheets({
   };
 }
 
-function toSerializableFile(file: SteelOAuthChatFile): SerializableSteelOAuthChatFile {
+function toSerializableFile(file: SteelRuntimeAttachmentFile): SerializableSteelOAuthChatFile {
   return {
     filename: file.filename,
     mediaType: file.mediaType,
