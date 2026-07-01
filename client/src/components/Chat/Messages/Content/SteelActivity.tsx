@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import { CheckCircle2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
-import type { SteelNativeActivityEvent } from '~/store/steel';
+import type { SteelNativeActivityEvent, SteelNativeSavedCounts } from '~/store/steel';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import useLocalize from '~/hooks/useLocalize';
 
@@ -10,8 +10,30 @@ type SteelActivityProps = {
   isCreatedByUser?: boolean;
 };
 
+const ocrSavedCountKeys = new Set(['ocr_extract']);
+const workbookSavedCountKeys = new Set([
+  'calculation_fact',
+  'customer_fact',
+  'price_evidence',
+  'working_order_row',
+]);
+
 function getSavedCountTotal(event: SteelNativeActivityEvent): number {
   return Object.values(event.savedCounts ?? {}).reduce((total, count) => total + count, 0);
+}
+
+function getSavedCountForKeys(savedCounts: SteelNativeSavedCounts | undefined, keys: Set<string>) {
+  if (!savedCounts) {
+    return 0;
+  }
+
+  return Object.entries(savedCounts).reduce((total, [key, count]) => {
+    if (!keys.has(key) || !Number.isFinite(count) || count <= 0) {
+      return total;
+    }
+
+    return total + count;
+  }, 0);
 }
 
 function getActivityLabel(event: SteelNativeActivityEvent, localize: ReturnType<typeof useLocalize>) {
@@ -28,6 +50,37 @@ function getActivityLabel(event: SteelNativeActivityEvent, localize: ReturnType<
   }
 
   return localize('com_ui_steel_activity_parse_saved');
+}
+
+function getSavedCountText(
+  event: SteelNativeActivityEvent,
+  localize: ReturnType<typeof useLocalize>,
+) {
+  const ocrCount = getSavedCountForKeys(event.savedCounts, ocrSavedCountKeys);
+  const workbookCount = getSavedCountForKeys(event.savedCounts, workbookSavedCountKeys);
+  const sourceCounts = [
+    ocrCount > 0
+      ? localize('com_ui_steel_activity_source_count', {
+          source: localize('com_ui_steel_activity_source_ocr'),
+          count: ocrCount,
+        })
+      : null,
+    workbookCount > 0
+      ? localize('com_ui_steel_activity_source_count', {
+          source: localize('com_ui_steel_activity_source_workbook'),
+          count: workbookCount,
+        })
+      : null,
+  ].filter((countText): countText is string => Boolean(countText));
+
+  if (sourceCounts.length > 0) {
+    return sourceCounts.join(', ');
+  }
+
+  const savedCount = getSavedCountTotal(event);
+  return savedCount > 0
+    ? localize('com_ui_steel_activity_records_saved', { count: savedCount })
+    : null;
 }
 
 const SteelActivity = memo(function SteelActivity({
@@ -52,11 +105,7 @@ const SteelActivity = memo(function SteelActivity({
       className="mt-1 flex flex-col gap-1 text-xs text-text-secondary"
     >
       {displayEvents.map((event, index) => {
-        const savedCount = getSavedCountTotal(event);
-        const savedText =
-          savedCount > 0
-            ? localize('com_ui_steel_activity_records_saved', { count: savedCount })
-            : null;
+        const savedText = getSavedCountText(event, localize);
         return (
           <div
             key={`${event.type}-${event.source}-${event.messageId ?? messageId}-${event.providerToolCallId ?? index}`}
