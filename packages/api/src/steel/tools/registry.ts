@@ -19,6 +19,11 @@ export interface SteelToolUsagePolicy {
   readonly forbiddenWhenHistoryHasNeededMarkdown?: boolean;
   readonly allowedScopes?: readonly string[];
   readonly currentConversationScoped?: boolean;
+  readonly fileKeyParameter?: string;
+  readonly ocrFileKeyParameter?: string;
+  readonly defaultWorkbookFileKey?: string;
+  readonly fileKeyRecommendedWhenMultipleOrders?: boolean;
+  readonly ocrFileKeyRecommendedForFullContent?: boolean;
 }
 
 export const steelReadMarkdownUsagePolicy = {
@@ -26,6 +31,11 @@ export const steelReadMarkdownUsagePolicy = {
   forbiddenWhenHistoryHasNeededMarkdown: true,
   allowedScopes: ['workbook', 'ocr'],
   currentConversationScoped: true,
+  fileKeyParameter: 'fileKey',
+  ocrFileKeyParameter: 'ocrFileKey',
+  defaultWorkbookFileKey: 'default',
+  fileKeyRecommendedWhenMultipleOrders: true,
+  ocrFileKeyRecommendedForFullContent: true,
 } as const satisfies SteelToolUsagePolicy;
 
 const providerToolNames = new Set<SteelProviderToolName>([
@@ -50,7 +60,7 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'read_markdown',
     description:
-      'Read the current conversation-scoped Markdown text for either workbook or OCR data only when chat history no longer contains the complete assistant table/evidence. First inspect provider chat history; if the needed OCR/workbook Markdown is already present and complete enough there, do not call this tool. Use scope=workbook for the strict workbook including quote sheets, or scope=ocr for free-form drawing/OCR evidence. Do not pass row queries, quote scope, all scope, or conversation IDs; the backend uses the active conversation.',
+      'Read the current conversation-scoped Markdown text for either workbook or OCR data only when chat history no longer contains the complete assistant table/evidence. First inspect provider chat history; if the needed OCR/workbook Markdown is already present and complete enough there, do not call this tool. Use scope=workbook without fileKey for the combined current workbook. Use scope=workbook with fileKey=file:<id> when multiple OCR files each have their own order and you need one file-specific workbook; use fileKey=default for the text/manual/default order when it coexists with OCR-file orders. For OCR, call scope=ocr without ocrFileKey only to list available OCR file keys; call scope=ocr with ocrFileKey=file:<id> to read one file result and avoid aggregate truncation. Do not pass row queries, quote scope, all scope, or conversation IDs; the backend uses the active conversation.',
     argsSchema: steelToolArgsSchemas.read_markdown,
     usagePolicy: steelReadMarkdownUsagePolicy,
   },

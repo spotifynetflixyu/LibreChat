@@ -253,6 +253,11 @@ function createTestRuntimeContext(
         forbiddenWhenHistoryHasNeededMarkdown: true,
         allowedScopes: ['workbook', 'ocr'],
         currentConversationScoped: true,
+        fileKeyParameter: 'fileKey',
+        ocrFileKeyParameter: 'ocrFileKey',
+        defaultWorkbookFileKey: 'default',
+        fileKeyRecommendedWhenMultipleOrders: true,
+        ocrFileKeyRecommendedForFullContent: true,
       },
     },
   };

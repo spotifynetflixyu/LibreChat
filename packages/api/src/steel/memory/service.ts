@@ -21,6 +21,8 @@ interface SteelJsonObject {
   [key: string]: SteelJsonValue;
 }
 
+const defaultWorkbookFileKey = 'default';
+
 export interface CaptureAssistantFinalMarkdownInput {
   conversationId: string;
   requestId?: string;
@@ -1049,6 +1051,15 @@ function getAssistantOcrReplacementFilter(
 function getOcrFileKeyReplacementFilter(
   ocrFileKey: string | undefined,
 ): FilterQuery<ISteelWorkingOrderMemory> {
+  if (ocrFileKey === defaultWorkbookFileKey) {
+    return {
+      $or: [
+        { 'payload.ocrFileKey': defaultWorkbookFileKey },
+        { 'payload.ocrFileKey': { $exists: false } },
+      ],
+    };
+  }
+
   return ocrFileKey !== undefined
     ? { 'payload.ocrFileKey': ocrFileKey }
     : { 'payload.ocrFileKey': { $exists: false } };
@@ -1072,13 +1083,16 @@ function groupPayloadsByOcrFileKey(
   return groups;
 }
 
-function attachSingleOcrFileMetadata(
+function attachWorkbookFileMetadata(
   payload: SteelJsonObject,
   descriptors: readonly SteelOcrFileDescriptor[],
 ): SteelJsonObject {
   const descriptor = descriptors.length === 1 ? descriptors[0] : undefined;
   return descriptor === undefined
-    ? payload
+    ? {
+        ...payload,
+        ocrFileKey: defaultWorkbookFileKey,
+      }
     : {
         ...payload,
         ...toOcrFileMetadataPayload(descriptor),
@@ -1544,7 +1558,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
           const rows = canonicalizeSystemOrderItemNumbers(
             payloads
               .filter((payload) => getParsedRowNo(payload) !== undefined)
-              .map((payload) => attachSingleOcrFileMetadata(payload, descriptors)),
+              .map((payload) => attachWorkbookFileMetadata(payload, descriptors)),
           );
           if (rows.length === 0) {
             continue;

@@ -87,6 +87,8 @@ interface SearchCustomersInput {
 
 export interface ReadMarkdownInput {
   scope: 'workbook' | 'ocr';
+  ocrFileKey?: string;
+  fileKey?: string;
   reason?: string;
 }
 
@@ -224,9 +226,20 @@ const searchPriceCandidatesSchema: z.ZodType<
 const readMarkdownSchema: z.ZodType<ReadMarkdownInput> = z
   .object({
     scope: z.enum(['workbook', 'ocr']),
+    ocrFileKey: nonEmptyString.optional(),
+    fileKey: nonEmptyString.optional(),
     reason: nonEmptyString.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.ocrFileKey && value.fileKey && value.ocrFileKey !== value.fileKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'ocrFileKey and fileKey must match when both are provided',
+        path: ['fileKey'],
+      });
+    }
+  });
 
 const runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
   .object({

@@ -49,6 +49,13 @@
   values as owned file-key aliases before calling MCP. Never pass `file:<id>`
   directly to `paddleocr-mcp`; it only accepts MCP-visible paths, URLs, Base64,
   or data URLs.
+- `read_markdown` should support per-file reads for both OCR and workbook
+  state. Use aggregate OCR only to list available file keys / short evidence;
+  fetch full OCR Markdown one file at a time with `ocrFileKey` to avoid
+  truncation. For workbook, no `fileKey` means the combined current workbook;
+  `fileKey` means multiple OCR files / text orders have separate workbook
+  orders and only that file's rows should be returned. Text/manual/default
+  workbook rows use the fixed `fileKey`/`ocrFileKey` value `default`.
 - OCR Markdown table parsing must keep a structured OCR heading as the pending
   table title when metadata lines such as `file key: file:<id>` appear between
   the heading and table. Do not let metadata replace the OCR title or

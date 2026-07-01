@@ -301,7 +301,7 @@ describe('Steel tool registry', () => {
     }).toThrow('Unknown Steel provider tool');
   });
 
-  it('exposes scope-only Markdown-derived current-state reads by default', () => {
+  it('exposes file-keyed Markdown-derived current-state reads by default', () => {
     const definition = getSteelToolDefinitions().find((entry) => entry.name === 'read_markdown');
 
     expect(definition).toBeDefined();
@@ -310,6 +310,11 @@ describe('Steel tool registry', () => {
       forbiddenWhenHistoryHasNeededMarkdown: true,
       allowedScopes: ['workbook', 'ocr'],
       currentConversationScoped: true,
+      fileKeyParameter: 'fileKey',
+      ocrFileKeyParameter: 'ocrFileKey',
+      defaultWorkbookFileKey: 'default',
+      fileKeyRecommendedWhenMultipleOrders: true,
+      ocrFileKeyRecommendedForFullContent: true,
     });
     expect(definition?.argsSchema.parse({
       scope: 'workbook',
@@ -319,10 +324,33 @@ describe('Steel tool registry', () => {
       reason: 'Need current parsed workbook after compact context',
     });
     expect(definition?.argsSchema.parse({
+      scope: 'workbook',
+      fileKey: 'file:file-d',
+    })).toEqual({
+      scope: 'workbook',
+      fileKey: 'file:file-d',
+    });
+    expect(definition?.argsSchema.parse({
       scope: 'ocr',
+      ocrFileKey: 'file:file-d',
     })).toEqual({
       scope: 'ocr',
+      ocrFileKey: 'file:file-d',
     });
+    expect(definition?.argsSchema.parse({
+      scope: 'ocr',
+      fileKey: 'file:file-d',
+    })).toEqual({
+      scope: 'ocr',
+      fileKey: 'file:file-d',
+    });
+    expect(() =>
+      definition?.argsSchema.parse({
+        scope: 'ocr',
+        ocrFileKey: 'file:file-d',
+        fileKey: 'file:file-e',
+      }),
+    ).toThrow('ocrFileKey and fileKey must match');
     expect(() =>
       definition?.argsSchema.parse({
         scope: 'quote',

@@ -795,7 +795,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       expect.arrayContaining([
         expect.objectContaining({ ocrFileKey: 'file:file-a', erpItemCode: 'NEW_A' }),
         expect.objectContaining({ ocrFileKey: 'file:file-b', erpItemCode: 'KEEP_B' }),
-        expect.objectContaining({ erpItemCode: 'NEW_DEFAULT' }),
+        expect.objectContaining({ ocrFileKey: 'default', erpItemCode: 'NEW_DEFAULT' }),
       ]),
     );
     expect(activeRows.map((row) => row.payload)).toEqual(

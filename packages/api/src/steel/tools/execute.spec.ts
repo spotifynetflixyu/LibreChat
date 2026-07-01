@@ -585,6 +585,146 @@ describe('Steel minimal tool execution', () => {
     expect(tables[2]?.rows[0]).toEqual(['', '', '536']);
   });
 
+  it('reads file-keyed workbook rows when multiple OCR files have separate orders', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    snapshot.previousOutputSheets.system_order.rows = [
+      {
+        rowId: 'system_order:default:1',
+        cells: {
+          ocrFileKey: 'default',
+          rowNo: 1,
+          erpItemCode: 'TEXT001',
+          productName: 'Text order item',
+          quantity: 3,
+        },
+      },
+      {
+        rowId: 'system_order:file-a:1',
+        cells: {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          rowNo: 1,
+          erpItemCode: 'A001',
+          productName: 'A order item',
+          quantity: 1,
+        },
+      },
+      {
+        rowId: 'system_order:file-b:1',
+        cells: {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          rowNo: 1,
+          erpItemCode: 'B001',
+          productName: 'B order item',
+          quantity: 2,
+        },
+      },
+    ];
+    snapshot.previousOutputSheets.customer_quote.rows = [];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'workbook',
+        fileKey: 'file:file-b',
+        reason: 'Need the workbook generated for b.pdf only',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(result.data.fileKey).toBe('file:file-b');
+    const markdown = String(result.data.markdown);
+    const tables = parseMarkdownTables(markdown);
+
+    expect(markdown).not.toContain('A001');
+    expect(markdown).not.toContain('TEXT001');
+    expect(markdown).toContain('B001');
+    expect(tables[0]?.rows).toHaveLength(1);
+    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['', '1', '', 'B001', 'B order item']);
+  });
+
+  it('reads the default workbook order separately from OCR file-keyed orders', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    snapshot.previousOutputSheets.system_order.rows = [
+      {
+        rowId: 'system_order:legacy-default:1',
+        cells: {
+          rowNo: 1,
+          erpItemCode: 'LEGACY_TEXT',
+          productName: 'Legacy text order item',
+          quantity: 1,
+        },
+      },
+      {
+        rowId: 'system_order:default:1',
+        cells: {
+          ocrFileKey: 'default',
+          rowNo: 2,
+          erpItemCode: 'TEXT001',
+          productName: 'Text order item',
+          quantity: 3,
+        },
+      },
+      {
+        rowId: 'system_order:file-b:1',
+        cells: {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          rowNo: 1,
+          erpItemCode: 'B001',
+          productName: 'B order item',
+          quantity: 2,
+        },
+      },
+    ];
+    snapshot.previousOutputSheets.customer_quote.rows = [];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'workbook',
+        fileKey: 'default',
+        reason: 'Need the text-order workbook only',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(result.data.fileKey).toBe('default');
+    const markdown = String(result.data.markdown);
+    const tables = parseMarkdownTables(markdown);
+
+    expect(markdown).toContain('LEGACY_TEXT');
+    expect(markdown).toContain('TEXT001');
+    expect(markdown).not.toContain('B001');
+    expect(tables[0]?.rows).toHaveLength(2);
+  });
+
   it('reads current OCR data as Markdown text without fixed workbook columns', async () => {
     const outputSheetMemoryReader = {
       readOutputSheetMemory: jest.fn(async () => createOutputSheetMemorySnapshot()),
@@ -732,6 +872,65 @@ describe('Steel minimal tool execution', () => {
         }),
       ]),
     );
+  });
+
+  it('reads one OCR result by ocrFileKey with chunked content parts', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    const dContent = `target d.pdf OCR ${'D'.repeat(2500)}`;
+    snapshot.derivedIndex.ocrExtracts = [
+      {
+        kind: 'paddleocr_mcp_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-a',
+        fileId: 'file-a',
+        filename: 'a.jpg',
+        content: 'a.jpg OCR content',
+      },
+      {
+        kind: 'paddleocr_mcp_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-d',
+        fileId: 'file-d',
+        filename: 'd.pdf',
+        content: dContent,
+      },
+    ];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'ocr',
+        ocrFileKey: 'file:file-d',
+        reason: 'Need this file OCR evidence after compact context',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    const markdown = String(result.data.markdown);
+    const items = result.data.items as Array<{ contentParts?: string[]; filename?: string }>;
+
+    expect(result.data.ocrFileKey).toBe('file:file-d');
+    expect(markdown).toContain('### PaddleOCR raw/preflight item 1 - d.pdf');
+    expect(markdown).toContain('ocrFileKey=file:file-d');
+    expect(markdown).not.toContain('file:file-a');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual(expect.objectContaining({ filename: 'd.pdf' }));
+    expect(items[0]?.contentParts).toHaveLength(3);
+    expect(items[0]?.contentParts?.join('')).toBe(dContent);
+    expect(items[0]?.contentParts?.join('')).not.toContain('[truncated]');
   });
 
   it('rejects row query arguments for current Markdown-derived reads', async () => {

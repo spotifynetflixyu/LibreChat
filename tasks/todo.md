@@ -58,6 +58,17 @@ Fix:
   structured `items[]`, one item per OCR file. This keeps later file keys and
   per-file content visible even when an earlier OCR result is long enough to
   trigger the Steel tool sanitizer's string cap.
+- `read_markdown(scope:"ocr", ocrFileKey:"file:<id>")` now reads a single OCR
+  file result. Aggregate OCR reads are for listing file keys / short evidence;
+  keyed OCR reads return per-file `contentParts[]` chunks so long OCR Markdown
+  is not lost to string truncation.
+- `read_markdown(scope:"workbook")` without `fileKey` returns the combined
+  current workbook. `read_markdown(scope:"workbook", fileKey:"file:<id>")`
+  reads workbook rows tied to one OCR file when multiple OCR files have
+  separate orders. `read_markdown(scope:"workbook", fileKey:"default")` reads
+  the text/manual/default order. Workbook parse/save now stores default rows
+  with `ocrFileKey: "default"` and same-key replacements only supersede that
+  key's rows.
 
 Verification:
 
@@ -65,7 +76,13 @@ Verification:
 - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|preflight"`
 - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false`
 - `cd packages/api && rtk npx jest src/steel/tools/execute.spec.ts --runInBand --watch=false --coverage=false`
+- `cd packages/api && rtk npx jest src/steel/tools/execute.spec.ts src/steel/tools/registry.spec.ts --runInBand --watch=false --coverage=false`
 - `cd packages/api && rtk npx jest src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts --runInBand --watch=false --coverage=false`
+- `cd packages/api && rtk npx jest src/steel/handlers.spec.ts src/steel/ai/provider.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "read_markdown|tool policy|aiVisibleTools|compact workbook|always exposes"`
+- Simplify pass reduced duplicated file-key matching logic in
+  `read_markdown`, limited legacy no-key default matching to workbook reads,
+  and kept requested `fileKey` calculation single-source within the tool
+  execution path.
 - `cd packages/api && rtk npm run build`
 - `rtk git diff --check HEAD`
 - Local new-code readback against `.env.prod` Mongo for conversation
@@ -75,6 +92,10 @@ Verification:
   `ocrSource: paddleocr_mcp`, and `hasRenderableText: true`.
 - The same local new-code `read_markdown(scope:"ocr")` check confirmed its
   Markdown includes `d.pdf`, the d.pdf file id, and the d.pdf file key.
+- Local new-code `read_markdown(scope:"ocr", ocrFileKey:
+  "file:2e3d9903-9736-41a9-bbf1-87e5c8e0a093")` against `.env.prod` Mongo
+  returned exactly one item for `d.pdf`, `keyedOnlyDFile: true`,
+  `hasRenderableText: true`, and `contentParts: 2`.
 
 ---
 

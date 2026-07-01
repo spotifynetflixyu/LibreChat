@@ -8,6 +8,7 @@ import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas } from './schemas';
 
 import type {
+  FullActiveSteelOutputSheets,
   SteelOutputSheetMemorySnapshot,
   SteelRuntimeActiveOutputSheetId,
   SteelRuntimeJsonObject,
@@ -40,6 +41,10 @@ const workbookSheetOrder = [
   'customer_quote',
   'manual_review',
 ] as const satisfies readonly SteelRuntimeActiveOutputSheetId[];
+
+const defaultWorkbookFileKey = 'default';
+const ocrContentPartLength = 1000;
+const ocrTextKeys = new Set(['markdown', 'text', 'content', 'rawText', 'ocrText', 'pageText', 'result']);
 
 const strictWorkbookHeaders: Partial<Record<SteelRuntimeActiveOutputSheetId, readonly string[]>> = {
   system_order: [
@@ -300,10 +305,68 @@ function getWorkbookSheetHeaders(sheet: SteelRuntimeOutputSheet): string[] {
   ];
 }
 
-function renderWorkbookMarkdown(snapshot: SteelOutputSheetMemorySnapshot): string {
+function matchesRequestedFileKey(
+  value: SteelRuntimeJsonObject,
+  requestedFileKey: string,
+  options?: { includeUnkeyedDefault?: boolean },
+): boolean {
+  if (
+    options?.includeUnkeyedDefault === true &&
+    requestedFileKey === defaultWorkbookFileKey &&
+    value.ocrFileKey === undefined &&
+    value.fileId === undefined
+  ) {
+    return true;
+  }
+
+  const bareFileKey = requestedFileKey.startsWith('file:')
+    ? requestedFileKey.slice('file:'.length)
+    : requestedFileKey;
+  return (
+    value.ocrFileKey === requestedFileKey ||
+    value.ocrFileKey === `file:${bareFileKey}` ||
+    value.fileId === requestedFileKey ||
+    value.fileId === bareFileKey
+  );
+}
+
+function filterWorkbookSheetByFileKey(
+  sheet: SteelRuntimeOutputSheet,
+  requestedFileKey: string,
+): SteelRuntimeOutputSheet {
+  return {
+    ...sheet,
+    rows: sheet.rows.filter((row) =>
+      matchesRequestedFileKey(row.cells, requestedFileKey, { includeUnkeyedDefault: true }),
+    ),
+  };
+}
+
+function filterWorkbookSheetsByFileKey(
+  outputSheets: FullActiveSteelOutputSheets,
+  requestedFileKey: string | undefined,
+): FullActiveSteelOutputSheets {
+  if (!requestedFileKey) {
+    return outputSheets;
+  }
+
+  return {
+    system_order: filterWorkbookSheetByFileKey(outputSheets.system_order, requestedFileKey),
+    customer_data: filterWorkbookSheetByFileKey(outputSheets.customer_data, requestedFileKey),
+    manual_review: filterWorkbookSheetByFileKey(outputSheets.manual_review, requestedFileKey),
+    customer_quote: filterWorkbookSheetByFileKey(outputSheets.customer_quote, requestedFileKey),
+  };
+}
+
+function renderWorkbookMarkdown(
+  snapshot: SteelOutputSheetMemorySnapshot,
+  requestedFileKey: string | undefined,
+): string {
+  const outputSheets = filterWorkbookSheetsByFileKey(snapshot.previousOutputSheets, requestedFileKey);
+
   return workbookSheetOrder
     .map((sheetId) => {
-      const sheet = snapshot.previousOutputSheets[sheetId];
+      const sheet = outputSheets[sheetId];
       const headers = getWorkbookSheetHeaders(sheet);
       const rows = sheet.rows.map((row) => row.cells);
 
@@ -313,7 +376,7 @@ function renderWorkbookMarkdown(snapshot: SteelOutputSheetMemorySnapshot): strin
 }
 
 function isOcrTextKey(key: string): boolean {
-  return ['markdown', 'text', 'content', 'rawText', 'ocrText', 'pageText', 'result'].includes(key);
+  return ocrTextKeys.has(key);
 }
 
 function getOcrTextBlocks(extract: SteelRuntimeJsonObject): string[] {
@@ -356,8 +419,36 @@ function getOcrEvidenceIndexLine(extract: SteelRuntimeJsonObject, index: number)
   return `- item ${index + 1}: ${fields.join('; ')}`;
 }
 
-function getOcrStructuredItems(snapshot: SteelOutputSheetMemorySnapshot): SteelRuntimeJsonObject[] {
-  return snapshot.derivedIndex.ocrExtracts.map((extract, index) => {
+function chunkText(value: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += chunkSize) {
+    chunks.push(value.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+function getRequestedFileKey(input: ReadMarkdownInput): string | undefined {
+  const fileKey = input.ocrFileKey ?? input.fileKey;
+  return typeof fileKey === 'string' && fileKey.trim() !== '' ? fileKey.trim() : undefined;
+}
+
+function getOcrExtractsForFileKey(
+  snapshot: SteelOutputSheetMemorySnapshot,
+  requestedFileKey: string | undefined,
+): SteelRuntimeJsonObject[] {
+  if (!requestedFileKey) {
+    return [...snapshot.derivedIndex.ocrExtracts];
+  }
+  return snapshot.derivedIndex.ocrExtracts.filter((extract) =>
+    matchesRequestedFileKey(extract, requestedFileKey),
+  );
+}
+
+function getOcrStructuredItems(
+  extracts: readonly SteelRuntimeJsonObject[],
+  options: { includeContentParts: boolean },
+): SteelRuntimeJsonObject[] {
+  return extracts.map((extract, index) => {
     const textBlocks = getOcrTextBlocks(extract);
     const item: SteelRuntimeJsonObject = {
       item: index + 1,
@@ -380,15 +471,34 @@ function getOcrStructuredItems(snapshot: SteelOutputSheetMemorySnapshot): SteelR
     });
 
     if (textBlocks.length > 0) {
-      item.content = textBlocks.join('\n\n');
+      const content = textBlocks.join('\n\n');
+      item.content = content;
+      if (options.includeContentParts) {
+        item.contentParts = chunkText(content, ocrContentPartLength);
+      }
     }
 
     return item;
   });
 }
 
-function renderOcrMarkdown(snapshot: SteelOutputSheetMemorySnapshot): string {
-  if (snapshot.derivedIndex.ocrExtracts.length === 0) {
+function renderOcrMarkdown(
+  snapshot: SteelOutputSheetMemorySnapshot,
+  requestedFileKey: string | undefined,
+  extracts: readonly SteelRuntimeJsonObject[],
+): string {
+  if (extracts.length === 0) {
+    if (requestedFileKey) {
+      return [
+        '## OCR data',
+        '',
+        `No current OCR data for ocrFileKey=${requestedFileKey}.`,
+        '',
+        '### Available OCR evidence index',
+        '',
+        ...snapshot.derivedIndex.ocrExtracts.map(getOcrEvidenceIndexLine),
+      ].join('\n');
+    }
     return '## OCR data\n\nNo current OCR data.';
   }
 
@@ -397,8 +507,8 @@ function renderOcrMarkdown(snapshot: SteelOutputSheetMemorySnapshot): string {
     '',
     '### OCR evidence index',
     '',
-    ...snapshot.derivedIndex.ocrExtracts.map(getOcrEvidenceIndexLine),
-    ...snapshot.derivedIndex.ocrExtracts.flatMap((extract, index) => {
+    ...extracts.map(getOcrEvidenceIndexLine),
+    ...extracts.flatMap((extract, index) => {
       const textBlocks = getOcrTextBlocks(extract);
       const metadataTable = renderOcrMetadataTable(extract);
 
@@ -422,15 +532,30 @@ async function readMarkdownRows(
   }
 
   const snapshot = await options.outputSheetMemoryReader.readOutputSheetMemory();
+  const requestedFileKey = getRequestedFileKey(input);
+  const ocrExtracts =
+    input.scope === 'ocr' ? getOcrExtractsForFileKey(snapshot, requestedFileKey) : [];
   const markdown =
-    input.scope === 'workbook' ? renderWorkbookMarkdown(snapshot) : renderOcrMarkdown(snapshot);
+    input.scope === 'workbook'
+      ? renderWorkbookMarkdown(snapshot, requestedFileKey)
+      : renderOcrMarkdown(snapshot, requestedFileKey, ocrExtracts);
 
   return {
     source: 'assistant_markdown_auto_parse',
     scope: input.scope,
     format: 'markdown',
     markdown,
-    ...(input.scope === 'ocr' ? { items: getOcrStructuredItems(snapshot) } : {}),
+    ...(input.scope === 'ocr'
+      ? {
+          ocrFileKey: requestedFileKey,
+          items: getOcrStructuredItems(ocrExtracts, {
+            includeContentParts: requestedFileKey !== undefined,
+          }),
+        }
+      : {}),
+    ...(input.scope === 'workbook' && requestedFileKey !== undefined
+      ? { fileKey: requestedFileKey }
+      : {}),
   };
 }
 
