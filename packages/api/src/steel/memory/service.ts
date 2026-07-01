@@ -1195,6 +1195,9 @@ function toOutputSheetMemorySnapshot(
       case 'ocr_extract':
         derivedIndex.ocrExtracts.push(document.payload);
         return;
+      case 'paddleocr_preflight':
+        derivedIndex.ocrExtracts.push(toPaddleOcrEvidencePayload(document.payload));
+        return;
       default:
         return;
     }
@@ -1203,6 +1206,43 @@ function toOutputSheetMemorySnapshot(
   return {
     previousOutputSheets,
     derivedIndex,
+  };
+}
+
+function getNestedStringProperty(
+  value: SteelJsonValue | undefined,
+  pathSegments: readonly string[],
+): string | undefined {
+  let current = value;
+  for (const segment of pathSegments) {
+    if (!isJsonObject(current)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return typeof current === 'string' ? current : undefined;
+}
+
+function getPaddleOcrResultText(payload: SteelJsonObject): string | undefined {
+  const result = isJsonObject(payload.result) ? payload.result : undefined;
+  return (
+    getStringProperty(result ?? null, 'content') ??
+    getStringProperty(result ?? null, 'text') ??
+    getStringProperty(result ?? null, 'markdown') ??
+    getNestedStringProperty(result, ['lc_kwargs', 'content']) ??
+    getNestedStringProperty(result, ['lc_kwargs', 'text']) ??
+    getNestedStringProperty(result, ['lc_kwargs', 'markdown'])
+  );
+}
+
+function toPaddleOcrEvidencePayload(payload: SteelJsonObject): SteelJsonObject {
+  const text = getPaddleOcrResultText(payload);
+  return {
+    ...payload,
+    kind: 'paddleocr_mcp_result',
+    ocrSource: 'paddleocr_mcp',
+    ocrEngine: 'paddleocr_vl',
+    ...(text !== undefined ? { content: text } : {}),
   };
 }
 
@@ -1316,6 +1356,7 @@ export function createMongooseSteelOutputSheetMemoryReader(
             'price_evidence',
             'calculation_fact',
             'ocr_extract',
+            'paddleocr_preflight',
           ],
         },
       })

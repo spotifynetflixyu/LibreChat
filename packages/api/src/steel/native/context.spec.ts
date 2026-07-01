@@ -385,7 +385,19 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContext.attachments.priorActiveFileEvidence).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ ocrSource: 'paddleocr_mcp' })]),
     );
+    expect(context.runtimeContext.toolPolicy.currentPaddleOcrUsagePolicy).toContain(
+      'currentPaddleOcrResults',
+    );
+    expect(context.runtimeContext.toolPolicy.currentPaddleOcrUsagePolicy).toContain(
+      'do not call read_markdown',
+    );
+    expect(context.runtimeContext.toolPolicy.currentPaddleOcrUsagePolicy).toContain(
+      'do not call paddleocr_vl',
+    );
     expect(serialized.attachments.currentPaddleOcrResults).toEqual(currentPaddleOcrResults);
+    expect(serialized.toolPolicy.currentPaddleOcrUsagePolicy).toContain(
+      'currentPaddleOcrResults',
+    );
   });
 
   it('builds default native context with injected dependencies for JS callers', async () => {

@@ -30,11 +30,25 @@
   reset errors and verify with both same-client and fresh-process smokes before
   adding locks. Sequential reset handling should rebuild the PaddleOCR MCP
   connection and retry only the affected file once.
+- Same-turn automatic PaddleOCR preflight output must be AI-visible as
+  authoritative OCR evidence for the current file. If
+  `attachments.currentPaddleOcrResults` contains the current file key, the
+  runtime policy should tell AI not to call `read_markdown` or rerun
+  `paddleocr_vl` for that file unless the user explicitly asks to rerun OCR or
+  the result is absent/failed.
 - OCR dedupe must be source-aware per file key. `ocr_extract` rows from
   assistant Markdown / AI OCR fallback are useful review state, but only
   active rows with `ocrSource: "paddleocr_mcp"` may skip future PaddleOCR
   preflight for the same `ocrFileKey`; PaddleOCR failures must not write
   completed OCR state so the next turn retries.
+- `read_markdown(scope: "ocr")` must include active PaddleOCR preflight raw
+  evidence as OCR evidence, labeled separately from assistant OCR Markdown, so
+  compact-context recovery does not hide successful PaddleOCR output and cause
+  duplicate OCR calls.
+- PaddleOCR MCP input resolution must treat Steel/LibreChat `file:<fileId>`
+  values as owned file-key aliases before calling MCP. Never pass `file:<id>`
+  directly to `paddleocr-mcp`; it only accepts MCP-visible paths, URLs, Base64,
+  or data URLs.
 - OCR Markdown table parsing must keep a structured OCR heading as the pending
   table title when metadata lines such as `file key: file:<id>` appear between
   the heading and table. Do not let metadata replace the OCR title or

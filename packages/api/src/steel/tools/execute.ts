@@ -313,7 +313,13 @@ function renderWorkbookMarkdown(snapshot: SteelOutputSheetMemorySnapshot): strin
 }
 
 function isOcrTextKey(key: string): boolean {
-  return ['markdown', 'text', 'content', 'rawText', 'ocrText', 'pageText'].includes(key);
+  return ['markdown', 'text', 'content', 'rawText', 'ocrText', 'pageText', 'result'].includes(key);
+}
+
+function getOcrTextBlocks(extract: SteelRuntimeJsonObject): string[] {
+  return Object.entries(extract)
+    .filter(([key, value]) => isOcrTextKey(key) && typeof value === 'string' && value.trim() !== '')
+    .map(([, value]) => String(value).trim());
 }
 
 function renderOcrMetadataTable(extract: SteelRuntimeJsonObject): string {
@@ -324,6 +330,63 @@ function renderOcrMetadataTable(extract: SteelRuntimeJsonObject): string {
   return rows.length > 0 ? toMarkdownTable(['欄位', '內容'], rows) : '';
 }
 
+function isPaddleOcrRawEvidence(extract: SteelRuntimeJsonObject): boolean {
+  return extract.ocrSource === 'paddleocr_mcp' || extract.kind === 'paddleocr_mcp_result';
+}
+
+function getOcrEvidenceHeading(extract: SteelRuntimeJsonObject, index: number): string {
+  const filename = typeof extract.filename === 'string' ? extract.filename.trim() : '';
+  const label = isPaddleOcrRawEvidence(extract)
+    ? `PaddleOCR raw/preflight item ${index + 1}`
+    : `OCR item ${index + 1}`;
+  return filename ? `${label} - ${filename}` : label;
+}
+
+function getOcrEvidenceIndexLine(extract: SteelRuntimeJsonObject, index: number): string {
+  const fields = [
+    ['heading', getOcrEvidenceHeading(extract, index)],
+    ['filename', extract.filename],
+    ['ocrFileKey', extract.ocrFileKey],
+    ['fileId', extract.fileId],
+    ['source', extract.ocrSource],
+  ]
+    .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+    .map(([key, value]) => `${key}=${value}`);
+
+  return `- item ${index + 1}: ${fields.join('; ')}`;
+}
+
+function getOcrStructuredItems(snapshot: SteelOutputSheetMemorySnapshot): SteelRuntimeJsonObject[] {
+  return snapshot.derivedIndex.ocrExtracts.map((extract, index) => {
+    const textBlocks = getOcrTextBlocks(extract);
+    const item: SteelRuntimeJsonObject = {
+      item: index + 1,
+      heading: getOcrEvidenceHeading(extract, index),
+    };
+
+    [
+      'filename',
+      'ocrFileKey',
+      'fileId',
+      'ocrSource',
+      'ocrEngine',
+      'kind',
+      'mediaType',
+    ].forEach((key) => {
+      const value = extract[key];
+      if (typeof value === 'string' && value.trim() !== '') {
+        item[key] = value;
+      }
+    });
+
+    if (textBlocks.length > 0) {
+      item.content = textBlocks.join('\n\n');
+    }
+
+    return item;
+  });
+}
+
 function renderOcrMarkdown(snapshot: SteelOutputSheetMemorySnapshot): string {
   if (snapshot.derivedIndex.ocrExtracts.length === 0) {
     return '## OCR data\n\nNo current OCR data.';
@@ -331,15 +394,17 @@ function renderOcrMarkdown(snapshot: SteelOutputSheetMemorySnapshot): string {
 
   return [
     '## OCR data',
+    '',
+    '### OCR evidence index',
+    '',
+    ...snapshot.derivedIndex.ocrExtracts.map(getOcrEvidenceIndexLine),
     ...snapshot.derivedIndex.ocrExtracts.flatMap((extract, index) => {
-      const textBlocks = Object.entries(extract)
-        .filter(([key, value]) => isOcrTextKey(key) && typeof value === 'string' && value.trim() !== '')
-        .map(([, value]) => String(value).trim());
+      const textBlocks = getOcrTextBlocks(extract);
       const metadataTable = renderOcrMetadataTable(extract);
 
       return [
         '',
-        `### OCR item ${index + 1}`,
+        `### ${getOcrEvidenceHeading(extract, index)}`,
         '',
         ...textBlocks,
         ...(metadataTable ? ['', metadataTable] : []),
@@ -365,6 +430,7 @@ async function readMarkdownRows(
     scope: input.scope,
     format: 'markdown',
     markdown,
+    ...(input.scope === 'ocr' ? { items: getOcrStructuredItems(snapshot) } : {}),
   };
 }
 

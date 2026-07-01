@@ -140,6 +140,7 @@ export interface SteelRuntimeContext {
     aiVisibleTools: readonly SteelRuntimeAiVisibleToolName[];
     removedTools: typeof steelRuntimeRemovedTools;
     ocrCorrectionPolicy: string;
+    currentPaddleOcrUsagePolicy: string;
     readMarkdownUsagePolicy: typeof steelReadMarkdownUsagePolicy;
   };
 }
@@ -170,6 +171,9 @@ export interface SteelRuntimeContextDependencies {
   listOtherGlobalRules(): Promise<SteelRuntimeOtherGlobalRules>;
   readOutputSheetMemory(conversationId?: string): Promise<SteelOutputSheetMemorySnapshot>;
 }
+
+const currentPaddleOcrUsagePolicy =
+  'attachments.currentPaddleOcrResults is authoritative same-turn PaddleOCR evidence for the matching current file keys and filenames. If it contains the current file, use that result directly; do not call read_markdown for that file and do not call paddleocr_vl again unless the user explicitly asks to rerun OCR or the result is absent/failed.';
 
 export interface PrepareSteelRuntimeContextInput {
   conversation: SteelRuntimeContextConversationInput;
@@ -521,6 +525,7 @@ export async function prepareSteelRuntimeContext({
       removedTools: steelRuntimeRemovedTools,
       ocrCorrectionPolicy:
         'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not rerun OCR unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
+      currentPaddleOcrUsagePolicy,
       readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };
@@ -599,6 +604,7 @@ export async function prepareLibreChatSteelRuntimeContext({
       removedTools: steelRuntimeRemovedTools,
       ocrCorrectionPolicy:
         'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not rerun OCR unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
+      currentPaddleOcrUsagePolicy,
       readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };

@@ -292,7 +292,9 @@ function normalizeFileName(value) {
   if (typeof value !== 'string' || value.trim() === '') {
     return '';
   }
-  const normalizedPath = safeDecode(value.trim().split(/[?#]/)[0]).replace(/\\/g, '/');
+  const trimmed = value.trim();
+  const normalizedInput = trimmed.startsWith('file:') ? trimmed.slice('file:'.length) : trimmed;
+  const normalizedPath = safeDecode(normalizedInput.split(/[?#]/)[0]).replace(/\\/g, '/');
   return path.basename(normalizedPath).toLowerCase();
 }
 

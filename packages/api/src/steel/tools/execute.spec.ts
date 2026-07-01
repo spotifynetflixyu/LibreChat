@@ -633,6 +633,107 @@ describe('Steel minimal tool execution', () => {
     );
   });
 
+  it('renders PaddleOCR preflight raw results in OCR Markdown reads', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    snapshot.derivedIndex.ocrExtracts = [
+      {
+        kind: 'paddleocr_mcp_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-d',
+        fileId: 'file-d',
+        filename: 'd.pdf',
+        mediaType: 'application/pdf',
+        content: 'PaddleOCR raw d.pdf content page 1 and page 2',
+      },
+    ];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'ocr',
+        reason: 'Need current OCR evidence after compact context',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    const markdown = String(result.data.markdown);
+
+    expect(markdown).toContain('### PaddleOCR raw/preflight item 1 - d.pdf');
+    expect(markdown).toContain('PaddleOCR raw d.pdf content page 1 and page 2');
+    expect(markdown).toContain('| ocrFileKey |file:file-d |');
+    expect(markdown).toContain('| filename |d.pdf |');
+  });
+
+  it('keeps later OCR file keys visible when earlier OCR text is long', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    snapshot.derivedIndex.ocrExtracts = [
+      {
+        kind: 'paddleocr_mcp_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-a',
+        fileId: 'file-a',
+        filename: 'a.jpg',
+        content: `long a.jpg OCR ${'A'.repeat(5000)}`,
+      },
+      {
+        kind: 'paddleocr_mcp_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-d',
+        fileId: 'file-d',
+        filename: 'd.pdf',
+        content: 'target d.pdf OCR content',
+      },
+    ];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'ocr',
+        reason: 'Need all current OCR evidence after compact context',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    const markdown = String(result.data.markdown);
+
+    expect(markdown).toContain('ocrFileKey=file:file-a');
+    expect(markdown).toContain('ocrFileKey=file:file-d');
+    expect(result.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          filename: 'd.pdf',
+          ocrFileKey: 'file:file-d',
+          content: 'target d.pdf OCR content',
+        }),
+      ]),
+    );
+  });
+
   it('rejects row query arguments for current Markdown-derived reads', async () => {
     const outputSheetMemoryReader = {
       readOutputSheetMemory: jest.fn(async () => createOutputSheetMemorySnapshot()),

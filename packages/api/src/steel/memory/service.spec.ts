@@ -1309,6 +1309,45 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
   });
 
+  it('exposes PaddleOCR preflight raw results as OCR evidence for read_markdown', async () => {
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const reader = createMongooseSteelOutputSheetMemoryReader(
+      mongoose,
+      'steel_conversation_paddleocr_read_markdown',
+    );
+
+    await writer.capturePaddleOcrResult({
+      conversationId: 'steel_conversation_paddleocr_read_markdown',
+      requestId: 'assistant_d_pdf',
+      providerToolCallId: 'steel_paddleocr_preflight_file_file-d',
+      turnIndex: 2,
+      checkpointTurnIndex: 1,
+      file: { fileId: 'file-d', filename: 'd.pdf', mediaType: 'application/pdf' },
+      data: {
+        type: 'tool',
+        status: 'success',
+        name: 'paddleocr_vl_mcp_PaddleOCR',
+        content: 'PaddleOCR raw content for d.pdf page 1 and page 2',
+      },
+    });
+
+    const snapshot = await reader.readOutputSheetMemory();
+
+    expect(snapshot.previousOutputSheets.system_order.rows).toHaveLength(0);
+    expect(snapshot.derivedIndex.ocrExtracts).toEqual([
+      expect.objectContaining({
+        kind: 'paddleocr_mcp_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-d',
+        fileId: 'file-d',
+        filename: 'd.pdf',
+        mediaType: 'application/pdf',
+        content: 'PaddleOCR raw content for d.pdf page 1 and page 2',
+      }),
+    ]);
+  });
+
   it('does not treat fallback OCR rows as completed PaddleOCR preflight state', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
@@ -1418,7 +1457,32 @@ describe('Mongoose Steel working-order memory reader', () => {
       totalTableCounts: {},
     });
     expect(activeEntries).toHaveLength(2);
-    expect(snapshot.derivedIndex.ocrExtracts).toEqual([]);
+    expect(snapshot.derivedIndex.ocrExtracts).toHaveLength(2);
+    expect(snapshot.derivedIndex.ocrExtracts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          content: 'new A',
+          result: expect.objectContaining({ text: 'new A' }),
+        }),
+        expect.objectContaining({
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          text: 'current B',
+        }),
+      ]),
+    );
+    expect(snapshot.derivedIndex.ocrExtracts).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ocrFileKey: 'file:file-a',
+          text: 'old A',
+        }),
+      ]),
+    );
     expect(activeEntries).toEqual([
       expect.objectContaining({
         payload: expect.objectContaining({

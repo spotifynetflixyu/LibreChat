@@ -1509,6 +1509,27 @@ describe('User parameter passing tests', () => {
       expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe(fileId);
     });
 
+    it('should resolve PaddleOCR file-key input_data from current request files', async () => {
+      const fileId = '2e3d9903-9736-41a9-bbf1-87e5c8e0a093';
+      const inputData = `file:${fileId}`;
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId,
+        inputData,
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
+      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe(inputData);
+    });
+
     it('should not download request-supplied PaddleOCR filepath without an owned DB file', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
         fileId: undefined,

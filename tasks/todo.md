@@ -1,3 +1,83 @@
+# Active: Production third-turn PaddleOCR preflight reuse bug - 2026-07-02
+
+Goal: diagnose and fix conversation
+`2fea7694-7872-4846-95dd-2297dc7a1df5`, where the third file turn for
+`d.pdf` saves automatic PaddleOCR preflight, then the assistant runs
+`read_markdown` and calls PaddleOCR again, producing `Error calling tool
+'paddleocr_vl'`.
+
+Status:
+
+- [x] Inspect the user screenshot and production Mongo using `.env.prod`.
+- [x] Compare third-turn messages, active Steel memory, current file keys, and
+      server logs.
+- [x] Identify why the assistant ran `read_markdown` and then retried
+      PaddleOCR despite a successful d.pdf preflight.
+- [x] Add red regressions for same-turn PaddleOCR context policy,
+      `read_markdown(scope:"ocr")` raw preflight visibility, and
+      `file:<id>` PaddleOCR input resolution.
+- [x] Implement the fix at the runtime context, read_markdown, and MCP input
+      resolver seams.
+- [x] Run focused tests/build and local production-data verification.
+- [ ] Deploy and verify production build state.
+
+Evidence:
+
+- Screenshot showed third turn used tools in this order:
+  `paddleocr_vl`, `read_markdown`, then `paddleocr_vl`.
+- Production Mongo showed d.pdf already had active
+  `paddleocr_preflight` with `ocrFileKey:
+  file:2e3d9903-9736-41a9-bbf1-87e5c8e0a093`, `filename: d.pdf`, and
+  `ocrSource: paddleocr_mcp`.
+- The same assistant message's stored tool calls showed
+  `read_markdown(scope:"ocr")` returned old a.jpg / b.jpg assistant OCR
+  Markdown, not d.pdf's raw PaddleOCR preflight result.
+- The model-visible second PaddleOCR call used
+  `input_data: "file:2e3d9903-9736-41a9-bbf1-87e5c8e0a093"`.
+- Production logs at `2026-07-01T22:24:43Z` showed the second PaddleOCR call
+  failed before OCR execution with `ValueError: Invalid input_data`, because
+  `paddleocr-mcp` only accepts absolute paths, URLs, raw Base64, or data URLs.
+
+Fix:
+
+- `attachments.currentPaddleOcrResults` is now paired with an explicit runtime
+  `currentPaddleOcrUsagePolicy`: if the current file already has same-turn
+  PaddleOCR evidence, use it directly; do not call `read_markdown` for that
+  file and do not call `paddleocr_vl` again unless the user explicitly asks to
+  rerun OCR or the result is absent/failed.
+- `readOutputSheetMemory()` now includes active `paddleocr_preflight` rows as
+  OCR evidence. The raw PaddleOCR result is exposed through
+  `derivedIndex.ocrExtracts` without adding workbook/system_order rows.
+- `read_markdown(scope:"ocr")` labels these rows as
+  `PaddleOCR raw/preflight item N - filename`, so the assistant can see that
+  d.pdf already has PaddleOCR evidence even if it calls read_markdown.
+- PaddleOCR MCP input resolution now treats `file:<id>` as a file-key wrapper
+  around the owned file id before matching request file records, so model
+  retries do not pass `file:<id>` directly to `paddleocr-mcp`.
+- `read_markdown(scope:"ocr")` now returns an OCR evidence index plus
+  structured `items[]`, one item per OCR file. This keeps later file keys and
+  per-file content visible even when an earlier OCR result is long enough to
+  trigger the Steel tool sanitizer's string cap.
+
+Verification:
+
+- `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false`
+- `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|preflight"`
+- `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false`
+- `cd packages/api && rtk npx jest src/steel/tools/execute.spec.ts --runInBand --watch=false --coverage=false`
+- `cd packages/api && rtk npx jest src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts --runInBand --watch=false --coverage=false`
+- `cd packages/api && rtk npm run build`
+- `rtk git diff --check HEAD`
+- Local new-code readback against `.env.prod` Mongo for conversation
+  `2fea7694-7872-4846-95dd-2297dc7a1df5` returned
+  `ocrEvidenceTotal: 5`, `itemCount: 5`, and one d.pdf item with
+  `ocrFileKey: file:2e3d9903-9736-41a9-bbf1-87e5c8e0a093`,
+  `ocrSource: paddleocr_mcp`, and `hasRenderableText: true`.
+- The same local new-code `read_markdown(scope:"ocr")` check confirmed its
+  Markdown includes `d.pdf`, the d.pdf file id, and the d.pdf file key.
+
+---
+
 # Active: Production PaddleOCR second-turn OCR table persistence bug - 2026-07-02
 
 Goal: diagnose and fix the production chat where the first image turn
