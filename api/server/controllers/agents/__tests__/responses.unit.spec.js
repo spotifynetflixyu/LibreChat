@@ -124,6 +124,32 @@ const mockBuildSteelNativeResponseMessageMetadata = jest.fn().mockReturnValue({
     },
   },
 });
+const mockCaptureSteelNativeResponseOutput = jest.fn().mockResolvedValue({
+  status: 'captured',
+  result: {
+    parseStatus: 'saved',
+    savedCounts: { ocr_extract: 1 },
+    savedTableCounts: { ocr_table: 1 },
+    totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2 },
+    totalTableCounts: { ocr_table: 2 },
+  },
+});
+const mockBuildSteelNativeEventEnvelopes = jest.fn().mockReturnValue([
+  {
+    event: 'steel_event',
+    data: {
+      type: 'memory_saved',
+      message: 'Working Order Memory saved',
+      savedCounts: { ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 2 },
+      source: 'responses_output',
+    },
+  },
+]);
+const mockSendEvent = jest.fn((res, event) => {
+  res.write(`event: message\ndata: ${JSON.stringify(event)}\n\n`);
+});
+const mockGenerationJobManagerEmitChunk = jest.fn();
 
 jest.mock('nanoid', () => ({
   nanoid: jest.fn(() => 'mock-nanoid-123'),
@@ -158,8 +184,13 @@ jest.mock('@librechat/api', () => ({
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
   extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
+  captureSteelNativeResponseOutput: (...args) => mockCaptureSteelNativeResponseOutput(...args),
+  buildSteelNativeEventEnvelopes: (...args) => mockBuildSteelNativeEventEnvelopes(...args),
   buildSteelNativeResponseMessageMetadata: (...args) =>
     mockBuildSteelNativeResponseMessageMetadata(...args),
+  createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({
+    captureAssistantFinalMarkdown: jest.fn(),
+  })),
   buildToolSet: jest.fn().mockReturnValue(new Set()),
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
   buildAgentContextAttachmentsByAgentId: (...args) =>
@@ -196,6 +227,10 @@ jest.mock('@librechat/api', () => ({
   getTransactionsConfig: mockGetTransactionsConfig,
   recordCollectedUsage: mockRecordCollectedUsage,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
+  sendEvent: (...args) => mockSendEvent(...args),
+  GenerationJobManager: {
+    emitChunk: (...args) => mockGenerationJobManagerEmitChunk(...args),
+  },
   extractManualSkills: jest.fn().mockReturnValue(undefined),
   injectSkillPrimes: jest.fn().mockReturnValue({
     initialMessages: [],
@@ -1047,6 +1082,35 @@ describe('createResponse controller', () => {
       );
       expect(runSteelPaddleOcrPreflight.mock.invocationCallOrder[0]).toBeLessThan(
         api.buildDefaultSteelGlobalAgentContext.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('emits final Steel capture events before closing the streaming response', async () => {
+      await createResponse(req, res);
+
+      expect(mockCaptureSteelNativeResponseOutput).toHaveBeenCalled();
+      expect(mockBuildSteelNativeEventEnvelopes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'responses_output',
+          conversationId: expect.any(String),
+          requestId: expect.any(String),
+          messageId: expect.any(String),
+          capture: expect.objectContaining({
+            status: 'captured',
+            result: expect.objectContaining({
+              totalTableCounts: { ocr_table: 2 },
+            }),
+          }),
+        }),
+      );
+      expect(mockSendEvent).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({
+          event: 'steel_event',
+        }),
+      );
+      expect(mockSendEvent.mock.invocationCallOrder[0]).toBeLessThan(
+        res.end.mock.invocationCallOrder[0],
       );
     });
   });

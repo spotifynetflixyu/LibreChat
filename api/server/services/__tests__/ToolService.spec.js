@@ -483,6 +483,17 @@ describe('ToolService - Action Capability Gating', () => {
         ],
         missingKeys: ['file:file-b', 'file:file-c'],
       });
+      mockCapturePaddleOcrResult
+        .mockResolvedValueOnce({
+          savedCounts: { paddleocr_preflight: 1 },
+          totalSavedCounts: { paddleocr_preflight: 2 },
+          totalTableCounts: {},
+        })
+        .mockResolvedValueOnce({
+          savedCounts: { paddleocr_preflight: 1 },
+          totalSavedCounts: { paddleocr_preflight: 3 },
+          totalTableCounts: {},
+        });
       mockLoadToolsUtil.mockResolvedValueOnce({
         loadedTools: [
           {
@@ -558,6 +569,11 @@ describe('ToolService - Action Capability Gating', () => {
                       input_data: 'file-b',
                       output_mode: 'detailed',
                       return_images: false,
+                      runtime_params: {
+                        use_doc_orientation_classify: true,
+                        use_doc_unwarping: true,
+                        use_layout_detection: true,
+                      },
                     }),
                     type: ToolCallTypes.TOOL_CALL,
                   },
@@ -577,8 +593,26 @@ describe('ToolService - Action Capability Gating', () => {
         ]),
       );
       expect(paddleInvoke.mock.calls.map(([args]) => args)).toEqual([
-        { input_data: 'file-b', output_mode: 'detailed', return_images: false },
-        { input_data: 'file-c', output_mode: 'detailed', return_images: false },
+        {
+          input_data: 'file-b',
+          output_mode: 'detailed',
+          return_images: false,
+          runtime_params: {
+            use_doc_orientation_classify: true,
+            use_doc_unwarping: true,
+            use_layout_detection: true,
+          },
+        },
+        {
+          input_data: 'file-c',
+          output_mode: 'detailed',
+          return_images: false,
+          runtime_params: {
+            use_doc_orientation_classify: true,
+            use_doc_unwarping: true,
+            use_layout_detection: true,
+          },
+        },
       ]);
       expect(mockCapturePaddleOcrResult.mock.calls.map(([input]) => ({
         providerToolCallId: input.providerToolCallId,
@@ -606,6 +640,14 @@ describe('ToolService - Action Capability Gating', () => {
           data: { text: 'C OCR' },
         },
       ]);
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          preflight: expect.objectContaining({
+            totalSavedCounts: { paddleocr_preflight: 3 },
+            totalTableCounts: {},
+          }),
+        }),
+      );
       expect(result).toEqual({
         status: 'completed',
         completedKeys: ['file:file-a', 'file:file-b', 'file:file-c'],
@@ -630,6 +672,8 @@ describe('ToolService - Action Capability Gating', () => {
             result: { text: 'C OCR' },
           },
         ],
+        totalSavedCounts: { paddleocr_preflight: 3 },
+        totalTableCounts: {},
       });
     });
 

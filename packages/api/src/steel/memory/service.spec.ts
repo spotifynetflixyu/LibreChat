@@ -397,6 +397,9 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(result).toEqual({
       parseStatus: 'saved',
       savedCounts: { working_order_row: 2 },
+      savedTableCounts: { system_order_table: 1 },
+      totalSavedCounts: { working_order_row: 2 },
+      totalTableCounts: { system_order_table: 1 },
     });
     await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
       expect.objectContaining({
@@ -472,6 +475,9 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(result).toEqual({
       parseStatus: 'saved',
       savedCounts: { ocr_extract: 1, working_order_row: 1 },
+      savedTableCounts: { ocr_table: 1, system_order_table: 1 },
+      totalSavedCounts: { ocr_extract: 1, working_order_row: 1 },
+      totalTableCounts: { ocr_table: 1, system_order_table: 1 },
     });
     expect(activeEntries.map((entry) => entry.memoryKind).sort()).toEqual([
       'ocr_extract',
@@ -500,6 +506,302 @@ describe('Mongoose Steel working-order memory reader', () => {
             erpItemCode: 'SHOULD_SKIP',
           }),
         }),
+      ]),
+    );
+  });
+
+  it('keeps OCR and workbook tables separated by OCR file key', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_multi_file',
+      turnIndex: 10,
+      checkpointTurnIndex: 9,
+      currentTurnFiles: [
+        { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
+        { fileId: 'file-b', filename: 'b.pdf', mediaType: 'application/pdf' },
+      ],
+      content: [
+        '## OCR result a.pdf',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '| --- | --- | --- | --- | --- | --- | --- |',
+        '| a.pdf | A1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
+        '',
+        '## OCR result b.pdf',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '| --- | --- | --- | --- | --- | --- | --- |',
+        '| b.pdf | B1 | PL9*100*1200 | 2 | 4 | 中 | 是 |',
+        '',
+        '## system_order a.pdf',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| 01 | 1 | A | A001 | A PDF item |  |  | PCS | 1 |  |  | 10 | B | F1 | 6 | 80 | 1000 | 鐵板 |  |  |',
+        '',
+        '## system_order b.pdf',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| 01 | 1 | A | B001 | B PDF item |  |  | PCS | 2 |  |  | 20 | B | F2 | 9 | 100 | 1200 | 鐵板 |  |  |',
+      ].join('\n'),
+    });
+    const activeEntries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      state: 'active',
+    })
+      .sort({ memoryKind: 1, 'payload.ocrFileKey': 1, 'payload.erpItemCode': 1 })
+      .lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 2, working_order_row: 2 },
+      savedTableCounts: { ocr_table: 2, system_order_table: 2 },
+      totalSavedCounts: { ocr_extract: 2, working_order_row: 2 },
+      totalTableCounts: { ocr_table: 2, system_order_table: 2 },
+    });
+    expect(activeEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          memoryKind: 'ocr_extract',
+          payload: expect.objectContaining({
+            ocrFileKey: 'file:file-a',
+            fileId: 'file-a',
+            filename: 'a.pdf',
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'ocr_extract',
+          payload: expect.objectContaining({
+            ocrFileKey: 'file:file-b',
+            fileId: 'file-b',
+            filename: 'b.pdf',
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'working_order_row',
+          payload: expect.objectContaining({
+            ocrFileKey: 'file:file-a',
+            fileId: 'file-a',
+            filename: 'a.pdf',
+            erpItemCode: 'A001',
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'working_order_row',
+          payload: expect.objectContaining({
+            ocrFileKey: 'file:file-b',
+            fileId: 'file-b',
+            filename: 'b.pdf',
+            erpItemCode: 'B001',
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('keeps sequential OCR turns separated by OCR file key and reports aggregate totals', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await writer.capturePaddleOcrResult({
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_a',
+      providerToolCallId: 'preflight_a',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      file: { fileId: 'file-a', filename: 'a.jpg', mediaType: 'image/jpeg' },
+      data: { text: 'raw OCR A' },
+    });
+    const first = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_a',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentTurnFiles: [{ fileId: 'file-a', filename: 'a.jpg', mediaType: 'image/jpeg' }],
+      content: [
+        '## OCR result a.jpg',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        '| a.jpg | A1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
+      ].join('\n'),
+    });
+
+    const secondPreflight = await writer.capturePaddleOcrResult({
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_b',
+      providerToolCallId: 'preflight_b',
+      turnIndex: 9,
+      checkpointTurnIndex: 8,
+      file: { fileId: 'file-b', filename: 'b.jpg', mediaType: 'image/jpeg' },
+      data: { text: 'raw OCR B' },
+    });
+    const second = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_b',
+      turnIndex: 9,
+      checkpointTurnIndex: 8,
+      currentTurnFiles: [{ fileId: 'file-b', filename: 'b.jpg', mediaType: 'image/jpeg' }],
+      content: [
+        '## OCR result b.jpg',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        '| b.jpg | B1 | PL9*100*1200 | 2 | 4 | 中 | 是 |',
+      ].join('\n'),
+    });
+    const activeOcr = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    })
+      .sort({ 'payload.ocrFileKey': 1 })
+      .lean();
+
+    expect(first).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 1 },
+      savedTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { paddleocr_preflight: 1, ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 1 },
+    });
+    expect(secondPreflight).toEqual({
+      savedCounts: { paddleocr_preflight: 1 },
+      totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 1 },
+    });
+    expect(second).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 1 },
+      savedTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2 },
+      totalTableCounts: { ocr_table: 2 },
+    });
+    expect(activeOcr.map((entry) => entry.payload)).toEqual([
+      expect.objectContaining({
+        ocrFileKey: 'file:file-a',
+        fileId: 'file-a',
+        filename: 'a.jpg',
+      }),
+      expect.objectContaining({
+        ocrFileKey: 'file:file-b',
+        fileId: 'file-b',
+        filename: 'b.jpg',
+      }),
+    ]);
+  });
+
+  it('replaces workbook rows only within the matching OCR file key or default group', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'old A',
+        payload: {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          rowNo: 10,
+          erpItemCode: 'OLD_A',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'old B',
+        payload: {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          rowNo: 10,
+          erpItemCode: 'KEEP_B',
+        },
+      },
+      {
+        conversationId: 'steel_conversation_1',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'working_order_row',
+        sourceKind: 'assistant_final_markdown',
+        state: 'active',
+        summary: 'old default',
+        payload: {
+          rowNo: 10,
+          erpItemCode: 'OLD_DEFAULT',
+        },
+      },
+    ]);
+
+    const keyedResult = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_update_a',
+      turnIndex: 3,
+      checkpointTurnIndex: 2,
+      currentTurnFiles: [
+        { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
+        { fileId: 'file-b', filename: 'b.pdf', mediaType: 'application/pdf' },
+      ],
+      content: [
+        '## system_order a.pdf',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| 01 | 1 | A | NEW_A | New A item |  |  | PCS | 1 |  |  | 10 | B | F1 | 6 | 80 | 1000 | 鐵板 |  |  |',
+      ].join('\n'),
+    });
+
+    expect(keyedResult.savedTableCounts).toEqual({ system_order_table: 1 });
+
+    const defaultResult = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_default',
+      turnIndex: 4,
+      checkpointTurnIndex: 3,
+      content: [
+        '## system_order',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| 01 | 1 | A | NEW_DEFAULT | New default item |  |  | PCS | 3 |  |  | 30 | B | F3 |  |  |  |  |  |  |',
+      ].join('\n'),
+    });
+    const activeRows = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'working_order_row',
+      state: 'active',
+    })
+      .sort({ 'payload.ocrFileKey': 1, 'payload.erpItemCode': 1 })
+      .lean();
+
+    expect(defaultResult.savedTableCounts).toEqual({ system_order_table: 1 });
+    expect(defaultResult.totalSavedCounts).toEqual({ working_order_row: 3 });
+    expect(defaultResult.totalTableCounts).toEqual({ system_order_table: 3 });
+    expect(activeRows.map((row) => row.payload)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ocrFileKey: 'file:file-a', erpItemCode: 'NEW_A' }),
+        expect.objectContaining({ ocrFileKey: 'file:file-b', erpItemCode: 'KEEP_B' }),
+        expect.objectContaining({ erpItemCode: 'NEW_DEFAULT' }),
+      ]),
+    );
+    expect(activeRows.map((row) => row.payload)).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({ erpItemCode: 'OLD_A' }),
+        expect.objectContaining({ erpItemCode: 'OLD_DEFAULT' }),
       ]),
     );
   });
@@ -792,6 +1094,9 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(result).toEqual({
       parseStatus: 'saved',
       savedCounts: { ocr_extract: 1 },
+      savedTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 1 },
     });
     expect(ocrEntries).toHaveLength(1);
     expect(ocrEntries[0]).toEqual(
@@ -855,6 +1160,9 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(result).toEqual({
       parseStatus: 'saved',
       savedCounts: { ocr_extract: 1 },
+      savedTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 1 },
     });
     expect(entry).toEqual(
       expect.objectContaining({
@@ -1018,7 +1326,11 @@ describe('Mongoose Steel working-order memory reader', () => {
       .lean();
     const snapshot = await outputReader.readOutputSheetMemory();
 
-    expect(result).toEqual({ savedCounts: { paddleocr_preflight: 1 } });
+    expect(result).toEqual({
+      savedCounts: { paddleocr_preflight: 1 },
+      totalSavedCounts: { paddleocr_preflight: 2 },
+      totalTableCounts: {},
+    });
     expect(activeEntries).toHaveLength(2);
     expect(snapshot.derivedIndex.ocrExtracts).toEqual([]);
     expect(activeEntries).toEqual([
@@ -1087,6 +1399,9 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(result).toEqual({
       parseStatus: 'saved',
       savedCounts: { ocr_extract: 1 },
+      savedTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 1 },
     });
     expect(activeEntries).toHaveLength(1);
     expect(activeEntries[0]).toEqual(
@@ -1142,7 +1457,11 @@ describe('Mongoose Steel working-order memory reader', () => {
           ],
         },
       }),
-    ).resolves.toEqual({ savedCounts: { customer_fact: 1 } });
+    ).resolves.toEqual({
+      savedCounts: { customer_fact: 1 },
+      totalSavedCounts: { customer_fact: 1 },
+      totalTableCounts: {},
+    });
     await expect(
       writer.captureToolResult({
         conversationId: 'steel_conversation_1',
@@ -1166,7 +1485,11 @@ describe('Mongoose Steel working-order memory reader', () => {
           ],
         },
       }),
-    ).resolves.toEqual({ savedCounts: { price_evidence: 1 } });
+    ).resolves.toEqual({
+      savedCounts: { price_evidence: 1 },
+      totalSavedCounts: { customer_fact: 1, price_evidence: 1 },
+      totalTableCounts: {},
+    });
     await expect(reader.readWorkingOrderItems({ mode: 'summary' })).resolves.toEqual(
       expect.objectContaining({
         summary: {

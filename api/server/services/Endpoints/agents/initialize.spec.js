@@ -119,6 +119,9 @@ describe('initializeClient — processAgent ACL gate', () => {
       result: {
         parseStatus: 'saved',
         savedCounts: { working_order_row: 1 },
+        savedTableCounts: { system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 1 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
       },
     });
   });
@@ -182,6 +185,9 @@ describe('initializeClient — processAgent ACL gate', () => {
         message: 'Markdown parse saved',
         parseStatus: 'saved',
         savedCounts: { working_order_row: 1 },
+        savedTableCounts: { system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 1 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
         source: 'assistant_markdown',
         conversationId: 'conv_1',
         requestId: 'message_2',
@@ -194,6 +200,9 @@ describe('initializeClient — processAgent ACL gate', () => {
         type: 'memory_saved',
         message: 'Working Order Memory saved',
         savedCounts: { working_order_row: 1 },
+        savedTableCounts: { system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 1 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
         source: 'assistant_markdown',
         conversationId: 'conv_1',
         requestId: 'message_2',

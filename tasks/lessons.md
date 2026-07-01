@@ -36,9 +36,28 @@
   Same-turn raw preflight may enter `attachments.currentPaddleOcrResults`, but
   follow-up turns should use `read_markdown(scope: "ocr")` only when organized
   OCR Markdown is missing from normal chat history.
+- When checking a user's Steel OCR count report, distinguish per-event activity
+  `savedCounts` from aggregate persisted state. Verify production
+  `steel_working_order_memory` by `memoryKind`, `ocrFileKey`, `fileId`, and
+  `state` before concluding raw OCR results were merged or overwritten.
+- OCR file-key behavior must update both runtime capture/UI and AI-facing rules.
+  When changing multi-OCR grouping, update `docs/rules/其他規則/OCR規則.txt` and
+  `docs/rules/輸出規則.txt` together so first-turn OCR Markdown and later
+  `system_order` output follow the same file-key boundaries.
+- Steel activity aggregate fixes must cover both AgentClient and Open Responses
+  streaming. Final assistant Markdown capture events need to be emitted before
+  `res.end()`; otherwise preflight activity can appear while final aggregate
+  totals are saved but invisible in the same UI turn.
+- Steel automatic PaddleOCR preflight must pass document preprocessing runtime
+  params explicitly. `output_mode: "detailed"` alone does not guarantee
+  orientation classification, unwarping, or layout detection are enabled.
 - Manual PaddleOCR UI smoke must use a text-bearing image or PDF. Decorative
   icons such as favicons are only suitable for checking that a preflight tool
   indicator appears; they do not verify OCR content or useful PaddleOCR output.
+- When adding chat timing UI, distinguish whole-turn elapsed time from
+  individual tool-call duration. If the user asks for AI message timing, place
+  it on the assistant name row with timestamp-like styling, `ml-2` spacing, and
+  compact `s`/`m` labels unless they explicitly ask for per-tool timing.
 - Future Steel native LibreChat work must start from
   `docs/steel-native-librechat-master-framework.md`, then use
   `docs/plans/2026-06-24-steel-global-native-librechat-integration.md` for phase

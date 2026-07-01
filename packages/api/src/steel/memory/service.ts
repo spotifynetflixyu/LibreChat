@@ -34,6 +34,9 @@ export interface CaptureAssistantFinalMarkdownInput {
 export interface CaptureAssistantFinalMarkdownResult {
   parseStatus: 'saved' | 'partial' | 'skipped';
   savedCounts: { [key: string]: number };
+  savedTableCounts?: { [key: string]: number };
+  totalSavedCounts?: { [key: string]: number };
+  totalTableCounts?: { [key: string]: number };
 }
 
 export interface CaptureToolResultInput {
@@ -48,6 +51,8 @@ export interface CaptureToolResultInput {
 
 export interface CaptureToolResultResult {
   savedCounts: { [key: string]: number };
+  totalSavedCounts?: { [key: string]: number };
+  totalTableCounts?: { [key: string]: number };
 }
 
 export type SteelOcrSource = 'assistant_ocr' | 'paddleocr_mcp';
@@ -144,6 +149,15 @@ interface MemorySourceRef {
 interface TitledSteelMarkdownTable extends SteelMarkdownTable {
   title: string;
 }
+
+const activeSavedMemoryKinds = [
+  'working_order_row',
+  'customer_fact',
+  'price_evidence',
+  'calculation_fact',
+  'ocr_extract',
+  'paddleocr_preflight',
+];
 
 export interface SteelOutputSheetMemoryReader {
   readOutputSheetMemory(): Promise<SteelOutputSheetMemorySnapshot>;
@@ -288,6 +302,49 @@ function summarizeByKind(documents: SteelWorkingOrderMemoryDocument[]) {
   }
 
   return counts;
+}
+
+function summarizeTableCounts(documents: SteelWorkingOrderMemoryDocument[]) {
+  const counts: { [key: string]: number } = {};
+  const systemOrderGroups = new Set<string>();
+
+  for (const document of documents) {
+    if (document.memoryKind === 'ocr_extract') {
+      counts.ocr_table = (counts.ocr_table ?? 0) + 1;
+      continue;
+    }
+
+    if (document.memoryKind !== 'working_order_row' || !isJsonObject(document.payload)) {
+      continue;
+    }
+
+    systemOrderGroups.add(getStringProperty(document.payload, 'ocrFileKey') ?? 'default');
+  }
+
+  if (systemOrderGroups.size > 0) {
+    counts.system_order_table = systemOrderGroups.size;
+  }
+
+  return counts;
+}
+
+async function readActiveMemoryTotals({
+  SteelWorkingOrderMemory,
+  conversationId,
+}: {
+  SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
+  conversationId: string;
+}) {
+  const documents = await SteelWorkingOrderMemory.find({
+    conversationId,
+    state: 'active',
+    memoryKind: { $in: activeSavedMemoryKinds },
+  }).lean<SteelWorkingOrderMemoryDocument[]>();
+
+  return {
+    totalSavedCounts: summarizeByKind(documents),
+    totalTableCounts: summarizeTableCounts(documents),
+  };
 }
 
 function isWorkingOrderTable(headers: readonly string[]): boolean {
@@ -567,9 +624,10 @@ function renderMarkdownTable(headers: readonly string[], rows: readonly string[]
 
 function descriptorMatchesTable(
   descriptor: SteelOcrFileDescriptor,
+  title: string,
   rows: readonly string[][],
 ): boolean {
-  const tableText = rows.flat().map(normalizeOcrLookupValue).join('\n');
+  const tableText = [title, ...rows.flat()].map(normalizeOcrLookupValue).join('\n');
   const filename = normalizeOcrFilename(descriptor.filename);
   const candidates = [descriptor.fileId, filename].filter(
     (value): value is string => value !== undefined && value !== '',
@@ -579,9 +637,11 @@ function descriptorMatchesTable(
 }
 
 function getOcrDescriptorsForTable({
+  title,
   rows,
   currentTurnFiles,
 }: {
+  title: string;
   rows: readonly string[][];
   currentTurnFiles?: readonly SteelOcrFileReference[];
 }): SteelOcrFileDescriptor[] {
@@ -590,7 +650,7 @@ function getOcrDescriptorsForTable({
     return descriptors;
   }
 
-  return descriptors.filter((descriptor) => descriptorMatchesTable(descriptor, rows));
+  return descriptors.filter((descriptor) => descriptorMatchesTable(descriptor, title, rows));
 }
 
 function toOcrFileMetadataPayload(descriptor: SteelOcrFileDescriptor): SteelJsonObject {
@@ -976,6 +1036,14 @@ function getAssistantOcrReplacementFilter(
   };
 }
 
+function getOcrFileKeyReplacementFilter(
+  ocrFileKey: string | undefined,
+): FilterQuery<ISteelWorkingOrderMemory> {
+  return ocrFileKey !== undefined
+    ? { 'payload.ocrFileKey': ocrFileKey }
+    : { 'payload.ocrFileKey': { $exists: false } };
+}
+
 function groupOcrPayloadsByFileKey(
   payloads: readonly SteelJsonObject[],
 ): Map<string, SteelJsonObject[]> {
@@ -987,6 +1055,32 @@ function groupOcrPayloadsByFileKey(
   }
 
   return groups;
+}
+
+function groupPayloadsByOcrFileKey(
+  payloads: readonly SteelJsonObject[],
+): Map<string, SteelJsonObject[]> {
+  const groups = new Map<string, SteelJsonObject[]>();
+
+  for (const payload of payloads) {
+    const key = getStringProperty(payload, 'ocrFileKey') ?? '';
+    groups.set(key, [...(groups.get(key) ?? []), payload]);
+  }
+
+  return groups;
+}
+
+function attachSingleOcrFileMetadata(
+  payload: SteelJsonObject,
+  descriptors: readonly SteelOcrFileDescriptor[],
+): SteelJsonObject {
+  const descriptor = descriptors.length === 1 ? descriptors[0] : undefined;
+  return descriptor === undefined
+    ? payload
+    : {
+        ...payload,
+        ...toOcrFileMetadataPayload(descriptor),
+      };
 }
 
 function hasSimpleSequentialItemNumbers(payloads: readonly SteelJsonObject[]): boolean {
@@ -1242,8 +1336,13 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
       }
 
       await SteelWorkingOrderMemory.insertMany(documents);
+      const totals = await readActiveMemoryTotals({
+        SteelWorkingOrderMemory,
+        conversationId: input.conversationId,
+      });
       return {
         savedCounts: summarizeByKind(documents),
+        ...totals,
       };
     },
 
@@ -1319,7 +1418,15 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         }),
       );
 
-      return { savedCounts: { paddleocr_preflight: 1 } };
+      const totals = await readActiveMemoryTotals({
+        SteelWorkingOrderMemory,
+        conversationId: input.conversationId,
+      });
+
+      return {
+        savedCounts: { paddleocr_preflight: 1 },
+        ...totals,
+      };
     },
 
     async captureAssistantFinalMarkdown({
@@ -1333,6 +1440,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
     }: CaptureAssistantFinalMarkdownInput): Promise<CaptureAssistantFinalMarkdownResult> {
       const tables = getParsedTables(content);
       const savedCounts: { [key: string]: number } = {};
+      const savedTableCounts: { [key: string]: number } = {};
       const ocrPayloads = tables
         .map((table, index) => {
           if (getTableTitleType(table.title) !== 'ocr' || !isOcrTable(table.headers)) {
@@ -1345,6 +1453,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
             index + 1,
             table.title,
             getOcrDescriptorsForTable({
+              title: table.title,
               rows: table.rows,
               currentTurnFiles,
             }),
@@ -1370,8 +1479,10 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
           });
         }
         incrementSavedCount(savedCounts, 'ocr_extract', ocrPayloads.length);
+        incrementSavedCount(savedTableCounts, 'ocr_table', ocrPayloads.length);
       }
 
+      const systemOrderRows: SteelJsonObject[] = [];
       for (const table of tables) {
         const payloads = toPayloads(table.headers, table.rows);
         const tableTitleType = getTableTitleType(table.title);
@@ -1381,29 +1492,43 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         }
 
         if (tableTitleType === 'workbook' && isWorkingOrderTable(table.headers)) {
+          const descriptors = getOcrDescriptorsForTable({
+            title: table.title,
+            rows: table.rows,
+            currentTurnFiles,
+          });
           const rows = canonicalizeSystemOrderItemNumbers(
-            payloads.filter((payload) => getParsedRowNo(payload) !== undefined),
+            payloads
+              .filter((payload) => getParsedRowNo(payload) !== undefined)
+              .map((payload) => attachSingleOcrFileMetadata(payload, descriptors)),
           );
           if (rows.length === 0) {
             continue;
           }
 
-          await replaceActiveMarkdownRows({
-            SteelWorkingOrderMemory,
-            conversationId,
-            requestId,
-            messageId,
-            turnIndex,
-            checkpointTurnIndex,
-            memoryKind: 'working_order_row',
-            payloads: rows,
-            summaryForPayload: getRowSummary,
-            locatorPrefix: 'table:system_order',
-          });
-          incrementSavedCount(savedCounts, 'working_order_row', rows.length);
+          systemOrderRows.push(...rows);
           continue;
         }
       }
+
+      const systemOrderGroups = groupPayloadsByOcrFileKey(systemOrderRows);
+      for (const [key, rows] of systemOrderGroups) {
+        await replaceActiveMarkdownRows({
+          SteelWorkingOrderMemory,
+          conversationId,
+          requestId,
+          messageId,
+          turnIndex,
+          checkpointTurnIndex,
+          memoryKind: 'working_order_row',
+          payloads: rows,
+          summaryForPayload: getRowSummary,
+          locatorPrefix: 'table:system_order',
+          replacementFilter: getOcrFileKeyReplacementFilter(key === '' ? undefined : key),
+        });
+        incrementSavedCount(savedCounts, 'working_order_row', rows.length);
+      }
+      incrementSavedCount(savedTableCounts, 'system_order_table', systemOrderGroups.size);
 
       if (Object.keys(savedCounts).length === 0) {
         return {
@@ -1412,9 +1537,16 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         };
       }
 
+      const totals = await readActiveMemoryTotals({
+        SteelWorkingOrderMemory,
+        conversationId,
+      });
+
       return {
         parseStatus: 'saved',
         savedCounts,
+        ...(Object.keys(savedTableCounts).length > 0 ? { savedTableCounts } : {}),
+        ...totals,
       };
     },
   };

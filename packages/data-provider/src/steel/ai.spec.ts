@@ -289,11 +289,17 @@ describe('Steel AI public contracts', () => {
         type: 'memory_saved',
         message: 'Working Order Memory saved',
         savedCounts: { working_order_row: 2 },
+        savedTableCounts: { system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
       }),
     ).toEqual({
       type: 'memory_saved',
       message: 'Working Order Memory saved',
       savedCounts: { working_order_row: 2 },
+      savedTableCounts: { system_order_table: 1 },
+      totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+      totalTableCounts: { ocr_table: 2, system_order_table: 1 },
     });
     expect(
       steelProviderChatStreamEventSchema.parse({
@@ -301,12 +307,18 @@ describe('Steel AI public contracts', () => {
         message: 'Markdown parse saved',
         parseStatus: 'saved',
         savedCounts: { working_order_row: 2 },
+        savedTableCounts: { system_order_table: 1 },
+        totalSavedCounts: { working_order_row: 2 },
+        totalTableCounts: { system_order_table: 1 },
       }),
     ).toEqual({
       type: 'parse_status',
       message: 'Markdown parse saved',
       parseStatus: 'saved',
       savedCounts: { working_order_row: 2 },
+      savedTableCounts: { system_order_table: 1 },
+      totalSavedCounts: { working_order_row: 2 },
+      totalTableCounts: { system_order_table: 1 },
     });
     expect(
       steelProviderChatStreamEventSchema.parse({

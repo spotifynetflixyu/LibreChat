@@ -51,6 +51,9 @@ describe('useSteelEventHandler', () => {
             message: 'Markdown parse saved',
             parseStatus: 'saved',
             savedCounts: { working_order_row: 2 },
+            savedTableCounts: { system_order_table: 1 },
+            totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+            totalTableCounts: { ocr_table: 2, system_order_table: 1 },
           },
         },
         createSubmission(),
@@ -64,6 +67,9 @@ describe('useSteelEventHandler', () => {
         messageId: 'assistant-2',
         parseStatus: 'saved',
         savedCounts: { working_order_row: 2 },
+        savedTableCounts: { system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
       }),
     ]);
   });

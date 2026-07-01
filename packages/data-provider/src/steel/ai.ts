@@ -263,6 +263,9 @@ const steelProviderChatStreamMemorySavedEventSchema = z.object({
   type: z.literal('memory_saved'),
   message: z.string().min(1),
   savedCounts: z.record(z.number().int().nonnegative()),
+  savedTableCounts: z.record(z.number().int().nonnegative()).optional(),
+  totalSavedCounts: z.record(z.number().int().nonnegative()).optional(),
+  totalTableCounts: z.record(z.number().int().nonnegative()).optional(),
 });
 
 const steelProviderChatStreamParseStatusEventSchema = z.object({
@@ -270,6 +273,9 @@ const steelProviderChatStreamParseStatusEventSchema = z.object({
   message: z.string().min(1),
   parseStatus: z.enum(['saved', 'partial', 'skipped']),
   savedCounts: z.record(z.number().int().nonnegative()).optional(),
+  savedTableCounts: z.record(z.number().int().nonnegative()).optional(),
+  totalSavedCounts: z.record(z.number().int().nonnegative()).optional(),
+  totalTableCounts: z.record(z.number().int().nonnegative()).optional(),
 });
 
 const steelProviderChatStreamSteerEventSchema = z.object({

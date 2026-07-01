@@ -12,6 +12,7 @@ export type SteelNativeEventSource =
   | 'tool_result';
 
 export type SteelNativeSavedCounts = Record<string, number>;
+export type SteelNativeTableCounts = Record<string, number>;
 
 export interface SteelNativeEventBase {
   source: SteelNativeEventSource;
@@ -27,12 +28,18 @@ export interface SteelNativeParseStatusEvent extends SteelNativeEventBase {
   message: string;
   parseStatus: 'saved' | 'partial' | 'skipped';
   savedCounts?: SteelNativeSavedCounts;
+  savedTableCounts?: SteelNativeTableCounts;
+  totalSavedCounts?: SteelNativeSavedCounts;
+  totalTableCounts?: SteelNativeTableCounts;
 }
 
 export interface SteelNativeMemorySavedEvent extends SteelNativeEventBase {
   type: 'memory_saved';
   message: string;
   savedCounts: SteelNativeSavedCounts;
+  savedTableCounts?: SteelNativeTableCounts;
+  totalSavedCounts?: SteelNativeSavedCounts;
+  totalTableCounts?: SteelNativeTableCounts;
 }
 
 export type SteelNativeStreamEvent = SteelNativeParseStatusEvent | SteelNativeMemorySavedEvent;
@@ -52,6 +59,8 @@ export interface SteelPaddleOcrPreflightActivityResult {
   attemptedKeys?: readonly string[];
   failedKeys?: readonly string[];
   skippedReason?: string;
+  totalSavedCounts?: SteelNativeSavedCounts;
+  totalTableCounts?: SteelNativeTableCounts;
 }
 
 export interface BuildSteelPaddleOcrPreflightEventEnvelopesInput
@@ -65,6 +74,33 @@ function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is St
   }
 
   return Object.values(savedCounts).some((count) => Number.isFinite(count) && count > 0);
+}
+
+function captureCountMetadata(
+  result: CaptureSteelNativeAssistantMarkdownResult['result'] | CaptureSteelNativeToolResultResult['result'],
+) {
+  return {
+    ...('savedTableCounts' in result && hasSavedCounts(result.savedTableCounts)
+      ? { savedTableCounts: result.savedTableCounts }
+      : {}),
+    ...('totalSavedCounts' in result && hasSavedCounts(result.totalSavedCounts)
+      ? { totalSavedCounts: result.totalSavedCounts }
+      : {}),
+    ...('totalTableCounts' in result && hasSavedCounts(result.totalTableCounts)
+      ? { totalTableCounts: result.totalTableCounts }
+      : {}),
+  };
+}
+
+function preflightCountMetadata(preflight: SteelPaddleOcrPreflightActivityResult) {
+  return {
+    ...('totalSavedCounts' in preflight && hasSavedCounts(preflight.totalSavedCounts)
+      ? { totalSavedCounts: preflight.totalSavedCounts }
+      : {}),
+    ...('totalTableCounts' in preflight && hasSavedCounts(preflight.totalTableCounts)
+      ? { totalTableCounts: preflight.totalTableCounts }
+      : {}),
+  };
 }
 
 function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
@@ -93,6 +129,7 @@ export function buildSteelNativeEventEnvelopes({
     const savedCounts = hasSavedCounts(capture.result.savedCounts)
       ? capture.result.savedCounts
       : undefined;
+    const countMetadata = captureCountMetadata(capture.result);
     events.push({
       event: steelNativeStreamEventName,
       data: {
@@ -100,18 +137,21 @@ export function buildSteelNativeEventEnvelopes({
         message: `Markdown parse ${capture.result.parseStatus}`,
         parseStatus: capture.result.parseStatus,
         ...(savedCounts ? { savedCounts } : {}),
+        ...countMetadata,
         ...eventBase,
       },
     });
   }
 
   if (hasSavedCounts(capture.result.savedCounts)) {
+    const countMetadata = captureCountMetadata(capture.result);
     events.push({
       event: steelNativeStreamEventName,
       data: {
         type: 'memory_saved',
         message: 'Working Order Memory saved',
         savedCounts: capture.result.savedCounts,
+        ...countMetadata,
         ...eventBase,
       },
     });
@@ -151,6 +191,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
   const parseStatus = getPaddleOcrParseStatus(preflight);
   const eventBase = baseEvent({ ...input, source: 'paddleocr_preflight' });
   const savedCounts = savedCount > 0 ? { paddleocr_preflight: savedCount } : undefined;
+  const countMetadata = preflightCountMetadata(preflight);
   const events: SteelNativeEventEnvelope[] = [];
 
   if (parseStatus) {
@@ -161,6 +202,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
         message: `PaddleOCR preflight ${parseStatus}`,
         parseStatus,
         ...(savedCounts ? { savedCounts } : {}),
+        ...countMetadata,
         ...eventBase,
       },
     });
@@ -173,6 +215,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
         type: 'memory_saved',
         message: 'PaddleOCR preflight saved',
         savedCounts,
+        ...countMetadata,
         ...eventBase,
       },
     });

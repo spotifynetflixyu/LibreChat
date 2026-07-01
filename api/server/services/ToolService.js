@@ -910,6 +910,8 @@ function createPreflightResult({
   failedKeys,
   skippedReason,
   currentPaddleOcrResults = [],
+  totalSavedCounts,
+  totalTableCounts,
 }) {
   return {
     status,
@@ -918,6 +920,8 @@ function createPreflightResult({
     failedKeys,
     skippedReason,
     currentPaddleOcrResults,
+    ...(totalSavedCounts ? { totalSavedCounts } : {}),
+    ...(totalTableCounts ? { totalTableCounts } : {}),
   };
 }
 
@@ -938,6 +942,7 @@ async function runSteelPaddleOcrPreflight({
   const attemptedKeys = [];
   const failedKeys = [];
   const currentPaddleOcrResults = [];
+  let latestPaddleOcrTotals = {};
   const finishPreflight = async (result) => {
     await emitSteelNativeEvents({
       res,
@@ -1027,6 +1032,11 @@ async function runSteelPaddleOcrPreflight({
       input_data: getSteelPaddleOcrInputData(file),
       output_mode: 'detailed',
       return_images: false,
+      runtime_params: {
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
     };
 
     try {
@@ -1064,7 +1074,7 @@ async function runSteelPaddleOcrPreflight({
         },
       });
 
-      await writer.capturePaddleOcrResult({
+      const captureResult = await writer.capturePaddleOcrResult({
         conversationId,
         requestId,
         providerToolCallId,
@@ -1073,6 +1083,10 @@ async function runSteelPaddleOcrPreflight({
         file,
         data: result,
       });
+      latestPaddleOcrTotals = {
+        ...(captureResult?.totalSavedCounts ? { totalSavedCounts: captureResult.totalSavedCounts } : {}),
+        ...(captureResult?.totalTableCounts ? { totalTableCounts: captureResult.totalTableCounts } : {}),
+      };
       currentPaddleOcrResults.push({
         ...file,
         ocrSource: 'paddleocr_mcp',
@@ -1119,6 +1133,7 @@ async function runSteelPaddleOcrPreflight({
     failedKeys,
     skippedReason: undefined,
     currentPaddleOcrResults,
+    ...latestPaddleOcrTotals,
   }));
 }
 

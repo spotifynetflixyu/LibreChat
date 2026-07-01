@@ -81,6 +81,40 @@ describe('Steel native event mapping', () => {
     ]);
   });
 
+  it('includes table counts and active totals on captured assistant Markdown events', () => {
+    const events = buildSteelNativeEventEnvelopes({
+      source: 'assistant_markdown',
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_2',
+      capture: {
+        status: 'captured',
+        result: {
+          parseStatus: 'saved',
+          savedCounts: { ocr_extract: 1, working_order_row: 2 },
+          savedTableCounts: { ocr_table: 1, system_order_table: 1 },
+          totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+          totalTableCounts: { ocr_table: 2, system_order_table: 1 },
+        },
+      },
+    });
+
+    expect(events.map((entry) => entry.data)).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        savedTableCounts: { ocr_table: 1, system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
+      }),
+      expect.objectContaining({
+        type: 'memory_saved',
+        savedTableCounts: { ocr_table: 1, system_order_table: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
+        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
+      }),
+    ]);
+  });
+
   it('does not emit events for routine skipped captures or empty save counts', () => {
     expect(
       buildSteelNativeEventEnvelopes({
@@ -120,6 +154,8 @@ describe('Steel native event mapping', () => {
         completedKeys: ['file:file-a'],
         attemptedKeys: ['file:file-a'],
         failedKeys: [],
+        totalSavedCounts: { paddleocr_preflight: 2 },
+        totalTableCounts: { ocr_table: 1 },
       },
     });
 
@@ -130,6 +166,8 @@ describe('Steel native event mapping', () => {
           type: 'memory_saved',
           message: 'PaddleOCR preflight saved',
           savedCounts: { paddleocr_preflight: 1 },
+          totalSavedCounts: { paddleocr_preflight: 2 },
+          totalTableCounts: { ocr_table: 1 },
           source: 'paddleocr_preflight',
           conversationId: 'conversation_1',
           requestId: 'request_1',

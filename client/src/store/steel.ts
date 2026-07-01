@@ -9,6 +9,7 @@ export type SteelNativeActivitySource =
   | 'tool_result';
 
 export type SteelNativeSavedCounts = Record<string, number>;
+export type SteelNativeTableCounts = Record<string, number>;
 
 export type SteelNativeActivityEvent =
   | {
@@ -17,6 +18,9 @@ export type SteelNativeActivityEvent =
       message: string;
       parseStatus: 'saved' | 'partial' | 'skipped';
       savedCounts?: SteelNativeSavedCounts;
+      savedTableCounts?: SteelNativeTableCounts;
+      totalSavedCounts?: SteelNativeSavedCounts;
+      totalTableCounts?: SteelNativeTableCounts;
       conversationId?: string;
       requestId?: string;
       messageId?: string;
@@ -29,6 +33,9 @@ export type SteelNativeActivityEvent =
       source: SteelNativeActivitySource;
       message: string;
       savedCounts: SteelNativeSavedCounts;
+      savedTableCounts?: SteelNativeTableCounts;
+      totalSavedCounts?: SteelNativeSavedCounts;
+      totalTableCounts?: SteelNativeTableCounts;
       conversationId?: string;
       requestId?: string;
       messageId?: string;

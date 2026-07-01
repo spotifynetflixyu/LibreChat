@@ -6,6 +6,7 @@ import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common'
 import { useAttachments, useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import { cn, getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
+import MessageElapsedTimer from '~/components/Chat/Messages/ui/MessageElapsedTimer';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import PlaceholderRow from '~/components/Chat/Messages/ui/PlaceholderRow';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
@@ -208,6 +209,13 @@ const ContentRender = memo(function ContentRender({
           <h2 className={cn('select-none font-semibold', fontSize)}>
             <span className="sr-only">{getHeaderPrefixForScreenReader(msg, localize)}</span>
             {messageLabel}
+            <MessageElapsedTimer
+              timerKey={msg.messageId}
+              startedAt={msg.createdAt ?? msg.clientTimestamp}
+              parentMessageId={msg.parentMessageId}
+              isSubmitting={isSubmitting}
+              isCreatedByUser={msg.isCreatedByUser}
+            />
             <MessageTimestamp value={msg.createdAt ?? msg.clientTimestamp} />
           </h2>
         )}

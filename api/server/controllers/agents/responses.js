@@ -26,6 +26,8 @@ const {
   extractManualSkills,
   recordCollectedUsage,
   createSubagentUsageSink,
+  sendEvent,
+  GenerationJobManager,
   getTransactionsConfig,
   findPiiMatchInMessages,
   discoverConnectedAgents,
@@ -34,6 +36,7 @@ const {
   resolveAgentScopedSkillIds,
   extractSteelNativeMarkdownText,
   captureSteelNativeResponseOutput,
+  buildSteelNativeEventEnvelopes,
   buildSteelNativeResponseMessageMetadata,
   createMongooseSteelWorkingOrderMemoryWriter,
   // Responses API
@@ -89,6 +92,16 @@ let steelWorkingOrderMemoryWriter;
 function getSteelWorkingOrderMemoryWriter() {
   steelWorkingOrderMemoryWriter ??= createMongooseSteelWorkingOrderMemoryWriter(mongoose);
   return steelWorkingOrderMemoryWriter;
+}
+
+async function emitSteelNativeEvents({ events, res, streamId }) {
+  for (const event of events) {
+    if (streamId) {
+      await GenerationJobManager.emitChunk(streamId, event);
+    } else if (typeof res?.write === 'function' && !res.writableEnded) {
+      sendEvent(res, event);
+    }
+  }
 }
 
 /**
@@ -370,7 +383,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @param {string} responseId
  * @param {import('@librechat/api').Response} response
  * @param {string} agentId
- * @returns {Promise<void>}
+ * @returns {Promise<import('@librechat/api').CaptureSteelNativeAssistantMarkdownResult>}
  */
 async function saveResponseOutput(req, conversationId, responseId, response, agentId) {
   // Extract text content from output items
@@ -432,6 +445,8 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
     parseStatus: captureResult.status === 'captured' ? captureResult.result.parseStatus : undefined,
     savedCounts: captureResult.status === 'captured' ? captureResult.result.savedCounts : undefined,
   });
+
+  return captureResult;
 }
 
 /**
@@ -1114,13 +1129,6 @@ const createResponse = async (req, res) => {
         logger.error('[Responses API] Error recording usage:', err);
       });
 
-      // Finalize the stream
-      finalizeStream();
-      res.end();
-
-      const duration = Date.now() - requestStartTime;
-      logger.debug(`[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`);
-
       if (shouldStoreResponse) {
         try {
           // Save conversation
@@ -1133,7 +1141,24 @@ const createResponse = async (req, res) => {
           const finalResponse = markSteelNativeResponseStored(
             buildResponse(context, tracker, 'completed'),
           );
-          await saveResponseOutput(req, conversationId, responseId, finalResponse, agentId);
+          const captureResult = await saveResponseOutput(
+            req,
+            conversationId,
+            responseId,
+            finalResponse,
+            agentId,
+          );
+          await emitSteelNativeEvents({
+            res,
+            streamId: req._resumableStreamId || null,
+            events: buildSteelNativeEventEnvelopes({
+              source: 'responses_output',
+              conversationId,
+              requestId: responseId,
+              messageId: responseId,
+              capture: captureResult,
+            }),
+          });
 
           logger.debug(
             `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
@@ -1143,6 +1168,13 @@ const createResponse = async (req, res) => {
           // Don't fail the request if saving fails
         }
       }
+
+      // Finalize the stream
+      finalizeStream();
+      res.end();
+
+      const duration = Date.now() - requestStartTime;
+      logger.debug(`[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`);
 
       // Wait for artifact processing after response ends (non-blocking)
       if (artifactPromises.length > 0) {

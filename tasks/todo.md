@@ -1,3 +1,194 @@
+# Active: Steel second-turn OCR aggregate activity regression
+
+Goal: explain and fix why a second image/PDF OCR turn shows
+`This turn: OCR tables: 1` but no aggregate `Total: OCR tables: 2` in the
+Steel activity UI.
+
+Status - 2026-07-01:
+
+- [x] Add a regression check for sequential `a.jpg` then `b.jpg` OCR Markdown
+      saves in one conversation.
+- [x] Trace which native stream path emits the screenshot activity rows and
+      confirm whether total count metadata is attached.
+- [x] Patch the missing event/count propagation path if the regression exposes
+      one.
+- [x] Run focused tests for memory totals, native events, SSE normalization,
+      activity UI, and backend preflight.
+
+Notes:
+
+- `This turn: OCR raw results: 1` is expected per-turn wording for the current
+  PaddleOCR preflight save. It is not supposed to mean aggregate total.
+- A second turn should still include a `Total: ...` row when the backend event
+  contains `totalSavedCounts` or `totalTableCounts`.
+- Local sequential writer and AgentClient event tests already pass with
+  aggregate totals; the Open Responses streaming path was missing same-turn
+  final event delivery because it saved/captured after `res.end()`.
+
+Review - 2026-07-01:
+
+- The first-row `PaddleOCR preflight saved This turn: OCR raw results: 1` is a
+  per-turn activity entry. In the second image/PDF turn it represents the new
+  current-file preflight, not an aggregate count and not by itself evidence of
+  a duplicate first-turn save.
+- Added a sequential regression for `a.jpg` then `b.jpg`: after the second OCR
+  Markdown save the writer reports `totalTableCounts.ocr_table = 2` and keeps
+  active OCR rows under separate file keys.
+- AgentClient already propagated aggregate metadata; its event test now asserts
+  `savedTableCounts`, `totalSavedCounts`, and `totalTableCounts`.
+- Fixed Open Responses streaming: final assistant response save/capture now
+  happens before `finalizeStream()` / `res.end()`, and the resulting Steel
+  event is emitted with source `responses_output` so the same UI turn can show
+  the aggregate `Total` row.
+- Added a responses unit regression that verifies the Steel event is sent
+  before `res.end()`.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts src/steel/native/events.spec.ts src/steel/native/markdown.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/responses.unit.spec.js server/services/Endpoints/agents/initialize.spec.js server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false -t "Steel|preflights PaddleOCR|final Steel capture events|emits native Steel parse"`
+  - `cd packages/data-provider && rtk npx jest src/steel/ai.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - `cd packages/data-provider && rtk npm run build`
+  - `cd client && rtk npm run typecheck`
+  - `rtk git diff --check`
+
+---
+
+# Active: PaddleOCR preflight runtime params
+
+Goal: make automatic Steel PaddleOCR preflight pass the document preprocessing
+runtime options needed for engineering drawings, including orientation
+classification.
+
+Status - 2026-07-01:
+
+- [x] Update automatic preflight `paddleocr_vl` args to include document
+      orientation, unwarping, and layout-detection runtime params.
+- [x] Update preflight tests so the visible Parameters include those runtime
+      params.
+- [x] Run focused ToolService tests and syntax/diff checks.
+
+Notes:
+
+- Current automatic preflight sends only `input_data`, `output_mode: "detailed"`,
+  and `return_images: false`.
+- Existing manual OCR smoke/spec paths already show the supported runtime param
+  shape under `runtime_params`.
+
+Review - 2026-07-01:
+
+- Automatic Steel PaddleOCR preflight now sends:
+  `runtime_params.use_doc_orientation_classify = true`,
+  `runtime_params.use_doc_unwarping = true`, and
+  `runtime_params.use_layout_detection = true`.
+- It still keeps `return_images: false`; image return is heavy and not needed
+  for the raw OCR save/status UI.
+- The ToolService preflight test now asserts these runtime params appear in
+  both the streamed Parameters JSON and the actual `paddleocr_vl` invocation.
+- Verification passed:
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false -t "preflights PaddleOCR only"`
+
+---
+
+# Active: Steel activity aggregate OCR/workbook counts
+
+Goal: make Steel chat activity labels distinguish per-turn saved counts from
+conversation totals, and show OCR/workbook table counts with OCR file-key
+grouping.
+
+Status - 2026-07-01:
+
+- [x] Add backend regression tests for file-keyed OCR markdown tables.
+- [x] Add backend regression tests for file-keyed workbook/system tables.
+- [x] Preserve the default merged system order for plain-text orders without an
+      OCR file key.
+- [x] Add stream event count metadata for per-turn and total OCR/workbook table
+      counts.
+- [x] Update Steel activity UI labels to show `This turn` and aggregate totals
+      clearly.
+- [x] Update OCR and output rules so AI keeps OCR/workbook tables grouped by
+      OCR file key.
+- [x] Run focused backend/frontend tests and `git diff --check`.
+
+Design notes:
+
+- `savedCounts` remains the low-level memory row count for the current event.
+- New table count metadata should separate table counts from row counts:
+  OCR tables, Workbook/system tables, and raw PaddleOCR results must not share
+  one ambiguous `OCR: n` label.
+- OCR Markdown rows are already keyed by `ocrFileKey`; workbook/system tables
+  should also carry an OCR file key when derived from a specific OCR source.
+- OCR-keyed workbook tables coexist by file key. A later system table for the
+  same file key replaces only that file's previous system rows.
+- System tables without OCR file keys represent plain-text/manual orders and
+  merge into one default system order snapshot.
+
+Review - 2026-07-01:
+
+- OCR Markdown capture now reports `savedTableCounts` / `totalTableCounts`
+  separately from memory row counts, so UI can distinguish OCR raw results, OCR
+  tables, workbook tables, and workbook rows.
+- `system_order` rows derived from OCR now carry the matched OCR file metadata
+  when the source table matches exactly one current OCR-capable file.
+- OCR-keyed `system_order` rows replace only the same `ocrFileKey`; rows without
+  OCR file metadata replace the default plain-text/manual system order group.
+- Native stream events carry per-turn and active-total count metadata through
+  backend event builders, data-provider schemas, SSE normalization, and Recoil
+  state.
+- Steel activity UI now renders a single aggregate `Total: ...` row plus
+  per-event `This turn: ...` labels.
+- Rules updated:
+  - `docs/rules/其他規則/OCR規則.txt` requires separate OCR Markdown tables per
+    OCR file key / source file.
+  - `docs/rules/輸出規則.txt` requires OCR-derived `system_order` tables to stay
+    grouped by file key while pure text/manual orders merge into default
+    `system_order`.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts src/steel/native/events.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/data-provider && rtk npx jest src/steel/ai.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false -t "preflights PaddleOCR only"`
+  - `cd packages/api && rtk npm run build`
+  - `cd packages/data-provider && rtk npm run build`
+  - `cd client && rtk npm run typecheck`
+  - `cd client && rtk git diff --check`
+
+---
+
+# Active: Production OCR raw-result merge check
+
+Goal: verify whether production conversation
+`8ae05b9e-8f0b-4bfd-95aa-e3d10bbee246` contains two PaddleOCR raw/preflight
+results after two PDF OCR rounds, and determine whether the visible
+`OCR: 1` activity count means per-turn save count or an incorrect overwrite.
+
+Status - 2026-07-01:
+
+- [x] Inspect production messages/files for both PDF upload turns.
+- [x] Count active/superseded `paddleocr_preflight` and `ocr_extract` memory rows
+      by `ocrFileKey`, `fileId`, `turnIndex`, and source.
+- [x] Compare persisted raw PaddleOCR rows with visible Steel activity events.
+- [x] Confirm no merge/overwrite fix is needed because both raw rows and both
+      organized OCR rows remain active under separate file keys.
+
+Review - 2026-07-01:
+
+- Production conversation `8ae05b9e-8f0b-4bfd-95aa-e3d10bbee246` has two
+  active raw PaddleOCR rows: `paddleocr_preflight:active = 2`.
+- The same conversation has two active assistant-organized OCR rows:
+  `ocr_extract:active = 2`.
+- The first successful PDF OCR row is for `新增板零件製造圖.pdf`, file
+  `5b0852bc-d748-4818-9700-c49981d831aa`, request
+  `16489d34-6da9-4291-94c4-42c34a7f5fff`.
+- The second successful PDF OCR row is for `d.pdf`, file
+  `2e3d9903-9736-41a9-bbf1-87e5c8e0a093`, request
+  `f648682b-5116-43d1-a2a2-2e8c38341ebb`.
+- The visible `OCR: 1` activity label is a per-event saved count from the
+  current assistant turn, not an aggregate count of all active OCR raw results
+  in the conversation.
+
+---
+
 # Active: Steel OCR preflight activity indicator
 
 Goal: surface automatic PaddleOCR preflight results in the existing Steel chat
@@ -59,6 +250,48 @@ Review - 2026-07-01:
   - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --silent` after the duplicate-args regression
   - Local UI smoke at `http://localhost:3090/c/3644c2df-b2ed-4058-b31b-8c54261132ee?endpoint=openai_oauth_responses&model=gpt-5.5`
     with `docs/reference/example/a.png`
+  - `rtk git diff --check`
+
+---
+
+# Active: AI message flow timer
+
+Goal: show whole-turn elapsed time on the AI message name row using the same
+visual style and spacing as the existing message timestamp.
+
+Status - 2026-07-01:
+
+- [x] Add a shared AI message elapsed timer component using compact `s`/`m`
+      formatting.
+- [x] Render the timer on all AI message header paths, not inside individual
+      tool-call rows.
+- [x] Keep the timer UI-only for the current page session; do not add backend
+      persistence or database schema changes.
+- [x] Run focused frontend tests and `git diff --check`.
+
+Design notes:
+
+- The timer measures the whole visible assistant turn, including preflight OCR,
+  tool calls, and final answer generation.
+- The name row should read like `GPT-5.5 1m 05s`: timer text uses the same
+  muted small-text style and `ml-2` spacing as the existing timestamp.
+- Prefer the previous user message timestamp as the start time; fall back to the
+  assistant row mount time when a parent timestamp is unavailable.
+
+Review - 2026-07-01:
+
+- Added shared `MessageElapsedTimer` with compact elapsed labels:
+  `0s`, `12s`, `1m 05s`, `2m 30s`.
+- Mounted the timer on all three AI name-row render paths:
+  `MessageRender`, `ContentRender`, and `MessageParts`.
+- Timer is UI-only for the current page session: it starts during the visible
+  assistant turn, ticks while submitting, and freezes when the turn completes.
+- The timer uses timestamp-like `ml-2 text-xs font-normal text-text-secondary`
+  styling so it aligns with the existing `7 seconds ago` UI.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/Messages/ui/__tests__/MessageElapsedTimer.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `cd client && rtk npm run build`
   - `rtk git diff --check`
 
 ---

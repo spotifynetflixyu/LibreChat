@@ -26,6 +26,14 @@ function isSavedCounts(value: unknown): value is Record<string, number> {
   return Object.values(value).every((count) => typeof count === 'number' && Number.isFinite(count));
 }
 
+function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
+  return {
+    ...(isSavedCounts(data.savedTableCounts) ? { savedTableCounts: data.savedTableCounts } : {}),
+    ...(isSavedCounts(data.totalSavedCounts) ? { totalSavedCounts: data.totalSavedCounts } : {}),
+    ...(isSavedCounts(data.totalTableCounts) ? { totalTableCounts: data.totalTableCounts } : {}),
+  };
+}
+
 function normalizeSteelActivityEvent(
   event: MaybeSteelNativeActivityEnvelope,
 ): SteelNativeActivityEvent | null {
@@ -59,6 +67,7 @@ function normalizeSteelActivityEvent(
       message: data.message,
       parseStatus: data.parseStatus,
       ...(isSavedCounts(data.savedCounts) ? { savedCounts: data.savedCounts } : {}),
+      ...normalizedCountMetadata(data),
       ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
       ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
       ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
@@ -78,6 +87,7 @@ function normalizeSteelActivityEvent(
     source: data.source,
     message: data.message,
     savedCounts: data.savedCounts,
+    ...normalizedCountMetadata(data),
     ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
     ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
     ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
