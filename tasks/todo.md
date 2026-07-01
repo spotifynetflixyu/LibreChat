@@ -1,3 +1,55 @@
+# Active: PaddleOCR failed preflight edit-resend retry bug - 2026-07-02
+
+Goal: fix the Steel chat case where `b.jpg` PaddleOCR fails on the first try,
+then editing and resending the message shows `PaddleOCR preflight skipped`
+instead of rerunning PaddleOCR for `b.jpg`.
+
+Status:
+
+- [x] Read `CLAUDE.md`, RTK rules, relevant `tasks/lessons.md` OCR guidance,
+      and the current dirty worktree before changing code.
+- [x] Trace the two likely skip paths:
+      `all_files_already_have_paddleocr` from active preflight memory, and
+      `no_current_files` from edit/resend attachment propagation.
+- [x] Confirm local Mongo is dev-only and cannot be used as proof of
+      chat.longdin.org production conversation state.
+- [x] Add a red regression proving fallback / assistant OCR state for `b.jpg`
+      does not satisfy PaddleOCR preflight dedupe on edit/resend.
+- [x] Implement the minimal root-cause fix so failed preflight results remain
+      retryable on the next edit/resend.
+- [x] Run focused ToolService/memory tests and `rtk git diff --check`.
+- [x] Record review and verification evidence here.
+
+Hypotheses:
+
+1. If fallback / assistant OCR for `b.jpg` is treated as completed PaddleOCR,
+   the next edit/resend sees the same `ocrFileKey` as completed and emits
+   skipped.
+2. If edit/resend drops old attachments before backend current-turn file
+   collection, preflight skips with `no_current_files`; fixing memory state
+   would not change that path.
+
+Review - 2026-07-02:
+
+- Red test reproduced the bug class: an active fallback/assistant OCR row with
+  the same `ocrFileKey` could satisfy PaddleOCR preflight dedupe and return
+  `completedKeys: ["file:file-b"]`, which leads to
+  `all_files_already_have_paddleocr` and the UI row
+  `PaddleOCR preflight skipped`.
+- Root cause fix: `findMissingPaddleOcrFileKeys()` now only treats active
+  `paddleocr_preflight` rows as completed when `sourceKind` is `ocr_result`
+  and `payload.ocrSource` is `paddleocr_mcp`. Fallback / assistant-final rows
+  no longer block PaddleOCR retry for the same file key.
+- Verification passed:
+  - Red regression failed before the fix, then passed after the fix:
+    `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "does not treat fallback OCR rows as completed PaddleOCR preflight state"`.
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|preflight"`
+  - `cd packages/api && rtk npm run build`
+  - `rtk git diff --check`
+
+---
+
 # Active: Steel second-turn OCR aggregate activity regression
 
 Goal: explain and fix why a second image/PDF OCR turn shows

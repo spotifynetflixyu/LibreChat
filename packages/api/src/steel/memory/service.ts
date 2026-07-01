@@ -1364,6 +1364,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         conversationId,
         state: 'active',
         memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
         'payload.ocrFileKey': { $in: keys },
         'payload.ocrSource': 'paddleocr_mcp',
       }).lean<SteelWorkingOrderMemoryDocument[]>();

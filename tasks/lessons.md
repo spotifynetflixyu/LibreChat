@@ -30,6 +30,13 @@
   active rows with `ocrSource: "paddleocr_mcp"` may skip future PaddleOCR
   preflight for the same `ocrFileKey`; PaddleOCR failures must not write
   completed OCR state so the next turn retries.
+- If a user says a file's OCR state is fallback / assistant OCR, treat that as
+  not PaddleOCR-complete even when it has the same filename or `ocrFileKey`.
+  Edit-message resend must rerun PaddleOCR preflight unless there is active
+  successful `paddleocr_mcp` preflight evidence for that exact file key.
+- For chat.longdin.org bug reports, local `MONGO_URI` points at dev Mongo and
+  cannot prove production conversation state. Treat production Mongo as a
+  separate source; do not use a zero-row local query to rule out prod data.
 - PaddleOCR preflight raw result is not `read_markdown(scope: "ocr")` data.
   Store and label raw automatic PaddleOCR output as `paddleocr_preflight`; only
   assistant-organized OCR Markdown confirmation tables are `ocr_extract`.
