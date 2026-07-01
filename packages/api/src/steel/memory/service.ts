@@ -5,6 +5,7 @@ import {
 import { parseMarkdownTables } from '../markdown/table';
 
 import type { FilterQuery } from 'mongoose';
+import type { SteelMarkdownTable } from '../markdown/table';
 import type {
   FullActiveSteelOutputSheets,
   SteelOutputSheetMemorySnapshot,
@@ -73,6 +74,10 @@ interface MemorySourceRef {
   pageNumber?: number;
   imageIndex?: number;
   locator?: string;
+}
+
+interface TitledSteelMarkdownTable extends SteelMarkdownTable {
+  title: string;
 }
 
 export interface SteelOutputSheetMemoryReader {
@@ -224,14 +229,6 @@ function isWorkingOrderTable(headers: readonly string[]): boolean {
   return ['項次', '型號', '品名規格'].every((header) => headers.includes(header));
 }
 
-function isCustomerTable(headers: readonly string[]): boolean {
-  return headers.some((header) => ['客戶名稱', '客戶代號', '客戶編號', '計價基準'].includes(header));
-}
-
-function isCalculationTable(headers: readonly string[]): boolean {
-  return headers.some((header) => ['公式', '小計', '總計', '金額', '項目'].includes(header));
-}
-
 function normalizeHeader(header: string): string {
   return header.replace(/\s+/g, '');
 }
@@ -331,8 +328,69 @@ function getFactSummary(payload: SteelJsonObject): string {
     .join(' ');
 }
 
-function getParsedTables(content: string) {
-  return parseMarkdownTables(content);
+function normalizeTableTitle(line: string): string {
+  return line
+    .replace(/^#{1,6}\s*/u, '')
+    .replace(/^\*\*(.*)\*\*$/u, '$1')
+    .trim();
+}
+
+function getTableTitleType(title: string): 'ocr' | 'workbook' | undefined {
+  const normalizedTitle = title.toLowerCase();
+  if (normalizedTitle.includes('ocr')) {
+    return 'ocr';
+  }
+  if (normalizedTitle.includes('system')) {
+    return 'workbook';
+  }
+  return undefined;
+}
+
+function getParsedTables(content: string): TitledSteelMarkdownTable[] {
+  const tables: TitledSteelMarkdownTable[] = [];
+  let pendingTitle = '';
+  let currentTitle = '';
+  let currentBlock: string[] = [];
+
+  const flushCurrentBlock = () => {
+    if (currentBlock.length === 0) {
+      return;
+    }
+
+    const table = parseMarkdownTables(currentBlock.join('\n'))[0];
+    if (table) {
+      tables.push({
+        ...table,
+        title: currentTitle,
+      });
+    }
+
+    currentBlock = [];
+    currentTitle = '';
+    pendingTitle = '';
+  };
+
+  for (const rawLine of content.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    const isTableLine = line.startsWith('|') && line.endsWith('|');
+    if (isTableLine) {
+      if (currentBlock.length === 0) {
+        currentTitle = pendingTitle;
+      }
+      currentBlock.push(line);
+      continue;
+    }
+
+    flushCurrentBlock();
+
+    if (line !== '') {
+      pendingTitle = normalizeTableTitle(line);
+    }
+  }
+
+  flushCurrentBlock();
+
+  return tables;
 }
 
 function toPayloads(headers: readonly string[], rows: readonly string[][]): SteelJsonObject[] {
@@ -355,10 +413,12 @@ function toOcrMarkdownPayload(
   headers: readonly string[],
   rows: readonly string[][],
   tableIndex: number,
+  title: string,
 ): SteelJsonObject {
   return {
     kind: 'assistant_ocr_markdown',
     tableIndex,
+    title,
     headers: [...headers],
     rows: rows.map((row) => [...row]),
     markdown: renderMarkdownTable(headers, rows),
@@ -642,28 +702,6 @@ async function replaceActiveMarkdownRows({
   );
 }
 
-function quoteCalculationFilter(): FilterQuery<ISteelWorkingOrderMemory> {
-  return {
-    $nor: [
-      { 'payload.reviewStatus': 'manual_review' },
-      { 'payload.classification': { $in: ['manual_review', 'unclassified_markdown_table'] } },
-      { 'payload.reason': { $exists: true } },
-      { 'payload.unresolvedReason': { $exists: true } },
-    ],
-  };
-}
-
-function manualReviewCalculationFilter(): FilterQuery<ISteelWorkingOrderMemory> {
-  return {
-    $or: [
-      { 'payload.reviewStatus': 'manual_review' },
-      { 'payload.classification': { $in: ['manual_review', 'unclassified_markdown_table'] } },
-      { 'payload.reason': { $exists: true } },
-      { 'payload.unresolvedReason': { $exists: true } },
-    ],
-  };
-}
-
 function hasSimpleSequentialItemNumbers(payloads: readonly SteelJsonObject[]): boolean {
   return payloads.length > 0 && payloads.every((payload, index) => getParsedRowNo(payload) === index + 1);
 }
@@ -883,11 +921,10 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
     }: CaptureAssistantFinalMarkdownInput): Promise<CaptureAssistantFinalMarkdownResult> {
       const tables = getParsedTables(content);
       const savedCounts: { [key: string]: number } = {};
-      let sawUnclassifiedTable = false;
       const ocrPayloads = tables
         .map((table, index) =>
-          isOcrTable(table.headers)
-            ? toOcrMarkdownPayload(table.headers, table.rows, index + 1)
+          getTableTitleType(table.title) === 'ocr' && isOcrTable(table.headers)
+            ? toOcrMarkdownPayload(table.headers, table.rows, index + 1, table.title)
             : undefined,
         )
         .filter((payload): payload is SteelJsonObject => payload !== undefined);
@@ -910,12 +947,13 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
 
       for (const table of tables) {
         const payloads = toPayloads(table.headers, table.rows);
+        const tableTitleType = getTableTitleType(table.title);
 
-        if (isOcrTable(table.headers)) {
+        if (tableTitleType === 'ocr') {
           continue;
         }
 
-        if (isWorkingOrderTable(table.headers)) {
+        if (tableTitleType === 'workbook' && isWorkingOrderTable(table.headers)) {
           const rows = canonicalizeSystemOrderItemNumbers(
             payloads.filter((payload) => getParsedRowNo(payload) !== undefined),
           );
@@ -938,76 +976,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
           incrementSavedCount(savedCounts, 'working_order_row', rows.length);
           continue;
         }
-
-        if (isCustomerTable(table.headers)) {
-          await replaceActiveMarkdownRows({
-            SteelWorkingOrderMemory,
-            conversationId,
-            requestId,
-            messageId,
-            turnIndex,
-            checkpointTurnIndex,
-            memoryKind: 'customer_fact',
-            payloads,
-            summaryForPayload: getFactSummary,
-            locatorPrefix: 'table:customer_fact',
-          });
-          incrementSavedCount(savedCounts, 'customer_fact', payloads.length);
-          continue;
-        }
-
-        if (isCalculationTable(table.headers)) {
-          const quoteRows = payloads.filter((payload) => !isManualReviewPayload(payload));
-          const manualRows = payloads.filter(isManualReviewPayload);
-          await replaceActiveMarkdownRows({
-            SteelWorkingOrderMemory,
-            conversationId,
-            requestId,
-            messageId,
-            turnIndex,
-            checkpointTurnIndex,
-            memoryKind: 'calculation_fact',
-            payloads: quoteRows,
-            summaryForPayload: getFactSummary,
-            locatorPrefix: 'table:calculation_fact',
-            replacementFilter: quoteCalculationFilter(),
-          });
-          await replaceActiveMarkdownRows({
-            SteelWorkingOrderMemory,
-            conversationId,
-            requestId,
-            messageId,
-            turnIndex,
-            checkpointTurnIndex,
-            memoryKind: 'calculation_fact',
-            payloads: manualRows,
-            summaryForPayload: getFactSummary,
-            locatorPrefix: 'table:manual_review',
-            replacementFilter: manualReviewCalculationFilter(),
-          });
-          incrementSavedCount(savedCounts, 'calculation_fact', payloads.length);
-          continue;
-        }
-
-        const unclassifiedPayloads = payloads.map((payload) => ({
-          ...payload,
-          classification: 'unclassified_markdown_table',
-        }));
-        await replaceActiveMarkdownRows({
-          SteelWorkingOrderMemory,
-          conversationId,
-          requestId,
-          messageId,
-          turnIndex,
-          checkpointTurnIndex,
-          memoryKind: 'calculation_fact',
-          payloads: unclassifiedPayloads,
-          summaryForPayload: getFactSummary,
-          locatorPrefix: 'table:unclassified',
-          replacementFilter: manualReviewCalculationFilter(),
-        });
-        sawUnclassifiedTable = true;
-        incrementSavedCount(savedCounts, 'calculation_fact', unclassifiedPayloads.length);
       }
 
       if (Object.keys(savedCounts).length === 0) {
@@ -1016,12 +984,9 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
           savedCounts,
         };
       }
-      if (savedCounts.working_order_row === undefined) {
-        savedCounts.working_order_row = 0;
-      }
 
       return {
-        parseStatus: sawUnclassifiedTable ? 'partial' : 'saved',
+        parseStatus: 'saved',
         savedCounts,
       };
     },

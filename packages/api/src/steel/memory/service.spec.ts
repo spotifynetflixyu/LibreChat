@@ -385,6 +385,8 @@ describe('Mongoose Steel working-order memory reader', () => {
       turnIndex: 4,
       checkpointTurnIndex: 3,
       content: [
+        '## system_order',
+        '',
         '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
         '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
         '| 01 | 1 | A | CCG075 | 錏輕型鋼 75x45x15x2.3 |  |  | 支 | 2 | 4 | 8 | 26.8 | B | F1 | 2.3 | 75 | 6000 | C型鋼 |  | 已採用價格列 |',
@@ -425,7 +427,84 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(oldRow).toBeNull();
   });
 
-  it('does not apply partial row-change Markdown as backend row patches', async () => {
+  it('only saves OCR and system tables when their titles contain the required keyword', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_title_filter',
+      turnIndex: 10,
+      checkpointTurnIndex: 9,
+      content: [
+        '## Drawing Review',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 信心程度 | 是否需人工複核 |',
+        '| --- | --- | --- | --- | --- |',
+        '| drawing.pdf | A1 | PL6*80*1000 | 高 | 否 |',
+        '',
+        '## ocr extracted table for user review',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 信心程度 | 是否需人工複核 |',
+        '| --- | --- | --- | --- | --- |',
+        '| drawing.pdf | A2 | PL9*100*1200 | 中 | 是 |',
+        '',
+        '## Quote Lines',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| 01 | 1 | A | SHOULD_SKIP | 不應儲存 |  |  | 支 | 1 |  |  | 1 | B | F1 |  |  |  |  |  | title 沒有 system |',
+        '',
+        '## generated system data table',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| 01 | 2 | A | KEEP001 | 應儲存 |  |  | 支 | 2 |  |  | 2 | B | F2 |  |  |  |  |  | title 有 system |',
+      ].join('\n'),
+    });
+    const activeEntries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      state: 'active',
+    })
+      .sort({ memoryKind: 1 })
+      .lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 1, working_order_row: 1 },
+    });
+    expect(activeEntries.map((entry) => entry.memoryKind).sort()).toEqual([
+      'ocr_extract',
+      'working_order_row',
+    ]);
+    expect(activeEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          memoryKind: 'ocr_extract',
+          payload: expect.objectContaining({
+            rows: [['drawing.pdf', 'A2', 'PL9*100*1200', '中', '是']],
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'working_order_row',
+          payload: expect.objectContaining({
+            erpItemCode: 'KEEP001',
+          }),
+        }),
+      ]),
+    );
+    expect(activeEntries).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            erpItemCode: 'SHOULD_SKIP',
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('skips partial row-change confirmation Markdown without backend row patches', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');
@@ -476,8 +555,8 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
 
     expect(result).toEqual({
-      parseStatus: 'partial',
-      savedCounts: { calculation_fact: 1, working_order_row: 0 },
+      parseStatus: 'skipped',
+      savedCounts: {},
     });
     await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
       expect.objectContaining({
@@ -498,14 +577,14 @@ describe('Mongoose Steel working-order memory reader', () => {
     );
     await expect(reader.readWorkingOrderItems({ mode: 'summary' })).resolves.toEqual(
       expect.objectContaining({
-        summary: { calculation_fact: 1, working_order_row: 2 },
+        summary: { working_order_row: 2 },
       }),
     );
   });
 
-  it('captures customer and calculation facts from final Markdown tables', async () => {
+  it('skips customer and calculation Markdown tables without OCR or system titles', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
-    const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');
 
     const result = await writer.captureAssistantFinalMarkdown({
       conversationId: 'steel_conversation_1',
@@ -524,31 +603,17 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
 
     expect(result).toEqual({
-      parseStatus: 'saved',
-      savedCounts: {
-        calculation_fact: 1,
-        customer_fact: 1,
-        working_order_row: 0,
-      },
+      parseStatus: 'skipped',
+      savedCounts: {},
     });
-    await expect(reader.readWorkingOrderItems({ mode: 'summary' })).resolves.toEqual(
-      expect.objectContaining({
-        summary: { calculation_fact: 1, customer_fact: 1 },
-        memoryEntries: expect.arrayContaining([
-          expect.objectContaining({
-            memoryKind: 'customer_fact',
-            summary: expect.stringContaining('龍頂'),
-          }),
-          expect.objectContaining({
-            memoryKind: 'calculation_fact',
-            summary: expect.stringContaining('第 1 項'),
-          }),
-        ]),
+    await expect(
+      SteelWorkingOrderMemory.countDocuments({
+        conversationId: 'steel_conversation_1',
       }),
-    );
+    ).resolves.toBe(0);
   });
 
-  it('merges latest assistant tables by sheet while carrying omitted sheets forward', async () => {
+  it('skips non-system quote tables while carrying existing sheets forward', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const outputReader = createMongooseSteelOutputSheetMemoryReader(mongoose, 'steel_conversation_1');
@@ -610,8 +675,8 @@ describe('Mongoose Steel working-order memory reader', () => {
     const snapshot = await outputReader.readOutputSheetMemory();
 
     expect(result).toEqual({
-      parseStatus: 'saved',
-      savedCounts: { calculation_fact: 1, working_order_row: 0 },
+      parseStatus: 'skipped',
+      savedCounts: {},
     });
     expect(snapshot.previousOutputSheets.system_order.rows).toHaveLength(1);
     expect(snapshot.previousOutputSheets.system_order.rows[0].cells).toEqual(
@@ -622,7 +687,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(snapshot.previousOutputSheets.customer_quote.rows).toEqual([
       expect.objectContaining({
         cells: expect.objectContaining({
-          小計: '53.6',
+          小計: '100',
         }),
       }),
     ]);
@@ -635,7 +700,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     ]);
   });
 
-  it('stores unclassified Markdown tables without mutating active rows', async () => {
+  it('skips unclassified Markdown tables without mutating active rows', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');
@@ -667,8 +732,8 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
 
     expect(result).toEqual({
-      parseStatus: 'partial',
-      savedCounts: { calculation_fact: 1, working_order_row: 0 },
+      parseStatus: 'skipped',
+      savedCounts: {},
     });
     await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
       expect.objectContaining({
@@ -678,7 +743,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     );
     await expect(reader.readWorkingOrderItems({ mode: 'summary' })).resolves.toEqual(
       expect.objectContaining({
-        summary: { calculation_fact: 1, working_order_row: 1 },
+        summary: { working_order_row: 1 },
       }),
     );
   });
@@ -726,7 +791,7 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1, working_order_row: 0 },
+      savedCounts: { ocr_extract: 1 },
     });
     expect(ocrEntries).toHaveLength(1);
     expect(ocrEntries[0]).toEqual(
@@ -746,6 +811,57 @@ describe('Mongoose Steel working-order memory reader', () => {
         markdown: expect.stringContaining('PL6*80*1000'),
       }),
     ]);
+  });
+
+  it('does not save OCR confirmation helper tables as workbook state', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const content = [
+      '## OCR 結果確認表',
+      '',
+      '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+      '|---|---|---|---:|---:|---|---|',
+      '| drawing.pdf | P1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
+      '',
+      '## 給使用者確認的 OCR 疑問',
+      '',
+      '| 項目 | OCR 判讀 | 備註 |',
+      '| --- | --- | --- |',
+      '| 1 | 5 | OCR 讀值待確認 |',
+      '| 2 | 3 | 圖面文字模糊 |',
+      '| 3 | 1 | 孔位需人工確認 |',
+    ].join('\n');
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_confirm',
+      turnIndex: 9,
+      checkpointTurnIndex: 8,
+      content,
+    });
+    const activeEntries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      state: 'active',
+    })
+      .sort({ memoryKind: 1 })
+      .lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 1 },
+    });
+    expect(activeEntries).toHaveLength(1);
+    expect(activeEntries[0]).toEqual(
+      expect.objectContaining({
+        memoryKind: 'ocr_extract',
+        payload: expect.objectContaining({
+          kind: 'assistant_ocr_markdown',
+          tableIndex: 1,
+          rows: [['drawing.pdf', 'P1', 'PL6*80*1000', '4', '8', '高', '否']],
+        }),
+      }),
+    );
   });
 
   it('skips malformed Markdown without saving memory or throwing', async () => {
