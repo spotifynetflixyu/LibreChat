@@ -1118,6 +1118,58 @@ describe('Mongoose Steel working-order memory reader', () => {
     ]);
   });
 
+  it('captures OCR tables when file-key metadata appears between the OCR heading and table', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_with_file_key_metadata',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentTurnFiles: [
+        {
+          fileId: 'file-a',
+          filename: 'a.jpg',
+          mediaType: 'image/jpeg',
+        },
+      ],
+      content: [
+        'PaddleOCR MCP returned an error, so the assistant provided OCR fallback Markdown.',
+        '',
+        '## OCR result review table - a.jpg',
+        'file key: `file:file-a`',
+        '',
+        '| 項次 | 來源 | 孔數 / 件 | 總孔數 | 低信心與複核原因 |',
+        '|---:|---|---:|---:|---|',
+        '| 1 | a.jpg | 0 | 0 | fallback review |',
+      ].join('\n'),
+    });
+    const activeEntries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    }).lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_extract: 1 },
+      savedTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { ocr_extract: 1 },
+      totalTableCounts: { ocr_table: 1 },
+    });
+    expect(activeEntries).toHaveLength(1);
+    expect(activeEntries[0]?.payload).toEqual(
+      expect.objectContaining({
+        kind: 'assistant_ocr_markdown',
+        ocrFileKey: 'file:file-a',
+        fileId: 'file-a',
+        filename: 'a.jpg',
+        mediaType: 'image/jpeg',
+      }),
+    );
+  });
+
   it('keeps assistant OCR file-keyed but still missing for PaddleOCR preflight', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);

@@ -90,7 +90,7 @@ const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
 const { findPluginAuthsByKeys } = require('~/models');
-const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
+const { getFlowStateManager, getMCPManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
 const domainSeparatorRegex = new RegExp(actionDomainSeparator, 'g');
@@ -528,6 +528,17 @@ const nativeTools = new Set([Tools.execute_code, Tools.file_search, Tools.web_se
 const defaultSteelNativeToolMaxCalls = 8;
 const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
+const steelPaddleOcrRetryableErrorPatterns = [
+  'connection reset by peer',
+  'connectionreseterror',
+  'clientconnectorerror',
+  'clientoserror',
+  'cannot connect to host paddleocr.aistudio-app.com',
+  'econnreset',
+  'socket hang up',
+  'server disconnected',
+  'transport closed',
+];
 let defaultSteelNativeToolClient;
 
 /** Checks if a tool name is a known built-in tool */
@@ -746,6 +757,204 @@ function isAbortError(error, signal) {
   }
 
   return false;
+}
+
+function collectErrorMessages(error) {
+  const messages = [];
+  const visited = new Set();
+  let current = error;
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    if (typeof current.name === 'string' && current.name.trim() !== '') {
+      messages.push(current.name);
+    }
+    if (typeof current.code === 'string' && current.code.trim() !== '') {
+      messages.push(current.code);
+    }
+    if (typeof current.message === 'string' && current.message.trim() !== '') {
+      messages.push(current.message);
+    }
+    current = current.cause;
+  }
+  if (typeof error === 'string') {
+    messages.push(error);
+  }
+  return messages;
+}
+
+function isRetryableSteelPaddleOcrPreflightError(error) {
+  const combined = collectErrorMessages(error).join('\n').toLowerCase();
+  if (!combined) {
+    return false;
+  }
+  return steelPaddleOcrRetryableErrorPatterns.some((pattern) => combined.includes(pattern));
+}
+
+function createSteelPaddleOcrInvokeConfig({
+  configurable,
+  req,
+  agent,
+  conversationId,
+  requestId,
+  signal,
+  providerToolCallId,
+  toolName,
+  args,
+}) {
+  return {
+    configurable: {
+      ...configurable,
+      req,
+      user: req.user,
+      user_id: req.user?.id,
+      requestBody: {
+        messageId: requestId,
+        conversationId,
+      },
+    },
+    metadata: {
+      provider: agent?.provider,
+      thread_id: conversationId,
+      run_id: requestId ?? conversationId,
+    },
+    signal,
+    toolCall: {
+      id: providerToolCallId,
+      name: toolName,
+      args,
+    },
+  };
+}
+
+async function loadSteelPaddleOcrPreflightTool({
+  req,
+  res,
+  signal,
+  agent,
+  toolName,
+  streamId,
+  userMCPAuthMap,
+  requestScopedConnections,
+}) {
+  const { loadedTools, configurable } = await loadToolsForExecution({
+    req,
+    res,
+    signal,
+    agent,
+    toolNames: [toolName],
+    streamId,
+    actionsEnabled: false,
+    ...(userMCPAuthMap ? { userMCPAuthMap } : {}),
+    ...(requestScopedConnections ? { requestScopedConnections } : {}),
+  });
+  return {
+    paddleTool: loadedTools.find((tool) => tool.name === toolName),
+    configurable,
+  };
+}
+
+async function rebuildSteelPaddleOcrPreflightTool({
+  req,
+  res,
+  signal,
+  agent,
+  streamId,
+  toolName,
+  conversationId,
+  requestId,
+  file,
+  error,
+  userMCPAuthMap,
+  requestScopedConnections,
+}) {
+  logger.warn('[Steel OCR] Rebuilding PaddleOCR MCP connection before retrying preflight', {
+    conversationId,
+    requestId,
+    ocrFileKey: file?.ocrFileKey,
+    error: error?.message,
+  });
+
+  const requestConnectionKey = req.user?.id
+    ? `${req.user.id}:${steelPaddleOcrMcpServerName}`
+    : undefined;
+  const requestConnection = requestConnectionKey
+    ? requestScopedConnections?.connections?.get?.(requestConnectionKey)
+    : undefined;
+  if (requestConnectionKey) {
+    requestScopedConnections?.pending?.delete?.(requestConnectionKey);
+    requestScopedConnections?.connections?.delete?.(requestConnectionKey);
+  }
+  if (typeof requestConnection?.disconnect === 'function') {
+    try {
+      await requestConnection.disconnect();
+    } catch (disconnectError) {
+      logger.warn('[Steel OCR] Failed to disconnect request-scoped PaddleOCR connection before retry', {
+        conversationId,
+        requestId,
+        ocrFileKey: file?.ocrFileKey,
+        error: disconnectError?.message,
+      });
+    }
+  }
+
+  try {
+    await getMCPManager(req.user?.id)?.appConnections?.disconnect?.(steelPaddleOcrMcpServerName);
+  } catch (disconnectError) {
+    logger.warn('[Steel OCR] Failed to disconnect PaddleOCR app connection before retry', {
+      conversationId,
+      requestId,
+      ocrFileKey: file?.ocrFileKey,
+      error: disconnectError?.message,
+    });
+  }
+
+  let configServers;
+  try {
+    configServers = await resolveConfigServers(req);
+  } catch (configError) {
+    logger.warn('[Steel OCR] Failed to resolve MCP config servers before PaddleOCR retry', {
+      conversationId,
+      requestId,
+      ocrFileKey: file?.ocrFileKey,
+      error: configError?.message,
+    });
+  }
+
+  try {
+    await reinitMCPServer({
+      user: req.user,
+      signal,
+      serverName: steelPaddleOcrMcpServerName,
+      ...(configServers ? { configServers } : {}),
+      ...(userMCPAuthMap ? { userMCPAuthMap } : {}),
+      requestBody: {
+        messageId: requestId,
+        conversationId,
+      },
+      requestScopedConnections,
+      forceNew: true,
+      returnOnOAuth: false,
+      connectionTimeout: Time.THIRTY_SECONDS,
+    });
+  } catch (reinitError) {
+    logger.warn('[Steel OCR] Failed to reinitialize PaddleOCR MCP before retry', {
+      conversationId,
+      requestId,
+      ocrFileKey: file?.ocrFileKey,
+      error: reinitError?.message,
+    });
+  }
+
+  return loadSteelPaddleOcrPreflightTool({
+    req,
+    res,
+    signal,
+    agent,
+    toolName,
+    streamId,
+    userMCPAuthMap,
+    requestScopedConnections,
+  });
 }
 
 function toBoundedSteelPaddleOcrValue(value, depth = 0) {
@@ -1034,18 +1243,16 @@ async function runSteelPaddleOcrPreflight({
   }
 
   const toolName = buildMCPToolKey(steelPaddleOcrToolName, steelPaddleOcrMcpServerName);
-  const { loadedTools, configurable } = await loadToolsForExecution({
+  let { paddleTool, configurable } = await loadSteelPaddleOcrPreflightTool({
     req,
     res,
     signal,
     agent,
-    toolNames: [toolName],
+    toolName,
     streamId,
-    actionsEnabled: false,
-    ...(userMCPAuthMap ? { userMCPAuthMap } : {}),
-    ...(requestScopedConnections ? { requestScopedConnections } : {}),
+    userMCPAuthMap,
+    requestScopedConnections,
   });
-  const paddleTool = loadedTools.find((tool) => tool.name === toolName);
   if (!paddleTool) {
     return finishPreflight(createPreflightResult({
       status: 'partial',
@@ -1083,29 +1290,62 @@ async function runSteelPaddleOcrPreflight({
         args,
         index,
       });
-      const result = await invokeLoadedTool(paddleTool, args, {
-        configurable: {
-          ...configurable,
-          req,
-          user: req.user,
-          user_id: req.user?.id,
-          requestBody: {
-            messageId: requestId,
-            conversationId,
-          },
-        },
-        metadata: {
-          provider: agent?.provider,
-          thread_id: conversationId,
-          run_id: requestId ?? conversationId,
-        },
-        signal,
-        toolCall: {
-          id: providerToolCallId,
-          name: toolName,
+      let result;
+      try {
+        result = await invokeLoadedTool(
+          paddleTool,
           args,
-        },
-      });
+          createSteelPaddleOcrInvokeConfig({
+            configurable,
+            req,
+            agent,
+            conversationId,
+            requestId,
+            signal,
+            providerToolCallId,
+            toolName,
+            args,
+          }),
+        );
+      } catch (error) {
+        if (isAbortError(error, signal) || !isRetryableSteelPaddleOcrPreflightError(error)) {
+          throw error;
+        }
+        const rebuilt = await rebuildSteelPaddleOcrPreflightTool({
+          req,
+          res,
+          signal,
+          agent,
+          streamId,
+          toolName,
+          conversationId,
+          requestId,
+          file,
+          error,
+          userMCPAuthMap,
+          requestScopedConnections,
+        });
+        if (!rebuilt.paddleTool) {
+          throw error;
+        }
+        paddleTool = rebuilt.paddleTool;
+        configurable = rebuilt.configurable;
+        result = await invokeLoadedTool(
+          paddleTool,
+          args,
+          createSteelPaddleOcrInvokeConfig({
+            configurable,
+            req,
+            agent,
+            conversationId,
+            requestId,
+            signal,
+            providerToolCallId,
+            toolName,
+            args,
+          }),
+        );
+      }
 
       const captureResult = await writer.capturePaddleOcrResult({
         conversationId,

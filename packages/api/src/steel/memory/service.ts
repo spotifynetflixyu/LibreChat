@@ -548,6 +548,10 @@ function normalizeTableTitle(line: string): string {
     .trim();
 }
 
+function isStructuredTableTitleLine(line: string): boolean {
+  return /^#{1,6}\s*/u.test(line) || /^\*\*.*\*\*$/u.test(line);
+}
+
 function getTableTitleType(title: string): 'ocr' | 'workbook' | undefined {
   const normalizedTitle = title.toLowerCase();
   if (normalizedTitle.includes('ocr')) {
@@ -562,6 +566,7 @@ function getTableTitleType(title: string): 'ocr' | 'workbook' | undefined {
 function getParsedTables(content: string): TitledSteelMarkdownTable[] {
   const tables: TitledSteelMarkdownTable[] = [];
   let pendingTitle = '';
+  let pendingTitleIsStructured = false;
   let currentTitle = '';
   let currentBlock: string[] = [];
 
@@ -581,6 +586,7 @@ function getParsedTables(content: string): TitledSteelMarkdownTable[] {
     currentBlock = [];
     currentTitle = '';
     pendingTitle = '';
+    pendingTitleIsStructured = false;
   };
 
   for (const rawLine of content.split(/\r?\n/u)) {
@@ -597,7 +603,11 @@ function getParsedTables(content: string): TitledSteelMarkdownTable[] {
     flushCurrentBlock();
 
     if (line !== '') {
-      pendingTitle = normalizeTableTitle(line);
+      const isStructuredTitle = isStructuredTableTitleLine(line);
+      if (isStructuredTitle || !pendingTitleIsStructured) {
+        pendingTitle = normalizeTableTitle(line);
+        pendingTitleIsStructured = isStructuredTitle;
+      }
     }
   }
 

@@ -1,3 +1,112 @@
+# Active: Production PaddleOCR second-turn OCR table persistence bug - 2026-07-02
+
+Goal: diagnose and fix the production chat where the first image turn
+PaddleOCR succeeds, the second image turn fails regardless of image order, and
+the second turn's OCR fallback Markdown is not persisted as an OCR table.
+
+Status:
+
+- [x] Read repo instructions, existing OCR lessons, prior todo evidence, and
+      the current worktree before changing code.
+- [x] Inspect the production conversation using `.env.prod` Mongo and server
+      logs without leaking secrets.
+- [x] Confirm whether the second turn saved `paddleocr_preflight` raw results,
+      emitted assistant OCR Markdown, and attempted `ocr_extract` capture.
+- [x] Trace the second-turn boundary across current-turn files, PaddleOCR MCP
+      execution, fallback Markdown generation, and title-gated OCR save logic.
+- [x] Add a red regression at the seam that reproduces
+      `Total: OCR raw results: 2, OCR tables: 1` after two image turns.
+- [x] Implement the minimal root-cause fix.
+- [x] Add a PaddleOCR preflight retry that rebuilds the MCP connection after a
+      sequential provider/network reset.
+- [x] Run focused backend tests/build/checks and update this review section
+      with exact evidence.
+
+Initial evidence from user:
+
+- Production conversation:
+  `https://chat.longdin.org/c/968973e2-2b24-4263-8371-4a4cc6d65fde`.
+- Production Mongo must be read from `.env.prod`, not local `.env`.
+- `b.jpg` succeeds when it is the first turn; `a.jpg` fails when it is the
+  second turn.
+- If image order is swapped, the second turn `b.jpg` fails instead.
+- After the second-turn `a.jpg` failure, OCR fallback Markdown is also not
+  stored in DB.
+- Observed aggregate: `Total: OCR raw results: 2, OCR tables: 1`.
+- Expected aggregate: `Total: OCR raw results: 2, OCR tables: 2`.
+
+Hypotheses:
+
+1. If second-turn PaddleOCR uses stale or mismatched current-turn file context,
+   raw preflight may save under the new key while fallback/assistant OCR capture
+   loses the file key or attachment reference, leaving only one `ocr_extract`.
+2. If the second-turn assistant fallback Markdown lacks an OCR-like nearby
+   title after a PaddleOCR tool error, title-gated capture will skip it even
+   though user-visible OCR content exists.
+3. If the native Responses/AgentClient final-save hook runs after the stream
+   closes or is skipped on tool-error fallback, the UI can show raw preflight
+   totals but never persist the assistant OCR table.
+4. If the PaddleOCR MCP process/session or AI Studio provider fails only on the
+   second call, the runtime still must preserve actionable fallback Markdown
+   and persist OCR table state when the assistant returns it.
+
+Review - 2026-07-02:
+
+- Production `/api/config` showed the live container running build commit
+  `87fa43fde5402ca4813054a464e542234a29de71`, not local `6fdef4bf`.
+- Production container was healthy and freshly started, so the symptom was not
+  an incomplete restart of the deployed `87fa43f` image.
+- Production logs around the second turn showed a real PaddleOCR MCP provider
+  failure: `ClientConnectorError` / `Connection reset by peer` connecting to
+  `paddleocr.aistudio-app.com:443`.
+- `.env.prod` Mongo readback for conversation
+  `968973e2-2b24-4263-8371-4a4cc6d65fde` showed exactly:
+  `paddleocr_preflight:active = 2` and `ocr_extract:active = 1`.
+- The second assistant message contained fallback OCR Markdown for `a.jpg` with
+  `## OCR 結果確認表 — a.jpg`, but it placed
+  `file key: file:f44bb0d3-46cd-4c88-949e-a772dc8251f3` between the heading
+  and the table.
+- Root cause: `getParsedTables()` used the last non-table line before the table
+  as the title. The `file key` metadata line overwrote the OCR heading, so the
+  title-gated OCR capture did not see `OCR` and skipped the table.
+- Fix: structured Markdown headings / bold headings now stay as the pending
+  table title until the next table; ordinary metadata lines no longer overwrite
+  them.
+- Confirmed multi-file OCR Markdown results are already file-keyed:
+  descriptors use `fileId`, then `storageKey`, then path, then filename; OCR
+  payloads are grouped by `ocrFileKey`; replacement deletes only active
+  assistant OCR rows for that key.
+- The user's 5-second-gap clarification rules out a simple simultaneous
+  same-process race. Fresh-process and same-client production smokes both
+  succeeded, so the production failure is treated as a retryable provider /
+  connection reset, not as a corrupt file or missing S3 URL.
+- Fix: reset-class PaddleOCR preflight failures now disconnect any request-
+  scoped PaddleOCR connection, disconnect the PaddleOCR app connection,
+  reinitialize the MCP server with `forceNew: true`, reload the PaddleOCR tool,
+  and retry that file once. Non-reset provider errors still produce the
+  previous partial preflight behavior, and aborts still rethrow.
+- Red-green evidence:
+  - Before the parser fix, the new regression returned
+    `parseStatus: skipped`.
+  - After the fix, the same case saves `ocr_extract: 1` and preserves
+    `ocrFileKey`, `fileId`, filename, and media type.
+  - Before the retry fix, the new reset regression did not call PaddleOCR
+    connection disconnect/reinitialize and returned partial.
+  - After the retry fix, the same case disconnects `PaddleOCR`, calls
+    `reinitMCPServer({ forceNew: true })`, reloads the tool, retries once, and
+    saves the successful second result as `paddleocr_preflight`.
+- Verification passed:
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "rebuilds and retries PaddleOCR"`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|preflight"`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "captures OCR tables when file-key metadata"`
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "keeps OCR and workbook tables separated|keeps sequential OCR turns|captures OCR tables when file-key metadata"`
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - `rtk git diff --check`
+
+---
+
 # Active: PaddleOCR failed preflight edit-resend retry bug - 2026-07-02
 
 Goal: fix the Steel chat case where `b.jpg` PaddleOCR fails on the first try,

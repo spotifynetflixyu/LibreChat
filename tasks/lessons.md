@@ -25,11 +25,20 @@
   CloudFront should stay on the stream fallback unless signed URL mode is
   explicitly verified. Keep the existing owned-file DB lookup before
   resolution; never trust a request-supplied filepath directly.
+- When PaddleOCR fails on the second image turn after the first turn completed,
+  do not assume concurrent access. Check production logs for provider/network
+  reset errors and verify with both same-client and fresh-process smokes before
+  adding locks. Sequential reset handling should rebuild the PaddleOCR MCP
+  connection and retry only the affected file once.
 - OCR dedupe must be source-aware per file key. `ocr_extract` rows from
   assistant Markdown / AI OCR fallback are useful review state, but only
   active rows with `ocrSource: "paddleocr_mcp"` may skip future PaddleOCR
   preflight for the same `ocrFileKey`; PaddleOCR failures must not write
   completed OCR state so the next turn retries.
+- OCR Markdown table parsing must keep a structured OCR heading as the pending
+  table title when metadata lines such as `file key: file:<id>` appear between
+  the heading and table. Do not let metadata replace the OCR title or
+  title-gated `ocr_extract` capture will skip valid fallback Markdown.
 - If a user says a file's OCR state is fallback / assistant OCR, treat that as
   not PaddleOCR-complete even when it has the same filename or `ocrFileKey`.
   Edit-message resend must rerun PaddleOCR preflight unless there is active

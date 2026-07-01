@@ -96,6 +96,11 @@ const mockGetServerConfig = jest.fn();
 const mockFlowManager = { getFlowState: jest.fn() };
 const mockResolveConfigServers = jest.fn();
 const mockUserCanUseMCPServers = jest.fn().mockResolvedValue(true);
+const mockMCPManager = {
+  appConnections: {
+    disconnect: jest.fn(),
+  },
+};
 jest.mock('~/server/services/Tools/credentials', () => ({
   loadAuthValues: jest.fn().mockResolvedValue({}),
 }));
@@ -131,6 +136,7 @@ jest.mock('~/models', () => ({
 }));
 jest.mock('~/config', () => ({
   getFlowStateManager: jest.fn(() => mockFlowManager),
+  getMCPManager: jest.fn(() => mockMCPManager),
   getMCPServersRegistry: jest.fn(() => ({
     getServerConfig: (...args) => mockGetServerConfig(...args),
   })),
@@ -215,6 +221,7 @@ describe('ToolService - Action Capability Gating', () => {
     mockGetCachedTools.mockResolvedValue(null);
     mockGetUserMCPAuthMap.mockResolvedValue({});
     mockGetServerConfig.mockResolvedValue(undefined);
+    mockMCPManager.appConnections.disconnect.mockResolvedValue(undefined);
     mockFlowManager.getFlowState.mockResolvedValue(undefined);
     mockResolveConfigServers.mockResolvedValue({});
     mockFindMissingPaddleOcrFileKeys.mockResolvedValue({
@@ -789,6 +796,113 @@ describe('ToolService - Action Capability Gating', () => {
         failedKeys: ['file:file-fallback'],
         skippedReason: undefined,
         currentPaddleOcrResults: [],
+      });
+    });
+
+    it('rebuilds and retries PaddleOCR preflight after a sequential provider connection reset', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-second', filename: 'second.jpg', mediaType: 'image/jpeg' },
+        ],
+      };
+      const firstInvoke = jest.fn().mockRejectedValueOnce(
+        new Error(
+          'ClientConnectorError: Cannot connect to host paddleocr.aistudio-app.com:443 ssl:default [Connection reset by peer]',
+        ),
+      );
+      const secondInvoke = jest.fn().mockResolvedValueOnce({ text: 'Second OCR' });
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: [],
+        missingFiles: [
+          {
+            ocrFileKey: 'file:file-second',
+            fileId: 'file-second',
+            filename: 'second.jpg',
+            mediaType: 'image/jpeg',
+          },
+        ],
+        missingKeys: ['file:file-second'],
+      });
+      mockLoadToolsUtil
+        .mockResolvedValueOnce({
+          loadedTools: [
+            {
+              name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+              invoke: firstInvoke,
+            },
+          ],
+          toolContextMap: {},
+        })
+        .mockResolvedValueOnce({
+          loadedTools: [
+            {
+              name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+              invoke: secondInvoke,
+            },
+          ],
+          toolContextMap: {},
+        });
+      mockCapturePaddleOcrResult.mockResolvedValueOnce({
+        savedCounts: { paddleocr_preflight: 1 },
+        totalSavedCounts: { paddleocr_preflight: 2 },
+        totalTableCounts: {},
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+
+      expect(mockMCPManager.appConnections.disconnect).toHaveBeenCalledWith('PaddleOCR');
+      expect(reinitMCPServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: req.user,
+          serverName: 'PaddleOCR',
+          forceNew: true,
+          returnOnOAuth: false,
+        }),
+      );
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(2);
+      expect(firstInvoke).toHaveBeenCalledTimes(1);
+      expect(secondInvoke).toHaveBeenCalledTimes(1);
+      expect(mockCapturePaddleOcrResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerToolCallId: 'steel_paddleocr_preflight_file_file-second',
+          file: {
+            ocrFileKey: 'file:file-second',
+            fileId: 'file-second',
+            filename: 'second.jpg',
+            mediaType: 'image/jpeg',
+          },
+          data: { text: 'Second OCR' },
+        }),
+      );
+      expect(result).toEqual({
+        status: 'completed',
+        completedKeys: ['file:file-second'],
+        attemptedKeys: ['file:file-second'],
+        failedKeys: [],
+        skippedReason: undefined,
+        currentPaddleOcrResults: [
+          {
+            ocrFileKey: 'file:file-second',
+            fileId: 'file-second',
+            filename: 'second.jpg',
+            mediaType: 'image/jpeg',
+            ocrSource: 'paddleocr_mcp',
+            result: { text: 'Second OCR' },
+          },
+        ],
+        totalSavedCounts: { paddleocr_preflight: 2 },
+        totalTableCounts: {},
       });
     });
 
