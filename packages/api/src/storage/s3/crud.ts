@@ -652,6 +652,14 @@ export async function saveURLToS3(
   return filepath;
 }
 
+function decodeS3UrlKey(key: string): string {
+  try {
+    return decodeURIComponent(key);
+  } catch {
+    return key;
+  }
+}
+
 export function extractKeyFromS3Url(fileUrlOrKey: string): string {
   if (!fileUrlOrKey) {
     throw new Error('Invalid input: URL or key is empty');
@@ -681,7 +689,7 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
       } else {
         logger.debug(`[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${key}`);
       }
-      return key;
+      return decodeS3UrlKey(key);
     }
 
     if (
@@ -701,7 +709,7 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
             `[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${key}`,
           );
         }
-        return key;
+        return decodeS3UrlKey(key);
       }
       logger.warn(
         `[extractKeyFromS3Url] Unable to extract key from path-style URL: ${fileUrlOrKey}`,
@@ -710,7 +718,7 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
     }
 
     logger.debug(`[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${pathname}`);
-    return pathname;
+    return decodeS3UrlKey(pathname);
   } catch (error) {
     if (fileUrlOrKey.startsWith('http://') || fileUrlOrKey.startsWith('https://')) {
       logger.error(

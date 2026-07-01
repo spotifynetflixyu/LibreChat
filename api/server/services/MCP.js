@@ -275,14 +275,9 @@ function isLikelyBase64Input(value) {
   return normalized.length > 128 && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
 }
 
-function isExternalOrCompletePaddleInput(value) {
+function isInlinePaddleInput(value) {
   const trimmed = value.trim();
-  return (
-    path.isAbsolute(trimmed) ||
-    /^https?:\/\//i.test(trimmed) ||
-    /^data:/i.test(trimmed) ||
-    isLikelyBase64Input(trimmed)
-  );
+  return /^data:/i.test(trimmed) || isLikelyBase64Input(trimmed);
 }
 
 function safeDecode(value) {
@@ -428,7 +423,7 @@ function shouldResolvePaddleInputAsDownloadUrl(source) {
 
 async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }) {
   const trimmedInput = inputData.trim();
-  if (isExternalOrCompletePaddleInput(trimmedInput)) {
+  if (isInlinePaddleInput(trimmedInput)) {
     return inputData;
   }
 

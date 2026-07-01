@@ -1285,6 +1285,48 @@ describe('User parameter passing tests', () => {
       expectLoggerNotToContainSignedUrlSecrets();
     });
 
+    it('should resolve PaddleOCR sandbox-style absolute paths from current S3 attachments', async () => {
+      const fileId = 's3-file-drawing';
+      mockGetDownloadURL.mockResolvedValueOnce(SIGNED_PADDLEOCR_URL);
+
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId,
+        inputData: '/mnt/data/drawing.pdf',
+        dbFiles: [
+          {
+            file_id: fileId,
+            filename: 'drawing.pdf',
+            filepath: OLD_SIGNED_PADDLEOCR_URL,
+            storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
+            type: 'application/pdf',
+            source: 's3',
+          },
+        ],
+      });
+
+      expect(mockGetDownloadURL).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: expect.objectContaining({
+            file_id: fileId,
+            storageKey: 'uploads/paddle-user/s3-file-drawing__drawing.pdf',
+            source: 's3',
+          }),
+          customFilename: 'drawing.pdf',
+          contentType: 'application/pdf',
+        }),
+      );
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: SIGNED_PADDLEOCR_URL,
+          }),
+        }),
+      );
+      expectLoggerNotToContainSignedUrlSecrets();
+    });
+
     it('should keep CloudFront PaddleOCR attachments on the stream fallback path', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
         fileId: 'cloudfront-file-drawing',

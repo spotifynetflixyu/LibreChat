@@ -1645,7 +1645,15 @@ describe('S3 CRUD', () => {
       const key = extractKeyFromS3Url(
         'https://bucket.s3.amazonaws.com/test-bucket/images/user123/my%20file%20name.jpg',
       );
-      expect(key).toBe('images/user123/my%20file%20name.jpg');
+      expect(key).toBe('images/user123/my file name.jpg');
+    });
+
+    it('decodes unicode object keys from S3 URLs', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url(
+        'https://amzn-s3-longdin-ap-east.s3.ap-east-1.amazonaws.com/prod/uploads/user123/file-id__%E6%96%B0%E5%A2%9E%E6%9D%BF%E9%9B%B6%E4%BB%B6%E8%A3%BD%E9%80%A0%E5%9C%96.pdf',
+      );
+      expect(key).toBe('prod/uploads/user123/file-id__新增板零件製造圖.pdf');
     });
 
     it('handles deep nested paths', async () => {
