@@ -19,7 +19,7 @@ Status:
 - [x] Implement the fix at the runtime context, read_markdown, and MCP input
       resolver seams.
 - [x] Run focused tests/build and local production-data verification.
-- [ ] Deploy and verify production build state.
+- [x] Deploy and verify production build state.
 
 Evidence:
 
@@ -96,6 +96,11 @@ Verification:
   "file:2e3d9903-9736-41a9-bbf1-87e5c8e0a093")` against `.env.prod` Mongo
   returned exactly one item for `d.pdf`, `keyedOnlyDFile: true`,
   `hasRenderableText: true`, and `contentParts: 2`.
+- GitHub deploy run `28553416272` completed successfully for commit
+  `2b3652996c8263bc05993a37b83f4ab066394dc6`.
+- Production `/api/config.buildInfo` reports commit
+  `2b3652996c8263bc05993a37b83f4ab066394dc6`, branch `master`, and build date
+  `2026-07-01T23:01:39Z`; `/health` returns `OK`.
 
 ---
 
