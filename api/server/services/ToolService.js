@@ -39,6 +39,7 @@ const {
   executeSteelTool,
   mergeSteelToolDefinitions,
   resolveSteelProviderToolName,
+  getSteelOcrFileDescriptor,
   createMongooseSteelOutputSheetMemoryReader,
   createMongooseSteelWorkingOrderMemoryWriter,
 } = require('@librechat/api');
@@ -549,26 +550,7 @@ function getRequestConversationId(req) {
     : undefined;
 }
 
-function isOcrableSteelFile(file) {
-  const mediaType = [file?.mediaType, file?.type, file?.mimeType, file?.mimetype]
-    .find((value) => typeof value === 'string')
-    ?.toLowerCase() ?? '';
-  const filename = [file?.filename, file?.name, file?.originalname, file?.filepath, file?.path]
-    .find((value) => typeof value === 'string')
-    ?.toLowerCase() ?? '';
-
-  return (
-    mediaType === 'application/pdf' ||
-    mediaType.startsWith('image/') ||
-    /\.(pdf|png|jpe?g|webp|bmp|gif|tiff?)$/i.test(filename)
-  );
-}
-
-function getSteelFileIdentity(file) {
-  return file?.fileId ?? file?.file_id ?? file?.id ?? file?.filepath ?? file?.path ?? file?.filename;
-}
-
-function collectSteelOcrCandidateFiles(req, requestAttachments) {
+function collectSteelOcrCandidateDescriptors(req, requestAttachments) {
   const candidateGroups = [
     req?.steelNativeContext?.currentTurnFiles,
     requestAttachments,
@@ -586,14 +568,12 @@ function collectSteelOcrCandidateFiles(req, requestAttachments) {
       if (!file || typeof file !== 'object') {
         continue;
       }
-      const identity = getSteelFileIdentity(file);
-      if (identity && seen.has(identity)) {
+      const descriptor = getSteelOcrFileDescriptor(file);
+      if (!descriptor || seen.has(descriptor.ocrFileKey)) {
         continue;
       }
-      if (identity) {
-        seen.add(identity);
-      }
-      candidates.push(file);
+      seen.add(descriptor.ocrFileKey);
+      candidates.push(descriptor);
     }
   }
 
@@ -606,9 +586,7 @@ function addSteelPaddleOcrMcpTool(selectedTools, req, requestAttachments) {
     return selectedTools;
   }
 
-  const ocrableFiles = collectSteelOcrCandidateFiles(req, requestAttachments).filter(
-    isOcrableSteelFile,
-  );
+  const ocrableFiles = collectSteelOcrCandidateDescriptors(req, requestAttachments);
   if (ocrableFiles.length === 0) {
     return selectedTools;
   }
@@ -616,9 +594,9 @@ function addSteelPaddleOcrMcpTool(selectedTools, req, requestAttachments) {
   logger.debug('[Steel OCR] Injecting PaddleOCR MCP server during tool initialization', {
     serverName: steelPaddleOcrMcpServerName,
     files: ocrableFiles.map((file) => ({
-      fileId: file?.fileId ?? file?.file_id ?? file?.id,
-      filename: file?.filename ?? file?.name ?? file?.originalname,
-      mediaType: file?.mediaType ?? file?.type ?? file?.mimeType ?? file?.mimetype,
+      fileId: file.fileId,
+      filename: file.filename,
+      mediaType: file.mediaType,
     })),
   });
   return [...selectedTools, serverToken];
@@ -740,6 +718,61 @@ function stringifySteelPaddleOcrPayload(value) {
       message: error?.message,
     });
   }
+}
+
+function isAbortError(error, signal) {
+  if (signal?.aborted) {
+    return true;
+  }
+
+  const visited = new Set();
+  let current = error;
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    const errorName = current.name;
+    const errorCode = current.code;
+    const errorMessage = typeof current.message === 'string' ? current.message : '';
+
+    if (
+      errorName === 'AbortError' ||
+      errorCode === 'ABORT_ERR' ||
+      errorMessage.includes('AbortError') ||
+      /(?:operation|request|stream) was aborted/i.test(errorMessage)
+    ) {
+      return true;
+    }
+
+    current = current.cause;
+  }
+
+  return false;
+}
+
+function toBoundedSteelPaddleOcrValue(value, depth = 0) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    return value.length > 1200 ? `${value.slice(0, 1200)}...` : value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (depth >= 6) {
+      return [];
+    }
+    return value.slice(0, 20).map((entry) => toBoundedSteelPaddleOcrValue(entry, depth + 1));
+  }
+  if (typeof value !== 'object' || depth >= 6) {
+    return String(value);
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 40)
+      .map(([key, entry]) => [key, toBoundedSteelPaddleOcrValue(entry, depth + 1)]),
+  );
 }
 
 function createSteelPaddleOcrToolCall({ providerToolCallId, toolName, args, output }) {
@@ -1090,7 +1123,7 @@ async function runSteelPaddleOcrPreflight({
       currentPaddleOcrResults.push({
         ...file,
         ocrSource: 'paddleocr_mcp',
-        result,
+        result: toBoundedSteelPaddleOcrValue(result),
       });
       await emitSteelPaddleOcrToolCompleted({
         res,
@@ -1103,6 +1136,9 @@ async function runSteelPaddleOcrPreflight({
         index,
       });
     } catch (error) {
+      if (isAbortError(error, signal)) {
+        throw error;
+      }
       failedKeys.push(file.ocrFileKey);
       logger.warn('[Steel OCR] PaddleOCR preflight failed for current file', {
         conversationId,

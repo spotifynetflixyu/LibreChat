@@ -207,6 +207,29 @@ describe('useSteelEventHandler', () => {
     });
   });
 
+  it('keeps activity events when displayed count metadata changes', () => {
+    const first: SteelNativeActivityEvent = {
+      type: 'memory_saved',
+      source: 'assistant_markdown',
+      message: 'Working Order Memory saved',
+      messageId: 'assistant-1',
+      savedCounts: { working_order_row: 1 },
+      totalTableCounts: { system_order_table: 1 },
+    };
+    const second: SteelNativeActivityEvent = {
+      ...first,
+      totalTableCounts: { system_order_table: 2 },
+    };
+
+    const activity = [first, second].reduce<SteelNativeActivityEvent[]>(
+      appendSteelNativeActivityEvent,
+      [],
+    );
+
+    expect(activity).toHaveLength(2);
+    expect(activity[1]?.totalTableCounts).toEqual({ system_order_table: 2 });
+  });
+
   it('retains more than twelve activity events for long Steel turns', () => {
     const events = Array.from({ length: 13 }, (_, index) => ({
       type: 'memory_saved' as const,

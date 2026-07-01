@@ -1044,19 +1044,6 @@ function getOcrFileKeyReplacementFilter(
     : { 'payload.ocrFileKey': { $exists: false } };
 }
 
-function groupOcrPayloadsByFileKey(
-  payloads: readonly SteelJsonObject[],
-): Map<string, SteelJsonObject[]> {
-  const groups = new Map<string, SteelJsonObject[]>();
-
-  for (const payload of payloads) {
-    const key = getStringProperty(payload, 'ocrFileKey') ?? '';
-    groups.set(key, [...(groups.get(key) ?? []), payload]);
-  }
-
-  return groups;
-}
-
 function groupPayloadsByOcrFileKey(
   payloads: readonly SteelJsonObject[],
 ): Map<string, SteelJsonObject[]> {
@@ -1064,7 +1051,12 @@ function groupPayloadsByOcrFileKey(
 
   for (const payload of payloads) {
     const key = getStringProperty(payload, 'ocrFileKey') ?? '';
-    groups.set(key, [...(groups.get(key) ?? []), payload]);
+    const group = groups.get(key);
+    if (group) {
+      group.push(payload);
+      continue;
+    }
+    groups.set(key, [payload]);
   }
 
   return groups;
@@ -1463,7 +1455,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         .filter((payload): payload is SteelJsonObject => payload !== undefined);
 
       if (ocrPayloads.length > 0) {
-        const groupedOcrPayloads = groupOcrPayloadsByFileKey(ocrPayloads);
+        const groupedOcrPayloads = groupPayloadsByOcrFileKey(ocrPayloads);
         for (const [key, payloads] of groupedOcrPayloads) {
           await replaceActiveMarkdownRows({
             SteelWorkingOrderMemory,

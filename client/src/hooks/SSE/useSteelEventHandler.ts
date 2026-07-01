@@ -128,6 +128,9 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     providerToolCallId: event.providerToolCallId,
     parseStatus: event.type === 'parse_status' ? event.parseStatus : undefined,
     savedCounts: event.savedCounts,
+    savedTableCounts: event.savedTableCounts,
+    totalSavedCounts: event.totalSavedCounts,
+    totalTableCounts: event.totalTableCounts,
   });
 }
 

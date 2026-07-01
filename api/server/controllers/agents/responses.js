@@ -821,9 +821,7 @@ const createResponse = async (req, res) => {
     }
 
     // Convert input to internal messages
-    const inputMessages = convertToInternalMessages(
-      typeof request.input === 'string' ? request.input : request.input,
-    );
+    const inputMessages = convertToInternalMessages(request.input);
     const currentTurnFiles = collectSteelNativeInputFileReferences({
       requestInput: request.input,
       inputMessages,

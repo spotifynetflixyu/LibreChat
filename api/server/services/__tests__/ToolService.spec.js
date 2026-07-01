@@ -792,6 +792,112 @@ describe('ToolService - Action Capability Gating', () => {
       });
     });
 
+    it('bounds same-turn PaddleOCR preflight results before runtime context injection', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-large', filename: 'large.pdf', mediaType: 'application/pdf' },
+        ],
+      };
+      const longText = 'x'.repeat(1500);
+      const paddleResult = {
+        text: longText,
+        pages: Array.from({ length: 25 }, (_, index) => ({ index, text: `page-${index}` })),
+      };
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: [],
+        missingFiles: [
+          {
+            ocrFileKey: 'file:file-large',
+            fileId: 'file-large',
+            filename: 'large.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+        missingKeys: ['file:file-large'],
+      });
+      mockLoadToolsUtil.mockResolvedValueOnce({
+        loadedTools: [
+          {
+            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+            invoke: jest.fn().mockResolvedValueOnce(paddleResult),
+          },
+        ],
+        toolContextMap: {},
+      });
+      mockCapturePaddleOcrResult.mockResolvedValueOnce({
+        savedCounts: { paddleocr_preflight: 1 },
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockCapturePaddleOcrResult.mock.calls[0][0].data).toBe(paddleResult);
+      expect(result.currentPaddleOcrResults[0].result).toEqual({
+        text: `${'x'.repeat(1200)}...`,
+        pages: paddleResult.pages.slice(0, 20),
+      });
+    });
+
+    it('rethrows aborted PaddleOCR preflight calls instead of saving partial failure state', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-abort', filename: 'abort.pdf', mediaType: 'application/pdf' },
+        ],
+      };
+      const abortError = new DOMException('The operation was aborted', 'AbortError');
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: [],
+        missingFiles: [
+          {
+            ocrFileKey: 'file:file-abort',
+            fileId: 'file-abort',
+            filename: 'abort.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+        missingKeys: ['file:file-abort'],
+      });
+      mockLoadToolsUtil.mockResolvedValueOnce({
+        loadedTools: [
+          {
+            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+            invoke: jest.fn().mockRejectedValueOnce(abortError),
+          },
+        ],
+        toolContextMap: {},
+      });
+
+      await expect(
+        runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toBe(abortError);
+
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          preflight: expect.objectContaining({ status: 'partial' }),
+        }),
+      );
+    });
+
     it('should filter MCP tool definitions when user lacks MCP server use permission', async () => {
       const { userCanUseMCPServers } = require('~/server/services/MCP');
       userCanUseMCPServers.mockResolvedValueOnce(false);

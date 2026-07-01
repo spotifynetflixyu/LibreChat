@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useOptionalMessagesOperations } from '~/Providers';
 
 type TimerTimestamp = string | number | null | undefined;
@@ -52,19 +52,29 @@ export default function MessageElapsedTimer({
 
   const resolvedStartedAt = parseTimestampMs(parentStartedAt) ?? parseTimestampMs(startedAt);
   const keyRef = useRef<string | null | undefined>(timerKey);
-  const startAtRef = useRef<number>(resolvedStartedAt ?? Date.now());
+  const resolvedStartedAtRef = useRef<number | null>(resolvedStartedAt);
   const hasStartedRef = useRef(isCreatedByUser !== true && isSubmitting);
+  const [startAtMs, setStartAtMs] = useState(() => resolvedStartedAt ?? Date.now());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [completedAtMs, setCompletedAtMs] = useState<number | null>(null);
 
-  useEffect(() => {
-    if (keyRef.current === timerKey) {
+  useLayoutEffect(() => {
+    const keyChanged = keyRef.current !== timerKey;
+    const startChanged = resolvedStartedAtRef.current !== resolvedStartedAt;
+    if (!keyChanged && !startChanged) {
       return;
     }
     keyRef.current = timerKey;
-    startAtRef.current = resolvedStartedAt ?? Date.now();
-    hasStartedRef.current = isCreatedByUser !== true && isSubmitting;
-    setCompletedAtMs(null);
+    resolvedStartedAtRef.current = resolvedStartedAt;
+
+    if (keyChanged) {
+      setStartAtMs(resolvedStartedAt ?? Date.now());
+      hasStartedRef.current = isCreatedByUser !== true && isSubmitting;
+      setCompletedAtMs(null);
+    } else if (resolvedStartedAt !== null) {
+      setStartAtMs(resolvedStartedAt);
+    }
+
     setNowMs(Date.now());
   }, [isCreatedByUser, isSubmitting, resolvedStartedAt, timerKey]);
 
@@ -104,7 +114,7 @@ export default function MessageElapsedTimer({
       data-testid="message-elapsed-timer"
       className="ml-2 text-xs font-normal tabular-nums text-text-secondary"
     >
-      {formatElapsedTime(endAtMs - startAtRef.current)}
+      {formatElapsedTime(endAtMs - startAtMs)}
     </span>
   );
 }

@@ -457,13 +457,8 @@ export async function prepareSteelRuntimeContext({
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
   const currentPaddleOcrResults = attachments?.currentPaddleOcrResults ?? [];
-  const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(conversation.conversationId);
-  const outputSheetMemory = await outputSheetMemoryPromise;
-  const priorActiveFileEvidence = collectPriorActiveFileEvidence({
-    explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
-    outputSheetMemory,
-  });
   const [
+    outputSheetMemory,
     agentRules,
     instructionPackets,
     quoteDefaults,
@@ -471,6 +466,7 @@ export async function prepareSteelRuntimeContext({
     outputRules,
     otherGlobalRules,
   ] = await Promise.all([
+    dependencies.readOutputSheetMemory(conversation.conversationId),
     dependencies.listAgentRules(),
     dependencies.listReviewedInstructionPackets(),
     dependencies.listReviewedQuoteDefaults(),
@@ -478,6 +474,11 @@ export async function prepareSteelRuntimeContext({
     dependencies.listOutputRules(),
     dependencies.listOtherGlobalRules(),
   ]);
+  const activeOutputSheets = pickActiveOutputSheets(outputSheetMemory);
+  const priorActiveFileEvidence = collectPriorActiveFileEvidence({
+    explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
+    outputSheetMemory,
+  });
 
   return {
     conversation,
@@ -503,10 +504,10 @@ export async function prepareSteelRuntimeContext({
       contextName: 'Runtime Output Sheet Context',
       conversationId: conversation.conversationId,
       sheetIds: steelRuntimeActiveOutputSheetIds,
-      previousOutputSheets: pickActiveOutputSheets(outputSheetMemory),
+      previousOutputSheets: activeOutputSheets,
       derivedIndex: outputSheetMemory.derivedIndex,
       compactWorkbook: buildCompactWorkbookContext(
-        pickActiveOutputSheets(outputSheetMemory),
+        activeOutputSheets,
         outputSheetMemory.derivedIndex,
       ),
     },
@@ -533,17 +534,8 @@ export async function prepareLibreChatSteelRuntimeContext({
   const runtimeConversation = prepareLibreChatRuntimeConversation(conversation);
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
   const currentPaddleOcrResults = attachments?.currentPaddleOcrResults ?? [];
-  const outputSheetMemoryPromise = dependencies.readOutputSheetMemory(
-    runtimeConversation.conversationId,
-  );
-  const outputSheetMemory = await outputSheetMemoryPromise;
-  const activeOutputSheets = pickActiveOutputSheets(outputSheetMemory);
-  const supplementalOutputSheetMemory = createEmptySteelOutputSheetMemorySnapshot();
-  const priorActiveFileEvidence = collectPriorActiveFileEvidence({
-    explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
-    outputSheetMemory,
-  });
   const [
+    outputSheetMemory,
     agentRules,
     instructionPackets,
     quoteDefaults,
@@ -551,6 +543,7 @@ export async function prepareLibreChatSteelRuntimeContext({
     outputRules,
     otherGlobalRules,
   ] = await Promise.all([
+    dependencies.readOutputSheetMemory(runtimeConversation.conversationId),
     dependencies.listAgentRules(),
     dependencies.listReviewedInstructionPackets(),
     dependencies.listReviewedQuoteDefaults(),
@@ -558,6 +551,12 @@ export async function prepareLibreChatSteelRuntimeContext({
     dependencies.listOutputRules(),
     dependencies.listOtherGlobalRules(),
   ]);
+  const activeOutputSheets = pickActiveOutputSheets(outputSheetMemory);
+  const supplementalOutputSheetMemory = createEmptySteelOutputSheetMemorySnapshot();
+  const priorActiveFileEvidence = collectPriorActiveFileEvidence({
+    explicitEvidence: attachments?.priorActiveFileEvidence ?? [],
+    outputSheetMemory,
+  });
 
   return {
     conversation: runtimeConversation,

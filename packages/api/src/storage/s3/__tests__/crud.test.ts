@@ -756,6 +756,7 @@ describe('S3 CRUD', () => {
       const putInput = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input;
       expect(putInput.Body).toBeInstanceOf(Buffer);
       expect(putInput.ContentLength).toBeUndefined();
+      expect(putInput.ContentType).toBe('image/png');
       expect((putInput.Body as Buffer).toString()).toBe('streamed');
     });
 
@@ -796,6 +797,9 @@ describe('S3 CRUD', () => {
       expect(result.bytes).toBe(firstPart.length + finalPart.length);
       expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
       expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(1);
+      expect(s3Mock.commandCalls(CreateMultipartUploadCommand)[0].args[0].input.ContentType).toBe(
+        'image/png',
+      );
       expect(s3Mock.commandCalls(UploadPartCommand)).toHaveLength(2);
       expect(s3Mock.commandCalls(CompleteMultipartUploadCommand)).toHaveLength(1);
       expect(uploadedParts[0]).toEqual(firstPart);

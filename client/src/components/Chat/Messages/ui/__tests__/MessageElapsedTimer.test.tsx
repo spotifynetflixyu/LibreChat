@@ -59,4 +59,29 @@ describe('MessageElapsedTimer', () => {
 
     expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('18s');
   });
+
+  it('updates the start time when the same message receives a corrected timestamp', () => {
+    jest.setSystemTime(20_000);
+    const { rerender } = render(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={10_000}
+        timerKey="assistant-1"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('10s');
+
+    rerender(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={5_000}
+        timerKey="assistant-1"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('15s');
+  });
 });

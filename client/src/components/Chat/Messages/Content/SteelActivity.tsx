@@ -182,6 +182,14 @@ function getTotalCountText(
   return null;
 }
 
+function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
+  if (event.type === 'memory_saved') {
+    return getSavedCountTotal(event) > 0;
+  }
+
+  return event.parseStatus !== 'saved';
+}
+
 const SteelActivity = memo(function SteelActivity({
   messageId,
   isCreatedByUser,
@@ -190,7 +198,7 @@ const SteelActivity = memo(function SteelActivity({
   const events = useRecoilValue(steelNativeActivityByMessageId(messageId));
 
   const displayEvents = useMemo(
-    () => events.filter((event) => event.type === 'parse_status' || getSavedCountTotal(event) > 0),
+    () => events.filter(shouldDisplayEvent),
     [events],
   );
 

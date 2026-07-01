@@ -589,3 +589,12 @@
   tables whose nearby title contains `OCR`/`ocr`, and only workbook rows whose
   nearby title contains `system`. Keep using table structure as a second check,
   but do not save assistant Markdown tables from headers alone.
+- S3 image uploads already have a dedicated Sharp preprocessing seam in
+  `packages/api/src/storage/images.ts`: uploaded images are resized/compressed
+  and saved as JPEG with `contentType: image/jpeg`. Keep generic S3 CRUD
+  changes format-neutral, and do not duplicate image conversion logic in
+  `packages/api/src/storage/s3/crud.ts`.
+- Steel activity UI should not show successful `parse_status: saved` rows such
+  as `Steel form parsed`; those are internal parse status, not user-facing work
+  results. Show the `Total` aggregate and actual save/preflight rows instead;
+  keep partial/skipped parse status visible because they need user attention.

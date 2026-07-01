@@ -453,6 +453,7 @@ async function saveReadableToS3({
   basePath = defaultBasePath,
   tenantId = null,
   storageRegion = null,
+  contentType = null,
   includeRegionInPath = false,
   useInlinePath,
   urlBuilder,
@@ -486,7 +487,11 @@ async function saveReadableToS3({
         return uploadId;
       }
       const response = await s3.send(
-        new CreateMultipartUploadCommand({ Bucket: bucketName, Key: key }),
+        new CreateMultipartUploadCommand({
+          Bucket: bucketName,
+          Key: key,
+          ...(contentType ? { ContentType: contentType } : {}),
+        }),
       );
       if (!response.UploadId) {
         throw new Error('[saveReadableToS3] S3 did not return an upload ID');
@@ -525,6 +530,9 @@ async function saveReadableToS3({
       const bodyBuffer =
         pending.bytes > 0 ? takePendingBytes(pending, pending.bytes) : Buffer.alloc(0);
       const params: PutObjectCommandInput = { Bucket: bucketName, Key: key, Body: bodyBuffer };
+      if (contentType) {
+        params.ContentType = contentType;
+      }
       await s3.send(new PutObjectCommand(params));
     } else {
       if (pending.bytes > 0) {
@@ -597,6 +605,7 @@ export async function saveURLToS3WithMetadata({
         basePath,
         tenantId,
         storageRegion,
+        contentType,
         includeRegionInPath,
         useInlinePath,
         urlBuilder,

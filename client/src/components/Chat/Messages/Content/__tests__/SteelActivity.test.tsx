@@ -63,7 +63,7 @@ jest.mock('~/hooks/useLocalize', () => ({
 }));
 
 describe('SteelActivity', () => {
-  it('renders native Steel parse and save status for assistant messages', () => {
+  it('renders native Steel save status without successful parse rows', () => {
     render(
       <RecoilRoot
         initializeState={({ set }) => {
@@ -99,10 +99,10 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getByLabelText('Steel activity')).toBeInTheDocument();
-    expect(screen.getByText('Steel form parsed')).toBeInTheDocument();
+    expect(screen.queryByText('Steel form parsed')).not.toBeInTheDocument();
     expect(screen.getByText('Steel quote state saved')).toBeInTheDocument();
     expect(screen.getByText('Total: Workbook tables: 1, Workbook rows: 2')).toBeInTheDocument();
-    expect(screen.getAllByText('This turn: Workbook tables: 1, Workbook rows: 2')).toHaveLength(2);
+    expect(screen.getAllByText('This turn: Workbook tables: 1, Workbook rows: 2')).toHaveLength(1);
   });
 
   it('renders OCR table counts separately from aggregate OCR raw totals', () => {

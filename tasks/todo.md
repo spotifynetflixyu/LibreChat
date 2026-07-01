@@ -50,6 +50,75 @@ Review - 2026-07-02:
 
 ---
 
+# Active: /simplify review from bf5b169bb8b3fea61d113c140 to HEAD
+
+Goal: review all files changed from `bf5b169bb8b3fea61d113c140..HEAD` and
+their directly related functional modules, then simplify clearly worthwhile
+reuse, quality, or efficiency issues without changing public APIs.
+
+Status - 2026-07-01:
+
+- [x] Read repo instructions: `CLAUDE.md`, `tasks/lessons.md`, RTK rules, and
+      the `/simplify` skill.
+- [x] Confirm `bf5b169bb8b3fea61d113c140` is an ancestor of current `HEAD`.
+- [x] Run three parallel `/simplify` review passes:
+      code reuse, code quality, and efficiency.
+- [x] Inspect the changed modules locally and consolidate only actionable,
+      low-risk findings.
+- [x] Apply minimal simplifications while preserving exported APIs, request /
+      response shapes, event names, schema contracts, env keys, and UI props.
+- [x] Run focused tests and checks for touched modules.
+- [x] Add this task's review results and verification evidence below.
+
+Scope notes:
+
+- Review target: `bf5b169bb8b3fea61d113c140..HEAD`.
+- Changed areas include agent streaming, MCP/tool initialization, Steel
+  activity events and counts, Steel memory/native/runtime context, S3 storage
+  URL handling, frontend Steel activity/timer UI, Steel data schemas/provider
+  types, rule docs, and planning/lesson docs.
+- Do not compare against or modify other branches.
+- Do not run Prettier unless explicitly requested; prefer manual edits,
+  focused tests, package builds where needed, and `rtk git diff --check`.
+
+Review - 2026-07-02:
+
+- Simplified Steel OCR preflight tool injection by reusing
+  `getSteelOcrFileDescriptor()` from `@librechat/api`, so MCP injection and
+  memory dedupe use the same OCR-capable file and `ocrFileKey` rules.
+- Preserved PaddleOCR abort behavior: abort errors are rethrown instead of
+  being reported as recoverable per-file OCR failures.
+- Bounded same-turn `currentPaddleOcrResults` before putting PaddleOCR output
+  into runtime context, while still saving the raw result to memory.
+- Removed duplicate OCR payload grouping helper and changed grouping to append
+  into existing buckets instead of repeatedly copying arrays.
+- Parallelized Steel runtime context loading so output-sheet memory and rules
+  load together, and reused the picked active output sheets inside the same
+  context build.
+- Kept S3 image preprocessing in `packages/api/src/storage/images.ts`; generic
+  S3 CRUD now only preserves `ContentType` for streamed URL saves and does not
+  duplicate Sharp JPEG conversion.
+- Tightened frontend activity/timer behavior:
+  - Steel activity dedupe keys include table/total count metadata.
+  - Successful `parse_status: saved` rows such as `Steel form parsed` are
+    hidden; the UI shows aggregate totals and actual save/preflight rows.
+  - AI elapsed timer updates when the same message receives a corrected
+    start timestamp.
+- Intentionally skipped broader refactors that would expand the change surface:
+  shared Steel event emitter extraction, moving event schemas into
+  `packages/data-provider`, bounded concurrent PaddleOCR preflight execution,
+  and DB aggregation rewrites for totals.
+- Verification passed:
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts src/steel/runtime/context.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/storage/s3/__tests__/crud.test.ts --runInBand --watch=false --coverage=false -t "streams response bodies|multipart upload|ContentType|saveBufferToS3"`
+  - `cd packages/api && rtk npm run build`
+  - `cd client && rtk npx jest src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/ui/__tests__/MessageElapsedTimer.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `rtk git diff --check`
+
+---
+
 # Active: Steel second-turn OCR aggregate activity regression
 
 Goal: explain and fix why a second image/PDF OCR turn shows
