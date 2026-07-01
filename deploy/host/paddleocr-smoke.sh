@@ -1,48 +1,36 @@
 #!/usr/bin/env sh
 set -eu
 
-INPUT_PATH="${1:-${PADDLEOCR_SMOKE_INPUT_PATH:-}}"
-PADDLEOCR_DIR="${PADDLEOCR_DIR:-/data/paddleocr}"
-PADDLEOCR_VENV_DIR="${PADDLEOCR_VENV_DIR:-$PADDLEOCR_DIR/venv}"
-PADDLEOCR_MCP_COMMAND="${PADDLEOCR_MCP_COMMAND:-$PADDLEOCR_VENV_DIR/bin/paddleocr_mcp}"
-PADDLEOCR_SMOKE_TIMEOUT_MS="${PADDLEOCR_SMOKE_TIMEOUT_MS:-1200000}"
+SMOKE_FILE_URL="${1:-}"
 
-export PADDLEOCR_MCP_COMMAND
-export PADDLEOCR_SMOKE_TIMEOUT_MS
-
-if [ -z "$INPUT_PATH" ]; then
-  printf 'PaddleOCR smoke input path is required. Pass a path or set PADDLEOCR_SMOKE_INPUT_PATH.\n' >&2
-  exit 1
+if [ -z "$SMOKE_FILE_URL" ]; then
+  printf 'PaddleOCR live smoke skipped: pass an S3 smoke PDF URL as the first argument.\n'
+  exit 0
 fi
 
-if [ ! -f "$INPUT_PATH" ]; then
-  printf 'PaddleOCR smoke input not found: %s\n' "$INPUT_PATH" >&2
-  exit 1
-fi
+case "$SMOKE_FILE_URL" in
+  http://*|https://*)
+    ;;
+  *)
+    printf 'PaddleOCR live smoke requires an S3 PDF URL, not a local path: %s\n' "$SMOKE_FILE_URL" >&2
+    exit 1
+    ;;
+esac
 
-if [ ! -x "$PADDLEOCR_MCP_COMMAND" ]; then
-  printf 'PaddleOCR MCP command is not executable: %s\n' "$PADDLEOCR_MCP_COMMAND" >&2
-  exit 1
-fi
-
-if [ -z "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN:-}" ]; then
-  printf 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required for AI Studio PaddleOCR smoke.\n' >&2
-  exit 1
-fi
-
-node - "$INPUT_PATH" <<'NODE'
+node - "$SMOKE_FILE_URL" <<'NODE'
 const fs = require('fs');
+const path = require('path');
+const yaml = require('js-yaml');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 
-const inputPath = process.argv[2];
-const command = process.env.PADDLEOCR_MCP_COMMAND;
-const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? 1200000);
-const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 100);
-const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
-const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 12000);
+const smokeFileUrl = process.argv[2];
+const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 10);
+const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'markdown';
+const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 2048);
 const toolName = process.env.PADDLEOCR_SMOKE_TOOL_NAME || 'paddleocr_vl';
-const model = process.env.PADDLEOCR_MCP_MODEL || 'PaddleOCR-VL-1.6';
+const serverName = process.env.PADDLEOCR_SMOKE_MCP_SERVER_NAME || 'PaddleOCR';
+const configPath = process.env.CONFIG_PATH || '/data/librechat.yaml';
 const expectedMarkers = String(process.env.PADDLEOCR_SMOKE_EXPECT_MARKERS ?? '')
   .split(',')
   .map((marker) => marker.trim())
@@ -57,6 +45,7 @@ function inheritedEnv() {
 
 function redact(value) {
   return String(value ?? '')
+    .replace(/https:\/\/[^\s"']+/g, 'https://[redacted-s3-url]')
     .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [redacted]')
     .replace(/access[_-]?token["'=:\s]+[A-Za-z0-9._-]+/gi, 'access_token=[redacted]')
     .replace(/PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN["'=:\s]+[A-Za-z0-9._-]+/g, 'PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=[redacted]');
@@ -109,29 +98,99 @@ function appendTail(current, chunk, limit = 2000) {
   return `${current}${String(chunk)}`.slice(-limit);
 }
 
-function inferFileType(value) {
-  return /\.(png|jpe?g|bmp|cif|gif|webp|tiff?)$/i.test(value) ? 'image' : 'pdf';
+function getObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  return value;
+}
+
+function interpolateEnv(value) {
+  if (typeof value !== 'string') {
+    return value == null ? '' : String(value);
+  }
+
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => process.env[name] ?? '');
+}
+
+function resolveCommand(command) {
+  if (!command || typeof command !== 'string') {
+    throw new Error(`${serverName}.command is required in ${configPath}`);
+  }
+
+  if (command.includes('/')) {
+    fs.accessSync(command, fs.constants.X_OK);
+    return command;
+  }
+
+  const match = String(process.env.PATH ?? '')
+    .split(path.delimiter)
+    .map((directory) => path.join(directory, command))
+    .find((candidate) => {
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+  if (!match) {
+    throw new Error(`${serverName}.command is not executable on PATH: ${command}`);
+  }
+
+  return command;
+}
+
+function loadPaddleOcrServerConfig() {
+  const root = getObject(yaml.load(fs.readFileSync(configPath, 'utf8')), configPath);
+  const servers = getObject(root.mcpServers, `${configPath}.mcpServers`);
+  const serverConfig = getObject(servers[serverName], `${configPath}.mcpServers.${serverName}`);
+  const serverEnv = getObject(serverConfig.env ?? {}, `${configPath}.mcpServers.${serverName}.env`);
+  const env = {
+    ...inheritedEnv(),
+    ...Object.fromEntries(
+      Object.entries(serverEnv).map(([key, value]) => [key, interpolateEnv(value)]),
+    ),
+  };
+  const args = Array.isArray(serverConfig.args) ? serverConfig.args.map((arg) => String(arg)) : [];
+  const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? serverConfig.timeout ?? 1200000);
+
+  if (!env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN) {
+    throw new Error(
+      `${serverName}.env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN is required in ${configPath}`,
+    );
+  }
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`${serverName}.timeout must be a positive number in ${configPath}`);
+  }
+
+  return {
+    args,
+    command: resolveCommand(serverConfig.command),
+    env,
+    model: env.PADDLEOCR_MCP_MODEL || '',
+    provider: env.PADDLEOCR_MCP_PPOCR_SOURCE || '',
+    timeoutMs,
+  };
 }
 
 async function main() {
-  if (!fs.existsSync(inputPath)) {
-    throw new Error(`PaddleOCR smoke input does not exist: ${inputPath}`);
+  if (!/^https?:\/\//i.test(smokeFileUrl)) {
+    throw new Error(
+      `PaddleOCR smoke requires an S3 file URL, not a local path: ${smokeFileUrl}`,
+    );
   }
 
-  const fileType = process.env.PADDLEOCR_SMOKE_FILE_TYPE || inferFileType(inputPath);
+  const serverConfig = loadPaddleOcrServerConfig();
+  const fileType = process.env.PADDLEOCR_SMOKE_FILE_TYPE || 'pdf';
   let stderrPreview = '';
   const transport = new StdioClientTransport({
-    command,
-    args: [],
-    env: {
-      ...inheritedEnv(),
-      PADDLEOCR_MCP_MODEL: model,
-      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT:
-        process.env.PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT || '600',
-      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT:
-        process.env.PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT || '1200',
-      PADDLEOCR_MCP_HTTP_TIMEOUT: process.env.PADDLEOCR_MCP_HTTP_TIMEOUT || '1200',
-    },
+    command: serverConfig.command,
+    args: serverConfig.args,
+    env: serverConfig.env,
     stderr: 'pipe',
   });
   const client = new Client({ name: 'librechat-prod-paddleocr-smoke', version: '0.0.0' });
@@ -139,7 +198,7 @@ async function main() {
   const timer = setTimeout(() => {
     timedOut = true;
     void client.close();
-  }, timeoutMs);
+  }, serverConfig.timeoutMs);
 
   transport.stderr?.on('data', (chunk) => {
     stderrPreview = appendTail(stderrPreview, chunk);
@@ -159,17 +218,17 @@ async function main() {
       max_new_tokens: maxNewTokens,
       use_doc_orientation_classify: boolEnv(
         'PADDLEOCR_SMOKE_USE_DOC_ORIENTATION_CLASSIFY',
-        true,
+        false,
       ),
-      use_doc_unwarping: boolEnv('PADDLEOCR_SMOKE_USE_DOC_UNWARPING', true),
-      use_layout_detection: boolEnv('PADDLEOCR_SMOKE_USE_LAYOUT_DETECTION', true),
+      use_doc_unwarping: boolEnv('PADDLEOCR_SMOKE_USE_DOC_UNWARPING', false),
+      use_layout_detection: boolEnv('PADDLEOCR_SMOKE_USE_LAYOUT_DETECTION', false),
       ...extraRuntimeParams,
     };
     const response = await client.callTool(
       {
         name: toolName,
         arguments: {
-          input_data: inputPath,
+          input_data: smokeFileUrl,
           output_mode: outputMode,
           file_type: fileType,
           return_images: false,
@@ -177,13 +236,13 @@ async function main() {
         },
       },
       undefined,
-      { timeout: timeoutMs },
+      { timeout: serverConfig.timeoutMs },
     );
     const text = extractText(response);
     const normalized = normalize(text);
     const matchedMarkers = expectedMarkers.filter((marker) => normalized.includes(normalize(marker)));
     if (timedOut) {
-      throw new Error(`PaddleOCR smoke timed out after ${timeoutMs} ms`);
+      throw new Error(`PaddleOCR smoke timed out after ${serverConfig.timeoutMs} ms`);
     }
 
     if (response?.isError === true || /Error calling tool/i.test(text)) {
@@ -210,9 +269,12 @@ async function main() {
 
     const summary = {
       ok: true,
-      inputPath,
-      command,
-      model,
+      smokeFileUrl: '[redacted]',
+      configPath,
+      serverName,
+      command: serverConfig.command,
+      provider: serverConfig.provider,
+      model: serverConfig.model,
       fileType,
       toolName,
       elapsedMs: Date.now() - startedAt,

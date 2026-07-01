@@ -6,9 +6,13 @@
   `.env.prod` installed as `/etc/librechat/.env.prod`, and should use
   `fileStrategy: "s3"` plus `S3_KEY_PREFIX=prod` when sharing the bucket with
   dev/test.
-- Production PaddleOCR startup smoke must not block LibreChat rollout. Keep
-  `PADDLEOCR_PREWARM_STRICT=false` in `.env.prod` and `/etc/librechat/.env.prod`
-  so AI Studio dependency failures remain warnings while `/health` can recover.
+- Production PaddleOCR preparation must not block LibreChat rollout. Do not keep
+  a strict prewarm env or startup MCP smoke gate; AI Studio dependency failures
+  should remain warnings while `/health` can recover.
+- After deployment, use `/health` only to confirm the LibreChat site started.
+  Run PaddleOCR smoke separately by passing the freshly obtained S3 smoke PDF
+  URL as the smoke command argument. This checks both S3 URL readability and the
+  PaddleOCR `fileUrl` OCR path.
 - When switching LibreChat production file storage to S3, verify the running
   container with a server-side put/get/delete smoke test and log
   `[initializeS3]` before claiming uploads are backed by S3. Never print AWS
@@ -412,18 +416,25 @@
 - The current PaddleOCR MCP server key should be `PaddleOCR`; keep
   `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6` as the model setting. Do not reuse the
   model name as the LibreChat MCP server key.
-- On low-cost DigitalOcean production, keep PaddleOCR MCP's Python environment
-  in a persistent `/data/paddleocr/venv` prepared at container startup. The
-  Docker image should carry Debian/glibc runtime libraries and `uv`, but not a
-  build-time `uvx` PaddleOCR environment layer. Production `/data/librechat.yaml`
-  should point `PaddleOCR` at `/data/paddleocr/venv/bin/paddleocr_mcp` and
-  still include `args: []` for LibreChat's stdio MCP schema; repo `.mcp.json`
-  remains local MCP client config.
+- For PaddleOCR with `PADDLEOCR_MCP_PPOCR_SOURCE: "aistudio"`, do not prepare
+  a host-mounted PaddleOCR Python environment at API startup. Keep API/local
+  runtime aligned by launching `PaddleOCR` from `librechat.yaml` with
+  `command: uvx` and `args: ["--python", "3.12", "--from", "paddleocr-mcp",
+  "paddleocr_mcp"]`. The API image needs `uv`/`uvx` and Python availability;
+  it does not need a separate local PaddlePaddle inference stack for the AI
+  Studio provider path.
 - Do not keep PaddleOCR source/provider branching when there is only one
   supported OCR API path. Production should require
   `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`, model, and timeout settings only; do
-  not pass a legacy PPOCR source selector from `.env`, host scripts, MCP
-  config, smoke scripts, or tests.
+  not expose a PPOCR source selector through user-editable `.env`. Hardcode
+  `PADDLEOCR_MCP_PPOCR_SOURCE: "aistudio"` in the MCP env map and smoke
+  transport env, instead of setting provider through CLI args or making it a
+  separate operator config knob.
+- PaddleOCR smoke must launch MCP from the same `librechat.yaml` server config
+  used by LibreChat, including `command`, `args`, `env`, timeout, and token
+  interpolation. Do not duplicate PaddleOCR MCP env assembly inside the smoke
+  script; read `CONFIG_PATH` / `/data/librechat.yaml` and resolve
+  `${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}` from the container env.
 - Keep PaddleOCR smoke and resolver handling format-neutral. PaddleOCR supports
   PDF and image inputs such as PNG, JPG/JPEG, BMP, and CIF, so generic OCR code
   must not assume only PDF/PNG/JPG or bake a fixture-specific marker set.
@@ -431,17 +442,17 @@
   after a model reaches its daily parsing limit, exceeded requests return `429`;
   there is no documented single-file size limit, but keep PDF inputs within 100
   pages to avoid timeout, and expect pages beyond the limit to be ignored.
-- When creating a persistent uv-managed venv inside a container, also persist
-  uv's Python install directory under `/data` such as `/data/paddleocr/python`.
-  Otherwise the venv's `bin/python` symlink can point at container-local
-  `/root/.local/share/uv/...` and break or force recreation after container
-  replacement.
+- Do not expose `PADDLEOCR_UV_PYTHON_INSTALL_DIR` or reinstall toggles for the
+  current AI Studio PaddleOCR path. Those controls only made sense for the old
+  host-prepared Python environment approach; the current contract is a single
+  `uvx` command in LibreChat MCP config plus the AI Studio token and timeouts.
 - Do not bake a specific ignored drawing fixture, path, or expected marker set
-  into generic PaddleOCR smoke code. The smoke script should require an explicit
-  input path and only check fixture markers when the caller provides
+  into generic PaddleOCR smoke code. The smoke script should only run live OCR
+  when the caller passes a freshly obtained S3 smoke PDF URL as the command
+  argument, and it should only check fixture markers when the caller provides
   `PADDLEOCR_SMOKE_EXPECT_MARKERS`. Do not make GitHub Actions production deploy
-  gate on live PaddleOCR OCR; AI Studio API/network failures should not
-  block LibreChat app rollout. Keep PaddleOCR smoke as a manual diagnostic.
+  gate on live PaddleOCR OCR; AI Studio API/network failures should not block
+  LibreChat app rollout. Keep PaddleOCR smoke as a manual diagnostic.
 - Do not assume AI Studio website OCR speed matches `paddleocr-mcp` AI Studio
   API behavior. On production, a simple tracked PDF completed through
   `paddleocr_vl` in about 214 seconds, while a larger drawing PDF returned

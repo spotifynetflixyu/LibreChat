@@ -1,5 +1,8 @@
 # DigitalOcean Droplet Production Runbook
 
+Traditional Chinese version:
+`docs/deployment/digitalocean-droplet-prod-runbook.zh-TW.md`.
+
 This runbook deploys the customized LibreChat/Steel production app on a
 DigitalOcean Droplet with a user-owned domain.
 
@@ -441,47 +444,44 @@ application `.env.prod` secret set.
 
 ## PaddleOCR MCP Runtime
 
-Production PaddleOCR MCP uses a persistent Python venv on the host-mounted
-`/data` volume:
+Production and local development use the same PaddleOCR MCP shape. LibreChat
+launches PaddleOCR through `uvx` from the API process environment; the API
+startup script does not prepare a separate PaddleOCR Python environment.
 
-```text
-/data/paddleocr/venv
-```
+The API image must include Debian/glibc runtime libraries and `uv`/`uvx`.
+`uvx` resolves Python 3.12 and the `paddleocr-mcp` package when the MCP server
+is launched. Because the provider source is fixed to AI Studio, production does
+not require a local PaddlePaddle inference stack.
 
-The API image includes Debian/glibc runtime libraries and `uv`, but it does not
-embed the full `paddleocr-mcp` Python environment. On container startup,
-`deploy/host/start.sh` creates or reuses the persistent venv, installs
-`paddleocr-mcp` if missing, imports `paddleocr_mcp`, and starts the MCP command
-briefly to prove it does not crash.
-
-Production `/data/librechat.yaml` must use the persistent command:
+Production `/data/librechat.yaml` and local `librechat.yaml` must use the `uvx`
+command:
 
 ```yaml
 mcpServers:
   PaddleOCR:
     type: stdio
     startup: false
-    command: /data/paddleocr/venv/bin/paddleocr_mcp
-    args: []
+    command: uvx
+    args:
+      - --python
+      - "3.12"
+      - --from
+      - paddleocr-mcp
+      - paddleocr_mcp
+    timeout: 1200000
+    env:
+      PADDLEOCR_MCP_MODEL: PaddleOCR-VL-1.6
+      PADDLEOCR_MCP_PPOCR_SOURCE: aistudio
+      PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN: "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"
+      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "600"
+      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "1200"
+      PADDLEOCR_MCP_HTTP_TIMEOUT: "1200"
 ```
 
-Keep the long LibreChat and PaddleOCR API timeouts for drawing PDF/image inputs:
-
-```yaml
-timeout: 1200000
-env:
-  PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "600"
-  PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "1200"
-  PADDLEOCR_MCP_HTTP_TIMEOUT: "1200"
-```
-
-Useful startup controls in `/etc/librechat/.env.prod`:
+The only required PaddleOCR secret in `/etc/librechat/.env.prod` is:
 
 ```bash
 PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=
-PADDLEOCR_FORCE_REINSTALL=false
-PADDLEOCR_PREWARM_STRICT=false
-PADDLEOCR_UV_PYTHON_INSTALL_DIR=/data/paddleocr/python
 ```
 
 Production uses PaddleOCR-VL through the AI Studio API. PaddleOCR supports PDF
@@ -493,33 +493,168 @@ requests return `429`. There is no documented single-file size limit, but keep
 PDF inputs within 100 pages to avoid timeout; pages beyond the limit are
 ignored.
 
-Startup preparation defaults live in `deploy/host/start.sh`. Production should
-keep prepare-on-startup enabled, but set `PADDLEOCR_PREWARM_STRICT=false` so a
-PaddleOCR AI Studio dependency or network failure is logged as a warning instead
-of blocking the LibreChat API from starting. The short MCP startup smoke timeout
-defaults to 10 seconds.
+Startup no longer installs or prewarms PaddleOCR. `deploy/host/start.sh` only
+starts the LibreChat API. PaddleOCR is started lazily by LibreChat when the MCP
+tool is used.
 
 GitHub Actions does not run PaddleOCR OCR as a deploy gate. Production deploy
 is gated only by LibreChat container health because PaddleOCR depends on the
 external AI Studio API path and can fail due to API or network conditions that
 should not block app rollout.
 
-For a heavier drawing smoke, upload the selected local smoke input manually from
-your workstation:
+### PaddleOCR MCP Smoke
+
+The smoke script reads the same `PaddleOCR` server config from
+`CONFIG_PATH`/`/data/librechat.yaml`, including command, args, env, token
+interpolation, and timeout. Pass a fresh S3 smoke PDF URL as the first argument:
 
 ```bash
-scp <local-smoke-input> deploy@<droplet-ipv4>:/data/smoke/<input-file>
+PROD_HOST=139.59.110.150
+SMOKE_URL="https://..."
+ssh deploy@"$PROD_HOST" 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api /bin/sh /app/deploy/host/paddleocr-smoke.sh "$0"' "$SMOKE_URL"
 ```
 
-Then run the live production smoke manually after deploy:
+Do not use local container paths for live OCR smoke.
+
+## Post-Deploy Manual Verification
+
+Use this after a `master` push deploy. `/health` only proves the LibreChat site
+started. PaddleOCR must be checked separately with a freshly generated S3 smoke
+PDF URL so the same manual smoke verifies both S3 URL readability and the
+PaddleOCR `fileUrl` OCR path.
+
+Set the production target once in your local terminal:
 
 ```bash
-ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh /data/smoke/<input-file>'
+PROD_HOST=139.59.110.150
+PROD_URL=https://chat.longdin.org
+```
+
+Check the latest GitHub Actions deploy:
+
+```bash
+gh run list --workflow "Deploy Production" --branch master --limit 5
+LATEST_DEPLOY_RUN_ID="$(gh run list --workflow "Deploy Production" --branch master --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run watch "$LATEST_DEPLOY_RUN_ID"
+```
+
+Check public and container-local health:
+
+```bash
+curl -fsS "$PROD_URL/health" && printf '\n'
+ssh deploy@"$PROD_HOST" 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api curl -fsS http://127.0.0.1:3080/health && printf "\n"'
+```
+
+Run the combined S3 + PaddleOCR live smoke only after `/health` is good. The
+command creates a tiny PDF in the production API container, uploads it with the
+container's production S3 config, validates the presigned URL with a signed GET,
+then passes that fresh S3 URL as the first argument to `paddleocr-smoke.sh`.
+
+```bash
+ssh deploy@"$PROD_HOST" 'bash -se' <<'REMOTE'
+set -euo pipefail
+cd /srv/librechat/app
+
+SMOKE_URL="$(docker compose -f deploy-compose.prod.yml exec -T api sh -lc 'cd /app/api && node' <<'NODE'
+const crypto = require('crypto');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+const required = ['AWS_BUCKET_NAME', 'AWS_REGION'];
+const missing = required.filter((name) => !process.env[name]);
+if (missing.length > 0) {
+  throw new Error(`Missing required S3 env: ${missing.join(', ')}`);
+}
+
+const bucket = process.env.AWS_BUCKET_NAME;
+const region = process.env.AWS_REGION;
+const endpoint = process.env.AWS_ENDPOINT_URL || undefined;
+const forcePathStyle = /^(1|true|yes|on)$/i.test(process.env.AWS_FORCE_PATH_STYLE || '');
+const expiresIn = Number(process.env.S3_URL_EXPIRY_SECONDS || 43200);
+const keyPrefix = process.env.S3_KEY_PREFIX ? `${process.env.S3_KEY_PREFIX}/` : '';
+const key = `${keyPrefix}uploads/smoke/paddleocr-smoke-${Date.now()}-${crypto.randomUUID()}.pdf`;
+const marker = `LibreChat PaddleOCR smoke OK ${new Date().toISOString()}`;
+
+function escapePdfText(value) {
+  return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function createPdf(text) {
+  const stream = `BT\n/F1 24 Tf\n72 720 Td\n(${escapePdfText(text)}) Tj\nET`;
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
+    `5 0 obj\n<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream\nendobj\n`,
+  ];
+  const offsets = [0];
+  let pdf = '%PDF-1.4\n';
+  for (const object of objects) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += object;
+  }
+  const startxref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let index = 1; index <= objects.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
+async function main() {
+  const s3 = new S3Client({ region, endpoint, forcePathStyle });
+  await s3.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: createPdf(marker),
+    ContentType: 'application/pdf',
+    ContentDisposition: 'inline; filename="paddleocr-smoke.pdf"',
+    Metadata: { purpose: 'paddleocr-smoke' },
+  }));
+
+  const url = await getSignedUrl(
+    s3,
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+    { expiresIn },
+  );
+  const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+  if (!response.ok && response.status !== 206) {
+    throw new Error(`Signed S3 GET failed with HTTP ${response.status}`);
+  }
+
+  console.error(`Uploaded smoke PDF to s3://${bucket}/${key}`);
+  console.error(`Validated signed S3 GET with HTTP ${response.status}`);
+  console.log(url);
+}
+
+main().catch((error) => {
+  console.error(error?.stack || error);
+  process.exit(1);
+});
+NODE
+)"
+
+case "$SMOKE_URL" in
+  http://*|https://*)
+    ;;
+  *)
+    printf 'Did not receive an S3 smoke PDF URL from the API container.\n' >&2
+    exit 1
+    ;;
+esac
+
+docker compose -f deploy-compose.prod.yml exec -T api sh /app/deploy/host/paddleocr-smoke.sh "$SMOKE_URL"
+REMOTE
 ```
 
 The smoke calls AI Studio and is intentionally manual. Keep it for diagnosing
 OCR API/runtime health after deploy; do not treat it as the production
-deployment gate.
+deployment gate. Do not use local container paths as the production live smoke
+input. The smoke script reads the PaddleOCR MCP `command`, `args`, `env`, token
+placeholder, and timeout from `CONFIG_PATH` / `/data/librechat.yaml`, matching
+LibreChat's own MCP server configuration.
 
 Current production observation:
 

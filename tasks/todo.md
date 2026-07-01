@@ -1,3 +1,380 @@
+# Active: PaddleOCR uvx production deploy
+
+Goal: commit the PaddleOCR uvx/runtime cleanup on `master`, push to trigger the
+production workflow, update production `/data/librechat.yaml`, then run a fresh
+S3 PaddleOCR live smoke.
+
+Status - 2026-07-01:
+
+- [x] Confirm current branch is `master`.
+- [x] Confirm production workflow deploys on `master` push and uploads host
+      scripts, while `/data/librechat.yaml` must be updated separately.
+- [x] Stage the final task-log delta and commit current master changes.
+- [ ] Push `master` to `origin` and watch the production workflow.
+- [ ] Update production `/data/librechat.yaml` with the committed uvx config.
+- [ ] Verify production public/container health after deploy.
+- [ ] Generate a fresh S3 smoke PDF URL from the production API container.
+- [ ] Run production PaddleOCR smoke using the fresh S3 URL and record result.
+
+---
+
+# Active: PaddleOCR uvx API-runtime design
+
+Goal: simplify PaddleOCR MCP runtime so local `npm run backend` and production
+API use the same LibreChat MCP config, fixed to AI Studio, without a persistent
+PaddleOCR venv or `PADDLEOCR_UV_PYTHON_INSTALL_DIR` surface.
+
+Status - 2026-07-01:
+
+- [x] Verify current production uses `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio` and
+      that the successful smoke did not require local `paddlepaddle`.
+- [x] Verify API image already includes `uv`/`uvx` and Python is obtained
+      through `uv`.
+- [x] Identify current persistent-venv surfaces:
+      `deploy/host/start.sh`, `librechat.yaml`, env examples, runbooks, and the
+      old persistent-venv plan.
+- [x] Confirm design direction with the user before implementation.
+- [x] If approved, update tests first for local/production `uvx` MCP config and
+      removal of `PADDLEOCR_UV_PYTHON_INSTALL_DIR`.
+- [x] Implement the minimal runtime/config/doc cleanup.
+- [x] Verify local `npm run backend` can expose PaddleOCR MCP when token/env are
+      configured.
+
+Review - 2026-07-01:
+
+- Switched `librechat.yaml` PaddleOCR MCP from the production-only
+  host-prepared command to `uvx --python 3.12 --from paddleocr-mcp
+  paddleocr_mcp`.
+- Kept `PADDLEOCR_MCP_PPOCR_SOURCE: aistudio` hardcoded in MCP env maps and
+  left the AI Studio access token as the only PaddleOCR secret placeholder in
+  `.env.example` / `.env.prod.example`.
+- Removed PaddleOCR install/prewarm/reinstall logic from `deploy/host/start.sh`;
+  API startup now just prepares LibreChat data paths and starts
+  `node server/index.js`.
+- Updated `deploy/host/paddleocr-smoke.sh` to continue reading command, args,
+  env, token interpolation, and timeout from `CONFIG_PATH` /
+  `/data/librechat.yaml`, so smoke matches the same MCP server config LibreChat
+  uses.
+- Updated deployment runbooks, PaddleOCR runtime plan, and lessons to describe
+  the `uvx` API-runtime contract instead of a host-prepared PaddleOCR Python
+  environment.
+- Verification passed: static PaddleOCR uvx contract, `sh -n` for start/smoke
+  scripts, `.mcp.json` parse, `librechat.yaml` parse, smoke no-arg skip,
+  smoke local-path rejection, `git diff --check`, focused
+  `initializeMCPs.spec.js`, `uvx --version`, direct MCP list-tools via
+  `uvx` returning `paddleocr_vl`, and controlled `npm run backend` startup
+  showing PaddleOCR registered with readiness checks passing.
+
+---
+
+# Active: Server PaddleOCR MCP smoke verification
+
+Goal: verify whether the production server's PaddleOCR MCP path can run from
+the API container using a fresh S3 smoke PDF URL.
+
+Status - 2026-07-01:
+
+- [x] Confirm SSH access, production container state, and `/health`.
+- [x] Generate a fresh S3 smoke PDF signed URL from inside the API container.
+- [x] Confirm the deployed `deploy/host/paddleocr-smoke.sh` is stale and still
+      rejects S3 URLs as missing local files.
+- [x] Run a one-off direct PaddleOCR MCP URL smoke inside the API container.
+- [x] Diagnose why `paddleocr_vl` initially failed during direct smoke: the
+      test transport did not hardcode `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`,
+      so `paddleocr-mcp` defaulted to local inference.
+- [x] Correct local MCP/smoke config to hardcode
+      `PADDLEOCR_MCP_PPOCR_SOURCE: "aistudio"` in env maps, not CLI args.
+- [x] Sync the updated smoke script to the server and run official S3 URL
+      PaddleOCR smoke.
+- [x] Record the result, failure point, and next action.
+
+Review - 2026-07-01:
+
+- Server SSH, public `/health`, and container-local `/health` returned OK.
+- The first official smoke attempt proved S3 upload and signed GET worked, but
+  failed before MCP because the deployed smoke script was stale and still
+  treated the fresh S3 URL as a local file path.
+- Direct MCP smoke initially reproduced the real provider failure: without
+  hardcoded `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`, `paddleocr-mcp 0.8.5`
+  defaulted to local inference, and local PaddleOCRVL pipeline creation failed
+  because the production venv does not install local `paddlepaddle`.
+- Direct MCP smoke with the hardcoded AI Studio env succeeded from the API
+  container using the fresh S3 URL.
+- Corrected local MCP/smoke config so the provider is hardcoded in MCP env
+  maps as `PADDLEOCR_MCP_PPOCR_SOURCE: "aistudio"`, not as CLI args and not as
+  user-facing `.env` config.
+- Installed the updated smoke script on the server after backing up the old
+  one to
+  `/srv/librechat/app/deploy/host/paddleocr-smoke.sh.bak.20260701072750`.
+- Official server smoke passed: fresh S3 smoke PDF upload succeeded, signed GET
+  returned `206`, `paddleocr_vl` ran through
+  `/data/paddleocr/venv/bin/paddleocr_mcp`, provider was `aistudio`, elapsed
+  time was `15523` ms, and OCR returned 44 text chars with the expected smoke
+  marker preview.
+- Follow-up correction: smoke must read PaddleOCR MCP command/args/env/token
+  settings from `CONFIG_PATH` / `/data/librechat.yaml`, not duplicate those
+  settings in `deploy/host/paddleocr-smoke.sh`.
+
+---
+
+# Active: SSH and tmux operations doc
+
+Goal: document how SSH keepalive and tmux should be used for production
+Droplet maintenance.
+
+Status - 2026-06-30:
+
+- [x] Check for existing SSH/tmux deployment docs.
+- [x] Create `docs/deployment/ssh-tmux-operations.zh-TW.md`.
+- [x] Document the difference between SSH keepalive, tmux sessions, and Docker
+      Compose detached services.
+- [x] Add copyable commands for `~/.ssh/config`, tmux install/check, session
+      attach/detach, logs, API restart, and health checks.
+- [x] Link the SSH/tmux guide from the Traditional Chinese DigitalOcean runbook.
+- [x] Run documentation/static checks.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- Added `docs/deployment/ssh-tmux-operations.zh-TW.md`.
+- Documented SSH keepalive as connection maintenance, tmux as remote session
+  preservation, and Docker Compose detached mode as the service owner.
+- Included copyable commands for Mac SSH config, checking/installing tmux on
+  the Droplet, creating/attaching/detaching sessions, reading logs, restarting
+  API, and health checks.
+- Linked the guide from the Traditional Chinese DigitalOcean production
+  runbook.
+- Verification passed:
+  - `rtk git diff --check`
+  - code fence parity check for the SSH/tmux guide and Traditional Chinese
+    DigitalOcean runbook
+  - key-section scan for keepalive, tmux, detached Docker Compose, and
+    PaddleOCR smoke references
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+
+---
+
+# Active: Traditional Chinese DigitalOcean runbook
+
+Goal: add a Traditional Chinese version of the DigitalOcean production runbook
+without replacing the English source document.
+
+Status - 2026-06-30:
+
+- [x] Read the current English DigitalOcean Droplet production runbook,
+      including post-deploy verification and PaddleOCR reinstall/reset sections.
+- [x] Create `docs/deployment/digitalocean-droplet-prod-runbook.zh-TW.md`.
+- [x] Preserve copyable terminal commands, config snippets, and the S3 smoke PDF
+      PaddleOCR live smoke flow in the Traditional Chinese version.
+- [x] Add a cross-reference from the English runbook to the Traditional Chinese
+      version.
+- [x] Run documentation/static checks.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- Added `docs/deployment/digitalocean-droplet-prod-runbook.zh-TW.md` as an
+  independent Traditional Chinese production runbook.
+- Preserved the operational command blocks for host setup, S3 config,
+  PaddleOCR reinstall/reset, post-deploy health checks, S3 smoke PDF generation,
+  and PaddleOCR live smoke.
+- Added a cross-reference from the English runbook to the Traditional Chinese
+  version.
+- Verification passed:
+  - `rtk git diff --check`
+  - code fence parity check for both English and Traditional Chinese runbooks
+  - key-section scan for reset, post-deploy verification, auto deploy, backups,
+    and PaddleOCR smoke commands
+  - Node syntax check for the Traditional Chinese runbook's S3 smoke PDF
+    generation snippet
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+
+---
+
+# Active: Document PaddleOCR reinstall reset
+
+Goal: document how to trigger PaddleOCR MCP reinstall/reset on the production
+server and which settings must be restored afterwards.
+
+Status - 2026-06-30:
+
+- [x] Confirm `PADDLEOCR_FORCE_REINSTALL=true` is read by `deploy/host/start.sh`
+      during API container startup.
+- [x] Add a production runbook section with copyable terminal commands for
+      enabling reinstall, restarting API, checking logs, restoring
+      `PADDLEOCR_FORCE_REINSTALL=false`, and verifying health/OCR.
+- [x] Run documentation/static checks.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- Added `PaddleOCR MCP Reinstall Reset` to the production runbook.
+- Documented `PADDLEOCR_FORCE_REINSTALL=true` as a one-time maintenance switch
+  that only runs during API container startup.
+- Added copyable commands to back up `/etc/librechat/.env.prod`, turn force
+  reinstall on, restart API, inspect PaddleOCR install logs, confirm health,
+  restore `PADDLEOCR_FORCE_REINSTALL=false`, and restart API again.
+- Documented the required follow-up: run normal post-deploy verification with
+  a fresh S3 smoke PDF URL.
+- Verification passed:
+  - shell parser check for the documented SSH commands
+  - `rtk git diff --check`
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+
+---
+
+# Active: Admin Steel Rules UI design doc
+
+Goal: document an Admin-managed Steel rules UI that lets admins edit reviewed
+Steel rule content and ordering without changing code or hand-editing
+`docs/rules`.
+
+Status - 2026-06-30:
+
+- [x] Read project instructions, current Steel lessons, and the native Steel
+      master framework.
+- [x] Verify the current `steel.rules` schema, rule repository ordering, native
+      context loading, and existing Admin Steel route boundary.
+- [x] Write the design doc under `docs/plans`.
+- [x] Run markdown/static checks.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- Created `docs/plans/2026-06-30-admin-steel-rules-ui-design.md` as a
+  design-only plan for an Admin-managed Steel Rules UI.
+- Proposed `steel.rules` as the operational source of truth, with `docs/rules`
+  kept for bootstrap/export/audit rather than runtime reads.
+- Covered backend Admin API, UI layout, draft/review/publish workflow, runtime
+  prefix preview, permissions, import/export, implementation slices, and
+  verification.
+- No implementation or Supabase schema changes were made.
+- Verification passed:
+  - `test -f docs/plans/2026-06-30-admin-steel-rules-ui-design.md && wc -l docs/plans/2026-06-30-admin-steel-rules-ui-design.md`
+  - boundary keyword scan for unresolved markers and Steel rule-source terms
+  - `git diff --check -- docs/plans/2026-06-30-admin-steel-rules-ui-design.md tasks/todo.md`
+
+---
+
+# Active: Document post-deploy manual verification
+
+Goal: document the manual post-deploy verification flow with copyable terminal
+commands for GitHub Actions, `/health`, S3 smoke PDF URL generation, and
+PaddleOCR live smoke.
+
+Status - 2026-06-30:
+
+- [x] Confirm production deploy is triggered by `master` push through
+      `.github/workflows/deploy-prod.yml`.
+- [x] Update the production runbook with copyable terminal commands for Actions
+      and health checks.
+- [x] Add a copyable remote command that creates a tiny PDF in the API
+      container, uploads it to production S3, validates the signed URL, and
+      passes that URL to PaddleOCR smoke.
+- [x] Run documentation/static checks.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- Added `Post-Deploy Manual Verification` to the DigitalOcean production
+  runbook.
+- Documented copyable terminal commands for:
+  - watching the latest `Deploy Production` GitHub Actions run
+  - checking public and container-local `/health`
+  - creating a tiny smoke PDF inside the production API container
+  - uploading that PDF with the container's production S3 config
+  - validating the presigned S3 URL with signed GET
+  - passing the fresh S3 smoke PDF URL to `paddleocr-smoke.sh`
+- Kept PaddleOCR live smoke manual and separate from the deploy gate.
+- Verification passed:
+  - `rtk git diff --check`
+  - `rtk sh -n deploy/host/start.sh && rtk sh -n deploy/host/paddleocr-smoke.sh`
+  - Node syntax check for the runbook's S3 smoke PDF generation snippet
+
+---
+
+# Active: Remove PaddleOCR startup gate
+
+Goal: delete the strict PaddleOCR prewarm env surface and remove the PaddleOCR
+startup check as an API boot gate, without committing.
+
+Status - 2026-06-30:
+
+- [x] Read project instructions, current OCR lessons, and relevant memory.
+- [x] Locate the strict prewarm env in local env files, env examples, docs, and
+      `deploy/host/start.sh`.
+- [x] Verify the current startup gate fails before `node` when PaddleOCR prep
+      cannot run.
+- [x] Remove the strict env surface and startup smoke gate.
+- [x] Update deployment docs/task review text so they no longer recommend the
+      removed env.
+- [x] Run syntax/static checks and the focused startup behavior check.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- Removed the strict PaddleOCR prewarm env from ignored local env files, env
+  examples, deployment docs, and current task/lesson guidance.
+- Removed the `deploy/host/start.sh` startup MCP smoke check and strict
+  fail/warn gate.
+- Kept startup preparation enabled, but changed PaddleOCR prep failures such as
+  missing `uv`, directory setup failure, install failure, import failure, or
+  missing MCP binary into warnings that return successfully before API boot.
+- Verification passed:
+  - `rtk sh -n deploy/host/start.sh`
+  - strict prewarm env and startup smoke gate symbol search returned no matches
+  - ignored `.env*` strict prewarm env search returned no matches
+  - `rtk git diff --check`
+  - temp-copy startup check with no `uv` printed the PaddleOCR warning and
+    reached the fake `node`
+  - temp-copy startup check with failing fake `uv` warned on venv creation and
+    reached the fake `node`
+- Deployment follow-up rule: use `/health` only to confirm the site starts,
+  then pass the freshly obtained S3 smoke PDF URL to PaddleOCR smoke so it
+  verifies both S3 URL readability and PaddleOCR `fileUrl` OCR.
+
+---
+
+# Active: S3 URL only PaddleOCR smoke
+
+Goal: make the manual live PaddleOCR smoke run only when the caller passes a
+fresh S3 smoke PDF URL, and keep the live PDF smoke small.
+
+Status - 2026-06-30:
+
+- [x] Confirm current smoke script still requires a local input path.
+- [x] Update `deploy/host/paddleocr-smoke.sh` to skip live OCR when no S3 smoke
+      PDF URL argument is passed.
+- [x] Make the smoke call URL-only so local paths are not used as the
+      production live smoke input.
+- [x] Update deployment docs and lessons for S3 URL only live smoke.
+- [x] Run shell syntax, targeted smoke skip/fail behavior checks, and
+      `git diff --check`.
+- [x] Record review results here.
+
+Review - 2026-06-30:
+
+- `deploy/host/paddleocr-smoke.sh` no longer reads a persistent S3 URL env.
+  It accepts the freshly obtained S3 smoke PDF URL as the first argument.
+- When no URL argument is passed, the script skips live OCR and exits
+  successfully.
+- Local paths are rejected before MCP/token checks, so production live smoke
+  cannot accidentally use `/data/smoke/...` as input.
+- The live smoke defaults are lightweight for concise PDF content:
+  `output_mode=markdown`, `max_new_tokens=2048`, minimum text length 10, and
+  orientation/unwarping/layout extras disabled unless explicitly enabled.
+- The S3 PDF URL smoke verifies both sides of the production path: S3 URL
+  readability and PaddleOCR `fileUrl` OCR.
+- Verification passed:
+  - `rtk sh -n deploy/host/paddleocr-smoke.sh`
+  - no-argument smoke skips with exit 0
+  - local path argument fails before MCP/token checks
+  - URL argument reaches the AI Studio token prerequisite instead of local file
+    lookup
+  - rejected S3 URL env/fallback wording search returned no matches
+
+---
+
 # Active: Merge and deploy S3 upload changes
 
 Goal: commit the completed S3 image compression and S3 namespace work, merge it
@@ -24,8 +401,8 @@ Review - 2026-06-30:
   `/etc/librechat/.env.prod` lacked `S3_KEY_PREFIX=prod` and strict PaddleOCR
   startup smoke blocked API boot on an AI Studio dependency failure.
 - Installed the ignored local `.env.prod` to the private server env path,
-  confirmed `S3_KEY_PREFIX=prod`, then set `PADDLEOCR_PREWARM_STRICT=false`
-  so PaddleOCR startup smoke warns without blocking LibreChat API rollout.
+  confirmed `S3_KEY_PREFIX=prod`, then removed the PaddleOCR startup gate so
+  PaddleOCR preparation issues warn without blocking LibreChat API rollout.
 - Reran production deploy run `28422127369`; the rerun passed image build,
   Droplet deploy, container health, and public `https://chat.longdin.org/health`
   smoke.
