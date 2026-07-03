@@ -993,11 +993,12 @@ class BaseClient {
       return { message: savedMessage };
     }
 
+    const { title: _title, ...safeEndpointOptions } = endpointOptions ?? {};
     const fieldsToKeep = {
       conversationId: message.conversationId,
       endpoint: options.endpoint,
       endpointType: options.endpointType,
-      ...endpointOptions,
+      ...safeEndpointOptions,
     };
     const conversationCreatedAt = options?.req?.conversationCreatedAt;
     const createdAtOnInsert =

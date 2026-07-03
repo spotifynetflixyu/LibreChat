@@ -121,6 +121,22 @@ describe('useTitleGeneration — eligibility', () => {
 
     expect(isEligible('conv-sse-title')).toBe(false);
   });
+
+  it('can requeue a processed conversation when a later turn still has no real title', () => {
+    mockTiming = 'immediate';
+
+    const { rerender } = renderHook(() => useTitleGeneration(true));
+    act(() => markTitleGenerationProcessed('conv-retry-title'));
+    act(() =>
+      (queueTitleGeneration as (id: string, options?: { retry?: boolean }) => void)(
+        'conv-retry-title',
+        { retry: true },
+      ),
+    );
+    rerender();
+
+    expect(isEligible('conv-retry-title')).toBe(true);
+  });
 });
 
 describe('useTitleGeneration — result handling', () => {

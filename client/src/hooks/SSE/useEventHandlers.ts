@@ -67,8 +67,24 @@ type TTitleEvent = {
   };
 };
 
-const hasRealTitle = (title?: string | null): title is string =>
-  title != null && title !== '' && title !== 'New Chat';
+export const hasRealTitle = (title?: string | null): title is string =>
+  title != null && title.trim().length > 0 && title.trim() !== 'New Chat';
+
+export const shouldQueueTitleGenerationForFinal = ({
+  conversationId,
+  title,
+  isTemporary,
+}: {
+  conversationId?: string | null;
+  title?: string | null;
+  isTemporary?: boolean;
+}): boolean =>
+  conversationId != null &&
+  conversationId !== '' &&
+  conversationId !== Constants.NEW_CONVO &&
+  conversationId !== Constants.PENDING_CONVO &&
+  isTemporary !== true &&
+  !hasRealTitle(title);
 
 /** Skill caches refreshed when a chat turn authors a skill via `create_file`/`edit_file`. */
 const SKILL_QUERY_KEYS = [
@@ -758,8 +774,14 @@ export default function useEventHandlers({
         const isNewConvo = conversation.conversationId !== submissionConvo.conversationId;
 
         // Skip temporary conversations — the server never generates titles for them.
-        if (isNewConvo && conversation.conversationId && !_isTemporary) {
-          queueTitleGeneration(conversation.conversationId);
+        if (
+          shouldQueueTitleGenerationForFinal({
+            conversationId: conversation.conversationId,
+            title: conversation.title,
+            isTemporary: _isTemporary,
+          })
+        ) {
+          queueTitleGeneration(conversation.conversationId, { retry: !isNewConvo });
         }
 
         const setFinalMessages = (id: string | null, _messages: TMessage[]) => {

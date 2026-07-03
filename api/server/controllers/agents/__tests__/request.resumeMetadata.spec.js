@@ -9,8 +9,11 @@ const mockLogger = {
 
 const mockGenerationJobManager = {
   createJob: jest.fn(),
+  emitChunk: jest.fn(),
+  emitDone: jest.fn(),
   emitError: jest.fn(),
   completeJob: jest.fn(),
+  getJob: jest.fn(),
   getResumeState: jest.fn(),
   updateMetadata: jest.fn(),
 };
@@ -169,6 +172,20 @@ function nextTick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+async function waitForExpectation(assertion) {
+  let lastError;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await nextTick();
+    }
+  }
+  throw lastError;
+}
+
 describe('ResumableAgentController resume metadata', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -185,7 +202,10 @@ describe('ResumableAgentController resume metadata', () => {
     });
     mockGenerationJobManager.getResumeState.mockResolvedValue(null);
     mockGenerationJobManager.updateMetadata.mockResolvedValue(undefined);
+    mockGenerationJobManager.emitChunk.mockResolvedValue(undefined);
+    mockGenerationJobManager.emitDone.mockResolvedValue(undefined);
     mockGenerationJobManager.emitError.mockResolvedValue(undefined);
+    mockGenerationJobManager.getJob.mockResolvedValue({ createdAt: 1000 });
     mockSaveMessage.mockResolvedValue({});
   });
 
@@ -674,5 +694,66 @@ describe('ResumableAgentController resume metadata', () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it('generates a title after a follow-up user message when the conversation still has New Chat title', async () => {
+    const conversationId = 'conversation-untitled';
+    const addTitle = jest.fn().mockResolvedValue(undefined);
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      sendMessage: jest.fn(async (_text, messageOptions) => {
+        const userMessage = {
+          messageId: 'follow-up-user',
+          parentMessageId: 'assistant-1',
+          conversationId,
+          text: '再幫我整理這張報價單。',
+        };
+        messageOptions.onStart(userMessage, 'assistant-2');
+        return {
+          messageId: 'assistant-2',
+          conversationId,
+          content: [{ type: 'text', text: '整理完成。' }],
+          databasePromise: Promise.resolve({
+            conversation: {
+              conversationId,
+              title: 'New Chat',
+            },
+          }),
+        };
+      }),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: '再幫我整理這張報價單。',
+        messageId: 'follow-up-user',
+        parentMessageId: 'assistant-1',
+        conversationId,
+        endpointOption: {
+          endpoint: 'agents',
+          modelOptions: { model: 'gpt-4.1' },
+        },
+      },
+      config: {},
+    };
+    const res = createResumableResponse();
+
+    await AgentController(req, res, jest.fn(), initializeClient, addTitle);
+
+    await waitForExpectation(() => {
+      expect(addTitle).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({
+          text: '再幫我整理這張報價單。',
+          response: expect.objectContaining({
+            conversationId,
+            messageId: 'assistant-2',
+          }),
+          client,
+        }),
+      );
+    });
   });
 });

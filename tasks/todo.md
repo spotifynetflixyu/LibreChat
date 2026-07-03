@@ -1,3 +1,99 @@
+# Active: Retry title generation while conversation title is New Chat - 2026-07-03
+
+Goal: after every user message, if the conversation still has the default
+`New Chat` / no-real-title state, try title generation again so a previously
+untitled conversation can be overwritten by the generated title.
+
+Design checklist:
+
+- [x] Read `CLAUDE.md`, `/Users/neven/.codex/RTK.md`, relevant title memory,
+      and current `tasks/lessons.md`.
+- [x] Locate current title generation flow: backend `addTitle()`, agent request
+      controllers, `/api/convos/gen_title/:conversationId`, and frontend title
+      queue.
+- [x] Confirm design before production-code edits.
+- [x] Add RED tests for existing conversations whose title remains `New Chat`
+      after a follow-up user message.
+- [x] Implement minimal backend title eligibility so follow-up turns can call
+      existing `addTitle()` when the saved conversation has no real title.
+- [x] Implement minimal frontend final-event queue logic so those generated
+      titles are fetched through the existing `/gen_title` cache endpoint.
+- [x] Verify with focused Jest, JS syntax checks, and `rtk git diff --check`.
+
+Review notes:
+
+- Existing behavior only queues/generates titles for initial new conversations.
+- `Conversation.title` defaults to `New Chat` in Mongo, while final events may
+  normalize missing titles to `null`; treat both as the same no-real-title
+  state for this feature.
+- Keep OpenAI OAuth titles on `generateOpenAIOAuthTitle()` via existing
+  `AgentClient.titleConvo()`; do not add hard title overrides or new title
+  prompt behavior.
+
+Implementation review - 2026-07-03:
+
+- [x] Added backend title retry eligibility after successful turns when the
+      saved conversation title is still not real (`New Chat`, empty, or null).
+- [x] Kept initial new-conversation immediate title generation single-shot; if
+      that already started, the same turn does not launch a duplicate title job.
+- [x] Added frontend final-event title queue helper and forced retry queueing
+      when a later turn still reports no real title.
+- [x] Added queue retry support so conversations previously marked processed can
+      be re-armed by a later `New Chat` final event.
+
+Verification run:
+
+- [x] RED observed:
+      `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js --runInBand --watch=false --coverage=false --testNamePattern "New Chat title"`
+- [x] RED observed:
+      `cd client && rtk npx jest src/hooks/SSE/__tests__/useEventHandlers.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "title generation"`
+- [x] RED observed:
+      `cd client && rtk npx jest src/data-provider/SSE/__tests__/useTitleGeneration.test.ts --runInBand --watch=false --coverage=false --testNamePattern "requeue"`
+- [x] GREEN:
+      `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js server/services/Endpoints/agents/title.test.js --runInBand --watch=false --coverage=false`
+- [x] GREEN:
+      `cd client && rtk npx jest src/hooks/SSE/__tests__/useEventHandlers.spec.ts src/data-provider/SSE/__tests__/useTitleGeneration.test.ts --runInBand --watch=false --coverage=false`
+- [x] GREEN: `rtk node --check api/server/controllers/agents/request.js`
+- [x] GREEN: `rtk git diff --check`
+
+Follow-up diagnosis - 2026-07-03:
+
+- [x] User clarified the visible `New Chat` backlog existed before this branch's
+      title-retry patch, so the investigation shifted from current-regression
+      rollback to existing data/path diagnosis.
+- [x] Prod Mongo (`librechat_prod`) has 27 conversations, 10 no-real-title
+      conversations, all under `openai_oauth_responses` / `gpt-5.5`. Local dev
+      Mongo (`test`) has 18 conversations, 4 no-real-title conversations, also
+      all `openai_oauth_responses`.
+- [x] Prod build currently reports commit `fd4416b` on `master`, build date
+      `2026-07-01T23:29:34Z`; most prod no-real-title rows were created on
+      `2026-07-02`, so the backlog predates today's local patch but occurred on
+      a build that already had the OpenAI OAuth title helper.
+- [x] Prod no-real-title split: 9/10 conversations have no `context: "title"`
+      transaction, while 17/17 named OAuth conversations do have title
+      transactions. This indicates most missing titles are title-job failures,
+      skips, aborts, or no-result paths, not successful title writes.
+- [x] One no-real-title prod conversation had title transactions but still ended
+      as `New Chat`. Root cause reproduced locally: `BaseClient.saveMessageToDatabase()`
+      accepted stale client `endpointOptions.title` and wrote `title: "New Chat"`
+      through `saveConvo`, allowing later message saves to overwrite a generated
+      title.
+- [x] Fixed `BaseClient.saveMessageToDatabase()` to drop client-supplied
+      `endpointOptions.title`; title changes should come from title generation
+      or explicit conversation update routes, not normal message persistence.
+
+Follow-up verification:
+
+- [x] RED observed:
+      `cd api && rtk npx jest app/clients/specs/BaseClient.test.js --runInBand --watch=false --coverage=false --testNamePattern "stale endpoint options"`
+- [x] GREEN:
+      `cd api && rtk npx jest app/clients/specs/BaseClient.test.js server/controllers/agents/__tests__/request.resumeMetadata.spec.js server/services/Endpoints/agents/title.test.js --runInBand --watch=false --coverage=false`
+- [x] GREEN:
+      `cd client && rtk npx jest src/hooks/SSE/__tests__/useEventHandlers.spec.ts src/data-provider/SSE/__tests__/useTitleGeneration.test.ts --runInBand --watch=false --coverage=false`
+- [x] GREEN:
+      `rtk node --check api/app/clients/BaseClient.js && rtk node --check api/server/controllers/agents/request.js`
+- [x] GREEN: `rtk git diff --check`
+
 # Active: OCR preprocessing pipeline page-chunk design - 2026-07-03
 
 Goal: replace same-turn raw PaddleOCR injection with a preprocessing pipeline

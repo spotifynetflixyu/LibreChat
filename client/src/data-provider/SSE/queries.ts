@@ -55,8 +55,20 @@ const deferredTitles = new Set<string>();
 /** Listeners to notify when queue changes (for non-resumable streams like assistants) */
 const queueListeners = new Set<() => void>();
 
+type QueueTitleGenerationOptions = {
+  retry?: boolean;
+};
+
 /** Queue a conversation for title generation (call when starting new conversation) */
-export function queueTitleGeneration(conversationId: string) {
+export function queueTitleGeneration(
+  conversationId: string,
+  options: QueueTitleGenerationOptions = {},
+) {
+  if (options.retry) {
+    processedTitles.delete(conversationId);
+    deferredTitles.delete(conversationId);
+  }
+
   if (!processedTitles.has(conversationId)) {
     titleQueue.add(conversationId);
     queueListeners.forEach((listener) => listener());

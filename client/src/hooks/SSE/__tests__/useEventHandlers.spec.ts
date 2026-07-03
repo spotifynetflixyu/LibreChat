@@ -6,6 +6,7 @@ import {
   getExistingConversationAbortMessages,
   isInitialNewConversationSubmission,
   mergeRegenerateFinalMessages,
+  shouldQueueTitleGenerationForFinal,
 } from '~/hooks/SSE/useEventHandlers';
 
 describe('buildCreatedInitialResponse', () => {
@@ -77,6 +78,38 @@ describe('isInitialNewConversationSubmission', () => {
           parentMessageId: 'assistant-1',
         } as TMessage,
       } as EventSubmission),
+    ).toBe(false);
+  });
+});
+
+describe('shouldQueueTitleGenerationForFinal', () => {
+  it('queues follow-up title generation when the saved conversation still has New Chat title', () => {
+    expect(
+      shouldQueueTitleGenerationForFinal({
+        conversationId: 'conversation-1',
+        title: 'New Chat',
+        isTemporary: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not queue title generation when the conversation already has a real title', () => {
+    expect(
+      shouldQueueTitleGenerationForFinal({
+        conversationId: 'conversation-1',
+        title: '報價單整理',
+        isTemporary: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('does not queue title generation for temporary conversations', () => {
+    expect(
+      shouldQueueTitleGenerationForFinal({
+        conversationId: 'conversation-1',
+        title: 'New Chat',
+        isTemporary: true,
+      }),
     ).toBe(false);
   });
 });

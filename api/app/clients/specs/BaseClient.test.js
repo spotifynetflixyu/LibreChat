@@ -897,6 +897,57 @@ describe('BaseClient', () => {
       expect(secondSaveConvoCall[2]).toHaveProperty('unsetFields', {});
     });
 
+    test('does not overwrite an existing generated title with stale endpoint options', async () => {
+      const existingConvo = {
+        conversationId: 'existing-title-convo-id',
+        endpoint: 'openai_oauth_responses',
+        endpointType: 'openAI',
+        model: 'gpt-5.5',
+        title: '已產生標題',
+      };
+      const user = { id: 'user-id' };
+
+      getConvo.mockResolvedValue(existingConvo);
+      saveConvo.mockResolvedValue(existingConvo);
+
+      TestClient = initializeFakeClient(
+        apiKey,
+        {
+          ...options,
+          endpoint: 'openai_oauth_responses',
+          endpointType: 'openAI',
+          req: { user },
+        },
+        [],
+      );
+
+      await TestClient.saveMessageToDatabase(
+        {
+          messageId: 'follow-up-message',
+          conversationId: existingConvo.conversationId,
+          parentMessageId: 'assistant-message',
+          text: 'follow up',
+          isCreatedByUser: true,
+        },
+        {
+          model: 'gpt-5.5',
+          title: 'New Chat',
+        },
+        user,
+      );
+
+      const [, savedFields] = saveConvo.mock.calls[0];
+      expect(savedFields).toEqual(
+        expect.objectContaining({
+          conversationId: existingConvo.conversationId,
+          endpoint: 'openai_oauth_responses',
+          endpointType: 'openAI',
+          model: 'gpt-5.5',
+        }),
+      );
+      expect(savedFields).not.toHaveProperty('title');
+    });
+
     test('sendCompletion is called with the correct arguments', async () => {
       const payload = {}; // Mock payload
       TestClient.buildMessages.mockReturnValue({ prompt: payload, tokenCountMap: null });

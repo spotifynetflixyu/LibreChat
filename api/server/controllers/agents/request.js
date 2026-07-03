@@ -49,6 +49,22 @@ function toValidISOString(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function hasRealTitle(title) {
+  return typeof title === 'string' && title.trim().length > 0 && title.trim() !== 'New Chat';
+}
+
+function shouldGenerateTitleAfterTurn({
+  addTitle,
+  title,
+  isTemporary,
+  wasAborted,
+  alreadyStartedTitle,
+}) {
+  return Boolean(
+    addTitle && !isTemporary && !wasAborted && !alreadyStartedTitle && !hasRealTitle(title),
+  );
+}
+
 async function resolveConversationCreatedAt({ userId, conversationId, isNewConvo }) {
   if (isNewConvo) {
     return { createdAt: new Date().toISOString(), conversation: undefined };
@@ -445,7 +461,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       } else {
         job.abortController.signal.addEventListener('abort', abortTitleOnJobAbort, { once: true });
       }
-      const titleEligible =
+      const initialTitleEligible =
         addTitle && parentMessageId === Constants.NO_PARENT && isNewConvo && !req.body?.isTemporary;
       const emitTitleEvent = ({ conversationId: titleConversationId, title }) => {
         titleEventPromise = (async () => {
@@ -521,7 +537,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
         const sendPromise = client.sendMessage(text, messageOptions);
 
-        if (titleEligible && titleTiming === 'immediate') {
+        if (initialTitleEligible && titleTiming === 'immediate') {
           immediateTitlePromise = addTitle(req, {
             text,
             conversationId,
@@ -560,11 +576,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
         // Check abort state BEFORE calling completeJob (which triggers abort signal for cleanup)
         const wasAbortedBeforeComplete = job.abortController.signal.aborted;
-        const shouldGenerateTitle =
-          addTitle &&
-          parentMessageId === Constants.NO_PARENT &&
-          isNewConvo &&
-          !wasAbortedBeforeComplete;
+        const shouldGenerateTitleAfterFinal = shouldGenerateTitleAfterTurn({
+          addTitle,
+          title: conversation.title,
+          isTemporary: req.body?.isTemporary,
+          wasAborted: wasAbortedBeforeComplete,
+          alreadyStartedTitle: initialTitleEligible && titleTiming === 'immediate',
+        });
 
         // Save user message BEFORE sending final event to avoid race condition
         // where client refetch happens before database is updated
@@ -684,7 +702,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           await finishResumableRequest(req, userId);
         }
 
-        if (titleTiming === 'immediate') {
+        if (initialTitleEligible && titleTiming === 'immediate') {
           // Title was fired in parallel above (if eligible); a stopped turn already
           // aborted it before `resolveConvoReady`. Defer disposal until it settles
           // so the run/req aren't torn down mid-generation.
@@ -697,7 +715,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           } else if (client) {
             disposeClient(client);
           }
-        } else if (shouldGenerateTitle) {
+        } else if (shouldGenerateTitleAfterFinal) {
           addTitle(req, {
             text,
             response: { ...response },
@@ -1086,8 +1104,16 @@ const _LegacyAgentController = async (req, res, next, initializeClient, addTitle
       );
     }
 
+    const shouldGenerateTitleAfterFinal = shouldGenerateTitleAfterTurn({
+      addTitle,
+      title: conversation.title,
+      isTemporary: req.body?.isTemporary,
+      wasAborted: job.abortController.signal.aborted,
+      alreadyStartedTitle: false,
+    });
+
     // Add title if needed - extract minimal data
-    if (addTitle && parentMessageId === Constants.NO_PARENT && isNewConvo) {
+    if (shouldGenerateTitleAfterFinal) {
       addTitle(req, {
         text,
         response: { ...response },

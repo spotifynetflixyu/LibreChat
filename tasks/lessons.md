@@ -1,5 +1,10 @@
 # Lessons
 
+- When a user reports a visible regression after a recent change, first confirm
+  whether the symptom predates the diff before attributing cause to the current
+  patch. For title/UI issues, inspect existing DB rows, timestamps, cache/log
+  evidence, and frontend state before assuming the latest code created the
+  backlog.
 - When enabling S3 storage, update both the code/env path and the ignored
   runtime `librechat.yaml` source. Local/dev should use `fileStrategy: "s3"`
   plus `.env` `S3_KEY_PREFIX=dev`; the private production server uses
