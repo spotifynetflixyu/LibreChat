@@ -17,6 +17,7 @@ export {
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
+  createSteelOcrPdfChunkArtifactModel,
   createSteelProjectModel,
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,

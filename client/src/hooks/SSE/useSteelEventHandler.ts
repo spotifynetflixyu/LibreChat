@@ -13,6 +13,7 @@ type MaybeSteelNativeActivityEnvelope = Partial<SteelNativeActivityEnvelope> & {
 const steelActivityEventTypes = new Set(['parse_status', 'memory_saved']);
 const steelActivitySources = new Set([
   'assistant_markdown',
+  'ocr_preprocessing',
   'paddleocr_preflight',
   'responses_output',
   'tool_result',
@@ -24,6 +25,10 @@ function isSavedCounts(value: unknown): value is Record<string, number> {
   }
 
   return Object.values(value).every((count) => typeof count === 'number' && Number.isFinite(count));
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
 function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
@@ -75,6 +80,8 @@ function normalizeSteelActivityEvent(
       ...(typeof data.providerToolCallId === 'string'
         ? { providerToolCallId: data.providerToolCallId }
         : {}),
+      ...(typeof data.errorMessage === 'string' ? { errorMessage: data.errorMessage } : {}),
+      ...(isStringArray(data.failedKeys) ? { failedKeys: data.failedKeys } : {}),
     };
   }
 
@@ -121,6 +128,7 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
   return JSON.stringify({
     type: event.type,
     source: event.source,
+    message: event.message,
     conversationId: event.conversationId,
     requestId: event.requestId,
     messageId: event.messageId,

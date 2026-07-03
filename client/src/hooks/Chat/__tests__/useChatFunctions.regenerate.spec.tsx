@@ -206,4 +206,65 @@ describe('useChatFunctions regenerate', () => {
     expect(submission.userMessage.text).toContain('分別輸出每個 Markdown 的完整新表格');
     expect(mockResetRecoil).toHaveBeenCalledWith('pendingMarkdownTableComments');
   });
+
+  it('includes filename-bearing file metadata on a fresh submit', () => {
+    const messages = [userMessage('user-1')];
+    const setMessages = jest.fn((nextMessages: TMessage[]) => {
+      messages.splice(0, messages.length, ...nextMessages);
+    });
+    const setFiles = jest.fn();
+    const setSubmission = jest.fn();
+    const conversation = {
+      conversationId: 'conversation-1',
+      endpoint: EModelEndpoint.agents,
+      model: 'gpt-5.5',
+      agent_id: 'agent-1',
+    } as TConversation;
+    const files = new Map([
+      [
+        'file-bh-pdf',
+        {
+          file_id: 'file-bh-pdf',
+          filename: 'BH.pdf',
+          filepath: 'files/user-123/BH.pdf',
+          type: 'application/pdf',
+          size: 2048,
+          width: 0,
+          height: 0,
+          progress: 1,
+        },
+      ],
+    ]);
+
+    const { result } = renderHook(() =>
+      useChatFunctions({
+        isSubmitting: false,
+        latestMessage: messages[0],
+        conversation,
+        files,
+        setFiles,
+        getMessages: () => messages,
+        setMessages,
+        setSubmission,
+      }),
+    );
+
+    act(() => {
+      result.current.ask({ text: 'OCR檔案內容，逐一列表給我核對。' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.files).toEqual([
+      expect.objectContaining({
+        file_id: 'file-bh-pdf',
+        filename: 'BH.pdf',
+        filepath: 'files/user-123/BH.pdf',
+        type: 'application/pdf',
+        bytes: 2048,
+        width: 0,
+        height: 0,
+      }),
+    ]);
+    expect(setFiles).toHaveBeenCalledWith(new Map());
+  });
 });

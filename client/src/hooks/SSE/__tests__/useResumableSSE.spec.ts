@@ -344,7 +344,7 @@ describe('useResumableSSE - 404 error path', () => {
     unmount();
   });
 
-  it('invalidates the stream conversation id on 404 for a new conversation', async () => {
+  it('keeps the generated conversation in the sidebar on 404 after a new conversation gets an id', async () => {
     mockFindAll.mockReturnValue([{ queryKey: [QueryKeys.allConversations] }]);
     const submission = buildSubmission({
       conversation: {},
@@ -387,22 +387,7 @@ describe('useResumableSSE - 404 error path', () => {
     const allConversationWrites = mockSetQueryData.mock.calls.filter(
       ([queryKey]) => Array.isArray(queryKey) && queryKey[0] === QueryKeys.allConversations,
     );
-    expect(allConversationWrites).toHaveLength(2);
-
-    const removeUpdater = allConversationWrites[1][1] as (data: {
-      pages: { conversations: { conversationId: string }[]; nextCursor: null }[];
-      pageParams: never[];
-    }) => { pages: { conversations: { conversationId: string }[] }[] };
-    const result = removeUpdater({
-      pages: [
-        {
-          conversations: [{ conversationId: 'stream-123' }, { conversationId: 'other' }],
-          nextCursor: null,
-        },
-      ],
-      pageParams: [],
-    });
-    expect(result.pages[0].conversations).toEqual([{ conversationId: 'other' }]);
+    expect(allConversationWrites).toHaveLength(1);
     unmount();
   });
 
@@ -1600,7 +1585,7 @@ describe('useResumableSSE - 404 error path', () => {
     unmount();
   });
 
-  it('removes the optimistic sidebar row when a new conversation errors before created', async () => {
+  it('keeps the generated conversation in the sidebar when a new conversation errors before created', async () => {
     mockFindAll.mockReturnValue([{ queryKey: [QueryKeys.allConversations] }]);
     const submission = buildSubmission({
       conversation: {},
@@ -1636,22 +1621,7 @@ describe('useResumableSSE - 404 error path', () => {
     const allConversationWrites = mockSetQueryData.mock.calls.filter(
       ([queryKey]) => Array.isArray(queryKey) && queryKey[0] === QueryKeys.allConversations,
     );
-    expect(allConversationWrites).toHaveLength(2);
-
-    const removeUpdater = allConversationWrites[1][1] as (data: {
-      pages: { conversations: { conversationId: string }[]; nextCursor: null }[];
-      pageParams: never[];
-    }) => { pages: { conversations: { conversationId: string }[] }[] };
-    const result = removeUpdater({
-      pages: [
-        {
-          conversations: [{ conversationId: 'stream-123' }, { conversationId: 'other' }],
-          nextCursor: null,
-        },
-      ],
-      pageParams: [],
-    });
-    expect(result.pages[0].conversations).toEqual([{ conversationId: 'other' }]);
+    expect(allConversationWrites).toHaveLength(1);
     expect(mockErrorHandler).toHaveBeenCalledWith(
       expect.objectContaining({
         submission: expect.objectContaining({

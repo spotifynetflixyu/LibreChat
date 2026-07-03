@@ -9,6 +9,7 @@ export { default as steelConversationTurnSchema } from './conversationTurn';
 export { default as steelExcelExportSchema } from './excelExport';
 export { default as steelMemoryCandidateSchema } from './memoryCandidate';
 export { default as steelMemorySchema } from './memory';
+export { default as steelOcrPdfChunkArtifactSchema } from './ocrPdfChunkArtifact';
 export { default as steelProjectSchema } from './project';
 export { default as steelProjectSourceSchema } from './projectSource';
 export { default as steelSourceVersionSchema } from './sourceVersion';

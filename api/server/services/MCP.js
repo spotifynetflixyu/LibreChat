@@ -48,6 +48,7 @@ const { createOboTrustChecker } = require('./OboPolicyService');
 const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
+const { streamToBuffer } = require('~/server/utils/stream');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 
 const MAX_CACHE_SIZE = 1000;
@@ -495,24 +496,6 @@ function getMediaTypeForFile(file, inputData) {
     PADDLEOCR_MEDIA_TYPES_BY_EXTENSION[extension] ||
     'application/octet-stream'
   );
-}
-
-async function streamToBuffer(stream) {
-  if (Buffer.isBuffer(stream)) {
-    return stream;
-  }
-  if (stream instanceof ArrayBuffer) {
-    return Buffer.from(stream);
-  }
-  if (typeof stream === 'string') {
-    return Buffer.from(stream);
-  }
-
-  const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
 }
 
 function shouldResolvePaddleInputAsDownloadUrl(source) {

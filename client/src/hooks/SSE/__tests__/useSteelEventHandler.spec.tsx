@@ -180,6 +180,132 @@ describe('useSteelEventHandler', () => {
     ]);
   });
 
+  it('stores OCR preprocessing progress events and keeps distinct messages', () => {
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: RecoilRoot,
+    });
+
+    const progressEventBase = {
+      source: 'ocr_preprocessing',
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      messageId: 'assistant-live',
+    } as const;
+    const progressEvents: SteelNativeActivityEvent[] = [
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Uploaded pdf to S3 (163 pages / 4 chunks) (file:BH.pdf)',
+        parseStatus: 'partial' as const,
+      },
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Running paddleocr_vl in PaddleOCR (chunk 1/4) (file:BH.pdf)',
+        parseStatus: 'partial' as const,
+      },
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Ran paddleocr_vl in PaddleOCR (chunk 1/4) (file:BH.pdf)',
+        parseStatus: 'partial' as const,
+      },
+      {
+        ...progressEventBase,
+        type: 'memory_saved' as const,
+        message: 'PaddleOCR preflight saved (chunk 1/4) (file:BH.pdf)',
+        savedCounts: { paddleocr_preflight: 1 },
+      },
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Running OCR markdown process (chunk 1/4) (file:BH.pdf)',
+        parseStatus: 'partial' as const,
+      },
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Ran OCR markdown process (chunk 1/4) (file:BH.pdf)',
+        parseStatus: 'partial' as const,
+      },
+      {
+        ...progressEventBase,
+        type: 'memory_saved' as const,
+        message: 'Saved OCR markdown (chunk 1/4) (file:BH.pdf)',
+        savedCounts: { ocr_extract: 1 },
+      },
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Read OCR markdowns (file:BH.pdf: 4 chunks)',
+        parseStatus: 'partial' as const,
+      },
+      {
+        ...progressEventBase,
+        type: 'parse_status' as const,
+        message: 'Processing pdf with OCR markdowns (file:BH.pdf)',
+        parseStatus: 'partial' as const,
+      },
+    ];
+
+    act(() => {
+      for (const progressEvent of progressEvents) {
+        result.current.steelEventHandler(
+          {
+            event: 'steel_event',
+            data: progressEvent,
+          },
+          createSubmission('assistant-live'),
+        );
+      }
+    });
+
+    expect(result.current.activity.map((event) => event.message)).toEqual([
+      'Uploaded pdf to S3 (163 pages / 4 chunks) (file:BH.pdf)',
+      'Running paddleocr_vl in PaddleOCR (chunk 1/4) (file:BH.pdf)',
+      'Ran paddleocr_vl in PaddleOCR (chunk 1/4) (file:BH.pdf)',
+      'PaddleOCR preflight saved (chunk 1/4) (file:BH.pdf)',
+      'Running OCR markdown process (chunk 1/4) (file:BH.pdf)',
+      'Ran OCR markdown process (chunk 1/4) (file:BH.pdf)',
+      'Saved OCR markdown (chunk 1/4) (file:BH.pdf)',
+      'Read OCR markdowns (file:BH.pdf: 4 chunks)',
+      'Processing pdf with OCR markdowns (file:BH.pdf)',
+    ]);
+  });
+
+  it('preserves OCR preprocessing error details for the activity UI', () => {
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: RecoilRoot,
+    });
+
+    act(() => {
+      result.current.steelEventHandler(
+        {
+          event: 'steel_event',
+          data: {
+            type: 'parse_status',
+            source: 'ocr_preprocessing',
+            conversationId: 'conversation-1',
+            requestId: 'request-1',
+            messageId: 'assistant-live',
+            message: 'ocr preprocessing failed (file:BH.pdf)',
+            parseStatus: 'partial',
+            errorMessage: 'organizer timeout',
+            failedKeys: ['file:BH.pdf'],
+          },
+        },
+        createSubmission('assistant-live'),
+      );
+    });
+
+    expect(result.current.activity).toEqual([
+      expect.objectContaining({
+        errorMessage: 'organizer timeout',
+        failedKeys: ['file:BH.pdf'],
+      }),
+    ]);
+  });
+
   it('deduplicates replayed Steel activity envelopes', () => {
     const event = {
       event: 'steel_event' as const,

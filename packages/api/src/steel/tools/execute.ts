@@ -3,6 +3,7 @@ import {
   discoverSteelPriceCategories,
   searchSteelPriceItems,
 } from '../repositories';
+import { normalizeOcrEvidenceForRuntime } from '../runtime/context';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
 import { steelToolArgsSchemas } from './schemas';
@@ -336,11 +337,14 @@ function matchesRequestedFileKey(
   const bareFileKey = requestedFileKey.startsWith('file:')
     ? requestedFileKey.slice('file:'.length)
     : requestedFileKey;
+  const ocrFileKeys = Array.isArray(value.ocrFileKeys) ? value.ocrFileKeys : [];
   return (
     value.ocrFileKey === requestedFileKey ||
     value.ocrFileKey === `file:${bareFileKey}` ||
     value.fileId === requestedFileKey ||
-    value.fileId === bareFileKey
+    value.fileId === bareFileKey ||
+    ocrFileKeys.includes(requestedFileKey) ||
+    ocrFileKeys.includes(`file:${bareFileKey}`)
   );
 }
 
@@ -393,10 +397,37 @@ function isOcrTextKey(key: string): boolean {
   return ocrTextKeys.has(key);
 }
 
+function getExtractOcrFileKey(extract: SteelRuntimeJsonObject): string | undefined {
+  if (typeof extract.ocrFileKey === 'string' && extract.ocrFileKey.trim() !== '') {
+    return extract.ocrFileKey.trim();
+  }
+  if (typeof extract.fileId === 'string' && extract.fileId.trim() !== '') {
+    return `file:${extract.fileId.trim()}`;
+  }
+  return undefined;
+}
+
+function labelOfficialOcrMarkdown(extract: SteelRuntimeJsonObject, content: string): string {
+  const kind = typeof extract.kind === 'string' ? extract.kind : '';
+  const source = typeof extract.ocrSource === 'string' ? extract.ocrSource : '';
+  if (
+    kind !== 'ocr_official_markdown' ||
+    (source !== 'paddleocr_official_markdown' && source !== 'ai_official_markdown')
+  ) {
+    return content;
+  }
+
+  const ocrFileKey = getExtractOcrFileKey(extract);
+  if (!ocrFileKey || content.startsWith(`<${ocrFileKey}>`)) {
+    return content;
+  }
+  return `<${ocrFileKey}>\n${content}`;
+}
+
 function getOcrTextBlocks(extract: SteelRuntimeJsonObject): string[] {
   return Object.entries(extract)
     .filter(([key, value]) => isOcrTextKey(key) && typeof value === 'string' && value.trim() !== '')
-    .map(([, value]) => String(value).trim());
+    .map(([, value]) => labelOfficialOcrMarkdown(extract, String(value).trim()));
 }
 
 function renderOcrMetadataTable(extract: SteelRuntimeJsonObject): string {
@@ -420,10 +451,14 @@ function getOcrEvidenceHeading(extract: SteelRuntimeJsonObject, index: number): 
 }
 
 function getOcrEvidenceIndexLine(extract: SteelRuntimeJsonObject, index: number): string {
+  const ocrFileKeys = Array.isArray(extract.ocrFileKeys)
+    ? extract.ocrFileKeys.filter((key) => typeof key === 'string').join(',')
+    : undefined;
   const fields = [
     ['heading', getOcrEvidenceHeading(extract, index)],
     ['filename', extract.filename],
     ['ocrFileKey', extract.ocrFileKey],
+    ['ocrFileKeys', ocrFileKeys],
     ['fileId', extract.fileId],
     ['source', extract.ocrSource],
   ]
@@ -450,12 +485,11 @@ function getOcrExtractsForFileKey(
   snapshot: SteelOutputSheetMemorySnapshot,
   requestedFileKey: string | undefined,
 ): SteelRuntimeJsonObject[] {
+  const extracts = normalizeOcrEvidenceForRuntime(snapshot.derivedIndex.ocrExtracts);
   if (!requestedFileKey) {
-    return [...snapshot.derivedIndex.ocrExtracts];
+    return extracts;
   }
-  return snapshot.derivedIndex.ocrExtracts.filter((extract) =>
-    matchesRequestedFileKey(extract, requestedFileKey),
-  );
+  return extracts.filter((extract) => matchesRequestedFileKey(extract, requestedFileKey));
 }
 
 function getOcrStructuredItems(
@@ -510,7 +544,9 @@ function renderOcrMarkdown(
         '',
         '### Available OCR evidence index',
         '',
-        ...snapshot.derivedIndex.ocrExtracts.map(getOcrEvidenceIndexLine),
+        ...normalizeOcrEvidenceForRuntime(snapshot.derivedIndex.ocrExtracts).map(
+          getOcrEvidenceIndexLine,
+        ),
       ].join('\n');
     }
     return '## OCR data\n\nNo current OCR data.';

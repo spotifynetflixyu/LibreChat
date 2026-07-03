@@ -136,6 +136,8 @@ function createSteelNativeResponseSaveHook({ req, res, streamId }) {
       error: responseMessage?.error,
       temporary: responseMessage?.temporary,
       currentTurnFiles: req?.steelNativeContext?.currentTurnFiles,
+      currentOcrMarkdownResults:
+        req?.steelNativeContext?.paddleOcrPreflight?.currentOcrMarkdownResults,
     });
 
     logger.debug('[AgentClient] Steel native response capture', {

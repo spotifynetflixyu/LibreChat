@@ -6,6 +6,8 @@ import type { ServerRequest } from '~/types';
 const mockGetCloudFrontConfig = jest.fn<CloudFrontFullConfig | null, []>();
 const mockGetS3Key = jest.fn();
 const mockSaveBufferToS3 = jest.fn();
+const mockSaveBufferToS3StorageKey = jest.fn();
+const mockS3ObjectExistsByKey = jest.fn();
 const mockSaveURLToS3WithMetadata = jest.fn();
 const mockUploadFileToS3 = jest.fn();
 const mockDeleteFileFromS3 = jest.fn();
@@ -23,6 +25,8 @@ jest.mock('~/cdn/cloudfront', () => ({
 jest.mock('~/storage/s3/crud', () => ({
   getS3Key: mockGetS3Key,
   saveBufferToS3: mockSaveBufferToS3,
+  saveBufferToS3StorageKey: mockSaveBufferToS3StorageKey,
+  s3ObjectExistsByKey: mockS3ObjectExistsByKey,
   saveURLToS3WithMetadata: mockSaveURLToS3WithMetadata,
   uploadFileToS3: mockUploadFileToS3,
   deleteFileFromS3: mockDeleteFileFromS3,
@@ -81,6 +85,8 @@ describe('CloudFront CRUD', () => {
           : `${prefix}${basePath}/${userId}/${fileName}`;
       },
     );
+    mockSaveBufferToS3StorageKey.mockResolvedValue({ bytes: 3, storageRegion: 'us-east-1' });
+    mockS3ObjectExistsByKey.mockResolvedValue({ exists: true, bytes: 3, storageRegion: 'us-east-1' });
     mockGetCloudFrontConfig.mockReturnValue(makeConfig());
   });
 
@@ -662,6 +668,60 @@ describe('CloudFront CRUD', () => {
       expect(policy.Statement[0].Condition.DateLessThan['AWS:EpochTime']).toEqual(
         expect.any(Number),
       );
+    });
+
+    it('signs an exact deterministic storage key without resolving a file record', async () => {
+      mockGetCloudFrontConfig.mockReturnValue(
+        makeConfig({ privateKey: 'pk-secret', keyPairId: 'K123' }),
+      );
+      mockGetSignedUrl.mockReturnValue('signed-chunk-url');
+
+      const { getCloudFrontDownloadURLForKey } = await import('~/storage/cloudfront/crud');
+      const result = await getCloudFrontDownloadURLForKey({
+        storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        contentType: 'application/pdf',
+      });
+
+      expect(result).toBe('signed-chunk-url');
+      expect(mockResolveStoredS3Key).not.toHaveBeenCalled();
+      expect(mockGetSignedUrl).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: expect.stringContaining(
+            'https://d123.cloudfront.net/ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+          ),
+          keyPairId: 'K123',
+          privateKey: 'pk-secret',
+        }),
+      );
+    });
+
+    it('delegates direct storage-key exists and save operations to S3', async () => {
+      const {
+        cloudFrontObjectExistsByKey,
+        saveBufferToCloudFrontStorageKey,
+      } = await import('~/storage/cloudfront/crud');
+
+      await expect(
+        cloudFrontObjectExistsByKey({
+          storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        }),
+      ).resolves.toEqual({ exists: true, bytes: 3, storageRegion: 'us-east-1' });
+      await expect(
+        saveBufferToCloudFrontStorageKey({
+          storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+          buffer: Buffer.from('pdf'),
+          contentType: 'application/pdf',
+        }),
+      ).resolves.toEqual({ bytes: 3, storageRegion: 'us-east-1' });
+
+      expect(mockS3ObjectExistsByKey).toHaveBeenCalledWith({
+        storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+      });
+      expect(mockSaveBufferToS3StorageKey).toHaveBeenCalledWith({
+        storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        buffer: Buffer.from('pdf'),
+        contentType: 'application/pdf',
+      });
     });
 
     it('throws when signing keys are missing', async () => {

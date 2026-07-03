@@ -21,11 +21,13 @@ import { sanitizeContentDispositionFilename } from '~/storage/validation';
 import {
   getS3Key,
   saveBufferToS3,
+  saveBufferToS3StorageKey,
   saveURLToS3WithMetadata,
   uploadFileToS3,
   deleteFileFromS3,
   getS3FileStream,
   resolveStoredS3Key,
+  s3ObjectExistsByKey,
 } from '~/storage/s3/crud';
 
 let _cloudFrontClient: CloudFrontClient | null = null;
@@ -188,6 +190,26 @@ export async function saveBufferToCloudFront(
   });
 }
 
+export async function saveBufferToCloudFrontStorageKey({
+  storageKey,
+  buffer,
+  contentType = null,
+}: {
+  storageKey: string;
+  buffer: Buffer | Uint8Array;
+  contentType?: string | null;
+}): Promise<{ bytes: number; storageRegion?: string }> {
+  return saveBufferToS3StorageKey({ storageKey, buffer, contentType });
+}
+
+export async function cloudFrontObjectExistsByKey({
+  storageKey,
+}: {
+  storageKey: string;
+}): Promise<{ exists: boolean; bytes?: number; storageRegion?: string }> {
+  return s3ObjectExistsByKey({ storageKey });
+}
+
 /** Save file from URL to S3 and return CloudFront URL. */
 export async function saveURLToCloudFront(
   params: SaveURLParams & { sign?: boolean },
@@ -276,5 +298,18 @@ export async function getCloudFrontDownloadURL({
     throw new Error('[getCloudFrontDownloadURL] Unable to extract S3 key from file path');
   }
   const url = appendDownloadOverrides(buildCloudFrontUrl(key), customFilename, contentType);
+  return signUrl(url);
+}
+
+export async function getCloudFrontDownloadURLForKey({
+  storageKey,
+  customFilename = null,
+  contentType = null,
+}: {
+  storageKey: string;
+  customFilename?: string | null;
+  contentType?: string | null;
+}): Promise<string> {
+  const url = appendDownloadOverrides(buildCloudFrontUrl(storageKey), customFilename, contentType);
   return signUrl(url);
 }

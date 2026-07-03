@@ -10,6 +10,7 @@ export * from './history';
 export * from './memory';
 export * from './native';
 export * from './normalization';
+export * from './ocr';
 export * from './repositories';
 export * from './rules';
 export * from './schema/mapping';

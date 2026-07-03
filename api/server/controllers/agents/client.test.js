@@ -8,6 +8,7 @@ const mockRunSteelPaddleOcrPreflight = jest.fn().mockResolvedValue({
   failedKeys: [],
   skippedReason: 'no_current_files',
   currentPaddleOcrResults: [],
+  currentOcrMarkdownResults: [],
 });
 jest.mock('~/server/services/ToolService', () => ({
   runSteelPaddleOcrPreflight: (...args) => mockRunSteelPaddleOcrPreflight(...args),
@@ -2041,6 +2042,33 @@ describe('AgentClient - titleConvo', () => {
     it('keeps OCR-capable request attachments in Steel context when provider processing filters them out', async () => {
       const { buildDefaultSteelGlobalAgentContext } = require('@librechat/api');
       const currentFile = makeUploadedFile('current-pdf', 'drawing.pdf', 'application/octet-stream');
+      const currentOcrMarkdownResults = [
+        {
+          ocrFileKey: 'file:current-pdf',
+          fileId: 'current-pdf',
+          filename: 'drawing.pdf',
+          mediaType: 'application/octet-stream',
+          ocrSource: 'ocr_preprocessing_merge',
+          content: 'merged OCR markdown',
+        },
+      ];
+
+      mockRunSteelPaddleOcrPreflight.mockResolvedValueOnce({
+        status: 'completed',
+        completedKeys: ['file:current-pdf'],
+        attemptedKeys: ['file:current-pdf'],
+        failedKeys: [],
+        skippedReason: undefined,
+        currentPaddleOcrResults: [
+          {
+            ocrFileKey: 'file:current-pdf',
+            fileId: 'current-pdf',
+            filename: 'drawing.pdf',
+            result: { text: 'raw OCR' },
+          },
+        ],
+        currentOcrMarkdownResults,
+      });
 
       client.options.attachments = [currentFile];
 
@@ -2080,6 +2108,7 @@ describe('AgentClient - titleConvo', () => {
         expect.objectContaining({
           attachments: {
             currentTurnFiles: [expectedReference],
+            currentOcrMarkdownResults,
             priorActiveFileEvidence: [],
           },
         }),

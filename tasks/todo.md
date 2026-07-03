@@ -3,49 +3,69 @@
 Goal: replace same-turn raw PaddleOCR injection with a preprocessing pipeline
 that produces merged OCR Markdown before the main Steel agent runs.
 
+Execution checklist:
+
+- [x] Read `CLAUDE.md`, `/Users/neven/.codex/RTK.md`, relevant OCR memory, and
+      this implementation plan.
+- [x] Critical review: no blocking plan gaps found. Hard constraints are global
+      `sourcePdfKey` chunk artifacts, resumable DB state, no raw OCR injection,
+      and 50-page PDF chunks.
+- [x] Batch 1: add global PDF chunk artifact schema/model with red-green
+      `packages/data-schemas` test.
+- [x] Batch 2: add OCR preprocessing memory state reader and idempotent chunk /
+      Markdown capture helpers with red-green `packages/api` tests.
+- [x] Batch 3: add PDF chunk helpers, organizer interface, preprocessing
+      orchestrator, merge behavior, and native preprocessing events.
+- [x] Batch 4: wire `api` AgentClient / Open Responses integration and
+      production organizer seam.
+- [x] Batch 5: run focused verification, `rtk git diff --check`, and document
+      review results here.
+
 First-slice scope:
 
-- [ ] Follow implementation plan:
+- [x] Follow implementation plan:
       `docs/plans/2026-07-03-ocr-preprocessing-pipeline.md`.
-- [ ] Keep automatic PaddleOCR preflight, but process PDFs as page-range PDF
+- [x] Keep automatic PaddleOCR preflight, but process PDFs as page-range PDF
       chunks, not rasterized page images.
-- [ ] Use 50 PDF pages per chunk by default, e.g. `1-50`, `51-100`.
-- [ ] Use the original PDF S3 file key/storage key as the main index for PDF
+- [x] Use 50 PDF pages per chunk by default, e.g. `1-50`, `51-100`.
+- [x] Use the original PDF S3 file key/storage key as the main index for PDF
       chunk artifacts, not `conversationId`.
-- [ ] Store split PDF chunk artifacts in a global DB registry so another
+- [x] Store split PDF chunk artifacts in a global DB registry so another
       conversation using the same original PDF file key reuses existing chunk
       PDFs instead of splitting/uploading again.
-- [ ] Before creating chunk PDFs, read global chunk artifact rows and check the
+- [x] Before creating chunk PDFs, read global chunk artifact rows and check the
       deterministic S3 object key; repair DB rows from S3 when possible.
-- [ ] Persist raw chunk evidence as `paddleocr_preflight` with file key, page
+- [x] Persist raw chunk evidence as `paddleocr_preflight` with file key, page
       range, source PDF key, chunk index, and total chunk count metadata.
-- [ ] Make preprocessing resumable by deriving chunk state from persisted
+- [x] Make preprocessing resumable by deriving chunk state from persisted
       `paddleocr_preflight` and `ocr_extract` rows for the same file key.
-- [ ] Emit user-visible progress events:
+- [x] Emit user-visible progress events:
       `paddleocr_preflight`, `paddleocr_preflight data saved as N chunks`,
       `subagent process ocr X/N`, and `ocr markdown saved`.
-- [ ] Add an internal OCR organizer pass per chunk. The organizer receives only
+- [x] Add an internal OCR organizer pass per chunk. The organizer receives only
       OCR rules, file/chunk metadata, and that chunk's raw OCR result.
-- [ ] Parse and save each organized chunk Markdown immediately after its
+- [x] Parse and save each organized chunk Markdown immediately after its
       organizer pass succeeds, instead of waiting for all chunks to finish.
-- [ ] On resubmit, skip chunks whose raw preflight and organized OCR Markdown
+- [x] On resubmit, skip chunks whose raw preflight and organized OCR Markdown
       are already saved for the same file key/chunk identity.
-- [ ] Treat `ocrRuleVersion` changes as invalidating organized chunk Markdown
-      and final merged Markdown, while reusing saved raw `paddleocr_preflight`
+- [x] Treat `ocrRuleVersion` changes as invalidating organized chunk Markdown
+      and runtime merged Markdown, while reusing saved raw `paddleocr_preflight`
       chunks for the same file key/chunk identity.
-- [ ] Merge organized chunk Markdown deterministically by page/chunk order.
-- [ ] When same-file-key chunk Markdown tables have different headers, merge
+- [x] Merge organized chunk Markdown deterministically by page/chunk order.
+- [x] When same-file-key chunk Markdown tables have different headers, merge
       with a union header set and leave missing cells blank.
-- [ ] Save the merged OCR Markdown as normal `ocr_extract` memory for the file.
-- [ ] If all chunks for a file key already have saved organized OCR Markdown,
+- [x] Do not save full merged OCR Markdown as another DB row. Store raw
+      `paddleocr_preflight` chunks and organized `ocr_extract` chunk Markdown
+      separately, then runtime merge them for agent context/readback.
+- [x] If all chunks for a file key already have saved organized OCR Markdown,
       skip PaddleOCR, skip organizer subagents, rebuild/load the merged OCR
       Markdown, and pass it to the main Steel agent.
-- [ ] Give the main Steel agent exactly one merged OCR Markdown string per
+- [x] Give the main Steel agent exactly one merged OCR Markdown string per
       file key instead of raw `paddleocr_preflight` results or per-chunk
       Markdown arrays.
-- [ ] Add focused tests for event order, chunk metadata, merged OCR persistence,
+- [x] Add focused tests for event order, chunk metadata, merged OCR persistence,
       and main-agent context using organized OCR instead of raw OCR.
-- [ ] Run a large-PDF pressure test after the pipeline works.
+- [x] Run a local large-PDF pressure test after the pipeline works.
 
 Explicitly out of scope for this first slice:
 
@@ -81,6 +101,403 @@ Review notes:
   merged Markdown from current-rule chunk outputs.
 - The pressure test result will decide whether a later retrieval/page-range
   contract is necessary.
+
+Execution review - 2026-07-03:
+
+- [x] Added global `steel_ocr_pdf_chunk_artifacts` schema/model and exports.
+- [x] Added OCR preprocessing DB state reader plus idempotent raw chunk and
+      organized chunk Markdown capture helpers.
+- [x] Added PDF page chunk math, PDF page count, and PDF-preserving page-range
+      chunk copy helpers.
+- [x] Added deterministic OCR PDF chunk artifact key/reuse helper with
+      Mongoose repository adapter.
+- [x] Added organizer prompt interface and fake-driven preprocessing
+      orchestrator with union-header table merge.
+- [x] Added native OCR preprocessing progress event builder.
+- [x] Added `attachments.currentOcrMarkdownResults` through runtime/native
+      context, AgentClient, and Open Responses.
+- [x] Changed same-turn Steel context to consume OCR Markdown results instead
+      of raw `currentPaddleOcrResults`.
+- [x] Wired production `runSteelPaddleOcrPreflight()` so permission-checked PDF
+      file records run through page-counting, 50-page chunk planning, global
+      PDF chunk artifacts, PaddleOCR chunk runner, organizer runner, and final
+      merged Markdown context injection.
+- [x] Added direct deterministic S3/CloudFront storage-key helpers for OCR PDF
+      chunk artifacts, including HeadObject/PutObject checks and signed URL
+      regeneration by artifact key.
+- [x] Preserved the old whole-file PaddleOCR path for non-PDF images and PDFs
+      whose current request file record cannot be resolved, while PDF records
+      with a source storage key use final merged OCR Markdown as the preflight
+      completion contract.
+- [x] BH.pdf fixture smoke: verify `docs/reference/example/BH.pdf` page count,
+      50-page chunk planning, PDF-preserving chunk creation, and local
+      preprocessing orchestration.
+- [x] Remaining external verification: run a live large-PDF smoke with real S3
+      storage, real PaddleOCR MCP, and OpenAI OAuth organizer credentials.
+
+Verification run:
+
+- [x] `cd packages/data-schemas && rtk npx jest src/schema/steel.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "OCR PDF chunk artifact|Steel Mongo schemas"`
+- [x] `cd packages/data-schemas && rtk npm run build`
+- [x] `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts src/steel/ocr/artifacts.spec.ts src/steel/ocr/chunks.spec.ts src/steel/ocr/organizer.spec.ts src/steel/ocr/preprocess.spec.ts src/steel/native/events.spec.ts src/steel/native/context.spec.ts src/steel/runtime/context.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing|PaddleOCR chunk|organized chunk markdown|merged OCR markdown|OCR PDF chunk artifacts|OCR organizer|current OCR merged Markdown|organized OCR Markdown"`
+- [x] `cd packages/api && rtk npm run build`
+- [x] `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js server/controllers/agents/client.test.js server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing|PaddleOCR|Steel context|input_file references|OCR-capable request attachments"`
+- [x] `cd packages/api && rtk npx jest src/storage/s3/__tests__/crud.test.ts src/storage/cloudfront/__tests__/crud.test.ts --runInBand --watch=false --coverage=false --testNamePattern "direct storage-key|deterministic storage key|exact deterministic storage key"`
+- [x] `cd packages/api && rtk npx jest src/steel/ocr/preprocess.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing|synthetic 251-page"`
+- [x] `rtk node --check api/server/services/ToolService.js`
+- [x] `rtk node --check api/server/controllers/agents/client.js`
+- [x] `rtk node --check api/server/controllers/agents/responses.js`
+- [x] `rtk git diff --check`
+- [x] `docs/reference/example/BH.pdf` local PDF smoke: 106 pages, 3 chunks
+      (`1-50`, `51-100`, `101-106`), each split artifact remained a valid PDF
+      with matching page count.
+- [x] `docs/reference/example/BH.pdf` dev live smoke using `.env`: real Mongo
+      artifact registry, real S3 chunk PDFs, real PaddleOCR MCP, and default
+      OpenAI OAuth organizer completed; final merged Markdown saved with 51,048
+      chars.
+- [x] Dev readback confirmed final merged OCR Markdown exists, all 3 chunks are
+      raw/organized saved, and artifact registry reuse does not split or upload
+      the same chunk PDFs again.
+- [x] Focused context test: verify a 3-chunk merged OCR Markdown payload is
+      delivered to Steel agent context as one `currentOcrMarkdownResults` item,
+      not as per-chunk arrays or raw PaddleOCR context.
+- [x] Dev BH context smoke confirmed the 51,048-char runtime-merged Markdown is
+      passed to Steel agent context as exactly one OCR Markdown payload, with
+      zero raw PaddleOCR payloads and all three page ranges present.
+- [x] Focused Jest context check:
+      `cd packages/api && rtk npx jest src/steel/native/context.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "3-chunk merged OCR Markdown|same-turn organized OCR Markdown"`
+- [x] Dev BH context smoke read the saved final merged Markdown from Mongo and
+      verified Steel agent context receives one `currentOcrMarkdownResults`
+      entry, `currentPaddleOcrResults` stays empty, and context content equals
+      the saved merged Markdown.
+- [x] OCR preprocessing organizer/subagent failures and PaddleOCR provider
+      failures now emit UI-visible redacted error activity and throw redacted
+      request errors so the chat message shows the concrete failure instead of
+      silently continuing as partial preflight state.
+- [x] Local dev server started for manual testing: backend health OK on
+      `http://localhost:3080/health`, frontend/Vite proxy OK on
+      `http://localhost:3090/health` and `http://localhost:3090/api/config`.
+
+Follow-up hardening - 2026-07-03:
+
+- [x] Updated OCR preprocessing events to show per-step PaddleOCR chunk,
+      preflight-save, organizer/subagent, merged-read, and
+      processing-with-merged-markdown activity.
+- [x] Changed preprocessing orchestration so PaddleOCR chunks complete first;
+      organizer/subagent chunks then re-read persisted `paddleocr_preflight`
+      state from DB; final merge re-reads persisted `ocr_extract` chunk
+      Markdown from DB.
+- [x] Removed full merged Markdown persistence from OCR preprocessing memory
+      state and runtime capture paths.
+- [x] Hardened Steel runtime context and `read_markdown(scope: "ocr")` so they
+      merge all OCR chunk Markdown at read time, label each file as
+      `<file_key>`, and exclude raw PaddleOCR/preflight rows.
+- [x] Wrapped direct AI `paddleocr_vl` MCP execution so raw PaddleOCR output is
+      stored as preflight data, organized into chunk Markdown, and only
+      `<file_key>` merged OCR Markdown is returned to the agent context.
+- [x] Direct `paddleocr_vl` wrapper skips duplicate raw persistence when the
+      same file already has organized OCR Markdown and returns the existing
+      runtime merge instead.
+- [x] PDFs under the 50-page chunk size skip PDF splitting/chunk upload only;
+      they still run the same `1/1` PaddleOCR -> organizer/subagent Markdown
+      -> returned merged Markdown flow.
+- [x] PaddleOCR and organizer/subagent failures emit UI-visible OCR activity
+      errors and throw redacted request errors for chat display.
+- [x] Dev BH readback: found 3 `file:BH.pdf` chunk Markdown rows
+      (`1-50`, `51-100`, `101-106`) and verified runtime merge yields
+      51,048 chars without raw PaddleOCR markers while ignoring the legacy full
+      merged row.
+- [x] Frontend Steel activity now accepts `ocr_preprocessing` SSE events,
+      preserves distinct progress messages instead of deduping them away, and
+      renders the OCR step text/error details verbatim.
+- [x] Direct AI `paddleocr_vl` MCP calls now emit the same visible OCR progress
+      sequence for PaddleOCR raw capture, organizer Markdown, merged Markdown
+      read, and final Markdown handoff.
+
+Event visibility verification - 2026-07-03:
+
+- [x] Client SSE spec covers the expected OCR preprocessing sequence:
+      uploaded PDF/chunks, PaddleOCR running/ran/saved, organizer
+      running/ran/saved, read merged Markdown, and processing with merged
+      Markdown.
+- [x] Client activity spec confirms OCR preprocessing progress text and error
+      details render in chat activity.
+- [x] API event builder spec confirms chunk completion emits `Ran ...` progress
+      plus `... saved` memory events.
+- [x] Direct MCP ToolService spec confirms direct AI PaddleOCR calls return only
+      merged Markdown and emit the same visible OCR progress sequence.
+
+Activity collapse UX - 2026-07-03:
+
+- [x] Default Steel activity to the latest 3 events when a turn has more than 3
+      visible events.
+- [x] Add an accessible chevron toggle that expands to every event and collapses
+      back to the latest 3 events, matching the tool-call group interaction.
+- [x] Keep 1-3 event turns unchanged and avoid moving activity state into global
+      Recoil.
+- [x] Cover collapsed, expanded, and small-event cases with focused client
+      tests.
+
+---
+
+# Active: Stop during conversation preflight removes conversation - 2026-07-03
+
+Goal: if a conversation already has a real `conversationId`, stopping during
+preflight/generation must not auto-remove it from the conversation list.
+
+Plan:
+
+- [x] Trace stop/abort cleanup from UI action through submission state and
+      conversation-list cache mutation.
+- [x] Identify the distinction between true temporary conversations and
+      persisted conversations that have already received a real id.
+- [x] Add a focused regression test for "stop after real id is assigned keeps
+      the conversation list item".
+- [x] Fix the cleanup guard at the source, not by re-adding the item later.
+- [x] Run focused client tests, typecheck if touched, and `rtk git diff --check`.
+
+Review notes:
+
+- `useResumableSSE` generated a concrete stream/conversation id before
+  preflight finished, hydrated the optimistic user message, then terminal
+  404/error cleanup could still remove the sidebar row because no backend
+  `created` event had arrived yet.
+- `useEventHandlers.finalHandler` treated early aborts from a root message as a
+  disposable new-chat rollback even when the submission had already been
+  hydrated with a concrete conversation id.
+- The abort endpoint also skipped persistence for early aborts without a
+  response message. That meant a generated-id preflight stop could survive only
+  in frontend cache and disappear after a conversation refetch/reload.
+- The fix keeps concrete-id preflight stops under the generated conversation,
+  preserves and persists the user message/conversation row, and only restores
+  the prompt draft for existing non-root abort rollback.
+
+Verification run:
+
+- [x] `cd client && rtk npx jest src/hooks/SSE/__tests__/useEventHandlers.spec.ts --runInBand --coverage=false --silent`
+- [x] `cd client && rtk npx jest src/hooks/SSE/__tests__/useResumableSSE.spec.ts --runInBand --coverage=false --silent`
+- [x] `cd api && rtk npx jest server/routes/agents/__tests__/abort.spec.js --runInBand --coverage=false --silent`
+- [x] `cd client && rtk npm run typecheck`
+- [x] `rtk node --check api/server/routes/agents/index.js`
+- [x] `rtk git diff --check`
+- [x] Local server health remains OK: `http://localhost:3080/health`,
+      `http://localhost:3090/health`, and `http://localhost:3090/api/config`
+      all returned HTTP 200.
+
+---
+
+# Active: OCR PDF chunk artifact reuse event - 2026-07-03
+
+Goal: when OCR preprocessing finds existing PDF chunk artifact rows for the
+same source file key and S3 confirms the chunk PDFs still exist, reuse them
+without splitting/uploading again and show a fetched-chunks progress event.
+
+Plan:
+
+- [x] Trace current PDF chunk artifact reuse path and OCR preprocessing event
+      mapping.
+- [x] Add tests for DB+S3 verified reuse, stale DB rows with missing S3 objects,
+      and fetched/uploaded progress source.
+- [x] Verify existing artifact rows with S3 before reuse.
+- [x] Recreate/upload stale artifact rows whose S3 object is missing.
+- [x] Emit `Fetched pdf chunks (...)` only when every chunk came from verified
+      existing DB rows; keep `Uploaded pdf to S3 (...)` for new uploads.
+
+Review notes:
+
+- Existing artifact rows were reused without an S3 existence check. Now each
+  row is considered reusable only after `exists(storageKey)` returns true.
+- Stale rows whose S3 object is missing are regenerated and upserted instead of
+  returning a broken download URL.
+- The OCR preprocessing `pdf_chunks_ready` progress event now carries
+  `source: "fetched" | "uploaded"`, derived from artifact provenance.
+
+Verification run:
+
+- [x] `cd packages/api && rtk npx jest src/steel/ocr/artifacts.spec.ts src/steel/ocr/preprocess.spec.ts src/steel/native/events.spec.ts --runInBand --watch=false --coverage=false`
+- [x] `rtk node --check api/server/services/ToolService.js`
+
+---
+
+# Active: Preflight stop preserves user attachments - 2026-07-03
+
+Goal: stopping during OCR/conversation preflight must persist the user message
+with its uploaded file metadata so refresh still shows the PDF file chip.
+
+Plan:
+
+- [x] Trace the early request metadata path that seeds abort persistence before
+      `initializeClient()` finishes.
+- [x] Add a regression test proving early resume metadata includes the uploaded
+      `files` array.
+- [x] Add a regression test proving the abort endpoint saves user-message
+      `files` when no assistant response exists yet.
+- [x] Include filename-bearing file metadata in frontend submission payloads so
+      persisted user attachments can render the same visible file UI after
+      reload.
+- [x] Run focused backend/frontend verification and final `rtk git diff --check`.
+
+Review notes:
+
+- `getPreliminaryUserMessage()` currently seeds abort metadata with text and
+  quotes only. If the user stops before normal `sendMessage` completion attaches
+  files from `client.options.attachments`, the abort endpoint can persist a
+  text-only user message.
+- The message attachment UI renders from `message.files`; visible labels come
+  from `file.filename`, so preserving only `file_id` is not enough for the
+  expected `BH.pdf` chip after refresh.
+
+Verification run:
+
+- [x] Red test observed:
+      `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js --runInBand --coverage=false --testNamePattern "stores uploaded files"`
+      failed because early metadata omitted `userMessage.files`.
+- [x] Red test observed:
+      `cd client && rtk npx jest src/hooks/Chat/__tests__/useChatFunctions.regenerate.spec.tsx --runInBand --coverage=false --testNamePattern "includes filename-bearing file metadata"`
+      failed because submitted files omitted `filename` and `bytes`.
+- [x] `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js --runInBand --coverage=false --silent`
+- [x] `cd api && rtk npx jest server/routes/agents/__tests__/abort.spec.js --runInBand --coverage=false --silent`
+- [x] `cd client && rtk npx jest src/hooks/Chat/__tests__/useChatFunctions.regenerate.spec.tsx --runInBand --coverage=false --silent`
+- [x] `rtk node --check api/server/controllers/agents/request.js`
+- [x] `rtk node --check api/server/routes/agents/index.js`
+- [x] `cd client && rtk npm run typecheck`
+- [x] `rtk git diff --check`
+- [x] Local server health remains OK after nodemon reload:
+      `http://localhost:3080/health`, `http://localhost:3090/health`, and
+      `http://localhost:3090/api/config` returned HTTP 200.
+
+---
+
+# Active: Official OCR markdown contract - 2026-07-03
+
+Goal: separate raw PaddleOCR data, subagent/chunk OCR Markdown, and official
+PaddleOCR-derived OCR Markdown so the main agent and `read_markdown(scope:
+"ocr")` only receive official OCR Markdown.
+
+Plan:
+
+- [x] Trace the duplicated activity events and current OCR persistence kinds.
+- [x] Add regression tests for official OCR Markdown persistence and
+      `read_markdown(scope: "ocr")` excluding raw/subagent rows.
+- [x] Save official OCR Markdown from assistant final Markdown capture, not
+      from preprocessing, with distinct PaddleOCR-derived vs AI-derived sources.
+- [x] Make preprocessing/direct PaddleOCR wrappers check official OCR Markdown
+      first and skip rerun unless the tool call explicitly requests `new: true`.
+- [x] Distinguish official OCR Markdown source: PaddleOCR-derived rows can skip
+      future PaddleOCR, AI OCR-derived rows cannot.
+- [x] Preserve multiple multi-file official OCR Markdown rows under the
+      `default` bucket by grouping on covered file keys instead of replacing all
+      default OCR data.
+- [x] Delete the generic raw preflight save action after preprocessing and
+      rename official OCR Markdown activity to `OCR markdown saved`.
+- [x] Route image/whole-file PaddleOCR through the same single-chunk `1/1`
+      preprocessing flow instead of a legacy generic event branch.
+- [x] Run focused backend/frontend tests, type/build checks, and `rtk git diff
+      --check`.
+
+Review notes:
+
+- `PaddleOCR preflight saved` after `Processing pdf with OCR markdowns` is
+  generic preflight activity derived from raw `paddleocr_preflight` totals, not
+  a useful user-visible step after preprocessing already completed.
+- `Steel quote state saved` for OCR output is a generic `ocr_extract` memory
+  saved label. Official OCR Markdown needs a distinct label from Steel quote or
+  workbook state.
+- Subagent chunk Markdown remains durable process/resume state; it must not be
+  returned by `read_markdown(scope: "ocr")`.
+
+Review:
+
+- Preprocessing now produces only raw chunk state plus subagent chunk Markdown
+  state, then returns one merged OCR Markdown attachment to the main agent.
+  It no longer writes official OCR Markdown directly.
+- Assistant final Markdown capture saves OCR tables as official OCR Markdown.
+  `ocrSource: "paddleocr_official_markdown"` can satisfy future PaddleOCR
+  shortcuts; `ocrSource: "ai_official_markdown"` remains readable OCR Markdown
+  but does not skip PaddleOCR.
+- Multi-file official OCR rows use `ocrFileKey: "default"` plus `ocrFileKeys`
+  and `ocrGroupKey`, so a later multi-file OCR result for different files does
+  not replace an earlier completed group.
+- `read_markdown(scope: "ocr")` filters out raw PaddleOCR rows and subagent
+  chunk Markdown rows, and labels official OCR Markdown by file key/default plus
+  file key lists.
+- Verification passed:
+  - `rtk node --check api/server/services/ToolService.js`
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "official|OCR read|PaddleOCR preflight raw|assistant OCR|multi-file"`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|OCR preprocessing|direct PaddleOCR|single"`
+  - `cd packages/api && rtk npx jest src/steel/native/events.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing|markdown_saved|PaddleOCR preflight"`
+  - `cd packages/api && rtk npx jest src/steel/tools/execute.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "official OCR Markdown|read_markdown|OCR"`
+  - `cd packages/api && rtk npx jest src/steel/ocr/preprocess.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --coverage=false`
+  - `cd client && rtk npx tsc --noEmit --pretty false --skipLibCheck`
+  - `rtk git diff --check`
+  - Local `http://localhost:3080/health` and `http://localhost:3090/`
+    returned HTTP 200.
+
+---
+
+# Active: Message-level batch OCR phase ordering - 2026-07-03
+
+Goal: when one user message has multiple OCR-capable files/images, process all
+files as one batch: prepare all chunk identities first, run PaddleOCR for all
+chunks, then run organizer/subagent Markdown for all chunks, then pass merged
+per-file OCR Markdown attachments to the main agent together.
+
+Plan:
+
+- [x] Add regression coverage proving two files/chunks do not run organizer
+      work until every PaddleOCR chunk in the message batch has completed.
+- [x] Add a batch preprocessing API that returns one merged Markdown attachment
+      per file key while preserving existing per-file resume/official shortcut
+      behavior.
+- [x] Wire native preflight/direct ToolService preparation to call the batch API
+      once per message instead of running one full pipeline per file.
+- [x] Verify official OCR Markdown save stays split by file key when the main
+      agent returns multiple OCR tables, and default/multi-file rows remain
+      grouped by covered file key set.
+- [x] Run focused backend/frontend checks and keep local `3080`/`3090` healthy.
+
+Notes:
+
+- File chunk identity must include `ocrFileKey`, `sourcePdfKey`, and chunk
+  index/count before PaddleOCR starts.
+- The raw PaddleOCR and subagent chunk Markdown DB rows remain resume state.
+  Main-agent context should still receive only merged per-file Markdown
+  attachments.
+
+Review:
+
+- [x] Added `runOcrPreprocessingBatchPipeline()` and kept
+      `runOcrPreprocessingPipeline()` as a single-file wrapper around it.
+- [x] Batch pipeline now checks official PaddleOCR OCR Markdown per file,
+      reuses completed chunk Markdown per file, prepares missing artifacts for
+      all files, runs all PaddleOCR chunks, re-reads DB preflight state, runs
+      all organizer chunks, then re-reads DB Markdown state and returns one
+      merged Markdown result per file.
+- [x] Native automatic preflight now builds all current message file/chunk
+      inputs first and calls the batch pipeline once, so multiple PDFs/images
+      are handed to the main agent together as merged per-file OCR Markdown.
+- [x] Added regression coverage that split official OCR Markdown tables from
+      the main agent save under their matched file keys, while unresolved
+      integrated multi-file OCR remains grouped under `default` by file-key set.
+- [x] Added multi-file resume coverage: file A can resume from saved
+      PaddleOCR raw data while file B still runs PaddleOCR, then both files
+      continue organizer/subagent Markdown from their own file-key state.
+- [x] Added Mongo state isolation coverage proving OCR preprocessing progress
+      reads only the requested `ocrFileKey` and `sourcePdfKey`.
+- [x] Updated the organized chunk Markdown persistence test to expect
+      `ocr_preprocessing_chunk_markdown` saved counts, keeping subagent chunk
+      Markdown separate from official OCR Markdown.
+
+Verification:
+
+- [x] `cd packages/api && rtk npx jest src/steel/ocr/preprocess.spec.ts --runInBand --watch=false --coverage=false`
+- [x] `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "requested file key and source PDF|reads OCR preprocessing chunk state|persists PaddleOCR chunk results|captures organized chunk markdown"`
+- [x] `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "routes every current OCR-capable file|routes current PDFs|uses the original PDF artifact|OCR preprocessing|PaddleOCR"`
+- [x] `rtk node --check api/server/services/ToolService.js`
+- [x] `rtk git diff --check`
+- [x] `http://localhost:3080/health` returned HTTP 200 and
+      `http://localhost:3090/` returned HTTP 200.
 
 ---
 
@@ -123,6 +540,63 @@ Findings:
 - Local reproduction with `createPruneMessages()` and
   `getInstructionTokens() => 465846` produced `contextLength: 0`,
   `remainingContextTokens: 0`, and `effectiveInstructionTokens: 465846`.
+
+---
+
+# Active: OCR preprocessing activity and context hardening - 2026-07-03
+
+Goal: make the PDF OCR preprocessing flow visibly progress through every
+PaddleOCR chunk, organizer chunk, and final runtime merged-Markdown handoff,
+while ensuring the main Steel agent receives only one merged organizer Markdown
+payload per PDF file key.
+
+Checklist:
+
+- [x] Diagnose whether the current AH/PDF overflow came from raw PaddleOCR
+      output, duplicated OCR Markdown, or a single oversized merged Markdown.
+- [x] Add regression tests for per-chunk PaddleOCR progress, per-chunk
+      organizer Markdown saves, and final merged-Markdown handoff events.
+- [x] Add regression tests that PDF preprocessing does not put raw PaddleOCR
+      output or per-chunk Markdown arrays into main-agent context.
+- [x] Remove full merged Markdown DB persistence; DB should keep only raw
+      preflight chunks and organizer chunk Markdown rows, with runtime merging
+      chunk Markdown into one main-agent attachment.
+- [x] Preserve resumability with two DB-backed preprocessing nodes:
+      `paddleocr_preflight` raw chunk rows for PaddleOCR progress and
+      `ocr_extract` chunk Markdown rows for subagent progress.
+- [x] Make `read_markdown(scope: "ocr")` return all OCR Markdown automatically,
+      with each file's merged all-chunk Markdown labeled by `<file_key>` and
+      without requiring a file/chunk/part argument.
+- [x] Keep automatic PaddleOCR tool-call activity compact so raw provider
+      output is persisted as `paddleocr_preflight` evidence but not surfaced as
+      chat/tool-event output.
+- [x] Run focused backend/frontend tests and final hygiene checks.
+
+Review notes:
+
+- AH.pdf local Mongo evidence showed 4 active `paddleocr_preflight` raw rows,
+  4 active `ocr_preprocessing_subagent` chunk Markdown rows, and 1 old active
+  `ocr_preprocessing_merge` full Markdown row. The old full merged row made DB
+  store duplicate Markdown and was removed from the write path.
+- Main-agent context now normalizes OCR preprocessing evidence before
+  serialization: raw PaddleOCR chunk rows and legacy merged rows stay out of
+  `priorActiveFileEvidence`; organized chunk Markdown rows are merged at
+  runtime into one `<file_key>` labeled Markdown payload per file.
+- Same-turn PDF preprocessing still returns exactly one merged Markdown payload
+  per PDF file key in `currentOcrMarkdownResults`, labeled with `<file_key>`.
+- `read_markdown(scope: "ocr")` uses the same runtime normalization and returns
+  all current OCR Markdown, with one `<file_key>` labeled merged Markdown block
+  per file. No file key or chunk/part argument is required for OCR reads.
+- Automatic PDF PaddleOCR chunk tool completion events now emit compact
+  metadata (`chunkIndex`, `pageStart`, `rawTextLength`, hash, storage target)
+  instead of raw OCR provider payloads.
+
+Verification run:
+
+- [x] `cd packages/api && rtk npx jest src/steel/ocr/preprocess.spec.ts src/steel/native/events.spec.ts src/steel/runtime/context.spec.ts src/steel/tools/execute.spec.ts src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing|OCR markdown|read_markdown|PaddleOCR preflight raw|active OCR extracts|preprocessing resume|organized chunk|merged OCR|current OCR merged Markdown|current PaddleOCR|scope-only OCR"`
+- [x] `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "compact PaddleOCR chunk tool output|routes current PDFs|OCR preprocessing organizer failures|PaddleOCR preflight failures"`
+- [x] `cd packages/api && rtk npm run build`
+- [x] `rtk node --check api/server/services/ToolService.js`
 
 Recommendation:
 
@@ -6336,3 +6810,42 @@ Review:
   `provider: local`, and `createdAt: 2026-07-02T01:58:08.241Z`.
 - Verified the supplied password by bcrypt comparison against the stored hash;
   output was only `passwordMatches: true`, with no password or hash printed.
+
+## OCR Preprocessing Simplify Pass - 2026-07-03
+
+- [x] Move the 50-page OCR preprocessing chunk size behind
+      `STEEL_OCR_PREPROCESSING_CHUNK_SIZE_PAGES`, with fallback `50`.
+- [x] Centralize OCR preprocessing config and PaddleOCR result text extraction
+      in `packages/api/src/steel/ocr/`.
+- [x] Remove the ToolService test compatibility adapter for the old single-file
+      preprocessing pipeline mock; tests now use the batch input/output shape.
+- [x] Reuse current chunk metadata for direct PaddleOCR organizer state instead
+      of hardcoding chunk size or page identity.
+- [x] Reuse merged organized chunk Markdown helpers across preprocessing and
+      direct PaddleOCR paths.
+- [x] Keep OCR official Markdown lookup source/rule/pipeline-aware so a stale
+      official row cannot skip the current PaddleOCR preprocessing source.
+- [x] Preserve OCR PDF chunk artifact storage source (`s3` or `cloudfront`)
+      when repairing/recreating artifact rows.
+- [x] Avoid downloading/counting PDF pages when official OCR Markdown or a
+      complete organized chunk state already exists.
+- [x] Reuse a loaded PDF document while creating multiple page-range chunks.
+- [x] Skip aggregate memory-total reads for internal per-chunk preprocessing
+      saves while preserving totals for direct writer callers by default.
+- [x] Add working-order memory indexes for OCR preprocessing state and official
+      OCR Markdown lookups.
+- [x] Extract duplicate JS `streamToBuffer` logic into
+      `api/server/utils/stream.js`.
+
+Verification:
+
+- [x] `cd packages/data-schemas && rtk npm run build`
+- [x] `cd packages/api && rtk npm run build`
+- [x] `cd packages/api && rtk npx jest src/steel/ocr/chunks.spec.ts src/steel/ocr/artifacts.spec.ts src/steel/ocr/preprocess.spec.ts --runInBand --watch=false --coverage=false`
+- [x] `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "persists PaddleOCR chunk results|captures organized chunk markdown|skips aggregate totals|official OCR Markdown|requested file key and source PDF|reads OCR preprocessing chunk state"`
+- [x] `cd packages/data-schemas && rtk npx jest src/schema/steel.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "Steel Mongo schemas|OCR PDF chunk artifact|working-order memory"`
+- [x] `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js server/services/MCP.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|OCR preprocessing|same-turn runtime attachments|current PDFs|PDFs under 50 pages|complete organized OCR preprocessing state|file"`
+- [x] `rtk node --check api/server/services/ToolService.js`
+- [x] `rtk node --check api/server/services/MCP.js`
+- [x] `rtk node --check api/server/utils/stream.js`
+- [x] `rtk git diff --check`

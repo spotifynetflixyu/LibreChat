@@ -174,21 +174,25 @@ async function buildFixtureContext({
   fileReference,
   currentUserContent = '請依附件報價',
   currentPaddleOcrResults,
+  currentOcrMarkdownResults,
   priorActiveFileEvidence,
 }: {
   fileReference?: SteelNativeFileReference;
   currentUserContent?: string;
   currentPaddleOcrResults?: readonly SteelRuntimeJsonObject[];
+  currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 } = {}) {
   const dependencies = createRuntimeDependencies();
   const attachments =
     fileReference !== undefined ||
     currentPaddleOcrResults !== undefined ||
+    currentOcrMarkdownResults !== undefined ||
     priorActiveFileEvidence !== undefined
       ? {
           ...(fileReference ? { currentTurnFiles: [fileReference] } : {}),
           ...(currentPaddleOcrResults ? { currentPaddleOcrResults } : {}),
+          ...(currentOcrMarkdownResults ? { currentOcrMarkdownResults } : {}),
           ...(priorActiveFileEvidence ? { priorActiveFileEvidence } : {}),
         }
       : undefined;
@@ -398,6 +402,71 @@ describe('Steel native context adapter', () => {
     expect(serialized.toolPolicy.currentPaddleOcrUsagePolicy).toContain(
       'currentPaddleOcrResults',
     );
+  });
+
+  it('passes same-turn organized OCR Markdown through native runtime context', async () => {
+    const currentOcrMarkdownResults = [
+      {
+        ocrFileKey: 'file:file_1',
+        filename: 'drawing.pdf',
+        ocrSource: 'ocr_preprocessing_merge',
+        content: '| 品名 | 數量 |\n|---|---:|\n| 鐵板 | 2 |',
+      },
+    ];
+    const { context } = await buildFixtureContext({ currentOcrMarkdownResults });
+    const serialized = JSON.parse(serializeSteelRuntimeContext(context.runtimeContext));
+
+    expect(context.runtimeContext.attachments.currentOcrMarkdownResults).toEqual(
+      currentOcrMarkdownResults,
+    );
+    expect(context.runtimeContext.toolPolicy.currentOcrMarkdownUsagePolicy).toContain(
+      'currentOcrMarkdownResults',
+    );
+    expect(serialized.attachments.currentOcrMarkdownResults).toEqual(currentOcrMarkdownResults);
+  });
+
+  it('passes a 3-chunk merged OCR Markdown result to Steel agent context as one file payload', async () => {
+    const mergedMarkdown = [
+      '| chunk | pages | part |',
+      '| --- | --- | --- |',
+      '| 1 | 1-50 | BH_CHUNK_1_SENTINEL |',
+      '| 2 | 51-100 | BH_CHUNK_2_SENTINEL |',
+      '| 3 | 101-106 | BH_CHUNK_3_SENTINEL |',
+    ].join('\n');
+    const currentOcrMarkdownResults = [
+      {
+        ocrFileKey: 'file:BH.pdf',
+        fileId: 'BH.pdf',
+        filename: 'BH.pdf',
+        mediaType: 'application/pdf',
+        ocrSource: 'ocr_preprocessing_merge',
+        chunkCount: 3,
+        chunkSizePages: 50,
+        content: mergedMarkdown,
+      },
+    ];
+    const { context } = await buildFixtureContext({
+      currentOcrMarkdownResults,
+      currentPaddleOcrResults: [],
+    });
+    const serialized = JSON.parse(serializeSteelRuntimeContext(context.runtimeContext));
+    const serializedOcrResults = serialized.attachments.currentOcrMarkdownResults;
+
+    expect(context.runtimeContext.attachments.currentPaddleOcrResults).toEqual([]);
+    expect(context.runtimeContext.attachments.currentOcrMarkdownResults).toHaveLength(1);
+    expect(context.runtimeContext.attachments.currentOcrMarkdownResults[0]).toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'file:BH.pdf',
+        ocrSource: 'ocr_preprocessing_merge',
+        chunkCount: 3,
+        content: mergedMarkdown,
+      }),
+    );
+    expect(serializedOcrResults).toHaveLength(1);
+    expect(serializedOcrResults[0].content).toContain('BH_CHUNK_1_SENTINEL');
+    expect(serializedOcrResults[0].content).toContain('BH_CHUNK_2_SENTINEL');
+    expect(serializedOcrResults[0].content).toContain('BH_CHUNK_3_SENTINEL');
+    expect(serialized.attachments.currentPaddleOcrResults).toEqual([]);
   });
 
   it('builds default native context with injected dependencies for JS callers', async () => {

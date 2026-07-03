@@ -294,6 +294,7 @@ async function prepareContext(
   priorActiveFileEvidence: Record<string, string>[] = [],
   memorySnapshot: SteelOutputSheetMemorySnapshot = createRuntimeMemorySnapshot(),
   currentPaddleOcrResults: Record<string, unknown>[] = [],
+  currentOcrMarkdownResults: Record<string, unknown>[] = [],
 ) {
   const dependencies = createRuntimeDependencies(memorySnapshot);
   const input: PrepareSteelRuntimeContextInput = {
@@ -313,6 +314,7 @@ async function prepareContext(
       currentTurnFiles: files,
       priorActiveFileEvidence,
       currentPaddleOcrResults,
+      currentOcrMarkdownResults,
     },
     dependencies,
   };
@@ -433,6 +435,72 @@ describe('Steel runtime context', () => {
     expect(dependencies.listOtherGlobalRules).toHaveBeenCalledWith();
   });
 
+  it('keeps OCR preprocessing raw evidence out and exposes one runtime-merged Markdown per file', async () => {
+    const memorySnapshot = createRuntimeMemorySnapshot();
+    memorySnapshot.derivedIndex.ocrExtracts = [
+      {
+        kind: 'paddleocr_mcp_chunk_result',
+        ocrFileKey: 'file:pdf-1',
+        ocrSource: 'paddleocr_mcp',
+        content: 'raw OCR chunk text must stay out',
+        result: { lc_kwargs: { content: 'raw OCR provider payload must stay out' } },
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/user/pdf-1.pdf',
+          chunkIndex: 1,
+          chunkCount: 2,
+        },
+      },
+      {
+        kind: 'ocr_preprocessing_chunk_markdown',
+        ocrFileKey: 'file:pdf-1',
+        ocrSource: 'ocr_preprocessing_subagent',
+        content: '| 品名 | 數量 |\n|---|---|\n| A | 1 |',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/user/pdf-1.pdf',
+          chunkIndex: 1,
+          chunkCount: 2,
+        },
+      },
+      {
+        kind: 'ocr_preprocessing_chunk_markdown',
+        ocrFileKey: 'file:pdf-1',
+        ocrSource: 'ocr_preprocessing_subagent',
+        content: '| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/user/pdf-1.pdf',
+          chunkIndex: 2,
+          chunkCount: 2,
+        },
+      },
+    ];
+
+    const { context } = await prepareContext([], undefined, [], [], memorySnapshot);
+    const serializedText = serializeSteelRuntimeContext(context);
+    const serialized = JSON.parse(serializedText);
+
+    expect(context.attachments.priorActiveFileEvidence).toEqual([
+      expect.objectContaining({
+        kind: 'ocr_preprocessing_runtime_merge',
+        ocrFileKey: 'file:pdf-1',
+        ocrSource: 'ocr_preprocessing_merge',
+        content: expect.stringContaining(['<file:pdf-1>', '| 品名 | 數量 | 材質 |'].join('\n')),
+      }),
+    ]);
+    expect(serialized.attachments.priorActiveFileEvidence).toEqual([
+      expect.objectContaining({
+        kind: 'ocr_preprocessing_runtime_merge',
+        ocrFileKey: 'file:pdf-1',
+        ocrSource: 'ocr_preprocessing_merge',
+        content: expect.stringContaining(['<file:pdf-1>', '| 品名 | 數量 | 材質 |'].join('\n')),
+      }),
+    ]);
+    expect(serializedText).toContain('<file:pdf-1>');
+    expect(serializedText).toContain('| A | 1 |  |');
+    expect(serializedText).toContain('| B |  | SS400 |');
+    expect(serializedText).not.toContain('raw OCR provider payload must stay out');
+    expect(serializedText).not.toContain('raw OCR chunk text must stay out');
+  });
+
   it('includes current PaddleOCR raw preflight results without relying on follow-up memory context', async () => {
     const currentPaddleOcrResults = [
       {
@@ -457,6 +525,36 @@ describe('Steel runtime context', () => {
       expect.arrayContaining([expect.objectContaining({ ocrSource: 'paddleocr_mcp' })]),
     );
     expect(serialized.attachments.currentPaddleOcrResults).toEqual(currentPaddleOcrResults);
+  });
+
+  it('includes current OCR merged Markdown results for same-turn Steel context', async () => {
+    const currentOcrMarkdownResults = [
+      {
+        ocrFileKey: 'file:file-a',
+        filename: 'drawing.pdf',
+        ocrSource: 'ocr_preprocessing_merge',
+        content: '| 品名 | 數量 |\n|---|---:|\n| 鐵板 | 2 |',
+      },
+    ];
+    const { context } = await prepareContext(
+      [],
+      undefined,
+      [],
+      [],
+      createRuntimeMemorySnapshot(),
+      [],
+      currentOcrMarkdownResults,
+    );
+    const serialized = JSON.parse(serializeSteelRuntimeContext(context));
+
+    expect(context.attachments.currentOcrMarkdownResults).toEqual(currentOcrMarkdownResults);
+    expect(serialized.attachments.currentOcrMarkdownResults).toEqual(currentOcrMarkdownResults);
+    expect(context.toolPolicy.currentOcrMarkdownUsagePolicy).toContain(
+      'currentOcrMarkdownResults',
+    );
+    expect(serialized.toolPolicy.currentOcrMarkdownUsagePolicy).toContain(
+      'currentOcrMarkdownResults',
+    );
   });
 
   it('serializes workbook output rules as backend sheet carry-forward and emitted-sheet replacement policy', async () => {

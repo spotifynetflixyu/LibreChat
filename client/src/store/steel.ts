@@ -4,6 +4,7 @@ export const steelNativeStreamEventName = 'steel_event' as const;
 
 export type SteelNativeActivitySource =
   | 'assistant_markdown'
+  | 'ocr_preprocessing'
   | 'paddleocr_preflight'
   | 'responses_output'
   | 'tool_result';
@@ -17,6 +18,8 @@ export type SteelNativeActivityEvent =
       source: SteelNativeActivitySource;
       message: string;
       parseStatus: 'saved' | 'partial' | 'skipped';
+      errorMessage?: string;
+      failedKeys?: readonly string[];
       savedCounts?: SteelNativeSavedCounts;
       savedTableCounts?: SteelNativeTableCounts;
       totalSavedCounts?: SteelNativeSavedCounts;

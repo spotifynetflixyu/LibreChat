@@ -190,6 +190,33 @@ export interface ISteelWorkingOrderMemory extends Document {
   updatedAt?: Date;
 }
 
+export interface SteelOcrPdfChunkArtifactFile {
+  source: 's3' | 'cloudfront';
+  storageKey: string;
+  storageRegion?: string;
+  filepath: string;
+  filename: string;
+  bytes: number;
+  contentType: 'application/pdf';
+}
+
+export interface ISteelOcrPdfChunkArtifact extends Document {
+  sourcePdfKey: string;
+  sourceStorageKey?: string;
+  sourceFileId?: string;
+  sourceFilename?: string;
+  sourceBytes?: number;
+  pipelineVersion: number;
+  chunkIndex: number;
+  chunkCount: number;
+  pageStart: number;
+  pageEnd: number;
+  chunkSizePages: number;
+  artifact: SteelOcrPdfChunkArtifactFile;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 export interface ISteelAIRun extends Document {
   conversationMetaId?: string;
   requestedProvider: SteelProviderId;

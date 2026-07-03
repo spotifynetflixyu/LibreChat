@@ -216,7 +216,7 @@ const preferDefinedString = (value?: string | null, fallback?: string): string |
   value != null && value !== '' ? value : fallback;
 
 const toResumeTimestamp = (value?: number): string | undefined => {
-  if (!Number.isFinite(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return undefined;
   }
   return new Date(value).toISOString();
@@ -532,6 +532,15 @@ export default function useResumableSSE(
         const submission = { ...currentSubmission, userMessage } as EventSubmission;
         for (const event of preCreatedStepEvents.splice(0)) {
           stepHandler(event, submission);
+        }
+      };
+      const removeUnhydratedOptimisticConversation = () => {
+        if (
+          !createdStreamIdsRef.current.has(currentStreamId) &&
+          optimisticStreamIdsRef.current.has(currentStreamId) &&
+          !hasConcreteConversationId(currentSubmission.conversation?.conversationId)
+        ) {
+          removeConvoFromAllQueries(queryClient, currentStreamId);
         }
       };
 
@@ -905,12 +914,7 @@ export default function useResumableSSE(
             queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, convoId] });
             queryClient.removeQueries({ queryKey: streamStatusQueryKey(convoId) });
           }
-          if (
-            !createdStreamIdsRef.current.has(currentStreamId) &&
-            optimisticStreamIdsRef.current.has(currentStreamId)
-          ) {
-            removeConvoFromAllQueries(queryClient, currentStreamId);
-          }
+          removeUnhydratedOptimisticConversation();
           setIsSubmitting(false);
           setShowStopButton(false);
           setStreamId(null);
@@ -951,12 +955,7 @@ export default function useResumableSSE(
           sse.close();
           removeActiveJob(currentStreamId);
           resetLive({ ...currentSubmission, userMessage });
-          if (
-            !createdStreamIdsRef.current.has(currentStreamId) &&
-            optimisticStreamIdsRef.current.has(currentStreamId)
-          ) {
-            removeConvoFromAllQueries(queryClient, currentStreamId);
-          }
+          removeUnhydratedOptimisticConversation();
 
           try {
             const errorData = JSON.parse(e.data);
@@ -1039,12 +1038,7 @@ export default function useResumableSSE(
           resetLive({ ...currentSubmission, userMessage });
           // Optimistically remove from active jobs on max retries
           removeActiveJob(currentStreamId);
-          if (
-            !createdStreamIdsRef.current.has(currentStreamId) &&
-            optimisticStreamIdsRef.current.has(currentStreamId)
-          ) {
-            removeConvoFromAllQueries(queryClient, currentStreamId);
-          }
+          removeUnhydratedOptimisticConversation();
           setIsSubmitting(false);
           setShowStopButton(false);
           setStreamId(null);

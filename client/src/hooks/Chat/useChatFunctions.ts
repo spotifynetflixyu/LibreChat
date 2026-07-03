@@ -525,8 +525,12 @@ export default function useChatFunctions({
     } else if (setFiles && files && files.size > 0) {
       currentMsg.files = Array.from(files.values()).map((file) => ({
         file_id: file.file_id,
+        temp_file_id: file.temp_file_id,
+        filename: file.filename,
         filepath: file.filepath,
         type: file.type ?? '', // Ensure type is not undefined
+        bytes: file.size,
+        source: file.source,
         height: file.height,
         width: file.width,
       }));

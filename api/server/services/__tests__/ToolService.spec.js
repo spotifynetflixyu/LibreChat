@@ -32,6 +32,25 @@ const mockCaptureSteelNativeToolResult = jest.fn().mockResolvedValue({
 });
 const mockFindMissingPaddleOcrFileKeys = jest.fn();
 const mockCapturePaddleOcrResult = jest.fn();
+const mockReadOfficialOcrMarkdown = jest.fn();
+const mockReadOcrPreprocessingState = jest.fn();
+const mockCapturePaddleOcrChunkResult = jest.fn();
+const mockCaptureOcrPreprocessingChunkMarkdown = jest.fn();
+const mockRunOcrPreprocessingBatchPipeline = jest.fn();
+const mockBuildPdfPageChunks = jest.fn();
+const mockGetPdfPageCount = jest.fn();
+const mockCreatePdfPageRangeChunk = jest.fn();
+const mockCreatePdfPageRangeChunker = jest.fn();
+const mockEnsurePdfChunkArtifacts = jest.fn();
+const mockCreateMongooseOcrPdfChunkArtifactRepository = jest.fn();
+const mockGetS3DownloadURLForKey = jest.fn();
+const mockS3ObjectExistsByKey = jest.fn();
+const mockSaveBufferToS3StorageKey = jest.fn();
+const mockGetCloudFrontDownloadURLForKey = jest.fn();
+const mockCloudFrontObjectExistsByKey = jest.fn();
+const mockSaveBufferToCloudFrontStorageKey = jest.fn();
+const mockCreateSteelContextDependencies = jest.fn();
+const mockCreateOpenAIOAuthModel = jest.fn();
 const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
   {
     event: 'steel_event',
@@ -55,7 +74,81 @@ jest.mock('@librechat/api', () => ({
     captureToolResult: jest.fn(),
     findMissingPaddleOcrFileKeys: (...args) => mockFindMissingPaddleOcrFileKeys(...args),
     capturePaddleOcrResult: (...args) => mockCapturePaddleOcrResult(...args),
+    readOfficialOcrMarkdown: (...args) => mockReadOfficialOcrMarkdown(...args),
+    readOcrPreprocessingState: (...args) => mockReadOcrPreprocessingState(...args),
+    capturePaddleOcrChunkResult: (...args) => mockCapturePaddleOcrChunkResult(...args),
+    captureOcrPreprocessingChunkMarkdown: (...args) =>
+      mockCaptureOcrPreprocessingChunkMarkdown(...args),
   })),
+  runOcrPreprocessingBatchPipeline: (...args) => mockRunOcrPreprocessingBatchPipeline(...args),
+  mergeOcrPreprocessingStateMarkdown: ({ state }) => {
+    const markdowns = state?.chunks
+      ?.filter((chunk) => chunk?.organizedSaved && chunk?.organizedMarkdown !== undefined)
+      .sort((first, second) => first.chunkIndex - second.chunkIndex)
+      .map((chunk) => chunk.organizedMarkdown);
+    if (!markdowns?.length) {
+      return undefined;
+    }
+
+    const tables = markdowns
+      .map((markdown) => {
+        const lines = markdown
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith('|') && line.endsWith('|'));
+        if (lines.length < 3) {
+          return undefined;
+        }
+        const headers = lines[0].split('|').slice(1, -1).map((cell) => cell.trim());
+        const rows = lines.slice(2).map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
+        return { headers, rows };
+      })
+      .filter(Boolean);
+    if (!tables.length) {
+      return markdowns.join('\n\n');
+    }
+
+    const headers = [...new Set(tables.flatMap((table) => table.headers))];
+    const outputRows = tables.flatMap((table) =>
+      table.rows.map((row) => {
+        const values = new Map(table.headers.map((header, index) => [header, row[index] ?? '']));
+        return headers.map((header) => values.get(header) ?? '');
+      }),
+    );
+    return [
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      ...outputRows.map((row) => `| ${row.join(' | ')} |`),
+    ].join('\n');
+  },
+  getPaddleOcrResultContent: (result) => {
+    if (typeof result === 'string') {
+      return result;
+    }
+    if (result?.content) {
+      return result.content;
+    }
+    if (result?.text) {
+      return result.text;
+    }
+    return JSON.stringify(result ?? '');
+  },
+  resolveOcrPreprocessingChunkSizePages: jest.fn(() => 50),
+  buildPdfPageChunks: (...args) => mockBuildPdfPageChunks(...args),
+  getPdfPageCount: (...args) => mockGetPdfPageCount(...args),
+  createPdfPageRangeChunk: (...args) => mockCreatePdfPageRangeChunk(...args),
+  createPdfPageRangeChunker: (...args) => mockCreatePdfPageRangeChunker(...args),
+  ensurePdfChunkArtifacts: (...args) => mockEnsurePdfChunkArtifacts(...args),
+  createMongooseOcrPdfChunkArtifactRepository: (...args) =>
+    mockCreateMongooseOcrPdfChunkArtifactRepository(...args),
+  getS3DownloadURLForKey: (...args) => mockGetS3DownloadURLForKey(...args),
+  s3ObjectExistsByKey: (...args) => mockS3ObjectExistsByKey(...args),
+  saveBufferToS3StorageKey: (...args) => mockSaveBufferToS3StorageKey(...args),
+  getCloudFrontDownloadURLForKey: (...args) => mockGetCloudFrontDownloadURLForKey(...args),
+  cloudFrontObjectExistsByKey: (...args) => mockCloudFrontObjectExistsByKey(...args),
+  saveBufferToCloudFrontStorageKey: (...args) => mockSaveBufferToCloudFrontStorageKey(...args),
+  createSteelContextDependencies: (...args) => mockCreateSteelContextDependencies(...args),
+  createOpenAIOAuthModel: (...args) => mockCreateOpenAIOAuthModel(...args),
   createSteelNativeTool: ({ nativeToolName, steelToolName, execute }) => ({
     name: nativeToolName,
     invoke: (args, config) =>
@@ -114,6 +207,10 @@ jest.mock('~/server/services/Files/process', () => ({
   processFileURL: jest.fn(),
   uploadImageBuffer: jest.fn(),
 }));
+const mockGetStrategyFunctions = jest.fn();
+jest.mock('~/server/services/Files/strategies', () => ({
+  getStrategyFunctions: (...args) => mockGetStrategyFunctions(...args),
+}));
 jest.mock('~/app/clients/tools/util/fileSearch', () => ({
   primeFiles: jest.fn().mockResolvedValue({}),
 }));
@@ -130,9 +227,10 @@ jest.mock('../ActionService', () => ({
 jest.mock('~/server/services/Threads', () => ({
   recordUsage: jest.fn(),
 }));
+const mockGetFiles = jest.fn();
 jest.mock('~/models', () => ({
   findPluginAuthsByKeys: jest.fn(),
-  getFiles: jest.fn(),
+  getFiles: (...args) => mockGetFiles(...args),
 }));
 jest.mock('~/config', () => ({
   getFlowStateManager: jest.fn(() => mockFlowManager),
@@ -199,6 +297,17 @@ function getNonSteelToolDefinitions(definitions) {
   return definitions.filter((definition) => !isSteelNativeToolDefinition(definition));
 }
 
+function createMockOcrBatchResult(input, markdown = '| 項次 | 品名規格 |\n| --- | --- |\n| 1 | OCR |') {
+  return {
+    files: (input.files ?? []).map((entry) => ({
+      file: entry.file,
+      status: 'completed',
+      markdown,
+      chunkCount: entry.chunks?.[0]?.chunkCount ?? entry.chunks?.length ?? 0,
+    })),
+  };
+}
+
 function expectSteelNativeToolDefinitions(definitions) {
   expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual([
     'read_markdown',
@@ -230,6 +339,91 @@ describe('ToolService - Action Capability Gating', () => {
       missingKeys: [],
     });
     mockCapturePaddleOcrResult.mockResolvedValue({ savedCounts: { paddleocr_preflight: 1 } });
+    mockReadOfficialOcrMarkdown.mockResolvedValue(undefined);
+    mockReadOcrPreprocessingState.mockResolvedValue({
+      ocrFileKey: 'file:file-ocr',
+      sourcePdfKey: 'uploads/user/file-ocr.pdf',
+      pipelineVersion: 1,
+      ocrRuleVersion: 'ocr-rules:test',
+      chunkSizePages: 50,
+      chunkCount: 0,
+      chunks: [],
+    });
+    mockCapturePaddleOcrChunkResult.mockResolvedValue({
+      savedCounts: { paddleocr_preflight: 1 },
+    });
+    mockCaptureOcrPreprocessingChunkMarkdown.mockResolvedValue({
+      savedCounts: { ocr_extract: 1 },
+    });
+    mockRunOcrPreprocessingBatchPipeline.mockImplementation(async (input) =>
+      createMockOcrBatchResult(input),
+    );
+    mockBuildPdfPageChunks.mockReturnValue([
+      {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        chunkSizePages: 50,
+      },
+    ]);
+    mockGetPdfPageCount.mockResolvedValue(1);
+    mockCreatePdfPageRangeChunk.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
+    mockCreatePdfPageRangeChunker.mockResolvedValue((range) =>
+      mockCreatePdfPageRangeChunk(range),
+    );
+    mockEnsurePdfChunkArtifacts.mockResolvedValue([
+      {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        chunkSizePages: 50,
+        filepath: 'https://files.example.test/chunk.pdf',
+        storageKey: 'ocr-preprocessing/source/v1/pages-000001-000001.pdf',
+        source: 's3',
+      },
+    ]);
+    mockCreateMongooseOcrPdfChunkArtifactRepository.mockReturnValue({
+      findBySourcePdfKey: jest.fn(),
+      upsert: jest.fn(),
+    });
+    mockGetS3DownloadURLForKey.mockResolvedValue('https://files.example.test/original.pdf');
+    mockS3ObjectExistsByKey.mockResolvedValue({ exists: false });
+    mockSaveBufferToS3StorageKey.mockResolvedValue({ bytes: 1234, storageRegion: 'us-east-1' });
+    mockGetCloudFrontDownloadURLForKey.mockResolvedValue('https://cdn.example.test/original.pdf');
+    mockCloudFrontObjectExistsByKey.mockResolvedValue({ exists: false });
+    mockSaveBufferToCloudFrontStorageKey.mockResolvedValue({
+      bytes: 1234,
+      storageRegion: 'us-east-1',
+    });
+    mockCreateSteelContextDependencies.mockReturnValue({
+      listOtherGlobalRules: jest.fn().mockResolvedValue({
+        ocrRules: [
+          {
+            slug: 'steel-drawing-ocr-policy',
+            title: 'Steel OCR',
+            ruleType: 'ocr',
+            ruleSections: ['file_ocr'],
+            prompt: 'OCR rules text',
+            toolPolicy: {},
+            outputPolicy: {},
+          },
+        ],
+        fileRules: [],
+        sourcePriorityRules: [],
+        markdownOutputRules: [],
+      }),
+    });
+    mockCreateOpenAIOAuthModel.mockReturnValue({
+      invoke: jest.fn().mockResolvedValue({ content: 'organized OCR Markdown' }),
+    });
+    mockGetFiles.mockResolvedValue([]);
+    mockGetStrategyFunctions.mockReturnValue({
+      getDownloadStream: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.7')),
+      saveBuffer: jest.fn().mockResolvedValue('https://files.example.test/chunk.pdf'),
+      getDownloadURL: jest.fn().mockResolvedValue('https://files.example.test/chunk.pdf'),
+    });
     mockExecuteSteelTool.mockResolvedValue({
       ok: true,
       toolName: 'search_customers',
@@ -465,7 +659,7 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
-    it('preflights PaddleOCR only for current files missing active PaddleOCR OCR', async () => {
+    it('routes every current OCR-capable file through the preprocessing pipeline', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.body = { conversationId: 'convo-1' };
       req.steelNativeContext = {
@@ -478,38 +672,6 @@ describe('ToolService - Action Capability Gating', () => {
           { fileId: 'file-c', filename: 'c.pdf', mediaType: 'application/pdf' },
         ],
       };
-      const paddleInvoke = jest
-        .fn()
-        .mockResolvedValueOnce({ text: 'B OCR' })
-        .mockResolvedValueOnce({ text: 'C OCR' });
-      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
-        completedKeys: ['file:file-a'],
-        missingFiles: [
-          { ocrFileKey: 'file:file-b', fileId: 'file-b', filename: 'b.png', mediaType: 'image/png' },
-          { ocrFileKey: 'file:file-c', fileId: 'file-c', filename: 'c.pdf', mediaType: 'application/pdf' },
-        ],
-        missingKeys: ['file:file-b', 'file:file-c'],
-      });
-      mockCapturePaddleOcrResult
-        .mockResolvedValueOnce({
-          savedCounts: { paddleocr_preflight: 1 },
-          totalSavedCounts: { paddleocr_preflight: 2 },
-          totalTableCounts: {},
-        })
-        .mockResolvedValueOnce({
-          savedCounts: { paddleocr_preflight: 1 },
-          totalSavedCounts: { paddleocr_preflight: 3 },
-          totalTableCounts: {},
-        });
-      mockLoadToolsUtil.mockResolvedValueOnce({
-        loadedTools: [
-          {
-            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-            invoke: paddleInvoke,
-          },
-        ],
-        toolContextMap: {},
-      });
 
       const result = await runSteelPaddleOcrPreflight({
         req,
@@ -518,173 +680,483 @@ describe('ToolService - Action Capability Gating', () => {
         signal: new AbortController().signal,
         streamId: 'stream-1',
       });
-      const emittedEvents = mockEmitChunk.mock.calls.map(([, event]) => event);
 
-      expect(mockFindMissingPaddleOcrFileKeys).toHaveBeenCalledWith({
-        conversationId: 'convo-1',
-        files: req.steelNativeContext.currentTurnFiles,
-      });
-      expect(emittedEvents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            event: StepEvents.ON_RUN_STEP,
-            data: expect.objectContaining({
-              id: 'steel_paddleocr_preflight_file_file-b_step',
-              runId: 'resp-1',
-              type: StepTypes.TOOL_CALLS,
-              stepDetails: {
-                type: StepTypes.TOOL_CALLS,
-                tool_calls: [
-                  expect.objectContaining({
-                    id: 'steel_paddleocr_preflight_file_file-b',
-                    name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-                    args: '',
-                    type: ToolCallTypes.TOOL_CALL,
-                  }),
-                ],
-              },
-            }),
-          }),
-          expect.objectContaining({
-            event: StepEvents.ON_RUN_STEP_COMPLETED,
-            data: {
-              result: {
-                id: 'steel_paddleocr_preflight_file_file-b_step',
-                index: 0,
-                tool_call: expect.objectContaining({
-                  id: 'steel_paddleocr_preflight_file_file-b',
-                  name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-                  output: JSON.stringify({ text: 'B OCR' }),
-                  progress: 1,
-                  type: ToolCallTypes.TOOL_CALL,
-                }),
-              },
-            },
-          }),
-          expect.objectContaining({
-            event: StepEvents.ON_RUN_STEP_DELTA,
-            data: {
-              id: 'steel_paddleocr_preflight_file_file-b_step',
-              delta: {
-                type: StepTypes.TOOL_CALLS,
-                tool_calls: [
-                  {
-                    index: 0,
-                    id: 'steel_paddleocr_preflight_file_file-b',
-                    name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-                    args: JSON.stringify({
-                      input_data: 'file-b',
-                      output_mode: 'detailed',
-                      return_images: false,
-                      runtime_params: {
-                        use_doc_orientation_classify: true,
-                        use_doc_unwarping: true,
-                        use_layout_detection: true,
-                      },
-                    }),
-                    type: ToolCallTypes.TOOL_CALL,
-                  },
-                ],
-              },
-            },
-          }),
-          {
-            event: 'steel_event',
-            data: {
-              type: 'memory_saved',
-              source: 'paddleocr_preflight',
-              message: 'PaddleOCR preflight saved',
-              savedCounts: { paddleocr_preflight: 1 },
-            },
-          },
-        ]),
-      );
-      expect(paddleInvoke.mock.calls.map(([args]) => args)).toEqual([
-        {
-          input_data: 'file-b',
-          output_mode: 'detailed',
-          return_images: false,
-          runtime_params: {
-            use_doc_orientation_classify: true,
-            use_doc_unwarping: true,
-            use_layout_detection: true,
-          },
-        },
-        {
-          input_data: 'file-c',
-          output_mode: 'detailed',
-          return_images: false,
-          runtime_params: {
-            use_doc_orientation_classify: true,
-            use_doc_unwarping: true,
-            use_layout_detection: true,
-          },
-        },
-      ]);
-      expect(mockCapturePaddleOcrResult.mock.calls.map(([input]) => ({
-        providerToolCallId: input.providerToolCallId,
-        file: input.file,
-        data: input.data,
-      }))).toEqual([
-        {
-          providerToolCallId: 'steel_paddleocr_preflight_file_file-b',
-          file: {
-            ocrFileKey: 'file:file-b',
-            fileId: 'file-b',
-            filename: 'b.png',
-            mediaType: 'image/png',
-          },
-          data: { text: 'B OCR' },
-        },
-        {
-          providerToolCallId: 'steel_paddleocr_preflight_file_file-c',
-          file: {
-            ocrFileKey: 'file:file-c',
-            fileId: 'file-c',
-            filename: 'c.pdf',
-            mediaType: 'application/pdf',
-          },
-          data: { text: 'C OCR' },
-        },
-      ]);
-      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).toHaveBeenCalledWith(
-        expect.objectContaining({
-          preflight: expect.objectContaining({
-            totalSavedCounts: { paddleocr_preflight: 3 },
-            totalTableCounts: {},
-          }),
-        }),
-      );
+      expect(mockFindMissingPaddleOcrFileKeys).not.toHaveBeenCalled();
+      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalled();
+      expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
+      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(({ file }) => file.ocrFileKey))
+        .toEqual(['file:file-a', 'file:file-b', 'file:file-c']);
       expect(result).toEqual({
         status: 'completed',
         completedKeys: ['file:file-a', 'file:file-b', 'file:file-c'],
-        attemptedKeys: ['file:file-b', 'file:file-c'],
+        attemptedKeys: ['file:file-a', 'file:file-b', 'file:file-c'],
         failedKeys: [],
         skippedReason: undefined,
-        currentPaddleOcrResults: [
-          {
+        currentPaddleOcrResults: [],
+        currentOcrMarkdownResults: expect.arrayContaining([
+          expect.objectContaining({
+            ocrFileKey: 'file:file-a',
+            kind: 'ocr_preprocessing_merged_markdown',
+            ocrSource: 'ocr_preprocessing_merge',
+            content: expect.stringContaining('<file:file-a>'),
+          }),
+          expect.objectContaining({
             ocrFileKey: 'file:file-b',
-            fileId: 'file-b',
-            filename: 'b.png',
-            mediaType: 'image/png',
-            ocrSource: 'paddleocr_mcp',
-            result: { text: 'B OCR' },
-          },
-          {
+            kind: 'ocr_preprocessing_merged_markdown',
+            ocrSource: 'ocr_preprocessing_merge',
+            content: expect.stringContaining('<file:file-b>'),
+          }),
+          expect.objectContaining({
             ocrFileKey: 'file:file-c',
-            fileId: 'file-c',
-            filename: 'c.pdf',
-            mediaType: 'application/pdf',
-            ocrSource: 'paddleocr_mcp',
-            result: { text: 'C OCR' },
-          },
-        ],
-        totalSavedCounts: { paddleocr_preflight: 3 },
-        totalTableCounts: {},
+            kind: 'ocr_preprocessing_merged_markdown',
+            ocrSource: 'ocr_preprocessing_merge',
+            content: expect.stringContaining('<file:file-c>'),
+          }),
+        ]),
       });
     });
 
-    it('skips PaddleOCR preflight tool loading when every current file already has PaddleOCR OCR', async () => {
+    it('routes current PDFs through the OCR preprocessing pipeline instead of whole-file raw injection', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.user = { id: 'user_123', tenantId: 'tenant-a' };
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'pdf-1',
+            filename: 'quote.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: ['file:pdf-1'],
+        missingFiles: [],
+        missingKeys: [],
+      });
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'pdf-1',
+          filename: 'quote.pdf',
+          filepath: 'https://files.example.test/uploads/user_123/pdf-1__quote.pdf',
+          storageKey: 'uploads/user_123/pdf-1__quote.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 1234,
+          user: 'user_123',
+          tenantId: 'tenant-a',
+        },
+      ]);
+      mockGetPdfPageCount.mockResolvedValueOnce(75);
+      const pageChunks = [
+        {
+          chunkIndex: 1,
+          chunkCount: 2,
+          pageStart: 1,
+          pageEnd: 50,
+          chunkSizePages: 50,
+        },
+        {
+          chunkIndex: 2,
+          chunkCount: 2,
+          pageStart: 51,
+          pageEnd: 75,
+          chunkSizePages: 50,
+        },
+      ];
+      mockBuildPdfPageChunks.mockReturnValueOnce(pageChunks);
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) =>
+        createMockOcrBatchResult(input, '| 項次 | 品名規格 |\n| --- | --- |\n| 1 | PL-100 |'),
+      );
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockGetFiles).toHaveBeenCalledWith(
+        {
+          file_id: { $in: ['pdf-1'] },
+          user: 'user_123',
+          tenantId: 'tenant-a',
+        },
+        {},
+        {},
+      );
+      expect(mockGetPdfPageCount).toHaveBeenCalledWith({
+        pdfBytes: expect.any(Buffer),
+      });
+      expect(mockBuildPdfPageChunks).toHaveBeenCalledWith({ pageCount: 75, chunkSizePages: 50 });
+      expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'convo-1',
+          files: [
+            expect.objectContaining({
+              file: expect.objectContaining({
+                ocrFileKey: 'file:pdf-1',
+                fileId: 'pdf-1',
+                filename: 'quote.pdf',
+                mediaType: 'application/pdf',
+                sourcePdfKey: 'uploads/user_123/pdf-1__quote.pdf',
+                storageKey: 'uploads/user_123/pdf-1__quote.pdf',
+              }),
+              chunks: pageChunks,
+            }),
+          ],
+          ocrRulesText: expect.stringContaining('OCR rules text'),
+          ocrRuleVersion: expect.stringMatching(/^ocr-rules:/),
+        }),
+      );
+      const pipelineInput = mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0];
+      const pipelineFileInput = pipelineInput.files[0];
+      expect(typeof pipelineFileInput.artifacts.ensurePdfChunkArtifacts).toBe('function');
+      expect(typeof pipelineInput.memory.capturePaddleOcrChunkResult).toBe('function');
+      expect(typeof pipelineInput.organizer.organize).toBe('function');
+      expect(typeof pipelineInput.paddleOcr.runChunk).toBe('function');
+      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        status: 'completed',
+        completedKeys: ['file:pdf-1'],
+        attemptedKeys: ['file:pdf-1'],
+        failedKeys: [],
+        skippedReason: undefined,
+        currentPaddleOcrResults: [],
+        currentOcrMarkdownResults: [
+          expect.objectContaining({
+            ocrFileKey: 'file:pdf-1',
+            fileId: 'pdf-1',
+            filename: 'quote.pdf',
+            mediaType: 'application/pdf',
+            storageKey: 'uploads/user_123/pdf-1__quote.pdf',
+            kind: 'ocr_preprocessing_merged_markdown',
+            ocrSource: 'ocr_preprocessing_merge',
+            ocrPreprocessing: expect.objectContaining({
+              chunkCount: 2,
+              source: 'paddleocr_markdowns',
+              sourcePdfKey: 'uploads/user_123/pdf-1__quote.pdf',
+            }),
+            content: '<file:pdf-1>\n| 項次 | 品名規格 |\n| --- | --- |\n| 1 | PL-100 |',
+          }),
+        ],
+      });
+    });
+
+    it('uses the original PDF artifact for PDFs under 50 pages while keeping OCR markdown flow', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.user = { id: 'user_123', tenantId: 'tenant-a' };
+      req.body = { conversationId: 'convo-small-pdf' };
+      req.steelNativeContext = {
+        requestId: 'resp-small-pdf',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'pdf-small',
+            filename: 'small.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: ['file:pdf-small'],
+        missingFiles: [],
+        missingKeys: [],
+      });
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'pdf-small',
+          filename: 'small.pdf',
+          filepath: 'https://files.example.test/uploads/user_123/pdf-small__small.pdf',
+          storageKey: 'uploads/user_123/pdf-small__small.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 987,
+          user: 'user_123',
+          tenantId: 'tenant-a',
+        },
+      ]);
+      mockGetPdfPageCount.mockResolvedValueOnce(49);
+      const pageChunks = [
+        {
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 49,
+          chunkSizePages: 50,
+        },
+      ];
+      mockBuildPdfPageChunks.mockReturnValueOnce(pageChunks);
+      mockGetS3DownloadURLForKey.mockResolvedValueOnce(
+        'https://files.example.test/original-small.pdf',
+      );
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) =>
+        createMockOcrBatchResult(input, '| 項次 | 品名規格 |\n| --- | --- |\n| 1 | SMALL |'),
+      );
+
+      await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      const pipelineInput = mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0];
+      const pipelineFileInput = pipelineInput.files[0];
+      const artifacts = await pipelineFileInput.artifacts.ensurePdfChunkArtifacts({
+        file: pipelineFileInput.file,
+        sourcePdfKey: pipelineFileInput.file.sourcePdfKey,
+        chunks: pageChunks,
+      });
+
+      expect(mockBuildPdfPageChunks).toHaveBeenCalledWith({ pageCount: 49, chunkSizePages: 50 });
+      expect(mockEnsurePdfChunkArtifacts).not.toHaveBeenCalled();
+      expect(mockCreatePdfPageRangeChunk).not.toHaveBeenCalled();
+      expect(mockGetS3DownloadURLForKey).toHaveBeenCalledWith({
+        storageKey: 'uploads/user_123/pdf-small__small.pdf',
+        contentType: 'application/pdf',
+      });
+      expect(artifacts).toEqual([
+        expect.objectContaining({
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 49,
+          sourcePdfKey: 'uploads/user_123/pdf-small__small.pdf',
+          source: 's3',
+          storageKey: 'uploads/user_123/pdf-small__small.pdf',
+          filepath: 'https://files.example.test/original-small.pdf',
+          filename: 'small.pdf',
+          bytes: 987,
+          contentType: 'application/pdf',
+        }),
+      ]);
+      expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          files: [
+            expect.objectContaining({
+              chunks: pageChunks,
+            }),
+          ],
+          paddleOcr: expect.objectContaining({ runChunk: expect.any(Function) }),
+          organizer: expect.objectContaining({ organize: expect.any(Function) }),
+        }),
+      );
+    });
+
+    it('emits compact PaddleOCR chunk tool output while preserving raw result for DB capture', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.user = { id: 'user_123', tenantId: 'tenant-a' };
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'pdf-1',
+            filename: 'quote.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: ['file:pdf-1'],
+        missingFiles: [],
+        missingKeys: [],
+      });
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'pdf-1',
+          filename: 'quote.pdf',
+          filepath: 'https://files.example.test/uploads/user_123/pdf-1__quote.pdf',
+          storageKey: 'uploads/user_123/pdf-1__quote.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 1234,
+          user: 'user_123',
+          tenantId: 'tenant-a',
+        },
+      ]);
+      mockGetPdfPageCount.mockResolvedValueOnce(50);
+      const pageChunks = [
+        {
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 50,
+          chunkSizePages: 50,
+        },
+      ];
+      const rawContent = `raw OCR provider payload ${'R'.repeat(2048)}`;
+      const paddleInvoke = jest.fn().mockResolvedValueOnce({
+        type: 'tool',
+        content: rawContent,
+      });
+      mockBuildPdfPageChunks.mockReturnValueOnce(pageChunks);
+      mockLoadToolsUtil.mockResolvedValueOnce({
+        loadedTools: [
+          {
+            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+            invoke: paddleInvoke,
+          },
+        ],
+        configurable: { mcpConfig: true },
+        toolContextMap: {},
+      });
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
+        const pipelineFileInput = input.files[0];
+        const raw = await input.paddleOcr.runChunk({
+          file: pipelineFileInput.file,
+          chunk: pageChunks[0],
+          artifact: {
+            ...pageChunks[0],
+            filepath: 'https://files.example.test/chunk-1.pdf',
+            storageKey: 'ocr/chunk-1.pdf',
+            source: 's3',
+          },
+        });
+        await input.memory.capturePaddleOcrChunkResult({
+          conversationId: input.conversationId,
+          requestId: input.requestId,
+          providerToolCallId: 'ocr_preprocessing_chunk_1',
+          turnIndex: 4,
+          checkpointTurnIndex: 3,
+          file: pipelineFileInput.file,
+          chunk: {
+            ...pageChunks[0],
+            sourcePdfKey: pipelineFileInput.file.sourcePdfKey,
+            pdfChunk: {
+              source: 's3',
+              storageKey: 'ocr/chunk-1.pdf',
+              filepath: 'https://files.example.test/chunk-1.pdf',
+            },
+          },
+          rawResultHash: raw.rawResultHash,
+          data: raw.rawResult,
+        });
+        return createMockOcrBatchResult(input, '| item |\n| --- |\n| ok |');
+      });
+
+      await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+
+      const completedEvents = mockEmitChunk.mock.calls
+        .map(([, event]) => event)
+        .filter((event) => event.event === StepEvents.ON_RUN_STEP_COMPLETED);
+      const completedOutput = completedEvents[0]?.data?.result?.tool_call?.output ?? '';
+      const parsedOutput = JSON.parse(completedOutput);
+
+      expect(paddleInvoke).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input_data: 'https://files.example.test/chunk-1.pdf',
+          return_images: false,
+        }),
+        expect.any(Object),
+      );
+      expect(completedOutput).not.toContain(rawContent);
+      expect(parsedOutput).toEqual(
+        expect.objectContaining({
+          status: 'completed',
+          ocrEngine: 'paddleocr_vl',
+          ocrFileKey: 'file:pdf-1',
+          filename: 'quote.pdf',
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 50,
+          rawTextLength: rawContent.length,
+          outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+        }),
+      );
+      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].memory.capturePaddleOcrChunkResult)
+        .toBeDefined();
+    });
+
+    it('surfaces OCR preprocessing organizer failures as request errors for chat display', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.user = { id: 'user_123', tenantId: 'tenant-a' };
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'pdf-1',
+            filename: 'quote.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+        completedKeys: ['file:pdf-1'],
+        missingFiles: [],
+        missingKeys: [],
+      });
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'pdf-1',
+          filename: 'quote.pdf',
+          filepath: 'https://files.example.test/uploads/user_123/pdf-1__quote.pdf',
+          storageKey: 'uploads/user_123/pdf-1__quote.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 1234,
+          user: 'user_123',
+          tenantId: 'tenant-a',
+        },
+      ]);
+      mockGetPdfPageCount.mockResolvedValueOnce(25);
+      mockBuildPdfPageChunks.mockReturnValueOnce([
+        {
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 25,
+          chunkSizePages: 50,
+        },
+      ]);
+      mockRunOcrPreprocessingBatchPipeline.mockRejectedValueOnce(new Error('organizer timeout'));
+
+      await expect(
+        runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        }),
+      ).rejects.toThrow('OCR preprocessing failed for quote.pdf: organizer timeout');
+      expect(mockEmitChunk.mock.calls.map(([, event]) => event)).toEqual(
+        expect.arrayContaining([
+          {
+            event: 'steel_event',
+            data: expect.objectContaining({
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              parseStatus: 'partial',
+              errorMessage: 'organizer timeout',
+              failedKeys: ['file:pdf-1'],
+            }),
+          },
+        ]),
+      );
+    });
+
+    it('lets the preprocessing pipeline reuse existing PaddleOCR official Markdown', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.body = { conversationId: 'convo-1' };
       req.steelNativeContext = {
@@ -695,11 +1167,25 @@ describe('ToolService - Action Capability Gating', () => {
           { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
         ],
       };
-      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
-        completedKeys: ['file:file-a'],
-        missingFiles: [],
-        missingKeys: [],
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'file-a',
+          filename: 'a.pdf',
+          filepath: 'https://files.example.test/uploads/user_123/file-a__a.pdf',
+          storageKey: 'uploads/user_123/file-a__a.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 1234,
+          user: 'user_123',
+        },
+      ]);
+      mockReadOfficialOcrMarkdown.mockResolvedValueOnce({
+        markdown: '| OCR |\n| --- |\n| Official |',
+        chunkCount: 3,
       });
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) =>
+        createMockOcrBatchResult(input, '| OCR |\n| --- |\n| Official |'),
+      );
 
       const result = await runSteelPaddleOcrPreflight({
         req,
@@ -710,14 +1196,131 @@ describe('ToolService - Action Capability Gating', () => {
 
       expect(mockLoadToolsUtil).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(mockFindMissingPaddleOcrFileKeys).not.toHaveBeenCalled();
+      expect(mockGetPdfPageCount).not.toHaveBeenCalled();
+      expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
+      expect(mockBuildPdfPageChunks).toHaveBeenCalledWith({ pageCount: 1, chunkSizePages: 1 });
+      expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
+      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files[0].chunks).toEqual([
+        expect.objectContaining({
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 1,
+        }),
+      ]);
       expect(result).toEqual({
-        status: 'skipped',
+        status: 'completed',
         completedKeys: ['file:file-a'],
-        attemptedKeys: [],
+        attemptedKeys: ['file:file-a'],
         failedKeys: [],
-        skippedReason: 'all_files_already_have_paddleocr',
+        skippedReason: undefined,
         currentPaddleOcrResults: [],
+        currentOcrMarkdownResults: [
+          expect.objectContaining({
+            ocrFileKey: 'file:file-a',
+            kind: 'ocr_preprocessing_merged_markdown',
+            ocrSource: 'ocr_preprocessing_merge',
+          }),
+        ],
       });
+    });
+
+    it('reuses complete organized OCR preprocessing state before downloading PDFs', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
+        ],
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'file-a',
+          filename: 'a.pdf',
+          filepath: 'https://files.example.test/uploads/user_123/file-a__a.pdf',
+          storageKey: 'uploads/user_123/file-a__a.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 1234,
+          user: 'user_123',
+        },
+      ]);
+      const savedChunks = [
+        {
+          chunkIndex: 1,
+          chunkCount: 2,
+          pageStart: 1,
+          pageEnd: 50,
+          chunkSizePages: 50,
+          rawSaved: true,
+          organizedSaved: true,
+          organizedMarkdown: '| OCR |\n| --- |\n| Chunk 1 |',
+        },
+        {
+          chunkIndex: 2,
+          chunkCount: 2,
+          pageStart: 51,
+          pageEnd: 75,
+          chunkSizePages: 50,
+          rawSaved: true,
+          organizedSaved: true,
+          organizedMarkdown: '| OCR |\n| --- |\n| Chunk 2 |',
+        },
+      ];
+      mockReadOcrPreprocessingState.mockResolvedValueOnce({
+        ocrFileKey: 'file:file-a',
+        sourcePdfKey: 'uploads/user_123/file-a__a.pdf',
+        pipelineVersion: 1,
+        ocrRuleVersion: 'ocr-rules:test',
+        chunkSizePages: 50,
+        chunkCount: 2,
+        chunks: savedChunks,
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockGetPdfPageCount).not.toHaveBeenCalled();
+      expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
+      expect(mockBuildPdfPageChunks).not.toHaveBeenCalled();
+      expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
+      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files[0].chunks).toEqual([
+        expect.objectContaining({
+          chunkIndex: 1,
+          chunkCount: 2,
+          pageStart: 1,
+          pageEnd: 50,
+          chunkSizePages: 50,
+        }),
+        expect.objectContaining({
+          chunkIndex: 2,
+          chunkCount: 2,
+          pageStart: 51,
+          pageEnd: 75,
+          chunkSizePages: 50,
+        }),
+      ]);
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'completed',
+          completedKeys: ['file:file-a'],
+          currentPaddleOcrResults: [],
+          currentOcrMarkdownResults: [
+            expect.objectContaining({
+              ocrFileKey: 'file:file-a',
+              ocrPreprocessing: expect.objectContaining({ chunkCount: 2 }),
+            }),
+          ],
+        }),
+      );
     });
 
     it('does not save PaddleOCR preflight failures as completed OCR', async () => {
@@ -731,72 +1334,32 @@ describe('ToolService - Action Capability Gating', () => {
           { fileId: 'file-fallback', filename: 'fallback.pdf', mediaType: 'application/pdf' },
         ],
       };
-      const paddleInvoke = jest.fn().mockRejectedValueOnce(new Error('provider timeout'));
-      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
-        completedKeys: [],
-        missingFiles: [
-          {
-            ocrFileKey: 'file:file-fallback',
-            fileId: 'file-fallback',
-            filename: 'fallback.pdf',
-            mediaType: 'application/pdf',
-          },
-        ],
-        missingKeys: ['file:file-fallback'],
-      });
-      mockLoadToolsUtil.mockResolvedValueOnce({
-        loadedTools: [
-          {
-            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-            invoke: paddleInvoke,
-          },
-        ],
-        toolContextMap: {},
-      });
+      mockRunOcrPreprocessingBatchPipeline.mockRejectedValueOnce(new Error('provider timeout'));
 
-      const result = await runSteelPaddleOcrPreflight({
-        req,
-        res: {},
-        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
-        signal: new AbortController().signal,
-        streamId: 'stream-1',
-      });
-      const emittedEvents = mockEmitChunk.mock.calls.map(([, event]) => event);
+      await expect(
+        runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        }),
+      ).rejects.toThrow('OCR preprocessing failed for fallback.pdf: provider timeout');
 
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
-      expect(emittedEvents).toEqual(
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalled();
+      expect(mockEmitChunk.mock.calls.map(([, event]) => event)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            event: StepEvents.ON_RUN_STEP,
+            event: 'steel_event',
             data: expect.objectContaining({
-              id: 'steel_paddleocr_preflight_file_file-fallback_step',
-              runId: 'resp-1',
+              source: 'ocr_preprocessing',
+              message: 'ocr preprocessing failed (file:file-fallback)',
+              errorMessage: 'provider timeout',
             }),
-          }),
-          expect.objectContaining({
-            event: StepEvents.ON_RUN_STEP_COMPLETED,
-            data: {
-              result: {
-                id: 'steel_paddleocr_preflight_file_file-fallback_step',
-                index: 0,
-                tool_call: expect.objectContaining({
-                  id: 'steel_paddleocr_preflight_file_file-fallback',
-                  output: expect.stringContaining('provider timeout'),
-                  progress: 1,
-                }),
-              },
-            },
           }),
         ]),
       );
-      expect(result).toEqual({
-        status: 'partial',
-        completedKeys: [],
-        attemptedKeys: ['file:file-fallback'],
-        failedKeys: ['file:file-fallback'],
-        skippedReason: undefined,
-        currentPaddleOcrResults: [],
-      });
     });
 
     it('rebuilds and retries PaddleOCR preflight after a sequential provider connection reset', async () => {
@@ -847,10 +1410,28 @@ describe('ToolService - Action Capability Gating', () => {
           ],
           toolContextMap: {},
         });
-      mockCapturePaddleOcrResult.mockResolvedValueOnce({
-        savedCounts: { paddleocr_preflight: 1 },
-        totalSavedCounts: { paddleocr_preflight: 2 },
-        totalTableCounts: {},
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
+        const pipelineFileInput = input.files[0];
+        await input.paddleOcr.runChunk({
+          file: pipelineFileInput.file,
+          chunk: {
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 1,
+            chunkSizePages: 50,
+          },
+          artifact: {
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 1,
+            chunkSizePages: 50,
+            filepath: 'https://files.example.test/second.jpg',
+            storageKey: 'ocr/second.jpg',
+          },
+        });
+        return createMockOcrBatchResult(input, '| OCR |\n| --- |\n| Second OCR |');
       });
 
       const result = await runSteelPaddleOcrPreflight({
@@ -873,40 +1454,29 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockLoadToolsUtil).toHaveBeenCalledTimes(2);
       expect(firstInvoke).toHaveBeenCalledTimes(1);
       expect(secondInvoke).toHaveBeenCalledTimes(1);
-      expect(mockCapturePaddleOcrResult).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerToolCallId: 'steel_paddleocr_preflight_file_file-second',
-          file: {
-            ocrFileKey: 'file:file-second',
-            fileId: 'file-second',
-            filename: 'second.jpg',
-            mediaType: 'image/jpeg',
-          },
-          data: { text: 'Second OCR' },
-        }),
-      );
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
       expect(result).toEqual({
         status: 'completed',
         completedKeys: ['file:file-second'],
         attemptedKeys: ['file:file-second'],
         failedKeys: [],
         skippedReason: undefined,
-        currentPaddleOcrResults: [
-          {
+        currentPaddleOcrResults: [],
+        currentOcrMarkdownResults: [
+          expect.objectContaining({
             ocrFileKey: 'file:file-second',
             fileId: 'file-second',
             filename: 'second.jpg',
             mediaType: 'image/jpeg',
-            ocrSource: 'paddleocr_mcp',
-            result: { text: 'Second OCR' },
-          },
+            kind: 'ocr_preprocessing_merged_markdown',
+            ocrSource: 'ocr_preprocessing_merge',
+            content: expect.stringContaining('Second OCR'),
+          }),
         ],
-        totalSavedCounts: { paddleocr_preflight: 2 },
-        totalTableCounts: {},
       });
     });
 
-    it('keeps complete same-turn PaddleOCR preflight results for runtime context injection', async () => {
+    it('keeps raw PaddleOCR output out of same-turn runtime attachments', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.body = { conversationId: 'convo-1' };
       req.steelNativeContext = {
@@ -918,34 +1488,9 @@ describe('ToolService - Action Capability Gating', () => {
         ],
       };
       const longText = 'x'.repeat(1500);
-      const paddleResult = {
-        text: longText,
-        pages: Array.from({ length: 25 }, (_, index) => ({ index, text: `page-${index}` })),
-      };
-      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
-        completedKeys: [],
-        missingFiles: [
-          {
-            ocrFileKey: 'file:file-large',
-            fileId: 'file-large',
-            filename: 'large.pdf',
-            mediaType: 'application/pdf',
-          },
-        ],
-        missingKeys: ['file:file-large'],
-      });
-      mockLoadToolsUtil.mockResolvedValueOnce({
-        loadedTools: [
-          {
-            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-            invoke: jest.fn().mockResolvedValueOnce(paddleResult),
-          },
-        ],
-        toolContextMap: {},
-      });
-      mockCapturePaddleOcrResult.mockResolvedValueOnce({
-        savedCounts: { paddleocr_preflight: 1 },
-      });
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) =>
+        createMockOcrBatchResult(input, '| OCR |\n| --- |\n| organized markdown |'),
+      );
 
       const result = await runSteelPaddleOcrPreflight({
         req,
@@ -954,8 +1499,15 @@ describe('ToolService - Action Capability Gating', () => {
         signal: new AbortController().signal,
       });
 
-      expect(mockCapturePaddleOcrResult.mock.calls[0][0].data).toBe(paddleResult);
-      expect(result.currentPaddleOcrResults[0].result).toEqual(paddleResult);
+      expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(JSON.stringify(result.currentPaddleOcrResults)).not.toContain(longText);
+      expect(result.currentPaddleOcrResults).toEqual([]);
+      expect(result.currentOcrMarkdownResults[0]).toEqual(
+        expect.objectContaining({
+          ocrFileKey: 'file:file-large',
+          content: expect.stringContaining('organized markdown'),
+        }),
+      );
     });
 
     it('rethrows aborted PaddleOCR preflight calls instead of saving partial failure state', async () => {
@@ -970,27 +1522,7 @@ describe('ToolService - Action Capability Gating', () => {
         ],
       };
       const abortError = new DOMException('The operation was aborted', 'AbortError');
-      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
-        completedKeys: [],
-        missingFiles: [
-          {
-            ocrFileKey: 'file:file-abort',
-            fileId: 'file-abort',
-            filename: 'abort.pdf',
-            mediaType: 'application/pdf',
-          },
-        ],
-        missingKeys: ['file:file-abort'],
-      });
-      mockLoadToolsUtil.mockResolvedValueOnce({
-        loadedTools: [
-          {
-            name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-            invoke: jest.fn().mockRejectedValueOnce(abortError),
-          },
-        ],
-        toolContextMap: {},
-      });
+      mockRunOcrPreprocessingBatchPipeline.mockRejectedValueOnce(abortError);
 
       await expect(
         runSteelPaddleOcrPreflight({
@@ -1002,6 +1534,7 @@ describe('ToolService - Action Capability Gating', () => {
       ).rejects.toBe(abortError);
 
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalled();
       expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalledWith(
         expect.objectContaining({
           preflight: expect.objectContaining({ status: 'partial' }),
@@ -1711,6 +2244,238 @@ describe('ToolService - Action Capability Gating', () => {
   describe('loadToolsForExecution — action tool gating', () => {
     const actionToolName = `get_weather${actionDelimiter}api_example_com`;
     const regularTool = Tools.web_search;
+
+    it('wraps direct PaddleOCR MCP results into stored OCR Markdown before returning content', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      req.body = { conversationId: 'conv-direct-ocr' };
+      req.steelNativeContext = {
+        conversationId: 'conv-direct-ocr',
+        requestId: 'msg-direct-ocr',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'file-bh',
+            filename: 'BH.pdf',
+            mediaType: 'application/pdf',
+            storageKey: 'uploads/user/BH.pdf',
+          },
+        ],
+      };
+      const paddleToolName = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`;
+      const rawPaddleResult = {
+        content: 'RAW OCR RESULT THAT MUST NOT REACH MODEL CONTEXT',
+        artifact: { content: [{ type: 'text', text: 'raw artifact' }] },
+      };
+      const invokePaddleOcr = jest.fn().mockResolvedValue(rawPaddleResult);
+      const rawPaddleTool = {
+        name: paddleToolName,
+        invoke: invokePaddleOcr,
+      };
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [rawPaddleTool],
+        toolContextMap: {},
+      });
+      mockReadOcrPreprocessingState
+        .mockResolvedValueOnce({
+          ocrFileKey: 'file:file-bh',
+          sourcePdfKey: 'uploads/user/BH.pdf',
+          pipelineVersion: 1,
+          ocrRuleVersion: 'ocr-rules:test',
+          chunkSizePages: 50,
+          chunkCount: 0,
+          chunks: [],
+        })
+        .mockResolvedValueOnce({
+          ocrFileKey: 'file:file-bh',
+          sourcePdfKey: 'uploads/user/BH.pdf',
+          pipelineVersion: 1,
+          ocrRuleVersion: 'ocr-rules:test',
+          chunkSizePages: 50,
+          chunkCount: 1,
+          chunks: [
+            {
+              chunkIndex: 1,
+              chunkCount: 1,
+              pageStart: 1,
+              pageEnd: 1,
+              chunkSizePages: 50,
+              rawSaved: true,
+              organizedSaved: true,
+              rawResultHash: 'hash-direct',
+              rawOcrText: rawPaddleResult.content,
+              organizedMarkdown: 'organized OCR Markdown',
+            },
+          ],
+        });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        streamId: 'stream-direct-ocr',
+        agent: { id: 'agent_direct_ocr', tools: [paddleToolName] },
+        toolNames: [paddleToolName],
+        actionsEnabled: false,
+      });
+      const output = await result.loadedTools[0].invoke(
+        { input_data: 'uploads/user/BH.pdf', output_mode: 'detailed' },
+        { toolCall: { id: 'call-direct-ocr' } },
+      );
+
+      expect(invokePaddleOcr).toHaveBeenCalledTimes(1);
+      expect(mockCapturePaddleOcrChunkResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'conv-direct-ocr',
+          requestId: 'msg-direct-ocr',
+          providerToolCallId: 'call-direct-ocr',
+          turnIndex: 4,
+          checkpointTurnIndex: 3,
+          rawResultHash: expect.any(String),
+          data: rawPaddleResult,
+          file: expect.objectContaining({
+            ocrFileKey: 'file:file-bh',
+            sourcePdfKey: 'uploads/user/BH.pdf',
+          }),
+          chunk: expect.objectContaining({
+            sourcePdfKey: 'uploads/user/BH.pdf',
+            chunkIndex: 1,
+            chunkCount: 1,
+          }),
+        }),
+      );
+      expect(mockCaptureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'conv-direct-ocr',
+          requestId: 'msg-direct-ocr',
+          content: 'organized OCR Markdown',
+        }),
+      );
+      expect(output.content).toContain('<file:file-bh>');
+      expect(output.content).toContain('organized OCR Markdown');
+      expect(output.content).not.toContain('RAW OCR RESULT');
+      expect(output.artifact).toBeUndefined();
+
+      const steelEventMessages = mockEmitChunk.mock.calls
+        .map(([, event]) => event)
+        .filter((event) => event.event === 'steel_event')
+        .map((event) => event.data?.message);
+      expect(steelEventMessages).toEqual(
+        expect.arrayContaining([
+          'Running paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)',
+          'Ran paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)',
+          'PaddleOCR preflight saved (chunk 1/1) (file:file-bh)',
+          'Running OCR markdown process (chunk 1/1) (file:file-bh)',
+          'Ran OCR markdown process (chunk 1/1) (file:file-bh)',
+          'Saved OCR markdown (chunk 1/1) (file:file-bh)',
+          'Read OCR markdowns (file:file-bh: 1 chunks)',
+          'Processing pdf with OCR markdowns (file:file-bh)',
+        ]),
+      );
+    });
+
+    it('returns existing merged OCR Markdown for direct PaddleOCR MCP calls without rerunning PaddleOCR', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      req.body = { conversationId: 'conv-existing-ocr' };
+      req.steelNativeContext = {
+        conversationId: 'conv-existing-ocr',
+        requestId: 'msg-existing-ocr',
+        assistantTurnIndex: 5,
+        memoryCheckpointTurnIndex: 4,
+        currentTurnFiles: [
+          {
+            fileId: 'file-bh',
+            filename: 'BH.pdf',
+            mediaType: 'application/pdf',
+            storageKey: 'uploads/user/BH.pdf',
+          },
+        ],
+      };
+      const paddleToolName = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`;
+      const invokePaddleOcr = jest.fn().mockResolvedValue({
+        content: 'RAW OCR RESULT THAT SHOULD NOT RUN',
+      });
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: paddleToolName,
+            invoke: invokePaddleOcr,
+          },
+        ],
+        toolContextMap: {},
+      });
+      mockReadOcrPreprocessingState.mockResolvedValueOnce({
+        ocrFileKey: 'file:file-bh',
+        sourcePdfKey: 'uploads/user/BH.pdf',
+        pipelineVersion: 1,
+        ocrRuleVersion: 'ocr-rules:test',
+        chunkSizePages: 50,
+        chunkCount: 2,
+        chunks: [
+          {
+            chunkIndex: 1,
+            chunkCount: 2,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawSaved: true,
+            organizedSaved: true,
+            rawResultHash: 'hash-1',
+            rawOcrText: 'raw 1',
+            organizedMarkdown: '| 品名 | 數量 |\n|---|---|\n| A | 1 |',
+          },
+          {
+            chunkIndex: 2,
+            chunkCount: 2,
+            pageStart: 51,
+            pageEnd: 100,
+            chunkSizePages: 50,
+            rawSaved: true,
+            organizedSaved: true,
+            rawResultHash: 'hash-2',
+            rawOcrText: 'raw 2',
+            organizedMarkdown: '| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
+          },
+        ],
+      });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        streamId: 'stream-existing-ocr',
+        agent: { id: 'agent_existing_ocr', tools: [paddleToolName] },
+        toolNames: [paddleToolName],
+        actionsEnabled: false,
+      });
+      const output = await result.loadedTools[0].invoke(
+        { input_data: 'uploads/user/BH.pdf', output_mode: 'detailed' },
+        { toolCall: { id: 'call-existing-ocr' } },
+      );
+
+      expect(invokePaddleOcr).not.toHaveBeenCalled();
+      expect(mockCapturePaddleOcrChunkResult).not.toHaveBeenCalled();
+      expect(mockCaptureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
+      expect(output.content).toContain('<file:file-bh>');
+      expect(output.content).toContain('| 品名 | 數量 | 材質 |');
+      expect(output.content).not.toContain('RAW OCR RESULT');
+
+      const steelEventMessages = mockEmitChunk.mock.calls
+        .map(([, event]) => event)
+        .filter((event) => event.event === 'steel_event')
+        .map((event) => event.data?.message);
+      expect(steelEventMessages).toEqual(
+        expect.arrayContaining([
+          'Read OCR markdowns (file:file-bh: 2 chunks)',
+          'Processing pdf with OCR markdowns (file:file-bh)',
+        ]),
+      );
+      expect(steelEventMessages).not.toEqual(
+        expect.arrayContaining([
+          'Running paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)',
+        ]),
+      );
+    });
 
     it('does not load code execution tools that were not registered for the agent', async () => {
       const capabilities = [

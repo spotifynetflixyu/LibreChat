@@ -24,6 +24,7 @@ const mockGenerationJobManager = {
 };
 
 const mockSaveMessage = jest.fn();
+const mockSaveConvo = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -38,6 +39,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
+  saveConvo: (...args) => mockSaveConvo(...args),
 }));
 
 jest.mock('~/server/middleware', () => ({
@@ -144,8 +146,24 @@ describe('Agent Abort Endpoint', () => {
     });
 
     describe('Early Abort Handling', () => {
-      it('should skip message saving when responseMessageId is missing (early abort)', async () => {
+      it('should save the user message and conversation when responseMessageId is missing', async () => {
         const jobStreamId = 'test-stream-123';
+        const userMessage = {
+          messageId: 'user-msg-123',
+          parentMessageId: '00000000-0000-0000-0000-000000000000',
+          conversationId: jobStreamId,
+          text: 'OCR檔案內容，逐一列表給我核對。',
+          files: [
+            {
+              file_id: 'file-bh-pdf',
+              filename: 'BH.pdf',
+              filepath: 'files/test-user-123/BH.pdf',
+              type: 'application/pdf',
+              bytes: 1024,
+            },
+          ],
+        };
+        const savedUserMessage = { ...userMessage, isCreatedByUser: true, user: 'test-user-123' };
 
         mockGenerationJobManager.getJob.mockResolvedValue({
           metadata: { userId: 'test-user-123' },
@@ -154,20 +172,43 @@ describe('Agent Abort Endpoint', () => {
         mockGenerationJobManager.abortJob.mockResolvedValue({
           success: true,
           jobData: {
-            userMessage: { messageId: 'user-msg-123' },
+            userMessage,
             // No responseMessageId - early abort before generation started
             conversationId: jobStreamId,
           },
           content: [],
           text: '',
         });
+        mockSaveMessage.mockResolvedValue(savedUserMessage);
+        mockSaveConvo.mockResolvedValue({ conversationId: jobStreamId });
 
         const response = await request(app)
           .post('/api/agents/chat/abort')
           .send({ conversationId: jobStreamId });
 
         expect(response.status).toBe(200);
-        expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            messageId: userMessage.messageId,
+            parentMessageId: userMessage.parentMessageId,
+            conversationId: jobStreamId,
+            text: userMessage.text,
+            files: userMessage.files,
+            isCreatedByUser: true,
+            user: 'test-user-123',
+          }),
+          expect.objectContaining({
+            context: 'api/server/routes/agents/index.js - abort user message',
+          }),
+        );
+        expect(mockSaveConvo).toHaveBeenCalledWith(
+          expect.anything(),
+          savedUserMessage,
+          expect.objectContaining({
+            context: 'api/server/routes/agents/index.js - abort user message',
+          }),
+        );
       });
 
       it('should skip message saving when userMessage is missing', async () => {
@@ -194,6 +235,7 @@ describe('Agent Abort Endpoint', () => {
 
         expect(response.status).toBe(200);
         expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(mockSaveConvo).not.toHaveBeenCalled();
       });
 
       it('should skip message saving when abort content is only an OAuth prompt', async () => {
@@ -206,7 +248,12 @@ describe('Agent Abort Endpoint', () => {
         mockGenerationJobManager.abortJob.mockResolvedValue({
           success: true,
           jobData: {
-            userMessage: { messageId: 'user-msg-123' },
+            userMessage: {
+              messageId: 'user-msg-123',
+              parentMessageId: '00000000-0000-0000-0000-000000000000',
+              conversationId: jobStreamId,
+              text: 'Connect OAuth',
+            },
             responseMessageId: 'response-msg-456',
             conversationId: jobStreamId,
           },
@@ -224,13 +271,31 @@ describe('Agent Abort Endpoint', () => {
           ],
           text: '',
         });
+        mockSaveMessage.mockResolvedValue({
+          messageId: 'user-msg-123',
+          conversationId: jobStreamId,
+          isCreatedByUser: true,
+        });
+        mockSaveConvo.mockResolvedValue({ conversationId: jobStreamId });
 
         const response = await request(app)
           .post('/api/agents/chat/abort')
           .send({ conversationId: jobStreamId });
 
         expect(response.status).toBe(200);
-        expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            messageId: 'user-msg-123',
+            conversationId: jobStreamId,
+            isCreatedByUser: true,
+          }),
+          expect.objectContaining({
+            context: 'api/server/routes/agents/index.js - abort user message',
+          }),
+        );
+        expect(mockSaveConvo).toHaveBeenCalledTimes(1);
       });
     });
 

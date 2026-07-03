@@ -297,6 +297,7 @@ jest.mock('~/server/services/ToolService', () => ({
     failedKeys: [],
     skippedReason: 'no_current_files',
     currentPaddleOcrResults: [],
+    currentOcrMarkdownResults: [],
   }),
 }));
 
@@ -841,6 +842,15 @@ describe('createResponse controller', () => {
     it('passes Open Responses input_file references into Steel native OCR context', async () => {
       const api = require('@librechat/api');
       const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
+      const currentOcrMarkdownResults = [
+        {
+          ocrFileKey: 'file:file-drawing',
+          fileId: 'file-drawing',
+          filename: 'drawing.pdf',
+          ocrSource: 'ocr_preprocessing_merge',
+          content: 'merged OCR markdown',
+        },
+      ];
       api.validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -868,6 +878,22 @@ describe('createResponse controller', () => {
           ],
         },
       ]);
+      runSteelPaddleOcrPreflight.mockResolvedValueOnce({
+        status: 'completed',
+        completedKeys: ['file:file-drawing'],
+        attemptedKeys: ['file:file-drawing'],
+        failedKeys: [],
+        skippedReason: undefined,
+        currentPaddleOcrResults: [
+          {
+            ocrFileKey: 'file:file-drawing',
+            fileId: 'file-drawing',
+            filename: 'drawing.pdf',
+            result: { text: 'raw OCR' },
+          },
+        ],
+        currentOcrMarkdownResults,
+      });
 
       await createResponse(req, res);
 
@@ -902,6 +928,7 @@ describe('createResponse controller', () => {
                 conversationId: 'mock-uuid-456',
               },
             ],
+            currentOcrMarkdownResults,
           },
           conversation: expect.objectContaining({
             currentUserTurn: expect.objectContaining({

@@ -46,6 +46,7 @@ import {
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
+  createSteelOcrPdfChunkArtifactModel,
   createSteelProjectModel,
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,
@@ -109,6 +110,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SteelAdminMappingProfile: ReturnType<typeof createSteelAdminMappingProfileModel>;
   SteelMemoryCandidate: ReturnType<typeof createSteelMemoryCandidateModel>;
   SteelMemory: ReturnType<typeof createSteelMemoryModel>;
+  SteelOcrPdfChunkArtifact: ReturnType<typeof createSteelOcrPdfChunkArtifactModel>;
 } {
   return {
     User: createUserModel(mongoose),
@@ -163,6 +165,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SteelAdminMappingProfile: createSteelAdminMappingProfileModel(mongoose),
     SteelMemoryCandidate: createSteelMemoryCandidateModel(mongoose),
     SteelMemory: createSteelMemoryModel(mongoose),
+    SteelOcrPdfChunkArtifact: createSteelOcrPdfChunkArtifactModel(mongoose),
   };
 }
 
@@ -178,6 +181,7 @@ export {
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
+  createSteelOcrPdfChunkArtifactModel,
   createSteelProjectModel,
   createSteelProjectSourceModel,
   createSteelSourceVersionModel,

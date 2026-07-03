@@ -1,6 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import SteelActivity from '../SteelActivity';
 
@@ -10,11 +10,17 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_activity') {
       return 'Steel activity';
     }
+    if (key === 'com_ui_steel_activity_events') {
+      return `${options?.count ?? 0} events`;
+    }
     if (key === 'com_ui_steel_activity_parse_saved') {
       return 'Steel form parsed';
     }
     if (key === 'com_ui_steel_activity_state_saved') {
       return 'Steel quote state saved';
+    }
+    if (key === 'com_ui_steel_activity_ocr_markdown_saved') {
+      return 'OCR markdown saved';
     }
     if (key === 'com_ui_steel_activity_paddleocr_saved') {
       return 'PaddleOCR preflight saved';
@@ -39,6 +45,9 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_activity_source_ocr') {
       return 'OCR';
+    }
+    if (key === 'com_ui_steel_activity_source_ocr_markdown') {
+      return 'OCR markdown';
     }
     if (key === 'com_ui_steel_activity_source_ocr_raw') {
       return 'OCR raw results';
@@ -131,6 +140,31 @@ describe('SteelActivity', () => {
     expect(screen.getByText('Steel quote state saved')).toBeInTheDocument();
     expect(screen.getByText('This turn: OCR tables: 1')).toBeInTheDocument();
     expect(screen.getByText('Total: OCR raw results: 2, OCR tables: 2')).toBeInTheDocument();
+  });
+
+  it('renders official OCR markdown save activity with an OCR-specific label', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-official-ocr'), [
+            {
+              type: 'memory_saved',
+              source: 'assistant_markdown',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-official-ocr',
+              message: 'Working Order Memory saved',
+              savedCounts: { ocr_markdown: 1 },
+              totalSavedCounts: { ocr_markdown: 1 },
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-official-ocr" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('OCR markdown saved')).toBeInTheDocument();
+    expect(screen.queryByText('Steel quote state saved')).not.toBeInTheDocument();
   });
 
   it('renders combined OCR table and workbook table counts', () => {
@@ -230,6 +264,139 @@ describe('SteelActivity', () => {
     expect(screen.getByText('PaddleOCR preflight partial')).toBeInTheDocument();
     expect(screen.getByText('This turn: OCR raw results: 1')).toBeInTheDocument();
     expect(screen.getByText('Total: OCR raw results: 1')).toBeInTheDocument();
+  });
+
+  it('renders OCR preprocessing progress messages verbatim', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-ocr-progress'), [
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-ocr-progress',
+              message: 'Uploaded pdf to S3 (163 pages / 4 chunks) (file:BH.pdf)',
+              parseStatus: 'partial',
+            },
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-ocr-progress',
+              message: 'Ran OCR markdown process (chunk 1/4) (file:BH.pdf)',
+              parseStatus: 'partial',
+            },
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-ocr-progress',
+              message: 'Processing pdf with OCR markdowns (file:BH.pdf)',
+              parseStatus: 'partial',
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-ocr-progress" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getByText('Uploaded pdf to S3 (163 pages / 4 chunks) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Ran OCR markdown process (chunk 1/4) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Processing pdf with OCR markdowns (file:BH.pdf)')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '3 events' })).not.toBeInTheDocument();
+  });
+
+  it('collapses long OCR preprocessing activity to the latest three events', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-ocr-long-progress'), [
+            'Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)',
+            'Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+            'Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+            'PaddleOCR preflight saved (chunk 1/3) (file:BH.pdf)',
+            'Running paddleocr_vl in PaddleOCR (chunk 2/3) (file:BH.pdf)',
+          ].map((message) => ({
+            type: 'parse_status',
+            source: 'ocr_preprocessing',
+            conversationId: 'conversation-1',
+            messageId: 'assistant-ocr-long-progress',
+            message,
+            parseStatus: 'partial',
+          })));
+        }}
+      >
+        <SteelActivity messageId="assistant-ocr-long-progress" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    const toggle = screen.getByRole('button', { name: '5 events' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByText('Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('PaddleOCR preflight saved (chunk 1/3) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Running paddleocr_vl in PaddleOCR (chunk 2/3) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByText('Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByText('Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders OCR preprocessing error details in activity', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-ocr-error'), [
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-ocr-error',
+              message: 'ocr preprocessing failed (file:BH.pdf)',
+              parseStatus: 'partial',
+              errorMessage: 'OCR preprocessing failed for BH.pdf: organizer timeout',
+              failedKeys: ['file:BH.pdf'],
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-ocr-error" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getByText('OCR preprocessing failed for BH.pdf: organizer timeout'),
+    ).toBeInTheDocument();
   });
 
   it('does not render Steel activity on user messages', () => {

@@ -563,6 +563,58 @@ describe('S3 CRUD', () => {
     });
   });
 
+  describe('direct storage-key helpers', () => {
+    it('checks and uploads exactly the deterministic storage key', async () => {
+      const { s3ObjectExistsByKey, saveBufferToS3StorageKey } = await import('../crud');
+      s3Mock.on(HeadObjectCommand).resolvesOnce({ ContentLength: 42 });
+
+      await expect(
+        s3ObjectExistsByKey({
+          storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        }),
+      ).resolves.toEqual({
+        exists: true,
+        bytes: 42,
+      });
+      await saveBufferToS3StorageKey({
+        storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        buffer: Buffer.from('pdf'),
+        contentType: 'application/pdf',
+      });
+
+      expect(s3Mock.commandCalls(HeadObjectCommand)[0].args[0].input).toEqual({
+        Bucket: 'test-bucket',
+        Key: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+      });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input).toEqual({
+        Bucket: 'test-bucket',
+        Key: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        Body: Buffer.from('pdf'),
+        ContentType: 'application/pdf',
+      });
+    });
+
+    it('generates a signed URL for an exact deterministic storage key', async () => {
+      const { getS3DownloadURLForKey } = await import('../crud');
+      await getS3DownloadURLForKey({
+        storageKey: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+        contentType: 'application/pdf',
+      });
+
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.any(S3Client),
+        expect.objectContaining({
+          input: expect.objectContaining({
+            Bucket: 'test-bucket',
+            Key: 'ocr-preprocessing/hash/v1/pages-000001-000050.pdf',
+            ResponseContentType: 'application/pdf',
+          }),
+        }),
+        { expiresIn: 120 },
+      );
+    });
+  });
+
   describe('getS3URL', () => {
     it('returns signed URL', async () => {
       const { getS3URL } = await import('../crud');

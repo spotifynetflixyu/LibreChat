@@ -434,6 +434,8 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
     turnIndex: req.steelNativeContext?.assistantTurnIndex,
     checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
     currentTurnFiles: req.steelNativeContext?.currentTurnFiles,
+    currentOcrMarkdownResults:
+      req.steelNativeContext?.paddleOcrPreflight?.currentOcrMarkdownResults,
     response,
   });
 
@@ -893,12 +895,12 @@ const createResponse = async (req, res) => {
     });
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
-      ...(currentTurnFiles.length > 0 || paddleOcrPreflight.currentPaddleOcrResults.length > 0
+      ...(currentTurnFiles.length > 0 || paddleOcrPreflight.currentOcrMarkdownResults?.length > 0
         ? {
             attachments: {
               ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
-              ...(paddleOcrPreflight.currentPaddleOcrResults.length > 0
-                ? { currentPaddleOcrResults: paddleOcrPreflight.currentPaddleOcrResults }
+              ...(paddleOcrPreflight.currentOcrMarkdownResults?.length > 0
+                ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
                 : {}),
             },
           }

@@ -669,8 +669,8 @@ class AgentClient extends BaseClient {
       conversation: steelConversation,
       attachments: {
         currentTurnFiles: currentTurnSteelFileReferences,
-        ...(paddleOcrPreflight?.currentPaddleOcrResults?.length > 0
-          ? { currentPaddleOcrResults: paddleOcrPreflight.currentPaddleOcrResults }
+        ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
+          ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
           : {}),
         priorActiveFileEvidence: [],
       },

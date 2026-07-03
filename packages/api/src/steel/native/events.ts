@@ -7,6 +7,7 @@ export const steelNativeStreamEventName = 'steel_event' as const;
 
 export type SteelNativeEventSource =
   | 'assistant_markdown'
+  | 'ocr_preprocessing'
   | 'paddleocr_preflight'
   | 'responses_output'
   | 'tool_result';
@@ -27,6 +28,8 @@ export interface SteelNativeParseStatusEvent extends SteelNativeEventBase {
   type: 'parse_status';
   message: string;
   parseStatus: 'saved' | 'partial' | 'skipped';
+  errorMessage?: string;
+  failedKeys?: readonly string[];
   savedCounts?: SteelNativeSavedCounts;
   savedTableCounts?: SteelNativeTableCounts;
   totalSavedCounts?: SteelNativeSavedCounts;
@@ -49,6 +52,10 @@ export interface SteelNativeEventEnvelope {
   data: SteelNativeStreamEvent;
 }
 
+type CapturedSteelNativeResult =
+  | Extract<CaptureSteelNativeAssistantMarkdownResult, { status: 'captured' }>['result']
+  | Extract<CaptureSteelNativeToolResultResult, { status: 'captured' }>['result'];
+
 export interface BuildSteelNativeEventEnvelopesInput extends SteelNativeEventBase {
   capture: CaptureSteelNativeAssistantMarkdownResult | CaptureSteelNativeToolResultResult;
 }
@@ -58,6 +65,7 @@ export interface SteelPaddleOcrPreflightActivityResult {
   completedKeys?: readonly string[];
   attemptedKeys?: readonly string[];
   failedKeys?: readonly string[];
+  errorMessage?: string;
   skippedReason?: string;
   totalSavedCounts?: SteelNativeSavedCounts;
   totalTableCounts?: SteelNativeTableCounts;
@@ -66,6 +74,27 @@ export interface SteelPaddleOcrPreflightActivityResult {
 export interface BuildSteelPaddleOcrPreflightEventEnvelopesInput
   extends Omit<SteelNativeEventBase, 'source'> {
   preflight: SteelPaddleOcrPreflightActivityResult;
+}
+
+export type SteelOcrPreprocessingProgress =
+  | {
+      stage: 'pdf_chunks_ready';
+      pageCount: number;
+      chunkCount: number;
+      source: 'fetched' | 'uploaded';
+    }
+  | { stage: 'paddleocr_chunk_started'; chunkIndex: number; chunkCount: number }
+  | { stage: 'paddleocr_chunk_saved'; chunkIndex: number; chunkCount: number }
+  | { stage: 'organizer_chunk_started'; chunkIndex: number; chunkCount: number }
+  | { stage: 'organizer_chunk_saved'; chunkIndex: number; chunkCount: number }
+  | { stage: 'merged_markdowns_read'; chunkCount: number }
+  | { stage: 'processing_with_merged_markdown'; chunkCount: number }
+  | { stage: 'failed'; errorMessage: string };
+
+export interface BuildSteelOcrPreprocessingEventEnvelopesInput
+  extends Omit<SteelNativeEventBase, 'source'> {
+  ocrFileKey: string;
+  progress: SteelOcrPreprocessingProgress;
 }
 
 function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is SteelNativeSavedCounts {
@@ -77,7 +106,7 @@ function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is St
 }
 
 function captureCountMetadata(
-  result: CaptureSteelNativeAssistantMarkdownResult['result'] | CaptureSteelNativeToolResultResult['result'],
+  result: CapturedSteelNativeResult,
 ) {
   return {
     ...('savedTableCounts' in result && hasSavedCounts(result.savedTableCounts)
@@ -202,6 +231,12 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
         message: `PaddleOCR preflight ${parseStatus}`,
         parseStatus,
         ...(savedCounts ? { savedCounts } : {}),
+        ...(preflight.errorMessage
+          ? {
+              errorMessage: preflight.errorMessage,
+              failedKeys: preflight.failedKeys ?? [],
+            }
+          : {}),
         ...countMetadata,
         ...eventBase,
       },
@@ -222,4 +257,137 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
   }
 
   return events;
+}
+
+export function buildSteelOcrPreprocessingEventEnvelopes({
+  ocrFileKey,
+  progress,
+  ...input
+}: BuildSteelOcrPreprocessingEventEnvelopesInput): SteelNativeEventEnvelope[] {
+  const eventBase = baseEvent({ ...input, source: 'ocr_preprocessing' });
+
+  switch (progress.stage) {
+    case 'pdf_chunks_ready':
+      const message =
+        progress.source === 'fetched'
+          ? `Fetched pdf chunks (${progress.pageCount} pages / ${progress.chunkCount} chunks) (${ocrFileKey})`
+          : `Uploaded pdf to S3 (${progress.pageCount} pages / ${progress.chunkCount} chunks) (${ocrFileKey})`;
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
+    case 'paddleocr_chunk_started':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Running paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
+    case 'paddleocr_chunk_saved':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Ran paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'memory_saved',
+            message: `PaddleOCR preflight saved (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            savedCounts: { paddleocr_preflight: 1 },
+            ...eventBase,
+          },
+        },
+      ];
+    case 'organizer_chunk_started':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Running OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
+    case 'organizer_chunk_saved':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Ran OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'memory_saved',
+            message: `Saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+            ...eventBase,
+          },
+        },
+      ];
+    case 'merged_markdowns_read':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Read OCR markdowns (${ocrFileKey}: ${progress.chunkCount} chunks)`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
+    case 'processing_with_merged_markdown':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Processing pdf with OCR markdowns (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
+    case 'failed':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `ocr preprocessing failed (${ocrFileKey})`,
+            parseStatus: 'partial',
+            errorMessage: progress.errorMessage,
+            failedKeys: [ocrFileKey],
+            ...eventBase,
+          },
+        },
+      ];
+    default:
+      return [];
+  }
 }

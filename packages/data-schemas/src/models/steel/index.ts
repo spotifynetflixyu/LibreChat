@@ -12,6 +12,7 @@ import {
   steelExcelExportSchema,
   steelMemoryCandidateSchema,
   steelMemorySchema,
+  steelOcrPdfChunkArtifactSchema,
   steelProjectSchema,
   steelProjectSourceSchema,
   steelSourceVersionSchema,
@@ -66,6 +67,19 @@ export function createSteelWorkingOrderMemoryModel(mongoose: Mongoose): Model<t.
       'SteelWorkingOrderMemory',
       steelWorkingOrderMemorySchema,
       'steel_working_order_memory',
+    )
+  );
+}
+
+export function createSteelOcrPdfChunkArtifactModel(
+  mongoose: Mongoose,
+): Model<t.ISteelOcrPdfChunkArtifact> {
+  return (
+    getExistingModel<t.ISteelOcrPdfChunkArtifact>(mongoose, 'SteelOcrPdfChunkArtifact') ||
+    mongoose.model<t.ISteelOcrPdfChunkArtifact>(
+      'SteelOcrPdfChunkArtifact',
+      steelOcrPdfChunkArtifactSchema,
+      'steel_ocr_pdf_chunk_artifacts',
     )
   );
 }

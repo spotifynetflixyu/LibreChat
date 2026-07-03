@@ -1,5 +1,6 @@
 import {
   buildSteelNativeEventEnvelopes,
+  buildSteelOcrPreprocessingEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   steelNativeStreamEventName,
 } from './events';
@@ -246,6 +247,200 @@ describe('Steel native event mapping', () => {
           messageId: 'message_2',
         },
       },
+    ]);
+  });
+
+  it('maps OCR preprocessing chunk progress into native stream events', () => {
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'pdf_chunks_ready', pageCount: 163, chunkCount: 4, source: 'uploaded' },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Uploaded pdf to S3 (163 pages / 4 chunks) (file:file-a)',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'pdf_chunks_ready', pageCount: 106, chunkCount: 3, source: 'fetched' },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Fetched pdf chunks (106 pages / 3 chunks) (file:file-a)',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'paddleocr_chunk_started', chunkIndex: 3, chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Running paddleocr_vl in PaddleOCR (chunk 3/5) (file:file-a)',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'paddleocr_chunk_saved', chunkIndex: 3, chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Ran paddleocr_vl in PaddleOCR (chunk 3/5) (file:file-a)',
+        parseStatus: 'partial',
+      }),
+      expect.objectContaining({
+        type: 'memory_saved',
+        source: 'ocr_preprocessing',
+        message: 'PaddleOCR preflight saved (chunk 3/5) (file:file-a)',
+        savedCounts: { paddleocr_preflight: 1 },
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'organizer_chunk_started', chunkIndex: 3, chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Running OCR markdown process (chunk 3/5) (file:file-a)',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'organizer_chunk_saved', chunkIndex: 3, chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Ran OCR markdown process (chunk 3/5) (file:file-a)',
+        parseStatus: 'partial',
+      }),
+      expect.objectContaining({
+        type: 'memory_saved',
+        source: 'ocr_preprocessing',
+        message: 'Saved OCR markdown (chunk 3/5) (file:file-a)',
+        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'merged_markdowns_read', chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Read OCR markdowns (file:file-a: 5 chunks)',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'processing_with_merged_markdown', chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Processing pdf with OCR markdowns (file:file-a)',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'markdown_saved' },
+      }),
+    ).toEqual([]);
+  });
+
+  it('maps OCR preprocessing failures into UI-visible partial error activity', () => {
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_2',
+        ocrFileKey: 'file:file-a',
+        progress: {
+          stage: 'failed',
+          errorMessage: 'organizer context exceeded token budget',
+        },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'ocr preprocessing failed (file:file-a)',
+        parseStatus: 'partial',
+        errorMessage: 'organizer context exceeded token budget',
+        failedKeys: ['file:file-a'],
+      }),
+    ]);
+  });
+
+  it('maps PaddleOCR preflight failures into UI-visible partial error activity', () => {
+    expect(
+      buildSteelPaddleOcrPreflightEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_2',
+        preflight: {
+          status: 'partial',
+          attemptedKeys: ['file:file-a'],
+          failedKeys: ['file:file-a'],
+          errorMessage: 'provider timeout',
+        },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'paddleocr_preflight',
+        message: 'PaddleOCR preflight partial',
+        parseStatus: 'partial',
+        errorMessage: 'provider timeout',
+        failedKeys: ['file:file-a'],
+      }),
     ]);
   });
 });

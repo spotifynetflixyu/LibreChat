@@ -155,6 +155,34 @@ export const getExistingConversationAbortMessages = ({
   return [...sourceMessages];
 };
 
+export const getConcreteEarlyAbortMessages = ({
+  userMessage,
+  currentMessages,
+  submissionMessages,
+  isInitialNewConvo,
+  regenerateMessages,
+  isRegenerate = false,
+}: Pick<EventSubmission, 'regenerateMessages' | 'isRegenerate'> & {
+  userMessage: TMessage;
+  currentMessages?: TMessage[];
+  submissionMessages: TMessage[];
+  isInitialNewConvo: boolean;
+}): TMessage[] => {
+  if (isInitialNewConvo) {
+    const currentUserMessage = currentMessages?.find(
+      (message) => message.messageId === userMessage.messageId,
+    );
+    return [currentUserMessage ?? userMessage];
+  }
+
+  return getExistingConversationAbortMessages({
+    messages: submissionMessages,
+    currentMessages,
+    regenerateMessages,
+    isRegenerate,
+  });
+};
+
 export type EventHandlerParams = {
   isAddedRequest?: boolean;
   setCompleted: React.Dispatch<React.SetStateAction<Set<unknown>>>;
@@ -644,6 +672,7 @@ export default function useEventHandlers({
       const { requestMessage, responseMessage, conversation, runMessages } = data;
       const {
         messages,
+        userMessage,
         conversation: submissionConvo,
         isRegenerate = false,
         isTemporary: _isTemporary = false,
@@ -659,13 +688,17 @@ export default function useEventHandlers({
 
           const currentConvoId = submissionConvo.conversationId;
           const isInitialNewConvo = isInitialNewConversationSubmission(submission);
-          const isExistingConvo =
-            currentConvoId && currentConvoId !== Constants.NEW_CONVO && !isInitialNewConvo;
-          if (isExistingConvo) {
-            const abortMessages = getExistingConversationAbortMessages({
-              messages,
+          const hasConcreteCurrentConvo =
+            currentConvoId &&
+            currentConvoId !== Constants.NEW_CONVO &&
+            currentConvoId !== Constants.PENDING_CONVO;
+          if (hasConcreteCurrentConvo) {
+            const abortMessages = getConcreteEarlyAbortMessages({
+              userMessage,
               isRegenerate,
+              isInitialNewConvo,
               currentMessages: getMessages(),
+              submissionMessages: messages,
               regenerateMessages: submission.regenerateMessages,
             });
             setMessages(abortMessages);
@@ -673,8 +706,10 @@ export default function useEventHandlers({
               [QueryKeys.messages, currentConvoId],
               abortMessages,
             );
-            setDraft({ id: currentConvoId, value: requestMessage?.text });
-            restorePendingQuotes(currentConvoId, requestMessage?.quotes);
+            if (!isInitialNewConvo) {
+              setDraft({ id: currentConvoId, value: requestMessage?.text });
+              restorePendingQuotes(currentConvoId, requestMessage?.quotes);
+            }
             return;
           }
 

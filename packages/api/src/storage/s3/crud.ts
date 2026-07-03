@@ -303,6 +303,14 @@ export function resolveStoredS3Key(
   return file.storageKey || extractKeyFromS3Url(file.filepath);
 }
 
+function assertS3ObjectKey(label: string, value: string, errorPrefix: string): string {
+  const key = assertS3FileName(label, value.replace(/^\/+/, ''), errorPrefix);
+  if (!key.includes('/')) {
+    throw new Error(`[${errorPrefix}] ${label} must include at least one path separator`);
+  }
+  return key;
+}
+
 async function getS3URLForKey({
   key,
   customFilename = null,
@@ -333,6 +341,19 @@ async function getS3URLForKey({
     logger.error('[getS3URL] Error getting signed URL from S3:', (error as Error).message);
     throw error;
   }
+}
+
+export async function getS3DownloadURLForKey({
+  storageKey,
+  customFilename = null,
+  contentType = null,
+}: {
+  storageKey: string;
+  customFilename?: string | null;
+  contentType?: string | null;
+}): Promise<string> {
+  const key = assertS3ObjectKey('storageKey', storageKey, 'getS3DownloadURLForKey');
+  return getS3URLForKey({ key, customFilename, contentType });
 }
 
 export async function getS3URL({
@@ -405,6 +426,66 @@ export async function saveBufferToS3({
     });
   } catch (error) {
     logger.error('[saveBufferToS3] Error uploading buffer to S3:', (error as Error).message);
+    throw error;
+  }
+}
+
+export async function s3ObjectExistsByKey({
+  storageKey,
+}: {
+  storageKey: string;
+}): Promise<{ exists: boolean; bytes?: number; storageRegion?: string }> {
+  const key = assertS3ObjectKey('storageKey', storageKey, 's3ObjectExistsByKey');
+  const s3 = initializeS3();
+  if (!s3) {
+    throw new Error('[s3ObjectExistsByKey] S3 not initialized');
+  }
+
+  try {
+    const result = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
+    const metadata = getStorageMetadataForKey(key);
+    return {
+      exists: true,
+      ...(typeof result.ContentLength === 'number' ? { bytes: result.ContentLength } : {}),
+      ...(metadata.storageRegion ? { storageRegion: metadata.storageRegion } : {}),
+    };
+  } catch (error) {
+    const name = (error as { name?: string }).name;
+    if (name === 'NotFound' || name === 'NoSuchKey') {
+      return { exists: false };
+    }
+    throw error;
+  }
+}
+
+export async function saveBufferToS3StorageKey({
+  storageKey,
+  buffer,
+  contentType = null,
+}: {
+  storageKey: string;
+  buffer: Buffer | Uint8Array;
+  contentType?: string | null;
+}): Promise<{ bytes: number; storageRegion?: string }> {
+  const key = assertS3ObjectKey('storageKey', storageKey, 'saveBufferToS3StorageKey');
+  const params: PutObjectCommandInput = { Bucket: bucketName, Key: key, Body: buffer };
+  if (contentType) {
+    params.ContentType = contentType;
+  }
+
+  try {
+    const s3 = initializeS3();
+    if (!s3) {
+      throw new Error('[saveBufferToS3StorageKey] S3 not initialized');
+    }
+    await s3.send(new PutObjectCommand(params));
+    const metadata = getStorageMetadataForKey(key);
+    return {
+      bytes: buffer.byteLength,
+      ...(metadata.storageRegion ? { storageRegion: metadata.storageRegion } : {}),
+    };
+  } catch (error) {
+    logger.error('[saveBufferToS3StorageKey] Error uploading buffer to S3:', (error as Error).message);
     throw error;
   }
 }

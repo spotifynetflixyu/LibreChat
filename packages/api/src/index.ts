@@ -85,6 +85,7 @@ export * from './steel/memory/service';
 export * from './steel/models';
 export * from './steel/native';
 export * from './steel/normalization';
+export * from './steel/ocr';
 export * from './steel/postgres';
 export * from './steel/repositories';
 export * from './steel/tools';

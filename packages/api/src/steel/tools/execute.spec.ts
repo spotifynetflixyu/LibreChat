@@ -816,6 +816,116 @@ describe('Steel minimal tool execution', () => {
     expect(markdown).toContain('| filename |d.pdf |');
   });
 
+  it('reads official OCR Markdown and excludes raw or subagent chunk rows', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    snapshot.derivedIndex.ocrExtracts = [
+      {
+        kind: 'paddleocr_mcp_chunk_result',
+        ocrSource: 'paddleocr_mcp',
+        ocrFileKey: 'file:file-a',
+        filename: 'a.pdf',
+        content: 'raw a chunk must stay out',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/a.pdf',
+          chunkIndex: 1,
+          chunkCount: 2,
+        },
+      },
+      {
+        kind: 'ocr_preprocessing_chunk_markdown',
+        ocrSource: 'ocr_preprocessing_subagent',
+        ocrFileKey: 'file:file-a',
+        filename: 'a.pdf',
+        content: '| 品名 | 數量 |\n|---|---|\n| A | 1 |',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/a.pdf',
+          chunkIndex: 1,
+          chunkCount: 2,
+          ocrRuleVersion: 'rules-v2',
+        },
+      },
+      {
+        kind: 'ocr_preprocessing_chunk_markdown',
+        ocrSource: 'ocr_preprocessing_subagent',
+        ocrFileKey: 'file:file-a',
+        filename: 'a.pdf',
+        content: '| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/a.pdf',
+          chunkIndex: 2,
+          chunkCount: 2,
+          ocrRuleVersion: 'rules-v2',
+        },
+      },
+      {
+        kind: 'ocr_preprocessing_chunk_markdown',
+        ocrSource: 'ocr_preprocessing_subagent',
+        ocrFileKey: 'file:file-b',
+        filename: 'b.pdf',
+        content: '| 件號 | 長度 |\n|---|---|\n| C | 300 |',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/b.pdf',
+          chunkIndex: 1,
+          chunkCount: 1,
+          ocrRuleVersion: 'rules-v2',
+        },
+      },
+      {
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:file-a',
+        filename: 'a.pdf',
+        content: '<file:file-a>\n\n| 品名 | 數量 |\n|---|---|\n| OFFICIAL | 8 |',
+        ocrPreprocessing: {
+          sourcePdfKey: 'uploads/a.pdf',
+          chunkCount: 2,
+          ocrRuleVersion: 'rules-v2',
+          official: true,
+        },
+      },
+    ];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: {
+        scope: 'ocr',
+        reason: 'Need all OCR markdown',
+      },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    const markdown = String(result.data.markdown);
+
+    expect(result.data.ocrFileKey).toBeUndefined();
+    expect(result.data.items).toEqual([
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: 'file:file-a',
+        content: expect.stringContaining('OFFICIAL'),
+      }),
+    ]);
+    expect(markdown).toContain('<file:file-a>');
+    expect(markdown).toContain('| OFFICIAL | 8 |');
+    expect(markdown).not.toContain('| A | 1 |');
+    expect(markdown).not.toContain('| B | SS400 |');
+    expect(markdown).not.toContain('<file:file-b>');
+    expect(markdown).not.toContain('| 件號 | 長度 |');
+    expect(markdown).not.toContain('raw a chunk must stay out');
+  });
+
   it('keeps later OCR file keys visible when earlier OCR text is long', async () => {
     const snapshot = createOutputSheetMemorySnapshot();
     snapshot.derivedIndex.ocrExtracts = [

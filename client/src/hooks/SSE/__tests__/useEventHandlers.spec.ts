@@ -2,6 +2,7 @@ import { Constants } from 'librechat-data-provider';
 import type { EventSubmission, TMessage } from 'librechat-data-provider';
 import {
   buildCreatedInitialResponse,
+  getConcreteEarlyAbortMessages,
   getExistingConversationAbortMessages,
   isInitialNewConversationSubmission,
   mergeRegenerateFinalMessages,
@@ -169,6 +170,37 @@ describe('getExistingConversationAbortMessages', () => {
       getExistingConversationAbortMessages({
         messages: submissionMessages,
         currentMessages,
+      }).map(({ messageId }) => messageId),
+    ).toEqual(['user-1']);
+  });
+});
+
+describe('getConcreteEarlyAbortMessages', () => {
+  const userMessage = {
+    messageId: 'user-1',
+    conversationId: 'conversation-1',
+    text: 'OCR檔案內容，逐一列表給我核對。',
+    isCreatedByUser: true,
+    sender: 'User',
+    parentMessageId: Constants.NO_PARENT,
+  } as TMessage;
+
+  const assistantPlaceholder = {
+    messageId: 'user-1_',
+    parentMessageId: 'user-1',
+    conversationId: 'conversation-1',
+    text: '',
+    isCreatedByUser: false,
+    sender: 'Assistant',
+  } as TMessage;
+
+  it('keeps the already-created user message when a new conversation is stopped during preflight', () => {
+    expect(
+      getConcreteEarlyAbortMessages({
+        currentMessages: [userMessage, assistantPlaceholder],
+        submissionMessages: [],
+        userMessage,
+        isInitialNewConvo: true,
       }).map(({ messageId }) => messageId),
     ).toEqual(['user-1']);
   });

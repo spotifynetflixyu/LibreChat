@@ -15,7 +15,7 @@ const {
   configMiddleware,
   messageUserLimiter,
 } = require('~/server/middleware');
-const { saveMessage } = require('~/models');
+const { saveConvo, saveMessage } = require('~/models');
 const responses = require('./responses');
 const openai = require('./openai');
 const { v1 } = require('./v1');
@@ -26,6 +26,41 @@ const { LIMIT_MESSAGE_IP, LIMIT_MESSAGE_USER } = process.env ?? {};
 /** Untenanted jobs (pre-multi-tenancy) remain accessible if the userId check passes. */
 function hasTenantMismatch(job, user) {
   return job.metadata?.tenantId != null && job.metadata.tenantId !== user.tenantId;
+}
+
+async function saveAbortUserMessage(req, userId, jobData) {
+  const userMessage = jobData?.userMessage;
+  const conversationId = jobData?.conversationId || userMessage?.conversationId;
+  if (!userMessage?.messageId || !conversationId) {
+    return;
+  }
+
+  const reqCtx = {
+    userId: req?.user?.id,
+    isTemporary: req?.body?.isTemporary,
+    interfaceConfig: req?.config?.interfaceConfig,
+  };
+  const context = 'api/server/routes/agents/index.js - abort user message';
+
+  try {
+    const savedUserMessage = await saveMessage(
+      reqCtx,
+      {
+        ...userMessage,
+        conversationId,
+        sender: userMessage.sender || 'User',
+        isCreatedByUser: true,
+        user: userId,
+      },
+      { context },
+    );
+
+    if (savedUserMessage) {
+      await saveConvo(reqCtx, savedUserMessage, { context });
+    }
+  } catch (saveError) {
+    logger.error(`[AgentStream] Failed to save abort user message: ${saveError.message}`);
+  }
 }
 
 const router = express.Router();
@@ -269,6 +304,10 @@ router.post('/chat/abort', async (req, res) => {
       abortResultUserMessageId: abortResult.jobData?.userMessage?.messageId,
       abortResultResponseMessageId: abortResult.jobData?.responseMessageId,
     });
+
+    if (abortResult.success) {
+      await saveAbortUserMessage(req, userId, abortResult.jobData);
+    }
 
     // CRITICAL: Save partial response BEFORE returning to prevent race condition.
     // If user sends a follow-up immediately after abort, the parentMessageId must exist in DB.

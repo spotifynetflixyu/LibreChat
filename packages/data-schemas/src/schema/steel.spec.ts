@@ -7,6 +7,7 @@ import {
   createSteelConversationMetaModel,
   createSteelConversationTurnModel,
   createSteelMemoryCandidateModel,
+  createSteelOcrPdfChunkArtifactModel,
   createSteelWorkingOrderMemoryModel,
   createSteelSourceVersionModel,
 } from '../models/steel';
@@ -32,6 +33,34 @@ describe('Steel Mongo schemas', () => {
     expect(SteelAICapability.collection.name).toBe('steel_ai_capabilities');
     expect(SteelAuditLog.collection.name).toBe('steel_audit_logs');
     expect(SteelSourceVersion.collection.name).toBe('steel_source_versions');
+  });
+
+  it('stores OCR PDF chunk artifacts with source-PDF chunk identity', () => {
+    const SteelOcrPdfChunkArtifact = createSteelOcrPdfChunkArtifactModel(mongoose);
+
+    expect(SteelOcrPdfChunkArtifact.collection.name).toBe('steel_ocr_pdf_chunk_artifacts');
+    expect(SteelOcrPdfChunkArtifact.schema.path('sourcePdfKey')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('sourceStorageKey')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('sourceFileId')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('pipelineVersion')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('chunkIndex')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('chunkCount')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('pageStart')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('pageEnd')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('chunkSizePages')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('artifact.storageKey')).toBeDefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('conversationId')).toBeUndefined();
+    expect(SteelOcrPdfChunkArtifact.schema.indexes()).toContainEqual([
+      {
+        sourcePdfKey: 1,
+        pipelineVersion: 1,
+        chunkSizePages: 1,
+        chunkIndex: 1,
+        pageStart: 1,
+        pageEnd: 1,
+      },
+      expect.objectContaining({ unique: true }),
+    ]);
   });
 
   it('indexes account privacy, guest token, and provider capability lookup fields', () => {
@@ -125,6 +154,34 @@ describe('Steel Mongo schemas', () => {
     ]);
     expect(SteelWorkingOrderMemory.schema.indexes()).toContainEqual([
       { conversationId: 1, checkpointTurnIndex: 1, state: 1 },
+      expect.any(Object),
+    ]);
+    expect(SteelWorkingOrderMemory.schema.indexes()).toContainEqual([
+      {
+        conversationId: 1,
+        state: 1,
+        memoryKind: 1,
+        'payload.ocrFileKey': 1,
+        'payload.ocrPreprocessing.sourcePdfKey': 1,
+        'payload.ocrPreprocessing.pipelineVersion': 1,
+        'payload.ocrPreprocessing.chunkIndex': 1,
+      },
+      expect.any(Object),
+    ]);
+    expect(SteelWorkingOrderMemory.schema.indexes()).toContainEqual([
+      {
+        conversationId: 1,
+        state: 1,
+        memoryKind: 1,
+        'payload.kind': 1,
+        'payload.ocrSource': 1,
+        'payload.ocrFileKey': 1,
+        'payload.ocrPreprocessing.sourcePdfKey': 1,
+        'payload.ocrPreprocessing.ocrRuleVersion': 1,
+        'payload.ocrPreprocessing.pipelineVersion': 1,
+        turnIndex: -1,
+        createdAt: -1,
+      },
       expect.any(Object),
     ]);
   });

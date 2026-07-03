@@ -118,6 +118,28 @@ steelWorkingOrderMemorySchema.index({
   'payload.ocrFileKey': 1,
   'payload.ocrSource': 1,
 });
+steelWorkingOrderMemorySchema.index({
+  conversationId: 1,
+  state: 1,
+  memoryKind: 1,
+  'payload.ocrFileKey': 1,
+  'payload.ocrPreprocessing.sourcePdfKey': 1,
+  'payload.ocrPreprocessing.pipelineVersion': 1,
+  'payload.ocrPreprocessing.chunkIndex': 1,
+});
+steelWorkingOrderMemorySchema.index({
+  conversationId: 1,
+  state: 1,
+  memoryKind: 1,
+  'payload.kind': 1,
+  'payload.ocrSource': 1,
+  'payload.ocrFileKey': 1,
+  'payload.ocrPreprocessing.sourcePdfKey': 1,
+  'payload.ocrPreprocessing.ocrRuleVersion': 1,
+  'payload.ocrPreprocessing.pipelineVersion': 1,
+  turnIndex: -1,
+  createdAt: -1,
+});
 steelWorkingOrderMemorySchema.index({ conversationId: 1, checkpointTurnIndex: 1, state: 1 });
 
 export default steelWorkingOrderMemorySchema;

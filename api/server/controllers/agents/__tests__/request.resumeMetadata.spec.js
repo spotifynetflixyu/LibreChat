@@ -318,6 +318,63 @@ describe('ResumableAgentController resume metadata', () => {
     );
   });
 
+  it('stores uploaded files in the in-flight turn before MCP initialization', async () => {
+    const conversationId = 'conversation-123';
+    const initializeClient = jest.fn().mockRejectedValue(new Error('stop before tool loading'));
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        messageId: 'file-user-message',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        conversationId,
+        files: [
+          {
+            file_id: 'file-bh-pdf',
+            filename: 'BH.pdf',
+            filepath: 'files/user-123/BH.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+            height: 0,
+            width: 0,
+            text: 'must not be stored in preliminary metadata',
+            _id: 'mongo-row-id',
+            __v: 0,
+          },
+        ],
+        endpointOption: {
+          endpoint: 'agents',
+          modelOptions: { model: 'gpt-5.5' },
+        },
+      },
+      config: {},
+    };
+    const res = createResumableResponse();
+
+    await AgentController(req, res, jest.fn(), initializeClient, null);
+
+    expect(mockGenerationJobManager.updateMetadata).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({
+        userMessage: expect.objectContaining({
+          messageId: 'file-user-message',
+          conversationId,
+          files: [
+            {
+              file_id: 'file-bh-pdf',
+              filename: 'BH.pdf',
+              filepath: 'files/user-123/BH.pdf',
+              type: 'application/pdf',
+              bytes: 1024,
+              height: 0,
+              width: 0,
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
   it('keeps request-scoped MCP connections until resumable initialization finishes', async () => {
     const conversationId = 'conversation-123';
     const disconnect = jest.fn().mockResolvedValue(undefined);

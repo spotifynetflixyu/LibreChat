@@ -94,7 +94,40 @@ function getPreliminaryResponseMessageId({ messageId, responseMessageId }) {
   return `${messageId.replace(/_+$/, '')}_`;
 }
 
-function getPreliminaryUserMessage({ messageId, parentMessageId, text, quotes }, conversationId) {
+function getPreliminaryMessageFiles(files) {
+  if (!Array.isArray(files)) {
+    return;
+  }
+
+  const messageFiles = [];
+  for (const file of files) {
+    if (!file || typeof file !== 'object') {
+      continue;
+    }
+
+    if (typeof file.file_id !== 'string' || file.file_id.length === 0) {
+      continue;
+    }
+
+    const messageFile = {
+      file_id: file.file_id,
+      ...(typeof file.temp_file_id === 'string' && { temp_file_id: file.temp_file_id }),
+      ...(typeof file.filename === 'string' && { filename: file.filename }),
+      ...(typeof file.filepath === 'string' && { filepath: file.filepath }),
+      ...(typeof file.type === 'string' && { type: file.type }),
+      ...(typeof file.bytes === 'number' && { bytes: file.bytes }),
+      ...(typeof file.height === 'number' && { height: file.height }),
+      ...(typeof file.width === 'number' && { width: file.width }),
+      ...(typeof file.source === 'string' && { source: file.source }),
+      ...(typeof file.embedded === 'boolean' && { embedded: file.embedded }),
+    };
+    messageFiles.push(messageFile);
+  }
+
+  return messageFiles.length > 0 ? messageFiles : undefined;
+}
+
+function getPreliminaryUserMessage({ messageId, parentMessageId, text, quotes, files }, conversationId) {
   if (typeof messageId !== 'string' || messageId.length === 0) {
     return null;
   }
@@ -106,12 +139,14 @@ function getPreliminaryUserMessage({ messageId, parentMessageId, text, quotes },
    * turn keeps its `MessageQuotes`.
    */
   const referencedQuotes = getReferencedQuotes(quotes);
+  const messageFiles = getPreliminaryMessageFiles(files);
 
   return {
     messageId,
     parentMessageId,
     conversationId,
     text,
+    ...(messageFiles !== undefined && { files: messageFiles }),
     ...(referencedQuotes != null && { quotes: referencedQuotes }),
   };
 }

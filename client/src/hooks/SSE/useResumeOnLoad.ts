@@ -83,7 +83,7 @@ function preferDefinedString(value?: string | null, fallback?: string): string |
 }
 
 function toResumeTimestamp(value?: number): string | undefined {
-  if (!Number.isFinite(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return undefined;
   }
   return new Date(value).toISOString();

@@ -99,6 +99,21 @@
   original PDF can reuse existing chunk PDFs; conversation-scoped
   `paddleocr_preflight` / `ocr_extract` rows should only reference that source
   key as OCR evidence state.
+- OCR preprocessing must not persist a second full merged OCR Markdown row.
+  Store organizer output per chunk only; at runtime, read the chunk Markdown
+  rows and merge them into exactly one main-agent OCR Markdown attachment for
+  that PDF file key. Raw PaddleOCR chunk results and per-chunk Markdown arrays
+  are intermediate evidence/resume state, not main-agent context.
+- OCR preprocessing resume state has two DB-backed nodes:
+  `paddleocr_preflight` raw chunk rows for PaddleOCR progress and
+  `ocr_extract` chunk Markdown rows for subagent progress. On retry, continue
+  from the first missing raw chunk if raw is incomplete, otherwise from the
+  first missing organized Markdown chunk.
+- `read_markdown(scope: "ocr")` must return all OCR Markdown automatically for
+  preprocessing PDFs, with each file's merged all-chunk Markdown labeled by
+  `<file_key>`. Do not require the agent to ask for individual file/chunk parts,
+  and do not return raw PaddleOCR chunks as the default OCR read when organized
+  chunk Markdown exists.
 - When checking a user's Steel OCR count report, distinguish per-event activity
   `savedCounts` from aggregate persisted state. Verify production
   `steel_working_order_memory` by `memoryKind`, `ocrFileKey`, `fileId`, and
@@ -681,3 +696,89 @@
 - OCR preprocessing merged Markdown must tolerate different headers across
   chunks. Union headers in first-seen order, keep all rows, and leave missing
   cells blank instead of inferring values.
+- OpenAI OAuth organizer smokes should not assume OAuth is unavailable just
+  because dev `.env` does not set `OPENAI_OAUTH_AUTH_FILE`. On this machine,
+  the default npm/OpenAI OAuth token path may be valid; use the default resolver
+  unless the user explicitly asks to override it.
+- OCR preprocessing organizer/subagent failures and PaddleOCR provider failures
+  must surface as chat request errors, not only as partial activity state. Emit a
+  UI-visible redacted activity error, then throw a redacted error so the chat
+  message shows the concrete failure.
+- Direct AI calls to the PaddleOCR MCP tool must follow the same raw-to-Markdown
+  contract as automatic preflight. Store raw output as `paddleocr_preflight`,
+  organize it into `ocr_extract` chunk Markdown, and return only merged
+  `<file_key>` OCR Markdown to the agent context.
+- OCR preprocessing has two durable resume nodes: PaddleOCR/preflight raw data
+  and organizer/subagent Markdown. After all PaddleOCR chunks finish, re-read
+  preflight state from DB for organizer input; after organizer chunks save,
+  re-read Markdown state from DB for runtime merge.
+- For PDFs under the 50-page chunk size, skip only the PDF splitting/uploading
+  step. Still create a single `1/1` chunk identity and run the same
+  PaddleOCR -> organizer/subagent Markdown -> returned merged Markdown flow.
+- OCR preprocessing progress is only useful if the frontend keeps every event.
+  Add new Steel activity sources to the SSE allow-list, include `message` in
+  the dedupe key, preserve `errorMessage`/`failedKeys`, and render
+  `ocr_preprocessing` labels verbatim instead of mapping them to generic
+  PaddleOCR text.
+- Stop/preflight cleanup must treat a generated UUID/stream id as a real
+  conversation id even before the backend `created` event arrives. Once the
+  optimistic user message is hydrated under that id, abort/404/error cleanup
+  must not remove the sidebar row or navigate back to `/c/new`; preserve the
+  user message, persist it from the abort endpoint when needed, and only clean
+  true `new`/`pending` placeholders.
+- Preflight abort persistence must seed a complete displayable user message in
+  `GenerationJobManager` metadata before client initialization finishes. Include
+  uploaded file metadata such as `file_id`, `filename`, `filepath`, `type`, and
+  `bytes`, while excluding raw file text/OCR content, so refresh after Stop
+  still renders the original PDF chip.
+- OCR PDF chunk artifact reuse requires both a DB row and a successful S3
+  existence check for that row's storage key. Only then show `Fetched pdf
+  chunks`; if the S3 object is missing, regenerate and upload the chunk PDF and
+  keep the progress event on the uploaded path.
+- OCR preprocessing must use one unified PaddleOCR flow for PDF chunks,
+  under-50-page PDFs, images, and whole-file inputs. Treat image/whole-file
+  inputs as a single `1/1` chunk and run raw PaddleOCR -> organizer/subagent
+  Markdown -> official OCR Markdown; do not keep a separate generic
+  PaddleOCR event or generic raw-save path.
+- Official OCR Markdown is the only `read_markdown(scope: "ocr")` data.
+  Subagent chunk Markdown and PaddleOCR raw rows are resume/progress state only,
+  and AI-agent OCR Markdown must not be promoted to official PaddleOCR OCR
+  Markdown unless it came through the PaddleOCR preprocessing pipeline.
+- Official OCR Markdown needs an OCR source distinction. PaddleOCR-derived
+  official rows may skip future PaddleOCR preflight for the same file key, but
+  AI OCR-derived official rows must remain readable OCR Markdown only and must
+  not satisfy the PaddleOCR preflight skip check.
+- Multi-file official OCR Markdown should not be a single replace-all
+  `default` bucket. Store each multi-file OCR result as its own active row with
+  `ocrFileKey: "default"`, `ocrFileKeys`, and a stable `ocrGroupKey` derived
+  from the covered file key set, so later OCR for a different file set does not
+  overwrite completed OCR Markdown.
+- Multi-file OCR turns must be batched by message phase, not run as independent
+  full per-file pipelines. First build every file/chunk identity, then run
+  PaddleOCR for all missing chunks, then organizer/subagent Markdown for all
+  missing chunks, then pass merged per-file OCR Markdown attachments to the
+  main agent together.
+- When the main agent returns multiple PaddleOCR-derived official OCR Markdown
+  tables that each match a file key or filename, save each official Markdown
+  under that matched file key. Use the `default` multi-file grouping only for
+  genuinely integrated OCR Markdown that cannot be attributed to one file.
+- OCR preprocessing resume tests must prove file-key isolation, not just
+  generic retry. Cover multi-file partial progress where one file resumes from
+  saved PaddleOCR raw data while another file still runs PaddleOCR, and verify
+  DB reads are scoped by both `ocrFileKey` and `sourcePdfKey`.
+- Organized subagent chunk Markdown is progress/resume state. Its save counters
+  should stay `ocr_preprocessing_chunk_markdown`; do not count it as official
+  `ocr_markdown`/OCR table output until the main agent returns official OCR
+  Markdown.
+- OCR preprocessing chunk size must have one config source. Use
+  `STEEL_OCR_PREPROCESSING_CHUNK_SIZE_PAGES` with fallback `50` through the
+  shared OCR config helper, and pass the resolved value into ToolService chunk
+  planning instead of scattering literal `50` values in runtime code.
+- When simplifying OCR preprocessing tests, remove old single-file pipeline
+  compatibility adapters. ToolService tests should mock the current batch
+  contract (`files: [...]` -> `{ files: [...] }`) so test fixtures do not hide
+  production shape drift.
+- For large-PDF OCR preprocessing, check existing official OCR Markdown and
+  complete organized chunk state before downloading/counting the PDF. Resume
+  state can skip expensive file IO when the batch pipeline only needs to emit
+  merged Markdown events.

@@ -40,6 +40,7 @@ export interface SteelNativeAssistantMarkdownMessage {
   error?: unknown;
   temporary?: boolean;
   currentTurnFiles?: readonly SteelOcrFileReference[];
+  currentOcrMarkdownResults?: readonly SteelOcrFileReference[];
 }
 
 export interface CaptureSteelNativeAssistantMarkdownInput
@@ -65,6 +66,7 @@ export interface CaptureSteelNativeResponseOutputInput {
   turnIndex?: number;
   checkpointTurnIndex?: number;
   currentTurnFiles?: readonly SteelOcrFileReference[];
+  currentOcrMarkdownResults?: readonly SteelOcrFileReference[];
   response: Pick<Response, 'id' | 'status' | 'output' | 'error'>;
 }
 
@@ -175,6 +177,7 @@ export async function captureSteelNativeAssistantMarkdown({
   error,
   temporary,
   currentTurnFiles,
+  currentOcrMarkdownResults,
 }: CaptureSteelNativeAssistantMarkdownInput): Promise<CaptureSteelNativeAssistantMarkdownResult> {
   if (isCreatedByUser) {
     return { status: 'skipped', reason: 'user_message' };
@@ -211,6 +214,7 @@ export async function captureSteelNativeAssistantMarkdown({
     checkpointTurnIndex: getCheckpointTurnIndex({ checkpointTurnIndex, turnIndex }),
     content: markdown,
     ...(currentTurnFiles !== undefined ? { currentTurnFiles } : {}),
+    ...(currentOcrMarkdownResults !== undefined ? { currentOcrMarkdownResults } : {}),
   });
 
   return { status: 'captured', result };
@@ -223,6 +227,7 @@ export async function captureSteelNativeResponseOutput({
   turnIndex,
   checkpointTurnIndex,
   currentTurnFiles,
+  currentOcrMarkdownResults,
   response,
 }: CaptureSteelNativeResponseOutputInput): Promise<CaptureSteelNativeAssistantMarkdownResult> {
   const messageId = responseId ?? response.id;
@@ -235,6 +240,7 @@ export async function captureSteelNativeResponseOutput({
     turnIndex,
     checkpointTurnIndex,
     currentTurnFiles,
+    currentOcrMarkdownResults,
     text: extractSteelNativeResponseOutputText(response),
     unfinished: response.status === 'in_progress' || response.status === 'incomplete',
     error: response.error ?? (response.status === 'failed' ? true : undefined),

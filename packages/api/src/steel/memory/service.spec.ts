@@ -1093,10 +1093,9 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1 },
-      savedTableCounts: { ocr_table: 1 },
-      totalSavedCounts: { ocr_extract: 1 },
-      totalTableCounts: { ocr_table: 1 },
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
     });
     expect(ocrEntries).toHaveLength(1);
     expect(ocrEntries[0]).toEqual(
@@ -1104,7 +1103,9 @@ describe('Mongoose Steel working-order memory reader', () => {
         sourceKind: 'assistant_final_markdown',
         state: 'active',
         payload: expect.objectContaining({
-          kind: 'assistant_ocr_markdown',
+          kind: 'ocr_official_markdown',
+          ocrSource: 'ai_official_markdown',
+          ocrEngine: 'assistant',
           markdown: expect.stringContaining('PL6*80*1000'),
           tableIndex: 1,
         }),
@@ -1153,15 +1154,15 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1 },
-      savedTableCounts: { ocr_table: 1 },
-      totalSavedCounts: { ocr_extract: 1 },
-      totalTableCounts: { ocr_table: 1 },
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
     });
     expect(activeEntries).toHaveLength(1);
     expect(activeEntries[0]?.payload).toEqual(
       expect.objectContaining({
-        kind: 'assistant_ocr_markdown',
+        kind: 'ocr_official_markdown',
+        ocrSource: 'ai_official_markdown',
         ocrFileKey: 'file:file-a',
         fileId: 'file-a',
         filename: 'a.jpg',
@@ -1211,10 +1212,9 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1 },
-      savedTableCounts: { ocr_table: 1 },
-      totalSavedCounts: { ocr_extract: 1 },
-      totalTableCounts: { ocr_table: 1 },
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
     });
     expect(entry).toEqual(
       expect.objectContaining({
@@ -1223,7 +1223,8 @@ describe('Mongoose Steel working-order memory reader', () => {
           fileId: 'file-ai-fallback',
           filename: 'fallback.pdf',
           mediaType: 'application/pdf',
-          ocrSource: 'assistant_ocr',
+          kind: 'ocr_official_markdown',
+          ocrSource: 'ai_official_markdown',
           ocrEngine: 'assistant',
         }),
       }),
@@ -1238,6 +1239,251 @@ describe('Mongoose Steel working-order memory reader', () => {
       ],
       missingKeys: ['file:file-ai-fallback'],
     });
+  });
+
+  it('keeps separate multi-file official OCR Markdown groups under default', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const table = (spec: string) =>
+      [
+        '## OCR result review table',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        `| merged | P1 | ${spec} | 4 | 8 | 高 | 否 |`,
+      ].join('\n');
+
+    await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_ab',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          mediaType: 'application/pdf',
+        },
+        {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
+      content: table('AB'),
+    });
+    await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_cd',
+      turnIndex: 9,
+      checkpointTurnIndex: 8,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-c',
+          fileId: 'file-c',
+          filename: 'c.pdf',
+          mediaType: 'application/pdf',
+        },
+        {
+          ocrFileKey: 'file:file-d',
+          fileId: 'file-d',
+          filename: 'd.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
+      content: table('CD'),
+    });
+    await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_ab_revision',
+      turnIndex: 10,
+      checkpointTurnIndex: 9,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          mediaType: 'application/pdf',
+        },
+        {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
+      content: table('AB revised'),
+    });
+
+    const entries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    }).lean();
+    const fileAOfficial = await writer.readOfficialOcrMarkdown({
+      conversationId: 'steel_conversation_1',
+      sourcePdfKey: 'unused',
+      ocrFileKey: 'file:file-a',
+      ocrRuleVersion: 'unused',
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.payload)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ocrFileKey: 'default',
+          ocrFileKeys: ['file:file-a', 'file:file-b'],
+          ocrGroupKey: 'files:file:file-a|file:file-b',
+          ocrSource: 'paddleocr_official_markdown',
+          markdown: expect.stringContaining('AB revised'),
+        }),
+        expect.objectContaining({
+          ocrFileKey: 'default',
+          ocrFileKeys: ['file:file-c', 'file:file-d'],
+          ocrGroupKey: 'files:file:file-c|file:file-d',
+          ocrSource: 'paddleocr_official_markdown',
+          markdown: expect.stringContaining('CD'),
+        }),
+      ]),
+    );
+    expect(fileAOfficial?.markdown).toContain('AB revised');
+  });
+
+  it('saves split PaddleOCR official OCR Markdown tables by matched file key', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_split',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          mediaType: 'application/pdf',
+        },
+        {
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
+      content: [
+        '## OCR result review table - a.pdf',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        '| a.pdf | A1 | A-SPEC | 1 | 1 | 高 | 否 |',
+        '',
+        '## OCR result review table - b.pdf',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        '| b.pdf | B1 | B-SPEC | 2 | 2 | 高 | 否 |',
+      ].join('\n'),
+    });
+    const entries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    })
+      .sort({ 'payload.ocrFileKey': 1 })
+      .lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_markdown: 2 },
+      totalSavedCounts: { ocr_markdown: 2 },
+      totalTableCounts: {},
+    });
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.payload)).toEqual([
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: 'file:file-a',
+        fileId: 'file-a',
+        filename: 'a.pdf',
+        markdown: expect.stringContaining('A-SPEC'),
+      }),
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: 'file:file-b',
+        fileId: 'file-b',
+        filename: 'b.pdf',
+        markdown: expect.stringContaining('B-SPEC'),
+      }),
+    ]);
+  });
+
+  it('matches PaddleOCR official OCR Markdown by file key and source metadata when present', async () => {
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_source_scoped',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          mediaType: 'application/pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/a-v1.pdf',
+            chunkCount: 1,
+            ocrRuleVersion: 'rules-v2',
+            source: 'paddleocr_markdowns',
+          },
+        },
+      ],
+      content: [
+        '## OCR result review table - a.pdf',
+        '',
+        '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
+        '|---|---|---|---:|---:|---|---|',
+        '| a.pdf | A1 | A-SPEC | 1 | 1 | 高 | 否 |',
+      ].join('\n'),
+    });
+
+    await expect(
+      writer.readOfficialOcrMarkdown({
+        conversationId: 'steel_conversation_1',
+        sourcePdfKey: 'uploads/a-v1.pdf',
+        ocrFileKey: 'file:file-a',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        markdown: expect.stringContaining('A-SPEC'),
+        chunkCount: 1,
+      }),
+    );
+    await expect(
+      writer.readOfficialOcrMarkdown({
+        conversationId: 'steel_conversation_1',
+        sourcePdfKey: 'uploads/a-v2.pdf',
+        ocrFileKey: 'file:file-a',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      writer.readOfficialOcrMarkdown({
+        conversationId: 'steel_conversation_1',
+        sourcePdfKey: 'uploads/a-v1.pdf',
+        ocrFileKey: 'file:file-a',
+        ocrRuleVersion: 'rules-v3',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('finds only files without active PaddleOCR OCR', async () => {
@@ -1309,7 +1555,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
   });
 
-  it('exposes PaddleOCR preflight raw results as OCR evidence for read_markdown', async () => {
+  it('keeps PaddleOCR preflight raw results out of OCR read evidence', async () => {
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const reader = createMongooseSteelOutputSheetMemoryReader(
       mongoose,
@@ -1340,22 +1586,748 @@ describe('Mongoose Steel working-order memory reader', () => {
     const snapshot = await reader.readOutputSheetMemory();
 
     expect(snapshot.previousOutputSheets.system_order.rows).toHaveLength(0);
-    expect(snapshot.derivedIndex.ocrExtracts).toEqual([
+    expect(snapshot.derivedIndex.ocrExtracts).toEqual([]);
+  });
+
+  it('reads OCR preprocessing chunk state for current OCR rule version', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const sourcePdfKey = 's3://bucket/r/prod/t/tenant/uploads/original.pdf';
+    const rawChunks = Array.from({ length: 5 }, (_, index) => {
+      const chunkIndex = index + 1;
+      return {
+        conversationId: 'steel_conversation_preprocess',
+        turnIndex: 10 + chunkIndex,
+        checkpointTurnIndex: 9,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: `raw chunk ${chunkIndex}`,
+        payload: {
+          kind: 'paddleocr_mcp_chunk_result',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkIndex,
+            chunkCount: 5,
+            pageStart: (chunkIndex - 1) * 50 + 1,
+            pageEnd: chunkIndex * 50,
+            chunkSizePages: 50,
+            rawResultHash: `hash-${chunkIndex}`,
+          },
+          result: { text: `raw ${chunkIndex}` },
+        },
+      };
+    });
+
+    await SteelWorkingOrderMemory.create([
+      ...rawChunks,
+      {
+        conversationId: 'steel_conversation_preprocess',
+        turnIndex: 20,
+        checkpointTurnIndex: 19,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'organized chunk 1',
+        payload: {
+          kind: 'ocr_preprocessing_chunk_markdown',
+          ocrSource: 'ocr_preprocessing_subagent',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          content: 'chunk 1 markdown',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkIndex: 1,
+            chunkCount: 5,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-1',
+            ocrRuleVersion: 'rules-v2',
+            organizerVersion: 1,
+          },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_preprocess',
+        turnIndex: 21,
+        checkpointTurnIndex: 20,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'organized chunk 2',
+        payload: {
+          kind: 'ocr_preprocessing_chunk_markdown',
+          ocrSource: 'ocr_preprocessing_subagent',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          content: 'chunk 2 markdown',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkIndex: 2,
+            chunkCount: 5,
+            pageStart: 51,
+            pageEnd: 100,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-2',
+            ocrRuleVersion: 'rules-v2',
+            organizerVersion: 1,
+          },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_preprocess',
+        turnIndex: 22,
+        checkpointTurnIndex: 21,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'stale organized chunk 3',
+        payload: {
+          kind: 'ocr_preprocessing_chunk_markdown',
+          ocrSource: 'ocr_preprocessing_subagent',
+          ocrFileKey: 'file:file-100',
+          content: 'stale chunk 3 markdown',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkIndex: 3,
+            chunkCount: 5,
+            pageStart: 101,
+            pageEnd: 150,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-3',
+            ocrRuleVersion: 'rules-v1',
+            organizerVersion: 1,
+          },
+        },
+      },
+    ]);
+
+    await expect(
+      writer.readOcrPreprocessingState({
+        conversationId: 'steel_conversation_preprocess',
+        sourcePdfKey,
+        ocrFileKey: 'file:file-100',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ).resolves.toEqual(
       expect.objectContaining({
-        kind: 'paddleocr_mcp_result',
-        ocrSource: 'paddleocr_mcp',
-        ocrEngine: 'paddleocr_vl',
-        ocrFileKey: 'file:file-d',
-        fileId: 'file-d',
-        filename: 'd.pdf',
-        mediaType: 'application/pdf',
-        content: rawContent,
-        result: expect.objectContaining({
-          content: rawContent,
-          pages,
+        ocrFileKey: 'file:file-100',
+        sourcePdfKey,
+        chunkSizePages: 50,
+        chunkCount: 5,
+        chunks: [
+          expect.objectContaining({ chunkIndex: 1, rawSaved: true, organizedSaved: true }),
+          expect.objectContaining({ chunkIndex: 2, rawSaved: true, organizedSaved: true }),
+          expect.objectContaining({ chunkIndex: 3, rawSaved: true, organizedSaved: false }),
+          expect.objectContaining({ chunkIndex: 4, rawSaved: true, organizedSaved: false }),
+          expect.objectContaining({ chunkIndex: 5, rawSaved: true, organizedSaved: false }),
+        ],
+      }),
+    );
+  });
+
+  it('reads OCR preprocessing progress only for the requested file key and source PDF', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_preprocess_isolation',
+        turnIndex: 10,
+        checkpointTurnIndex: 9,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'raw A chunk 1',
+        payload: {
+          kind: 'paddleocr_mcp_chunk_result',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/a.pdf',
+            chunkIndex: 1,
+            chunkCount: 2,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-a-1',
+          },
+          result: { text: 'raw a chunk 1' },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_preprocess_isolation',
+        turnIndex: 11,
+        checkpointTurnIndex: 10,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'organized A chunk 1',
+        payload: {
+          kind: 'ocr_preprocessing_chunk_markdown',
+          ocrSource: 'ocr_preprocessing_subagent',
+          ocrFileKey: 'file:file-a',
+          fileId: 'file-a',
+          filename: 'a.pdf',
+          content: 'markdown a chunk 1',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/a.pdf',
+            chunkIndex: 1,
+            chunkCount: 2,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-a-1',
+            ocrRuleVersion: 'rules-v2',
+            organizerVersion: 1,
+          },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_preprocess_isolation',
+        turnIndex: 12,
+        checkpointTurnIndex: 11,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'raw B chunk 1',
+        payload: {
+          kind: 'paddleocr_mcp_chunk_result',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/b.pdf',
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-b-1',
+          },
+          result: { text: 'raw b chunk 1' },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_preprocess_isolation',
+        turnIndex: 13,
+        checkpointTurnIndex: 12,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'organized B chunk 1',
+        payload: {
+          kind: 'ocr_preprocessing_chunk_markdown',
+          ocrSource: 'ocr_preprocessing_subagent',
+          ocrFileKey: 'file:file-b',
+          fileId: 'file-b',
+          filename: 'b.pdf',
+          content: 'markdown b chunk 1',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/b.pdf',
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-b-1',
+            ocrRuleVersion: 'rules-v2',
+            organizerVersion: 1,
+          },
+        },
+      },
+    ]);
+
+    await expect(
+      writer.readOcrPreprocessingState({
+        conversationId: 'steel_conversation_preprocess_isolation',
+        sourcePdfKey: 'uploads/a.pdf',
+        ocrFileKey: 'file:file-a',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'file:file-a',
+        sourcePdfKey: 'uploads/a.pdf',
+        chunkCount: 2,
+        chunks: [
+          expect.objectContaining({
+            chunkIndex: 1,
+            rawSaved: true,
+            organizedSaved: true,
+            rawOcrText: 'raw a chunk 1',
+            organizedMarkdown: 'markdown a chunk 1',
+          }),
+        ],
+      }),
+    );
+    await expect(
+      writer.readOcrPreprocessingState({
+        conversationId: 'steel_conversation_preprocess_isolation',
+        sourcePdfKey: 'uploads/b.pdf',
+        ocrFileKey: 'file:file-b',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'file:file-b',
+        sourcePdfKey: 'uploads/b.pdf',
+        chunkCount: 1,
+        chunks: [
+          expect.objectContaining({
+            chunkIndex: 1,
+            rawSaved: true,
+            organizedSaved: true,
+            rawOcrText: 'raw b chunk 1',
+            organizedMarkdown: 'markdown b chunk 1',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('persists PaddleOCR chunk results without replacing other chunks', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const sourcePdfKey = 's3://bucket/r/prod/t/tenant/uploads/original.pdf';
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_chunks',
+        turnIndex: 3,
+        checkpointTurnIndex: 2,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'existing chunk 2',
+        payload: {
+          kind: 'paddleocr_mcp_chunk_result',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkIndex: 2,
+            chunkCount: 2,
+            pageStart: 51,
+            pageEnd: 100,
+            chunkSizePages: 50,
+            pdfChunk: {
+              source: 's3',
+              storageKey: 'ocr/chunk-2.pdf',
+              filepath: 'https://cdn.example/chunk-2.pdf',
+            },
+            rawResultHash: 'hash-2',
+          },
+          result: { text: 'chunk 2 raw' },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_chunks',
+        turnIndex: 2,
+        checkpointTurnIndex: 1,
+        memoryKind: 'paddleocr_preflight',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'legacy whole-file raw',
+        payload: {
+          kind: 'paddleocr_mcp_result',
+          ocrSource: 'paddleocr_mcp',
+          ocrEngine: 'paddleocr_vl',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          result: { text: 'legacy raw' },
+        },
+      },
+    ]);
+
+    await expect(
+      writer.capturePaddleOcrChunkResult({
+        conversationId: 'steel_conversation_chunks',
+        requestId: 'request_chunk_1',
+        providerToolCallId: 'preflight_chunk_1',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        file: { fileId: 'file-100', filename: 'quote.pdf', mediaType: 'application/pdf' },
+        chunk: {
+          pipelineVersion: 1,
+          sourcePdfKey,
+          chunkIndex: 1,
+          chunkCount: 2,
+          pageStart: 1,
+          pageEnd: 50,
+          chunkSizePages: 50,
+          pdfChunk: {
+            source: 's3',
+            storageKey: 'ocr/chunk-1.pdf',
+            storageRegion: 'ap-east-1',
+            filepath: 'https://cdn.example/chunk-1.pdf',
+          },
+        },
+        rawResultHash: 'hash-1a',
+        data: { text: 'chunk 1 raw first' },
+      }),
+    ).resolves.toEqual({
+      savedCounts: { paddleocr_preflight: 1 },
+      totalSavedCounts: { paddleocr_preflight: 3 },
+      totalTableCounts: {},
+    });
+
+    await writer.capturePaddleOcrChunkResult({
+      conversationId: 'steel_conversation_chunks',
+      requestId: 'request_chunk_1_retry',
+      providerToolCallId: 'preflight_chunk_1_retry',
+      turnIndex: 5,
+      checkpointTurnIndex: 4,
+      file: { fileId: 'file-100', filename: 'quote.pdf', mediaType: 'application/pdf' },
+      chunk: {
+        pipelineVersion: 1,
+        sourcePdfKey,
+        chunkIndex: 1,
+        chunkCount: 2,
+        pageStart: 1,
+        pageEnd: 50,
+        chunkSizePages: 50,
+        pdfChunk: {
+          source: 's3',
+          storageKey: 'ocr/chunk-1.pdf',
+          storageRegion: 'ap-east-1',
+          filepath: 'https://cdn.example/chunk-1.pdf',
+        },
+      },
+      rawResultHash: 'hash-1b',
+      data: { text: 'chunk 1 raw retry' },
+    });
+
+    const activePreflight = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_chunks',
+      memoryKind: 'paddleocr_preflight',
+      state: 'active',
+    })
+      .sort({ 'payload.ocrPreprocessing.chunkIndex': 1, turnIndex: 1 })
+      .lean();
+
+    expect(activePreflight).toHaveLength(3);
+    expect(activePreflight.map((entry) => entry.payload)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'paddleocr_mcp_chunk_result',
+          ocrPreprocessing: expect.objectContaining({
+            chunkIndex: 1,
+            rawResultHash: 'hash-1b',
+          }),
+          result: expect.objectContaining({ text: 'chunk 1 raw retry' }),
+        }),
+        expect.objectContaining({
+          kind: 'paddleocr_mcp_chunk_result',
+          ocrPreprocessing: expect.objectContaining({ chunkIndex: 2 }),
+          result: expect.objectContaining({ text: 'chunk 2 raw' }),
+        }),
+        expect.objectContaining({
+          kind: 'paddleocr_mcp_result',
+          result: expect.objectContaining({ text: 'legacy raw' }),
+        }),
+      ]),
+    );
+    expect(activePreflight.map((entry) => entry.payload)).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          result: expect.objectContaining({ text: 'chunk 1 raw first' }),
+        }),
+      ]),
+    );
+  });
+
+  it('skips aggregate totals for preprocessing chunk saves when requested', async () => {
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const sourcePdfKey = 's3://bucket/r/prod/t/tenant/uploads/no-totals.pdf';
+    const chunk = {
+      pipelineVersion: 1,
+      sourcePdfKey,
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 10,
+      chunkSizePages: 50,
+      pdfChunk: {
+        source: 's3' as const,
+        storageKey: 'ocr/chunk-1.pdf',
+        filepath: 'https://cdn.example/chunk-1.pdf',
+      },
+    };
+
+    await expect(
+      writer.capturePaddleOcrChunkResult({
+        conversationId: 'steel_conversation_chunk_no_totals',
+        requestId: 'request_raw_no_totals',
+        providerToolCallId: 'preflight_chunk_1',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        file: { fileId: 'file-100', filename: 'quote.pdf', mediaType: 'application/pdf' },
+        chunk,
+        rawResultHash: 'hash-1',
+        data: { text: 'chunk raw' },
+        includeTotals: false,
+      }),
+    ).resolves.toEqual({
+      savedCounts: { paddleocr_preflight: 1 },
+    });
+    await expect(
+      writer.captureOcrPreprocessingChunkMarkdown({
+        conversationId: 'steel_conversation_chunk_no_totals',
+        requestId: 'request_markdown_no_totals',
+        turnIndex: 5,
+        checkpointTurnIndex: 4,
+        file: { fileId: 'file-100', filename: 'quote.pdf', mediaType: 'application/pdf' },
+        chunk,
+        rawResultHash: 'hash-1',
+        ocrRuleVersion: 'rules-v2',
+        content: 'chunk markdown',
+        includeTotals: false,
+      }),
+    ).resolves.toEqual({
+      savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+    });
+  });
+
+  it('captures organized chunk markdown without replacing other chunks', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const sourcePdfKey = 's3://bucket/r/prod/t/tenant/uploads/original.pdf';
+
+    await SteelWorkingOrderMemory.create({
+      conversationId: 'steel_conversation_organized_chunks',
+      turnIndex: 3,
+      checkpointTurnIndex: 2,
+      memoryKind: 'ocr_extract',
+      sourceKind: 'ocr_result',
+      state: 'active',
+      summary: 'existing organized chunk 2',
+      payload: {
+        kind: 'ocr_preprocessing_chunk_markdown',
+        ocrSource: 'ocr_preprocessing_subagent',
+        ocrFileKey: 'file:file-100',
+        fileId: 'file-100',
+        filename: 'quote.pdf',
+        content: 'chunk 2 markdown',
+        ocrPreprocessing: {
+          pipelineVersion: 1,
+          sourcePdfKey,
+          chunkIndex: 2,
+          chunkCount: 2,
+          pageStart: 51,
+          pageEnd: 100,
+          chunkSizePages: 50,
+          rawResultHash: 'hash-2',
+          ocrRuleVersion: 'rules-v2',
+          organizerVersion: 1,
+        },
+      },
+    });
+
+    await expect(
+      writer.captureOcrPreprocessingChunkMarkdown({
+        conversationId: 'steel_conversation_organized_chunks',
+        requestId: 'request_chunk_markdown_1',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        file: { fileId: 'file-100', filename: 'quote.pdf', mediaType: 'application/pdf' },
+        chunk: {
+          pipelineVersion: 1,
+          sourcePdfKey,
+          chunkIndex: 1,
+          chunkCount: 2,
+          pageStart: 1,
+          pageEnd: 50,
+          chunkSizePages: 50,
+        },
+        rawResultHash: 'hash-1a',
+        ocrRuleVersion: 'rules-v2',
+        content: 'chunk 1 markdown first',
+      }),
+    ).resolves.toEqual({
+      savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+      totalSavedCounts: { ocr_preprocessing_chunk_markdown: 2 },
+      totalTableCounts: {},
+    });
+
+    await writer.captureOcrPreprocessingChunkMarkdown({
+      conversationId: 'steel_conversation_organized_chunks',
+      requestId: 'request_chunk_markdown_1_retry',
+      turnIndex: 5,
+      checkpointTurnIndex: 4,
+      file: { fileId: 'file-100', filename: 'quote.pdf', mediaType: 'application/pdf' },
+      chunk: {
+        pipelineVersion: 1,
+        sourcePdfKey,
+        chunkIndex: 1,
+        chunkCount: 2,
+        pageStart: 1,
+        pageEnd: 50,
+        chunkSizePages: 50,
+      },
+      rawResultHash: 'hash-1b',
+      ocrRuleVersion: 'rules-v2',
+      content: 'chunk 1 markdown retry',
+    });
+
+    const activeOcr = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_organized_chunks',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    })
+      .sort({ 'payload.ocrPreprocessing.chunkIndex': 1 })
+      .lean();
+
+    expect(activeOcr).toHaveLength(2);
+    expect(activeOcr.map((entry) => entry.payload)).toEqual([
+      expect.objectContaining({
+        kind: 'ocr_preprocessing_chunk_markdown',
+        content: 'chunk 1 markdown retry',
+        ocrPreprocessing: expect.objectContaining({
+          chunkIndex: 1,
+          rawResultHash: 'hash-1b',
+          ocrRuleVersion: 'rules-v2',
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'ocr_preprocessing_chunk_markdown',
+        content: 'chunk 2 markdown',
+        ocrPreprocessing: expect.objectContaining({
+          chunkIndex: 2,
+          rawResultHash: 'hash-2',
+          ocrRuleVersion: 'rules-v2',
         }),
       }),
     ]);
+  });
+
+  it('ignores legacy final merged OCR markdown rows when reading preprocessing resume state', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const sourcePdfKey = 's3://bucket/r/prod/t/tenant/uploads/original.pdf';
+
+    await SteelWorkingOrderMemory.create([
+      {
+        conversationId: 'steel_conversation_merged_ocr',
+        turnIndex: 3,
+        checkpointTurnIndex: 2,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'chunk markdown',
+        payload: {
+          kind: 'ocr_preprocessing_chunk_markdown',
+          ocrSource: 'ocr_preprocessing_subagent',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          content: 'chunk markdown',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 50,
+            chunkSizePages: 50,
+            rawResultHash: 'hash-1',
+            ocrRuleVersion: 'rules-v2',
+            organizerVersion: 1,
+          },
+        },
+      },
+      {
+        conversationId: 'steel_conversation_merged_ocr',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        memoryKind: 'ocr_extract',
+        sourceKind: 'ocr_result',
+        state: 'active',
+        summary: 'old final merged OCR',
+        payload: {
+          kind: 'ocr_preprocessing_merged_markdown',
+          ocrSource: 'ocr_preprocessing_merge',
+          ocrFileKey: 'file:file-100',
+          fileId: 'file-100',
+          filename: 'quote.pdf',
+          content: 'old merged markdown',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey,
+            chunkCount: 1,
+            chunkSizePages: 50,
+            complete: true,
+            ocrRuleVersion: 'rules-v2',
+            organizerVersion: 1,
+          },
+        },
+      },
+    ]);
+
+    const activeOcr = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_merged_ocr',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    })
+      .sort({ 'payload.kind': 1 })
+      .lean();
+    const state = await writer.readOcrPreprocessingState({
+      conversationId: 'steel_conversation_merged_ocr',
+      sourcePdfKey,
+      ocrFileKey: 'file:file-100',
+      ocrRuleVersion: 'rules-v2',
+    });
+
+    expect(activeOcr).toHaveLength(2);
+    expect(activeOcr.map((entry) => entry.payload)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'ocr_preprocessing_chunk_markdown',
+          content: 'chunk markdown',
+        }),
+        expect.objectContaining({
+          kind: 'ocr_preprocessing_merged_markdown',
+          content: 'old merged markdown',
+        }),
+      ]),
+    );
+    expect(state).toEqual(
+      expect.objectContaining({
+        chunks: [
+          expect.objectContaining({
+            chunkIndex: 1,
+            organizedSaved: true,
+            organizedMarkdown: 'chunk markdown',
+          }),
+        ],
+      }),
+    );
   });
 
   it('does not treat fallback OCR rows as completed PaddleOCR preflight state', async () => {

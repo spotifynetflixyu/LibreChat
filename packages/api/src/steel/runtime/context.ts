@@ -148,6 +148,7 @@ export interface SteelRuntimeContext {
   attachments: {
     currentTurnFiles: SteelRuntimeAttachmentFile[];
     currentPaddleOcrResults: SteelRuntimeJsonObject[];
+    currentOcrMarkdownResults: SteelRuntimeJsonObject[];
     priorActiveFileEvidence: SteelRuntimeJsonObject[];
   };
   toolPolicy: {
@@ -155,6 +156,7 @@ export interface SteelRuntimeContext {
     removedTools: typeof steelRuntimeRemovedTools;
     ocrCorrectionPolicy: string;
     currentPaddleOcrUsagePolicy: string;
+    currentOcrMarkdownUsagePolicy: string;
     readMarkdownUsagePolicy: typeof steelReadMarkdownUsagePolicy;
   };
 }
@@ -173,6 +175,7 @@ export interface SteelRuntimeContextConversationInput {
 export interface SteelRuntimeContextAttachmentsInput {
   currentTurnFiles?: SteelRuntimeAttachmentFile[];
   currentPaddleOcrResults?: SteelRuntimeJsonObject[];
+  currentOcrMarkdownResults?: SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: SteelRuntimeJsonObject[];
 }
 
@@ -188,6 +191,9 @@ export interface SteelRuntimeContextDependencies {
 
 const currentPaddleOcrUsagePolicy =
   'attachments.currentPaddleOcrResults is authoritative same-turn PaddleOCR evidence for the matching current file keys and filenames. If it contains the current file, use that result directly; do not call read_markdown for that file and do not call paddleocr_vl again unless the user explicitly asks to rerun OCR or the result is absent/failed.';
+
+const currentOcrMarkdownUsagePolicy =
+  'attachments.currentOcrMarkdownResults is authoritative same-turn organized OCR Markdown for matching current file keys and filenames. Use its merged Markdown directly for Steel quoting; do not use raw PaddleOCR chunks in context and do not call paddleocr_vl again unless the user explicitly asks to rerun OCR or the result is absent/failed.';
 
 export interface PrepareSteelRuntimeContextInput {
   conversation: SteelRuntimeContextConversationInput;
@@ -217,6 +223,57 @@ function uniqueStrings(values: readonly (string | undefined)[]): string[] {
   return [...new Set(values.filter((value): value is string => value !== undefined))];
 }
 
+function getRuntimeStringValue(value: SteelRuntimeJsonObject, key: string): string | undefined {
+  const entry = value[key];
+  return typeof entry === 'string' && entry.trim() !== '' ? entry : undefined;
+}
+
+function isOcrPreprocessingChunkMarkdown(value: SteelRuntimeJsonObject): boolean {
+  return getRuntimeStringValue(value, 'kind') === 'ocr_preprocessing_chunk_markdown';
+}
+
+function isOcrPreprocessingRawChunk(value: SteelRuntimeJsonObject): boolean {
+  return getRuntimeStringValue(value, 'kind') === 'paddleocr_mcp_chunk_result';
+}
+
+function isOcrPreprocessingMergedMarkdown(value: SteelRuntimeJsonObject): boolean {
+  return getRuntimeStringValue(value, 'kind') === 'ocr_preprocessing_merged_markdown';
+}
+
+function isOfficialOcrMarkdown(value: SteelRuntimeJsonObject): boolean {
+  const source = getRuntimeStringValue(value, 'ocrSource');
+  return (
+    getRuntimeStringValue(value, 'kind') === 'ocr_official_markdown' &&
+    (source === 'paddleocr_official_markdown' || source === 'ai_official_markdown')
+  );
+}
+
+export function normalizeOcrEvidenceForRuntime(
+  evidence: readonly SteelRuntimeJsonObject[],
+): SteelRuntimeJsonObject[] {
+  const passthrough: SteelRuntimeJsonObject[] = [];
+
+  for (const entry of evidence) {
+    if (
+      isOcrPreprocessingRawChunk(entry) ||
+      isOcrPreprocessingChunkMarkdown(entry) ||
+      isOcrPreprocessingMergedMarkdown(entry)
+    ) {
+      continue;
+    }
+
+    passthrough.push(entry);
+  }
+
+  return passthrough.filter((entry) => {
+    const kind = getRuntimeStringValue(entry, 'kind');
+    if (!kind?.startsWith('ocr_')) {
+      return true;
+    }
+    return isOfficialOcrMarkdown(entry);
+  });
+}
+
 function collectPriorActiveFileEvidence({
   explicitEvidence,
   outputSheetMemory,
@@ -224,7 +281,10 @@ function collectPriorActiveFileEvidence({
   explicitEvidence: readonly SteelRuntimeJsonObject[];
   outputSheetMemory: SteelOutputSheetMemorySnapshot;
 }): SteelRuntimeJsonObject[] {
-  return [...explicitEvidence, ...outputSheetMemory.derivedIndex.ocrExtracts];
+  return [
+    ...explicitEvidence,
+    ...normalizeOcrEvidenceForRuntime(outputSheetMemory.derivedIndex.ocrExtracts),
+  ];
 }
 
 function buildGlobalRuleGroups({
@@ -475,6 +535,7 @@ export async function prepareSteelRuntimeContext({
 }: PrepareSteelRuntimeContextInput): Promise<SteelRuntimeContext> {
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
   const currentPaddleOcrResults = attachments?.currentPaddleOcrResults ?? [];
+  const currentOcrMarkdownResults = attachments?.currentOcrMarkdownResults ?? [];
   const [
     outputSheetMemory,
     agentRules,
@@ -532,6 +593,7 @@ export async function prepareSteelRuntimeContext({
     attachments: {
       currentTurnFiles,
       currentPaddleOcrResults,
+      currentOcrMarkdownResults,
       priorActiveFileEvidence,
     },
     toolPolicy: {
@@ -540,6 +602,7 @@ export async function prepareSteelRuntimeContext({
       ocrCorrectionPolicy:
         'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not rerun OCR unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
       currentPaddleOcrUsagePolicy,
+      currentOcrMarkdownUsagePolicy,
       readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };
@@ -553,6 +616,7 @@ export async function prepareLibreChatSteelRuntimeContext({
   const runtimeConversation = prepareLibreChatRuntimeConversation(conversation);
   const currentTurnFiles = attachments?.currentTurnFiles ?? [];
   const currentPaddleOcrResults = attachments?.currentPaddleOcrResults ?? [];
+  const currentOcrMarkdownResults = attachments?.currentOcrMarkdownResults ?? [];
   const [
     outputSheetMemory,
     agentRules,
@@ -611,6 +675,7 @@ export async function prepareLibreChatSteelRuntimeContext({
     attachments: {
       currentTurnFiles,
       currentPaddleOcrResults,
+      currentOcrMarkdownResults,
       priorActiveFileEvidence,
     },
     toolPolicy: {
@@ -619,6 +684,7 @@ export async function prepareLibreChatSteelRuntimeContext({
       ocrCorrectionPolicy:
         'If the user confirms or corrects prior OCR/table content, update and return the complete latest OCR/quote Markdown from chat history and user corrections. Do not rerun OCR unless the user explicitly requests rerun OCR or supplies new/changed file evidence.',
       currentPaddleOcrUsagePolicy,
+      currentOcrMarkdownUsagePolicy,
       readMarkdownUsagePolicy: steelReadMarkdownUsagePolicy,
     },
   };
