@@ -1183,11 +1183,14 @@ describe('useResumableSSE - 404 error path', () => {
     };
 
     const sse = getLastSSE();
+    const generationStartedAt = Date.UTC(2026, 6, 2, 1, 0, 0);
+    const generationStartedAtIso = new Date(generationStartedAt).toISOString();
     await act(async () => {
       sse._emit('message', {
         data: JSON.stringify({
           sync: true,
           resumeState: {
+            createdAt: generationStartedAt,
             runSteps: [runStep],
             replayEvents: [replayEvent],
             responseMessageId: 'follow-up-response',
@@ -1209,10 +1212,16 @@ describe('useResumableSSE - 404 error path', () => {
       1,
       { event: StepEvents.ON_RUN_STEP, data: runStep },
       expect.objectContaining({
-        userMessage: expect.objectContaining({ messageId: 'follow-up-user' }),
+        userMessage: expect.objectContaining({
+          messageId: 'follow-up-user',
+          createdAt: generationStartedAtIso,
+          clientTimestamp: generationStartedAtIso,
+        }),
         initialResponse: expect.objectContaining({
           messageId: 'follow-up-response',
           parentMessageId: 'follow-up-user',
+          createdAt: generationStartedAtIso,
+          clientTimestamp: generationStartedAtIso,
         }),
       }),
     );

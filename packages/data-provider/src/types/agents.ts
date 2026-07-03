@@ -211,6 +211,8 @@ export namespace Agents {
 
   /** State data sent to reconnecting clients */
   export interface ResumeState {
+    /** Original generation job creation time in epoch milliseconds */
+    createdAt?: number;
     runSteps: RunStep[];
     /** Aggregated content parts - can be MessageContentComplex[] or ContentPart[] */
     aggregatedContent?: MessageContentComplex[];

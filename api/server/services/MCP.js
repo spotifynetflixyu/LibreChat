@@ -280,12 +280,87 @@ function isInlinePaddleInput(value) {
   return /^data:/i.test(trimmed) || isLikelyBase64Input(trimmed);
 }
 
+function isUrlPaddleInput(value) {
+  return /^(?:https?|file):\/\//i.test(value.trim());
+}
+
+function isHttpUrlPaddleInput(value) {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+function isDirectPaddleInput(value) {
+  return isInlinePaddleInput(value) || isHttpUrlPaddleInput(value);
+}
+
+function isLocalPathPaddleInput(value) {
+  const trimmed = value.trim();
+  return (
+    /^file:\/\//i.test(trimmed) ||
+    /^\/[^/]/.test(trimmed) ||
+    /^\.\.?(?:[\\/]|$)/.test(trimmed) ||
+    /^[A-Za-z]:[\\/]/.test(trimmed) ||
+    /^\\\\/.test(trimmed)
+  );
+}
+
 function safeDecode(value) {
   try {
     return decodeURIComponent(value);
   } catch {
     return value;
   }
+}
+
+function cleanExtractedPaddleInput(value) {
+  return value.trim().replace(/^[<"'([`]+/g, '').replace(/[>"'\])`,.]+$/g, '');
+}
+
+function addPaddleInputCandidate(candidates, seen, value) {
+  if (typeof value !== 'string') {
+    return;
+  }
+  const candidate = cleanExtractedPaddleInput(value);
+  if (!candidate || seen.has(candidate)) {
+    return;
+  }
+  seen.add(candidate);
+  candidates.push(candidate);
+}
+
+function collectPaddleInputCandidates(value) {
+  const candidates = [];
+  const seen = new Set();
+  const original = cleanExtractedPaddleInput(value);
+  addPaddleInputCandidate(candidates, seen, original);
+
+  for (const match of original.matchAll(/\bdata:[^\s"'<>]+/gi)) {
+    addPaddleInputCandidate(candidates, seen, match[0]);
+  }
+
+  for (const match of original.matchAll(/\b(?:https?|file):\/\/[^\s"'<>]+/gi)) {
+    addPaddleInputCandidate(candidates, seen, match[0]);
+  }
+
+  for (const match of original.matchAll(/\bfile:(?!\/\/)([A-Za-z0-9][A-Za-z0-9._~-]*)/gi)) {
+    addPaddleInputCandidate(candidates, seen, `file:${match[1]}`);
+    addPaddleInputCandidate(candidates, seen, match[1]);
+  }
+
+  let labelStripped = original;
+  for (let i = 0; i < 3; i++) {
+    const match = labelStripped.match(/^[A-Za-z][A-Za-z0-9_-]{0,63}\s*[:=]\s*(.+)$/);
+    if (
+      !match ||
+      /^data:/i.test(labelStripped) ||
+      /^(?:https?|file):\/\//i.test(labelStripped)
+    ) {
+      break;
+    }
+    labelStripped = cleanExtractedPaddleInput(match[1]);
+    addPaddleInputCandidate(candidates, seen, labelStripped);
+  }
+
+  return candidates;
 }
 
 function normalizeFileName(value) {
@@ -365,18 +440,39 @@ async function getRequestFileRecords({ req, userId, requestBody }) {
 }
 
 function fileMatchesInputName(file, inputData) {
-  const inputName = normalizeFileName(inputData);
-  if (!inputName) {
-    return false;
-  }
+  const candidates = collectPaddleInputCandidates(inputData);
+  for (const candidate of candidates) {
+    const inputName = normalizeFileName(candidate);
+    if (!inputName) {
+      continue;
+    }
 
-  if (String(getFileId(file) ?? '').trim().toLowerCase() === inputName) {
-    return true;
-  }
+    if (String(getFileId(file) ?? '').trim().toLowerCase() === inputName) {
+      return true;
+    }
 
-  return [file?.filename, file?.name, file?.originalname, file?.filepath].some(
-    (candidate) => normalizeFileName(candidate) === inputName,
-  );
+    if (
+      [file?.filename, file?.name, file?.originalname, file?.filepath].some(
+        (fileCandidate) => normalizeFileName(fileCandidate) === inputName,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getPaddleInputLogLabel(inputData) {
+  const directInput = collectPaddleInputCandidates(inputData).find(isUrlPaddleInput);
+  if (!directInput) {
+    return inputData;
+  }
+  try {
+    const url = new URL(directInput);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return directInput.replace(/[?#].*$/u, '');
+  }
 }
 
 function getMediaTypeForFile(file, inputData) {
@@ -425,13 +521,20 @@ function shouldResolvePaddleInputAsDownloadUrl(source) {
 
 async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }) {
   const trimmedInput = inputData.trim();
-  if (isInlinePaddleInput(trimmedInput)) {
-    return inputData;
-  }
+  const candidates = collectPaddleInputCandidates(trimmedInput);
 
   const files = await getRequestFileRecords({ req, userId, requestBody });
   const matchedFile = files.find((file) => fileMatchesInputName(file, trimmedInput));
   if (!matchedFile) {
+    const directInput = candidates.find(isDirectPaddleInput);
+    if (directInput) {
+      return directInput;
+    }
+    if (candidates.some(isLocalPathPaddleInput)) {
+      throw new Error(
+        'Unsupported PaddleOCR input_data: local paths are not allowed. Use a current file id, filename, http(s) URL, or data URL.',
+      );
+    }
     return inputData;
   }
 
@@ -453,7 +556,7 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
 
     const downloadUrl = await getDownloadURL({ req, file: matchedFile });
     logger.debug(
-      `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}" using a clean storage download URL.`,
+      `[MCP][PaddleOCR] Resolved input_data "${getPaddleInputLogLabel(trimmedInput)}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}" using a clean storage download URL.`,
     );
     return downloadUrl;
   }
@@ -466,7 +569,7 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
   const stream = await getDownloadStream(req, matchedFile.filepath);
   const buffer = await streamToBuffer(stream);
   logger.debug(
-    `[MCP][PaddleOCR] Resolved input_data "${trimmedInput}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}".`,
+    `[MCP][PaddleOCR] Resolved input_data "${getPaddleInputLogLabel(trimmedInput)}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}".`,
   );
   return `data:${mediaType};base64,${buffer.toString('base64')}`;
 }

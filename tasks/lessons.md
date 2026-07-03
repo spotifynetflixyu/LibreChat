@@ -61,6 +61,14 @@
   values as owned file-key aliases before calling MCP. Never pass `file:<id>`
   directly to `paddleocr-mcp`; it only accepts MCP-visible paths, URLs, Base64,
   or data URLs.
+- PaddleOCR MCP `input_data` normalization should extract canonical supported
+  tokens from model text instead of chasing individual AI-added prefixes.
+  Recognize `data:`, `http(s)://`, `file:<id>`, raw file ids, and
+  label-stripped forms such as `file_url:` or `source=`; resolve owned current
+  files first, then pass supported direct URL/data inputs through. Direct local
+  paths such as `file://...`, `/tmp/...`, `./...`, or `../...` must not be
+  passed to PaddleOCR unless they only match an owned current file that the
+  backend rewrites to a controlled URL/data URL.
 - `read_markdown` should support per-file reads for both OCR and workbook
   state. Use aggregate OCR only to list available file keys / short evidence;
   fetch full OCR Markdown one file at a time with `ocrFileKey` to avoid
@@ -85,6 +93,12 @@
   Same-turn raw preflight may enter `attachments.currentPaddleOcrResults`, but
   follow-up turns should use `read_markdown(scope: "ocr")` only when organized
   OCR Markdown is missing from normal chat history.
+- OCR preprocessing PDF chunk artifacts must be indexed by the original stored
+  PDF's S3 file key/storage key, not by `conversationId`. Store split PDF chunk
+  artifact metadata in a global registry so another conversation using the same
+  original PDF can reuse existing chunk PDFs; conversation-scoped
+  `paddleocr_preflight` / `ocr_extract` rows should only reference that source
+  key as OCR evidence state.
 - When checking a user's Steel OCR count report, distinguish per-event activity
   `savedCounts` from aggregate persisted state. Verify production
   `steel_working_order_memory` by `memoryKind`, `ocrFileKey`, `fileId`, and
@@ -640,3 +654,30 @@
   as `Steel form parsed`; those are internal parse status, not user-facing work
   results. Show the `Total` aggregate and actual save/preflight rows instead;
   keep partial/skipped parse status visible because they need user attention.
+- Resumable assistant-message elapsed timers must be anchored to the
+  server-side generation job `createdAt` value. Do not let a reconnecting
+  browser rebuild resumed user/assistant placeholders with `new Date()` or
+  `Date.now()`, or the visible running time will restart from zero after
+  cross-device resume.
+- When the user says not to commit after a bug fix, keep the working tree
+  uncommitted and report the dirty files/status in the wrap-up. Do not stage,
+  commit, or push unless they explicitly ask afterward.
+- OCR preprocessing chunk work must be durable and idempotent per file key and
+  chunk identity. Save organized chunk Markdown immediately after each
+  subagent pass, and on resubmit resume from persisted `paddleocr_preflight` and
+  `ocr_extract` state instead of rerunning OCR, organizer subagents, or
+  parse/save for completed chunks.
+- OCR preprocessing must merge same-file-key chunk Markdown into one final
+  Markdown string before adding OCR content to main-agent
+  `additional_instructions`; per-chunk Markdown rows are durable intermediate
+  state, not main-agent context.
+- OCR rule version is part of OCR organizer output validity. If the OCR rule
+  version/hash changes, reuse raw `paddleocr_preflight` chunks but rerun every
+  subagent organizer chunk and rebuild the final merged OCR Markdown before
+  starting the main Steel agent.
+- OCR preprocessing must not rasterize PDFs into PNG/JPEG chunks. Split PDFs by
+  page range into PDF chunks, such as pages 1-50 and 51-100, so PaddleOCR can
+  still see embedded PDF text/vector content.
+- OCR preprocessing merged Markdown must tolerate different headers across
+  chunks. Union headers in first-seen order, keep all rows, and leave missing
+  cells blank instead of inferring values.

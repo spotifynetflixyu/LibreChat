@@ -261,6 +261,57 @@ describe('useResumeOnLoad', () => {
     );
   });
 
+  it('preserves the original generation start time when rebuilding resumed placeholders', async () => {
+    const generationStartedAt = Date.UTC(2026, 6, 2, 1, 0, 0);
+    const generationStartedAtIso = new Date(generationStartedAt).toISOString();
+    const observedSubmissions: Array<TSubmission | null> = [];
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          createdAt: generationStartedAt,
+          runSteps: [],
+          aggregatedContent: [{ type: 'text', text: 'Streaming...' }],
+          responseMessageId: RESPONSE_MESSAGE_ID,
+          conversationId: CONVERSATION_ID,
+          userMessage: {
+            messageId: USER_MESSAGE_ID,
+            parentMessageId: Constants.NO_PARENT,
+            conversationId: CONVERSATION_ID,
+            text: 'Hello',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [],
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const resumed = observedSubmissions[observedSubmissions.length - 1];
+    expect(resumed?.userMessage).toEqual(
+      expect.objectContaining({
+        createdAt: generationStartedAtIso,
+        clientTimestamp: generationStartedAtIso,
+      }),
+    );
+    expect(resumed?.initialResponse).toEqual(
+      expect.objectContaining({
+        createdAt: generationStartedAtIso,
+        clientTimestamp: generationStartedAtIso,
+      }),
+    );
+  });
+
   it('restores the branch that owns a pending OAuth resume user message', async () => {
     const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
     const branchOneResponse = {

@@ -215,6 +215,24 @@ const hydrateMessageConversationId = (message: TMessage, conversationId: string)
 const preferDefinedString = (value?: string | null, fallback?: string): string | undefined =>
   value != null && value !== '' ? value : fallback;
 
+const toResumeTimestamp = (value?: number): string | undefined => {
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+  return new Date(value).toISOString();
+};
+
+const withResumeTimestamp = (message: TMessage, timestamp?: string): TMessage => {
+  if (!timestamp) {
+    return message;
+  }
+  return {
+    ...message,
+    createdAt: message.createdAt ?? timestamp,
+    clientTimestamp: message.clientTimestamp ?? timestamp,
+  };
+};
+
 const getOptimisticMessages = (
   submission: TSubmission,
   conversationId: string,
@@ -280,32 +298,39 @@ const buildResumeEventSubmission = (
     resumeState.userMessage?.conversationId ??
     currentUserMessage.conversationId ??
     currentSubmission.conversation?.conversationId;
+  const resumeTimestamp = toResumeTimestamp(resumeState.createdAt);
 
-  const userMessage = {
-    ...currentUserMessage,
-    ...resumeState.userMessage,
-    conversationId,
-    isCreatedByUser: true,
-  } as TMessage;
+  const userMessage = withResumeTimestamp(
+    {
+      ...currentUserMessage,
+      ...resumeState.userMessage,
+      conversationId,
+      isCreatedByUser: true,
+    } as TMessage,
+    resumeTimestamp,
+  );
 
   const responseMessageId =
     resumeState.responseMessageId ??
     currentSubmission.initialResponse?.messageId ??
     `${userMessage.messageId}_`;
 
-  const initialResponse = {
-    ...(currentSubmission.initialResponse as TMessage),
-    messageId: responseMessageId,
-    parentMessageId: userMessage.messageId,
-    conversationId,
-    content:
-      resumeState.aggregatedContent ??
-      (currentSubmission.initialResponse as TMessage | undefined)?.content,
-    sender: resumeState.sender ?? currentSubmission.initialResponse?.sender,
-    iconURL: preferDefinedString(currentSubmission.initialResponse?.iconURL, resumeState.iconURL),
-    model: preferDefinedString(currentSubmission.initialResponse?.model, resumeState.model),
-    isCreatedByUser: false,
-  } as TMessage;
+  const initialResponse = withResumeTimestamp(
+    {
+      ...(currentSubmission.initialResponse as TMessage),
+      messageId: responseMessageId,
+      parentMessageId: userMessage.messageId,
+      conversationId,
+      content:
+        resumeState.aggregatedContent ??
+        (currentSubmission.initialResponse as TMessage | undefined)?.content,
+      sender: resumeState.sender ?? currentSubmission.initialResponse?.sender,
+      iconURL: preferDefinedString(currentSubmission.initialResponse?.iconURL, resumeState.iconURL),
+      model: preferDefinedString(currentSubmission.initialResponse?.model, resumeState.model),
+      isCreatedByUser: false,
+    } as TMessage,
+    resumeTimestamp,
+  );
 
   return {
     ...currentSubmission,
@@ -726,6 +751,10 @@ export default function useResumableSSE(
                     data.resumeState.iconURL,
                   ),
                   model: preferDefinedString(messages[responseIdx]?.model, data.resumeState.model),
+                  createdAt: messages[responseIdx]?.createdAt ?? resumeSubmission.initialResponse.createdAt,
+                  clientTimestamp:
+                    messages[responseIdx]?.clientTimestamp ??
+                    resumeSubmission.initialResponse.clientTimestamp,
                 } as TMessage;
                 const updated = mergeResumeMessages(messages, userMessage, responseMessage);
                 console.log('[ResumableSSE] SYNC updating message', {
@@ -748,6 +777,8 @@ export default function useResumableSSE(
                   isCreatedByUser: false,
                   iconURL: data.resumeState.iconURL,
                   model: data.resumeState.model,
+                  createdAt: resumeSubmission.initialResponse.createdAt,
+                  clientTimestamp: resumeSubmission.initialResponse.clientTimestamp,
                 } as TMessage;
                 setMessages(mergeResumeMessages(messages, userMessage, newMessage));
                 resetContentHandler();

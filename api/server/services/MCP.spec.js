@@ -1530,6 +1530,121 @@ describe('User parameter passing tests', () => {
       expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe(inputData);
     });
 
+    it('should resolve prefixed PaddleOCR file-key input_data from current request files', async () => {
+      const fileId = '2e3d9903-9736-41a9-bbf1-87e5c8e0a093';
+      const inputData = `source=file:${fileId}`;
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId,
+        inputData,
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
+      expect(mockCallTool.mock.calls[0][0].toolArguments.input_data).not.toBe(inputData);
+    });
+
+    it('should strip AI-added prefixes from direct PaddleOCR http URLs', async () => {
+      const inputData = `file_url:${SIGNED_PADDLEOCR_URL}`;
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: undefined,
+        inputData,
+        requestFiles: [],
+        dbFiles: [],
+      });
+
+      expect(mockGetDownloadURL).not.toHaveBeenCalled();
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: SIGNED_PADDLEOCR_URL,
+          }),
+        }),
+      );
+    });
+
+    it('should strip AI-added prefixes from direct PaddleOCR data URLs', async () => {
+      const dataUrl = 'data:application/pdf;base64,JVBERi0xLjQgdGVzdA==';
+      const inputData = `file_url:${dataUrl}`;
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: undefined,
+        inputData,
+        requestFiles: [],
+        dbFiles: [],
+      });
+
+      expect(mockGetDownloadURL).not.toHaveBeenCalled();
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: dataUrl,
+          }),
+        }),
+      );
+    });
+
+    it('should reject AI-added prefixes around direct PaddleOCR file URLs', async () => {
+      const fileUrl = 'file:///tmp/paddleocr/manual-drawing.pdf';
+      const inputData = `file_url:${fileUrl}`;
+
+      await expect(
+        invokePaddleOcrWithRequestFile({
+          fileId: undefined,
+          inputData,
+          requestFiles: [],
+          dbFiles: [],
+        }),
+      ).rejects.toThrow(/local paths are not allowed/i);
+      expect(mockGetDownloadURL).not.toHaveBeenCalled();
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+    });
+
+    it('should reject direct PaddleOCR absolute local paths without an owned current file', async () => {
+      await expect(
+        invokePaddleOcrWithRequestFile({
+          fileId: undefined,
+          inputData: '/tmp/paddleocr/manual-drawing.pdf',
+          requestFiles: [],
+          dbFiles: [],
+        }),
+      ).rejects.toThrow(/local paths are not allowed/i);
+      expect(mockGetDownloadURL).not.toHaveBeenCalled();
+      expect(mockGetDownloadStream).not.toHaveBeenCalled();
+    });
+
+    it('should still resolve local-path-shaped PaddleOCR input when it names an owned current file', async () => {
+      const { mockCallTool } = await invokePaddleOcrWithRequestFile({
+        fileId: 'file-drawing',
+        inputData: '/mnt/data/drawing.pdf',
+      });
+
+      expect(mockCallTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverName: 'PaddleOCR',
+          toolName: 'paddleocr_vl',
+          toolArguments: expect.objectContaining({
+            file_type: 'pdf',
+            input_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+          }),
+        }),
+      );
+    });
+
     it('should not download request-supplied PaddleOCR filepath without an owned DB file', async () => {
       const { mockCallTool } = await invokePaddleOcrWithRequestFile({
         fileId: undefined,

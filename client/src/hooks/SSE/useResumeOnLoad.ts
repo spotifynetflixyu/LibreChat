@@ -82,6 +82,24 @@ function preferDefinedString(value?: string | null, fallback?: string): string |
   return value != null && value !== '' ? value : fallback;
 }
 
+function toResumeTimestamp(value?: number): string | undefined {
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+  return new Date(value).toISOString();
+}
+
+function withResumeTimestamp(message: TMessage, timestamp?: string): TMessage {
+  if (!timestamp) {
+    return message;
+  }
+  return {
+    ...message,
+    createdAt: message.createdAt ?? timestamp,
+    clientTimestamp: message.clientTimestamp ?? timestamp,
+  };
+}
+
 /**
  * Build a submission object from resume state for reconnected streams.
  * This provides the minimum data needed for useResumableSSE to subscribe.
@@ -95,6 +113,7 @@ function buildSubmissionFromResumeState(
   const userMessageData = resumeState.userMessage;
   const responseMessageId =
     resumeState.responseMessageId ?? `${userMessageData?.messageId ?? 'resume'}_`;
+  const resumeTimestamp = toResumeTimestamp(resumeState.createdAt);
 
   // Try to find existing user message in the messages array (from database)
   const existingUserMessage = messages.find(
@@ -119,6 +138,7 @@ function buildSubmissionFromResumeState(
           text: userMessageData.text ?? '',
           isCreatedByUser: true,
           role: 'user',
+          ...(resumeTimestamp ? { createdAt: resumeTimestamp, clientTimestamp: resumeTimestamp } : {}),
         }) as TMessage)
       : (messages[messages.length - 2] ??
         ({
@@ -152,8 +172,8 @@ function buildSubmissionFromResumeState(
 
   return {
     messages,
-    userMessage,
-    initialResponse,
+    userMessage: withResumeTimestamp(userMessage, resumeTimestamp),
+    initialResponse: withResumeTimestamp(initialResponse, resumeTimestamp),
     conversation,
     isRegenerate: false,
     isTemporary: false,

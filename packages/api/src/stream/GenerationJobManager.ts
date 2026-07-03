@@ -1487,6 +1487,7 @@ class GenerationJobManagerClass {
     });
 
     return {
+      createdAt: jobData.createdAt,
       runSteps,
       aggregatedContent,
       userMessage: jobData.userMessage,

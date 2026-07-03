@@ -1,3 +1,281 @@
+# Active: OCR preprocessing pipeline page-chunk design - 2026-07-03
+
+Goal: replace same-turn raw PaddleOCR injection with a preprocessing pipeline
+that produces merged OCR Markdown before the main Steel agent runs.
+
+First-slice scope:
+
+- [ ] Follow implementation plan:
+      `docs/plans/2026-07-03-ocr-preprocessing-pipeline.md`.
+- [ ] Keep automatic PaddleOCR preflight, but process PDFs as page-range PDF
+      chunks, not rasterized page images.
+- [ ] Use 50 PDF pages per chunk by default, e.g. `1-50`, `51-100`.
+- [ ] Use the original PDF S3 file key/storage key as the main index for PDF
+      chunk artifacts, not `conversationId`.
+- [ ] Store split PDF chunk artifacts in a global DB registry so another
+      conversation using the same original PDF file key reuses existing chunk
+      PDFs instead of splitting/uploading again.
+- [ ] Before creating chunk PDFs, read global chunk artifact rows and check the
+      deterministic S3 object key; repair DB rows from S3 when possible.
+- [ ] Persist raw chunk evidence as `paddleocr_preflight` with file key, page
+      range, source PDF key, chunk index, and total chunk count metadata.
+- [ ] Make preprocessing resumable by deriving chunk state from persisted
+      `paddleocr_preflight` and `ocr_extract` rows for the same file key.
+- [ ] Emit user-visible progress events:
+      `paddleocr_preflight`, `paddleocr_preflight data saved as N chunks`,
+      `subagent process ocr X/N`, and `ocr markdown saved`.
+- [ ] Add an internal OCR organizer pass per chunk. The organizer receives only
+      OCR rules, file/chunk metadata, and that chunk's raw OCR result.
+- [ ] Parse and save each organized chunk Markdown immediately after its
+      organizer pass succeeds, instead of waiting for all chunks to finish.
+- [ ] On resubmit, skip chunks whose raw preflight and organized OCR Markdown
+      are already saved for the same file key/chunk identity.
+- [ ] Treat `ocrRuleVersion` changes as invalidating organized chunk Markdown
+      and final merged Markdown, while reusing saved raw `paddleocr_preflight`
+      chunks for the same file key/chunk identity.
+- [ ] Merge organized chunk Markdown deterministically by page/chunk order.
+- [ ] When same-file-key chunk Markdown tables have different headers, merge
+      with a union header set and leave missing cells blank.
+- [ ] Save the merged OCR Markdown as normal `ocr_extract` memory for the file.
+- [ ] If all chunks for a file key already have saved organized OCR Markdown,
+      skip PaddleOCR, skip organizer subagents, rebuild/load the merged OCR
+      Markdown, and pass it to the main Steel agent.
+- [ ] Give the main Steel agent exactly one merged OCR Markdown string per
+      file key instead of raw `paddleocr_preflight` results or per-chunk
+      Markdown arrays.
+- [ ] Add focused tests for event order, chunk metadata, merged OCR persistence,
+      and main-agent context using organized OCR instead of raw OCR.
+- [ ] Run a large-PDF pressure test after the pipeline works.
+
+Explicitly out of scope for this first slice:
+
+- Token-budget truncation or inline/manifest switching.
+- `read_markdown(scope: "ocr", pageRange/contentPartIndex)` support.
+- Solving every possible 300-page context case before measuring the new
+  pipeline behavior.
+
+Review notes:
+
+- Page-based chunking should happen before or during PaddleOCR processing so
+  each OCR chunk has reliable page provenance and can be retried independently.
+- PDF chunking must preserve PDF content by copying page ranges into PDF chunks.
+  Do not render PDF pages to PNG/JPEG for OCR preprocessing.
+- PDF chunk artifact identity is the original stored PDF object key. It must be
+  reusable across conversations that reference the same source PDF, while still
+  relying on the current request's normal file permission checks before access.
+- Conversation-scoped `paddleocr_preflight` and `ocr_extract` rows should
+  reference the source PDF key, but should not be the primary cache for split
+  PDF chunk artifacts.
+- The default chunk range is 50 PDF pages; keep it internal for this first
+  slice instead of adding a user-facing option.
+- The main agent must not receive raw OCR chunks in `additional_instructions`.
+- Chunk state must be durable after every successful organizer pass so an
+  interrupted request can resume without duplicating OCR, subagent work, or
+  parse/save side effects.
+- Chunk Markdown rows are intermediate durable state. `additional_instructions`
+  must receive the deterministic same-file-key merge, not individual chunks.
+- Chunk Markdown table headers may differ. The merge must preserve rows, use
+  union headers, and leave missing values blank instead of guessing.
+- OCR rules are part of organizer output identity. When the OCR rule version
+  changes, rerun subagent processing for every chunk and rebuild the final
+  merged Markdown from current-rule chunk outputs.
+- The pressure test result will decide whether a later retrieval/page-range
+  contract is necessary.
+
+---
+
+# Active: 100-page PDF context overflow research - 2026-07-03
+
+Goal: research why a roughly 100-page PDF can trigger
+`empty_messages` / `instructionTokens exceed maxContextTokens`, and identify
+the safest fix path before implementation.
+
+Status:
+
+- [x] Read project instructions, current lessons, RTK rule, and relevant memory.
+- [x] Trace where PDF/OCR/file-analysis content enters instructions,
+      additional instructions, tool definitions, or message history.
+- [x] Explain why pruning removes all messages and why the oversized payload
+      is counted as instruction tokens.
+- [x] Compare solution options and recommend the lowest-risk design.
+- [x] Record findings, verification seams, and next tasks.
+
+Findings:
+
+- Root cause is not PDF upload size directly. Automatic PaddleOCR preflight
+  saves the full OCR result, then also passes the full same-turn result into
+  `attachments.currentPaddleOcrResults`.
+- `buildDefaultSteelGlobalAgentContext()` forwards that array into
+  `runtimeContextText`, and `serializeSteelRuntimeContext()` stringifies the
+  complete attachment payload.
+- Native AgentClient and Open Responses both append `runtimeContextText` to
+  shared run context / `additional_instructions`.
+- In `@librechat/agents`, OpenAI/OAuth has no prompt-cache dynamic-tail split,
+  so additional instructions are folded into the SystemMessage and counted as
+  `systemMessageTokens`. That matches the observed breakdown:
+  `system: 463901`, `dynamic: 0`, `tools: 1945`.
+- `maxContextTokens: 245100` matches the repo's OpenAI OAuth 258K context
+  ceiling after the 0.95 reserve ratio. Raising UI max context is not a real
+  fix for this provider path.
+- Summarization cannot rescue this case. When instruction tokens already exceed
+  context, the summarizer explicitly skips because a summary would add more
+  instruction overhead, and Graph then raises `empty_messages`.
+- Local reproduction with `createPruneMessages()` and
+  `getInstructionTokens() => 465846` produced `contextLength: 0`,
+  `remainingContextTokens: 0`, and `effectiveInstructionTokens: 465846`.
+
+Recommendation:
+
+- Do not put full large same-turn PaddleOCR results into Steel runtime
+  instructions. Keep the full raw result persisted in `paddleocr_preflight`,
+  but serialize only a bounded OCR evidence manifest into
+  `runtimeContextText`.
+- Preserve the existing "do not rerun OCR" policy by making the manifest
+  explicit: current file key, filename, OCR source/status, page/content-part
+  counts, and a directive to use `read_markdown(scope: "ocr", ocrFileKey:
+  "file:<id>")` for full evidence when omitted from context.
+- Extend `read_markdown` before relying on it for 100-page PDFs. The current
+  keyed OCR read exposes `contentParts`, but the tool still returns full
+  content/markdown for the file. Add `contentPartIndex` or `pageRange` so the
+  tool output itself stays bounded.
+- Keep full same-turn injection only for small OCR payloads under a measured
+  budget. Large payloads should degrade to manifest + retrieval, never silent
+  hard truncation.
+
+Verification seams for implementation:
+
+- `api/server/services/__tests__/ToolService.spec.js`: preflight still saves
+  the complete PaddleOCR result.
+- `packages/api/src/steel/runtime/context.spec.ts`: large
+  `currentPaddleOcrResults` serializes to a bounded manifest, not full raw
+  text/pages.
+- `packages/api/src/steel/native/context.spec.ts`: `runtimeContextText` remains
+  under a safe budget for a synthetic 100-page OCR result and keeps retrieval
+  instructions.
+- `packages/api/src/steel/tools/execute.spec.ts`: keyed `read_markdown` can
+  return one OCR chunk/page range without including the full file content.
+- `packages/api/src/agents/__tests__/run-summarization.test.ts` or a focused
+  graph/pruning test: large OCR evidence no longer drives
+  `instructionTokens > maxContextTokens`.
+
+---
+
+# Active: PaddleOCR MCP input_data URL/prefix normalization - 2026-07-02
+
+Goal: harden `paddleocr_vl.input_data` so AI-added prefixes do not break
+PaddleOCR calls, while supporting S3/http URLs, `file:<id>` / file ids,
+and data URLs while rejecting direct local paths.
+
+Status:
+
+- [x] Add red MCP resolver regressions for prefixed current-file tokens,
+      direct http(s) URLs, data URLs with prefixes, and local-path rejection.
+- [x] Implement a single PaddleOCR input canonicalization path before
+      `mcpManager.callTool()`.
+- [x] Prefer owned current-file resolution over trusting AI-supplied URLs.
+- [x] Pass supported direct URL/data inputs through instead of sending
+      malformed prefixed strings to PaddleOCR.
+- [x] Run focused MCP tests, build/checks, and document evidence.
+
+Investigation:
+
+- Current `prepareMCPToolArguments()` already runs for both model-requested
+  `paddleocr_vl` calls and automatic Steel PaddleOCR preflight.
+- Existing resolver strips only `file:` while matching filenames/file ids. Other
+  AI-added prefixes can leave `input_data` malformed unless basename matching
+  happens to recover it.
+- Preflight uses controlled file ids via the same MCP tool wrapper, so the
+  higher-risk path is model-generated `input_data` on manual tool calls.
+
+Fix:
+
+- Added candidate extraction for PaddleOCR `input_data` before MCP execution:
+  `data:...`, `http(s)://...`, `file:<id>`, raw file ids, and
+  label-stripped values such as `file_url:...` / `source=...`.
+- Current owned attachments still win over direct AI-supplied URLs; S3 current
+  files are rewritten through `getDownloadURL()` to a clean backend-generated
+  URL, and non-S3 owned files continue through the data URL fallback.
+- If no owned current file matches, supported direct `http(s)://`, `data:` and
+  raw Base64 inputs are passed through without the AI-added prefix.
+- Direct local paths such as `file://...`, `/tmp/...`, `./...`, `../...`, and
+  Windows path forms are rejected unless they only serve as a local-path-shaped
+  alias for an owned current file, in which case the owned file is still
+  rewritten to a backend-controlled URL/data URL.
+- PaddleOCR resolver logs now strip URL query strings before logging matched
+  URL-shaped inputs.
+
+Verification:
+
+- Red first:
+  `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR"` failed on the four new prefixed-input regressions before the fix.
+- Red correction:
+  the same focused spec failed on direct `file://...` and `/tmp/...` local path
+  rejection before banning direct local paths.
+- Green:
+  `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR"`
+- `cd api && rtk npx jest server/services/MCP.spec.js --runInBand --watch=false --coverage=false`
+- `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR|preflight"`
+- `node --check api/server/services/MCP.js`
+- `git diff --check`
+
+---
+
+# Active: Cross-device message elapsed timer reset - 2026-07-02
+
+Goal: diagnose and fix the UI bug where a running assistant message elapsed
+timer shows only a few seconds after switching to another browser/computer,
+even though the generation had already been running for minutes.
+
+Status:
+
+- [x] Read project instructions, timing lesson, and current message timer code.
+- [x] Trace the elapsed-time data flow through message rendering, resumable SSE,
+      and generation resume state.
+- [x] Add a red regression for reconnect/resume preserving original generation
+      start time.
+- [x] Implement the minimal fix at the server resume-state and frontend
+      resumed-submission seams.
+- [x] Run focused tests/checks and document evidence.
+
+Investigation:
+
+- `MessageElapsedTimer` computes the displayed elapsed time from the parent
+  user message timestamp first, then the assistant message timestamp.
+- A normal local submit has the user message `clientTimestamp`, so the timer
+  starts near the original submit time.
+- Cross-device resume builds a new submission from `resumeState`; that state
+  currently carries message ids/content/model/icon metadata, but not the
+  original generation/job start timestamp as client-facing message metadata.
+- When the reconnecting browser builds the resumed placeholder without that
+  timestamp, the timer falls back to the new local render time and then freezes
+  at only a few seconds when the final message arrives.
+
+Fix:
+
+- `ResumeState` now exposes the server-side generation job `createdAt` value.
+- Cross-device resume and SSE sync rebuild user/assistant placeholders with
+  that original timestamp as both `createdAt` and `clientTimestamp`.
+- Sync updates preserve the existing resumed timestamp instead of replacing it
+  with the reconnecting browser's current time.
+
+Verification:
+
+- `cd client && rtk npx jest src/hooks/SSE/__tests__/useResumeOnLoad.spec.tsx src/hooks/SSE/__tests__/useResumableSSE.spec.ts --runInBand --watch=false --coverage=false`
+- `cd packages/api && rtk npx jest src/stream/__tests__/GenerationJobManager.stream_integration.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "metadata consistency|createdAt|resume"`
+- `cd packages/data-provider && rtk npm run build`
+- `cd packages/api && rtk npm run build`
+- `rtk npm run frontend:ci`
+- `git diff --check`
+
+Note:
+
+- `cd client && rtk npm run typecheck` currently fails in this checkout with
+  workspace/module resolution errors such as `Cannot find module
+  'librechat-data-provider'`; the root `frontend:ci` path passed and rebuilds
+  the relevant packages before the client build.
+
+---
+
 # Active: Production OCR preflight read_markdown regression check - 2026-07-02
 
 Goal: diagnose and fix conversation
@@ -6036,3 +6314,25 @@ Completion review - 2026-06-26:
     `PaddleOCR-VL-1.6` received `tools/call`. No new `Invalid 'tools[0].name'`
     error appeared after the fix; the remaining invalid-name log entry is from
     the pre-fix 09:27 UTC request.
+
+## Production User Bootstrap - 2026-07-02
+
+- [x] Confirm the repo-supported production user creation path and avoid
+      placing the password in shell arguments.
+- [x] Create the LibreChat production user for username `longding`.
+- [x] Verify the user exists in production Mongo with email verification set.
+- [x] Record review evidence without exposing the password.
+
+Review:
+
+- Used the documented local-terminal bootstrap path with
+  `DOTENV_CONFIG_PATH=.env.prod` and `CONFIG_PATH=librechat.yaml`, so the script
+  connected to production Mongo without reading the server-only
+  `/data/librechat.yaml`.
+- Created local-provider LibreChat user `longding` with email
+  `longding@gmail.com`; the script returned `User created successfully!` and
+  `Email verified: true`.
+- Verified production Mongo readback: `emailVerified: true`, `role: USER`,
+  `provider: local`, and `createdAt: 2026-07-02T01:58:08.241Z`.
+- Verified the supplied password by bcrypt comparison against the stored hash;
+  output was only `passwordMatches: true`, with no password or hash printed.

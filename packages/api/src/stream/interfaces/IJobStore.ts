@@ -154,6 +154,7 @@ export interface AbortResult {
  * Resume state for reconnecting clients
  */
 export interface ResumeState {
+  createdAt?: number;
   runSteps: Agents.RunStep[];
   aggregatedContent: Agents.MessageContentComplex[];
   userMessage?: SerializableJobData['userMessage'];

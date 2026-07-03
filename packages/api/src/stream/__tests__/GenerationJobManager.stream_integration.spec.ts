@@ -415,6 +415,7 @@ describe('GenerationJobManager Integration Tests', () => {
         expect(updated?.metadata?.model).toBe('gpt-4.1');
 
         const resumeState = await GenerationJobManager.getResumeState(streamId);
+        expect(resumeState?.createdAt).toBe(job.createdAt);
         expect(resumeState?.sender).toBe('ConsistencyAgent');
         expect(resumeState?.responseMessageId).toBe('resp-123');
         expect(resumeState?.iconURL).toBe('https://example.com/spec-icon.png');
