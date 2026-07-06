@@ -13,8 +13,6 @@ export function normalizeSteelSpecKey(
   return normalized || undefined;
 }
 
-export function normalizeSteelSpecKeyOrUnknown(
-  ...parts: Array<string | null | undefined>
-): string {
+export function normalizeSteelSpecKeyOrUnknown(...parts: Array<string | null | undefined>): string {
   return normalizeSteelSpecKey(...parts) ?? 'unknown_spec';
 }

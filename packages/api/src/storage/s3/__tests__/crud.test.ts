@@ -216,9 +216,7 @@ describe('S3 CRUD', () => {
       process.env.S3_KEY_PREFIX = 'dev';
       const { getS3Key } = await import('../crud');
 
-      expect(getS3Key('uploads', 'user123', 'report.pdf')).toBe(
-        'dev/uploads/user123/report.pdf',
-      );
+      expect(getS3Key('uploads', 'user123', 'report.pdf')).toBe('dev/uploads/user123/report.pdf');
       expect(
         getS3Key({
           basePath: 'images',

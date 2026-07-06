@@ -1,8 +1,4 @@
-import {
-  resolveOpenAIOAuthAuthFilePath,
-  OpenAIConfigError,
-  parseOpenAIConfig,
-} from './config';
+import { resolveOpenAIOAuthAuthFilePath, OpenAIConfigError, parseOpenAIConfig } from './config';
 
 describe('OpenAI runtime config', () => {
   it('defaults to OAuth, gpt-5.5, and medium reasoning effort', () => {

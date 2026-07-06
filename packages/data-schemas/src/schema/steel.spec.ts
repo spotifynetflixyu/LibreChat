@@ -84,10 +84,7 @@ describe('Steel Mongo schemas', () => {
   it('stores Steel conversation turns with latest-visible and superseded state fields', () => {
     const SteelConversationTurn = createSteelConversationTurnModel(mongoose);
 
-    expect(SteelConversationTurn.schema.path('role').options.enum).toEqual([
-      'user',
-      'assistant',
-    ]);
+    expect(SteelConversationTurn.schema.path('role').options.enum).toEqual(['user', 'assistant']);
     expect(SteelConversationTurn.schema.path('source').options.enum).toEqual([
       'user_input',
       'assistant_final',
@@ -100,7 +97,9 @@ describe('Steel Mongo schemas', () => {
     expect(SteelConversationTurn.schema.path('userId')).toBeDefined();
     expect(SteelConversationTurn.schema.path('finalResponseMetadata.provider')).toBeDefined();
     expect(SteelConversationTurn.schema.path('finalResponseMetadata.responseId')).toBeDefined();
-    expect(SteelConversationTurn.schema.path('finalResponseMetadata.usage.totalTokens')).toBeDefined();
+    expect(
+      SteelConversationTurn.schema.path('finalResponseMetadata.usage.totalTokens'),
+    ).toBeDefined();
     expect(SteelConversationTurn.schema.path('queuedSteer.targetRequestId')).toBeDefined();
     expect(SteelConversationTurn.schema.path('queuedSteer.status').options.enum).toEqual([
       'queued',

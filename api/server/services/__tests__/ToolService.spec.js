@@ -99,8 +99,16 @@ jest.mock('@librechat/api', () => ({
         if (lines.length < 3) {
           return undefined;
         }
-        const headers = lines[0].split('|').slice(1, -1).map((cell) => cell.trim());
-        const rows = lines.slice(2).map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
+        const headers = lines[0]
+          .split('|')
+          .slice(1, -1)
+          .map((cell) => cell.trim());
+        const rows = lines.slice(2).map((line) =>
+          line
+            .split('|')
+            .slice(1, -1)
+            .map((cell) => cell.trim()),
+        );
         return { headers, rows };
       })
       .filter(Boolean);
@@ -297,7 +305,10 @@ function getNonSteelToolDefinitions(definitions) {
   return definitions.filter((definition) => !isSteelNativeToolDefinition(definition));
 }
 
-function createMockOcrBatchResult(input, markdown = '| 項次 | 品名規格 |\n| --- | --- |\n| 1 | OCR |') {
+function createMockOcrBatchResult(
+  input,
+  markdown = '| 項次 | 品名規格 |\n| --- | --- |\n| 1 | OCR |',
+) {
   return {
     files: (input.files ?? []).map((entry) => ({
       file: entry.file,
@@ -309,11 +320,9 @@ function createMockOcrBatchResult(input, markdown = '| 項次 | 品名規格 |\n
 }
 
 function expectSteelNativeToolDefinitions(definitions) {
-  expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual([
-    'read_markdown',
-    'search_customers',
-    'search_price_candidates',
-  ]);
+  expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual(
+    ['read_markdown', 'search_customers', 'search_price_candidates'],
+  );
 }
 
 describe('ToolService - Action Capability Gating', () => {
@@ -369,9 +378,7 @@ describe('ToolService - Action Capability Gating', () => {
     ]);
     mockGetPdfPageCount.mockResolvedValue(1);
     mockCreatePdfPageRangeChunk.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
-    mockCreatePdfPageRangeChunker.mockResolvedValue((range) =>
-      mockCreatePdfPageRangeChunk(range),
-    );
+    mockCreatePdfPageRangeChunker.mockResolvedValue((range) => mockCreatePdfPageRangeChunk(range));
     mockEnsurePdfChunkArtifacts.mockResolvedValue([
       {
         chunkIndex: 1,
@@ -686,8 +693,11 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
       expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalled();
       expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
-      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(({ file }) => file.ocrFileKey))
-        .toEqual(['file:file-a', 'file:file-b', 'file:file-c']);
+      expect(
+        mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(
+          ({ file }) => file.ocrFileKey,
+        ),
+      ).toEqual(['file:file-a', 'file:file-b', 'file:file-c']);
       expect(result).toEqual({
         status: 'completed',
         completedKeys: ['file:file-a', 'file:file-b', 'file:file-c'],
@@ -1081,8 +1091,9 @@ describe('ToolService - Action Capability Gating', () => {
           outputStorage: 'steel_working_order_memory:paddleocr_preflight',
         }),
       );
-      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].memory.capturePaddleOcrChunkResult)
-        .toBeDefined();
+      expect(
+        mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].memory.capturePaddleOcrChunkResult,
+      ).toBeDefined();
     });
 
     it('surfaces OCR preprocessing organizer failures as request errors for chat display', async () => {
@@ -1163,9 +1174,7 @@ describe('ToolService - Action Capability Gating', () => {
         requestId: 'resp-1',
         assistantTurnIndex: 4,
         memoryCheckpointTurnIndex: 3,
-        currentTurnFiles: [
-          { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
-        ],
+        currentTurnFiles: [{ fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' }],
       };
       mockGetFiles.mockResolvedValueOnce([
         {
@@ -1233,9 +1242,7 @@ describe('ToolService - Action Capability Gating', () => {
         requestId: 'resp-1',
         assistantTurnIndex: 4,
         memoryCheckpointTurnIndex: 3,
-        currentTurnFiles: [
-          { fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' },
-        ],
+        currentTurnFiles: [{ fileId: 'file-a', filename: 'a.pdf', mediaType: 'application/pdf' }],
       };
       mockGetFiles.mockResolvedValueOnce([
         {
@@ -1373,11 +1380,13 @@ describe('ToolService - Action Capability Gating', () => {
           { fileId: 'file-second', filename: 'second.jpg', mediaType: 'image/jpeg' },
         ],
       };
-      const firstInvoke = jest.fn().mockRejectedValueOnce(
-        new Error(
-          'ClientConnectorError: Cannot connect to host paddleocr.aistudio-app.com:443 ssl:default [Connection reset by peer]',
-        ),
-      );
+      const firstInvoke = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            'ClientConnectorError: Cannot connect to host paddleocr.aistudio-app.com:443 ssl:default [Connection reset by peer]',
+          ),
+        );
       const secondInvoke = jest.fn().mockResolvedValueOnce({ text: 'Second OCR' });
       mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
         completedKeys: [],
@@ -2471,9 +2480,7 @@ describe('ToolService - Action Capability Gating', () => {
         ]),
       );
       expect(steelEventMessages).not.toEqual(
-        expect.arrayContaining([
-          'Running paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)',
-        ]),
+        expect.arrayContaining(['Running paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)']),
       );
     });
 

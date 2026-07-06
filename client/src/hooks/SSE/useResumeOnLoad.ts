@@ -138,7 +138,9 @@ function buildSubmissionFromResumeState(
           text: userMessageData.text ?? '',
           isCreatedByUser: true,
           role: 'user',
-          ...(resumeTimestamp ? { createdAt: resumeTimestamp, clientTimestamp: resumeTimestamp } : {}),
+          ...(resumeTimestamp
+            ? { createdAt: resumeTimestamp, clientTimestamp: resumeTimestamp }
+            : {}),
         }) as TMessage)
       : (messages[messages.length - 2] ??
         ({

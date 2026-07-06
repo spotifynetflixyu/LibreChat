@@ -387,9 +387,7 @@ function toCompactWorkbookRow(
   };
 }
 
-function toCompactWorkbookSheet(
-  sheet: SteelRuntimeOutputSheet,
-): SteelRuntimeCompactWorkbookSheet {
+function toCompactWorkbookSheet(sheet: SteelRuntimeOutputSheet): SteelRuntimeCompactWorkbookSheet {
   return {
     sheetId: sheet.sheetId,
     rowCount: sheet.rows.length,
@@ -498,9 +496,7 @@ function isSameRuntimeMessage(
   return left.role === right.role && left.content === right.content;
 }
 
-function toLibreChatRuntimeMessageReference(
-  message: SteelOAuthChatMessage,
-): SteelOAuthChatMessage {
+function toLibreChatRuntimeMessageReference(message: SteelOAuthChatMessage): SteelOAuthChatMessage {
   return {
     role: message.role,
     content: '',

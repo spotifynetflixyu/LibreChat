@@ -1,8 +1,5 @@
 const express = require('express');
-const {
-  createSteelHandlers,
-  resolveEvidenceFileForProvider,
-} = require('@librechat/api');
+const { createSteelHandlers, resolveEvidenceFileForProvider } = require('@librechat/api');
 const { getFiles } = require('~/models');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -110,7 +107,11 @@ router.post(
   requireJwtAuth,
   handlers.createAuthenticatedConversation,
 );
-router.post('/conversations/guest', requireSteelOAuthChatDevRoute, handlers.createGuestConversation);
+router.post(
+  '/conversations/guest',
+  requireSteelOAuthChatDevRoute,
+  handlers.createGuestConversation,
+);
 router.get(
   '/conversations/:conversationId/messages',
   requireSteelOAuthChatDevRoute,

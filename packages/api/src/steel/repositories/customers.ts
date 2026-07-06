@@ -1,9 +1,4 @@
-import {
-  getLimit,
-  parseNullableString,
-  parseRequiredNumber,
-  parseSteelSourceRefs,
-} from './types';
+import { getLimit, parseNullableString, parseRequiredNumber, parseSteelSourceRefs } from './types';
 import { priceTierCodes, type PriceTierCode } from '../pricing/enums';
 
 import type {
@@ -74,7 +69,9 @@ export async function searchSteelCustomers(
     values.push(keyword, `%${keyword}%`);
     const exactPlaceholder = `$${values.length - 1}`;
     const containsPlaceholder = `$${values.length}`;
-    exactScoreExpressions.push(`CASE WHEN c.erp_customer_code = ${exactPlaceholder} THEN 0 ELSE 1 END`);
+    exactScoreExpressions.push(
+      `CASE WHEN c.erp_customer_code = ${exactPlaceholder} THEN 0 ELSE 1 END`,
+    );
     where.push(`(
       c.erp_customer_code = ${exactPlaceholder}
       OR c.display_name ILIKE ${containsPlaceholder}

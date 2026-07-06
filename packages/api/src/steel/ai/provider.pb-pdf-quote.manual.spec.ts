@@ -33,9 +33,7 @@ const describePBQuoteLive = runPBQuoteLive ? describe : describe.skip;
 const repoRoot = path.resolve(__dirname, '../../../../../');
 const pbPdfPath = path.join(repoRoot, 'docs/reference/example/PB.pdf');
 const pbPdfExpectedPageCount = 71;
-const caseTimeoutMs = Number(
-  process.env.STEEL_OPENAI_OAUTH_PB_PDF_QUOTE_TIMEOUT_MS ?? 1200000,
-);
+const caseTimeoutMs = Number(process.env.STEEL_OPENAI_OAUTH_PB_PDF_QUOTE_TIMEOUT_MS ?? 1200000);
 const pbPdfMaxOutputTokens = Number(
   process.env.STEEL_OPENAI_OAUTH_PB_PDF_QUOTE_MAX_OUTPUT_TOKENS ?? 20000,
 );
@@ -197,11 +195,7 @@ function isMaterialModelCode(value: string | undefined): boolean {
 function isHoleQuoteRow(row: TablePayload): boolean {
   const modelCode = row['型號'];
   const productName = row['品名規格'];
-  const processingText = [
-    row['加工類型'],
-    row['類別'],
-    row['原始規格'],
-  ]
+  const processingText = [row['加工類型'], row['類別'], row['原始規格']]
     .filter((value) => value !== undefined && value.trim().length > 0)
     .join(' ');
 
@@ -333,8 +327,7 @@ function hasNumericPriceBasis(rows: readonly TablePayload[]): boolean {
 function hasPositiveQuoteAmount(row: TablePayload): boolean {
   return Object.entries(row).some(([header, value]) => {
     return (
-      /單價|小計|總價|金額|價格|報價/u.test(header) &&
-      extractPositiveNumbers(value).length > 0
+      /單價|小計|總價|金額|價格|報價/u.test(header) && extractPositiveNumbers(value).length > 0
     );
   });
 }
@@ -583,12 +576,8 @@ async function createRuntimeContext({
         return {
           ocrRules,
           fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
-          sourcePriorityRules: rules.filter((rule) =>
-            hasRuleSection(rule, ['source_priority']),
-          ),
-          markdownOutputRules: rules.filter((rule) =>
-            hasRuleSection(rule, ['markdown_output']),
-          ),
+          sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
+          markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
         };
       },
       readOutputSheetMemory: async () => createEmptySteelOutputSheetMemorySnapshot(),
@@ -678,9 +667,7 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
             );
           }
         })();
-        const removedOcrEvents = ocrToolEvents.filter(
-          (event) => event.toolName === 'run_file_ocr',
-        );
+        const removedOcrEvents = ocrToolEvents.filter((event) => event.toolName === 'run_file_ocr');
         const ocrProductRowCount = countOcrProductRows(ocrResponse.text);
         const ocrHoleCountSummary = getOcrHoleCountSummary(ocrResponse.text);
         const quoteRuntimeContext = await createRuntimeContext({
@@ -703,10 +690,7 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
           steelRuntimeContext: quoteRuntimeContext,
           steelRuntimePolicy: true,
           steelToolMaxCalls: 10,
-          messages: [
-            { role: 'assistant', content: ocrResponse.text },
-            quoteUserMessage,
-          ],
+          messages: [{ role: 'assistant', content: ocrResponse.text }, quoteUserMessage],
         });
         const priceCandidates = quoteCapturedCalls.flatMap((call) =>
           getPriceCandidates(call.result),
@@ -794,7 +778,9 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
           'PB.pdf OCR confirmation did not include explicit per-piece and total hole counts.',
           evidence,
         );
-        expect(quoteToolEvents.filter((event) => event.toolName === 'run_file_ocr')).toHaveLength(0);
+        expect(quoteToolEvents.filter((event) => event.toolName === 'run_file_ocr')).toHaveLength(
+          0,
+        );
         expect(quoteCapturedCalls.some(isPriceLookupCall)).toBe(true);
         expect(priceCandidates.some((candidate) => candidate.priceKind === 'product')).toBe(true);
         expect(
@@ -808,12 +794,14 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
           evidence,
         );
         assertWithEvidence(
-          firstQuoteTable !== undefined && hasHeaders(firstQuoteTable, ['項次', '型號', '品名規格']),
+          firstQuoteTable !== undefined &&
+            hasHeaders(firstQuoteTable, ['項次', '型號', '品名規格']),
           'PB.pdf quote response did not put the system_order detail table first.',
           evidence,
         );
         assertWithEvidence(
-          firstQuoteTable !== undefined && hasExactHeaders(firstQuoteTable, expectedSystemOrderHeaders),
+          firstQuoteTable !== undefined &&
+            hasExactHeaders(firstQuoteTable, expectedSystemOrderHeaders),
           'PB.pdf first system_order table did not use the fixed ERP column order.',
           evidence,
         );
@@ -852,9 +840,7 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
           'PB.pdf hole-processing quote quantity did not match confirmed OCR total hole count.',
           evidence,
         );
-        expect(JSON.stringify(evidence)).not.toMatch(
-          /access_token|authorization|Bearer|authFile/i,
-        );
+        expect(JSON.stringify(evidence)).not.toMatch(/access_token|authorization|Bearer|authFile/i);
       } finally {
         await pool.end();
       }

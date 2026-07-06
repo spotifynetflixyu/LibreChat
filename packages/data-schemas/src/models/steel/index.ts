@@ -31,14 +31,16 @@ function createSteelNamedStateModel(
   modelName: string,
   schema: Schema<t.ISteelNamedState>,
   collectionName: string,
-) : Model<t.ISteelNamedState> {
+): Model<t.ISteelNamedState> {
   return (
     getExistingModel<t.ISteelNamedState>(mongoose, modelName) ||
     mongoose.model<t.ISteelNamedState>(modelName, schema, collectionName)
   );
 }
 
-export function createSteelConversationMetaModel(mongoose: Mongoose): Model<t.ISteelConversationMeta> {
+export function createSteelConversationMetaModel(
+  mongoose: Mongoose,
+): Model<t.ISteelConversationMeta> {
   return (
     getExistingModel<t.ISteelConversationMeta>(mongoose, 'SteelConversationMeta') ||
     mongoose.model<t.ISteelConversationMeta>(
@@ -49,7 +51,9 @@ export function createSteelConversationMetaModel(mongoose: Mongoose): Model<t.IS
   );
 }
 
-export function createSteelConversationTurnModel(mongoose: Mongoose): Model<t.ISteelConversationTurn> {
+export function createSteelConversationTurnModel(
+  mongoose: Mongoose,
+): Model<t.ISteelConversationTurn> {
   return (
     getExistingModel<t.ISteelConversationTurn>(mongoose, 'SteelConversationTurn') ||
     mongoose.model<t.ISteelConversationTurn>(
@@ -60,7 +64,9 @@ export function createSteelConversationTurnModel(mongoose: Mongoose): Model<t.IS
   );
 }
 
-export function createSteelWorkingOrderMemoryModel(mongoose: Mongoose): Model<t.ISteelWorkingOrderMemory> {
+export function createSteelWorkingOrderMemoryModel(
+  mongoose: Mongoose,
+): Model<t.ISteelWorkingOrderMemory> {
   return (
     getExistingModel<t.ISteelWorkingOrderMemory>(mongoose, 'SteelWorkingOrderMemory') ||
     mongoose.model<t.ISteelWorkingOrderMemory>(
@@ -176,7 +182,9 @@ export function createSteelAdminMappingProfileModel(mongoose: Mongoose): Model<t
   );
 }
 
-export function createSteelMemoryCandidateModel(mongoose: Mongoose): Model<t.ISteelMemoryCandidate> {
+export function createSteelMemoryCandidateModel(
+  mongoose: Mongoose,
+): Model<t.ISteelMemoryCandidate> {
   return (
     getExistingModel<t.ISteelMemoryCandidate>(mongoose, 'SteelMemoryCandidate') ||
     mongoose.model<t.ISteelMemoryCandidate>(

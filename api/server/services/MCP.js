@@ -313,7 +313,10 @@ function safeDecode(value) {
 }
 
 function cleanExtractedPaddleInput(value) {
-  return value.trim().replace(/^[<"'([`]+/g, '').replace(/[>"'\])`,.]+$/g, '');
+  return value
+    .trim()
+    .replace(/^[<"'([`]+/g, '')
+    .replace(/[>"'\])`,.]+$/g, '');
 }
 
 function addPaddleInputCandidate(candidates, seen, value) {
@@ -350,11 +353,7 @@ function collectPaddleInputCandidates(value) {
   let labelStripped = original;
   for (let i = 0; i < 3; i++) {
     const match = labelStripped.match(/^[A-Za-z][A-Za-z0-9_-]{0,63}\s*[:=]\s*(.+)$/);
-    if (
-      !match ||
-      /^data:/i.test(labelStripped) ||
-      /^(?:https?|file):\/\//i.test(labelStripped)
-    ) {
+    if (!match || /^data:/i.test(labelStripped) || /^(?:https?|file):\/\//i.test(labelStripped)) {
       break;
     }
     labelStripped = cleanExtractedPaddleInput(match[1]);
@@ -448,7 +447,11 @@ function fileMatchesInputName(file, inputData) {
       continue;
     }
 
-    if (String(getFileId(file) ?? '').trim().toLowerCase() === inputName) {
+    if (
+      String(getFileId(file) ?? '')
+        .trim()
+        .toLowerCase() === inputName
+    ) {
       return true;
     }
 
@@ -480,10 +483,7 @@ function getMediaTypeForFile(file, inputData) {
   const explicitType = file?.type ?? file?.mimetype ?? file?.mediaType;
   const normalizedExplicitType =
     typeof explicitType === 'string' ? explicitType.trim().toLowerCase() : '';
-  if (
-    normalizedExplicitType !== '' &&
-    normalizedExplicitType !== 'application/octet-stream'
-  ) {
+  if (normalizedExplicitType !== '' && normalizedExplicitType !== 'application/octet-stream') {
     return explicitType.trim();
   }
 
@@ -545,7 +545,9 @@ async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }
   }
 
   if (typeof getDownloadStream !== 'function') {
-    throw new Error(`Matched attachment "${matchedFile.filename ?? trimmedInput}" is not downloadable`);
+    throw new Error(
+      `Matched attachment "${matchedFile.filename ?? trimmedInput}" is not downloadable`,
+    );
   }
 
   const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);

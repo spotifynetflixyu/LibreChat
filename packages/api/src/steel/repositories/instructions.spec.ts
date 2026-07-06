@@ -1,7 +1,4 @@
-import {
-  listReviewedSteelInstructionPackets,
-  searchSteelInstructionPackets,
-} from './instructions';
+import { listReviewedSteelInstructionPackets, searchSteelInstructionPackets } from './instructions';
 
 import type { SteelRepositoryClient } from './types';
 

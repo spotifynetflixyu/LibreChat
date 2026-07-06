@@ -157,7 +157,7 @@ describe('Steel price repositories', () => {
     expect(sql).toContain('material ILIKE $3');
     expect(sql).toContain('source_thickness = $4');
     expect(sql).toContain('product_name ILIKE $5');
-    expect(sql).not.toContain("category = $6");
+    expect(sql).not.toContain('category = $6');
     expect(sql).not.toContain("price_kind = 'cutting'");
     expect(sql).not.toContain('subcategory = ANY');
     expect(sql).toContain(' AND ');
@@ -321,12 +321,7 @@ describe('Steel price repositories', () => {
     expect(sql).not.toContain('source_thickness =');
     expect(sql).not.toContain("price_kind = 'cutting'");
     expect(sql).not.toContain('subcategory = ANY');
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '鐵板/鋼板',
-      '%鋅%',
-      5,
-    ]);
+    expect(query).toHaveBeenCalledWith(expect.any(String), ['reviewed', '鐵板/鋼板', '%鋅%', 5]);
     expect(result[0]).toEqual(
       expect.objectContaining({
         material: '鋁鋅',
@@ -399,13 +394,7 @@ describe('Steel price repositories', () => {
     },
   );
 
-  it.each([
-    'C型鋼',
-    '鐵板/鋼板',
-    '樓層板',
-    '浪板/收邊',
-    'T型鋼',
-  ] satisfies PriceCategory[])(
+  it.each(['C型鋼', '鐵板/鋼板', '樓層板', '浪板/收邊', 'T型鋼'] satisfies PriceCategory[])(
     'does not include related cutting rows for non-whitelisted category %s',
     async (category) => {
       const query = jest.fn().mockResolvedValue({ rows: [] });
@@ -525,11 +514,6 @@ describe('Steel price repositories', () => {
 
     expect(sql).toContain('material ILIKE $2');
     expect(sql).toContain('product_name ILIKE $3');
-    expect(query).toHaveBeenCalledWith(expect.any(String), [
-      'reviewed',
-      '%白鐵%',
-      '%方管%',
-      5,
-    ]);
+    expect(query).toHaveBeenCalledWith(expect.any(String), ['reviewed', '%白鐵%', '%方管%', 5]);
   });
 });

@@ -174,9 +174,7 @@ function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
     return [];
   }
 
-  return Array.from(table.rows).map((row) =>
-    Array.from(row.cells).map(getNormalizedCellText),
-  );
+  return Array.from(table.rows).map((row) => Array.from(row.cells).map(getNormalizedCellText));
 }
 
 function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOption[] {
@@ -192,10 +190,7 @@ function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOptio
   }));
 }
 
-function getColumnHeader(
-  columnHeaders: readonly TableHeaderOption[],
-  columnIndex: number,
-): string {
+function getColumnHeader(columnHeaders: readonly TableHeaderOption[], columnIndex: number): string {
   return (
     columnHeaders.find((header) => header.index === columnIndex)?.label ||
     `Column ${columnIndex + 1}`
@@ -648,9 +643,7 @@ function TableToolbar({
   const expandLabel = localize('com_ui_expand_table');
   const closeLabel = localize('com_ui_close_table');
   const showStickyColumnSelector = expanded && headerOptions.length > 0;
-  const stickyColumnLabel = showStickyColumnSelector
-    ? localize('com_ui_sticky_table_column')
-    : '';
+  const stickyColumnLabel = showStickyColumnSelector ? localize('com_ui_sticky_table_column') : '';
   const noStickyColumnLabel = showStickyColumnSelector
     ? localize('com_ui_no_sticky_table_column')
     : '';
@@ -687,7 +680,9 @@ function TableToolbar({
   return (
     <div
       className={
-        expanded ? 'markdown-table-toolbar markdown-table-toolbar-expanded' : 'markdown-table-toolbar'
+        expanded
+          ? 'markdown-table-toolbar markdown-table-toolbar-expanded'
+          : 'markdown-table-toolbar'
       }
     >
       {showStickyColumnSelector && (
@@ -753,7 +748,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     store.pendingMarkdownTableCommentsByConvoId(commentConversationId),
   );
   const themeAttributes = useThemeAttributes(isExpanded);
-  const modalClassName = ['markdown-table-modal', themeAttributes.className].filter(Boolean).join(' ');
+  const modalClassName = ['markdown-table-modal', themeAttributes.className]
+    .filter(Boolean)
+    .join(' ');
   const commentLabel = localize('com_ui_markdown_table_cell_comment');
   const messageTimestampLabel = useMemo(() => {
     const formatted = getMessageTimestamp(messageTimestamp, i18n.language);

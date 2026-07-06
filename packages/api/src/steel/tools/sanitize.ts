@@ -20,10 +20,7 @@ function isPlainObject(value: unknown): value is { [key: string]: unknown } {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sanitizeValue(
-  value: unknown,
-  seen: WeakSet<object>,
-): SteelToolJsonValue | undefined {
+function sanitizeValue(value: unknown, seen: WeakSet<object>): SteelToolJsonValue | undefined {
   if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
     return undefined;
   }

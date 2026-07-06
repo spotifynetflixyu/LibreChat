@@ -1447,7 +1447,8 @@ describe('User parameter passing tests', () => {
           {
             file_id: 'cloudfront-file-drawing',
             filename: 'drawing.pdf',
-            filepath: 'https://cdn.example.test/uploads/paddle-user/cloudfront-file-drawing__drawing.pdf',
+            filepath:
+              'https://cdn.example.test/uploads/paddle-user/cloudfront-file-drawing__drawing.pdf',
             storageKey: 'uploads/paddle-user/cloudfront-file-drawing__drawing.pdf',
             type: 'application/pdf',
             source: 'cloudfront',

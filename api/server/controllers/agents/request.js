@@ -143,7 +143,10 @@ function getPreliminaryMessageFiles(files) {
   return messageFiles.length > 0 ? messageFiles : undefined;
 }
 
-function getPreliminaryUserMessage({ messageId, parentMessageId, text, quotes, files }, conversationId) {
+function getPreliminaryUserMessage(
+  { messageId, parentMessageId, text, quotes, files },
+  conversationId,
+) {
   if (typeof messageId !== 'string' || messageId.length === 0) {
     return null;
   }

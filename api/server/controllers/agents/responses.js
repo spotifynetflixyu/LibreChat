@@ -181,7 +181,7 @@ function addSteelNativeFileReference(filesById, part, conversationId) {
       ? part.mediaType
       : typeof part.media_type === 'string'
         ? part.media_type
-        : parseSteelNativeDataUrlMediaType(part.file_data) ?? 'application/octet-stream';
+        : (parseSteelNativeDataUrlMediaType(part.file_data) ?? 'application/octet-stream');
 
   filesById.set(fileId, {
     fileId,

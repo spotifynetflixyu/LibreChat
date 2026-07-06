@@ -9,11 +9,7 @@ describe('Steel tool registry', () => {
   it('exposes only the minimal AI-led tool surface', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
 
-    expect(toolNames).toEqual([
-      'search_customers',
-      'search_price_candidates',
-      'read_markdown',
-    ]);
+    expect(toolNames).toEqual(['search_customers', 'search_price_candidates', 'read_markdown']);
     expect(toolNames).not.toContain('run_file_ocr');
     expect(toolNames).not.toContain('lookup_quote_rules');
     expect(toolNames).not.toContain('read_working_order_items');
@@ -316,31 +312,39 @@ describe('Steel tool registry', () => {
       fileKeyRecommendedWhenMultipleOrders: true,
       ocrFileKeyRecommendedForFullContent: true,
     });
-    expect(definition?.argsSchema.parse({
+    expect(
+      definition?.argsSchema.parse({
+        scope: 'workbook',
+        reason: 'Need current parsed workbook after compact context',
+      }),
+    ).toEqual({
       scope: 'workbook',
       reason: 'Need current parsed workbook after compact context',
-    })).toEqual({
-      scope: 'workbook',
-      reason: 'Need current parsed workbook after compact context',
     });
-    expect(definition?.argsSchema.parse({
+    expect(
+      definition?.argsSchema.parse({
+        scope: 'workbook',
+        fileKey: 'file:file-d',
+      }),
+    ).toEqual({
       scope: 'workbook',
       fileKey: 'file:file-d',
-    })).toEqual({
-      scope: 'workbook',
-      fileKey: 'file:file-d',
     });
-    expect(definition?.argsSchema.parse({
+    expect(
+      definition?.argsSchema.parse({
+        scope: 'ocr',
+        ocrFileKey: 'file:file-d',
+      }),
+    ).toEqual({
       scope: 'ocr',
       ocrFileKey: 'file:file-d',
-    })).toEqual({
-      scope: 'ocr',
-      ocrFileKey: 'file:file-d',
     });
-    expect(definition?.argsSchema.parse({
-      scope: 'ocr',
-      fileKey: 'file:file-d',
-    })).toEqual({
+    expect(
+      definition?.argsSchema.parse({
+        scope: 'ocr',
+        fileKey: 'file:file-d',
+      }),
+    ).toEqual({
       scope: 'ocr',
       fileKey: 'file:file-d',
     });

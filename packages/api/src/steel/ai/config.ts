@@ -98,11 +98,7 @@ function stripWrappingQuotes(value: string): string {
 export function resolveOpenAIOAuthAuthFilePath(
   env: OpenAIConfigEnv = process.env,
 ): string | undefined {
-  const configuredPath = getEnvValue(
-    env,
-    'OPENAI_OAUTH_AUTH_FILE',
-    'STEEL_OPENAI_OAUTH_AUTH_FILE',
-  );
+  const configuredPath = getEnvValue(env, 'OPENAI_OAUTH_AUTH_FILE', 'STEEL_OPENAI_OAUTH_AUTH_FILE');
   if (!configuredPath) {
     return undefined;
   }

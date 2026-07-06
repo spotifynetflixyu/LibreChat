@@ -147,7 +147,9 @@ export async function ensurePdfChunkArtifacts(
           source: existing.artifact.source,
           storageKey: existing.artifact.storageKey,
           storageRegion: existing.artifact.storageRegion,
-          filepath: await input.storage.getDownloadUrl({ storageKey: existing.artifact.storageKey }),
+          filepath: await input.storage.getDownloadUrl({
+            storageKey: existing.artifact.storageKey,
+          }),
           filename: existing.artifact.filename,
           bytes: existing.artifact.bytes,
           contentType: existing.artifact.contentType,

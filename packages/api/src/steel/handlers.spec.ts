@@ -477,7 +477,9 @@ describe('createSteelHandlers', () => {
     const generatedConversationId = doneEvent?.response.conversationId;
     expect(generatedConversationId).toEqual(expect.stringMatching(/^steel-chat-/));
 
-    const sendChatOptions = (sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>)[0]?.[0];
+    const sendChatOptions = (
+      sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>
+    )[0]?.[0];
     expect(sendChatOptions?.conversationId).toBe(generatedConversationId);
     expect(sendChatOptions?.messages).toEqual([
       expect.objectContaining({
@@ -795,7 +797,9 @@ describe('createSteelHandlers', () => {
       }),
     );
 
-    const sendChatOptions = (sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>)[0]?.[0];
+    const sendChatOptions = (
+      sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>
+    )[0]?.[0];
     expect(sendChatOptions).toEqual(
       expect.objectContaining({
         conversationId: 'steel_conversation_1',
@@ -1217,9 +1221,7 @@ describe('createSteelHandlers', () => {
           content: '確認上一輪 OCR 表格正確，請依 OCR 表單給出報價。',
         }),
       );
-      expect(
-        secondOptions?.steelRuntimeContext?.attachments.priorActiveFileEvidence,
-      ).toEqual([
+      expect(secondOptions?.steelRuntimeContext?.attachments.priorActiveFileEvidence).toEqual([
         expect.objectContaining({
           kind: 'assistant_ocr_markdown',
           markdown: expect.stringContaining('PL6*80*1000'),
@@ -1648,7 +1650,9 @@ describe('createSteelHandlers', () => {
         content: '改成 3 支',
       }),
     );
-    const sendChatOptions = (sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>)[0]?.[0];
+    const sendChatOptions = (
+      sendChat.mock.calls as unknown as Array<[SendSteelOAuthChatOptions]>
+    )[0]?.[0];
     expect(sendChatOptions).toEqual(
       expect.objectContaining({
         messages: [{ role: 'user', content: '改成 3 支' }],

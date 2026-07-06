@@ -155,9 +155,7 @@ describe('convertInputToMessages', () => {
       },
     ];
     const result = convertInputToMessages(input);
-    expect(result).toEqual([
-      { role: 'user', content: [{ type: 'input_file', file_id: 'f_123' }] },
-    ]);
+    expect(result).toEqual([{ role: 'user', content: [{ type: 'input_file', file_id: 'f_123' }] }]);
   });
 
   // ── Null / undefined filtering ─────────────────────────────────────

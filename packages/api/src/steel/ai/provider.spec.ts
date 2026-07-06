@@ -1,10 +1,7 @@
 import { sendSteelOAuthChat, type SteelProviderToolExecutor } from './provider';
 
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
-import type {
-  LanguageModelV3CallOptions,
-  LanguageModelV3,
-} from '@ai-sdk/provider';
+import type { LanguageModelV3CallOptions, LanguageModelV3 } from '@ai-sdk/provider';
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories';
 import type { SteelRuntimeContext } from '../runtime/context';
 import type { SteelToolJsonValue, SteelToolResult } from '../tools/results';
@@ -390,9 +387,9 @@ function createProviderRuntimeContext({
         markdownOutputRules: [],
       },
     },
-      outputSheets: {
-        activeOnly: true,
-        contextMode: 'compact_workbook',
+    outputSheets: {
+      activeOnly: true,
+      contextMode: 'compact_workbook',
       memoryName: 'Output Sheet Memory',
       contextName: 'Runtime Output Sheet Context',
       conversationId: 'steel_conversation_1',
@@ -876,7 +873,11 @@ describe('OpenAI OAuth provider adapter', () => {
         controller.enqueue({ type: 'stream-start', warnings: [] });
         controller.enqueue({ type: 'response-metadata', id: 'resp_stream_timeout_3' });
         controller.enqueue({ type: 'text-start', id: 'txt_timeout_retry' });
-        controller.enqueue({ type: 'text-delta', id: 'txt_timeout_retry', delta: 'timeout-retry-ok' });
+        controller.enqueue({
+          type: 'text-delta',
+          id: 'txt_timeout_retry',
+          delta: 'timeout-retry-ok',
+        });
         controller.enqueue({ type: 'text-end', id: 'txt_timeout_retry' });
         controller.enqueue({
           type: 'finish',
@@ -1080,8 +1081,7 @@ describe('OpenAI OAuth provider adapter', () => {
       reasoningEffort: 'medium',
       steelRuntimePolicy: true,
       steelRuntimeContext: createProviderRuntimeContext(),
-      workingMemorySummary:
-        'Working Order Memory: rows=2; customer=龍頂; unresolved=第 2 項缺厚度',
+      workingMemorySummary: 'Working Order Memory: rows=2; customer=龍頂; unresolved=第 2 項缺厚度',
     } as Parameters<typeof sendSteelOAuthChat>[0] & { workingMemorySummary: string });
 
     const firstGenerateOptions = doGenerate.mock.calls[0]?.[0] as LanguageModelV3CallOptions;
@@ -1240,15 +1240,11 @@ describe('OpenAI OAuth provider adapter', () => {
     const toolResultMessage = secondGenerateOptions.prompt.find(
       (message) => message.role === 'tool',
     ) as unknown as ToolMessageFixture;
-    const toolResults = toolResultMessage.content.filter(
-      (part) => part.type === 'tool-result',
-    );
-    const primaryToolResult = toolResults.find(
-      (part) => part.toolCallId === 'call_price_b',
-    )?.output.value as SteelToolResult;
-    const coalescedToolResult = toolResults.find(
-      (part) => part.toolCallId === 'call_price_custom',
-    )?.output.value as SteelToolResult;
+    const toolResults = toolResultMessage.content.filter((part) => part.type === 'tool-result');
+    const primaryToolResult = toolResults.find((part) => part.toolCallId === 'call_price_b')?.output
+      .value as SteelToolResult;
+    const coalescedToolResult = toolResults.find((part) => part.toolCallId === 'call_price_custom')
+      ?.output.value as SteelToolResult;
 
     expect(primaryToolResult).toEqual(
       expect.objectContaining({

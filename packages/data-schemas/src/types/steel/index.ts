@@ -61,7 +61,10 @@ export type SteelRuleProposalConfidence = 'low' | 'medium' | 'high';
 export type SteelRuleProposalParameterValueType = 'string' | 'number' | 'boolean' | 'null';
 export type SteelRuleProposalParameterValue = string | number | boolean | null;
 export type SteelJsonPrimitive = string | number | boolean | null;
-export type SteelJsonValue = SteelJsonPrimitive | SteelJsonValue[] | { [key: string]: SteelJsonValue };
+export type SteelJsonValue =
+  | SteelJsonPrimitive
+  | SteelJsonValue[]
+  | { [key: string]: SteelJsonValue };
 
 export interface SteelRuleProposalSelectorEntry {
   key: string;

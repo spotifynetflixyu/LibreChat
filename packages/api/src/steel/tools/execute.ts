@@ -31,10 +31,7 @@ type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
 type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
-type DispatchSteelToolArgs =
-  | SearchCustomersInput
-  | SearchPriceCandidatesInput
-  | ReadMarkdownInput;
+type DispatchSteelToolArgs = SearchCustomersInput | SearchPriceCandidatesInput | ReadMarkdownInput;
 
 const workbookSheetOrder = [
   'system_order',
@@ -45,7 +42,15 @@ const workbookSheetOrder = [
 
 const defaultWorkbookFileKey = 'default';
 const ocrContentPartLength = 1000;
-const ocrTextKeys = new Set(['markdown', 'text', 'content', 'rawText', 'ocrText', 'pageText', 'result']);
+const ocrTextKeys = new Set([
+  'markdown',
+  'text',
+  'content',
+  'rawText',
+  'ocrText',
+  'pageText',
+  'result',
+]);
 
 const strictWorkbookHeaders: Partial<Record<SteelRuntimeActiveOutputSheetId, readonly string[]>> = {
   system_order: [
@@ -292,8 +297,9 @@ function getWorkbookCellValue(row: SteelRuntimeJsonObject, header: string): unkn
 function toMarkdownTable(headers: readonly string[], rows: readonly SteelRuntimeJsonObject[]) {
   const headerLine = `| ${headers.map(toMarkdownTableCell).join(' |')} |`;
   const separatorLine = `| ${headers.map(() => '---').join(' |')} |`;
-  const rowLines = rows.map((row) =>
-    `| ${headers.map((header) => toMarkdownTableCell(getWorkbookCellValue(row, header))).join(' |')} |`,
+  const rowLines = rows.map(
+    (row) =>
+      `| ${headers.map((header) => toMarkdownTableCell(getWorkbookCellValue(row, header))).join(' |')} |`,
   );
 
   return [headerLine, separatorLine, ...rowLines].join('\n');
@@ -380,7 +386,10 @@ function renderWorkbookMarkdown(
   snapshot: SteelOutputSheetMemorySnapshot,
   requestedFileKey: string | undefined,
 ): string {
-  const outputSheets = filterWorkbookSheetsByFileKey(snapshot.previousOutputSheets, requestedFileKey);
+  const outputSheets = filterWorkbookSheetsByFileKey(
+    snapshot.previousOutputSheets,
+    requestedFileKey,
+  );
 
   return workbookSheetOrder
     .map((sheetId) => {
@@ -503,20 +512,14 @@ function getOcrStructuredItems(
       heading: getOcrEvidenceHeading(extract, index),
     };
 
-    [
-      'filename',
-      'ocrFileKey',
-      'fileId',
-      'ocrSource',
-      'ocrEngine',
-      'kind',
-      'mediaType',
-    ].forEach((key) => {
-      const value = extract[key];
-      if (typeof value === 'string' && value.trim() !== '') {
-        item[key] = value;
-      }
-    });
+    ['filename', 'ocrFileKey', 'fileId', 'ocrSource', 'ocrEngine', 'kind', 'mediaType'].forEach(
+      (key) => {
+        const value = extract[key];
+        if (typeof value === 'string' && value.trim() !== '') {
+          item[key] = value;
+        }
+      },
+    );
 
     if (textBlocks.length > 0) {
       const content = textBlocks.join('\n\n');

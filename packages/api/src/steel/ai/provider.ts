@@ -326,9 +326,7 @@ function getFileSourceKinds(file: SteelOAuthChatFile): VisualEvidenceSourceKind[
   return [];
 }
 
-function getVisualEvidenceFiles(
-  messages: readonly SteelOAuthChatMessage[],
-): SteelOAuthChatFile[] {
+function getVisualEvidenceFiles(messages: readonly SteelOAuthChatMessage[]): SteelOAuthChatFile[] {
   const files: SteelOAuthChatFile[] = [];
 
   for (const message of messages) {
@@ -721,7 +719,9 @@ function toJsonValue(value: unknown): JSONValue {
   return JSON.parse(serialized) as JSONValue;
 }
 
-function uniquePriceQueries(queries: readonly SearchPriceCandidateQuery[]): SearchPriceCandidateQuery[] {
+function uniquePriceQueries(
+  queries: readonly SearchPriceCandidateQuery[],
+): SearchPriceCandidateQuery[] {
   const seen = new Set<string>();
 
   return queries.filter((query) => {
@@ -1010,7 +1010,9 @@ async function executeSteelBusinessToolCalls({
   return executedCalls;
 }
 
-function toAssistantToolCallMessage(executedCalls: ExecutedSteelToolCall[]): LanguageModelV3Message {
+function toAssistantToolCallMessage(
+  executedCalls: ExecutedSteelToolCall[],
+): LanguageModelV3Message {
   return {
     role: 'assistant',
     content: [

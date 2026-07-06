@@ -849,11 +849,9 @@ describe('Mongoose Steel working-order memory reader', () => {
       messageId: 'assistant_4',
       turnIndex: 4,
       checkpointTurnIndex: 3,
-      content: [
-        '| 項次 | 數量 | 備註 |',
-        '| --- | --- | --- |',
-        '| 1 | 5 | 客戶改數量 |',
-      ].join('\n'),
+      content: ['| 項次 | 數量 | 備註 |', '| --- | --- | --- |', '| 1 | 5 | 客戶改數量 |'].join(
+        '\n',
+      ),
     });
 
     expect(result).toEqual({
@@ -918,7 +916,10 @@ describe('Mongoose Steel working-order memory reader', () => {
   it('skips non-system quote tables while carrying existing sheets forward', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
-    const outputReader = createMongooseSteelOutputSheetMemoryReader(mongoose, 'steel_conversation_1');
+    const outputReader = createMongooseSteelOutputSheetMemoryReader(
+      mongoose,
+      'steel_conversation_1',
+    );
 
     await SteelWorkingOrderMemory.create([
       {
@@ -1026,11 +1027,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       messageId: 'assistant_6',
       turnIndex: 6,
       checkpointTurnIndex: 5,
-      content: [
-        '| 說明 | 值 |',
-        '| --- | --- |',
-        '| 內部備註 | 需要人工確認 |',
-      ].join('\n'),
+      content: ['| 說明 | 值 |', '| --- | --- |', '| 內部備註 | 需要人工確認 |'].join('\n'),
     });
 
     expect(result).toEqual({
@@ -2629,8 +2626,14 @@ describe('Mongoose Steel working-order memory reader', () => {
           price_evidence: 1,
         },
         memoryEntries: expect.arrayContaining([
-          expect.objectContaining({ memoryKind: 'customer_fact', summary: expect.stringContaining('龍頂') }),
-          expect.objectContaining({ memoryKind: 'price_evidence', summary: expect.stringContaining('CCG075') }),
+          expect.objectContaining({
+            memoryKind: 'customer_fact',
+            summary: expect.stringContaining('龍頂'),
+          }),
+          expect.objectContaining({
+            memoryKind: 'price_evidence',
+            summary: expect.stringContaining('CCG075'),
+          }),
         ]),
       }),
     );
@@ -2703,18 +2706,20 @@ describe('Mongoose Steel working-order memory reader', () => {
       },
     });
 
-    await expect(writer.captureToolResult({
-      conversationId: 'steel_conversation_1',
-      requestId: 'request_ocr_2',
-      toolName: 'run_file_ocr',
-      providerToolCallId: 'call_ocr_2',
-      turnIndex: 4,
-      checkpointTurnIndex: 3,
-      data: {
-        filename: 'second.pdf',
-        pageResults: [{ page: 2, text: 'second' }],
-      },
-    })).resolves.toEqual({ savedCounts: {} });
+    await expect(
+      writer.captureToolResult({
+        conversationId: 'steel_conversation_1',
+        requestId: 'request_ocr_2',
+        toolName: 'run_file_ocr',
+        providerToolCallId: 'call_ocr_2',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        data: {
+          filename: 'second.pdf',
+          pageResults: [{ page: 2, text: 'second' }],
+        },
+      }),
+    ).resolves.toEqual({ savedCounts: {} });
 
     const ocrEntries = await SteelWorkingOrderMemory.find({
       conversationId: 'steel_conversation_1',

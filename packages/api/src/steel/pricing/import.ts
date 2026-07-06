@@ -138,7 +138,10 @@ function normalizeTextField(value: string): string | null {
 }
 
 function normalizeSpecField(...values: readonly string[]): string | null {
-  const joined = values.map((value) => value.trim()).filter(Boolean).join(' ');
+  const joined = values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(' ');
   if (!joined) {
     return null;
   }
@@ -206,9 +209,7 @@ function toImportRow(input: SteelPriceWorkbookInputRow): SteelPriceImportRow | n
   const sourceMaterialLabel = readCell(input.row, '材質');
   const applyPlateCorrection = shouldApplyPlateCorrection(input, erpItemCode);
   const sourceCategoryLabel = applyPlateCorrection ? '鐵板/鋼板' : rawSourceCategoryLabel;
-  const category = applyPlateCorrection
-    ? '鐵板/鋼板'
-    : normalizeCategory(rawSourceCategoryLabel);
+  const category = applyPlateCorrection ? '鐵板/鋼板' : normalizeCategory(rawSourceCategoryLabel);
   const material = normalizeMaterial(sourceMaterialLabel);
   const sourceThickness = normalizeTextField(readCell(input.row, '厚度'));
   const sourceSpec = normalizeSpecField(

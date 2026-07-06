@@ -32,9 +32,7 @@ const runPLQuoteLive = process.env.STEEL_OPENAI_OAUTH_PL_PDF_QUOTE_LIVE_TEST ===
 const describePLQuoteLive = runPLQuoteLive ? describe : describe.skip;
 const repoRoot = path.resolve(__dirname, '../../../../../');
 const plPdfPath = path.join(repoRoot, 'docs/reference/example/PL.pdf');
-const caseTimeoutMs = Number(
-  process.env.STEEL_OPENAI_OAUTH_PL_PDF_QUOTE_TIMEOUT_MS ?? 1200000,
-);
+const caseTimeoutMs = Number(process.env.STEEL_OPENAI_OAUTH_PL_PDF_QUOTE_TIMEOUT_MS ?? 1200000);
 const plPdfMaxOutputTokens = Number(
   process.env.STEEL_OPENAI_OAUTH_PL_PDF_QUOTE_MAX_OUTPUT_TOKENS ?? 20000,
 );
@@ -163,7 +161,9 @@ function hasOcrConfirmationTable(text: string): boolean {
 function hasQuoteTable(text: string): boolean {
   return parseMarkdownTables(text).some((table) => {
     const headers = new Set(table.headers);
-    return headers.has('項次') && headers.has('型號') && headers.has('品名規格') && table.rows.length > 0;
+    return (
+      headers.has('項次') && headers.has('型號') && headers.has('品名規格') && table.rows.length > 0
+    );
   });
 }
 
@@ -298,10 +298,7 @@ describePLQuoteLive('Steel live PL.pdf OCR confirmation and quote flow', () => {
           executeSteelToolCall: createCapturingToolExecutor(pool, quoteCapturedCalls),
           maxOutputTokens: plPdfMaxOutputTokens,
           model: config.model,
-          messages: [
-            { role: 'assistant', content: ocrResponse.text },
-            quoteUserMessage,
-          ],
+          messages: [{ role: 'assistant', content: ocrResponse.text }, quoteUserMessage],
           onToolStatus: (event) => {
             quoteToolEvents.push(event);
           },

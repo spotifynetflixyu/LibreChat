@@ -30,10 +30,11 @@ describe('Steel customer repository', () => {
       limit: 3,
     });
 
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('FROM steel.customers c'),
-      ['龍頂', '%龍頂%', 3],
-    );
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.customers c'), [
+      '龍頂',
+      '%龍頂%',
+      3,
+    ]);
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_aliases'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tiers'));
     expect(result[0]).toMatchObject({

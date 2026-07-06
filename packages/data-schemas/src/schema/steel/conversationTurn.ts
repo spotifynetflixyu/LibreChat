@@ -18,37 +18,37 @@ import type {
 
 const steelConversationTurnRevisionSchema: Schema<SteelConversationTurnRevision> =
   new Schema<SteelConversationTurnRevision>(
-  {
-    content: {
-      type: String,
-      required: true,
+    {
+      content: {
+        type: String,
+        required: true,
+      },
+      revisedAt: {
+        type: Date,
+        required: true,
+      },
+      revisedByUserId: {
+        type: String,
+      },
     },
-    revisedAt: {
-      type: Date,
-      required: true,
-    },
-    revisedByUserId: {
-      type: String,
-    },
-  },
-  { _id: false },
+    { _id: false },
   );
 
 const steelConversationTurnAttachmentRefSchema: Schema<SteelConversationTurnAttachmentRef> =
   new Schema<SteelConversationTurnAttachmentRef>(
-  {
-    fileId: {
-      type: String,
-      required: true,
+    {
+      fileId: {
+        type: String,
+        required: true,
+      },
+      filename: {
+        type: String,
+      },
+      mediaType: {
+        type: String,
+      },
     },
-    filename: {
-      type: String,
-    },
-    mediaType: {
-      type: String,
-    },
-  },
-  { _id: false },
+    { _id: false },
   );
 
 const steelConversationTurnFinalResponseMetadataSchema: Schema<SteelConversationTurnFinalResponseMetadata> =
@@ -83,99 +83,100 @@ const steelConversationTurnFinalResponseMetadataSchema: Schema<SteelConversation
 
 const steelConversationTurnQueuedSteerSchema: Schema<SteelConversationTurnQueuedSteer> =
   new Schema<SteelConversationTurnQueuedSteer>(
-  {
-    targetRequestId: {
-      type: String,
-      required: true,
+    {
+      targetRequestId: {
+        type: String,
+        required: true,
+      },
+      status: {
+        type: String,
+        enum: steelQueuedSteerStatusEnum,
+        required: true,
+      },
+      appliedAt: {
+        type: Date,
+      },
+      deferredAt: {
+        type: Date,
+      },
     },
-    status: {
-      type: String,
-      enum: steelQueuedSteerStatusEnum,
-      required: true,
-    },
-    appliedAt: {
-      type: Date,
-    },
-    deferredAt: {
-      type: Date,
-    },
-  },
-  { _id: false },
+    { _id: false },
   );
 
-const steelConversationTurnSchema: Schema<ISteelConversationTurn> = new Schema<ISteelConversationTurn>(
-  {
-    conversationId: {
-      type: String,
-      required: true,
-      index: true,
+const steelConversationTurnSchema: Schema<ISteelConversationTurn> =
+  new Schema<ISteelConversationTurn>(
+    {
+      conversationId: {
+        type: String,
+        required: true,
+        index: true,
+      },
+      userId: {
+        type: String,
+        index: true,
+      },
+      requestId: {
+        type: String,
+        index: true,
+      },
+      messageId: {
+        type: String,
+        required: true,
+      },
+      turnIndex: {
+        type: Number,
+        required: true,
+      },
+      role: {
+        type: String,
+        enum: steelConversationTurnRoleEnum,
+        required: true,
+      },
+      source: {
+        type: String,
+        enum: steelConversationTurnSourceEnum,
+        required: true,
+      },
+      state: {
+        type: String,
+        enum: steelConversationTurnStateEnum,
+        default: 'active',
+        index: true,
+      },
+      content: {
+        type: String,
+        required: true,
+      },
+      attachments: {
+        type: [steelConversationTurnAttachmentRefSchema],
+        default: undefined,
+      },
+      tableHashes: {
+        type: [String],
+        default: undefined,
+      },
+      finalResponseMetadata: {
+        type: steelConversationTurnFinalResponseMetadataSchema,
+        default: undefined,
+      },
+      queuedSteer: {
+        type: steelConversationTurnQueuedSteerSchema,
+        default: undefined,
+      },
+      revisions: {
+        type: [steelConversationTurnRevisionSchema],
+        default: undefined,
+      },
+      supersededAt: {
+        type: Date,
+      },
+      supersededByMessageId: {
+        type: String,
+        index: true,
+      },
     },
-    userId: {
-      type: String,
-      index: true,
-    },
-    requestId: {
-      type: String,
-      index: true,
-    },
-    messageId: {
-      type: String,
-      required: true,
-    },
-    turnIndex: {
-      type: Number,
-      required: true,
-    },
-    role: {
-      type: String,
-      enum: steelConversationTurnRoleEnum,
-      required: true,
-    },
-    source: {
-      type: String,
-      enum: steelConversationTurnSourceEnum,
-      required: true,
-    },
-    state: {
-      type: String,
-      enum: steelConversationTurnStateEnum,
-      default: 'active',
-      index: true,
-    },
-    content: {
-      type: String,
-      required: true,
-    },
-    attachments: {
-      type: [steelConversationTurnAttachmentRefSchema],
-      default: undefined,
-    },
-    tableHashes: {
-      type: [String],
-      default: undefined,
-    },
-    finalResponseMetadata: {
-      type: steelConversationTurnFinalResponseMetadataSchema,
-      default: undefined,
-    },
-    queuedSteer: {
-      type: steelConversationTurnQueuedSteerSchema,
-      default: undefined,
-    },
-    revisions: {
-      type: [steelConversationTurnRevisionSchema],
-      default: undefined,
-    },
-    supersededAt: {
-      type: Date,
-    },
-    supersededByMessageId: {
-      type: String,
-      index: true,
-    },
-  },
-  { timestamps: true },
-);
+    { timestamps: true },
+  );
 
 steelConversationTurnSchema.index({ conversationId: 1, state: 1, turnIndex: 1 });
 steelConversationTurnSchema.index({ conversationId: 1, userId: 1, state: 1, turnIndex: 1 });

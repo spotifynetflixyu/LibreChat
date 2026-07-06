@@ -52,8 +52,7 @@ export interface LookupInstructionsInput {
   limit?: number;
 }
 
-export interface LookupQuoteRulesInput
-  extends Omit<LookupInstructionsInput, 'customerContext'> {
+export interface LookupQuoteRulesInput extends Omit<LookupInstructionsInput, 'customerContext'> {
   customerContext?: LookupCustomerContextInput;
 }
 
@@ -213,13 +212,12 @@ const searchPriceCandidateQuerySchema: z.ZodType<
   z.union([priceCategoryDiscoveryQuerySchema, priceLookupQuerySchema]),
 );
 
-const searchPriceCandidatesSchema: z.ZodType<
-  SearchPriceCandidatesInput,
-  z.ZodTypeDef,
-  unknown
-> = z
+const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
   .object({
-    queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1).max(20),
+    queries: z
+      .array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' })
+      .min(1)
+      .max(20),
   })
   .strict();
 

@@ -119,9 +119,7 @@ export interface SteelHandlersDeps {
   conversationService?: ReturnType<typeof createSteelConversationService>;
   createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
   historyService?: ReturnType<typeof createSteelConversationHistoryService>;
-  prepareRuntimeContext?: (
-    input: PrepareSteelRuntimeContextInput,
-  ) => Promise<SteelRuntimeContext>;
+  prepareRuntimeContext?: (input: PrepareSteelRuntimeContextInput) => Promise<SteelRuntimeContext>;
   runtimeRulesClient?: SteelRepositoryClient;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
   workingOrderMemoryWriter?: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
@@ -468,8 +466,7 @@ async function prepareChatContext({
     ...(userId ? { userId } : {}),
   });
   const nextTurnIndex = getNextTurnIndex(activeHistory);
-  const nextAssistantTurnIndex =
-    currentMessage.role === 'user' ? nextTurnIndex + 1 : nextTurnIndex;
+  const nextAssistantTurnIndex = currentMessage.role === 'user' ? nextTurnIndex + 1 : nextTurnIndex;
 
   if (currentMessage.role === 'user' && !editMessageId) {
     await historyService.appendTurn({
@@ -529,9 +526,7 @@ async function buildSteelRuntimeContext({
   createOutputSheetMemoryReader: (conversationId: string) => SteelOutputSheetMemoryReader;
   parsedRequest: ParsedSteelChatRequest;
   prepareDefaultRuntimeContext: boolean;
-  prepareRuntimeContext?: (
-    input: PrepareSteelRuntimeContextInput,
-  ) => Promise<SteelRuntimeContext>;
+  prepareRuntimeContext?: (input: PrepareSteelRuntimeContextInput) => Promise<SteelRuntimeContext>;
   preparedContext: PreparedSteelChatContext;
   runtimeRulesClient?: SteelRepositoryClient;
 }): Promise<SteelRuntimeContext | undefined> {
@@ -635,7 +630,12 @@ async function captureSuccessfulToolResult({
   checkpointTurnIndex?: number;
   workingOrderMemoryWriter: ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
 }) {
-  if (!conversationId || !toolResult?.ok || turnIndex === undefined || toolName === 'run_file_ocr') {
+  if (
+    !conversationId ||
+    !toolResult?.ok ||
+    turnIndex === undefined ||
+    toolName === 'run_file_ocr'
+  ) {
     return undefined;
   }
 
@@ -657,9 +657,7 @@ function createToolExecutorWithMemoryCapture({
 }: {
   baseExecuteToolCall?: SteelProviderToolExecutor;
   conversationId?: string;
-  getWorkingOrderMemoryWriter: () => ReturnType<
-    typeof createMongooseSteelWorkingOrderMemoryWriter
-  >;
+  getWorkingOrderMemoryWriter: () => ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
   preparedContext: PreparedSteelChatContext;
 }): SteelProviderToolExecutor | undefined {
   if (!baseExecuteToolCall) {
@@ -690,9 +688,7 @@ function createStreamToolExecutorWithMemoryEvents({
 }: {
   baseExecuteToolCall?: SteelProviderToolExecutor;
   conversationId?: string;
-  getWorkingOrderMemoryWriter: () => ReturnType<
-    typeof createMongooseSteelWorkingOrderMemoryWriter
-  >;
+  getWorkingOrderMemoryWriter: () => ReturnType<typeof createMongooseSteelWorkingOrderMemoryWriter>;
   preparedContext: PreparedSteelChatContext;
   res: Response;
 }): SteelProviderToolExecutor {
@@ -893,10 +889,7 @@ function parseOptionalMessageSource(value: unknown): SteelUserTurnSource {
   if (value === undefined) {
     return 'user_input';
   }
-  if (
-    typeof value === 'string' &&
-    (steelUserTurnSources as readonly string[]).includes(value)
-  ) {
+  if (typeof value === 'string' && (steelUserTurnSources as readonly string[]).includes(value)) {
     return value as SteelUserTurnSource;
   }
 
@@ -979,11 +972,7 @@ async function parseSteelChatRunRequest({
   };
 }
 
-function sendInvalidSteelChatRequest(
-  res: Response,
-  config: OpenAIConfig,
-  error: unknown,
-) {
+function sendInvalidSteelChatRequest(res: Response, config: OpenAIConfig, error: unknown) {
   res
     .status(400)
     .json(
@@ -1281,7 +1270,8 @@ export function createSteelHandlers({
   const getConversationIdsForRequest = (requestedConversationId?: string) => {
     const responseConversationId = requestedConversationId ?? createSteelChatConversationId();
     const persistentConversationId =
-      requestedConversationId ?? (canPersistConversationHistory() ? responseConversationId : undefined);
+      requestedConversationId ??
+      (canPersistConversationHistory() ? responseConversationId : undefined);
 
     return {
       persistentConversationId,
@@ -1399,7 +1389,7 @@ export function createSteelHandlers({
               getProviderErrorCategory(error),
               getProviderErrorSummary(error),
             ),
-        );
+          );
         return;
       } finally {
         requestAbort.cleanup();
@@ -1717,7 +1707,6 @@ export function createSteelHandlers({
         sendRuleProposalError(res, error);
       }
     },
-
   };
 }
 

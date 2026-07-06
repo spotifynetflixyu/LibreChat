@@ -40,71 +40,71 @@ const steelRuleProposalValueTypes = ['string', 'number', 'boolean', 'null'];
 
 const steelRuleProposalSelectorEntrySchema: Schema<SteelRuleProposalSelectorEntry> =
   new Schema<SteelRuleProposalSelectorEntry>(
-  {
-    key: { type: String, required: true },
-    value: {
-      type: Schema.Types.Mixed,
-      validate: {
-        validator: (value: unknown) => value !== undefined,
-        message: 'value is required',
+    {
+      key: { type: String, required: true },
+      value: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => value !== undefined,
+          message: 'value is required',
+        },
       },
     },
-  },
-  { _id: false },
+    { _id: false },
   );
 
 const steelRuleProposalSelectorSchema: Schema<SteelRuleProposalSelector> =
   new Schema<SteelRuleProposalSelector>(
-  {
-    catalogFamily: { type: String },
-    productFamily: { type: String },
-    specification: { type: String },
-    workType: { type: String },
-    conditionText: { type: String },
-    customerAlias: { type: String },
-    additionalSelectors: {
-      type: [steelRuleProposalSelectorEntrySchema],
-      default: [],
+    {
+      catalogFamily: { type: String },
+      productFamily: { type: String },
+      specification: { type: String },
+      workType: { type: String },
+      conditionText: { type: String },
+      customerAlias: { type: String },
+      additionalSelectors: {
+        type: [steelRuleProposalSelectorEntrySchema],
+        default: [],
+      },
     },
-  },
-  { _id: false },
+    { _id: false },
   );
 
 const steelRuleProposalDefaultParameterSchema: Schema<SteelRuleProposalDefaultParameter> =
   new Schema<SteelRuleProposalDefaultParameter>(
-  {
-    key: { type: String, required: true },
-    value: {
-      type: Schema.Types.Mixed,
-      validate: {
-        validator: (value: unknown) => value !== undefined,
-        message: 'value is required',
+    {
+      key: { type: String, required: true },
+      value: {
+        type: Schema.Types.Mixed,
+        validate: {
+          validator: (value: unknown) => value !== undefined,
+          message: 'value is required',
+        },
       },
+      valueType: {
+        type: String,
+        required: true,
+        enum: steelRuleProposalValueTypes,
+      },
+      unit: { type: String },
+      reason: { type: String },
     },
-    valueType: {
-      type: String,
-      required: true,
-      enum: steelRuleProposalValueTypes,
-    },
-    unit: { type: String },
-    reason: { type: String },
-  },
-  { _id: false },
+    { _id: false },
   );
 
 const steelRuleProposalSourceRefSchema: Schema<SteelRuleProposalSourceRef> =
   new Schema<SteelRuleProposalSourceRef>(
-  {
-    channel: { type: String, required: true },
-    factType: { type: String, required: true },
-    sourceFile: { type: String },
-    sourceVersionId: { type: String },
-    locator: { type: String },
-    confidence: { type: String, enum: steelRuleProposalConfidences },
-    extractedLabel: { type: String },
-    canonicalKey: { type: String },
-  },
-  { _id: false },
+    {
+      channel: { type: String, required: true },
+      factType: { type: String, required: true },
+      sourceFile: { type: String },
+      sourceVersionId: { type: String },
+      locator: { type: String },
+      confidence: { type: String, enum: steelRuleProposalConfidences },
+      extractedLabel: { type: String },
+      canonicalKey: { type: String },
+    },
+    { _id: false },
   );
 
 const steelMemoryCandidateSchema: Schema<ISteelMemoryCandidate> = new Schema<ISteelMemoryCandidate>(

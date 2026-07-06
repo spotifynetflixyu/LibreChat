@@ -203,10 +203,7 @@ describe('validateFiles', () => {
   });
 
   it('infers BMP and CIF as PaddleOCR UI image files from extensions', () => {
-    const fileList = [
-      makeFile('drawing.bmp', '', 1024),
-      makeFile('drawing.cif', '', 1024),
-    ];
+    const fileList = [makeFile('drawing.bmp', '', 1024), makeFile('drawing.cif', '', 1024)];
     const result = validateFiles({
       files,
       fileList,

@@ -1,8 +1,5 @@
 import { buildPdfPageChunks } from './chunks';
-import {
-  buildOcrPdfChunkArtifactStorageKey,
-  ensurePdfChunkArtifacts,
-} from './artifacts';
+import { buildOcrPdfChunkArtifactStorageKey, ensurePdfChunkArtifacts } from './artifacts';
 
 describe('OCR PDF chunk artifacts', () => {
   it('builds deterministic storage keys from source PDF key and page range', () => {
@@ -82,10 +79,7 @@ describe('OCR PDF chunk artifacts', () => {
     };
     const storage = {
       source: 'cloudfront' as const,
-      exists: jest
-        .fn()
-        .mockResolvedValueOnce(false)
-        .mockResolvedValueOnce(false),
+      exists: jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false),
       saveBuffer: jest.fn(async () => ({
         bytes: 456,
         storageRegion: 'ap-east-1',

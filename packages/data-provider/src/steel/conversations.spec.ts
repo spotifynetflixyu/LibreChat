@@ -38,18 +38,16 @@ describe('Steel conversation public contracts', () => {
         createdAt: '2026-05-28T00:00:00.000Z',
         updatedAt: '2026-05-28T00:00:00.000Z',
       }),
-    ).toEqual(
-      {
-        id: 'steel_meta_1',
-        libreChatConversationId: 'lc_guest_1',
-        createdFrom: 'guest',
-        guestToken: 'raw-token-only-on-create',
-        guestTokenIssued: true,
-        status: 'active',
-        createdAt: '2026-05-28T00:00:00.000Z',
-        updatedAt: '2026-05-28T00:00:00.000Z',
-      },
-    );
+    ).toEqual({
+      id: 'steel_meta_1',
+      libreChatConversationId: 'lc_guest_1',
+      createdFrom: 'guest',
+      guestToken: 'raw-token-only-on-create',
+      guestTokenIssued: true,
+      status: 'active',
+      createdAt: '2026-05-28T00:00:00.000Z',
+      updatedAt: '2026-05-28T00:00:00.000Z',
+    });
   });
 
   it('does not expose workbook refs in conversation message requests', () => {

@@ -760,7 +760,8 @@ export default function useResumableSSE(
                     data.resumeState.iconURL,
                   ),
                   model: preferDefinedString(messages[responseIdx]?.model, data.resumeState.model),
-                  createdAt: messages[responseIdx]?.createdAt ?? resumeSubmission.initialResponse.createdAt,
+                  createdAt:
+                    messages[responseIdx]?.createdAt ?? resumeSubmission.initialResponse.createdAt,
                   clientTimestamp:
                     messages[responseIdx]?.clientTimestamp ??
                     resumeSubmission.initialResponse.clientTimestamp,

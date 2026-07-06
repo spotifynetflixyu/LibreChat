@@ -29,9 +29,7 @@ const mockSteelNativeContext = {
     globalApplied: true,
   },
 };
-const mockBuildDefaultSteelGlobalAgentContext = jest
-  .fn()
-  .mockResolvedValue(mockSteelNativeContext);
+const mockBuildDefaultSteelGlobalAgentContext = jest.fn().mockResolvedValue(mockSteelNativeContext);
 const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
   if (typeof content === 'string') {
     return content;
@@ -531,11 +529,11 @@ describe('OpenAIChatCompletionController', () => {
         expect.objectContaining({
           renderProfile: 'agents_chat_completions',
           conversation: expect.objectContaining({
-	            conversationId: 'mock-nanoid-123',
-	            requestId: 'chatcmpl-mock-nanoid-123',
-	            activeHistory: [],
-	            currentUserTurn: { role: 'user', content: '' },
-	          }),
+            conversationId: 'mock-nanoid-123',
+            requestId: 'chatcmpl-mock-nanoid-123',
+            activeHistory: [],
+            currentUserTurn: { role: 'user', content: '' },
+          }),
         }),
       );
       expect(applySteelNativeGlobalContextToAgentConfigs).toHaveBeenCalledWith({
@@ -544,9 +542,7 @@ describe('OpenAIChatCompletionController', () => {
       });
 
       const createRunArgs = createRun.mock.calls.at(-1)[0];
-      expect(createRunArgs.agents[0].instructions).toBe(
-        'Steel global prefix\n\nBase instructions',
-      );
+      expect(createRunArgs.agents[0].instructions).toBe('Steel global prefix\n\nBase instructions');
       expect(createRunArgs.agents[0].additional_instructions).toBe(
         'Existing dynamic context\n\nSteel runtime tail',
       );
@@ -614,10 +610,7 @@ describe('OpenAIChatCompletionController', () => {
 
       const steelContextAgents =
         mockApplySteelNativeGlobalContextToAgentConfigs.mock.calls.at(-1)[0].agents;
-      expect(steelContextAgents).toEqual([
-        expect.objectContaining({ id: 'agent-123' }),
-        subConfig,
-      ]);
+      expect(steelContextAgents).toEqual([expect.objectContaining({ id: 'agent-123' }), subConfig]);
 
       const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
       await toolExecuteOptions.loadTools(['read_file'], 'agent-sub');

@@ -97,7 +97,9 @@ export interface BuildSteelOcrPreprocessingEventEnvelopesInput
   progress: SteelOcrPreprocessingProgress;
 }
 
-function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is SteelNativeSavedCounts {
+function hasSavedCounts(
+  savedCounts?: SteelNativeSavedCounts,
+): savedCounts is SteelNativeSavedCounts {
   if (!savedCounts) {
     return false;
   }
@@ -105,9 +107,7 @@ function hasSavedCounts(savedCounts?: SteelNativeSavedCounts): savedCounts is St
   return Object.values(savedCounts).some((count) => Number.isFinite(count) && count > 0);
 }
 
-function captureCountMetadata(
-  result: CapturedSteelNativeResult,
-) {
+function captureCountMetadata(result: CapturedSteelNativeResult) {
   return {
     ...('savedTableCounts' in result && hasSavedCounts(result.savedTableCounts)
       ? { savedTableCounts: result.savedTableCounts }

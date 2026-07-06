@@ -52,7 +52,9 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
 const defaultCache: OpenAIOAuthUsageCache = {};
 const unavailableTtlMs = 10_000;
 
-async function loadDefaultAuthTokens(options: LoadAuthTokensOptions): Promise<EffectiveOpenAIOAuth> {
+async function loadDefaultAuthTokens(
+  options: LoadAuthTokensOptions,
+): Promise<EffectiveOpenAIOAuth> {
   const provider = await dynamicImport('openai-oauth-provider');
   return provider.loadAuthTokens(options);
 }
@@ -61,7 +63,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function getRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+function getRecord(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
   const value = record[key];
   return isRecord(value) ? value : undefined;
 }

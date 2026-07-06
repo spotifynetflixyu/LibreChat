@@ -485,7 +485,10 @@ export async function saveBufferToS3StorageKey({
       ...(metadata.storageRegion ? { storageRegion: metadata.storageRegion } : {}),
     };
   } catch (error) {
-    logger.error('[saveBufferToS3StorageKey] Error uploading buffer to S3:', (error as Error).message);
+    logger.error(
+      '[saveBufferToS3StorageKey] Error uploading buffer to S3:',
+      (error as Error).message,
+    );
     throw error;
   }
 }

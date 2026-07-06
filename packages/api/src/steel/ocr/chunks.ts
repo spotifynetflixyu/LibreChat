@@ -67,10 +67,7 @@ export async function getPdfPageCount(input: { pdfBytes: Uint8Array }): Promise<
   }
 }
 
-function assertPdfPageRange(input: {
-  pageStart: number;
-  pageEnd: number;
-}) {
+function assertPdfPageRange(input: { pageStart: number; pageEnd: number }) {
   if (!Number.isInteger(input.pageStart) || input.pageStart < 1) {
     throw new Error('PDF chunk pageStart must be a positive integer');
   }

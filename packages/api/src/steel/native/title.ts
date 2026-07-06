@@ -176,10 +176,7 @@ export async function generateOpenAIOAuthTitle({
     ? ({ signal } as RunnableConfig)
     : undefined;
   const message = await titleModel.invoke(
-    [
-      new SystemMessage('Generate only a concise conversation title.'),
-      new HumanMessage(prompt),
-    ],
+    [new SystemMessage('Generate only a concise conversation title.'), new HumanMessage(prompt)],
     runnableConfig,
   );
 

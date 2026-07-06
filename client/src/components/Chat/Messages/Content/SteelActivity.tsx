@@ -52,11 +52,7 @@ function getCountForKeys(
   }, 0);
 }
 
-function formatCountText(
-  localize: Localize,
-  sourceKey: LocalizeKey,
-  count: number,
-) {
+function formatCountText(localize: Localize, sourceKey: LocalizeKey, count: number) {
   return localize('com_ui_steel_activity_source_count', {
     source: localize(sourceKey),
     count,
@@ -103,16 +99,15 @@ function getCountTexts({
         )
       : null,
     workbookRowCount > 0
-      ? formatCountText(
-          localize,
-          'com_ui_steel_activity_source_workbook_rows',
-          workbookRowCount,
-        )
+      ? formatCountText(localize, 'com_ui_steel_activity_source_workbook_rows', workbookRowCount)
       : null,
   ].filter((countText): countText is string => Boolean(countText));
 }
 
-function getActivityLabel(event: SteelNativeActivityEvent, localize: ReturnType<typeof useLocalize>) {
+function getActivityLabel(
+  event: SteelNativeActivityEvent,
+  localize: ReturnType<typeof useLocalize>,
+) {
   if (event.source === 'ocr_preprocessing') {
     return event.message;
   }
@@ -220,10 +215,7 @@ const SteelActivity = memo(function SteelActivity({
   const events = useRecoilValue(steelNativeActivityByMessageId(messageId));
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const displayEvents = useMemo(
-    () => events.filter(shouldDisplayEvent),
-    [events],
-  );
+  const displayEvents = useMemo(() => events.filter(shouldDisplayEvent), [events]);
 
   if (isCreatedByUser || displayEvents.length === 0) {
     return null;

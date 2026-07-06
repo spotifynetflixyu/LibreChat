@@ -1,7 +1,4 @@
-import {
-  normalizeSteelSpecKey,
-  normalizeSteelSpecKeyOrUnknown,
-} from './spec';
+import { normalizeSteelSpecKey, normalizeSteelSpecKeyOrUnknown } from './spec';
 
 describe('Steel spec key normalization', () => {
   it('normalizes ERP/product/spec fragments using the importer spec_key rules', () => {

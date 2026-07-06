@@ -1,10 +1,7 @@
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import type { EventSubmission, TMessage } from 'librechat-data-provider';
-import {
-  steelNativeActivityByMessageId,
-  type SteelNativeActivityEvent,
-} from '~/store/steel';
+import { steelNativeActivityByMessageId, type SteelNativeActivityEvent } from '~/store/steel';
 import useSteelEventHandler, {
   appendSteelNativeActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
@@ -365,10 +362,7 @@ describe('useSteelEventHandler', () => {
       providerToolCallId: `call-${index + 1}`,
     }));
 
-    const activity = events.reduce<SteelNativeActivityEvent[]>(
-      appendSteelNativeActivityEvent,
-      [],
-    );
+    const activity = events.reduce<SteelNativeActivityEvent[]>(appendSteelNativeActivityEvent, []);
 
     expect(activity).toHaveLength(13);
     expect(activity[0]?.providerToolCallId).toBe('call-1');

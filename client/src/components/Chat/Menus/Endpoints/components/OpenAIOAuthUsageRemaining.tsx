@@ -4,10 +4,7 @@ import { useGetOpenAIOAuthUsageQuery } from '~/data-provider';
 import type { LocalizeFunction } from '~/common';
 import { useLocalize } from '~/hooks';
 
-function getWindowLabel(
-  window: OpenAIOAuthUsageWindow,
-  localize: LocalizeFunction,
-): string {
+function getWindowLabel(window: OpenAIOAuthUsageWindow, localize: LocalizeFunction): string {
   if (window.key === 'secondary' || window.limitWindowSeconds >= 604800) {
     return localize('com_ui_weekly');
   }

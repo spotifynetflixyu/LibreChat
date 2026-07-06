@@ -2,19 +2,21 @@ import { countMarkdownTables, parseMarkdownTables } from './table';
 
 describe('Steel Markdown table parser', () => {
   it('parses pipe Markdown tables and ignores malformed pipe blocks', () => {
-    const tables = parseMarkdownTables([
-      'before',
-      '| 項次 | 型號 | 品名規格 |',
-      '| ---: | --- | --- |',
-      '| 1 | DNB70060 | 6.0m/mOT板雷射切割 |',
-      '',
-      '| malformed | table |',
-      '| no separator | row |',
-      '',
-      '| key | value |',
-      '| --- | --- |',
-      '| a | b |',
-    ].join('\n'));
+    const tables = parseMarkdownTables(
+      [
+        'before',
+        '| 項次 | 型號 | 品名規格 |',
+        '| ---: | --- | --- |',
+        '| 1 | DNB70060 | 6.0m/mOT板雷射切割 |',
+        '',
+        '| malformed | table |',
+        '| no separator | row |',
+        '',
+        '| key | value |',
+        '| --- | --- |',
+        '| a | b |',
+      ].join('\n'),
+    );
 
     expect(tables).toEqual([
       {
@@ -30,8 +32,6 @@ describe('Steel Markdown table parser', () => {
   });
 
   it('can count tables directly from Markdown text', () => {
-    expect(
-      countMarkdownTables('| A | B |\n| --- | --- |\n| 1 | 2 |\n\nnot a table'),
-    ).toBe(1);
+    expect(countMarkdownTables('| A | B |\n| --- | --- |\n| 1 | 2 |\n\nnot a table')).toBe(1);
   });
 });

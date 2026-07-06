@@ -339,11 +339,11 @@ describe('Steel native context adapter', () => {
       expect.objectContaining({
         nativeContextVersion: 1,
         contextMode: 'compact_workbook',
-          renderProfile: 'agent_client',
-          globalApplied: true,
-          attachmentBytePolicy: 'metadata_references_only',
-          ocrExecutionPolicy: 'direct_paddleocr_mcp',
-        }),
+        renderProfile: 'agent_client',
+        globalApplied: true,
+        attachmentBytePolicy: 'metadata_references_only',
+        ocrExecutionPolicy: 'direct_paddleocr_mcp',
+      }),
     );
     expect(context.contextSlots).toEqual({
       instructionPrefix: 'top_of_context',
@@ -399,9 +399,7 @@ describe('Steel native context adapter', () => {
       'do not call paddleocr_vl',
     );
     expect(serialized.attachments.currentPaddleOcrResults).toEqual(currentPaddleOcrResults);
-    expect(serialized.toolPolicy.currentPaddleOcrUsagePolicy).toContain(
-      'currentPaddleOcrResults',
-    );
+    expect(serialized.toolPolicy.currentPaddleOcrUsagePolicy).toContain('currentPaddleOcrResults');
   });
 
   it('passes same-turn organized OCR Markdown through native runtime context', async () => {

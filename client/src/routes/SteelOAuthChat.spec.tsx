@@ -289,9 +289,7 @@ describe('SteelOAuthChat', () => {
     expect(within(activityPanel).getAllByText('Reasoning summary')).toHaveLength(1);
     expect(within(activityPanel).getAllByText('Summary')).toHaveLength(1);
     expect(within(activityPanel).getAllByText('reasoning summary')).toHaveLength(1);
-    expect(
-      within(activityPanel).getByText('I need final OCR confirmation.'),
-    ).toBeInTheDocument();
+    expect(within(activityPanel).getByText('I need final OCR confirmation.')).toBeInTheDocument();
     expect(within(activityPanel).queryByText('I')).not.toBeInTheDocument();
     expect(within(activityPanel).queryByText(' need')).not.toBeInTheDocument();
     expect(within(activityPanel).queryByText(' final OCR confirmation.')).not.toBeInTheDocument();
@@ -526,7 +524,9 @@ describe('SteelOAuthChat', () => {
         ],
       }),
     );
-    expect(within(screen.getByLabelText('Activity panel')).getByText('Queued steer applied')).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText('Activity panel')).getByText('Queued steer applied'),
+    ).toBeInTheDocument();
   });
 
   it('copies assistant Markdown and rendered tables without Activity text', async () => {

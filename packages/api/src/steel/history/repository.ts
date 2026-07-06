@@ -117,9 +117,8 @@ export function createMongooseSteelConversationHistoryRepository(
         state: 'active',
       });
       const hasLimit = typeof maxTurns === 'number' && maxTurns > 0;
-      const documents = await (hasLimit
-        ? query.sort({ turnIndex: -1 }).limit(maxTurns)
-        : query.sort({ turnIndex: 1 })
+      const documents = await (
+        hasLimit ? query.sort({ turnIndex: -1 }).limit(maxTurns) : query.sort({ turnIndex: 1 })
       ).lean<SteelConversationTurnDocument[]>();
 
       return (hasLimit ? documents.reverse() : documents).map(toTurnRecord);

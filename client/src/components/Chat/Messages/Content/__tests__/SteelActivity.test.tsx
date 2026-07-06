@@ -316,20 +316,23 @@ describe('SteelActivity', () => {
     render(
       <RecoilRoot
         initializeState={({ set }) => {
-          set(steelNativeActivityByMessageId('assistant-ocr-long-progress'), [
-            'Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)',
-            'Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
-            'Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
-            'PaddleOCR preflight saved (chunk 1/3) (file:BH.pdf)',
-            'Running paddleocr_vl in PaddleOCR (chunk 2/3) (file:BH.pdf)',
-          ].map((message) => ({
-            type: 'parse_status',
-            source: 'ocr_preprocessing',
-            conversationId: 'conversation-1',
-            messageId: 'assistant-ocr-long-progress',
-            message,
-            parseStatus: 'partial',
-          })));
+          set(
+            steelNativeActivityByMessageId('assistant-ocr-long-progress'),
+            [
+              'Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)',
+              'Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+              'Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+              'PaddleOCR preflight saved (chunk 1/3) (file:BH.pdf)',
+              'Running paddleocr_vl in PaddleOCR (chunk 2/3) (file:BH.pdf)',
+            ].map((message) => ({
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-ocr-long-progress',
+              message,
+              parseStatus: 'partial',
+            })),
+          );
         }}
       >
         <SteelActivity messageId="assistant-ocr-long-progress" isCreatedByUser={false} />

@@ -70,7 +70,10 @@ describe('Steel native tool adapter', () => {
       aiVisibleTools: ['search_customers'],
     });
 
-    expect(getNames(result.toolDefinitions)).toEqual(['search_customers', 'steel_search_customers']);
+    expect(getNames(result.toolDefinitions)).toEqual([
+      'search_customers',
+      'steel_search_customers',
+    ]);
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
       'steel_search_customers',
     );

@@ -10,99 +10,99 @@ import type { ISteelWorkingOrderMemory, SteelWorkingOrderMemorySourceRef } from 
 
 const steelWorkingOrderMemorySourceRefSchema: Schema<SteelWorkingOrderMemorySourceRef> =
   new Schema<SteelWorkingOrderMemorySourceRef>(
-  {
-    sourceKind: {
-      type: String,
-      required: true,
+    {
+      sourceKind: {
+        type: String,
+        required: true,
+      },
+      sourceId: {
+        type: String,
+      },
+      filename: {
+        type: String,
+      },
+      fileId: {
+        type: String,
+      },
+      storageKey: {
+        type: String,
+      },
+      mediaType: {
+        type: String,
+      },
+      ocrFileKey: {
+        type: String,
+      },
+      pageNumber: {
+        type: Number,
+      },
+      imageIndex: {
+        type: Number,
+      },
+      locator: {
+        type: String,
+      },
     },
-    sourceId: {
-      type: String,
-    },
-    filename: {
-      type: String,
-    },
-    fileId: {
-      type: String,
-    },
-    storageKey: {
-      type: String,
-    },
-    mediaType: {
-      type: String,
-    },
-    ocrFileKey: {
-      type: String,
-    },
-    pageNumber: {
-      type: Number,
-    },
-    imageIndex: {
-      type: Number,
-    },
-    locator: {
-      type: String,
-    },
-  },
-  { _id: false },
+    { _id: false },
   );
 
 const steelWorkingOrderMemorySchema: Schema<ISteelWorkingOrderMemory> =
   new Schema<ISteelWorkingOrderMemory>(
-  {
-    conversationId: {
-      type: String,
-      required: true,
-      index: true,
+    {
+      conversationId: {
+        type: String,
+        required: true,
+        index: true,
+      },
+      requestId: {
+        type: String,
+        index: true,
+      },
+      turnIndex: {
+        type: Number,
+        required: true,
+      },
+      checkpointTurnIndex: {
+        type: Number,
+        required: true,
+        index: true,
+      },
+      memoryKind: {
+        type: String,
+        enum: steelWorkingOrderMemoryKindEnum,
+        required: true,
+        index: true,
+      },
+      sourceKind: {
+        type: String,
+        enum: steelWorkingOrderMemorySourceKindEnum,
+        required: true,
+      },
+      state: {
+        type: String,
+        enum: steelWorkingOrderMemoryStateEnum,
+        default: 'active',
+        index: true,
+      },
+      sourceRefs: {
+        type: [steelWorkingOrderMemorySourceRefSchema],
+        default: undefined,
+      },
+      summary: {
+        type: String,
+      },
+      payload: {
+        type: Schema.Types.Mixed,
+      },
+      supersededAt: {
+        type: Date,
+      },
+      supersededByMessageId: {
+        type: String,
+        index: true,
+      },
     },
-    requestId: {
-      type: String,
-      index: true,
-    },
-    turnIndex: {
-      type: Number,
-      required: true,
-    },
-    checkpointTurnIndex: {
-      type: Number,
-      required: true,
-      index: true,
-    },
-    memoryKind: {
-      type: String,
-      enum: steelWorkingOrderMemoryKindEnum,
-      required: true,
-      index: true,
-    },
-    sourceKind: {
-      type: String,
-      enum: steelWorkingOrderMemorySourceKindEnum,
-      required: true,
-    },
-    state: {
-      type: String,
-      enum: steelWorkingOrderMemoryStateEnum,
-      default: 'active',
-      index: true,
-    },
-    sourceRefs: {
-      type: [steelWorkingOrderMemorySourceRefSchema],
-      default: undefined,
-    },
-    summary: {
-      type: String,
-    },
-    payload: {
-      type: Schema.Types.Mixed,
-    },
-    supersededAt: {
-      type: Date,
-    },
-    supersededByMessageId: {
-      type: String,
-      index: true,
-    },
-  },
-  { timestamps: true },
+    { timestamps: true },
   );
 
 steelWorkingOrderMemorySchema.index({

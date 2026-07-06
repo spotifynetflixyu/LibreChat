@@ -27,7 +27,8 @@ jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   initializeAgent: (...args) => mockInitializeAgent(...args),
   validateAgentModel: (...args) => mockValidateAgentModel(...args),
-  captureSteelNativeAssistantMarkdown: (...args) => mockCaptureSteelNativeAssistantMarkdown(...args),
+  captureSteelNativeAssistantMarkdown: (...args) =>
+    mockCaptureSteelNativeAssistantMarkdown(...args),
   createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({ capture: jest.fn() })),
   GenerationJobManager: {
     setCollectedUsage: jest.fn(),

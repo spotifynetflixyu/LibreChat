@@ -98,33 +98,31 @@ describe('Steel agent and quote rule repositories', () => {
     expect(sql).toEqual(expect.stringContaining('rule_kind = $2'));
     expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject(
-      {
-        id: 1,
-        slug: 'steel-default-agent-instruction',
-        version: 1,
-        ruleType: 'agent',
-        title: 'Steel default agent instruction',
-        locale: 'zh-TW',
-        ruleSections: ['agent_instruction'],
-        sheetId: undefined,
-        selectors: { appliesTo: ['steel_quote_runtime'] },
-        prompt: 'Fixture agent instruction',
-        toolPolicy: { availableTools: ['search_customers'] },
-        outputPolicy: null,
-        priority: 10,
-        confidence: 'high',
-        active: true,
-        reviewState: 'reviewed',
-        sourceRefs: [
-          {
-            channel: 'repo_docs',
-            factType: 'agent_rule',
-            canonicalKey: 'steel_default_agent_instruction',
-          },
-        ],
-      },
-    );
+    expect(result[0]).toMatchObject({
+      id: 1,
+      slug: 'steel-default-agent-instruction',
+      version: 1,
+      ruleType: 'agent',
+      title: 'Steel default agent instruction',
+      locale: 'zh-TW',
+      ruleSections: ['agent_instruction'],
+      sheetId: undefined,
+      selectors: { appliesTo: ['steel_quote_runtime'] },
+      prompt: 'Fixture agent instruction',
+      toolPolicy: { availableTools: ['search_customers'] },
+      outputPolicy: null,
+      priority: 10,
+      confidence: 'high',
+      active: true,
+      reviewState: 'reviewed',
+      sourceRefs: [
+        {
+          channel: 'repo_docs',
+          factType: 'agent_rule',
+          canonicalKey: 'steel_default_agent_instruction',
+        },
+      ],
+    });
   });
 
   it('lists reviewed active output rules separately from agent and other rules', async () => {
@@ -173,39 +171,35 @@ describe('Steel agent and quote rule repositories', () => {
     const result = await listReviewedSteelQuoteRules({ query } as SteelRepositoryClient);
     const sql = query.mock.calls[0]?.[0];
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), [
-      'reviewed',
-    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), ['reviewed']);
     expect(sql).toEqual(expect.stringContaining('active = true'));
     expect(sql).toEqual(expect.stringContaining("rule_kind = 'steel'"));
     expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
     expect(sql).not.toEqual(expect.stringContaining('ANY($'));
     expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject(
-      {
-        id: 31,
-        ruleType: 'formula_rule',
-        scopeType: 'catalog_family',
-        catalogFamily: 'plate',
-        productFamily: 'laser_cut',
-        chargeType: 'cutting',
-        formulaCode: 'PL',
-        selectors: { catalogFamily: 'plate' },
-        parameters: { density: 7.85 },
-        prompt: 'Fixture quote rule',
-        priority: 40,
-        confidence: 'high',
-        active: true,
-        reviewState: 'reviewed',
-        sourceRefs: [
-          {
-            channel: 'repo_docs',
-            factType: 'quote_rule',
-            canonicalKey: 'plate_laser_cut_formula',
-          },
-        ],
-      },
-    );
+    expect(result[0]).toMatchObject({
+      id: 31,
+      ruleType: 'formula_rule',
+      scopeType: 'catalog_family',
+      catalogFamily: 'plate',
+      productFamily: 'laser_cut',
+      chargeType: 'cutting',
+      formulaCode: 'PL',
+      selectors: { catalogFamily: 'plate' },
+      parameters: { density: 7.85 },
+      prompt: 'Fixture quote rule',
+      priority: 40,
+      confidence: 'high',
+      active: true,
+      reviewState: 'reviewed',
+      sourceRefs: [
+        {
+          channel: 'repo_docs',
+          factType: 'quote_rule',
+          canonicalKey: 'plate_laser_cut_formula',
+        },
+      ],
+    });
   });
 });

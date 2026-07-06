@@ -50,9 +50,13 @@ export interface PaddleOcrChunkRunner {
 }
 
 export interface OcrPreprocessingMemoryStore {
-  readOfficialOcrMarkdown(input: OfficialOcrMarkdownInput): Promise<OfficialOcrMarkdownResult | undefined>;
+  readOfficialOcrMarkdown(
+    input: OfficialOcrMarkdownInput,
+  ): Promise<OfficialOcrMarkdownResult | undefined>;
   readOcrPreprocessingState(input: OcrPreprocessingStateInput): Promise<OcrPreprocessingState>;
-  capturePaddleOcrChunkResult(input: CapturePaddleOcrChunkResultInput): Promise<CaptureToolResultResult>;
+  capturePaddleOcrChunkResult(
+    input: CapturePaddleOcrChunkResultInput,
+  ): Promise<CaptureToolResultResult>;
   captureOcrPreprocessingChunkMarkdown(
     input: CaptureOcrPreprocessingChunkMarkdownInput,
   ): Promise<CaptureToolResultResult>;
@@ -242,9 +246,7 @@ export async function runOcrPreprocessingBatchPipeline(
 ): Promise<RunOcrPreprocessingBatchPipelineResult> {
   const turnIndex = input.turnIndex ?? 0;
   const checkpointTurnIndex = input.checkpointTurnIndex ?? turnIndex;
-  const resultSlots = new Array<RunOcrPreprocessingBatchFileResult | undefined>(
-    input.files.length,
-  );
+  const resultSlots = new Array<RunOcrPreprocessingBatchFileResult | undefined>(input.files.length);
   const workItems: OcrPreprocessingBatchWorkItem[] = [];
 
   for (let index = 0; index < input.files.length; index += 1) {
@@ -362,7 +364,9 @@ export async function runOcrPreprocessingBatchPipeline(
           pdfChunk: {
             source: artifact.source ?? 's3',
             storageKey: artifact.storageKey,
-            ...(artifact.storageRegion !== undefined ? { storageRegion: artifact.storageRegion } : {}),
+            ...(artifact.storageRegion !== undefined
+              ? { storageRegion: artifact.storageRegion }
+              : {}),
             filepath: artifact.filepath,
           },
         },
@@ -474,7 +478,9 @@ export async function runOcrPreprocessingBatchPipeline(
   }
 
   return {
-    files: resultSlots.filter((result): result is RunOcrPreprocessingBatchFileResult => result !== undefined),
+    files: resultSlots.filter(
+      (result): result is RunOcrPreprocessingBatchFileResult => result !== undefined,
+    ),
   };
 }
 

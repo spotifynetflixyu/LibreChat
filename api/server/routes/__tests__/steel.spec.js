@@ -348,8 +348,9 @@ describe('Steel route shells', () => {
     const patchRes = await request(app)
       .patch('/api/steel/workbooks/wb_1')
       .send({ workbookVersion: 1, operations: [] });
-    const fileAnalysisRes = await request(app)
-      .get('/api/steel/file-analysis/by-conversation/steel_meta_1');
+    const fileAnalysisRes = await request(app).get(
+      '/api/steel/file-analysis/by-conversation/steel_meta_1',
+    );
 
     expect(createRes.status).toBe(404);
     expect(readRes.status).toBe(404);

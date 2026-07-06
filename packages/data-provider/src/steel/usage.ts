@@ -28,9 +28,7 @@ export const openAIOAuthUsageRemainingSchema = z.object({
   windows: z.array(openAIOAuthUsageWindowSchema),
 });
 
-export type OpenAIOAuthUsageWindowKey = z.infer<
-  typeof openAIOAuthUsageWindowKeySchema
->;
+export type OpenAIOAuthUsageWindowKey = z.infer<typeof openAIOAuthUsageWindowKeySchema>;
 
 export type OpenAIOAuthUsageUnavailableReason = z.infer<
   typeof openAIOAuthUsageUnavailableReasonSchema
@@ -38,6 +36,4 @@ export type OpenAIOAuthUsageUnavailableReason = z.infer<
 
 export type OpenAIOAuthUsageWindow = z.infer<typeof openAIOAuthUsageWindowSchema>;
 
-export type OpenAIOAuthUsageRemaining = z.infer<
-  typeof openAIOAuthUsageRemainingSchema
->;
+export type OpenAIOAuthUsageRemaining = z.infer<typeof openAIOAuthUsageRemainingSchema>;

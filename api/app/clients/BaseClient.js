@@ -846,11 +846,7 @@ class BaseClient {
 
     const assistantTurnIndex =
       this.options?.req?.steelNativeContext?.assistantTurnIndex ?? this.currentMessages.length;
-    const responseDatabasePromise = this.saveMessageToDatabase(
-      responseMessage,
-      saveOptions,
-      user,
-    );
+    const responseDatabasePromise = this.saveMessageToDatabase(responseMessage, saveOptions, user);
     responseMessage.databasePromise = this.withResponseMessageSavedHook({
       responseMessage,
       databasePromise: responseDatabasePromise,

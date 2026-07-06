@@ -12,10 +12,7 @@ import {
   useRecoilCallback,
 } from 'recoil';
 import type { EModelEndpoint, TConversation, TSubmission, TPreset } from 'librechat-data-provider';
-import {
-  readStoredMarkdownTableComments,
-  writeStoredMarkdownTableComments,
-} from '~/common';
+import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
 import type { TOptionSettings, ExtendedFile, MarkdownTableComment } from '~/common';
 import {
   clearModelForNonEphemeralAgent,
@@ -307,8 +304,7 @@ const pendingQuotesByConvoId = atomFamily<string[], string>({
 const pendingMarkdownTableCommentsByConvoId = atomFamily<MarkdownTableComment[], string>({
   key: 'pendingMarkdownTableCommentsByConvoId',
   default: [],
-  effects:
-    (conversationId) =>
+  effects: (conversationId) =>
     [
       ({ onSet, setSelf }) => {
         const storedComments = readStoredMarkdownTableComments(conversationId);

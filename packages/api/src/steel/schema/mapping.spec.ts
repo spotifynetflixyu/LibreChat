@@ -112,11 +112,10 @@ describe('Steel source schema mapping', () => {
     const context = buildSourceSchemaMappingPromptContext();
 
     expect(context).not.toContain('workbook_patch');
-    expect(
-      () =>
-        buildSourceSchemaMappingPromptContext({
-          allowedFor: 'workbook_patch' as never,
-        }),
+    expect(() =>
+      buildSourceSchemaMappingPromptContext({
+        allowedFor: 'workbook_patch' as never,
+      }),
     ).not.toThrow();
     expect(
       buildSourceSchemaMappingPromptContext({

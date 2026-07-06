@@ -15,8 +15,14 @@ export default function useSubmitMessage() {
   const localize = useLocalize();
   const methods = useChatFormContext();
   const { conversation: addedConvo } = useAddedChatContext();
-  const { ask, index, getMessages, setMessages, conversation, files = emptyFiles } =
-    useChatContext();
+  const {
+    ask,
+    index,
+    getMessages,
+    setMessages,
+    conversation,
+    files = emptyFiles,
+  } = useChatContext();
   const latestMessage = useLatestMessage(index);
 
   const autoSendPrompts = useRecoilValue(store.autoSendPrompts);

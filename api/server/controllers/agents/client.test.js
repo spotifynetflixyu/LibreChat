@@ -2041,7 +2041,11 @@ describe('AgentClient - titleConvo', () => {
 
     it('keeps OCR-capable request attachments in Steel context when provider processing filters them out', async () => {
       const { buildDefaultSteelGlobalAgentContext } = require('@librechat/api');
-      const currentFile = makeUploadedFile('current-pdf', 'drawing.pdf', 'application/octet-stream');
+      const currentFile = makeUploadedFile(
+        'current-pdf',
+        'drawing.pdf',
+        'application/octet-stream',
+      );
       const currentOcrMarkdownResults = [
         {
           ocrFileKey: 'file:current-pdf',

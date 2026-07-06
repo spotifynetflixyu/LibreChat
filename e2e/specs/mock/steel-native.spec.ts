@@ -62,9 +62,9 @@ test.describe('Steel native chat', () => {
 
     await expect(assistantMessage.locator('.agent-turn')).toBeVisible();
     await expect(assistantMessage.getByText(STEEL_NATIVE_ASSERTION_FINAL_TEXT)).toBeVisible();
-    await expect(assistantMessage.locator('table tbody tr').first().locator('td').nth(1)).toHaveText(
-      '10',
-    );
+    await expect(
+      assistantMessage.locator('table tbody tr').first().locator('td').nth(1),
+    ).toHaveText('10');
     await expect(assistantMessage.getByLabel('Steel activity')).toBeVisible({ timeout: 30000 });
     await expect(assistantMessage.getByText('Steel form parsed')).toBeVisible();
     await expect(assistantMessage.getByText('Steel quote state saved')).toBeVisible();

@@ -1,8 +1,4 @@
-import type {
-  SteelCustomerRule,
-  SteelQuoteRule,
-  SteelQuoteDefault,
-} from '../repositories';
+import type { SteelCustomerRule, SteelQuoteRule, SteelQuoteDefault } from '../repositories';
 import type { SteelJsonValue, SteelSourceRef } from '../repositories/types';
 import type { SteelToolJsonObject, SteelToolJsonValue } from './results';
 

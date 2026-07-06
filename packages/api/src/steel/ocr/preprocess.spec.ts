@@ -1,9 +1,6 @@
 import { buildPdfPageChunks } from './chunks';
 import { mergeChunkMarkdownForFileKey } from './merge';
-import {
-  runOcrPreprocessingBatchPipeline,
-  runOcrPreprocessingPipeline,
-} from './preprocess';
+import { runOcrPreprocessingBatchPipeline, runOcrPreprocessingPipeline } from './preprocess';
 
 import type { OcrPreprocessingState } from '../memory/service';
 import type { OcrOrganizer } from './organizer';
@@ -801,7 +798,9 @@ describe('OCR preprocessing orchestrator', () => {
         },
         {
           chunkIndex: 2,
-          markdown: ['| 品名 | 材質 | 備註 |', '|---|---|---|', '| 白鐵管 | 304 | 急件 |'].join('\n'),
+          markdown: ['| 品名 | 材質 | 備註 |', '|---|---|---|', '| 白鐵管 | 304 | 急件 |'].join(
+            '\n',
+          ),
         },
       ],
     });

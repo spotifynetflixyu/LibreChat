@@ -153,9 +153,7 @@ describe('OpenAI OAuth model adapter', () => {
     });
     const systemRunnable = RunnableLambda.from((messages: unknown) => messages);
 
-    const result = await systemRunnable
-      .pipe(model)
-      .invoke([new HumanMessage('請 OCR PL.pdf')]);
+    const result = await systemRunnable.pipe(model).invoke([new HumanMessage('請 OCR PL.pdf')]);
 
     expect(result.content).toBe('已解析');
   });
@@ -201,10 +199,7 @@ describe('OpenAI OAuth model adapter', () => {
 
     doGenerate.mockClear();
 
-    await model.invoke([
-      new SystemMessage('Already prepared'),
-      new HumanMessage('確認後報價'),
-    ]);
+    await model.invoke([new SystemMessage('Already prepared'), new HumanMessage('確認後報價')]);
 
     expect(getGenerateCall(doGenerate).prompt).toEqual([
       {

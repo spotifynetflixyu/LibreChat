@@ -38,7 +38,11 @@ const compressImageToJpeg = async (
     withoutEnlargement: true,
   });
 
-  for (let quality = JPEG_QUALITY_START; quality >= JPEG_QUALITY_MIN; quality -= JPEG_QUALITY_STEP) {
+  for (
+    let quality = JPEG_QUALITY_START;
+    quality >= JPEG_QUALITY_MIN;
+    quality -= JPEG_QUALITY_STEP
+  ) {
     const { data, info } = await image
       .clone()
       .jpeg({ quality, mozjpeg: true })

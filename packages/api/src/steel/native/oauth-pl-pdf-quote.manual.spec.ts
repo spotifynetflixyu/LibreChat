@@ -12,10 +12,7 @@ import { createSteelPostgresPool } from '../postgres';
 import { createEmptySteelOutputSheetMemorySnapshot } from '../runtime/context';
 import { createSteelToolRunState, executeSteelTool } from '../tools/execute';
 import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '../ai/config';
-import {
-  buildSteelGlobalAgentContext,
-  createSteelContextDependencies,
-} from './context';
+import { buildSteelGlobalAgentContext, createSteelContextDependencies } from './context';
 import { createOpenAIOAuthModel } from './oauth';
 import { mergeSteelToolDefinitions, resolveSteelProviderToolName } from './tools';
 
@@ -254,10 +251,7 @@ function hasQuoteTable(text: string): boolean {
   return parseMarkdownTables(text).some((table) => {
     const headers = new Set(table.headers);
     return (
-      headers.has('項次') &&
-      headers.has('型號') &&
-      headers.has('品名規格') &&
-      table.rows.length > 0
+      headers.has('項次') && headers.has('型號') && headers.has('品名規格') && table.rows.length > 0
     );
   });
 }

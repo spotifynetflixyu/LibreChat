@@ -16,10 +16,7 @@ import type {
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import {
-  AIMessageChunk,
-  type BaseMessage,
-} from '@librechat/agents/langchain/messages';
+import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
 import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
@@ -68,10 +65,7 @@ function createOpenAIOAuthSettings({
   authFilePath,
   ensureFresh,
   fetch,
-}: Pick<
-  OpenAIOAuthModelOptions,
-  'authFilePath' | 'ensureFresh' | 'fetch'
->): OpenAIOAuthSettings {
+}: Pick<OpenAIOAuthModelOptions, 'authFilePath' | 'ensureFresh' | 'fetch'>): OpenAIOAuthSettings {
   return omitUndefined({
     authFilePath,
     ensureFresh,
@@ -249,9 +243,9 @@ function toUserContentPart(
   return undefined;
 }
 
-function contentToUserParts(content: BaseMessage['content']): Array<
-  LanguageModelV3TextPart | LanguageModelV3FilePart
-> {
+function contentToUserParts(
+  content: BaseMessage['content'],
+): Array<LanguageModelV3TextPart | LanguageModelV3FilePart> {
   if (typeof content === 'string') {
     return createTextParts(content);
   }
@@ -286,9 +280,9 @@ function toAssistantToolCallPart(call: ToolCall): LanguageModelV3ToolCallPart {
   };
 }
 
-function contentToAssistantParts(content: BaseMessage['content']): Array<
-  LanguageModelV3TextPart | LanguageModelV3FilePart | LanguageModelV3ToolCallPart
-> {
+function contentToAssistantParts(
+  content: BaseMessage['content'],
+): Array<LanguageModelV3TextPart | LanguageModelV3FilePart | LanguageModelV3ToolCallPart> {
   const parts = contentToUserParts(content);
   if (parts.length > 0) {
     return parts;
@@ -413,9 +407,7 @@ function toLanguageModelTool(tool: BindToolsInput): LanguageModelV3FunctionTool 
   };
 }
 
-function toLanguageModelTools(
-  tools?: BindToolsInput[],
-): LanguageModelV3FunctionTool[] | undefined {
+function toLanguageModelTools(tools?: BindToolsInput[]): LanguageModelV3FunctionTool[] | undefined {
   const converted = (tools ?? [])
     .map(toLanguageModelTool)
     .filter((tool): tool is LanguageModelV3FunctionTool => tool != null);
@@ -508,10 +500,7 @@ function createResponseMetadata({
   });
 }
 
-function toMessageChunk(
-  result: LanguageModelV3GenerateResult,
-  model: string,
-): AIMessageChunk {
+function toMessageChunk(result: LanguageModelV3GenerateResult, model: string): AIMessageChunk {
   const toolCalls = result.content
     .filter((part): part is LanguageModelV3ToolCall => part.type === 'tool-call')
     .map(toToolCall);
@@ -704,9 +693,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
   }
 }
 
-export function createOpenAIOAuthModel(
-  options: OpenAIOAuthModelOptions,
-): OpenAIOAuthModel {
+export function createOpenAIOAuthModel(options: OpenAIOAuthModelOptions): OpenAIOAuthModel {
   return new OpenAIOAuthModel(options);
 }
 

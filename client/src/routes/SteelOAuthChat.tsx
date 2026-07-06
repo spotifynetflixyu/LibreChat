@@ -400,7 +400,11 @@ function getStreamStatusIcon(event: SteelProviderChatStreamEvent) {
   if ((event.type === 'lookup' || event.type === 'tool') && event.status === 'completed') {
     return CheckCircle2;
   }
-  if (event.type.startsWith('memory_') || event.type.startsWith('parse_') || event.type.startsWith('steer_')) {
+  if (
+    event.type.startsWith('memory_') ||
+    event.type.startsWith('parse_') ||
+    event.type.startsWith('steer_')
+  ) {
     return CheckCircle2;
   }
   return Loader2;
@@ -859,11 +863,7 @@ export default function SteelOAuthChat() {
     setIsEncodingFiles(false);
   };
 
-  const streamAssistantResponse = async ({
-    payload,
-  }: {
-    payload: SteelProviderChatRequest;
-  }) => {
+  const streamAssistantResponse = async ({ payload }: { payload: SteelProviderChatRequest }) => {
     const streamingAssistantId = `assistant-stream-${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}`;
@@ -989,7 +989,9 @@ export default function SteelOAuthChat() {
     const content = trimmedInput || 'Read the attached file(s).';
     const editingTurnIndex =
       editingMessageId !== null
-        ? messages.findIndex((message) => message.id === editingMessageId && message.role === 'user')
+        ? messages.findIndex(
+            (message) => message.id === editingMessageId && message.role === 'user',
+          )
         : -1;
     const isEditing = editingMessageId !== null && editingTurnIndex >= 0;
     const nextUserTurn = isEditing
@@ -1316,9 +1318,7 @@ export default function SteelOAuthChat() {
         </form>
       </section>
       {isActivityPanelOpen && (
-        <aside
-          className="min-h-0 border-t border-border-light lg:w-[24rem] lg:flex-shrink-0 lg:border-l lg:border-t-0"
-        >
+        <aside className="min-h-0 border-t border-border-light lg:w-[24rem] lg:flex-shrink-0 lg:border-l lg:border-t-0">
           <ActivityStatusPanel events={streamEvents} timings={lastResponse?.timings} />
         </aside>
       )}

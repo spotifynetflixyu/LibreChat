@@ -119,9 +119,7 @@ export interface BuildSteelGlobalAgentContextInput {
   dependencies: SteelRuntimeContextDependencies;
   attachments?: SteelNativeContextAttachmentsInput;
   renderProfile?: SteelNativeRenderProfile;
-  prepareRuntimeContext?: (
-    input: PrepareSteelRuntimeContextInput,
-  ) => Promise<SteelRuntimeContext>;
+  prepareRuntimeContext?: (input: PrepareSteelRuntimeContextInput) => Promise<SteelRuntimeContext>;
 }
 
 export interface BuildDefaultSteelGlobalAgentContextInput
@@ -232,11 +230,7 @@ export function buildSteelNativeInstructionPrefix({
   sections: SteelNativeInstructionPrefixSlot[];
 } {
   const sections = [
-    buildSlot(
-      'agent',
-      'Steel Agent Rules',
-      runtimeContext.rules.agentRules.map(renderAgentRule),
-    ),
+    buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.map(renderAgentRule)),
     buildSlot('quote_rules', 'Steel Quote Rules', [
       ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
       ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),

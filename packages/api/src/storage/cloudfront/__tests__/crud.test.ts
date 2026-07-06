@@ -86,7 +86,11 @@ describe('CloudFront CRUD', () => {
       },
     );
     mockSaveBufferToS3StorageKey.mockResolvedValue({ bytes: 3, storageRegion: 'us-east-1' });
-    mockS3ObjectExistsByKey.mockResolvedValue({ exists: true, bytes: 3, storageRegion: 'us-east-1' });
+    mockS3ObjectExistsByKey.mockResolvedValue({
+      exists: true,
+      bytes: 3,
+      storageRegion: 'us-east-1',
+    });
     mockGetCloudFrontConfig.mockReturnValue(makeConfig());
   });
 
@@ -696,10 +700,9 @@ describe('CloudFront CRUD', () => {
     });
 
     it('delegates direct storage-key exists and save operations to S3', async () => {
-      const {
-        cloudFrontObjectExistsByKey,
-        saveBufferToCloudFrontStorageKey,
-      } = await import('~/storage/cloudfront/crud');
+      const { cloudFrontObjectExistsByKey, saveBufferToCloudFrontStorageKey } = await import(
+        '~/storage/cloudfront/crud'
+      );
 
       await expect(
         cloudFrontObjectExistsByKey({

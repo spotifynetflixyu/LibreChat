@@ -34,9 +34,7 @@ const getTextPartText = (part: TMessageContentParts): string => {
 const isTextContentPart = (part: TMessageContentParts): boolean => {
   const text = (part as TextPartLike).text;
   return (
-    part.type === ContentTypes.TEXT ||
-    typeof text === 'string' ||
-    typeof text?.value === 'string'
+    part.type === ContentTypes.TEXT || typeof text === 'string' || typeof text?.value === 'string'
   );
 };
 

@@ -10,7 +10,5 @@ export function resolveOcrPreprocessingChunkSizePages(
   }
 
   const value = Number(raw);
-  return Number.isInteger(value) && value > 0
-    ? value
-    : defaultOcrPreprocessingChunkSizePages;
+  return Number.isInteger(value) && value > 0 ? value : defaultOcrPreprocessingChunkSizePages;
 }

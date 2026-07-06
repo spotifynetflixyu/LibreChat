@@ -67,9 +67,7 @@ const mockSteelNativeContext = {
     globalApplied: true,
   },
 };
-const mockBuildDefaultSteelGlobalAgentContext = jest
-  .fn()
-  .mockResolvedValue(mockSteelNativeContext);
+const mockBuildDefaultSteelGlobalAgentContext = jest.fn().mockResolvedValue(mockSteelNativeContext);
 const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
   if (typeof content === 'string') {
     return content;
@@ -575,14 +573,12 @@ describe('createResponse controller', () => {
     it('retrieves a stored response by generated response id', async () => {
       const { getConvo, getMessage, getMessages } = require('~/models');
       req.params = { id: 'resp_previous' };
-      getConvo
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({
-          conversationId: 'convo-abc',
-          user: 'user-123',
-          createdAt: new Date('2026-06-25T00:00:00.000Z'),
-          updatedAt: new Date('2026-06-25T00:01:00.000Z'),
-        });
+      getConvo.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        conversationId: 'convo-abc',
+        user: 'user-123',
+        createdAt: new Date('2026-06-25T00:00:00.000Z'),
+        updatedAt: new Date('2026-06-25T00:01:00.000Z'),
+      });
       getMessage.mockResolvedValueOnce({
         messageId: 'resp_previous',
         conversationId: 'convo-abc',
@@ -778,18 +774,18 @@ describe('createResponse controller', () => {
           conversation: expect.objectContaining({
             conversationId: 'convo-abc',
             requestId: 'resp_mock-123',
-	            activeHistory: [
-	              {
-	                role: 'assistant',
-	                content: '',
-	                messageId: 'assistant-1',
-	              },
-	            ],
-	            currentUserTurn: {
-	              role: 'user',
-	              content: '',
-	              messageId: 'user-2',
-	            },
+            activeHistory: [
+              {
+                role: 'assistant',
+                content: '',
+                messageId: 'assistant-1',
+              },
+            ],
+            currentUserTurn: {
+              role: 'user',
+              content: '',
+              messageId: 'user-2',
+            },
           }),
         }),
       );

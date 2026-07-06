@@ -25,18 +25,16 @@ export interface BuildSourceSchemaMappingPromptContextOptions {
   allowedFor?: SteelSourceSchemaUsage;
 }
 
-const productPriceTierEntries = (['A', 'B', 'C', 'F'] as const).map((tier) => (
-  {
-    sourceFile: '產品價格.xlsx',
-    sourceLabels: [`售價${tier}`],
-    canonicalKey: `unit_price_by_tier.${tier}`,
-    target: 'steel.prices.unit_price_*',
-    allowedFor: ['admin_import', 'price_lookup'] as const,
-    valueType: 'money' as const,
-    customerTierCode: tier,
-    note: '匯入只保留售價A-F；來源比率A-F 欄位 intentionally ignored，不入庫也不提供查價。',
-  }
-));
+const productPriceTierEntries = (['A', 'B', 'C', 'F'] as const).map((tier) => ({
+  sourceFile: '產品價格.xlsx',
+  sourceLabels: [`售價${tier}`],
+  canonicalKey: `unit_price_by_tier.${tier}`,
+  target: 'steel.prices.unit_price_*',
+  allowedFor: ['admin_import', 'price_lookup'] as const,
+  valueType: 'money' as const,
+  customerTierCode: tier,
+  note: '匯入只保留售價A-F；來源比率A-F 欄位 intentionally ignored，不入庫也不提供查價。',
+}));
 
 export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[] = [
   {

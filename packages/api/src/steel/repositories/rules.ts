@@ -227,9 +227,7 @@ function addCommonRuleFilters(
   addKeywordContainsFilter(where, values, input.keywords);
 }
 
-function getRuleQuery(
-  input: SearchSteelRulesInput,
-): { sql: string; values: SteelSqlParameter[] } {
+function getRuleQuery(input: SearchSteelRulesInput): { sql: string; values: SteelSqlParameter[] } {
   const where: string[] = [];
   const values: SteelSqlParameter[] = [];
 

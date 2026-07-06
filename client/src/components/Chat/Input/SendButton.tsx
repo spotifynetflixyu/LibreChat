@@ -48,8 +48,7 @@ const SendButton = React.memo(
       <SubmitButton
         ref={ref}
         disabled={
-          props.disabled ||
-          (!content && !props.hasFiles && !props.hasPendingMarkdownTableComments)
+          props.disabled || (!content && !props.hasFiles && !props.hasPendingMarkdownTableComments)
         }
       />
     );

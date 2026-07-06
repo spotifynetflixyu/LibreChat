@@ -17,11 +17,7 @@ import type {
   SteelSqlParameter,
   SteelValueState,
 } from './types';
-import type {
-  PriceLookupMaterialKind,
-  PriceCategory,
-  MaterialKind,
-} from '../pricing/enums';
+import type { PriceLookupMaterialKind, PriceCategory, MaterialKind } from '../pricing/enums';
 
 export type SteelPriceKind = 'product' | 'cutting' | 'hole';
 
@@ -147,7 +143,10 @@ const relatedCuttingCriteriaByCategory: Partial<Record<PriceCategory, RelatedCut
 };
 
 function normalizeKeywordText(value: string): string {
-  return value.normalize('NFKC').replace(/[＊*×]/gu, 'x').trim();
+  return value
+    .normalize('NFKC')
+    .replace(/[＊*×]/gu, 'x')
+    .trim();
 }
 
 function formatThicknessMm(value: string): string {
@@ -205,12 +204,14 @@ function parsePriceKeyword(
   }
 
   const normalized = normalizeKeywordText(keyword);
-  const thicknessResult = query.thicknessMm === undefined
-    ? extractThicknessMm(normalized)
-    : { text: normalized, thicknessMm: undefined };
-  const materialResult = query.material === undefined && query.category !== '孔'
-    ? extractMaterial(thicknessResult.text)
-    : { text: thicknessResult.text, material: undefined };
+  const thicknessResult =
+    query.thicknessMm === undefined
+      ? extractThicknessMm(normalized)
+      : { text: normalized, thicknessMm: undefined };
+  const materialResult =
+    query.material === undefined && query.category !== '孔'
+      ? extractMaterial(thicknessResult.text)
+      : { text: thicknessResult.text, material: undefined };
 
   return {
     material: materialResult.material,
@@ -270,10 +271,7 @@ function shouldUseBroadPlateZincLookup(
   return query.category === '鐵板/鋼板' && material === '鋅';
 }
 
-function addPriceQueryFilter(
-  values: SteelSqlParameter[],
-  query: SteelPriceCandidateQuery,
-): string {
+function addPriceQueryFilter(values: SteelSqlParameter[], query: SteelPriceCandidateQuery): string {
   const clauses: string[] = [];
 
   values.push(query.category);
@@ -282,12 +280,9 @@ function addPriceQueryFilter(
   const parsedKeyword = parsePriceKeyword(query.keyword, query);
   const material = query.material ?? parsedKeyword.material;
   if (material) {
-    addKeywordTermsFilter(
-      clauses,
-      values,
-      priceMaterialKeywordColumns,
-      [normalizeKeywordText(material)],
-    );
+    addKeywordTermsFilter(clauses, values, priceMaterialKeywordColumns, [
+      normalizeKeywordText(material),
+    ]);
   }
 
   if (!shouldUseBroadPlateZincLookup(query, material)) {
@@ -297,20 +292,13 @@ function addPriceQueryFilter(
       query.thicknessMm ?? (parsedKeyword.thicknessMm ? [parsedKeyword.thicknessMm] : undefined),
     );
 
-    addKeywordTermsFilter(
-      clauses,
-      values,
-      priceKeywordColumns,
-      parsedKeyword.terms,
-    );
+    addKeywordTermsFilter(clauses, values, priceKeywordColumns, parsedKeyword.terms);
   }
 
   return `(${clauses.join('\n    AND ')})`;
 }
 
-function getRelatedCuttingCriteria(
-  category: PriceCategory,
-): RelatedCuttingCriteria | undefined {
+function getRelatedCuttingCriteria(category: PriceCategory): RelatedCuttingCriteria | undefined {
   return relatedCuttingCriteriaByCategory[category];
 }
 
@@ -422,9 +410,7 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
   };
 }
 
-function toCategoryCandidate(
-  row: SteelPriceCategoryCandidateRow,
-): SteelPriceCategoryCandidate {
+function toCategoryCandidate(row: SteelPriceCategoryCandidateRow): SteelPriceCategoryCandidate {
   return {
     category: row.category,
     material: row.material,
@@ -448,7 +434,9 @@ export async function searchSteelPriceItems(
 
     const filters = [addPriceQueryFilter(values, query)];
     const relatedCuttingFilter = addRelatedCuttingQueryFilter(values, query);
-    where.push(`(${(relatedCuttingFilter ? [...filters, relatedCuttingFilter] : filters).join('\n  OR ')})`);
+    where.push(
+      `(${(relatedCuttingFilter ? [...filters, relatedCuttingFilter] : filters).join('\n  OR ')})`,
+    );
 
     values.push(getLimit(query.limit, 30));
     return `
@@ -489,9 +477,10 @@ LIMIT $${values.length}
     return [];
   }
 
-  const sql = selects.length === 1
-    ? selects[0]
-    : `
+  const sql =
+    selects.length === 1
+      ? selects[0]
+      : `
 SELECT *
 FROM (
 ${selects.map((select) => `(${select})`).join('\nUNION ALL\n')}
@@ -511,9 +500,7 @@ export async function discoverSteelPriceCategories(
   input: DiscoverSteelPriceCategoriesInput,
 ): Promise<SteelPriceCategoryCandidate[]> {
   const values: SteelSqlParameter[] = [input.reviewState ?? 'reviewed'];
-  const where = [
-    'review_state = $1',
-  ];
+  const where = ['review_state = $1'];
   addKeywordTermsFilter(
     where,
     values,

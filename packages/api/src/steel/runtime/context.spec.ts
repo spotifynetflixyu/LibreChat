@@ -283,7 +283,9 @@ function createRuntimeDependencies(
       sourcePriorityRules: [createAgentRule({ id: 62, slug: 'steel-source-priority' })],
       markdownOutputRules: [createAgentRule({ id: 63, slug: 'steel-markdown-output-policy' })],
     })),
-    readOutputSheetMemory: jest.fn(async (): Promise<SteelOutputSheetMemorySnapshot> => memorySnapshot),
+    readOutputSheetMemory: jest.fn(
+      async (): Promise<SteelOutputSheetMemorySnapshot> => memorySnapshot,
+    ),
   };
 }
 
@@ -413,13 +415,7 @@ describe('Steel runtime context', () => {
     const memorySnapshot = createRuntimeMemorySnapshot();
     memorySnapshot.derivedIndex.ocrExtracts = [ocrExtract];
 
-    const { context, dependencies } = await prepareContext(
-      [],
-      undefined,
-      [],
-      [],
-      memorySnapshot,
-    );
+    const { context, dependencies } = await prepareContext([], undefined, [], [], memorySnapshot);
 
     expect(context.attachments.priorActiveFileEvidence).toEqual([
       expect.objectContaining({
@@ -549,9 +545,7 @@ describe('Steel runtime context', () => {
 
     expect(context.attachments.currentOcrMarkdownResults).toEqual(currentOcrMarkdownResults);
     expect(serialized.attachments.currentOcrMarkdownResults).toEqual(currentOcrMarkdownResults);
-    expect(context.toolPolicy.currentOcrMarkdownUsagePolicy).toContain(
-      'currentOcrMarkdownResults',
-    );
+    expect(context.toolPolicy.currentOcrMarkdownUsagePolicy).toContain('currentOcrMarkdownResults');
     expect(serialized.toolPolicy.currentOcrMarkdownUsagePolicy).toContain(
       'currentOcrMarkdownResults',
     );

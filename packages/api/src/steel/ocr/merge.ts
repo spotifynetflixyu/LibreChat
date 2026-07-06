@@ -59,7 +59,9 @@ function mergeChunkMarkdownTables(chunks: readonly { chunkIndex: number; markdow
 
   const rows = tables.flatMap((table) =>
     table.rows.map((row) => {
-      const cellsByHeader = new Map(table.headers.map((header, index) => [header, row[index] ?? '']));
+      const cellsByHeader = new Map(
+        table.headers.map((header, index) => [header, row[index] ?? '']),
+      );
       return headers.map((header) => cellsByHeader.get(header) ?? '');
     }),
   );

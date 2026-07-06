@@ -99,7 +99,11 @@ function getStringProperty(value: unknown, key: string): string | undefined {
   return typeof property === 'string' ? property : undefined;
 }
 
-function getNestedStringProperty(value: unknown, key: string, nestedKey: string): string | undefined {
+function getNestedStringProperty(
+  value: unknown,
+  key: string,
+  nestedKey: string,
+): string | undefined {
   if (value == null || typeof value !== 'object') {
     return undefined;
   }
@@ -123,7 +127,9 @@ function extractContentText(content: unknown): string {
         return part;
       }
 
-      return getStringProperty(part, 'text') ?? getNestedStringProperty(part, 'text', 'value') ?? '';
+      return (
+        getStringProperty(part, 'text') ?? getNestedStringProperty(part, 'text', 'value') ?? ''
+      );
     })
     .join('');
 }
@@ -146,9 +152,7 @@ export function extractSteelNativeResponseOutputText(response: Pick<Response, 'o
         return '';
       }
 
-      return item.content
-        .map((part) => (part.type === 'output_text' ? part.text : ''))
-        .join('');
+      return item.content.map((part) => (part.type === 'output_text' ? part.text : '')).join('');
     })
     .join('');
 }

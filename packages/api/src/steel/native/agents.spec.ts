@@ -22,9 +22,7 @@ describe('Steel native agent context helpers', () => {
     });
 
     expect(agent.instructions).toBe('Steel global prefix\n\nBase instructions');
-    expect(agent.additional_instructions).toBe(
-      'Existing dynamic context\n\nSteel runtime tail',
-    );
+    expect(agent.additional_instructions).toBe('Existing dynamic context\n\nSteel runtime tail');
   });
 
   it('applies the same Steel context to every initialized run agent', () => {

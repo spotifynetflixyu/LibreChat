@@ -32,9 +32,7 @@ jest.mock('~/hooks/AuthContext', () => ({
 jest.mock('~/hooks/useLocalize', () => ({
   __esModule: true,
   default: () => (key: string) =>
-    key === 'com_ui_steel_file_ocr_default_prompt'
-      ? 'OCR檔案內容，逐一列表給我核對。'
-      : key,
+    key === 'com_ui_steel_file_ocr_default_prompt' ? 'OCR檔案內容，逐一列表給我核對。' : key,
 }));
 
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({

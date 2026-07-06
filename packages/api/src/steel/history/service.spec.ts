@@ -61,8 +61,7 @@ function createDeps() {
     findTurnByMessageId: jest.fn(async ({ conversationId, messageId, userId }) => {
       return (
         turns.find(
-          (turn) =>
-            matchesScope(turn, { conversationId, userId }) && turn.messageId === messageId,
+          (turn) => matchesScope(turn, { conversationId, userId }) && turn.messageId === messageId,
         ) ?? null
       );
     }),

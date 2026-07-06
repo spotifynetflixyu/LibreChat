@@ -742,24 +742,26 @@ type OpenAIOAuthGraph = {
   toolExecution?: Parameters<typeof resolveLocalToolsForBinding>[0]['toolExecution'];
 };
 
-function isOpenAIOAuthAgent(
-  agent: Pick<RunAgent, 'endpoint' | 'provider'> | undefined,
-): boolean {
-  return (
-    agent?.provider === openAIOAuthProvider || agent?.endpoint === openAIOAuthProvider
-  );
+function isOpenAIOAuthAgent(agent: Pick<RunAgent, 'endpoint' | 'provider'> | undefined): boolean {
+  return agent?.provider === openAIOAuthProvider || agent?.endpoint === openAIOAuthProvider;
 }
 
 function getRecordValue(record: Record<string, unknown> | undefined, key: string): unknown {
   return record ? record[key] : undefined;
 }
 
-function getStringValue(record: Record<string, unknown> | undefined, key: string): string | undefined {
+function getStringValue(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
   const value = getRecordValue(record, key);
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
-function getNumberValue(record: Record<string, unknown> | undefined, key: string): number | undefined {
+function getNumberValue(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined {
   const value = getRecordValue(record, key);
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -779,8 +781,7 @@ function getOpenAIOAuthModelOptions(agentInput: AgentInputs) {
 
   return {
     authFilePath:
-      getStringValue(clientOptions, 'authFilePath') ??
-      resolveOpenAIOAuthAuthFilePath(process.env),
+      getStringValue(clientOptions, 'authFilePath') ?? resolveOpenAIOAuthAuthFilePath(process.env),
     ensureFresh: getBooleanValue(clientOptions, 'ensureFresh'),
     frequencyPenalty: getNumberValue(clientOptions, 'frequencyPenalty'),
     maxOutputTokens:

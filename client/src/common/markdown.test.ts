@@ -134,7 +134,9 @@ describe('markdown table comments', () => {
   it('stores and restores pending markdown table comments by conversation id', () => {
     writeStoredMarkdownTableComments('conversation-a', [baseComment]);
 
-    expect(localStorage.getItem(getMarkdownTableCommentsStorageKey('conversation-a'))).not.toBeNull();
+    expect(
+      localStorage.getItem(getMarkdownTableCommentsStorageKey('conversation-a')),
+    ).not.toBeNull();
     expect(readStoredMarkdownTableComments('conversation-a')).toEqual([baseComment]);
     expect(readStoredMarkdownTableComments('conversation-b')).toEqual([]);
   });

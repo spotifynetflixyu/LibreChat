@@ -124,7 +124,8 @@ function createOutputSheetMemorySnapshot(): SteelOutputSheetMemorySnapshot {
         {
           filename: 'PL.pdf',
           page: 1,
-          markdown: '| 件號 | 規格 | 數量 | 孔數 / 件 |\n| --- | --- | ---: | ---: |\n| D3 | PL15*500 | 10 | 6 |',
+          markdown:
+            '| 件號 | 規格 | 數量 | 孔數 / 件 |\n| --- | --- | ---: | ---: |\n| D3 | PL15*500 | 10 | 6 |',
           confidence: 'high',
         },
       ],
@@ -207,11 +208,7 @@ describe('Steel minimal tool execution', () => {
   });
 
   it('does not expose internal tier ratios in price candidate output', async () => {
-    const client = createClient([
-      [
-        createPriceRow({ id: '12' }),
-      ],
-    ]);
+    const client = createClient([[createPriceRow({ id: '12' })]]);
 
     const result = await executeSteelTool({
       client,
@@ -267,13 +264,7 @@ describe('Steel minimal tool execution', () => {
     }
 
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual([
-      'reviewed',
-      '鐵板/鋼板',
-      '%黑鐵%',
-      '%OT板%',
-      5,
-    ]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '鐵板/鋼板', '%黑鐵%', '%OT板%', 5]);
     expect(client.calls[0]?.sql).not.toContain('customer_tier_id');
     expect(result.data.priceCandidates).toEqual([
       expect.objectContaining({
@@ -419,12 +410,7 @@ describe('Steel minimal tool execution', () => {
     }
 
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual([
-      'reviewed',
-      '%白鐵方管%',
-      '%75x45%',
-      5,
-    ]);
+    expect(client.calls[0]?.values).toEqual(['reviewed', '%白鐵方管%', '%75x45%', 5]);
     expect(result.data).toEqual(
       expect.objectContaining({
         categoryCandidates: [
@@ -574,13 +560,7 @@ describe('Steel minimal tool execution', () => {
       '型號',
       '品名規格',
     ]);
-    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual([
-      '',
-      '1',
-      '',
-      'CCG075',
-      '錏輕型鋼 75x45',
-    ]);
+    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['', '1', '', 'CCG075', '錏輕型鋼 75x45']);
     expect(tables[2]?.headers).toEqual(['項目', '說明', '小計']);
     expect(tables[2]?.rows[0]).toEqual(['', '', '536']);
   });
