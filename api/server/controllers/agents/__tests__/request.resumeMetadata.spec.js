@@ -25,6 +25,7 @@ const mockFilterPersistableAbortContent = jest.fn((content) =>
 );
 const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
+const mockSaveConvo = jest.fn();
 const mockSaveMessage = jest.fn();
 let mockMCPContexts = new WeakMap();
 
@@ -143,6 +144,7 @@ jest.mock('~/cache', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  saveConvo: (...args) => mockSaveConvo(...args),
   saveMessage: (...args) => mockSaveMessage(...args),
   getMessages: (...args) => mockGetMessages(...args),
   getConvo: (...args) => mockGetConvo(...args),
@@ -194,6 +196,7 @@ describe('ResumableAgentController resume metadata', () => {
     mockDecrementPendingRequest.mockResolvedValue(undefined);
     mockGetConvo.mockResolvedValue({ createdAt: '2026-06-07T00:00:00.000Z' });
     mockGetMessages.mockResolvedValue([]);
+    mockSaveConvo.mockResolvedValue({});
     mockGenerationJobManager.createJob.mockResolvedValue({
       createdAt: 1000,
       readyPromise: Promise.resolve(),
@@ -287,6 +290,94 @@ describe('ResumableAgentController resume metadata', () => {
       'user-123',
       conversationId,
     );
+  });
+
+  it('persists a new conversation shell before returning the generated stream id', async () => {
+    const initializeClient = jest.fn().mockRejectedValue(new Error('stop before tool loading'));
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'OCR this PDF before replying.',
+        messageId: 'file-user-message',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        endpointOption: {
+          endpoint: 'openai_oauth_responses',
+          iconURL: 'openai',
+          modelOptions: { model: 'gpt-5.5' },
+        },
+      },
+      config: {},
+    };
+    const res = createResumableResponse();
+
+    await AgentController(req, res, jest.fn(), initializeClient, null);
+
+    const { conversationId } = res.json.mock.calls[0][0];
+    expect(mockSaveConvo).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({
+        conversationId,
+        endpoint: 'openai_oauth_responses',
+        title: 'New Chat',
+        model: 'gpt-5.5',
+      }),
+      expect.objectContaining({
+        context: 'api/server/controllers/agents/request.js - preliminary conversation shell',
+        createdAtOnInsert: expect.any(Date),
+      }),
+    );
+    expect(mockSaveConvo.mock.invocationCallOrder[0]).toBeLessThan(
+      res.json.mock.invocationCallOrder[0],
+    );
+    expect(mockSaveConvo.mock.invocationCallOrder[0]).toBeLessThan(
+      initializeClient.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('keeps an already-generated title persistable when preflight later fails', async () => {
+    let titleParams;
+    const addTitle = jest.fn(async (_req, params) => {
+      titleParams = params;
+      await params.convoReady;
+    });
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      sendMessage: jest.fn(async (_text, messageOptions) => {
+        messageOptions.onStart(
+          {
+            messageId: 'file-user-message',
+            parentMessageId: '00000000-0000-0000-0000-000000000000',
+            conversationId: messageOptions.conversationId,
+            text: 'OCR this PDF before replying.',
+          },
+          'assistant-message',
+        );
+        throw new Error('preflight failed after title generation');
+      }),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'OCR this PDF before replying.',
+        messageId: 'file-user-message',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        endpointOption: {
+          endpoint: 'openai_oauth_responses',
+          modelOptions: { model: 'gpt-5.5' },
+        },
+      },
+      config: {},
+    };
+    const res = createResumableResponse();
+
+    await AgentController(req, res, jest.fn(), initializeClient, addTitle);
+    await waitForExpectation(() => {
+      expect(addTitle).toHaveBeenCalled();
+    });
+
+    expect(titleParams.discardSignal.aborted).toBe(false);
   });
 
   it('stores the in-flight turn before MCP initialization can emit OAuth', async () => {

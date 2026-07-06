@@ -91,6 +91,12 @@ const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
     .filter(Boolean)
     .join('');
 });
+const mockExtractSteelNativeResponseOutputText = jest.fn((response) =>
+  (response?.output ?? [])
+    .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+    .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+    .join(''),
+);
 const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
   const currentUserTurn = conversation.currentUserTurn
     ? { ...conversation.currentUserTurn, content: '' }
@@ -137,7 +143,7 @@ const mockBuildSteelNativeEventEnvelopes = jest.fn().mockReturnValue([
     event: 'steel_event',
     data: {
       type: 'memory_saved',
-      message: 'Working Order Memory saved',
+      message: 'Saved Working Order Memory',
       savedCounts: { ocr_extract: 1 },
       totalTableCounts: { ocr_table: 2 },
       source: 'responses_output',
@@ -182,6 +188,8 @@ jest.mock('@librechat/api', () => ({
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
   extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
+  extractSteelNativeResponseOutputText: (...args) =>
+    mockExtractSteelNativeResponseOutputText(...args),
   captureSteelNativeResponseOutput: (...args) => mockCaptureSteelNativeResponseOutput(...args),
   buildSteelNativeEventEnvelopes: (...args) => mockBuildSteelNativeEventEnvelopes(...args),
   buildSteelNativeResponseMessageMetadata: (...args) =>
@@ -671,6 +679,45 @@ describe('createResponse controller', () => {
               },
             },
           },
+        }),
+      );
+    });
+
+    it('saves normalized Open Responses text on the assistant message', async () => {
+      const api = require('@librechat/api');
+      const { saveMessage } = require('~/models');
+      api.buildAggregatedResponse.mockReturnValueOnce({
+        id: 'resp_123',
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'text', text: '## OCR 結果確認表\n\n| 頁 | 圖號 |\n' }],
+          },
+        ],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+
+      await createResponse(req, res);
+
+      const assistantMessage = saveMessage.mock.calls
+        .map((call) => call[1])
+        .find((message) => message.isCreatedByUser === false);
+      expect(mockExtractSteelNativeResponseOutputText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          output: expect.arrayContaining([
+            expect.objectContaining({
+              content: [{ type: 'text', text: '## OCR 結果確認表\n\n| 頁 | 圖號 |\n' }],
+            }),
+          ]),
+        }),
+      );
+      expect(assistantMessage).toEqual(
+        expect.objectContaining({
+          text: '## OCR 結果確認表\n\n| 頁 | 圖號 |\n',
         }),
       );
     });

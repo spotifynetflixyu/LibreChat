@@ -1,3 +1,135 @@
+# Active: Title Falls Back To New Chat After Preflight - 2026-07-06
+
+Goal: diagnose why OpenAI OAuth conversations still end up titled `New Chat`
+even when title generation runs after the conversation row exists.
+
+Diagnosis checklist:
+
+- [x] Confirm local Mongo title/message/transaction state for recent
+      `openai_oauth_responses` conversations.
+- [x] Inspect title-generation logs around recent requests.
+- [x] Reproduce the title race at the controller seam with a failing test.
+- [x] Fix the minimal title persistence / final-event ordering bug.
+- [x] Verify focused title/request tests, syntax, and diff hygiene.
+
+Hypotheses to test:
+
+- H1: immediate title generation writes the DB title after the final event has
+      already sent a stale `New Chat` conversation payload to the frontend.
+- H2: a later normal conversation save still writes `title: "New Chat"` and
+      overwrites the generated title.
+- H3: OpenAI OAuth title generation spends tokens but returns no title because
+      endpoint config lookup is missing.
+
+Review notes:
+
+- Local Mongo recent rows `0a12...` and `e222...` still have
+  `title: "New Chat"` while both have `context: "title"` transactions. This
+  means the title model ran, but the generated title did not become the durable
+  conversation title.
+- Logs show `No endpoint config for "openai_oauth_responses"` in
+  `AgentClient.titleConvo()`, but title transactions exist, so this warning is
+  not by itself proof that title generation skipped.
+- Root cause: after title generation finished, later preflight/send-message
+  failure aborted `titleDiscardController`, so `addTitle()` treated the
+  generated title as stale and skipped the `saveConvo({ title })` write.
+  Discard must be reserved for superseded/replaced streams only.
+- Fix: generic preflight/send-message failures still abort in-flight title
+  model calls, but no longer abort the discard signal. A title that already
+  generated can update the conversation shell even if the main turn fails.
+- Verification passed:
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js server/services/Endpoints/agents/title.test.js --runInBand --watch=false --coverage=false`
+  - `rtk node --check api/server/controllers/agents/request.js && rtk node --check api/server/services/Endpoints/agents/title.js`
+  - `rtk git diff --check`
+
+# Active: Conversation disappears after Steel preflight - 2026-07-06
+
+Goal: diagnose why duplicating a tab while a newly created OpenAI OAuth
+Responses conversation is running preflight leaves the duplicate tab at
+`/c/e2220c2a-c717-441b-9cbd-a554782fdf07` with `conversation not found`, after
+which the original tab's optimistic sidebar row disappears.
+
+Diagnosis checklist:
+
+- [x] Confirm the reported conversation state in local Mongo and message rows.
+- [x] Trace frontend `conversation not found` path for `/c/:conversationId`.
+- [x] Trace backend conversation creation/save/fetch/delete and any cleanup
+      paths connected to stop, preflight, aborted streams, or title jobs.
+- [x] Build a focused repro or regression seam before changing production code.
+- [x] Fix the root cause with minimal scope if reproducible.
+- [x] Verify with focused tests, original symptom check where possible, and
+      `git diff --check`.
+
+Hypotheses to test:
+
+- H1: preflight stop/cleanup treats the generated conversation id as disposable
+      and removes the row/navigation state after the backend created event.
+- H2: a final/error response path saves messages but fails to persist or later
+      overwrites the conversation row for `openai_oauth_responses`.
+- H3: title-generation or conversation-cache invalidation makes the frontend
+      query a conversation id before/after save and then removes it from local
+      state as missing.
+- H4: duplicate id/endpoint mismatch causes fetch to use a valid id with the
+      wrong endpoint/model filter, surfacing as not found.
+
+Review notes:
+
+- Local Mongo for `e2220c2a-c717-441b-9cbd-a554782fdf07` had no conversation
+  row and no messages, but did have title transactions. The duplicate tab's
+  404 was therefore backend truth, not a frontend-only false negative.
+- Root cause: the resumable agents controller returned the generated UUID and
+  stamped `/c/:id` before any conversation row existed. The row was only created
+  later through message/response persistence, after preflight/main response.
+- Fix: new conversations now save a preliminary conversation shell and resume
+  metadata before returning the generated stream id. Immediate title generation
+  can update that shell as soon as the title is generated instead of waiting for
+  the main response to finish.
+- Contract: send message generates the durable conversation id first; the
+  conversations collection must contain that row before automatic preflight
+  persists any conversation-bound OCR rows, and later title/message writes reuse
+  the same row.
+- Verification passed:
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js server/services/Endpoints/agents/title.test.js --runInBand --watch=false --coverage=false`
+  - `rtk node --check api/server/controllers/agents/request.js`
+  - `rtk git diff --check`
+
+# Active: Standalone user-message title generation - 2026-07-06
+
+Goal: make every provider generate conversation titles from the user message
+and conversation id without waiting for Steel OCR preflight, agent run
+initialization, tools, or the main assistant response.
+
+Design checklist:
+
+- [x] Confirmed product contract: title generation uses user message +
+      conversation id for all providers; final-mode should not wait for or use
+      assistant response content.
+- [x] Keep OCR/file title guidance model-driven: include attachment filename(s)
+      and the OCR/file-review title rule in the prompt, without hard
+      `preferredTitle` overrides.
+- [x] Add RED tests showing normal provider title generation works when
+      `client.run` is null and always sends empty `contentParts`.
+- [x] Add RED tests showing OpenAI OAuth no longer uses a separate
+      `generateOpenAIOAuthTitle` path but still receives OCR filename guidance.
+- [x] Implement a shared standalone title helper used by `AgentClient.titleConvo()`.
+- [x] Remove the OpenAI OAuth-specific title helper and update exports/tests.
+- [x] Verify focused Jest, package build if needed, syntax checks, and
+      `git diff --check`.
+
+Review notes:
+
+- The title job may run before the conversation row exists; existing
+  `convoReady` remains responsible for delaying persistent `saveConvo`.
+- Keep existing endpoint config behavior: `titleEndpoint`, `titleModel`,
+  `titleMethod`, `titlePrompt`, and `titlePromptTemplate` should still apply.
+- This change is scoped to title generation; long OCR/preflight remains valid
+  and should not block title creation.
+- Verification passed:
+  - `cd packages/api && npx jest src/steel/native/title.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd api && npx jest server/controllers/agents/client.test.js --runInBand --watch=false --coverage=false --testNamePattern "titleConvo"`
+  - `cd packages/api && npm run build`
+  - `git diff --check`
+
 # Active: Retry title generation while conversation title is New Chat - 2026-07-03
 
 Goal: after every user message, if the conversation still has the default
@@ -26,9 +158,10 @@ Review notes:
 - `Conversation.title` defaults to `New Chat` in Mongo, while final events may
   normalize missing titles to `null`; treat both as the same no-real-title
   state for this feature.
-- Keep OpenAI OAuth titles on `generateOpenAIOAuthTitle()` via existing
-  `AgentClient.titleConvo()`; do not add hard title overrides or new title
-  prompt behavior.
+- Superseded 2026-07-06: OpenAI OAuth now enters through shared
+  `generateTitle()` from `AgentClient.titleConvo()` like every provider; keep
+  the model-driven OCR filename guidance, but do not restore a dedicated
+  `generateOpenAIOAuthTitle()` path.
 
 Implementation review - 2026-07-03:
 
@@ -6945,3 +7078,149 @@ Verification:
 - [x] `rtk node --check api/server/services/MCP.js`
 - [x] `rtk node --check api/server/utils/stream.js`
 - [x] `rtk git diff --check`
+
+## Active: OCR Preflight Flow Analysis - 2026-07-06
+
+Goal: diagnose the BH.pdf preflight flow for conversation
+`33393cbb-37bf-41a9-8027-146b1f01f0ee`, fix the visible progress and final
+OCR Markdown capture gaps, and verify the flow with focused tests.
+
+- [x] Inspect the actual local Mongo conversation, assistant message, and
+      `steel_working_order_memory` rows for BH.pdf.
+- [x] Confirm whether raw PaddleOCR chunks and organized OCR Markdown chunks
+      are persisted separately and resumable.
+- [x] Trace how merged OCR Markdown is passed to the main agent.
+- [x] Replace matching `Running ...` OCR preprocessing activity rows with the
+      corresponding `Ran ...` row in the frontend activity state.
+- [x] Make Open Responses final assistant text extraction accept normalized
+      `{ type: "text" }` content as well as `output_text`.
+- [x] Remove header-gated OCR Markdown detection; treat final OCR Markdown as
+      official OCR Markdown, with explicit title file keys or `default`.
+- [x] Update AI-facing OCR/output rules so final OCR table titles carry
+      explicit `file:...` keys.
+- [x] Add focused regression tests.
+- [x] Run focused verification and record the review result.
+
+Review:
+
+- Local Mongo for conversation `33393cbb-37bf-41a9-8027-146b1f01f0ee`
+  showed 3 active `paddleocr_preflight` raw chunk rows and 3 active
+  `ocr_extract` organized chunk Markdown rows for BH.pdf. No official
+  `ocr_official_markdown` row existed for the final assistant response.
+- The assistant message had empty `text` but a populated normalized
+  `content: [{ type: "text", text: ... }]`, so Open Responses final capture
+  could miss the visible Markdown when only `output_text` was read.
+- The final OCR Markdown capture no longer uses table headers as OCR signals.
+  OCR-titled final Markdown is official OCR Markdown; PaddleOCR final responses
+  save every non-workbook table in that OCR response. A `file:...` key in the
+  table title binds that official Markdown to the file, and missing title keys
+  bind to `default`.
+- `docs/rules/其他規則/OCR規則.txt` and `docs/rules/輸出規則.txt` now require
+  explicit `file:...` in every OCR confirmation table title; row data or
+  standalone metadata lines are not enough for file binding.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/native/markdown.spec.ts src/steel/memory/service.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/responses.unit.spec.js --runInBand --watch=false --coverage=false`
+  - `rtk node --check api/server/controllers/agents/responses.js`
+  - `rtk node packages/api/scripts/sync-steel-rules.cjs --dry-run`
+  - `rtk git diff --check`
+- Full `packages/api` `service.spec.ts` now passes after updating stale
+  `ocr_extract` expectations to the current official `ocr_markdown` contract.
+
+## Active: OCR Preflight Streaming And Same-File Final Markdown - 2026-07-06
+
+Goal: keep OCR preprocessing as same-file-key merged source Markdown for the
+main agent, and make the main agent produce exactly one final OCR Markdown table
+per file key without backend/UI fake streaming.
+
+- [x] Rename the saved preflight activity from `PaddleOCR preflight saved` to
+      `Saved PaddleOCR preflight`.
+- [x] Revert the fake large-delta splitter; frontend/backend SSE preserves the
+      provider's text-delta granularity exactly.
+- [x] Keep the main-agent OCR preprocessing attachment as merged same-file-key
+      Markdown with the file-key marker, not a canonical final OCR title.
+- [x] Update OCR/output rules so the final main-agent OCR response outputs one
+      canonical OCR table per file key and never same-file chunk/page splits.
+- [x] Verify provider native streaming still uses `doStream`/`stream: true` and
+      add focused coverage for preserving provider delta granularity.
+- [x] Run focused backend/frontend verification plus rule sync and diff hygiene.
+
+Review:
+
+- User correction: if the provider returns a very large single text delta, send
+  that one delta to the frontend once. Do not split or pace it in LibreChat to
+  simulate streaming; diagnose/fix provider streaming at the source.
+- User correction: the canonical title
+  `OCR 結果確認表：<filename>（file:<id>）` belongs to the main agent's final OCR
+  Markdown output, not the preprocessing Markdown passed to the main agent.
+- The preprocessing handoff remains a per-file-key merged Markdown payload, and
+  rules now require the final answer to output exactly one OCR confirmation
+  table for each file key.
+- Verification passed:
+  - `rtk node --check api/server/controllers/agents/callbacks.js`
+  - `rtk node --check api/server/services/ToolService.js`
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/callbacks.spec.js --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/native/oauth.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/native/events.spec.ts src/steel/ocr/preprocess.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useSteelEventHandler.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - local `openai-oauth-provider` fake-fetch probe confirmed request body has
+    `stream: true`, `store: false`, and model `gpt-5.5`.
+  - `rtk node packages/api/scripts/sync-steel-rules.cjs --dry-run`
+  - `rtk node packages/api/scripts/sync-steel-rules.cjs --apply`
+  - `rtk env DOTENV_CONFIG_PATH=.env.prod node -r dotenv/config packages/api/scripts/sync-steel-rules.cjs --dry-run`
+  - `rtk env DOTENV_CONFIG_PATH=.env.prod node -r dotenv/config packages/api/scripts/sync-steel-rules.cjs --apply`
+  - `rtk git diff --check`
+  - `rtk git diff --cached --check`
+
+## Active: Final OCR Markdown Save And Timer Stability - 2026-07-06
+
+Goal: fix the post-completion message timer reset and ensure Steel only saves
+final official OCR Markdown, with explicit `file:...` title binding when
+present.
+
+- [x] Inspect the timer state path from streaming assistant placeholder to
+      completed assistant message and identify why elapsed time reanchors.
+- [x] Add a focused timer regression test that preserves the original turn
+      start/elapsed duration after the main agent finishes.
+- [x] Inspect final OCR Markdown capture and activity generation for the
+      reported conversation and current parser behavior.
+- [x] Add focused OCR regressions for skipping manual-review Markdown, binding
+      title `file:...` keys, and emitting `Save final OCR markdown`.
+- [x] Implement the minimal backend/frontend fixes.
+- [x] Run focused verification and record the review result.
+
+Review:
+
+- Timer root cause: while a message is still submitting, the elapsed timer
+  accepted a later server `createdAt` correction for the same assistant message.
+  When the final server message arrived with a near-completion timestamp, the
+  timer reanchored from the original turn start to that late timestamp.
+- Timer fix: once a non-user assistant timer has started, keep the earliest
+  resolved start timestamp for the same `timerKey`; completion freezes against
+  that original start instead of the final persisted message timestamp.
+- OCR root cause: final OCR capture promoted every non-workbook table after any
+  OCR-titled table in a PaddleOCR-derived response. That saved helper/manual
+  review sections such as `需你優先核對的項目` as `ocr_markdown`.
+- OCR fix: official OCR capture is now table-title-local: a table's own title
+  must contain `OCR`. Later non-OCR helper tables in the same response are not
+  saved as official OCR Markdown. Explicit `file:...` in the OCR title still
+  binds the row to that file key.
+- Existing stale active rows with `kind: ocr_official_markdown` but a non-OCR
+  title are ignored by OCR read/output summary paths, and the next official OCR
+  capture deletes those stale active rows for the conversation.
+- Local Mongo cleanup for the reported conversation
+  `e2220c2a-c717-441b-9cbd-a554782fdf07` superseded 1 stale non-OCR-title
+  official row; active official OCR Markdown now only has the BH.pdf
+  `file:3ff04e38-bd5e-4fb7-82ce-866ad49ce5b9` row.
+- Activity wording for official OCR saves is now `Save final OCR markdown`;
+  preprocessing chunk saves remain separate progress state.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/memory/service.spec.ts src/steel/native/events.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/components/Chat/Messages/ui/__tests__/MessageElapsedTimer.test.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - `rtk node --check api/server/controllers/agents/request.js && rtk node --check api/server/services/Endpoints/agents/title.js`
+  - `rtk git diff --check`

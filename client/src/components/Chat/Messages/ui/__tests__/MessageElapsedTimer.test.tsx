@@ -60,6 +60,42 @@ describe('MessageElapsedTimer', () => {
     expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('18s');
   });
 
+  it('does not shorten elapsed time when final server timestamps arrive late', () => {
+    jest.setSystemTime(1_080_000);
+    const { rerender } = render(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={0}
+        timerKey="assistant-1"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('18m 00s');
+
+    rerender(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={1_077_000}
+        timerKey="assistant-1"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('18m 00s');
+
+    rerender(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting={false}
+        startedAt={1_077_000}
+        timerKey="assistant-1"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('18m 00s');
+  });
+
   it('updates the start time when the same message receives a corrected timestamp', () => {
     jest.setSystemTime(20_000);
     const { rerender } = render(

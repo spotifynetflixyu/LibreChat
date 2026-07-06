@@ -142,6 +142,46 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
   });
 }
 
+function getOcrPreprocessingProgressState(event: SteelNativeActivityEvent):
+  | {
+      key: string;
+      state: 'running' | 'ran';
+    }
+  | undefined {
+  if (
+    event.source !== 'ocr_preprocessing' ||
+    event.type !== 'parse_status' ||
+    event.parseStatus !== 'partial'
+  ) {
+    return undefined;
+  }
+
+  const paddleOcrMatch =
+    /^(Running|Ran) paddleocr_vl in PaddleOCR \(chunk (\d+)\/(\d+)\) \((.*)\)$/u.exec(
+      event.message,
+    );
+  const organizerMatch =
+    /^(Running|Ran) OCR markdown process \(chunk (\d+)\/(\d+)\) \((.*)\)$/u.exec(event.message);
+  const match = paddleOcrMatch ?? organizerMatch;
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    key: JSON.stringify({
+      source: event.source,
+      conversationId: event.conversationId,
+      requestId: event.requestId,
+      messageId: event.messageId,
+      stage: paddleOcrMatch ? 'paddleocr' : 'organizer',
+      chunkIndex: match[2],
+      chunkCount: match[3],
+      file: match[4],
+    }),
+    state: match[1] === 'Ran' ? 'ran' : 'running',
+  };
+}
+
 export function appendSteelNativeActivityEvent(
   current: SteelNativeActivityEvent[],
   incoming: SteelNativeActivityEvent,
@@ -151,7 +191,16 @@ export function appendSteelNativeActivityEvent(
     return current;
   }
 
-  return [...current, incoming].slice(-MAX_STEEL_ACTIVITY_EVENTS);
+  const incomingProgress = getOcrPreprocessingProgressState(incoming);
+  const nextCurrent =
+    incomingProgress?.state === 'ran'
+      ? current.filter((event) => {
+          const progress = getOcrPreprocessingProgressState(event);
+          return progress?.key !== incomingProgress.key || progress.state !== 'running';
+        })
+      : current;
+
+  return [...nextCurrent, incoming].slice(-MAX_STEEL_ACTIVITY_EVENTS);
 }
 
 export default function useSteelEventHandler() {

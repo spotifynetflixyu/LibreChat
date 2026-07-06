@@ -11,7 +11,7 @@ const {
   payloadParser,
   createSafeUser,
   initializeAgent,
-  generateOpenAIOAuthTitle,
+  generateTitle,
   resolveConfigHeaders,
   countTokens,
   getBalanceConfig,
@@ -141,14 +141,13 @@ function appendTitleGuidance(titlePrompt, guidance) {
   return [titlePrompt, guidance].filter(Boolean).join('\n\n');
 }
 
-async function createTitleContext({ attachments, text }) {
+function createTitleContext({ attachments, text }) {
   if (!steelOcrReviewPromptPattern.test(text)) {
     return {};
   }
 
-  const resolvedAttachments = await Promise.resolve(attachments).catch(() => undefined);
-  const filenames = Array.isArray(resolvedAttachments)
-    ? [...new Set(resolvedAttachments.map(getAttachmentFilename).filter(Boolean))]
+  const filenames = Array.isArray(attachments)
+    ? [...new Set(attachments.map(getAttachmentFilename).filter(Boolean))]
     : [];
   if (filenames.length === 0) {
     return {};
@@ -1744,8 +1743,7 @@ class AgentClient extends BaseClient {
 
   /**
    * Resolves with the agent run once it is initialized, or `null` if
-   * initialization fails. Lets immediate-mode title generation await the run
-   * instead of throwing when fired before `chatCompletion` assigns `this.run`.
+   * initialization fails.
    * Rejects promptly if the provided signal aborts before the run is ready.
    * @param {AbortSignal} [signal]
    * @returns {Promise<AgentRun | null>}
@@ -1779,23 +1777,11 @@ class AgentClient extends BaseClient {
    * @param {Object} params
    * @param {string} params.text
    * @param {AbortController} params.abortController
-   * @param {boolean} [params.immediate] When true, the title is generated as soon
-   *   as the request is made — the run is awaited (instead of throwing) and the
-   *   title derives from the user's input only (`contentParts` is empty).
+   * @param {boolean} [params.immediate] Kept for callers that schedule title
+   *   generation before streaming completes. Titles always derive from the user's
+   *   input only (`contentParts` is empty).
    */
-  async titleConvo({ text, abortController, immediate = false }) {
-    if (!this.run) {
-      if (!immediate) {
-        throw new Error('Run not initialized');
-      }
-      await this._waitForRun(abortController?.signal);
-      if (!this.run) {
-        logger.debug(
-          '[api/server/controllers/agents/client.js #titleConvo] Run unavailable for immediate title generation',
-        );
-        return;
-      }
-    }
+  async titleConvo({ text, abortController }) {
     const { handleLLMEnd, collected: collectedMetadata } = createMetadataAggregator();
     const { req, agent } = this.options;
 
@@ -1859,19 +1845,37 @@ class AgentClient extends BaseClient {
       clientOptions.model = endpointConfig.titleModel;
     }
 
+    const titleContext = createTitleContext({
+      attachments: this.options.attachments,
+      text,
+    });
+    const titlePrompt = appendTitleGuidance(endpointConfig?.titlePrompt, titleContext.guidance);
+    const chainOptions = {
+      runName: 'TitleRun',
+      signal: abortController?.signal,
+      callbacks: [
+        {
+          handleLLMEnd,
+        },
+      ],
+      configurable: {
+        thread_id: this.conversationId,
+        user_id: this.user ?? this.options.req.user?.id,
+      },
+    };
+
     if (endpoint === EModelEndpoint.openAIOAuth) {
       try {
-        const titleContext = await createTitleContext({
-          attachments: this.options.attachments,
-          text,
-        });
-        const titleResult = await generateOpenAIOAuthTitle({
-          contentParts: immediate ? [] : this.contentParts,
+        const titleResult = await generateTitle({
+          endpoint,
+          provider: endpoint,
+          clientOptions,
+          contentParts: [],
           inputText: text,
-          model: clientOptions.model,
-          signal: abortController.signal,
-          titlePrompt: appendTitleGuidance(endpointConfig?.titlePrompt, titleContext.guidance),
+          titleMethod: endpointConfig?.titleMethod,
+          titlePrompt,
           titlePromptTemplate: endpointConfig?.titlePromptTemplate,
+          chainOptions,
         });
         const balanceConfig = getBalanceConfig(appConfig);
         const transactionsConfig = getTransactionsConfig(appConfig);
@@ -1978,57 +1982,48 @@ class AgentClient extends BaseClient {
     });
 
     try {
-      const titleResult = await this.run.generateTitle({
+      const titleResult = await generateTitle({
+        endpoint,
         provider,
         clientOptions,
         inputText: text,
-        contentParts: immediate ? [] : this.contentParts,
+        contentParts: [],
         titleMethod: endpointConfig?.titleMethod,
-        titlePrompt: endpointConfig?.titlePrompt,
+        titlePrompt,
         titlePromptTemplate: endpointConfig?.titlePromptTemplate,
-        chainOptions: {
-          runName: 'TitleRun',
-          signal: abortController.signal,
-          callbacks: [
-            {
-              handleLLMEnd,
-            },
-          ],
-          configurable: {
-            thread_id: this.conversationId,
-            user_id: this.user ?? this.options.req.user?.id,
-          },
-        },
+        chainOptions,
       });
 
-      const collectedUsage = collectedMetadata.map((item) => {
-        let input_tokens, output_tokens;
+      const collectedUsage = titleResult.usage
+        ? [titleResult.usage]
+        : collectedMetadata.map((item) => {
+            let input_tokens, output_tokens;
 
-        if (item.usage) {
-          input_tokens =
-            item.usage.prompt_tokens || item.usage.input_tokens || item.usage.inputTokens;
-          output_tokens =
-            item.usage.completion_tokens || item.usage.output_tokens || item.usage.outputTokens;
-        } else if (item.tokenUsage) {
-          input_tokens = item.tokenUsage.promptTokens;
-          output_tokens = item.tokenUsage.completionTokens;
-        } else if (item.usage_metadata) {
-          input_tokens = item.usage_metadata.input_tokens;
-          output_tokens = item.usage_metadata.output_tokens;
-        }
+            if (item.usage) {
+              input_tokens =
+                item.usage.prompt_tokens || item.usage.input_tokens || item.usage.inputTokens;
+              output_tokens =
+                item.usage.completion_tokens || item.usage.output_tokens || item.usage.outputTokens;
+            } else if (item.tokenUsage) {
+              input_tokens = item.tokenUsage.promptTokens;
+              output_tokens = item.tokenUsage.completionTokens;
+            } else if (item.usage_metadata) {
+              input_tokens = item.usage_metadata.input_tokens;
+              output_tokens = item.usage_metadata.output_tokens;
+            }
 
-        return {
-          input_tokens: input_tokens,
-          output_tokens: output_tokens,
-        };
-      });
+            return {
+              input_tokens: input_tokens,
+              output_tokens: output_tokens,
+            };
+          });
 
       const balanceConfig = getBalanceConfig(appConfig);
       const transactionsConfig = getTransactionsConfig(appConfig);
       await this.recordCollectedUsage({
         collectedUsage,
         context: 'title',
-        model: clientOptions.model,
+        model: titleResult.model ?? clientOptions.model,
         balance: balanceConfig,
         transactions: transactionsConfig,
         messageId: this.responseMessageId,

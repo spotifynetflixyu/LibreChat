@@ -1,5 +1,10 @@
 # Lessons
 
+- OCR preprocessing activity labels are user-visible contracts. Use verb-first
+  completed wording such as `Saved PaddleOCR preflight`, and keep
+  preprocessing Markdown as one merged same-file-key source block. The
+  canonical file-keyed OCR title belongs to the main agent's final OCR output,
+  not the preprocessing attachment.
 - When a user reports a visible regression after a recent change, first confirm
   whether the symptom predates the diff before attributing cause to the current
   patch. For title/UI issues, inspect existing DB rows, timestamps, cache/log
@@ -324,11 +329,11 @@
   canonical source refs/hashes against `steel.rules`, then use the existing
   `packages/api/scripts/sync-steel-rules.cjs` readback flow. Do not hand-edit
   individual rule rows.
-- Do not let `OpenAI (OAuth)` title generation use the normal
-  `run.generateTitle()` path. That path builds a fresh LLM from
-  provider/clientOptions and does not use the OpenAI OAuth graph override. Route
-  OAuth titles through the dedicated `generateOpenAIOAuthTitle()` helper so
-  title calls use `openai-oauth-provider` and do not require `OPENAI_API_KEY`.
+- Superseded 2026-07-06: title generation for every provider, including OpenAI
+  OAuth, must enter through shared `generateTitle()` using user message plus
+  conversation id. The helper may choose the OAuth transport internally, but
+  `AgentClient.titleConvo()` must not wait for a run or call a dedicated
+  `generateOpenAIOAuthTitle()` path.
 - Keep OpenAI OAuth transport/config/title/usage helper names free of the
   `Steel` prefix. Reserve `Steel` naming for quote/OCR/rules/runtime context,
   Markdown capture, auto-parse/save, and other steel-business modules. Existing
@@ -687,7 +692,7 @@
   subagent pass, and on resubmit resume from persisted `paddleocr_preflight` and
   `ocr_extract` state instead of rerunning OCR, organizer subagents, or
   parse/save for completed chunks.
-- OCR preprocessing must merge same-file-key chunk Markdown into one final
+- OCR preprocessing must merge same-file-key chunk Markdown into one source
   Markdown string before adding OCR content to main-agent
   `additional_instructions`; per-chunk Markdown rows are durable intermediate
   state, not main-agent context.
@@ -731,6 +736,21 @@
   must not remove the sidebar row or navigate back to `/c/new`; preserve the
   user message, persist it from the abort endpoint when needed, and only clean
   true `new`/`pending` placeholders.
+- Duplicate-tab during preflight exposes backend persistence windows. Once the
+  frontend can show `/c/<generated-id>`, the backend must already have upserted
+  a conversation shell and resume metadata for that id, and immediate title
+  generation should update that DB-backed shell rather than wait for the main
+  response to finish.
+- Automatic preflight artifacts are conversation-id bound data. After send
+  message generates the real conversation id and before preflight writes any
+  `paddleocr_preflight` / `ocr_extract` rows, the conversations collection must
+  already contain the corresponding row so every later title, preflight, and
+  message write has the same durable parent.
+- Do not conflate aborting in-flight title generation with discarding an
+  already-generated title. For generated conversation ids with a DB shell,
+  preflight/send-message failure may abort the title model call, but only a
+  superseded/replaced stream should abort the discard signal and prevent
+  `saveConvo({ title })`.
 - Preflight abort persistence must seed a complete displayable user message in
   `GenerationJobManager` metadata before client initialization finishes. Include
   uploaded file metadata such as `file_id`, `filename`, `filepath`, `type`, and
@@ -787,3 +807,34 @@
   complete organized chunk state before downloading/counting the PDF. Resume
   state can skip expensive file IO when the batch pipeline only needs to emit
   merged Markdown events.
+- OCR preprocessing progress should treat `Running ...` rows as live status.
+  When the matching `Ran ...` event arrives for the same file/chunk/stage,
+  replace the running row in activity state instead of keeping both.
+- Open Responses final assistant capture must read the normalized LibreChat
+  `{ type: "text", text }` output shape as well as spec-level `output_text`;
+  otherwise the chat can show assistant content while Steel Markdown capture
+  sees blank content and skips parse/save.
+- Final OCR Markdown is official OCR Markdown. Do not header-gate it: table
+  headers are AI-generated and not a stable detector. Save every final OCR
+  Markdown table, bind only an explicit `file:...` key in the table title to
+  that file key, and use `default` when the title has no file key.
+- Title generation must not wait for Steel OCR preflight, tool loading, agent
+  run initialization, or assistant response content. For all providers, build
+  the title from the user message plus conversation id and keep OCR/file title
+  filename guidance in the prompt instead of a separate OpenAI OAuth title path
+  or hard `preferredTitle` override.
+- Do not split or pace a provider's large text delta in LibreChat just to make
+  the UI look streamed. Preserve provider delta granularity exactly; if a turn
+  appears all at once, verify whether the provider `doStream` source emitted one
+  large delta or real incremental deltas before changing SSE/UI behavior.
+- OCR preprocessing Markdown passed to the main Steel agent is source context,
+  not final official OCR Markdown. Merge same-file-key chunks/tables for the
+  attachment, but put the canonical `OCR 結果確認表：filename（file:key）` title
+  requirement on the main agent's final OCR output and save path.
+- Final OCR Markdown capture is title-local. If a table's own title contains
+  `OCR`, save that table as official OCR Markdown; do not promote later
+  non-OCR helper/manual-review tables in the same response just because an
+  earlier OCR table existed.
+- Steel activity/event messages should start with the action verb. Prefer
+  `Saved Working Order Memory`, `Saved Markdown parse`, and `Saved PaddleOCR
+  preflight` over noun-first `... saved` wording.

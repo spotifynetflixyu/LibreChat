@@ -15,7 +15,7 @@
 3. OCR 辨識出 N 筆產品 / 材料列，就保留 N 列；不可先依厚度、品類、頁面或價格品名彙總。
 4. `孔數 / 件` 與 `總孔數` 必填；`總孔數` = 數量 × 每件孔數。孔數不明填「未確認」並列原因，不可只寫成備註。
 5. 可辨識的加工資訊要保留為欄位或加工表；使用者確認或修正前，不輸出正式報價表。
-6. 多個 PDF / image / OCR file key 不得合併成同一張 OCR 確認表；每個 file key / 來源檔案各自輸出 OCR Markdown 表格，表格標題或列資料須保留來源檔案 / file key。
+6. 多個 PDF / image / OCR file key 不得合併成同一張 OCR 確認表；每個 file key / 來源檔案各自輸出一張 OCR Markdown 表格。同一 file key 的所有 OCR Markdown 內容必須合併成單一 final OCR 確認表，不得依 chunk、頁碼區間或同一 file key 分段輸出多張表。每張 OCR 確認表的 Markdown 標題必須包含明確 `file:...`，例如 `## OCR 結果確認表：BH.pdf（file:<id>）`。不得只把 file key 放在列資料、備註或獨立 metadata line。標題沒有 `file:...` 的 final OCR Markdown 會歸入 `default`。
 
 四、報價輸出格式
 
@@ -35,7 +35,7 @@
 6. 加工列使用加工 price row 的 `型號` / `品名規格` / `類別` / `單位` / `單價`；`數量` 與 `總數` 填孔數、刀數、折數、切工次數、開槽長度或加工件數；低信心或無單價仍保留列並填「未確認」。
 7. 次輪報價必須把已確認 `總孔數` 加入獨立孔加工列；若分組，所有孔加工列數量合計必須等於已確認 `總孔數` 合計。
 8. `項次` 採主項 / 次項：材料主項為 10、20、30；附屬加工為 11、12、21、22。
-9. 若 `system_order` 來源是 OCR 確認資料，必須依同一 OCR file key / 來源檔案分開輸出 `system_order` Markdown 表格；不同 file key 不得混在同一張 `system_order`。表格標題須保留來源檔案 / file key，但表格欄位仍只能使用固定 ERP 欄位，不得新增 `ocrFileKey` 欄。
+9. 若 `system_order` 來源是 OCR 確認資料，必須依同一 OCR file key / 來源檔案分開輸出 `system_order` Markdown 表格；不同 file key 不得混在同一張 `system_order`。表格標題須保留來源檔案與明確 `file:...`，但表格欄位仍只能使用固定 ERP 欄位，不得新增 `ocrFileKey` 欄。
 10. 若 `system_order` 不是來自 OCR file key（例如純文字訂單、人工輸入、一般聊天文字），所有此類資料合併到單一 default `system_order` 表格。
 
 `customer_data`：

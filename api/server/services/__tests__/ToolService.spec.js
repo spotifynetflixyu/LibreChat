@@ -57,7 +57,7 @@ const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
     data: {
       type: 'memory_saved',
       source: 'paddleocr_preflight',
-      message: 'PaddleOCR preflight saved',
+      message: 'Saved PaddleOCR preflight',
       savedCounts: { paddleocr_preflight: 1 },
     },
   },
@@ -2373,7 +2373,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.arrayContaining([
           'Running paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)',
           'Ran paddleocr_vl in PaddleOCR (chunk 1/1) (file:file-bh)',
-          'PaddleOCR preflight saved (chunk 1/1) (file:file-bh)',
+          'Saved PaddleOCR preflight (chunk 1/1) (file:file-bh)',
           'Running OCR markdown process (chunk 1/1) (file:file-bh)',
           'Ran OCR markdown process (chunk 1/1) (file:file-bh)',
           'Saved OCR markdown (chunk 1/1) (file:file-bh)',
@@ -2432,7 +2432,8 @@ describe('ToolService - Action Capability Gating', () => {
             organizedSaved: true,
             rawResultHash: 'hash-1',
             rawOcrText: 'raw 1',
-            organizedMarkdown: '| 品名 | 數量 |\n|---|---|\n| A | 1 |',
+            organizedMarkdown:
+              '## BH.pdf OCR 結果確認表｜第 1～50 頁\n\n| 品名 | 數量 |\n|---|---|\n| A | 1 |',
           },
           {
             chunkIndex: 2,
@@ -2444,7 +2445,8 @@ describe('ToolService - Action Capability Gating', () => {
             organizedSaved: true,
             rawResultHash: 'hash-2',
             rawOcrText: 'raw 2',
-            organizedMarkdown: '| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
+            organizedMarkdown:
+              '## BH.pdf OCR 結果確認表｜第 51～100 頁\n\n| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
           },
         ],
       });
@@ -2467,6 +2469,8 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockCaptureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
       expect(output.content).toContain('<file:file-bh>');
       expect(output.content).toContain('| 品名 | 數量 | 材質 |');
+      expect(output.content).not.toContain('第 1～50 頁');
+      expect(output.content).not.toContain('第 51～100 頁');
       expect(output.content).not.toContain('RAW OCR RESULT');
 
       const steelEventMessages = mockEmitChunk.mock.calls

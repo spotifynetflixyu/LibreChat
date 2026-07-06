@@ -45,7 +45,7 @@ describe('useSteelEventHandler', () => {
             source: 'assistant_markdown',
             conversationId: 'conversation-1',
             messageId: 'assistant-2',
-            message: 'Markdown parse saved',
+            message: 'Saved Markdown parse',
             parseStatus: 'saved',
             savedCounts: { working_order_row: 2 },
             savedTableCounts: { system_order_table: 1 },
@@ -91,7 +91,7 @@ describe('useSteelEventHandler', () => {
             source: 'assistant_markdown',
             conversationId: 'conversation-1',
             messageId: 'assistant-saved',
-            message: 'Markdown parse saved',
+            message: 'Saved Markdown parse',
             parseStatus: 'saved',
             savedCounts: { working_order_row: 1 },
           },
@@ -127,7 +127,7 @@ describe('useSteelEventHandler', () => {
             requestId: 'request-1',
             toolName: 'run_file_ocr',
             providerToolCallId: 'call-ocr',
-            message: 'Working Order Memory saved',
+            message: 'Saved Working Order Memory',
             savedCounts: { paddleocr_preflight: 1 },
           },
         },
@@ -160,7 +160,7 @@ describe('useSteelEventHandler', () => {
             source: 'paddleocr_preflight',
             conversationId: 'conversation-1',
             requestId: 'request-1',
-            message: 'PaddleOCR preflight saved',
+            message: 'Saved PaddleOCR preflight',
             savedCounts: { ocr_extract: 1 },
           },
         },
@@ -177,7 +177,7 @@ describe('useSteelEventHandler', () => {
     ]);
   });
 
-  it('stores OCR preprocessing progress events and keeps distinct messages', () => {
+  it('stores OCR preprocessing progress events and replaces matching running messages', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
       wrapper: RecoilRoot,
     });
@@ -210,7 +210,7 @@ describe('useSteelEventHandler', () => {
       {
         ...progressEventBase,
         type: 'memory_saved' as const,
-        message: 'PaddleOCR preflight saved (chunk 1/4) (file:BH.pdf)',
+        message: 'Saved PaddleOCR preflight (chunk 1/4) (file:BH.pdf)',
         savedCounts: { paddleocr_preflight: 1 },
       },
       {
@@ -259,10 +259,8 @@ describe('useSteelEventHandler', () => {
 
     expect(result.current.activity.map((event) => event.message)).toEqual([
       'Uploaded pdf to S3 (163 pages / 4 chunks) (file:BH.pdf)',
-      'Running paddleocr_vl in PaddleOCR (chunk 1/4) (file:BH.pdf)',
       'Ran paddleocr_vl in PaddleOCR (chunk 1/4) (file:BH.pdf)',
-      'PaddleOCR preflight saved (chunk 1/4) (file:BH.pdf)',
-      'Running OCR markdown process (chunk 1/4) (file:BH.pdf)',
+      'Saved PaddleOCR preflight (chunk 1/4) (file:BH.pdf)',
       'Ran OCR markdown process (chunk 1/4) (file:BH.pdf)',
       'Saved OCR markdown (chunk 1/4) (file:BH.pdf)',
       'Read OCR markdowns (file:BH.pdf: 4 chunks)',
@@ -311,7 +309,7 @@ describe('useSteelEventHandler', () => {
         source: 'assistant_markdown' as const,
         conversationId: 'conversation-1',
         messageId: 'assistant-1',
-        message: 'Working Order Memory saved',
+        message: 'Saved Working Order Memory',
         savedCounts: { working_order_row: 2 },
       },
     };
@@ -334,7 +332,7 @@ describe('useSteelEventHandler', () => {
     const first: SteelNativeActivityEvent = {
       type: 'memory_saved',
       source: 'assistant_markdown',
-      message: 'Working Order Memory saved',
+      message: 'Saved Working Order Memory',
       messageId: 'assistant-1',
       savedCounts: { working_order_row: 1 },
       totalTableCounts: { system_order_table: 1 },
@@ -351,6 +349,40 @@ describe('useSteelEventHandler', () => {
 
     expect(activity).toHaveLength(2);
     expect(activity[1]?.totalTableCounts).toEqual({ system_order_table: 2 });
+  });
+
+  it('replaces OCR preprocessing running progress with matching completed progress', () => {
+    const base = {
+      type: 'parse_status' as const,
+      source: 'ocr_preprocessing' as const,
+      conversationId: 'conversation-1',
+      requestId: 'request-1',
+      messageId: 'assistant-1',
+      parseStatus: 'partial' as const,
+    };
+    const activity = [
+      {
+        ...base,
+        message: 'Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+      },
+      {
+        ...base,
+        message: 'Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+      },
+      {
+        ...base,
+        message: 'Running OCR markdown process (chunk 1/3) (file:BH.pdf)',
+      },
+      {
+        ...base,
+        message: 'Ran OCR markdown process (chunk 1/3) (file:BH.pdf)',
+      },
+    ].reduce<SteelNativeActivityEvent[]>(appendSteelNativeActivityEvent, []);
+
+    expect(activity.map((event) => event.message)).toEqual([
+      'Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
+      'Ran OCR markdown process (chunk 1/3) (file:BH.pdf)',
+    ]);
   });
 
   it('retains more than twelve activity events for long Steel turns', () => {
@@ -383,7 +415,7 @@ describe('useSteelEventHandler', () => {
             source: 'assistant_markdown',
             conversationId: 'conversation-1',
             messageId: 'assistant-1',
-            message: 'Working Order Memory saved',
+            message: 'Saved Working Order Memory',
             savedCounts: { working_order_row: Number.NaN },
           },
         },

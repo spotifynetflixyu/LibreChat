@@ -626,7 +626,7 @@ describe('useResumableSSE - 404 error path', () => {
         conversationId: CONV_ID,
         toolName: 'run_file_ocr',
         providerToolCallId: 'call-ocr',
-        message: 'Working Order Memory saved',
+        message: 'Saved Working Order Memory',
         savedCounts: { ocr_extract: 1 },
       },
     };

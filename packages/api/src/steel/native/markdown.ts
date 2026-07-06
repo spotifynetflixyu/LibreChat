@@ -134,6 +134,15 @@ function extractContentText(content: unknown): string {
     .join('');
 }
 
+function extractOutputContentText(part: unknown): string {
+  const type = getStringProperty(part, 'type');
+  if (type !== 'output_text' && type !== 'text') {
+    return '';
+  }
+
+  return getStringProperty(part, 'text') ?? '';
+}
+
 export function extractSteelNativeMarkdownText({
   text,
   content,
@@ -152,7 +161,7 @@ export function extractSteelNativeResponseOutputText(response: Pick<Response, 'o
         return '';
       }
 
-      return item.content.map((part) => (part.type === 'output_text' ? part.text : '')).join('');
+      return item.content.map(extractOutputContentText).join('');
     })
     .join('');
 }

@@ -92,6 +92,28 @@ describe('Steel native Markdown adapter', () => {
     ).toBe('| 項次 | 品名 |\n| 1 | 鋼板 |\n');
   });
 
+  it('extracts Markdown text from normalized Open Responses text parts', () => {
+    expect(
+      extractSteelNativeResponseOutputText(
+        createResponse({
+          id: 'resp_1',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                { type: 'text', text: '| 頁 | 圖號 |\n' },
+                { type: 'text', text: '| 1 | A-001 |\n' },
+              ] as never,
+            },
+          ],
+        }),
+      ),
+    ).toBe('| 頁 | 圖號 |\n| 1 | A-001 |\n');
+  });
+
   it('captures stored Open Responses output after message persistence metadata is known', async () => {
     const captureAssistantFinalMarkdown = jest.fn(
       async (

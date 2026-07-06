@@ -29,7 +29,7 @@ jest.mock('@librechat/api', () => ({
   checkAccess: jest.fn(),
   countFormattedMessageTokens: jest.fn(() => 42),
   countTokens: jest.fn((text) => Math.ceil(String(text ?? '').length / 4)),
-  generateOpenAIOAuthTitle: jest.fn(),
+  generateTitle: jest.fn(),
   buildDefaultSteelGlobalAgentContext: jest.fn(),
   prepareLibreChatSteelChatContext: jest.fn((conversation) => {
     const toReference = (message) =>
@@ -105,6 +105,9 @@ describe('AgentClient - titleConvo', () => {
   beforeEach(() => {
     // Reset all mocks
     jest.clearAllMocks();
+    require('@librechat/api').generateTitle.mockResolvedValue({
+      title: 'Generated Title',
+    });
     require('@librechat/api').buildDefaultSteelGlobalAgentContext.mockResolvedValue({
       instructionPrefix: '',
       runtimeContextText: '',
@@ -181,26 +184,32 @@ describe('AgentClient - titleConvo', () => {
   });
 
   describe('titleConvo method', () => {
-    it('should throw error if run is not initialized', async () => {
+    it('generates a title without an initialized run', async () => {
       client.run = null;
 
-      await expect(
-        client.titleConvo({ text: 'Test', abortController: new AbortController() }),
-      ).rejects.toThrow('Run not initialized');
+      const result = await client.titleConvo({
+        text: 'Test',
+        abortController: new AbortController(),
+      });
+
+      expect(result).toBe('Generated Title');
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inputText: 'Test',
+          contentParts: [],
+        }),
+      );
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
     });
 
-    it('waits for the run in immediate mode instead of throwing', async () => {
+    it('does not wait for the run in immediate mode', async () => {
       client.run = null;
       const abortController = new AbortController();
 
-      const titlePromise = client.titleConvo({ text: 'Test', abortController, immediate: true });
+      await client.titleConvo({ text: 'Test', abortController, immediate: true });
 
-      // Simulate `chatCompletion` assigning the run (client.js: `this.run = run`).
-      client.run = mockRun;
-      client._resolveRun(mockRun);
-
-      await titlePromise;
-      expect(mockRun.generateTitle).toHaveBeenCalled();
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalled();
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
     });
 
     it('passes empty contentParts in immediate mode (title from the user input only)', async () => {
@@ -209,29 +218,36 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text: 'Hello there', abortController, immediate: true });
 
-      const call = mockRun.generateTitle.mock.calls[0][0];
+      const call = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(call.contentParts).toEqual([]);
       expect(call.inputText).toBe('Hello there');
     });
 
-    it('uses live contentParts in non-immediate (final) mode', async () => {
+    it('passes empty contentParts in non-immediate mode', async () => {
       client.contentParts = [{ type: 'text', text: 'Full response' }];
       const abortController = new AbortController();
 
       await client.titleConvo({ text: 'Hello there', abortController });
 
-      const call = mockRun.generateTitle.mock.calls[0][0];
-      expect(call.contentParts).toEqual([{ type: 'text', text: 'Full response' }]);
+      const call = require('@librechat/api').generateTitle.mock.calls[0][0];
+      expect(call.contentParts).toEqual([]);
+      expect(call.inputText).toBe('Hello there');
     });
 
-    it('rejects promptly when aborted before the run initializes in immediate mode', async () => {
+    it('passes the abort signal to standalone title generation without waiting for run', async () => {
       client.run = null;
       const abortController = new AbortController();
       abortController.abort();
 
-      await expect(
-        client.titleConvo({ text: 'Test', abortController, immediate: true }),
-      ).rejects.toThrow('Aborted before run initialization');
+      await client.titleConvo({ text: 'Test', abortController, immediate: true });
+
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chainOptions: expect.objectContaining({
+            signal: abortController.signal,
+          }),
+        }),
+      );
       expect(mockRun.generateTitle).not.toHaveBeenCalled();
     });
 
@@ -241,7 +257,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePrompt: 'Custom title prompt',
         }),
@@ -254,7 +270,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePromptTemplate: 'Template: {{content}}',
         }),
@@ -267,7 +283,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: Providers.OPENAI,
           titleMethod: 'structured',
@@ -282,7 +298,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Check that generateTitle was called with correct clientOptions
-      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-3.5-turbo');
     });
 
@@ -317,7 +333,8 @@ describe('AgentClient - titleConvo', () => {
         await anthropicClient.titleConvo({ text: 'Hello', abortController: new AbortController() });
 
         const defaultHeaders =
-          mockRun.generateTitle.mock.calls[0][0].clientOptions?.clientOptions?.defaultHeaders;
+          require('@librechat/api').generateTitle.mock.calls[0][0].clientOptions?.clientOptions
+            ?.defaultHeaders;
         // Custom header survives the `omitTitleOptions` strip and resolves the conversationId
         expect(defaultHeaders?.['X-Conversation-Id']).toBe('convo-123');
         // Provider-managed beta header is preserved alongside it
@@ -340,7 +357,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePrompt: undefined,
           titlePromptTemplate: undefined,
@@ -367,7 +384,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4'); // Should use agent's model
     });
 
@@ -388,7 +405,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4'); // Should use agent's model
     });
 
@@ -398,10 +415,11 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockRun.generateTitle).toHaveBeenCalledWith({
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith({
+        endpoint: EModelEndpoint.openAI,
         provider: expect.any(String),
         inputText: text,
-        contentParts: client.contentParts,
+        contentParts: [],
         clientOptions: expect.objectContaining({
           model: 'gpt-3.5-turbo',
         }),
@@ -445,7 +463,7 @@ describe('AgentClient - titleConvo', () => {
 
     it('should sanitize the generated title by removing think blocks', async () => {
       const titleWithThinkBlock = '<think>reasoning about the title</think> User Hi Greeting';
-      mockRun.generateTitle.mockResolvedValue({
+      require('@librechat/api').generateTitle.mockResolvedValue({
         title: titleWithThinkBlock,
       });
 
@@ -462,7 +480,7 @@ describe('AgentClient - titleConvo', () => {
 
     it('should return fallback title when sanitization results in empty string', async () => {
       const titleOnlyThinkBlock = '<think>only reasoning no actual title</think>';
-      mockRun.generateTitle.mockResolvedValue({
+      require('@librechat/api').generateTitle.mockResolvedValue({
         title: titleOnlyThinkBlock,
       });
 
@@ -476,7 +494,9 @@ describe('AgentClient - titleConvo', () => {
     });
 
     it('should handle errors gracefully and return undefined', async () => {
-      mockRun.generateTitle.mockRejectedValue(new Error('Title generation failed'));
+      require('@librechat/api').generateTitle.mockRejectedValue(
+        new Error('Title generation failed'),
+      );
 
       const text = 'Test conversation text';
       const abortController = new AbortController();
@@ -509,13 +529,13 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockRun.generateTitle).not.toHaveBeenCalled();
+      expect(require('@librechat/api').generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
     });
 
-    it('uses OpenAI OAuth title generation for OpenAI OAuth endpoint', async () => {
+    it('uses shared title generation for OpenAI OAuth endpoint', async () => {
       mockAgent.endpoint = EModelEndpoint.openAIOAuth;
       mockAgent.provider = EModelEndpoint.openAIOAuth;
       mockReq.config = {
@@ -527,7 +547,7 @@ describe('AgentClient - titleConvo', () => {
           },
         },
       };
-      require('@librechat/api').generateOpenAIOAuthTitle.mockResolvedValueOnce({
+      require('@librechat/api').generateTitle.mockResolvedValueOnce({
         model: 'gpt-5.5',
         title: 'PL OCR Review',
         usage: {
@@ -542,11 +562,14 @@ describe('AgentClient - titleConvo', () => {
       });
 
       expect(result).toBe('PL OCR Review');
-      expect(require('@librechat/api').generateOpenAIOAuthTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
-          contentParts: client.contentParts,
+          endpoint: EModelEndpoint.openAIOAuth,
+          contentParts: [],
           inputText: 'Test conversation text',
-          model: 'gpt-5.5',
+          clientOptions: expect.objectContaining({
+            model: 'gpt-5.5',
+          }),
           titlePrompt: 'Custom OAuth title prompt',
           titlePromptTemplate: 'OAuth template: {{content}}',
         }),
@@ -566,11 +589,11 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
-    it('passes the current OCR filename and title rule to OpenAI OAuth title generation', async () => {
+    it('passes the current OCR filename and title rule to shared title generation', async () => {
       mockAgent.endpoint = EModelEndpoint.openAIOAuth;
       mockAgent.provider = EModelEndpoint.openAIOAuth;
       client.options.attachments = [{ filename: 'PL.pdf' }];
-      require('@librechat/api').generateOpenAIOAuthTitle.mockResolvedValueOnce({
+      require('@librechat/api').generateTitle.mockResolvedValueOnce({
         model: 'gpt-5.5',
         title: 'PL.pdf 內容核對',
         usage: {
@@ -586,16 +609,58 @@ describe('AgentClient - titleConvo', () => {
       });
 
       expect(result).toBe('PL.pdf 內容核對');
-      expect(require('@librechat/api').generateOpenAIOAuthTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
+          endpoint: EModelEndpoint.openAIOAuth,
           contentParts: [],
           inputText: 'OCR檔案內容，逐一列表給我核對。',
           titlePrompt: expect.stringContaining('File name(s): PL.pdf'),
         }),
       );
-      expect(require('@librechat/api').generateOpenAIOAuthTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePrompt: expect.stringContaining('Example: "PL.pdf 內容核對"'),
+        }),
+      );
+    });
+
+    it('passes OCR filename guidance to shared title generation for regular providers', async () => {
+      client.options.attachments = [{ filename: 'PL.pdf' }];
+
+      await client.titleConvo({
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        abortController: new AbortController(),
+      });
+
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: EModelEndpoint.openAI,
+          contentParts: [],
+          inputText: 'OCR檔案內容，逐一列表給我核對。',
+          titlePrompt: expect.stringContaining('File name(s): PL.pdf'),
+        }),
+      );
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          titlePrompt: expect.stringContaining('Example: "PL.pdf 內容核對"'),
+        }),
+      );
+    });
+
+    it('does not await pending attachments while generating OCR titles', async () => {
+      client.options.attachments = new Promise(() => {});
+
+      const result = await client.titleConvo({
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        abortController: new AbortController(),
+      });
+
+      expect(result).toBe('Generated Title');
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contentParts: [],
+          inputText: 'OCR檔案內容，逐一列表給我核對。',
+          titlePrompt: 'Custom title prompt',
         }),
       );
     });
@@ -613,7 +678,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockRun.generateTitle).not.toHaveBeenCalled();
+      expect(require('@librechat/api').generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -642,7 +707,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockRun.generateTitle).not.toHaveBeenCalled();
+      expect(require('@librechat/api').generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -703,7 +768,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockRun.generateTitle).not.toHaveBeenCalled();
+      expect(require('@librechat/api').generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -733,7 +798,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify generateTitle was called with the custom configuration
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titleMethod: 'structured',
           provider: Providers.ANTHROPIC,
@@ -769,7 +834,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify generateTitle was called with 'all' config values
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titleMethod: 'completion',
           titlePrompt: 'All config title prompt',
@@ -778,7 +843,7 @@ describe('AgentClient - titleConvo', () => {
       );
 
       // Check that the model was set from 'all' config
-      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
     });
 
@@ -807,7 +872,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify 'all' config takes precedence over endpoint config
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titleMethod: 'completion',
           titlePrompt: 'All config title prompt',
@@ -816,7 +881,7 @@ describe('AgentClient - titleConvo', () => {
       );
 
       // Check that the model was set from 'all' config
-      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
     });
 
@@ -845,19 +910,19 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify all config values were used
-      expect(mockRun.generateTitle).toHaveBeenCalledWith(
+      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: Providers.ANTHROPIC, // Critical: Verify provider switched to Anthropic
           titleMethod: 'completion',
           titlePrompt: 'Generate a concise, descriptive title for this conversation',
           titlePromptTemplate: 'Conversation summary: {{content}}',
           inputText: text,
-          contentParts: client.contentParts,
+          contentParts: [],
         }),
       );
 
       // Verify the model was set from 'all' config
-      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('claude-3-haiku-20240307');
 
       // Verify other client options are set correctly
@@ -880,7 +945,7 @@ describe('AgentClient - titleConvo', () => {
 
       for (const method of titleMethods) {
         // Clear previous calls
-        mockRun.generateTitle.mockClear();
+        require('@librechat/api').generateTitle.mockClear();
 
         // Set 'all' config with specific titleMethod
         mockReq.config = {
@@ -900,7 +965,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify the correct titleMethod was used
-        expect(mockRun.generateTitle).toHaveBeenCalledWith(
+        expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             titleMethod: method,
             titlePrompt: `Testing ${method} method`,
@@ -975,7 +1040,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify provider was switched to OPENAI for serverless
-        expect(mockRun.generateTitle).toHaveBeenCalledWith(
+        expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.OPENAI, // Should be OPENAI for serverless
             titleMethod: 'completion',
@@ -1026,7 +1091,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify provider remains AZURE with instanceName
-        expect(mockRun.generateTitle).toHaveBeenCalledWith(
+        expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.AZURE,
             titleMethod: 'structured',
@@ -1079,7 +1144,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify it uses the correct model when titleModel is CURRENT_MODEL
-        const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+        const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
         // When CURRENT_MODEL is used with Azure, the model gets mapped to the deployment name
         // In this case, 'gpt-4o-latest' is mapped to 'gpt-4o-mini' deployment
         expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
@@ -1157,14 +1222,14 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify correct model and provider are used
-        expect(mockRun.generateTitle).toHaveBeenCalledWith(
+        expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.AZURE,
             titleMethod: 'completion',
           }),
         );
 
-        const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+        const generateTitleCall = require('@librechat/api').generateTitle.mock.calls[0][0];
         expect(generateTitleCall.clientOptions.model).toBe('o1-mini');
         expect(generateTitleCall.clientOptions.maxTokens).toBeUndefined(); // o1 models shouldn't have maxTokens
       });
@@ -1214,7 +1279,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify all config is used
-        expect(mockRun.generateTitle).toHaveBeenCalledWith(
+        expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.OPENAI, // Should be OPENAI when no instanceName
             titleMethod: 'structured',

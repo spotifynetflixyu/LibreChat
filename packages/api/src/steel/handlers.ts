@@ -613,6 +613,16 @@ function hasSavedMemory(savedCounts: { [key: string]: number }) {
   return Object.values(savedCounts).some((count) => count > 0);
 }
 
+function getMarkdownParseMessage(parseStatus: 'saved' | 'partial' | 'skipped') {
+  if (parseStatus === 'saved') {
+    return 'Saved Markdown parse';
+  }
+  if (parseStatus === 'partial') {
+    return 'Partially parsed Markdown';
+  }
+  return 'Skipped Markdown parse';
+}
+
 async function captureSuccessfulToolResult({
   conversationId,
   providerToolCallId,
@@ -730,7 +740,7 @@ function createStreamToolExecutorWithMemoryEvents({
       if (captureResult && hasSavedMemory(captureResult.savedCounts)) {
         writeStreamEvent(res, {
           type: 'memory_saved',
-          message: 'Working Order Memory saved',
+          message: 'Saved Working Order Memory',
           savedCounts: captureResult.savedCounts,
         });
       }
@@ -1544,7 +1554,7 @@ export function createSteelHandlers({
             if (captureResult && hasSavedMemory(captureResult.savedCounts)) {
               writeStreamEvent(res, {
                 type: 'memory_saved',
-                message: 'Working Order Memory saved',
+                message: 'Saved Working Order Memory',
                 savedCounts: captureResult.savedCounts,
               });
             }
@@ -1562,14 +1572,14 @@ export function createSteelHandlers({
         if (captureResult) {
           writeStreamEvent(res, {
             type: 'parse_status',
-            message: `Markdown parse ${captureResult.parseStatus}`,
+            message: getMarkdownParseMessage(captureResult.parseStatus),
             parseStatus: captureResult.parseStatus,
             savedCounts: captureResult.savedCounts,
           });
           if (hasSavedMemory(captureResult.savedCounts)) {
             writeStreamEvent(res, {
               type: 'memory_saved',
-              message: 'Working Order Memory saved',
+              message: 'Saved Working Order Memory',
               savedCounts: captureResult.savedCounts,
             });
           }

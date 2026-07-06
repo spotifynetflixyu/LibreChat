@@ -108,6 +108,8 @@ describe('Mongoose Steel working-order memory reader', () => {
         state: 'active',
         summary: 'active OCR',
         payload: {
+          kind: 'ocr_official_markdown',
+          ocrSource: 'ai_official_markdown',
           filename: 'drawing.pdf',
           page: 1,
           text: '尺寸 75x45',
@@ -474,10 +476,10 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1, working_order_row: 1 },
-      savedTableCounts: { ocr_table: 1, system_order_table: 1 },
-      totalSavedCounts: { ocr_extract: 1, working_order_row: 1 },
-      totalTableCounts: { ocr_table: 1, system_order_table: 1 },
+      savedCounts: { ocr_markdown: 1, working_order_row: 1 },
+      savedTableCounts: { system_order_table: 1 },
+      totalSavedCounts: { ocr_markdown: 1, working_order_row: 1 },
+      totalTableCounts: { system_order_table: 1 },
     });
     expect(activeEntries.map((entry) => entry.memoryKind).sort()).toEqual([
       'ocr_extract',
@@ -488,6 +490,9 @@ describe('Mongoose Steel working-order memory reader', () => {
         expect.objectContaining({
           memoryKind: 'ocr_extract',
           payload: expect.objectContaining({
+            kind: 'ocr_official_markdown',
+            ocrSource: 'ai_official_markdown',
+            ocrFileKey: 'default',
             rows: [['drawing.pdf', 'A2', 'PL9*100*1200', '中', '是']],
           }),
         }),
@@ -524,13 +529,13 @@ describe('Mongoose Steel working-order memory reader', () => {
         { fileId: 'file-b', filename: 'b.pdf', mediaType: 'application/pdf' },
       ],
       content: [
-        '## OCR result a.pdf',
+        '## OCR result a.pdf (file:file-a)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '| --- | --- | --- | --- | --- | --- | --- |',
         '| a.pdf | A1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
         '',
-        '## OCR result b.pdf',
+        '## OCR result b.pdf (file:file-b)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '| --- | --- | --- | --- | --- | --- | --- |',
@@ -558,16 +563,18 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 2, working_order_row: 2 },
-      savedTableCounts: { ocr_table: 2, system_order_table: 2 },
-      totalSavedCounts: { ocr_extract: 2, working_order_row: 2 },
-      totalTableCounts: { ocr_table: 2, system_order_table: 2 },
+      savedCounts: { ocr_markdown: 2, working_order_row: 2 },
+      savedTableCounts: { system_order_table: 2 },
+      totalSavedCounts: { ocr_markdown: 2, working_order_row: 2 },
+      totalTableCounts: { system_order_table: 2 },
     });
     expect(activeEntries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           memoryKind: 'ocr_extract',
           payload: expect.objectContaining({
+            kind: 'ocr_official_markdown',
+            ocrSource: 'ai_official_markdown',
             ocrFileKey: 'file:file-a',
             fileId: 'file-a',
             filename: 'a.pdf',
@@ -576,6 +583,8 @@ describe('Mongoose Steel working-order memory reader', () => {
         expect.objectContaining({
           memoryKind: 'ocr_extract',
           payload: expect.objectContaining({
+            kind: 'ocr_official_markdown',
+            ocrSource: 'ai_official_markdown',
             ocrFileKey: 'file:file-b',
             fileId: 'file-b',
             filename: 'b.pdf',
@@ -623,7 +632,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       checkpointTurnIndex: 7,
       currentTurnFiles: [{ fileId: 'file-a', filename: 'a.jpg', mediaType: 'image/jpeg' }],
       content: [
-        '## OCR result a.jpg',
+        '## OCR result a.jpg (file:file-a)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '|---|---|---|---:|---:|---|---|',
@@ -647,7 +656,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       checkpointTurnIndex: 8,
       currentTurnFiles: [{ fileId: 'file-b', filename: 'b.jpg', mediaType: 'image/jpeg' }],
       content: [
-        '## OCR result b.jpg',
+        '## OCR result b.jpg (file:file-b)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '|---|---|---|---:|---:|---|---|',
@@ -664,22 +673,20 @@ describe('Mongoose Steel working-order memory reader', () => {
 
     expect(first).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1 },
-      savedTableCounts: { ocr_table: 1 },
-      totalSavedCounts: { paddleocr_preflight: 1, ocr_extract: 1 },
-      totalTableCounts: { ocr_table: 1 },
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { paddleocr_preflight: 1, ocr_markdown: 1 },
+      totalTableCounts: {},
     });
     expect(secondPreflight).toEqual({
       savedCounts: { paddleocr_preflight: 1 },
-      totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 1 },
-      totalTableCounts: { ocr_table: 1 },
+      totalSavedCounts: { paddleocr_preflight: 2, ocr_markdown: 1 },
+      totalTableCounts: {},
     });
     expect(second).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1 },
-      savedTableCounts: { ocr_table: 1 },
-      totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2 },
-      totalTableCounts: { ocr_table: 2 },
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { paddleocr_preflight: 2, ocr_markdown: 2 },
+      totalTableCounts: {},
     });
     expect(activeOcr.map((entry) => entry.payload)).toEqual([
       expect.objectContaining({
@@ -1116,7 +1123,203 @@ describe('Mongoose Steel working-order memory reader', () => {
     ]);
   });
 
-  it('captures OCR tables when file-key metadata appears between the OCR heading and table', async () => {
+  it('captures OCR-titled final Markdown as official OCR Markdown without header gating', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_arbitrary_headers',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      content: [
+        '## OCR 結果確認表',
+        '',
+        '| AI 自訂欄位 A | 另一個任意欄位 |',
+        '|---|---|',
+        '| B-1 | RH250X250X9X14 |',
+      ].join('\n'),
+    });
+    const [entry] = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    }).lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
+    });
+    expect(entry?.payload).toEqual(
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'ai_official_markdown',
+        ocrFileKey: 'default',
+        markdown: expect.stringContaining('AI 自訂欄位 A'),
+      }),
+    );
+  });
+
+  it('captures only official PaddleOCR final OCR tables and binds explicit title file keys', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_multi_table',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-bh',
+          fileId: 'file-bh',
+          filename: 'BH.pdf',
+          mediaType: 'application/pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/file-bh.pdf',
+            chunkCount: 3,
+            ocrRuleVersion: 'rules-v1',
+            source: 'paddleocr_markdowns',
+          },
+        },
+      ],
+      content: [
+        '## OCR 結果確認表：BH.pdf（file:file-bh）',
+        '',
+        '| 任意欄位 | 值 |',
+        '|---|---|',
+        '| 第一表 | B-1 |',
+        '',
+        '### 所屬構件編號與數量對照',
+        '',
+        '| AI 自訂欄位 | 數量 |',
+        '|---|---:|',
+        '| 第二表 | 2 |',
+      ].join('\n'),
+    });
+    const entries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    })
+      .sort({ 'payload.tableIndex': 1 })
+      .lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.payload).toEqual(
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: 'file:file-bh',
+        fileId: 'file-bh',
+        markdown: expect.stringContaining('第一表'),
+      }),
+    );
+    expect(entries[0]?.payload).toEqual(
+      expect.not.objectContaining({
+        markdown: expect.stringContaining('第二表'),
+      }),
+    );
+  });
+
+  it('saves only canonical final OCR Markdown and binds the title file key', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const fileKey = 'file:3ff04e38-bd5e-4fb7-82ce-866ad49ce5b9';
+
+    await SteelWorkingOrderMemory.create({
+      conversationId: 'steel_conversation_1',
+      turnIndex: 7,
+      checkpointTurnIndex: 6,
+      memoryKind: 'ocr_extract',
+      sourceKind: 'assistant_final_markdown',
+      state: 'active',
+      summary: 'stale manual review',
+      payload: {
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: 'default',
+        ocrGroupKey: 'files:default',
+        title: '需你優先核對的項目',
+        tableIndex: 2,
+        markdown: '| 項目 | 需確認內容 |\\n| --- | --- |\\n| 1 | stale manual review |',
+      },
+    });
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_final_only',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: fileKey,
+          fileId: '3ff04e38-bd5e-4fb7-82ce-866ad49ce5b9',
+          filename: 'BH.pdf',
+          mediaType: 'application/pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/BH.pdf',
+            chunkCount: 2,
+            ocrRuleVersion: 'rules-v1',
+            source: 'paddleocr_markdowns',
+          },
+        },
+      ],
+      content: [
+        `## OCR 結果確認表：BH.pdf（${fileKey}）`,
+        '',
+        '| 頁 | 圖號 | 零件編號 | 規格 | 數量 | 信心 / 需複核 |',
+        '|---:|---|---|---|---:|---|',
+        '| 1 | A-001 | B-1 | RH250X250X9X14 | 1 | 高 / 否 |',
+        '',
+        '## 需你優先核對的項目',
+        '',
+        '| 項目 | 需確認內容 |',
+        '|---|---|',
+        '| 1 | 人工確認用，不應存成 official OCR Markdown |',
+      ].join('\n'),
+    });
+    const entries = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    }).lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.payload).toEqual(
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: fileKey,
+        fileId: '3ff04e38-bd5e-4fb7-82ce-866ad49ce5b9',
+        filename: 'BH.pdf',
+        markdown: expect.stringContaining('RH250X250X9X14'),
+      }),
+    );
+    expect(entries[0]?.payload).toEqual(
+      expect.not.objectContaining({
+        markdown: expect.stringContaining('人工確認用'),
+      }),
+    );
+  });
+
+  it('stores OCR tables under default when the title has no file key', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
 
@@ -1160,7 +1363,11 @@ describe('Mongoose Steel working-order memory reader', () => {
       expect.objectContaining({
         kind: 'ocr_official_markdown',
         ocrSource: 'ai_official_markdown',
-        ocrFileKey: 'file:file-a',
+        ocrFileKey: 'default',
+      }),
+    );
+    expect(activeEntries[0]?.payload).toEqual(
+      expect.not.objectContaining({
         fileId: 'file-a',
         filename: 'a.jpg',
         mediaType: 'image/jpeg',
@@ -1185,7 +1392,7 @@ describe('Mongoose Steel working-order memory reader', () => {
         },
       ],
       content: [
-        '## OCR 結果確認表',
+        '## OCR 結果確認表 (file:file-ai-fallback)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '|---|---|---|---:|---:|---|---|',
@@ -1238,7 +1445,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     });
   });
 
-  it('keeps separate multi-file official OCR Markdown groups under default', async () => {
+  it('replaces default official OCR Markdown when no title file key is present', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const table = (spec: string) =>
@@ -1325,30 +1532,32 @@ describe('Mongoose Steel working-order memory reader', () => {
       ocrFileKey: 'file:file-a',
       ocrRuleVersion: 'unused',
     });
+    const defaultOfficial = await writer.readOfficialOcrMarkdown({
+      conversationId: 'steel_conversation_1',
+      sourcePdfKey: 'unused',
+      ocrFileKey: 'default',
+      ocrRuleVersion: 'unused',
+    });
 
-    expect(entries).toHaveLength(2);
-    expect(entries.map((entry) => entry.payload)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          ocrFileKey: 'default',
-          ocrFileKeys: ['file:file-a', 'file:file-b'],
-          ocrGroupKey: 'files:file:file-a|file:file-b',
-          ocrSource: 'paddleocr_official_markdown',
-          markdown: expect.stringContaining('AB revised'),
-        }),
-        expect.objectContaining({
-          ocrFileKey: 'default',
-          ocrFileKeys: ['file:file-c', 'file:file-d'],
-          ocrGroupKey: 'files:file:file-c|file:file-d',
-          ocrSource: 'paddleocr_official_markdown',
-          markdown: expect.stringContaining('CD'),
-        }),
-      ]),
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.payload).toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'default',
+        ocrGroupKey: 'files:default',
+        ocrSource: 'paddleocr_official_markdown',
+        markdown: expect.stringContaining('AB revised'),
+      }),
     );
-    expect(fileAOfficial?.markdown).toContain('AB revised');
+    expect(entries[0]?.payload).toEqual(
+      expect.not.objectContaining({
+        ocrFileKeys: expect.any(Array),
+      }),
+    );
+    expect(fileAOfficial).toBeUndefined();
+    expect(defaultOfficial?.markdown).toContain('AB revised');
   });
 
-  it('saves split PaddleOCR official OCR Markdown tables by matched file key', async () => {
+  it('saves split PaddleOCR official OCR Markdown tables by explicit title file key', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
 
@@ -1372,13 +1581,13 @@ describe('Mongoose Steel working-order memory reader', () => {
         },
       ],
       content: [
-        '## OCR result review table - a.pdf',
+        '## OCR result review table - a.pdf (file:file-a)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '|---|---|---|---:|---:|---|---|',
         '| a.pdf | A1 | A-SPEC | 1 | 1 | 高 | 否 |',
         '',
-        '## OCR result review table - b.pdf',
+        '## OCR result review table - b.pdf (file:file-b)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '|---|---|---|---:|---:|---|---|',
@@ -1420,6 +1629,66 @@ describe('Mongoose Steel working-order memory reader', () => {
     ]);
   });
 
+  it('captures PaddleOCR official OCR Markdown tables with drawing review headers', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      messageId: 'assistant_ocr_review',
+      turnIndex: 8,
+      checkpointTurnIndex: 7,
+      currentOcrMarkdownResults: [
+        {
+          ocrFileKey: 'file:file-bh',
+          fileId: 'file-bh',
+          filename: 'BH.pdf',
+          mediaType: 'application/pdf',
+          ocrPreprocessing: {
+            pipelineVersion: 1,
+            sourcePdfKey: 'uploads/file-bh.pdf',
+            chunkCount: 3,
+            ocrRuleVersion: 'rules-v1',
+            source: 'paddleocr_markdowns',
+          },
+        },
+      ],
+      content: [
+        '## OCR 結果確認表：BH.pdf（file:file-bh）',
+        '',
+        '| 頁 | 圖號 | 零件編號 | 規格 | 長度 mm | 材質 | 數量 | 所屬構件 / 數量 | 孔數 / 件 | 孔徑 / 孔型 | 信心 / 需複核 |',
+        '|---:|---|---|---|---:|---|---:|---|---|---|---|',
+        '| 1 | A-001 | B-1 | RH250X250X9X14 | 2694 | SN490B | 1 | B-C1 x 1 | 0 | 未確認 | 高 / 否 |',
+      ].join('\n'),
+    });
+    const [entry] = await SteelWorkingOrderMemory.find({
+      conversationId: 'steel_conversation_1',
+      memoryKind: 'ocr_extract',
+      state: 'active',
+    }).lean();
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
+    });
+    expect(entry?.payload).toEqual(
+      expect.objectContaining({
+        kind: 'ocr_official_markdown',
+        ocrSource: 'paddleocr_official_markdown',
+        ocrFileKey: 'file:file-bh',
+        fileId: 'file-bh',
+        filename: 'BH.pdf',
+        ocrPreprocessing: expect.objectContaining({
+          sourcePdfKey: 'uploads/file-bh.pdf',
+          chunkCount: 3,
+          ocrRuleVersion: 'rules-v1',
+        }),
+      }),
+    );
+  });
+
   it('matches PaddleOCR official OCR Markdown by file key and source metadata when present', async () => {
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
 
@@ -1444,7 +1713,7 @@ describe('Mongoose Steel working-order memory reader', () => {
         },
       ],
       content: [
-        '## OCR result review table - a.pdf',
+        '## OCR result review table - a.pdf (file:file-a)',
         '',
         '| 來源檔案 | 編號 | 斷面規格 | 孔數 / 件 | 總孔數 | 信心程度 | 是否需人工複核 |',
         '|---|---|---|---:|---:|---|---|',
@@ -2436,24 +2705,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       totalTableCounts: {},
     });
     expect(activeEntries).toHaveLength(2);
-    expect(snapshot.derivedIndex.ocrExtracts).toHaveLength(2);
-    expect(snapshot.derivedIndex.ocrExtracts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          ocrFileKey: 'file:file-a',
-          fileId: 'file-a',
-          filename: 'a.pdf',
-          content: 'new A',
-          result: expect.objectContaining({ text: 'new A' }),
-        }),
-        expect.objectContaining({
-          ocrFileKey: 'file:file-b',
-          fileId: 'file-b',
-          filename: 'b.pdf',
-          text: 'current B',
-        }),
-      ]),
-    );
+    expect(snapshot.derivedIndex.ocrExtracts).toEqual([]);
     expect(snapshot.derivedIndex.ocrExtracts).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2491,7 +2743,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     ]);
   });
 
-  it('does not save OCR confirmation helper tables as workbook state', async () => {
+  it('skips non-OCR confirmation helper tables when saving official OCR Markdown', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
 
@@ -2502,7 +2754,7 @@ describe('Mongoose Steel working-order memory reader', () => {
       '|---|---|---|---:|---:|---|---|',
       '| drawing.pdf | P1 | PL6*80*1000 | 4 | 8 | 高 | 否 |',
       '',
-      '## 給使用者確認的 OCR 疑問',
+      '## 需你優先核對的項目',
       '',
       '| 項目 | OCR 判讀 | 備註 |',
       '| --- | --- | --- |',
@@ -2522,25 +2774,27 @@ describe('Mongoose Steel working-order memory reader', () => {
       conversationId: 'steel_conversation_1',
       state: 'active',
     })
-      .sort({ memoryKind: 1 })
+      .sort({ 'payload.tableIndex': 1 })
       .lean();
 
     expect(result).toEqual({
       parseStatus: 'saved',
-      savedCounts: { ocr_extract: 1 },
-      savedTableCounts: { ocr_table: 1 },
-      totalSavedCounts: { ocr_extract: 1 },
-      totalTableCounts: { ocr_table: 1 },
+      savedCounts: { ocr_markdown: 1 },
+      totalSavedCounts: { ocr_markdown: 1 },
+      totalTableCounts: {},
     });
     expect(activeEntries).toHaveLength(1);
-    expect(activeEntries[0]).toEqual(
+    expect(activeEntries[0]?.payload).toEqual(
       expect.objectContaining({
-        memoryKind: 'ocr_extract',
-        payload: expect.objectContaining({
-          kind: 'assistant_ocr_markdown',
-          tableIndex: 1,
-          rows: [['drawing.pdf', 'P1', 'PL6*80*1000', '4', '8', '高', '否']],
-        }),
+        kind: 'ocr_official_markdown',
+        ocrSource: 'ai_official_markdown',
+        tableIndex: 1,
+        rows: [['drawing.pdf', 'P1', 'PL6*80*1000', '4', '8', '高', '否']],
+      }),
+    );
+    expect(activeEntries[0]?.payload).toEqual(
+      expect.not.objectContaining({
+        rows: expect.arrayContaining([['1', '5', 'OCR 讀值待確認']]),
       }),
     );
   });

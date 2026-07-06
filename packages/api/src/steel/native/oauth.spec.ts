@@ -607,6 +607,8 @@ describe('OpenAI OAuth model adapter', () => {
     const finalChunk = chunks[chunks.length - 1];
 
     expect(chunks.map((chunk) => chunk.content)).toEqual(['報價', '完成', '']);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
     expect(finalChunk?.response_metadata).toEqual(
       expect.objectContaining({
         id: 'resp_stream',
@@ -619,6 +621,53 @@ describe('OpenAI OAuth model adapter', () => {
       output_tokens: 4,
       total_tokens: 16,
     });
+  });
+
+  it('streams native OAuth graph output through doStream without doGenerate fallback', async () => {
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () => ({
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'text_1',
+            delta: '第一段',
+          });
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'text_1',
+            delta: '第二段',
+          });
+          controller.enqueue({
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: {
+              unified: 'stop',
+              raw: 'stop',
+            },
+          });
+          controller.close();
+        },
+      }),
+      warnings: [],
+    }));
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+        model: 'gpt-5.5',
+      },
+      getSystemRunnable: () => RunnableLambda.from((messages: BaseMessage[]) => messages),
+    });
+
+    const stream = await model.stream([new HumanMessage('輸出報價')]);
+    const chunks = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual(['第一段', '第二段', '']);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
   });
 
   it('cancels the provider stream when the native OAuth chunk consumer exits early', async () => {

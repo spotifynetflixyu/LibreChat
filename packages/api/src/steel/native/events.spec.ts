@@ -26,7 +26,7 @@ describe('Steel native event mapping', () => {
         event: steelNativeStreamEventName,
         data: {
           type: 'parse_status',
-          message: 'Markdown parse saved',
+          message: 'Saved Markdown parse',
           parseStatus: 'saved',
           savedCounts: { working_order_row: 2 },
           source: 'assistant_markdown',
@@ -39,7 +39,7 @@ describe('Steel native event mapping', () => {
         event: steelNativeStreamEventName,
         data: {
           type: 'memory_saved',
-          message: 'Working Order Memory saved',
+          message: 'Saved Working Order Memory',
           savedCounts: { working_order_row: 2 },
           source: 'assistant_markdown',
           conversationId: 'conversation_1',
@@ -70,7 +70,7 @@ describe('Steel native event mapping', () => {
         event: steelNativeStreamEventName,
         data: {
           type: 'memory_saved',
-          message: 'Working Order Memory saved',
+          message: 'Saved Working Order Memory',
           savedCounts: { price_evidence: 1 },
           source: 'tool_result',
           conversationId: 'conversation_1',
@@ -80,6 +80,30 @@ describe('Steel native event mapping', () => {
         },
       },
     ]);
+  });
+
+  it('labels final OCR Markdown saves explicitly', () => {
+    const events = buildSteelNativeEventEnvelopes({
+      source: 'assistant_markdown',
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_2',
+      capture: {
+        status: 'captured',
+        result: {
+          parseStatus: 'saved',
+          savedCounts: { ocr_markdown: 1 },
+        },
+      },
+    });
+
+    expect(events[1]?.data).toEqual(
+      expect.objectContaining({
+        type: 'memory_saved',
+        message: 'Save final OCR markdown',
+        savedCounts: { ocr_markdown: 1 },
+      }),
+    );
   });
 
   it('includes table counts and active totals on captured assistant Markdown events', () => {
@@ -165,7 +189,7 @@ describe('Steel native event mapping', () => {
         event: steelNativeStreamEventName,
         data: {
           type: 'memory_saved',
-          message: 'PaddleOCR preflight saved',
+          message: 'Saved PaddleOCR preflight',
           savedCounts: { paddleocr_preflight: 1 },
           totalSavedCounts: { paddleocr_preflight: 2 },
           totalTableCounts: { ocr_table: 1 },
@@ -209,7 +233,7 @@ describe('Steel native event mapping', () => {
         event: steelNativeStreamEventName,
         data: {
           type: 'memory_saved',
-          message: 'PaddleOCR preflight saved',
+          message: 'Saved PaddleOCR preflight',
           savedCounts: { paddleocr_preflight: 1 },
           source: 'paddleocr_preflight',
           conversationId: 'conversation_1',
@@ -313,7 +337,7 @@ describe('Steel native event mapping', () => {
       expect.objectContaining({
         type: 'memory_saved',
         source: 'ocr_preprocessing',
-        message: 'PaddleOCR preflight saved (chunk 3/5) (file:file-a)',
+        message: 'Saved PaddleOCR preflight (chunk 3/5) (file:file-a)',
         savedCounts: { paddleocr_preflight: 1 },
       }),
     ]);

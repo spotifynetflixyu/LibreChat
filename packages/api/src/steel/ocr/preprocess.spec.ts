@@ -422,7 +422,8 @@ describe('OCR preprocessing orchestrator', () => {
             organizedSaved: true,
             rawResultHash: 'hash-1',
             rawOcrText: 'raw 1',
-            organizedMarkdown: '| 品名 | 數量 |\n|---|---|\n| A | 1 |',
+            organizedMarkdown:
+              '## quote.pdf OCR 結果確認表｜第 1～50 頁\n\n| 品名 | 數量 |\n|---|---|\n| A | 1 |',
           },
           {
             ...chunks[1],
@@ -430,7 +431,8 @@ describe('OCR preprocessing orchestrator', () => {
             organizedSaved: true,
             rawResultHash: 'hash-2',
             rawOcrText: 'raw 2',
-            organizedMarkdown: '| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
+            organizedMarkdown:
+              '## quote.pdf OCR 結果確認表｜第 51～100 頁\n\n| 品名 | 材質 |\n|---|---|\n| B | SS400 |',
           },
         ],
       })),

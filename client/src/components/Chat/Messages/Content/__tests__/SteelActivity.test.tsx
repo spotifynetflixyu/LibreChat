@@ -17,13 +17,13 @@ jest.mock('~/hooks/useLocalize', () => ({
       return 'Steel form parsed';
     }
     if (key === 'com_ui_steel_activity_state_saved') {
-      return 'Steel quote state saved';
+      return 'Saved Working Order Memory';
     }
     if (key === 'com_ui_steel_activity_ocr_markdown_saved') {
-      return 'OCR markdown saved';
+      return 'Save final OCR markdown';
     }
     if (key === 'com_ui_steel_activity_paddleocr_saved') {
-      return 'PaddleOCR preflight saved';
+      return 'Saved PaddleOCR preflight';
     }
     if (key === 'com_ui_steel_activity_paddleocr_partial') {
       return 'PaddleOCR preflight partial';
@@ -82,7 +82,7 @@ describe('SteelActivity', () => {
               source: 'assistant_markdown',
               conversationId: 'conversation-1',
               messageId: 'assistant-1',
-              message: 'Markdown parse saved',
+              message: 'Saved Markdown parse',
               parseStatus: 'saved',
               savedCounts: { working_order_row: 2 },
               savedTableCounts: { system_order_table: 1 },
@@ -94,7 +94,7 @@ describe('SteelActivity', () => {
               source: 'assistant_markdown',
               conversationId: 'conversation-1',
               messageId: 'assistant-1',
-              message: 'Working Order Memory saved',
+              message: 'Saved Working Order Memory',
               savedCounts: { working_order_row: 2 },
               savedTableCounts: { system_order_table: 1 },
               totalSavedCounts: { working_order_row: 2 },
@@ -109,7 +109,7 @@ describe('SteelActivity', () => {
 
     expect(screen.getByLabelText('Steel activity')).toBeInTheDocument();
     expect(screen.queryByText('Steel form parsed')).not.toBeInTheDocument();
-    expect(screen.getByText('Steel quote state saved')).toBeInTheDocument();
+    expect(screen.getByText('Saved Working Order Memory')).toBeInTheDocument();
     expect(screen.getByText('Total: Workbook tables: 1, Workbook rows: 2')).toBeInTheDocument();
     expect(screen.getAllByText('This turn: Workbook tables: 1, Workbook rows: 2')).toHaveLength(1);
   });
@@ -124,7 +124,7 @@ describe('SteelActivity', () => {
               source: 'assistant_markdown',
               conversationId: 'conversation-1',
               messageId: 'assistant-ocr',
-              message: 'Working Order Memory saved',
+              message: 'Saved Working Order Memory',
               savedCounts: { ocr_extract: 1 },
               savedTableCounts: { ocr_table: 1 },
               totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2 },
@@ -137,7 +137,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('Steel quote state saved')).toBeInTheDocument();
+    expect(screen.getByText('Saved Working Order Memory')).toBeInTheDocument();
     expect(screen.getByText('This turn: OCR tables: 1')).toBeInTheDocument();
     expect(screen.getByText('Total: OCR raw results: 2, OCR tables: 2')).toBeInTheDocument();
   });
@@ -152,7 +152,7 @@ describe('SteelActivity', () => {
               source: 'assistant_markdown',
               conversationId: 'conversation-1',
               messageId: 'assistant-official-ocr',
-              message: 'Working Order Memory saved',
+              message: 'Saved Working Order Memory',
               savedCounts: { ocr_markdown: 1 },
               totalSavedCounts: { ocr_markdown: 1 },
             },
@@ -163,8 +163,8 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('OCR markdown saved')).toBeInTheDocument();
-    expect(screen.queryByText('Steel quote state saved')).not.toBeInTheDocument();
+    expect(screen.getByText('Save final OCR markdown')).toBeInTheDocument();
+    expect(screen.queryByText('Saved Working Order Memory')).not.toBeInTheDocument();
   });
 
   it('renders combined OCR table and workbook table counts', () => {
@@ -177,7 +177,7 @@ describe('SteelActivity', () => {
               source: 'assistant_markdown',
               conversationId: 'conversation-1',
               messageId: 'assistant-mixed',
-              message: 'Working Order Memory saved',
+              message: 'Saved Working Order Memory',
               savedCounts: {
                 ocr_extract: 1,
                 calculation_fact: 1,
@@ -212,7 +212,7 @@ describe('SteelActivity', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders PaddleOCR preflight saved activity with OCR raw result counts', () => {
+  it('renders saved PaddleOCR preflight activity with OCR raw result counts', () => {
     render(
       <RecoilRoot
         initializeState={({ set }) => {
@@ -222,7 +222,7 @@ describe('SteelActivity', () => {
               source: 'paddleocr_preflight',
               conversationId: 'conversation-1',
               messageId: 'assistant-preflight',
-              message: 'PaddleOCR preflight saved',
+              message: 'Saved PaddleOCR preflight',
               savedCounts: { paddleocr_preflight: 1 },
               totalSavedCounts: { paddleocr_preflight: 2 },
               totalTableCounts: {},
@@ -234,7 +234,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('PaddleOCR preflight saved')).toBeInTheDocument();
+    expect(screen.getByText('Saved PaddleOCR preflight')).toBeInTheDocument();
     expect(screen.getByText('This turn: OCR raw results: 1')).toBeInTheDocument();
     expect(screen.getByText('Total: OCR raw results: 2')).toBeInTheDocument();
   });
@@ -322,7 +322,7 @@ describe('SteelActivity', () => {
               'Uploaded pdf to S3 (106 pages / 3 chunks) (file:BH.pdf)',
               'Running paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
               'Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)',
-              'PaddleOCR preflight saved (chunk 1/3) (file:BH.pdf)',
+              'Saved PaddleOCR preflight (chunk 1/3) (file:BH.pdf)',
               'Running paddleocr_vl in PaddleOCR (chunk 2/3) (file:BH.pdf)',
             ].map((message) => ({
               type: 'parse_status',
@@ -351,7 +351,7 @@ describe('SteelActivity', () => {
       screen.getByText('Ran paddleocr_vl in PaddleOCR (chunk 1/3) (file:BH.pdf)'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('PaddleOCR preflight saved (chunk 1/3) (file:BH.pdf)'),
+      screen.getByText('Saved PaddleOCR preflight (chunk 1/3) (file:BH.pdf)'),
     ).toBeInTheDocument();
     expect(
       screen.getByText('Running paddleocr_vl in PaddleOCR (chunk 2/3) (file:BH.pdf)'),
@@ -410,7 +410,7 @@ describe('SteelActivity', () => {
             {
               type: 'memory_saved',
               source: 'tool_result',
-              message: 'Working Order Memory saved',
+              message: 'Saved Working Order Memory',
               savedCounts: { ocr_extract: 1 },
             },
           ]);

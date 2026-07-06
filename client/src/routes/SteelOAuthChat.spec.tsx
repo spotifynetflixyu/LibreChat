@@ -365,7 +365,7 @@ describe('SteelOAuthChat', () => {
       };
       onEvent({
         type: 'parse_status',
-        message: 'Markdown parse saved',
+        message: 'Saved Markdown parse',
         parseStatus: 'saved',
         savedCounts: {
           working_order_row: 71,
@@ -385,7 +385,7 @@ describe('SteelOAuthChat', () => {
     const activityPanel = screen.getByLabelText('Activity panel');
     expect(within(activityPanel).getByText('Memory parse')).toBeInTheDocument();
     expect(within(activityPanel).getByText('Saved')).toBeInTheDocument();
-    expect(within(activityPanel).getByText('Markdown parse saved')).toBeInTheDocument();
+    expect(within(activityPanel).getByText('Saved Markdown parse')).toBeInTheDocument();
     expect(
       within(activityPanel).getByText('working_order_row: 71, customer_fact: 1'),
     ).toBeInTheDocument();

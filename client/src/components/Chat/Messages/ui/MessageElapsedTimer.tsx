@@ -72,7 +72,12 @@ export default function MessageElapsedTimer({
       hasStartedRef.current = isCreatedByUser !== true && isSubmitting;
       setCompletedAtMs(null);
     } else if (resolvedStartedAt !== null) {
-      setStartAtMs(resolvedStartedAt);
+      setStartAtMs((current) => {
+        if (!hasStartedRef.current) {
+          return resolvedStartedAt;
+        }
+        return Math.min(current, resolvedStartedAt);
+      });
     }
 
     setNowMs(Date.now());

@@ -132,6 +132,24 @@ function preflightCountMetadata(preflight: SteelPaddleOcrPreflightActivityResult
   };
 }
 
+function getMemorySavedMessage(savedCounts: SteelNativeSavedCounts): string {
+  if ((savedCounts.ocr_markdown ?? 0) > 0) {
+    return 'Save final OCR markdown';
+  }
+
+  return 'Saved Working Order Memory';
+}
+
+function getMarkdownParseMessage(parseStatus: SteelNativeParseStatusEvent['parseStatus']): string {
+  if (parseStatus === 'saved') {
+    return 'Saved Markdown parse';
+  }
+  if (parseStatus === 'partial') {
+    return 'Partially parsed Markdown';
+  }
+  return 'Skipped Markdown parse';
+}
+
 function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
   return {
     source: input.source,
@@ -163,7 +181,7 @@ export function buildSteelNativeEventEnvelopes({
       event: steelNativeStreamEventName,
       data: {
         type: 'parse_status',
-        message: `Markdown parse ${capture.result.parseStatus}`,
+        message: getMarkdownParseMessage(capture.result.parseStatus),
         parseStatus: capture.result.parseStatus,
         ...(savedCounts ? { savedCounts } : {}),
         ...countMetadata,
@@ -178,7 +196,7 @@ export function buildSteelNativeEventEnvelopes({
       event: steelNativeStreamEventName,
       data: {
         type: 'memory_saved',
-        message: 'Working Order Memory saved',
+        message: getMemorySavedMessage(capture.result.savedCounts),
         savedCounts: capture.result.savedCounts,
         ...countMetadata,
         ...eventBase,
@@ -248,7 +266,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
       event: steelNativeStreamEventName,
       data: {
         type: 'memory_saved',
-        message: 'PaddleOCR preflight saved',
+        message: 'Saved PaddleOCR preflight',
         savedCounts,
         ...countMetadata,
         ...eventBase,
@@ -310,7 +328,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'memory_saved',
-            message: `PaddleOCR preflight saved (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Saved PaddleOCR preflight (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
             savedCounts: { paddleocr_preflight: 1 },
             ...eventBase,
           },

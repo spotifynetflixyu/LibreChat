@@ -20,7 +20,7 @@ const {
 } = require('~/server/services/MCPRequestContext');
 const { handleAbortError } = require('~/server/middleware');
 const { logViolation } = require('~/cache');
-const { saveMessage, getMessages, getConvo } = require('~/models');
+const { saveConvo, saveMessage, getMessages, getConvo } = require('~/models');
 
 function createCloseHandler(abortController) {
   return function (manual) {
@@ -207,6 +207,37 @@ function getAgentResponseModel(req, endpointOption) {
   return getEndpointResponseModel(endpointOption);
 }
 
+async function savePreliminaryConversationShell(
+  req,
+  { conversationId, endpointOption, iconURL, model },
+) {
+  const createdAtOnInsert =
+    req.conversationCreatedAt != null ? new Date(req.conversationCreatedAt) : undefined;
+  const validCreatedAtOnInsert =
+    createdAtOnInsert && !Number.isNaN(createdAtOnInsert.getTime()) ? createdAtOnInsert : undefined;
+
+  return saveConvo(
+    {
+      userId: req?.user?.id,
+      isTemporary: req?.body?.isTemporary,
+      interfaceConfig: req?.config?.interfaceConfig,
+    },
+    {
+      conversationId,
+      endpoint: endpointOption?.endpoint,
+      title: 'New Chat',
+      model,
+      ...(iconURL ? { iconURL } : {}),
+      ...(endpointOption?.spec ? { spec: endpointOption.spec } : {}),
+      ...(endpointOption?.agent_id ? { agent_id: endpointOption.agent_id } : {}),
+    },
+    {
+      context: 'api/server/controllers/agents/request.js - preliminary conversation shell',
+      createdAtOnInsert: validCreatedAtOnInsert,
+    },
+  );
+}
+
 async function finishResumableRequest(req, userId) {
   try {
     await cleanupMCPRequestContextForReq(req);
@@ -287,16 +318,21 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req._resumableStreamId = streamId;
     getMCPRequestContext(req, undefined, { cleanupOnResponse: false });
 
-    // Send JSON response IMMEDIATELY so client can connect to SSE stream
-    // This is critical: tool loading (MCP OAuth) may emit events that the client needs to receive
-    res.json({ streamId, conversationId, status: 'started' });
-
     await attachConversationCreatedAt(req, { userId, conversationId, isNewConvo });
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
     const preliminaryUserMessage = getPreliminaryUserMessage(req.body, conversationId);
     const preliminaryResponseMessageId = getPreliminaryResponseMessageId(req.body);
+    if (isNewConvo) {
+      await savePreliminaryConversationShell(req, {
+        conversationId,
+        endpointOption,
+        iconURL: endpointIconURL,
+        model: responseModel,
+      });
+    }
+
     await GenerationJobManager.updateMetadata(streamId, {
       conversationId,
       endpoint: endpointOption.endpoint,
@@ -305,6 +341,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       responseMessageId: preliminaryResponseMessageId,
       userMessage: preliminaryUserMessage,
     });
+
+    // Return the stream id only after the conversation shell and resume metadata
+    // exist so a duplicated tab can fetch/resume this id during preflight.
+    res.json({ streamId, conversationId, status: 'started' });
 
     // Note: We no longer use res.on('close') to abort since we send JSON immediately.
     // The response closes normally after res.json(), which is not an abort condition.
@@ -436,11 +476,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         );
       }
 
-      /** Immediate-mode title generation runs in parallel with the response, so
-       *  the conversation row may not exist when the title resolves. `convoReady`
-       *  resolves once the response (and thus the conversation) has been saved,
-       *  gating the title's `saveConvo`. Declared here so both the success tail
-       *  and the catch block can settle it and gate `disposeClient` on the title. */
+      /** Immediate-mode title generation runs in parallel with the response.
+       *  New conversations already have a preliminary shell before the stream id
+       *  is returned, so title persistence can update that row before the main
+       *  response finishes. */
       let immediateTitlePromise = null;
       let titleEventPromise = null;
       let acceptsTitleEvents = true;
@@ -455,7 +494,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       const titleAbortController = new AbortController();
       /** Separate from `titleAbortController`: a user Stop cancels the in-flight
        *  title model call but keeps a title that already finished generating.
-       *  Only a superseded/failed stream aborts this to discard such a title so it
+       *  Only a superseded stream aborts this to discard such a title so it
        *  cannot clobber the conversation now owned by the newer run. */
       const titleDiscardController = new AbortController();
       const abortTitleOnJobAbort = () => titleAbortController.abort();
@@ -466,6 +505,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }
       const initialTitleEligible =
         addTitle && parentMessageId === Constants.NO_PARENT && isNewConvo && !req.body?.isTemporary;
+      if (initialTitleEligible) {
+        resolveConvoReady();
+      }
       const emitTitleEvent = ({ conversationId: titleConversationId, title }) => {
         titleEventPromise = (async () => {
           if (!acceptsTitleEvents || titleAbortController.signal.aborted) {
@@ -739,11 +781,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         }
       } catch (error) {
         // Any failure (user Stop, or a preflight/quota failure before the run is
-        // even created) must cancel the title and unblock its waits: the title's
-        // `_waitForRun` would otherwise never resolve, deferring client disposal
-        // until the 45s title timeout, and no title should persist for a failed turn.
+        // even created) must cancel in-flight title generation and unblock its
+        // waits: the title's `_waitForRun` would otherwise never resolve,
+        // deferring client disposal until the 45s title timeout. A title that
+        // already generated remains valid for this conversation shell; only a
+        // superseded stream should discard it.
         titleAbortController.abort();
-        titleDiscardController.abort();
         job.abortController.signal.removeEventListener('abort', abortTitleOnJobAbort);
         acceptsTitleEvents = false;
         resolveConvoReady();

@@ -422,6 +422,9 @@ function summarizeByKind(documents: SteelWorkingOrderMemoryDocument[]) {
         continue;
       }
       if (kind === 'ocr_official_markdown') {
+        if (!isOfficialOcrMarkdownPayload(document.payload)) {
+          continue;
+        }
         counts.ocr_markdown = (counts.ocr_markdown ?? 0) + 1;
         continue;
       }
@@ -486,32 +489,6 @@ async function readActiveMemoryTotals({
 
 function isWorkingOrderTable(headers: readonly string[]): boolean {
   return ['項次', '型號', '品名規格'].every((header) => headers.includes(header));
-}
-
-function normalizeHeader(header: string): string {
-  return header.replace(/\s+/g, '');
-}
-
-function isOcrTable(headers: readonly string[]): boolean {
-  const normalizedHeaders = headers.map(normalizeHeader);
-  const signalCount = normalizedHeaders.filter((header) =>
-    [
-      '來源檔案',
-      '來源標籤',
-      '來源頁',
-      '品名/材料名稱',
-      '加工內容',
-      '孔數',
-      '折邊',
-      '切角',
-      '缺口',
-      '開槽',
-      '信心程度',
-      '是否需人工複核',
-    ].some((signal) => header.includes(signal)),
-  ).length;
-
-  return signalCount >= 2;
 }
 
 function getFirstText(values: readonly (string | undefined)[]): string | undefined {
@@ -707,6 +684,12 @@ function getTableTitleType(title: string): 'ocr' | 'workbook' | undefined {
   return undefined;
 }
 
+const officialOcrMarkdownTitlePattern = /ocr/iu;
+
+function isOfficialOcrMarkdownTitle(title: string): boolean {
+  return getTableTitleType(title) === 'ocr';
+}
+
 function getParsedTables(content: string): TitledSteelMarkdownTable[] {
   const tables: TitledSteelMarkdownTable[] = [];
   let pendingTitle = '';
@@ -790,6 +773,11 @@ function descriptorMatchesTable(
   return candidates.some((candidate) => tableText.includes(normalizeOcrLookupValue(candidate)));
 }
 
+function getExplicitOcrFileKeyFromTitle(title: string): string | undefined {
+  const match = /(?:^|[\s`([{（【])(?<fileKey>file:[^`\s)\]）】,，;；]+)/u.exec(title);
+  return match?.groups?.fileKey;
+}
+
 function getOcrDescriptorsForTable({
   title,
   rows,
@@ -809,22 +797,34 @@ function getOcrDescriptorsForTable({
 
 function getOfficialOcrDescriptorsForTable({
   title,
-  rows,
   currentOcrMarkdownResults,
+  currentTurnFiles,
 }: {
   title: string;
-  rows: readonly string[][];
   currentOcrMarkdownResults?: readonly SteelOcrFileReference[];
+  currentTurnFiles?: readonly SteelOcrFileReference[];
 }): SteelOcrFileDescriptor[] {
-  const descriptors = getUniqueOcrFileDescriptors(currentOcrMarkdownResults);
-  if (descriptors.length <= 1) {
-    return descriptors;
+  const titleFileKey = getExplicitOcrFileKeyFromTitle(title);
+  if (!titleFileKey) {
+    return [];
   }
 
-  const matched = descriptors.filter((descriptor) =>
-    descriptorMatchesTable(descriptor, title, rows),
-  );
-  return matched.length > 0 ? matched : descriptors;
+  const descriptorsByKey = new Map<string, SteelOcrFileDescriptor>();
+  for (const descriptor of getUniqueOcrFileDescriptors(currentOcrMarkdownResults)) {
+    descriptorsByKey.set(descriptor.ocrFileKey, descriptor);
+  }
+  for (const descriptor of getUniqueOcrFileDescriptors(currentTurnFiles)) {
+    if (!descriptorsByKey.has(descriptor.ocrFileKey)) {
+      descriptorsByKey.set(descriptor.ocrFileKey, descriptor);
+    }
+  }
+  const descriptors = [...descriptorsByKey.values()];
+  const matched = descriptors.find((descriptor) => descriptor.ocrFileKey === titleFileKey);
+  if (matched) {
+    return [matched];
+  }
+
+  return [{ ocrFileKey: titleFileKey }];
 }
 
 function getOfficialOcrMetadataForDescriptor({
@@ -1778,10 +1778,21 @@ function createOfficialOcrMarkdownPayload({
 
 function isOfficialOcrMarkdownPayload(payload: SteelJsonObject): boolean {
   const source = getStringProperty(payload, 'ocrSource');
+  const title = getStringProperty(payload, 'title');
   return (
     getStringProperty(payload, 'kind') === 'ocr_official_markdown' &&
-    (source === 'paddleocr_official_markdown' || source === 'ai_official_markdown')
+    (source === 'paddleocr_official_markdown' || source === 'ai_official_markdown') &&
+    (title === undefined || isOfficialOcrMarkdownTitle(title))
   );
+}
+
+function officialOcrMarkdownTitleQuery(): FilterQuery<ISteelWorkingOrderMemory> {
+  return {
+    $or: [
+      { 'payload.title': { $exists: false } },
+      { 'payload.title': officialOcrMarkdownTitlePattern },
+    ],
+  };
 }
 
 function createPaddleOcrSourceRef({
@@ -1973,6 +1984,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         'payload.kind': 'ocr_official_markdown',
         'payload.ocrSource': 'paddleocr_official_markdown',
         $and: [
+          officialOcrMarkdownTitleQuery(),
           {
             $or: [
               { 'payload.ocrFileKey': input.ocrFileKey },
@@ -2225,40 +2237,33 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
       currentOcrMarkdownResults,
     }: CaptureAssistantFinalMarkdownInput): Promise<CaptureAssistantFinalMarkdownResult> {
       const tables = getParsedTables(content);
+      const hasPaddleOcrFinalMarkdown = (currentOcrMarkdownResults?.length ?? 0) > 0;
       const savedCounts: { [key: string]: number } = {};
       const savedTableCounts: { [key: string]: number } = {};
       const ocrPayloadEntries = tables
         .map((table, index) => {
-          if (getTableTitleType(table.title) !== 'ocr' || !isOcrTable(table.headers)) {
+          if (!isOfficialOcrMarkdownTitle(table.title)) {
             return undefined;
           }
 
-          const paddleOcrDescriptors = getOfficialOcrDescriptorsForTable({
+          const officialDescriptors = getOfficialOcrDescriptorsForTable({
             title: table.title,
-            rows: table.rows,
             currentOcrMarkdownResults,
+            currentTurnFiles,
           });
-          const descriptors =
-            paddleOcrDescriptors.length > 0
-              ? paddleOcrDescriptors
-              : getOcrDescriptorsForTable({
-                  title: table.title,
-                  rows: table.rows,
-                  currentTurnFiles,
-                });
 
           const payload = toOcrMarkdownPayload(
             table.headers,
             table.rows,
             index + 1,
             table.title,
-            descriptors,
+            officialDescriptors,
             {
               official: true,
               officialMetadata: getOfficialOcrMetadataForDescriptor({
-                descriptor: descriptors.length === 1 ? descriptors[0] : undefined,
+                descriptor: officialDescriptors.length === 1 ? officialDescriptors[0] : undefined,
                 currentOcrMarkdownResults,
-                paddleOcrSource: paddleOcrDescriptors.length > 0,
+                paddleOcrSource: hasPaddleOcrFinalMarkdown,
               }),
             },
           );
@@ -2297,6 +2302,13 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         .filter((entry) => entry.official)
         .map((entry) => entry.payload);
       if (officialOcrPayloads.length > 0) {
+        await SteelWorkingOrderMemory.deleteMany({
+          conversationId,
+          state: 'active',
+          memoryKind: 'ocr_extract',
+          'payload.kind': 'ocr_official_markdown',
+          'payload.title': { $exists: true, $not: officialOcrMarkdownTitlePattern },
+        });
         const groupedOcrPayloads = groupPayloadsByOcrFileKey(officialOcrPayloads);
         for (const [key, payloads] of groupedOcrPayloads) {
           await replaceActiveMarkdownRows({

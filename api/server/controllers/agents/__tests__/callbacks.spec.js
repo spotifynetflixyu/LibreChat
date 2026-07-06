@@ -64,6 +64,50 @@ jest.mock('~/server/services/Files/process', () => ({
   saveBase64Image: jest.fn(),
 }));
 
+describe('getDefaultHandlers', () => {
+  let getDefaultHandlers;
+  let sendEvent;
+  let GraphEvents;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    ({ getDefaultHandlers } = require('../callbacks'));
+    ({ sendEvent } = require('@librechat/api'));
+    ({ GraphEvents } = require('@librechat/agents'));
+  });
+
+  it('preserves provider text-delta granularity for large visible deltas', async () => {
+    const aggregateContent = jest.fn();
+    const handlers = getDefaultHandlers({
+      res: { headersSent: true, write: jest.fn() },
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+    });
+    const event = GraphEvents.ON_MESSAGE_DELTA;
+    const text = Array.from(
+      { length: 40 },
+      (_, index) => `| ${index + 1} | BH-${index + 1} |`,
+    ).join('\n');
+    const data = {
+      id: 'message-step-1',
+      delta: {
+        content: [{ type: 'text', text }],
+      },
+    };
+
+    await handlers[event].handle(event, data, {
+      last_agent_id: 'agent_1',
+      langgraph_node: 'graph.agent_1',
+    });
+
+    expect(aggregateContent).toHaveBeenCalledTimes(1);
+    expect(aggregateContent).toHaveBeenCalledWith({ event, data });
+    expect(sendEvent).toHaveBeenCalledTimes(1);
+    expect(sendEvent).toHaveBeenCalledWith(expect.any(Object), { event, data });
+  });
+});
+
 describe('createToolEndCallback', () => {
   let req, res, artifactPromises, createToolEndCallback;
   let logger;

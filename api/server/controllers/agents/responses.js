@@ -35,6 +35,7 @@ const {
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
   extractSteelNativeMarkdownText,
+  extractSteelNativeResponseOutputText,
   captureSteelNativeResponseOutput,
   buildSteelNativeEventEnvelopes,
   buildSteelNativeResponseMessageMetadata,
@@ -386,17 +387,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @returns {Promise<import('@librechat/api').CaptureSteelNativeAssistantMarkdownResult>}
  */
 async function saveResponseOutput(req, conversationId, responseId, response, agentId) {
-  // Extract text content from output items
-  let responseText = '';
-  for (const item of response.output) {
-    if (item.type === 'message' && item.content) {
-      for (const part of item.content) {
-        if (part.type === 'output_text' && part.text) {
-          responseText += part.text;
-        }
-      }
-    }
-  }
+  const responseText = extractSteelNativeResponseOutputText(response);
 
   // Save the assistant message
   await db.saveMessage(

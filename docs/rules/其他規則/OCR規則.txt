@@ -28,7 +28,7 @@ AI 回覆須使用繁體中文，並以 Markdown 表格整理：
 4. 需人工複核欄位
 
 若來源表格可辨識為 N 列，輸出表格應盡量對應 N 列；即使部分欄位不清楚，也必須保留該列，缺失欄位填「未確認」或標示低信心。
-多個 PDF / image / OCR 來源不可合併成同一張 OCR Markdown 表格。整理 OCR 結果時，必須依同一 OCR file key / 來源檔案分組；每個 file key 各自輸出一張或多張 OCR 結果確認表，表格標題或列資料必須保留可辨識的來源檔案 / file key。不同 file key 的資料不得混在同一張 OCR 表格內。
+多個 PDF / image / OCR 來源不可合併成同一張 OCR Markdown 表格。整理 OCR 結果時，必須依同一 OCR file key / 來源檔案分組；同一 file key 的所有 OCR Markdown 內容必須合併成單一 final OCR 結果確認表，不得依 chunk、頁碼區間或同一 file key 分段輸出多張表。每張 OCR 結果確認表的 Markdown 標題必須包含該來源的明確 OCR file key（格式為 `file:...`），例如 `## OCR 結果確認表：BH.pdf（file:<id>）`。不得只把 file key 放在列資料、備註或獨立 metadata line。若標題沒有明確 `file:...`，backend 會將該 final OCR Markdown 歸入 `default`。不同 file key 的資料不得混在同一張 OCR 表格內。
 
 ## 四、可報價資料欄位
 

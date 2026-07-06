@@ -193,7 +193,7 @@ const currentPaddleOcrUsagePolicy =
   'attachments.currentPaddleOcrResults is authoritative same-turn PaddleOCR evidence for the matching current file keys and filenames. If it contains the current file, use that result directly; do not call read_markdown for that file and do not call paddleocr_vl again unless the user explicitly asks to rerun OCR or the result is absent/failed.';
 
 const currentOcrMarkdownUsagePolicy =
-  'attachments.currentOcrMarkdownResults is authoritative same-turn organized OCR Markdown for matching current file keys and filenames. Use its merged Markdown directly for Steel quoting; do not use raw PaddleOCR chunks in context and do not call paddleocr_vl again unless the user explicitly asks to rerun OCR or the result is absent/failed.';
+  'attachments.currentOcrMarkdownResults is authoritative same-turn organized OCR Markdown for matching current file keys and filenames. Use its merged same-file-key Markdown directly for Steel quoting. When producing OCR confirmation output, output exactly one final OCR Markdown table per file key using the title format OCR 結果確認表：filename（file:key）; do not emit chunk/page-range tables for the same file key. Do not use raw PaddleOCR chunks in context and do not call paddleocr_vl again unless the user explicitly asks to rerun OCR or the result is absent/failed.';
 
 export interface PrepareSteelRuntimeContextInput {
   conversation: SteelRuntimeContextConversationInput;

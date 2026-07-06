@@ -25,9 +25,9 @@ const { saveConvo } = require('~/models');
  *   title that already finished generating is still persisted and surfaced.
  * @param {AbortSignal} [params.discardSignal] - When aborted, discards an
  *   already-generated title instead of persisting it. Used only when this stream
- *   is superseded by a newer run (or the turn failed), so a stale title does not
- *   clobber the conversation now owned by the newer run. A plain user Stop does
- *   NOT abort this — its generated title is kept.
+ *   is superseded by a newer run, so a stale title does not clobber the
+ *   conversation now owned by the newer run. A plain user Stop or preflight
+ *   failure does NOT abort this — its generated title is kept.
  * @param {(params: { conversationId: string, title: string }) => Promise<void>|void} [params.onTitleGenerated]
  *   Called after the title is cached and before persistence waits for the
  *   conversation row. Used by live streams to push the title immediately.
@@ -138,10 +138,11 @@ const addTitle = async (
     }
 
     if (discardSignal?.aborted) {
-      // This stream was superseded by a newer run (or the turn failed) after the
-      // title had already been generated — discard it so a stale title does not
-      // clobber the conversation now owned by the newer run. A plain user Stop is
-      // not a discard: its generated title falls through and is persisted below.
+      // This stream was superseded by a newer run after the title had already
+      // been generated — discard it so a stale title does not clobber the
+      // conversation now owned by the newer run. A plain user Stop or preflight
+      // failure is not a discard: its generated title falls through and is
+      // persisted below.
       // Only clear the cache if it still holds THIS task's title: a replacement
       // stream shares the `userId-conversationId` key and may have already cached
       // its own (valid) title that we must not remove.
