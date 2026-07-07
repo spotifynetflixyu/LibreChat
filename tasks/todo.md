@@ -1,3 +1,49 @@
+# Active: Merge main into feat/v8.4 safely - 2026-07-07
+
+Goal: bring the latest `main` changes into `feat/v8.4` while preserving the
+custom Steel/LibreChat logic already carried on the feature branch.
+
+Merge checklist:
+
+- [x] Confirm repo instructions, branch state, remotes, and a clean working
+      tree before merge.
+- [x] Fetch current refs and identify the exact `main` ref to merge.
+- [x] Compare `main` vs `feat/v8.4` to locate high-risk overlap in custom
+      Steel/OCR/runtime/UI/process files.
+- [x] Merge `main` into `feat/v8.4` without discarding feature-branch changes.
+- [x] Resolve conflicts by keeping upstream framework updates plus existing
+      custom Steel behavior unless the incoming change directly fixes the same
+      code path.
+- [x] Run focused verification for touched areas plus `git diff --check`.
+- [x] Document merge review notes, verification evidence, and any remaining
+      risk.
+
+Review notes:
+
+- Merged `origin/main` at `8fcb77fe6` into `feat/v8.4` with `--no-commit`
+  after fetching all refs.
+- Conflict resolution used an additive union strategy:
+  - kept Steel native context, PaddleOCR preflight, OpenAI OAuth behavior,
+    Steel events, resume timestamps, Markdown table actions, and Steel activity
+    rendering;
+  - kept upstream HITL pending-action/checkpoint behavior, keyed memory context,
+    tool favorites, upload routing, start-generation handling, and LangGraph
+    checkpoint dependencies.
+- Extra UI check: `ControlCombobox` keeps `popoverClassName` z-index overrides
+  when callers pass class-based stacking rules, while default callers still use
+  upstream dialog-aware z-index.
+- Verification passed:
+  - `npm run build:data-provider`
+  - `npm run build:data-schemas`
+  - `npm run build:api`
+  - `npm run build:client-package`
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js server/controllers/agents/client.test.js server/routes/agents/__tests__/abort.spec.js server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/agents/__tests__/run-summarization.test.ts src/tools/definitions.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useResumableSSE.spec.ts src/hooks/SSE/__tests__/useResumeOnLoad.spec.tsx src/components/Chat/Messages/Content/__tests__/SteelActivity.test.tsx src/components/Chat/Input/__tests__/PendingMarkdownTableComments.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd packages/client && rtk npx jest src/components/ControlCombobox.spec.tsx --runInBand --watch=false --coverage=false`
+  - `rtk node --check api/server/controllers/agents/client.js && rtk node --check api/server/controllers/agents/request.js && rtk node --check api/server/routes/agents/index.js && rtk node --check api/server/services/ToolService.js`
+  - `rtk git diff --check`
+
 # Active: Title Falls Back To New Chat After Preflight - 2026-07-06
 
 Goal: diagnose why OpenAI OAuth conversations still end up titled `New Chat`

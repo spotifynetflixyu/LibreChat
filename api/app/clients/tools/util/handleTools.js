@@ -6,11 +6,14 @@ const {
   createSafeUser,
   mcpToolPattern,
   loadWebSearchAuth,
+  buildInlineMemoryTool,
   getCodeApiAuthHeaders,
   normalizeMCPToolServerName,
   splitMCPToolKey,
   buildImageToolContext,
+  SET_MEMORY_TOOL_NAME,
   buildWebSearchContext,
+  DELETE_MEMORY_TOOL_NAME,
   buildWebSearchDynamicContext,
 } = require('@librechat/api');
 const {
@@ -50,7 +53,7 @@ const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
-const { getRoleByName } = require('~/models');
+const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
 
 function resolveRawMCPServerName(serverName, mcpAvailableTools, configServers) {
   if (mcpAvailableTools?.[serverName] || configServers?.[serverName]) {
@@ -376,6 +379,17 @@ const loadTools = async ({
           logger,
         });
       };
+      continue;
+    } else if (tool === SET_MEMORY_TOOL_NAME || tool === DELETE_MEMORY_TOOL_NAME) {
+      requestedTools[tool] = () =>
+        buildInlineMemoryTool({
+          toolName: tool,
+          req: options.req,
+          agent,
+          userId: user,
+          memoryMethods: { setMemory, deleteMemory, getFormattedMemories },
+          getRoleByName,
+        });
       continue;
     } else if (tool && mcpToolPattern.test(tool)) {
       if (!canUseMCP) {

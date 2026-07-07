@@ -70,6 +70,7 @@ export const fullMimeTypesList = [
   'application/vnd.oasis.opendocument.graphics',
   'image/svg',
   'image/svg+xml',
+  'message/rfc822',
   // Video formats
   'video/mp4',
   'video/avi',
@@ -229,6 +230,8 @@ export const supportedMimeTypes = [
   audioMimeTypes,
   /** Supported by LC Code Interpreter API */
   /^image\/(svg|svg\+xml)$/,
+  /** .eml email files */
+  /^message\/rfc822$/,
 ];
 
 export const codeInterpreterMimeTypes = [
@@ -285,6 +288,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   cljs: 'text/plain', // .cljs - ClojureScript source
   cljc: 'text/plain', // .cljc - Clojure common source
   elm: 'text/plain', // .elm - Elm source
+  eml: 'message/rfc822', // .eml - Email message (RFC 822)
   erl: 'text/plain', // .erl - Erlang source
   hrl: 'text/plain', // .hrl - Erlang header
   ex: 'text/plain', // .ex - Elixir source

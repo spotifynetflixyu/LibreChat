@@ -2,8 +2,10 @@ const { logger } = require('@librechat/data-schemas');
 const mongoose = require('mongoose');
 const { createContentAggregator } = require('@librechat/agents');
 const {
+  checkAccess,
   loadSkillStates,
   initializeAgent,
+  isMemoryEnabled,
   primeInvokedSkills,
   validateAgentModel,
   extractManualSkills,
@@ -23,9 +25,11 @@ const {
   sendEvent,
 } = require('@librechat/api');
 const {
+  Permissions,
   ResourceType,
   EModelEndpoint,
   PermissionBits,
+  PermissionTypes,
   MAX_SUBAGENT_DEPTH,
   isAgentsEndpoint,
   getResponseSender,
@@ -210,6 +214,24 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
   const codeEnvAvailable = enabledCapabilities.has(AgentCapabilities.execute_code);
   const ephemeralSkillsToggle = req.body?.ephemeralAgent?.skills === true;
   const skillDbMethods = getSkillDbMethods();
+
+  /** Run-level gate for inline memory tools: the `memory` capability must be
+   *  enabled, memory must be configured, and the user must not have opted out.
+   *  Requires the memory WRITE permissions (CREATE + UPDATE) — both inline tools
+   *  mutate memory — so the tools aren't registered (and shown to the model) for
+   *  read-only-memory roles that the runtime loader would then refuse to build.
+   *  Agents (or the ephemeral memory badge) opt in per-agent via the `memory`
+   *  marker on `tools`. */
+  const memoryAvailable =
+    enabledCapabilities.has(AgentCapabilities.memory) &&
+    isMemoryEnabled(appConfig?.memory) &&
+    req.user?.personalization?.memories !== false &&
+    (await checkAccess({
+      user: req.user,
+      permissionType: PermissionTypes.MEMORIES,
+      permissions: [Permissions.USE, Permissions.CREATE, Permissions.UPDATE],
+      getRoleByName: db.getRoleByName,
+    }));
 
   const accessibleSkillIds = skillsCapabilityEnabled
     ? withDeploymentSkillIds(
@@ -446,6 +468,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       accessibleSkillIds: primaryScopedSkillIds,
       skillAuthoringAvailable: primarySkillAuthoringAvailable,
       codeEnvAvailable,
+      memoryAvailable,
       skillStates,
       defaultActiveOnShare,
       manualSkills,
@@ -521,6 +544,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       skillStates,
       defaultActiveOnShare,
       codeEnvAvailable,
+      memoryAvailable,
     },
     {
       getAgent: db.getAgent,
@@ -592,6 +616,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     skillStates,
     defaultActiveOnShare,
     codeEnvAvailable,
+    memoryAvailable,
   });
 
   if (updatedMCPAuthMap) {
@@ -730,6 +755,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
            *  false`, so `bash_tool` / `read_file` sandbox fallback are
            *  silently gated off even though the seed walk found it. */
           codeEnvAvailable,
+          memoryAvailable,
           skillStates,
           defaultActiveOnShare,
         },

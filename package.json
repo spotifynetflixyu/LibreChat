@@ -1,6 +1,6 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.7-rc1",
+  "version": "v0.8.7",
   "description": "",
   "packageManager": "npm@11.13.0",
   "workspaces": [
@@ -96,6 +96,7 @@
     "b:balance": "bun config/add-balance.js",
     "b:list-balances": "bun config/list-balances.js",
     "reset-terms": "node config/reset-terms.js",
+    "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",
     "flush-cache": "node config/flush-cache.js",
     "migrate:agent-permissions:dry-run": "node config/migrate-agent-permissions.js --dry-run",
     "migrate:agent-permissions": "node config/migrate-agent-permissions.js",

@@ -4,6 +4,9 @@ const {
   GenerationJobManager,
   hasPersistableAbortContent,
   buildAbortedResponseMetadata,
+  isPendingActionStale,
+  isHITLEnabled,
+  deleteAgentCheckpoint,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -237,7 +240,13 @@ router.get('/chat/status/:conversationId', async (req, res) => {
   // Get resume state which contains aggregatedContent
   // Avoid calling both getStreamInfo and getResumeState (both fetch content)
   const resumeState = await GenerationJobManager.getResumeState(conversationId);
-  const isActive = job.status === 'running';
+  // A job paused for human review is still active (consistent with /chat/active),
+  // so the client resumes/subscribes rather than treating it as finished — but
+  // only while it has a live, resolvable prompt: a missing/malformed or
+  // past-expiry pendingAction reads as inactive (cleanup/expiry will finalize it).
+  const pendingAction = job.metadata.pendingAction;
+  const pendingLive = job.status === 'requires_action' && !isPendingActionStale({ pendingAction });
+  const isActive = job.status === 'running' || pendingLive;
 
   res.json({
     active: isActive,
@@ -246,6 +255,10 @@ router.get('/chat/status/:conversationId', async (req, res) => {
     aggregatedContent: resumeState?.aggregatedContent ?? [],
     createdAt: job.createdAt,
     resumeState,
+    // Surface the live pending approval so a client rebuilding from /chat/status
+    // (reload / cross-replica) has the action id + payload to render and submit
+    // the prompt, not just the knowledge that the stream is paused.
+    pendingAction: job.status === 'requires_action' && pendingLive ? pendingAction : undefined,
   });
 });
 
@@ -255,7 +268,7 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
-router.post('/chat/abort', async (req, res) => {
+router.post('/chat/abort', configMiddleware, async (req, res) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);
   logger.debug(`[AgentStream] Body:`, req.body);
@@ -266,7 +279,10 @@ router.post('/chat/abort', async (req, res) => {
   // streamId === conversationId, so try any of the provided IDs
   // Skip "new" as it's a placeholder for new conversations, not an actual ID
   let jobStreamId =
-    streamId || (conversationId !== 'new' ? conversationId : null) || abortKey?.split(':')[0];
+    streamId ||
+    (conversationId !== 'new' ? conversationId : null) ||
+    abortKey?.split(':')[0] ||
+    null;
   let job = jobStreamId ? await GenerationJobManager.getJob(jobStreamId) : null;
 
   // Fallback: if job not found and we have a userId, look up active jobs for user
@@ -277,11 +293,15 @@ router.post('/chat/abort', async (req, res) => {
       userId,
       req.user.tenantId,
     );
-    if (activeJobIds.length > 0) {
-      // Abort the most recent active job for this user
-      jobStreamId = activeJobIds[0];
-      job = await GenerationJobManager.getJob(jobStreamId);
+    for (const activeJobId of activeJobIds) {
+      const activeJob = await GenerationJobManager.getJob(activeJobId);
+      if (activeJob?.status !== 'running') {
+        continue;
+      }
+      jobStreamId = activeJobId;
+      job = activeJob;
       logger.debug(`[AgentStream] Found active job for user: ${jobStreamId}`);
+      break;
     }
   }
 
@@ -307,6 +327,17 @@ router.post('/chat/abort', async (req, res) => {
 
     if (abortResult.success) {
       await saveAbortUserMessage(req, userId, abortResult.jobData);
+    }
+
+    // HITL: prune the durable checkpoint of a run aborted while paused, so a new turn
+    // in this conversation can't rehydrate the stale interrupt before the Mongo TTL
+    // reclaims it (thread_id is the stable conversationId). Idempotent / no-op when
+    // HITL is off or nothing was written.
+    const agentsCfg = req.config?.endpoints?.agents;
+    if (isHITLEnabled(agentsCfg?.toolApproval)) {
+      await deleteAgentCheckpoint(jobStreamId, agentsCfg?.checkpointer).catch((err) =>
+        logger.error(`[AgentStream] Failed to prune checkpoint on abort: ${jobStreamId}`, err),
+      );
     }
 
     // CRITICAL: Save partial response BEFORE returning to prevent race condition.
@@ -348,7 +379,10 @@ router.post('/chat/abort', async (req, res) => {
         await saveMessage(
           {
             userId: req?.user?.id,
-            isTemporary: req?.body?.isTemporary,
+            // Source from the job, not the request: the stop button posts only the
+            // conversationId, so trusting req.body.isTemporary would persist an aborted
+            // temporary-chat partial as a normal (orphaned) message.
+            isTemporary: jobData?.isTemporary ?? req?.body?.isTemporary,
             interfaceConfig: req?.config?.interfaceConfig,
           },
           responseMessage,
