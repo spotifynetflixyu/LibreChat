@@ -334,6 +334,144 @@ describe('ResumableAgentController resume metadata', () => {
     );
   });
 
+  it('persists the submitted user message before OCR preflight can fail', async () => {
+    const initializeClient = jest
+      .fn()
+      .mockRejectedValue(new Error('OCR preprocessing failed for BH.pdf: terminated'));
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        messageId: 'file-user-message',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        files: [
+          {
+            file_id: 'file-bh-pdf',
+            filename: 'BH.pdf',
+            filepath: 'files/user-123/BH.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+            text: 'raw OCR/file text must not be saved early',
+            _id: 'mongo-row-id',
+          },
+        ],
+        endpointOption: {
+          endpoint: 'openai_oauth_responses',
+          iconURL: 'openai',
+          modelOptions: { model: 'gpt-5.5' },
+        },
+      },
+      config: {},
+    };
+    const res = createResumableResponse();
+
+    await AgentController(req, res, jest.fn(), initializeClient, null);
+
+    const { conversationId } = res.json.mock.calls[0][0];
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({
+        messageId: 'file-user-message',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        conversationId,
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        sender: 'User',
+        isCreatedByUser: true,
+        files: [
+          {
+            file_id: 'file-bh-pdf',
+            filename: 'BH.pdf',
+            filepath: 'files/user-123/BH.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+          },
+        ],
+      }),
+      expect.objectContaining({
+        context: 'api/server/controllers/agents/request.js - preliminary user message',
+      }),
+    );
+    const savedMessage = mockSaveMessage.mock.calls[0][1];
+    expect(savedMessage.files[0]).not.toHaveProperty('text');
+    expect(savedMessage.files[0]).not.toHaveProperty('_id');
+    expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      initializeClient.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('reuses the preliminary user id and emits the server response id on created', async () => {
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      sendMessage: jest.fn(async (_text, messageOptions) => {
+        expect(messageOptions.userMessageId).toBe('file-user-message');
+        messageOptions.onStart(
+          {
+            messageId: messageOptions.userMessageId,
+            parentMessageId: '00000000-0000-0000-0000-000000000000',
+            conversationId: messageOptions.conversationId,
+            text: 'OCR檔案內容，逐一列表給我核對。',
+          },
+          'assistant-message',
+        );
+        return {
+          messageId: 'assistant-message',
+          conversationId: messageOptions.conversationId,
+          content: [{ type: 'text', text: '逐一列表完成。' }],
+          databasePromise: Promise.resolve({
+            conversation: {
+              conversationId: messageOptions.conversationId,
+              title: 'New Chat',
+            },
+          }),
+        };
+      }),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'OCR檔案內容，逐一列表給我核對。',
+        messageId: 'file-user-message',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        files: [
+          {
+            file_id: 'file-bh-pdf',
+            filename: 'BH.pdf',
+            filepath: 'files/user-123/BH.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+          },
+        ],
+        endpointOption: {
+          endpoint: 'openai_oauth_responses',
+          iconURL: 'openai',
+          modelOptions: { model: 'gpt-5.5' },
+        },
+      },
+      config: {},
+    };
+    const res = createResumableResponse();
+
+    await AgentController(req, res, jest.fn(), initializeClient, null);
+    const { conversationId } = res.json.mock.calls[0][0];
+
+    await waitForExpectation(() => {
+      expect(client.sendMessage).toHaveBeenCalled();
+      expect(mockGenerationJobManager.emitChunk).toHaveBeenCalledWith(
+        conversationId,
+        expect.objectContaining({
+          created: true,
+          responseMessageId: 'assistant-message',
+          message: expect.objectContaining({
+            messageId: 'file-user-message',
+            conversationId,
+          }),
+        }),
+      );
+    });
+  });
+
   it('keeps an already-generated title persistable when preflight later fails', async () => {
     let titleParams;
     const addTitle = jest.fn(async (_req, params) => {

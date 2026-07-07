@@ -47,7 +47,11 @@ import { buildLangfuseConfig } from '~/langfuse/config';
 import { resolveConfigHeaders } from '~/utils/headers';
 import { applyTestRunHook } from '~/agents/testHook';
 import { isUserProvided } from '~/utils/common';
-import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '~/steel/ai/config';
+import {
+  parseOpenAIConfig,
+  resolveOpenAIOAuthAuthFilePath,
+  type OpenAIReasoningEffort,
+} from '~/steel/ai/config';
 import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
 
 /** Expected shape of JSON tool search results */
@@ -779,7 +783,10 @@ function getBooleanValue(
   return typeof value === 'boolean' ? value : undefined;
 }
 
-function getOpenAIOAuthModelOptions(agentInput: AgentInputs) {
+function getOpenAIOAuthModelOptions(
+  agentInput: AgentInputs,
+  reasoningEffortOverride?: OpenAIReasoningEffort,
+) {
   const clientOptions = agentInput.clientOptions as Record<string, unknown> | undefined;
   const openAIConfig = parseOpenAIConfig(process.env);
   const model = getStringValue(clientOptions, 'model') ?? openAIConfig.model;
@@ -796,7 +803,9 @@ function getOpenAIOAuthModelOptions(agentInput: AgentInputs) {
     model,
     presencePenalty: getNumberValue(clientOptions, 'presencePenalty'),
     reasoningEffort:
-      getStringValue(clientOptions, 'reasoningEffort') ?? openAIConfig.reasoningEffort,
+      reasoningEffortOverride ??
+      getStringValue(clientOptions, 'reasoningEffort') ??
+      openAIConfig.reasoningEffort,
     temperature: getNumberValue(clientOptions, 'temperature'),
     topP: getNumberValue(clientOptions, 'topP'),
   };
@@ -804,10 +813,12 @@ function getOpenAIOAuthModelOptions(agentInput: AgentInputs) {
 
 function applyOpenAIOAuthGraphOverride({
   agentInput,
+  openAIOAuthReasoningEffortOverride,
   run,
   sourceAgent,
 }: {
   agentInput?: AgentInputs;
+  openAIOAuthReasoningEffortOverride?: OpenAIReasoningEffort;
   run: unknown;
   sourceAgent?: Pick<RunAgent, 'endpoint' | 'provider'>;
 }): void {
@@ -822,7 +833,7 @@ function applyOpenAIOAuthGraphOverride({
 
   const agentId = agentInput.agentId;
   graph.overrideModel = createOpenAIOAuthGraphModel({
-    modelOptions: getOpenAIOAuthModelOptions(agentInput),
+    modelOptions: getOpenAIOAuthModelOptions(agentInput, openAIOAuthReasoningEffortOverride),
     getSystemRunnable: () => graph.agentContexts?.get(agentId)?.systemRunnable,
     getTools: () =>
       resolveLocalToolsForBinding({
@@ -990,6 +1001,7 @@ export async function createRun({
   calibrationRatio,
   appConfig,
   subagentUsageSink,
+  openAIOAuthReasoningEffortOverride,
   hitlCapable = false,
   streaming = true,
   streamUsage = true,
@@ -1000,6 +1012,7 @@ export async function createRun({
   streaming?: boolean;
   streamUsage?: boolean;
   requestBody?: t.RequestBody;
+  openAIOAuthReasoningEffortOverride?: OpenAIReasoningEffort;
   user?: IUser;
   tenantId?: string;
   /** Message history for extracting previously discovered tools */
@@ -1367,6 +1380,7 @@ export async function createRun({
 
   applyOpenAIOAuthGraphOverride({
     agentInput: agentInputs.length === 1 ? agentInputs[0] : undefined,
+    openAIOAuthReasoningEffortOverride,
     run,
     sourceAgent: agents.length === 1 ? agents[0] : undefined,
   });

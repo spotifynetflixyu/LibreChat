@@ -751,6 +751,8 @@ export default function useResumableSSE(
             const createdInitialResponse = buildCreatedInitialResponse({
               initialResponse: currentSubmission.initialResponse as TMessage,
               userMessage,
+              responseMessageId:
+                typeof data.responseMessageId === 'string' ? data.responseMessageId : undefined,
               isRegenerate: currentSubmission.isRegenerate,
             });
             currentSubmission = {

@@ -1184,6 +1184,62 @@ describe('useStepHandler', () => {
       );
     });
 
+    it('appends text after synced tool-call content when server text index starts at zero', () => {
+      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+      const toolCallPart = {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'tool-call-1',
+          name: 'paddleocr_vl_mcp_PaddleOCR',
+          args: '{}',
+          type: ToolCallTypes.TOOL_CALL,
+        },
+      } as unknown as TMessageContentParts;
+      const responseMessage = createResponseMessage({
+        content: [toolCallPart],
+      });
+      mockGetMessages.mockReturnValue([responseMessage]);
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission({
+        initialResponse: responseMessage,
+        messages: [createUserMessage(), responseMessage],
+      });
+
+      act(() => {
+        result.current.syncStepMessage(responseMessage);
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createRunStep({ index: 0 }) },
+          submission,
+        );
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_MESSAGE_DELTA, data: createMessageDelta('step-1', 'OCR text') },
+          submission,
+        );
+      });
+
+      const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
+      const responseMsg = lastCall[lastCall.length - 1];
+      expect(responseMsg.content).toEqual([
+        expect.objectContaining({ type: ContentTypes.TOOL_CALL }),
+        expect.objectContaining({ type: ContentTypes.TEXT, text: 'OCR text' }),
+      ]);
+      expect(consoleSpy).not.toHaveBeenCalledWith(
+        'Content type mismatch',
+        expect.objectContaining({
+          existingType: ContentTypes.TOOL_CALL,
+          contentType: ContentTypes.TEXT,
+        }),
+      );
+      consoleSpy.mockRestore();
+    });
+
     it('should return early when contentPart is null', () => {
       const responseMessage = createResponseMessage();
       mockGetMessages.mockReturnValue([responseMessage]);

@@ -349,7 +349,10 @@ class BaseClient {
     const conversationId = requestConvoId ?? crypto.randomUUID();
     const parentMessageId = opts.parentMessageId ?? Constants.NO_PARENT;
     const userMessageId =
-      overrideUserMessageId ?? opts.overrideParentMessageId ?? crypto.randomUUID();
+      overrideUserMessageId ??
+      opts.userMessageId ??
+      opts.overrideParentMessageId ??
+      crypto.randomUUID();
     let responseMessageId = opts.responseMessageId ?? crypto.randomUUID();
     let head = isEdited ? responseMessageId : parentMessageId;
     this.currentMessages = (await this.loadHistory(conversationId, head)) ?? [];

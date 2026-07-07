@@ -654,6 +654,7 @@ class AgentClient extends BaseClient {
         : undefined,
     });
     let paddleOcrPreflight;
+    this.options.openAIOAuthReasoningEffortOverride = undefined;
     if (this.options.req) {
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
@@ -674,6 +675,9 @@ class AgentClient extends BaseClient {
         ...(this.options.req.steelNativeContext ?? {}),
         paddleOcrPreflight,
       };
+      if (paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0) {
+        this.options.openAIOAuthReasoningEffortOverride = 'none';
+      }
     }
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
@@ -1748,6 +1752,7 @@ class AgentClient extends BaseClient {
           runId: this.responseMessageId,
           signal: abortController.signal,
           customHandlers: this.options.eventHandlers,
+          openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
           requestBody: config.configurable.requestBody,
           user: createSafeUser(this.options.req?.user),
           tenantId: this.options.req?.user?.tenantId,
@@ -2066,6 +2071,7 @@ class AgentClient extends BaseClient {
         runId: this.responseMessageId,
         signal: abortController.signal,
         customHandlers: this.options.eventHandlers,
+        openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
         requestBody: config.configurable.requestBody,
         user: createSafeUser(this.options.req?.user),
         tenantId: this.options.req?.user?.tenantId,

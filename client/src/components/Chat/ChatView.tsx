@@ -25,6 +25,7 @@ import Header from './Header';
 import Footer from './Footer';
 import { cn } from '~/utils';
 import store from '~/store';
+import { getChatViewContentState } from './state';
 
 function LoadingSpinner() {
   return (
@@ -49,7 +50,11 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
 
   const fileMap = useFileMapContext();
 
-  const { data: messagesTree = null, isLoading } = useGetMessagesByConvoId(
+  const {
+    data: messagesTree = null,
+    isFetched: messagesFetched,
+    isLoading,
+  } = useGetMessagesByConvoId(
     conversationId ?? '',
     {
       select: useCallback(
@@ -77,14 +82,17 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
   const isLandingPage =
     (!messagesTree || messagesTree.length === 0) &&
     (conversationId === Constants.NEW_CONVO || !conversationId);
-  const isNavigating = (!messagesTree || messagesTree.length === 0) && conversationId != null;
+  const contentState = getChatViewContentState({
+    conversationId,
+    hasMessages: !!messagesTree?.length,
+    isLoading,
+    messagesFetched,
+  });
   const isProjectLandingPage = isLandingPage && project != null;
 
-  if (isLoading && conversationId !== Constants.NEW_CONVO) {
+  if (contentState === 'loading') {
     content = <LoadingSpinner />;
-  } else if ((isLoading || isNavigating) && !isLandingPage) {
-    content = <LoadingSpinner />;
-  } else if (!isLandingPage) {
+  } else if (contentState === 'messages') {
     content = <MessagesView messagesTree={messagesTree} />;
   } else {
     content = <Landing centerFormOnLanding={centerFormOnLanding} />;

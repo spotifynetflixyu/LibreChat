@@ -276,6 +276,30 @@ Recommended hook points:
   `client/src/components/Chat/Messages/Content/SteelActivity.tsx` renders the
   assistant-message parse/save status without writing internal activity into
   persisted assistant text or content parts.
+- Frontend message content indexing must preserve streamed text after OCR/tool
+  content. Long OCR preprocessing turns can sync PaddleOCR/tool-call content
+  parts onto the assistant message before the main agent starts streaming its
+  final text. The provider/backend run-step content index for that final text
+  may still start at `0`, so the client must not blindly write the text delta
+  into existing content slot `0` if that slot already holds a non-OAuth
+  `tool_call`. In `client/src/hooks/SSE/useStepHandler.ts`, text/think deltas
+  targeting a non-OAuth tool-call slot must resolve to an existing compatible
+  text/think slot or append a new content part. OAuth prompt tool calls are the
+  exception: they intentionally occupy the real response slot and must still be
+  replaceable by the real text response. Preserve the backend SSE semantics and
+  provider delta granularity; do not split/pad model deltas to fake streaming.
+  Regression coverage belongs in
+  `client/src/hooks/SSE/__tests__/useStepHandler.spec.ts` with a synced
+  PaddleOCR `tool_call` followed by a text delta at server index `0`.
+- Streaming diagnostics for this path should separate backend emission from
+  frontend placement. When re-debugging this path, temporary backend logs can
+  prove `Invoking LLM -> first visible text delta -> LLM call complete`, and
+  temporary browser diagnostics can expose raw text-delta receive/apply/buffer
+  counters. Remove that instrumentation after the content-index behavior is
+  verified. If the console shows repeated `Content type mismatch` warnings such as
+  `{ existingType: "tool_call", contentType: "text", index: 0 }`, the backend
+  is already delivering deltas and the bug is client content-index placement,
+  not OCR preflight duration or provider streaming.
 - Open Responses protocol guard: `api/server/controllers/agents/responses.js`
   runs durable Steel Markdown capture after `db.saveMessage`, but it does not
   currently inject custom `steel_event` SSE into the Open Responses-compatible

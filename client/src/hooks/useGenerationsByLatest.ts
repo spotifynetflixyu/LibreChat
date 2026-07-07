@@ -26,6 +26,7 @@ export default function useGenerationsByLatest({
   const isEditableEndpoint = Boolean(
     [
       EModelEndpoint.openAI,
+      EModelEndpoint.openAIOAuth,
       EModelEndpoint.custom,
       EModelEndpoint.google,
       EModelEndpoint.agents,
@@ -47,6 +48,7 @@ export default function useGenerationsByLatest({
     [
       EModelEndpoint.azureOpenAI,
       EModelEndpoint.openAI,
+      EModelEndpoint.openAIOAuth,
       EModelEndpoint.custom,
       EModelEndpoint.agents,
       EModelEndpoint.bedrock,

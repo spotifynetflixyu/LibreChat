@@ -988,6 +988,11 @@ describe('createResponse controller', () => {
           }),
         }),
       );
+      expect(api.createRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openAIOAuthReasoningEffortOverride: 'none',
+        }),
+      );
     });
 
     it('applies agent-scoped attachment context before createRun', async () => {

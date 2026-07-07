@@ -99,8 +99,11 @@ const SKILL_QUERY_KEYS = [
 export const buildCreatedInitialResponse = ({
   initialResponse,
   userMessage,
+  responseMessageId,
   isRegenerate = false,
-}: Pick<EventSubmission, 'initialResponse' | 'userMessage' | 'isRegenerate'>): TMessage => ({
+}: Pick<EventSubmission, 'initialResponse' | 'userMessage' | 'isRegenerate'> & {
+  responseMessageId?: string | null;
+}): TMessage => ({
   ...initialResponse,
   parentMessageId:
     isRegenerate && initialResponse.parentMessageId
@@ -109,7 +112,7 @@ export const buildCreatedInitialResponse = ({
   messageId:
     isRegenerate && initialResponse.messageId
       ? initialResponse.messageId
-      : `${userMessage.messageId}_`,
+      : responseMessageId || `${userMessage.messageId}_`,
   conversationId: userMessage.conversationId ?? initialResponse.conversationId,
 });
 
@@ -565,9 +568,13 @@ export default function useEventHandlers({
        * drops it, which is the right behavior: by finalize the real
        * `skill` tool_call is in `content` and takes over rendering.
        */
+      const createdResponseMessageId = (data as unknown as { responseMessageId?: unknown })
+        .responseMessageId;
       const initialResponse = buildCreatedInitialResponse({
         initialResponse: submission.initialResponse,
         userMessage,
+        responseMessageId:
+          typeof createdResponseMessageId === 'string' ? createdResponseMessageId : undefined,
         isRegenerate,
       });
       if (isRegenerate) {
@@ -774,14 +781,16 @@ export default function useEventHandlers({
         const isNewConvo = conversation.conversationId !== submissionConvo.conversationId;
 
         // Skip temporary conversations — the server never generates titles for them.
+        const finalConversationId = conversation.conversationId;
         if (
           shouldQueueTitleGenerationForFinal({
-            conversationId: conversation.conversationId,
+            conversationId: finalConversationId,
             title: conversation.title,
             isTemporary: _isTemporary,
-          })
+          }) &&
+          finalConversationId
         ) {
-          queueTitleGeneration(conversation.conversationId, { retry: !isNewConvo });
+          queueTitleGeneration(finalConversationId, { retry: !isNewConvo });
         }
 
         const setFinalMessages = (id: string | null, _messages: TMessage[]) => {

@@ -226,6 +226,8 @@ beforeEach(() => {
   delete process.env.LANGFUSE_FANOUT_TENANT_BASE_URL;
   delete process.env.LANGFUSE_FANOUT_TENANT_DESTINATIONS;
   delete process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED;
+  delete process.env.OPENAI_REASONING_EFFORT;
+  delete process.env.STEEL_OPENAI_REASONING_EFFORT;
 });
 
 // ---------------------------------------------------------------------------
@@ -288,6 +290,73 @@ describe('custom endpoint stream usage defaults', () => {
       | { options?: { getSystemRunnable?: () => unknown } }
       | undefined;
     expect(overrideModel?.options?.getSystemRunnable?.()).toBe(systemRunnable);
+  });
+
+  it('uses configured reasoning effort for OpenAI OAuth runs by default', async () => {
+    process.env.OPENAI_REASONING_EFFORT = 'high';
+    const graph = {
+      agentContexts: new Map([['agent_1', { getToolsForBinding: jest.fn(() => []) }]]),
+    };
+    const run = {
+      Graph: graph,
+      processStream: jest.fn().mockResolvedValue(undefined),
+    };
+    (Run.create as jest.Mock).mockResolvedValueOnce(run);
+
+    await createRun({
+      agents: [
+        makeAgent({
+          endpoint: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          model_parameters: {
+            model: 'gpt-5.5',
+          },
+          provider: 'openai_oauth_responses',
+        }) as never,
+      ],
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const overrideModel = (graph as { overrideModel?: unknown }).overrideModel as
+      | { options?: { modelOptions?: { reasoningEffort?: string } } }
+      | undefined;
+    expect(overrideModel?.options?.modelOptions?.reasoningEffort).toBe('high');
+  });
+
+  it('lets the OCR markdown path force OpenAI OAuth reasoning effort to none', async () => {
+    process.env.OPENAI_REASONING_EFFORT = 'high';
+    const graph = {
+      agentContexts: new Map([['agent_1', { getToolsForBinding: jest.fn(() => []) }]]),
+    };
+    const run = {
+      Graph: graph,
+      processStream: jest.fn().mockResolvedValue(undefined),
+    };
+    (Run.create as jest.Mock).mockResolvedValueOnce(run);
+
+    await createRun({
+      agents: [
+        makeAgent({
+          endpoint: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          model_parameters: {
+            model: 'gpt-5.5',
+          },
+          provider: 'openai_oauth_responses',
+        }) as never,
+      ],
+      openAIOAuthReasoningEffortOverride: 'none',
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const overrideModel = (graph as { overrideModel?: unknown }).overrideModel as
+      | { options?: { modelOptions?: { reasoningEffort?: string } } }
+      | undefined;
+    expect(overrideModel?.options?.modelOptions?.reasoningEffort).toBe('none');
   });
 
   it('disables streamUsage by default for OpenAI-compatible custom endpoints', async () => {

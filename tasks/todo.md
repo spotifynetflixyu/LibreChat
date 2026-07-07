@@ -1,3 +1,616 @@
+# Active: first text delta timing instrumentation - 2026-07-07
+
+Goal: prove whether OCR main-agent responses stream visible text before final
+completion by logging `Invoking LLM -> first text delta -> LLM call complete`.
+
+Checklist:
+
+- [x] Add a focused callback test for first visible text-delta timing logs.
+- [x] Implement timing tracking in the native AgentClient event handlers without
+      changing stream behavior.
+- [x] Run focused callback tests and `rtk git diff --check`.
+- [x] Record how to read the next OCR run logs.
+- [x] Extend the timing log to summarize received vs emitted visible text
+      deltas, so the next OCR run can distinguish provider chunking from
+      SSE/client rendering.
+- [x] Inspect the next OCR run's delta summary and add client-side SSE text
+      delta diagnostics for the remaining frontend/render path.
+- [x] Switch the client `SSETextDelta` diagnostic from logger-gated output to
+      raw `console.debug` plus `window.__sseTextDeltaStats`.
+- [x] Rerun the BH.pdf OCR case and verify console telemetry.
+
+Review:
+
+- `ON_AGENT_LOG` now tracks `Invoking LLM` / `LLM call complete`.
+- `ON_MESSAGE_DELTA` now logs the first visible text delta received by the UI
+  path, without changing aggregation or SSE emission.
+- The completion timing log also reports total received/emitted text-delta
+  events and characters, plus first/last emitted timings.
+- For `1ee0bd74-e70e-4fa4-bee7-dfdc4679f9ae`, backend received and emitted
+  10,409 visible text deltas / 16,758 chars. First emitted delta was 8.86s
+  after `Invoking LLM`; last emitted delta was 204.84s, about 1s before LLM
+  complete. The remaining issue is therefore client receive/apply/render, not
+  backend SSE emission.
+- `useStepHandler` now logs `SSETextDelta` first/every-1000 received/applied/
+  buffered/dropped text deltas in the browser console to distinguish missing
+  run-step buffering from render saturation.
+- `SSETextDelta` now uses raw `console.debug` with single-line JSON payloads,
+  updates `window.__sseTextDeltaStats`, and emits `SSETextDeltaSummary` during
+  stream cleanup before clearing the client counters.
+- Live BH.pdf run `8613bbe2-92c4-430c-ac9c-f625771dc45e` streamed visibly in
+  the UI. Backend emitted 12,667 text-delta events / 20,405 chars; first delta
+  was 9.94s after `Invoking LLM`, last delta 248.76s, and complete 250.40s.
+  Browser console telemetry after HMR showed JSON `SSETextDelta` counters at
+  1,000 / 2,000 / 3,000 / 4,000 / 5,000 / 6,000 received+applied events with
+  `bufferedEvents=0` and `droppedEvents=0`.
+- A clean rerun after adding `SSETextDeltaSummary` reached main LLM run
+  `75b9316d-380b-457a-94f8-e57a073d7165` but failed upstream with
+  `token_expired` from OpenAI OAuth before any visible text delta; this verifies
+  the remaining blocker was auth, not SSE/client streaming.
+- Look for `[agents:graph] First visible text delta` and
+  `[agents:graph] LLM timing complete` in `api/logs/debug-2026-07-07.log`.
+- Verified:
+  - Browser console logs for `SSETextDelta` on the BH.pdf OCR run.
+  - `rtk npx jest src/hooks/SSE/__tests__/useStepHandler.spec.ts --runInBand --watch=false --coverage=false`
+  - `rtk npx jest --runTestsByPath server/controllers/agents/__tests__/callbacks.spec.js --runInBand`
+  - `rtk git diff --check`
+
+# Active: SSE text delta content-index mismatch after OCR tool calls - 2026-07-07
+
+Goal: fix repeated frontend `Content type mismatch` warnings where OCR main
+agent text deltas try to write into a synced `tool_call` content slot.
+
+Checklist:
+
+- [x] Confirm the reported conversation has backend text deltas but frontend
+      indexes them against an existing `tool_call` part.
+- [x] Add a focused client regression for synced tool-call content followed by
+      text deltas at server index 0.
+- [x] Fix the client content-index calculation without changing backend SSE
+      semantics.
+- [x] Run focused frontend tests and `rtk git diff --check`.
+- [x] Remove temporary streaming telemetry and the earlier no-run-step fallback
+      that was part of the wrong diagnosis.
+
+Findings:
+
+- `/c/bb347780-eb96-417d-af96-44a5e8e980c2` reached main LLM and logged first
+  visible text delta at `2026-07-07T13:43:40.106Z`, 14.41s after
+  `Invoking LLM`; the warning is therefore not a missing backend delta.
+- The warning shape `existingType: "tool_call", contentType: "text", index: 0`
+  means the frontend selected content slot 0 for a text delta while the synced
+  response message already had a tool-call part at slot 0.
+- The fix only skips over non-OAuth `tool_call` slots for incoming text/think
+  content. OAuth prompt tool calls still get replaced by the real response
+  content, and non-tool content mismatches still warn instead of appending.
+
+Review:
+
+- Added a regression where a synced PaddleOCR tool-call content part occupies
+  slot 0 and the server later sends text at index 0. The text is now appended as
+  a new text part instead of being dropped by `Content type mismatch`.
+- Focused verification passed:
+  - `rtk npx jest src/hooks/SSE/__tests__/useStepHandler.spec.ts --runInBand --watch=false --coverage=false`
+  - `rtk git diff --check`
+- Cleanup kept the content-index fix and regression test, and removed the
+  temporary backend/client text-delta timing logs plus the no-run-step delta
+  application fallback.
+
+# Active: OCR preprocessing reasoning effort routing - 2026-07-07
+
+Goal: reduce first-token latency when the main agent is only processing OCR
+markdown produced by preprocessing, while preserving env-configured reasoning
+for normal Steel tasks such as quoting.
+
+Checklist:
+
+- [x] Add failing tests for OCR organizer `reasoningEffort: none` and main
+      OAuth agent `reasoningEffort: none` only when current OCR preprocessing
+      markdown is present.
+- [x] Implement the smallest routing change in the native OAuth/Steel OCR path.
+- [x] Run focused backend/package tests and `rtk git diff --check`.
+- [x] Record result and residual risk.
+
+Design:
+
+- PaddleOCR raw-data-to-markdown organizer keeps its existing
+  `reasoningEffort: none`.
+- Main OpenAI OAuth graph model keeps env/client `reasoningEffort` for normal
+  tasks.
+- Main OpenAI OAuth graph model overrides to `reasoningEffort: none` only when
+  the current request has same-turn OCR preprocessing markdown evidence, because
+  the markdown has already been organized by the preprocessing subagent.
+
+Review:
+
+- Implemented a caller-supplied OpenAI OAuth reasoning-effort override in
+  `createRun`.
+- AgentClient and Open Responses pass `none` only when PaddleOCR preflight
+  produced same-turn `currentOcrMarkdownResults`.
+- PaddleOCR OCR organizer remains `reasoningEffort: none`.
+- Verified:
+  - `rtk npx jest --runTestsByPath server/services/__tests__/ToolService.spec.js --runInBand`
+  - `rtk npx jest --runTestsByPath server/controllers/agents/__tests__/responses.unit.spec.js --runInBand`
+  - `rtk npx jest --runTestsByPath src/agents/__tests__/run-summarization.test.ts --runInBand --coverage=false`
+  - `rtk npm run build` in `packages/api`
+  - `rtk git diff --check`
+
+# Active: OAuth Responses final-only stream after OCR preflight - 2026-07-07
+
+Goal: explain why `/c/5184cbe8-de40-4fcb-ade4-e3f5fdff73d9`
+still waited about 9 minutes and then rendered the full OCR answer at once
+instead of streaming text during the main-agent response.
+
+Checklist:
+
+- [x] Confirm persisted conversation/message timing for the reported run.
+- [x] Compare OCR/preflight timing with the actual main LLM run window.
+- [x] Trace whether the OpenAI OAuth Responses stream emitted text delta
+      chunks or only a final completed chunk for this path.
+- [x] Add/run a focused regression or harness at the native stream seam.
+- [x] Decide whether a backend/client stream contract fix is needed.
+- [x] Record conclusion, verification, and residual risk.
+
+Findings so far:
+
+- The reported conversation has one user message and one assistant response
+  row; the latest duplicate-root-message fix is not the failing symptom for
+  this run.
+- OCR/preflight finished before the main answer. The main OpenAI OAuth LLM run
+  started at `2026-07-07T10:54:52.779Z` and completed at
+  `2026-07-07T10:58:04.695Z`, producing one persisted assistant text part of
+  length 14138.
+- Current graph code should stream if the provider yields
+  `response.output_text.delta`; the remaining question is whether this specific
+  Responses/OAuth model stream emitted deltas or only `response.completed`.
+- A live direct `openai-oauth-provider` `doStream()` smoke with `gpt-5.5` and
+  `reasoningEffort:"medium"` streamed 159 small `text-delta` parts over about
+  2.7s-5.5s, so the OAuth provider and native adapter are not globally stuck
+  on `doGenerate`.
+- The remaining evidence points to first-visible-token latency/provider
+  buffering for the large OCR prompt: this run had about 103k input tokens,
+  50k instruction tokens, and the main LLM call took 191.92s before finalizing.
+  There is no persisted partial assistant row and the in-memory SSE job was
+  deleted on completion, so the exact raw delta count for this completed run is
+  no longer recoverable.
+
+Review notes:
+
+- No new backend/client stream-contract fix is justified from this run. The
+  current backend path is `doStream -> text-delta -> AIMessageChunk ->
+  ChatModelStreamHandler -> on_run_step/on_message_delta`, and focused coverage
+  already asserts that native OAuth graph text deltas emit a message run step
+  before deltas.
+- This is not the duplicate-root-user-message failure anymore. The new run's
+  user/assistant parentage is stable and `created.responseMessageId` matched
+  the saved assistant row.
+- The user-visible all-at-once response is most likely the upstream not
+  producing displayable text until the end of a very large OCR prompt. Artificial
+  server-side chunk splitting would make the UI look streamed after the upstream
+  blob arrives, but would not reduce first-token latency and would misrepresent
+  provider streaming behavior.
+- Verification:
+  - Live direct provider smoke:
+    `rtk node --input-type=module -e '...'` streamed 159 `text-delta` parts for
+    `gpt-5.5` with `reasoningEffort:"medium"`.
+  - `rtk git diff --check` passed.
+- Residual risk: the completed in-memory SSE job was deleted, so this exact
+  run's raw delta timestamps cannot be recovered. To prove the next OCR run
+  conclusively, add temporary/permanent first-text-delta timing instrumentation
+  around the OAuth adapter or GenerationJobManager before rerunning the same
+  OCR prompt.
+
+# Active: OCR preflight duplicate root user messages - 2026-07-07
+
+Goal: decide and lock down whether OCR/preflight should still create duplicate
+root user messages after the resumable streaming identity fix.
+
+Checklist:
+
+- [x] Inspect the reported conversation's Mongo message shape.
+- [x] Add/strengthen a regression that proves the preliminary user id is reused.
+- [x] Run focused backend verification.
+- [x] Record whether old duplicate rows need cleanup versus code-only fix.
+
+Findings so far:
+
+- `/c/d9a4bbfc-abcc-444b-83c7-bcc662bff63a` currently has two root user
+  messages with the same text/file and no assistant child row under either
+  message. Its `conversations.messages` array points at an id not present in
+  the messages query, so this is stale/broken historical data rather than a
+  clean branch state.
+- The new-code invariant should be: the preliminary user message saved before
+  OCR/preflight and the later `BaseClient.sendMessage()` user message must use
+  the same `messageId`.
+
+Review notes:
+
+- New OCR/preflight turns should be fixed by the resumable identity change:
+  `request.js` passes the preliminary `messageId` down as `userMessageId`, and
+  `BaseClient` uses that explicit id for the user message instead of generating
+  a second UUID.
+- Added a BaseClient regression proving a fresh turn with `userMessageId` saves
+  exactly one user message and parents the assistant response to that same id.
+- Verification:
+  - `cd api && rtk npx jest app/clients/specs/BaseClient.test.js server/controllers/agents/__tests__/request.resumeMetadata.spec.js --runInBand --watch=false --coverage=false`
+    passed 87 tests.
+  - `rtk git diff --check` passed.
+- Old duplicate rows should not be broad-deleted automatically. The reported
+  conversation also has an orphan `conversations.messages` pointer, so cleanup
+  should be a targeted repair script or manual one-off after deciding which
+  row, if any, should remain visible.
+
+# Active: OpenAI OAuth user message edit missing - 2026-07-07
+
+Goal: diagnose why `/c/d9a4bbfc-abcc-444b-83c7-bcc662bff63a`
+does not show the user-message edit button / Save and Submit flow.
+
+Checklist:
+
+- [x] Confirm the conversation/message DB state for the reported URL.
+- [x] Trace the frontend hover action gating for edit visibility.
+- [x] Add a focused regression for OpenAI OAuth edit capability.
+- [x] Apply the minimal fix and run focused verification.
+- [x] Record root cause and residual risk.
+
+Hypotheses:
+
+- H1: `openai_oauth_responses` is omitted from the frontend editable endpoint
+      allowlist, so the edit icon is never rendered.
+- H2: file-attached user messages suppress edit controls even when the endpoint
+      is editable.
+- H3: the message is not treated as the latest editable generation because the
+      conversation has duplicate root user messages from OCR preflight history.
+
+Review notes:
+
+- H1 confirmed. The reported conversation endpoint is
+  `openai_oauth_responses`, and the hover action path uses
+  `conversation.endpointType ?? conversation.endpoint`; this conversation has
+  no `endpointType`, so it reaches the edit capability gate as
+  `openai_oauth_responses`.
+- `useGenerationsByLatest` did not include `EModelEndpoint.openAIOAuth` in the
+  editable/branching endpoint allowlists. That made
+  `isEditableEndpoint=false`, so `HoverButtons` never rendered the edit button;
+  the Save and Submit flow was unreachable.
+- File attachments were not the suppressing condition. The user edit path is
+  already handled by `EditTextPart` once the edit state is reachable.
+- The minimal fix adds `EModelEndpoint.openAIOAuth` to the editable and
+  branching endpoint capability lists.
+- Verification:
+  - `cd client && rtk npx jest src/hooks/__tests__/useGenerationsByLatest.spec.ts --runInBand --watch=false --coverage=false`
+    passed.
+  - `cd client && rtk npx jest src/components/Chat/Messages/__tests__/HoverActions.streaming.spec.tsx --runInBand --watch=false --coverage=false`
+    passed.
+  - `rtk git diff --check` passed.
+- Residual risk: the reported conversation has duplicate root user messages
+  from the OCR/preflight history, but that was not the cause of the missing
+  edit button.
+
+# Active: Repeat OCR main-agent response not streaming - 2026-07-07
+
+Goal: diagnose why `/c/0b271982-97f7-4148-85f2-a40fd79b4b5f`
+ran for about 9m26s, spent roughly 7m in OCR preflight, then showed the
+main-agent response all at once instead of streaming into the chat UI.
+
+Checklist:
+
+- [x] Inspect Mongo conversation/message rows, timestamps, saved partial/final
+      message state, and OCR activity state for this conversation.
+- [x] Inspect local backend/frontend logs for the transition from
+      `Processing pdf with OCR markdowns` into the main OpenAI OAuth model run.
+- [x] Determine whether backend emits `on_message_delta` during the main-agent
+      run or only emits/commits content at finalization.
+- [x] Build a focused regression test at the actual failing seam before any
+      production-code change.
+- [x] Apply the minimal fix, then run focused verification and
+      `rtk git diff --check`.
+- [x] Record root cause, timing evidence, and residual risk.
+
+Hypotheses:
+
+- H1: Preflight duration is related because the assistant placeholder or
+      frontend `submission` state expires/gets replaced during the long
+      OCR-only phase, so later text deltas cannot attach to the visible message.
+- H2: Backend main-agent streaming still uses a final-value path in this OCR
+      handoff, so no text deltas are emitted until the model finishes.
+- H3: Backend emits deltas, but the client discards them because the delta id
+      does not match the placeholder/run-step state after resumable sync.
+- H4: Activity/tool panels update correctly because `steel_event`/tool events
+      use a separate path, while assistant text rendering is blocked by
+      message-list/submission reconciliation.
+
+Review notes:
+
+- Mongo timing for `0b271982-97f7-4148-85f2-a40fd79b4b5f` shows OCR
+  preflight from roughly 09:56:38Z to 10:02:47Z, then the main LLM run from
+  10:02:47Z to 10:05:56Z. The final assistant row is parented to a second user
+  message id, while the preliminary request user message was already saved
+  under a different id.
+- The earlier aborted runs prove the model/provider had generated partial text
+  before Stop: abort persistence saved partial assistant content. Direct
+  `openai-oauth-provider` and the LibreChat OAuth graph wrapper both streamed
+  small prompts, so this was not a provider-wide `doGenerate` path.
+- The concrete fix is to keep the long-preflight resumable turn's identity
+  stable: `BaseClient` now accepts an explicit `userMessageId`, the resumable
+  controller passes the preliminary user message id into the real
+  `client.sendMessage()` call, and the `created` SSE event now includes the
+  actual server response id.
+- The frontend now uses `created.responseMessageId` for the assistant
+  placeholder when present. That means main-agent text can attach to the
+  correct response id immediately after OCR preflight, instead of depending on
+  a later `on_run_step` to replace an underscore placeholder after several
+  minutes of OCR-only events.
+- Verification:
+  - `cd api && rtk npx jest app/clients/specs/BaseClient.test.js server/controllers/agents/__tests__/request.resumeMetadata.spec.js --runInBand --watch=false --coverage=false`
+    passed 86 tests.
+  - `cd client && rtk npx jest src/hooks/SSE/__tests__/useEventHandlers.spec.ts src/hooks/SSE/__tests__/useResumableSSE.spec.ts src/hooks/SSE/__tests__/useStepHandler.spec.ts --runInBand --watch=false --coverage=false`
+    passed 108 tests.
+  - `rtk node --check api/app/clients/BaseClient.js` and
+    `rtk node --check api/server/controllers/agents/request.js` passed.
+  - `rtk git diff --check` passed.
+- Residual risk: `cd client && rtk npx tsc --noEmit --pretty false --skipLibCheck`
+  is still blocked by unrelated existing errors in
+  `client/src/components/Chat/__tests__/state.spec.ts` and
+  `client/src/components/Chat/Menus/Endpoints/components/OpenAIOAuthUsageRemaining.tsx`;
+  no remaining type errors are reported in the files touched for this fix.
+
+# Active: Backend run-step gap for OCR preprocessing answer - 2026-07-07
+
+Goal: explain why the OCR preprocessing main-agent response path emitted
+visible `on_message_delta` chunks without a matching `on_run_step`, and decide
+whether the backend should synthesize/fix that event contract instead of only
+handling the frontend fallback.
+
+Checklist:
+
+- [x] Trace the current native OpenAI OAuth agent path from provider event
+      handlers to SSE/job chunks.
+- [x] Identify which backend component owns `on_run_step` creation versus
+      `on_message_delta` forwarding.
+- [x] Compare normal graph/tool-step deltas with the OCR preprocessing
+      main-agent answer path.
+- [x] Add or run a focused backend/agent test if there is a code-owned backend
+      contract bug.
+- [x] Record the conclusion, verification, and residual frontend/backend
+      contract risk.
+
+Hypotheses:
+
+- H1: OpenAI OAuth main-answer deltas are direct provider text deltas, not graph
+      node content, so `@librechat/agents` forwards them as `on_message_delta`
+      without synthesizing a message-creation run step.
+- H2: OCR preprocessing bypasses the normal graph `dispatchRunStep` path after
+      the activity event and therefore loses the message-creation step only for
+      this PDF-preprocessed handoff.
+- H3: resumable stream/job replay drops `on_run_step` while retaining
+      `on_message_delta`, so the live backend originally sent the step but the
+      client did not receive/replay it.
+- H4: custom Steel activity events share the stream but are unrelated; the
+      missing run step is a pre-existing Responses/OAuth provider adapter
+      contract mismatch.
+
+Review notes:
+
+- The visible `Processing pdf with OCR markdowns (...)` event is not a graph
+  run step. It is built by
+  `buildSteelOcrPreprocessingEventEnvelopes()` as a `steel_event` with source
+  `ocr_preprocessing`, and `ToolService.emitSteelNativeEvents()` sends it
+  directly through `GenerationJobManager.emitChunk()`.
+- Normal native OpenAI OAuth main-answer text does not bypass graph run-step
+  creation. The provider `text-delta` becomes a LangChain `AIMessageChunk`, and
+  `ChatModelStreamHandler` calls `graph.dispatchRunStep()` with
+  `MESSAGE_CREATION` before `graph.dispatchMessageDelta()` for that same step
+  id. `callbacks.js` uses the same visibility gate for `ON_RUN_STEP` and
+  `ON_MESSAGE_DELTA`, and the ephemeral `openai_oauth_responses__gpt-5.5`
+  agent does not set `hide_sequential_outputs`.
+- H1, H2, and H4 are ruled out for the normal main-answer path. The remaining
+  backend-side risk is H3/replay timing: in local in-memory stream mode,
+  run-step resume state is read from a live graph `WeakRef`, while abort cleanup
+  clears content state and deletes the job by default. The exact live SSE event
+  sequence for the aborted 09:15:57 turn is therefore no longer recoverable
+  after the user pressed stop.
+- I added backend contract coverage in
+  `packages/api/src/steel/native/oauth.spec.ts`: native OAuth graph streaming
+  now asserts `ON_RUN_STEP(MESSAGE_CREATION)` is observed before the matching
+  `ON_MESSAGE_DELTA` chunks for the same step id.
+- Conclusion: do not synthesize fake backend `on_run_step` events for OCR
+  preprocessing. The correct backend invariant already exists on the graph
+  text path; the UI still needs a defensive fallback for cases where the
+  client-side step map is missing after resume/timing gaps.
+- Verification:
+  - `cd packages/api && rtk npx jest src/steel/native/oauth.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "message run step"` passed.
+  - `cd packages/api && rtk npx jest src/steel/native/oauth.spec.ts --runInBand --watch=false --coverage=false` passed 12 tests.
+
+# Active: OCR preprocessing AI response streaming gap - 2026-07-07
+
+Goal: diagnose why `/c/08993fe1-5a84-44d9-b42f-fd7a1df79b86`
+shows `Processing pdf with OCR markdowns` but does not stream the main agent
+assistant response into the chat UI until the user presses stop, where a
+truncated response suddenly appears.
+
+Checklist:
+
+- [x] Inspect local conversation/message/OCR memory state and recent runtime
+      logs for conversation `08993fe1-5a84-44d9-b42f-fd7a1df79b86`.
+- [x] Trace frontend SSE/resumable rendering and stop/abort behavior for
+      in-progress assistant messages.
+- [x] Trace backend OpenAI OAuth Responses streaming, Steel callbacks, and OCR
+      preprocessing handoff to identify where deltas are buffered or withheld.
+- [x] Build the smallest reproducible feedback loop or focused test at the
+      correct seam.
+- [x] Apply the minimal root-cause fix if code-owned, then run focused
+      verification and `rtk git diff --check`.
+- [x] Record review notes, residual risk, and any lesson from user correction.
+
+Hypotheses:
+
+- H1: backend receives provider deltas but OCR/Steel callback aggregation does
+      not forward them to the client until abort/finalization.
+- H2: backend forwards deltas, but frontend resumable SSE state suppresses
+      assistant rendering while the latest event is an OCR activity/status.
+- H3: the provider path is still using a non-streaming generate/aggregator path
+      during the main-agent OCR Markdown answer, so only abort persistence makes
+      partial text visible.
+- H4: abort handling flushes `AgentClient`/message state that normal streaming
+      fails to reconcile with the pending UI message id.
+
+Review notes:
+
+- Local Mongo for `08993fe1-5a84-44d9-b42f-fd7a1df79b86` has the conversation
+  title `BH.pdf OCR內容核對`, two user turns, and one assistant response saved as
+  `unfinished: true` with 647 chars. That matches the user report: pressing
+  stop caused abort/final handling to surface a partial response that had not
+  been visible during normal streaming.
+- Frontend root cause: if the client-side step map lacks a visible run step,
+  `useStepHandler` treated every matching text delta as out-of-order and
+  buffered it forever. Backend follow-up verified the normal native OAuth graph
+  text path does create `MESSAGE_CREATION` before text deltas, so the missing
+  step map is most likely a stream/replay/timing gap rather than an OCR
+  preprocessing main-answer bypass.
+- Fix: `useStepHandler` now falls back only when the current message list
+  already contains both this turn's user message and assistant placeholder. It
+  streams the visible delta into that placeholder; otherwise it preserves the
+  original buffering behavior for genuine out-of-order run-step streams.
+- Verification:
+  - Red test observed:
+    `cd client && rtk npx jest src/hooks/SSE/__tests__/useStepHandler.spec.ts --runInBand --watch=false --coverage=false --testNamePattern "streams visible message deltas"`
+    failed because no UI update occurred.
+  - Green/focused:
+    `cd client && rtk npx jest src/hooks/SSE/__tests__/useStepHandler.spec.ts --runInBand --watch=false --coverage=false`
+    passed 63 tests.
+  - `rtk git diff --check` passed.
+- Residual risk: `cd client && rtk npx tsc --noEmit --pretty false --skipLibCheck`
+  is currently blocked by unrelated existing type errors in
+  `client/src/components/Chat/__tests__/state.spec.ts`,
+  `client/src/components/Chat/Menus/Endpoints/components/OpenAIOAuthUsageRemaining.tsx`,
+  and `client/src/hooks/SSE/useEventHandlers.ts`; it did not report errors in
+  the edited hook/test files.
+
+# Active: Persist user message before OCR preflight - 2026-07-07
+
+Goal: fix generated/resumable conversations where OCR preflight can fail after
+the conversation shell is created but before the user's submitted message is
+persisted to the `messages` collection.
+
+Checklist:
+
+- [x] Add focused controller regression coverage for preflight/client
+      initialization failure after the early conversation shell is saved.
+- [x] Persist the preliminary user message before client initialization can run
+      OCR preflight.
+- [x] Ensure the preliminary message keeps displayable file metadata but does
+      not persist raw OCR/file text.
+- [x] Verify focused backend tests, existing frontend loading regression, syntax
+      checks, and diff hygiene.
+- [x] Record review notes and the user-corrected persistence rule.
+
+Review notes:
+
+- Root cause confirmed: resumable agent requests saved the generated
+  conversation shell and job metadata before returning the stream id, but the
+  actual `messages` row for the user's submitted message was still saved later,
+  after client initialization / `sendMessage()`. An OCR preflight or organizer
+  failure before that point left a durable conversation with zero messages.
+- Fix: `request.js` now saves a preliminary user message before
+  `initializeClient()` can run OCR preflight. The saved row uses the submitted
+  `messageId`, `conversationId`, `parentMessageId`, user text, `sender: "User"`,
+  `isCreatedByUser: true`, and sanitized file chip metadata.
+- The early save keeps raw file/OCR text out of the message row and preserves
+  the existing `overrideUserMessageId` skip-save branch behavior. Later
+  user-message saves are idempotent because `saveMessage()` upserts by
+  `(messageId, user)`.
+- Verification passed:
+  - `cd api && rtk npx jest server/controllers/agents/__tests__/request.resumeMetadata.spec.js --runInBand --watch=false --coverage=false`
+  - `rtk node --check api/server/controllers/agents/request.js`
+
+# Active: Frontend loading on empty conversation shell - 2026-07-07
+
+Goal: fix `/c/607328a4-544c-44fe-b1ed-41abbf0d85a2` staying on the frontend
+loading spinner when the conversation row exists but no message rows were saved.
+
+Checklist:
+
+- [x] Confirm local frontend/backend are reachable and the route serves the
+      Vite app.
+- [x] Confirm Mongo state for the reported conversation: conversation shell
+      exists, message count is zero, OCR preprocessing memory has partial
+      progress.
+- [x] Trace frontend loading condition for empty message query results.
+- [x] Add focused frontend regression coverage for an existing empty
+      conversation after messages query completes.
+- [x] Apply the minimal `ChatView` condition fix.
+- [x] Run focused frontend tests and `rtk git diff --check`.
+- [x] Record review notes.
+
+Review notes:
+
+- Root cause: `ChatView` treated every existing route with no messages as
+  "navigating" forever. Once the message query finished with an empty array,
+  `messagesTree` became `null`, so `/c/<id>` stayed on the spinner even though
+  the query was complete.
+- Fix: `getChatViewContentState()` now distinguishes "empty but already
+  fetched" from "still navigating/loading". Existing empty conversations render
+  `MessagesView`, which already shows the empty-state copy, instead of the
+  loading spinner.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/__tests__/state.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run build`
+  - `rtk git diff --check`
+
+# Active: Inspect OCR preprocessing terminated error - 2026-07-07
+
+Goal: diagnose and fix the local `/c/607328a4-544c-44fe-b1ed-41abbf0d85a2`
+error `OCR preprocessing failed for BH.pdf: terminated`.
+
+Diagnosis checklist:
+
+- [x] Inspect the conversation, message rows, preflight memory rows, and local
+      runtime logs for `BH.pdf`.
+- [x] Reproduce or isolate the failing OCR preprocessing path with the smallest
+      agent-runnable loop available.
+- [x] Rank and test termination hypotheses: explicit abort, subprocess timeout,
+      PaddleOCR/MCP timeout, or preprocessing chunk-state bug.
+- [x] Apply the minimal root-cause fix if the failure is code/config-owned.
+- [x] Run focused verification, syntax checks, and `rtk git diff --check`.
+- [x] Document review notes and residual risk.
+
+Hypotheses:
+
+- H1: PaddleOCR/MCP chunk OCR failed or timed out. Ruled out by Mongo: all 3
+      `paddleocr_preflight` raw chunks for BH.pdf are active.
+- H2: PDF splitting or S3 chunk artifact creation failed. Ruled out by Mongo:
+      chunk artifacts already existed for pages `1-50`, `51-100`, and
+      `101-106`.
+- H3: user/request abort terminated preprocessing. Less likely because the
+      persisted error was a bare provider `terminated` during organizer work,
+      not an abort-class error.
+- H4: OpenAI OAuth organizer transiently terminated after chunk 1/3. Confirmed
+      by persisted state: only chunk 1 has active `ocr_extract` organizer
+      Markdown; chunks 2/3 have raw OCR only.
+
+Review notes:
+
+- Local Mongo for `607328a4-544c-44fe-b1ed-41abbf0d85a2` has a conversation
+  shell titled `BH.pdf OCR內容核對`, zero saved messages, and only title
+  transactions.
+- Steel memory for the same conversation has 3 active `paddleocr_preflight`
+  raw chunk rows for `BH.pdf` and 1 active `ocr_extract` organized chunk row.
+  The failed run therefore reached organizer chunk processing after PaddleOCR
+  completed.
+- Fix: `createSteelOcrOrganizer()` now retries transient OpenAI OAuth organizer
+  failures up to 3 attempts (`terminated`, timeout/reset/network/429/503-style
+  messages), while still rethrowing true aborts immediately.
+- Regression: `ToolService.spec.js` now exercises `runSteelPaddleOcrPreflight()`
+  with an organizer model that throws `terminated` once and succeeds on retry.
+- Verification passed:
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing organizer"`
+  - `cd api && rtk npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "OCR preprocessing|PaddleOCR preflight failures"`
+  - `rtk node --check api/server/services/ToolService.js`
+  - `rtk git diff --check`
+- Residual risk: the currently running local backend process was started before
+  this code edit, so the fix requires a backend restart before browser retry.
+
 # Active: Merge main into feat/v8.4 safely - 2026-07-07
 
 Goal: bring the latest `main` changes into `feat/v8.4` while preserving the
@@ -7270,3 +7883,66 @@ Review:
   - `cd packages/api && rtk npm run build`
   - `rtk node --check api/server/controllers/agents/request.js && rtk node --check api/server/services/Endpoints/agents/title.js`
   - `rtk git diff --check`
+
+## Active: Production OpenAI OAuth Token Sync - 2026-07-07
+
+Goal: update the production server's OpenAI OAuth auth file from this
+machine's current Codex auth file without exposing token contents.
+
+- [x] Confirm the canonical local source and production target paths.
+- [x] Validate local auth JSON and capture non-secret metadata.
+- [x] Upload the auth file to the production host with restrictive
+      permissions.
+- [x] Validate the remote auth JSON and production env path without printing
+      secrets.
+- [x] Restart the production API container if required and verify health.
+- [x] Record the review result.
+
+Review:
+
+- Canonical source is local `~/.codex/auth.json`; production target is
+  `/data/openai-oauth/auth.json`.
+- Local auth JSON parsed successfully before upload, with mode `600`.
+- Remote auth JSON was older and did not match the local file. Uploaded through
+  a temporary `/tmp/openai-auth-*.json` path, then installed to
+  `/data/openai-oauth/auth.json` with mode `600`, owner/group `deploy`.
+- Container readback confirmed `OPENAI_OAUTH_AUTH_FILE` points to
+  `/data/openai-oauth/auth.json`; JSON parse succeeded and the remote file
+  metadata/fingerprint matched the local source.
+- Restarted the production API container with
+  `docker compose -f deploy-compose.prod.yml restart api`.
+- The first short health loop ended while the API was still booting; follow-up
+  public `https://chat.longdin.org/health` and container-local
+  `http://127.0.0.1:3080/health` both returned `OK`, and compose reported the
+  API service healthy.
+- No token contents were printed or recorded.
+
+## Active: Admin Codex Login Button For Server OAuth Token - 2026-07-07
+
+Goal: design an admin-only way to recover an expired production OpenAI OAuth
+auth file from the existing `Usage remaining` UI without exposing token
+contents to normal users or browser responses.
+
+- [x] Inspect the existing `Usage remaining` UI/API path.
+- [x] Confirm current `openai-oauth-provider` login/refresh capabilities.
+- [ ] Confirm the approved re-auth approach before implementation.
+- [ ] Add backend admin-only token refresh/re-auth endpoints.
+- [ ] Add the `Login Codex` affordance to the OAuth usage panel only when the
+      signed-in user is admin and auth is unavailable.
+- [ ] Add focused backend/frontend tests for admin gating, sanitized responses,
+      and usage-query invalidation.
+- [ ] Run focused verification and record review results.
+
+Design notes:
+
+- Existing `Usage remaining` reads `/api/steel/ai/oauth-usage`, which is
+  sanitized and already hides access tokens, refresh tokens, account IDs,
+  emails, and auth file paths.
+- `openai-oauth-provider` can load and refresh an existing auth file, but its
+  README explicitly says it has no built-in login flow. A simple button cannot
+  call the provider directly to create new auth from scratch.
+- Safe implementation should be admin-only on both frontend and backend. The
+  backend must verify `req.user.role === "ADMIN"` before any token mutation.
+- Browser responses must stay sanitized: status, expiry/health, and next action
+  only; never token values, account identifiers, raw `auth.json`, or the
+  absolute auth file path.

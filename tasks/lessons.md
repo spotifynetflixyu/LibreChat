@@ -1,5 +1,20 @@
 # Lessons
 
+- When tuning OCR markdown latency, keep the PaddleOCR raw-to-Markdown organizer
+  on its existing `reasoningEffort: "none"` unless the user explicitly confirms
+  changing that component. The main-agent OCR Markdown review path is a separate
+  reasoning-effort control from the organizer/subagent call.
+- For OCR streaming regressions, do not treat "the provider supports
+  `doStream`" as proof that a large OCR answer will visibly stream. Separate
+  three timings: preflight/organizer work, main LLM start, and first visible
+  `text-delta`; long reasoning/input-processing can make the upstream produce
+  no displayable text until near completion.
+- For streaming bugs where the UI sees `on_message_delta` without a visible
+  run step, verify the backend graph contract before declaring the provider path
+  omitted `on_run_step`. Native OpenAI OAuth text should flow
+  `text-delta -> AIMessageChunk -> ChatModelStreamHandler`, which emits
+  `MESSAGE_CREATION` before the matching text delta; if the UI lacks that step,
+  inspect resume/replay/step-map loss separately from Steel activity events.
 - OCR preprocessing activity labels are user-visible contracts. Use verb-first
   completed wording such as `Saved PaddleOCR preflight`, and keep
   preprocessing Markdown as one merged same-file-key source block. The
@@ -827,6 +842,14 @@
   the UI look streamed. Preserve provider delta granularity exactly; if a turn
   appears all at once, verify whether the provider `doStream` source emitted one
   large delta or real incremental deltas before changing SSE/UI behavior.
+- Browser-side SSE diagnostics should not depend only on the app logger or
+  devtools log capture path. For streaming investigations, temporary raw
+  `console.debug` counters can prove receive/apply/buffer/drop behavior in the
+  active page; remove that instrumentation after the root cause is verified.
+- When OCR streaming diagnostics show frontend `Content type mismatch`, do not
+  stop at delta counters. Verify the target content index against synced
+  tool-call parts; a text delta can be received/applied telemetry-wise while
+  still being dropped by the content-type guard.
 - OCR preprocessing Markdown passed to the main Steel agent is source context,
   not final official OCR Markdown. Merge same-file-key chunks/tables for the
   attachment, but put the canonical `OCR 結果確認表：filename（file:key）` title
@@ -838,3 +861,18 @@
 - Steel activity/event messages should start with the action verb. Prefer
   `Saved Working Order Memory`, `Saved Markdown parse`, and `Saved PaddleOCR
   preflight` over noun-first `... saved` wording.
+- Before automatic Steel OCR preflight or client initialization starts, persist
+  the submitted user message to the `messages` collection, not only to
+  `GenerationJobManager` metadata. Preflight/organizer failures can happen
+  before `AgentClient.onStart` reaches the normal user-message save, and the
+  durable conversation must still reload with the user's text and file chips.
+- For long OCR preflight resumable turns, keep the preliminary user message id,
+  the `created` SSE user message, and the main `AgentClient` user message as
+  the same id. Also send the actual response id on `created`; otherwise the UI
+  depends on a later `on_run_step` to reconcile the assistant placeholder after
+  several minutes of OCR-only events.
+- When restarting the local backend from Codex, do not rely on a plain shell
+  background command such as `... &` or `nohup ... &`; the runner can tear it
+  down after the command exits. Use a persistent process manager such as
+  `screen` or keep an explicit foreground exec session, then verify
+  `http://localhost:3080/health` before telling the user it is running.

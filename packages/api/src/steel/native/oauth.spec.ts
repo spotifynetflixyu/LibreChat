@@ -5,6 +5,13 @@ import type {
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
+import {
+  ChatModelStreamHandler,
+  ContentTypes,
+  GraphEvents,
+  Providers,
+  StepTypes,
+} from '@librechat/agents';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import {
   AIMessage,
@@ -666,6 +673,120 @@ describe('OpenAI OAuth model adapter', () => {
     }
 
     expect(chunks.map((chunk) => chunk.content)).toEqual(['第一段', '第二段', '']);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('creates a message run step before forwarding native OAuth graph text deltas', async () => {
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () => ({
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'text_1',
+            delta: '第一段',
+          });
+          controller.enqueue({
+            type: 'text-delta',
+            id: 'text_1',
+            delta: '第二段',
+          });
+          controller.close();
+        },
+      }),
+      warnings: [],
+    }));
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+        model: 'gpt-5.5',
+      },
+      getSystemRunnable: () => RunnableLambda.from((messages: BaseMessage[]) => messages),
+    });
+    const handler = new ChatModelStreamHandler();
+    const events: Array<{ event: string; data: any }> = [];
+    const stepIdsByKey = new Map<string, string>();
+    const runSteps = new Map<string, any>();
+    const graph: any = {
+      config: { configurable: { thread_id: 'thread_1' } },
+      messageIdsByStepKey: new Map(),
+      prelimMessageIdsByStepKey: new Map(),
+      messageStepHasTextDeltas: new Set(),
+      messageStepHasToolCalls: new Map(),
+      toolCallStepIds: new Map(),
+      sessions: new Map(),
+      getAgentContext: jest.fn(() => ({
+        agentId: 'agent_1',
+        currentTokenType: ContentTypes.TEXT,
+        graphTools: [],
+        provider: Providers.OPENAI,
+        reasoningKey: 'reasoning_content',
+        reasoningTransitionCount: 0,
+        tokenTypeSwitch: 'content',
+        toolDefinitions: [],
+      })),
+      getStepKey: jest.fn(() => 'agent_1:0'),
+      getStepIdByKey: jest.fn((stepKey: string) => stepIdsByKey.get(stepKey) ?? ''),
+      getRunStep: jest.fn((stepId: string) => runSteps.get(stepId)),
+      dispatchRunStep: jest.fn(async (stepKey: string, stepDetails: any) => {
+        const stepId = `step_${runSteps.size + 1}`;
+        stepIdsByKey.set(stepKey, stepId);
+        const runStep = {
+          id: stepId,
+          index: runSteps.size,
+          stepDetails,
+          stepIndex: runSteps.size,
+          type: stepDetails.type,
+          usage: null,
+        };
+        runSteps.set(stepId, runStep);
+        events.push({ event: GraphEvents.ON_RUN_STEP, data: runStep });
+        return stepId;
+      }),
+      dispatchMessageDelta: jest.fn(async (stepId: string, delta: any) => {
+        graph.messageStepHasTextDeltas.add(stepId);
+        events.push({ event: GraphEvents.ON_MESSAGE_DELTA, data: { id: stepId, delta } });
+      }),
+      dispatchReasoningDelta: jest.fn(),
+    };
+
+    const stream = await model.stream([new HumanMessage('輸出報價')]);
+    for await (const chunk of stream) {
+      await handler.handle(
+        GraphEvents.CHAT_MODEL_STREAM,
+        { chunk },
+        { langgraph_node: 'agent_1', last_agent_id: 'agent_1' },
+        graph,
+      );
+    }
+
+    expect(events[0]).toMatchObject({
+      event: GraphEvents.ON_RUN_STEP,
+      data: {
+        id: 'step_1',
+        stepDetails: {
+          type: StepTypes.MESSAGE_CREATION,
+          message_creation: { message_id: expect.stringMatching(/^msg_/) },
+        },
+      },
+    });
+    expect(events.slice(1)).toEqual([
+      {
+        event: GraphEvents.ON_MESSAGE_DELTA,
+        data: {
+          id: 'step_1',
+          delta: { content: [{ type: ContentTypes.TEXT, text: '第一段' }] },
+        },
+      },
+      {
+        event: GraphEvents.ON_MESSAGE_DELTA,
+        data: {
+          id: 'step_1',
+          delta: { content: [{ type: ContentTypes.TEXT, text: '第二段' }] },
+        },
+      },
+    ]);
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });

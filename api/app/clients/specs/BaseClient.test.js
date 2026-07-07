@@ -683,6 +683,49 @@ describe('BaseClient', () => {
       );
     });
 
+    it('uses an explicit userMessageId without overloading overrideParentMessageId', async () => {
+      const userMessageId = 'preliminary-user-message-id';
+
+      await TestClient.sendMessage('test message', {
+        conversationId,
+        parentMessageId: Constants.NO_PARENT,
+        userMessageId,
+      });
+
+      expect(TestClient.currentMessages[TestClient.currentMessages.length - 1].messageId).toBe(
+        userMessageId,
+      );
+    });
+
+    it('saves a fresh turn with the explicit preliminary user id', async () => {
+      const userMessageId = 'preliminary-user-message-id';
+      const testConversationId = '11111111-1111-4111-8111-111111111111';
+      TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({});
+
+      await TestClient.sendMessage('test message', {
+        conversationId: testConversationId,
+        parentMessageId: Constants.NO_PARENT,
+        userMessageId,
+      });
+
+      const savedMessages = TestClient.saveMessageToDatabase.mock.calls.map(([message]) => message);
+      const savedUserMessages = savedMessages.filter((message) => message.isCreatedByUser);
+      expect(savedUserMessages).toHaveLength(1);
+      expect(savedUserMessages[0]).toEqual(
+        expect.objectContaining({
+          messageId: userMessageId,
+          parentMessageId: Constants.NO_PARENT,
+          conversationId: testConversationId,
+        }),
+      );
+      expect(savedMessages[1]).toEqual(
+        expect.objectContaining({
+          parentMessageId: userMessageId,
+          isCreatedByUser: false,
+        }),
+      );
+    });
+
     test('setOptions is called with the correct arguments only when replaceOptions is set to true', async () => {
       TestClient.setOptions = jest.fn();
       const opts = { conversationId: '123', parentMessageId: '456', replaceOptions: true };

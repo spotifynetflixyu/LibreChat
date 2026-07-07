@@ -874,6 +874,8 @@ const createResponse = async (req, res) => {
       ...(req.steelNativeContext ?? {}),
       paddleOcrPreflight,
     };
+    const openAIOAuthReasoningEffortOverride =
+      paddleOcrPreflight.currentOcrMarkdownResults?.length > 0 ? 'none' : undefined;
     const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(allMessages);
     if (currentUserTurn && currentTurnFiles.length > 0) {
       currentUserTurn.files = currentTurnFiles;
@@ -1055,6 +1057,7 @@ const createResponse = async (req, res) => {
         appConfig,
         signal: abortController.signal,
         customHandlers: handlers,
+        openAIOAuthReasoningEffortOverride,
         requestBody: {
           messageId: responseId,
           conversationId,
@@ -1251,6 +1254,7 @@ const createResponse = async (req, res) => {
         appConfig,
         signal: abortController.signal,
         customHandlers: handlers,
+        openAIOAuthReasoningEffortOverride,
         requestBody: {
           messageId: responseId,
           conversationId,

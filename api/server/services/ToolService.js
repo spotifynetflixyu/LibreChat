@@ -572,6 +572,25 @@ const steelPaddleOcrRetryableErrorPatterns = [
   'server disconnected',
   'transport closed',
 ];
+const steelOcrOrganizerMaxAttempts = 3;
+const steelOcrOrganizerRetryDelaysMs = [300, 1000];
+const steelOcrOrganizerRetryableErrorPatterns = [
+  ...steelPaddleOcrRetryableErrorPatterns,
+  'terminated',
+  'timeout',
+  'timed out',
+  'fetch failed',
+  'network error',
+  'service unavailable',
+  'temporarily unavailable',
+  'try again later',
+  'too many requests',
+  'rate limit',
+  'rate_limit',
+  'overloaded',
+  '429',
+  '503',
+];
 let defaultSteelNativeToolClient;
 
 /** Checks if a tool name is a known built-in tool */
@@ -912,16 +931,36 @@ function createSteelOcrOrganizer({ signal }) {
         });
       }
 
-      const message = await model.invoke(
-        [
-          new SystemMessage(
-            'You organize a single PaddleOCR chunk into Steel OCR Markdown. Return only Markdown.',
-          ),
-          new HumanMessage(buildOcrOrganizerPrompt(input)),
-        ],
-        signal ? { signal } : undefined,
-      );
-      return { markdown: getMessageContentText(message).trim() };
+      const messages = [
+        new SystemMessage(
+          'You organize a single PaddleOCR chunk into Steel OCR Markdown. Return only Markdown.',
+        ),
+        new HumanMessage(buildOcrOrganizerPrompt(input)),
+      ];
+
+      for (let attemptIndex = 0; attemptIndex < steelOcrOrganizerMaxAttempts; attemptIndex += 1) {
+        try {
+          const message = await model.invoke(messages, signal ? { signal } : undefined);
+          return { markdown: getMessageContentText(message).trim() };
+        } catch (error) {
+          const canRetry =
+            !isAbortError(error, signal) &&
+            attemptIndex < steelOcrOrganizerMaxAttempts - 1 &&
+            isRetryableSteelOcrOrganizerError(error);
+          if (!canRetry) {
+            throw error;
+          }
+
+          logger.warn('[Steel OCR] OCR organizer transient failure; retrying', {
+            attempt: attemptIndex + 1,
+            maxAttempts: steelOcrOrganizerMaxAttempts,
+            error: redactMessage(error?.message ?? 'OCR organizer failed'),
+          });
+          await sleep(getSteelOcrOrganizerRetryDelayMs(attemptIndex));
+        }
+      }
+
+      throw new Error('OCR organizer retry loop exited unexpectedly.');
     },
   };
 }
@@ -1233,6 +1272,22 @@ function isRetryableSteelPaddleOcrPreflightError(error) {
     return false;
   }
   return steelPaddleOcrRetryableErrorPatterns.some((pattern) => combined.includes(pattern));
+}
+
+function isRetryableSteelOcrOrganizerError(error) {
+  const combined = collectErrorMessages(error).join('\n').toLowerCase();
+  if (!combined) {
+    return false;
+  }
+  return steelOcrOrganizerRetryableErrorPatterns.some((pattern) => combined.includes(pattern));
+}
+
+function getSteelOcrOrganizerRetryDelayMs(attemptIndex) {
+  return (
+    steelOcrOrganizerRetryDelaysMs[attemptIndex] ??
+    steelOcrOrganizerRetryDelaysMs[steelOcrOrganizerRetryDelaysMs.length - 1] ??
+    0
+  );
 }
 
 function createSteelPaddleOcrInvokeConfig({

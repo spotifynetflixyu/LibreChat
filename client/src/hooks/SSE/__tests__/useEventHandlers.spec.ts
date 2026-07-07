@@ -42,6 +42,22 @@ describe('buildCreatedInitialResponse', () => {
     );
   });
 
+  it('uses the server response id from the created event when present', () => {
+    expect(
+      buildCreatedInitialResponse({
+        initialResponse,
+        userMessage,
+        responseMessageId: 'server-response-message',
+        isRegenerate: false,
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        messageId: 'server-response-message',
+        parentMessageId: 'server-user-message',
+      }),
+    );
+  });
+
   it('preserves the regenerated prelim response id and parent', () => {
     expect(
       buildCreatedInitialResponse({

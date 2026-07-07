@@ -160,8 +160,7 @@ function getPreliminaryUserMessage(
   const referencedQuotes = getReferencedQuotes(quotes);
   const messageFiles = getPreliminaryMessageFiles(files);
   const preliminaryFiles =
-    messageFiles ??
-    (Array.isArray(files) && files.length > 0 ? files : undefined);
+    messageFiles ?? (Array.isArray(files) && files.length > 0 ? files : undefined);
 
   return {
     messageId,
@@ -218,6 +217,17 @@ function getAgentResponseModel(req, endpointOption) {
   return getEndpointResponseModel(endpointOption);
 }
 
+function shouldSkipPreliminaryUserMessageSave(req) {
+  const overrideUserMessageId =
+    req?.body?.overrideUserMessageId ?? req?.body?.endpointOption?.overrideUserMessageId;
+  if (typeof overrideUserMessageId !== 'string' || overrideUserMessageId.length === 0) {
+    return false;
+  }
+
+  const [, index] = overrideUserMessageId.split(Constants.COMMON_DIVIDER);
+  return index != null && index !== '0';
+}
+
 async function savePreliminaryConversationShell(
   req,
   { conversationId, endpointOption, iconURL, model },
@@ -246,6 +256,26 @@ async function savePreliminaryConversationShell(
       context: 'api/server/controllers/agents/request.js - preliminary conversation shell',
       createdAtOnInsert: validCreatedAtOnInsert,
     },
+  );
+}
+
+async function savePreliminaryUserMessage(req, userMessage) {
+  if (!userMessage || shouldSkipPreliminaryUserMessageSave(req)) {
+    return;
+  }
+
+  return saveMessage(
+    {
+      userId: req?.user?.id,
+      isTemporary: req?.body?.isTemporary,
+      interfaceConfig: req?.config?.interfaceConfig,
+    },
+    {
+      ...userMessage,
+      sender: userMessage.sender || 'User',
+      isCreatedByUser: true,
+    },
+    { context: 'api/server/controllers/agents/request.js - preliminary user message' },
   );
 }
 
@@ -343,6 +373,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         model: responseModel,
       });
     }
+    await savePreliminaryUserMessage(req, preliminaryUserMessage);
 
     await GenerationJobManager.updateMetadata(streamId, {
       conversationId,
@@ -588,6 +619,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
           GenerationJobManager.emitChunk(streamId, {
             created: true,
+            responseMessageId: respMsgId,
             // Skill selections aren't on `userMessage` yet at onStart (BaseClient adds
             // them later), so attach them from the request — this is the message
             // `trackUserMessage` persists as the authoritative job.metadata.userMessage,
@@ -619,6 +651,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           conversationId,
           parentMessageId,
           abortController: job.abortController,
+          ...(!overrideParentMessageId &&
+            !editedContent && { userMessageId: preliminaryUserMessage.messageId }),
           overrideParentMessageId,
           isEdited: !!editedContent,
           userMCPAuthMap: result.userMCPAuthMap,

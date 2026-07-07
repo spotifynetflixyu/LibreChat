@@ -109,6 +109,13 @@ const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>) => {
   return isOAuthToolCallName(name);
 };
 
+const isCompatibleContentType = (existingType?: string, incomingType?: string) =>
+  !!existingType &&
+  !!incomingType &&
+  (existingType === incomingType ||
+    incomingType.startsWith(existingType) ||
+    existingType.startsWith(incomingType));
+
 export default function useStepHandler({
   setMessages,
   getMessages,
@@ -301,11 +308,33 @@ export default function useStepHandler({
       ) {
         const targetIndex = serverIndex + initialContent.length - 1;
         const existingType = existingContent?.[targetIndex]?.type;
-        if (existingType === incomingContentType) {
+        if (isCompatibleContentType(existingType, incomingContentType)) {
           return targetIndex;
         }
       }
-      return serverIndex + initialContent.length;
+      const targetIndex = serverIndex + initialContent.length;
+      const existingPart = existingContent?.[targetIndex];
+      const existingType = existingPart?.type;
+      if (isOAuthToolCallContent(existingPart)) {
+        return targetIndex;
+      }
+      if (!existingType || isCompatibleContentType(existingType, incomingContentType)) {
+        return targetIndex;
+      }
+
+      if (
+        existingType === ContentTypes.TOOL_CALL &&
+        (incomingContentType === ContentTypes.TEXT || incomingContentType === ContentTypes.THINK)
+      ) {
+        for (let index = targetIndex + 1; index < (existingContent?.length ?? 0); index++) {
+          if (isCompatibleContentType(existingContent?.[index]?.type, incomingContentType)) {
+            return index;
+          }
+        }
+        return existingContent?.length ?? targetIndex;
+      }
+
+      return targetIndex;
     },
     [],
   );
@@ -345,12 +374,7 @@ export default function useStepHandler({
 
     /** Prevent overwriting an existing content part with a different type */
     const existingType = (updatedContent[index]?.type as string | undefined) ?? '';
-    if (
-      existingType &&
-      existingType !== contentType &&
-      !contentType.startsWith(existingType) &&
-      !existingType.startsWith(contentType)
-    ) {
+    if (existingType && !isCompatibleContentType(existingType, contentType)) {
       console.warn('Content type mismatch', { existingType, contentType, index });
       return message;
     }
@@ -773,7 +797,6 @@ export default function useStepHandler({
           responseMessageId = submission?.initialResponse?.messageId ?? '';
           parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
         }
-
         if (!runStep || !responseMessageId) {
           const buffer = pendingDeltaBuffer.current.get(messageDelta.id) ?? [];
           buffer.push({ event: StepEvents.ON_MESSAGE_DELTA, data: messageDelta });
