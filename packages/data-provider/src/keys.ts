@@ -89,6 +89,8 @@ export enum QueryKeys {
   steelModels = 'steelModels',
   steelConversation = 'steelConversation',
   openAIOAuthUsage = 'openAIOAuthUsage',
+  openAIOAuthTokenStatus = 'openAIOAuthTokenStatus',
+  openAIOAuthCodexLoginStatus = 'openAIOAuthCodexLoginStatus',
 }
 
 // Dynamic query keys that require parameters
@@ -98,6 +100,8 @@ export const DynamicQueryKeys = {
 
 export enum MutationKeys {
   createAgentApiKey = 'createAgentApiKey',
+  refreshOpenAIOAuthToken = 'refreshOpenAIOAuthToken',
+  startOpenAIOAuthCodexLogin = 'startOpenAIOAuthCodexLogin',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',
   fileDelete = 'fileDelete',

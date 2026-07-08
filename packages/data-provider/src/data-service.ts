@@ -3,6 +3,8 @@ import type { TFileConfig } from './file-config';
 import type * as t from './types';
 import type {
   SteelConversationMessagesResponse,
+  OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
   SteelProviderChatRequest,
   SteelProviderChatResponse,
@@ -58,6 +60,24 @@ export function getSteelConversationMessages(
 
 export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
   return request.get(endpoints.openAIOAuthUsage());
+}
+
+export function getOpenAIOAuthTokenStatus(): Promise<OpenAIOAuthTokenStatus> {
+  return request.get(endpoints.adminOpenAIOAuthToken());
+}
+
+export function refreshOpenAIOAuthToken(): Promise<OpenAIOAuthTokenStatus> {
+  return request.post(endpoints.adminOpenAIOAuthTokenRefresh());
+}
+
+export function startOpenAIOAuthCodexLogin(): Promise<OpenAIOAuthTokenLoginStatus> {
+  return request.post(endpoints.adminOpenAIOAuthTokenLogin());
+}
+
+export function getOpenAIOAuthCodexLoginStatus(
+  sessionId: string,
+): Promise<OpenAIOAuthTokenLoginStatus> {
+  return request.get(endpoints.adminOpenAIOAuthTokenLoginStatus(sessionId));
 }
 
 export async function streamSteelChat(

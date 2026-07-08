@@ -6,5 +6,6 @@ export * from './metadata';
 export * from './oauth';
 export * from './provider';
 export * from './title';
+export * from './token';
 export * from './tools';
 export * from './usage';

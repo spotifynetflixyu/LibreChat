@@ -306,6 +306,11 @@ export const steelConversationMessages = (conversationId: string) =>
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;
+export const adminOpenAIOAuthToken = () => `${adminSteelBase()}/ai/oauth-token`;
+export const adminOpenAIOAuthTokenRefresh = () => `${adminOpenAIOAuthToken()}/refresh`;
+export const adminOpenAIOAuthTokenLogin = () => `${adminOpenAIOAuthToken()}/login`;
+export const adminOpenAIOAuthTokenLoginStatus = (sessionId: string) =>
+  `${adminOpenAIOAuthTokenLogin()}/${encodeURIComponent(sessionId)}`;
 
 export const mcp = {
   tools: `${BASE_URL}/api/mcp/tools`,

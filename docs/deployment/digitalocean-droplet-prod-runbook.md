@@ -229,6 +229,37 @@ Verify `auth.json` without printing secrets:
 ssh deploy@<droplet-ipv4> 'node -e '\''const fs=require("fs"); const p="/data/openai-oauth/auth.json"; JSON.parse(fs.readFileSync(p,"utf8")); console.log("auth.json OK", fs.statSync(p).size, "bytes")'\'''
 ```
 
+## Server-side Codex Login
+
+The admin `Usage remaining` panel detects Codex CLI from inside the API server
+runtime. Installing Codex CLI on the Droplet host is not enough when LibreChat
+runs in Docker; the API container must be able to run `codex --version`.
+
+`Dockerfile.multi` installs the CLI with:
+
+```bash
+npm install -g @openai/codex
+```
+
+After deploy, verify the container runtime:
+
+```bash
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api codex --version'
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh -lc "mkdir -p /data/openai-oauth && test -w /data/openai-oauth && echo openai-oauth-dir-writable"'
+```
+
+The Login Codex admin flow sets `CODEX_HOME` to the directory that contains
+`OPENAI_OAUTH_AUTH_FILE`. With the production value below, Codex writes and
+refreshes credentials at `/data/openai-oauth/auth.json`. The browser only sees
+device-login URL/code/status; it must never receive `auth.json`, access tokens,
+refresh tokens, account IDs, or the absolute auth path.
+
+The resulting `auth.json` contains refreshable Codex/OpenAI OAuth credentials.
+It is long-lived operational state, but not permanent: it can stop working if
+the account login is revoked, workspace settings change, or OpenAI changes the
+OAuth flow. Treat the file like a password and keep it off git, logs, and
+public artifacts.
+
 ## Production Env Values
 
 Use local `.env.prod` as the private source of truth. For Droplet deployment,
@@ -448,7 +479,8 @@ Production and local development use the same PaddleOCR MCP shape. LibreChat
 launches PaddleOCR through `uvx` from the API process environment; the API
 startup script does not prepare a separate PaddleOCR Python environment.
 
-The API image must include Debian/glibc runtime libraries and `uv`/`uvx`.
+The API image must include Debian/glibc runtime libraries, `uv`/`uvx`, and
+the `@openai/codex` CLI.
 `uvx` resolves Python 3.12 and the `paddleocr-mcp` package when the MCP server
 is launched. Because the provider source is fixed to AI Studio, production does
 not require a local PaddlePaddle inference stack.

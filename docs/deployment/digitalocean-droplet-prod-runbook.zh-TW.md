@@ -227,6 +227,35 @@ ssh deploy@<droplet-ipv4> 'install -m 600 /tmp/auth.json /data/openai-oauth/auth
 ssh deploy@<droplet-ipv4> 'node -e '\''const fs=require("fs"); const p="/data/openai-oauth/auth.json"; JSON.parse(fs.readFileSync(p,"utf8")); console.log("auth.json OK", fs.statSync(p).size, "bytes")'\'''
 ```
 
+## Server-side Codex Login
+
+Admin `Usage remaining` panel 是從 API server runtime 裡偵測 Codex CLI。
+LibreChat 跑在 Docker 時，只在 Droplet host 安裝 Codex CLI 不夠；API container
+必須能執行 `codex --version`。
+
+`Dockerfile.multi` 會用這個方式安裝 CLI：
+
+```bash
+npm install -g @openai/codex
+```
+
+Deploy 後，在 container 裡驗證：
+
+```bash
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api codex --version'
+ssh deploy@<droplet-ipv4> 'cd /srv/librechat/app && docker compose -f deploy-compose.prod.yml exec -T api sh -lc "mkdir -p /data/openai-oauth && test -w /data/openai-oauth && echo openai-oauth-dir-writable"'
+```
+
+Login Codex admin flow 會把 `CODEX_HOME` 指到 `OPENAI_OAUTH_AUTH_FILE` 所在
+目錄。用下面的 production 設定時，Codex 會把 credential 寫入並 refresh
+`/data/openai-oauth/auth.json`。Browser 只會看到 device-login URL/code/status；
+不能回傳 `auth.json`、access token、refresh token、account ID 或絕對 auth path。
+
+產生的 `auth.json` 內含可 refresh 的 Codex/OpenAI OAuth credential。它是長期
+operational state，但不是永久：如果帳號 login 被 revoked、workspace 設定改變、
+或 OpenAI OAuth flow 改變，它仍可能失效。把這個檔案當 password 處理，不要放進
+git、logs 或 public artifacts。
+
 ## Production Env Values
 
 以 local `.env.prod` 作為 private source of truth。Droplet production 至少要有：
@@ -455,9 +484,10 @@ Production 和 local development 使用同一種 PaddleOCR MCP 形狀。LibreCha
 API process environment 用 `uvx` 啟動 PaddleOCR；API startup script 不再額外準備
 PaddleOCR Python environment。
 
-API image 必須包含 Debian/glibc runtime libraries 和 `uv`/`uvx`。MCP server 被啟動
-時，`uvx` 會解析 Python 3.12 與 `paddleocr-mcp` package。Provider source 固定為
-AI Studio，因此 production 不需要 local PaddlePaddle inference stack。
+API image 必須包含 Debian/glibc runtime libraries、`uv`/`uvx`、以及
+`@openai/codex` CLI。MCP server 被啟動時，`uvx` 會解析 Python 3.12 與
+`paddleocr-mcp` package。Provider source 固定為 AI Studio，因此 production 不需要
+local PaddlePaddle inference stack。
 
 Production `/data/librechat.yaml` 和 local `librechat.yaml` 必須使用 `uvx` command：
 

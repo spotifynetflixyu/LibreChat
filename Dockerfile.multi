@@ -92,6 +92,7 @@ RUN npm run build
 FROM node:24.16.0-bookworm-slim AS api-runtime-base
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
+ARG OPENAI_CODEX_CLI_VERSION=latest
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       ca-certificates \
@@ -106,6 +107,8 @@ WORKDIR /app
 RUN npm config set fetch-retry-maxtimeout 600000 && \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 15000
+RUN npm install -g "@openai/codex@${OPENAI_CODEX_CLI_VERSION}" && \
+    codex --version
 COPY package*.json ./
 COPY packages/data-provider/package*.json ./packages/data-provider/
 COPY packages/api/package*.json ./packages/api/

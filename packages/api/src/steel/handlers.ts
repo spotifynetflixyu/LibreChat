@@ -52,6 +52,14 @@ import {
   prepareSteelRuntimeContext,
 } from './runtime/context';
 import { executeSteelTool } from './tools/execute';
+import {
+  getOpenAIOAuthCodexLoginStatus,
+  getOpenAIOAuthTokenStatus,
+  refreshOpenAIOAuthToken,
+  startOpenAIOAuthCodexLogin,
+  type OpenAIOAuthCodexLoginDeps,
+  type OpenAIOAuthTokenStatusDeps,
+} from './native/token';
 import { getOpenAIOAuthUsageRemaining } from './native/usage';
 
 import type { Request, Response } from 'express';
@@ -67,6 +75,8 @@ import type { SteelOutputSheetMemoryReader } from './memory/service';
 import type { SteelConversationTurnRecord } from './history/service';
 import type {
   SteelConversationMessagesResponse,
+  OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenStatus,
   SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
 } from 'librechat-data-provider';
@@ -138,6 +148,10 @@ interface SteelHandlers {
 }
 
 interface SteelAdminHandlers {
+  readOpenAIOAuthTokenStatus(_req: Request, res: Response): Promise<void>;
+  refreshOpenAIOAuthToken(_req: Request, res: Response): Promise<void>;
+  startOpenAIOAuthCodexLogin(_req: Request, res: Response): Promise<void>;
+  readOpenAIOAuthCodexLoginStatus(req: Request, res: Response): Promise<void>;
   requestCapabilitySmoke(_req: Request, res: Response): Promise<void>;
 }
 
@@ -1720,8 +1734,63 @@ export function createSteelHandlers({
   };
 }
 
-export function createSteelAdminHandlers(): SteelAdminHandlers {
+export function createSteelAdminHandlers({
+  env = process.env,
+  getCodexLoginStatus = getOpenAIOAuthCodexLoginStatus,
+  getTokenStatus = getOpenAIOAuthTokenStatus,
+  refreshToken = refreshOpenAIOAuthToken,
+  startCodexLogin = startOpenAIOAuthCodexLogin,
+}: {
+  env?: OpenAIConfigEnv;
+  getCodexLoginStatus?: (
+    sessionId: string,
+    deps?: OpenAIOAuthCodexLoginDeps,
+  ) => OpenAIOAuthTokenLoginStatus;
+  getTokenStatus?: (deps?: OpenAIOAuthTokenStatusDeps) => Promise<OpenAIOAuthTokenStatus>;
+  refreshToken?: (deps?: OpenAIOAuthTokenStatusDeps) => Promise<OpenAIOAuthTokenStatus>;
+  startCodexLogin?: (deps?: OpenAIOAuthCodexLoginDeps) => Promise<OpenAIOAuthTokenLoginStatus>;
+} = {}): SteelAdminHandlers {
+  const authFilePath = resolveOpenAIOAuthAuthFilePath(env);
+
   return {
+    async readOpenAIOAuthTokenStatus(_req: Request, res: Response): Promise<void> {
+      const status = await getTokenStatus({
+        authFilePath,
+        env,
+      });
+      res.status(200).json(status);
+    },
+
+    async refreshOpenAIOAuthToken(_req: Request, res: Response): Promise<void> {
+      const status = await refreshToken({
+        authFilePath,
+        env,
+      });
+      res.status(200).json(status);
+    },
+
+    async startOpenAIOAuthCodexLogin(_req: Request, res: Response): Promise<void> {
+      const status = await startCodexLogin({
+        authFilePath,
+        env,
+      });
+      res.status(status.status === 'unavailable' ? 503 : 202).json(status);
+    },
+
+    async readOpenAIOAuthCodexLoginStatus(req: Request, res: Response): Promise<void> {
+      const sessionId = req.params.sessionId;
+      if (!sessionId) {
+        res.status(400).json({ message: 'Missing Codex login session id' });
+        return;
+      }
+
+      const status = getCodexLoginStatus(sessionId, {
+        authFilePath,
+        env,
+      });
+      res.status(status.reason === 'login_not_found' ? 404 : 200).json(status);
+    },
+
     async requestCapabilitySmoke(_req: Request, res: Response): Promise<void> {
       res.status(200).json({
         capabilities: {

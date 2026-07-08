@@ -43,6 +43,65 @@ const mockCapabilitySmoke = jest.fn((_req, res) =>
     source: 'code_owned_support_matrix',
   }),
 );
+const mockReadOpenAIOAuthTokenStatus = jest.fn((_req, res) =>
+  res.status(200).json({
+    provider: 'openai_oauth_responses',
+    status: 'available',
+    fetchedAt: '2026-07-08T02:34:02.000Z',
+    accessToken: {
+      status: 'valid',
+      expiresAt: '2026-07-18T02:34:02.000Z',
+      expiresInSeconds: 864000,
+    },
+    refresh: {
+      available: true,
+    },
+    login: {
+      available: false,
+      reason: 'codex_cli_unavailable',
+    },
+  }),
+);
+const mockRefreshOpenAIOAuthToken = jest.fn((_req, res) =>
+  res.status(200).json({
+    provider: 'openai_oauth_responses',
+    status: 'available',
+    fetchedAt: '2026-07-08T02:35:02.000Z',
+    accessToken: {
+      status: 'valid',
+      expiresAt: '2026-07-18T02:35:02.000Z',
+      expiresInSeconds: 864000,
+    },
+    refresh: {
+      available: true,
+    },
+    login: {
+      available: false,
+      reason: 'codex_cli_unavailable',
+    },
+  }),
+);
+const mockStartOpenAIOAuthCodexLogin = jest.fn((_req, res) =>
+  res.status(202).json({
+    status: 'pending',
+    sessionId: 'session_1',
+    startedAt: '2026-07-08T02:34:02.000Z',
+    updatedAt: '2026-07-08T02:34:02.000Z',
+    expiresAt: '2026-07-08T02:44:02.000Z',
+    device: {
+      verificationUri: 'https://auth.openai.com/codex/device',
+      userCode: 'ABCD-EFGH',
+    },
+  }),
+);
+const mockReadOpenAIOAuthCodexLoginStatus = jest.fn((_req, res) =>
+  res.status(200).json({
+    status: 'succeeded',
+    sessionId: 'session_1',
+    startedAt: '2026-07-08T02:34:02.000Z',
+    updatedAt: '2026-07-08T02:35:02.000Z',
+  }),
+);
 const mockCreateAuthenticatedConversation = jest.fn((_req, res) =>
   res.status(201).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
 );
@@ -74,7 +133,11 @@ const mockCreateSteelHandlers = jest.fn(() => ({
   streamChat: mockStreamChat,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
+  readOpenAIOAuthCodexLoginStatus: mockReadOpenAIOAuthCodexLoginStatus,
+  readOpenAIOAuthTokenStatus: mockReadOpenAIOAuthTokenStatus,
+  refreshOpenAIOAuthToken: mockRefreshOpenAIOAuthToken,
   requestCapabilitySmoke: mockCapabilitySmoke,
+  startOpenAIOAuthCodexLogin: mockStartOpenAIOAuthCodexLogin,
 }));
 const mockRequireCapability = jest.fn(() => (_req, _res, next) => next());
 const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
@@ -369,5 +432,76 @@ describe('Steel route shells', () => {
       model: 'gpt-5.5',
       source: 'code_owned_support_matrix',
     });
+  });
+
+  it('registers admin-only OpenAI OAuth token status under /api/admin/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).get('/api/admin/steel/ai/oauth-token');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      provider: 'openai_oauth_responses',
+      status: 'available',
+      fetchedAt: '2026-07-08T02:34:02.000Z',
+      accessToken: {
+        status: 'valid',
+        expiresAt: '2026-07-18T02:34:02.000Z',
+        expiresInSeconds: 864000,
+      },
+      refresh: {
+        available: true,
+      },
+      login: {
+        available: false,
+        reason: 'codex_cli_unavailable',
+      },
+    });
+    expect(mockReadOpenAIOAuthTokenStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers admin-only OpenAI OAuth token refresh under /api/admin/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).post('/api/admin/steel/ai/oauth-token/refresh');
+
+    expect(res.status).toBe(200);
+    expect(res.body.accessToken.status).toBe('valid');
+    expect(mockRefreshOpenAIOAuthToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers admin-only OpenAI OAuth Codex login start under /api/admin/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).post('/api/admin/steel/ai/oauth-token/login');
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({
+      status: 'pending',
+      sessionId: 'session_1',
+      startedAt: '2026-07-08T02:34:02.000Z',
+      updatedAt: '2026-07-08T02:34:02.000Z',
+      expiresAt: '2026-07-08T02:44:02.000Z',
+      device: {
+        verificationUri: 'https://auth.openai.com/codex/device',
+        userCode: 'ABCD-EFGH',
+      },
+    });
+    expect(mockStartOpenAIOAuthCodexLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers admin-only OpenAI OAuth Codex login status under /api/admin/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).get('/api/admin/steel/ai/oauth-token/login/session_1');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: 'succeeded',
+      sessionId: 'session_1',
+      startedAt: '2026-07-08T02:34:02.000Z',
+      updatedAt: '2026-07-08T02:35:02.000Z',
+    });
+    expect(mockReadOpenAIOAuthCodexLoginStatus).toHaveBeenCalledTimes(1);
   });
 });

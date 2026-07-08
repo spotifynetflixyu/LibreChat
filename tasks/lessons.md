@@ -1,5 +1,11 @@
 # Lessons
 
+- Codex CLI device-login output is streamed prose. Never extract a device code
+  with a global `AAAA-BBBBB` fallback across the full output, because text such
+  as `Open this` can become `OPEN-THIS`. Also do not treat generic title text
+  like `device code` as a prompt; accept codes only from line-scoped
+  `Enter/Use/... code` prompts, and keep a frontend guard against stale invalid
+  cached codes.
 - When tuning OCR markdown latency, keep the PaddleOCR raw-to-Markdown organizer
   on its existing `reasoningEffort: "none"` unless the user explicitly confirms
   changing that component. The main-agent OCR Markdown review path is a separate
@@ -876,3 +882,52 @@
   down after the command exits. Use a persistent process manager such as
   `screen` or keep an explicit foreground exec session, then verify
   `http://localhost:3080/health` before telling the user it is running.
+- Admin-only token actions need visible pending/success/failure feedback even
+  when the underlying token expiry does not change. Do not rely on a refreshed
+  timestamp as the only proof that a button click did something.
+- OAuth token status UI should use fixed label/value rows such as `Status`,
+  `Expires`, and `Codex CLI`; avoid mixing token state into inline explanatory
+  text that makes the section harder to scan.
+- OAuth token refresh feedback belongs in the existing `Status` row when that
+  row is already the user's status focal point; avoid adding a second status
+  line below the actions.
+- For server-side Codex CLI availability in LibreChat production, install and
+  verify the actual `@openai/codex` CLI binary used by the API runtime. Do not
+  confuse it with `@openai/codex-sdk`, and do not assume a host-level install
+  is visible inside the Docker API container.
+- Localhost Codex CLI detection runs inside the backend process, not the user's
+  interactive shell. If `codex --version` works in shell but UI says
+  unavailable, first check backend PATH/restart state and probe common absolute
+  install paths such as `/opt/homebrew/bin/codex` before blaming the UI.
+- Codex CLI device-login output prints the prompt text and the actual one-time
+  code on separate lines, and the code can be `4-5` characters such as
+  `ABCD-12345`. Parse the full captured output near the code prompt instead of
+  only scanning the prompt line or assuming `4-4`.
+- Codex login UI should keep device-auth state in a LibreChat-style modal
+  instead of an auto-opened `about:blank` popup. Show login status, verification
+  code, login URL, and copy feedback in the modal; let the user open the
+  verification link explicitly after copying the code.
+- Codex login UI state must live outside the model-list menu/submenu layer.
+  Keep the pending session id, polling hook, and dialog state in a provider that
+  remains mounted when the model list closes.
+- When starting a new Codex login from an overlay that may have restored a stale
+  session, keep the restored session in the modal instead of starting a second
+  server session. If a true restart is needed, clear the old stored session
+  before creating the new one.
+- Popup-based Codex login retries are fragile in overlay UIs. If the UI can be
+  closed and remounted, persist the login session id, restore polling, and
+  reopen the same modal rather than depending on a browser tab that may close or
+  lose state.
+- Local LibreChat OAuth auth files should use an app-specific path such as
+  `$HOME/.librechat-openai-oauth/auth.json` when testing localhost, so server
+  login does not overwrite or share the user's personal `~/.codex/auth.json`.
+- Codex OAuth status rows should use compact status labels plus a colored dot:
+  pending/loading yellow, success green, and failed/unavailable/expired red.
+  Avoid verbose labels such as `Login pending`, `Login starting`, or
+  `Login failed` in the status value itself.
+- Usage remaining unavailable states should also use the red status dot, not
+  bare `Unavailable: reason` text.
+- When disabling Codex login `Open link` until the code is copied, show a short
+  inline hint in the link step explaining that the user must copy the
+  verification code first, then switch the hint to tell the user to open the
+  page and complete login verification after copy succeeds.

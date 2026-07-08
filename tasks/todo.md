@@ -1,3 +1,203 @@
+# Active: simplify current Codex OAuth diff - 2026-07-08
+
+Goal: simplify the current working tree changes for the admin Codex OAuth token
+and login flow without changing public API contracts.
+
+Checklist:
+
+- [x] Collect current diff scope and high-risk changed modules.
+- [x] Review code reuse, code quality, and efficiency findings in parallel.
+- [x] Apply only local, low-risk simplifications.
+- [x] Run focused backend/client verification plus `rtk git diff --check`.
+- [x] Record simplify review results.
+
+Review:
+
+- Reused `openAIOAuthTokenLoginStatusSchema` for frontend login-error body
+  validation instead of duplicating the enum/type guard locally.
+- Reused the Codex login status renderer between the dialog and OAuth token
+  `Status` row, while keeping refresh status precedence unchanged.
+- Kept token display sourced from the token-status query cache after login
+  success instead of mixing in `loginStatus.token` as a second source of truth.
+- Restored persisted Codex login sessions only for admin users, clears stale
+  sessions for non-admin users, and converts polling failures into a visible
+  `login_not_found` status.
+- Centralized Codex home expansion for CLI detection and login, so
+  `CODEX_HOME=~/...` resolves the same way in both paths.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/native/token.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `cd packages/api && rtk npm run build`
+  - `rtk git diff --check`
+
+# Active: Codex login modal UX - 2026-07-08
+
+Goal: replace the fragile popup-based Codex login flow with a LibreChat-style
+modal that shows login status, verification code, login URL, copy feedback, and
+a Close action.
+
+Checklist:
+
+- [x] Inspect existing LibreChat dialog components and current OAuth token UI.
+- [x] Implement modal-only Codex login flow without exposing secrets.
+- [x] Update focused UI tests for modal URL/code/status behavior.
+- [x] Run focused verification, frontend build, and `rtk git diff --check`.
+- [x] Record results and lesson.
+
+Review:
+
+- Replaced popup/about:blank Codex login behavior with a LibreChat-style modal
+  rendered from the model selector provider, outside the model-list menu layer.
+- The modal shows login status, verification code above the login URL, manual
+  copy feedback, and a Close action.
+- Loading slots in the Codex login dialog now use skeleton placeholders instead
+  of `Loading...` text.
+- Status values now use compact labels with colored dots: pending/loading states
+  yellow, success states green, and failed/unavailable/expired states red.
+- `Open link` stays disabled until the verification code is copied.
+- Pending login sessions now keep polling in the provider and the modal remains
+  mounted when the model-list menu closes.
+- Kept verification URL/code in the admin-only modal and left the compact OAuth
+  section focused on `Status`, `Expires`, `Codex CLI`, and actions.
+- Local auth-file guidance now recommends an app-specific
+  `$HOME/.librechat-openai-oauth/auth.json` path instead of sharing
+  `~/.codex/auth.json`.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `node -e "JSON.parse(require('fs').readFileSync('client/src/locales/en/translation.json','utf8')); console.log('json-ok')"`
+  - `rtk npm run frontend`
+  - `rtk git diff --check`
+
+# Active: Codex login failed tab diagnosis - 2026-07-08
+
+Goal: make the admin Codex login tab show the real sanitized failure reason and
+avoid stale login-session state overwriting a new login attempt.
+
+Checklist:
+
+- [x] Check server logs, local env, and direct Codex login service behavior.
+- [x] Add frontend coverage for failed/unavailable login start handling.
+- [x] Implement scoped tab/status error handling without exposing secrets.
+- [x] Fix Codex CLI device-code parsing so `Open this` is not treated as
+      `OPEN-THIS`.
+- [x] Run focused verification plus `rtk git diff --check`.
+- [x] Record result and lesson.
+
+Review:
+
+- Root cause: the Codex CLI parser had a global device-code fallback, so streamed
+  prose like `Open this link` matched the `4-4/4-5` code shape and surfaced as
+  `OPEN-THIS`.
+- Fixed parser to only accept line-scoped explicit prompts such as `Enter ...
+  code` or `Use ... code`; generic text like `device code` is not treated as a
+  prompt.
+- Added backend regression proving the first streamed chunk with only `Open this
+  link` and the generic `device code` page title exposes only the verification
+  URL, then fills the code only after the real prompt arrives.
+- Added a frontend guard so stale cached `OPEN-THIS` values are not rendered as
+  verification codes.
+- Added frontend handling for `POST /login` HTTP errors so sanitized enum reasons
+  appear in Status/about:blank instead of a generic failed tab.
+- Rebuilt frontend and `packages/api`, then restarted local backend on
+  `http://localhost:3080`.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/native/token.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `rtk npm run frontend`
+  - compiled dist smoke for the `OPEN-THIS` parser case
+  - `cd client && rtk npm run typecheck`
+  - `rtk git diff --check`
+
+# Active: admin OAuth refresh status row - 2026-07-08
+
+Goal: move OAuth token refresh feedback into the `Status` row instead of a
+separate message below the buttons.
+
+Checklist:
+
+- [x] Make the status row show `Refreshing...`, `Checked`, or `Refresh failed`
+      from the refresh mutation state.
+- [x] Remove the separate refresh feedback line.
+- [x] Update focused UI coverage.
+- [x] Run focused client verification plus `rtk git diff --check`.
+- [x] Record result.
+
+Review:
+
+- Moved refresh feedback into the existing `Status` row:
+  - idle token status: `Valid` / `Expired` / `Unavailable`
+  - pending refresh: `Refreshing...`
+  - successful refresh check: `Checked`
+  - failed refresh: `Refresh failed`
+- Removed the separate `Token checked` message below the action buttons.
+- Added the `Checked` locale key and removed the now-unused `Token checked` key.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `rtk npm run frontend`
+
+# Active: admin OAuth token row layout - 2026-07-08
+
+Goal: align the admin OAuth token section into fixed label/value rows so token
+state lives on a `Status` row instead of mixed inline status text.
+
+Checklist:
+
+- [x] Convert OAuth token status display to `Status`, `Expires`, and
+      `Codex CLI` rows.
+- [x] Update focused UI coverage for the row labels.
+- [x] Run focused client verification plus `rtk git diff --check`.
+- [x] Record result.
+
+Review:
+
+- Changed the OAuth token details to fixed label/value rows:
+  - `Status` / `Valid`
+  - `Expires` / formatted expiry time
+  - `Codex CLI` / `Unavailable`
+- Superseded by the next pass: refresh feedback now lives in the `Status` row
+  instead of below the buttons.
+- Added locale keys for `Status`, `Codex CLI`, and `Available`.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `rtk npm run frontend`
+
+# Active: admin OAuth refresh button feedback - 2026-07-08
+
+Goal: make the admin-only OpenAI OAuth token refresh control visibly respond on
+localhost even when the refreshed token status or expiry timestamp does not
+change.
+
+Checklist:
+
+- [x] Reproduce the UI gap from the token section code path and existing tests.
+- [x] Add focused coverage for refresh pending, success, and failure feedback.
+- [x] Implement minimal visible feedback without exposing token secrets or auth
+      file paths.
+- [x] Run focused client verification plus `rtk git diff --check`.
+- [x] Record the result and any remaining server/deploy caveat.
+
+Review:
+
+- The bug was visible-state, not a missing click handler: the mutation already
+  fired, but the panel only changed when the token status/expiry changed.
+- Added inline refresh feedback with `aria-live`: `Refreshing...` while the
+  request is pending, `Token checked` on a usable refreshed status, and
+  `Refresh failed` when the backend returns unavailable or the request errors.
+- Kept the browser response sanitized: no token values, account identifiers, or
+  auth-file paths are added to the UI.
+- Rebuilt the frontend bundle so a compiled `http://localhost/` server can pick
+  up the changed client assets after restart/reload.
+- Verification passed:
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npm run typecheck`
+  - `rtk npm run frontend`
+  - `rtk git diff --check`
+
 # Active: SSE resume replay batching - 2026-07-08
 
 Goal: reduce reconnect/resume UI churn by batching message-state writes during
@@ -8032,13 +8232,13 @@ contents to normal users or browser responses.
 
 - [x] Inspect the existing `Usage remaining` UI/API path.
 - [x] Confirm current `openai-oauth-provider` login/refresh capabilities.
-- [ ] Confirm the approved re-auth approach before implementation.
-- [ ] Add backend admin-only token refresh/re-auth endpoints.
-- [ ] Add the `Login Codex` affordance to the OAuth usage panel only when the
+- [x] Confirm the approved re-auth approach before implementation.
+- [x] Add backend admin-only token refresh/re-auth endpoints.
+- [x] Add the `Login Codex` affordance to the OAuth usage panel only when the
       signed-in user is admin and auth is unavailable.
-- [ ] Add focused backend/frontend tests for admin gating, sanitized responses,
+- [x] Add focused backend/frontend tests for admin gating, sanitized responses,
       and usage-query invalidation.
-- [ ] Run focused verification and record review results.
+- [x] Run focused verification and record review results.
 
 Design notes:
 
@@ -8053,3 +8253,111 @@ Design notes:
 - Browser responses must stay sanitized: status, expiry/health, and next action
   only; never token values, account identifiers, raw `auth.json`, or the
   absolute auth file path.
+
+Review:
+
+- Added sanitized token status/refresh types to `librechat-data-provider`.
+  Responses include provider/status, access-token expiry/status, refresh
+  availability, and login capability only. They do not include token values,
+  account IDs, emails, raw auth JSON, or auth-file paths.
+- Added `packages/api/src/steel/native/token.ts` with TDD coverage for valid,
+  expired, unavailable, and refresh paths.
+- Added admin-only routes under `/api/admin/steel`:
+  - `GET /ai/oauth-token`
+  - `POST /ai/oauth-token/refresh`
+- The admin route stays protected by the existing `requireJwtAuth` +
+  `ACCESS_ADMIN` middleware. The general `/api/steel/ai/oauth-usage` route
+  remains read-only usage status.
+- Extended `Usage remaining` with an admin-only `OAuth token` section. It shows
+  access-token status and expiry, has a working `Refresh token` button, and
+  shows a disabled `Login Codex` button with `Codex CLI unavailable` because the
+  production image is not expected to include Codex CLI.
+- `Refresh token` invalidates both token status and usage remaining queries.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/native/token.spec.ts src/steel/native/usage.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/routes/__tests__/steel.spec.js --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - The OAuth token UI spec now covers restoring a pending Codex login session
+    after overlay remount and copying the displayed verification code.
+  - `cd packages/api && rtk npm run build`
+  - `rtk npm run build:data-provider`
+  - `rtk npm run frontend`
+  - `rtk node -e "JSON.parse(require('fs').readFileSync('client/src/locales/en/translation.json','utf8')); console.log('translation-json-ok')"`
+  - `rtk git diff --check`
+
+## Active: Admin Codex Device Login On Server - 2026-07-08
+
+Goal: make the admin OAuth token panel detect a working server-side Codex CLI,
+start a real Codex device-login flow, and write refreshed credentials to the
+configured server auth path.
+
+- [x] Add server-side Codex CLI detection that proves the binary works instead
+      of only checking whether `codex` exists on `PATH`.
+- [x] Add an admin-only Codex device-login service that uses the configured
+      `OPENAI_OAUTH_AUTH_FILE` directory as `CODEX_HOME`, forces file credential
+      storage, sanitizes browser responses, and times out abandoned sessions.
+- [x] Wire admin API routes, shared data-provider types/endpoints, React Query
+      hooks, and `Usage remaining` UI polling for login status.
+- [x] Document production install/verification steps for Codex CLI inside the
+      server runtime and the required auth-file path.
+- [x] Run focused backend/frontend verification and record review results.
+
+Review:
+
+- `getOpenAIOAuthTokenStatus` now performs a server-side `codex --version`
+  probe through the API runtime. A broken or host-only CLI install reports
+  `Codex CLI: Unavailable`; a working binary reports `Available`.
+- Localhost detection also probes common absolute install paths such as
+  `/opt/homebrew/bin/codex` when the backend process PATH cannot resolve
+  `codex`; this covers macOS/Homebrew installs launched from a narrower server
+  environment.
+- Added admin-only device-login endpoints under `/api/admin/steel`:
+  - `POST /ai/oauth-token/login`
+  - `GET /ai/oauth-token/login/:sessionId`
+- The login service sets `CODEX_HOME` to the directory containing the resolved
+  `OPENAI_OAUTH_AUTH_FILE` when the configured path is an `auth.json` file.
+  It writes `cli_auth_credentials_store = "file"` into that Codex home so
+  Codex writes refreshable credentials to the configured server auth path.
+- Browser responses remain sanitized: status, expiry, device URL/code, and
+  coarse failure reasons only. They do not include token values, account IDs,
+  raw `auth.json`, CLI stderr/stdout, or absolute auth-file paths.
+- `Usage remaining` admin UI now enables `Login Codex` when the server CLI is
+  available, polls the login session, shows device URL/code rows, and reuses
+  the `Status` row for Login starting/Login pending/Checked/Login failed.
+- Follow-up UI correction: `Login Codex` now pre-opens a new tab from the user
+  click and navigates it to the Codex device-auth URL when the server returns
+  it. The UI no longer displays a `Login URL` row; it only shows the
+  verification code needed by the OpenAI device page.
+- Follow-up parser correction: Codex CLI prints the device code on the line
+  after the prompt and can use a `4-5` code shape, so the parser scans the full
+  captured output near the code prompt and reparses pending-session output
+  during status polling.
+- Follow-up overlay correction: the current Codex login session id is persisted
+  in browser `sessionStorage`, so closing and reopening the model-list overlay
+  keeps polling the same device-login session and restores the displayed device
+  code without opening another device-auth tab.
+- Follow-up code UX correction: the verification code is shown directly with a
+  copy icon button, so the user does not need to select text manually.
+- Follow-up stale-session correction: starting a new login clears the restored
+  stored session first, and pre-opened-tab cleanup is scoped to the new session
+  id so an old failed session cannot close the new `about:blank` tab.
+- `Dockerfile.multi` installs the runtime CLI with
+  `npm install -g @openai/codex`, and the DigitalOcean runbooks document
+  container-level `codex --version` plus `/data/openai-oauth` writability
+  checks.
+- Verification passed:
+  - `cd packages/api && rtk npx jest src/steel/native/token.spec.ts src/steel/native/usage.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npx jest src/steel/native/token.spec.ts --runInBand --watch=false --coverage=false`
+  - `cd api && rtk npx jest server/routes/__tests__/steel.spec.js --runInBand --watch=false --coverage=false`
+  - `cd client && rtk npx jest src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `cd packages/api && rtk npm run build`
+  - local direct backend probe confirmed Codex CLI detection returns
+    `{"available":true}` without setting `CODEX_CLI_PATH`.
+  - `rtk npm run build:data-provider`
+  - `cd client && rtk npm run typecheck`
+  - `rtk npm run frontend`
+  - local backend restarted in detached `screen` session `librechat-backend`
+    with `CODEX_CLI_PATH=/opt/homebrew/bin/codex`; `http://localhost:3080/health`
+    returned `OK`.
+  - `rtk node -e "JSON.parse(require('fs').readFileSync('client/src/locales/en/translation.json','utf8')); console.log('translation-json-ok')"`
+  - `rtk git diff --check`

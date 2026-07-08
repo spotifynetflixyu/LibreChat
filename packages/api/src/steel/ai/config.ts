@@ -21,8 +21,11 @@ export interface OpenAIConfigEnv {
   STEEL_OPENAI_REASONING_EFFORT?: string;
   STEEL_OPENAI_OAUTH_AUTH_FILE?: string;
   CHATGPT_LOCAL_HOME?: string;
+  CODEX_CLI_PATH?: string;
   CODEX_HOME?: string;
   HOME?: string;
+  OPENAI_OAUTH_CODEX_LOGIN_TIMEOUT_MS?: string;
+  STEEL_OPENAI_OAUTH_CODEX_LOGIN_TIMEOUT_MS?: string;
 }
 
 export class OpenAIConfigError extends Error {
