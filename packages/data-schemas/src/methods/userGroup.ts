@@ -14,6 +14,12 @@ export interface UserGroupDeps {
 }
 
 type PendingGroupLookup = { promise: Promise<Types.ObjectId[]>; markStale: () => void };
+type UserSearchPrincipal = Pick<
+  TUser,
+  'avatar' | 'email' | 'id' | 'name' | 'provider' | 'username'
+> & {
+  idOnTheSource?: string;
+};
 
 /** Same-process dedup of concurrent cache builds, keyed by scoped member cache key. */
 const pendingGroupLookups = new Map<string, PendingGroupLookup>();
@@ -612,6 +618,26 @@ export function createUserGroupMethods(
     return await query.lean<IGroup[]>();
   }
 
+  async function findUserMemberReference(
+    userId: string | Types.ObjectId,
+    session?: ClientSession,
+  ): Promise<{ memberId: string; user: IUser & { idOnTheSource?: string } } | null> {
+    const User = mongoose.models.User as Model<IUser>;
+    const query = User.findById(userId, 'idOnTheSource');
+    if (session) {
+      query.session(session);
+    }
+    const user = await query.lean<IUser & { idOnTheSource?: string }>();
+    if (!user) {
+      return null;
+    }
+
+    return {
+      memberId: user.idOnTheSource || userId.toString(),
+      user,
+    };
+  }
+
   /**
    * Create a new group
    * @param groupData - Group data including name, source, and optional idOnTheSource
@@ -682,28 +708,21 @@ export function createUserGroupMethods(
     groupId: string | Types.ObjectId,
     session?: ClientSession,
   ): Promise<{ user: IUser; group: IGroup | null }> {
-    const User = mongoose.models.User as Model<IUser>;
     const Group = mongoose.models.Group as Model<IGroup>;
-
     const options = { new: true, ...(session ? { session } : {}) };
-
-    const user = await User.findById(userId, 'idOnTheSource', options).lean<{
-      idOnTheSource?: string;
-      _id: Types.ObjectId;
-    }>();
-    if (!user) {
+    const member = await findUserMemberReference(userId, session);
+    if (!member) {
       throw new Error(`User not found: ${userId}`);
     }
 
-    const userIdOnTheSource = user.idOnTheSource || userId.toString();
     const updatedGroup = await Group.findByIdAndUpdate(
       groupId,
-      { $addToSet: { memberIds: userIdOnTheSource } },
+      { $addToSet: { memberIds: member.memberId } },
       options,
     ).lean<IGroup>();
-    await runAfterTransaction(session, () => invalidateMemberGroupsCache([userIdOnTheSource]));
+    await runAfterTransaction(session, () => invalidateMemberGroupsCache([member.memberId]));
 
-    return { user: user as IUser, group: updatedGroup };
+    return { user: member.user as IUser, group: updatedGroup };
   }
 
   /**
@@ -721,28 +740,21 @@ export function createUserGroupMethods(
     groupId: string | Types.ObjectId,
     session?: ClientSession,
   ): Promise<{ user: IUser; group: IGroup | null }> {
-    const User = mongoose.models.User as Model<IUser>;
     const Group = mongoose.models.Group as Model<IGroup>;
-
     const options = { new: true, ...(session ? { session } : {}) };
-
-    const user = await User.findById(userId, 'idOnTheSource', options).lean<{
-      idOnTheSource?: string;
-      _id: Types.ObjectId;
-    }>();
-    if (!user) {
+    const member = await findUserMemberReference(userId, session);
+    if (!member) {
       throw new Error(`User not found: ${userId}`);
     }
 
-    const userIdOnTheSource = user.idOnTheSource || userId.toString();
     const updatedGroup = await Group.findByIdAndUpdate(
       groupId,
-      { $pullAll: { memberIds: [userIdOnTheSource] } },
+      { $pullAll: { memberIds: [member.memberId] } },
       options,
     ).lean<IGroup>();
-    await runAfterTransaction(session, () => invalidateMemberGroupsCache([userIdOnTheSource]));
+    await runAfterTransaction(session, () => invalidateMemberGroupsCache([member.memberId]));
 
-    return { user: user as IUser, group: updatedGroup };
+    return { user: member.user as IUser, group: updatedGroup };
   }
 
   /**
@@ -1013,7 +1025,9 @@ export function createUserGroupMethods(
    * @param user - User object from database
    * @returns Transformed user result
    */
-  function transformUserToTPrincipalSearchResult(user: TUser): TPrincipalSearchResult {
+  function transformUserToTPrincipalSearchResult(
+    user: UserSearchPrincipal,
+  ): TPrincipalSearchResult {
     return {
       id: user.id,
       type: PrincipalType.USER,
@@ -1023,7 +1037,7 @@ export function createUserGroupMethods(
       avatar: user.avatar,
       provider: user.provider,
       source: 'local',
-      idOnTheSource: (user as TUser & { idOnTheSource?: string }).idOnTheSource || user.id,
+      idOnTheSource: user.idOnTheSource || user.id,
     };
   }
 
@@ -1096,7 +1110,8 @@ export function createUserGroupMethods(
               username: userWithId.username,
               avatar: userWithId.avatar,
               provider: userWithId.provider,
-            } as TUser);
+              idOnTheSource: userWithId.idOnTheSource,
+            });
           }),
         ),
       );
@@ -1152,8 +1167,15 @@ export function createUserGroupMethods(
    */
   async function removeUserFromAllGroups(userId: string | Types.ObjectId): Promise<void> {
     const Group = mongoose.models.Group as Model<IGroup>;
-    await Group.updateMany({ memberIds: userId }, { $pullAll: { memberIds: [userId] } });
-    await invalidateMemberGroupsCache([userId]);
+    const rawUserId = userId.toString();
+    const member = await findUserMemberReference(userId);
+    const memberIds = Array.from(
+      new Set(
+        [rawUserId, member?.memberId].filter((memberId): memberId is string => Boolean(memberId)),
+      ),
+    );
+    await Group.updateMany({ memberIds: { $in: memberIds } }, { $pullAll: { memberIds } });
+    await invalidateMemberGroupsCache(memberIds);
   }
 
   /**

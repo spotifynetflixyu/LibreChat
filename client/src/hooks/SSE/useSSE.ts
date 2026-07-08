@@ -61,6 +61,7 @@ export default function useSSE(
     attachmentHandler,
     abortConversation,
     steelEventHandler,
+    syncStepMessage,
   } = useEventHandlers({
     setMessages,
     getMessages,
@@ -158,6 +159,7 @@ export default function useSSE(
             const nextMessages = [...messages];
             nextMessages[index] = updated;
             setMessages(nextMessages);
+            syncStepMessage(updated);
           }
         }
       } else if (data.event != null) {

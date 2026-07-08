@@ -1,7 +1,7 @@
 import type { AppConfig } from '@librechat/data-schemas';
 import type { RunConfig } from '@librechat/agents';
 import { resolveLangfuseTenantDestination } from './tenantDestinations';
-import { isTrueEnv, normalizeBoolean } from './utils';
+import { isTrueEnv, normalizeBoolean, resolveCentralLangfuseBaseUrl } from './utils';
 import { normalizeString } from '~/utils/text';
 
 type LangfuseRunConfig = NonNullable<RunConfig['langfuse']>;
@@ -14,7 +14,6 @@ type LangfuseRunConfigWithTraceAttributes = LangfuseRunConfig & {
 };
 const TENANT_EXPORT_ATTRIBUTE = 'librechat.langfuse.tenant_export.enabled';
 const TENANT_DESTINATION_ATTRIBUTE = 'librechat.langfuse.destination';
-const DEFAULT_BASE_URL = 'https://cloud.langfuse.com';
 
 function appendPath(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${path}`;
@@ -55,11 +54,7 @@ function applyCentralEnvConfig(langfuse: LangfuseRunConfigWithTraceAttributes): 
   if (publicKey && secretKey) {
     langfuse.publicKey = publicKey;
     langfuse.secretKey = secretKey;
-    langfuse.baseUrl =
-      normalizeString(process.env.LANGFUSE_BASE_URL) ??
-      normalizeString(process.env.LANGFUSE_HOST) ??
-      normalizeString(process.env.LANGFUSE_BASEURL) ??
-      DEFAULT_BASE_URL;
+    langfuse.baseUrl = resolveCentralLangfuseBaseUrl();
   }
 }
 

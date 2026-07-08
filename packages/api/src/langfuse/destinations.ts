@@ -1,11 +1,14 @@
 import type { AppConfig } from '@librechat/data-schemas';
 import type { LangfuseFanoutConfig } from './config';
 import { isLangfuseFanoutEnabled, isLangfuseTenantExportEnabled } from './config';
-import { isFalseEnv, normalizeBoolean, toBasicAuthorization } from './utils';
+import {
+  isFalseEnv,
+  normalizeBoolean,
+  resolveCentralLangfuseBaseUrl,
+  toBasicAuthorization,
+} from './utils';
 import { resolveLangfuseTenantDestination } from './tenantDestinations';
 import { normalizeString } from '~/utils/text';
-
-const DEFAULT_BASE_URL = 'https://cloud.langfuse.com';
 
 export type LangfuseScoreDestination = {
   name: 'central' | 'tenant';
@@ -28,15 +31,6 @@ function isTracingEnabled(): boolean {
   );
 }
 
-function getCentralEnvBaseUrl(): string {
-  return (
-    normalizeString(process.env.LANGFUSE_BASE_URL) ??
-    normalizeString(process.env.LANGFUSE_HOST) ??
-    normalizeString(process.env.LANGFUSE_BASEURL) ??
-    DEFAULT_BASE_URL
-  );
-}
-
 function getCentralScoreDestination(): LangfuseScoreDestination | undefined {
   if (!isTracingEnabled()) {
     return undefined;
@@ -53,7 +47,7 @@ function getCentralScoreDestination(): LangfuseScoreDestination | undefined {
 
   return {
     name: 'central',
-    baseUrl: getCentralEnvBaseUrl(),
+    baseUrl: resolveCentralLangfuseBaseUrl(),
     authorization: toBasicAuthorization(publicKey, secretKey),
   };
 }

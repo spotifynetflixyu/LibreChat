@@ -1,6 +1,8 @@
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
+  OAUTH_TOOL_CALL_PREFIX,
   buildOAuthToolCallName,
+  isOAuthToolCallName,
   normalizeServerName,
   redactAllServerSecrets,
   redactServerSecrets,
@@ -47,6 +49,10 @@ describe('normalizeServerName', () => {
 });
 
 describe('buildOAuthToolCallName', () => {
+  it('exports the shared OAuth MCP tool-call prefix', () => {
+    expect(OAUTH_TOOL_CALL_PREFIX).toBe('oauth_mcp_');
+  });
+
   it('should prefix a simple server name with oauth_mcp_', () => {
     expect(buildOAuthToolCallName('my-server')).toBe('oauth_mcp_my-server');
   });
@@ -86,6 +92,17 @@ describe('buildOAuthToolCallName', () => {
     // so the guard correctly does not fire and the prefix is added.
     const result = buildOAuthToolCallName('oauth@mcp@server');
     expect(result).toBe('oauth_mcp_oauth_mcp_server');
+  });
+});
+
+describe('isOAuthToolCallName', () => {
+  it('detects synthetic OAuth MCP tool-call names', () => {
+    expect(isOAuthToolCallName('oauth_mcp_my-server')).toBe(true);
+  });
+
+  it('rejects regular MCP tool-call names and non-string values', () => {
+    expect(isOAuthToolCallName('search_mcp_my-server')).toBe(false);
+    expect(isOAuthToolCallName(undefined)).toBe(false);
   });
 });
 

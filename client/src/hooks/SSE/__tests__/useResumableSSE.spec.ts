@@ -4,6 +4,7 @@ import {
   LocalStorageKeys,
   QueryKeys,
   StepEvents,
+  ApprovalEvents,
   request,
 } from 'librechat-data-provider';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
@@ -1401,6 +1402,76 @@ describe('useResumableSSE', () => {
         model: 'gpt-4.1',
       }),
     );
+
+    unmount();
+  });
+
+  it('batches message writes while replaying resume sync events', async () => {
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    chatHelpers.setMessages.mockClear();
+
+    const sse = getLastSSE();
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          sync: true,
+          resumeState: {
+            runSteps: [],
+            replayEvents: [
+              {
+                event: ApprovalEvents.ON_PENDING_ACTION,
+                data: {
+                  actionId: 'ask-1',
+                  responseMessageId: 'resp-1',
+                  payload: {
+                    type: 'ask_user_question',
+                    question: { prompt: 'First question?' },
+                  },
+                },
+              },
+            ],
+            aggregatedContent: [],
+            responseMessageId: 'resp-1',
+            conversationId: CONV_ID,
+            userMessage: {
+              messageId: 'msg-1',
+              parentMessageId: Constants.NO_PARENT,
+              conversationId: CONV_ID,
+              text: 'Hello',
+            },
+          },
+          pendingEvents: [
+            {
+              event: ApprovalEvents.ON_PENDING_ACTION,
+              data: {
+                actionId: 'ask-2',
+                responseMessageId: 'resp-1',
+                payload: {
+                  type: 'ask_user_question',
+                  question: { prompt: 'Second question?' },
+                },
+              },
+            },
+          ],
+        }),
+      });
+    });
+
+    expect(chatHelpers.setMessages).toHaveBeenCalledTimes(1);
+    const committedMessages = chatHelpers.setMessages.mock.calls[0][0] as TMessage[];
+    const response = committedMessages.find((message) => message.messageId === 'resp-1');
+    expect(response?.content?.map((part) => part?.type)).toEqual([
+      'ask_user_question',
+      'ask_user_question',
+    ]);
 
     unmount();
   });

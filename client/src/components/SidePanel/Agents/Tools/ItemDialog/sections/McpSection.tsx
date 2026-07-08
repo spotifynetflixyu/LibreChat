@@ -15,7 +15,7 @@ import {
 import MCPServerStatusIcon from '~/components/MCP/MCPServerStatusIcon';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
-import { mcpServerToken } from '../../items/selectors';
+import { matchesMcpServer, mcpServerToken } from '../../items/selectors';
 import { useAgentPanelContext } from '~/Providers';
 import { getIconForItem } from '../../items/icons';
 import MCPToolItem from '../../../MCPToolItem';
@@ -105,11 +105,11 @@ export default function McpSection({ item }: Props) {
     (next: string[]) => {
       const current = (getValues('tools') ?? []) as string[];
       const otherTools = current.filter(
-        (t) => t !== serverToken && !tools.some((st) => st.tool_id === t),
+        (t) => !matchesMcpServer(t, serverName) && !tools.some((st) => st.tool_id === t),
       );
       setValue('tools', [...otherTools, serverToken, ...next], { shouldDirty: true });
     },
-    [getValues, setValue, serverToken, tools],
+    [getValues, setValue, serverName, serverToken, tools],
   );
 
   const toggleToolSelect = (toolId: string) => {

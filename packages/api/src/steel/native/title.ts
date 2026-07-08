@@ -267,26 +267,23 @@ async function invokeStructuredTitle({
   const prompt = PromptTemplate.fromTemplate(
     normalizeTitlePrompt(titlePrompt) ?? structuredTitlePrompt,
   );
-  const titleOnlyChain = RunnableSequence.from([prompt, model.withStructuredOutput(titleSchema)]);
-  const combinedChain = RunnableSequence.from([
-    prompt,
-    model.withStructuredOutput(combinedTitleSchema),
-  ]);
   const input = {
     convo: conversation,
     input: inputText,
     output: '',
   };
+  const chain = RunnableSequence.from([
+    prompt,
+    model.withStructuredOutput(skipLanguage ? titleSchema : combinedTitleSchema),
+  ]);
 
-  if (skipLanguage) {
-    return (await titleOnlyChain.invoke(input, chainOptions)) as TitleResult;
-  }
-
-  const result = (await combinedChain.invoke(input, chainOptions)) as TitleResult;
-  return {
-    language: result.language ?? 'English',
-    title: result.title ?? '',
-  };
+  const result = (await chain.invoke(input, chainOptions)) as TitleResult;
+  return skipLanguage
+    ? result
+    : {
+        language: result.language ?? 'English',
+        title: result.title ?? '',
+      };
 }
 
 async function generateResponsesTitle({

@@ -16,7 +16,7 @@ describe('getChatViewContentState', () => {
   it('keeps the new conversation route on the landing page', () => {
     expect(
       getChatViewContentState({
-        conversationId: Constants.NEW_CONVO,
+        conversationId: String(Constants.NEW_CONVO),
         hasMessages: false,
         isLoading: false,
         messagesFetched: true,

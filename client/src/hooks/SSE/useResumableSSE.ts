@@ -49,6 +49,8 @@ import { useAuthContext } from '~/hooks/AuthContext';
 import useUsageHandler from './useUsageHandler';
 import store from '~/store';
 import { steelNativeStreamEventName } from '~/store/steel';
+import { isOAuthToolCallName } from './oauth';
+import { preferDefinedString, toResumeTimestamp, withResumeTimestamp } from './resume';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -218,9 +220,6 @@ const getToolCallName = (toolCall: unknown) =>
     ? (toolCall.name as unknown)
     : undefined;
 
-const isOAuthToolCallName = (name: unknown) =>
-  typeof name === 'string' && name.startsWith(`oauth${Constants.mcp_delimiter}`);
-
 const hasOAuthToolCall = (toolCalls: unknown) =>
   Array.isArray(toolCalls) &&
   toolCalls.some((toolCall) => isOAuthToolCallName(getToolCallName(toolCall)));
@@ -285,27 +284,6 @@ const shouldHydrateMessage = (message: TMessage) =>
 
 const hydrateMessageConversationId = (message: TMessage, conversationId: string): TMessage =>
   shouldHydrateMessage(message) ? { ...message, conversationId } : message;
-
-const preferDefinedString = (value?: string | null, fallback?: string): string | undefined =>
-  value != null && value !== '' ? value : fallback;
-
-const toResumeTimestamp = (value?: number): string | undefined => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return undefined;
-  }
-  return new Date(value).toISOString();
-};
-
-const withResumeTimestamp = (message: TMessage, timestamp?: string): TMessage => {
-  if (!timestamp) {
-    return message;
-  }
-  return {
-    ...message,
-    createdAt: message.createdAt ?? timestamp,
-    clientTimestamp: message.clientTimestamp ?? timestamp,
-  };
-};
 
 const getOptimisticMessages = (
   submission: TSubmission,
@@ -476,8 +454,46 @@ export default function useResumableSSE(
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
 
   const { token, isAuthenticated } = useAuthContext();
-  const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
-    chatHelpers;
+  const {
+    setMessages: setMessagesRaw,
+    getMessages: getMessagesRaw,
+    setConversation,
+    setIsSubmitting,
+    newConversation,
+  } = chatHelpers;
+  const replayMessageBatchRef = useRef<{ messages: TMessage[]; dirty: boolean } | null>(null);
+  const setMessages = useCallback(
+    (messages: TMessage[]) => {
+      const replayBatch = replayMessageBatchRef.current;
+      if (replayBatch) {
+        replayBatch.messages = messages;
+        replayBatch.dirty = true;
+        return;
+      }
+      setMessagesRaw(messages);
+    },
+    [setMessagesRaw],
+  );
+  const getMessages = useCallback(
+    () => replayMessageBatchRef.current?.messages ?? getMessagesRaw(),
+    [getMessagesRaw],
+  );
+  const startReplayMessageBatch = useCallback(() => {
+    if (replayMessageBatchRef.current) {
+      return;
+    }
+    replayMessageBatchRef.current = { messages: getMessagesRaw() ?? [], dirty: false };
+  }, [getMessagesRaw]);
+  const flushReplayMessageBatch = useCallback(() => {
+    const replayBatch = replayMessageBatchRef.current;
+    replayMessageBatchRef.current = null;
+    if (replayBatch?.dirty) {
+      setMessagesRaw(replayBatch.messages);
+    }
+  }, [setMessagesRaw]);
+  const discardReplayMessageBatch = useCallback(() => {
+    replayMessageBatchRef.current = null;
+  }, []);
 
   /**
    * Optimistically add a job ID to the active jobs cache.
@@ -821,6 +837,7 @@ export default function useResumableSSE(
           }
 
           if (data.sync != null) {
+            startReplayMessageBatch();
             logger.log('ResumableSSE', 'SYNC received', {
               runSteps: data.resumeState?.runSteps?.length ?? 0,
               pendingEvents: data.pendingEvents?.length ?? 0,
@@ -1019,6 +1036,7 @@ export default function useResumableSSE(
 
             setIsSubmitting(true);
             setShowStopButton(true);
+            flushReplayMessageBatch();
             return;
           }
 
@@ -1045,6 +1063,7 @@ export default function useResumableSSE(
             messageHandler(text, { ...currentSubmission, userMessage, initialResponse });
           }
         } catch (error) {
+          discardReplayMessageBatch();
           logger.error('ResumableSSE', 'Error processing message:', error);
         }
       });
@@ -1311,6 +1330,9 @@ export default function useResumableSSE(
       backfillUsage,
       resetLive,
       seedLive,
+      startReplayMessageBatch,
+      flushReplayMessageBatch,
+      discardReplayMessageBatch,
     ],
   );
 

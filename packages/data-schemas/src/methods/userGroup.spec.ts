@@ -292,6 +292,23 @@ describe('userGroup methods', () => {
       expect(groupC!.memberIds).toContain('other');
     });
 
+    it('removes external users by idOnTheSource member key', async () => {
+      const user = await createTestUser({ idOnTheSource: 'user-ext-remove-all' });
+      await Group.create([
+        { name: 'Group A', source: 'local', memberIds: ['user-ext-remove-all', 'other'] },
+        { name: 'Group B', source: 'local', memberIds: ['user-ext-remove-all'] },
+        { name: 'Group C', source: 'local', memberIds: [user._id.toString()] },
+      ]);
+
+      await methods.removeUserFromAllGroups(user._id.toString());
+
+      const externalGroups = await Group.find({ memberIds: 'user-ext-remove-all' });
+      expect(externalGroups).toHaveLength(0);
+
+      const rawIdGroups = await Group.find({ memberIds: user._id.toString() });
+      expect(rawIdGroups).toHaveLength(0);
+    });
+
     it('is a no-op when user is not in any groups', async () => {
       await Group.create({ name: 'Group A', source: 'local', memberIds: ['other'] });
       await expect(
@@ -1109,12 +1126,14 @@ describe('userGroup methods', () => {
       });
 
       await cachedMethods.removeUserFromAllGroups(user._id.toString());
-      expect(cache.delete).toHaveBeenCalledTimes(1);
+      expect(cache.delete).toHaveBeenCalledTimes(2);
 
       cache.store.set(user._id.toString(), []);
+      cache.store.set('nolock-ext-1', []);
       await new Promise((resolve) => setTimeout(resolve, 700));
 
       expect(cache.store.has(user._id.toString())).toBe(false);
+      expect(cache.store.has('nolock-ext-1')).toBe(false);
     });
 
     it('takes over the build when the lock frees without a cache fill', async () => {
@@ -1639,6 +1658,27 @@ describe('userGroup methods', () => {
         }),
       );
       expect(results[0].id).toBeDefined();
+    });
+
+    it('preserves external user idOnTheSource in search results', async () => {
+      await User.create({
+        name: 'External Person',
+        email: 'external@test.com',
+        username: 'external-person',
+        password: 'password123',
+        provider: 'openid',
+        idOnTheSource: 'entra-user-search',
+      });
+
+      const results = await methods.searchPrincipals('external', 10, [PrincipalType.USER]);
+
+      expect(results[0]).toEqual(
+        expect.objectContaining({
+          type: PrincipalType.USER,
+          name: 'External Person',
+          idOnTheSource: 'entra-user-search',
+        }),
+      );
     });
 
     it('transforms group results to TPrincipalSearchResult format', async () => {

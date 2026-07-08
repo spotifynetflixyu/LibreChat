@@ -3,6 +3,7 @@ import type { ParsedServerConfig } from '~/mcp/types';
 import type { RequestBody } from '~/types';
 
 export const mcpToolPattern: RegExp = new RegExp(`^.+${Constants.mcp_delimiter}.+$`);
+export const OAUTH_TOOL_CALL_PREFIX: string = `oauth${Constants.mcp_delimiter}`;
 
 export function splitMCPToolKey(toolKey: string): [toolName: string, serverName: string] {
   const delimiterIndex = toolKey.lastIndexOf(Constants.mcp_delimiter);
@@ -407,11 +408,14 @@ export function buildMCPToolKey(toolName: string, serverName: string): string {
  * prevent double-wrapping.
  */
 export function buildOAuthToolCallName(serverName: string): string {
-  const oauthPrefix = `oauth${Constants.mcp_delimiter}`;
-  if (serverName.startsWith(oauthPrefix)) {
+  if (serverName.startsWith(OAUTH_TOOL_CALL_PREFIX)) {
     return normalizeServerName(serverName);
   }
-  return `${oauthPrefix}${normalizeServerName(serverName)}`;
+  return `${OAUTH_TOOL_CALL_PREFIX}${normalizeServerName(serverName)}`;
+}
+
+export function isOAuthToolCallName(name: unknown): name is string {
+  return typeof name === 'string' && name.startsWith(OAUTH_TOOL_CALL_PREFIX);
 }
 
 const INVALID_CLIENT_PATTERNS = [

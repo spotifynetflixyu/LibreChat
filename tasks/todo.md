@@ -1,3 +1,110 @@
+# Active: SSE resume replay batching - 2026-07-08
+
+Goal: reduce reconnect/resume UI churn by batching message-state writes during
+SSE sync replay while preserving live streaming updates.
+
+Checklist:
+
+- [x] Inspect `useResumableSSE` sync/replay paths and `useStepHandler` message
+      update behavior.
+- [x] Add a focused regression showing resume replay commits message state once
+      after multiple replay updates.
+- [x] Implement a replay-only message batching proxy in `useResumableSSE`.
+- [x] Run focused SSE frontend tests, client typecheck, and `rtk git diff --check`.
+- [x] Record result and skipped broader replay/storage work.
+
+Review:
+
+- Added a resume-sync-only message batch in `useResumableSSE` so replay handlers
+  read and write the same in-memory message array, then commit to React state
+  once after sync replay completes.
+- Preserved live stream behavior by routing normal `setMessages` calls directly
+  to the existing chat helper outside the sync branch.
+- Added a regression covering one resume sync packet with snapshot hydration plus
+  replayed and pending approval events; the final committed response contains
+  both approval parts with one `setMessages` commit.
+- Skipped broader backend replay storage batching; this pass only reduces
+  frontend resume replay message churn.
+- Verified:
+  - `rtk npx jest src/hooks/SSE/__tests__/useResumableSSE.spec.ts --runInBand --watch=false --coverage=false`
+  - `rtk npx jest src/hooks/SSE/__tests__/useStepHandler.spec.ts src/hooks/SSE/__tests__/useResumableSSE.spec.ts src/hooks/SSE/__tests__/useResumeOnLoad.spec.tsx --runInBand --watch=false --coverage=false`
+  - `rtk npm run typecheck` in `client`
+  - `rtk git diff --check`
+
+# Active: backend stream-prefix consolidation - 2026-07-08
+
+Goal: centralize backend OAuth MCP stream-prefix detection so stream replay and
+abort persistence share one helper instead of duplicate local prefix constants.
+
+Checklist:
+
+- [x] Inspect current OAuth MCP helper exports and stream call sites.
+- [x] Add or reuse one backend helper without changing stream event contracts.
+- [x] Replace local duplicate prefix checks in stream modules.
+- [x] Run focused stream/package verification plus `rtk git diff --check`.
+- [x] Record result and any skipped broader stream refactors.
+
+Review:
+
+- Added one backend OAuth MCP tool-call prefix constant and
+  `isOAuthToolCallName` helper in `packages/api/src/mcp/utils.ts`, next to the
+  existing `buildOAuthToolCallName` builder.
+- Replaced duplicate local OAuth prefix checks in
+  `packages/api/src/stream/GenerationJobManager.ts` and
+  `packages/api/src/stream/abortContent.ts`.
+- Added utility coverage for the shared prefix and detector.
+- Kept the broader SSE replay batching work out of scope.
+- Verified:
+  - `rtk npx jest --runTestsByPath src/mcp/__tests__/utils.test.ts src/stream/__tests__/GenerationJobManager.resumeReplay.spec.ts src/stream/__tests__/collectedUsage.spec.ts --runInBand --coverage=false`
+  - `rtk npm run build` in `packages/api`
+  - `rtk git diff --check`
+
+# Active: simplify 717854df234808f6f4907..HEAD - 2026-07-08
+
+Goal: review the current branch changes from `717854df234808f6f4907` to `HEAD`
+for local simplifications without changing public APIs or broadening scope.
+
+Checklist:
+
+- [x] Collect diff scope and identify the highest-risk changed areas.
+- [x] Run code reuse, quality, and efficiency review tracks in parallel.
+- [x] Apply only clear, local simplifications that reduce risk or duplication.
+- [x] Run focused verification for touched modules plus `rtk git diff --check`.
+- [x] Record review results and any intentionally skipped findings.
+
+Review:
+
+- Extracted shared SSE resume timestamp helpers and OAuth tool-call-name
+  detection so resume hydration and step handling do not carry parallel local
+  copies.
+- Synced pending-action SSE updates through `syncStepMessage` before applying
+  subsequent stream events.
+- Reused the MCP server selection predicate in the MCP item dialog so select-all
+  replaces legacy/current server tokens instead of leaving stale selections.
+- Centralized Langfuse central base URL resolution and simplified Steel title
+  structured-output chain construction.
+- Consolidated Steel user-group member-key resolution, preserved
+  `idOnTheSource` in principal search results, removed external users from both
+  source-key and raw-id memberships, and moved user group cleanup before user
+  row deletion so the source key can still resolve.
+- Fixed two small client typecheck blockers found by verification:
+  `Constants.NEW_CONVO` enum typing in the chat state spec and missing
+  `com_ui_unavailable` in the English locale baseline.
+- Skipped broader opportunities that would exceed this simplify pass:
+  GenerationJobManager/Redis replay storage reshaping, SSE replay render
+  batching, backend stream-prefix consolidation, and ToolCard/ToolRow UI
+  display refactors.
+- Verified:
+  - `rtk npx jest src/hooks/SSE/__tests__/useStepHandler.spec.ts src/hooks/SSE/__tests__/useResumableSSE.spec.ts src/hooks/SSE/__tests__/useResumeOnLoad.spec.tsx src/components/SidePanel/Agents/Tools/ItemDialog/__tests__/McpSection.spec.tsx --runInBand --watch=false --coverage=false`
+  - `rtk npx jest src/components/Chat/__tests__/state.spec.ts src/components/Chat/Menus/Endpoints/components/__tests__/OpenAIOAuthUsageRemaining.test.tsx --runInBand --watch=false --coverage=false`
+  - `rtk npx jest --runTestsByPath src/methods/userGroup.spec.ts --runInBand --coverage=false`
+  - `rtk npx jest --runTestsByPath src/steel/native/title.spec.ts src/langfuse/feedback.spec.ts --runInBand --coverage=false`
+  - `rtk npx jest server/controllers/__tests__/deleteUser.spec.js --runInBand`
+  - `rtk npm run build` in `packages/data-schemas`
+  - `rtk npm run build` in `packages/api`
+  - `rtk npm run typecheck` in `client`
+  - `rtk git diff --check`
+
 # Active: first text delta timing instrumentation - 2026-07-07
 
 Goal: prove whether OCR main-agent responses stream visible text before final

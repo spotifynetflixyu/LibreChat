@@ -1,3 +1,7 @@
+import { normalizeString } from '~/utils/text';
+
+const DEFAULT_BASE_URL = 'https://cloud.langfuse.com';
+
 export function toBasicAuthorization(publicKey: string, secretKey: string): string {
   return `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString('base64')}`;
 }
@@ -29,4 +33,13 @@ export function isTrueEnv(value: unknown): boolean {
 
 export function isFalseEnv(value: unknown): boolean {
   return normalizeBoolean(value) === false;
+}
+
+export function resolveCentralLangfuseBaseUrl(): string {
+  return (
+    normalizeString(process.env.LANGFUSE_BASE_URL) ??
+    normalizeString(process.env.LANGFUSE_HOST) ??
+    normalizeString(process.env.LANGFUSE_BASEURL) ??
+    DEFAULT_BASE_URL
+  );
 }

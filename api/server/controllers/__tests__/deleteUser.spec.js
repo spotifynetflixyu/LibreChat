@@ -171,6 +171,20 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.send).toHaveBeenCalledWith({ message: 'User deleted' });
   });
 
+  it('removes group memberships before deleting the user row', async () => {
+    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+    const res = createRes();
+    const { removeUserFromAllGroups } = require('~/models');
+    mockGetUserById.mockResolvedValue(null);
+
+    await deleteUserController(req, res);
+
+    expect(removeUserFromAllGroups).toHaveBeenCalledWith('user1');
+    expect(removeUserFromAllGroups.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDeleteUserById.mock.invocationCallOrder[0],
+    );
+  });
+
   it('returns error when 2FA is enabled and verification fails with 400', async () => {
     const req = { user: { id: 'user1', _id: 'user1' }, body: {} };
     const res = createRes();

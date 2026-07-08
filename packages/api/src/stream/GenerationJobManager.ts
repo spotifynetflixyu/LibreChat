@@ -1,6 +1,5 @@
 import { logger, getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import {
-  Constants,
   UsageEvents,
   ApprovalEvents,
   parseTextParts,
@@ -29,6 +28,7 @@ import {
   setGenerationJobsInFlight,
   recordGenerationJob,
 } from '~/app/metrics';
+import { isOAuthToolCallName } from '~/mcp/utils';
 import { isPendingActionStale, isPendingActionExpired } from './interfaces/IJobStore';
 import { InMemoryEventTransport } from './implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
@@ -40,7 +40,6 @@ const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
 
 /** Error surfaced to any client still attached when a stale/hung job is reaped. */
 const REAPED_JOB_ERROR = 'Generation timed out';
-const OAUTH_TOOL_CALL_PREFIX = `oauth${Constants.mcp_delimiter}`;
 
 function getToolCallName(toolCall: unknown): unknown {
   return toolCall != null && typeof toolCall === 'object' && 'name' in toolCall
@@ -53,7 +52,7 @@ function hasOAuthToolCall(toolCalls: unknown): boolean {
     Array.isArray(toolCalls) &&
     toolCalls.some((toolCall) => {
       const name = getToolCallName(toolCall);
-      return typeof name === 'string' && name.startsWith(OAUTH_TOOL_CALL_PREFIX);
+      return isOAuthToolCallName(name);
     })
   );
 }
@@ -108,7 +107,7 @@ function isOAuthReplayEvent(event: t.ServerSentEvent): boolean {
       return false;
     }
     const name = getToolCallName(result.tool_call);
-    return typeof name === 'string' && name.startsWith(OAUTH_TOOL_CALL_PREFIX);
+    return isOAuthToolCallName(name);
   }
 
   return false;

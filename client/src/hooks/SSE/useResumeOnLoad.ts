@@ -6,6 +6,7 @@ import type { StreamStatusResponse } from '~/data-provider';
 import { getBranchSiblingIndexesForTarget, applyPendingAction } from '~/utils';
 import { useStreamStatus } from '~/data-provider';
 import store from '~/store';
+import { preferDefinedString, toResumeTimestamp, withResumeTimestamp } from './resume';
 
 function hasSubmissionUserMessage(
   submission: TSubmission | null,
@@ -76,28 +77,6 @@ function getResumeBranchTargetMessageId(
   }
 
   return resumeState.userMessage?.parentMessageId;
-}
-
-function preferDefinedString(value?: string | null, fallback?: string): string | undefined {
-  return value != null && value !== '' ? value : fallback;
-}
-
-function toResumeTimestamp(value?: number): string | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return undefined;
-  }
-  return new Date(value).toISOString();
-}
-
-function withResumeTimestamp(message: TMessage, timestamp?: string): TMessage {
-  if (!timestamp) {
-    return message;
-  }
-  return {
-    ...message,
-    createdAt: message.createdAt ?? timestamp,
-    clientTimestamp: message.clientTimestamp ?? timestamp,
-  };
 }
 
 /**

@@ -1973,6 +1973,7 @@
   "com_ui_upload_provider": "Upload to Provider",
   "com_ui_upload_success": "Successfully uploaded file",
   "com_ui_upload_type": "Select Upload Type",
+  "com_ui_unavailable": "Unavailable",
   "com_ui_usage": "Usage",
   "com_ui_usage_remaining": "Usage remaining",
   "com_ui_steel_file_ocr_default_prompt": "OCR檔案內容，逐一列表給我核對。",

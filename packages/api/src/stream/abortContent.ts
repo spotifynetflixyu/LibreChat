@@ -1,7 +1,6 @@
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { ContentTypes } from 'librechat-data-provider';
 import type { Agents, TMessageContentParts } from 'librechat-data-provider';
-
-const OAUTH_TOOL_CALL_PREFIX = `oauth${Constants.mcp_delimiter}`;
+import { isOAuthToolCallName } from '~/mcp/utils';
 
 type PersistableAbortContentPart = Agents.MessageContentComplex | TMessageContentParts;
 type AbortContentPart = PersistableAbortContentPart | null | undefined;
@@ -46,7 +45,7 @@ function isOAuthPromptContentPart(part: AbortContentPart): boolean {
   }
 
   const name = toolCall.name;
-  return typeof name === 'string' && name.startsWith(OAUTH_TOOL_CALL_PREFIX);
+  return isOAuthToolCallName(name);
 }
 
 function isPersistableAbortContentPart(

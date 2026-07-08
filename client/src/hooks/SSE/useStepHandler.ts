@@ -28,6 +28,7 @@ import {
 } from '~/utils/subagentContent';
 import { subagentProgressByToolCallId } from '~/store';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
+import { isOAuthToolCallName } from './oauth';
 
 type TUseStepHandler = {
   announcePolite: (options: AnnounceOptions) => void;
@@ -96,9 +97,6 @@ function isSkillAuthoringToolCall(toolCall?: Agents.ToolCall): boolean {
   }
   return typeof filePath === 'string' && filePath.startsWith(SKILL_FILE_PREFIX);
 }
-
-const isOAuthToolCallName = (name?: string) =>
-  typeof name === 'string' && name.startsWith(`oauth${Constants.mcp_delimiter}`);
 
 const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>) => {
   if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) {

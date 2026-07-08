@@ -91,6 +91,11 @@ jest.mock('@librechat/client', () => {
   return {
     Button: ({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) =>
       React.createElement('button', { type: 'button', onClick }, children),
+    Spinner: ({ className }: { className?: string }) =>
+      React.createElement('span', { className, 'data-testid': 'spinner' }),
+    Skeleton: ({ className }: { className?: string }) =>
+      React.createElement('span', { className, 'data-testid': 'skeleton' }),
+    TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
     Checkbox: ({
       checked,
       onCheckedChange,
@@ -167,6 +172,17 @@ describe('McpSection', () => {
     expect(mockSetValue).toHaveBeenCalledWith(
       'tools',
       ['sys__server__sys_mcp_srv'],
+      expect.objectContaining({ shouldDirty: true }),
+    );
+  });
+
+  test('select-all replaces legacy server tokens instead of leaving stale selections', () => {
+    mockGetValues.mockReturnValue(['search_mcp_srv', 'mcp_srv', 'mcp:srv:a', 'dalle']);
+    render(<McpSection item={item} />);
+    fireEvent.click(screen.getByLabelText('com_ui_tools_mcp_select_all'));
+    expect(mockSetValue).toHaveBeenCalledWith(
+      'tools',
+      ['dalle', 'sys__server__sys_mcp_srv', 'mcp:srv:a', 'mcp:srv:b'],
       expect.objectContaining({ shouldDirty: true }),
     );
   });
