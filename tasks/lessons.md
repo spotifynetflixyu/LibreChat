@@ -450,9 +450,9 @@
   PDF/image turns inject the MCP server token before `loadToolDefinitions()`;
   otherwise the model falls back to provider file parsing and may report "No
   text could be parsed" without ever calling `paddleocr_vl`.
-- PaddleOCR MCP can take longer on real drawing PDFs. Keep the LibreChat MCP
-  server timeout and the direct Steel PaddleOCR helper default at 20 minutes
-  (`1200000` ms) unless the user explicitly asks for a shorter timeout.
+- PaddleOCR MCP can take longer on real drawing PDFs, but the current accepted
+  default is 10 minutes (`600000` ms). Do not restore the old 20-minute
+  (`1200000` ms) default unless the user explicitly asks for it.
 - Portal-based Markdown table modals must explicitly sync the active root theme
   class and `data-theme`; do not assume a body-level portal inherits the chat
   message theme scope.
@@ -537,10 +537,13 @@
   and body attachments with filename-extension fallback for
   `application/octet-stream`; do not inject PaddleOCR MCP on turns with no
   PDF/image evidence unless the user explicitly asks for always-on loading.
-- PaddleOCR MCP process lazy-load must be enforced in the tracked MCP
-  initialization path, not only in ignored local `librechat.yaml`. Before
-  `createMCPManager()`, force the `PaddleOCR` server config to `startup:false`
-  so startup keeps the server known but does not launch the stdio process.
+- PaddleOCR MCP is now intentionally eager for no request-time cold start.
+  Preserve `startup:true` in the tracked MCP initialization path; do not force
+  `PaddleOCR` back to `startup:false` before `createMCPManager()`.
+- PaddleOCR preflight retry matching must stay narrow. Add connection startup
+  phrases such as `connection timeout after` and `failed to establish
+  connection`, but do not add generic `timeout` / `timed out` patterns that
+  would blindly rerun a real long OCR job timeout.
 - MCP server names may contain config-valid characters that provider tool names
   reject. Keep raw server names for MCP registry/config lookup, but sanitize the
   provider-facing MCP tool-name suffix to `^[a-zA-Z0-9_-]+$`; names such as
@@ -552,19 +555,20 @@
 - PaddleOCR has nested timeouts: LibreChat MCP `timeout` controls tool
   execution from LibreChat's side, while `PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT`
   and `PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT` control AI Studio calls inside
-  `paddleocr-mcp`. For real drawing PDFs, raise both inner AI Studio timeouts;
-  increasing only LibreChat's MCP timeout will not prevent `paddleocr_vl`
-  `TimeoutError`.
+  `paddleocr-mcp`. The current default is `timeout: 600000`,
+  `PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "60"`, and
+  `PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "600"`. Keep request/connect timeouts
+  shorter than the OCR job budget so startup/request failures surface quickly.
 - The current PaddleOCR MCP server key should be `PaddleOCR`; keep
   `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6` as the model setting. Do not reuse the
   model name as the LibreChat MCP server key.
 - For PaddleOCR with `PADDLEOCR_MCP_PPOCR_SOURCE: "aistudio"`, do not prepare
-  a host-mounted PaddleOCR Python environment at API startup. Keep API/local
-  runtime aligned by launching `PaddleOCR` from `librechat.yaml` with
-  `command: uvx` and `args: ["--python", "3.12", "--from", "paddleocr-mcp",
-  "paddleocr_mcp"]`. The API image needs `uv`/`uvx` and Python availability;
-  it does not need a separate local PaddlePaddle inference stack for the AI
-  Studio provider path.
+  a host-mounted PaddleOCR Python environment at API startup. The production
+  image build installs Python 3.12 and `paddleocr-mcp` with `uv tool install`
+  before deploy/start, and LibreChat launches the eager MCP server with
+  `command: paddleocr_mcp`, `args: []`, and `initTimeout: 60000`. The API image
+  still needs `uv`/`uvx` for build-time install support, but runtime startup
+  must not depend on `uvx --from paddleocr-mcp` package resolution.
 - Do not keep PaddleOCR source/provider branching when there is only one
   supported OCR API path. Production should require
   `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`, model, and timeout settings only; do

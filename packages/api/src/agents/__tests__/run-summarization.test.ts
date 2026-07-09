@@ -325,6 +325,42 @@ describe('custom endpoint stream usage defaults', () => {
     expect(overrideModel?.options?.modelOptions?.reasoningEffort).toBe('high');
   });
 
+  it('uses explicit frontend reasoning effort for OpenAI OAuth runs over env default', async () => {
+    process.env.OPENAI_REASONING_EFFORT = 'high';
+    const graph = {
+      agentContexts: new Map([['agent_1', { getToolsForBinding: jest.fn(() => []) }]]),
+    };
+    const run = {
+      Graph: graph,
+      processStream: jest.fn().mockResolvedValue(undefined),
+    };
+    (Run.create as jest.Mock).mockResolvedValueOnce(run);
+
+    await createRun({
+      agents: [
+        makeAgent({
+          endpoint: 'openai_oauth_responses',
+          model: 'gpt-5.5',
+          model_parameters: {
+            model: 'gpt-5.5',
+            modelKwargs: {
+              reasoning_effort: 'low',
+            },
+          },
+          provider: 'openai_oauth_responses',
+        }) as never,
+      ],
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const overrideModel = (graph as { overrideModel?: unknown }).overrideModel as
+      | { options?: { modelOptions?: { reasoningEffort?: string } } }
+      | undefined;
+    expect(overrideModel?.options?.modelOptions?.reasoningEffort).toBe('low');
+  });
+
   it('lets the OCR markdown path force OpenAI OAuth reasoning effort to none', async () => {
     process.env.OPENAI_REASONING_EFFORT = 'high';
     const graph = {

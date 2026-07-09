@@ -1,3 +1,163 @@
+# Active: OpenAI OAuth frontend setting parameter audit - 2026-07-09
+
+Goal: verify whether LibreChat chat settings for Image Detail and Reasoning
+Effort are applied to the OpenAI OAuth provider request path.
+
+Checklist:
+
+- [x] Trace frontend storage/request payload for `imageDetail` and
+      `reasoningEffort`.
+- [x] Trace backend conversation/client option parsing into the OpenAI OAuth
+      provider.
+- [x] Compare current defaults against the expected contracts:
+      Image Detail UI `Auto` should resolve to provider `high`; Reasoning
+      Effort UI `Auto` should resolve from `OPENAI_REASONING_EFFORT`.
+- [x] Record evidence, gaps, and recommended fix scope.
+
+Review:
+
+- Frontend `openai_oauth_responses` uses the OpenAI settings schema, so
+  `imageDetail` and `reasoning_effort` reach the backend payload.
+- Root cause: the native OpenAI OAuth graph override only read camel
+  `reasoningEffort`, while the normal settings path resolves explicit frontend
+  values into `modelKwargs.reasoning_effort` or `modelKwargs.reasoning.effort`.
+- Root cause: native OAuth image conversion hardcoded every image as
+  `imageDetail: "high"`, so `Auto` effectively matched the desired high default
+  but explicit `Low` was ignored.
+- Fixed native OAuth normalization so explicit frontend reasoning effort wins
+  over `OPENAI_REASONING_EFFORT`, while `Auto`/empty still falls back to env
+  config. Image detail now maps `low -> low` and `auto`/unset/`high -> high`.
+- Verification:
+  - Red checks failed before implementation for explicit frontend
+    `reasoning_effort=low` and image `detail=low`.
+  - `cd packages/api && npx jest src/steel/native/oauth.spec.ts --runInBand --watch=false --coverage=false` passed, 12 tests.
+  - `cd packages/api && npx jest src/agents/__tests__/run-summarization.test.ts --runInBand --watch=false --coverage=false` passed, 107 tests.
+  - `cd packages/api && npm run build` passed.
+  - `git diff --check` passed.
+
+# Active: production Docker PaddleOCR layer verification - 2026-07-09
+
+Goal: build the production `api-build` Docker target and verify the resulting
+image contains the preinstalled `paddleocr_mcp` executable.
+
+Checklist:
+
+- [x] Confirm the production Docker target and local verification command.
+- [x] Run `docker build --target api-build` for `Dockerfile.multi`.
+- [x] Run a container command that resolves `paddleocr_mcp`.
+- [x] Record result or blocker.
+
+Review:
+
+- Production workflow target confirmed as `Dockerfile.multi` target
+  `api-build` with `linux/amd64`.
+- Built local production image successfully:
+  `docker build --platform linux/amd64 --file Dockerfile.multi --target api-build --tag librechat-prod-api:paddleocr-layer-check .`.
+- Build log verified the PaddleOCR layer installed `paddleocr-mcp==0.8.5` and
+  resolved `/usr/local/bin/paddleocr_mcp` during image build.
+- Container verification passed:
+  `docker run --rm --platform linux/amd64 --entrypoint sh librechat-prod-api:paddleocr-layer-check -lc 'set -eu; path="$(command -v paddleocr_mcp)"; echo "paddleocr_mcp=$path"; test -x "$path"; uv tool list'`.
+- Runtime check output:
+  `paddleocr_mcp=/usr/local/bin/paddleocr_mcp`,
+  `paddleocr-mcp v0.8.5`, `- paddleocr_mcp`.
+- Image metadata: `linux/amd64`, image id
+  `sha256:18a24fcd9d7934b42749e970450e52d11063fdbd89c8cf7cd2a03aa5fcabfc72`,
+  size `1407013306` bytes.
+
+# Active: simplify current PaddleOCR startup/timeout diff - 2026-07-09
+
+Goal: simplify the current working-tree diff without changing public runtime
+contracts or broadening the PaddleOCR retry behavior.
+
+Checklist:
+
+- [x] Review the changed PaddleOCR startup, retry, timeout, docs, and tests.
+- [x] Apply small local simplifications only where they reduce duplication or
+      stale-risk.
+- [x] Run focused Jest/static checks and `git diff --check`.
+- [x] Record results.
+
+Review:
+
+- Reused the new single-file PaddleOCR preflight test helpers for the older
+  sequential connection-reset retry test, removing duplicated mock request,
+  missing-file, tool-load, and chunk-pipeline setup.
+- Added a small `mockPaddleOcrToolLoads` helper so PaddleOCR retry tests no
+  longer repeat the MCP tool wrapper shape.
+- Removed the extra `uv tool list` build output from `Dockerfile.multi`; the
+  build still verifies the cached tool with `command -v paddleocr_mcp`.
+- Intentionally did not narrow the existing provider reset retry patterns in
+  this simplify pass, because that would change the current retry contract
+  covered by the sequential connection-reset regression.
+- Verification:
+  - `cd api && npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false` passed, 79 tests.
+  - `cd api && npx jest server/services/initializeMCPs.spec.js --runInBand --watch=false --coverage=false` passed, 16 tests.
+  - `node --check api/server/services/ToolService.js`, `node --check api/server/services/initializeMCPs.js`, `sh -n deploy/host/paddleocr-smoke.sh`, YAML parse/assertion, and `git diff --check` passed.
+
+# Active: PaddleOCR retry pattern and timeout tuning - 2026-07-09
+
+Goal: keep PaddleOCR connection-start retries narrow while reducing OCR timeout
+budgets from 20 minutes to 10 minutes and shortening non-OCR timeouts to
+reasonable startup/request values.
+
+Checklist:
+
+- [x] Add regression coverage for connection-establishment retry and real OCR
+      job timeout non-retry.
+- [x] Limit PaddleOCR retry matching to connection startup failure patterns.
+- [x] Change PaddleOCR config/docs from 20-minute OCR timeout to 10 minutes.
+- [x] Shorten non-OCR init/request timeout values.
+- [x] Run focused verification and `git diff --check`.
+- [x] Record results.
+
+Review:
+
+- Added red-green coverage proving `Connection timeout after 30000ms` triggers
+  the PaddleOCR connection rebuild/retry path, while a real OCR job timeout
+  (`PaddleOCR MCP OCR timed out after 600000 ms.`) does not retry.
+- PaddleOCR retry patterns now add only connection-start phrases:
+  `connection timeout after` and `failed to establish connection`.
+- Runtime config now uses `timeout: 600000`, `initTimeout: 60000`,
+  `PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "60"`,
+  `PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "600"`, and
+  `PADDLEOCR_MCP_HTTP_TIMEOUT: "60"`.
+- Verification:
+  - Red test failed before implementation:
+    `cd api && npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false --testNamePattern "connection establishment timeout|real OCR job timeout"`.
+  - `cd api && npx jest server/services/__tests__/ToolService.spec.js --runInBand --watch=false --coverage=false` passed, 79 tests.
+  - `cd api && npx jest server/services/initializeMCPs.spec.js --runInBand --watch=false --coverage=false` passed, 16 tests.
+  - `node --check api/server/services/ToolService.js`, `node --check api/server/services/initializeMCPs.js`, YAML parse/assertion, current-runtime `rg`, and `git diff --check` passed.
+
+# Active: PaddleOCR eager startup and build-time cache - 2026-07-09
+
+Goal: remove PaddleOCR request-time cold start by preserving `startup:true`,
+removing the forced lazy-load override, and installing/cacheing `paddleocr-mcp`
+during the production image build.
+
+Checklist:
+
+- [x] Add focused regression coverage for preserving PaddleOCR eager startup.
+- [x] Remove the `initializeMCPs` PaddleOCR lazy-load override.
+- [x] Change production PaddleOCR config to `startup:true`, `initTimeout`, and
+      direct `paddleocr_mcp` command.
+- [x] Install/cache `paddleocr-mcp` before deploy/start in `Dockerfile.multi`.
+- [x] Update current deployment docs that describe the PaddleOCR runtime.
+- [x] Run focused verification and `git diff --check`.
+- [x] Record results.
+
+Review:
+
+- Red regression check failed before implementation because `initializeMCPs`
+  still forced PaddleOCR to `startup:false`.
+- Focused regression passed after removing the override:
+  `cd api && npx jest server/services/initializeMCPs.spec.js --runInBand --watch=false --coverage=false --testNamePattern "PaddleOCR eager"`.
+- Full focused suite passed:
+  `cd api && npx jest server/services/initializeMCPs.spec.js --runInBand --watch=false --coverage=false`.
+- Static checks passed: `node --check api/server/services/initializeMCPs.js`,
+  YAML parse/assertion for PaddleOCR config, current-runtime `rg` audit, and
+  `git diff --check`.
+- Full Docker image build/deploy was not run in this implementation pass.
+
 # Active: simplify current Codex OAuth diff - 2026-07-08
 
 Goal: simplify the current working tree changes for the admin Codex OAuth token
@@ -4568,44 +4728,14 @@ Current simplify review - 2026-06-27:
 
 PaddleOCR MCP process lazy-load plan - 2026-06-27:
 
-- [x] Verify the existing MCP startup/config/reinit paths and confirm
-      `startup:false` keeps a YAML server known while skipping startup
-      capability/tool inspection.
-- [x] Add a red MCP initialization regression test proving `PaddleOCR` is
-      forced to process lazy loading before manager startup.
-- [x] Force `mcpServers.PaddleOCR.startup: false` before MCP manager
-      initialization, without mutating the loaded base config.
-- [x] Verify the red test turns green and focused OCR/MCP tool-loading tests
-      still pass.
-- [x] Rebuild/restart backend and confirm startup no longer launches the
-      PaddleOCR MCP stdio process before an OCR-capable turn.
+- Superseded on 2026-07-09 by the eager-start/no request-time cold-start plan.
+  The active contract is `startup:true`, no `initializeMCPs` lazy override, and
+  a preinstalled `paddleocr_mcp` command in the production image.
 
 PaddleOCR MCP process lazy-load review - 2026-06-27:
 
-- Added `withLazyLoadedSteelMCPServers()` in
-  `api/server/services/initializeMCPs.js` so the `PaddleOCR` MCP server is
-  passed to `createMCPManager()` with `startup:false`, while other MCP servers
-  are left unchanged and the original app config object is not mutated.
-- This preserves the MCP registry/config entry but skips startup stdio
-  inspection, so `paddleocr_mcp` is not launched until an OCR-capable request
-  injects and uses the tool.
-- Kept the ignored local `librechat.yaml` aligned with `startup:false`, but the
-  tracked runtime guard does not depend on that local file being versioned.
-- Verification:
-  - Red test failed before implementation:
-    `cd api && rtk npx jest server/services/initializeMCPs.spec.js --runInBand --watch=false --coverage=false --testNamePattern "should force PaddleOCR MCP process lazy loading"`.
-  - Same focused test passed after implementation.
-  - `cd api && rtk npx jest server/services/initializeMCPs.spec.js server/services/__tests__/ToolService.spec.js server/services/MCP.spec.js app/clients/tools/util/handleTools.test.js --runInBand --watch=false --coverage=false`
-    passed, 152 tests.
-  - `cd packages/api && rtk npx jest src/mcp/registry/__tests__/MCPServerInspector.test.ts src/mcp/__tests__/MCPManager.test.ts src/mcp/tools.spec.ts src/tools/definitions.spec.ts --runInBand --watch=false --coverage=false`
-    passed, 117 tests.
-  - `cd packages/api && rtk npm run build` passed.
-  - `rtk git diff --check` passed.
-  - Restarted backend on `http://localhost:3080/`; detached npm PID `92630`,
-    server PID `92667`, and `curl` returned `200`.
-  - Startup log shows `[MCP] Initialized with 1 configured server and 0 tools.`
-    and the check returned `hasFastMcpBanner=false`,
-    `hasPaddleOcrToolsAtStartup=false`, `hasZeroToolInit=true`.
+- Historical note only. Do not reintroduce the previous PaddleOCR lazy-load
+  override; it was removed by the 2026-07-09 eager-start work.
 
 # Active: Steel Direct MCP OCR
 

@@ -155,7 +155,7 @@ function loadPaddleOcrServerConfig() {
     ),
   };
   const args = Array.isArray(serverConfig.args) ? serverConfig.args.map((arg) => String(arg)) : [];
-  const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? serverConfig.timeout ?? 1200000);
+  const timeoutMs = Number(process.env.PADDLEOCR_SMOKE_TIMEOUT_MS ?? serverConfig.timeout ?? 600000);
 
   if (!env.PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN) {
     throw new Error(

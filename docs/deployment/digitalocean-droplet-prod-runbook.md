@@ -476,38 +476,34 @@ application `.env.prod` secret set.
 ## PaddleOCR MCP Runtime
 
 Production and local development use the same PaddleOCR MCP shape. LibreChat
-launches PaddleOCR through `uvx` from the API process environment; the API
-startup script does not prepare a separate PaddleOCR Python environment.
+starts PaddleOCR eagerly during MCP initialization so the first OCR request does
+not pay the MCP cold-start cost.
 
 The API image must include Debian/glibc runtime libraries, `uv`/`uvx`, and
-the `@openai/codex` CLI.
-`uvx` resolves Python 3.12 and the `paddleocr-mcp` package when the MCP server
-is launched. Because the provider source is fixed to AI Studio, production does
-not require a local PaddlePaddle inference stack.
+the `@openai/codex` CLI. The image build installs Python 3.12 and
+`paddleocr-mcp` with `uv tool install`, exposing `paddleocr_mcp` on `PATH`
+before deploy/start. Because the provider source is fixed to AI Studio,
+production does not require a local PaddlePaddle inference stack.
 
-Production `/data/librechat.yaml` and local `librechat.yaml` must use the `uvx`
-command:
+Production `/data/librechat.yaml` and local `librechat.yaml` must use the
+preinstalled `paddleocr_mcp` command:
 
 ```yaml
 mcpServers:
   PaddleOCR:
     type: stdio
-    startup: false
-    command: uvx
-    args:
-      - --python
-      - "3.12"
-      - --from
-      - paddleocr-mcp
-      - paddleocr_mcp
-    timeout: 1200000
+    startup: true
+    initTimeout: 60000
+    command: paddleocr_mcp
+    args: []
+    timeout: 600000
     env:
       PADDLEOCR_MCP_MODEL: PaddleOCR-VL-1.6
       PADDLEOCR_MCP_PPOCR_SOURCE: aistudio
       PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN: "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"
-      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "600"
-      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "1200"
-      PADDLEOCR_MCP_HTTP_TIMEOUT: "1200"
+      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "60"
+      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "600"
+      PADDLEOCR_MCP_HTTP_TIMEOUT: "60"
 ```
 
 The only required PaddleOCR secret in `/etc/librechat/.env.prod` is:
@@ -516,18 +512,20 @@ The only required PaddleOCR secret in `/etc/librechat/.env.prod` is:
 PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=
 ```
 
-Production uses PaddleOCR-VL through the AI Studio API. PaddleOCR supports PDF
-and image inputs such as PNG, JPG/JPEG, BMP, and CIF. Treat this as a single API
-path: do not expose source/provider selection in env or host scripts.
+Production uses PaddleOCR-VL through the AI Studio API. OCR tool execution is
+bounded to 10 minutes; individual connection/request timeouts are intentionally
+shorter so startup failures surface quickly. PaddleOCR supports PDF and image
+inputs such as PNG, JPG/JPEG, BMP, and CIF. Treat this as a single API path: do
+not expose source/provider selection in env or host scripts.
 
 PaddleOCR API limits: after a model reaches its daily parsing limit, exceeded
 requests return `429`. There is no documented single-file size limit, but keep
 PDF inputs within 100 pages to avoid timeout; pages beyond the limit are
 ignored.
 
-Startup no longer installs or prewarms PaddleOCR. `deploy/host/start.sh` only
-starts the LibreChat API. PaddleOCR is started lazily by LibreChat when the MCP
-tool is used.
+Container startup no longer installs PaddleOCR packages. The production image
+already contains the `paddleocr_mcp` tool environment, and LibreChat starts the
+PaddleOCR MCP server eagerly during API initialization.
 
 GitHub Actions does not run PaddleOCR OCR as a deploy gate. Production deploy
 is gated only by LibreChat container health because PaddleOCR depends on the

@@ -319,6 +319,71 @@ function createMockOcrBatchResult(
   };
 }
 
+function createMockPaddleOcrPreflightReq(file) {
+  const req = createMockReq([AgentCapabilities.tools]);
+  req.body = { conversationId: 'convo-1' };
+  req.steelNativeContext = {
+    requestId: 'resp-1',
+    assistantTurnIndex: 4,
+    memoryCheckpointTurnIndex: 3,
+    currentTurnFiles: [file],
+  };
+  return req;
+}
+
+function mockSingleFilePaddleOcrPipeline(file, markdown = '| OCR |\n| --- |\n| OCR result |') {
+  const ocrFileKey = `file:${file.fileId}`;
+  mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+    completedKeys: [],
+    missingFiles: [
+      {
+        ocrFileKey,
+        fileId: file.fileId,
+        filename: file.filename,
+        mediaType: file.mediaType,
+      },
+    ],
+    missingKeys: [ocrFileKey],
+  });
+  mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
+    const pipelineFileInput = input.files[0];
+    await input.paddleOcr.runChunk({
+      file: pipelineFileInput.file,
+      chunk: {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        chunkSizePages: 50,
+      },
+      artifact: {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        chunkSizePages: 50,
+        filepath: `https://files.example.test/${file.filename}`,
+        storageKey: `ocr/${file.filename}`,
+      },
+    });
+    return createMockOcrBatchResult(input, markdown);
+  });
+}
+
+function mockPaddleOcrToolLoads(...invokes) {
+  for (const invoke of invokes) {
+    mockLoadToolsUtil.mockResolvedValueOnce({
+      loadedTools: [
+        {
+          name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+          invoke,
+        },
+      ],
+      toolContextMap: {},
+    });
+  }
+}
+
 function expectSteelNativeToolDefinitions(definitions) {
   expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual(
     ['read_markdown', 'search_customers', 'search_price_candidates'],
@@ -1460,16 +1525,8 @@ describe('ToolService - Action Capability Gating', () => {
     });
 
     it('rebuilds and retries PaddleOCR preflight after a sequential provider connection reset', async () => {
-      const req = createMockReq([AgentCapabilities.tools]);
-      req.body = { conversationId: 'convo-1' };
-      req.steelNativeContext = {
-        requestId: 'resp-1',
-        assistantTurnIndex: 4,
-        memoryCheckpointTurnIndex: 3,
-        currentTurnFiles: [
-          { fileId: 'file-second', filename: 'second.jpg', mediaType: 'image/jpeg' },
-        ],
-      };
+      const file = { fileId: 'file-second', filename: 'second.jpg', mediaType: 'image/jpeg' };
+      const req = createMockPaddleOcrPreflightReq(file);
       const firstInvoke = jest
         .fn()
         .mockRejectedValueOnce(
@@ -1478,60 +1535,8 @@ describe('ToolService - Action Capability Gating', () => {
           ),
         );
       const secondInvoke = jest.fn().mockResolvedValueOnce({ text: 'Second OCR' });
-      mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
-        completedKeys: [],
-        missingFiles: [
-          {
-            ocrFileKey: 'file:file-second',
-            fileId: 'file-second',
-            filename: 'second.jpg',
-            mediaType: 'image/jpeg',
-          },
-        ],
-        missingKeys: ['file:file-second'],
-      });
-      mockLoadToolsUtil
-        .mockResolvedValueOnce({
-          loadedTools: [
-            {
-              name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-              invoke: firstInvoke,
-            },
-          ],
-          toolContextMap: {},
-        })
-        .mockResolvedValueOnce({
-          loadedTools: [
-            {
-              name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
-              invoke: secondInvoke,
-            },
-          ],
-          toolContextMap: {},
-        });
-      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
-        const pipelineFileInput = input.files[0];
-        await input.paddleOcr.runChunk({
-          file: pipelineFileInput.file,
-          chunk: {
-            chunkIndex: 1,
-            chunkCount: 1,
-            pageStart: 1,
-            pageEnd: 1,
-            chunkSizePages: 50,
-          },
-          artifact: {
-            chunkIndex: 1,
-            chunkCount: 1,
-            pageStart: 1,
-            pageEnd: 1,
-            chunkSizePages: 50,
-            filepath: 'https://files.example.test/second.jpg',
-            storageKey: 'ocr/second.jpg',
-          },
-        });
-        return createMockOcrBatchResult(input, '| OCR |\n| --- |\n| Second OCR |');
-      });
+      mockSingleFilePaddleOcrPipeline(file, '| OCR |\n| --- |\n| Second OCR |');
+      mockPaddleOcrToolLoads(firstInvoke, secondInvoke);
 
       const result = await runSteelPaddleOcrPreflight({
         req,
@@ -1573,6 +1578,73 @@ describe('ToolService - Action Capability Gating', () => {
           }),
         ],
       });
+    });
+
+    it('rebuilds and retries PaddleOCR preflight after connection establishment timeout', async () => {
+      const file = { fileId: 'file-connect', filename: 'connect.jpg', mediaType: 'image/jpeg' };
+      const req = createMockPaddleOcrPreflightReq(file);
+      const firstInvoke = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Connection timeout after 30000ms'));
+      const secondInvoke = jest.fn().mockResolvedValueOnce({ text: 'Connected OCR' });
+      mockSingleFilePaddleOcrPipeline(file, '| OCR |\n| --- |\n| Connected OCR |');
+      mockPaddleOcrToolLoads(firstInvoke, secondInvoke);
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+
+      expect(reinitMCPServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: req.user,
+          serverName: 'PaddleOCR',
+          forceNew: true,
+          returnOnOAuth: false,
+        }),
+      );
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(2);
+      expect(firstInvoke).toHaveBeenCalledTimes(1);
+      expect(secondInvoke).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'completed',
+          completedKeys: ['file:file-connect'],
+          failedKeys: [],
+        }),
+      );
+    });
+
+    it('does not retry PaddleOCR preflight after a real OCR job timeout', async () => {
+      const file = {
+        fileId: 'file-timeout',
+        filename: 'timeout.pdf',
+        mediaType: 'application/pdf',
+      };
+      const req = createMockPaddleOcrPreflightReq(file);
+      const firstInvoke = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('PaddleOCR MCP OCR timed out after 600000 ms.'));
+      mockSingleFilePaddleOcrPipeline(file);
+      mockPaddleOcrToolLoads(firstInvoke);
+
+      await expect(
+        runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        }),
+      ).rejects.toThrow('PaddleOCR MCP OCR timed out after 600000 ms.');
+
+      expect(reinitMCPServer).not.toHaveBeenCalled();
+      expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalledWith('PaddleOCR');
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
+      expect(firstInvoke).toHaveBeenCalledTimes(1);
     });
 
     it('keeps raw PaddleOCR output out of same-turn runtime attachments', async () => {

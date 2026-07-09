@@ -381,6 +381,13 @@ describe('OpenAI OAuth model adapter', () => {
             },
           },
           {
+            type: 'image_url',
+            image_url: {
+              url: 'data:image/jpeg;base64,LOW_DETAIL_IMAGE_DATA',
+              detail: 'low',
+            },
+          },
+          {
             type: 'input_file',
             filename: 'drawing.pdf',
             file_data: 'data:application/pdf;base64,PDF_DATA',
@@ -404,6 +411,16 @@ describe('OpenAI OAuth model adapter', () => {
             providerOptions: {
               openai: {
                 imageDetail: 'high',
+              },
+            },
+          },
+          {
+            type: 'file',
+            mediaType: 'image/jpeg',
+            data: 'LOW_DETAIL_IMAGE_DATA',
+            providerOptions: {
+              openai: {
+                imageDetail: 'low',
               },
             },
           },

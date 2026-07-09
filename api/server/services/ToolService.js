@@ -562,6 +562,8 @@ const defaultSteelNativeToolMaxCalls = 8;
 const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
 const steelPaddleOcrRetryableErrorPatterns = [
+  'connection timeout after',
+  'failed to establish connection',
   'connection reset by peer',
   'connectionreseterror',
   'clientconnectorerror',

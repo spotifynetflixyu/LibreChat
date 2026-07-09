@@ -480,37 +480,35 @@ Caddy container 只接收 `LIBRECHAT_DOMAIN` 和 `PORT`，不接收完整 app
 
 ## PaddleOCR MCP Runtime
 
-Production 和 local development 使用同一種 PaddleOCR MCP 形狀。LibreChat 從
-API process environment 用 `uvx` 啟動 PaddleOCR；API startup script 不再額外準備
-PaddleOCR Python environment。
+Production 和 local development 使用同一種 PaddleOCR MCP 形狀。LibreChat 會在
+MCP initialization 階段 eager 啟動 PaddleOCR，第一個 OCR request 不再承擔 MCP
+cold-start 成本。
 
 API image 必須包含 Debian/glibc runtime libraries、`uv`/`uvx`、以及
-`@openai/codex` CLI。MCP server 被啟動時，`uvx` 會解析 Python 3.12 與
-`paddleocr-mcp` package。Provider source 固定為 AI Studio，因此 production 不需要
-local PaddlePaddle inference stack。
+`@openai/codex` CLI。Image build 階段會用 `uv tool install` 安裝 Python 3.12
+和 `paddleocr-mcp`，並在 deploy/start 前讓 `paddleocr_mcp` 出現在 `PATH`。
+Provider source 固定為 AI Studio，因此 production 不需要 local PaddlePaddle
+inference stack。
 
-Production `/data/librechat.yaml` 和 local `librechat.yaml` 必須使用 `uvx` command：
+Production `/data/librechat.yaml` 和 local `librechat.yaml` 必須使用預先安裝好的
+`paddleocr_mcp` command：
 
 ```yaml
 mcpServers:
   PaddleOCR:
     type: stdio
-    startup: false
-    command: uvx
-    args:
-      - --python
-      - "3.12"
-      - --from
-      - paddleocr-mcp
-      - paddleocr_mcp
-    timeout: 1200000
+    startup: true
+    initTimeout: 60000
+    command: paddleocr_mcp
+    args: []
+    timeout: 600000
     env:
       PADDLEOCR_MCP_MODEL: PaddleOCR-VL-1.6
       PADDLEOCR_MCP_PPOCR_SOURCE: aistudio
       PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN: "${PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN}"
-      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "600"
-      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "1200"
-      PADDLEOCR_MCP_HTTP_TIMEOUT: "1200"
+      PADDLEOCR_MCP_AISTUDIO_REQUEST_TIMEOUT: "60"
+      PADDLEOCR_MCP_AISTUDIO_POLL_TIMEOUT: "600"
+      PADDLEOCR_MCP_HTTP_TIMEOUT: "60"
 ```
 
 `/etc/librechat/.env.prod` 只需要保留 PaddleOCR secret：
@@ -519,11 +517,13 @@ mcpServers:
 PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN=
 ```
 
-Production 使用 PaddleOCR-VL through AI Studio API。PDF input 建議小於 100 頁，
-避免 timeout；超過頁數可能被忽略。
+Production 使用 PaddleOCR-VL through AI Studio API。OCR tool execution 上限是
+10 分鐘；connection/request timeout 則刻意較短，讓 startup failure 快速浮現。
+PDF input 建議小於 100 頁，避免 timeout；超過頁數可能被忽略。
 
-Startup 不再安裝或 prewarm PaddleOCR。`deploy/host/start.sh` 只啟動 LibreChat
-API；PaddleOCR 由 LibreChat 在 MCP tool 被使用時 lazy start。
+Container startup 不再安裝 PaddleOCR packages。Production image 已經包含
+`paddleocr_mcp` tool environment，LibreChat 會在 API initialization 時 eager
+啟動 PaddleOCR MCP server。
 
 GitHub Actions 不把 PaddleOCR OCR 當 deploy gate。Production deploy 只 gate
 LibreChat container health，因為 PaddleOCR 依賴外部 AI Studio API/network。

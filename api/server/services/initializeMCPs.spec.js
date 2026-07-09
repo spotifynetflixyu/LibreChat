@@ -183,13 +183,15 @@ describe('initializeMCPs', () => {
       expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers);
     });
 
-    it('should force PaddleOCR MCP process lazy loading before manager initialization', async () => {
+    it('should preserve PaddleOCR eager startup before manager initialization', async () => {
       const mcpServers = {
         PaddleOCR: {
           type: 'stdio',
-          command: 'uvx',
-          args: ['--from', 'paddleocr-mcp', 'paddleocr_mcp'],
-          timeout: 1200000,
+          startup: true,
+          command: 'paddleocr_mcp',
+          args: [],
+          initTimeout: 60000,
+          timeout: 600000,
         },
         'local-server': { type: 'stdio', command: 'node', args: ['server.js'] },
       };
@@ -200,12 +202,14 @@ describe('initializeMCPs', () => {
       expect(mockCreateMCPManager).toHaveBeenCalledWith({
         PaddleOCR: expect.objectContaining({
           type: 'stdio',
-          command: 'uvx',
-          startup: false,
+          startup: true,
+          command: 'paddleocr_mcp',
+          args: [],
+          initTimeout: 60000,
         }),
         'local-server': mcpServers['local-server'],
       });
-      expect(mcpServers.PaddleOCR.startup).toBeUndefined();
+      expect(mcpServers.PaddleOCR.startup).toBe(true);
     });
 
     it('should throw and log error if MCPManager initialization fails', async () => {

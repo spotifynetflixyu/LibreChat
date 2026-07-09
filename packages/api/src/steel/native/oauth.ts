@@ -140,6 +140,15 @@ function createTextParts(text: string): LanguageModelV3TextPart[] {
   return part ? [part] : [];
 }
 
+function toOAuthImageDetail(part: Record<string, unknown>): 'low' | 'high' {
+  const imageUrl = part.image_url;
+  if (!isRecord(imageUrl)) {
+    return 'high';
+  }
+
+  return imageUrl.detail === 'low' ? 'low' : 'high';
+}
+
 function createImageFilePart(part: Record<string, unknown>): LanguageModelV3FilePart | undefined {
   const imageUrl = part.image_url;
   const urlValue = isRecord(imageUrl) ? imageUrl.url : imageUrl;
@@ -157,7 +166,7 @@ function createImageFilePart(part: Record<string, unknown>): LanguageModelV3File
         ? {
             providerOptions: {
               openai: {
-                imageDetail: 'high',
+                imageDetail: toOAuthImageDetail(part),
               },
             },
           }
@@ -176,7 +185,7 @@ function createImageFilePart(part: Record<string, unknown>): LanguageModelV3File
     data: url,
     providerOptions: {
       openai: {
-        imageDetail: 'high',
+        imageDetail: toOAuthImageDetail(part),
       },
     },
   };

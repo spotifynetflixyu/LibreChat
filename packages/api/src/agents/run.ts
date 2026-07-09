@@ -767,6 +767,32 @@ function getStringValue(
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
+function getRecordField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = getRecordValue(record, key);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function getOpenAIOAuthReasoningEffort(
+  clientOptions: Record<string, unknown> | undefined,
+): string | undefined {
+  const modelKwargs = getRecordField(clientOptions, 'modelKwargs');
+  const reasoning = getRecordField(clientOptions, 'reasoning');
+  const modelKwargsReasoning = getRecordField(modelKwargs, 'reasoning');
+
+  return (
+    getStringValue(clientOptions, 'reasoningEffort') ??
+    getStringValue(clientOptions, 'reasoning_effort') ??
+    getStringValue(reasoning, 'effort') ??
+    getStringValue(modelKwargs, 'reasoning_effort') ??
+    getStringValue(modelKwargsReasoning, 'effort')
+  );
+}
+
 function getNumberValue(
   record: Record<string, unknown> | undefined,
   key: string,
@@ -804,7 +830,7 @@ function getOpenAIOAuthModelOptions(
     presencePenalty: getNumberValue(clientOptions, 'presencePenalty'),
     reasoningEffort:
       reasoningEffortOverride ??
-      getStringValue(clientOptions, 'reasoningEffort') ??
+      getOpenAIOAuthReasoningEffort(clientOptions) ??
       openAIConfig.reasoningEffort,
     temperature: getNumberValue(clientOptions, 'temperature'),
     topP: getNumberValue(clientOptions, 'topP'),
