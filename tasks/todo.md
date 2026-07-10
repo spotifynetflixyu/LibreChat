@@ -42,7 +42,7 @@ Review:
   `長度 * 寬度 * 肚`; the old 捲門 category gate is absent. Existing workbook
   rows stored as `度` or `degree` remain readable and render under the canonical
   `肚` header; new E2E fixtures emit only `肚`.
-- Focused Jest: 15 suites / 152 tests passed. Package build passed. Focused
+- Focused Jest: 15 suites / 153 tests passed. Package build passed. Focused
   ESLint completed with 0 errors (three existing unused-schema warnings).
   Final workbook inspection found zero formula errors, and both sheets were
   rendered and visually checked.
