@@ -42,11 +42,11 @@ describe('Steel source schema mapping', () => {
     expect(
       resolveSourceSchemaMapping({
         sourceFile: '系統訂單.xlsx',
-        sourceLabel: '度',
+        sourceLabel: '肚',
       }),
     ).toMatchObject({
-      canonicalKey: 'degree',
-      target: 'steel.order_items.metadata.degree',
+      canonicalKey: 'belly',
+      target: 'steel.order_items.metadata.belly',
       valueType: 'number',
     });
     expect(

@@ -2,11 +2,11 @@
 
 H、H鋼先判定為 H型鋼。
 
-必須確認尺寸、長度、支數、材質與是否加工。查材料使用 `category: "H型鋼"`，依已知資料加入 `erpItemCode`、`material`、`thicknessMm`、完整尺寸 `keyword` 或 `unit`。
+必須確認尺寸、長度、支數、材質與是否加工。查材料使用 `category: "H型鋼"`，依已知資料加入 `erpItemCode`、`material`、`thicknessMm` 或完整尺寸 `keyword`。
 
-若同一訂單列需要切工，材料與切工放在同一次 `search_price_candidates`：
-`{"queries":[{"queryId":"line-20-material","category":"H型鋼","keyword":"200x100"},{"queryId":"line-20-cut","category":"加工/切工","subcategory":"H型鋼","keyword":"200x100"}]}`
-依 `queryResults[].queryId` 分別採用候選，不假設 backend 自動附帶切工。
+只送 H型鋼材料 query，例如：
+`{"queries":[{"queryId":"line-20-material","category":"H型鋼","keyword":"200x100"}]}`
+一般價格 query 全部完成後，backend 會以 `H型鋼` 對 `steel.cutting_prices.cutting_category` 做包含搜尋，將所有 H型鋼 / 工字鐵切工規格與補充規則放在頂層 `cuttingPrices`；不另送 `加工/切工` query。
 
 每支分別算重量與價格。若 price row 為 Kg 價，使用單位重量 × 長度 × 數量 × Kg 單價；M 價使用總長度M × M單價；其他單位使用數量 × direct 單價。
 

@@ -10,14 +10,15 @@
 
 1. 使用 `category: "鐵板"`，次類別 enum 為 `網板`、`花板`、`圍籬板`、`檔泥板`、`特殊`；未確認次類別時省略。
 2. 加入可確認的 `material` 與 `thicknessMm`；已知型號優先 `erpItemCode`，`keyword` 只放板種或規格片段。
-3. 6t 以上含 6t，預設用 `OT板雷射切割`；6t 以下預設用 OT 黑鐵板材有價格的資料，除非明確說白鐵。
-4. 板材價格優先採鐵板產品列中的「雷射切割」Kg 單價；這不是另查切工。
-5. 若雷射切割價格列不是 Kg 單位，不得作材料費依據，須改找 Kg 單價或標待確認。
-6. 材質預設造成的不確定，寫入低信心/判讀備註，但仍用最可能的 OT 黑鐵 Kg 單價暫估。
+3. 白鐵小於 3t（不含 3t）時，優先採 material / 品名包含 `2B` 的候選；白鐵 3t 以上（含 3t）時，優先採包含 `NO1` 的候選。
+4. 黑鐵同厚度有多筆候選時，預設採品名包含 `雷射切割` 的價格。
+5. 板材價格優先採鐵板產品列中的「雷射切割」Kg 單價；這不是另查切工。
+6. 若雷射切割價格列不是 Kg 單位，不得作材料費依據，須改找 Kg 單價或標待確認。
+7. 材質預設造成的不確定，寫入低信心/判讀備註，但仍用最可能的 OT 黑鐵 Kg 單價暫估。
 
 材料與加工要放在同一次 grouped query 的獨立 query，例如：
 `{"queries":[{"queryId":"line-40-material","category":"鐵板","material":"黑鐵","thicknessMm":["15"]},{"queryId":"line-40-hole","category":"加工/孔","subcategory":"鐵板","thicknessMm":["15"],"keyword":"孔"},{"queryId":"line-40-fold","category":"加工/折工","subcategory":"鐵板","thicknessMm":["15"]}]}`
-依 `queryResults[].queryId` 對回材料、孔與折工。若材料 query 加 keyword 查不到，移除不必要 keyword，只用 category/material/thicknessMm 重查。
+依 `queryResults[].queryId` 對回材料、孔與折工。若材料 query 加 keyword 查不到，移除不必要 keyword，只用 category/material/thicknessMm 重查。鐵板切工價由同次 tool 結果頂層 `cuttingPrices` 自動附加，不另送切工 query。
 
 重量公式：
 鐵板四方理論重 Kg = 長 mm × 寬 mm × 厚 mm × 7.850 ÷ 1,000,000 × 數量。
