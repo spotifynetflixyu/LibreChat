@@ -1,4 +1,8 @@
-import { searchSteelCustomers, searchSteelPriceCandidateGroups } from '../repositories';
+import {
+  searchSteelCustomers,
+  searchSteelCuttingPriceGroups,
+  searchSteelPriceCandidateGroups,
+} from '../repositories';
 import { normalizeOcrEvidenceForRuntime } from '../runtime/context';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
@@ -202,7 +206,13 @@ function hasPriceTierValue(tiers: SteelPriceTierValues): boolean {
 }
 
 function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
-  const { tierPrices, tierRatios, unitPriceBase: _unitPriceBase, ...candidateFields } = candidate;
+  const {
+    tierPrices,
+    tierRatios,
+    unitPriceBase: _unitPriceBase,
+    sourceRefs: _sourceRefs,
+    ...candidateFields
+  } = candidate;
   const pricingOptions: SteelRawToolOutput[] = [];
   const skippedPricingOptions: SteelRawToolOutput[] = [];
 
@@ -270,9 +280,11 @@ async function searchPriceCandidates(
       issues: [],
     };
   });
+  const cuttingPrices = await searchSteelCuttingPriceGroups(client, input.queries);
 
   return {
     queryResults,
+    cuttingPrices,
     summary: {
       queryCount: input.queries.length,
       groupCount: queryResults.length,

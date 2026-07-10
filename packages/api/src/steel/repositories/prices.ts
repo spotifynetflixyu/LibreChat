@@ -2,14 +2,12 @@ import {
   parseNullableNumber,
   parseNullableString,
   parseRequiredNumber,
-  parseReviewState,
   parseSteelSourceRefs,
 } from './types';
 import { normalizeSteelSpecKey } from '../normalization/spec';
 
 import type {
   SteelRepositoryClient,
-  SteelReviewState,
   SteelSourceBackedRecord,
   SteelSourceRef,
 } from './types';
@@ -62,7 +60,6 @@ interface SteelPriceItemRow {
   spec_sort_key: string | null;
   cost_basis: string;
   currency: string;
-  review_state: string;
   active: boolean;
   source_refs: unknown;
 }
@@ -125,7 +122,6 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   specSortKey?: string;
   costBasis: string;
   currency: string;
-  reviewState: SteelReviewState;
   active: boolean;
   sourceRefs: SteelSourceRef[];
 }
@@ -139,7 +135,6 @@ export interface SteelPriceLookupQuery {
   thicknessMm?: readonly string[];
   erpItemCode?: string;
   keyword?: string;
-  unit?: string;
   limit?: number;
 }
 
@@ -154,7 +149,6 @@ export type SteelPriceCandidateQuery = SteelPriceLookupQuery | SteelPriceCategor
 
 export interface SearchSteelPriceCandidateGroupsInput {
   queries: readonly SteelPriceCandidateQuery[];
-  reviewState?: SteelReviewState;
   includeInactive?: boolean;
 }
 
@@ -184,7 +178,6 @@ interface SerializedPriceQuery {
   thickness_mm?: readonly string[];
   erp_item_code?: string;
   keyword_terms?: readonly string[];
-  unit?: string;
   query_limit: number;
 }
 
@@ -192,7 +185,8 @@ const materialTermsByFamily: Record<PriceLookupMaterialKind, readonly string[]> 
   黑鐵: ['黑鐵'],
   白鐵: ['白鐵'],
   鋁: ['鋁'],
-  錏: ['錏', '鍍鋅'],
+  錏: ['錏'],
+  鋅: ['鋅'],
   鎢: ['鎢'],
   塑膠: ['塑膠'],
 };
@@ -266,7 +260,6 @@ function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number
       ? [...new Set(query.thicknessMm.map(formatThicknessMm))]
       : undefined,
     erp_item_code: query.erpItemCode,
-    unit: query.unit,
   } satisfies SerializedPriceQuery;
 }
 
@@ -353,7 +346,6 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     specSortKey: parseNullableString(row.spec_sort_key),
     costBasis: row.cost_basis,
     currency: row.currency,
-    reviewState: parseReviewState(row.review_state),
     active: row.active,
     sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
@@ -413,7 +405,7 @@ function toCandidateGroup(row: SteelPriceCandidateGroupRow): SteelPriceCandidate
 const groupedPriceCandidatesSql = `
 WITH input_queries AS (
   SELECT *
-  FROM jsonb_to_recordset($2::jsonb) AS input_query(
+  FROM jsonb_to_recordset($1::jsonb) AS input_query(
     query_index INTEGER,
     query_id TEXT,
     mode TEXT,
@@ -424,7 +416,6 @@ WITH input_queries AS (
     thickness_mm TEXT[],
     erp_item_code TEXT,
     keyword_terms TEXT[],
-    unit TEXT,
     query_limit INTEGER
   )
 )
@@ -479,13 +470,11 @@ SELECT
           p.spec_sort_key,
           p.cost_basis,
           p.currency,
-          p.review_state,
           p.active,
           p.source_refs
         FROM steel.prices AS p
         WHERE input_query.mode = 'lookup'
-          AND p.review_state = $1
-          AND ($3::boolean OR p.active = true)
+          AND ($2::boolean OR p.active = true)
           AND p.category = input_query.category
           AND (input_query.subcategory IS NULL OR p.subcategory = input_query.subcategory)
           AND (
@@ -498,13 +487,18 @@ SELECT
           )
           AND (
             input_query.thickness_mm IS NULL
-            OR p.source_thickness = ANY(input_query.thickness_mm)
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(input_query.thickness_mm) AS requested_thickness
+              WHERE p.source_thickness ~ '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)[[:space:]]*$'
+                AND requested_thickness ~ '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)[[:space:]]*$'
+                AND p.source_thickness::numeric = requested_thickness::numeric
+            )
           )
           AND (
             input_query.erp_item_code IS NULL
             OR p.erp_item_code = input_query.erp_item_code
           )
-          AND (input_query.unit IS NULL OR p.unit = input_query.unit)
           AND (
             input_query.keyword_terms IS NULL
             OR NOT EXISTS (
@@ -538,8 +532,7 @@ SELECT
           MIN(p.product_name) AS example_product_name
         FROM steel.prices AS p
         WHERE input_query.mode = 'category_discovery'
-          AND p.review_state = $1
-          AND ($3::boolean OR p.active = true)
+          AND ($2::boolean OR p.active = true)
           AND NOT EXISTS (
             SELECT 1
             FROM unnest(input_query.keyword_terms) AS keyword_term
@@ -574,7 +567,6 @@ export async function searchSteelPriceCandidateGroups(
 
   const serializedQueries = input.queries.map(serializePriceQuery);
   const result = await client.query<SteelPriceCandidateGroupRow>(groupedPriceCandidatesSql, [
-    input.reviewState ?? 'reviewed',
     JSON.stringify(serializedQueries),
     input.includeInactive ?? false,
   ]);

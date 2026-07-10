@@ -57,7 +57,6 @@ describe('Steel tool registry', () => {
             thicknessMm: ['2'],
             erpItemCode: '00123',
             keyword: '50x2',
-            unit: 'M',
             limit: 101,
           },
           { mode: 'category_discovery', keyword: '白鐵 方管' },
@@ -73,7 +72,6 @@ describe('Steel tool registry', () => {
           thicknessMm: ['2'],
           erpItemCode: '00123',
           keyword: '50x2',
-          unit: 'M',
           limit: 100,
         },
         { queryId: 'q2', mode: 'category_discovery', keyword: '白鐵 方管' },
@@ -101,7 +99,9 @@ describe('Steel tool registry', () => {
     expect(definition.description).toContain('queryId');
     expect(definition.description).toContain('subcategory');
     expect(definition.description).toContain('erpItemCode');
-    expect(definition.description).toContain('unit');
+    expect(definition.description).not.toContain('keyword, unit');
+    expect(definition.description).toContain('鋅');
+    expect(definition.description).toContain('cutting');
     expect(definition.description).toContain('default 30');
     expect(definition.description).toContain('clamped to 100');
     expect(definition.description).not.toContain('candidateQueries');

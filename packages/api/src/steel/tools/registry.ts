@@ -54,7 +54,7 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search price candidates for multiple order lines in one call with 1-20 top-level queries. Give each query a stable queryId when possible; omitted IDs become q1, q2, and so on. A lookup query uses a category enum and may filter by subcategory, material family (黑鐵, 白鐵, 鋁, 錏, 鎢, 塑膠), thicknessMm, erpItemCode, keyword, unit, and a per-query limit (default 30; positive values above 100 are clamped to 100). Results are grouped by queryId. If category is unclear, use mode=category_discovery with keyword instead of guessing.',
+      'Search price candidates for multiple order lines in one call with 1-20 top-level queries. Give each query a stable queryId when possible; omitted IDs become q1, q2, and so on. A lookup query uses a category enum and may filter by subcategory, contains-match material family (黑鐵, 白鐵, 鋁, 錏, 鋅, 鎢, 塑膠), numeric thicknessMm, erpItemCode, keyword, and a per-query limit (default 30; positive values above 100 are clamped to 100). Omit limit normally and use 100 only to expand candidates. Results are grouped by queryId; after all normal price queries finish, supported categories receive one consolidated automatic cutting-price lookup with no cutting row limit. If category is unclear, use mode=category_discovery with keyword instead of guessing.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
   {

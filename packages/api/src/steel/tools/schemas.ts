@@ -76,7 +76,6 @@ interface SteelPriceLookupQueryInput {
   thicknessMm?: string[];
   erpItemCode?: string;
   keyword?: string;
-  unit?: string;
   limit?: number;
 }
 
@@ -193,11 +192,10 @@ const priceLookupQuerySchema = z
     material: z
       .enum(priceLookupMaterialKinds)
       .optional()
-      .describe('Optional material family enum value. Use one of 黑鐵, 白鐵, 鋁, 錏, 鎢, or 塑膠.'),
+      .describe('Optional contains-match material family. Use one of 黑鐵, 白鐵, 鋁, 錏, 鋅, 鎢, or 塑膠.'),
     thicknessMm: z.array(nonEmptyString).min(1).max(20).optional(),
     erpItemCode: nonEmptyString.optional(),
     keyword: nonEmptyString.optional(),
-    unit: nonEmptyString.optional(),
     limit: priceQueryLimitSchema,
   })
   .strict()

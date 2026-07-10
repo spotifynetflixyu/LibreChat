@@ -47,7 +47,6 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     spec_sort_key: '050.000-002.000',
     cost_basis: 'Kg',
     currency: 'TWD',
-    review_state: 'reviewed',
     active: true,
     source_refs: [],
     ...overrides,
@@ -91,7 +90,6 @@ describe('Steel price candidate repository', () => {
           thicknessMm: ['2', '2.0', '2.3'],
           erpItemCode: '00123',
           keyword: '黑鐵鋼管 50*2',
-          unit: 'Kg',
           limit: 101,
         },
         {
@@ -105,24 +103,23 @@ describe('Steel price candidate repository', () => {
     expect(query).toHaveBeenCalledTimes(1);
     const sql = String(query.mock.calls[0]?.[0] ?? '');
     const values = query.mock.calls[0]?.[1] as string[];
-    const serializedQueries = JSON.parse(values[1] ?? '[]') as Array<Record<string, unknown>>;
+    const serializedQueries = JSON.parse(values[0] ?? '[]') as Array<Record<string, unknown>>;
 
-    expect(sql).toContain('jsonb_to_recordset($2::jsonb)');
+    expect(sql).toContain('jsonb_to_recordset($1::jsonb)');
     expect(sql).toContain('p.erp_item_code = input_query.erp_item_code');
     expect(sql).toContain('p.category = input_query.category');
     expect(sql).toContain('p.subcategory = input_query.subcategory');
     expect(sql).toContain('p.material ILIKE');
-    expect(sql).toContain('p.source_thickness = ANY(input_query.thickness_mm)');
-    expect(sql).toContain('p.unit = input_query.unit');
+    expect(sql).toContain('p.source_thickness::numeric');
+    expect(sql).not.toContain('p.unit = input_query.unit');
     expect(sql).toContain('p.spec_key ILIKE');
     expect(sql).toContain('p.normalized_spec_text ILIKE');
-    expect(sql).toContain('p.review_state = $1');
+    expect(sql).not.toContain('review_state');
     expect(sql).toContain('p.active = true');
     expect(sql).toContain('NOT EXISTS');
     expect(sql).not.toContain('source_subcategory_label');
     expect(sql).not.toContain('source_spec');
     expect(sql).not.toContain('product_price_unit_weight');
-    expect(values[0]).toBe('reviewed');
     expect(serializedQueries).toEqual([
       expect.objectContaining({
         query_index: 0,
@@ -134,7 +131,6 @@ describe('Steel price candidate repository', () => {
         keyword_terms: ['黑鐵鋼管', '50x2'],
         thickness_mm: ['2', '2.3'],
         erp_item_code: '00123',
-        unit: 'Kg',
         query_limit: 100,
       }),
       expect.objectContaining({
@@ -170,32 +166,40 @@ describe('Steel price candidate repository', () => {
     ]);
   });
 
-  it('maps the 錏 material family to both 錏 and standalone 鍍鋅 raw values', async () => {
+  it('keeps 錏 and 鋅 material contains terms distinct', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         {
           query_index: 0,
           query_id: 'galvanized',
-          price_candidates: [createPriceRow({ material: '鍍鋅 / 白A' })],
+          price_candidates: [createPriceRow({ material: '錏 / 白A' })],
           category_candidates: [],
         },
       ],
     });
 
-    const result = await searchSteelPriceCandidateGroups({ query } as SteelRepositoryClient, {
-      queries: [{ queryId: 'galvanized', category: '圓管', material: '錏' }],
+    await searchSteelPriceCandidateGroups({ query } as SteelRepositoryClient, {
+      queries: [
+        { queryId: 'galvanized', category: '圓管', material: '錏' },
+        { queryId: 'zinc', category: '圓管', material: '鋅' },
+      ],
     });
 
     const values = query.mock.calls[0]?.[1] as string[];
-    const serializedQueries = JSON.parse(values[1] ?? '[]') as Array<Record<string, unknown>>;
+    const serializedQueries = JSON.parse(values[0] ?? '[]') as Array<Record<string, unknown>>;
 
     expect(serializedQueries[0]).toEqual(
       expect.objectContaining({
         material: '錏',
-        material_terms: ['錏', '鍍鋅'],
+        material_terms: ['錏'],
       }),
     );
-    expect(result[0]?.candidates[0]?.material).toBe('鍍鋅 / 白A');
+    expect(serializedQueries[1]).toEqual(
+      expect.objectContaining({
+        material: '鋅',
+        material_terms: ['鋅'],
+      }),
+    );
   });
 
   it('deduplicates only within a query group and preserves the same row across groups', async () => {

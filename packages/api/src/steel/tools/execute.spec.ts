@@ -74,9 +74,34 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     spec_sort_key: '006.000',
     cost_basis: 'Kg',
     currency: 'TWD',
-    review_state: 'reviewed',
     active: true,
-    source_refs: [],
+    source_refs: [{ channel: 'price', factType: 'price', locator: 'row:10' }],
+    ...overrides,
+  };
+}
+
+function createCuttingRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    lookup_term: '鐵管',
+    id: '101',
+    cutting_category: '鐵管',
+    record_type: 'price',
+    item_name: '1/2"',
+    cut_type: '加工/切工',
+    spec_text: '1/2"',
+    normalized_spec_text: '1/2"',
+    inch_min: '0.500000000',
+    inch_max: '0.500000000',
+    mm_min: '12.700000000',
+    mm_max: '12.700000000',
+    unit: '刀',
+    unit_price_a: '10.0000',
+    unit_price_b: null,
+    unit_price_c: '10.0000',
+    unit_price_f: '10.0000',
+    conditions: {},
+    calculation_rule: null,
+    notes: null,
     ...overrides,
   };
 }
@@ -212,6 +237,24 @@ describe('Steel minimal tool execution', () => {
           ],
         },
       ],
+      [
+        createCuttingRow(),
+        createCuttingRow({
+          lookup_term: '鐵板',
+          id: '102',
+          cutting_category: '鐵板/平鐵',
+          item_name: '65~100',
+          spec_text: '65~100',
+          normalized_spec_text: '65~100',
+          inch_min: null,
+          inch_max: null,
+          mm_min: null,
+          mm_max: null,
+          unit_price_a: '20.0000',
+          unit_price_c: '20.0000',
+          unit_price_f: '20.0000',
+        }),
+      ],
     ]);
 
     const result = await executeSteelTool({
@@ -227,7 +270,7 @@ describe('Steel minimal tool execution', () => {
             keyword: 'OT板',
             limit: 101,
           },
-          { category: '圓管', erpItemCode: 'PIPE-M', unit: 'M' },
+          { category: '圓管', erpItemCode: 'PIPE-M' },
           { mode: 'category_discovery', keyword: '黑鐵圓管' },
         ],
       },
@@ -238,7 +281,7 @@ describe('Steel minimal tool execution', () => {
       throw new Error(result.errorSummary);
     }
 
-    expect(client.calls).toHaveLength(1);
+    expect(client.calls).toHaveLength(2);
     expect(result.data).not.toHaveProperty('priceCandidates');
     expect(result.data.queryResults).toEqual([
       expect.objectContaining({
@@ -275,7 +318,7 @@ describe('Steel minimal tool execution', () => {
       }),
       expect.objectContaining({
         queryId: 'q2',
-        query: expect.objectContaining({ queryId: 'q2', erpItemCode: 'PIPE-M', unit: 'M' }),
+        query: expect.objectContaining({ queryId: 'q2', erpItemCode: 'PIPE-M' }),
         status: 'ok',
         candidates: [
           expect.objectContaining({
@@ -317,8 +360,27 @@ describe('Steel minimal tool execution', () => {
       candidateCount: 2,
       categoryCandidateCount: 1,
     });
+    expect(result.data.cuttingPrices).toEqual([
+      expect.objectContaining({
+        cuttingCategory: '鐵板/平鐵',
+        sourceCategories: ['鐵板'],
+        queryIds: ['line-1'],
+      }),
+      expect.objectContaining({
+        cuttingCategory: '鐵管',
+        sourceCategories: ['圓管'],
+        queryIds: ['q2'],
+        prices: [
+          expect.objectContaining({
+            tierPrices: { A: 10, B: 10, C: 10, F: 10 },
+            tierBSource: 'A/C/F',
+          }),
+        ],
+      }),
+    ]);
     expect(JSON.stringify(result.data)).not.toContain('tierRatios');
     expect(JSON.stringify(result.data)).not.toContain('price_ratio_');
+    expect(JSON.stringify(result.data)).not.toContain('sourceRefs');
   });
 
   it('marks non-Kg/M ratio pricing as skipped and non-quote-eligible', async () => {

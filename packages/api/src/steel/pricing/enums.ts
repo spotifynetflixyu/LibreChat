@@ -27,5 +27,5 @@ export const materialKinds = [
 ] as const;
 export type MaterialKind = (typeof materialKinds)[number];
 
-export const priceLookupMaterialKinds = ['黑鐵', '白鐵', '鋁', '錏', '鎢', '塑膠'] as const;
+export const priceLookupMaterialKinds = ['黑鐵', '白鐵', '鋁', '錏', '鋅', '鎢', '塑膠'] as const;
 export type PriceLookupMaterialKind = (typeof priceLookupMaterialKinds)[number];

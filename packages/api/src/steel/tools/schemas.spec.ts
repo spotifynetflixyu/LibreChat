@@ -36,7 +36,7 @@ describe('Steel price candidate tool schema', () => {
     expect(() => schema.parse({ queries: [{ category: '鐵板', limit }] })).toThrow();
   });
 
-  it('accepts all v4.2 lookup filters and material enum values', () => {
+  it('accepts all v4.2 lookup filters and separate 錏/鋅 material enum values', () => {
     expect(
       schema.parse({
         queries: [
@@ -48,10 +48,9 @@ describe('Steel price candidate tool schema', () => {
             thicknessMm: ['1.2', '1.5'],
             erpItemCode: '00123',
             keyword: '連料',
-            unit: 'M',
             limit: 30,
           },
-          { category: '五金/配件', material: '塑膠' },
+          { category: '五金/配件', material: '鋅' },
         ],
       }),
     ).toEqual({
@@ -64,12 +63,17 @@ describe('Steel price candidate tool schema', () => {
           thicknessMm: ['1.2', '1.5'],
           erpItemCode: '00123',
           keyword: '連料',
-          unit: 'M',
           limit: 30,
         },
-        { queryId: 'q2', category: '五金/配件', material: '塑膠' },
+        { queryId: 'q2', category: '五金/配件', material: '鋅' },
       ],
     });
+  });
+
+  it('rejects the removed unit query filter', () => {
+    expect(() =>
+      schema.parse({ queries: [{ category: '圓管', unit: 'M' }] }),
+    ).toThrow('Unrecognized key');
   });
 
   it('validates subcategories against their category and rejects legacy names', () => {
@@ -83,7 +87,8 @@ describe('Steel price candidate tool schema', () => {
     expect(() => schema.parse({ queries: [{ category: '孔', keyword: '鐵板' }] })).toThrow();
   });
 
-  it('rejects the removed zinc query alias', () => {
-    expect(() => schema.parse({ queries: [{ category: '鐵板', material: '鋅' }] })).toThrow();
+  it('keeps 錏 and 鋅 as distinct accepted material filters', () => {
+    expect(schema.parse({ queries: [{ category: '鐵板', material: '錏' }] })).toBeDefined();
+    expect(schema.parse({ queries: [{ category: '鐵板', material: '鋅' }] })).toBeDefined();
   });
 });
