@@ -58,8 +58,9 @@ function printUsage() {
   node packages/api/scripts/sync-steel-rules.cjs --dry-run
   node packages/api/scripts/sync-steel-rules.cjs --apply
 
-Default mode is --dry-run. --apply syncs docs/rules/*.txt into the unified
-steel.rules table using STEEL_POSTGRES_URL, then reads rows back.
+Default mode is --dry-run. --apply syncs agent, output, other, and category
+rules under docs/rules into steel.rules using STEEL_POSTGRES_URL, then reads
+rows back.
 `);
 }
 
@@ -149,68 +150,75 @@ function unifiedRule({
   };
 }
 
-const steelRuleMetadataByFile = {
-  'docs/rules/鋼材規則/C型鋼.txt': {
+const categoryRuleMetadataByFile = {
+  'docs/rules/類別規則/查價方式.txt': {
+    slug: 'steel_category_price_lookup_guide',
+    title: 'Steel 類別查價方式',
+    locator: '類別查價方式',
+    ruleSection: 'price_lookup',
+    priority: 15,
+  },
+  'docs/rules/類別規則/C型鋼.txt': {
     slug: 'steel_quote_rules_c_type',
-    title: 'Steel C型鋼規則',
-    locator: 'C型鋼規則',
+    title: 'Steel C型鋼類別規則',
+    locator: 'C型鋼類別規則',
     ruleSection: 'c_type',
     catalogFamily: 'c_type',
     priority: 20,
   },
-  'docs/rules/鋼材規則/H型鋼.txt': {
+  'docs/rules/類別規則/H型鋼.txt': {
     slug: 'steel_quote_rules_h_beam',
-    title: 'Steel H型鋼規則',
-    locator: 'H型鋼規則',
+    title: 'Steel H型鋼類別規則',
+    locator: 'H型鋼類別規則',
     ruleSection: 'h_beam',
     catalogFamily: 'h_beam',
     priority: 20,
   },
-  'docs/rules/鋼材規則/鐵板.txt': {
+  'docs/rules/類別規則/鐵板.txt': {
     slug: 'steel_quote_rules_plate',
-    title: 'Steel 鐵板/鋼板規則',
-    locator: '鐵板/鋼板規則',
+    title: 'Steel 鐵板類別規則',
+    locator: '鐵板類別規則',
     ruleSection: 'plate_weight_processing',
     catalogFamily: 'plate',
     priority: 25,
   },
-  'docs/rules/鋼材規則/孔.txt': {
+  'docs/rules/類別規則/孔.txt': {
     slug: 'steel_quote_rules_hole',
-    title: 'Steel 孔加工規則',
-    locator: '孔加工規則',
+    title: 'Steel 孔加工類別規則',
+    locator: '孔加工類別規則',
     ruleSection: 'hole_processing',
     catalogFamily: 'hole',
     priority: 23,
   },
-  'docs/rules/鋼材規則/長管-切工.txt': {
+  'docs/rules/類別規則/長管-切工.txt': {
     slug: 'steel_quote_rules_long_material_cutting',
-    title: 'Steel 長條料切工規則',
-    locator: '長條料切工規則',
+    title: 'Steel 長條料切工類別規則',
+    locator: '長條料切工類別規則',
     ruleSection: 'bar_cutting',
     priority: 24,
   },
 };
 
-function readSteelRuleMetadata(sourceFile) {
-  const metadata = steelRuleMetadataByFile[sourceFile];
+function readCategoryRuleMetadata(sourceFile) {
+  const metadata = categoryRuleMetadataByFile[sourceFile];
   if (!metadata) {
-    throw new Error(`Missing Steel rule metadata for ${sourceFile}`);
+    throw new Error(`Missing category rule metadata for ${sourceFile}`);
   }
 
   return metadata;
 }
 
-function steelRule({ sourceFile, prompt, fileSha, handbookSha }) {
-  const metadata = readSteelRuleMetadata(sourceFile);
+function categoryRule({ sourceFile, prompt, fileSha, handbookSha }) {
+  const metadata = readCategoryRuleMetadata(sourceFile);
 
   return unifiedRule({
     slug: metadata.slug,
     ruleKind: 'steel',
     title: metadata.title,
-    ruleSections: ['steel_quote_rule', metadata.ruleSection].filter(Boolean),
+    ruleSections: ['steel_category_rule', metadata.ruleSection].filter(Boolean),
     selectors: {
       appliesTo: ['steel_quote_runtime', 'steel_global_rules_context'],
-      ruleType: 'calculation_rule',
+      ruleType: 'category_rule',
       scopeType: metadata.catalogFamily ? 'catalog_family' : 'company',
       catalogFamily: metadata.catalogFamily,
       confidence: 'high',
@@ -239,9 +247,9 @@ function buildRules(repoRoot) {
   const output = readRulePrompt(repoRoot, 'docs/rules/輸出規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR規則.txt');
   const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
-  const steelRules = listTextFiles(repoRoot, 'docs/rules/鋼材規則').map((sourceFile) => {
+  const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則').map((sourceFile) => {
     const rule = readRulePrompt(repoRoot, sourceFile);
-    return steelRule({
+    return categoryRule({
       sourceFile,
       prompt: rule.prompt,
       fileSha: rule.sha256,
@@ -362,7 +370,7 @@ function buildRules(repoRoot) {
         ),
       ],
     }),
-    ...steelRules,
+    ...categoryRules,
   ];
 }
 
@@ -439,12 +447,20 @@ SET
 }
 
 async function deleteRemovedRules(client, rules) {
+  const legacyCategoryRuleSourceFiles = [
+    'docs/rules/鋼材規則.txt',
+    'docs/rules/鋼材規則/C型鋼.txt',
+    'docs/rules/鋼材規則/H型鋼.txt',
+    'docs/rules/鋼材規則/鐵板.txt',
+    'docs/rules/鋼材規則/孔.txt',
+    'docs/rules/鋼材規則/長管-切工.txt',
+  ];
   const sourceFiles = [
     'docs/rules/agent規則.txt',
     'docs/rules/輸出規則.txt',
     'docs/rules/OCR規則.txt',
     'docs/rules/其他規則/OCR規則.txt',
-    'docs/rules/鋼材規則.txt',
+    ...legacyCategoryRuleSourceFiles,
     ...rules.flatMap((rule) => rule.sourceRefs.map((ref) => ref.sourceFile)),
   ];
   const sourceFileRefs = [...new Set(sourceFiles)].map((sourceFile) =>

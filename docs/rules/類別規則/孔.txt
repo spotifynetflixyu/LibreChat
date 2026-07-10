@@ -1,0 +1,17 @@
+【孔加工類別規則】
+
+適用於鐵板、連接板、底板、補強板、角鐵、接頭、五金或門件上的鑽孔、沖孔、雷射孔與其他孔加工價格判斷。
+
+查價方式：
+
+1. 孔加工 query 的 `category` 固定使用 `加工/孔`；`subcategory` 使用 `鐵板`、`角鐵`、`接頭`、`五金` 或 `門`，不確定時省略。
+2. 已知價格型號時用 `erpItemCode`；否則以孔型、孔徑、厚度或加工規格放 `keyword`，並依已知資料加入 `material`、`thicknessMm`、`unit`。
+3. 材料與孔加工放在同一次 grouped query，例如：
+   `{"queries":[{"queryId":"line-30-material","category":"鐵板","material":"黑鐵","thicknessMm":["12"]},{"queryId":"line-30-hole","category":"加工/孔","subcategory":"鐵板","thicknessMm":["12"],"keyword":"22mm孔"}]}`
+4. 依 `queryResults[].queryId` 分別採用材料與孔加工候選。若孔加工回傳多筆，依產品名稱、規格描述、厚度範圍與加工方式選擇；無法判斷時列人工複核，不可自行填 0。
+
+計算：
+
+1. 孔加工費 = 採用孔 direct 單價 × 總孔數。
+2. 總孔數 = 每件孔數 × 件數。
+3. 不同孔徑/孔型若價格相同可合併總孔數；若價格可能不同，需分列或列人工複核。

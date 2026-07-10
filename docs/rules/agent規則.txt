@@ -9,8 +9,8 @@
 4. 根據 tool 回傳資料選擇最合理候選，並清楚標示信心、差異、來源、未確認項目與人工複核項目。
 
 二、Runtime context
-1. backend 會在 provider 前組裝 Agent rules、Steel global rules、其他全域規則與 active output sheet 補充資訊；active workbook context 一律是 compact workbook 摘要，不內嵌完整 workbook / OCR Markdown。
-2. Steel global rules、輸出規則、來源優先序規則與 active output sheets 補充資訊已在 context 中；不要為了讀規則呼叫工具。`read_markdown` 永遠可用，但使用前先判斷 provider chat history 是否已有本輪需要的完整 OCR 或 workbook Markdown；若 history 已足夠，就不要呼叫 `read_markdown`。只有 chat history 因 token 壓縮、上下文裁切或缺少完整 Markdown 表格時，才可呼叫 `read_markdown` 讀取目前 conversation-scoped Markdown 文本；`scope: "workbook"` 包含報價 sheets，`scope: "ocr"` 包含圖面 / OCR 解析文本。
+1. backend 會在 provider 前組裝 Agent rules、category rules（類別規則）、其他全域規則與 active output sheet 補充資訊；active workbook context 一律是 compact workbook 摘要，不內嵌完整 workbook / OCR Markdown。
+2. 類別規則、輸出規則、來源優先序規則與 active output sheets 補充資訊已在 context 中；不要為了讀規則呼叫工具。`read_markdown` 永遠可用，但使用前先判斷 provider chat history 是否已有本輪需要的完整 OCR 或 workbook Markdown；若 history 已足夠，就不要呼叫 `read_markdown`。只有 chat history 因 token 壓縮、上下文裁切或缺少完整 Markdown 表格時，才可呼叫 `read_markdown` 讀取目前 conversation-scoped Markdown 文本；`scope: "workbook"` 包含報價 sheets，`scope: "ocr"` 包含圖面 / OCR 解析文本。
 3. OCR 規則是 otherGlobalRules 的固定組成之一。
 4. active output sheet data 只包含 `system_order`、`customer_data`、`manual_review`、`customer_quote`。
 
@@ -20,13 +20,13 @@
    - 多筆相似客戶或分級不明時列為低信心 / 人工複核，多個等級不明確時，報價預設用B。
 2. `search_price_candidates`
    - 需要產品價格、材料價格、加工價格、切工價格、孔加工價格、開槽價格、折工價格或其他報價單價時使用。
-   - input 只允許 `{ "queries": [...] }`；`mode`、`keyword`、`limit` 都放在單筆 query 內，不放 top-level。
-   - lookup query 可省略 `mode`，使用可見 enum `category` / 查詢端 `material`；`material` 只用簡化關鍵字：`黑鐵`、`白鐵`、`錏`、`鋁`、`鋅`，可選 `thicknessMm: string[]`、`keyword`、`limit`；不用 `specs`、`includeRelatedCutting` 或 `無`。
-   - `keyword` 可省略；有空白時 backend 會拆成 AND。category 不明時先用 `mode: "category_discovery"`，不要硬猜。
-   - `category: "孔"` 只需送 `keyword: "鐵板"`；若多送材料、厚度、孔徑、limit 或其他加工參數，backend 會忽略。
-   - 鐵板先拆成結構化查詢，例如 `category: "鐵板/鋼板"`, `material: "黑鐵"`, `thicknessMm: ["15"]`，不要把 `PL15*500` 當 keyword。
-   - 自動附帶 `切工/切割` 只適用鋼軌、H型鋼、工字鐵、角鐵、槽鐵、平鐵/扁鐵、圓鐵/圓鋼/圓條、方鋼/方鐵、圓管、方管、扁方管；鐵板沒有另查切割價。
-   - 範例：`{ "queries": [{ "category": "鐵板/鋼板", "material": "黑鐵", "thicknessMm": ["15"] }] }`；`{ "queries": [{ "mode": "category_discovery", "keyword": "白鐵方管 75x45" }] }`；`{ "queries": [{ "category": "孔", "keyword": "鐵板" }] }`。
+   - input 只允許 `{ "queries": [...] }`。同一輪所有訂單列與其加工 query 應合併成一次 tool call；每筆 query 使用穩定、唯一的 `queryId`，回傳後依 `queryResults[].queryId` 對回原訂單列，不跨 query 混用候選。
+   - lookup query 可省略 `mode`，依類別規則使用 `category`、`subcategory`、`material`、`thicknessMm`、`erpItemCode`、`keyword`、`unit`、`limit`。`material` enum 只用 `黑鐵`、`白鐵`、`鋁`、`錏`、`鎢`、`塑膠`；不用 `specs`、`includeRelatedCutting` 或 `無`。
+   - `keyword` 可省略；有空白時 backend 會拆成 AND。已知 ERP 優先 `erpItemCode` 精確查詢；category 不明時先用 `mode: "category_discovery"`，不要硬猜。
+   - 每筆 query 的 `limit` 預設 30；正整數超過 100 時 backend clamp 為 100，不要視為 rejected 或為此重送。
+   - 每個 category/subcategory 的欄位組合、規格關鍵字、厚度/材質/單位與計價方式，以 runtime context 內 `查價方式` 類別規則為準。
+   - direct A-F tier price 優先。ratio option 只有 row unit 為 `Kg` 或 `M` 才能作單位售價；`category_rule_pending` 代表非 Kg/M ratio 必須略過，不可把 skipped/raw ratio 當可報價單價。缺價是未知/人工複核，不是 0。
+   - 範例：`{ "queries": [{ "queryId": "line-10", "category": "鐵板", "material": "黑鐵", "thicknessMm": ["15"] }, { "queryId": "line-10-hole", "category": "加工/孔", "subcategory": "鐵板", "keyword": "22mm孔" }] }`。
 3. `read_markdown`
    - 呼叫前先檢查 provider chat history；若需要的 OCR / workbook Markdown 已在 history 中且足以完成更新或報價，就不要呼叫此工具。
    - 只在 chat history 因 token 壓縮、上下文裁切或缺少完整 OCR / workbook Markdown 表格時使用。
