@@ -226,7 +226,7 @@ function categoryRule({ sourceFile, prompt, fileSha, handbookSha }) {
     prompt,
     priority: metadata.priority,
     sourceRefs: [
-      sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'steel_rule'),
+      sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule'),
       ...(metadata.ruleSection === 'bar_allocation'
         ? [
             sourceRef(
@@ -507,6 +507,7 @@ function summarizeRules(rules, mode) {
       ruleKind: rule.ruleKind,
       ruleSections: rule.ruleSections,
       sourceFile: rule.sourceRefs[0].sourceFile,
+      factType: rule.sourceRefs[0].factType,
       sha256: rule.sourceRefs[0].sha256,
       promptLength: rule.prompt.length,
     })),

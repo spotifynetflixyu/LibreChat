@@ -231,7 +231,7 @@ export function buildSteelNativeInstructionPrefix({
 } {
   const sections = [
     buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.map(renderAgentRule)),
-    buildSlot('quote_rules', 'Steel Quote Rules', [
+    buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
       ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
       ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
     ]),

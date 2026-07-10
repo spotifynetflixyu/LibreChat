@@ -7,6 +7,7 @@ import { priceCategories, priceSubcategoriesByCategory } from '../src/steel/pric
 type DryRunRule = {
   slug: string;
   sourceFile: string;
+  factType: string;
 };
 
 type DryRunSummary = {
@@ -46,6 +47,42 @@ function listRuleFiles(directory: string): string[] {
   });
 }
 
+function parseLookupContract(guide: string): Record<string, string> {
+  const block = guide.match(
+    /\[category_lookup_contract\]\n([\s\S]*?)\n\[\/category_lookup_contract\]/u,
+  );
+  if (!block?.[1]) {
+    throw new Error('Missing category lookup contract metadata');
+  }
+
+  return Object.fromEntries(
+    block[1].split('\n').map((line) => {
+      const separator = line.indexOf('=');
+      if (separator < 1) {
+        throw new Error(`Invalid category lookup contract metadata: ${line}`);
+      }
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }),
+  );
+}
+
+function parseCategorySubcategories(guide: string): Map<string, string[]> {
+  const sections = guide.split(/^## /mu).slice(1);
+
+  return new Map(
+    sections.map((section) => {
+      const [category, ...bodyLines] = section.split('\n');
+      const subcategoryLine = bodyLines
+        .join('\n')
+        .match(/^次類別=\[(.*)\];空白=unfiltered$/mu)?.[1];
+      if (!category || subcategoryLine === undefined) {
+        throw new Error(`Missing structured subcategory metadata for ${category ?? 'unknown'}`);
+      }
+      return [category, subcategoryLine ? subcategoryLine.split('|') : []];
+    }),
+  );
+}
+
 describe('Steel category rule sources', () => {
   it('uses only the renamed category rules directory in sync metadata', () => {
     expect(fs.existsSync(oldRulesDir)).toBe(false);
@@ -67,48 +104,67 @@ describe('Steel category rule sources', () => {
     expect(syncedCategoryFiles).toEqual(currentCategoryFiles);
     expect(syncedSourceFiles).toEqual(listRuleFiles(path.join(repoRoot, 'docs/rules')).sort());
     expect(summary.rules.every((rule) => !rule.sourceFile.includes('鋼材規則'))).toBe(true);
-    expect(summary.rules.map((rule) => rule.slug)).toContain('steel_category_price_lookup_guide');
+    expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
+      'steel-default-agent-instruction',
+      'steel-drawing-ocr-policy',
+      'steel-workbook-output-policy',
+      'steel_category_price_lookup_guide',
+      'steel_quote_rules_c_type',
+      'steel_quote_rules_h_beam',
+      'steel_quote_rules_hole',
+      'steel_quote_rules_long_material_cutting',
+      'steel_quote_rules_plate',
+    ]);
+    expect(
+      summary.rules
+        .filter((rule) => rule.sourceFile.startsWith('docs/rules/類別規則/'))
+        .map((rule) => rule.factType),
+    ).toEqual(Array(currentCategoryFiles.length).fill('category_rule'));
   });
 
-  it('documents every price category and non-empty subcategory from the registry', () => {
-    const guide = readUtf8(guidePath);
+  it('exactly matches every category section subcategory metadata to the registry', () => {
+    const subcategoriesByCategory = parseCategorySubcategories(readUtf8(guidePath));
 
-    for (const category of priceCategories) {
-      expect(guide).toContain(`## ${category}`);
-      for (const subcategory of priceSubcategoriesByCategory[category]) {
-        if (subcategory) {
-          expect(guide).toContain(`\`${subcategory}\``);
-        }
-      }
-    }
-
-    expect(guide).toContain('`扁鐵`');
-    expect(guide).not.toMatch(/`扁`/u);
-  });
-
-  it('documents grouped query IDs, limits, material enums, and safe ratio pricing', () => {
-    const guide = readUtf8(guidePath);
-
-    expect(guide).toContain('queryId');
-    expect(guide).toContain('queryResults');
-    expect(guide).toMatch(/一次[^\n]*search_price_candidates/u);
-    expect(guide).toMatch(/預設[^\n]*30/u);
-    expect(guide).toMatch(/超過[^\n]*100[^\n]*100/u);
-    expect(guide).toContain('黑鐵、白鐵、鋁、錏、鎢、塑膠');
-    expect(guide).toContain('category_rule_pending');
-    expect(guide).toMatch(/ratio_only[^\n]*(Kg|M)[^\n]*(Kg|M)/u);
-    expect(guide).toMatch(/缺少[^\n]*價格[^\n]*(未知|人工複核)/u);
-  });
-
-  it('uses current category-rule terminology in runtime instructions', () => {
-    const agentRule = readUtf8(path.join(repoRoot, 'docs/rules/agent規則.txt'));
-    const runtimeInstructions = readUtf8(
-      path.join(repoRoot, 'packages/api/src/steel/tools/instructions.ts'),
+    expect([...subcategoriesByCategory.keys()]).toEqual([...priceCategories]);
+    expect(Object.fromEntries(subcategoriesByCategory)).toEqual(
+      Object.fromEntries(
+        priceCategories.map((category) => [
+          category,
+          priceSubcategoriesByCategory[category].filter(Boolean),
+        ]),
+      ),
     );
+    expect(subcategoriesByCategory.get('加工/其他')).toEqual([
+      'C型鋼',
+      'H型鋼',
+      'L',
+      'U',
+      '丸條',
+      '加工',
+      '圓管',
+      '扁鐵',
+      '捲門/伸縮門',
+      '網',
+      '角鐵',
+      '鐵板',
+    ]);
+  });
 
-    expect(agentRule).toContain('類別規則');
-    expect(agentRule).not.toContain('鋼材規則');
-    expect(runtimeInstructions).toContain('類別規則');
-    expect(runtimeInstructions).not.toContain('鋼材規則');
+  it('exposes the canonical grouped-query and pricing safety contract', () => {
+    expect(parseLookupContract(readUtf8(guidePath))).toEqual({
+      schema_version: 'v4.2',
+      tool: 'search_price_candidates',
+      grouping: 'one_call_multiple_queries',
+      request_identity: 'queryId',
+      response_identity: 'queryResults.queryId',
+      query_limit_default: '30',
+      query_limit_max: '100',
+      query_limit_overflow: 'clamp',
+      material_enum: '黑鐵|白鐵|鋁|錏|鎢|塑膠',
+      ratio_quoteable_units: 'Kg|M',
+      ratio_unsupported_action: 'category_rule_pending',
+      missing_price_action: 'manual_review',
+      empty_subcategory: 'unfiltered',
+    });
   });
 });

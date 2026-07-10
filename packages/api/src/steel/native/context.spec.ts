@@ -490,7 +490,11 @@ describe('Steel native context adapter', () => {
     });
 
     expect(context.instructionPrefix).toContain('Steel Agent Rules');
-    expect(context.instructionPrefix).toContain('Steel Quote Rules');
+    expect(
+      context.instructionPrefixSections
+        .find((section) => section.section === 'quote_rules')
+        ?.text?.split('\n', 1),
+    ).toEqual(['# Steel Quote Defaults and Category Rules']);
     expect(context.instructionPrefix).not.toContain('Steel Tool Policy');
     expect(context.runtimeContextText).toContain('Steel Native Context Metadata');
     expect(context.metadata).toEqual(
