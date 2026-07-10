@@ -39,7 +39,6 @@ const registry = Object.freeze({
     '丸條',
     '加工',
     '圓管',
-    '扁',
     '扁鐵',
     '捲門/伸縮門',
     '網',
