@@ -270,11 +270,7 @@ function buildRules(repoRoot) {
       },
       prompt: agent.prompt,
       toolPolicy: {
-        availableTools: [
-          'search_customers',
-          'search_price_candidates',
-          'read_markdown',
-        ],
+        availableTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
       priority: 10,
@@ -308,11 +304,7 @@ function buildRules(repoRoot) {
       },
       prompt: output.prompt,
       toolPolicy: {
-        availableTools: [
-          'search_customers',
-          'search_price_candidates',
-          'read_markdown',
-        ],
+        availableTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
       },
       outputPolicy: {
         activeSheets: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
