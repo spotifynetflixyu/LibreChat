@@ -41,7 +41,6 @@ type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelProvider
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
-type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
 type SteelRoundTool = LanguageModelV3FunctionTool;
 type SteelProviderRoundTiming = {
   round: number;
@@ -720,13 +719,15 @@ function toJsonValue(value: unknown): JSONValue {
 }
 
 function createBatchedSearchPriceInput(
-  inputs: readonly SearchPriceCandidatesInput[],
+  inputs: readonly unknown[],
 ): SearchPriceCandidatesInput | undefined {
   if (inputs.length < 2) {
     return undefined;
   }
 
-  const queries: SearchPriceCandidateQuery[] = inputs.flatMap((input) => input.queries);
+  const queries = inputs.flatMap((input) =>
+    isRecord(input) && Array.isArray(input.queries) ? input.queries : [],
+  );
   if (queries.length === 0 || queries.length > 20) {
     return undefined;
   }
@@ -933,13 +934,14 @@ async function executeSteelBusinessToolCalls({
     if (call.toolName === 'search_price_candidates') {
       const parsedSearchInput = steelToolArgsSchemas.search_price_candidates.safeParse(input);
       if (parsedSearchInput.success) {
+        const rawSearchInput = input;
         const searchInput = parsedSearchInput.data;
         input = searchInput;
         const groupedCalls: Array<{
           call: SteelBusinessToolCall;
           input: unknown;
-          searchInput: SearchPriceCandidatesInput;
-        }> = [{ call, input, searchInput }];
+          rawInput: unknown;
+        }> = [{ call, input, rawInput: rawSearchInput }];
 
         for (const siblingCall of calls.slice(callIndex + 1)) {
           if (
@@ -962,13 +964,13 @@ async function executeSteelBusinessToolCalls({
             groupedCalls.push({
               call: siblingCall,
               input: parsedSiblingSearchInput.data,
-              searchInput: parsedSiblingSearchInput.data,
+              rawInput: siblingInput,
             });
           }
         }
 
         const batchedInput = createBatchedSearchPriceInput(
-          groupedCalls.map(({ searchInput }) => searchInput),
+          groupedCalls.map(({ rawInput }) => rawInput),
         );
         if (batchedInput) {
           result = await executeProviderBusinessToolCall({

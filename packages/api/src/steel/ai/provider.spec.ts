@@ -1166,7 +1166,7 @@ describe('OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('batches same-round grouped price calls without deduping distinct query IDs', async () => {
+  it('assigns distinct query IDs when coalescing same-round calls that omit IDs', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -1178,7 +1178,6 @@ describe('OpenAI OAuth provider adapter', () => {
             input: JSON.stringify({
               queries: [
                 {
-                  queryId: 'line-a',
                   category: '鐵板',
                   material: '黑鐵',
                   keyword: 'DNB70060',
@@ -1194,7 +1193,22 @@ describe('OpenAI OAuth provider adapter', () => {
             input: JSON.stringify({
               queries: [
                 {
-                  queryId: 'line-b',
+                  category: '鐵板',
+                  material: '黑鐵',
+                  keyword: 'DNB70060',
+                  limit: 5,
+                },
+              ],
+            }),
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'call_price_explicit',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({
+              queries: [
+                {
+                  queryId: 'line-c',
                   category: '鐵板',
                   material: '黑鐵',
                   keyword: 'DNB70060',
@@ -1264,14 +1278,21 @@ describe('OpenAI OAuth provider adapter', () => {
         arguments: {
           queries: [
             {
-              queryId: 'line-a',
+              queryId: 'q1',
               category: '鐵板',
               material: '黑鐵',
               keyword: 'DNB70060',
               limit: 5,
             },
             {
-              queryId: 'line-b',
+              queryId: 'q2',
+              category: '鐵板',
+              material: '黑鐵',
+              keyword: 'DNB70060',
+              limit: 5,
+            },
+            {
+              queryId: 'line-c',
               category: '鐵板',
               material: '黑鐵',
               keyword: 'DNB70060',
@@ -1296,8 +1317,9 @@ describe('OpenAI OAuth provider adapter', () => {
         ok: true,
         data: expect.objectContaining({
           queryResults: [
-            expect.objectContaining({ queryId: 'line-a' }),
-            expect.objectContaining({ queryId: 'line-b' }),
+            expect.objectContaining({ queryId: 'q1' }),
+            expect.objectContaining({ queryId: 'q2' }),
+            expect.objectContaining({ queryId: 'line-c' }),
           ],
         }),
       }),
@@ -1307,10 +1329,10 @@ describe('OpenAI OAuth provider adapter', () => {
         ok: true,
         data: expect.objectContaining({
           coalescedWithProviderToolCallId: 'call_price_b',
-          queryIds: ['line-a', 'line-b'],
-          queryCount: 2,
-          queryGroupCount: 2,
-          candidateCount: 2,
+          queryIds: ['q1', 'q2', 'line-c'],
+          queryCount: 3,
+          queryGroupCount: 3,
+          candidateCount: 3,
           categoryCandidateCount: 0,
         }),
       }),

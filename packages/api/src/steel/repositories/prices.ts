@@ -192,7 +192,7 @@ const materialTermsByFamily: Record<PriceLookupMaterialKind, readonly string[]> 
   黑鐵: ['黑鐵'],
   白鐵: ['白鐵'],
   鋁: ['鋁'],
-  錏: ['錏'],
+  錏: ['錏', '鍍鋅'],
   鎢: ['鎢'],
   塑膠: ['塑膠'],
 };
@@ -229,7 +229,7 @@ function formatThicknessMm(value: string): string {
     return normalized;
   }
 
-  return Number.isInteger(parsed) ? `${parsed}.0` : String(parsed);
+  return String(parsed);
 }
 
 function getPriceQueryLimit(limit: number | undefined): number {
@@ -262,7 +262,9 @@ function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number
     subcategory: query.subcategory,
     material: query.material,
     material_terms: query.material ? materialTermsByFamily[query.material] : undefined,
-    thickness_mm: query.thicknessMm?.map(formatThicknessMm),
+    thickness_mm: query.thicknessMm
+      ? [...new Set(query.thicknessMm.map(formatThicknessMm))]
+      : undefined,
     erp_item_code: query.erpItemCode,
     unit: query.unit,
   } satisfies SerializedPriceQuery;

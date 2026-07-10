@@ -46,8 +46,8 @@ Final focused GREEN:
 
 - `provider.spec.ts`: 17/17 tests passed.
 - `categories`, `v4`, `schemas`, `registry`, `prices`, `execute`, `sanitize`, and
-  `memory`: 8 suites, 116/116 tests passed.
-- Total focused result: 9 suites, 133/133 tests passed.
+  `memory`: 8 suites, 117/117 tests passed.
+- Total focused result: 9 suites, 134/134 tests passed.
 - Focused ESLint with `--quiet` passed for provider, registry, schema,
   repository, executor, sanitizer, and their Task 3 tests.
 - `git diff --check` passed.
@@ -57,6 +57,23 @@ unrelated modules/tests (Redis type duplication, OAuth/runtime fixtures, legacy
 v3 importer comparisons, and other pre-existing type issues). The touched
 memory service also retains six pre-existing `no-nested-ternary` diagnostics at
 lines outside the Task 3 diff; the new grouped-memory lines add no lint errors.
+
+## Review correction
+
+The rejected first implementation received three focused regression corrections:
+
+- Numeric thickness filters now follow importer storage text: `2` and `2.0`
+  both normalize to `2`, `2.3` remains `2.3`, and duplicate normalized values
+  are removed.
+- Provider coalescing now merges validated raw query objects and parses the batch
+  once. Two same-round calls without IDs become `q1` and `q2`; supplied IDs such
+  as `line-c` remain unchanged in execution arguments, grouped results, and the
+  compact coalesced summary.
+- The `錏` lookup family now searches both `錏` and `鍍鋅`, including raw values
+  such as `鍍鋅 / 白A` that do not contain `錏`.
+
+The repository regression also explicitly retains reviewed/active filtering and
+AND semantics across normalized keyword terms.
 
 ## Test replacement review
 
