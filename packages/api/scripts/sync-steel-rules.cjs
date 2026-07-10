@@ -46,9 +46,21 @@ function loadRootEnv(repoRoot) {
 }
 
 function parseArgs(argv) {
+  const apply = argv.includes('--apply');
+  const dryRun = argv.includes('--dry-run');
+  if (apply && dryRun) {
+    throw new Error('Use either --dry-run or --apply, not both.');
+  }
+
+  const knownArgs = new Set(['--apply', '--dry-run', '--help', '-h']);
+  const unknownArg = argv.find((arg) => !knownArgs.has(arg));
+  if (unknownArg) {
+    throw new Error(`Unknown argument: ${unknownArg}`);
+  }
+
   return {
-    apply: argv.includes('--apply'),
-    dryRun: argv.includes('--dry-run') || !argv.includes('--apply'),
+    apply,
+    dryRun: dryRun || !apply,
     help: argv.includes('--help') || argv.includes('-h'),
   };
 }
@@ -103,16 +115,6 @@ function sourceRef(sourceFile, locator, canonicalKey, fileSha, factType = 'rule'
     canonicalKey,
     sha256: fileSha,
   };
-}
-
-function getPromptSection(prompt, startText, endText) {
-  const start = prompt.indexOf(startText);
-  if (start < 0) {
-    throw new Error(`Missing rule section: ${startText}`);
-  }
-
-  const end = endText ? prompt.indexOf(endText, start + startText.length) : -1;
-  return prompt.slice(start, end >= 0 ? end : undefined).trim();
 }
 
 function toJson(value) {
@@ -208,7 +210,7 @@ function readCategoryRuleMetadata(sourceFile) {
   return metadata;
 }
 
-function categoryRule({ sourceFile, prompt, fileSha, handbookSha }) {
+function categoryRule({ sourceFile, prompt, fileSha }) {
   const metadata = readCategoryRuleMetadata(sourceFile);
 
   return unifiedRule({
@@ -227,17 +229,6 @@ function categoryRule({ sourceFile, prompt, fileSha, handbookSha }) {
     priority: metadata.priority,
     sourceRefs: [
       sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule'),
-      ...(metadata.ruleSection === 'bar_allocation'
-        ? [
-            sourceRef(
-              'docs/reference/龍頂鋼鐵手冊__文字版.docx',
-              'Page 14 鋼軌表；Page 21 方鋼表；Page 22 圓鋼表',
-              'steel_density_table_handbook',
-              handbookSha,
-              'reference_handbook',
-            ),
-          ]
-        : []),
     ],
   });
 }
@@ -253,7 +244,6 @@ function buildRules(repoRoot) {
       sourceFile,
       prompt: rule.prompt,
       fileSha: rule.sha256,
-      handbookSha,
     });
   });
 
@@ -506,6 +496,28 @@ function summarizeRules(rules, mode) {
   };
 }
 
+async function syncRules(pool, rules) {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.rules:sync'))");
+    await deleteRemovedRules(client, rules);
+    for (const rule of rules) {
+      await upsertRule(client, rule);
+    }
+
+    const rows = await readBackRules(client, rules);
+    await client.query('COMMIT');
+    return rows;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -524,22 +536,25 @@ async function main() {
     return;
   }
 
-  const client = createSteelPostgresPool();
+  const pool = createSteelPostgresPool();
 
   try {
-    await deleteRemovedRules(client, rules);
-    for (const rule of rules) {
-      await upsertRule(client, rule);
-    }
-
-    const row = await readBackRules(client, rules);
+    const row = await syncRules(pool, rules);
     process.stdout.write(`${JSON.stringify({ ...summary, row }, null, 2)}\n`);
   } finally {
-    await client.end();
+    await pool.end();
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-  process.exit(1);
-});
+module.exports = {
+  buildRules,
+  parseArgs,
+  syncRules,
+};
+
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+    process.exit(1);
+  });
+}

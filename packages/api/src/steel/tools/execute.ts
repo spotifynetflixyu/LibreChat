@@ -215,8 +215,10 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
   } = candidate;
   const pricingOptions: SteelRawToolOutput[] = [];
   const skippedPricingOptions: SteelRawToolOutput[] = [];
+  const hasTierPrices = hasPriceTierValue(tierPrices);
+  const hasTierRatios = hasPriceTierValue(tierRatios);
 
-  if (hasPriceTierValue(tierPrices)) {
+  if (hasTierPrices) {
     pricingOptions.push({
       source: 'tier_price',
       quoteEligible: true,
@@ -225,14 +227,14 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
     });
   }
 
-  if (hasPriceTierValue(tierRatios) && (candidate.unit === 'Kg' || candidate.unit === 'M')) {
+  if (hasTierRatios && (candidate.unit === 'Kg' || candidate.unit === 'M')) {
     pricingOptions.push({
       source: 'price_ratio',
       quoteEligible: true,
       quoteUnit: candidate.unit,
       tierPrices: tierRatios,
     });
-  } else if (hasPriceTierValue(tierRatios)) {
+  } else if (hasTierRatios) {
     skippedPricingOptions.push({
       source: 'price_ratio',
       status: 'skipped',
@@ -254,9 +256,10 @@ async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  const repositoryGroups = await searchSteelPriceCandidateGroups(client, {
-    queries: input.queries,
-  });
+  const [repositoryGroups, cuttingPrices] = await Promise.all([
+    searchSteelPriceCandidateGroups(client, { queries: input.queries }),
+    searchSteelCuttingPriceGroups(client, input.queries),
+  ]);
   const groupsByIndex = new Map(repositoryGroups.map((group) => [group.queryIndex, group]));
   let matchedQueryCount = 0;
   let candidateCount = 0;
@@ -280,8 +283,6 @@ async function searchPriceCandidates(
       issues: [],
     };
   });
-  const cuttingPrices = await searchSteelCuttingPriceGroups(client, input.queries);
-
   return {
     queryResults,
     cuttingPrices,

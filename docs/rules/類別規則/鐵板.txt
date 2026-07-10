@@ -16,8 +16,8 @@
 6. 材質預設造成的不確定，用黑鐵 Kg 單價暫估。
 
 材料與加工要放在同一次 grouped query 的獨立 query，例如：
-`{"queries":[{"queryId":"line-40-material","category":"鐵板","material":"黑鐵","thicknessMm":["15"]},{"queryId":"line-40-hole","category":"加工/孔","subcategory":"鐵板","thicknessMm":["15"],"keyword":"孔"},{"queryId":"line-40-fold","category":"加工/折工","subcategory":"鐵板","thicknessMm":["15"]}]}`
-依 `queryResults[].queryId` 對回材料、孔與折工。若材料 query 加 keyword 查不到，移除不必要 keyword，只用 category/material/thicknessMm 重查。鐵板切工價由同次 tool 結果頂層 `cuttingPrices` 自動附加，不另送切工 query。
+`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["15"]},{"category":"加工/孔","subcategory":"鐵板","thicknessMm":["15"],"keyword":"孔"},{"category":"加工/折工","subcategory":"鐵板","thicknessMm":["15"]}]}`
+依 `queryResults` 相同順序對回材料、孔與折工。若材料 query 加 keyword 查不到，移除不必要 keyword，只用 category/material/thicknessMm 重查。鐵板切工價由同次 tool 結果頂層 `cuttingPrices` 自動附加，不另送切工 query。
 
 重量公式：
 鐵板四方理論重 Kg = 長 mm × 寬 mm × 厚 mm × 密度 ÷ 1,000,000 × 數量。

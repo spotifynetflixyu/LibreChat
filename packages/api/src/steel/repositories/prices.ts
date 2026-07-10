@@ -177,16 +177,6 @@ interface SerializedPriceQuery {
   query_limit: number;
 }
 
-const materialTermsByFamily: Record<PriceLookupMaterialKind, readonly string[]> = {
-  黑鐵: ['黑鐵'],
-  白鐵: ['白鐵'],
-  鋁: ['鋁'],
-  錏: ['錏'],
-  鋅: ['鋅'],
-  鎢: ['鎢'],
-  塑膠: ['塑膠'],
-};
-
 function normalizeKeywordText(value: string): string {
   return value
     .normalize('NFKC')
@@ -251,7 +241,7 @@ function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number
     category: query.category,
     subcategory: query.subcategory,
     material: query.material,
-    material_terms: query.material ? materialTermsByFamily[query.material] : undefined,
+    material_terms: query.material ? [query.material] : undefined,
     thickness_mm: query.thicknessMm
       ? [...new Set(query.thicknessMm.map(formatThicknessMm))]
       : undefined,

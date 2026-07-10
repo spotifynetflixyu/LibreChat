@@ -3,8 +3,8 @@
 C、C鋼、輕型鋼先判定為 C型鋼。未標材質/表面時，預設以「錏輕型鋼」暫報；黑鐵、白鐵只有文字或價格候選明確指向時才採用或列人工確認。
 
 查價使用 `category: "C型鋼"`，依已知資料加入 `erpItemCode`、`material`、`thicknessMm` 或 `keyword`；`subcategory: "加工/其他"` 只在產品列本身屬該次類別時使用。若明確另計特殊加工，產品與加工要放在同一次 grouped query：
-`{"queries":[{"queryId":"line-10-material","category":"C型鋼","material":"錏","keyword":"100x50"},{"queryId":"line-10-process","category":"加工/其他","subcategory":"C型鋼","keyword":"特殊切角"}]}`
-依 `queryResults[].queryId` 分別採用材料與加工候選，不可跨組混用。
+`{"queries":[{"category":"C型鋼","material":"錏","keyword":"100x50"},{"category":"加工/其他","subcategory":"C型鋼"}]}`
+依 `queryResults` 相同順序分別採用第一筆材料與第二筆加工候選，不可跨組混用。
 
 C型鋼屬鋼捲抽料/成型下料，不套一般 6M 長條料規則：不配料、不算素材支數、不算餘料、不預設切工、孔費或加工費。
 材料費依成品長度與支數計算，並依 price row 單位計價，不可自行改單位。

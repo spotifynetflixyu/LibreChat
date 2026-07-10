@@ -1,3 +1,5 @@
+import { priceTierCodes } from '../pricing/enums';
+
 export type SteelSourceSchemaUsage =
   | 'admin_import'
   | 'calculator_context'
@@ -25,7 +27,7 @@ export interface BuildSourceSchemaMappingPromptContextOptions {
   allowedFor?: SteelSourceSchemaUsage;
 }
 
-const productPriceTierEntries = (['A', 'B', 'C', 'F'] as const).map((tier) => ({
+const productPriceTierEntries = priceTierCodes.map((tier) => ({
   sourceFile: '產品價格.xlsx',
   sourceLabels: [`售價${tier}`],
   canonicalKey: `unit_price_by_tier.${tier}`,
@@ -263,7 +265,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
     allowedFor: ['admin_import', 'calculator_context', 'price_lookup'],
     valueType: 'string',
   },
-  ...(['A', 'B', 'C', 'F'] as const).map((tier) => ({
+  ...priceTierCodes.map((tier) => ({
     sourceFile: '切工價錢-clean.xlsx',
     sourceLabels: [`unit_price_${tier.toLowerCase()}`],
     canonicalKey: `cutting_unit_price_by_tier.${tier}`,

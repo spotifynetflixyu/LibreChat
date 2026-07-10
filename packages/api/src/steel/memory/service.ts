@@ -479,7 +479,15 @@ async function readActiveMemoryTotals({
     conversationId,
     state: 'active',
     memoryKind: { $in: activeSavedMemoryKinds },
-  }).lean<SteelWorkingOrderMemoryDocument[]>();
+  })
+    .select({
+      memoryKind: 1,
+      'payload.kind': 1,
+      'payload.ocrFileKey': 1,
+      'payload.ocrSource': 1,
+      'payload.title': 1,
+    })
+    .lean<SteelWorkingOrderMemoryDocument[]>();
 
   return {
     totalSavedCounts: summarizeByKind(documents),

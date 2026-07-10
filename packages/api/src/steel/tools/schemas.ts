@@ -239,7 +239,7 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
     (input): SearchPriceCandidatesInput => ({
       queries: input.queries.map((query, index) => ({
         ...query,
-        queryId: query.queryId ?? `q${index + 1}`,
+        queryId: `q${index + 1}`,
       })) as SearchPriceCandidateQueryInput[],
     }),
   );

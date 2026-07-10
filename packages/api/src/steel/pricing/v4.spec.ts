@@ -156,6 +156,20 @@ describe('Steel price v4.2 parser', () => {
     });
   });
 
+  it.each([
+    { unit_price_a: '-1' },
+    { price_ratio_b: '-1' },
+    { unit_weight_value: '-1' },
+    { density: '-1' },
+    { width_mm: '-1' },
+  ])('rejects negative database-constrained numeric values', (overrides) => {
+    expect(() => buildSteelPriceV4Rows([makeWorkbookRow(overrides)])).toThrow();
+  });
+
+  it.each(['', 'bogus'])('rejects unsupported cost basis %s', (costBasis) => {
+    expect(() => buildSteelPriceV4Rows([makeWorkbookRow({ cost_basis: costBasis })])).toThrow();
+  });
+
   it('derives hole and cutting price kinds from processing categories', () => {
     const [hole, cutting] = buildSteelPriceV4Rows([
       makeWorkbookRow({ erp_item_code: 'HOLE01', category: '加工/孔', subcategory: '' }),

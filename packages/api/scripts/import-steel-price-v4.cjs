@@ -14,52 +14,16 @@ require('ts-node/register/transpile-only');
 const XLSX = require('xlsx');
 
 const { createSteelPostgresPool } = require('../src/steel/postgres');
-const { buildSteelPriceV4Rows } = require('../src/steel/pricing/v4');
+const {
+  buildSteelPriceV4Rows,
+  steelPriceV4SourceDataset,
+  steelPriceV4WorkbookHeaders,
+} = require('../src/steel/pricing/v4');
 
 const SHEET_NAME = 'products_db_ready';
-const SOURCE_DATASET = 'product_price_v4_2';
+const SOURCE_DATASET = steelPriceV4SourceDataset;
 const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.2.xlsx');
-const EXPECTED_HEADERS = Object.freeze([
-  'erp_item_code',
-  'formula_code',
-  'product_name',
-  'normalized_spec_text',
-  'category',
-  'subcategory',
-  'material',
-  'dimension_signature',
-  'unit',
-  'value_state',
-  'unit_price_base',
-  'unit_price_a',
-  'unit_price_b',
-  'unit_price_c',
-  'unit_price_d',
-  'unit_price_e',
-  'unit_price_f',
-  'price_ratio_a',
-  'price_ratio_b',
-  'price_ratio_c',
-  'price_ratio_d',
-  'price_ratio_e',
-  'price_ratio_f',
-  'unit_weight_value',
-  'unit_weight_basis',
-  'density',
-  'source_thickness',
-  'width_mm',
-  'height_mm',
-  'length_mm',
-  'outer_diameter_mm',
-  'nominal_inch',
-  'web_mm',
-  'flange_mm',
-  'lip_mm',
-  'sheet_width_mm',
-  'sheet_length_mm',
-  'spec_sort_key',
-  'cost_basis',
-]);
+const EXPECTED_HEADERS = steelPriceV4WorkbookHeaders;
 const EXPECTED_RECONCILIATION = Object.freeze({
   importRows: 6761,
   duplicateErpItemCodes: 0,

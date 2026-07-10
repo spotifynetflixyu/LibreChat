@@ -1,5 +1,8 @@
 # Lessons
 
+- For grouped Steel price lookup, backend query IDs come only from `queries`
+  array order (`q1`, `q2`, ...). Ignore caller-supplied `queryId` values, keep
+  `queryResults` in the same order, and never reject a batch for ID collisions.
 - For Steel cutting-price enrichment, finish every normal grouped price query
   first, derive unique cutting terms from the selected product categories, and
   run one final unlimited contains query. Return one top-level cutting catalog

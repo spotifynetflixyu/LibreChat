@@ -3,7 +3,7 @@ import { steelToolArgsSchemas } from './schemas';
 describe('Steel price candidate tool schema', () => {
   const schema = steelToolArgsSchemas.search_price_candidates;
 
-  it('assigns deterministic query IDs while preserving trimmed supplied IDs', () => {
+  it('assigns deterministic query IDs from array order and ignores supplied IDs', () => {
     expect(
       schema.parse({
         queries: [
@@ -15,10 +15,21 @@ describe('Steel price candidate tool schema', () => {
     ).toEqual({
       queries: [
         { queryId: 'q1', category: 'H型鋼', keyword: 'H200x100' },
-        { queryId: 'order-line-2', category: '加工/其他', subcategory: '扁鐵' },
+        { queryId: 'q2', category: '加工/其他', subcategory: '扁鐵' },
         { queryId: 'q3', mode: 'category_discovery', keyword: '不銹鋼管' },
       ],
     });
+  });
+
+  it('normalizes duplicate supplied IDs to their array positions', () => {
+    expect(
+      schema.parse({
+        queries: [
+          { queryId: 'same', category: '鐵板' },
+          { queryId: 'same', category: 'H型鋼' },
+        ],
+      }).queries.map((query) => query.queryId),
+    ).toEqual(['q1', 'q2']);
   });
 
   it('keeps an omitted limit undefined and clamps every positive integer above 100', () => {
@@ -56,7 +67,7 @@ describe('Steel price candidate tool schema', () => {
     ).toEqual({
       queries: [
         {
-          queryId: 'line-1',
+          queryId: 'q1',
           category: '圓管',
           subcategory: '鋼管',
           material: '鎢',

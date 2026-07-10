@@ -23,7 +23,7 @@
 | 平鐵 | 平鐵，可匹配 `鐵板/平鐵` |
 | 鐵板 | 鐵板，可匹配 `鐵板/平鐵` |
 
-`cuttingPrices[].queryIds` 與 `sourceCategories` 對回原訂單列。I型鋼/工字鐵、鐵軌、圓鐵、方鐵、板/浪板不在自動切工對應範圍；若另有明確 ERP 加工品項，才以一般 `加工/切工` price query 查詢，不可自行套用其他類別。
+`cuttingPrices[].queryIds` 使用 backend 依 `queries` 順序產生的 `q1`、`q2`…，並與 `sourceCategories` 一起對回原訂單列。I型鋼/工字鐵、鐵軌、圓鐵、方鐵、板/浪板不在自動切工對應範圍；若另有明確 ERP 加工品項，才以一般 `加工/切工` price query 查詢，不可自行套用其他類別。
 
 四、基本公式
 切工費 = (基本切工 direct 單價 + 加價) × 刀數 × 數量基準。

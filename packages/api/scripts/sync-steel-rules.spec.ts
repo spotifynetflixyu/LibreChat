@@ -15,11 +15,24 @@ type DryRunSummary = {
   rules: DryRunRule[];
 };
 
+interface SyncClient {
+  query: jest.Mock<Promise<{ rows: object[] }>, [string, unknown?]>;
+  release: jest.Mock<void, []>;
+}
+
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const oldRulesDir = path.join(repoRoot, 'docs/rules/鋼材規則');
 const categoryRulesDir = path.join(repoRoot, 'docs/rules/類別規則');
 const guidePath = path.join(categoryRulesDir, '查價方式.txt');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
+
+const ruleSync = require('./sync-steel-rules.cjs') as {
+  buildRules: (root: string) => object[];
+  syncRules: (
+    pool: { connect: () => Promise<SyncClient> },
+    rules: object[],
+  ) => Promise<object[]>;
+};
 
 function readUtf8(filePath: string): string {
   return fs.readFileSync(filePath, 'utf8');
@@ -84,6 +97,49 @@ function parseCategorySubcategories(guide: string): Map<string, string[]> {
 }
 
 describe('Steel category rule sources', () => {
+  it('rolls back an interrupted rule publication on its dedicated connection', async () => {
+    const client: SyncClient = {
+      query: jest.fn(async (sql: string) => {
+        if (sql.includes('INSERT INTO steel.rules')) {
+          throw new Error('injected upsert failure');
+        }
+        return { rows: [] };
+      }),
+      release: jest.fn(),
+    };
+
+    await expect(
+      ruleSync.syncRules(
+        { connect: async () => client },
+        ruleSync.buildRules(repoRoot).slice(0, 1),
+      ),
+    ).rejects.toThrow('injected upsert failure');
+
+    const sql = client.query.mock.calls.map(([statement]) => statement.trim());
+    expect(sql).toContain('BEGIN');
+    expect(sql.some((statement) => statement.includes('pg_advisory_xact_lock'))).toBe(true);
+    expect(sql).toContain('ROLLBACK');
+    expect(sql).not.toContain('COMMIT');
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects conflicting or unknown CLI flags before syncing', () => {
+    expect(() =>
+      execFileSync(process.execPath, [syncScript, '--dry-run', '--apply'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }),
+    ).toThrow();
+    expect(() =>
+      execFileSync(process.execPath, [syncScript, '--unknown'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }),
+    ).toThrow();
+  });
+
   it('uses only the renamed category rules directory in sync metadata', () => {
     expect(fs.existsSync(oldRulesDir)).toBe(false);
     expect(fs.existsSync(categoryRulesDir)).toBe(true);
@@ -154,8 +210,9 @@ describe('Steel category rule sources', () => {
     expect(parseLookupContract(readUtf8(guidePath))).toEqual({
       tool: 'search_price_candidates',
       grouping: 'one_call_multiple_queries',
-      request_identity: 'queryId',
-      response_identity: 'queryResults.queryId',
+      request_identity: 'query_order',
+      response_identity: 'queryResults_array_order',
+      query_id_generation: 'q{index+1}',
       query_limit_default: '30',
       query_limit_max: '100',
       query_limit_overflow: 'clamp',

@@ -65,7 +65,7 @@ describe('Steel tool registry', () => {
     ).toEqual({
       queries: [
         {
-          queryId: 'line-1',
+          queryId: 'q1',
           category: '圓管',
           subcategory: '鋼管',
           material: '鎢',
@@ -96,7 +96,8 @@ describe('Steel tool registry', () => {
 
     expect(definition.description).toContain('one call');
     expect(definition.description).toContain('multiple order lines');
-    expect(definition.description).toContain('queryId');
+    expect(definition.description).toContain('input order');
+    expect(definition.description).toContain('q1, q2');
     expect(definition.description).toContain('subcategory');
     expect(definition.description).toContain('erpItemCode');
     expect(definition.description).not.toContain('keyword, unit');

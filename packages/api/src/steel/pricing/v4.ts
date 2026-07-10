@@ -5,48 +5,53 @@ import type { PriceCategory, PriceSubcategory } from './categories';
 export type SteelPriceV4Cell = string | number | null | undefined;
 export type SteelPriceV4ValueState = 'confirmed' | 'ratio_only' | 'no_price';
 export type SteelPriceV4Kind = 'product' | 'cutting' | 'hole';
+export type SteelPriceV4CostBasis = '1.總數' | '2.數量';
 
-export interface SteelPriceV4WorkbookRow {
-  formula_code: SteelPriceV4Cell;
-  erp_item_code: SteelPriceV4Cell;
-  product_name: SteelPriceV4Cell;
-  normalized_spec_text: SteelPriceV4Cell;
-  category: SteelPriceV4Cell;
-  subcategory: SteelPriceV4Cell;
-  material: SteelPriceV4Cell;
-  dimension_signature: SteelPriceV4Cell;
-  unit: SteelPriceV4Cell;
-  value_state: SteelPriceV4Cell;
-  unit_price_base: SteelPriceV4Cell;
-  unit_price_a: SteelPriceV4Cell;
-  unit_price_b: SteelPriceV4Cell;
-  unit_price_c: SteelPriceV4Cell;
-  unit_price_d: SteelPriceV4Cell;
-  unit_price_e: SteelPriceV4Cell;
-  unit_price_f: SteelPriceV4Cell;
-  price_ratio_a: SteelPriceV4Cell;
-  price_ratio_b: SteelPriceV4Cell;
-  price_ratio_c: SteelPriceV4Cell;
-  price_ratio_d: SteelPriceV4Cell;
-  price_ratio_e: SteelPriceV4Cell;
-  price_ratio_f: SteelPriceV4Cell;
-  unit_weight_value: SteelPriceV4Cell;
-  unit_weight_basis: SteelPriceV4Cell;
-  density: SteelPriceV4Cell;
-  source_thickness: SteelPriceV4Cell;
-  width_mm: SteelPriceV4Cell;
-  height_mm: SteelPriceV4Cell;
-  length_mm: SteelPriceV4Cell;
-  outer_diameter_mm: SteelPriceV4Cell;
-  nominal_inch: SteelPriceV4Cell;
-  web_mm: SteelPriceV4Cell;
-  flange_mm: SteelPriceV4Cell;
-  lip_mm: SteelPriceV4Cell;
-  sheet_width_mm: SteelPriceV4Cell;
-  sheet_length_mm: SteelPriceV4Cell;
-  spec_sort_key: SteelPriceV4Cell;
-  cost_basis: SteelPriceV4Cell;
-}
+export const steelPriceV4SourceDataset = 'product_price_v4_2' as const;
+export const steelPriceV4WorkbookHeaders = Object.freeze([
+  'erp_item_code',
+  'formula_code',
+  'product_name',
+  'normalized_spec_text',
+  'category',
+  'subcategory',
+  'material',
+  'dimension_signature',
+  'unit',
+  'value_state',
+  'unit_price_base',
+  'unit_price_a',
+  'unit_price_b',
+  'unit_price_c',
+  'unit_price_d',
+  'unit_price_e',
+  'unit_price_f',
+  'price_ratio_a',
+  'price_ratio_b',
+  'price_ratio_c',
+  'price_ratio_d',
+  'price_ratio_e',
+  'price_ratio_f',
+  'unit_weight_value',
+  'unit_weight_basis',
+  'density',
+  'source_thickness',
+  'width_mm',
+  'height_mm',
+  'length_mm',
+  'outer_diameter_mm',
+  'nominal_inch',
+  'web_mm',
+  'flange_mm',
+  'lip_mm',
+  'sheet_width_mm',
+  'sheet_length_mm',
+  'spec_sort_key',
+  'cost_basis',
+] as const);
+
+export interface SteelPriceV4WorkbookRow
+  extends Record<(typeof steelPriceV4WorkbookHeaders)[number], SteelPriceV4Cell> {}
 
 export interface SteelPriceV4Row {
   formulaCode: string | null;
@@ -87,16 +92,14 @@ export interface SteelPriceV4Row {
   sheetWidthMm: number | null;
   sheetLengthMm: number | null;
   specSortKey: string | null;
-  costBasis: string | null;
+  costBasis: SteelPriceV4CostBasis;
   specKey: string;
   priceKind: SteelPriceV4Kind;
-  sourceDataset: 'product_price_v4_2';
+  sourceDataset: typeof steelPriceV4SourceDataset;
   sourceRowKey: string;
   currency: 'TWD';
   active: boolean;
 }
-
-const sourceDataset = 'product_price_v4_2' as const;
 
 function parseText(value: SteelPriceV4Cell): string | null {
   if (value === null || value === undefined) {
@@ -134,6 +137,10 @@ function parseNumber(value: SteelPriceV4Cell, field: string): number | null {
 
 function parseZeroAsNullNumber(value: SteelPriceV4Cell, field: string): number | null {
   const parsed = parseNumber(value, field);
+
+  if (parsed !== null && parsed < 0) {
+    throw new Error(`Steel price v4.2 ${field} must be nonnegative`);
+  }
 
   return parsed === 0 ? null : parsed;
 }
@@ -175,6 +182,15 @@ function parseValueState(value: SteelPriceV4Cell): SteelPriceV4ValueState {
   }
 
   throw new Error(`Unknown Steel price v4.2 value_state: ${state}`);
+}
+
+function parseCostBasis(value: SteelPriceV4Cell): SteelPriceV4CostBasis {
+  const costBasis = parseRequiredText(value, 'cost_basis');
+  if (costBasis === '1.總數' || costBasis === '2.數量') {
+    return costBasis;
+  }
+
+  throw new Error(`Unknown Steel price v4.2 cost_basis: ${costBasis}`);
 }
 
 function getPriceKind(category: PriceCategory): SteelPriceV4Kind {
@@ -271,10 +287,10 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     sheetWidthMm: parseZeroAsNullNumber(row.sheet_width_mm, 'sheet_width_mm'),
     sheetLengthMm: parseZeroAsNullNumber(row.sheet_length_mm, 'sheet_length_mm'),
     specSortKey: parseText(row.spec_sort_key),
-    costBasis: parseText(row.cost_basis),
+    costBasis: parseCostBasis(row.cost_basis),
     specKey: normalizedSpecText ? `${erpItemCode} ${normalizedSpecText}` : erpItemCode,
     priceKind: getPriceKind(category),
-    sourceDataset,
+    sourceDataset: steelPriceV4SourceDataset,
     sourceRowKey: erpItemCode,
     currency: 'TWD',
     active: true,

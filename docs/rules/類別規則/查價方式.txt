@@ -3,8 +3,9 @@
 [category_lookup_contract]
 tool=search_price_candidates
 grouping=one_call_multiple_queries
-request_identity=queryId
-response_identity=queryResults.queryId
+request_identity=query_order
+response_identity=queryResults_array_order
+query_id_generation=q{index+1}
 query_limit_default=30
 query_limit_max=100
 query_limit_overflow=clamp
@@ -22,12 +23,12 @@ empty_subcategory=unfiltered
 
 一、批次查價契約
 
-1. 一次 `search_price_candidates` 呼叫放入本輪所有訂單列的 `queries`；每筆使用穩定且唯一的 `queryId`。回傳後依 `queryResults[].queryId` 對回原訂單列，不可跨 query 合併候選。
+1. 一次 `search_price_candidates` 呼叫放入本輪所有訂單列的 `queries`；backend 依陣列順序固定產生 `q1`、`q2`…，輸入的 `queryId` 會被忽略。`queryResults` 順序與 `queries` 完全一致，依相同 index / 產生的 ID 對回原訂單列，不可跨 query 合併候選。
 2. 已知 ERP 時優先用 `erpItemCode` 精確查詢；否則用 `category` 加可確認的 `subcategory`、`material`、`thicknessMm`，再以 `keyword` 放規格片段。沒有 `unit` query filter；`spec_key` 是 ERP + 規格的關鍵字搜尋文字，不是型號唯一鍵。
 3. `subcategory` 省略或空白代表不篩選次類別。`material` 與 `keyword` 都是包含搜尋；材質 enum 僅限：黑鐵、白鐵、鋁、錏、鋅、鎢、塑膠。`鋅` 可匹配鋅/鍍鋅，`錏` 不等同鋅。類別不明才用 `mode: "category_discovery"` 加 `keyword`。
 4. 每筆 query 的 `limit` 預設 30，平時省略；只有需要擴大候選時才傳 100。正整數超過 100 時會 clamp 為 100，不需重送。
 5. 一般價格 query 全部完成後，backend 會統一查一次切工並加在頂層 `cuttingPrices`。H型鋼、平鐵、鐵板、角鐵、槽鐵使用原 category 作包含搜尋；圓管、方管、扁方管先轉成 `鐵管`。切工只按類別包含搜尋，不用厚度/尺寸/keyword，不設筆數上限。
-6. 範例：`{"queries":[{"queryId":"line-10","category":"鐵板","material":"黑鐵","thicknessMm":["6"]},{"queryId":"line-20","category":"圓管","subcategory":"鋼管","keyword":"2吋"}]}`。材料結果依 `queryResults[].queryId` 對回；切工由 `cuttingPrices[].queryIds` / `sourceCategories` 對回。
+6. 範例：`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["6"]},{"category":"圓管","subcategory":"鋼管","keyword":"2吋"}]}`。第一筆結果固定為 `q1`，第二筆固定為 `q2`；切工由 `cuttingPrices[].queryIds` / `sourceCategories` 對回相同順序。
 
 二、選價與計算
 

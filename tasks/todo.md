@@ -240,7 +240,53 @@ Review:
   - `cd packages/api && rtk npx jest src/steel/native/token.spec.ts --runInBand --watch=false --coverage=false`
   - `cd client && rtk npm run typecheck`
   - `cd packages/api && rtk npm run build`
-  - `rtk git diff --check`
+- `rtk git diff --check`
+
+## Active: Simplify Steel pricing/cutting range - 2026-07-11
+
+Goal: review and simplify every changed file and relevant nearby module in
+`9d31b51e296e6bdb337660b85..HEAD` without changing public contracts.
+
+- [x] Confirm the requested commit is an ancestor of `HEAD` and inventory the
+      full named range separately from the working tree.
+- [x] Review code reuse, code quality, and efficiency in parallel across the
+      named range and relevant call sites/tests.
+- [x] Apply only clearly beneficial, local simplifications while preserving
+      APIs, schema contracts, rule behavior, and importer semantics.
+- [x] Run focused tests/build checks for touched modules plus
+      `rtk git diff --check`.
+- [x] Record accepted fixes, intentional skips, and verification evidence.
+
+Review:
+
+- Centralized the v4.2 workbook headers and source-dataset constant so the
+  parser type and importer use one contract.
+- Aligned v4.2 parser validation with the database's nonnegative numeric and
+  cost-basis constraints.
+- Follow-up correction: grouped price IDs now always come from `queries` order
+  (`q1`, `q2`, ...); supplied IDs are ignored, collisions are not rejected, and
+  AI-visible rules/examples use positional result mapping.
+- Ran independent product-price and cutting-price repository queries in
+  parallel, removed the identity material lookup map, and reused the canonical
+  A/B/C/F tier constant in schema mappings.
+- Made rule publication transactional on one connection with an advisory lock,
+  rollback coverage, and fail-fast CLI argument validation; also removed dead
+  rule-sync branches.
+- Limited aggregate memory-total reads to the fields actually needed for
+  counting, and reused one system-order fixture header in the E2E fake model.
+- Intentionally kept the explicit category tuple types after the declaration
+  build proved inference is incompatible with `--isolatedDeclarations`.
+- Intentionally skipped purpose-specific memory-reader redesign, v3 importer
+  retirement, and rule ownership changes because they require separate contract
+  decisions.
+- Verification passed:
+  - 10 focused Jest suites / 152 tests.
+  - Positional query-ID follow-up: 5 focused Jest suites / 58 tests.
+  - `cd packages/api && rtk npm run build`.
+  - v4 importer dry-run: 6,761 rows, 0 duplicate ERP codes, expected state totals.
+  - rule sync dry-run: 9 reviewed rule payloads.
+  - `rtk node --check e2e/setup/fake-model.js`.
+  - `rtk git diff --cached --check`.
 
 ## Active: Steel Pricing v4.2 Full Replacement - 2026-07-10
 

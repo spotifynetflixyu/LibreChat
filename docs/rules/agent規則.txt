@@ -18,12 +18,12 @@
    - 多筆相似客戶或分級不明時列為低信心 / 人工複核，多個等級不明確時，報價預設用B。
 2. `search_price_candidates`
    - 需要產品價格、材料價格、加工價格、切工價格、孔加工價格、開槽價格、折工價格或其他報價單價時使用。
-   - input 只允許 `{ "queries": [...] }`。同一輪所有訂單列與其加工 query 應合併成一次 tool call；每筆 query 使用穩定、唯一的 `queryId`，回傳後依 `queryResults[].queryId` 對回原訂單列，不跨 query 混用候選。
+   - input 只允許 `{ "queries": [...] }`。同一輪所有訂單列與其加工 query 應合併成一次 tool call；backend 依 `queries` 陣列順序固定產生 `q1`、`q2`…，輸入的 `queryId` 會被忽略。`queryResults` 順序與 `queries` 一致，依相同 index / 產生的 ID 對回原訂單列，不跨 query 混用候選。
    - lookup query 可省略 `mode`，依類別規則使用 `category`、`subcategory`、`material`、`thicknessMm`、`erpItemCode`、`keyword`、`limit`。`material` 與 `keyword` 都是包含搜尋；material enum 只用 `黑鐵`、`白鐵`、`鋁`、`錏`、`鋅`、`鎢`、`塑膠`。
    - `keyword` 可省略；有空白時 backend 會拆成 AND。已知 ERP 優先 `erpItemCode` 精確查詢；category 不明時先用 `mode: "category_discovery"`。
    - 每筆 query 的 `limit` 預設 30；平時不要傳 `limit`，只有候選需要擴大時才傳 100。
    - direct A-F tier price 優先。ratio option 只有 row unit 為 `Kg` 或 `M` 才能作單位售價；`category_rule_pending` 代表非 Kg/M ratio 必須略過。缺價是未知/人工複核，不是 0。
-   - 範例：`{ "queries": [{ "queryId": "line-10", "category": "鐵板", "material": "黑鐵", "thicknessMm": ["15"] }, { "queryId": "line-10-hole", "category": "加工/孔", "subcategory": "鐵板", "keyword": "22mm孔" }] }`。
+   - 範例：`{ "queries": [{ "category": "鐵板", "material": "黑鐵", "thicknessMm": ["15"] }, { "category": "加工/孔", "subcategory": "鐵板", "keyword": "22mm孔" }] }`；第一筆固定為 `q1`，第二筆固定為 `q2`。
 3. `read_markdown`
    - 呼叫前先檢查 chat history；若需要的 OCR / workbook Markdown 已在 history 中且足以完成更新或報價，就不要呼叫此工具。
    - 只允許 `scope: "workbook"` 或 `scope: "ocr"`。`workbook` 包含嚴格欄位的 `system_order`；`ocr` 是無固定欄位的圖面解析文本。

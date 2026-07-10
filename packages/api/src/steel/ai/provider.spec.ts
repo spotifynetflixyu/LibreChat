@@ -1166,7 +1166,7 @@ describe('OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('assigns distinct query IDs when coalescing same-round calls that omit IDs', async () => {
+  it('assigns query IDs from coalesced array order even when calls supply IDs', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -1292,7 +1292,7 @@ describe('OpenAI OAuth provider adapter', () => {
               limit: 5,
             },
             {
-              queryId: 'line-c',
+              queryId: 'q3',
               category: '鐵板',
               material: '黑鐵',
               keyword: 'DNB70060',
@@ -1319,7 +1319,7 @@ describe('OpenAI OAuth provider adapter', () => {
           queryResults: [
             expect.objectContaining({ queryId: 'q1' }),
             expect.objectContaining({ queryId: 'q2' }),
-            expect.objectContaining({ queryId: 'line-c' }),
+            expect.objectContaining({ queryId: 'q3' }),
           ],
         }),
       }),
@@ -1329,7 +1329,7 @@ describe('OpenAI OAuth provider adapter', () => {
         ok: true,
         data: expect.objectContaining({
           coalescedWithProviderToolCallId: 'call_price_b',
-          queryIds: ['q1', 'q2', 'line-c'],
+          queryIds: ['q1', 'q2', 'q3'],
           queryCount: 3,
           queryGroupCount: 3,
           candidateCount: 3,

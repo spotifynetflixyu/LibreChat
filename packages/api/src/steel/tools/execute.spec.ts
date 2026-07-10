@@ -285,9 +285,9 @@ describe('Steel minimal tool execution', () => {
     expect(result.data).not.toHaveProperty('priceCandidates');
     expect(result.data.queryResults).toEqual([
       expect.objectContaining({
-        queryId: 'line-1',
+        queryId: 'q1',
         query: expect.objectContaining({
-          queryId: 'line-1',
+          queryId: 'q1',
           category: '鐵板',
           limit: 100,
         }),
@@ -364,7 +364,7 @@ describe('Steel minimal tool execution', () => {
       expect.objectContaining({
         cuttingCategory: '鐵板/平鐵',
         sourceCategories: ['鐵板'],
-        queryIds: ['line-1'],
+        queryIds: ['q1'],
       }),
       expect.objectContaining({
         cuttingCategory: '鐵管',
@@ -422,7 +422,7 @@ describe('Steel minimal tool execution', () => {
 
     expect(result.data.queryResults).toEqual([
       expect.objectContaining({
-        queryId: 'hardware',
+        queryId: 'q1',
         status: 'ok',
         candidates: [
           expect.objectContaining({
@@ -472,8 +472,8 @@ describe('Steel minimal tool execution', () => {
 
     expect(result.data.queryResults).toEqual([
       {
-        queryId: 'missing',
-        query: { queryId: 'missing', category: 'T型鋼', keyword: 'not-found' },
+        queryId: 'q1',
+        query: { queryId: 'q1', category: 'T型鋼', keyword: 'not-found' },
         status: 'no_match',
         candidates: [],
         categoryCandidates: [],
