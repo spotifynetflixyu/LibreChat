@@ -959,3 +959,6 @@
   inline hint in the link step explaining that the user must copy the
   verification code first, then switch the hint to tell the user to open the
   page and complete login verification after copy succeeds.
+- For Steel Supabase rollouts, treat local `.env` as dev and `.env.prod` as
+  production when both are present. Apply and verify dev first; never copy to
+  production until the user explicitly approves the verified dev result.

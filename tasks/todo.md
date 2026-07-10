@@ -199,12 +199,13 @@ ratio pricing, rename category rules, and add the `system_order.度` field.
 
 - [x] Add the complete v4.2 category/subcategory registry and pure parser.
 - [x] Add paired Supabase schema migrations, schema snapshot, and atomic importer.
-- [ ] Return grouped price results carrying each normalized query ID.
-- [ ] Clamp positive query limits above 100 instead of rejecting them.
-- [ ] Expose Kg/M ratio options and mark other ratio units skipped for future rules.
+- [x] Return grouped price results carrying each normalized query ID.
+- [x] Clamp positive query limits above 100 instead of rejecting them.
+- [x] Expose Kg/M ratio options and mark other ratio units skipped for future rules.
 - [ ] Rename `鋼材規則` to `類別規則` and document every category query shape.
 - [ ] Add `度` after `長度` for DA/DB/DC rolling-door system-order rows.
-- [ ] Replace live `steel.prices`, sync reviewed rules, and run focused/live verification.
+- [ ] Replace dev `steel.prices`, sync reviewed rules, and run focused/live verification.
+- [ ] Copy the verified dev pricing/rules rollout to prod only after user confirmation.
 
 Design: `docs/plans/2026-07-10-steel-pricing-v4-2-design.md`  
 Implementation: `docs/plans/2026-07-10-steel-pricing-v4-2-implementation.md`
