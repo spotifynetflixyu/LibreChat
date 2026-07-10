@@ -3,33 +3,8 @@ export type PriceTierCode = (typeof priceTierCodes)[number];
 
 export const defaultPriceTierCode: PriceTierCode = 'B';
 
-export const priceCategories = [
-  'C型鋼',
-  'H型鋼',
-  '鐵板/鋼板',
-  '圓鐵/圓鋼',
-  '角鐵/角鋼',
-  '孔',
-  '平鐵/扁鐵',
-  '槽鐵',
-  '工字鐵/I字鐵',
-  '方鋼/方鐵',
-  '圓管/鋼管',
-  '方管',
-  '扁方管',
-  '樓層板',
-  '浪板/收邊',
-  '網材',
-  '門窗/捲門/配件',
-  '五金/零件/耗材',
-  '折工',
-  '切工/切割',
-  '非鋼材/其他材料',
-  '鐵軌',
-  'T型鋼',
-  '加工',
-] as const;
-export type PriceCategory = (typeof priceCategories)[number];
+export { priceCategories } from './categories';
+export type { PriceCategory } from './categories';
 
 export const materialKinds = [
   'OT 黑鐵',
