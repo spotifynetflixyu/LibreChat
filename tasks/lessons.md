@@ -1,5 +1,8 @@
 # Lessons
 
+- When the user says they replaced an in-scope workbook during an active
+  implementation, stop any planned workbook edit and re-read the current file
+  before continuing. Do not apply a correction to a stale imported snapshot.
 - Treat authoritative structured price datasets as reviewed, searchable source
   rows regardless of `value_state`: keep `confirmed`, `ratio_only`, and
   `no_price` active/reviewed, and enforce quote eligibility separately.
