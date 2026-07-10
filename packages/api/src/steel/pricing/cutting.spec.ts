@@ -106,8 +106,8 @@ describe('buildSteelCuttingRows', () => {
     expect(() => buildSteelCuttingRows([sourceRow, sourceRow])).toThrow(
       'Duplicate cutting source row: 全部整理資料:63',
     );
-    expect(() =>
-      buildSteelCuttingRows([{ ...sourceRow, sourceBlock: '' }]),
-    ).toThrow('Missing cutting category at 全部整理資料:63');
+    expect(() => buildSteelCuttingRows([{ ...sourceRow, sourceBlock: '' }])).toThrow(
+      'Missing cutting category at 全部整理資料:63',
+    );
   });
 });

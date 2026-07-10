@@ -1,3 +1,52 @@
+# Active: Steel Price And Cutting Catalog - 2026-07-11
+
+Goal: update grouped Steel price lookup, build and import the clean cutting
+catalog, revise category pricing rules, and correct `system_order.肚` on dev.
+
+- [x] Record and review the approved design and implementation plan.
+- [x] Generate and visually verify `docs/reference/切工價錢-clean.xlsx`.
+- [x] Add `steel.cutting_prices`, remove `steel.prices.review_state`, and add an
+      atomic clean-workbook importer.
+- [x] Update grouped price lookup filters and append one consolidated cutting
+      catalog after normal price queries finish.
+- [x] Update category rules for 鐵板, C型鋼/CCG02, ratio use, cutting lookup,
+      and normal limit behavior.
+- [x] Rename the fixed output field from `度` to `肚` and gate it only by
+      formula code DA/DB/DC.
+- [x] Apply and verify schema/data/rules on dev; do not access prod.
+- [x] Run focused tests, build, live smokes, and requirement-by-requirement
+      completion audit.
+
+Design:
+`docs/superpowers/specs/2026-07-11-steel-price-cutting-catalog-design.md`
+
+Implementation:
+`docs/superpowers/plans/2026-07-11-steel-price-cutting-catalog.md`
+
+Review:
+
+- Dev `steel.prices` was atomically replaced from `products_db_v4.2.xlsx`:
+  6,761 rows and 6,761 distinct ERP codes (`confirmed=4,880`,
+  `ratio_only=230`, `no_price=1,651`). `review_state` is absent from the live
+  `steel.prices` columns.
+- Dev `steel.cutting_prices` contains 119 clean-workbook rows: 100 price rows
+  and 19 supplements across `H型鋼`, `工字鐵/H型鋼`, `鐵管`, `角鐵`, `槽鐵`,
+  and `鐵板/平鐵`. Exact 25.4 conversion readback includes `1/2" = 12.7mm`
+  and `5/8" = 15.875mm`.
+- A live 11-query smoke used two SQL calls total: all grouped normal queries
+  completed first, then one unlimited cutting lookup returned all 119 rows.
+  Query provenance, `limit=101 -> 100`, numeric thickness equality, 鋅
+  contains matching, and hidden candidate `sourceRefs` were verified.
+- Dev has nine active reviewed rules. `system_order` uses `肚`, formulas
+  DA/DB/DC read back as `(長度/4) * 肚`, `(長度/3) * 肚`, and
+  `長度 * 寬度 * 肚`; the old 捲門 category gate is absent.
+- Focused Jest: 15 suites / 152 tests passed. Package build passed. Focused
+  ESLint completed with 0 errors (three existing unused-schema warnings).
+  Final workbook inspection found zero formula errors, and both sheets were
+  rendered and visually checked.
+- Prod Supabase was not accessed or changed; rollout remains gated on explicit
+  user approval after dev verification.
+
 # Active: OpenAI OAuth frontend setting parameter audit - 2026-07-09
 
 Goal: verify whether LibreChat chat settings for Image Detail and Reasoning

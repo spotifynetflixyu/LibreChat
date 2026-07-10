@@ -49,7 +49,10 @@ interface InchRange {
 }
 
 function normalizeText(value: string): string {
-  return value.normalize('NFKC').replace(/[＊*×X]/gu, 'x').trim();
+  return value
+    .normalize('NFKC')
+    .replace(/[＊*×X]/gu, 'x')
+    .trim();
 }
 
 function parseNullablePrice(value: SteelCuttingSourceValue): number | null {

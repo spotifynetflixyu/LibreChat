@@ -121,9 +121,9 @@ function parseRecordType(value: string): SteelCuttingRecordType {
   throw new Error(`Unexpected Steel cutting record_type: ${value}`);
 }
 
-function parseConditions(
-  value: SteelJsonValue | string,
-): { [key: string]: SteelJsonValue | undefined } {
+function parseConditions(value: SteelJsonValue | string): {
+  [key: string]: SteelJsonValue | undefined;
+} {
   const parsed: SteelJsonValue = typeof value === 'string' ? JSON.parse(value) : value;
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('Steel cutting conditions must be an object');
@@ -137,6 +137,12 @@ function toCuttingPriceRecord(row: SteelCuttingPriceRow): SteelCuttingPriceRecor
   const C = parseNullableNumber(row.unit_price_c);
   const F = parseNullableNumber(row.unit_price_f);
   const sharedAcf = A ?? C ?? F;
+  let tierBSource: SteelCuttingPriceRecord['tierBSource'] = null;
+  if (explicitB !== null) {
+    tierBSource = 'B';
+  } else if (sharedAcf !== null) {
+    tierBSource = 'A/C/F';
+  }
 
   return {
     id: parseRequiredNumber(row.id),
@@ -157,7 +163,7 @@ function toCuttingPriceRecord(row: SteelCuttingPriceRow): SteelCuttingPriceRecor
       C,
       F,
     },
-    tierBSource: explicitB !== null ? 'B' : sharedAcf !== null ? 'A/C/F' : null,
+    tierBSource,
     conditions: parseConditions(row.conditions),
     calculationRule: parseNullableString(row.calculation_rule),
     notes: parseNullableString(row.notes),

@@ -121,38 +121,38 @@ function makeRow(overrides: Partial<CuttingWorkbookRow> = {}): CuttingWorkbookRo
   };
 }
 
-function writeWorkbook(options: {
-  prices?: readonly CuttingWorkbookRow[];
-  supplements?: readonly CuttingWorkbookRow[];
-  priceHeaders?: readonly string[];
-  includeSupplements?: boolean;
-} = {}): string {
+function writeWorkbook(
+  options: {
+    prices?: readonly CuttingWorkbookRow[];
+    supplements?: readonly CuttingWorkbookRow[];
+    priceHeaders?: readonly string[];
+    includeSupplements?: boolean;
+  } = {},
+): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-cutting-prices-'));
   const workbookPath = path.join(directory, 'cutting.xlsx');
   const workbook = XLSX.utils.book_new();
   const prices = options.prices ?? [makeRow()];
-  const supplements =
-    options.supplements ??
-    [
-      makeRow({
-        cutting_category: '鐵管',
-        record_type: 'supplement',
-        item_name: '方管厚度',
-        cut_type: '補充',
-        spec_text: '方管厚度',
-        normalized_spec_text: '方管厚度',
-        inch_min: '',
-        inch_max: '',
-        mm_min: '',
-        mm_max: '',
-        unit: '',
-        unit_price_a: '',
-        unit_price_c: '',
-        unit_price_f: '',
-        notes: '方管厚度 1.2 以下不切',
-        source_row: 112,
-      }),
-    ];
+  const supplements = options.supplements ?? [
+    makeRow({
+      cutting_category: '鐵管',
+      record_type: 'supplement',
+      item_name: '方管厚度',
+      cut_type: '補充',
+      spec_text: '方管厚度',
+      normalized_spec_text: '方管厚度',
+      inch_min: '',
+      inch_max: '',
+      mm_min: '',
+      mm_max: '',
+      unit: '',
+      unit_price_a: '',
+      unit_price_c: '',
+      unit_price_f: '',
+      notes: '方管厚度 1.2 以下不切',
+      source_row: 112,
+    }),
+  ];
 
   const toSheet = (sheetHeaders: readonly string[], rows: readonly CuttingWorkbookRow[]) =>
     XLSX.utils.aoa_to_sheet([
@@ -166,11 +166,7 @@ function writeWorkbook(options: {
     'cutting_prices',
   );
   if (options.includeSupplements !== false) {
-    XLSX.utils.book_append_sheet(
-      workbook,
-      toSheet(headers, supplements),
-      'cutting_supplements',
-    );
+    XLSX.utils.book_append_sheet(workbook, toSheet(headers, supplements), 'cutting_supplements');
   }
   XLSX.writeFile(workbook, workbookPath);
   tempDirectories.push(directory);

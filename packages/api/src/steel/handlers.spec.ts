@@ -1223,7 +1223,8 @@ describe('createSteelHandlers', () => {
       );
       expect(secondOptions?.steelRuntimeContext?.attachments.priorActiveFileEvidence).toEqual([
         expect.objectContaining({
-          kind: 'assistant_ocr_markdown',
+          kind: 'ocr_official_markdown',
+          ocrSource: 'ai_official_markdown',
           markdown: expect.stringContaining('PL6*80*1000'),
         }),
       ]);

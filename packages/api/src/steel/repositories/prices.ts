@@ -6,11 +6,7 @@ import {
 } from './types';
 import { normalizeSteelSpecKey } from '../normalization/spec';
 
-import type {
-  SteelRepositoryClient,
-  SteelSourceBackedRecord,
-  SteelSourceRef,
-} from './types';
+import type { SteelRepositoryClient, SteelSourceBackedRecord, SteelSourceRef } from './types';
 import type { PriceLookupMaterialKind, PriceCategory } from '../pricing/enums';
 
 export type SteelPriceKind = 'product' | 'cutting' | 'hole';

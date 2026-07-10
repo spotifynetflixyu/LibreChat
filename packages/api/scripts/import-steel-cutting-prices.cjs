@@ -222,7 +222,10 @@ function parseWorkbookRow(raw, cleanSheet, cleanRow) {
   if (prices.some((price) => price !== null && price < 0)) {
     throw new Error(`Cutting price must be nonnegative at ${location}`);
   }
-  if (recordType === 'supplement' && (row.unit !== null || prices.some((price) => price !== null))) {
+  if (
+    recordType === 'supplement' &&
+    (row.unit !== null || prices.some((price) => price !== null))
+  ) {
     throw new Error(`Cutting supplement cannot contain unit prices at ${location}`);
   }
 
@@ -253,10 +256,7 @@ function readSheet(workbook, sheetName) {
 
 function loadWorkbookRows(workbookPath) {
   const workbook = XLSX.readFile(workbookPath, { raw: false, cellDates: false });
-  const rows = [
-    ...readSheet(workbook, PRICE_SHEET),
-    ...readSheet(workbook, SUPPLEMENT_SHEET),
-  ];
+  const rows = [...readSheet(workbook, PRICE_SHEET), ...readSheet(workbook, SUPPLEMENT_SHEET)];
   const sourceIdentities = new Set();
   for (const row of rows) {
     const identity = `${row.sourceSheet}:${row.sourceRow}`;
@@ -348,9 +348,7 @@ async function replaceSteelCuttingPrices(client, rows) {
 
   await client.query('BEGIN');
   try {
-    await client.query(
-      "SELECT pg_advisory_xact_lock(hashtext('steel.cutting_prices:replace'))",
-    );
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.cutting_prices:replace'))");
     await client.query('LOCK TABLE steel.cutting_prices IN ACCESS EXCLUSIVE MODE');
     await client.query('TRUNCATE TABLE steel.cutting_prices RESTART IDENTITY');
     const insert = buildInsert(rows);

@@ -71,9 +71,9 @@ describe('Steel price candidate tool schema', () => {
   });
 
   it('rejects the removed unit query filter', () => {
-    expect(() =>
-      schema.parse({ queries: [{ category: '圓管', unit: 'M' }] }),
-    ).toThrow('Unrecognized key');
+    expect(() => schema.parse({ queries: [{ category: '圓管', unit: 'M' }] })).toThrow(
+      'Unrecognized key',
+    );
   });
 
   it('validates subcategories against their category and rejects legacy names', () => {

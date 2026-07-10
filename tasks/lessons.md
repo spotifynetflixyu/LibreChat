@@ -1,5 +1,15 @@
 # Lessons
 
+- For Steel cutting-price enrichment, finish every normal grouped price query
+  first, derive unique cutting terms from the selected product categories, and
+  run one final unlimited contains query. Return one top-level cutting catalog
+  with query/category provenance instead of duplicating cutting rows per item.
+- Cutting category matching is always contains-based. Preserve source labels
+  such as `鐵板/平鐵`; only map `圓管`, `方管`, and `扁方管` to the lookup term
+  `鐵管`.
+- The Steel ERP output field is `肚`, not the homophone `度`. Gate it only by
+  formula code DA/DB/DC, never by product category, and leave it blank for
+  manual review until a real derivation rule exists.
 - When the user says they replaced an in-scope workbook during an active
   implementation, stop any planned workbook edit and re-read the current file
   before continuing. Do not apply a correction to a stale imported snapshot.
