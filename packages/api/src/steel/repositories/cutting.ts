@@ -210,6 +210,12 @@ export async function searchSteelCuttingPriceGroups(
   ]);
   const provenanceByTerm = new Map(provenance.map((item) => [item.lookupTerm, item]));
   const queryRank = new Map(queries.map((query, index) => [query.queryId, index]));
+  const categoryRank = new Map<PriceCategory, number>();
+  queries.forEach((query, index) => {
+    if (query.mode !== 'category_discovery' && !categoryRank.has(query.category)) {
+      categoryRank.set(query.category, index);
+    }
+  });
   const groupByCategory = new Map<
     string,
     SteelCuttingPriceGroup & { recordIds: Set<number>; queryRank: number }
@@ -246,5 +252,13 @@ export async function searchSteelCuttingPriceGroups(
 
   return [...groupByCategory.values()]
     .sort((left, right) => left.queryRank - right.queryRank)
-    .map(({ recordIds: _recordIds, queryRank: _queryRank, ...group }) => group);
+    .map(({ recordIds: _recordIds, queryRank: _queryRank, ...group }) => ({
+      ...group,
+      sourceCategories: group.sourceCategories.sort(
+        (left, right) => (categoryRank.get(left) ?? 0) - (categoryRank.get(right) ?? 0),
+      ),
+      queryIds: group.queryIds.sort(
+        (left, right) => (queryRank.get(left) ?? 0) - (queryRank.get(right) ?? 0),
+      ),
+    }));
 }

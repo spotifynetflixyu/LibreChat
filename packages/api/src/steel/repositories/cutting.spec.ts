@@ -70,8 +70,8 @@ describe('Steel cutting price repository', () => {
       { queryId: 'pipe-1', category: '圓管' },
       { queryId: 'pipe-2', category: '方管' },
       { queryId: 'pipe-3', category: '扁方管' },
-      { queryId: 'plate', category: '鐵板' },
       { queryId: 'flat', category: '平鐵' },
+      { queryId: 'plate', category: '鐵板' },
       { queryId: 'discover', mode: 'category_discovery', keyword: 'H型鋼' },
       { queryId: 'unsupported', category: '五金/配件' },
     ]);
@@ -86,8 +86,8 @@ describe('Steel cutting price repository', () => {
     expect(sql).not.toContain('normalized_spec_text ILIKE');
     expect(JSON.parse(values[0] ?? '[]')).toEqual([
       { lookup_term: '鐵管' },
-      { lookup_term: '鐵板' },
       { lookup_term: '平鐵' },
+      { lookup_term: '鐵板' },
     ]);
 
     expect(groups).toEqual([
@@ -105,8 +105,8 @@ describe('Steel cutting price repository', () => {
       }),
       expect.objectContaining({
         cuttingCategory: '鐵板/平鐵',
-        sourceCategories: ['鐵板', '平鐵'],
-        queryIds: ['plate', 'flat'],
+        sourceCategories: ['平鐵', '鐵板'],
+        queryIds: ['flat', 'plate'],
         prices: [expect.objectContaining({ id: 2 })],
       }),
     ]);
