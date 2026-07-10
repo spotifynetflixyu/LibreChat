@@ -30,7 +30,6 @@
 ### Task 1: Generate the clean cutting workbook
 
 **Files:**
-- Create: `packages/api/scripts/build-steel-cutting-workbook.mjs`
 - Create: `docs/reference/切工價錢-clean.xlsx`
 - Create: `packages/api/src/steel/pricing/cutting.ts`
 - Test: `packages/api/src/steel/pricing/cutting.spec.ts`
@@ -42,7 +41,7 @@
 - [ ] Write parser tests for NFKC/spec `*`→`x`, fractional inch values/ranges, `inch * 25.4` min/max values without rounding, price/supplement classification, tier-B null preservation, and duplicate source-row rejection.
 - [ ] Run `cd packages/api && rtk npx jest src/steel/pricing/cutting.spec.ts --runInBand --watch=false --coverage=false`; verify RED because the parser does not exist.
 - [ ] Implement the pure row types and parser in `cutting.ts`.
-- [ ] Build one artifact-tool script that imports the raw XLSM, transforms the reviewed source ranges, formats both clean sheets, freezes headers, applies numeric formats, and exports the clean XLSX.
+- [ ] Build one temporary artifact-tool script in the conversation work directory that imports the raw XLSM, transforms the reviewed source ranges, formats both clean sheets, freezes headers, applies numeric formats, and exports the clean XLSX. The reviewed workbook, not the one-time builder, is the durable repository artifact.
 - [ ] Run the builder and parser tests; verify GREEN.
 - [ ] Inspect both clean sheets, scan formula errors, render both sheets, and visually verify legibility and source/target row reconciliation.
 
