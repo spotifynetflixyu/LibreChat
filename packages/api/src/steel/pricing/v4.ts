@@ -1,7 +1,6 @@
 import { isPriceCategory, isPriceSubcategory } from './categories';
 
 import type { PriceCategory, PriceSubcategory } from './categories';
-import type { SteelReviewState } from '../repositories/types';
 
 export type SteelPriceV4Cell = string | number | null | undefined;
 export type SteelPriceV4ValueState = 'confirmed' | 'ratio_only' | 'no_price';
@@ -95,7 +94,6 @@ export interface SteelPriceV4Row {
   sourceRowKey: string;
   currency: 'TWD';
   active: boolean;
-  reviewState: SteelReviewState;
 }
 
 const sourceDataset = 'product_price_v4_2' as const;
@@ -280,7 +278,6 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     sourceRowKey: erpItemCode,
     currency: 'TWD',
     active: true,
-    reviewState: 'reviewed',
   };
 }
 

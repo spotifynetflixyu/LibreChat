@@ -203,7 +203,6 @@ describe('Steel price v4.2 importer', () => {
       importRows: 3,
       duplicateErpItemCodes: 1,
       activeRows: 3,
-      reviewedRows: 3,
       byValueState: {
         confirmed: 1,
         ratio_only: 1,
@@ -243,7 +242,6 @@ describe('Steel price v4.2 importer', () => {
                 {
                   total: failurePhase === 'readback' ? 0 : 1,
                   active: 1,
-                  reviewed: 1,
                   confirmed: 1,
                   ratio_only: 0,
                   no_price: 0,
@@ -263,4 +261,28 @@ describe('Steel price v4.2 importer', () => {
       expect(statements).not.toContain('COMMIT');
     },
   );
+
+  it('replaces prices without a review_state insert or readback dependency', async () => {
+    const statements: string[] = [];
+    const client: TestClient = {
+      query: jest.fn(async (sql) => {
+        statements.push(sql);
+        if (sql.includes('COUNT(*)::int AS total')) {
+          return {
+            rows: [{ total: 1, active: 1, confirmed: 1, ratio_only: 0, no_price: 0 }],
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+
+    await importer.replaceSteelPrices(client, [makeParsedRow()]);
+
+    expect(statements.find((sql) => sql.startsWith('INSERT INTO steel.prices'))).not.toContain(
+      'review_state',
+    );
+    expect(statements.find((sql) => sql.includes('COUNT(*)::int AS total'))).not.toContain(
+      'review_state',
+    );
+  });
 });

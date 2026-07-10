@@ -99,8 +99,8 @@ describe('Steel price v4.2 parser', () => {
       sourceRowKey: '00123',
       currency: 'TWD',
       active: true,
-      reviewState: 'reviewed',
     });
+    expect(row).not.toHaveProperty('reviewState');
   });
 
   it('keeps nullable product, normalized spec, and unit fields as null', () => {
@@ -186,7 +186,6 @@ describe('Steel price v4.2 parser', () => {
       unitPriceF: null,
       priceRatioB: 1.25,
       active: true,
-      reviewState: 'reviewed',
     });
     expect(() =>
       buildSteelPriceV4Rows([makeWorkbookRow({ value_state: 'ratio_only', unit_price_a: '100' })]),
@@ -209,7 +208,6 @@ describe('Steel price v4.2 parser', () => {
     expect(row).toMatchObject({
       valueState: 'no_price',
       active: true,
-      reviewState: 'reviewed',
     });
     expect(() =>
       buildSteelPriceV4Rows([makeWorkbookRow({ value_state: 'no_price', price_ratio_a: '1.1' })]),

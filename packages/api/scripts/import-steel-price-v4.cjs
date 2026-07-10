@@ -64,7 +64,6 @@ const EXPECTED_RECONCILIATION = Object.freeze({
   importRows: 6761,
   duplicateErpItemCodes: 0,
   activeRows: 6761,
-  reviewedRows: 6761,
   byValueState: Object.freeze({
     confirmed: 4880,
     ratio_only: 230,
@@ -117,7 +116,6 @@ const INSERT_COLUMNS = Object.freeze([
   'cost_basis',
   'currency',
   'active',
-  'review_state',
   'source_refs',
 ]);
 
@@ -203,7 +201,6 @@ function buildReconciliationCounts(rows) {
   const counts = {
     duplicateErpItemCodes: 0,
     activeRows: 0,
-    reviewedRows: 0,
     byValueState: {
       confirmed: 0,
       ratio_only: 0,
@@ -219,7 +216,6 @@ function buildReconciliationCounts(rows) {
     }
 
     counts.activeRows += row.active ? 1 : 0;
-    counts.reviewedRows += row.reviewState === 'reviewed' ? 1 : 0;
     counts.byValueState[row.valueState] += 1;
   }
 
@@ -244,7 +240,6 @@ function validateExpectedReconciliation(summary) {
     summary.importRows === EXPECTED_RECONCILIATION.importRows &&
     summary.duplicateErpItemCodes === EXPECTED_RECONCILIATION.duplicateErpItemCodes &&
     summary.activeRows === EXPECTED_RECONCILIATION.activeRows &&
-    summary.reviewedRows === EXPECTED_RECONCILIATION.reviewedRows &&
     summary.byValueState.confirmed === EXPECTED_RECONCILIATION.byValueState.confirmed &&
     summary.byValueState.ratio_only === EXPECTED_RECONCILIATION.byValueState.ratio_only &&
     summary.byValueState.no_price === EXPECTED_RECONCILIATION.byValueState.no_price;
@@ -303,7 +298,6 @@ function toDbValues(row) {
     row.costBasis,
     row.currency,
     row.active,
-    row.reviewState,
     JSON.stringify([]),
   ];
 }
@@ -340,7 +334,6 @@ function buildReadbackExpectation(rows) {
   return {
     total: rows.length,
     active: counts.activeRows,
-    reviewed: counts.reviewedRows,
     ...counts.byValueState,
   };
 }
@@ -363,7 +356,6 @@ async function replaceSteelPrices(client, rows) {
 SELECT
   COUNT(*)::int AS total,
   COUNT(*) FILTER (WHERE active)::int AS active,
-  COUNT(*) FILTER (WHERE review_state = 'reviewed')::int AS reviewed,
   COUNT(*) FILTER (WHERE value_state = 'confirmed')::int AS confirmed,
   COUNT(*) FILTER (WHERE value_state = 'ratio_only')::int AS ratio_only,
   COUNT(*) FILTER (WHERE value_state = 'no_price')::int AS no_price
