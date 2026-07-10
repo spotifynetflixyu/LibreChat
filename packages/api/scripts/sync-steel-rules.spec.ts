@@ -152,7 +152,6 @@ describe('Steel category rule sources', () => {
 
   it('exposes the canonical grouped-query and pricing safety contract', () => {
     expect(parseLookupContract(readUtf8(guidePath))).toEqual({
-      schema_version: 'v4.2',
       tool: 'search_price_candidates',
       grouping: 'one_call_multiple_queries',
       request_identity: 'queryId',

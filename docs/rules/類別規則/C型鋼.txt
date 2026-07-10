@@ -3,11 +3,10 @@
 C、C鋼、輕型鋼先判定為 C型鋼。未標材質/表面時，預設以「錏輕型鋼」暫報；黑鐵、白鐵只有文字或價格候選明確指向時才採用或列人工確認。
 
 查價使用 `category: "C型鋼"`，依已知資料加入 `erpItemCode`、`material`、`thicknessMm` 或 `keyword`；`subcategory: "加工/其他"` 只在產品列本身屬該次類別時使用。若明確另計特殊加工，產品與加工要放在同一次 grouped query：
-`{"queries":[{"queryId":"line-10-material","category":"C型鋼","material":"錏","keyword":"100x50x20x2.3"},{"queryId":"line-10-process","category":"加工/其他","subcategory":"C型鋼","keyword":"特殊切角"}]}`
+`{"queries":[{"queryId":"line-10-material","category":"C型鋼","material":"錏","keyword":"100x50"},{"queryId":"line-10-process","category":"加工/其他","subcategory":"C型鋼","keyword":"特殊切角"}]}`
 依 `queryResults[].queryId` 分別採用材料與加工候選，不可跨組混用。
 
 C型鋼屬鋼捲抽料/成型下料，不套一般 6M 長條料規則：不配料、不算素材支數、不算餘料、不預設切工、孔費或加工費。
-
 材料費依成品長度與支數計算，並依 price row 單位計價，不可自行改單位。
 
 Kg 計價時：
@@ -17,7 +16,7 @@ Kg 計價時：
 M 計價時：
 小計 = 長度M × 支數 × M單價
 
-2C 表示兩支組合，重量與支數乘 2。「一支多少」代表支數 = 1；若為 Kg 價仍須先換算重量。凡訂單出現 2C，同一次 `search_price_candidates` 必須另加一筆 `erpItemCode: "CCG02"` 的精確 query，取得「型鋼結筒加工費」。結筒加工費 = 2C 組合後總重量 Kg × CCG02 對應客戶 tier 單價，並與材料費分列。
+2C 表示兩支組合，重量乘 2。若為 Kg 價仍須先換算重量。凡訂單出現 2C，同一次 `search_price_candidates` 必須另加一筆 `erpItemCode: "CCG02"` 的精確 query，取得「型鋼結筒加工費」。結筒加工費 = 2C 組合後總重量 Kg × CCG02 對應客戶 tier 單價，並與材料費分列。
 
 孔數可記錄備註，但不另計孔費。只有明確標示「孔另計、切工另計、修頭尾、特殊切角」，或 price/category rule 有 C型鋼加工單價時，才另列加工費。
 

@@ -1,7 +1,6 @@
-【類別查價方式】
+【search_price_candidates 類別查價方式】
 
 [category_lookup_contract]
-schema_version=v4.2
 tool=search_price_candidates
 grouping=one_call_multiple_queries
 request_identity=queryId
