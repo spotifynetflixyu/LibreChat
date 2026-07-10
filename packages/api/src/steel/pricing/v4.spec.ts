@@ -88,7 +88,7 @@ describe('Steel price v4.2 parser', () => {
       nominalInch: null,
       webMm: 5.5,
       flangeMm: 8,
-      lipMm: 0,
+      lipMm: null,
       sheetWidthMm: null,
       sheetLengthMm: null,
       specSortKey: '0200|0100|0055|0080',
@@ -120,6 +120,50 @@ describe('Steel price v4.2 parser', () => {
       unit: null,
       specKey: '00000',
     });
+  });
+
+  it('normalizes optional physical zero placeholders to null', () => {
+    const [row] = buildSteelPriceV4Rows([
+      makeWorkbookRow({
+        unit_weight_value: '0',
+        density: 0,
+        source_thickness: '0.0',
+        width_mm: '0',
+        height_mm: 0,
+        length_mm: '0.0',
+        outer_diameter_mm: '0',
+        web_mm: 0,
+        flange_mm: '0.0',
+        lip_mm: '0',
+        sheet_width_mm: 0,
+        sheet_length_mm: '0.0',
+      }),
+    ]);
+
+    expect(row).toMatchObject({
+      unitWeightValue: null,
+      density: null,
+      sourceThickness: null,
+      widthMm: null,
+      heightMm: null,
+      lengthMm: null,
+      outerDiameterMm: null,
+      webMm: null,
+      flangeMm: null,
+      lipMm: null,
+      sheetWidthMm: null,
+      sheetLengthMm: null,
+    });
+  });
+
+  it('derives hole and cutting price kinds from processing categories', () => {
+    const [hole, cutting] = buildSteelPriceV4Rows([
+      makeWorkbookRow({ erp_item_code: 'HOLE01', category: '加工/孔', subcategory: '' }),
+      makeWorkbookRow({ erp_item_code: 'CUT01', category: '加工/折工', subcategory: '' }),
+    ]);
+
+    expect(hole?.priceKind).toBe('hole');
+    expect(cutting?.priceKind).toBe('cutting');
   });
 
   it('accepts ratio_only rows only when prices are absent and a ratio exists', () => {

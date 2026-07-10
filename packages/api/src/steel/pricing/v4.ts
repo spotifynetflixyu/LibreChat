@@ -134,10 +134,21 @@ function parseNumber(value: SteelPriceV4Cell, field: string): number | null {
   return parsed;
 }
 
-function parsePriceNumber(value: SteelPriceV4Cell, field: string): number | null {
+function parseZeroAsNullNumber(value: SteelPriceV4Cell, field: string): number | null {
   const parsed = parseNumber(value, field);
 
   return parsed === 0 ? null : parsed;
+}
+
+function parseZeroAsNullText(value: SteelPriceV4Cell): string | null {
+  const parsed = parseText(value);
+  if (parsed === null) {
+    return null;
+  }
+
+  const numericValue = Number(parsed.replace(/,/gu, ''));
+
+  return Number.isFinite(numericValue) && numericValue === 0 ? null : parsed;
 }
 
 function parseCategory(value: SteelPriceV4Cell): PriceCategory {
@@ -203,19 +214,19 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   const category = parseCategory(row.category);
   const subcategory = parseSubcategory(category, row.subcategory);
   const valueState = parseValueState(row.value_state);
-  const unitPriceBase = parsePriceNumber(row.unit_price_base, 'unit_price_base');
-  const unitPriceA = parsePriceNumber(row.unit_price_a, 'unit_price_a');
-  const unitPriceB = parsePriceNumber(row.unit_price_b, 'unit_price_b');
-  const unitPriceC = parsePriceNumber(row.unit_price_c, 'unit_price_c');
-  const unitPriceD = parsePriceNumber(row.unit_price_d, 'unit_price_d');
-  const unitPriceE = parsePriceNumber(row.unit_price_e, 'unit_price_e');
-  const unitPriceF = parsePriceNumber(row.unit_price_f, 'unit_price_f');
-  const priceRatioA = parsePriceNumber(row.price_ratio_a, 'price_ratio_a');
-  const priceRatioB = parsePriceNumber(row.price_ratio_b, 'price_ratio_b');
-  const priceRatioC = parsePriceNumber(row.price_ratio_c, 'price_ratio_c');
-  const priceRatioD = parsePriceNumber(row.price_ratio_d, 'price_ratio_d');
-  const priceRatioE = parsePriceNumber(row.price_ratio_e, 'price_ratio_e');
-  const priceRatioF = parsePriceNumber(row.price_ratio_f, 'price_ratio_f');
+  const unitPriceBase = parseZeroAsNullNumber(row.unit_price_base, 'unit_price_base');
+  const unitPriceA = parseZeroAsNullNumber(row.unit_price_a, 'unit_price_a');
+  const unitPriceB = parseZeroAsNullNumber(row.unit_price_b, 'unit_price_b');
+  const unitPriceC = parseZeroAsNullNumber(row.unit_price_c, 'unit_price_c');
+  const unitPriceD = parseZeroAsNullNumber(row.unit_price_d, 'unit_price_d');
+  const unitPriceE = parseZeroAsNullNumber(row.unit_price_e, 'unit_price_e');
+  const unitPriceF = parseZeroAsNullNumber(row.unit_price_f, 'unit_price_f');
+  const priceRatioA = parseZeroAsNullNumber(row.price_ratio_a, 'price_ratio_a');
+  const priceRatioB = parseZeroAsNullNumber(row.price_ratio_b, 'price_ratio_b');
+  const priceRatioC = parseZeroAsNullNumber(row.price_ratio_c, 'price_ratio_c');
+  const priceRatioD = parseZeroAsNullNumber(row.price_ratio_d, 'price_ratio_d');
+  const priceRatioE = parseZeroAsNullNumber(row.price_ratio_e, 'price_ratio_e');
+  const priceRatioF = parseZeroAsNullNumber(row.price_ratio_f, 'price_ratio_f');
 
   validateValueState(
     valueState,
@@ -247,20 +258,20 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     priceRatioD,
     priceRatioE,
     priceRatioF,
-    unitWeightValue: parseNumber(row.unit_weight_value, 'unit_weight_value'),
+    unitWeightValue: parseZeroAsNullNumber(row.unit_weight_value, 'unit_weight_value'),
     unitWeightBasis: parseText(row.unit_weight_basis),
-    density: parseNumber(row.density, 'density'),
-    sourceThickness: parseText(row.source_thickness),
-    widthMm: parseNumber(row.width_mm, 'width_mm'),
-    heightMm: parseNumber(row.height_mm, 'height_mm'),
-    lengthMm: parseNumber(row.length_mm, 'length_mm'),
-    outerDiameterMm: parseNumber(row.outer_diameter_mm, 'outer_diameter_mm'),
+    density: parseZeroAsNullNumber(row.density, 'density'),
+    sourceThickness: parseZeroAsNullText(row.source_thickness),
+    widthMm: parseZeroAsNullNumber(row.width_mm, 'width_mm'),
+    heightMm: parseZeroAsNullNumber(row.height_mm, 'height_mm'),
+    lengthMm: parseZeroAsNullNumber(row.length_mm, 'length_mm'),
+    outerDiameterMm: parseZeroAsNullNumber(row.outer_diameter_mm, 'outer_diameter_mm'),
     nominalInch: parseText(row.nominal_inch),
-    webMm: parseNumber(row.web_mm, 'web_mm'),
-    flangeMm: parseNumber(row.flange_mm, 'flange_mm'),
-    lipMm: parseNumber(row.lip_mm, 'lip_mm'),
-    sheetWidthMm: parseNumber(row.sheet_width_mm, 'sheet_width_mm'),
-    sheetLengthMm: parseNumber(row.sheet_length_mm, 'sheet_length_mm'),
+    webMm: parseZeroAsNullNumber(row.web_mm, 'web_mm'),
+    flangeMm: parseZeroAsNullNumber(row.flange_mm, 'flange_mm'),
+    lipMm: parseZeroAsNullNumber(row.lip_mm, 'lip_mm'),
+    sheetWidthMm: parseZeroAsNullNumber(row.sheet_width_mm, 'sheet_width_mm'),
+    sheetLengthMm: parseZeroAsNullNumber(row.sheet_length_mm, 'sheet_length_mm'),
     specSortKey: parseText(row.spec_sort_key),
     costBasis: parseText(row.cost_basis),
     specKey: normalizedSpecText ? `${erpItemCode} ${normalizedSpecText}` : erpItemCode,
