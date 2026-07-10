@@ -40,6 +40,7 @@ const registry = Object.freeze({
     '加工',
     '圓管',
     '扁',
+    '扁鐵',
     '捲門/伸縮門',
     '網',
     '角鐵',
@@ -97,6 +98,7 @@ const registry = Object.freeze({
     '門',
   ] as const),
   '加工/切工': Object.freeze([
+    '',
     'H型鋼',
     'I型鋼/工字鐵',
     '圓管',
@@ -105,6 +107,7 @@ const registry = Object.freeze({
     '槽鐵',
     '角鐵',
     '鐵板',
+    '板/浪板',
   ] as const),
   C型鋼: Object.freeze(['', '加工/其他'] as const),
   '板/浪板': Object.freeze(['', '五金/配件'] as const),
@@ -119,7 +122,7 @@ const registry = Object.freeze({
   'I型鋼/工字鐵': Object.freeze([''] as const),
   方管: Object.freeze(['', '連料'] as const),
   扁方管: Object.freeze([''] as const),
-  '加工/開槽': Object.freeze(['H型鋼'] as const),
+  '加工/開槽': Object.freeze(['', 'H型鋼'] as const),
 }) satisfies Readonly<Record<PriceCategory, readonly string[]>>;
 
 export type PriceSubcategory = (typeof registry)[PriceCategory][number];

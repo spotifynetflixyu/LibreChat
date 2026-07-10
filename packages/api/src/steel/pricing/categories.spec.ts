@@ -45,6 +45,7 @@ describe('Steel price v4.2 category registry', () => {
       '加工',
       '圓管',
       '扁',
+      '扁鐵',
       '捲門/伸縮門',
       '網',
       '角鐵',
@@ -106,6 +107,7 @@ describe('Steel price v4.2 category registry', () => {
       '平鐵',
       '方管',
       '槽鐵',
+      '板/浪板',
       '加工/其他',
       '五金/配件',
       '不等邊',
@@ -121,6 +123,42 @@ describe('Steel price v4.2 category registry', () => {
   it('accepts T型鋼 and an explicitly registered empty subcategory', () => {
     expect(priceCategories).toContain('T型鋼');
     expect(isPriceSubcategory('T型鋼', '')).toBe(true);
+  });
+
+  it.each(priceCategories)('registers an empty subcategory for %s', (category) => {
+    expect(isPriceSubcategory(category, '')).toBe(true);
+  });
+
+  it('preserves the exact processing subcategory registries', () => {
+    expect(priceSubcategoriesByCategory['加工/其他']).toEqual([
+      '',
+      'C型鋼',
+      'H型鋼',
+      'L',
+      'U',
+      '丸條',
+      '加工',
+      '圓管',
+      '扁',
+      '扁鐵',
+      '捲門/伸縮門',
+      '網',
+      '角鐵',
+      '鐵板',
+    ]);
+    expect(priceSubcategoriesByCategory['加工/切工']).toEqual([
+      '',
+      'H型鋼',
+      'I型鋼/工字鐵',
+      '圓管',
+      '平鐵',
+      '方管',
+      '槽鐵',
+      '角鐵',
+      '鐵板',
+      '板/浪板',
+    ]);
+    expect(priceSubcategoriesByCategory['加工/開槽']).toEqual(['', 'H型鋼']);
   });
 
   it('rejects a subcategory that is registered under a different category', () => {
