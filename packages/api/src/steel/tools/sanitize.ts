@@ -20,6 +20,15 @@ function isPlainObject(value: unknown): value is { [key: string]: unknown } {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isRawPriceRatioKey(key: string): boolean {
+  return (
+    key === 'tierRatios' ||
+    key === 'priceRatios' ||
+    /^priceRatio[A-F]$/u.test(key) ||
+    /^price_ratio_[a-f]$/u.test(key)
+  );
+}
+
 function sanitizeValue(value: unknown, seen: WeakSet<object>): SteelToolJsonValue | undefined {
   if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
     return undefined;
@@ -54,6 +63,10 @@ function sanitizeValue(value: unknown, seen: WeakSet<object>): SteelToolJsonValu
   }
   seen.add(value);
   const output = Object.entries(value).reduce<SteelToolJsonObject>((sanitized, [key, entry]) => {
+    if (isRawPriceRatioKey(key)) {
+      return sanitized;
+    }
+
     const sanitizedEntry = sanitizeValue(entry, seen);
 
     if (sanitizedEntry !== undefined) {

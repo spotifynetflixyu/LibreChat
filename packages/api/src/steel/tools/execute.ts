@@ -1,8 +1,4 @@
-import {
-  searchSteelCustomers,
-  discoverSteelPriceCategories,
-  searchSteelPriceItems,
-} from '../repositories';
+import { searchSteelCustomers, searchSteelPriceCandidateGroups } from '../repositories';
 import { normalizeOcrEvidenceForRuntime } from '../runtime/context';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
@@ -22,7 +18,7 @@ import type {
   SteelToolErrorCategory,
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
-import type { SteelPriceItem } from '../repositories';
+import type { SteelPriceItem, SteelPriceTierValues } from '../repositories';
 import type { ReadMarkdownInput, SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
@@ -30,7 +26,6 @@ type SearchCustomersInput = ReturnType<typeof steelToolArgsSchemas.search_custom
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
 >;
-type SearchPriceCandidateQuery = SearchPriceCandidatesInput['queries'][number];
 type DispatchSteelToolArgs = SearchCustomersInput | SearchPriceCandidatesInput | ReadMarkdownInput;
 
 const workbookSheetOrder = [
@@ -182,6 +177,7 @@ function summarizeOutput(data: SteelToolJsonObject): string {
     'quoteDefaults',
     'formulaCandidates',
     'customers',
+    'queryResults',
     'priceCandidates',
     'workingOrderRows',
     'memoryEntries',
@@ -200,57 +196,90 @@ function summarizeOutput(data: SteelToolJsonObject): string {
   return `keys=${Object.keys(data).length}`;
 }
 
-function dedupePriceCandidates(candidates: SteelPriceItem[]): SteelPriceItem[] {
-  const seen = new Set<number>();
-
-  return candidates.filter((candidate) => {
-    if (seen.has(candidate.id)) {
-      return false;
-    }
-
-    seen.add(candidate.id);
-    return true;
-  });
+function hasPriceTierValue(tiers: SteelPriceTierValues): boolean {
+  return Object.values(tiers).some((value) => value !== null);
 }
 
-function isCategoryDiscoveryPriceQuery(
-  query: SearchPriceCandidateQuery,
-): query is Extract<SearchPriceCandidateQuery, { mode: 'category_discovery' }> {
-  return query.mode === 'category_discovery';
-}
+function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
+  const { tierPrices, tierRatios, unitPriceBase: _unitPriceBase, ...candidateFields } = candidate;
+  const pricingOptions: SteelRawToolOutput[] = [];
+  const skippedPricingOptions: SteelRawToolOutput[] = [];
 
-function isLookupPriceQuery(
-  query: SearchPriceCandidateQuery,
-): query is Extract<SearchPriceCandidateQuery, { category: string }> {
-  return query.mode !== 'category_discovery';
+  if (hasPriceTierValue(tierPrices)) {
+    pricingOptions.push({
+      source: 'tier_price',
+      quoteEligible: true,
+      quoteUnit: candidate.unit ?? null,
+      tierPrices,
+    });
+  }
+
+  if (hasPriceTierValue(tierRatios) && (candidate.unit === 'Kg' || candidate.unit === 'M')) {
+    pricingOptions.push({
+      source: 'price_ratio',
+      quoteEligible: true,
+      quoteUnit: candidate.unit,
+      tierPrices: tierRatios,
+    });
+  } else if (hasPriceTierValue(tierRatios)) {
+    skippedPricingOptions.push({
+      source: 'price_ratio',
+      status: 'skipped',
+      reason: 'category_rule_pending',
+      quoteEligible: false,
+      quoteUnit: candidate.unit ?? null,
+    });
+  }
+
+  return {
+    ...candidateFields,
+    quoteEligible: pricingOptions.length > 0,
+    pricingOptions,
+    skippedPricingOptions,
+  };
 }
 
 async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  const discoveryQueries = input.queries.filter(isCategoryDiscoveryPriceQuery);
-  const lookupQueries = input.queries.filter(isLookupPriceQuery);
-  const categoryCandidateGroupsPromise = Promise.all(
-    discoveryQueries.map((query) =>
-      discoverSteelPriceCategories(client, {
-        keyword: query.keyword,
-        limit: query.limit,
-      }),
-    ),
-  );
-  const priceCandidatesPromise =
-    lookupQueries.length > 0 ? searchSteelPriceItems(client, { queries: lookupQueries }) : [];
+  const repositoryGroups = await searchSteelPriceCandidateGroups(client, {
+    queries: input.queries,
+  });
+  const groupsByIndex = new Map(repositoryGroups.map((group) => [group.queryIndex, group]));
+  let matchedQueryCount = 0;
+  let candidateCount = 0;
+  let categoryCandidateCount = 0;
+  const queryResults = input.queries.map((query, queryIndex) => {
+    const repositoryGroup = groupsByIndex.get(queryIndex);
+    const candidates = (repositoryGroup?.candidates ?? []).map(toSafePriceCandidate);
+    const categoryCandidates = repositoryGroup?.categoryCandidates ?? [];
+    const matched = candidates.length > 0 || categoryCandidates.length > 0;
 
-  const [categoryCandidateGroups, priceCandidates] = await Promise.all([
-    categoryCandidateGroupsPromise,
-    priceCandidatesPromise,
-  ]);
+    candidateCount += candidates.length;
+    categoryCandidateCount += categoryCandidates.length;
+    matchedQueryCount += matched ? 1 : 0;
+
+    return {
+      queryId: query.queryId,
+      query,
+      status: matched ? 'ok' : 'no_match',
+      candidates,
+      categoryCandidates,
+      issues: [],
+    };
+  });
 
   return {
-    priceCandidates: dedupePriceCandidates(priceCandidates),
-    categoryCandidates: categoryCandidateGroups.flat(),
-    searchQueries: input.queries,
+    queryResults,
+    summary: {
+      queryCount: input.queries.length,
+      groupCount: queryResults.length,
+      matchedQueryCount,
+      noMatchQueryCount: input.queries.length - matchedQueryCount,
+      candidateCount,
+      categoryCandidateCount,
+    },
   };
 }
 

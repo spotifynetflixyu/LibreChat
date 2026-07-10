@@ -719,22 +719,6 @@ function toJsonValue(value: unknown): JSONValue {
   return JSON.parse(serialized) as JSONValue;
 }
 
-function uniquePriceQueries(
-  queries: readonly SearchPriceCandidateQuery[],
-): SearchPriceCandidateQuery[] {
-  const seen = new Set<string>();
-
-  return queries.filter((query) => {
-    const key = JSON.stringify(query);
-    if (seen.has(key)) {
-      return false;
-    }
-
-    seen.add(key);
-    return true;
-  });
-}
-
 function createBatchedSearchPriceInput(
   inputs: readonly SearchPriceCandidatesInput[],
 ): SearchPriceCandidatesInput | undefined {
@@ -742,7 +726,7 @@ function createBatchedSearchPriceInput(
     return undefined;
   }
 
-  const queries = uniquePriceQueries(inputs.flatMap((input) => input.queries));
+  const queries: SearchPriceCandidateQuery[] = inputs.flatMap((input) => input.queries);
   if (queries.length === 0 || queries.length > 20) {
     return undefined;
   }
@@ -759,8 +743,29 @@ interface ExecutedSteelToolCall {
   coalescedResultOfToolCallId?: string;
 }
 
-function getJsonArrayCount(value: SteelToolJsonObject[string]): number | undefined {
-  return Array.isArray(value) ? value.length : undefined;
+function isSteelToolJsonObject(value: SteelToolJsonObject[string]): value is SteelToolJsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getJsonNumber(value: SteelToolJsonObject | undefined, key: string): number | undefined {
+  const entry = value?.[key];
+  return typeof entry === 'number' ? entry : undefined;
+}
+
+function getGroupedQueryIds(value: SteelToolJsonObject[string]): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const queryIds = value.flatMap((entry) => {
+    if (!isSteelToolJsonObject(entry)) {
+      return [];
+    }
+
+    return typeof entry.queryId === 'string' ? [entry.queryId] : [];
+  });
+
+  return queryIds.length > 0 ? queryIds : undefined;
 }
 
 function createCoalescedSearchPriceResult(
@@ -775,18 +780,27 @@ function createCoalescedSearchPriceResult(
     coalescedWithProviderToolCallId: primaryToolCallId,
     message: 'Full search_price_candidates data is available in the referenced tool result.',
   };
-  const priceCandidateCount = getJsonArrayCount(result.data.priceCandidates);
-  const categoryCandidateCount = getJsonArrayCount(result.data.categoryCandidates);
-  const searchQueryCount = getJsonArrayCount(result.data.searchQueries);
+  const summary = isSteelToolJsonObject(result.data.summary) ? result.data.summary : undefined;
+  const queryIds = getGroupedQueryIds(result.data.queryResults);
+  const queryCount = getJsonNumber(summary, 'queryCount');
+  const queryGroupCount = getJsonNumber(summary, 'groupCount');
+  const candidateCount = getJsonNumber(summary, 'candidateCount');
+  const categoryCandidateCount = getJsonNumber(summary, 'categoryCandidateCount');
 
-  if (priceCandidateCount !== undefined) {
-    data.priceCandidateCount = priceCandidateCount;
+  if (queryIds) {
+    data.queryIds = queryIds;
+  }
+  if (queryCount !== undefined) {
+    data.queryCount = queryCount;
+  }
+  if (queryGroupCount !== undefined) {
+    data.queryGroupCount = queryGroupCount;
+  }
+  if (candidateCount !== undefined) {
+    data.candidateCount = candidateCount;
   }
   if (categoryCandidateCount !== undefined) {
     data.categoryCandidateCount = categoryCandidateCount;
-  }
-  if (searchQueryCount !== undefined) {
-    data.searchQueryCount = searchQueryCount;
   }
 
   return {

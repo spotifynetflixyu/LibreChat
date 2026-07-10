@@ -1125,6 +1125,19 @@ function createToolMemoryDocument(input: {
   };
 }
 
+function getGroupedPriceCandidates(data: SteelJsonObject) {
+  return getArrayProperty(data, 'queryResults')
+    .filter(isJsonObject)
+    .flatMap((queryResult) => {
+      const query = isJsonObject(queryResult.query) ? queryResult.query : null;
+      const queryId = getStringProperty(queryResult, 'queryId');
+
+      return getArrayProperty(queryResult, 'candidates')
+        .filter(isJsonObject)
+        .map((candidate) => ({ candidate, query, queryId }));
+    });
+}
+
 function getToolCaptureDocuments(input: CaptureToolResultInput) {
   const data = toJsonValue(input.data);
   if (!isJsonObject(data)) {
@@ -1150,25 +1163,23 @@ function getToolCaptureDocuments(input: CaptureToolResultInput) {
   }
 
   if (input.toolName === 'search_price_candidates') {
-    return getArrayProperty(data, 'priceCandidates')
-      .filter(isJsonObject)
-      .map((candidate) =>
-        createToolMemoryDocument({
-          ...input,
-          memoryKind: 'price_evidence',
-          sourceKind: 'tool_result',
-          payload: {
-            ...candidate,
-            customerTierId: data.customerTierId,
-            searchQueries: data.searchQueries,
-          },
-          summary: getPriceSummary(candidate) || getFactSummary(candidate),
-          sourceRefs: toMemorySourceRefs({
-            providerToolCallId: input.providerToolCallId,
-            sourceRefs: getArrayProperty(candidate, 'sourceRefs'),
-          }),
+    return getGroupedPriceCandidates(data).map(({ candidate, query, queryId }) =>
+      createToolMemoryDocument({
+        ...input,
+        memoryKind: 'price_evidence',
+        sourceKind: 'tool_result',
+        payload: {
+          ...candidate,
+          ...(queryId ? { queryId } : {}),
+          ...(query ? { searchQuery: query } : {}),
+        },
+        summary: getPriceSummary(candidate) || getFactSummary(candidate),
+        sourceRefs: toMemorySourceRefs({
+          providerToolCallId: input.providerToolCallId,
+          sourceRefs: getArrayProperty(candidate, 'sourceRefs'),
         }),
-      );
+      }),
+    );
   }
 
   return [];

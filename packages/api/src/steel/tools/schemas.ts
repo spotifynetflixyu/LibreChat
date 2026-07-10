@@ -5,11 +5,22 @@ import {
   priceCategories,
   priceTierCodes,
 } from '../pricing/enums';
+import { isPriceSubcategory } from '../pricing/categories';
 
 export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
 const nonEmptyString = z.string().trim().min(1);
 const limitSchema = z.number().int().min(1).max(100).optional();
+const priceQueryLimitSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((limit) => Math.min(limit, 100))
+  .optional();
+const optionalFilterString = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  nonEmptyString.optional(),
+);
 const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
 const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
 
@@ -57,15 +68,20 @@ export interface LookupQuoteRulesInput extends Omit<LookupInstructionsInput, 'cu
 }
 
 interface SteelPriceLookupQueryInput {
+  queryId: string;
   mode?: 'lookup';
   category: (typeof priceCategories)[number];
+  subcategory?: string;
   material?: (typeof priceLookupMaterialKinds)[number];
   thicknessMm?: string[];
+  erpItemCode?: string;
   keyword?: string;
+  unit?: string;
   limit?: number;
 }
 
 interface SteelPriceCategoryDiscoveryQueryInput {
+  queryId: string;
   mode: 'category_discovery';
   keyword: string;
   limit?: number;
@@ -107,21 +123,6 @@ export interface RunVisualInspectionInput {
   >;
   prompt: string;
   dpi?: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function normalizeSearchPriceCandidateQueryInput(value: unknown): unknown {
-  if (!isRecord(value) || value.category !== '孔') {
-    return value;
-  }
-
-  return {
-    category: '孔',
-    keyword: '鐵板',
-  };
 }
 
 const instructionCatalogContextSchema = z.object({
@@ -179,38 +180,52 @@ const lookupDefaultsSchema = z.object({
 
 const priceLookupQuerySchema = z
   .object({
+    queryId: nonEmptyString.optional(),
     mode: z.literal('lookup').optional(),
     category: z
       .enum(priceCategories)
       .describe(
         'Required price category enum value. If the category is unknown, call category_discovery mode first instead of guessing.',
       ),
+    subcategory: optionalFilterString.describe(
+      'Optional subcategory enum for the selected category. Empty means no subcategory filter.',
+    ),
     material: z
       .enum(priceLookupMaterialKinds)
       .optional()
-      .describe('Optional material keyword enum value. Use one of 黑鐵, 白鐵, 錏, 鋁, or 鋅.'),
+      .describe('Optional material family enum value. Use one of 黑鐵, 白鐵, 鋁, 錏, 鎢, or 塑膠.'),
     thicknessMm: z.array(nonEmptyString).min(1).max(20).optional(),
+    erpItemCode: nonEmptyString.optional(),
     keyword: nonEmptyString.optional(),
-    limit: limitSchema,
+    unit: nonEmptyString.optional(),
+    limit: priceQueryLimitSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((query, ctx) => {
+    if (!query.subcategory || isPriceSubcategory(query.category, query.subcategory)) {
+      return;
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Invalid subcategory ${query.subcategory} for category ${query.category}`,
+      path: ['subcategory'],
+    });
+  });
 
 const priceCategoryDiscoveryQuerySchema = z
   .object({
+    queryId: nonEmptyString.optional(),
     mode: z.literal('category_discovery'),
     keyword: nonEmptyString.describe('Required keyword used to discover candidate categories.'),
-    limit: limitSchema,
+    limit: priceQueryLimitSchema,
   })
   .strict();
 
-const searchPriceCandidateQuerySchema: z.ZodType<
-  SearchPriceCandidateQueryInput,
-  z.ZodTypeDef,
-  unknown
-> = z.preprocess(
-  normalizeSearchPriceCandidateQueryInput,
-  z.union([priceCategoryDiscoveryQuerySchema, priceLookupQuerySchema]),
-);
+const searchPriceCandidateQuerySchema = z.union([
+  priceCategoryDiscoveryQuerySchema,
+  priceLookupQuerySchema,
+]);
 
 const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
   .object({
@@ -219,7 +234,15 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
       .min(1)
       .max(20),
   })
-  .strict();
+  .strict()
+  .transform(
+    (input): SearchPriceCandidatesInput => ({
+      queries: input.queries.map((query, index) => ({
+        ...query,
+        queryId: query.queryId ?? `q${index + 1}`,
+      })) as SearchPriceCandidateQueryInput[],
+    }),
+  );
 
 const readMarkdownSchema: z.ZodType<ReadMarkdownInput> = z
   .object({

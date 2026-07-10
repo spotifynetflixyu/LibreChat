@@ -1166,7 +1166,7 @@ describe('OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('batches same-round lookup price tool calls without customer tier props', async () => {
+  it('batches same-round grouped price calls without deduping distinct query IDs', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -1176,7 +1176,15 @@ describe('OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_b',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70060', limit: 5 }],
+              queries: [
+                {
+                  queryId: 'line-a',
+                  category: '鐵板',
+                  material: '黑鐵',
+                  keyword: 'DNB70060',
+                  limit: 5,
+                },
+              ],
             }),
           },
           {
@@ -1184,7 +1192,15 @@ describe('OpenAI OAuth provider adapter', () => {
             toolCallId: 'call_price_custom',
             toolName: 'search_price_candidates',
             input: JSON.stringify({
-              queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70160', limit: 5 }],
+              queries: [
+                {
+                  queryId: 'line-b',
+                  category: '鐵板',
+                  material: '黑鐵',
+                  keyword: 'DNB70060',
+                  limit: 5,
+                },
+              ],
             }),
           },
         ],
@@ -1200,18 +1216,35 @@ describe('OpenAI OAuth provider adapter', () => {
         response: { id: 'resp_price_tiers_2' },
         warnings: [],
       }));
-    const executeSteelToolCall = jest.fn(async (options) => ({
-      ok: true as const,
-      toolName: options.toolName as 'search_price_candidates',
-      data: {
-        priceCandidates: [{ id: 1, erpItemCode: 'OTL006', unitPrice: 40 }],
-        categoryCandidates: [],
-        searchQueries: (options.arguments as SearchPriceCandidatesInputFixture).queries,
-      },
-      sourceRefs: [],
-      durationMs: 1,
-      redactionVersion: 1 as const,
-    }));
+    const executeSteelToolCall = jest.fn(async (options) => {
+      const queries = (options.arguments as SearchPriceCandidatesInputFixture).queries;
+
+      return {
+        ok: true as const,
+        toolName: options.toolName as 'search_price_candidates',
+        data: {
+          queryResults: queries.map((query, index) => ({
+            queryId: (query as { queryId: string }).queryId,
+            query,
+            status: 'ok',
+            candidates: [{ id: index + 1, erpItemCode: `OTL00${index + 6}` }],
+            categoryCandidates: [],
+            issues: [],
+          })),
+          summary: {
+            queryCount: queries.length,
+            groupCount: queries.length,
+            matchedQueryCount: queries.length,
+            noMatchQueryCount: 0,
+            candidateCount: queries.length,
+            categoryCandidateCount: 0,
+          },
+        },
+        sourceRefs: [],
+        durationMs: 1,
+        redactionVersion: 1 as const,
+      };
+    });
 
     await sendSteelOAuthChat({
       createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
@@ -1230,8 +1263,20 @@ describe('OpenAI OAuth provider adapter', () => {
         providerToolCallId: 'call_price_b',
         arguments: {
           queries: [
-            { category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70060', limit: 5 },
-            { category: '鐵板/鋼板', material: '黑鐵', keyword: 'DNB70160', limit: 5 },
+            {
+              queryId: 'line-a',
+              category: '鐵板',
+              material: '黑鐵',
+              keyword: 'DNB70060',
+              limit: 5,
+            },
+            {
+              queryId: 'line-b',
+              category: '鐵板',
+              material: '黑鐵',
+              keyword: 'DNB70060',
+              limit: 5,
+            },
           ],
         },
       }),
@@ -1250,7 +1295,10 @@ describe('OpenAI OAuth provider adapter', () => {
       expect.objectContaining({
         ok: true,
         data: expect.objectContaining({
-          priceCandidates: [expect.objectContaining({ erpItemCode: 'OTL006' })],
+          queryResults: [
+            expect.objectContaining({ queryId: 'line-a' }),
+            expect.objectContaining({ queryId: 'line-b' }),
+          ],
         }),
       }),
     );
@@ -1259,8 +1307,11 @@ describe('OpenAI OAuth provider adapter', () => {
         ok: true,
         data: expect.objectContaining({
           coalescedWithProviderToolCallId: 'call_price_b',
-          priceCandidateCount: 1,
-          searchQueryCount: 2,
+          queryIds: ['line-a', 'line-b'],
+          queryCount: 2,
+          queryGroupCount: 2,
+          candidateCount: 2,
+          categoryCandidateCount: 0,
         }),
       }),
     );
@@ -1356,7 +1407,9 @@ describe('OpenAI OAuth provider adapter', () => {
         toolName: 'search_price_candidates',
         providerToolCallId: 'call_price',
         arguments: {
-          queries: [{ category: 'C型鋼', material: '錏', keyword: 'CCG075', limit: 5 }],
+          queries: [
+            { queryId: 'q1', category: 'C型鋼', material: '錏', keyword: 'CCG075', limit: 5 },
+          ],
         },
       }),
     );
@@ -1422,7 +1475,15 @@ describe('OpenAI OAuth provider adapter', () => {
       expect.objectContaining({
         toolName: 'search_price_candidates',
         arguments: {
-          queries: [{ category: 'C型鋼', material: '錏', keyword: '75x45x15x2.3', limit: 5 }],
+          queries: [
+            {
+              queryId: 'q1',
+              category: 'C型鋼',
+              material: '錏',
+              keyword: '75x45x15x2.3',
+              limit: 5,
+            },
+          ],
         },
       }),
     );

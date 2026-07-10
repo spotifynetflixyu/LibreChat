@@ -2854,18 +2854,33 @@ describe('Mongoose Steel working-order memory reader', () => {
         turnIndex: 8,
         checkpointTurnIndex: 7,
         data: {
-          customerTierId: 2,
-          searchQueries: ['CCG075'],
-          priceCandidates: [
+          queryResults: [
             {
-              id: 10,
-              erpItemCode: 'CCG075',
-              productName: '錏輕型鋼',
-              specKey: '75x45',
-              unitPrice: 26.8,
-              sourceRefs: [{ channel: 'price', factType: 'price', locator: 'row:10' }],
+              queryId: 'line-1',
+              query: { queryId: 'line-1', category: 'C型鋼', keyword: 'CCG075' },
+              status: 'ok',
+              categoryCandidates: [],
+              issues: [],
+              candidates: [
+                {
+                  id: 10,
+                  erpItemCode: 'CCG075',
+                  productName: '錏輕型鋼',
+                  specKey: '75x45',
+                  pricingOptions: [
+                    {
+                      source: 'tier_price',
+                      quoteEligible: true,
+                      quoteUnit: 'Kg',
+                      tierPrices: { A: 26.8, B: null, C: null, D: null, E: null, F: null },
+                    },
+                  ],
+                  sourceRefs: [{ channel: 'price', factType: 'price', locator: 'row:10' }],
+                },
+              ],
             },
           ],
+          summary: { queryCount: 1, groupCount: 1, candidateCount: 1 },
         },
       }),
     ).resolves.toEqual({
@@ -2897,7 +2912,7 @@ describe('Mongoose Steel working-order memory reader', () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const longProductName = `錏輕型鋼 ${'x'.repeat(1500)}`;
-    const searchQueries = Array.from({ length: 25 }, (_, index) => `query-${index + 1}`);
+    const searchQuery = { queryId: 'bulk', category: 'C型鋼', keyword: 'all' };
 
     await expect(
       writer.captureToolResult({
@@ -2908,15 +2923,30 @@ describe('Mongoose Steel working-order memory reader', () => {
         turnIndex: 8,
         checkpointTurnIndex: 7,
         data: {
-          customerTierId: 2,
-          searchQueries,
-          priceCandidates: Array.from({ length: 25 }, (_, index) => ({
-            id: index + 1,
-            erpItemCode: `ITEM-${index + 1}`,
-            productName: index === 24 ? longProductName : '錏輕型鋼',
-            specKey: `${index + 1}x${index + 1}`,
-            unitPrice: 26.8,
-          })),
+          queryResults: [
+            {
+              queryId: 'bulk',
+              query: searchQuery,
+              status: 'ok',
+              categoryCandidates: [],
+              issues: [],
+              candidates: Array.from({ length: 25 }, (_, index) => ({
+                id: index + 1,
+                erpItemCode: `ITEM-${index + 1}`,
+                productName: index === 24 ? longProductName : '錏輕型鋼',
+                specKey: `${index + 1}x${index + 1}`,
+                pricingOptions: [
+                  {
+                    source: 'tier_price',
+                    quoteEligible: true,
+                    quoteUnit: 'Kg',
+                    tierPrices: { A: 26.8 },
+                  },
+                ],
+              })),
+            },
+          ],
+          summary: { queryCount: 1, groupCount: 1, candidateCount: 25 },
         },
       }),
     ).resolves.toEqual({
@@ -2938,7 +2968,8 @@ describe('Mongoose Steel working-order memory reader', () => {
         id: 25,
         erpItemCode: 'ITEM-25',
         productName: longProductName,
-        searchQueries,
+        queryId: 'bulk',
+        searchQuery,
       }),
     );
   });

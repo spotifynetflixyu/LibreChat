@@ -54,7 +54,7 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search unified Steel price candidates with AI-derived query objects. Send only top-level queries. Each lookup query omits mode or uses mode=lookup, includes a visible category enum value, and may include material keyword enum value: 黑鐵, 白鐵, 錏, 鋁, or 鋅. It may also include thicknessMm string array, keyword text, and per-query limit defaulting to 30. If category is unclear, add a query with mode=category_discovery and keyword first instead of guessing.',
+      'Search price candidates for multiple order lines in one call with 1-20 top-level queries. Give each query a stable queryId when possible; omitted IDs become q1, q2, and so on. A lookup query uses a category enum and may filter by subcategory, material family (黑鐵, 白鐵, 鋁, 錏, 鎢, 塑膠), thicknessMm, erpItemCode, keyword, unit, and a per-query limit (default 30; positive values above 100 are clamped to 100). Results are grouped by queryId. If category is unclear, use mode=category_discovery with keyword instead of guessing.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
   {

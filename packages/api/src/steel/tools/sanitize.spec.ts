@@ -22,4 +22,48 @@ describe('Steel tool output sanitizer', () => {
 
     expect(output.text).toBe(`[redacted instruction-like text] ${suffix}`);
   });
+
+  it('removes raw ratio fields while retaining explicit safe pricing options', () => {
+    const output = sanitizeSteelToolOutput({
+      queryResults: [
+        {
+          candidates: [
+            {
+              tierRatios: { A: 1.4 },
+              price_ratio_a: 1.4,
+              pricingOptions: [
+                {
+                  source: 'price_ratio',
+                  quoteEligible: true,
+                  quoteUnit: 'Kg',
+                  tierPrices: { A: 1.4 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(JSON.stringify(output)).not.toContain('tierRatios');
+    expect(JSON.stringify(output)).not.toContain('price_ratio_a');
+    expect(output).toEqual(
+      expect.objectContaining({
+        queryResults: [
+          {
+            candidates: [
+              {
+                pricingOptions: [
+                  expect.objectContaining({
+                    source: 'price_ratio',
+                    quoteEligible: true,
+                  }),
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+  });
 });

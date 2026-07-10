@@ -33,31 +33,53 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: '10',
     erp_item_code: 'OTL006',
-    spec_key: '6.0m/mOT板雷射切割',
-    product_name: 'OT板雷射切割 6.0m/m',
     price_kind: 'product',
-    category: '鐵板/鋼板',
+    formula_code: null,
+    spec_key: 'OTL006 6.0mm OT板',
+    product_name: 'OT板 6.0mm',
+    normalized_spec_text: '6.0mm 4x8',
+    category: '鐵板',
     subcategory: null,
-    material: 'OT 黑鐵',
-    source_subcategory_label: null,
-    source_thickness: '6.0',
-    source_spec: '雷射切割',
-    unit: 'piece',
+    material: '黑鐵 / OT',
+    dimension_signature: 'T6-W1219-L2438',
+    unit: 'Kg',
+    value_state: 'confirmed',
+    unit_price_base: null,
     unit_price_a: '40.0000',
     unit_price_b: '42.0000',
-    unit_price_c: '45.0000',
+    unit_price_c: null,
+    unit_price_d: '46.0000',
+    unit_price_e: null,
     unit_price_f: '50.0000',
-    product_price_unit_weight: null,
-    product_price_unit_weight_unit: null,
+    price_ratio_a: '1.4000',
+    price_ratio_b: '1.3000',
+    price_ratio_c: null,
+    price_ratio_d: '1.2000',
+    price_ratio_e: null,
+    price_ratio_f: '1.1000',
+    unit_weight_value: null,
+    unit_weight_basis: null,
+    density: '7.850000',
+    source_thickness: '6.0',
+    width_mm: null,
+    height_mm: null,
+    length_mm: null,
+    outer_diameter_mm: null,
+    nominal_inch: null,
+    web_mm: null,
+    flange_mm: null,
+    lip_mm: null,
+    sheet_width_mm: '1219.000000',
+    sheet_length_mm: '2438.000000',
+    spec_sort_key: '006.000',
+    cost_basis: 'Kg',
     currency: 'TWD',
-    value_state: 'confirmed',
-    review_state: 'draft',
-    active: false,
+    review_state: 'reviewed',
+    active: true,
     source_refs: [],
     ...overrides,
   };
 }
-
 function createOutputSheetMemorySnapshot(): SteelOutputSheetMemorySnapshot {
   return {
     previousOutputSheets: {
@@ -148,11 +170,46 @@ describe('Steel minimal tool execution', () => {
     });
   });
 
-  it('returns all tier prices from unified rows without customer tier input', async () => {
+  it('returns ordered grouped query results with direct-first safe pricing options', async () => {
     const client = createClient([
       [
-        createPriceRow({ id: '10', unit: 'piece' }),
-        createPriceRow({ id: '11', unit: 'kg', spec_key: '6.0m/mOT板雷射切割_kg' }),
+        {
+          query_index: 0,
+          query_id: 'line-1',
+          price_candidates: [createPriceRow()],
+          category_candidates: [],
+        },
+        {
+          query_index: 1,
+          query_id: 'q2',
+          price_candidates: [
+            createPriceRow({
+              id: '11',
+              erp_item_code: 'PIPE-M',
+              unit: 'M',
+              value_state: 'ratio_only',
+              unit_price_a: null,
+              unit_price_b: null,
+              unit_price_d: null,
+              unit_price_f: null,
+            }),
+          ],
+          category_candidates: [],
+        },
+        {
+          query_index: 2,
+          query_id: 'q3',
+          price_candidates: [],
+          category_candidates: [
+            {
+              category: '圓管',
+              material: '黑鐵 / OT',
+              candidate_count: '8',
+              example_erp_item_code: 'PIPE-M',
+              example_product_name: '黑鐵圓管',
+            },
+          ],
+        },
       ],
     ]);
 
@@ -162,12 +219,15 @@ describe('Steel minimal tool execution', () => {
       arguments: {
         queries: [
           {
-            category: '鐵板/鋼板',
+            queryId: 'line-1',
+            category: '鐵板',
             material: '黑鐵',
             thicknessMm: ['6'],
             keyword: 'OT板',
-            limit: 5,
+            limit: 101,
           },
+          { category: '圓管', erpItemCode: 'PIPE-M', unit: 'M' },
+          { mode: 'category_discovery', keyword: '黑鐵圓管' },
         ],
       },
     });
@@ -178,43 +238,117 @@ describe('Steel minimal tool execution', () => {
     }
 
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual([
-      'reviewed',
-      '鐵板/鋼板',
-      '%黑鐵%',
-      '6.0',
-      '%OT板%',
-      5,
-    ]);
-    expect(client.calls[0]?.sql).toContain('FROM steel.prices');
-    expect(client.calls[0]?.sql).toContain('review_state = $1');
-    expect(client.calls[0]?.sql).toContain('active = true');
-    expect(client.calls[0]?.sql).toContain('category = $2');
-    expect(client.calls[0]?.sql).toContain('material ILIKE $3');
-    expect(client.calls[0]?.sql).not.toContain('customer_tier_id');
-    expect(client.calls[0]?.sql).not.toContain("unit = 'kg'");
-    expect(result.data).not.toHaveProperty('customerTier');
-    expect(result.data.priceCandidates).toHaveLength(2);
-    expect(result.data.priceCandidates).toEqual([
+    expect(result.data).not.toHaveProperty('priceCandidates');
+    expect(result.data.queryResults).toEqual([
       expect.objectContaining({
-        unit: 'piece',
-        tierPrices: { A: 40, B: 42, C: 45, F: 50 },
+        queryId: 'line-1',
+        query: expect.objectContaining({
+          queryId: 'line-1',
+          category: '鐵板',
+          limit: 100,
+        }),
+        status: 'ok',
+        categoryCandidates: [],
+        issues: [],
+        candidates: [
+          expect.objectContaining({
+            erpItemCode: 'OTL006',
+            quoteEligible: true,
+            pricingOptions: [
+              {
+                source: 'tier_price',
+                quoteEligible: true,
+                quoteUnit: 'Kg',
+                tierPrices: { A: 40, B: 42, C: null, D: 46, E: null, F: 50 },
+              },
+              {
+                source: 'price_ratio',
+                quoteEligible: true,
+                quoteUnit: 'Kg',
+                tierPrices: { A: 1.4, B: 1.3, C: null, D: 1.2, E: null, F: 1.1 },
+              },
+            ],
+            skippedPricingOptions: [],
+          }),
+        ],
       }),
       expect.objectContaining({
-        unit: 'kg',
-        tierPrices: { A: 40, B: 42, C: 45, F: 50 },
+        queryId: 'q2',
+        query: expect.objectContaining({ queryId: 'q2', erpItemCode: 'PIPE-M', unit: 'M' }),
+        status: 'ok',
+        candidates: [
+          expect.objectContaining({
+            erpItemCode: 'PIPE-M',
+            quoteEligible: true,
+            pricingOptions: [
+              {
+                source: 'price_ratio',
+                quoteEligible: true,
+                quoteUnit: 'M',
+                tierPrices: { A: 1.4, B: 1.3, C: null, D: 1.2, E: null, F: 1.1 },
+              },
+            ],
+          }),
+        ],
       }),
+      {
+        queryId: 'q3',
+        query: { queryId: 'q3', mode: 'category_discovery', keyword: '黑鐵圓管' },
+        status: 'ok',
+        candidates: [],
+        categoryCandidates: [
+          {
+            category: '圓管',
+            material: '黑鐵 / OT',
+            candidateCount: 8,
+            exampleErpItemCode: 'PIPE-M',
+            exampleProductName: '黑鐵圓管',
+          },
+        ],
+        issues: [],
+      },
     ]);
+    expect(result.data.summary).toEqual({
+      queryCount: 3,
+      groupCount: 3,
+      matchedQueryCount: 3,
+      noMatchQueryCount: 0,
+      candidateCount: 2,
+      categoryCandidateCount: 1,
+    });
+    expect(JSON.stringify(result.data)).not.toContain('tierRatios');
+    expect(JSON.stringify(result.data)).not.toContain('price_ratio_');
   });
 
-  it('does not expose internal tier ratios in price candidate output', async () => {
-    const client = createClient([[createPriceRow({ id: '12' })]]);
+  it('marks non-Kg/M ratio pricing as skipped and non-quote-eligible', async () => {
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'hardware',
+          price_candidates: [
+            createPriceRow({
+              id: '12',
+              erp_item_code: 'BOLT-1',
+              category: '五金/配件',
+              unit: '支',
+              value_state: 'ratio_only',
+              unit_price_a: null,
+              unit_price_b: null,
+              unit_price_d: null,
+              unit_price_f: null,
+            }),
+          ],
+          category_candidates: [],
+        },
+      ],
+    ]);
 
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'OT板', limit: 5 }],
+        queries: [{ queryId: 'hardware', category: '五金/配件', material: '黑鐵' }],
       },
     });
 
@@ -223,20 +357,82 @@ describe('Steel minimal tool execution', () => {
       throw new Error(result.errorSummary);
     }
 
-    expect(result.data.priceCandidates).toEqual([
+    expect(result.data.queryResults).toEqual([
       expect.objectContaining({
-        tierPrices: { A: 40, B: 42, C: 45, F: 50 },
+        queryId: 'hardware',
+        status: 'ok',
+        candidates: [
+          expect.objectContaining({
+            quoteEligible: false,
+            pricingOptions: [],
+            skippedPricingOptions: [
+              {
+                source: 'price_ratio',
+                status: 'skipped',
+                reason: 'category_rule_pending',
+                quoteEligible: false,
+                quoteUnit: '支',
+              },
+            ],
+          }),
+        ],
       }),
     ]);
-    expect(JSON.stringify(result.data.priceCandidates)).not.toContain('tierRatios');
+    expect(JSON.stringify(result.data)).not.toContain('tierRatios');
+    expect(JSON.stringify(result.data)).not.toContain('"A":1.4');
   });
 
-  it('rejects customer tier props in price lookup arguments', async () => {
+  it('returns a no-match group and summary instead of flattening empty results', async () => {
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'missing',
+          price_candidates: [],
+          category_candidates: [],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [{ queryId: 'missing', category: 'T型鋼', keyword: 'not-found' }],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(result.data.queryResults).toEqual([
+      {
+        queryId: 'missing',
+        query: { queryId: 'missing', category: 'T型鋼', keyword: 'not-found' },
+        status: 'no_match',
+        candidates: [],
+        categoryCandidates: [],
+        issues: [],
+      },
+    ]);
+    expect(result.data.summary).toEqual({
+      queryCount: 1,
+      groupCount: 1,
+      matchedQueryCount: 0,
+      noMatchQueryCount: 1,
+      candidateCount: 0,
+      categoryCandidateCount: 0,
+    });
+  });
+
+  it('rejects customer tier props in grouped price lookup arguments', async () => {
     const result = await executeSteelTool({
       client: createClient([]),
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'OT板', limit: 5 }],
+        queries: [{ category: '鐵板', material: '黑鐵' }],
         customerTier: 'A',
       },
     });
@@ -246,186 +442,6 @@ describe('Steel minimal tool execution', () => {
       errorCategory: 'invalid_arguments',
     });
   });
-
-  it('does not narrow SQL by customer tier and returns every price tier', async () => {
-    const client = createClient([[createPriceRow({ id: '12' })]]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: {
-        queries: [{ category: '鐵板/鋼板', material: '黑鐵', keyword: 'OT板', limit: 5 }],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['reviewed', '鐵板/鋼板', '%黑鐵%', '%OT板%', 5]);
-    expect(client.calls[0]?.sql).not.toContain('customer_tier_id');
-    expect(result.data.priceCandidates).toEqual([
-      expect.objectContaining({
-        tierPrices: { A: 40, B: 42, C: 45, F: 50 },
-      }),
-    ]);
-  });
-
-  it('canonicalizes hole lookup arguments instead of failing on irrelevant fields', async () => {
-    const client = createClient([
-      [
-        createPriceRow({
-          id: '13',
-          erp_item_code: 'DZA1319',
-          price_kind: 'hole',
-          spec_key: '鐵板孔加工',
-          product_name: '鐵板孔加工',
-          category: '孔',
-          material: '無',
-          unit: '孔',
-          unit_price_b: '7.0000',
-        }),
-      ],
-    ]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: {
-        queries: [
-          {
-            category: '孔',
-            material: 'OT 黑鐵',
-            thicknessMm: ['15'],
-            keyword: '鑽孔',
-            limit: 5,
-          },
-        ],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['reviewed', '孔', '%鐵板%', 30]);
-    expect(result.data.searchQueries).toEqual([{ category: '孔', keyword: '鐵板' }]);
-    expect(result.data.priceCandidates).toEqual([
-      expect.objectContaining({
-        priceKind: 'hole',
-        category: '孔',
-        productName: '鐵板孔加工',
-        tierPrices: expect.objectContaining({ B: 7 }),
-      }),
-    ]);
-  });
-
-  it('returns related cutting rows in the same price candidate call', async () => {
-    const client = createClient([
-      [
-        createPriceRow({
-          id: '20',
-          erp_item_code: null,
-          price_kind: 'cutting',
-          spec_key: 'H型鋼200x100切工',
-          product_name: 'H型鋼 200*100 切工',
-          category: '切工/切割',
-          subcategory: 'H型鋼',
-          material: '無',
-          source_subcategory_label: 'H型鋼',
-          source_spec: '200x100',
-          unit: '刀',
-          unit_price_a: '120.0000',
-          unit_price_b: '125.0000',
-          unit_price_c: '120.0000',
-          unit_price_f: '120.0000',
-        }),
-      ],
-    ]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: {
-        queries: [{ category: 'H型鋼', keyword: '200*100', limit: 20 }],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.sql).toContain("price_kind = 'cutting'");
-    expect(client.calls[0]?.values).toEqual([
-      'reviewed',
-      'H型鋼',
-      '%200x100%',
-      '切工/切割',
-      ['H型鋼', '工字鐵/H型鋼'],
-      '%200x100%',
-      20,
-    ]);
-    expect(result.data.priceCandidates).toEqual([
-      expect.objectContaining({
-        priceKind: 'cutting',
-        category: '切工/切割',
-        subcategory: 'H型鋼',
-        sourceSubcategoryLabel: 'H型鋼',
-        unit: '刀',
-        tierPrices: { A: 120, B: 125, C: 120, F: 120 },
-      }),
-    ]);
-  });
-
-  it('supports category discovery when category is unknown', async () => {
-    const client = createClient([
-      [
-        {
-          category: '扁方管',
-          material: 'OT 黑鐵',
-          candidate_count: '12',
-          example_erp_item_code: 'GDH075',
-          example_product_name: '黑方管 75x45',
-        },
-      ],
-    ]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: {
-        queries: [{ mode: 'category_discovery', keyword: '白鐵方管 75x45', limit: 5 }],
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.errorSummary);
-    }
-
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toEqual(['reviewed', '%白鐵方管%', '%75x45%', 5]);
-    expect(result.data).toEqual(
-      expect.objectContaining({
-        categoryCandidates: [
-          {
-            category: '扁方管',
-            material: 'OT 黑鐵',
-            candidateCount: 12,
-            exampleErpItemCode: 'GDH075',
-            exampleProductName: '黑方管 75x45',
-          },
-        ],
-      }),
-    );
-  });
-
   it('searches customers by AI-provided keyword arrays', async () => {
     const client = createClient([
       [

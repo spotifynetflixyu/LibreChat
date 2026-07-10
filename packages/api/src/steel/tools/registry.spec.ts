@@ -43,223 +43,69 @@ describe('Steel tool registry', () => {
     }).toThrow('Unknown Steel executable tool');
   });
 
-  it('keeps Zod validation owned by the backend registry', () => {
+  it('describes and validates one-call grouped v4.2 price lookup', () => {
     const definition = getSteelToolDefinition('search_price_candidates');
 
     expect(
       definition.argsSchema.parse({
         queries: [
           {
-            category: '扁方管',
-            material: '黑鐵',
+            queryId: 'line-1',
+            category: '圓管',
+            subcategory: '鋼管',
+            material: '鎢',
             thicknessMm: ['2'],
-            keyword: '75x45 扁方管',
-            limit: 5,
+            erpItemCode: '00123',
+            keyword: '50x2',
+            unit: 'M',
+            limit: 101,
           },
+          { mode: 'category_discovery', keyword: '白鐵 方管' },
         ],
       }),
     ).toEqual({
       queries: [
         {
-          category: '扁方管',
-          material: '黑鐵',
+          queryId: 'line-1',
+          category: '圓管',
+          subcategory: '鋼管',
+          material: '鎢',
           thicknessMm: ['2'],
-          keyword: '75x45 扁方管',
-          limit: 5,
+          erpItemCode: '00123',
+          keyword: '50x2',
+          unit: 'M',
+          limit: 100,
         },
-      ],
-    });
-    expect(
-      definition.argsSchema.parse({
-        queries: [{ category: '孔', keyword: '鐵板' }],
-      }),
-    ).toEqual({
-      queries: [{ category: '孔', keyword: '鐵板' }],
-    });
-    expect(
-      definition.argsSchema.parse({
-        queries: [
-          {
-            category: '孔',
-            material: 'OT 黑鐵',
-            thicknessMm: ['15'],
-            keyword: '鑽孔',
-            limit: 5,
-          },
-        ],
-      }),
-    ).toEqual({
-      queries: [{ category: '孔', keyword: '鐵板' }],
-    });
-    expect(
-      definition.argsSchema.parse({
-        queries: [{ mode: 'category_discovery', keyword: '白鐵 方管', limit: 10 }],
-      }),
-    ).toEqual({
-      queries: [{ mode: 'category_discovery', keyword: '白鐵 方管', limit: 10 }],
-    });
-    expect(
-      definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: '白鐵', thicknessMm: ['3'], limit: 10 }],
-      }),
-    ).toEqual({
-      queries: [{ category: '鐵板/鋼板', material: '白鐵', thicknessMm: ['3'], limit: 10 }],
-    });
-    expect(
-      definition.argsSchema.parse({
-        queries: [
-          { category: '角鐵/角鋼', material: '錏', keyword: 'L50', limit: 10 },
-          { category: '非鋼材/其他材料', material: '鋁', keyword: '扁條', limit: 10 },
-          { category: '浪板/收邊', material: '鋅', keyword: '收邊', limit: 10 },
-        ],
-      }),
-    ).toEqual({
-      queries: [
-        { category: '角鐵/角鋼', material: '錏', keyword: 'L50', limit: 10 },
-        { category: '非鋼材/其他材料', material: '鋁', keyword: '扁條', limit: 10 },
-        { category: '浪板/收邊', material: '鋅', keyword: '收邊', limit: 10 },
+        { queryId: 'q2', mode: 'category_discovery', keyword: '白鐵 方管' },
       ],
     });
     expect(() =>
       definition.argsSchema.parse({
-        candidateQueries: [
-          {
-            queryId: 'c75',
-            productNames: ['錏輕型鋼', '75*2.3'],
-            erpItemCodes: ['CCG075'],
-            confidence: 'medium',
-            reason: 'old nested candidate shape',
-          },
-        ],
+        queries: [{ category: '加工/其他', subcategory: '扁' }],
+      }),
+    ).toThrow('扁');
+    expect(() =>
+      definition.argsSchema.parse({
+        queries: [{ category: '鐵板/鋼板', material: '鋅' }],
       }),
     ).toThrow();
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ material: 'OT 黑鐵', keyword: '方管' }],
-      }),
-    ).toThrow('Required');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: 'rectangular_tube', material: 'OT 黑鐵' }],
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: 'ot_black_iron' }],
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: 'No1 白鐵' }],
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: 'OT 黑鐵' }],
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: '錏/鍍鋅' }],
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: '鋁鋅' }],
-      }),
-    ).toThrow();
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: '黑鐵' }],
-        customerTier: 'b',
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管', material: '黑鐵' }],
+        queries: [{ category: '鐵板' }],
         customerTier: 'A',
       }),
     ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '扁方管' }],
-        customerTierId: 2,
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: '黑鐵' }],
-        reviewState: 'reviewed',
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: '黑鐵' }],
-        includeInactive: true,
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', specs: ['雷射切割'] }],
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: 'H型鋼', keyword: '200x100' }],
-        includeRelatedCutting: true,
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: 'H型鋼', keyword: '200x100' }],
-        limit: 5,
-      }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      definition.argsSchema.parse({
-        mode: 'category_discovery',
-        keyword: '白鐵 方管',
-      }),
-    ).toThrow('Unrecognized key');
-    expect(
-      definition.argsSchema.parse({
-        queries: [{ category: '孔', keyword: '鐵板', thicknessMm: 15 }],
-      }),
-    ).toEqual({
-      queries: [{ category: '孔', keyword: '鐵板' }],
-    });
-    expect(() =>
-      definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', thicknessMm: [15] }],
-      }),
-    ).toThrow();
-    expect(
-      definition.argsSchema.parse({
-        queries: [{ category: '孔', material: '無', keyword: '鐵板' }],
-      }),
-    ).toEqual({
-      queries: [{ category: '孔', keyword: '鐵板' }],
-    });
-    expect(
-      definition.argsSchema.parse({
-        queries: [{ category: '孔', keyword: '鑽孔' }],
-      }),
-    ).toEqual({
-      queries: [{ category: '孔', keyword: '鐵板' }],
-    });
-    expect(() => definition.argsSchema.parse({ limit: 2 })).toThrow();
-    expect(definition.description).toContain('queries');
-    expect(definition.description).toContain('category');
-    expect(definition.description).toContain('thicknessMm');
-    expect(definition.description).not.toContain('specs');
-    expect(definition.description).not.toContain('includeRelatedCutting');
-    expect(definition.description).not.toContain('customerTier');
-    expect(definition.description).not.toContain('customerTierId');
-    expect(definition.description).not.toContain('candidateQueries');
-    expect(definition.description).not.toContain('productNames');
-    expect(definition.description).not.toContain('erpItemCodes');
-  });
 
+    expect(definition.description).toContain('one call');
+    expect(definition.description).toContain('multiple order lines');
+    expect(definition.description).toContain('queryId');
+    expect(definition.description).toContain('subcategory');
+    expect(definition.description).toContain('erpItemCode');
+    expect(definition.description).toContain('unit');
+    expect(definition.description).toContain('default 30');
+    expect(definition.description).toContain('clamped to 100');
+    expect(definition.description).not.toContain('candidateQueries');
+  });
   it('uses AI-supplied keyword arrays for customer lookup only', () => {
     expect(
       getSteelToolDefinition('search_customers').argsSchema.parse({
