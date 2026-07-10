@@ -40,22 +40,6 @@ interface ProcessingPriceRow {
   source_refs: unknown;
 }
 
-interface CuttingPriceRow {
-  id: string | number;
-  product_family: string;
-  cut_type: string;
-  spec_key: string | null;
-  length_m: string | number | null;
-  unit: string;
-  unit_price: string | number | null;
-  surcharge_per_kg: string | number | null;
-  currency: string;
-  value_state: string;
-  review_state: string;
-  active: boolean;
-  source_refs: unknown;
-}
-
 interface HolePriceRow {
   id: string | number;
   hole_type: string;
@@ -135,14 +119,6 @@ export interface SteelProcessingPrice extends SteelChargeRow {
   minPrice: number | null;
 }
 
-export interface SteelCuttingPrice extends SteelChargeRow {
-  productFamily: string;
-  cutType: string;
-  specKey?: string;
-  lengthM: number | null;
-  surchargePerKg: number | null;
-}
-
 export interface SteelHolePrice extends SteelChargeRow {
   holeType: string;
   diameterMm: number | null;
@@ -183,12 +159,6 @@ export interface SteelMaterialRule extends SteelSourceBackedRecord {
 interface SearchSteelProcessingPricesInput extends SearchStateInput {
   processingType?: string;
   productFamily?: string;
-  specKey?: string;
-}
-
-interface SearchSteelCuttingPricesInput extends SearchStateInput {
-  productFamily?: string;
-  cutType?: string;
   specKey?: string;
 }
 
@@ -319,52 +289,6 @@ LIMIT $${values.length}
     productFamily: parseNullableString(row.product_family),
     specKey: parseNullableString(row.spec_key),
     minPrice: parseNullableNumber(row.min_price),
-  }));
-}
-
-export async function searchSteelCuttingPrices(
-  client: SteelRepositoryClient,
-  input: SearchSteelCuttingPricesInput,
-): Promise<SteelCuttingPrice[]> {
-  const where: string[] = [];
-  const values: SteelSqlParameter[] = [];
-  addDefaultStateFilters(where, values, input);
-  addOptionalFilter(where, values, 'product_family', input.productFamily);
-  addOptionalFilter(where, values, 'cut_type', input.cutType);
-  addOptionalFilter(where, values, 'spec_key', input.specKey);
-  values.push(getLimit(input.limit));
-
-  const result = await client.query<CuttingPriceRow>(
-    `
-SELECT
-  id,
-  product_family,
-  cut_type,
-  spec_key,
-  length_m,
-  unit,
-  unit_price,
-  surcharge_per_kg,
-  currency,
-  value_state,
-  review_state,
-  active,
-  source_refs
-FROM steel.cutting_prices
-WHERE ${where.join('\n  AND ')}
-ORDER BY product_family ASC, cut_type ASC, spec_key ASC NULLS LAST, id ASC
-LIMIT $${values.length}
-`,
-    values,
-  );
-
-  return result.rows.map((row) => ({
-    ...mapCharge(row),
-    productFamily: row.product_family,
-    cutType: row.cut_type,
-    specKey: parseNullableString(row.spec_key),
-    lengthM: parseNullableNumber(row.length_m),
-    surchargePerKg: parseNullableNumber(row.surcharge_per_kg),
   }));
 }
 

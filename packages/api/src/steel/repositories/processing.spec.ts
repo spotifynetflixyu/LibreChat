@@ -1,6 +1,5 @@
 import {
   searchSteelBendingPrices,
-  searchSteelCuttingPrices,
   searchSteelHolePrices,
   searchSteelMaterialRules,
   searchSteelProcessingPrices,
@@ -42,40 +41,6 @@ describe('Steel processing repositories', () => {
       100,
     ]);
     expect(result[0]?.unitPrice).toBe(12);
-  });
-
-  it('searches cutting price rows without converting their pricing unit', async () => {
-    const query = jest.fn().mockResolvedValue({
-      rows: [
-        {
-          id: '2',
-          product_family: 'H型鋼',
-          cut_type: 'saw',
-          spec_key: 'H100x100',
-          length_m: '6.000',
-          unit: 'cut',
-          unit_price: '80.0000',
-          surcharge_per_kg: null,
-          currency: 'TWD',
-          value_state: 'confirmed',
-          review_state: 'reviewed',
-          active: true,
-          source_refs: [],
-        },
-      ],
-    });
-
-    const result = await searchSteelCuttingPrices({ query } as SteelRepositoryClient, {
-      productFamily: 'H型鋼',
-      cutType: 'saw',
-      specKey: 'H100x100',
-    });
-
-    expect(result[0]).toMatchObject({
-      unit: 'cut',
-      unitPrice: 80,
-      valueState: 'confirmed',
-    });
   });
 
   it('searches hole, slotting, and bending tables through typed helpers', async () => {

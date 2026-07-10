@@ -60,12 +60,12 @@ describe('Steel source schema mapping', () => {
     });
     expect(
       resolveSourceSchemaMapping({
-        sourceFile: '切工價錢.xlsx',
-        sourceLabel: 'A/C/F',
+        sourceFile: '切工價錢-clean.xlsx',
+        sourceLabel: 'unit_price_a',
       }),
     ).toMatchObject({
-      canonicalKey: 'cutting_unit_price_by_tier.A_C_F',
-      target: 'steel.cutting_prices.unit_price',
+      canonicalKey: 'cutting_unit_price_by_tier.A',
+      target: 'steel.cutting_prices.unit_price_a',
     });
     expect(
       resolveSourceSchemaMapping({
@@ -95,6 +95,12 @@ describe('Steel source schema mapping', () => {
       resolveSourceSchemaMapping({
         sourceFile: '產品價格.xlsx',
         sourceLabel: '比率A',
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveSourceSchemaMapping({
+        sourceFile: '切工價錢-raw.xlsm',
+        sourceLabel: 'tier A/C/F',
       }),
     ).toBeUndefined();
   });
