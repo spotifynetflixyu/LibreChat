@@ -1,5 +1,20 @@
 # Lessons
 
+- Steel price lookup limits above the AI-visible maximum are a clamp contract,
+  not an invalid-arguments path: keep the default at 30 and normalize every
+  positive value above 100 to 100.
+- Batched `search_price_candidates` output must preserve query provenance.
+  Group candidates by a stable query ID and deduplicate only within that group;
+  the same price row may legitimately serve more than one order line.
+- `steel.prices.spec_key` is keyword-search text (`ERP + normalized spec`), not
+  row identity. Use `erp_item_code` as the sole unique/upsert key.
+- Store ratio prices independently from direct tier prices. Only Kg/M ratios
+  are quoteable until a category rule defines another unit; return an explicit
+  skipped marker for unsupported units instead of guessing or dropping them.
+- Reviewed Steel domain rule folders and wording are now `類別規則` / category
+  rules. Category-specific search shapes belong there, while generic tool
+  envelope and retry behavior stays in `agent規則.txt`.
+
 - Codex CLI device-login output is streamed prose. Never extract a device code
   with a global `AAAA-BBBBB` fallback across the full output, because text such
   as `Open this` can become `OPEN-THIS`. Also do not treat generic title text

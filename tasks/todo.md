@@ -191,6 +191,24 @@ Review:
   - `cd packages/api && rtk npm run build`
   - `rtk git diff --check`
 
+## Active: Steel Pricing v4.2 Full Replacement - 2026-07-10
+
+Goal: make `docs/products_db_v4.2.xlsx` authoritative for `steel.prices`,
+redesign `search_price_candidates` as grouped multi-query lookup, restore safe
+ratio pricing, rename category rules, and add the `system_order.度` field.
+
+- [ ] Add the complete v4.2 category/subcategory registry and pure parser.
+- [ ] Add paired Supabase schema migrations, schema snapshot, and atomic importer.
+- [ ] Return grouped price results carrying each normalized query ID.
+- [ ] Clamp positive query limits above 100 instead of rejecting them.
+- [ ] Expose Kg/M ratio options and mark other ratio units skipped for future rules.
+- [ ] Rename `鋼材規則` to `類別規則` and document every category query shape.
+- [ ] Add `度` after `長度` for DA/DB/DC rolling-door system-order rows.
+- [ ] Replace live `steel.prices`, sync reviewed rules, and run focused/live verification.
+
+Design: `docs/plans/2026-07-10-steel-pricing-v4-2-design.md`  
+Implementation: `docs/plans/2026-07-10-steel-pricing-v4-2-implementation.md`
+
 # Active: Codex login modal UX - 2026-07-08
 
 Goal: replace the fragile popup-based Codex login flow with a LibreChat-style
