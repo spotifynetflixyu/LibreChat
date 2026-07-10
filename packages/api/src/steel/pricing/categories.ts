@@ -1,4 +1,33 @@
-export const priceCategories = Object.freeze([
+type PriceCategoryTuple = readonly [
+  '加工/其他',
+  '加工/孔',
+  '其他',
+  '圓鐵',
+  '捲門/伸縮門',
+  '網',
+  '格板/隔板',
+  '五金/配件',
+  '門窗/門板',
+  '鐵板',
+  '加工/折工',
+  '加工/切工',
+  'C型鋼',
+  '板/浪板',
+  '方鐵',
+  'H型鋼',
+  'T型鋼',
+  '平鐵',
+  '角鐵',
+  '圓管',
+  '鐵軌',
+  '槽鐵',
+  'I型鋼/工字鐵',
+  '方管',
+  '扁方管',
+  '加工/開槽',
+];
+
+export const priceCategories: PriceCategoryTuple = Object.freeze([
   '加工/其他',
   '加工/孔',
   '其他',
@@ -29,7 +58,102 @@ export const priceCategories = Object.freeze([
 
 export type PriceCategory = (typeof priceCategories)[number];
 
-const registry = Object.freeze({
+type PriceSubcategoryRegistry = Readonly<{
+  '加工/其他': readonly [
+    '',
+    'C型鋼',
+    'H型鋼',
+    'L',
+    'U',
+    '丸條',
+    '加工',
+    '圓管',
+    '扁鐵',
+    '捲門/伸縮門',
+    '網',
+    '角鐵',
+    '鐵板',
+  ];
+  '加工/孔': readonly ['', '五金', '接頭', '角鐵', '鐵板', '門'];
+  其他: readonly ['', '保麗龍', '加工', '手套', '曬衣架', '蜂巢紙', '配件'];
+  圓鐵: readonly ['', '其他'];
+  '捲門/伸縮門': readonly ['', '中柱', '其他', '底支', '遙控', '邊柱', '配件'];
+  網: readonly ['', '刺網', '浪型網', '菱形網', '配件', '高床網', '點焊網'];
+  '格板/隔板': readonly [''];
+  '五金/配件': readonly [
+    '',
+    '伸縮器',
+    '加工',
+    '培林座',
+    '壁虎',
+    '彈簧',
+    '後鈕',
+    '扶手',
+    '油漆',
+    '焊條',
+    '矽利康',
+    '節竹鐵',
+    '膠',
+    '花管',
+    '華司',
+    '蜂巢紙',
+    '螺帽',
+    '螺母',
+    '螺母/螺絲',
+    '螺絲',
+    '輪子',
+    '配件',
+    '配管',
+    '釘',
+    '鋸',
+    '鑄花',
+    '馬達箱',
+  ];
+  '門窗/門板': readonly ['', '窗花', '網', '角鐵', '配件', '門花'];
+  鐵板: readonly ['', '圍籬板', '檔泥板', '特殊', '網板', '花板'];
+  '加工/折工': readonly [
+    '',
+    '中柱',
+    '其他',
+    '切工',
+    '工具箱',
+    '消音',
+    '無缺口',
+    '特殊',
+    '花板',
+    '車斗',
+    '鐵板',
+    '門',
+  ];
+  '加工/切工': readonly [
+    '',
+    'H型鋼',
+    'I型鋼/工字鐵',
+    '圓管',
+    '平鐵',
+    '方管',
+    '槽鐵',
+    '角鐵',
+    '鐵板',
+    '板/浪板',
+  ];
+  C型鋼: readonly ['', '加工/其他'];
+  '板/浪板': readonly ['', '五金/配件'];
+  方鐵: readonly [''];
+  H型鋼: readonly [''];
+  T型鋼: readonly [''];
+  平鐵: readonly [''];
+  角鐵: readonly ['', '不等邊', '烤漆', '配件'];
+  圓管: readonly ['', 'A管', 'B管', '圓條', '連料', '配管', '鋼管'];
+  鐵軌: readonly [''];
+  槽鐵: readonly [''];
+  'I型鋼/工字鐵': readonly [''];
+  方管: readonly ['', '連料'];
+  扁方管: readonly [''];
+  '加工/開槽': readonly ['', 'H型鋼'];
+}>;
+
+const registry: PriceSubcategoryRegistry = Object.freeze({
   '加工/其他': Object.freeze([
     '',
     'C型鋼',
@@ -124,9 +248,9 @@ const registry = Object.freeze({
   '加工/開槽': Object.freeze(['', 'H型鋼'] as const),
 }) satisfies Readonly<Record<PriceCategory, readonly string[]>>;
 
-export type PriceSubcategory = (typeof registry)[PriceCategory][number];
+export type PriceSubcategory = PriceSubcategoryRegistry[PriceCategory][number];
 
-export const priceSubcategoriesByCategory = registry;
+export const priceSubcategoriesByCategory: PriceSubcategoryRegistry = registry;
 
 const priceCategorySet = new Set<string>(priceCategories);
 
