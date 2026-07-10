@@ -51,6 +51,16 @@ describe('Steel source schema mapping', () => {
     });
     expect(
       resolveSourceSchemaMapping({
+        sourceFile: '系統訂單.xlsx',
+        sourceLabel: '度',
+      }),
+    ).toMatchObject({
+      canonicalKey: 'belly',
+      target: 'steel.order_items.metadata.belly',
+      valueType: 'number',
+    });
+    expect(
+      resolveSourceSchemaMapping({
         sourceFile: '公式編號.xlsx',
         sourceLabel: '公式計算式',
       }),

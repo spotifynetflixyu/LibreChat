@@ -319,7 +319,7 @@ const workbookHeaderAliases: Record<string, readonly string[]> = {
   單重: ['unitWeight'],
   總數: ['totalQuantity'],
   單價: ['unitPrice'],
-  肚: ['belly'],
+  肚: ['belly', '度', 'degree'],
   小計: ['subtotal', '金額'],
 };
 

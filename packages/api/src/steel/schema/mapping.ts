@@ -185,7 +185,7 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
   },
   {
     sourceFile: '系統訂單.xlsx',
-    sourceLabels: ['肚'],
+    sourceLabels: ['肚', '度'],
     canonicalKey: 'belly',
     target: 'steel.order_items.metadata.belly',
     allowedFor: ['admin_import', 'calculator_context'],

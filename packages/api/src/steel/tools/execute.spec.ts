@@ -661,6 +661,40 @@ describe('Steel minimal tool execution', () => {
     expect(tables[2]?.rows[0]).toEqual(['', '', '536']);
   });
 
+  it('renders legacy degree cells under the canonical 肚 header', async () => {
+    const snapshot = createOutputSheetMemorySnapshot();
+    snapshot.previousOutputSheets.system_order.rows = [
+      {
+        rowId: 'system_order:legacy-chinese',
+        cells: { 項次: '1', 度: 3 },
+      },
+      {
+        rowId: 'system_order:legacy-english',
+        cells: { 項次: '2', degree: 4 },
+      },
+    ];
+    const outputSheetMemoryReader = {
+      readOutputSheetMemory: jest.fn(async () => snapshot),
+    };
+
+    const result = await executeSteelTool({
+      client: createClient([]),
+      outputSheetMemoryReader,
+      toolName: 'read_markdown',
+      arguments: { scope: 'workbook' },
+    } as Parameters<typeof executeSteelTool>[0] & {
+      outputSheetMemoryReader: typeof outputSheetMemoryReader;
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    const systemOrder = parseMarkdownTables(String(result.data.markdown))[0];
+    expect(systemOrder?.headers[17]).toBe('肚');
+    expect(systemOrder?.rows.map((row) => row[17])).toEqual(['3', '4']);
+  });
+
   it('reads file-keyed workbook rows when multiple OCR files have separate orders', async () => {
     const snapshot = createOutputSheetMemorySnapshot();
     snapshot.previousOutputSheets.system_order.rows = [
