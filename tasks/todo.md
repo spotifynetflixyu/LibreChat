@@ -204,11 +204,29 @@ ratio pricing, rename category rules, and add the `system_order.度` field.
 - [x] Expose Kg/M ratio options and mark other ratio units skipped for future rules.
 - [x] Rename `鋼材規則` to `類別規則` and document every category query shape.
 - [x] Add `度` after `長度` for DA/DB/DC rolling-door system-order rows.
-- [ ] Replace dev `steel.prices`, sync reviewed rules, and run focused/live verification.
+- [x] Replace dev `steel.prices`, sync reviewed rules, and run focused/live verification.
 - [ ] Copy the verified dev pricing/rules rollout to prod only after user confirmation.
 
 Design: `docs/plans/2026-07-10-steel-pricing-v4-2-design.md`  
 Implementation: `docs/plans/2026-07-10-steel-pricing-v4-2-implementation.md`
+
+Review (dev rollout, 2026-07-11):
+
+- Dev `.env` Supabase now has the authoritative 6,761 v4.2 rows, 6,761 distinct
+  ERP codes, and state totals 4,880 confirmed / 230 ratio-only / 1,651 no-price.
+- Final `steel.prices` has the exact 51-column shape, validated v4.2 constraints,
+  required lookup/trigram indexes, no zero price/ratio placeholders, and
+  `KA02I = 加工/其他 -> 扁鐵`.
+- All 9 current rules are active/reviewed; 6 category rules use only
+  `docs/rules/類別規則/...`, and the output rule contains the
+  `system_order.度` DA/DB/DC rolling-door contract.
+- One grouped live tool call verified explicit query IDs, limit 101 -> 100,
+  direct-price priority, Kg ratio pricing, non-Kg/M skipped ratio behavior,
+  thickness `2`, and no raw ratio leakage.
+- Verification passed: 12 focused suites / 148 tests, 1 Mongo-backed degree
+  smoke, package build, focused ESLint/syntax checks, and `git diff --check`.
+- Production was not accessed or modified; the production copy remains gated on
+  explicit user approval.
 
 # Active: Codex login modal UX - 2026-07-08
 
