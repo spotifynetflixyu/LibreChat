@@ -185,6 +185,14 @@ export const steelSourceSchemaMappings: readonly SteelSourceSchemaMappingEntry[]
   },
   {
     sourceFile: '系統訂單.xlsx',
+    sourceLabels: ['度'],
+    canonicalKey: 'degree',
+    target: 'steel.order_items.metadata.degree',
+    allowedFor: ['admin_import', 'calculator_context'],
+    valueType: 'number',
+  },
+  {
+    sourceFile: '系統訂單.xlsx',
     sourceLabels: ['交貨日期'],
     canonicalKey: 'delivery_date',
     target: 'steel.order_items.metadata.delivery_date',

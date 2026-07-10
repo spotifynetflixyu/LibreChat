@@ -95,6 +95,7 @@ const expectedSystemOrderHeaders = [
   '厚度',
   '寬度',
   '長度',
+  '度',
   '類別',
   '交貨日期',
   '備註',

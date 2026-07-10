@@ -66,6 +66,7 @@ const strictWorkbookHeaders: Partial<Record<SteelRuntimeActiveOutputSheetId, rea
     '厚度',
     '寬度',
     '長度',
+    '度',
     '類別',
     '交貨日期',
     '備註',
@@ -306,6 +307,7 @@ const workbookHeaderAliases: Record<string, readonly string[]> = {
   單重: ['unitWeight'],
   總數: ['totalQuantity'],
   單價: ['unitPrice'],
+  度: ['degree'],
   小計: ['subtotal', '金額'],
 };
 

@@ -1353,9 +1353,11 @@ describe('createSteelHandlers', () => {
     await withMongoMemory(async () => {
       const conversationId = 'steel_smoke_autosave_1';
       const finalMarkdown = [
-        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 類別 | 交貨日期 | 備註 |',
-        '| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | --- | --- | --- |',
-        '| 01 | 1 | A | DNB70060 | 6.0m/mOT板雷射切割 |  |  | 片 | 2 |  |  | 38.5 | B | F1 | 6 | 700 | 6000 | 切割 |  | handler smoke |',
+        '## system_order',
+        '',
+        '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 度 | 類別 | 交貨日期 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |',
+        '| 01 | 1 | A | DOR001 | 捲門75型 |  |  | 才 | 2 |  |  | 38.5 | B | DA |  |  | 6000 | 3 | 捲門/伸縮門 |  | handler smoke |',
       ].join('\n');
       const historyService = createSteelConversationHistoryService({
         historyRepository: createMongooseSteelConversationHistoryRepository(mongoose),
@@ -1419,10 +1421,11 @@ describe('createSteelHandlers', () => {
           workingOrderRows: [
             expect.objectContaining({
               rowNo: 10,
-              erpItemCode: 'DNB70060',
-              productName: '6.0m/mOT板雷射切割',
+              erpItemCode: 'DOR001',
+              productName: '捲門75型',
               quantity: 2,
               unitPrice: 38.5,
+              度: '3',
             }),
           ],
         }),

@@ -93,6 +93,7 @@ function createOutputSheetMemorySnapshot(): SteelOutputSheetMemorySnapshot {
               型號: 'CCG075',
               品名規格: '錏輕型鋼 75x45',
               數量: 2,
+              degree: 3,
               內部備註: '完整 row data 必須回傳',
             },
           },
@@ -569,14 +570,31 @@ describe('Steel minimal tool execution', () => {
       'customer_quote',
       'manual_review',
     ]);
-    expect(tables[0]?.headers.slice(0, 5)).toEqual([
+    expect(tables[0]?.headers).toEqual([
       '公司編號',
       '項次',
       '倉庫編號',
       '型號',
       '品名規格',
+      '材質編號',
+      '廠別編號',
+      '單位',
+      '數量',
+      '單重',
+      '總數',
+      '單價',
+      '計價基準',
+      '公式編號',
+      '厚度',
+      '寬度',
+      '長度',
+      '度',
+      '類別',
+      '交貨日期',
+      '備註',
     ]);
     expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['', '1', '', 'CCG075', '錏輕型鋼 75x45']);
+    expect(tables[0]?.rows[0]?.[17]).toBe('3');
     expect(tables[2]?.headers).toEqual(['項目', '說明', '小計']);
     expect(tables[2]?.rows[0]).toEqual(['', '', '536']);
   });
