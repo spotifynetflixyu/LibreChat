@@ -1,5 +1,11 @@
 # Lessons
 
+- Treat authoritative structured price datasets as reviewed, searchable source
+  rows regardless of `value_state`: keep `confirmed`, `ratio_only`, and
+  `no_price` active/reviewed, and enforce quote eligibility separately.
+- In Steel price parsers, normalize zero placeholders to null for optional
+  physical measurements as well as prices and ratios; zero dimensions are not
+  measured values.
 - Steel price lookup limits above the AI-visible maximum are a clamp contract,
   not an invalid-arguments path: keep the default at 30 and normalize every
   positive value above 100 to 100.
