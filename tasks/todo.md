@@ -198,7 +198,7 @@ redesign `search_price_candidates` as grouped multi-query lookup, restore safe
 ratio pricing, rename category rules, and add the `system_order.度` field.
 
 - [x] Add the complete v4.2 category/subcategory registry and pure parser.
-- [ ] Add paired Supabase schema migrations, schema snapshot, and atomic importer.
+- [x] Add paired Supabase schema migrations, schema snapshot, and atomic importer.
 - [ ] Return grouped price results carrying each normalized query ID.
 - [ ] Clamp positive query limits above 100 instead of rejecting them.
 - [ ] Expose Kg/M ratio options and mark other ratio units skipped for future rules.
