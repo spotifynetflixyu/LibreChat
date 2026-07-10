@@ -136,10 +136,11 @@ Both sheets preserve source sheet and row for audit. Item/spec text is
 normalized with the same NFKC and `*`/`×`/`＊` to lowercase `x` rules used by
 normal Steel price specifications.
 
-For an inch value, millimeters are calculated mathematically as
-`inch_value * 25.4`. The database stores the decimal result without rounding.
-Cutting lookup does not use that value as a filter; the AI receives both inch
-and exact millimeter values in the returned catalog.
+For inch values and ranges, millimeters are calculated mathematically as
+`inch * 25.4`. The database stores decimal `inch_min`, `inch_max`, `mm_min`,
+and `mm_max` without rounding; a single value uses the same min/max. Cutting
+lookup does not use those values as filters. The AI receives the source inch
+text and exact millimeter endpoints in the returned catalog.
 
 Tier A/C/F uses the workbook's combined A/C/F price. Tier B remains nullable in
 the source and database. The returned cutting record exposes effective B as
@@ -160,8 +161,8 @@ rows:
 - `cut_type`
 - `spec_text`
 - `normalized_spec_text`
-- `inch_value`
-- `mm_value`
+- `inch_min` and `inch_max`
+- `mm_min` and `mm_max`
 - `unit`
 - nullable `unit_price_a`, `unit_price_b`, `unit_price_c`, `unit_price_f`
 - structured `conditions` JSONB
@@ -222,4 +223,3 @@ The formulas remain:
 - Dev verification includes schema readback, imported row reconciliation,
   representative live grouped lookup, rule hash/readback, package build, and
   `git diff --check`.
-

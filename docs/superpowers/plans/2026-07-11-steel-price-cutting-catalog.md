@@ -36,10 +36,10 @@
 - Test: `packages/api/src/steel/pricing/cutting.spec.ts`
 
 **Interfaces:**
-- Produces `buildSteelCuttingRows()` returning `{ prices, supplements }` with normalized spec text, exact decimal inch/mm values, nullable B price, and source coordinates.
+- Produces `buildSteelCuttingRows()` returning `{ prices, supplements }` with normalized spec text, exact decimal inch/mm min/max values, nullable B price, and source coordinates.
 - Produces sheets `cutting_prices` and `cutting_supplements` with stable import headers.
 
-- [ ] Write parser tests for NFKC/spec `*`→`x`, fractional inches, `inch * 25.4` without rounding, price/supplement classification, tier-B null preservation, and duplicate source-row rejection.
+- [ ] Write parser tests for NFKC/spec `*`→`x`, fractional inch values/ranges, `inch * 25.4` min/max values without rounding, price/supplement classification, tier-B null preservation, and duplicate source-row rejection.
 - [ ] Run `cd packages/api && rtk npx jest src/steel/pricing/cutting.spec.ts --runInBand --watch=false --coverage=false`; verify RED because the parser does not exist.
 - [ ] Implement the pure row types and parser in `cutting.ts`.
 - [ ] Build one artifact-tool script that imports the raw XLSM, transforms the reviewed source ranges, formats both clean sheets, freezes headers, applies numeric formats, and exports the clean XLSX.
@@ -148,4 +148,3 @@
 - [ ] Read back dev schema, row counts, category counts, no-price-review column, and cutting query results.
 - [ ] Audit every design requirement against workbook, code, tests, dev database, and rule evidence; record the results in `tasks/todo.md`.
 - [ ] Stop before production and report the explicit remaining prod approval gate.
-
