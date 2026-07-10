@@ -134,7 +134,7 @@
 - [ ] Add the header alias/mapping and update output rules: only `捲門/伸縮門` with DA/DB/DC fills `度`; other categories leave it blank.
 - [ ] Update all strict header fixtures and run the focused tests to GREEN.
 
-### Task 6: Cloud migration, data replacement, rule sync, and verification
+### Task 6: Dev migration, data replacement, rule sync, and verification
 
 **Files:**
 - Modify only generated migration history through the documented Supabase workflow.
@@ -142,12 +142,20 @@
 
 **Interfaces:**
 - Consumes the tested migrations/importer/rule sync.
-- Produces live cloud `steel.prices` and reviewed category-rule rows.
+- Produces verified dev `steel.prices` and reviewed category-rule rows.
 
-- [ ] Verify live Postgres version/extensions and repair migration history `20260623115453` as applied.
-- [ ] Apply the expand migration through `STEEL_POSTGRES_URL`.
+- [ ] Verify dev Postgres version/extensions and repair migration history `20260623115453` as applied.
+- [ ] Apply the expand migration through dev `.env` `STEEL_POSTGRES_URL`.
 - [ ] Run the v4.2 importer with `--apply`; verify 6,761 rows and state totals inside the transaction.
 - [ ] Apply the finalize migration and run schema/index/constraint readback queries.
 - [ ] Run category-rule sync `--dry-run`, then `--apply`, then read back source refs/hashes.
-- [ ] Run focused Jest suites, `cd packages/api && npm run build`, `git diff --check`, and live multi-query smokes covering grouped query IDs, limit clamp, direct price, ratio Kg, and skipped non-Kg/M ratio.
-- [ ] Reconcile all plan requirements and record results without claiming completion before fresh evidence.
+- [ ] Run focused Jest suites, `cd packages/api && npm run build`, `git diff --check`, and dev multi-query smokes covering grouped query IDs, limit clamp, direct price, ratio Kg, skipped non-Kg/M ratio, and thickness `2`.
+- [ ] Reconcile all plan requirements, report dev evidence, and stop before production.
+
+### Task 7: Production copy after explicit approval
+
+- [ ] Wait for explicit user approval of the verified dev result.
+- [ ] Repeat the tested migration/import/rule-sync sequence using production
+  `.env.prod` credentials.
+- [ ] Read back production schema, counts, states, rule hashes, and grouped
+  pricing smokes before reporting completion.

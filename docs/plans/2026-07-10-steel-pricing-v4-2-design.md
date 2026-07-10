@@ -148,15 +148,21 @@ variable. Every other category leaves `度` empty.
 
 ## Deployment
 
-1. Repair the live migration ledger entry that is structurally present but
+The rollout is dev-first. Production remains unchanged until the user reviews
+and explicitly approves the verified dev result.
+
+1. On dev, repair the migration ledger entry that is structurally present but
    absent from history.
-2. Apply an expand migration.
+2. Apply the expand migration to dev.
 3. Parse and validate all 6,761 workbook rows before opening the replacement
    transaction.
 4. In one transaction, lock and truncate `steel.prices`, insert all rows, and
    verify counts/state totals before commit.
-5. Apply the finalize migration and verify constraints/indexes.
-6. Sync reviewed agent/output/category rules and read them back.
+5. Apply the finalize migration on dev and verify constraints/indexes.
+6. Sync reviewed agent/output/category rules on dev and read them back.
+7. Run dev grouped lookup and pricing smokes, report evidence, and stop.
+8. Only after explicit user approval, repeat the tested migration/import/rule
+   sync/readback sequence against production.
 
 The application uses direct Postgres through `STEEL_POSTGRES_URL`; no public
 Data API exposure or Docker database is introduced.
