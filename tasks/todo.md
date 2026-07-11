@@ -8927,9 +8927,9 @@ production image deployment.
       and checksums without printing secrets.
 - [x] Replace production Steel schema/data from dev and verify per-table row
       counts, constraints, migration history, reviewed rules, and lookup smokes.
-- [ ] Commit the complete candidate, merge it into `master`, and push to
+- [x] Commit the complete candidate, merge it into `master`, and push to
       trigger `Deploy Production`.
-- [ ] Watch the workflow to completion; verify public/internal health,
+- [x] Watch the workflow to completion; verify public/internal health,
       build provenance, container state/logs, and a fresh-S3 PaddleOCR smoke.
 
 Safety gates:
@@ -8968,3 +8968,20 @@ Review:
 - Production security advisors returned only the existing mutable function
   search-path and `pg_trgm`-in-public warnings; this rollout adds no exposed
   Data API surface.
+- Fast-forwarded `master` and pushed production commit `8afb67b39`. GitHub
+  Actions run `29146402735` completed successfully in 10m57s, including image
+  build/push, Droplet deployment, container-local health, and public health.
+  Live build provenance reported the exact full commit on branch `master`;
+  the API container was healthy with zero restarts and the image contained an
+  executable `/usr/local/bin/paddleocr_mcp` at package version 0.8.5.
+- The first fresh-S3 OCR smoke exposed an overly short 60-second AI Studio
+  request timeout. Restored the installed package defaults of 120 seconds for
+  AI Studio requests and 600 seconds for synchronous HTTP, then synchronized
+  local/server `librechat.yaml` and both production runbooks.
+- Two subsequent fresh-S3 smokes reached the upstream endpoint but could not
+  complete: one transient TLS connection failure and one explicit AI Studio
+  `任務提交隊列已滿，請稍後重試` response. Direct host/container DNS and TLS
+  checks passed afterward. Temporary S3 smoke objects were deleted after every
+  attempt; no signed URL was persisted or printed. Deployment health is green,
+  while OCR content proof remains blocked by current AI Studio capacity rather
+  than the production image, credentials, URL path, or MCP startup.
