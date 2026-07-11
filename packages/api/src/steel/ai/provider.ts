@@ -714,7 +714,7 @@ function createBatchedSearchPriceInput(
   const queries = inputs.flatMap((input) =>
     isRecord(input) && Array.isArray(input.queries) ? input.queries : [],
   );
-  if (queries.length === 0 || queries.length > 20) {
+  if (queries.length === 0) {
     return undefined;
   }
 

@@ -1,6 +1,6 @@
 import { parseNullableNumber, parseNullableString, parseRequiredNumber } from './types';
 
-import type { SteelPriceCandidateQuery } from './prices';
+import type { SteelPriceCandidateQuery, SteelPriceItem } from './prices';
 import type { SteelJsonValue, SteelRepositoryClient } from './types';
 import type { PriceCategory } from '../pricing/enums';
 
@@ -64,6 +64,12 @@ export interface SteelCuttingPriceGroup {
   supplements: SteelCuttingPriceRecord[];
 }
 
+export interface SteelCuttingCandidateMatch {
+  queryId: string;
+  category: PriceCategory;
+  candidates: readonly SteelPriceItem[];
+}
+
 interface CuttingLookupProvenance {
   lookupTerm: string;
   sourceCategories: PriceCategory[];
@@ -72,14 +78,439 @@ interface CuttingLookupProvenance {
 
 const cuttingLookupTermByCategory: Partial<Record<PriceCategory, string>> = {
   H型鋼: 'H型鋼',
+  'I型鋼/工字鐵': '工字鐵',
   平鐵: '平鐵',
-  鐵板: '鐵板',
   圓管: '鐵管',
   方管: '鐵管',
   扁方管: '鐵管',
+  圓鐵: '鐵管',
   角鐵: '角鐵',
   槽鐵: '槽鐵',
 };
+
+const pipeInchByMetricSize = new Map<number, number>([
+  [13, 0.5],
+  [19, 0.75],
+  [25, 1],
+  [32, 1.25],
+  [38, 1.5],
+  [40, 1.5],
+  [50, 2],
+  [65, 2.5],
+  [75, 3],
+  [100, 4],
+  [125, 5],
+  [150, 6],
+  [200, 8],
+]);
+
+function isSameNumber(left: number, right: number): boolean {
+  return Math.abs(left - right) < 0.000001;
+}
+
+function parseDimensionPair(value: string | undefined): readonly [number, number] | undefined {
+  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/iu);
+  if (!match) {
+    return undefined;
+  }
+
+  return [Number(match[1]), Number(match[2])];
+}
+
+function parseNumericRange(value: string | undefined): readonly [number, number] | undefined {
+  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)~(\d+(?:\.\d+)?)$/u);
+  if (!match) {
+    return undefined;
+  }
+
+  return [Number(match[1]), Number(match[2])];
+}
+
+function parseNumericValue(value: string | undefined): number | undefined {
+  if (!value?.normalize('NFKC').match(/^\d+(?:\.\d+)?$/u)) {
+    return undefined;
+  }
+
+  return Number(value);
+}
+
+function parseInchValue(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.normalize('NFKC').replace(/["”]/gu, '').trim();
+  const mixedFraction = normalized.match(/^(\d+)\s+(\d+)\/(\d+)$/u);
+  if (mixedFraction) {
+    return Number(mixedFraction[1]) + Number(mixedFraction[2]) / Number(mixedFraction[3]);
+  }
+  const fraction = normalized.match(/^(\d+)\/(\d+)$/u);
+  if (fraction) {
+    return Number(fraction[1]) / Number(fraction[2]);
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getCandidatePrimarySize(candidate: SteelPriceItem): number | undefined {
+  const dimensions = [candidate.outerDiameterMm, candidate.heightMm, candidate.widthMm].filter(
+    (value): value is number => value !== null,
+  );
+  if (dimensions.length > 0) {
+    return Math.max(...dimensions);
+  }
+
+  const declaredSize = (candidate.normalizedSpecText ?? candidate.productName)
+    ?.normalize('NFKC')
+    .match(/(?:角鐵|槽鐵)\s*(\d+(?:\.\d+)?)/u)?.[1];
+  return declaredSize ? Number(declaredSize) : undefined;
+}
+
+function isRoundBar(candidate: SteelPriceItem): boolean {
+  return (
+    candidate.category === '圓鐵' ||
+    candidate.subcategory === '圓條' ||
+    candidate.productName?.includes('圓條') === true
+  );
+}
+
+function getRoundBarSize(candidate: SteelPriceItem): number | undefined {
+  const text = (candidate.normalizedSpecText ?? candidate.productName)?.normalize('NFKC');
+  const metric = text?.match(/(?:圓鐵|圓條)\s*(\d+(?:\.\d+)?)\s*mm/u)?.[1];
+  if (metric) {
+    return Number(metric);
+  }
+  const inch = text?.match(/(?:圓鐵|圓條)\s*(\d+(?:\s+\d+\/\d+|\/\d+)?)/u)?.[1];
+  const parsedInch = parseInchValue(inch);
+  return parsedInch === undefined ? undefined : parsedInch * 25.4;
+}
+
+function getHFlangeThickness(candidate: SteelPriceItem): number | undefined {
+  const section = (candidate.normalizedSpecText ?? candidate.productName)
+    ?.normalize('NFKC')
+    .replace(/[＊*×]/gu, 'x')
+    .match(/\d+(?:\.\d+)?x\d+(?:\.\d+)?x\d+(?:\.\d+)?\/(\d+(?:\.\d+)?)/u);
+  return section ? Number(section[1]) : undefined;
+}
+
+function matchesHRecord(record: SteelCuttingPriceRecord, candidate: SteelPriceItem): boolean {
+  const dimensions = parseDimensionPair(record.normalizedSpecText ?? record.itemName);
+  if (dimensions && candidate.heightMm !== null && candidate.widthMm !== null) {
+    return (
+      isSameNumber(dimensions[0], candidate.heightMm) &&
+      isSameNumber(dimensions[1], candidate.widthMm)
+    );
+  }
+
+  return (
+    record.normalizedSpecText === undefined &&
+    record.notes?.includes('14m/m 以上') === true &&
+    (getHFlangeThickness(candidate) ?? 0) >= 14
+  );
+}
+
+function getApprovedMetricInch(candidate: SteelPriceItem): number | undefined {
+  const size = getCandidatePrimarySize(candidate);
+  return size === undefined ? undefined : pipeInchByMetricSize.get(size);
+}
+
+function matchesProfileRecord(
+  record: SteelCuttingPriceRecord,
+  candidate: SteelPriceItem,
+  useCandidateNominalInch: boolean,
+): boolean {
+  const candidateInch = useCandidateNominalInch
+    ? (parseInchValue(candidate.nominalInch) ?? getApprovedMetricInch(candidate))
+    : getApprovedMetricInch(candidate);
+  if (record.inchMin !== null && record.inchMax !== null) {
+    return (
+      candidateInch !== undefined &&
+      candidateInch >= record.inchMin &&
+      candidateInch <= record.inchMax
+    );
+  }
+
+  const size = getCandidatePrimarySize(candidate);
+  if (size === undefined) {
+    return false;
+  }
+
+  const dimensions = parseDimensionPair(record.normalizedSpecText ?? record.itemName);
+  if (dimensions && candidate.heightMm !== null && candidate.widthMm !== null) {
+    return (
+      (isSameNumber(dimensions[0], candidate.heightMm) &&
+        isSameNumber(dimensions[1], candidate.widthMm)) ||
+      (isSameNumber(dimensions[0], candidate.widthMm) &&
+        isSameNumber(dimensions[1], candidate.heightMm))
+    );
+  }
+
+  const numeric = parseNumericValue(record.normalizedSpecText ?? record.itemName);
+  return numeric !== undefined && isSameNumber(numeric, size);
+}
+
+function matchesChannelRecord(record: SteelCuttingPriceRecord, candidate: SteelPriceItem): boolean {
+  if (matchesProfileRecord(record, candidate, false)) {
+    return true;
+  }
+
+  const dimensions = parseDimensionPair(record.normalizedSpecText ?? record.itemName);
+  const thickness = getCandidateThickness(candidate);
+  return (
+    dimensions !== undefined &&
+    candidate.heightMm !== null &&
+    thickness !== undefined &&
+    isSameNumber(dimensions[0], candidate.heightMm) &&
+    isSameNumber(dimensions[1], thickness)
+  );
+}
+
+function getCandidateThickness(candidate: SteelPriceItem): number | undefined {
+  if (
+    candidate.thicknessMinMm !== null &&
+    candidate.thicknessMaxMm !== null &&
+    isSameNumber(candidate.thicknessMinMm, candidate.thicknessMaxMm)
+  ) {
+    return candidate.thicknessMinMm;
+  }
+  if (candidate.category === '平鐵' && candidate.widthMm !== null && candidate.heightMm !== null) {
+    return Math.min(candidate.widthMm, candidate.heightMm);
+  }
+  return undefined;
+}
+
+function isThinSquareTube(candidate: SteelPriceItem): boolean {
+  return (
+    (candidate.category === '方管' || candidate.category === '扁方管') &&
+    (getCandidateThickness(candidate) ?? Infinity) <= 1.2
+  );
+}
+
+function matchesFlatRecord(record: SteelCuttingPriceRecord, candidate: SteelPriceItem): boolean {
+  const width = candidate.widthMm;
+  const thickness = getCandidateThickness(candidate);
+  if (width === null || thickness === undefined) {
+    return false;
+  }
+
+  const normalized = record.normalizedSpecText ?? record.itemName;
+  const parsedRange = parseNumericRange(normalized);
+  let widthMatches = false;
+  if (parsedRange) {
+    widthMatches = width >= parsedRange[0] && width <= parsedRange[1];
+  } else if (record.mmMin !== null && record.mmMax !== null) {
+    widthMatches = width >= record.mmMin && width <= record.mmMax;
+  }
+  if (!widthMatches) {
+    return false;
+  }
+
+  const thicknessText = record.notes?.match(/厚度:([\d.、,，\s]+)/u)?.[1];
+  if (!thicknessText) {
+    return true;
+  }
+  const thicknesses = thicknessText
+    .split(/[、,，\s]+/u)
+    .map(Number)
+    .filter(Number.isFinite);
+  return thicknesses.some((value) => isSameNumber(value, thickness));
+}
+
+function matchesCuttingRecord(
+  group: SteelCuttingPriceGroup,
+  record: SteelCuttingPriceRecord,
+  candidate: SteelPriceItem,
+): boolean {
+  if (group.cuttingCategory.includes('H型鋼')) {
+    return matchesHRecord(record, candidate);
+  }
+  if (group.cuttingCategory === '鐵板/平鐵') {
+    return matchesFlatRecord(record, candidate);
+  }
+  if (
+    group.cuttingCategory === '鐵管' ||
+    group.cuttingCategory === '角鐵' ||
+    group.cuttingCategory === '槽鐵'
+  ) {
+    if (
+      group.cuttingCategory === '鐵管' &&
+      (isRoundBar(candidate) || isThinSquareTube(candidate))
+    ) {
+      return false;
+    }
+    if (group.cuttingCategory === '槽鐵') {
+      return matchesChannelRecord(record, candidate);
+    }
+    return matchesProfileRecord(record, candidate, group.cuttingCategory === '鐵管');
+  }
+  return false;
+}
+
+function selectCuttingPrices(
+  group: SteelCuttingPriceGroup,
+  candidate: SteelPriceItem,
+): SteelCuttingPriceRecord[] {
+  const matches = group.prices.filter((record) => matchesCuttingRecord(group, record, candidate));
+  if (group.cuttingCategory !== '槽鐵') {
+    return matches;
+  }
+
+  const dimensionMatches = matches.filter(
+    (record) => parseDimensionPair(record.normalizedSpecText ?? record.itemName) !== undefined,
+  );
+  return dimensionMatches.length > 0 ? dimensionMatches : matches;
+}
+
+function getCandidateSearchText(candidate: SteelPriceItem): string {
+  return [candidate.material, candidate.productName, candidate.normalizedSpecText]
+    .filter((value): value is string => value !== undefined)
+    .join(' ');
+}
+
+function matchesCuttingSupplement(
+  group: SteelCuttingPriceGroup,
+  supplement: SteelCuttingPriceRecord,
+  candidates: readonly SteelPriceItem[],
+): boolean {
+  const text = [supplement.itemName, supplement.normalizedSpecText, supplement.notes]
+    .filter((value): value is string => value !== undefined)
+    .join(' ');
+  const hasCandidateText = (pattern: RegExp) =>
+    candidates.some((candidate) => pattern.test(getCandidateSearchText(candidate)));
+  const hasCategory = (categories: readonly PriceCategory[]) =>
+    candidates.some((candidate) => categories.includes(candidate.category as PriceCategory));
+
+  const roundBars = candidates.filter(isRoundBar);
+  if (roundBars.length > 0) {
+    if (!text.includes('圓條')) {
+      return false;
+    }
+    if (text.includes('1"以下')) {
+      return roundBars.some((candidate) => (getRoundBarSize(candidate) ?? Infinity) <= 25.4);
+    }
+    return true;
+  }
+
+  if (group.cuttingCategory === '鐵管') {
+    if (text.includes('圓條')) {
+      return false;
+    }
+    if (text.includes('白A、錏方管')) {
+      return hasCategory(['方管', '扁方管']) && hasCandidateText(/白A|錏/u);
+    }
+    if (text.includes('白鐵')) {
+      const whiteCandidates = candidates.filter((candidate) =>
+        /白鐵/u.test(getCandidateSearchText(candidate)),
+      );
+      if (text.includes('100 以下')) {
+        return whiteCandidates.some(
+          (candidate) => (getCandidatePrimarySize(candidate) ?? Infinity) <= 100,
+        );
+      }
+      if (text.includes('100 以上')) {
+        return whiteCandidates.some(
+          (candidate) => (getCandidatePrimarySize(candidate) ?? -Infinity) >= 100,
+        );
+      }
+      return whiteCandidates.length > 0;
+    }
+    if (text.includes('1"以下小方管')) {
+      return candidates.some(
+        (candidate) =>
+          candidate.category === '方管' && (getCandidatePrimarySize(candidate) ?? Infinity) <= 25.4,
+      );
+    }
+    if (text.includes('方管厚度')) {
+      return candidates.some(isThinSquareTube);
+    }
+  }
+  if (group.cuttingCategory === '角鐵' && text.includes('白鐵')) {
+    return hasCandidateText(/白鐵/u);
+  }
+  if (group.cuttingCategory === '鐵板/平鐵' && text.includes('白鐵')) {
+    return (
+      hasCandidateText(/白鐵/u) ||
+      candidates.some((candidate) => (candidate.widthMm ?? Infinity) <= 25.4)
+    );
+  }
+  return true;
+}
+
+function hasTierValue(values: SteelPriceItem['tierPrices']): boolean {
+  return Object.values(values).some((value) => value !== null);
+}
+
+function isQuoteableCandidate(candidate: SteelPriceItem): boolean {
+  return (
+    hasTierValue(candidate.tierPrices) ||
+    ((candidate.unit === 'Kg' || candidate.unit === 'M') && hasTierValue(candidate.tierRatios))
+  );
+}
+
+function allowsSupplementOnly(group: SteelCuttingPriceGroup, candidate: SteelPriceItem): boolean {
+  return group.cuttingCategory === '鐵管' && (isRoundBar(candidate) || isThinSquareTube(candidate));
+}
+
+export function filterSteelCuttingPriceGroups(
+  groups: readonly SteelCuttingPriceGroup[],
+  matches: readonly SteelCuttingCandidateMatch[],
+): SteelCuttingPriceGroup[] {
+  return groups.flatMap((group) => {
+    const recordIds = new Set<number>();
+    const supplementIds = new Set<number>();
+    const queryIds: string[] = [];
+    const sourceCategories: PriceCategory[] = [];
+
+    for (const match of matches) {
+      const candidates = match.candidates.filter(isQuoteableCandidate);
+      if (!group.sourceCategories.includes(match.category) || candidates.length === 0) {
+        continue;
+      }
+
+      const candidateSelections = candidates.map((candidate) => {
+        const prices = selectCuttingPrices(group, candidate);
+        const supplements =
+          prices.length > 0 || allowsSupplementOnly(group, candidate)
+            ? group.supplements.filter((supplement) =>
+                matchesCuttingSupplement(group, supplement, [candidate]),
+              )
+            : [];
+        return { prices, supplements };
+      });
+      const selectionKeys = new Set(
+        candidateSelections.map(
+          ({ prices, supplements }) =>
+            `p:${prices.map(({ id }) => id).join(',')}|s:${supplements.map(({ id }) => id).join(',')}`,
+        ),
+      );
+      if (selectionKeys.size !== 1) {
+        continue;
+      }
+      const selection = candidateSelections[0];
+      if (!selection || (selection.prices.length === 0 && selection.supplements.length === 0)) {
+        continue;
+      }
+      selection.prices.forEach((record) => recordIds.add(record.id));
+      selection.supplements.forEach((record) => supplementIds.add(record.id));
+      appendUnique(queryIds, match.queryId);
+      appendUnique(sourceCategories, match.category);
+    }
+
+    if (recordIds.size === 0 && supplementIds.size === 0) {
+      return [];
+    }
+
+    return [
+      {
+        cuttingCategory: group.cuttingCategory,
+        sourceCategories,
+        queryIds,
+        prices: group.prices.filter((record) => recordIds.has(record.id)),
+        supplements: group.supplements.filter((supplement) => supplementIds.has(supplement.id)),
+      },
+    ];
+  });
+}
 
 function appendUnique<Value>(values: Value[], value: Value): void {
   if (!values.includes(value)) {

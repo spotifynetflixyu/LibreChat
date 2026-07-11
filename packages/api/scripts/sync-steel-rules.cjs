@@ -158,7 +158,7 @@ const categoryRuleMetadataByFile = {
     title: 'Steel 類別查價方式',
     locator: '類別查價方式',
     ruleSection: 'price_lookup',
-    priority: 15,
+    priority: 99,
   },
   'docs/rules/類別規則/C型鋼.txt': {
     slug: 'steel_quote_rules_c_type',
@@ -238,14 +238,16 @@ function buildRules(repoRoot) {
   const output = readRulePrompt(repoRoot, 'docs/rules/輸出規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR規則.txt');
   const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
-  const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則').map((sourceFile) => {
-    const rule = readRulePrompt(repoRoot, sourceFile);
-    return categoryRule({
-      sourceFile,
-      prompt: rule.prompt,
-      fileSha: rule.sha256,
-    });
-  });
+  const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則')
+    .map((sourceFile) => {
+      const rule = readRulePrompt(repoRoot, sourceFile);
+      return categoryRule({
+        sourceFile,
+        prompt: rule.prompt,
+        fileSha: rule.sha256,
+      });
+    })
+    .sort((left, right) => left.priority - right.priority || left.slug.localeCompare(right.slug));
 
   return [
     unifiedRule({

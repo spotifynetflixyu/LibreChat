@@ -6,20 +6,20 @@
 
 只指定白鐵、未明確表面材質時，厚度小於 3t 預設 `2B`，厚度 3t 以上（含）預設 `NO1`。訂單未指定厚度時，在其他條件相符且可報價的候選中採最小厚度。
 
-記號判讀：記號 `PL` 後數字為厚度 mm，`*` 後數字為寬度 mm。例：`PL6*80` = 6mm 厚、80mm 寬；成品寬度不放進材料查價 keyword。
+記號判讀：記號 `PL` 後數字為厚度 mm，`*` 後數字為寬度 mm。例：`PL6*80` = 6mm 厚、80mm 寬；材料首查只將厚度放入 `thicknessMm`，成品寬度保留給重量計算。
 
 板材查價優先順序：
 
 1. 使用 `category: "鐵板"`，次類別 enum 為 `網板`、`花板`、`圍籬板`、`檔泥板`、`特殊`；未確認次類別時省略。
-2. 加入可確認的 `material` 與 `thicknessMm`；`keyword` 只放板種或規格片段。
+2. 首次材料查價使用 `category`、可確認的 `material`、`thicknessMm`；2B、NO1、花板、網板等明確表面或板種同筆加入產品 `keyword`。`ST50`、`SN400B` 是表單代號，只保留在判讀與備註。
 3. 只指定白鐵、未明確表面材質時，小於 3t（不含 3t）採 material / 品名包含 `2B` 的候選；3t 以上（含 3t）採包含 `NO1` 的候選。
 4. 同厚度預設優先採鐵板產品列中的「OT板雷射切割」Kg 單價；這不是另查切工。
 5. 「OT板雷射切割」在該厚度、該客戶級別的價格缺漏時，才候補採同厚度「OT板四方切」Kg 單價；候補仍無可用價格時送人工複核，不得改用其他厚度或當 0。
 6. 材質預設造成的不確定，用黑鐵 Kg 單價暫估。
 
 材料與加工要放在同一次 grouped query 的獨立 query，例如：
-`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["15"]},{"category":"加工/孔","subcategory":"鐵板","thicknessMm":["15"],"keyword":"孔"},{"category":"加工/折工","subcategory":"鐵板","thicknessMm":["15"]}]}`
-依 `queryResults` 相同順序對回材料、孔與折工。若材料 query 加 keyword 查不到，移除不必要 keyword，只用 category/material/thicknessMm 重查。鐵板切工價由同次 tool 結果頂層 `cuttingPrices` 自動附加，不另送切工 query。
+`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["15"]},{"category":"加工/孔","subcategory":"鐵板","keyword":"鑽孔","thicknessMm":["15"]},{"category":"加工/折工","subcategory":"鐵板","keyword":"板折 15mm"}]}`
+依 `queryResults` 相同順序對回材料、孔與折工。首次材料 query 沒有可用的精確候選時，依最後載入的通用查價方式重試。鐵板沒有獨立自動切工價；「OT板雷射切割／四方切」是材料候選的 Kg 單價，不得再從平鐵切工資料重複加價。只有訂單明列獨立切割加工且材料價未含該加工時，才另送對應加工 query。
 
 重量公式：
 鐵板四方理論重 Kg = 長 mm × 寬 mm × 厚 mm × 密度 ÷ 1,000,000 × 數量。

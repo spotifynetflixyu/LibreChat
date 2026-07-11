@@ -18,12 +18,16 @@
    - 多筆相似客戶或分級不明時列為低信心 / 人工複核，多個等級不明確時，報價預設用B。
 2. `search_price_candidates`
    - 需要產品價格、材料價格、加工價格、切工價格、孔加工價格、開槽價格、折工價格或其他報價單價時使用。
-   - input 只允許 `{ "queries": [...] }`。同一輪所有訂單列與其加工 query 應合併成一次 tool call；backend 依 `queries` 陣列順序固定產生 `q1`、`q2`…，輸入的 `queryId` 會被忽略。`queryResults` 順序與 `queries` 一致，依相同 index / 產生的 ID 對回原訂單列，不跨 query 混用候選。
+   - input 只允許 `{ "queries": [...] }`。同一輪所有訂單列與其加工 query 應合併成一次 tool call；整批沒有 query 數量上限，每筆 query 各自使用自己的 `limit`。backend 依 `queries` 陣列順序固定產生 `q1`、`q2`…，輸入的 `queryId` 會被忽略。`queryResults` 順序與 `queries` 一致，依相同 index / 產生的 ID 對回原訂單列，不跨 query 混用候選。
    - lookup query 可省略 `mode`，依類別規則使用 `category`、`subcategory`、`material`、`thicknessMm`、`erpItemCode`、`keyword`、`limit`。`material` 與 `keyword` 都是包含搜尋；material enum 只用 `黑鐵`、`白鐵`、`鋁`、`錏`、`鋅`、`鎢`、`塑膠`。
-   - `keyword` 可省略；有空白時 backend 會拆成 AND。已知 ERP 優先 `erpItemCode` 精確查詢；category 不明時先用 `mode: "category_discovery"`。
-   - 每筆 query 的 `limit` 預設 30；平時不要傳 `limit`，只有候選需要擴大時才傳 100。
+   - 首次 lookup 一律以已判定的 `category` 為基礎，再依具體類別規則加入可確認的 `subcategory`、`material`、`thicknessMm` 或 canonical 品名/規格 `keyword`。只有 category 未知時，才先使用 `mode: "category_discovery" + keyword` 判定類別。
+   - `erpItemCode` 是價格候選返回後才能取得的 DB 識別欄位，不得作為首次 lookup 的前提。候選已返回時直接採用該列，不得為了同一列再用 `erpItemCode` 重查；只有後續回合需要精確重取先前已確認的候選時才可使用。
+   - 只有品名或規格可以作為價格 keyword，任何代號都不得作為價格 keyword；ST50、SN400B 等表單代號只保留在判讀/備註。`keyword` 有空白時 backend 會拆成 AND 硬篩選；各類 canonical keyword 依類別規則正規化。
+   - 每筆 query 的 `limit` 預設 30；平時不要傳 `limit`。只有前次候選數等於前次 limit、表示結果確實可能被截斷，而且仍未取得規格精確且 `quoteEligible: true` 的候選時，才可把 limit 提高到 100。
+   - 某筆 query 已回傳規格精確且 `quoteEligible: true` 的可用候選後，必須直接選價，不得以拆分或改寫相同規格、加入重複 filter、改變 limit 等方式再次查詢。修正查詢只可包含前次 `no_match`、沒有規格精確候選、精確候選全部不可報價或明確缺少必要規格的項目；不得夾帶任何前次 `status: "ok"` 的 query，也不得原樣重送未修改的失敗 query。每項最多修正一次，仍無法選價就送人工複核。
+   - 頂層 `cuttingPrices` 已由 backend 依 `quoteEligible: true` 且規格唯一的成功材料 candidate 篩選；材料 `no_match`、不可報價或多個候選對到不同切工 key 時不附切工。已由 `cuttingPrices` 返回的切工或限制不得另建價格 query。圓鐵只可使用圓條不切/外切限制，不借用鐵管基本價；方鐵、鐵軌與鐵板沒有可安全自動套用的獨立切工價。
    - direct A-F tier price 優先。ratio option 只有 row unit 為 `Kg` 或 `M` 才能作單位售價；`category_rule_pending` 代表非 Kg/M ratio 必須略過。缺價是未知/人工複核，不是 0。
-   - 範例：`{ "queries": [{ "category": "鐵板", "material": "黑鐵", "thicknessMm": ["15"] }, { "category": "加工/孔", "subcategory": "鐵板", "keyword": "22mm孔" }] }`；第一筆固定為 `q1`，第二筆固定為 `q2`。
+   - 已知類別首查範例：`{ "queries": [{ "category": "平鐵", "material": "黑鐵", "keyword": "黑鐵平鐵50 50x6mm" }, { "category": "角鐵", "material": "黑鐵", "keyword": "黑角鐵50 50x6mm" }, { "category": "圓鐵", "material": "黑鐵", "keyword": "磨光圓鐵 10mm" }] }`；第一筆固定為 `q1`，後續依序為 `q2`、`q3`，每類完整規格範例依 category rule。
 3. `read_markdown`
    - 呼叫前先檢查 chat history；若需要的 OCR / workbook Markdown 已在 history 中且足以完成更新或報價，就不要呼叫此工具。
    - 只允許 `scope: "workbook"` 或 `scope: "ocr"`。`workbook` 包含嚴格欄位的 `system_order`；`ocr` 是無固定欄位的圖面解析文本。

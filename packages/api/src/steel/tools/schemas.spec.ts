@@ -23,13 +23,25 @@ describe('Steel price candidate tool schema', () => {
 
   it('normalizes duplicate supplied IDs to their array positions', () => {
     expect(
-      schema.parse({
-        queries: [
-          { queryId: 'same', category: '鐵板' },
-          { queryId: 'same', category: 'H型鋼' },
-        ],
-      }).queries.map((query) => query.queryId),
+      schema
+        .parse({
+          queries: [
+            { queryId: 'same', category: '鐵板' },
+            { queryId: 'same', category: 'H型鋼' },
+          ],
+        })
+        .queries.map((query) => query.queryId),
     ).toEqual(['q1', 'q2']);
+  });
+
+  it('does not impose a top-level query count limit', () => {
+    const queries = Array.from({ length: 25 }, (_, index) => ({
+      category: '鐵板' as const,
+      thicknessMm: [String(index + 1)],
+      limit: 1,
+    }));
+
+    expect(schema.parse({ queries }).queries).toHaveLength(25);
   });
 
   it('keeps an omitted limit undefined and clamps every positive integer above 100', () => {

@@ -1,4 +1,5 @@
 import {
+  filterSteelCuttingPriceGroups,
   searchSteelCustomers,
   searchSteelCuttingPriceGroups,
   searchSteelPriceCandidateGroups,
@@ -256,6 +257,22 @@ async function searchPriceCandidates(
     searchSteelCuttingPriceGroups(client, input.queries),
   ]);
   const groupsByIndex = new Map(repositoryGroups.map((group) => [group.queryIndex, group]));
+  const cuttingCandidateMatches = input.queries.flatMap((query, queryIndex) => {
+    if (query.mode === 'category_discovery') {
+      return [];
+    }
+    return [
+      {
+        queryId: query.queryId,
+        category: query.category,
+        candidates: groupsByIndex.get(queryIndex)?.candidates ?? [],
+      },
+    ];
+  });
+  const filteredCuttingPrices = filterSteelCuttingPriceGroups(
+    cuttingPrices,
+    cuttingCandidateMatches,
+  );
   let matchedQueryCount = 0;
   let candidateCount = 0;
   let categoryCandidateCount = 0;
@@ -280,7 +297,7 @@ async function searchPriceCandidates(
   });
   return {
     queryResults,
-    cuttingPrices,
+    cuttingPrices: filteredCuttingPrices,
     summary: {
       queryCount: input.queries.length,
       groupCount: queryResults.length,

@@ -63,7 +63,8 @@ registry; empty subcategory remains valid for every category.
 
 ## Search contract
 
-One tool call accepts 1-20 queries. `queryId` is optional for backward
+One tool call accepts one or more queries without a top-level query-count cap.
+Each query keeps its own candidate limit. `queryId` is optional for backward
 compatibility; omitted IDs normalize to `q1`, `q2`, and so on. Category lookup
 queries accept `category`, `subcategory`, `material`, `thicknessMm`,
 `erpItemCode`, `keyword`, `unit`, and `limit`.

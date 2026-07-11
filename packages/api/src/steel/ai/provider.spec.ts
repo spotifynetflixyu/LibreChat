@@ -1374,6 +1374,98 @@ describe('OpenAI OAuth provider adapter', () => {
     expect(JSON.stringify(coalescedToolResult)).not.toContain('OTL006');
   });
 
+  it('coalesces more than 20 price queries without a grouped total limit', async () => {
+    const firstQueries = Array.from({ length: 11 }, (_, index) => ({
+      category: '鐵板',
+      thicknessMm: [String(index + 1)],
+      limit: 1,
+    }));
+    const secondQueries = Array.from({ length: 11 }, (_, index) => ({
+      category: 'H型鋼',
+      keyword: `${index + 100}x100`,
+      limit: 2,
+    }));
+    const doGenerate = jest
+      .fn()
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_price_first',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({ queries: firstQueries }),
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'call_price_second',
+            toolName: 'search_price_candidates',
+            input: JSON.stringify({ queries: secondQueries }),
+          },
+        ],
+        finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+        usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+        response: { id: 'resp_unbounded_group_1' },
+        warnings: [],
+      }))
+      .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
+        content: [{ type: 'text', text: '已完成全部查價。' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 12 }, outputTokens: { total: 4 } },
+        response: { id: 'resp_unbounded_group_2' },
+        warnings: [],
+      }));
+    const executeSteelToolCall = jest.fn(async (options) => {
+      const queries = (options.arguments as SearchPriceCandidatesInputFixture).queries;
+
+      return {
+        ok: true as const,
+        toolName: options.toolName as 'search_price_candidates',
+        data: {
+          queryResults: queries.map((query) => ({
+            queryId: (query as { queryId: string }).queryId,
+            query,
+            status: 'no_match',
+            candidates: [],
+            categoryCandidates: [],
+            issues: [],
+          })),
+          summary: {
+            queryCount: queries.length,
+            groupCount: queries.length,
+            matchedQueryCount: 0,
+            noMatchQueryCount: queries.length,
+            candidateCount: 0,
+            categoryCandidateCount: 0,
+          },
+        },
+        sourceRefs: [],
+        durationMs: 1,
+        redactionVersion: 1 as const,
+      };
+    });
+
+    await sendSteelOAuthChat({
+      ...createMockOpenAIOAuthDependencies(doGenerate),
+      ensureFresh: false,
+      executeSteelToolCall,
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '一次查完 22 個訂單列。' }],
+      reasoningEffort: 'medium',
+      steelRuntimePolicy: true,
+      steelRuntimeContext: createProviderRuntimeContext(),
+    });
+
+    expect(executeSteelToolCall).toHaveBeenCalledTimes(1);
+    const executedInput = executeSteelToolCall.mock.calls[0]?.[0]
+      .arguments as SearchPriceCandidatesInputFixture;
+    expect(executedInput.queries).toHaveLength(22);
+    expect(executedInput.queries.map((query) => query.queryId)).toEqual(
+      Array.from({ length: 22 }, (_, index) => `q${index + 1}`),
+    );
+    expect(executedInput.queries.slice(0, 11).every((query) => query.limit === 1)).toBe(true);
+    expect(executedInput.queries.slice(11).every((query) => query.limit === 2)).toBe(true);
+  });
+
   it('does not apply discovered customer tier to later price lookup calls', async () => {
     const doGenerate = jest
       .fn()

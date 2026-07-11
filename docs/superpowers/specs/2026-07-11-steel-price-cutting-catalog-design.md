@@ -23,7 +23,8 @@ catalog from `docs/reference/切工價錢-raw.xlsm` through a reviewed
 
 ## Price query contract
 
-One `search_price_candidates` call continues to accept 1-20 grouped queries.
+One `search_price_candidates` call accepts one or more grouped queries without a
+top-level query-count cap. Each query keeps its own candidate limit.
 Each result preserves its normalized `queryId`.
 
 Lookup queries accept:
@@ -65,11 +66,12 @@ of candidate data returned to the AI.
 
 ## Consolidated cutting lookup
 
-Normal grouped price queries finish first. The system then derives one set of
-unique cutting lookup terms from the lookup-query categories, performs one
-unlimited `steel.cutting_prices` query, organizes the results, and adds them to
-the final price data. Category discovery queries do not trigger cutting lookup
-because they do not select one authoritative product category.
+The system derives one set of unique cutting lookup terms from the lookup-query
+categories and performs one unlimited `steel.cutting_prices` query in parallel
+with the normal grouped price query. After both return, backend code filters the
+cutting catalog by the successfully matched material candidate specifications
+before adding it to the final price data. Category discovery and no-match
+queries contribute no cutting rows.
 
 Supported mappings are:
 
@@ -93,9 +95,14 @@ cutting_category ILIKE '%' || lookup_term || '%'
 This lets both `平鐵` and `鐵板` match the workbook category
 `鐵板/平鐵`. Only the three pipe categories are transformed, all to `鐵管`.
 
-Cutting lookup uses no thickness, dimension, keyword, active/reviewed, or row
-limit filter. All matching price and supplemental rows are returned for AI
-selection and calculation. If no supported product category is present, the
+The database cutting lookup uses no thickness, dimension, keyword,
+active/reviewed, or row limit filter. The AI-visible output is candidate-aware:
+H sections use exact height/width plus the complete section for 14mm processing,
+pipe families prefer nominal inch and otherwise use approved metric aliases,
+and angle/channel/flat rows use their category-specific dimensions. A matched
+candidate with no unique cutting row does not fall back to the full catalog.
+Supplemental rows are retained only for a cutting group with at least one
+matched base/process row. If no supported product category is present, the
 database cutting query is skipped and the output contains an empty array.
 
 The final output extends the existing grouped price data:
@@ -120,9 +127,9 @@ interface SteelCuttingPriceGroup {
 }
 ```
 
-The same cutting data is emitted once per cutting category rather than copied
-into every query result. `sourceCategories` and `queryIds` preserve the links
-back to the affected order lines.
+The same filtered cutting data is emitted once per cutting category rather than
+copied into every query result. `sourceCategories` and `queryIds` are rebuilt
+from successful candidate matches and preserve only the affected order lines.
 
 ## Clean cutting workbook
 

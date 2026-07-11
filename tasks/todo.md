@@ -1,3 +1,73 @@
+# Active: Structured-first category lookup guidance - 2026-07-11
+
+Goal: remove keyword-led examples from every concrete Steel category rule so
+known categories always start with supported structured price-query params.
+
+- [x] Inventory keyword guidance across the lookup guide and concrete category-rule files.
+- [x] Add a failing regression that rejects keyword guidance in concrete category rules.
+- [x] Rewrite every concrete category query section and example with structured params only.
+- [x] Sync reviewed rules to dev and prod, then verify DB prompt hashes/order.
+- [x] Run focused tests, live lookup smoke, and `git diff --check`; record review evidence.
+
+Review:
+
+- Rewrote all 26 concrete category query sections in `查價方式.txt` to use
+  only `category`, `subcategory`, `material`, `thicknessMm`, and
+  `erpItemCode` for the first lookup.
+- Removed keyword-led text and JSON examples from the concrete C型鋼, H型鋼,
+  孔, and 鐵板 rules. The long-material cutting rule keeps only its explicit
+  negative statement that automatic cutting lookup does not use keyword.
+- Product-name/spec keyword guidance now exists only in the common guide and
+  agent rules for unknown-category discovery or retry after a structured first
+  lookup.
+- Dev and prod DB readback both report zero concrete category prompts containing
+  keyword, keep `steel_category_price_lookup_guide` last at priority 99, and
+  return nine candidates for the 6mm black-plate structured lookup.
+- Focused sync-rule Jest passed 7/7 tests and `git diff --check` passed.
+
+# Active: Single-call Steel plate price lookup - 2026-07-11
+
+Goal: explain the duplicate `search_price_candidates` calls in conversation
+`04ea7c88-29f9-4e7c-a44c-18c342c0219f` and make the initial lookup retrieve
+usable plate-price candidates without a second tool round.
+
+- [x] Read project instructions, relevant lessons, prior lookup decisions, and both captured tool outputs.
+- [x] Reproduce the exact query difference and rank falsifiable root-cause hypotheses.
+- [x] Trace the effective reviewed rules, tool schema, and runtime prompt for keyword/fallback guidance.
+- [x] Add a focused regression for the approved first-call lookup behavior.
+- [x] Apply the smallest rule/tool change and sync reviewed rules to dev and prod DB with readback.
+- [x] Run focused tests, live lookup smoke, and `git diff --check`; record review evidence here.
+
+Diagnosis so far:
+
+- First call used `category=鐵板`, `material=黑鐵`, `thicknessMm=[6]`, plus
+  `keyword="ST50 SN400B"`; it returned `no_match` and zero candidates.
+- Second call kept the same structural filters but removed `keyword`; it returned
+  nine candidates. Both calls returned the same cutting-price catalog.
+- The second call is therefore a model repair/retry after an over-constrained
+  first query, not a duplicate backend query or a cutting-price lookup.
+
+Review:
+
+- Production Mongo confirmed the same assistant response called
+  `search_price_candidates` first with `keyword="ST50 SN400B"` and then without
+  keyword. Production `steel.rules` also contained the old instruction to remove
+  keyword and retry, so the second call was rule-driven.
+- Common lookup behavior now requires every known-category first lookup to omit
+  keyword and use only structured filters. Only unknown categories may start with
+  `category_discovery + keyword`; known-category keyword retry is reserved for a
+  first result with no usable exact candidate.
+- Price keyword is now a whitelist: only product names or specifications are
+  allowed. All codes are forbidden; `ST50` and `SN400B` are form codes, while ERP
+  codes must use `erpItemCode`.
+- `steel_category_price_lookup_guide` now has priority 99. Dev and prod DB
+  readback both place it last after all concrete category rules, matching runtime
+  `ORDER BY priority ASC, id ASC`.
+- Dev and prod live structured lookup `{category:鐵板, material:黑鐵,
+  thicknessMm:[6]}` each returned `status=ok`, 9 candidates, first ERP
+  `BNB060410`, without keyword.
+- Focused sync-rule Jest passed 6/6 tests and `git diff --check` passed.
+
 # Active: Steel Default Pricing And Hole Thickness Query - 2026-07-11
 
 Goal: update the reviewed category pricing defaults for missing thickness/material,
@@ -8985,3 +9055,217 @@ Review:
   attempt; no signed URL was persisted or printed. Deployment health is green,
   while OCR content proof remains blocked by current AI Studio capacity rather
   than the production image, credentials, URL path, or MCP startup.
+
+# Active: H 型鋼重複查價診斷與規則優化 - 2026-07-11
+
+Goal: 釐清 production 對話為何連續呼叫 `search_price_candidates` 八次，使用
+Supabase 實際 H 型鋼資料設計一次可取得報價候選的查詢規則；本輪不修改工具
+程式邏輯，任何邏輯變更先提出影響分析與使用者討論。
+
+- [x] 讀取 production 對話的八次 tool call inputs/results，建立可重播的失敗序列。
+- [x] 查詢 cloud Supabase 的 H 型鋼 category/subcategory/material/unit/spec 分布與代表列。
+- [x] 對照現行 H 型鋼與 common 查價規則，定位重試循環的根因。
+- [x] 最小化更新 H 型鋼類別規則與相關 common 規則，保留既有使用者修改。
+- [x] dry-run、同步規則到 dev DB 並驗證 readback，再用相同 H 型鋼案例回歸。
+- [x] 若仍需改 `search_price_candidates` 邏輯，只整理方案、風險與測試範圍供討論。
+
+Review:
+
+- Production Mongo 證實同一 assistant turn 連續產生八個不同 tool calls，總
+  token count 239,874；第 2 次已取得四組 H 型鋼精確候選，後續仍改寫 query。
+- Cloud Supabase `steel.prices` 有 655 筆 active H 型鋼；本案四個完整斷面以
+  一次 grouped call 分別取得 14/12/14/13 筆候選，其中 confirmed Kg 為
+  11/11/11/10，全部低於預設 limit 30。
+- H 型鋼規則現以完整斷面 canonical keyword 首查、不疊 `thicknessMm`，並
+  明定 exact quoteable 候選的停止條件、limit 升級條件、切工去重與正確 kg/m
+  換算。agent/common guide 保留其他類別的結構化首查預設，只開明確複合規格例外。
+- 規則測試 7/7、dry-run 與 `git diff --check` 通過。dev DB 已 apply/readback：
+  H 型鋼 hash `4fc38892674fea737c14636266ae6ae2e68464184ea95886769ca452a67ec322`，
+  common guide hash `a9e2d02668841ec974481940a3d187a552750e822d5b2d555309eb7fe0e08ce0`。
+- Live OAuth manual smoke 的本機 token refresh 回 HTTP 401，因此未取得新的模型
+  端到端生成；規則 readback 與實際 grouped repository query 已完成回歸證明。
+
+# Active: 全類別查價規則資料盤點與 grouped limit 修正 - 2026-07-11
+
+Goal: 以 cloud Supabase `steel.prices` 的實際資料逐類別設計首查規則；所有首查
+都以 `category` 為基礎，不把 DB 返回後才知道的 `erpItemCode` 當前提。同時移除
+`search_price_candidates` 的整批總 limit，只保留每個 query 自己的 limit。
+
+- [x] 盤點所有 active category 的資料分布、可用 filter 欄位、複合規格與代表列。
+- [x] 逐類對照現行查價規則，決定 category + structured filters / canonical keyword 形狀。
+- [x] 修正 common 與各類別 rules，移除首查優先 `erpItemCode` 的錯誤敘述。
+- [x] 追蹤並移除 grouped search 的整批總 limit，保留 per-query limit 與 query provenance。
+- [x] 新增 focused regression tests，驗證所有 queries 都保留且每筆只受自己的 limit 約束。
+- [x] dry-run、同步 rules 到 dev DB、readback，並以 live Supabase 代表 query 回歸。
+
+Review:
+
+- Live dev Supabase 盤點 26 個 active categories。除 `T型鋼`、`鐵軌`、
+  `加工/開槽` 外，category-only 多數超過預設 30；平鐵/圓鐵/方鐵/鐵軌沒有
+  可用 thickness rows，管類與白鐵角鐵另有 thickness 缺漏或誤解析。
+- 全類首查現一律以 `category` 為基礎，再依 live data 使用可靠 structured
+  filters 或 canonical keyword；具體/common rules 已移除首查推定
+  `erpItemCode`。H/C/I/槽鐵/角鐵/管類等改用完整複合規格，商品目錄類用
+  產品名稱/完整規格，鐵板維持 material + thickness 主路徑。
+- 移除 `queries.max(20)` 與 provider coalescing 的 20-query guard；tool registry
+  與設計文件現明定頂層 queries 無總數上限，只有每 query default 30 / clamp
+  100。Executor regression 證明兩組各 100 candidates 完整保留，總數 200。
+- Live representative query 驗證：C=1、H=14、I=4、平鐵=3、方管=2、扁方管=4、
+  槽鐵=14、角鐵=7、鐵軌=1、圓鐵=1；C 2C 加工=1、圓管 OD/t=2、
+  鐵板黑鐵 t6=9、鐵板鑽孔 t15=1。
+- Focused Jest 5 suites / 69 tests、package build、dry-run、`git diff --check`
+  通過。Focused ESLint 為 0 errors；另回報 10 個既有 unused warnings，未修改
+  使用者其他進行中程式。
+- Dev DB 已 apply/readback。agent hash
+  `203b397985fd8a03300984a3993a4eb2abf0318176b97d630d8ebb1008835917`；
+  C/H/孔/長條料/鐵板/common hashes 分別為
+  `144989e3d1da49a0a935e373840cd32c25a2b7c149ee97557eca03455172dbbf`、
+  `3c3a0e4ea67a7583d1f7411d5f20f021fbab2ee287d877825d6902b8af26a12d`、
+  `2c9138e86c8f5419805e9b068b8f6000b8090e8d9454ebc34e504e315bb411e4`、
+  `cd784d949371abf5edde0b86ddb706a28395a2cb5f99876ffa9abfe62713ec42`、
+  `fda58139d0fe787dc890d5fbb2488f6b64fb300e4c88310b1de9424d344289c5`、
+  `462ef40a2d8c64e4026dadcb14b6a9ca324a14e139ad26f13bce43ab9884194a`。
+
+# Active: 同步查價規則至 dev 與 production Supabase - 2026-07-11
+
+Goal: 將目前 repo 中同一組已驗證 rules 同步至 dev 與 production 的
+`steel.rules`，並分別驗證 active/reviewed 狀態與 source SHA-256。
+
+- [x] 重新 dry-run 並記錄本次 canonical rule hashes。
+- [x] 使用 `.env` 同步 dev Supabase 並回讀。
+- [x] 使用 `.env.prod` 同步 production Supabase 並回讀。
+- [x] 比對 dev/prod 目標 rule hashes 完全一致，確認未修改其他資料。
+
+Review:
+
+- Dev 與 production 均成功 apply 9 筆 canonical rules；兩邊 readback 全部為
+  `active=true`、`review_state=reviewed`。
+- Dev/prod 九筆 source SHA-256 完全一致：agent
+  `203b397985fd8a03300984a3993a4eb2abf0318176b97d630d8ebb1008835917`、OCR
+  `0ebf52982547970a46ec3d121766de04b01052a43d2126f76dd582efe28ae718`、output
+  `6b3b740f4cb2b8cf9d332d1bfefaa530c1f5241d95695aac6c8cd5e758bd617c`、C
+  `144989e3d1da49a0a935e373840cd32c25a2b7c149ee97557eca03455172dbbf`、H
+  `3c3a0e4ea67a7583d1f7411d5f20f021fbab2ee287d877825d6902b8af26a12d`、孔
+  `2c9138e86c8f5419805e9b068b8f6000b8090e8d9454ebc34e504e315bb411e4`、
+  長條料 `cd784d949371abf5edde0b86ddb706a28395a2cb5f99876ffa9abfe62713ec42`、
+  鐵板 `fda58139d0fe787dc890d5fbb2488f6b64fb300e4c88310b1de9424d344289c5`、
+  common guide `462ef40a2d8c64e4026dadcb14b6a9ca324a14e139ad26f13bce43ab9884194a`。
+- 本次只 upsert/readback `steel.rules`；未執行 schema migration，也未修改其他表。
+
+# Active: Production 兩次查價與 cuttingPrices token 診斷 - 2026-07-11
+
+Goal: 重現 production 同一報價仍呼叫兩次 `search_price_candidates` 的原因，量化
+自動 `cuttingPrices` 對 context 的占用，判斷能否安全改成由材料候選規格縮小切工，
+並在修改共用邏輯前提出具體方案與影響範圍。
+
+- [x] 讀取 latest production tool trace，逐次比對 inputs、results、bytes 與 tokenCount。
+- [x] 量化各次 material candidates 與 automatic cuttingPrices 的 payload 占比。
+- [x] 對照 Supabase cutting data 與現行 category-only 關聯邏輯。
+- [x] 建立 ranked hypotheses 並驗證第二次 tool call 的直接觸發原因。
+- [x] 提出一次 tool call 的最小設計、風險與 regression test seam，先供討論。
+
+Review:
+
+- Production 最新 turn 的第二次呼叫是模型針對第一次四個 `no_match` 的
+  repair/retry，不是 backend 或切工查詢自動觸發。第一次四組 H 型鋼已各取得
+  14/12/14/13 筆可報價候選；方管兩組與孔兩組為 `no_match`。第二次錯誤地重送
+  一組已成功 H、兩組完全未改寫方管，只有孔 keyword 有改寫，最後沒有新增有效資料。
+- 兩次 raw tool output 合計 123,597 bytes；重複 `cuttingPrices` 為 53,926 bytes，
+  占 43.6%。第二次單獨有 65.8% 是切工 payload。兩次 tool 執行只花 4.395 秒，
+  assistant turn 約 239 秒且 tokenCount 45,339，瓶頸主要是模型 round/context。
+- 現行切工只按輸入 category 查整包 catalog，即使材料 `no_match` 仍回傳該類切工；
+  每次固定帶 81 rows。live dev/prod `steel.cutting_prices` 都是 119 rows，資料 hash
+  一致。以本案實際 candidate 規格匹配並保留適用 supplements，可把 81 rows 縮至
+  約 17 rows、JSON 約減少 79%。
+- 方管失敗是 canonical keyword 錯誤：live 價格列為 `150x6`、`100x6`，不是
+  `150x150x6`、`100x100x6`。規則層先修正此 query 形狀，才能移除模型 retry 動機。
+- 建議的共用邏輯需先取得使用者核准：材料 queries 完成後，以成功 candidates
+  衍生 category-specific cutting keys；H/槽/角採 exact normalized dimension，管類
+  優先 `nominalInch`，缺失時只使用核准的 metric-to-inch alias；材料 no-match 或
+  cutting 無唯一匹配時不回整包 catalog。另加 regression，鎖定 resolved query 不重送、
+  unchanged no-match 不重送、candidate-aware cutting 與 output bytes 上限。
+
+# Active: Candidate-aware cutting output 與單次查價修正 - 2026-07-11
+
+Goal: 保持材料與切工 Supabase 查詢並行，在 backend 依實際命中的材料候選規格
+篩選 `cuttingPrices`，修正方管與 H 孔 query 規則，降低模型 context 並消除本案
+第二次 `search_price_candidates` 的 repair 動機。
+
+- [x] 先新增 candidate-aware cutting unit/integration regression 並確認 red。
+- [x] 實作成功候選規格篩選、no-match 排除與 provenance 重建。
+- [x] 修正方管 canonical keyword 與 H 型鋼沖孔 grouped-query 規則。
+- [x] 執行 focused Jest、coverage、build、dry-run 與 diff hygiene。
+- [x] 同步 reviewed rules 到 dev/prod Supabase 並驗證 readback hashes。
+
+Review:
+
+- 保留既有兩個 Supabase calls 並行；新增 backend post-filter，依成功 candidates
+  篩 H、管、角鐵、槽鐵、平鐵切工規格，重建 `queryIds` / `sourceCategories`。
+  `no_match`、規格不足或無唯一切工匹配時不回退整包 catalog；補充規則也依候選
+  類別、材質與尺寸排除不適用列。
+- 方管 rule 已鎖定圖面 `150x150x6 -> 150x6`、`100x100x6 -> 100x6`；
+  H 翼板厚 14mm 以上才保留 KZZB10/11/12，KZZB11 不再按 Ø24/Ø22 拆 query。
+  Agent/common rules 同時禁止重送成功 query 與原樣重送失敗 query。
+- 以本案六筆 query 對 dev/prod live DB 重播均一次命中：H candidates
+  14/12/14/13、方管各 1，總計 55；切工從 81 rows 降為 18 rows，JSON 從
+  約 26,978 bytes 降至 6,128 bytes，約減少 77%。
+- Focused Jest 4 suites / 43 tests 通過；`cutting.ts` coverage 為 statements
+  94.35%、branches 84.04%、functions 100%、lines 94.08%。touched code focused
+  ESLint、package build 與 `git diff --check` 均通過，未執行 Prettier。
+- Dev/prod 均 apply/readback 9 筆 reviewed active rules；變更 hashes：agent
+  `f39688f4ece72e862903db76695493fba53e695264e7e7070d0106bcd480f6b0`、H
+  `50378b9ef36933390e769f0713c1a43077a03c2f9d2d827b84150642dc24fe8b`、孔
+  `133bb35e5ff11d37a3245999bd38d4d7293cc98e90142e20d963604a65b522ae`、長條料
+  `651aac30c9b4915d77b16cabc5b8b5c7ead2abf419c0ad1eae733f363bdae608`、common
+  `418180cac5a90b1249485c2363292dc884159d50ea07a985c9f2bd745f27767d`。
+- Rules 已在 dev/prod DB 生效；candidate-aware TypeScript code 尚需走應用程式部署
+  才會進入 production runtime，本輪未自行觸發 production deploy。
+
+# Active: 全長條鋼 candidate-aware 切工規則 - 2026-07-11
+
+Goal: 將 H 型鋼已採用的 candidate-aware cutting 原則擴到圓鐵、方鐵、鐵軌、
+平鐵、角鐵、槽鐵、I 型鋼/工字鐵與管類；每類先以 live Supabase 與切工來源
+證明規格映射，不把不同產品族的切工價格互相猜套。
+
+- [x] 盤點所有長條料 live candidate structured fields、canonical keyword 與切工來源列。
+- [x] 先新增各類 mapping/matcher regression 並確認 red。
+- [x] 實作缺少的 backend category mapping、candidate filter 與 supplement applicability。
+- [x] 更新各長條料類別與 common/agent rules。
+- [x] 執行 focused tests、coverage、build、live dev/prod replay 與 rule sync/readback。
+
+Review:
+
+- Dev/prod 使用相同 11 筆首查 JSON 重播：除 I型鋼/工字鐵 `5/0` 外，H型鋼
+  `14/11`、平鐵 `1/1`、角鐵 `5/5`、槽鐵 `8/4`、圓管 `1/1`、方管
+  `1/1`、扁方管 `2/2`、圓鐵 `1/1`、方鐵 `2/2`、鐵軌 `1/1` 均有
+  candidate/quoteEligible 價；I 類規則明載不可報價後直接人工複核。
+- 補齊 I型鋼/工字鐵與圓鐵 cutting mapping；圓鐵只返回不切/外切限制，不借用
+  鐵管基本價。方鐵現有切工 SKU 無 tier 價、鐵軌無切工列、鐵板無獨立自動
+  切工價，三者都不做近似套價。
+- 平鐵改用 live structured `widthMm`/`heightMm` 判定寬厚；槽鐵支援 `150x9.0`
+  高度×腹厚特例，且複合規格優先於一般高度 key；多個可報價候選對到不同切工
+  key、材料不可報價或規格不足時一律不附切工。
+- 11 類 live cutting replay 在 dev/prod 完全一致：raw catalog 119 rows 經 code
+  篩為 20 rows，縮小約 83.2%。5 suites / 64 tests、packages/api build 通過；
+  cutting.ts statements 94.11%、branches 83.52%、functions 100%、lines 93.82%。
+- Agent、common、長條料、鐵板等 9 筆 reviewed rules 已同步 dev/prod 並 readback；
+  最終長條料 hash `957fcc518c3f5448d8662097419fb4aab6cc1596e1554d43a0d3be9d14667f97`，
+  common hash `afce32ea00581294881e0a7bc07583d73c9bd14774b50df007c4933477e99907`。
+- Rules 已即時生效；candidate-aware TypeScript code 尚需應用程式部署才會進入
+  production runtime，本輪未自行觸發 production deploy。
+
+# Active: Production backend deploy - 2026-07-11
+
+Goal: 將單次 `search_price_candidates` repair guard、unbounded grouped queries 與
+candidate-aware cutting filter 部署到 DigitalOcean production，並以 workflow、
+health、build metadata 與 live 查價驗證。
+
+- [x] 確認 `master` 與 `origin/master` 無差異，production 由
+  `.github/workflows/deploy-prod.yml` 的 master push 觸發。
+- [x] 完成部署前 focused tests、build 與 diff hygiene。
+- [ ] 提交並 push master，監看 production workflow 完成。
+- [ ] 驗證 production health、build commit 與 live 單次查價行為。
+
+Review:
+
+- Pending.

@@ -234,10 +234,7 @@ const searchPriceCandidateQuerySchema = z.union([
 
 const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
   .object({
-    queries: z
-      .array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' })
-      .min(1)
-      .max(20),
+    queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1),
   })
   .strict()
   .transform(

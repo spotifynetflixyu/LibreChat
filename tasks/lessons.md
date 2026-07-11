@@ -1,5 +1,18 @@
 # Lessons
 
+- 類別規則中的 `search_price_candidates` 範例不可只看字面合理；每個 JSON 都要對 dev/prod live `steel.prices` 重播，分別記錄「有 candidate」與「有 `quoteEligible` 價」。例如方管 `150x6` 雖命中 GDB15060，但只有不可用的非 Kg/M ratio，應改用 `100x6` 作可報價範例，並明載 150x6 須人工複核。
+- 切工 candidate-aware matcher 若同時命中一般尺寸 key 與更精確的複合尺寸 key，必須優先複合 key；例如槽鐵 200x90 不可同時回傳一般 `200` 與精確 `200x90` 兩個價格。
+- Candidate-aware `cuttingPrices` 應保留材料與切工 catalog 的並行 Supabase 查詢，再由 backend code 於兩邊返回後 post-filter；這能降低 AI token 而不增加 DB round-trip。篩選不只處理 base price，補充規則也必須依 candidate 的類別、材質與尺寸排除不適用列。
+- `search_price_candidates` 的自動 `cuttingPrices` 不可只依輸入 category 回傳整包切工目錄；應先完成材料查詢，再以實際命中的 candidate 規格做類別專用匹配。材料 `no_match` 時不得附上該類切工，否則既增加 context，也會讓模型誤以為已有可套用切工。
+- 方管價格資料的 canonical keyword 只寫一次邊長，例如圖面 `150x150x6` 要查 `category: "方管" + keyword: "150x6"`；不能把完整方形截面直接當 DB keyword。所有 canonical query 都必須以 live `steel.prices` 的實際 `normalized_spec` 驗證。
+- Production 出現第二次 `search_price_candidates` 時，要先區分「模型針對部分 `no_match` 的 repair/retry」與 backend 自動切工 enrichment。切工 catalog 不會自行觸發第二次 tool call，但重複回傳整包 catalog 會大幅放大第二輪 context；已成功 query 與完全未改寫的失敗 query 都不得重送。
+- Steel `search_price_candidates` 的首次查價永遠以已判定的 `category` 為基礎；`erpItemCode` 是價格資料返回後才能取得的識別欄位，不能寫成首次查價優先策略。只有使用者原始輸入明確提供 ERP 料號時，才可在首查同時傳入。
+- Grouped `search_price_candidates` 只應套用各 query 自己的 `limit`；不得再用整批總 limit 截斷 `queries`、`queryResults`、跨 query candidates 或 source refs，否則後面的訂單列即使各自未超限也會從 AI context 消失。
+- H/C/I/槽鐵/角鐵/圓管/方管/扁方管等具有多維複合規格的類別，首查必須使用 `category + canonical keyword`，不能只靠單一 `thicknessMm`。平鐵、圓鐵、方鐵、鐵軌及大型商品目錄類別也因 structured 欄位缺漏或過寬，需要在 category-based 首查同筆加入可確認的品名/規格 keyword；取得可用候選後禁止改寫同規格或 limit 重查。
+- H 型鋼價格候選的 `unitWeightValue` / `kg_per_piece_or_stock_length` 是 `lengthMm` 對應母材整支總重，不是 kg/m。報價必須先除以母材長度換算 kg/m，再乘成品長度與數量；不得為了找成品同長 row 反覆查價。
+- Steel 各具體類別的首查形狀必須先以 live `steel.prices` 證明。每筆一律帶 `category`；structured 欄位可靠且具選擇性時才加 `subcategory`、`material`、`thicknessMm`，複合規格或大型商品目錄則同筆加入 canonical 品名/規格 `keyword`。不得用跨類別 blanket 規則禁止 keyword，也不得在沒有資料證據時通用化 `thicknessMm`。
+- Steel runtime 類別規則順序必須先放所有具體類別規則，最後才放 `docs/rules/類別規則/查價方式.txt` 通用查價規則；以 DB `priority` 與 build/sync 順序共同鎖定，不能只依檔名排序。
+- Steel 查價首次 lookup 一律以已判定的 `category` 為基礎，再依該類 live 資料加入 structured filters 或 canonical keyword。只有 category 未知時才先使用 `mode: "category_discovery" + keyword`。`erpItemCode` 是 DB 候選返回值，不是首查前提；候選已返回就直接採用，不能為同一列再用 ERP 重查。`ST50`、`SN400B` 等表單代號只留在判讀/備註。
 - 加工/孔厚度區間一律是半開區間：下限「以上（含）」、上限「以下（不含）」，即 `min <= thickness < max`；只有 `min = max` 的單一厚度列使用精確匹配。不可把一般區間的上限當作可命中端點。
 - Steel material-unit defaults are category-specific: C型鋼、H型鋼、方鐵、鐵板 prefer Kg and must go to manual review when no usable Kg price exists, unless the request explicitly says `不切清`, which permits M/支/other direct units. 槽鐵、角鐵、鐵軌、圓管、圓鐵、平鐵、扁方管、方管、網 default to `不切清` and prefer 支/只/片; 板/浪板 pricing is length-led. Preserve precise intermediate values and ceil each final material-line subtotal to an integer TWD.
 

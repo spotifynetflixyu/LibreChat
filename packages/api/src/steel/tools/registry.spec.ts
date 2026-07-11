@@ -46,6 +46,8 @@ describe('Steel tool registry', () => {
   it('describes and validates one-call grouped v4.2 price lookup', () => {
     const definition = getSteelToolDefinition('search_price_candidates');
 
+    expect(definition.description).toContain('without a top-level query-count cap');
+
     expect(
       definition.argsSchema.parse({
         queries: [
@@ -103,6 +105,8 @@ describe('Steel tool registry', () => {
     expect(definition.description).not.toContain('keyword, unit');
     expect(definition.description).toContain('鋅');
     expect(definition.description).toContain('cutting');
+    expect(definition.description).toContain('matched material candidate specifications');
+    expect(definition.description).toContain('no-match queries contribute no cutting rows');
     expect(definition.description).toContain('default 30');
     expect(definition.description).toContain('clamped to 100');
     expect(definition.description).not.toContain('candidateQueries');

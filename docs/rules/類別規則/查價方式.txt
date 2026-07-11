@@ -6,15 +6,18 @@ grouping=one_call_multiple_queries
 request_identity=query_order
 response_identity=queryResults_array_order
 query_id_generation=q{index+1}
+query_count_limit=unbounded
 query_limit_default=30
 query_limit_max=100
 query_limit_overflow=clamp
 query_filters=category|subcategory|material|thicknessMm|erpItemCode|keyword|limit
 material_enum=黑鐵|白鐵|鋁|錏|鋅|鎢|塑膠
-cutting_query_timing=after_price_queries
+cutting_query_timing=parallel_with_price_queries
 cutting_query_filter=category_contains_only
 cutting_query_limit=unbounded
 cutting_output=cuttingPrices
+cutting_output_filter=matched_candidate_spec
+cutting_no_match_output=omit
 ratio_quoteable_units=Kg|M
 ratio_unsupported_action=category_rule_pending
 missing_price_action=manual_review
@@ -25,12 +28,14 @@ empty_subcategory=unfiltered
 
 一、批次查價契約
 
-1. 一次 `search_price_candidates` 呼叫放入本輪所有訂單列的 `queries`。
-2. 已知 ERP 時優先用 `erpItemCode` 精確查詢；否則用 `category` 加可確認的 `subcategory`、`material`、`thicknessMm`，再以 `keyword` 放規格片段。
-3. `subcategory` 省略或空白代表不篩選次類別。`material` 與 `keyword` 都是包含搜尋；材質 enum 僅限：黑鐵、白鐵、鋁、錏、鋅、鎢、塑膠。類別不明才用 `mode: "category_discovery"` 加 `keyword`。
-4. 每筆 query 的 `limit` 預設 30，平時省略；只有需要擴大候選時才傳 100。
-5. 一般價格 query 全部完成後，backend 會統一查一次切工並加在頂層 `cuttingPrices`。H型鋼、平鐵、鐵板、角鐵、槽鐵使用原 category 作包含搜尋。
-6. 範例：`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["6"]},{"category":"圓管","subcategory":"鋼管","keyword":"2吋"}]}`。第一筆結果固定為 `q1`，第二筆固定為 `q2`；切工由 `cuttingPrices[].queryIds` / `sourceCategories` 對回相同順序。
+1. 一次 `search_price_candidates` 呼叫放入本輪所有訂單列的 `queries`；整批沒有 query 數量上限，每筆 query 各自使用自己的 `limit`，不得用整批總 limit 截斷後面的訂單列或候選。
+2. 首次 lookup 一律以已判定的 `category` 為基礎，再依下列具體類別規則加入可確認的 `subcategory`、`material`、`thicknessMm` 或 canonical 品名/規格 `keyword`。只有 category 未知時，才先使用 `mode: "category_discovery"` 加 keyword 判定類別。
+3. `erpItemCode` 是價格候選返回後才能取得的 DB 識別欄位，不得作為首次 lookup 的前提。候選已返回時直接採用該列，不得為同一列再用 `erpItemCode` 重查；只有後續回合需要精確重取先前已確認候選時才可使用。
+4. `subcategory` 省略或空白代表不篩選次類別。`material` 與 `keyword` 都是包含搜尋，`keyword` 內空白分詞採 AND 硬篩選；材質 enum 僅限：黑鐵、白鐵、鋁、錏、鋅、鎢、塑膠。只有品名或規格可以作為價格 keyword，任何代號都不得作為價格 keyword；ST50、SN400B 等表單代號只保留在判讀/備註。各類 canonical keyword 依下列類別規則正規化。
+5. 每筆 query 的 `limit` 預設 30，平時省略。只有前次候選數等於前次 limit、表示該 query 確實可能被截斷，而且仍未取得規格精確且 `quoteEligible: true` 的候選時，才可把該 query 的 limit 提高到 100。
+6. 某筆 query 已回傳規格精確且 `quoteEligible: true` 的可用候選後直接選價，不得以拆分或改寫相同規格、加入重複 filter、改變 limit 再查一次。只有結果為零、沒有規格精確候選、精確候選全部不可報價，或明確缺少必要規格時才允許一次修正查詢；仍無法選價就送人工複核。
+7. Backend 將一般價格與切工 category catalog 並行查詢，兩邊返回後再以 `quoteEligible: true` 且規格唯一的成功材料 candidate 篩選，只有相關切工列會放進頂層 `cuttingPrices`。材料 `no_match`、候選不可報價、規格不足或多個候選對到不同切工規格時不回退整包 catalog。H型鋼、I型鋼/工字鐵、平鐵、角鐵、槽鐵與管類依各自規格對應；圓鐵只返回「圓條不切」限制，不借用鐵管基本價。方鐵與鐵軌沒有可安全自動套用的切工基本價。鐵板沒有獨立自動切工價，材料列中的「OT板雷射切割／四方切」是 Kg 材料價，不是另附切工。
+8. 已知類別首查範例：`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["6"]},{"category":"圓管","subcategory":"鋼管","material":"黑鐵","keyword":"黑A鋼管 4in 101.6mm"}]}`。第一筆結果固定為 `q1`，第二筆固定為 `q2`；切工由 `cuttingPrices[].queryIds` / `sourceCategories` 對回相同順序。
 
 二、選價與計算
 
@@ -46,130 +51,130 @@ empty_subcategory=unfiltered
 
 ## 加工/其他
 次類別=[C型鋼|H型鋼|L|U|丸條|加工|圓管|扁鐵|捲門/伸縮門|網|角鐵|鐵板];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 精確查或 `keyword` 比對加工名稱/規格；必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory` + 加工名稱/完整規格 `keyword`；只有 DB 對該加工明確使用材質或厚度欄位時才加 `material`、`thicknessMm`。
 - 計價：加工數量 × direct 單價；Kg/M row 才可依總 kg/總 m 採 ratio。
 
 ## 加工/孔
 次類別=[五金|接頭|角鐵|鐵板|門];空白=unfiltered
-- 查詢：使用 `category` + 對應 `subcategory`，以 `erpItemCode` 或 `keyword` 比對孔型/孔徑/加工規格；可加 `material`、`thicknessMm`。有工件厚度時，孔價區間使用下限含、上限不含比對：`thickness_min_mm <= thicknessMm < thickness_max_mm`；單一厚度上下限相同時精確匹配。
+- 查詢：首查使用 `category` + 對應 `subcategory` + live DB 的產品/加工名稱 `keyword`；只有 DB 產品名稱或規格確實編碼孔徑時才把孔徑加入 keyword。只有明確確認為工件厚度時才加 `thicknessMm`。孔價區間使用下限含、上限不含比對：`thickness_min_mm <= thicknessMm < thickness_max_mm`；單一厚度上下限相同時精確匹配。H 型鋼的 KZZB11 `沖孔加工` 不以孔徑作價格 key，已由材料候選對應的頂層 `cuttingPrices` 返回，不另送 Ø24、Ø22 query。
 - 計價：每孔 direct 單價 × 每件孔數 × 件數。區間缺口、區間重疊、未取得工件厚度或無完全匹配時送人工複核，不得以最小厚度、最近區間或 0 自動代入。
 
 ## 其他
 次類別=[保麗龍|加工|手套|曬衣架|蜂巢紙|配件];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，優先 `erpItemCode`，否則以品名/規格 `keyword` 並可加 `material`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory` + 產品名稱/完整規格 `keyword`；材質明確時加 `material`，不得依賴稀疏的 `thicknessMm`。
 - 計價：數量 × direct 單價；Kg/M row 依總 kg/總 m。
 
 ## 圓鐵
 次類別=[其他];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或直徑/規格 `keyword`，必要時加 `material`；切工另加 `加工/切工` query。
+- 查詢：首查使用 `category` + 可確認的 `material` + 直徑與產品族 `keyword`；已由 live query 驗證的 10mm 範例為 `{"category":"圓鐵","material":"黑鐵","keyword":"磨光圓鐵 10mm"}`。此類沒有可靠 `thicknessMm`。成功候選只可附「圓條不切／1吋以下需外切」限制，不可借用同尺寸鐵管基本切工價。
 - 計價：預設不切清，以支、只等整件 direct 單價為主；找不到對應整件價時送人工複核。
 
 ## 捲門/伸縮門
 次類別=[中柱|其他|底支|遙控|邊柱|配件];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或門型/規格 `keyword`，必要時加 `material`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory` + 產品名稱/型號/完整規格 `keyword`；材質明確時加 `material`，不得依賴稀疏的 `thicknessMm`。
 - 計價：依 direct tier 與類別公式；只有公式 `DA`、`DB`、`DC` 可使用已確認的 `肚`，未提供時留空並送人工複核。未有明確公式時數量 × direct 單價。
 
 ## 網
 次類別=[刺網|浪型網|菱形網|配件|高床網|點焊網];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或網目/線徑/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`、`material` + 線徑/孔目/尺寸 `keyword`。
 - 計價：預設不切清，以片、支、只、捲等對應整件單位為主，數量 × direct 單價。
 
 ## 格板/隔板
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或承載條/網目/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `material` + 廠牌/載重/齒規/尺寸 `keyword`；此類不得依賴 `thicknessMm`。
 - 計價：Kg/M row 依總 kg/總 m；片等其他單位用數量 × direct 單價。
 
 ## 五金/配件
 次類別=[伸縮器|加工|培林座|壁虎|彈簧|後鈕|扶手|油漆|焊條|矽利康|節竹鐵|膠|花管|華司|蜂巢紙|螺帽|螺母|螺母/螺絲|螺絲|輪子|配件|配管|釘|鋸|鑄花|馬達箱];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，優先 `erpItemCode`，否則以品名/尺寸 `keyword`，必要時加 `material`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory` + 產品名稱/完整規格 `keyword`；材質明確時加 `material`，不得使用稀疏或誤解析的 `thicknessMm` 作唯一條件。
 - 計價：數量 × direct 單價；Kg/M row 才可依總 kg/總 m。
 
 ## 門窗/門板
 次類別=[窗花|網|角鐵|配件|門花];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或門窗型式/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory` + 產品名稱/型式/完整規格 `keyword`；材質明確時加 `material`。
 - 計價：數量 × direct 單價；Kg/M row 依總 kg/總 m，特殊公式不明送人工複核。
 
 ## 鐵板
 次類別=[圍籬板|檔泥板|特殊|網板|花板];空白=unfiltered
-- 查詢：使用 `category` + 可確認的 `subcategory`、`material`、`thicknessMm`；`keyword` 只放板種/規格片段，不放成品寬長，已知時用 `erpItemCode`。切工由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`、`material`、`thicknessMm`；2B/NO1/花板/網板等明確表面或板種同筆加產品 `keyword`。成品寬長只用於重量計算，不作價格 filter。鐵板沒有獨立自動切工價；材料候選的「OT板雷射切割／四方切」Kg 單價已含對應材料計價方式，不得再從 `鐵板/平鐵` 切工表重複加價。
 - 計價：以 Kg row 為主，用四方理論重 × 單價；只有明確指定不切清才使用片、張或其他整片 direct 單價。找不到可用 Kg 價時送人工複核。切/孔/折另送加工 query。
 
 ## 加工/折工
 次類別=[中柱|其他|切工|工具箱|消音|無缺口|特殊|花板|車斗|鐵板|門];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或折型/厚度/規格 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory` + 折型/厚度區間/長度級距 `keyword`；只有 DB row 明確以工件厚度區間定義時才加 `thicknessMm`。
 - 計價：折數、件數或 price row 指定數量 × direct 單價；非 Kg/M ratio 一律略過。
 
 ## 加工/切工
 次類別=[H型鋼|I型鋼/工字鐵|圓管|平鐵|方管|槽鐵|角鐵|鐵板|板/浪板];空白=unfiltered
-- 查詢：訂單本身就是獨立加工品項時，使用 `category` + `subcategory`，以 `erpItemCode` 或尺寸/英吋/厚度 `keyword`，必要時加 `material`、`thicknessMm`。支援類別的材料切工改用自動 `cuttingPrices`，不另送此 query。
+- 查詢：訂單本身就是獨立加工品項時，首查使用 `category` + 對應 `subcategory` + 切割方式/厚度級距 `keyword`。支援類別的材料切工改用自動 `cuttingPrices`，不另送此 query。
 - 計價：刀數或 price row 指定數量 × direct 切工單價，再套用長條料切工規則中的已確認加價。
 
 ## C型鋼
 次類別=[加工/其他];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或 C 型尺寸 `keyword`，必要時加 `material`、`thicknessMm`；特殊加工另送 `加工/其他` query。2C 必須另加 `erpItemCode: "CCG02"` query。
+- 查詢：首查使用 `category` + 可確認的 `material` + 完整截面 `keyword`，例如 `150x65x20x2.5`；不得只用單一 `thicknessMm`。特殊加工另送對應 category query；2C 結筒加工費使用 `category: "C型鋼"` + `subcategory: "加工/其他"` + `keyword: "型鋼結筒加工費"`。
 - 計價：以 Kg row 為主，用單位重 × 長度 m × 支數 × 單價。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
 
 ## 板/浪板
 次類別=[五金/配件];空白=unfiltered
-- 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或板型/浪型/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`、`material` + 板型/型號/塗層/完整規格 `keyword`；此類 structured 厚度資料稀疏，不得依賴 `thicknessMm`。
 - 計價：浪板以長度為主，優先使用 M、尺或其他明確長度單位的單價，依總長度計價；長度單位無法對應時送人工複核。切工另送 `加工/切工` query。
 
 ## 方鐵
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或邊長/規格 `keyword`，必要時加 `material`。
+- 查詢：首查使用 `category` + 可確認的 `material` + 邊長與產品族 `keyword`；已由 live query 驗證的 25mm 範例為 `{"category":"方鐵","material":"黑鐵","keyword":"磨光方鐵 25mm"}`。此類沒有可靠 `thicknessMm`。目前雖有方鐵切工 SKU，但 tier 價為空，不可自動報切工；送人工複核，不得借用方管、圓管或角鐵價格。
 - 計價：以 Kg row 為主，用單位重 × 總長度 × 支數 × 單價。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
 
 ## H型鋼
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或完整 H 尺寸 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
-- 計價：以 Kg row 為主，用單位重 × 長度 m × 支數 × 單價。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
+- 查詢：首查一律使用 `category`；完整斷面已知時，同筆將「高度 × 翼寬 × 腹板厚 × 翼板厚」正規化為 `高度x翼寬x腹板厚/翼板厚` 加入 `keyword`，不得再加單一 `thicknessMm`。只有斷面不完整時才用 `category` 加確定的 `material` 或單一腹板厚 `thicknessMm` 廣查一次；取得規格精確且 `quoteEligible: true` 的候選後不得改寫相同規格或 limit 重查。H 型鋼材料不另送 `加工/切工` query，切工由頂層 `cuttingPrices` 自動附加。
+- 計價：以 Kg row 為主。`unitWeightValue` 是 `lengthMm` 對應母材整支總重；先算 `kg/m = unitWeightValue ÷ (lengthMm ÷ 1000)`，再用 `kg/m × 成品長度 m × 支數 × Kg 單價`，不得為了尋找成品同長 row 重查。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
 
 ## T型鋼
 次類別=[];空白=unfiltered
-- 查詢：category 必須使用 `T型鋼`，以 `erpItemCode` 或完整 T 尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查的 `category` 固定使用 `T型鋼`；live 資料只有一筆且不可報價，返回後直接送人工複核，不得為取得價格重試。
 - 計價：Kg row 用單位重 × 長度 m × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
 
 ## 平鐵
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或寬 × 厚規格 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `material` + 產品族與 `寬x厚` canonical `keyword`；已由 live query 驗證的黑鐵 50×6 範例為 `{"category":"平鐵","material":"黑鐵","keyword":"黑鐵平鐵50 50x6mm"}`。只寫 `50x6` 可能同時包含 `150x6`，必須加 DB 品名 token 縮小。此類沒有可靠 `thicknessMm`；backend 以 candidate 的 `widthMm` 與 `heightMm` 取寬、厚後匹配切工。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 角鐵
 次類別=[不等邊|烤漆|配件];空白=unfiltered
-- 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或邊長/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`、`material` + 等邊 `邊長x厚度` 或不等邊 `長邊x短邊x厚度` canonical `keyword`；已由 live query 驗證的黑角鐵 50×6 範例為 `{"category":"角鐵","material":"黑鐵","keyword":"黑角鐵50 50x6mm"}`。白鐵角鐵不得只信任 `thicknessMm`。backend 只在所有可報價候選都對到同一邊長切工 key 時附價，50 與 65 等不同邊長同時命中時不猜價。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 圓管
 次類別=[A管|B管|圓條|連料|配管|鋼管];空白=unfiltered
-- 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或管徑/英吋/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工以 `鐵管` 包含搜尋並由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`、`material` + 產品族、inch/外徑 canonical `keyword`；已由 live query 驗證的 4 吋黑 A 鋼管範例為 `{"category":"圓管","subcategory":"鋼管","material":"黑鐵","keyword":"黑A鋼管 4in 101.6mm"}`。不可使用查不到資料的 `OD101.6mm t2mm` 範例。inch 規格缺少 structured 厚度時，不得用 `thicknessMm` 排除正確列；候選 structured nominal 與品名/外徑矛盾時不得猜最近切工，送人工複核。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 鐵軌
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或磅數/型號/規格 `keyword`，必要時加 `material`。
+- 查詢：首查使用 `category` + `12K`、`9K` 等規格 `keyword`；已由 live query 驗證的範例為 `{"category":"鐵軌","keyword":"12K"}`。只有明確指定採購母材長度時才把長度加入 keyword。取得候選後直接選價或送人工複核；目前沒有鐵軌切工資料，不得借用 H 型鋼或槽鐵切工。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 槽鐵
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或槽寬/高度/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `material` + `高度x寬度x腹厚/翼厚` canonical `keyword`；已由 live query 驗證的 200 型範例為 `{"category":"槽鐵","material":"黑鐵","keyword":"槽鐵200 200x90x8/13.5"}`。不得只靠單一 `thicknessMm`。backend 通常用高度×寬度匹配切工；資料列 `150x9.0` 是高度×腹厚的特殊 key，必須用 candidate 實際腹厚精確匹配，不得當成高度×寬度。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## I型鋼/工字鐵
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或完整 I 型尺寸 `keyword`，必要時加 `material`、`thicknessMm`；需要切工時另送 `加工/切工` query。
+- 查詢：首查使用 `category` + `高度x寬度x腹厚/翼厚` canonical `keyword`，例如 `{"category":"I型鋼/工字鐵","keyword":"I字鐵200 200x100x7/10"}`；目前 live rows 全部不可報價，取得候選後送人工複核，不得重試。只有未來出現可報價且規格唯一的候選時，backend 才可用高度×寬度對應 `工字鐵/H型鋼` 切工；目前不可只因 DB 有切工列就報切工。
 - 計價：Kg row 用單位重 × 長度 m × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
 
 ## 方管
 次類別=[連料];空白=unfiltered
-- 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或邊長/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工以 `鐵管` 包含搜尋並由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`、`material` + `邊長x壁厚` canonical `keyword`；已由 live query 驗證可報價的範例為 `{"category":"方管","material":"黑鐵","keyword":"黑鐵方管 100x6"}`。圖面 `150x150x6` 必須轉成價格 keyword `150x6`，`100x100x6` 轉成 `100x6`；方形截面的重複邊長不可原樣送入價格 keyword。目前 150×6 可找到 GDB15060，但該列只有不可用的非 Kg/M ratio、`quoteEligible: false`，不得當作有價。長度 token 或連料尺寸不得誤當 `thicknessMm`。只有材料候選可報價且規格唯一時才附 `鐵管` 切工；厚度 1.2mm 以下只返回不切限制，不返回基本切工價。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 扁方管
 次類別=[];空白=unfiltered
-- 查詢：使用 `category`，以 `erpItemCode` 或寬 × 高 × 厚規格 `keyword`，必要時加 `material`、`thicknessMm`；切工以 `鐵管` 包含搜尋並由頂層 `cuttingPrices` 自動附加。
+- 查詢：首查使用 `category` + 可確認的 `material` + `寬x高x壁厚` canonical `keyword`；已由 live query 驗證的範例為 `{"category":"扁方管","material":"黑鐵","keyword":"黑鐵扁方管 40x80x3"}`。長度 token 不得誤當 `thicknessMm`。只有材料候選可報價且規格唯一時才附 `鐵管` 切工；厚度 1.2mm 以下只返回不切限制。
 - 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 加工/開槽
 次類別=[H型鋼];空白=unfiltered
-- 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或開槽型式/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
+- 查詢：首查使用 `category` + 可確認的 `subcategory`；live H 型鋼次類別只有兩筆，直接依返回的產品名稱選擇開槽/切斜，無法確認時送人工複核，不得重查。
 - 計價：槽數、件數或 price row 指定數量 × direct 單價；非 Kg/M ratio 一律略過。

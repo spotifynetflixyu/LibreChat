@@ -214,6 +214,10 @@ describe('Steel minimal tool execution', () => {
             createPriceRow({
               id: '11',
               erp_item_code: 'PIPE-M',
+              category: '圓管',
+              product_name: '黑鐵圓管 1/2"',
+              normalized_spec_text: '黑鐵圓管 1/2"',
+              nominal_inch: '0.5',
               unit: 'M',
               value_state: 'ratio_only',
               unit_price_a: null,
@@ -366,11 +370,6 @@ describe('Steel minimal tool execution', () => {
     });
     expect(result.data.cuttingPrices).toEqual([
       expect.objectContaining({
-        cuttingCategory: '鐵板/平鐵',
-        sourceCategories: ['鐵板'],
-        queryIds: ['q1'],
-      }),
-      expect.objectContaining({
         cuttingCategory: '鐵管',
         sourceCategories: ['圓管'],
         queryIds: ['q2'],
@@ -385,6 +384,116 @@ describe('Steel minimal tool execution', () => {
     expect(JSON.stringify(result.data)).not.toContain('tierRatios');
     expect(JSON.stringify(result.data)).not.toContain('price_ratio_');
     expect(JSON.stringify(result.data)).not.toContain('sourceRefs');
+  });
+
+  it('returns only candidate-matched cutting rows and excludes no-match query provenance', async () => {
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: [
+            createPriceRow({
+              id: '20',
+              erp_item_code: 'EHS252510',
+              spec_key: 'EHS252510 H型鋼250x250x9/14x10M',
+              product_name: 'H型鋼250*250*9/14*10M',
+              normalized_spec_text: 'H型鋼250x250x9/14x10M',
+              category: 'H型鋼',
+              width_mm: '250.000000',
+              height_mm: '250.000000',
+              thickness_min_mm: '9.000000',
+              thickness_max_mm: '9.000000',
+            }),
+          ],
+          category_candidates: [],
+        },
+        {
+          query_index: 1,
+          query_id: 'q2',
+          price_candidates: [],
+          category_candidates: [],
+        },
+      ],
+      [
+        createCuttingRow({
+          lookup_term: 'H型鋼',
+          id: '2',
+          cutting_category: 'H型鋼',
+          item_name: '加工/孔',
+          cut_type: '加工/孔',
+          spec_text: null,
+          normalized_spec_text: null,
+          inch_min: null,
+          inch_max: null,
+          mm_min: null,
+          mm_max: null,
+          notes: '14m/m 以上另計',
+        }),
+        createCuttingRow({
+          lookup_term: 'H型鋼',
+          id: '33',
+          cutting_category: '工字鐵/H型鋼',
+          item_name: '250x250',
+          spec_text: '250*250',
+          normalized_spec_text: '250x250',
+          inch_min: null,
+          inch_max: null,
+          mm_min: null,
+          mm_max: null,
+        }),
+        createCuttingRow({
+          lookup_term: 'H型鋼',
+          id: '36',
+          cutting_category: '工字鐵/H型鋼',
+          item_name: '340x250',
+          spec_text: '340*250',
+          normalized_spec_text: '340x250',
+          inch_min: null,
+          inch_max: null,
+          mm_min: null,
+          mm_max: null,
+        }),
+        createCuttingRow({ lookup_term: '鐵管', id: '62', item_name: '4"' }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [
+          { category: 'H型鋼', keyword: '250x250x9/14' },
+          { category: '方管', keyword: '100x6' },
+        ],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(client.calls).toHaveLength(2);
+    expect(result.data.queryResults).toEqual([
+      expect.objectContaining({ queryId: 'q1', status: 'ok' }),
+      expect.objectContaining({ queryId: 'q2', status: 'no_match' }),
+    ]);
+    expect(result.data.cuttingPrices).toEqual([
+      expect.objectContaining({
+        cuttingCategory: 'H型鋼',
+        queryIds: ['q1'],
+        prices: [expect.objectContaining({ id: 2 })],
+      }),
+      expect.objectContaining({
+        cuttingCategory: '工字鐵/H型鋼',
+        queryIds: ['q1'],
+        prices: [expect.objectContaining({ id: 33 })],
+      }),
+    ]);
+    expect(JSON.stringify(result.data.cuttingPrices)).not.toContain('q2');
+    expect(JSON.stringify(result.data.cuttingPrices)).not.toContain('340x250');
+    expect(JSON.stringify(result.data.cuttingPrices)).not.toContain('鐵管');
   });
 
   it('marks non-Kg/M ratio pricing as skipped and non-quote-eligible', async () => {
@@ -447,6 +556,67 @@ describe('Steel minimal tool execution', () => {
     ]);
     expect(JSON.stringify(result.data)).not.toContain('tierRatios');
     expect(JSON.stringify(result.data)).not.toContain('"A":1.4');
+  });
+
+  it('preserves every per-query candidate without a grouped total limit', async () => {
+    const firstCandidates = Array.from({ length: 100 }, (_, index) =>
+      createPriceRow({
+        id: String(index + 1),
+        erp_item_code: `I-${index + 1}`,
+        category: 'I型鋼/工字鐵',
+      }),
+    );
+    const secondCandidates = Array.from({ length: 100 }, (_, index) =>
+      createPriceRow({
+        id: String(index + 101),
+        erp_item_code: `T-${index + 1}`,
+        category: 'T型鋼',
+      }),
+    );
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: firstCandidates,
+          category_candidates: [],
+        },
+        {
+          query_index: 1,
+          query_id: 'q2',
+          price_candidates: secondCandidates,
+          category_candidates: [],
+        },
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [
+          { category: 'I型鋼/工字鐵', keyword: 'I', limit: 100 },
+          { category: 'T型鋼', keyword: 'T', limit: 100 },
+        ],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    expect(result.data.queryResults).toHaveLength(2);
+    expect(result.data.queryResults).toEqual([
+      expect.objectContaining({ candidates: expect.any(Array) }),
+      expect.objectContaining({ candidates: expect.any(Array) }),
+    ]);
+    const [firstResult, secondResult] = result.data.queryResults as Array<{
+      candidates: unknown[];
+    }>;
+    expect(firstResult?.candidates).toHaveLength(100);
+    expect(secondResult?.candidates).toHaveLength(100);
+    expect(result.data.summary).toEqual(expect.objectContaining({ candidateCount: 200 }));
   });
 
   it('returns a no-match group and summary instead of flattening empty results', async () => {
