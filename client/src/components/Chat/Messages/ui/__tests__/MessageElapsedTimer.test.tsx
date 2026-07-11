@@ -1,10 +1,18 @@
 import React from 'react';
 import { act, render, screen } from '@testing-library/react';
+import type { TMessage } from 'librechat-data-provider';
 import MessageElapsedTimer, { formatElapsedTime } from '../MessageElapsedTimer';
+
+let mockMessages: TMessage[] = [];
+
+jest.mock('~/Providers', () => ({
+  useOptionalMessagesOperations: () => ({ getMessages: () => mockMessages }),
+}));
 
 describe('MessageElapsedTimer', () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    mockMessages = [];
   });
 
   afterEach(() => {
@@ -40,6 +48,72 @@ describe('MessageElapsedTimer', () => {
     });
 
     expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('15s');
+  });
+
+  it('restarts from zero when a completed response is regenerated', () => {
+    jest.setSystemTime(0);
+    const { rerender } = render(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={0}
+        timerKey="assistant-1"
+      />,
+    );
+
+    jest.setSystemTime(10_000);
+    rerender(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting={false}
+        startedAt={0}
+        timerKey="assistant-1"
+      />,
+    );
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('10s');
+
+    jest.setSystemTime(100_000);
+    rerender(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={0}
+        timerKey="assistant-1"
+      />,
+    );
+    expect(screen.getByTestId('message-elapsed-timer').textContent).toBe('0s');
+
+    act(() => {
+      jest.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByTestId('message-elapsed-timer').textContent).toBe('2s');
+  });
+
+  it('starts from zero when regenerate remounts with an old parent timestamp', () => {
+    mockMessages = [
+      {
+        messageId: 'user-1',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        conversationId: 'conversation-1',
+        isCreatedByUser: true,
+        sender: 'User',
+        text: 'quote',
+        createdAt: new Date(0).toISOString(),
+      },
+    ];
+    jest.setSystemTime(100_000);
+
+    render(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        startedAt={100_000}
+        parentMessageId="user-1"
+        timerKey="assistant-1_"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer').textContent).toBe('0s');
   });
 
   it('freezes elapsed time when the assistant turn completes', () => {

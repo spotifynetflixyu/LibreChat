@@ -496,7 +496,7 @@ async function readActiveMemoryTotals({
 }
 
 function isWorkingOrderTable(headers: readonly string[]): boolean {
-  return ['項次', '型號', '品名規格'].every((header) => headers.includes(header));
+  return headers.includes('型號');
 }
 
 function getFirstText(values: readonly (string | undefined)[]): string | undefined {
@@ -2367,9 +2367,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
             currentTurnFiles,
           });
           const rows = canonicalizeSystemOrderItemNumbers(
-            payloads
-              .filter((payload) => getParsedRowNo(payload) !== undefined)
-              .map((payload) => attachWorkbookFileMetadata(payload, descriptors)),
+            payloads.map((payload) => attachWorkbookFileMetadata(payload, descriptors)),
           );
           if (rows.length === 0) {
             continue;

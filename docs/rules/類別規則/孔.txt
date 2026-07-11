@@ -5,10 +5,13 @@
 查價方式：
 
 1. 孔加工 query 的 `category` 固定使用 `加工/孔`；`subcategory` 使用 `鐵板`、`角鐵`、`接頭`、`五金` 或 `門`，不確定時省略。
-2. 已知價格型號時用 `erpItemCode`；否則以孔型、孔徑、厚度或加工規格放 `keyword`，並依已知資料加入 `material`、`thicknessMm`。
+2. 已知價格型號時用 `erpItemCode`；否則以孔型、孔徑或加工規格放 `keyword`，並依已知資料加入 `material`、`thicknessMm`。只有明確標示為「厚度」的單值或區間才可解析為厚度條件，不得把孔徑或其他尺寸區間當作厚度。
 3. 材料與孔加工放在同一次 grouped query，例如：
-   `{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["12"]},{"category":"加工/孔","subcategory":"鐵板","thicknessMm":["12"],"keyword":"22mm孔"}]}`
-4. 依 `queryResults` 相同順序分別採用第一筆材料與第二筆孔加工候選。若孔加工回傳多筆，依產品名稱、規格描述、厚度範圍與加工方式選擇；無法判斷時列人工複核，不可自行填 0。
+   `{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["12"]},{"category":"加工/孔","subcategory":"鐵板","thicknessMm":["12"],"keyword":"孔"}]}`
+4. 孔價厚度區間使用「以上（含）、以下（不含）」比對：`thickness_min_mm <= requestedThicknessMm < thickness_max_mm`。單一厚度上下限相同時使用精確匹配。
+5. 有傳入工件厚度時，未定義厚度區間的 price row 不視為匹配。若請求厚度落在區間缺口，不得自動靠攏到最近區間；若多個區間重疊命中，保留全部候選並列人工複核，不得擅自選價。
+6. 未取得工件厚度時，不適用材料類別的「最小厚度」預設；保留候選並列人工複核。
+7. 依 `queryResults` 相同順序分別採用第一筆材料與第二筆孔加工候選。若孔加工回傳多筆，依產品名稱、規格描述、厚度範圍與加工方式選擇；無法判斷時列人工複核，不可自行填 0。
 
 計算：
 

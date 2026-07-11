@@ -231,6 +231,8 @@ CREATE TABLE IF NOT EXISTS steel.prices (
   unit_weight_basis TEXT,
   density NUMERIC(18, 6),
   source_thickness TEXT,
+  thickness_min_mm NUMERIC(18, 6),
+  thickness_max_mm NUMERIC(18, 6),
   width_mm NUMERIC(18, 6),
   height_mm NUMERIC(18, 6),
   length_mm NUMERIC(18, 6),
@@ -270,6 +272,7 @@ ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_cost_basis_check;
 ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_numeric_values_nonnegative_check;
 ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_value_state_invariants_check;
 ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_subcategory_not_blank_check;
+ALTER TABLE steel.prices DROP CONSTRAINT IF EXISTS prices_thickness_range_check;
 DROP INDEX IF EXISTS steel.prices_review_active_idx;
 ALTER TABLE steel.prices DROP COLUMN IF EXISTS review_state;
 ALTER TABLE steel.prices
@@ -291,6 +294,16 @@ ALTER TABLE steel.prices
   CHECK (value_state IN ('confirmed', 'ratio_only', 'no_price')),
   ADD CONSTRAINT prices_cost_basis_check
   CHECK (cost_basis IN ('1.總數', '2.數量')),
+  ADD CONSTRAINT prices_thickness_range_check CHECK (
+    (thickness_min_mm IS NULL AND thickness_max_mm IS NULL)
+    OR (
+      thickness_min_mm IS NOT NULL
+      AND thickness_max_mm IS NOT NULL
+      AND thickness_min_mm > 0
+      AND thickness_max_mm > 0
+      AND thickness_min_mm <= thickness_max_mm
+    )
+  ),
   ADD CONSTRAINT prices_numeric_values_nonnegative_check CHECK (
     (unit_price_base IS NULL OR unit_price_base >= 0)
     AND (unit_price_a IS NULL OR unit_price_a >= 0)

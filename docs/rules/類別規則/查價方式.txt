@@ -18,6 +18,8 @@ cutting_output=cuttingPrices
 ratio_quoteable_units=Kg|M
 ratio_unsupported_action=category_rule_pending
 missing_price_action=manual_review
+missing_thickness_selection=minimum_quoteable_thickness
+material_line_rounding=ceil_final_subtotal_twd
 empty_subcategory=unfiltered
 [/category_lookup_contract]
 
@@ -33,8 +35,12 @@ empty_subcategory=unfiltered
 二、選價與計算
 
 1. 優先採符合客戶級別的 direct A-F tier price。缺少價格代表未知，保留品項並送人工複核，絕不可當 0。
-2. `ratio_only` / ratio option 只有 price row 的 `unit` 是 `Kg` 或 `M` 才能作單位售價：Kg 小計 = 計算總 kg × 採用單價；M 小計 = 總長度 m × 採用單價。
-3. 其他單位原則為數量 × direct 單價；若 ratio 標記 `category_rule_pending`，必須略過 ratio，改採 direct tier 或下列類別規則，不可把 skipped/raw ratio 當可報價單價。
+2. 訂單未指定厚度時，在其他已知條件相符且可報價的候選中，採最小厚度；候選不能確認厚度或最小厚度無可用價格時送人工複核。此預設不適用於孔加工的厚度區間。
+3. 類別主計價單位：C型鋼、H型鋼、方鐵、鐵板以 `Kg` 為主；槽鐵、角鐵、鐵軌、圓管、圓鐵、平鐵、扁方管、方管、網以 `支`、`只`、`片` 等對應整件單位為主，並預設為「不切清」；浪板以長度為主。
+4. C型鋼、H型鋼、方鐵、鐵板找不到可用 `Kg` 價時送人工複核，不自動改用 `M`、`支` 或其他單位。只有訂單明確指定「不切清」時，才改採相符的 `M`、`支` 或其他整件 direct 單價。
+5. `ratio_only` / ratio option 只有 price row 的 `unit` 是 `Kg` 或 `M` 才能作單位售價：Kg 小計 = 計算總 kg × 採用單價；M 小計 = 總長度 m × 採用單價。
+6. 其他單位原則為數量 × direct 單價；若 ratio 標記 `category_rule_pending`，必須略過 ratio，改採 direct tier 或下列類別規則，不可把 skipped/raw ratio 當可報價單價。
+7. 重量、長度與單價保留原始精度；每一材料列的最終小計以 TWD 整數無條件進位（`ceil`）。加工列不得與材料列合併後才進位。
 
 三、各類別
 
@@ -45,8 +51,8 @@ empty_subcategory=unfiltered
 
 ## 加工/孔
 次類別=[五金|接頭|角鐵|鐵板|門];空白=unfiltered
-- 查詢：使用 `category` + 對應 `subcategory`，以 `erpItemCode` 或 `keyword` 比對孔型/孔徑/厚度；可加 `material`、`thicknessMm`。
-- 計價：每孔 direct 單價 × 每件孔數 × 件數；無完全匹配送人工複核。
+- 查詢：使用 `category` + 對應 `subcategory`，以 `erpItemCode` 或 `keyword` 比對孔型/孔徑/加工規格；可加 `material`、`thicknessMm`。有工件厚度時，孔價區間使用下限含、上限不含比對：`thickness_min_mm <= thicknessMm < thickness_max_mm`；單一厚度上下限相同時精確匹配。
+- 計價：每孔 direct 單價 × 每件孔數 × 件數。區間缺口、區間重疊、未取得工件厚度或無完全匹配時送人工複核，不得以最小厚度、最近區間或 0 自動代入。
 
 ## 其他
 次類別=[保麗龍|加工|手套|曬衣架|蜂巢紙|配件];空白=unfiltered
@@ -56,7 +62,7 @@ empty_subcategory=unfiltered
 ## 圓鐵
 次類別=[其他];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或直徑/規格 `keyword`，必要時加 `material`；切工另加 `加工/切工` query。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只等整件 direct 單價為主；找不到對應整件價時送人工複核。
 
 ## 捲門/伸縮門
 次類別=[中柱|其他|底支|遙控|邊柱|配件];空白=unfiltered
@@ -66,7 +72,7 @@ empty_subcategory=unfiltered
 ## 網
 次類別=[刺網|浪型網|菱形網|配件|高床網|點焊網];空白=unfiltered
 - 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或網目/線徑/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
-- 計價：Kg/M row 依總 kg/總 m；片、支、捲等單位用數量 × direct 單價。
+- 計價：預設不切清，以片、支、只、捲等對應整件單位為主，數量 × direct 單價。
 
 ## 格板/隔板
 次類別=[];空白=unfiltered
@@ -86,7 +92,7 @@ empty_subcategory=unfiltered
 ## 鐵板
 次類別=[圍籬板|檔泥板|特殊|網板|花板];空白=unfiltered
 - 查詢：使用 `category` + 可確認的 `subcategory`、`material`、`thicknessMm`；`keyword` 只放板種/規格片段，不放成品寬長，已知時用 `erpItemCode`。切工由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用四方理論重 × 單價；M row 用總 m × 單價；片等其他單位用數量 × direct 單價。切/孔/折另送加工 query。
+- 計價：以 Kg row 為主，用四方理論重 × 單價；只有明確指定不切清才使用片、張或其他整片 direct 單價。找不到可用 Kg 價時送人工複核。切/孔/折另送加工 query。
 
 ## 加工/折工
 次類別=[中柱|其他|切工|工具箱|消音|無缺口|特殊|花板|車斗|鐵板|門];空白=unfiltered
@@ -101,22 +107,22 @@ empty_subcategory=unfiltered
 ## C型鋼
 次類別=[加工/其他];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或 C 型尺寸 `keyword`，必要時加 `material`、`thicknessMm`；特殊加工另送 `加工/其他` query。2C 必須另加 `erpItemCode: "CCG02"` query。
-- 計價：Kg row 用單位重 × 長度 m × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：以 Kg row 為主，用單位重 × 長度 m × 支數 × 單價。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
 
 ## 板/浪板
 次類別=[五金/配件];空白=unfiltered
 - 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或板型/浪型/尺寸 `keyword`，必要時加 `material`、`thicknessMm`。
-- 計價：Kg/M row 依總 kg/總 m；片、尺等其他單位用數量 × direct 單價；切工另送 `加工/切工` query。
+- 計價：浪板以長度為主，優先使用 M、尺或其他明確長度單位的單價，依總長度計價；長度單位無法對應時送人工複核。切工另送 `加工/切工` query。
 
 ## 方鐵
 次類別=[];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或邊長/規格 `keyword`，必要時加 `material`。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：以 Kg row 為主，用單位重 × 總長度 × 支數 × 單價。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
 
 ## H型鋼
 次類別=[];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或完整 H 尺寸 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 長度 m × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：以 Kg row 為主，用單位重 × 長度 m × 支數 × 單價。找不到可用 Kg 價時送人工複核；只有明確指定不切清才改用 M、支或其他整件 direct 單價。
 
 ## T型鋼
 次類別=[];空白=unfiltered
@@ -126,27 +132,27 @@ empty_subcategory=unfiltered
 ## 平鐵
 次類別=[];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或寬 × 厚規格 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 角鐵
 次類別=[不等邊|烤漆|配件];空白=unfiltered
 - 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或邊長/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 圓管
 次類別=[A管|B管|圓條|連料|配管|鋼管];空白=unfiltered
 - 查詢：使用 `category` + `subcategory`，以 `erpItemCode` 或管徑/英吋/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工以 `鐵管` 包含搜尋並由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；支等其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 鐵軌
 次類別=[];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或磅數/型號/規格 `keyword`，必要時加 `material`。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；支等其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 槽鐵
 次類別=[];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或槽寬/高度/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## I型鋼/工字鐵
 次類別=[];空白=unfiltered
@@ -156,12 +162,12 @@ empty_subcategory=unfiltered
 ## 方管
 次類別=[連料];空白=unfiltered
 - 查詢：使用 `category` + 可確認的 `subcategory`，以 `erpItemCode` 或邊長/厚度 `keyword`，必要時加 `material`、`thicknessMm`；切工以 `鐵管` 包含搜尋並由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；支等其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 扁方管
 次類別=[];空白=unfiltered
 - 查詢：使用 `category`，以 `erpItemCode` 或寬 × 高 × 厚規格 `keyword`，必要時加 `material`、`thicknessMm`；切工以 `鐵管` 包含搜尋並由頂層 `cuttingPrices` 自動附加。
-- 計價：Kg row 用單位重 × 總長度 × 支數 × 單價；M row 用總 m × 單價；支等其他單位數量 × direct 單價。
+- 計價：預設不切清，以支、只、片等相符整件 direct 單價為主；找不到可用整件價時送人工複核。
 
 ## 加工/開槽
 次類別=[H型鋼];空白=unfiltered

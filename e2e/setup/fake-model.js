@@ -316,9 +316,9 @@ function collectSteelNativeAssertionFailures({ agents, messages, toolNames }) {
 }
 
 const STEEL_NATIVE_SYSTEM_ORDER_HEADER =
-  '| 公司編號 | 項次 | 倉庫編號 | 型號 | 品名規格 | 材質編號 | 廠別編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 肚 | 類別 | 交貨日期 | 備註 |';
+  '| 型號 | 品名規格 | 材質編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 肚 | 類別 | 備註 |';
 const STEEL_NATIVE_SYSTEM_ORDER_SEPARATOR =
-  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
 
 function buildSteelNativeSystemOrderMarkdown(finalText) {
   return [
@@ -326,7 +326,7 @@ function buildSteelNativeSystemOrderMarkdown(finalText) {
     '',
     STEEL_NATIVE_SYSTEM_ORDER_HEADER,
     STEEL_NATIVE_SYSTEM_ORDER_SEPARATOR,
-    '| 01 | 10 | A | CCG075 | 錏輕型鋼 75x45x15x2.3 |  |  | 支 | 2 | 4 | 8 | 26.8 | B | F1 | 2.3 | 75 | 6000 |  | C型鋼 |  | E2E native smoke |',
+    '| CCG075 | 錏輕型鋼 75x45x15x2.3 |  | 支 | 2 | 4 | 8 | 26.8 | 2 | F1 | 2.3 | 75 | 6000 |  | C型鋼 | E2E native smoke |',
   ].join('\n');
 }
 

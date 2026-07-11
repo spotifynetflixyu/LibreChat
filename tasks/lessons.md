@@ -1,5 +1,9 @@
 # Lessons
 
+- 加工/孔厚度區間一律是半開區間：下限「以上（含）」、上限「以下（不含）」，即 `min <= thickness < max`；只有 `min = max` 的單一厚度列使用精確匹配。不可把一般區間的上限當作可命中端點。
+- Steel material-unit defaults are category-specific: C型鋼、H型鋼、方鐵、鐵板 prefer Kg and must go to manual review when no usable Kg price exists, unless the request explicitly says `不切清`, which permits M/支/other direct units. 槽鐵、角鐵、鐵軌、圓管、圓鐵、平鐵、扁方管、方管、網 default to `不切清` and prefer 支/只/片; 板/浪板 pricing is length-led. Preserve precise intermediate values and ceil each final material-line subtotal to an integer TWD.
+
+- The canonical Steel `system_order` output has exactly 16 columns in this order: `型號`, `品名規格`, `材質編號`, `單位`, `數量`, `單重`, `總數`, `單價`, `計價基準`, `公式編號`, `厚度`, `寬度`, `長度`, `肚`, `類別`, `備註`. Assistant Markdown capture eligibility is intentionally tolerant: under a `system_order` heading, a table containing `型號` must persist even when legacy fields such as `項次` are absent or other columns are imperfect.
 - OCR preprocessing organizer 的 reviewed OCR 規則必須明確寫出硬邊界：只可把 backend 提供的單一 PaddleOCR raw result 依 OCR 規則整理成 Markdown，不得呼叫任何 tool、補查資料、查價或進入報價流程。runtime 仍應用 tool isolation 落實此邊界，不能只依賴 prompt。
 
 - `OPENAI_DEFAULT_MODEL` defines the default model shown for a new LibreChat

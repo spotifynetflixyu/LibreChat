@@ -486,10 +486,11 @@ export default function useChatFunctions({
     }
     const responseSender = getSender({ model: conversation?.model, ...endpointOption });
 
+    const clientTimestamp = new Date().toLocaleString('sv').replace(' ', 'T');
     const currentMsg: TMessage = {
       text,
       sender: 'User',
-      clientTimestamp: new Date().toLocaleString('sv').replace(' ', 'T'),
+      clientTimestamp,
       isCreatedByUser: true,
       parentMessageId,
       conversationId,
@@ -562,6 +563,7 @@ export default function useChatFunctions({
       model: convo?.model,
       error: false,
       iconURL,
+      clientTimestamp: isRegenerate ? clientTimestamp : undefined,
       /**
        * Seed the assistant placeholder with the turn's manually-invoked
        * skill names so `ContentParts` can render interim `SkillCall` cards

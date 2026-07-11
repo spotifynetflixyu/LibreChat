@@ -1,3 +1,56 @@
+# Active: Steel Default Pricing And Hole Thickness Query - 2026-07-11
+
+Goal: update the reviewed category pricing defaults for missing thickness/material,
+plate price fallback, weight basis, and ceiling behavior; define and implement a
+range-aware `加工/孔` thickness lookup against the actual v4.2 price data.
+
+- [x] Inspect current category rules, sync path, unified price schema/query, and relevant prior decisions.
+- [x] Inspect live dev `加工/孔` rows and enumerate real `source_thickness` formats.
+- [x] Confirm the exact missing-thickness, ceiling, plate fallback, preferred-unit, and lower-inclusive/upper-exclusive range semantics with the user.
+- [x] Add RED regressions for the approved hole-range parsing, query, validation, and import contracts.
+- [x] Implement the minimal reviewed-rule, query/import, and schema changes required by the approved design.
+- [x] If schema changes are required, create a migration with `npx supabase migration new` and update `supabase/schema.sql` in the same change.
+- [x] Dry-run/apply/read back reviewed rules and the migration on dev only.
+- [x] Run focused tests, package build, live query smokes, and `git diff --check`; record review evidence here.
+
+Approved contract:
+
+- C型鋼、H型鋼、方鐵、鐵板 prefer Kg; only explicit `不切清` permits M/支/other units.
+- 槽鐵、角鐵、鐵軌、圓管、圓鐵、平鐵、扁方管、方管、網 default to `不切清` and prefer 支/只/片.
+- 板/浪板 pricing is length-led; each final material-line subtotal is ceiled to an integer TWD.
+
+Review:
+
+- Added normalized `thickness_min_mm` / `thickness_max_mm` to the unified `steel.prices` model, importer, public candidate output, schema snapshot, and CLI-created migration `20260711072639`.
+- Thickness input now accepts positive decimal strings only. Range rows use lower-inclusive/upper-exclusive matching; scalar rows use exact matching. Explicit `厚度` ranges are parsed without treating hole-diameter text such as `沖孔φ(1.0~2.0)` as material thickness; source ranges such as `20~25m/m` are also supported.
+- Dev migration history contains `20260711072639`; `steel.prices` has 6,761 rows, 2,023 normalized thickness rows, six non-scalar hole ranges, and the paired-positive ordered-range constraint.
+- Live grouped-query smoke proved every range lower bound and interior matches while upper bounds `4.5`, `12`, `19`, `25`, `32`, and `50` do not; a scalar `min=max` row still matched exactly.
+- Updated and synced six reviewed category-rule rows on dev. The lookup guide now carries minimum-thickness selection, category unit priorities, default `不切清`, length-led 浪板 pricing, OT laser-to-four-side fallback, and final-material-line TWD ceiling behavior.
+- Focused Jest passed 7 suites / 76 tests. The v4.2 dry-run reconciled 6,761 rows, the API package build passed, and `git diff --check` passed.
+- Supabase advisors reported only the existing mutable-search-path and public-extension warnings; this change adds no exposed Data API objects, functions, or RLS surface. Production was not accessed or changed.
+
+# Active: system_order capture and regenerate timer reset - 2026-07-11
+
+Goal: adopt the 16-column `system_order` contract, persist any assistant
+`system_order` Markdown table containing `型號`, and restart the visible
+processing timer from zero when a response is regenerated.
+
+- [x] Inspect conversation `c9088530-4da5-4578-9798-374c475ddb97` and prove the parse-skip root cause.
+- [x] Add RED regressions for the 16-column workbook contract and `型號`-only capture eligibility.
+- [x] Add RED regressions for a regenerate-specific response start timestamp and timer reset.
+- [x] Implement the minimal parser, workbook-header, and timer lifecycle fixes.
+- [x] Run focused backend/frontend tests, package checks, local runtime health, and diff hygiene.
+- [x] Record final review evidence here.
+
+Review:
+
+- Local log message `615f7d38-7706-4c3e-af10-14455293a3dd` reached capture but returned `parseStatus: skipped`; its 51-row table had the new 16 headers and no `項次`. Mongo had zero active `working_order_row` records before the fix.
+- Parser RED reproduced `parseStatus: skipped`; GREEN now accepts `system_order` tables based on `型號` and persists rows without requiring `rowNo` / `項次`.
+- The original conversation was backfilled from its persisted assistant response: `parseStatus: saved`, 51 active `working_order_row` records, one `system_order_table`.
+- Timer RED showed `1m 40s` on a completed-to-regenerate lifecycle; GREEN resets both the same timer instance and a remounted regenerate response with an old parent timestamp to exact `0s`.
+- Dev `steel-workbook-output-policy` was synced and read back at SHA `6b3b740f4cb2b8cf9d332d1bfefaa530c1f5241d95695aac6c8cd5e758bd617c`.
+- Focused Jest passed 3 API suites / 80 tests and 2 client suites / 11 tests. API build, client typecheck, changed-file ESLint (apart from existing unrelated diagnostics), fake-model syntax, backend/frontend health, and staged diff checks passed.
+
 # Active: Fixed OpenAI Title Model - 2026-07-11
 
 Goal: make shared Agents title generation use `gpt-5.6-luna` with reasoning

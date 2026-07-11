@@ -34,6 +34,8 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     unit_weight_basis: 'Kg/M',
     density: '7.850000',
     source_thickness: '2.0',
+    thickness_min_mm: '1.000000',
+    thickness_max_mm: '4.500000',
     width_mm: null,
     height_mm: null,
     length_mm: '6000.000000',
@@ -110,7 +112,11 @@ describe('Steel price candidate repository', () => {
     expect(sql).toContain('p.category = input_query.category');
     expect(sql).toContain('p.subcategory = input_query.subcategory');
     expect(sql).toContain('p.material ILIKE');
-    expect(sql).toContain('p.source_thickness::numeric');
+    expect(sql).toContain('p.thickness_min_mm <= requested_thickness::numeric');
+    expect(sql).toContain('requested_thickness::numeric < p.thickness_max_mm');
+    expect(sql).toContain('p.thickness_min_mm = p.thickness_max_mm');
+    expect(sql).toContain('p.thickness_min_mm = requested_thickness::numeric');
+    expect(sql).not.toContain('p.source_thickness::numeric');
     expect(sql).not.toContain('p.unit = input_query.unit');
     expect(sql).toContain('p.spec_key ILIKE');
     expect(sql).toContain('p.normalized_spec_text ILIKE');
@@ -153,6 +159,8 @@ describe('Steel price candidate repository', () => {
         tierRatios: { A: 1.4, B: 1.3, C: null, D: 1.2, E: null, F: 1.1 },
         unitPriceBase: 35,
         valueState: 'confirmed',
+        thicknessMinMm: 1,
+        thicknessMaxMm: 4.5,
       }),
     );
     expect(result[1]?.categoryCandidates).toEqual([

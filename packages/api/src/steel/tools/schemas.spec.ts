@@ -102,4 +102,13 @@ describe('Steel price candidate tool schema', () => {
     expect(schema.parse({ queries: [{ category: '鐵板', material: '錏' }] })).toBeDefined();
     expect(schema.parse({ queries: [{ category: '鐵板', material: '鋅' }] })).toBeDefined();
   });
+
+  it.each(['0', '-1', '6mm', 'NaN', 'Infinity', '1e2'])(
+    'rejects non-positive or non-decimal thickness %s',
+    (thicknessMm) => {
+      expect(() =>
+        schema.parse({ queries: [{ category: '加工/孔', thicknessMm: [thicknessMm] }] }),
+      ).toThrow();
+    },
+  );
 });

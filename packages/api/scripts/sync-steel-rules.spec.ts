@@ -225,6 +225,8 @@ describe('Steel category rule sources', () => {
       ratio_quoteable_units: 'Kg|M',
       ratio_unsupported_action: 'category_rule_pending',
       missing_price_action: 'manual_review',
+      missing_thickness_selection: 'minimum_quoteable_thickness',
+      material_line_rounding: 'ceil_final_subtotal_twd',
       empty_subcategory: 'unfiltered',
     });
   });

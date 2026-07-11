@@ -81,6 +81,8 @@ describe('Steel price v4.2 parser', () => {
       unitWeightBasis: 'M',
       density: 7.85,
       sourceThickness: '5.5',
+      thicknessMinMm: 5.5,
+      thicknessMaxMm: 5.5,
       widthMm: 200,
       heightMm: 100,
       lengthMm: 6000,
@@ -178,6 +180,48 @@ describe('Steel price v4.2 parser', () => {
 
     expect(hole?.priceKind).toBe('hole');
     expect(cutting?.priceKind).toBe('cutting');
+  });
+
+  it('derives inclusive material-thickness bands without treating hole diameters as thickness', () => {
+    const [range, exact, sourceRange, diameterRange] = buildSteelPriceV4Rows([
+      makeWorkbookRow({
+        erp_item_code: 'DZA0612',
+        category: '加工/孔',
+        subcategory: '鐵板',
+        product_name: '厚度6.0-12.0m/m鐵板鑽孔φ',
+        normalized_spec_text: '厚度6.0-12.0mm鐵板鑽孔φ t6mm',
+        source_thickness: '6',
+      }),
+      makeWorkbookRow({
+        erp_item_code: 'HOLE03',
+        category: '加工/孔',
+        subcategory: '鐵板',
+        product_name: '厚度3.0m/m鐵板鑽孔φ',
+        normalized_spec_text: '厚度3.0mm鐵板鑽孔φ',
+        source_thickness: '3',
+      }),
+      makeWorkbookRow({
+        erp_item_code: 'HOLE-RANGE',
+        category: '加工/孔',
+        subcategory: '鐵板',
+        product_name: '鐵板鑽孔φ',
+        normalized_spec_text: '鐵板鑽孔φ',
+        source_thickness: '20~25m/m',
+      }),
+      makeWorkbookRow({
+        erp_item_code: 'BLZZE2',
+        category: '加工/孔',
+        subcategory: '鐵板',
+        product_name: '沖孔φ(1.0~2.0)',
+        normalized_spec_text: '沖孔φ(1.0~2.0)',
+        source_thickness: '',
+      }),
+    ]);
+
+    expect(range).toMatchObject({ thicknessMinMm: 6, thicknessMaxMm: 12 });
+    expect(exact).toMatchObject({ thicknessMinMm: 3, thicknessMaxMm: 3 });
+    expect(sourceRange).toMatchObject({ thicknessMinMm: 20, thicknessMaxMm: 25 });
+    expect(diameterRange).toMatchObject({ thicknessMinMm: null, thicknessMaxMm: null });
   });
 
   it('accepts ratio_only rows only when prices are absent and a ratio exists', () => {

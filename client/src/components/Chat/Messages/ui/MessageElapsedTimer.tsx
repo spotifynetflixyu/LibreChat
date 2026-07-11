@@ -50,10 +50,16 @@ export default function MessageElapsedTimer({
     return parentMessage?.createdAt ?? parentMessage?.clientTimestamp ?? null;
   }, [getMessages, parentMessageId]);
 
-  const resolvedStartedAt = parseTimestampMs(parentStartedAt) ?? parseTimestampMs(startedAt);
+  const parentStartedAtMs = parseTimestampMs(parentStartedAt);
+  const responseStartedAtMs = parseTimestampMs(startedAt);
+  const resolvedStartedAt =
+    parentStartedAtMs === null || responseStartedAtMs === null
+      ? (parentStartedAtMs ?? responseStartedAtMs)
+      : Math.max(parentStartedAtMs, responseStartedAtMs);
   const keyRef = useRef<string | null | undefined>(timerKey);
   const resolvedStartedAtRef = useRef<number | null>(resolvedStartedAt);
   const hasStartedRef = useRef(isCreatedByUser !== true && isSubmitting);
+  const wasSubmittingRef = useRef(isSubmitting);
   const [startAtMs, setStartAtMs] = useState(() => resolvedStartedAt ?? Date.now());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [completedAtMs, setCompletedAtMs] = useState<number | null>(null);
@@ -85,15 +91,22 @@ export default function MessageElapsedTimer({
 
   useEffect(() => {
     if (isCreatedByUser === true) {
+      wasSubmittingRef.current = false;
       return;
     }
     if (!isSubmitting) {
+      wasSubmittingRef.current = false;
       if (hasStartedRef.current) {
         setCompletedAtMs((current) => current ?? Date.now());
       }
       return;
     }
 
+    const isRestarting = !wasSubmittingRef.current;
+    wasSubmittingRef.current = true;
+    if (isRestarting) {
+      setStartAtMs(Date.now());
+    }
     hasStartedRef.current = true;
     setCompletedAtMs(null);
     setNowMs(Date.now());

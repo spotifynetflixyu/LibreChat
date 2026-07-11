@@ -10,6 +10,11 @@ import { isPriceSubcategory } from '../pricing/categories';
 export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
 const nonEmptyString = z.string().trim().min(1);
+const positiveDecimalString = z
+  .string()
+  .trim()
+  .regex(/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/u)
+  .refine((value) => Number(value) > 0, 'Thickness must be greater than zero');
 const limitSchema = z.number().int().min(1).max(100).optional();
 const priceQueryLimitSchema = z
   .number()
@@ -195,7 +200,7 @@ const priceLookupQuerySchema = z
       .describe(
         'Optional contains-match material family. Use one of 黑鐵, 白鐵, 鋁, 錏, 鋅, 鎢, or 塑膠.',
       ),
-    thicknessMm: z.array(nonEmptyString).min(1).max(20).optional(),
+    thicknessMm: z.array(positiveDecimalString).min(1).max(20).optional(),
     erpItemCode: nonEmptyString.optional(),
     keyword: nonEmptyString.optional(),
     limit: priceQueryLimitSchema,

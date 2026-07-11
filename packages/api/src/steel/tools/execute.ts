@@ -53,13 +53,9 @@ const ocrTextKeys = new Set([
 
 const strictWorkbookHeaders: Partial<Record<SteelRuntimeActiveOutputSheetId, readonly string[]>> = {
   system_order: [
-    '公司編號',
-    '項次',
-    '倉庫編號',
     '型號',
     '品名規格',
     '材質編號',
-    '廠別編號',
     '單位',
     '數量',
     '單重',
@@ -72,7 +68,6 @@ const strictWorkbookHeaders: Partial<Record<SteelRuntimeActiveOutputSheetId, rea
     '長度',
     '肚',
     '類別',
-    '交貨日期',
     '備註',
   ],
   customer_quote: ['項目', '說明', '小計'],

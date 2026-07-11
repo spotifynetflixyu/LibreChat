@@ -43,6 +43,8 @@ interface SteelPriceItemRow {
   unit_weight_basis: string | null;
   density: string | number | null;
   source_thickness: string | null;
+  thickness_min_mm: string | number | null;
+  thickness_max_mm: string | number | null;
   width_mm: string | number | null;
   height_mm: string | number | null;
   length_mm: string | number | null;
@@ -105,6 +107,8 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   unitWeightBasis?: string;
   density: number | null;
   sourceThickness?: string;
+  thicknessMinMm: number | null;
+  thicknessMaxMm: number | null;
   widthMm: number | null;
   heightMm: number | null;
   lengthMm: number | null;
@@ -319,6 +323,8 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     unitWeightBasis: parseNullableString(row.unit_weight_basis),
     density: parseNullableNumber(row.density),
     sourceThickness: parseNullableString(row.source_thickness),
+    thicknessMinMm: parseNullableNumber(row.thickness_min_mm),
+    thicknessMaxMm: parseNullableNumber(row.thickness_max_mm),
     widthMm: parseNullableNumber(row.width_mm),
     heightMm: parseNullableNumber(row.height_mm),
     lengthMm: parseNullableNumber(row.length_mm),
@@ -443,6 +449,8 @@ SELECT
           p.unit_weight_basis,
           p.density,
           p.source_thickness,
+          p.thickness_min_mm,
+          p.thickness_max_mm,
           p.width_mm,
           p.height_mm,
           p.length_mm,
@@ -476,9 +484,18 @@ SELECT
             OR EXISTS (
               SELECT 1
               FROM unnest(input_query.thickness_mm) AS requested_thickness
-              WHERE p.source_thickness ~ '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)[[:space:]]*$'
-                AND requested_thickness ~ '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)[[:space:]]*$'
-                AND p.source_thickness::numeric = requested_thickness::numeric
+              WHERE requested_thickness ~ '^[[:space:]]*([0-9]+([.][0-9]*)?|[.][0-9]+)[[:space:]]*$'
+                AND (
+                  (
+                    p.thickness_min_mm = p.thickness_max_mm
+                    AND p.thickness_min_mm = requested_thickness::numeric
+                  )
+                  OR (
+                    p.thickness_min_mm < p.thickness_max_mm
+                    AND p.thickness_min_mm <= requested_thickness::numeric
+                    AND requested_thickness::numeric < p.thickness_max_mm
+                  )
+                )
             )
           )
           AND (

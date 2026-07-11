@@ -81,6 +81,8 @@ export interface SteelPriceV4Row {
   unitWeightBasis: string | null;
   density: number | null;
   sourceThickness: string | null;
+  thicknessMinMm: number | null;
+  thicknessMaxMm: number | null;
   widthMm: number | null;
   heightMm: number | null;
   lengthMm: number | null;
@@ -201,6 +203,47 @@ function getPriceKind(category: PriceCategory): SteelPriceV4Kind {
   return category.startsWith('加工/') ? 'cutting' : 'product';
 }
 
+function parseThicknessBand(
+  category: PriceCategory,
+  productName: string | null,
+  normalizedSpecText: string | null,
+  sourceThickness: string | null,
+): { thicknessMinMm: number | null; thicknessMaxMm: number | null } {
+  const sourceMatch = sourceThickness?.match(
+    /^([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:m\s*\/\s*m|mm|t)?$/iu,
+  );
+  if (sourceThickness !== null && !sourceMatch?.[1]) {
+    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
+  }
+  const sourceMinMm = sourceMatch?.[1] ? Number(sourceMatch[1]) : null;
+  const sourceMaxMm = sourceMatch?.[2] ? Number(sourceMatch[2]) : sourceMinMm;
+  if (
+    sourceMinMm !== null &&
+    (sourceMinMm <= 0 || sourceMaxMm === null || sourceMaxMm < sourceMinMm)
+  ) {
+    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
+  }
+  if (category !== '加工/孔') {
+    return { thicknessMinMm: sourceMinMm, thicknessMaxMm: sourceMaxMm };
+  }
+
+  const text = `${productName ?? ''} ${normalizedSpecText ?? ''}`.normalize('NFKC');
+  const match = text.match(
+    /厚度\s*([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:m\s*\/\s*m|mm|t)?/iu,
+  );
+  if (!match?.[1]) {
+    return { thicknessMinMm: sourceMinMm, thicknessMaxMm: sourceMaxMm };
+  }
+
+  const thicknessMinMm = Number(match[1]);
+  const thicknessMaxMm = Number(match[2] ?? match[1]);
+  if (thicknessMinMm <= 0 || thicknessMaxMm < thicknessMinMm) {
+    throw new Error(`Invalid Steel hole thickness band: ${match[0]}`);
+  }
+
+  return { thicknessMinMm, thicknessMaxMm };
+}
+
 function validateValueState(
   state: SteelPriceV4ValueState,
   prices: readonly (number | null)[],
@@ -241,6 +284,14 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   const priceRatioD = parseZeroAsNullNumber(row.price_ratio_d, 'price_ratio_d');
   const priceRatioE = parseZeroAsNullNumber(row.price_ratio_e, 'price_ratio_e');
   const priceRatioF = parseZeroAsNullNumber(row.price_ratio_f, 'price_ratio_f');
+  const productName = parseText(row.product_name);
+  const sourceThickness = parseZeroAsNullText(row.source_thickness);
+  const thicknessBand = parseThicknessBand(
+    category,
+    productName,
+    normalizedSpecText,
+    sourceThickness,
+  );
 
   validateValueState(
     valueState,
@@ -251,7 +302,7 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   return {
     formulaCode: parseText(row.formula_code),
     erpItemCode,
-    productName: parseText(row.product_name),
+    productName,
     normalizedSpecText,
     category,
     subcategory,
@@ -275,7 +326,8 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     unitWeightValue: parseZeroAsNullNumber(row.unit_weight_value, 'unit_weight_value'),
     unitWeightBasis: parseText(row.unit_weight_basis),
     density: parseZeroAsNullNumber(row.density, 'density'),
-    sourceThickness: parseZeroAsNullText(row.source_thickness),
+    sourceThickness,
+    ...thicknessBand,
     widthMm: parseZeroAsNullNumber(row.width_mm, 'width_mm'),
     heightMm: parseZeroAsNullNumber(row.height_mm, 'height_mm'),
     lengthMm: parseZeroAsNullNumber(row.length_mm, 'length_mm'),

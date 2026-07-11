@@ -78,13 +78,9 @@ interface TablePayload {
 type ToolStatusEvent = Parameters<SteelProviderToolStatusCallback>[0];
 
 const expectedSystemOrderHeaders = [
-  '公司編號',
-  '項次',
-  '倉庫編號',
   '型號',
   '品名規格',
   '材質編號',
-  '廠別編號',
   '單位',
   '數量',
   '單重',
@@ -97,7 +93,6 @@ const expectedSystemOrderHeaders = [
   '長度',
   '肚',
   '類別',
-  '交貨日期',
   '備註',
 ] as const;
 
@@ -149,9 +144,7 @@ function hasExactHeaders(table: SteelMarkdownTable, headers: readonly string[]):
 }
 
 function findSystemOrderTables(text: string): SteelMarkdownTable[] {
-  return parseMarkdownTables(text).filter((table) =>
-    hasHeaders(table, ['項次', '型號', '品名規格']),
-  );
+  return parseMarkdownTables(text).filter((table) => hasHeaders(table, ['型號']));
 }
 
 function findFirstMarkdownTable(text: string): SteelMarkdownTable | undefined {
@@ -277,52 +270,8 @@ function sumQuoteRowQuantities(rows: readonly TablePayload[]): number {
   return Math.round(rows.reduce((total, row) => total + getQuoteRowQuantity(row), 0));
 }
 
-function getQuoteRowItemNumber(row: TablePayload): number | undefined {
-  return extractFirstPositiveNumber(row['項次']);
-}
-
-function hasSystemOrderItemNumbers(rows: readonly TablePayload[]): boolean {
-  if (rows.length === 0) {
-    return false;
-  }
-
-  const itemNumbers = rows.map(getQuoteRowItemNumber);
-  if (itemNumbers.some((itemNumber) => itemNumber === undefined)) {
-    return false;
-  }
-
-  let currentMain = 0;
-  let nextMain = 10;
-  let nextSubitem: number | undefined;
-
-  for (const itemNumber of itemNumbers) {
-    if (itemNumber === undefined || !Number.isInteger(itemNumber)) {
-      return false;
-    }
-
-    if (itemNumber % 10 === 0) {
-      if (itemNumber !== nextMain) {
-        return false;
-      }
-
-      currentMain = itemNumber;
-      nextMain += 10;
-      nextSubitem = currentMain + 1;
-      continue;
-    }
-
-    if (currentMain === 0 || nextSubitem === undefined || itemNumber !== nextSubitem) {
-      return false;
-    }
-
-    nextSubitem += 1;
-  }
-
-  return true;
-}
-
 function hasNumericPriceBasis(rows: readonly TablePayload[]): boolean {
-  return rows.length > 0 && rows.every((row) => /^(?:1|2|3|5)$/u.test(row['計價基準'] ?? ''));
+  return rows.length > 0 && rows.every((row) => /^[1-6]$/u.test(row['計價基準'] ?? ''));
 }
 
 function hasPositiveQuoteAmount(row: TablePayload): boolean {
@@ -453,28 +402,15 @@ async function readRuntimeRuleEvidence(
       '使用者在後續訊息明確確認 OCR 資料正確',
     ],
     'steel-workbook-output-policy': [
-      '第一輪回覆只輸出 OCR 結果確認表',
-      '`孔數 / 件`、`總孔數`',
-      '`總孔數` 應等於數量 × 每件孔數',
-      '使用者確認或修正前，不輸出 `system_order` 或 `customer_quote` 報價表',
-      '每一筆已確認 OCR 產品 / 材料列都必須成為一筆獨立 `system_order` 報價列',
-      '最終報價的第一張表必須是 `system_order` 逐項明細表',
-      '`公司編號`、`項次`、`倉庫編號`、`型號`、`品名規格`',
-      '`廠別編號`、`單位`、`數量`、`單重`、`總數`、`單價`、`計價基準`',
-      'A=1、B=2、C=3、F=5',
-      '孔、切工、折工、開槽',
-      '必須額外成為獨立 `system_order` 報價列',
-      '產品 / 材料主項使用十進位整數 10、20、30',
-      '主項 10 的次項為 11、12、13',
-      '孔數、折工、刀、開槽、加工',
-      '次輪報價必須加總已確認 OCR 的 `總孔數`',
-      '所有孔加工列的數量合計必須等於已確認 OCR 的 `總孔數` 合計',
-      '加工報價列是追加列',
-      '總列數應大於 71',
-      '不算完成加工報價',
-      '不可只放在採用價格基準表或說明表',
-      '加工報價列不論放在同一張明細表或另開續表',
-      '不可把加工金額併入材料單價或材料小計',
+      '本輪有 PDF / image OCR 時，第一輪只輸出 OCR 結果確認表',
+      '第一張表必須是 `system_order` 逐項明細',
+      '`型號`、`品名規格`、`材質編號`、`單位`、`數量`',
+      '`單重`、`總數`、`單價`、`計價基準`、`公式編號`',
+      'A=1、B=2、C=3、D=4、E=5、F=6',
+      '孔、切工、折工、刀、開槽、切角、缺口、其他加工與外包加工',
+      '次輪報價必須把已確認 `總孔數` 加入獨立孔加工列',
+      '所有孔加工列數量合計必須等於已確認 `總孔數` 合計',
+      '最後一列必須是 `總計`',
     ],
   };
   const slugs = Object.keys(requiredFragments);
@@ -741,7 +677,6 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
             hasExactHeaders: hasExactHeaders(table, expectedSystemOrderHeaders),
           })),
           systemOrderRowCount: systemOrderRows.length,
-          hasSequentialItemNumbers: hasSequentialItemNumbers(systemOrderRows),
           hasNumericPriceBasis: hasNumericPriceBasis(systemOrderRows),
           materialRows: materialRows.map(getRowIdentityText),
           holeQuoteRows: holeQuoteRows.map(getRowIdentityText),
@@ -795,8 +730,7 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
           evidence,
         );
         assertWithEvidence(
-          firstQuoteTable !== undefined &&
-            hasHeaders(firstQuoteTable, ['項次', '型號', '品名規格']),
+          firstQuoteTable !== undefined && hasHeaders(firstQuoteTable, ['型號']),
           'PB.pdf quote response did not put the system_order detail table first.',
           evidence,
         );
@@ -809,11 +743,6 @@ describePBQuoteLive('Steel live PB.pdf OCR confirmation and quote flow', () => {
         assertWithEvidence(
           systemOrderTables.every((table) => hasExactHeaders(table, expectedSystemOrderHeaders)),
           'PB.pdf system_order continuation tables did not all use the fixed ERP column order.',
-          evidence,
-        );
-        assertWithEvidence(
-          hasSystemOrderItemNumbers(systemOrderRows),
-          'PB.pdf system_order item numbers did not follow main/subitem numbering such as 10, 11, 20, 21.',
           evidence,
         );
         assertWithEvidence(

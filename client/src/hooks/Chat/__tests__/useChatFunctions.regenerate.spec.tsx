@@ -138,6 +138,7 @@ describe('useChatFunctions regenerate', () => {
     expect(submission.userMessage.responseMessageId).toBe('assistant-1_');
     expect(submission.initialResponse?.messageId).toBe('assistant-1_');
     expect(submission.initialResponse?.parentMessageId).toBe('user-1');
+    expect(submission.initialResponse?.clientTimestamp).toBeDefined();
     expect(submission.messages.map((message) => message.messageId)).toEqual(['user-1']);
     expect(submission.regenerateMessages?.map((message) => message.messageId)).toEqual([
       'user-1',

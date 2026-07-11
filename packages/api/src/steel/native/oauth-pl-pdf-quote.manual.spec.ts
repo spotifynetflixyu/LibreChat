@@ -250,9 +250,7 @@ function hasOcrConfirmationTable(text: string): boolean {
 function hasQuoteTable(text: string): boolean {
   return parseMarkdownTables(text).some((table) => {
     const headers = new Set(table.headers);
-    return (
-      headers.has('項次') && headers.has('型號') && headers.has('品名規格') && table.rows.length > 0
-    );
+    return headers.has('型號') && table.rows.length > 0;
   });
 }
 

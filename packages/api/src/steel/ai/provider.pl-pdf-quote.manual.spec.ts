@@ -60,10 +60,6 @@ function isOcrRule(rule: SteelAgentRule): boolean {
   return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
 }
 
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
-}
-
 function getErrorSummary(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -161,9 +157,7 @@ function hasOcrConfirmationTable(text: string): boolean {
 function hasQuoteTable(text: string): boolean {
   return parseMarkdownTables(text).some((table) => {
     const headers = new Set(table.headers);
-    return (
-      headers.has('項次') && headers.has('型號') && headers.has('品名規格') && table.rows.length > 0
-    );
+    return headers.has('型號') && table.rows.length > 0;
   });
 }
 

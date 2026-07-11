@@ -61,6 +61,8 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     unit_weight_basis: null,
     density: '7.850000',
     source_thickness: '6.0',
+    thickness_min_mm: '6.000000',
+    thickness_max_mm: '6.000000',
     width_mm: null,
     height_mm: null,
     length_mm: null,
@@ -297,6 +299,8 @@ describe('Steel minimal tool execution', () => {
         candidates: [
           expect.objectContaining({
             erpItemCode: 'OTL006',
+            thicknessMinMm: 6,
+            thicknessMaxMm: 6,
             quoteEligible: true,
             pricingOptions: [
               {
@@ -633,13 +637,9 @@ describe('Steel minimal tool execution', () => {
       'manual_review',
     ]);
     expect(tables[0]?.headers).toEqual([
-      '公司編號',
-      '項次',
-      '倉庫編號',
       '型號',
       '品名規格',
       '材質編號',
-      '廠別編號',
       '單位',
       '數量',
       '單重',
@@ -652,11 +652,10 @@ describe('Steel minimal tool execution', () => {
       '長度',
       '肚',
       '類別',
-      '交貨日期',
       '備註',
     ]);
-    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['', '1', '', 'CCG075', '錏輕型鋼 75x45']);
-    expect(tables[0]?.rows[0]?.[17]).toBe('3');
+    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['CCG075', '錏輕型鋼 75x45', '', '', '2']);
+    expect(tables[0]?.rows[0]?.[13]).toBe('3');
     expect(tables[2]?.headers).toEqual(['項目', '說明', '小計']);
     expect(tables[2]?.rows[0]).toEqual(['', '', '536']);
   });
@@ -691,8 +690,8 @@ describe('Steel minimal tool execution', () => {
       throw new Error(result.errorSummary);
     }
     const systemOrder = parseMarkdownTables(String(result.data.markdown))[0];
-    expect(systemOrder?.headers[17]).toBe('肚');
-    expect(systemOrder?.rows.map((row) => row[17])).toEqual(['3', '4']);
+    expect(systemOrder?.headers[13]).toBe('肚');
+    expect(systemOrder?.rows.map((row) => row[13])).toEqual(['3', '4']);
   });
 
   it('reads file-keyed workbook rows when multiple OCR files have separate orders', async () => {
@@ -764,7 +763,7 @@ describe('Steel minimal tool execution', () => {
     expect(markdown).not.toContain('TEXT001');
     expect(markdown).toContain('B001');
     expect(tables[0]?.rows).toHaveLength(1);
-    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['', '1', '', 'B001', 'B order item']);
+    expect(tables[0]?.rows[0]?.slice(0, 5)).toEqual(['B001', 'B order item', '', '', '2']);
   });
 
   it('reads the default workbook order separately from OCR file-keyed orders', async () => {

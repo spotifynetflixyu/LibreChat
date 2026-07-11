@@ -433,6 +433,53 @@ describe('Mongoose Steel working-order memory reader', () => {
     expect(oldRow).toBeNull();
   });
 
+  it('captures a system_order table with 型號 and no legacy 項次 column', async () => {
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const reader = createMongooseSteelWorkingOrderMemoryReader(mongoose, 'steel_conversation_1');
+
+    const result = await writer.captureAssistantFinalMarkdown({
+      conversationId: 'steel_conversation_1',
+      requestId: 'request_16_column_order',
+      messageId: 'assistant_16_column_order',
+      turnIndex: 5,
+      checkpointTurnIndex: 4,
+      content: [
+        '## system_order',
+        '',
+        '| 型號 | 品名規格 | 材質編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 肚 | 類別 | 備註 |',
+        '| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- |',
+        '| DOR001 | 捲門75型 | SUS304 | 才 | 2 | 3.5 | 7 | 26.8 | 2 | DA | 1.2 | 75 | 6000 | 3 | 捲門/伸縮門 | 已採用價格列 |',
+        '| EQB0090 | 圓鐵 9m/m | SS400 | 支 | 3 |  | 3 | 18 | 2 | F2 |  | 9 | 6000 |  | 圓鐵 | 待確認 |',
+      ].join('\n'),
+    });
+
+    expect(result).toEqual({
+      parseStatus: 'saved',
+      savedCounts: { working_order_row: 2 },
+      savedTableCounts: { system_order_table: 1 },
+      totalSavedCounts: { working_order_row: 2 },
+      totalTableCounts: { system_order_table: 1 },
+    });
+    await expect(reader.readWorkingOrderItems({ mode: 'page', pageSize: 10 })).resolves.toEqual(
+      expect.objectContaining({
+        resultCount: 2,
+        workingOrderRows: [
+          expect.objectContaining({
+            erpItemCode: 'DOR001',
+            productName: '捲門75型',
+            quantity: 2,
+            肚: '3',
+          }),
+          expect.objectContaining({
+            erpItemCode: 'EQB0090',
+            productName: '圓鐵 9m/m',
+            quantity: 3,
+          }),
+        ],
+      }),
+    );
+  });
+
   it('only saves OCR and system tables when their titles contain the required keyword', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);

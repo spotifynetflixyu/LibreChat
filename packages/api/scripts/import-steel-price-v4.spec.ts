@@ -285,4 +285,35 @@ describe('Steel price v4.2 importer', () => {
       'review_state',
     );
   });
+
+  it('persists normalized inclusive thickness bounds during replacement', async () => {
+    const calls: Array<{ sql: string; values?: readonly SqlValue[] }> = [];
+    const client: TestClient = {
+      query: jest.fn(async (sql, values) => {
+        calls.push({ sql, values });
+        if (sql.includes('COUNT(*)::int AS total')) {
+          return {
+            rows: [{ total: 1, active: 1, confirmed: 1, ratio_only: 0, no_price: 0 }],
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+    const row = makeParsedRow({
+      erp_item_code: 'DZA0612',
+      category: '加工/孔',
+      subcategory: '鐵板',
+      product_name: '厚度6.0-12.0m/m鐵板鑽孔φ',
+      normalized_spec_text: '厚度6.0-12.0mm鐵板鑽孔φ',
+      source_thickness: '6',
+    });
+
+    await importer.replaceSteelPrices(client, [row]);
+
+    const insert = calls.find(({ sql }) => sql.startsWith('INSERT INTO steel.prices'));
+    expect(insert?.sql).toContain('thickness_min_mm, thickness_max_mm');
+    expect(insert?.values).toEqual(
+      expect.arrayContaining([row.thicknessMinMm, row.thicknessMaxMm]),
+    );
+  });
 });
