@@ -1,5 +1,11 @@
 # Lessons
 
+- OCR preprocessing organizer 的 reviewed OCR 規則必須明確寫出硬邊界：只可把 backend 提供的單一 PaddleOCR raw result 依 OCR 規則整理成 Markdown，不得呼叫任何 tool、補查資料、查價或進入報價流程。runtime 仍應用 tool isolation 落實此邊界，不能只依賴 prompt。
+
+- `OPENAI_DEFAULT_MODEL` defines the default model shown for a new LibreChat
+  conversation. OpenAI OAuth must continue using the model selected in the
+  LibreChat UI; the env value is only the default/fallback and must never
+  overwrite an explicit UI-selected model.
 - For grouped Steel price lookup, backend query IDs come only from `queries`
   array order (`q1`, `q2`, ...). Ignore caller-supplied `queryId` values, keep
   `queryResults` in the same order, and never reject a batch for ID collisions.
@@ -975,3 +981,8 @@
 - For Steel Supabase rollouts, treat local `.env` as dev and `.env.prod` as
   production when both are present. Apply and verify dev first; never copy to
   production until the user explicitly approves the verified dev result.
+- OCR preprocessing and the main OpenAI OAuth agent must both honor an
+  explicitly selected model such as `gpt-5.6-luna`. If Codex reports that the
+  model needs a newer client, update the OAuth transport so it resolves current
+  model metadata and protocol flags; do not silently fall back to an older
+  organizer model.

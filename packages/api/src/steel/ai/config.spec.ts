@@ -23,6 +23,31 @@ describe('OpenAI runtime config', () => {
     });
   });
 
+  it('accepts a GPT-5.6 model as the LibreChat default', () => {
+    expect(
+      parseOpenAIConfig({
+        OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna',
+      }),
+    ).toEqual({
+      provider: 'OAUTH',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'medium',
+    });
+  });
+
+  it('accepts max reasoning effort for GPT-5.6', () => {
+    expect(
+      parseOpenAIConfig({
+        OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna',
+        OPENAI_REASONING_EFFORT: 'max',
+      }),
+    ).toEqual({
+      provider: 'OAUTH',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'max',
+    });
+  });
+
   it('accepts legacy Steel env names for existing deployments', () => {
     expect(
       parseOpenAIConfig({
@@ -37,20 +62,10 @@ describe('OpenAI runtime config', () => {
     });
   });
 
-  it('rejects invalid provider, model, and reasoning effort values', () => {
+  it('rejects invalid provider and reasoning effort values', () => {
     expect(() =>
       parseOpenAIConfig({
         OPENAI_PROVIDER: 'LOCAL',
-      }),
-    ).toThrow(OpenAIConfigError);
-    expect(() =>
-      parseOpenAIConfig({
-        OPENAI_DEFAULT_MODEL: 'gpt-5.4',
-      }),
-    ).toThrow(OpenAIConfigError);
-    expect(() =>
-      parseOpenAIConfig({
-        OPENAI_DEFAULT_MODEL: 'gpt-4.1',
       }),
     ).toThrow(OpenAIConfigError);
     expect(() =>

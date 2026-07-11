@@ -1,6 +1,11 @@
-import { EModelEndpoint, getEndpointField } from 'librechat-data-provider';
+import { EModelEndpoint, LocalStorageKeys, getEndpointField } from 'librechat-data-provider';
 import type { TEndpointsConfig, TConfig } from 'librechat-data-provider';
-import { getAvailableEndpoints, getEndpointsFilter, mapEndpoints } from './endpoints';
+import {
+  mapEndpoints,
+  getEndpointsFilter,
+  getAvailableEndpoints,
+  updateLastSelectedModel,
+} from './endpoints';
 
 const mockEndpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { type: undefined, iconURL: 'openAI_icon.png', order: 0 },
@@ -81,5 +86,37 @@ describe('mapEndpoints', () => {
   it('returns sorted available endpoints', () => {
     const expectedOrder = [EModelEndpoint.openAI, EModelEndpoint.google, 'Mistral'];
     expect(mapEndpoints(mockEndpointsConfig)).toEqual(expectedOrder);
+  });
+});
+
+describe('updateLastSelectedModel', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('stores OpenAI OAuth models under openAI and keeps the OAuth conversation setup', () => {
+    localStorage.setItem(
+      `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+      JSON.stringify({ endpoint: EModelEndpoint.openAIOAuth, model: 'gpt-5.5' }),
+    );
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({ [EModelEndpoint.openAIOAuth]: 'gpt-5.5' }),
+    );
+
+    updateLastSelectedModel({
+      endpoint: EModelEndpoint.openAIOAuth,
+      model: 'gpt-5.6-terra',
+    });
+
+    expect(
+      JSON.parse(localStorage.getItem(`${LocalStorageKeys.LAST_CONVO_SETUP}_0`) || '{}'),
+    ).toEqual({
+      endpoint: EModelEndpoint.openAIOAuth,
+      model: 'gpt-5.6-terra',
+    });
+    expect(JSON.parse(localStorage.getItem(LocalStorageKeys.LAST_MODEL) || '{}')).toEqual({
+      [EModelEndpoint.openAI]: 'gpt-5.6-terra',
+    });
   });
 });

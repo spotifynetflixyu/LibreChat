@@ -138,6 +138,42 @@ function getAiVisibleTools(input: MergeSteelToolDefinitionsInput): Set<string> {
 
 const jsonSchemaByToolName = new Map<SteelProviderToolName, JsonSchemaType>();
 
+type JsonSchemaValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonSchemaValue[]
+  | { [key: string]: JsonSchemaValue };
+
+function normalizeExclusiveBounds(value: JsonSchemaValue): JsonSchemaValue {
+  if (Array.isArray(value)) {
+    return value.map(normalizeExclusiveBounds);
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  const normalized: { [key: string]: JsonSchemaValue } = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if ((key === 'exclusiveMinimum' || key === 'exclusiveMaximum') && typeof nested === 'boolean') {
+      if (!nested) {
+        continue;
+      }
+
+      const boundary = value[key === 'exclusiveMinimum' ? 'minimum' : 'maximum'];
+      if (typeof boundary !== 'number') {
+        throw new Error(`${key} requires a numeric boundary`);
+      }
+      normalized[key] = boundary;
+      continue;
+    }
+
+    normalized[key] = normalizeExclusiveBounds(nested);
+  }
+  return normalized;
+}
+
 function getJsonSchema(definition: SteelToolDefinition): JsonSchemaType {
   const cached = jsonSchemaByToolName.get(definition.name);
   if (cached) {
@@ -147,9 +183,10 @@ function getJsonSchema(definition: SteelToolDefinition): JsonSchemaType {
   const schema = zodToJsonSchema(definition.argsSchema, {
     name: definition.name,
     target: 'openApi3',
-  }) as JsonSchemaType;
-  jsonSchemaByToolName.set(definition.name, schema);
-  return schema;
+  }) as JsonSchemaValue;
+  const normalizedSchema = normalizeExclusiveBounds(schema) as JsonSchemaType;
+  jsonSchemaByToolName.set(definition.name, normalizedSchema);
+  return normalizedSchema;
 }
 
 function getAvailableNativeToolName(steelToolName: SteelProviderToolName, usedNames: Set<string>) {

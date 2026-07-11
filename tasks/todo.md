@@ -1,3 +1,85 @@
+# Active: Fixed OpenAI Title Model - 2026-07-11
+
+Goal: make shared Agents title generation use `gpt-5.6-luna` with reasoning
+effort `none` for OpenAI API and OpenAI OAuth without changing main chat runs.
+
+- [x] Confirm the current OpenAI API and OAuth title paths.
+- [x] Approve and commit the focused design spec.
+- [x] Write the TDD implementation plan.
+- [x] Add failing regressions for OAuth, OpenAI API, and non-OpenAI preservation.
+- [x] Implement the fixed title-only model and reasoning policy.
+- [x] Run focused tests, adjacent controller tests, API package build, and diff checks.
+- [x] Complete independent code review and record results.
+
+Design:
+`docs/superpowers/specs/2026-07-11-fixed-openai-title-model-design.md`
+
+Implementation:
+`docs/superpowers/plans/2026-07-11-fixed-openai-title-model.md`
+
+Review:
+
+- OAuth title generation ignores the selected chat model and returns
+  `gpt-5.6-luna`; the provider call carries reasoning effort `none`.
+- OpenAI API title generation immutably overrides only `model` and
+  `reasoning_effort`, preserving unrelated options and the caller's object.
+- Both `Providers.OPENAI` and `EModelEndpoint.openAI` direct identifiers are
+  covered. Endpoint-aware detection prevents custom OpenAI-compatible and Azure
+  serverless routes from being mistaken for the standard OpenAI API endpoint.
+- TDD RED failed first on the old selected-model behavior and again on the
+  custom/Azure collision. GREEN passed 7 focused title tests; adjacent
+  AgentClient tests passed 93 tests.
+- `npm run build:api` and `git diff --check` passed. Independent review returned
+  PASS for both spec compliance and code quality with no remaining findings.
+- The implementation remains uncommitted because the target files contain
+  overlapping user-owned OAuth transport changes.
+
+# Active: GPT-5.6 Luna OAuth Transport Compatibility - 2026-07-11
+
+Goal: make OCR preprocessing and the main OpenAI OAuth run use the explicitly
+selected `gpt-5.6-luna` model through the current Codex protocol.
+
+- [x] Reproduce the organizer failure with the same OAuth account and model.
+- [x] Confirm the failure is an outdated transport contract rather than an
+      invalid model name or different account.
+- [x] Add a failing adapter regression for Codex model-catalog resolution and
+      Responses Lite request metadata.
+- [x] Replace `openai-oauth-provider` with the `openai-oauth@2.0.0-beta.2`
+      in-process adapter packages.
+- [x] Verify focused tests/builds and a live luna request through the adapter.
+- [x] Restart localhost and verify the OCR organizer path plus backend health.
+
+Review:
+
+- Root cause was transport compatibility, not the selected model or OAuth
+  account. `gpt-5.6-luna` is returned by the current account-aware model
+  catalog with Responses Lite enabled, but the beta transport omitted the
+  current Codex `originator` and versioned `user-agent` response headers; the
+  upstream request therefore returned `Model not found`.
+- Replaced `openai-oauth-provider@1.0.3` with exact
+  `@openai-oauth/ai-sdk`, `@openai-oauth/core`, and `@openai-oauth/local`
+  `2.0.0-beta.2` dependencies. OAuth model, direct provider, title, token, and
+  usage paths now use the split packages with shared stateless transport
+  construction.
+- The transport compatibility wrapper reads the core package's
+  `client_version` model-catalog query, then supplies the matching current
+  Codex identity on `/responses`; credentials refresh remains untouched.
+- TDD evidence: the new identity-header assertion failed before the wrapper
+  (`originator` was null), then the five related API suites passed: 5 suites / 50
+  tests. ToolService OCR organizer regression passed: 1 suite / 79 tests.
+- `packages/api` build passed. A real authenticated
+  `sendSteelOAuthChat` smoke using `gpt-5.6-luna` passed and returned the exact
+  expected value instead of `Model not found`.
+- Dependency verification passed: `npm ls` resolves all three split packages
+  to `2.0.0-beta.2` with `@openai-oauth/core` deduped; no
+  `openai-oauth-provider` reference remains; lockfile JSON and npm 11.13.0
+  `npm ci --dry-run` passed.
+- Local backend was restarted in detached screen `librechat-backend`; health
+  returned `OK` on port 3080. The previously stopped frontend was started in
+  detached screen `librechat-frontend`, and `localhost:3090` returned HTTP 200.
+  `git diff --check` and the staged equivalent both passed. Changes remain
+  uncommitted and unstaged by this task.
+
 # Active: Steel Price And Cutting Catalog - 2026-07-11
 
 Goal: update grouped Steel price lookup, build and import the clean cutting
@@ -266,6 +348,9 @@ Review:
 - Follow-up correction: grouped price IDs now always come from `queries` order
   (`q1`, `q2`, ...); supplied IDs are ignored, collisions are not rejected, and
   AI-visible rules/examples use positional result mapping.
+- Applied the updated rules to the dev Supabase in one transaction: all 9 rows
+  are active/reviewed, the agent and category guide contain the query-order
+  contract, and no active prompt retains a custom `"queryId"` JSON example.
 - Ran independent product-price and cutting-price repository queries in
   parallel, removed the identity material lookup map, and reused the canonical
   A/B/C/F tier constant in schema mappings.
@@ -8549,6 +8634,27 @@ Review:
   - `rtk node -e "JSON.parse(require('fs').readFileSync('client/src/locales/en/translation.json','utf8')); console.log('translation-json-ok')"`
   - `rtk git diff --check`
 
+## Active: Add GPT-5.6 Models To Local OpenAI List - 2026-07-11
+
+Goal: expose every documented GPT-5.6 API alias/variant in the local
+`OPENAI_MODELS` allowlist without changing production or example env files.
+
+- [x] Verify current GPT-5.6 model IDs against OpenAI's official model docs.
+- [x] Preserve `gpt-5.5` and add the GPT-5.6 alias plus Sol, Terra, and Luna to
+      `.env` `OPENAI_MODELS`.
+- [x] Verify comma-delimited parsing, the final diff, and whitespace hygiene.
+
+Review:
+
+- `.env` now exposes `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, and
+  `gpt-5.6-luna` while preserving `gpt-5.5`.
+- OpenAI's official model pages confirm the three named GPT-5.6 variants and
+  that `gpt-5.6` aliases GPT-5.6 Sol.
+- A dotenv parse probe returned the expected five ordered IDs.
+- `.env.prod`, `.env.prod.example`, `.env.example`, and
+  `OPENAI_DEFAULT_MODEL` were intentionally unchanged.
+- `rtk git diff --check` passed.
+
 ## Active: Admin Codex Device Login On Server - 2026-07-08
 
 Goal: make the admin OAuth token panel detect a working server-side Codex CLI,
@@ -8625,3 +8731,129 @@ Review:
     returned `OK`.
   - `rtk node -e "JSON.parse(require('fs').readFileSync('client/src/locales/en/translation.json','utf8')); console.log('translation-json-ok')"`
   - `rtk git diff --check`
+## Active: Fix Local PaddleOCR MCP Startup - 2026-07-11
+
+Goal: make `npm run backend` start the configured eager PaddleOCR MCP server
+on localhost without `spawn paddleocr_mcp ENOENT`.
+
+- [x] Confirm the runtime `librechat.yaml` command and reproduce the missing
+      executable through the local PATH/tool state.
+- [x] Install `paddleocr-mcp` through the same Python 3.12 `uv tool` contract
+      used by the production image.
+- [x] Verify the executable, direct MCP `listTools`, and backend startup.
+- [x] Record the root cause and fresh verification evidence.
+
+Review:
+
+- Root cause: ignored local `librechat.yaml` eagerly launches
+  `paddleocr_mcp`, but localhost had no `uv` tool installation even though
+  `/Users/neven/.local/bin` was already on `PATH`. `.mcp.json` using `uvx`
+  does not control the LibreChat backend runtime.
+- Installed `paddleocr-mcp==0.8.5` with Python 3.12 through
+  `uv tool install --python 3.12 --compile-bytecode paddleocr-mcp`.
+- `command -v paddleocr_mcp` resolves to
+  `/Users/neven/.local/bin/paddleocr_mcp`.
+- A direct MCP client connected and returned one tool: `paddleocr_vl`.
+- A fresh `npm run backend` start logged PaddleOCR initialization in 1991 ms,
+  `Initialized with 1 configured server and 1 tool`, and the backend health
+  endpoint returned HTTP 200 with `OK`.
+
+## Active: GPT-5.6 Max Effort And Env Default Model - 2026-07-11
+
+Goal: allow GPT-5.6 `max` reasoning effort through the active OpenAI OAuth
+runtime and make new LibreChat conversations honor the configured
+`OPENAI_DEFAULT_MODEL`, while preserving the UI-selected model as the OAuth
+provider's request model.
+
+- [x] Trace the env, models endpoint, frontend default-conversation, and OAuth
+      request paths to identify the exact contract gaps.
+- [x] Add failing tests for `OPENAI_REASONING_EFFORT=max` and
+      `OPENAI_DEFAULT_MODEL=gpt-5.6-luna` model ordering/default selection.
+- [x] Implement the smallest shared-schema/runtime/model-list changes.
+- [x] Run focused tests, builds, runtime/frontend-path verification, and diff
+      hygiene.
+
+Review:
+
+- Root cause: the frontend derives a new conversation's default from the first
+  model returned by `/api/models`, while `OPENAI_DEFAULT_MODEL` previously only
+  reached the Steel/OpenAI OAuth runtime config and did not affect model-list
+  ordering.
+- `OPENAI_DEFAULT_MODEL` now moves an existing member to the front of both the
+  OpenAI and explicit/fallback OpenAI OAuth allowlists without adding a model
+  outside either list. A saved UI model remains higher priority.
+- `OPENAI_REASONING_EFFORT=max` is accepted and passed through to GPT-5.6 OAuth
+  runs; the env default does not replace a UI-selected OAuth model.
+- Verification: API model-list tests 3/3, frontend default-conversation tests
+  9/9, package config/OAuth/run tests 119/119, `@librechat/api` build passed,
+  runtime probes returned `gpt-5.6-luna` first and `max` unchanged, backend
+  health returned HTTP 200, and staged/unstaged diff checks passed.
+
+## Active: Unify OpenAI OAuth Model Defaults - 2026-07-11
+
+Goal: keep the OAuth provider identity for routing, but use the OpenAI model
+settings everywhere and make every plain New Chat use the env-prioritized
+`OPENAI_DEFAULT_MODEL`.
+
+- [x] Make `/api/models` return the same `OPENAI_MODELS`-derived list for
+      `openAI` and `openai_oauth_responses`.
+- [x] Make plain New Chat ignore last-selected browser models while preserving
+      explicit URL, preset, model-spec, and current UI model selections.
+- [x] Store both OpenAI transports under `lastSelectedModel.openAI` and remove
+      the legacy `lastSelectedModel.openai_oauth_responses` property.
+- [x] Run focused tests, builds, runtime probes, and diff hygiene without
+      committing.
+
+Review:
+
+- `openai_oauth_responses` remains only as the internal OAuth transport and
+  provider identity. Both frontend model-list keys now receive the same
+  `OPENAI_MODELS` array with `OPENAI_DEFAULT_MODEL` prioritized first.
+- Plain New Chat no longer restores `lastSelectedModel`; explicit URL, preset,
+  model-spec, existing-conversation, and active UI model values still win.
+- Browser storage now writes OAuth selections to `lastSelectedModel.openAI`.
+  Legacy OAuth-only values migrate to `openAI`, an existing `openAI` value wins
+  when both exist, and the legacy property is removed.
+- TDD RED failures were observed for divergent OAuth lists, stored-model New
+  Chat precedence, and all legacy storage cases. Final focused verification:
+  API 3/3, client 71/71, package OAuth/config/run 119/119, data-provider
+  121/121; client typecheck, client build, package API build, runtime probes,
+  backend health, and staged/unstaged diff checks passed. Independent review
+  reported no remaining Critical or Important issues.
+# Active: OCR organizer unexpected price lookup diagnosis - 2026-07-11
+
+Goal: determine why the PaddleOCR organizer subagent can call
+`search_price_candidates`, why the provider rejects that function schema, and
+whether the OCR or price-lookup reviewed rules are incorrect.
+
+- [x] Trace the organizer prompt, rule context, and exposed tool set.
+- [x] Audit OCR rules for strict output-only and no-price-lookup boundaries.
+- [x] Audit `search_price_candidates` schema, validator, and lookup rules.
+- [x] Reproduce or statically prove the schema rejection and identify its source.
+- [x] Record root causes, affected boundaries, and recommended fix scope.
+
+Review:
+
+- The OCR organizer uses a bare OpenAI OAuth model invocation with no bound
+  tools. The observed request failed later, when the main native agent attached
+  all Steel tool definitions; no `search_price_candidates` tool call occurred.
+- `priceQueryLimitSchema.positive()` is converted with the native adapter's
+  OpenAPI 3 target into `exclusiveMinimum: true`. OpenAI validates function
+  parameters as JSON Schema, where `exclusiveMinimum` must be numeric, and
+  rejects the request before model generation.
+- The reviewed OCR rule now explicitly limits the organizer to the supplied
+  single raw PaddleOCR result and forbids every tool, lookup, and quote output.
+  The unified rule sync applied and read back the active reviewed dev row.
+- Native Steel tools now emit Draft-7-compatible JSON Schema with numeric
+  exclusive bounds. The regression failed on `exclusiveMinimum: true`, passed
+  after the adapter change, and a live OAuth smoke with all three Steel tools
+  returned `SCHEMA_OK` without a tool call.
+- The final compatibility-safe implementation preserves the existing OpenAPI 3
+  schema shape and only normalizes boolean exclusive bounds to numeric values;
+  all three emitted schemas pass Ajv, contain no `const`, and independent review
+  reported no Critical or Important findings.
+- Focused verification passed 4 suites / 33 tests, focused ESLint, the
+  `packages/api` build, `git diff --check`, backend restart/health, and a live
+  authenticated `gpt-5.6-luna` schema smoke.
+- Remaining implementation work is separate: hard-limit the main agent tool
+  surface during OCR-only confirmation turns.

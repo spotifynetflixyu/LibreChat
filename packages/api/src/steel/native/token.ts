@@ -107,8 +107,8 @@ const defaultCodexLoginStore: OpenAIOAuthCodexLoginStore = new Map();
 async function loadDefaultAuthTokens(
   options: LoadAuthTokensOptions,
 ): Promise<EffectiveOpenAIOAuth> {
-  const provider = await dynamicImport('openai-oauth-provider');
-  return provider.loadAuthTokens(options);
+  const core = await dynamicImport('@openai-oauth/core');
+  return core.loadAuthTokens(options);
 }
 
 function decodeJwtClaims(token: string | undefined): { exp?: unknown } | undefined {

@@ -1,8 +1,15 @@
 import os from 'os';
 
 export type OpenAIProviderPreference = 'OAUTH' | 'API';
-export type OpenAIDefaultModel = 'gpt-5.5';
-export type OpenAIReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type OpenAIDefaultModel = string;
+export type OpenAIReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
 
 export interface OpenAIConfig {
   provider: OpenAIProviderPreference;
@@ -36,8 +43,16 @@ export class OpenAIConfigError extends Error {
 }
 
 const providerValues = ['OAUTH', 'API'] as const;
-const modelValues = ['gpt-5.5'] as const;
-const reasoningEffortValues = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const defaultModel = 'gpt-5.5';
+const reasoningEffortValues = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
 
 function getEnvValue(env: OpenAIConfigEnv, key: string, legacyKey: string): string | undefined {
   return env[key] ?? env[legacyKey];
@@ -60,6 +75,11 @@ function parseEnumValue<T extends string>(
   throw new OpenAIConfigError(`${name} must be one of: ${values.join(', ')}`);
 }
 
+function parseModelValue(value: string | undefined): OpenAIDefaultModel {
+  const model = value?.trim();
+  return model || defaultModel;
+}
+
 export function parseOpenAIConfig(env: OpenAIConfigEnv = process.env): OpenAIConfig {
   return {
     provider: parseEnumValue(
@@ -68,12 +88,7 @@ export function parseOpenAIConfig(env: OpenAIConfigEnv = process.env): OpenAICon
       'OAUTH',
       providerValues,
     ),
-    model: parseEnumValue(
-      'OPENAI_DEFAULT_MODEL',
-      getEnvValue(env, 'OPENAI_DEFAULT_MODEL', 'STEEL_OPENAI_DEFAULT_MODEL'),
-      'gpt-5.5',
-      modelValues,
-    ),
+    model: parseModelValue(getEnvValue(env, 'OPENAI_DEFAULT_MODEL', 'STEEL_OPENAI_DEFAULT_MODEL')),
     reasoningEffort: parseEnumValue(
       'OPENAI_REASONING_EFFORT',
       getEnvValue(env, 'OPENAI_REASONING_EFFORT', 'STEEL_OPENAI_REASONING_EFFORT'),

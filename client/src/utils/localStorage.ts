@@ -1,4 +1,37 @@
-import { LocalStorageKeys, TConversation, isUUID } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  LocalStorageKeys,
+  isUUID,
+} from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
+
+type LastSelectedModels = Record<string, string | undefined>;
+
+function removeLegacyOpenAIOAuthModel(
+  models: LastSelectedModels | null,
+): LastSelectedModels | null {
+  if (!models || !Object.hasOwn(models, EModelEndpoint.openAIOAuth)) {
+    return models;
+  }
+
+  const normalized = { ...models };
+  if (!Object.hasOwn(normalized, EModelEndpoint.openAI)) {
+    normalized[EModelEndpoint.openAI] = normalized[EModelEndpoint.openAIOAuth];
+  }
+  delete normalized[EModelEndpoint.openAIOAuth];
+  return normalized;
+}
+
+export function storeLastSelectedModel(endpoint: string, model?: string): void {
+  const stored = localStorage.getItem(LocalStorageKeys.LAST_MODEL) ?? '';
+  const parsed = stored ? (JSON.parse(stored) as LastSelectedModels) : {};
+  const models = removeLegacyOpenAIOAuthModel(parsed) ?? {};
+  const storageEndpoint =
+    endpoint === EModelEndpoint.openAIOAuth ? EModelEndpoint.openAI : endpoint;
+
+  models[storageEndpoint] = model;
+  localStorage.setItem(LocalStorageKeys.LAST_MODEL, JSON.stringify(models));
+}
 
 export function getLocalStorageItems() {
   const items = {
@@ -7,9 +40,13 @@ export function getLocalStorageItems() {
     lastConversationSetup: localStorage.getItem(LocalStorageKeys.LAST_CONVO_SETUP + '_0') ?? '',
   };
 
-  const lastSelectedModel = items.lastSelectedModel
-    ? (JSON.parse(items.lastSelectedModel) as Record<string, string | undefined> | null)
+  const parsedLastSelectedModel = items.lastSelectedModel
+    ? (JSON.parse(items.lastSelectedModel) as LastSelectedModels | null)
     : {};
+  const lastSelectedModel = removeLegacyOpenAIOAuthModel(parsedLastSelectedModel);
+  if (lastSelectedModel !== parsedLastSelectedModel) {
+    localStorage.setItem(LocalStorageKeys.LAST_MODEL, JSON.stringify(lastSelectedModel));
+  }
   const lastSelectedTools = items.lastSelectedTools
     ? (JSON.parse(items.lastSelectedTools) as string[] | null)
     : [];

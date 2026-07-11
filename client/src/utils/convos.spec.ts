@@ -1,4 +1,5 @@
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
+import { EModelEndpoint, LocalStorageKeys } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import {
   dateKeys,
@@ -549,12 +550,34 @@ describe('Conversation Utilities', () => {
       it('stores model for endpoint', () => {
         const conversation = {
           conversationId: '1',
-          endpoint: 'openAI',
+          endpoint: EModelEndpoint.openAI,
           model: 'gpt-3',
         };
         storeEndpointSettings(conversation as any);
-        const stored = JSON.parse(localStorage.getItem('lastModel') || '{}');
-        expect([undefined, 'gpt-3']).toContain(stored.openAI);
+        const stored = JSON.parse(localStorage.getItem(LocalStorageKeys.LAST_MODEL) || '{}');
+        expect(stored.openAI).toBe('gpt-3');
+      });
+
+      it('stores OpenAI OAuth models under openAI and removes the legacy OAuth property', () => {
+        localStorage.setItem(
+          LocalStorageKeys.LAST_MODEL,
+          JSON.stringify({
+            [EModelEndpoint.openAIOAuth]: 'gpt-5.5',
+            [EModelEndpoint.anthropic]: 'claude-sonnet-4-6',
+          }),
+        );
+
+        storeEndpointSettings({
+          conversationId: '1',
+          endpoint: EModelEndpoint.openAIOAuth,
+          model: 'gpt-5.6-terra',
+        } as TConversation);
+
+        const stored = JSON.parse(localStorage.getItem(LocalStorageKeys.LAST_MODEL) || '{}');
+        expect(stored).toEqual({
+          [EModelEndpoint.openAI]: 'gpt-5.6-terra',
+          [EModelEndpoint.anthropic]: 'claude-sonnet-4-6',
+        });
       });
 
       it('does nothing if conversation is null', () => {

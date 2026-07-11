@@ -1,7 +1,9 @@
 import { sendSteelOAuthChat, type SteelProviderToolExecutor } from './provider';
 
-import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import type { LanguageModelV3CallOptions, LanguageModelV3 } from '@ai-sdk/provider';
+import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
+import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
+import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
 import type { SteelRepositoryClient, SteelSqlParameter } from '../repositories';
 import type { SteelRuntimeContext } from '../runtime/context';
 import type { SteelToolJsonValue, SteelToolResult } from '../tools/results';
@@ -166,8 +168,8 @@ function createVisionRuleRow(prompt: string): AgentRuleRowFixture {
   };
 }
 
-function createMockOpenAIOAuth(doGenerate: jest.Mock) {
-  return jest.fn(() => {
+function createMockOpenAIOAuthDependencies(doGenerate: jest.Mock) {
+  const createOpenAIOAuth = jest.fn(() => {
     const modelFactory = () =>
       ({
         specificationVersion: 'v3' as const,
@@ -179,16 +181,17 @@ function createMockOpenAIOAuth(doGenerate: jest.Mock) {
 
     return modelFactory as unknown as ReturnType<typeof createOpenAIOAuthType>;
   }) as unknown as typeof createOpenAIOAuthType;
+  return createMockOpenAIOAuthProviderDependencies(createOpenAIOAuth);
 }
 
-function createMockStreamingOpenAIOAuth({
+function createMockStreamingOpenAIOAuthDependencies({
   doGenerate,
   doStream,
 }: {
   doGenerate: jest.Mock;
   doStream: jest.Mock;
 }) {
-  return jest.fn(() => {
+  const createOpenAIOAuth = jest.fn(() => {
     const modelFactory = () =>
       ({
         specificationVersion: 'v3' as const,
@@ -201,6 +204,37 @@ function createMockStreamingOpenAIOAuth({
 
     return modelFactory as unknown as ReturnType<typeof createOpenAIOAuthType>;
   }) as unknown as typeof createOpenAIOAuthType;
+  return createMockOpenAIOAuthProviderDependencies(createOpenAIOAuth);
+}
+
+function createMockOpenAIOAuthProviderDependencies(
+  createOpenAIOAuth: typeof createOpenAIOAuthType,
+) {
+  const transport = {
+    kind: 'openai-compatible' as const,
+    provider: 'chatgpt-codex' as const,
+    baseURL: 'https://openai-oauth.local/v1',
+    fetch: jest.fn(),
+    request: jest.fn(),
+    capabilities: {
+      responses: true as const,
+      chatCompletions: true as const,
+      models: true as const,
+      streaming: true as const,
+    },
+  };
+
+  return {
+    createOpenAIOAuth,
+    createOpenAIOAuthTransport: jest.fn(
+      () => transport,
+    ) as unknown as typeof createOpenAIOAuthTransportType,
+    openaiCredentials: jest.fn(() => ({
+      kind: 'openai-oauth' as const,
+      getSession: jest.fn(),
+      refreshSession: jest.fn(),
+    })) as unknown as typeof openaiCredentialsType,
+  };
 }
 
 const defaultAgentRulePrompt = [
@@ -491,7 +525,7 @@ describe('OpenAI OAuth provider adapter', () => {
     const onTextDelta = jest.fn();
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ...createMockStreamingOpenAIOAuthDependencies({ doGenerate, doStream }),
       ensureFresh: false,
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'stream smoke' }],
@@ -564,7 +598,7 @@ describe('OpenAI OAuth provider adapter', () => {
     const onTextDelta = jest.fn();
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ...createMockStreamingOpenAIOAuthDependencies({ doGenerate, doStream }),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -651,7 +685,7 @@ describe('OpenAI OAuth provider adapter', () => {
     const onProviderRoundStatus = jest.fn();
 
     const responsePromise = sendSteelOAuthChat({
-      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ...createMockStreamingOpenAIOAuthDependencies({ doGenerate, doStream }),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -740,7 +774,7 @@ describe('OpenAI OAuth provider adapter', () => {
 
     await expect(
       sendSteelOAuthChat({
-        createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+        ...createMockStreamingOpenAIOAuthDependencies({ doGenerate, doStream }),
         ensureFresh: false,
         executeSteelToolCall,
         model: 'gpt-5.5',
@@ -827,7 +861,7 @@ describe('OpenAI OAuth provider adapter', () => {
     const onTextDelta = jest.fn();
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ...createMockStreamingOpenAIOAuthDependencies({ doGenerate, doStream }),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -904,7 +938,7 @@ describe('OpenAI OAuth provider adapter', () => {
     const onTextDelta = jest.fn();
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockStreamingOpenAIOAuth({ doGenerate, doStream }),
+      ...createMockStreamingOpenAIOAuthDependencies({ doGenerate, doStream }),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -936,7 +970,7 @@ describe('OpenAI OAuth provider adapter', () => {
     await expect(
       sendSteelOAuthChat({
         abortSignal: abortController.signal,
-        createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+        ...createMockOpenAIOAuthDependencies(doGenerate),
         ensureFresh: false,
         model: 'gpt-5.5',
         messages: [{ role: 'user', content: 'abort before retry' }],
@@ -959,7 +993,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'PL6*80 多少錢？請直接用表格回答。' }],
@@ -1008,7 +1042,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: '工具列表測試' }],
@@ -1040,7 +1074,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: '測試 agent rule source。' }],
@@ -1071,7 +1105,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       model: 'gpt-5.5',
       messages: [
@@ -1146,7 +1180,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -1261,7 +1295,7 @@ describe('OpenAI OAuth provider adapter', () => {
     });
 
     await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -1414,7 +1448,7 @@ describe('OpenAI OAuth provider adapter', () => {
     });
 
     await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -1473,7 +1507,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       executeSteelToolCall,
       model: 'gpt-5.5',
@@ -1521,7 +1555,7 @@ describe('OpenAI OAuth provider adapter', () => {
     }));
 
     const response = await sendSteelOAuthChat({
-      createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+      ...createMockOpenAIOAuthDependencies(doGenerate),
       ensureFresh: false,
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'timing smoke' }],
@@ -1583,7 +1617,7 @@ describe('OpenAI OAuth provider adapter', () => {
 
     await expect(
       sendSteelOAuthChat({
-        createOpenAIOAuth: createMockOpenAIOAuth(doGenerate),
+        ...createMockOpenAIOAuthDependencies(doGenerate),
         ensureFresh: false,
         executeSteelToolCall,
         model: 'gpt-5.5',

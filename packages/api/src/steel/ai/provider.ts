@@ -10,11 +10,11 @@ import type {
   LanguageModelV3StreamPart,
   SharedV3Warning,
 } from '@ai-sdk/provider';
-import type { FetchFunction } from '@ai-sdk/provider-utils';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { OpenAIReasoningEffort } from './config';
+import type { OpenAIOAuthProviderOptions } from '../native/oauth';
 import { serializeSteelRuntimeContext, type SteelRuntimeContext } from '../runtime/context';
+import { createStatelessOpenAIOAuthProvider } from '../native/oauth';
 import { createSteelPostgresPool } from '../postgres';
 import {
   createSteelToolRunState,
@@ -29,14 +29,9 @@ import {
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import { steelToolArgsSchemas } from '../tools/schemas';
 
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-  specifier: string,
-) => Promise<typeof import('openai-oauth-provider')>;
-
 const transientProviderMaxAttempts = 3;
 const transientProviderRetryDelaysMs = [300, 1000] as const;
 
-type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type SteelBusinessToolCall = LanguageModelV3ToolCall & { toolName: SteelProviderToolName };
 type SearchPriceCandidatesInput = ReturnType<
   typeof steelToolArgsSchemas.search_price_candidates.parse
@@ -121,14 +116,10 @@ export interface SteelProviderChatResponse {
   warnings: string[];
 }
 
-export interface SendSteelOAuthChatOptions {
+export interface SendSteelOAuthChatOptions extends OpenAIOAuthProviderOptions {
   abortSignal?: AbortSignal;
-  authFilePath?: string;
   conversationId?: string;
-  createOpenAIOAuth?: CreateOpenAIOAuth;
-  ensureFresh?: boolean;
   executeSteelToolCall?: SteelProviderToolExecutor;
-  fetch?: FetchFunction;
   maxOutputTokens?: number;
   messages: SteelOAuthChatMessage[];
   model: string;
@@ -143,11 +134,6 @@ export interface SendSteelOAuthChatOptions {
   steelRuntimePolicy?: boolean;
   steelRuntimeContext?: SteelRuntimeContext;
   workingMemorySummary?: string;
-}
-
-async function loadCreateOpenAIOAuth(): Promise<typeof createOpenAIOAuthType> {
-  const provider = await dynamicImport('openai-oauth-provider');
-  return provider.createOpenAIOAuth;
 }
 
 let defaultSteelToolClient: ReturnType<typeof createSteelPostgresPool> | undefined;
@@ -1299,6 +1285,7 @@ export async function sendSteelOAuthChat({
   abortSignal,
   authFilePath,
   createOpenAIOAuth: injectedCreateOpenAIOAuth,
+  createOpenAIOAuthTransport,
   ensureFresh = true,
   executeSteelToolCall = executeDefaultSteelToolCall,
   fetch,
@@ -1309,6 +1296,7 @@ export async function sendSteelOAuthChat({
   onTextDelta,
   onToolStatus,
   onProviderRoundStatus,
+  openaiCredentials,
   passThroughUnsupportedFiles,
   providerRoundProgressIntervalMs,
   reasoningEffort,
@@ -1324,12 +1312,13 @@ export async function sendSteelOAuthChat({
     steelRuntimePolicy,
     steelRuntimeContext,
   });
-  const createOpenAIOAuth = injectedCreateOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
-  const openai = createOpenAIOAuth({
+  const openai = await createStatelessOpenAIOAuthProvider({
     authFilePath,
+    createOpenAIOAuth: injectedCreateOpenAIOAuth,
+    createOpenAIOAuthTransport,
     ensureFresh,
     fetch,
-    responsesState: false,
+    openaiCredentials,
   });
   const tools = [
     ...(steelRuntimePolicy ? getSteelBusinessFunctionTools() : []),

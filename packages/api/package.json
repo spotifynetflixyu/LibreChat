@@ -173,8 +173,10 @@
     "@ai-sdk/provider-utils": "^4.0.27",
     "@langchain/langgraph-checkpoint": "^1.1.2",
     "@langchain/langgraph-checkpoint-mongodb": "^1.4.0",
+    "@openai-oauth/ai-sdk": "2.0.0-beta.2",
+    "@openai-oauth/core": "2.0.0-beta.2",
+    "@openai-oauth/local": "2.0.0-beta.2",
     "exceljs": "^4.4.0",
-    "openai-oauth-provider": "^1.0.3",
     "pdf-lib": "^1.17.1"
   }
 }

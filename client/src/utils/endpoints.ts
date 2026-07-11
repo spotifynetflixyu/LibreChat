@@ -11,6 +11,7 @@ import {
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { LocalizeFunction, IconsRecord } from '~/common';
+import { storeLastSelectedModel } from './localStorage';
 import { getTimestampedValue } from './timestamps';
 
 /**
@@ -114,11 +115,7 @@ export function updateLastSelectedModel({
     localStorage.setItem(firstLocalConvoKey, JSON.stringify(lastConversationSetup));
   }
 
-  const lastSelectedModels = JSON.parse(
-    (localStorage.getItem(LocalStorageKeys.LAST_MODEL) ?? '{}') || '{}',
-  );
-  lastSelectedModels[endpoint] = model;
-  localStorage.setItem(LocalStorageKeys.LAST_MODEL, JSON.stringify(lastSelectedModels));
+  storeLastSelectedModel(endpoint, model);
 }
 
 interface ConversationInitParams {

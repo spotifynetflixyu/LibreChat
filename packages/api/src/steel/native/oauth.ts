@@ -19,23 +19,38 @@ import type { BindToolsInput } from '@librechat/agents/langchain/language_models
 import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
 import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
+import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
+import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
+import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
-) => Promise<typeof import('openai-oauth-provider')>;
+) => Promise<typeof import('@openai-oauth/ai-sdk')>;
+const dynamicImportOpenAIOAuthCore = new Function('specifier', 'return import(specifier)') as (
+  specifier: string,
+) => Promise<typeof import('@openai-oauth/core')>;
+const dynamicImportOpenAIOAuthLocal = new Function('specifier', 'return import(specifier)') as (
+  specifier: string,
+) => Promise<typeof import('@openai-oauth/local')>;
 
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
-type OpenAIOAuthSettings = NonNullable<Parameters<CreateOpenAIOAuth>[0]>;
+type CreateOpenAIOAuthTransport = typeof createOpenAIOAuthTransportType;
+type OpenAICredentials = typeof openaiCredentialsType;
+type LocalOpenAIOAuthOptions = NonNullable<Parameters<OpenAICredentials>[0]>;
 type MessageContentArray = Array<Record<string, unknown>>;
 
-export interface OpenAIOAuthModelOptions {
+export interface OpenAIOAuthProviderOptions {
   authFilePath?: string;
   createOpenAIOAuth?: CreateOpenAIOAuth;
+  createOpenAIOAuthTransport?: CreateOpenAIOAuthTransport;
   ensureFresh?: boolean;
   fetch?: FetchFunction;
+  openaiCredentials?: OpenAICredentials;
+}
+
+export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
   frequencyPenalty?: number;
   maxOutputTokens?: number;
   model: string;
@@ -47,8 +62,18 @@ export interface OpenAIOAuthModelOptions {
 }
 
 async function loadCreateOpenAIOAuth(): Promise<CreateOpenAIOAuth> {
-  const provider = await dynamicImport('openai-oauth-provider');
+  const provider = await dynamicImportOpenAIOAuth('@openai-oauth/ai-sdk');
   return provider.createOpenAIOAuth;
+}
+
+async function loadCreateOpenAIOAuthTransport(): Promise<CreateOpenAIOAuthTransport> {
+  const core = await dynamicImportOpenAIOAuthCore('@openai-oauth/core');
+  return core.createOpenAIOAuthTransport;
+}
+
+async function loadOpenAICredentials(): Promise<OpenAICredentials> {
+  const local = await dynamicImportOpenAIOAuthLocal('@openai-oauth/local');
+  return local.openaiCredentials;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,17 +86,66 @@ function omitUndefined<T extends Record<string, unknown>>(value: T): Partial<T> 
   ) as Partial<T>;
 }
 
-function createOpenAIOAuthSettings({
+function createLocalOpenAIOAuthOptions({
   authFilePath,
   ensureFresh,
   fetch,
-}: Pick<OpenAIOAuthModelOptions, 'authFilePath' | 'ensureFresh' | 'fetch'>): OpenAIOAuthSettings {
+}: Pick<
+  OpenAIOAuthModelOptions,
+  'authFilePath' | 'ensureFresh' | 'fetch'
+>): LocalOpenAIOAuthOptions {
   return omitUndefined({
     authFilePath,
     ensureFresh,
     fetch,
+  }) as LocalOpenAIOAuthOptions;
+}
+
+function createCodexCompatibleFetch(fetchFn: FetchFunction): FetchFunction {
+  let clientVersion: string | undefined;
+
+  return async (input, init) => {
+    const requestUrl = parseUrl(input instanceof Request ? input.url : String(input));
+    const requestedVersion = requestUrl?.searchParams.get('client_version')?.trim();
+    if (
+      requestUrl?.pathname.endsWith('/models') &&
+      requestedVersion &&
+      /^\d+\.\d+\.\d+$/.test(requestedVersion)
+    ) {
+      clientVersion = requestedVersion;
+    }
+
+    if (!requestUrl?.pathname.endsWith('/responses') || !clientVersion) {
+      return fetchFn(input, init);
+    }
+
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
+    headers.set('originator', 'codex_cli_rs');
+    headers.set('user-agent', `codex_cli_rs/${clientVersion}`);
+
+    return fetchFn(input, {
+      ...init,
+      headers,
+    });
+  };
+}
+
+export async function createStatelessOpenAIOAuthProvider(
+  options: OpenAIOAuthProviderOptions,
+): Promise<ReturnType<CreateOpenAIOAuth>> {
+  const createOpenAIOAuth = options.createOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
+  const createOpenAIOAuthTransport =
+    options.createOpenAIOAuthTransport ?? (await loadCreateOpenAIOAuthTransport());
+  const openaiCredentials = options.openaiCredentials ?? (await loadOpenAICredentials());
+  const credentials = openaiCredentials(createLocalOpenAIOAuthOptions(options));
+  const fetchFn = options.fetch ?? globalThis.fetch;
+  const transport = createOpenAIOAuthTransport({
+    auth: () => credentials.getSession(),
+    fetch: createCodexCompatibleFetch(fetchFn),
     responsesState: false,
-  }) as OpenAIOAuthSettings;
+  });
+  return createOpenAIOAuth(transport);
 }
 
 function getRunnableAbortSignal(config?: Partial<RunnableConfig>): AbortSignal | undefined {
@@ -695,8 +769,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       return this.providerModel;
     }
 
-    const createOpenAIOAuth = this.options.createOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
-    const provider = createOpenAIOAuth(createOpenAIOAuthSettings(this.options));
+    const provider = await createStatelessOpenAIOAuthProvider(this.options);
     this.providerModel = provider(this.options.model);
     return this.providerModel;
   }

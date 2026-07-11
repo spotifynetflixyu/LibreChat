@@ -1,5 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
-const { EModelEndpoint, defaultModels } = require('librechat-data-provider');
+const { EModelEndpoint } = require('librechat-data-provider');
 const {
   mergeHeaders,
   getAnthropicModels,
@@ -9,11 +9,13 @@ const {
 } = require('@librechat/api');
 const { getAppConfig } = require('./app');
 
-function splitModelList(value) {
-  return (value ?? '')
-    .split(',')
-    .map((model) => model.trim())
-    .filter(Boolean);
+function prioritizeDefaultModel(models, defaultModel) {
+  const index = models.indexOf(defaultModel);
+  if (index <= 0) {
+    return models;
+  }
+
+  return [models[index], ...models.slice(0, index), ...models.slice(index + 1)];
 }
 
 /**
@@ -83,19 +85,12 @@ async function loadDefaultModels(req) {
           return [];
         }),
       ]);
-    const configuredOpenAIOAuthModels = splitModelList(
-      process.env.OPENAI_OAUTH_MODELS || process.env.OPENAI_MODELS,
-    );
-    const openAIOAuth =
-      configuredOpenAIOAuthModels.length > 0
-        ? configuredOpenAIOAuthModels
-        : openAI.length > 0
-          ? openAI
-          : defaultModels[EModelEndpoint.openAIOAuth];
+    const defaultOpenAIModel = process.env.OPENAI_DEFAULT_MODEL?.trim();
+    const prioritizedOpenAI = prioritizeDefaultModel(openAI, defaultOpenAIModel);
 
     return {
-      [EModelEndpoint.openAIOAuth]: openAIOAuth,
-      [EModelEndpoint.openAI]: openAI,
+      [EModelEndpoint.openAIOAuth]: prioritizedOpenAI,
+      [EModelEndpoint.openAI]: prioritizedOpenAI,
       [EModelEndpoint.google]: google,
       [EModelEndpoint.anthropic]: anthropic,
       [EModelEndpoint.azureOpenAI]: azureOpenAI,

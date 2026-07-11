@@ -16,6 +16,8 @@
 4. 圖片也須先用 PaddleOCR MCP OCR 取得文字 / 表格結果。
 5. 只有加工內容：孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等非文字幾何判斷，才可由 AI 視覺判斷，且須標示信心程度。
 6. 若 PaddleOCR MCP OCR 無法執行、逾時、報錯或回傳無可用文字 / 表格，AI 可以改用自身 OCR / vision 解析作為 fallback，但必須明確標示「AI OCR fallback」、說明 PaddleOCR 失敗摘要，並將不確定欄位列為低信心或「未確認」。AI OCR fallback 不是 PaddleOCR MCP OCR 成功結果；同一檔案下輪仍須先重試 PaddleOCR MCP OCR。
+7. OCR process 只可使用 backend 提供的 PaddleOCR raw OCR result、file / chunk metadata 與本 OCR 規則，依本規則整理成 OCR Markdown。
+8. OCR process 不得呼叫 `search_price_candidates`、`search_customers`、`read_markdown`、`paddleocr_vl` 或任何其他 tool；完成符合本規則的 OCR Markdown 後即停止。
 
 ## 三、輸出格式
 

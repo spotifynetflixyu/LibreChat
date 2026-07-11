@@ -7,8 +7,11 @@ import { RunnableLambda, RunnableSequence } from '@librechat/agents/langchain/ru
 import type { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import type { ChatModelInstance, ClientOptions, RunTitleOptions } from '@librechat/agents';
 import type { OpenAIOAuthModelOptions } from './oauth';
-import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '../ai/config';
+import { resolveOpenAIOAuthAuthFilePath } from '../ai/config';
 import { createOpenAIOAuthModel } from './oauth';
+
+const OPENAI_TITLE_MODEL = 'gpt-5.6-luna';
+const OPENAI_TITLE_REASONING_EFFORT = 'none';
 
 export interface OpenAIOAuthTitleContentPart {
   text?: string;
@@ -26,7 +29,9 @@ export interface GenerateTitleInput {
   clientOptions?: ClientOptions;
   contentParts?: OpenAIOAuthTitleContentPart[];
   createOpenAIOAuth?: OpenAIOAuthModelOptions['createOpenAIOAuth'];
+  createOpenAIOAuthTransport?: OpenAIOAuthModelOptions['createOpenAIOAuthTransport'];
   inputText: string;
+  openaiCredentials?: OpenAIOAuthModelOptions['openaiCredentials'];
   skipLanguage?: boolean;
   titleMethod?: TitleMethod;
   titlePrompt?: string;
@@ -203,6 +208,32 @@ function isOpenAIOAuthTitleRequest({
   return endpoint === EModelEndpoint.openAIOAuth || provider === EModelEndpoint.openAIOAuth;
 }
 
+function isOpenAIProvider({
+  endpoint,
+  provider,
+}: Pick<GenerateTitleInput, 'endpoint' | 'provider'>): boolean {
+  if (endpoint !== undefined) {
+    return endpoint === EModelEndpoint.openAI;
+  }
+
+  return provider === Providers.OPENAI || provider === EModelEndpoint.openAI;
+}
+
+function getTitleClientOptions(
+  request: Pick<GenerateTitleInput, 'endpoint' | 'provider'>,
+  clientOptions: ClientOptions | undefined,
+): ClientOptions | undefined {
+  if (!isOpenAIProvider(request)) {
+    return clientOptions;
+  }
+
+  return {
+    ...clientOptions,
+    model: OPENAI_TITLE_MODEL,
+    reasoning_effort: OPENAI_TITLE_REASONING_EFFORT,
+  };
+}
+
 function getClientModel(clientOptions: ClientOptions | undefined): string | undefined {
   const options = clientOptions as Partial<{ model: string }> | undefined;
   return typeof options?.model === 'string' ? options.model : undefined;
@@ -288,14 +319,13 @@ async function invokeStructuredTitle({
 
 async function generateResponsesTitle({
   chainOptions,
-  clientOptions,
   createOpenAIOAuth,
+  createOpenAIOAuthTransport,
   inputText,
+  openaiCredentials,
   titlePrompt,
   titlePromptTemplate,
 }: GenerateTitleInput): Promise<GenerateTitleResult> {
-  const config = parseOpenAIConfig(process.env);
-  const selectedModel = getClientModel(clientOptions) || config.model;
   const conversation = createConversationText({
     inputText,
     titlePromptTemplate,
@@ -308,9 +338,11 @@ async function generateResponsesTitle({
   const titleModel = createOpenAIOAuthModel({
     authFilePath: resolveOpenAIOAuthAuthFilePath(process.env),
     createOpenAIOAuth,
+    createOpenAIOAuthTransport,
     maxOutputTokens: 64,
-    model: selectedModel,
-    reasoningEffort: 'none',
+    model: OPENAI_TITLE_MODEL,
+    openaiCredentials,
+    reasoningEffort: OPENAI_TITLE_REASONING_EFFORT,
     temperature: 0.2,
   });
   const message = await titleModel.invoke(
@@ -319,7 +351,7 @@ async function generateResponsesTitle({
   );
 
   return {
-    model: selectedModel,
+    model: OPENAI_TITLE_MODEL,
     title: getMessageText(message),
     usage: getUsage(message),
   };
@@ -334,9 +366,10 @@ export async function generateTitle(input: GenerateTitleInput): Promise<Generate
     inputText: input.inputText,
     titlePromptTemplate: input.titlePromptTemplate,
   });
+  const clientOptions = getTitleClientOptions(input, input.clientOptions);
   const model = initializeModel({
     provider: input.provider as Providers,
-    clientOptions: input.clientOptions,
+    clientOptions,
   }) as ChatModelInstance;
   const titleMethod = input.titleMethod ?? TitleMethod.COMPLETION;
   const result =
@@ -359,6 +392,6 @@ export async function generateTitle(input: GenerateTitleInput): Promise<Generate
 
   return {
     ...result,
-    model: getClientModel(input.clientOptions),
+    model: getClientModel(clientOptions),
   };
 }

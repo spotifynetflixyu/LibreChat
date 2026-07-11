@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query';
-import { LocalStorageKeys, QueryKeys } from 'librechat-data-provider';
+import { QueryKeys } from 'librechat-data-provider';
 import {
   format,
   isToday,
@@ -12,6 +12,7 @@ import {
 } from 'date-fns';
 import type { TConversation, GroupedConversations } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
+import { storeLastSelectedModel } from './localStorage';
 
 // Date group helpers
 export const dateKeys = {
@@ -354,9 +355,7 @@ export function storeEndpointSettings(conversation: TConversation | null) {
   if (!endpoint) {
     return;
   }
-  const lastModel = JSON.parse(localStorage.getItem(LocalStorageKeys.LAST_MODEL) ?? '{}');
-  lastModel[endpoint] = model;
-  localStorage.setItem(LocalStorageKeys.LAST_MODEL, JSON.stringify(lastModel));
+  storeLastSelectedModel(endpoint, model ?? undefined);
 }
 
 // Add

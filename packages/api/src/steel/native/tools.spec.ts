@@ -14,6 +14,29 @@ function getNames(tools: readonly LCTool[] | undefined): string[] {
   return tools?.map((tool) => tool.name) ?? [];
 }
 
+type JsonSchemaValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonSchemaValue[]
+  | { [key: string]: JsonSchemaValue };
+
+function collectExclusiveBounds(value: JsonSchemaValue): JsonSchemaValue[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(collectExclusiveBounds);
+  }
+  if (value === null || typeof value !== 'object') {
+    return [];
+  }
+
+  return Object.entries(value).flatMap(([key, nested]) =>
+    key === 'exclusiveMinimum' || key === 'exclusiveMaximum'
+      ? [nested]
+      : collectExclusiveBounds(nested),
+  );
+}
+
 describe('Steel native tool adapter', () => {
   it('adds Steel compact workbook tools without removing existing user tools', () => {
     const existingTool: LCTool = {
@@ -55,6 +78,17 @@ describe('Steel native tool adapter', () => {
       'read_markdown',
     ]);
     expect(result.toolRegistry.has('read_markdown')).toBe(true);
+  });
+
+  it('emits provider-compatible schemas for every native Steel tool', () => {
+    const parameters = mergeSteelToolDefinitions().toolDefinitions.map(
+      (definition) => definition.parameters as JsonSchemaValue,
+    );
+    const exclusiveBounds = parameters.flatMap(collectExclusiveBounds);
+
+    expect(exclusiveBounds.length).toBeGreaterThan(0);
+    expect(exclusiveBounds.every((bound) => typeof bound === 'number')).toBe(true);
+    expect(JSON.stringify(parameters)).not.toContain('"const":');
   });
 
   it('namespaces Steel tools deterministically when an existing tool has the same name', () => {

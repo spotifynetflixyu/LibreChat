@@ -20,7 +20,7 @@ type EffectiveOpenAIOAuth = {
 
 type LoadAuthTokens = (options: LoadAuthTokensOptions) => Promise<EffectiveOpenAIOAuth>;
 
-type OpenAIOAuthProviderModule = {
+type OpenAIOAuthCoreModule = {
   loadAuthTokens: LoadAuthTokens;
 };
 
@@ -47,7 +47,7 @@ export type OpenAIOAuthUsageDeps = {
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
-) => Promise<OpenAIOAuthProviderModule>;
+) => Promise<OpenAIOAuthCoreModule>;
 
 const defaultCache: OpenAIOAuthUsageCache = {};
 const unavailableTtlMs = 10_000;
@@ -55,8 +55,8 @@ const unavailableTtlMs = 10_000;
 async function loadDefaultAuthTokens(
   options: LoadAuthTokensOptions,
 ): Promise<EffectiveOpenAIOAuth> {
-  const provider = await dynamicImport('openai-oauth-provider');
-  return provider.loadAuthTokens(options);
+  const core = await dynamicImport('@openai-oauth/core');
+  return core.loadAuthTokens(options);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,5 +1,57 @@
-import { LocalStorageKeys } from 'librechat-data-provider';
-import { clearAllConversationStorage } from '../localStorage';
+import { EModelEndpoint, LocalStorageKeys } from 'librechat-data-provider';
+import {
+  storeLastSelectedModel,
+  clearAllConversationStorage,
+  getLocalStorageItems,
+} from '../localStorage';
+
+describe('getLocalStorageItems', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('removes the legacy OpenAI OAuth model property without replacing openAI', () => {
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({
+        [EModelEndpoint.openAI]: 'gpt-5.6-luna',
+        [EModelEndpoint.openAIOAuth]: 'gpt-5.5',
+      }),
+    );
+
+    expect(getLocalStorageItems().lastSelectedModel).toEqual({
+      [EModelEndpoint.openAI]: 'gpt-5.6-luna',
+    });
+    expect(JSON.parse(localStorage.getItem(LocalStorageKeys.LAST_MODEL) || '{}')).toEqual({
+      [EModelEndpoint.openAI]: 'gpt-5.6-luna',
+    });
+  });
+
+  it('migrates a legacy OAuth-only model preference to openAI', () => {
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({ [EModelEndpoint.openAIOAuth]: 'gpt-5.6-terra' }),
+    );
+
+    expect(getLocalStorageItems().lastSelectedModel).toEqual({
+      [EModelEndpoint.openAI]: 'gpt-5.6-terra',
+    });
+  });
+
+  it('preserves a legacy OAuth model when another endpoint preference is written', () => {
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({ [EModelEndpoint.openAIOAuth]: 'gpt-5.6-terra' }),
+    );
+
+    storeLastSelectedModel(EModelEndpoint.anthropic, 'claude-sonnet-4-6');
+
+    expect(JSON.parse(localStorage.getItem(LocalStorageKeys.LAST_MODEL) || '{}')).toEqual({
+      [EModelEndpoint.openAI]: 'gpt-5.6-terra',
+      [EModelEndpoint.anthropic]: 'claude-sonnet-4-6',
+    });
+  });
+});
 
 describe('clearAllConversationStorage', () => {
   beforeEach(() => {

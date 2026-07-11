@@ -20,7 +20,9 @@ import {
   type BaseMessage,
 } from '@librechat/agents/langchain/messages';
 import { RunnableLambda } from '@librechat/agents/langchain/runnables';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from 'openai-oauth-provider';
+import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
+import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
+import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
 import { createOpenAIOAuthGraphModel, createOpenAIOAuthModel } from './oauth';
 
 function createUsage(): LanguageModelV3GenerateResult['usage'] {
@@ -79,6 +81,46 @@ function createFakeOpenAIOAuth({
   }) as unknown as typeof createOpenAIOAuthType;
 }
 
+function createFakeOpenAIOAuthDependencies(input: {
+  doGenerate: jest.Mock;
+  doStream?: jest.Mock;
+}) {
+  const credentials = {
+    kind: 'openai-oauth' as const,
+    getSession: jest.fn(),
+    refreshSession: jest.fn(),
+  };
+  const transport = {
+    kind: 'openai-compatible' as const,
+    provider: 'chatgpt-codex' as const,
+    baseURL: 'https://openai-oauth.local/v1',
+    fetch: jest.fn(),
+    request: jest.fn(),
+    capabilities: {
+      responses: true as const,
+      chatCompletions: true as const,
+      models: true as const,
+      streaming: true as const,
+    },
+  };
+  const createOpenAIOAuth = createFakeOpenAIOAuth(input);
+  const createOpenAIOAuthTransport = jest.fn(
+    () => transport,
+  ) as unknown as typeof createOpenAIOAuthTransportType;
+  const openaiCredentials = jest.fn(
+    () => credentials,
+  ) as unknown as typeof openaiCredentialsType;
+
+  return {
+    options: {
+      createOpenAIOAuth,
+      createOpenAIOAuthTransport,
+      openaiCredentials,
+    },
+    transport,
+  };
+}
+
 function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
   return doGenerate.mock.calls[0][0] as LanguageModelV3CallOptions;
 }
@@ -94,11 +136,11 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const createOpenAIOAuth = createFakeOpenAIOAuth({ doGenerate });
+    const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate });
 
     const model = createOpenAIOAuthModel({
       authFilePath: '/tmp/auth.json',
-      createOpenAIOAuth,
+      ...dependencies.options,
       ensureFresh: false,
       fetch: fetchFn,
       model: 'gpt-5.5',
@@ -109,12 +151,17 @@ describe('OpenAI OAuth model adapter', () => {
       new HumanMessage('請解析報價單'),
     ]);
 
-    expect(createOpenAIOAuth).toHaveBeenCalledWith({
+    expect(dependencies.options.openaiCredentials).toHaveBeenCalledWith({
       authFilePath: '/tmp/auth.json',
       ensureFresh: false,
       fetch: fetchFn,
+    });
+    expect(dependencies.options.createOpenAIOAuthTransport).toHaveBeenCalledWith({
+      auth: expect.any(Function),
+      fetch: expect.any(Function),
       responsesState: false,
     });
+    expect(dependencies.options.createOpenAIOAuth).toHaveBeenCalledWith(dependencies.transport);
     expect(getGenerateCall(doGenerate).prompt).toEqual([
       {
         role: 'system',
@@ -145,6 +192,78 @@ describe('OpenAI OAuth model adapter', () => {
     });
   });
 
+  it('constructs the current OAuth provider from local credentials', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: 'luna ready',
+        },
+      ]),
+    );
+    const credentials = {
+      kind: 'openai-oauth' as const,
+      getSession: jest.fn(),
+      refreshSession: jest.fn(),
+    };
+    const openaiCredentials = jest.fn(() => credentials);
+    const fetchFn = jest.fn(async () => new Response()) as unknown as FetchFunction;
+    const transport = {
+      kind: 'openai-compatible' as const,
+      provider: 'chatgpt-codex' as const,
+      baseURL: 'https://openai-oauth.local/v1',
+      fetch: jest.fn(),
+      request: jest.fn(),
+      capabilities: {
+        responses: true as const,
+        chatCompletions: true as const,
+        models: true as const,
+        streaming: true as const,
+      },
+    };
+    const createOpenAIOAuthTransport = jest.fn(
+      () => transport,
+    ) as unknown as typeof createOpenAIOAuthTransportType;
+    const createOpenAIOAuth = createFakeOpenAIOAuth({ doGenerate });
+
+    const model = createOpenAIOAuthModel({
+      authFilePath: '/tmp/luna-auth.json',
+      createOpenAIOAuth,
+      createOpenAIOAuthTransport,
+      ensureFresh: false,
+      fetch: fetchFn,
+      model: 'gpt-5.6-luna',
+      openaiCredentials,
+    });
+
+    await expect(model.invoke([new HumanMessage('Reply exactly: OK')])).resolves.toEqual(
+      expect.objectContaining({ content: 'luna ready' }),
+    );
+    expect(openaiCredentials).toHaveBeenCalledWith({
+      authFilePath: '/tmp/luna-auth.json',
+      ensureFresh: false,
+      fetch: expect.any(Function),
+    });
+    expect(createOpenAIOAuthTransport).toHaveBeenCalledWith({
+      auth: expect.any(Function),
+      fetch: expect.any(Function),
+      responsesState: false,
+    });
+    expect(createOpenAIOAuth).toHaveBeenCalledWith(transport);
+
+    const transportFetch = createOpenAIOAuthTransport.mock.calls[0]?.[0].fetch;
+    expect(transportFetch).toBeDefined();
+    await transportFetch?.(
+      'https://chatgpt.com/backend-api/codex/models?client_version=0.144.1',
+    );
+    await transportFetch?.('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+    });
+    const responseHeaders = new Headers(fetchFn.mock.calls[1]?.[1]?.headers);
+    expect(responseHeaders.get('originator')).toBe('codex_cli_rs');
+    expect(responseHeaders.get('user-agent')).toBe('codex_cli_rs/0.144.1');
+  });
+
   it('can be piped after a system context runnable in the native graph path', async () => {
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -155,7 +274,7 @@ describe('OpenAI OAuth model adapter', () => {
       ]),
     );
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
       model: 'gpt-5.5',
     });
     const systemRunnable = RunnableLambda.from((messages: unknown) => messages);
@@ -176,7 +295,7 @@ describe('OpenAI OAuth model adapter', () => {
     );
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
-        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
         model: 'gpt-5.5',
       },
       getSystemRunnable: () =>
@@ -236,7 +355,7 @@ describe('OpenAI OAuth model adapter', () => {
     );
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
-        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
         model: 'gpt-5.5',
       },
       getSystemRunnable: () =>
@@ -302,7 +421,7 @@ describe('OpenAI OAuth model adapter', () => {
       ]),
     );
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
       model: 'gpt-5.5',
     });
     const tool = {
@@ -363,7 +482,7 @@ describe('OpenAI OAuth model adapter', () => {
       ]),
     );
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
       model: 'gpt-5.5',
     });
 
@@ -445,7 +564,7 @@ describe('OpenAI OAuth model adapter', () => {
       ]),
     );
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
       model: 'gpt-5.5',
     });
 
@@ -489,7 +608,7 @@ describe('OpenAI OAuth model adapter', () => {
       ]),
     );
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
       model: 'gpt-5.5',
     });
     const ocrConfirmationMarkdown = [
@@ -619,7 +738,7 @@ describe('OpenAI OAuth model adapter', () => {
       };
     });
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
       model: 'gpt-5.5',
     });
 
@@ -677,7 +796,7 @@ describe('OpenAI OAuth model adapter', () => {
     }));
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
-        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
         model: 'gpt-5.5',
       },
       getSystemRunnable: () => RunnableLambda.from((messages: BaseMessage[]) => messages),
@@ -716,7 +835,7 @@ describe('OpenAI OAuth model adapter', () => {
     }));
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
-        createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
         model: 'gpt-5.5',
       },
       getSystemRunnable: () => RunnableLambda.from((messages: BaseMessage[]) => messages),
@@ -830,7 +949,7 @@ describe('OpenAI OAuth model adapter', () => {
       warnings: [],
     }));
     const model = createOpenAIOAuthModel({
-      createOpenAIOAuth: createFakeOpenAIOAuth({ doGenerate, doStream }),
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
       model: 'gpt-5.5',
     });
 

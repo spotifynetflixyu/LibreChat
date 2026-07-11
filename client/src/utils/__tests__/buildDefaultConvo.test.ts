@@ -2,9 +2,11 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import buildDefaultConvo from '../buildDefaultConvo';
 
+let mockLastSelectedModel: Record<string, string> = {};
+
 jest.mock('../localStorage', () => ({
   getLocalStorageItems: jest.fn(() => ({
-    lastSelectedModel: {},
+    lastSelectedModel: mockLastSelectedModel,
     lastSelectedTools: [],
     lastConversationSetup: {},
   })),
@@ -19,6 +21,69 @@ const baseConversation: TConversation = {
 };
 
 describe('buildDefaultConvo - defaultParamsEndpoint', () => {
+  beforeEach(() => {
+    mockLastSelectedModel = {};
+  });
+
+  it('uses the first OpenAI OAuth model as the new-conversation default', () => {
+    const result = buildDefaultConvo({
+      models: ['gpt-5.6-luna', 'gpt-5.5'],
+      conversation: baseConversation,
+      endpoint: EModelEndpoint.openAIOAuth,
+      lastConversationSetup: null,
+    });
+
+    expect(result.model).toBe('gpt-5.6-luna');
+  });
+
+  it('ignores stored OpenAI model preferences for a plain New Chat', () => {
+    mockLastSelectedModel = {
+      [EModelEndpoint.openAI]: 'gpt-5.6-terra',
+      [EModelEndpoint.openAIOAuth]: 'gpt-5.6-terra',
+    };
+
+    const result = buildDefaultConvo({
+      models: ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.5'],
+      conversation: baseConversation,
+      endpoint: EModelEndpoint.openAIOAuth,
+      lastConversationSetup: null,
+    });
+
+    expect(result.model).toBe('gpt-5.6-luna');
+  });
+
+  it('keeps an explicit OpenAI OAuth model over the env-prioritized default', () => {
+    const explicitSetup: TConversation = {
+      ...baseConversation,
+      endpoint: EModelEndpoint.openAIOAuth,
+      model: 'gpt-5.6-terra',
+    };
+
+    const result = buildDefaultConvo({
+      models: ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.5'],
+      conversation: baseConversation,
+      endpoint: EModelEndpoint.openAIOAuth,
+      lastConversationSetup: explicitSetup,
+    });
+
+    expect(result.model).toBe('gpt-5.6-terra');
+  });
+
+  it('uses the first available model for a plain non-OpenAI New Chat', () => {
+    mockLastSelectedModel = {
+      [EModelEndpoint.anthropic]: 'claude-sonnet-4-6',
+    };
+
+    const result = buildDefaultConvo({
+      models: ['claude-opus-4-8', 'claude-sonnet-4-6'],
+      conversation: baseConversation,
+      endpoint: EModelEndpoint.anthropic,
+      lastConversationSetup: null,
+    });
+
+    expect(result.model).toBe('claude-opus-4-8');
+  });
+
   describe('custom endpoint with defaultParamsEndpoint: anthropic', () => {
     const models = ['anthropic/claude-opus-4.5', 'anthropic/claude-sonnet-4'];
 
