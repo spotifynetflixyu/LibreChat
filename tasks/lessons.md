@@ -1,5 +1,6 @@
 # Lessons
 
+- Steel `system_order` Markdown 的 `數量`、`單重`、`總數`、`單價`、`厚度`、`寬度`、`長度`、`肚`只能填純數字；不得混入單位、符號或補充文字，無資料留空，補充資訊一律移到`備註`。
 - 類別規則中的 `search_price_candidates` 範例不可只看字面合理；每個 JSON 都要對 dev/prod live `steel.prices` 重播，分別記錄「有 candidate」與「有 `quoteEligible` 價」。例如方管 `150x6` 雖命中 GDB15060，但只有不可用的非 Kg/M ratio，應改用 `100x6` 作可報價範例，並明載 150x6 須人工複核。
 - 切工 candidate-aware matcher 若同時命中一般尺寸 key 與更精確的複合尺寸 key，必須優先複合 key；例如槽鐵 200x90 不可同時回傳一般 `200` 與精確 `200x90` 兩個價格。
 - Candidate-aware `cuttingPrices` 應保留材料與切工 catalog 的並行 Supabase 查詢，再由 backend code 於兩邊返回後 post-filter；這能降低 AI token 而不增加 DB round-trip。篩選不只處理 base price，補充規則也必須依 candidate 的類別、材質與尺寸排除不適用列。

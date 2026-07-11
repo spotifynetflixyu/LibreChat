@@ -99,6 +99,29 @@ Review:
 - Focused Jest passed 7 suites / 76 tests. The v4.2 dry-run reconciled 6,761 rows, the API package build passed, and `git diff --check` passed.
 - Supabase advisors reported only the existing mutable-search-path and public-extension warnings; this change adds no exposed Data API objects, functions, or RLS surface. Production was not accessed or changed.
 
+# Active: system_order numeric-only Markdown fields - 2026-07-11
+
+Goal: require `數量`、`單重`、`總數`、`單價`、`厚度`、`寬度`、`長度`、`肚`
+to contain pure numbers only, with units or supplemental text moved to `備註`.
+
+- [x] Confirm the canonical output rule and current dev DB sync path.
+- [x] Update the minimal `system_order` rule and capture the correction in lessons.
+- [x] Dry-run and apply the reviewed rules to dev `steel.rules`.
+- [x] Read back the synced rule and run diff hygiene.
+- [x] Record final verification evidence here.
+
+Review:
+
+- `docs/rules/輸出規則.txt` now requires `數量`、`單重`、`總數`、`單價`、
+  `厚度`、`寬度`、`長度`、`肚` to contain pure numbers only; missing values
+  stay blank and units or explanations move to `備註`.
+- Reconciled the existing unknown-price wording so `system_order`.`單價` never
+  receives the text `未確認`; the field stays blank and `備註` carries that state.
+- Dev `steel-workbook-output-policy` was dry-run, applied, and read back as active
+  reviewed SHA `3b945a1a77c5b418feef2a4cd7579874e08e8230e027acace57e15970c6756f6`.
+  DB prompt matched the canonical file exactly and contained both required rules.
+- No schema or code change was needed. `git diff --check` passed.
+
 # Active: system_order capture and regenerate timer reset - 2026-07-11
 
 Goal: adopt the 16-column `system_order` contract, persist any assistant
@@ -9263,9 +9286,18 @@ health、build metadata 與 live 查價驗證。
 - [x] 確認 `master` 與 `origin/master` 無差異，production 由
   `.github/workflows/deploy-prod.yml` 的 master push 觸發。
 - [x] 完成部署前 focused tests、build 與 diff hygiene。
-- [ ] 提交並 push master，監看 production workflow 完成。
-- [ ] 驗證 production health、build commit 與 live 單次查價行為。
+- [x] 提交並 push master，監看 production workflow 完成。
+- [x] 驗證 production health、build commit 與已部署的查價篩選版本。
 
 Review:
 
-- Pending.
+- Commit `aa88ef5b90208d3fe35ca54bc1c51328b188420a` 已 push `master`，
+  GitHub Actions production run `29154241072` 於 3m51s 內成功完成 image
+  build/push、Droplet deploy、container health 與 public URL smoke。
+- `https://chat.longdin.org/health` 與 `/readyz` 皆回 `OK`；`/api/config`
+  `buildInfo.commit` 精確為 `aa88ef5b90208d3fe35ca54bc1c51328b188420a`、
+  branch `master`、build date `2026-07-11T13:23:59Z`。
+- 部署前 6 suites / 82 tests、packages/api build 與 `git diff --check` 通過。
+  Production 已載入 unbounded grouped queries、repair guard 與 candidate-aware cutting
+  post-filter；原 conversation 的模型層「是否只 call 一次 tool」仍應用同一輸
+  輸入另行重播確認。
