@@ -209,6 +209,18 @@ function getCacheKey({ authFilePath }: Pick<OpenAIOAuthUsageDeps, 'authFilePath'
   return authFilePath?.trim() || 'default';
 }
 
+export function invalidateOpenAIOAuthUsageCache({
+  authFilePath,
+  cache = defaultCache,
+}: Pick<OpenAIOAuthUsageDeps, 'authFilePath' | 'cache'> = {}): void {
+  const key = getCacheKey({ authFilePath });
+  cache.entries?.delete(key);
+  cache.inflight?.delete(key);
+  if (key === 'default') {
+    delete cache.entry;
+  }
+}
+
 function cacheResponse({
   cache,
   key,

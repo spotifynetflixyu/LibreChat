@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { logger } from '@librechat/data-schemas';
 import {
+  openAIOAuthTokenLoginMethodSchema,
   steelAuthenticatedConversationRequestSchema,
   steelGuestConversationRequestSchema,
 } from 'librechat-data-provider';
@@ -55,12 +56,13 @@ import { executeSteelTool } from './tools/execute';
 import {
   getOpenAIOAuthCodexLoginStatus,
   getOpenAIOAuthTokenStatus,
+  logoutOpenAIOAuthToken,
   refreshOpenAIOAuthToken,
   startOpenAIOAuthCodexLogin,
   type OpenAIOAuthCodexLoginDeps,
   type OpenAIOAuthTokenStatusDeps,
 } from './native/token';
-import { getOpenAIOAuthUsageRemaining } from './native/usage';
+import { getOpenAIOAuthUsageRemaining, invalidateOpenAIOAuthUsageCache } from './native/usage';
 
 import type { Request, Response } from 'express';
 import type {
@@ -76,8 +78,8 @@ import type { SteelConversationTurnRecord } from './history/service';
 import type {
   SteelConversationMessagesResponse,
   OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
-  SteelProviderChatResponse as SteelDataProviderChatResponse,
   SteelProviderChatStreamEvent,
 } from 'librechat-data-provider';
 
@@ -152,6 +154,7 @@ interface SteelAdminHandlers {
   refreshOpenAIOAuthToken(_req: Request, res: Response): Promise<void>;
   startOpenAIOAuthCodexLogin(_req: Request, res: Response): Promise<void>;
   readOpenAIOAuthCodexLoginStatus(req: Request, res: Response): Promise<void>;
+  logoutOpenAIOAuthToken(_req: Request, res: Response): Promise<void>;
   requestCapabilitySmoke(_req: Request, res: Response): Promise<void>;
 }
 
@@ -1738,6 +1741,8 @@ export function createSteelAdminHandlers({
   env = process.env,
   getCodexLoginStatus = getOpenAIOAuthCodexLoginStatus,
   getTokenStatus = getOpenAIOAuthTokenStatus,
+  invalidateUsageCache = invalidateOpenAIOAuthUsageCache,
+  logoutToken = logoutOpenAIOAuthToken,
   refreshToken = refreshOpenAIOAuthToken,
   startCodexLogin = startOpenAIOAuthCodexLogin,
 }: {
@@ -1747,6 +1752,8 @@ export function createSteelAdminHandlers({
     deps?: OpenAIOAuthCodexLoginDeps,
   ) => OpenAIOAuthTokenLoginStatus;
   getTokenStatus?: (deps?: OpenAIOAuthTokenStatusDeps) => Promise<OpenAIOAuthTokenStatus>;
+  invalidateUsageCache?: typeof invalidateOpenAIOAuthUsageCache;
+  logoutToken?: (deps?: OpenAIOAuthCodexLoginDeps) => Promise<OpenAIOAuthTokenLogoutStatus>;
   refreshToken?: (deps?: OpenAIOAuthTokenStatusDeps) => Promise<OpenAIOAuthTokenStatus>;
   startCodexLogin?: (deps?: OpenAIOAuthCodexLoginDeps) => Promise<OpenAIOAuthTokenLoginStatus>;
 } = {}): SteelAdminHandlers {
@@ -1766,15 +1773,30 @@ export function createSteelAdminHandlers({
         authFilePath,
         env,
       });
+      invalidateUsageCache({ authFilePath });
       res.status(200).json(status);
     },
 
-    async startOpenAIOAuthCodexLogin(_req: Request, res: Response): Promise<void> {
+    async startOpenAIOAuthCodexLogin(req: Request, res: Response): Promise<void> {
+      const method = openAIOAuthTokenLoginMethodSchema.safeParse(req.body?.method ?? 'device_code');
+      if (!method.success) {
+        res.status(400).json({ message: 'Invalid Codex login method' });
+        return;
+      }
       const status = await startCodexLogin({
         authFilePath,
         env,
+        method: method.data,
       });
-      res.status(status.status === 'unavailable' ? 503 : 202).json(status);
+      let statusCode = 500;
+      if (status.status === 'pending') {
+        statusCode = 202;
+      } else if (status.status === 'succeeded') {
+        statusCode = 200;
+      } else if (status.status === 'unavailable') {
+        statusCode = 503;
+      }
+      res.status(statusCode).json(status);
     },
 
     async readOpenAIOAuthCodexLoginStatus(req: Request, res: Response): Promise<void> {
@@ -1788,7 +1810,22 @@ export function createSteelAdminHandlers({
         authFilePath,
         env,
       });
+      if (status.status === 'succeeded') {
+        invalidateUsageCache({ authFilePath });
+      }
       res.status(status.reason === 'login_not_found' ? 404 : 200).json(status);
+    },
+
+    async logoutOpenAIOAuthToken(_req: Request, res: Response): Promise<void> {
+      const status = await logoutToken({ authFilePath, env });
+      invalidateUsageCache({ authFilePath });
+      let statusCode = 500;
+      if (status.status === 'succeeded') {
+        statusCode = 200;
+      } else if (status.status === 'unavailable') {
+        statusCode = 503;
+      }
+      res.status(statusCode).json(status);
     },
 
     async requestCapabilitySmoke(_req: Request, res: Response): Promise<void> {

@@ -1004,3 +1004,7 @@
   model needs a newer client, update the OAuth transport so it resolves current
   model metadata and protocol flags; do not silently fall back to an older
   organizer model.
+- Migrating Codex OAuth login to app-server JSON-RPC must preserve the existing
+  Admin device-code modal UX: show and copy the verification code first, then
+  enable the explicit Open URL action. Replace only the backend prose parser;
+  browser login is an additional option, not a replacement for device login.

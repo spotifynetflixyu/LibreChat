@@ -8,10 +8,23 @@ import type {
 } from '@tanstack/react-query';
 import type {
   OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLoginMethod,
+  OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
 } from 'librechat-data-provider';
 import store from '~/store';
+
+async function refreshOpenAIOAuthQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  token?: OpenAIOAuthTokenStatus,
+): Promise<void> {
+  if (token) {
+    queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], token);
+  }
+  await queryClient.invalidateQueries([QueryKeys.openAIOAuthUsage]);
+  await queryClient.refetchQueries([QueryKeys.openAIOAuthUsage]);
+}
 
 export const useGetOpenAIOAuthUsageQuery = (
   config?: UseQueryOptions<OpenAIOAuthUsageRemaining>,
@@ -80,9 +93,8 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
     [MutationKeys.refreshOpenAIOAuthToken],
     () => dataService.refreshOpenAIOAuthToken(),
     {
-      onSuccess: (data) => {
-        queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], data);
-        queryClient.invalidateQueries([QueryKeys.openAIOAuthUsage]);
+      onSuccess: async (data) => {
+        await refreshOpenAIOAuthQueries(queryClient, data);
       },
     },
   );
@@ -91,22 +103,40 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
 export const useStartOpenAIOAuthCodexLoginMutation = (): UseMutationResult<
   OpenAIOAuthTokenLoginStatus,
   unknown,
-  void,
+  OpenAIOAuthTokenLoginMethod,
   unknown
 > => {
   const queryClient = useQueryClient();
   return useMutation(
     [MutationKeys.startOpenAIOAuthCodexLogin],
-    () => dataService.startOpenAIOAuthCodexLogin(),
+    (method) => dataService.startOpenAIOAuthCodexLogin(method),
     {
-      onSuccess: (data) => {
+      onSuccess: async (data) => {
         if (data.sessionId) {
           queryClient.setQueryData([QueryKeys.openAIOAuthCodexLoginStatus, data.sessionId], data);
         }
         if (data.status === 'succeeded' && data.token) {
-          queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], data.token);
-          queryClient.invalidateQueries([QueryKeys.openAIOAuthUsage]);
+          await refreshOpenAIOAuthQueries(queryClient, data.token);
         }
+      },
+    },
+  );
+};
+
+export const useLogoutOpenAIOAuthCodexMutation = (): UseMutationResult<
+  OpenAIOAuthTokenLogoutStatus,
+  unknown,
+  void,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.logoutOpenAIOAuthCodex],
+    () => dataService.logoutOpenAIOAuthCodex(),
+    {
+      onSuccess: async (data) => {
+        await refreshOpenAIOAuthQueries(queryClient, data.token);
+        queryClient.removeQueries([QueryKeys.openAIOAuthCodexLoginStatus]);
       },
     },
   );

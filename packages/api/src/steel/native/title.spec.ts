@@ -130,10 +130,7 @@ describe('generateTitle', () => {
 
   it.each([
     ['provider-only fallback', { provider: Providers.OPENAI }],
-    [
-      'explicit OpenAI endpoint',
-      { endpoint: EModelEndpoint.openAI, provider: Providers.OPENAI },
-    ],
+    ['explicit OpenAI endpoint', { endpoint: EModelEndpoint.openAI, provider: Providers.OPENAI }],
   ])(
     'uses fixed title options for the OpenAI API through %s without mutating the selected client options',
     async (_requestName, request) => {

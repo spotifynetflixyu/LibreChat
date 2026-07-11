@@ -4,6 +4,8 @@ import type * as t from './types';
 import type {
   SteelConversationMessagesResponse,
   OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLoginMethod,
+  OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
   SteelProviderChatRequest,
@@ -70,14 +72,20 @@ export function refreshOpenAIOAuthToken(): Promise<OpenAIOAuthTokenStatus> {
   return request.post(endpoints.adminOpenAIOAuthTokenRefresh());
 }
 
-export function startOpenAIOAuthCodexLogin(): Promise<OpenAIOAuthTokenLoginStatus> {
-  return request.post(endpoints.adminOpenAIOAuthTokenLogin());
+export function startOpenAIOAuthCodexLogin(
+  method: OpenAIOAuthTokenLoginMethod,
+): Promise<OpenAIOAuthTokenLoginStatus> {
+  return request.post(endpoints.adminOpenAIOAuthTokenLogin(), { method });
 }
 
 export function getOpenAIOAuthCodexLoginStatus(
   sessionId: string,
 ): Promise<OpenAIOAuthTokenLoginStatus> {
   return request.get(endpoints.adminOpenAIOAuthTokenLoginStatus(sessionId));
+}
+
+export function logoutOpenAIOAuthCodex(): Promise<OpenAIOAuthTokenLogoutStatus> {
+  return request.post(endpoints.adminOpenAIOAuthTokenLogout());
 }
 
 export async function streamSteelChat(
@@ -102,12 +110,11 @@ export async function streamSteelChat(
     let errorSummary = errorText.trim();
     try {
       const parsed = JSON.parse(errorText) as { errorSummary?: unknown; message?: unknown };
-      errorSummary =
-        typeof parsed.errorSummary === 'string'
-          ? parsed.errorSummary
-          : typeof parsed.message === 'string'
-            ? parsed.message
-            : errorSummary;
+      if (typeof parsed.errorSummary === 'string') {
+        errorSummary = parsed.errorSummary;
+      } else if (typeof parsed.message === 'string') {
+        errorSummary = parsed.message;
+      }
     } catch {
       // Keep the raw response text when the server did not return JSON.
     }

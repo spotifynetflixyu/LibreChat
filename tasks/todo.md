@@ -9301,3 +9301,67 @@ Review:
   Production 已載入 unbounded grouped queries、repair guard 與 candidate-aware cutting
   post-filter；原 conversation 的模型層「是否只 call 一次 tool」仍應用同一輸
   輸入另行重播確認。
+
+# Active: OpenAI OAuth usage/login audit - 2026-07-11
+
+Goal: 比對 LibreChat、本機 Codex、OpenAI 官方說明與 `openai-oauth-v2` 上游，
+找出 usage remaining 與網頁/Codex 不一致的可能來源，並判定 provider 與 login
+method 是否需要更新；本輪只做唯讀診斷，不改 runtime code。
+
+- [x] 盤點本地 provider、usage endpoint/cache/parser/UI 與 login method。
+- [x] 比對 `openai-oauth-v2` 上游目前實作與近期變更。
+- [x] 核對 Codex 官方登入與 usage window 語義。
+- [x] 彙整根因排序、建議更新與可重現驗證方式。
+
+Review:
+
+- 本地已鎖定 `@openai-oauth/{ai-sdk,core,local}=2.0.0-beta.2`，與上游
+  `openai-oauth-v2` HEAD `7ea69d5` 同版；上游沒有 usage remaining 實作，單純
+  升級 provider 不會修正額度顯示。
+- 本機同一 ChatGPT identity 的 LibreChat auth file 目前 WHAM 回 401，而較新的
+  Codex auth file 同秒 WHAM 回 200；本輪取樣為 primary 72% used、secondary
+  28% used。這證明 auth-file lifecycle 是本機實際問題，不只是 UI 換算誤差。
+- Codex rollout 同一分鐘曾短暫從 primary/secondary 20%/3% used 跳成 0%/0%，
+  6 秒後回到 21%/3%，而 reset timestamps 也跟著切換；此證據支持 OpenAI
+  response header/server bucket 確實可能短暫不一致。
+- 本地 code 仍有確定的新鮮度缺口：available usage 不 polling、focus refetch 關閉、
+  backend 60 秒 process-local cache、login/refresh 後沒有 backend cache invalidation，
+  且未支援 additional rate-limit buckets。建議先修這些可控問題，再以同 token
+  同秒 raw WHAM + response headers 判定剩餘 upstream 差異。
+- Login 目前以 `codex login --device-auth` + prose parser 實作；官方 Codex
+  app-server 已提供 structured browser/device-code login 與 rate-limit JSON-RPC。
+  現行流程可用，但中期應改 structured app-server，並補 session user scope 與
+  multi-process persistence。
+- Backend focused Jest 2 suites / 18 tests、client focused Jest 1 suite / 12 tests
+  通過。第一次從 repo root 執行 client 測試因未使用 client Jest config 而 parse
+  失敗，改從 `client/` 執行後通過；本輪未修改 runtime code。
+
+# Active: Codex app-server OAuth login/logout - 2026-07-11
+
+Goal: 僅將 Admin OpenAI OAuth 登入/登出改為 Codex app-server structured flow，
+在既有 OAuth token UI 加上 login/logout actions，並讓 refresh token 成功後同步
+重新抓取 token status 與 usage limits；不改 provider transport 或 usage schema/parser。
+
+- [x] 鎖定 app-server initialize、account login/logout 與 notification contract。
+- [x] 先新增 backend/data-provider/client regression tests。
+- [x] 實作 structured browser/device-code login、logout 與 UI actions。
+- [x] 讓 refresh/login/logout 完成後同步更新 token status 與 usage query。
+- [x] 執行 focused tests、build/typecheck、安全檢查與 diff hygiene。
+
+Review:
+
+- Login 已從 `codex login --device-auth` prose parser 改成 Codex app-server JSONL
+  structured protocol：initialize/initialized、`account/login/start`、
+  `account/login/completed` 與 timeout cancel；同時支援 browser 與 device-code。
+- Admin UI 新增 Login/Logout，並保留原 device-code 流程：先顯示及 Copy device
+  code，再啟用 Open URL；browser login 只作為額外選項。
+- Refresh 改用 `account/read { refreshToken: true }`，logout 改用
+  `account/logout`；refresh/login/logout 完成後會更新 token query、清掉 backend
+  usage cache 並重新抓取 Usage limits。
+- Provider transport、OAuth usage response schema/parser 與其他 OpenAI OAuth 行為未改；
+  新增 admin-only route 延續既有 JWT + `ACCESS_ADMIN` 保護，app-server raw error/
+  stderr/token 不回傳到 UI。
+- `build:data-provider`、packages/api build、client `tsc --noEmit` 通過；focused
+  Jest 共 7 suites / 59 tests 通過，targeted ESLint 與 `git diff --check` 通過。
+- 使用獨立空白 `CODEX_HOME` 對本機 Codex 0.143 app-server 做 live smoke：
+  initialize 與 `account/read` structured request 成功，沒有讀寫目前登入帳號。

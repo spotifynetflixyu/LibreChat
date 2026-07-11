@@ -81,10 +81,7 @@ function createFakeOpenAIOAuth({
   }) as unknown as typeof createOpenAIOAuthType;
 }
 
-function createFakeOpenAIOAuthDependencies(input: {
-  doGenerate: jest.Mock;
-  doStream?: jest.Mock;
-}) {
+function createFakeOpenAIOAuthDependencies(input: { doGenerate: jest.Mock; doStream?: jest.Mock }) {
   const credentials = {
     kind: 'openai-oauth' as const,
     getSession: jest.fn(),
@@ -107,9 +104,7 @@ function createFakeOpenAIOAuthDependencies(input: {
   const createOpenAIOAuthTransport = jest.fn(
     () => transport,
   ) as unknown as typeof createOpenAIOAuthTransportType;
-  const openaiCredentials = jest.fn(
-    () => credentials,
-  ) as unknown as typeof openaiCredentialsType;
+  const openaiCredentials = jest.fn(() => credentials) as unknown as typeof openaiCredentialsType;
 
   return {
     options: {
@@ -253,9 +248,7 @@ describe('OpenAI OAuth model adapter', () => {
 
     const transportFetch = createOpenAIOAuthTransport.mock.calls[0]?.[0].fetch;
     expect(transportFetch).toBeDefined();
-    await transportFetch?.(
-      'https://chatgpt.com/backend-api/codex/models?client_version=0.144.1',
-    );
+    await transportFetch?.('https://chatgpt.com/backend-api/codex/models?client_version=0.144.1');
     await transportFetch?.('https://chatgpt.com/backend-api/codex/responses', {
       method: 'POST',
     });

@@ -1,4 +1,4 @@
-import { Gauge, KeyRound, LogIn, RefreshCw } from 'lucide-react';
+import { Gauge, KeyRound, LogIn, LogOut, RefreshCw } from 'lucide-react';
 import { SystemRoles } from 'librechat-data-provider';
 import type {
   OpenAIOAuthTokenLoginStatus,
@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import {
   useGetOpenAIOAuthUsageQuery,
   useGetOpenAIOAuthTokenStatusQuery,
+  useLogoutOpenAIOAuthCodexMutation,
   useRefreshOpenAIOAuthTokenMutation,
 } from '~/data-provider';
 import type { LocalizeFunction } from '~/common';
@@ -111,7 +112,7 @@ function OAuthTokenStatus({
   }
 
   const expiresLabel = formatExpiresLabel(status);
-  const codexCliStatus = status.login.available
+  const appServerStatus = status.login.available
     ? localize('com_ui_available')
     : localize('com_ui_unavailable');
 
@@ -128,7 +129,7 @@ function OAuthTokenStatus({
           valueClassName="tabular-nums"
         />
       )}
-      <OAuthTokenStatusRow label={localize('com_ui_codex_cli')} value={codexCliStatus} />
+      <OAuthTokenStatusRow label={localize('com_ui_codex_app_server')} value={appServerStatus} />
     </div>
   );
 }
@@ -167,6 +168,9 @@ function getTokenActionStatusValue({
   localize,
   loginIsLoading,
   loginStatus,
+  logoutFailed,
+  logoutIsLoading,
+  logoutSucceeded,
   refreshFailed,
   refreshIsLoading,
   refreshSucceeded,
@@ -175,15 +179,33 @@ function getTokenActionStatusValue({
   localize: LocalizeFunction;
   loginIsLoading: boolean;
   loginStatus?: OpenAIOAuthTokenLoginStatus;
+  logoutFailed: boolean;
+  logoutIsLoading: boolean;
+  logoutSucceeded: boolean;
   refreshFailed: boolean;
   refreshIsLoading: boolean;
   refreshSucceeded: boolean;
 }): ReactNode | undefined {
-  if (refreshIsLoading) {
+  if (logoutIsLoading) {
     return (
       <OpenAIOAuthStatusValue tone="yellow">
-        {localize('com_ui_refreshing')}
+        {localize('com_ui_logging_out')}
       </OpenAIOAuthStatusValue>
+    );
+  }
+  if (logoutFailed) {
+    return (
+      <OpenAIOAuthStatusValue tone="red">{localize('com_ui_logout_failed')}</OpenAIOAuthStatusValue>
+    );
+  }
+  if (logoutSucceeded) {
+    return (
+      <OpenAIOAuthStatusValue tone="green">{localize('com_ui_logged_out')}</OpenAIOAuthStatusValue>
+    );
+  }
+  if (refreshIsLoading) {
+    return (
+      <OpenAIOAuthStatusValue tone="yellow">{localize('com_ui_refreshing')}</OpenAIOAuthStatusValue>
     );
   }
 
@@ -207,7 +229,9 @@ function getTokenActionStatusValue({
     return loginStatusValue;
   }
   if (refreshSucceeded) {
-    return <OpenAIOAuthStatusValue tone="green">{localize('com_ui_checked')}</OpenAIOAuthStatusValue>;
+    return (
+      <OpenAIOAuthStatusValue tone="green">{localize('com_ui_checked')}</OpenAIOAuthStatusValue>
+    );
   }
 
   return undefined;
@@ -222,11 +246,13 @@ export default function OpenAIOAuthUsageRemaining() {
     loginIsLoading,
     loginPollingIsError,
     loginStatus,
-    startCodexLogin,
+    openCodexLogin,
+    resetCodexLogin,
   } = useOpenAIOAuthCodexLogin();
   const usageQuery = useGetOpenAIOAuthUsageQuery();
   const tokenQuery = useGetOpenAIOAuthTokenStatusQuery({ enabled: isAdmin });
   const refreshMutation = useRefreshOpenAIOAuthTokenMutation();
+  const logoutMutation = useLogoutOpenAIOAuthCodexMutation();
   const tokenStatus = tokenQuery.data;
   const windows = usageQuery.data?.status === 'available' ? usageQuery.data.windows : [];
   const showUnavailable =
@@ -239,6 +265,11 @@ export default function OpenAIOAuthUsageRemaining() {
     localize,
     loginIsLoading,
     loginStatus,
+    logoutFailed:
+      logoutMutation.isError ||
+      (logoutMutation.isSuccess && logoutMutation.data?.status !== 'succeeded'),
+    logoutIsLoading: logoutMutation.isLoading,
+    logoutSucceeded: logoutMutation.isSuccess && logoutMutation.data?.status === 'succeeded',
     refreshFailed,
     refreshIsLoading: refreshMutation.isLoading,
     refreshSucceeded: refreshMutation.isSuccess,
@@ -251,6 +282,34 @@ export default function OpenAIOAuthUsageRemaining() {
   const unavailableText = unavailableReason
     ? `${localize('com_ui_unavailable')}: ${unavailableReason}`
     : localize('com_ui_unavailable');
+  let usageContent: ReactNode = <UsageRows localize={localize} windows={windows} />;
+  if (usageQuery.isLoading) {
+    usageContent = (
+      <span className="text-xs text-text-secondary">{localize('com_ui_loading')}</span>
+    );
+  } else if (showUnavailable) {
+    usageContent = (
+      <span className="text-xs text-text-secondary">
+        <OpenAIOAuthStatusValue tone="red">{unavailableText}</OpenAIOAuthStatusValue>
+      </span>
+    );
+  }
+  let tokenContent: ReactNode = (
+    <OAuthTokenStatus
+      localize={localize}
+      status={tokenStatus}
+      statusLabel={tokenActionStatusValue}
+    />
+  );
+  if (tokenQuery.isLoading) {
+    tokenContent = (
+      <span className="text-xs text-text-secondary">{localize('com_ui_loading')}</span>
+    );
+  } else if (tokenQuery.isError) {
+    tokenContent = (
+      <span className="text-xs text-text-secondary">{localize('com_ui_unavailable')}</span>
+    );
+  }
 
   return (
     <div className="mx-2 mt-1 border-t border-border-light px-1 pb-1 pt-2">
@@ -260,15 +319,7 @@ export default function OpenAIOAuthUsageRemaining() {
           <span className="truncate">{localize('com_ui_usage_remaining')}</span>
         </span>
       </div>
-      {usageQuery.isLoading ? (
-        <span className="text-xs text-text-secondary">{localize('com_ui_loading')}</span>
-      ) : showUnavailable ? (
-        <span className="text-xs text-text-secondary">
-          <OpenAIOAuthStatusValue tone="red">{unavailableText}</OpenAIOAuthStatusValue>
-        </span>
-      ) : (
-        <UsageRows localize={localize} windows={windows} />
-      )}
+      {usageContent}
       {isAdmin && (
         <div className="mt-2 border-t border-border-light pt-2">
           <div className="mb-1.5 flex items-center justify-between gap-2 text-sm text-text-primary">
@@ -277,26 +328,16 @@ export default function OpenAIOAuthUsageRemaining() {
               <span className="truncate">{localize('com_ui_oauth_token')}</span>
             </span>
           </div>
-          {tokenQuery.isLoading ? (
-            <span className="text-xs text-text-secondary">{localize('com_ui_loading')}</span>
-          ) : tokenQuery.isError ? (
-            <span className="text-xs text-text-secondary">{localize('com_ui_unavailable')}</span>
-          ) : (
-            <OAuthTokenStatus
-              localize={localize}
-              status={tokenStatus}
-              statusLabel={tokenActionStatusValue}
-            />
-          )}
+          {tokenContent}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
               type="button"
               className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={refreshMutation.isLoading || loginBusy}
+              disabled={refreshMutation.isLoading || logoutMutation.isLoading || loginBusy}
               onClick={() => refreshMutation.mutate()}
             >
               <RefreshCw
-                className={`size-3.5${refreshMutation.isLoading ? ' animate-spin' : ''}`}
+                className={refreshMutation.isLoading ? 'size-3.5 animate-spin' : 'size-3.5'}
                 aria-hidden="true"
               />
               {refreshMutation.isLoading
@@ -306,11 +347,30 @@ export default function OpenAIOAuthUsageRemaining() {
             <button
               type="button"
               className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!loginAvailable || loginIsLoading}
-              onClick={startCodexLogin}
+              disabled={!loginAvailable || loginIsLoading || logoutMutation.isLoading}
+              onClick={openCodexLogin}
             >
-              <LogIn className={`size-3.5${loginBusy ? ' animate-pulse' : ''}`} aria-hidden="true" />
+              <LogIn
+                className={loginBusy ? 'size-3.5 animate-pulse' : 'size-3.5'}
+                aria-hidden="true"
+              />
               {localize('com_ui_codex_login')}
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={
+                tokenStatus?.status !== 'available' || logoutMutation.isLoading || loginBusy
+              }
+              onClick={() => logoutMutation.mutate(undefined, { onSuccess: resetCodexLogin })}
+            >
+              <LogOut
+                className={logoutMutation.isLoading ? 'size-3.5 animate-pulse' : 'size-3.5'}
+                aria-hidden="true"
+              />
+              {logoutMutation.isLoading
+                ? localize('com_ui_logging_out')
+                : localize('com_ui_logout')}
             </button>
           </div>
         </div>

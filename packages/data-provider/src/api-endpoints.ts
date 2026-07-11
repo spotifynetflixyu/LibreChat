@@ -311,6 +311,7 @@ export const adminOpenAIOAuthTokenRefresh = () => `${adminOpenAIOAuthToken()}/re
 export const adminOpenAIOAuthTokenLogin = () => `${adminOpenAIOAuthToken()}/login`;
 export const adminOpenAIOAuthTokenLoginStatus = (sessionId: string) =>
   `${adminOpenAIOAuthTokenLogin()}/${encodeURIComponent(sessionId)}`;
+export const adminOpenAIOAuthTokenLogout = () => `${adminOpenAIOAuthToken()}/logout`;
 
 export const mcp = {
   tools: `${BASE_URL}/api/mcp/tools`,

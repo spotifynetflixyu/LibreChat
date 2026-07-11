@@ -102,6 +102,12 @@ const mockReadOpenAIOAuthCodexLoginStatus = jest.fn((_req, res) =>
     updatedAt: '2026-07-08T02:35:02.000Z',
   }),
 );
+const mockLogoutOpenAIOAuthToken = jest.fn((_req, res) =>
+  res.status(200).json({
+    status: 'succeeded',
+    fetchedAt: '2026-07-08T02:35:02.000Z',
+  }),
+);
 const mockCreateAuthenticatedConversation = jest.fn((_req, res) =>
   res.status(201).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
 );
@@ -133,6 +139,7 @@ const mockCreateSteelHandlers = jest.fn(() => ({
   streamChat: mockStreamChat,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
+  logoutOpenAIOAuthToken: mockLogoutOpenAIOAuthToken,
   readOpenAIOAuthCodexLoginStatus: mockReadOpenAIOAuthCodexLoginStatus,
   readOpenAIOAuthTokenStatus: mockReadOpenAIOAuthTokenStatus,
   refreshOpenAIOAuthToken: mockRefreshOpenAIOAuthToken,
@@ -473,7 +480,9 @@ describe('Steel route shells', () => {
   it('registers admin-only OpenAI OAuth Codex login start under /api/admin/steel', async () => {
     const app = createApp();
 
-    const res = await request(app).post('/api/admin/steel/ai/oauth-token/login');
+    const res = await request(app)
+      .post('/api/admin/steel/ai/oauth-token/login')
+      .send({ method: 'device_code' });
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({
@@ -488,6 +497,19 @@ describe('Steel route shells', () => {
       },
     });
     expect(mockStartOpenAIOAuthCodexLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers admin-only OpenAI OAuth logout under /api/admin/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).post('/api/admin/steel/ai/oauth-token/logout');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: 'succeeded',
+      fetchedAt: '2026-07-08T02:35:02.000Z',
+    });
+    expect(mockLogoutOpenAIOAuthToken).toHaveBeenCalledTimes(1);
   });
 
   it('registers admin-only OpenAI OAuth Codex login status under /api/admin/steel', async () => {

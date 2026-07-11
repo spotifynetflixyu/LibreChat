@@ -70,11 +70,7 @@ describe('loadDefaultModels', () => {
       user: { id: 'user-1' },
     });
 
-    expect(models[EModelEndpoint.openAI]).toEqual([
-      'gpt-5.6-luna',
-      'gpt-5.5',
-      'gpt-5.6-terra',
-    ]);
+    expect(models[EModelEndpoint.openAI]).toEqual(['gpt-5.6-luna', 'gpt-5.5', 'gpt-5.6-terra']);
     expect(models[EModelEndpoint.openAIOAuth]).toEqual([
       'gpt-5.6-luna',
       'gpt-5.5',
@@ -90,11 +86,7 @@ describe('loadDefaultModels', () => {
       user: { id: 'user-1' },
     });
 
-    expect(models[EModelEndpoint.openAI]).toEqual([
-      'gpt-5.5',
-      'gpt-5.6-luna',
-      'gpt-5.6-terra',
-    ]);
+    expect(models[EModelEndpoint.openAI]).toEqual(['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra']);
     expect(models[EModelEndpoint.openAIOAuth]).toEqual([
       'gpt-5.5',
       'gpt-5.6-luna',
@@ -110,11 +102,7 @@ describe('loadDefaultModels', () => {
       user: { id: 'user-1' },
     });
 
-    expect(models[EModelEndpoint.openAI]).toEqual([
-      'gpt-5.6-luna',
-      'gpt-5.5',
-      'gpt-5.6-terra',
-    ]);
+    expect(models[EModelEndpoint.openAI]).toEqual(['gpt-5.6-luna', 'gpt-5.5', 'gpt-5.6-terra']);
     expect(models[EModelEndpoint.openAIOAuth]).toEqual([
       'gpt-5.6-luna',
       'gpt-5.5',

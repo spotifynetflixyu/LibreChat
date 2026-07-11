@@ -1,13 +1,23 @@
 import os from 'os';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 
 import type {
+  OpenAIOAuthTokenLoginMethod,
   OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
 } from 'librechat-data-provider';
+
+import type {
+  CodexAppServerClient,
+  CodexAppServerJsonObject,
+  StartCodexAppServerClientOptions,
+} from './appserver';
+
+import { startCodexAppServerClient } from './appserver';
 
 type LoadAuthTokensOptions = {
   authFilePath?: string;
@@ -45,24 +55,18 @@ export type OpenAIOAuthCodexCommandRunner = (input: {
   stdout: string;
 }>;
 
-export type OpenAIOAuthCodexLoginSpawner = (input: {
-  args: string[];
-  command: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  onExit: (result: { code: number | null; signal: NodeJS.Signals | null }) => void;
-  onOutput: (chunk: string) => void;
-}) => {
-  kill: () => void;
-};
+export type OpenAIOAuthAppServerFactory = (
+  input: Pick<StartCodexAppServerClientOptions, 'command' | 'cwd' | 'env'>,
+) => Promise<CodexAppServerClient>;
 
 type OpenAIOAuthCodexLoginRecord = {
   authFilePath?: string;
   cleanupTimer?: NodeJS.Timeout;
-  kill?: () => void;
-  output: string;
+  client: CodexAppServerClient;
+  loginId: string;
   status: OpenAIOAuthTokenLoginStatus;
   timeoutTimer?: NodeJS.Timeout;
+  unsubscribe: () => void;
 };
 
 type CodexLoginCapability =
@@ -75,6 +79,16 @@ type CodexLoginCapability =
       reason: NonNullable<OpenAIOAuthTokenStatus['login']['reason']>;
     };
 
+type PreparedAppServer =
+  | {
+      authFilePath?: string;
+      client: CodexAppServerClient;
+    }
+  | {
+      login: OpenAIOAuthTokenStatus['login'];
+      reason: 'auth_path_unsupported' | 'codex_cli_unavailable' | 'login_failed';
+    };
+
 export type OpenAIOAuthCodexLoginStore = Map<string, OpenAIOAuthCodexLoginRecord>;
 
 export type OpenAIOAuthTokenStatusDeps = {
@@ -84,14 +98,15 @@ export type OpenAIOAuthTokenStatusDeps = {
   loadAuthTokens?: OpenAIOAuthTokenLoader;
   now?: () => Date;
   runCodexCommand?: OpenAIOAuthCodexCommandRunner;
+  startAppServerClient?: OpenAIOAuthAppServerFactory;
 };
 
 export type OpenAIOAuthCodexLoginDeps = OpenAIOAuthTokenStatusDeps & {
   idFactory?: () => string;
   loginStore?: OpenAIOAuthCodexLoginStore;
   loginTimeoutMs?: number;
+  method?: OpenAIOAuthTokenLoginMethod;
   sessionTtlMs?: number;
-  spawnCodexLogin?: OpenAIOAuthCodexLoginSpawner;
 };
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
@@ -101,7 +116,6 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
 const codexCliProbeTimeoutMs = 5_000;
 const defaultLoginTimeoutMs = 10 * 60 * 1000;
 const defaultCompletedSessionTtlMs = 15 * 60 * 1000;
-const maxCodexLoginOutputChars = 20_000;
 const defaultCodexLoginStore: OpenAIOAuthCodexLoginStore = new Map();
 
 async function loadDefaultAuthTokens(
@@ -115,17 +129,13 @@ function decodeJwtClaims(token: string | undefined): { exp?: unknown } | undefin
   if (!token) {
     return undefined;
   }
-
   const [, payload] = token.split('.');
   if (!payload) {
     return undefined;
   }
 
   try {
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
-      exp?: unknown;
-    };
-    return parsed;
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp?: unknown };
   } catch {
     return undefined;
   }
@@ -135,17 +145,14 @@ function toOutput(value: string | Buffer | undefined): string {
   if (!value) {
     return '';
   }
-
   return typeof value === 'string' ? value : value.toString('utf8');
 }
 
-function getNodeErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('code' in error)) {
+function getNodeErrorCode(error: object): string | undefined {
+  if (!('code' in error)) {
     return undefined;
   }
-
-  const code = error.code;
-  return typeof code === 'string' ? code : undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
 }
 
 function runDefaultCodexCommand({
@@ -159,53 +166,16 @@ function runDefaultCodexCommand({
     execFile(
       command,
       args,
-      {
-        cwd,
-        env,
-        maxBuffer: 64_000,
-        timeout: timeoutMs,
-        windowsHide: true,
-      },
+      { cwd, env, maxBuffer: 64_000, timeout: timeoutMs, windowsHide: true },
       (error, stdout, stderr) => {
         resolve({
           exitCode: error ? 1 : 0,
-          stdout: toOutput(stdout),
           stderr: toOutput(stderr),
+          stdout: toOutput(stdout),
         });
       },
     );
   });
-}
-
-function spawnDefaultCodexLogin({
-  args,
-  command,
-  cwd,
-  env,
-  onExit,
-  onOutput,
-}: Parameters<OpenAIOAuthCodexLoginSpawner>[0]): ReturnType<OpenAIOAuthCodexLoginSpawner> {
-  const child = spawn(command, args, {
-    cwd,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => onOutput(chunk));
-  child.stderr.on('data', (chunk: string) => onOutput(chunk));
-  child.once('error', () => onExit({ code: 1, signal: null }));
-  child.once('exit', (code, signal) => onExit({ code, signal }));
-
-  return {
-    kill: () => {
-      if (!child.killed) {
-        child.kill('SIGTERM');
-      }
-    },
-  };
 }
 
 function uniqueValues(values: string[]): string[] {
@@ -218,7 +188,6 @@ function resolveCodexCliCommands(env: OpenAIOAuthTokenEnv = process.env): string
   if (configured) {
     return [configured];
   }
-
   return uniqueValues([
     'codex',
     '/opt/homebrew/bin/codex',
@@ -232,11 +201,7 @@ function expandHomePath(value: string, home: string): string {
   if (value === '~') {
     return home;
   }
-  if (value.startsWith('~/')) {
-    return path.join(home, value.slice(2));
-  }
-
-  return value;
+  return value.startsWith('~/') ? path.join(home, value.slice(2)) : value;
 }
 
 function resolveCodexHomePath(env: OpenAIOAuthTokenEnv): string {
@@ -244,7 +209,6 @@ function resolveCodexHomePath(env: OpenAIOAuthTokenEnv): string {
   if (configuredHome) {
     return path.resolve(expandHomePath(configuredHome, env.HOME ?? os.homedir()));
   }
-
   return path.join(env.HOME ?? os.homedir(), '.codex');
 }
 
@@ -261,9 +225,7 @@ function createCodexEnv(env: OpenAIOAuthTokenEnv, codexHome: string): NodeJS.Pro
 async function createCodexLoginCapability({
   env = process.env,
   runCodexCommand = runDefaultCodexCommand,
-}: Pick<OpenAIOAuthTokenStatusDeps, 'env' | 'runCodexCommand'>): Promise<
-  CodexLoginCapability
-> {
+}: Pick<OpenAIOAuthTokenStatusDeps, 'env' | 'runCodexCommand'>): Promise<CodexLoginCapability> {
   const codexHome = resolveCodexHomePath(env);
   for (const command of resolveCodexCliCommands(env)) {
     try {
@@ -277,27 +239,18 @@ async function createCodexLoginCapability({
         return { available: true, command };
       }
     } catch {
-      // Keep the response sanitized; raw CLI errors can include local paths.
+      continue;
     }
   }
-
-  return {
-    available: false,
-    reason: 'codex_cli_unavailable',
-  };
+  return { available: false, reason: 'codex_cli_unavailable' };
 }
 
 function toPublicCodexLoginCapability(
   login: CodexLoginCapability,
 ): OpenAIOAuthTokenStatus['login'] {
-  if (login.available) {
-    return { available: true };
-  }
-
-  return {
-    available: false,
-    ...(login.reason ? { reason: login.reason } : {}),
-  };
+  return login.available
+    ? { available: true }
+    : { available: false, ...(login.reason ? { reason: login.reason } : {}) };
 }
 
 function createUnavailableStatus({
@@ -314,12 +267,8 @@ function createUnavailableStatus({
     status: 'unavailable',
     fetchedAt: fetchedAt.toISOString(),
     reason,
-    accessToken: {
-      status: 'unknown',
-    },
-    refresh: {
-      available: false,
-    },
+    accessToken: { status: 'unknown' },
+    refresh: { available: false },
     login,
   };
 }
@@ -347,15 +296,12 @@ function createAvailableStatus({
           expiresAt: new Date(expiresAtMs).toISOString(),
           expiresInSeconds,
         };
-
   return {
     provider: 'openai_oauth_responses',
     status: 'available',
     fetchedAt: fetchedAt.toISOString(),
     accessToken,
-    refresh: {
-      available: Boolean(auth.refreshToken),
-    },
+    refresh: { available: Boolean(auth.refreshToken) },
     login,
   };
 }
@@ -375,7 +321,6 @@ async function loadStatus({
 }): Promise<OpenAIOAuthTokenStatus> {
   const fetchedAt = now();
   const login = await createCodexLoginCapability({ env, runCodexCommand });
-
   try {
     const auth = await loadAuthTokens({
       ...(authFilePath ? { authFilePath } : {}),
@@ -396,80 +341,6 @@ async function loadStatus({
   }
 }
 
-function stripAnsi(value: string): string {
-  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
-}
-
-function trimDeviceUri(value: string): string {
-  return value.replace(/[),.;]+$/u, '');
-}
-
-function normalizeDeviceCode(value: string): string | undefined {
-  const normalized = value.replace(/\s+/gu, '-').toUpperCase();
-  if (!/^[A-Z0-9]{4}-[A-Z0-9]{4,5}$/u.test(normalized)) {
-    return undefined;
-  }
-  if (!/\d/u.test(normalized)) {
-    return undefined;
-  }
-
-  return normalized;
-}
-
-function extractDeviceCodeCandidate(value: string): string | undefined {
-  const candidate = value.match(/\b([A-Z0-9]{4}[- ][A-Z0-9]{4,5})\b/u)?.[1];
-  return candidate ? normalizeDeviceCode(candidate) : undefined;
-}
-
-function isDeviceCodePrompt(value: string): boolean {
-  return /\b(?:enter|use|copy|paste|input|type)\b.{0,100}\b(?:one-time\s+)?code\b/iu.test(value);
-}
-
-function parseCodexDeviceCode(output: string): string | undefined {
-  const lines = output.split(/\r?\n/u);
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? '';
-    if (!isDeviceCodePrompt(line)) {
-      continue;
-    }
-
-    const sameLineCode = extractDeviceCodeCandidate(line);
-    if (sameLineCode) {
-      return sameLineCode;
-    }
-
-    for (let offset = 1; offset <= 3; offset += 1) {
-      const nearbyLine = lines[index + offset];
-      if (nearbyLine === undefined) {
-        break;
-      }
-
-      const nearbyCode = extractDeviceCodeCandidate(nearbyLine);
-      if (nearbyCode) {
-        return nearbyCode;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function parseCodexDevice(output: string): OpenAIOAuthTokenLoginStatus['device'] | undefined {
-  const sanitizedOutput = stripAnsi(output);
-  const verificationUri = sanitizedOutput.match(/https:\/\/[^\s'"<>]+/u)?.[0];
-  const userCode = parseCodexDeviceCode(sanitizedOutput);
-
-  if (!verificationUri && !userCode) {
-    return undefined;
-  }
-
-  return {
-    ...(verificationUri ? { verificationUri: trimDeviceUri(verificationUri) } : {}),
-    ...(userCode ? { userCode } : {}),
-  };
-}
-
 function parseLoginTimeoutMs({
   env,
   fallbackMs,
@@ -480,11 +351,9 @@ function parseLoginTimeoutMs({
   const raw =
     env.OPENAI_OAUTH_CODEX_LOGIN_TIMEOUT_MS ?? env.STEEL_OPENAI_OAUTH_CODEX_LOGIN_TIMEOUT_MS;
   const parsed = raw ? Number(raw) : NaN;
-  if (Number.isFinite(parsed) && parsed >= 30_000 && parsed <= 30 * 60 * 1000) {
-    return parsed;
-  }
-
-  return fallbackMs;
+  return Number.isFinite(parsed) && parsed >= 30_000 && parsed <= 30 * 60 * 1000
+    ? parsed
+    : fallbackMs;
 }
 
 function resolveCodexHome({
@@ -493,27 +362,15 @@ function resolveCodexHome({
 }: {
   authFilePath?: string;
   env: OpenAIOAuthTokenEnv;
-}):
-  | {
-      codexHome: string;
-      resolvedAuthFilePath?: string;
-    }
-  | {
-      reason: 'auth_path_unsupported';
-    } {
-  if (authFilePath) {
-    const resolvedAuthFilePath = path.resolve(authFilePath);
-    if (path.basename(resolvedAuthFilePath) !== 'auth.json') {
-      return { reason: 'auth_path_unsupported' };
-    }
-
-    return {
-      codexHome: path.dirname(resolvedAuthFilePath),
-      resolvedAuthFilePath,
-    };
+}): { codexHome: string; resolvedAuthFilePath?: string } | { reason: 'auth_path_unsupported' } {
+  if (!authFilePath) {
+    return { codexHome: resolveCodexHomePath(env) };
   }
-
-  return { codexHome: resolveCodexHomePath(env) };
+  const resolvedAuthFilePath = path.resolve(authFilePath);
+  if (path.basename(resolvedAuthFilePath) !== 'auth.json') {
+    return { reason: 'auth_path_unsupported' };
+  }
+  return { codexHome: path.dirname(resolvedAuthFilePath), resolvedAuthFilePath };
 }
 
 async function ensureCodexFileCredentialStore(codexHome: string): Promise<void> {
@@ -521,29 +378,28 @@ async function ensureCodexFileCredentialStore(codexHome: string): Promise<void> 
   const configPath = path.join(codexHome, 'config.toml');
   const setting = 'cli_auth_credentials_store = "file"';
   let existing = '';
-
   try {
     existing = await readFile(configPath, 'utf8');
   } catch (error) {
-    if (getNodeErrorCode(error) !== 'ENOENT') {
+    if (typeof error !== 'object' || error === null || getNodeErrorCode(error) !== 'ENOENT') {
       throw error;
     }
   }
-
   const next = /^\s*cli_auth_credentials_store\s*=/mu.test(existing)
     ? existing.replace(/^\s*cli_auth_credentials_store\s*=.*$/mu, setting)
     : `${existing}${existing.endsWith('\n') || existing.length === 0 ? '' : '\n'}${setting}\n`;
-
   if (next !== existing) {
     await writeFile(configPath, next, { mode: 0o600 });
   }
 }
 
 function createLoginStatus({
+  method,
   now,
   reason,
   status,
 }: {
+  method?: OpenAIOAuthTokenLoginMethod;
   now: Date;
   reason?: OpenAIOAuthTokenLoginStatus['reason'];
   status: OpenAIOAuthTokenLoginStatus['status'];
@@ -552,27 +408,65 @@ function createLoginStatus({
     status,
     startedAt: now.toISOString(),
     updatedAt: now.toISOString(),
+    ...(method ? { method } : {}),
     ...(reason ? { reason } : {}),
   };
+}
+
+async function prepareAppServer(deps: OpenAIOAuthTokenStatusDeps): Promise<PreparedAppServer> {
+  const env = deps.env ?? process.env;
+  const login = await createCodexLoginCapability({
+    env,
+    runCodexCommand: deps.runCodexCommand,
+  });
+  if (!login.available) {
+    return {
+      login: toPublicCodexLoginCapability(login),
+      reason: 'codex_cli_unavailable',
+    };
+  }
+  const home = resolveCodexHome({ authFilePath: deps.authFilePath, env });
+  if ('reason' in home) {
+    return { login: { available: true }, reason: home.reason };
+  }
+  try {
+    await ensureCodexFileCredentialStore(home.codexHome);
+    const startClient = deps.startAppServerClient ?? startCodexAppServerClient;
+    const client = await startClient({
+      command: login.command,
+      cwd: home.codexHome,
+      env: createCodexEnv(env, home.codexHome),
+    });
+    return {
+      authFilePath: home.resolvedAuthFilePath ?? deps.authFilePath,
+      client,
+    };
+  } catch {
+    return { login: { available: true }, reason: 'login_failed' };
+  }
+}
+
+function getString(record: CodexAppServerJsonObject, key: string): string | undefined {
+  return typeof record[key] === 'string' ? record[key] : undefined;
+}
+
+function getSafeUrl(record: CodexAppServerJsonObject, key: string): string | undefined {
+  const value = getString(record, key);
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function findPendingLoginSession(
   store: OpenAIOAuthCodexLoginStore,
 ): OpenAIOAuthCodexLoginRecord | undefined {
   return Array.from(store.values()).find((record) => record.status.status === 'pending');
-}
-
-function updateLoginDevice(record: OpenAIOAuthCodexLoginRecord, now: Date): void {
-  const device = parseCodexDevice(record.output);
-  if (!device) {
-    return;
-  }
-
-  record.status = {
-    ...record.status,
-    device,
-    updatedAt: now.toISOString(),
-  };
 }
 
 function scheduleCompletedSessionCleanup({
@@ -586,58 +480,79 @@ function scheduleCompletedSessionCleanup({
   sessionTtlMs: number;
   store: OpenAIOAuthCodexLoginStore;
 }): void {
-  if (record.cleanupTimer) {
-    clearTimeout(record.cleanupTimer);
-  }
-
-  record.cleanupTimer = setTimeout(() => {
-    store.delete(sessionId);
-  }, sessionTtlMs);
+  record.cleanupTimer = setTimeout(() => store.delete(sessionId), sessionTtlMs);
   record.cleanupTimer.unref?.();
 }
 
-async function completeCodexLogin({
-  authFilePath,
-  code,
-  deps,
+function closeLoginRecord(record: OpenAIOAuthCodexLoginRecord): void {
+  if (record.timeoutTimer) {
+    clearTimeout(record.timeoutTimer);
+  }
+  record.unsubscribe();
+  record.client.close();
+}
+
+function failLoginRecord({
+  now,
   reason,
   record,
   sessionId,
   sessionTtlMs,
   store,
 }: {
-  authFilePath?: string;
-  code: number | null;
-  deps: OpenAIOAuthCodexLoginDeps;
-  reason?: OpenAIOAuthTokenLoginStatus['reason'];
+  now: Date;
+  reason: OpenAIOAuthTokenLoginStatus['reason'];
   record: OpenAIOAuthCodexLoginRecord;
   sessionId: string;
   sessionTtlMs: number;
   store: OpenAIOAuthCodexLoginStore;
+}): void {
+  if (record.status.status !== 'pending') {
+    return;
+  }
+  record.status = {
+    ...record.status,
+    status: 'failed',
+    reason,
+    updatedAt: now.toISOString(),
+  };
+  closeLoginRecord(record);
+  scheduleCompletedSessionCleanup({ record, sessionId, sessionTtlMs, store });
+}
+
+async function completeLoginRecord({
+  deps,
+  record,
+  sessionId,
+  sessionTtlMs,
+  store,
+  success,
+}: {
+  deps: OpenAIOAuthCodexLoginDeps;
+  record: OpenAIOAuthCodexLoginRecord;
+  sessionId: string;
+  sessionTtlMs: number;
+  store: OpenAIOAuthCodexLoginStore;
+  success: boolean;
 }): Promise<void> {
   if (record.status.status !== 'pending') {
     return;
   }
-
-  if (record.timeoutTimer) {
-    clearTimeout(record.timeoutTimer);
-  }
-
-  const now = deps.now?.() ?? new Date();
-  if (reason || code !== 0) {
-    record.status = {
-      ...record.status,
-      status: 'failed',
-      reason: reason ?? 'login_failed',
-      updatedAt: now.toISOString(),
-    };
-    scheduleCompletedSessionCleanup({ record, sessionId, sessionTtlMs, store });
+  if (!success) {
+    failLoginRecord({
+      now: deps.now?.() ?? new Date(),
+      reason: 'login_failed',
+      record,
+      sessionId,
+      sessionTtlMs,
+      store,
+    });
     return;
   }
-
+  closeLoginRecord(record);
   const token = await loadStatus({
     ...deps,
-    authFilePath,
+    authFilePath: record.authFilePath,
     ensureFresh: false,
     unavailableReason: 'auth_unavailable',
   });
@@ -668,12 +583,32 @@ export function getOpenAIOAuthTokenStatus(
   });
 }
 
-export function refreshOpenAIOAuthToken(
+export async function refreshOpenAIOAuthToken(
   deps: OpenAIOAuthTokenStatusDeps = {},
 ): Promise<OpenAIOAuthTokenStatus> {
+  const prepared = await prepareAppServer(deps);
+  if ('reason' in prepared) {
+    return createUnavailableStatus({
+      fetchedAt: deps.now?.() ?? new Date(),
+      login: prepared.login,
+      reason: 'refresh_failed',
+    });
+  }
+  try {
+    await prepared.client.request('account/read', { refreshToken: true });
+  } catch {
+    prepared.client.close();
+    return createUnavailableStatus({
+      fetchedAt: deps.now?.() ?? new Date(),
+      login: { available: true },
+      reason: 'refresh_failed',
+    });
+  }
+  prepared.client.close();
   return loadStatus({
     ...deps,
-    ensureFresh: true,
+    authFilePath: prepared.authFilePath,
+    ensureFresh: false,
     unavailableReason: 'refresh_failed',
   });
 }
@@ -681,104 +616,122 @@ export function refreshOpenAIOAuthToken(
 export async function startOpenAIOAuthCodexLogin(
   deps: OpenAIOAuthCodexLoginDeps = {},
 ): Promise<OpenAIOAuthTokenLoginStatus> {
-  const env = deps.env ?? process.env;
   const now = deps.now?.() ?? new Date();
-  const login = await createCodexLoginCapability({
-    env,
-    runCodexCommand: deps.runCodexCommand,
-  });
-  if (!login.available) {
-    return createLoginStatus({
-      now,
-      reason: 'codex_cli_unavailable',
-      status: 'unavailable',
-    });
-  }
-
-  const home = resolveCodexHome({ authFilePath: deps.authFilePath, env });
-  if ('reason' in home) {
-    return createLoginStatus({
-      now,
-      reason: home.reason,
-      status: 'failed',
-    });
-  }
-
+  const method = deps.method ?? 'device_code';
   const store = deps.loginStore ?? defaultCodexLoginStore;
   const pending = findPendingLoginSession(store);
   if (pending) {
     return pending.status;
   }
-
-  try {
-    await ensureCodexFileCredentialStore(home.codexHome);
-  } catch {
+  const prepared = await prepareAppServer(deps);
+  if ('reason' in prepared) {
     return createLoginStatus({
+      method,
       now,
-      reason: 'login_failed',
-      status: 'failed',
+      reason: prepared.reason === 'login_failed' ? 'login_failed' : prepared.reason,
+      status: prepared.reason === 'codex_cli_unavailable' ? 'unavailable' : 'failed',
     });
   }
 
   const sessionId = deps.idFactory?.() ?? randomUUID();
-  const loginTimeoutMs = deps.loginTimeoutMs ?? parseLoginTimeoutMs({ env, fallbackMs: defaultLoginTimeoutMs });
+  const loginTimeoutMs =
+    deps.loginTimeoutMs ??
+    parseLoginTimeoutMs({ env: deps.env ?? process.env, fallbackMs: defaultLoginTimeoutMs });
   const sessionTtlMs = deps.sessionTtlMs ?? defaultCompletedSessionTtlMs;
   const expiresAt = new Date(now.getTime() + loginTimeoutMs).toISOString();
-  const record: OpenAIOAuthCodexLoginRecord = {
-    authFilePath: home.resolvedAuthFilePath ?? deps.authFilePath,
-    output: '',
-    status: {
-      status: 'pending',
+  const recordRef: { current?: OpenAIOAuthCodexLoginRecord } = {};
+  let earlyCompletion: { loginId?: string; success: boolean } | undefined;
+  const onCompleted = (params: CodexAppServerJsonObject) => {
+    const completion = {
+      loginId: getString(params, 'loginId'),
+      success: params.success === true,
+    };
+    if (!recordRef.current) {
+      earlyCompletion = completion;
+      return;
+    }
+    if (completion.loginId !== recordRef.current.loginId) {
+      return;
+    }
+    void completeLoginRecord({
+      deps,
+      record: recordRef.current,
       sessionId,
-      startedAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      expiresAt,
-    },
+      sessionTtlMs,
+      store,
+      ...completion,
+    });
   };
+  const unsubscribeCompleted = prepared.client.on('account/login/completed', onCompleted);
 
-  store.set(sessionId, record);
-
-  const spawnCodexLogin = deps.spawnCodexLogin ?? spawnDefaultCodexLogin;
-  let child: ReturnType<OpenAIOAuthCodexLoginSpawner>;
+  let response: CodexAppServerJsonObject;
   try {
-    child = spawnCodexLogin({
-      args: ['login', '--device-auth'],
-      command: login.command ?? 'codex',
-      cwd: home.codexHome,
-      env: createCodexEnv(env, home.codexHome),
-      onExit: (result) => {
-        void completeCodexLogin({
-          authFilePath: record.authFilePath,
-          code: result.code,
-          deps,
-          record,
-          sessionId,
-          sessionTtlMs,
-          store,
-        });
-      },
-      onOutput: (chunk) => {
-        record.output = `${record.output}${chunk}`.slice(-maxCodexLoginOutputChars);
-        updateLoginDevice(record, deps.now?.() ?? new Date());
-      },
+    response = await prepared.client.request('account/login/start', {
+      type: method === 'browser' ? 'chatgpt' : 'chatgptDeviceCode',
     });
   } catch {
-    record.status = {
-      ...record.status,
-      reason: 'login_failed',
-      status: 'failed',
-      updatedAt: (deps.now?.() ?? new Date()).toISOString(),
-    };
-    scheduleCompletedSessionCleanup({ record, sessionId, sessionTtlMs, store });
-    return record.status;
+    unsubscribeCompleted();
+    prepared.client.close();
+    return createLoginStatus({ method, now, reason: 'login_failed', status: 'failed' });
   }
-  record.kill = child.kill;
+  const loginId = getString(response, 'loginId');
+  const authUrl = getSafeUrl(response, 'authUrl');
+  const verificationUri = getSafeUrl(response, 'verificationUrl');
+  const userCode = getString(response, 'userCode');
+  const validResponse =
+    loginId &&
+    ((method === 'browser' && authUrl) ||
+      (method === 'device_code' && verificationUri && userCode));
+  if (!validResponse) {
+    unsubscribeCompleted();
+    prepared.client.close();
+    return createLoginStatus({ method, now, reason: 'login_failed', status: 'failed' });
+  }
+
+  const status: OpenAIOAuthTokenLoginStatus = {
+    status: 'pending',
+    method,
+    sessionId,
+    startedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    expiresAt,
+    ...(authUrl ? { browser: { authUrl } } : {}),
+    ...(verificationUri && userCode ? { device: { verificationUri, userCode } } : {}),
+  };
+  const unsubscribeClosed = prepared.client.on('app-server/closed', () => {
+    if (!recordRef.current) {
+      return;
+    }
+    failLoginRecord({
+      now: deps.now?.() ?? new Date(),
+      reason: 'login_failed',
+      record: recordRef.current,
+      sessionId,
+      sessionTtlMs,
+      store,
+    });
+  });
+  const record: OpenAIOAuthCodexLoginRecord = {
+    authFilePath: prepared.authFilePath,
+    client: prepared.client,
+    loginId,
+    status,
+    unsubscribe: () => {
+      unsubscribeCompleted();
+      unsubscribeClosed();
+    },
+  };
+  recordRef.current = record;
+  store.set(sessionId, record);
   record.timeoutTimer = setTimeout(() => {
-    record.kill?.();
-    void completeCodexLogin({
-      authFilePath: record.authFilePath,
-      code: null,
-      deps,
+    if (!record) {
+      return;
+    }
+    void record.client
+      .request('account/login/cancel', { loginId: record.loginId })
+      .catch(() => undefined);
+    failLoginRecord({
+      now: deps.now?.() ?? new Date(),
       reason: 'login_timeout',
       record,
       sessionId,
@@ -787,26 +740,74 @@ export async function startOpenAIOAuthCodexLogin(
     });
   }, loginTimeoutMs);
   record.timeoutTimer.unref?.();
-
-  return record.status;
+  if (earlyCompletion?.loginId === loginId) {
+    void completeLoginRecord({
+      deps,
+      record,
+      sessionId,
+      sessionTtlMs,
+      store,
+      success: earlyCompletion.success,
+    });
+  }
+  return status;
 }
 
 export function getOpenAIOAuthCodexLoginStatus(
   sessionId: string,
   deps: OpenAIOAuthCodexLoginDeps = {},
 ): OpenAIOAuthTokenLoginStatus {
-  const record = (deps.loginStore ?? defaultCodexLoginStore).get(sessionId);
-  if (!record) {
-    return createLoginStatus({
+  return (
+    (deps.loginStore ?? defaultCodexLoginStore).get(sessionId)?.status ??
+    createLoginStatus({
       now: deps.now?.() ?? new Date(),
       reason: 'login_not_found',
       status: 'failed',
+    })
+  );
+}
+
+export async function logoutOpenAIOAuthToken(
+  deps: OpenAIOAuthCodexLoginDeps = {},
+): Promise<OpenAIOAuthTokenLogoutStatus> {
+  const now = deps.now?.() ?? new Date();
+  const store = deps.loginStore ?? defaultCodexLoginStore;
+  for (const [sessionId, record] of store) {
+    if (record.status.status !== 'pending') {
+      continue;
+    }
+    void record.client
+      .request('account/login/cancel', { loginId: record.loginId })
+      .catch(() => undefined);
+    failLoginRecord({
+      now,
+      reason: 'login_failed',
+      record,
+      sessionId,
+      sessionTtlMs: deps.sessionTtlMs ?? defaultCompletedSessionTtlMs,
+      store,
     });
   }
-
-  if (record.status.status === 'pending') {
-    updateLoginDevice(record, deps.now?.() ?? new Date());
+  const prepared = await prepareAppServer(deps);
+  if ('reason' in prepared) {
+    return {
+      status: prepared.reason === 'codex_cli_unavailable' ? 'unavailable' : 'failed',
+      fetchedAt: now.toISOString(),
+      reason: prepared.reason === 'login_failed' ? 'logout_failed' : prepared.reason,
+    };
   }
-
-  return record.status;
+  try {
+    await prepared.client.request('account/logout');
+  } catch {
+    prepared.client.close();
+    return { status: 'failed', fetchedAt: now.toISOString(), reason: 'logout_failed' };
+  }
+  prepared.client.close();
+  const token = await loadStatus({
+    ...deps,
+    authFilePath: prepared.authFilePath,
+    ensureFresh: false,
+    unavailableReason: 'auth_unavailable',
+  });
+  return { status: 'succeeded', fetchedAt: now.toISOString(), token };
 }

@@ -37,6 +37,8 @@ export const openAIOAuthTokenAccessStatusSchema = z.enum(['valid', 'expired', 'u
 
 export const openAIOAuthTokenLoginUnavailableReasonSchema = z.enum(['codex_cli_unavailable']);
 
+export const openAIOAuthTokenLoginMethodSchema = z.enum(['browser', 'device_code']);
+
 export const openAIOAuthTokenLoginStatusReasonSchema = z.enum([
   'codex_cli_unavailable',
   'auth_path_unsupported',
@@ -72,12 +74,25 @@ export const openAIOAuthTokenLoginStatusSchema = z.object({
   updatedAt: z.string().datetime(),
   expiresAt: z.string().datetime().optional(),
   reason: openAIOAuthTokenLoginStatusReasonSchema.optional(),
+  method: openAIOAuthTokenLoginMethodSchema.optional(),
+  browser: z
+    .object({
+      authUrl: z.string().url(),
+    })
+    .optional(),
   device: z
     .object({
       verificationUri: z.string().url().optional(),
       userCode: z.string().optional(),
     })
     .optional(),
+  token: openAIOAuthTokenStatusSchema.optional(),
+});
+
+export const openAIOAuthTokenLogoutStatusSchema = z.object({
+  status: z.enum(['succeeded', 'failed', 'unavailable']),
+  fetchedAt: z.string().datetime(),
+  reason: z.enum(['codex_cli_unavailable', 'auth_path_unsupported', 'logout_failed']).optional(),
   token: openAIOAuthTokenStatusSchema.optional(),
 });
 
@@ -93,4 +108,8 @@ export type OpenAIOAuthUsageRemaining = z.infer<typeof openAIOAuthUsageRemaining
 
 export type OpenAIOAuthTokenStatus = z.infer<typeof openAIOAuthTokenStatusSchema>;
 
+export type OpenAIOAuthTokenLoginMethod = z.infer<typeof openAIOAuthTokenLoginMethodSchema>;
+
 export type OpenAIOAuthTokenLoginStatus = z.infer<typeof openAIOAuthTokenLoginStatusSchema>;
+
+export type OpenAIOAuthTokenLogoutStatus = z.infer<typeof openAIOAuthTokenLogoutStatusSchema>;

@@ -1,4 +1,4 @@
-import { getOpenAIOAuthUsageRemaining } from './usage';
+import { getOpenAIOAuthUsageRemaining, invalidateOpenAIOAuthUsageCache } from './usage';
 
 const primaryResetAt = 1782471969;
 const weeklyResetAt = 1782975152;
@@ -121,6 +121,25 @@ describe('OpenAI OAuth usage remaining service', () => {
     });
 
     expect(loadAuthTokens).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates the auth-file cache after token actions', async () => {
+    const cache = {};
+    const fetchImpl = jest.fn(async () => createResponse(createUsagePayload()));
+    const deps = {
+      authFilePath: '/data/openai-oauth/auth.json',
+      cache,
+      fetch: fetchImpl as typeof fetch,
+      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    };
+
+    await getOpenAIOAuthUsageRemaining(deps);
+    await getOpenAIOAuthUsageRemaining(deps);
+    invalidateOpenAIOAuthUsageCache({ authFilePath: deps.authFilePath, cache });
+    await getOpenAIOAuthUsageRemaining(deps);
+
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 

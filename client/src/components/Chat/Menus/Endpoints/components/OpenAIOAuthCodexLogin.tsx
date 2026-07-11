@@ -1,11 +1,4 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-  type ReactNode,
-} from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { Check, Copy, ExternalLink } from 'lucide-react';
 import {
   Button,
@@ -16,13 +9,12 @@ import {
   OGDialogContent,
   OGDialogTitle,
 } from '@librechat/client';
-import {
-  QueryKeys,
-  SystemRoles,
-  openAIOAuthTokenLoginStatusSchema,
-} from 'librechat-data-provider';
+import { QueryKeys, SystemRoles, openAIOAuthTokenLoginStatusSchema } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
-import type { OpenAIOAuthTokenLoginStatus } from 'librechat-data-provider';
+import type {
+  OpenAIOAuthTokenLoginMethod,
+  OpenAIOAuthTokenLoginStatus,
+} from 'librechat-data-provider';
 import {
   useGetOpenAIOAuthCodexLoginStatusQuery,
   useStartOpenAIOAuthCodexLoginMutation,
@@ -37,13 +29,15 @@ type OpenAIOAuthCodexLoginContextValue = {
   loginIsLoading: boolean;
   loginPollingIsError: boolean;
   loginStatus?: OpenAIOAuthTokenLoginStatus;
+  openCodexLogin: () => void;
+  resetCodexLogin: () => void;
   setDialogOpen: (open: boolean) => void;
-  startCodexLogin: () => void;
+  startCodexLogin: (method: OpenAIOAuthTokenLoginMethod) => void;
 };
 
-const OpenAIOAuthCodexLoginContext = createContext<
-  OpenAIOAuthCodexLoginContextValue | undefined
->(undefined);
+const OpenAIOAuthCodexLoginContext = createContext<OpenAIOAuthCodexLoginContextValue | undefined>(
+  undefined,
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -166,7 +160,7 @@ function VerificationCodeValue({
 
   return (
     <div className="mt-2 flex items-center gap-2">
-      <span className="min-w-0 flex-1 rounded-md border border-border-light bg-surface-secondary px-3 py-2 font-mono text-sm text-text-primary tabular-nums">
+      <span className="min-w-0 flex-1 rounded-md border border-border-light bg-surface-secondary px-3 py-2 font-mono text-sm tabular-nums text-text-primary">
         {code}
       </span>
       <Button
@@ -279,7 +273,9 @@ export function getCodexLoginStatusValue({
     );
   }
   if (loginStatus?.status === 'succeeded') {
-    return <OpenAIOAuthStatusValue tone="green">{localize('com_ui_checked')}</OpenAIOAuthStatusValue>;
+    return (
+      <OpenAIOAuthStatusValue tone="green">{localize('com_ui_checked')}</OpenAIOAuthStatusValue>
+    );
   }
 
   return undefined;
@@ -288,9 +284,7 @@ export function getCodexLoginStatusValue({
 export function useOpenAIOAuthCodexLogin() {
   const context = useContext(OpenAIOAuthCodexLoginContext);
   if (!context) {
-    throw new Error(
-      'useOpenAIOAuthCodexLogin must be used within OpenAIOAuthCodexLoginProvider',
-    );
+    throw new Error('useOpenAIOAuthCodexLogin must be used within OpenAIOAuthCodexLoginProvider');
   }
 
   return context;
@@ -366,34 +360,54 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
     queryClient.invalidateQueries([QueryKeys.openAIOAuthUsage]);
   }, [loginStatus, queryClient]);
 
-  const startCodexLogin = useCallback(() => {
+  const resetCodexLogin = useCallback(() => {
+    removeStoredCodexLoginSessionId();
+    setLoginSessionId(undefined);
+    setLoginStartErrorStatus(undefined);
+    loginMutation.reset();
+    queryClient.removeQueries([QueryKeys.openAIOAuthCodexLoginStatus]);
+  }, [loginMutation, queryClient]);
+
+  const openCodexLogin = useCallback(() => {
     setDialogOpen(true);
     if (loginStatus?.status === 'pending' && loginSessionId) {
       return;
     }
 
-    removeStoredCodexLoginSessionId();
-    setLoginSessionId(undefined);
-    setLoginStartErrorStatus(undefined);
-    loginMutation.mutate(undefined, {
-      onSuccess: (data) => {
-        if (data.sessionId) {
-          writeStoredCodexLoginSessionId(data.sessionId);
-          setLoginSessionId(data.sessionId);
-          return;
-        }
+    resetCodexLogin();
+  }, [loginSessionId, loginStatus?.status, resetCodexLogin]);
 
-        if (data.status === 'failed' || data.status === 'unavailable') {
-          setLoginStartErrorStatus(data);
-        }
-      },
-      onError: (error) => {
-        setLoginStartErrorStatus(
-          getCodexLoginStatusFromError(error) ?? createClientLoginFailedStatus(),
-        );
-      },
-    });
-  }, [loginMutation, loginSessionId, loginStatus?.status]);
+  const startCodexLogin = useCallback(
+    (method: OpenAIOAuthTokenLoginMethod) => {
+      setDialogOpen(true);
+      if (loginStatus?.status === 'pending' && loginSessionId) {
+        return;
+      }
+
+      removeStoredCodexLoginSessionId();
+      setLoginSessionId(undefined);
+      setLoginStartErrorStatus(undefined);
+      loginMutation.mutate(method, {
+        onSuccess: (data) => {
+          if (data.sessionId) {
+            writeStoredCodexLoginSessionId(data.sessionId);
+            setLoginSessionId(data.sessionId);
+            return;
+          }
+
+          if (data.status === 'failed' || data.status === 'unavailable') {
+            setLoginStartErrorStatus(data);
+          }
+        },
+        onError: (error) => {
+          setLoginStartErrorStatus(
+            getCodexLoginStatusFromError(error) ?? createClientLoginFailedStatus(),
+          );
+        },
+      });
+    },
+    [loginMutation, loginSessionId, loginStatus?.status],
+  );
 
   return (
     <OpenAIOAuthCodexLoginContext.Provider
@@ -403,6 +417,8 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
         loginIsLoading: loginMutation.isLoading,
         loginPollingIsError: loginStatusQuery.isError,
         loginStatus,
+        openCodexLogin,
+        resetCodexLogin,
         setDialogOpen,
         startCodexLogin,
       }}
@@ -421,8 +437,10 @@ export function OpenAIOAuthCodexLoginDialog() {
     loginPollingIsError,
     loginStatus,
     setDialogOpen,
+    startCodexLogin,
   } = useOpenAIOAuthCodexLogin();
   const verificationUri = loginStatus?.device?.verificationUri;
+  const browserAuthUrl = loginStatus?.browser?.authUrl;
   const userCode = getDisplayCodexDeviceCode(loginStatus?.device?.userCode);
   const statusValue = getCodexLoginStatusValue({
     isLoginPollingError: loginPollingIsError,
@@ -438,6 +456,68 @@ export function OpenAIOAuthCodexLoginDialog() {
     }
   }, [copiedCode, userCode]);
 
+  let loginUrlContent: ReactNode = <LoginUrlSkeleton localize={localize} />;
+  if (browserAuthUrl) {
+    loginUrlContent = (
+      <div className="mt-2 flex items-center gap-2">
+        <Input
+          readOnly
+          dir="ltr"
+          value={browserAuthUrl}
+          aria-label={localize('com_ui_login_url')}
+          onFocus={(event) => event.currentTarget.select()}
+          className="h-9 text-xs text-text-secondary"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0 gap-1.5"
+          onClick={() => window.open(browserAuthUrl, '_blank', 'noopener,noreferrer')}
+        >
+          {localize('com_ui_open_link')}
+          <ExternalLink className="size-3.5" aria-hidden="true" />
+        </Button>
+      </div>
+    );
+  } else if (verificationUri) {
+    loginUrlContent = (
+      <>
+        <div className="mt-2 flex items-center gap-2">
+          <Input
+            readOnly
+            dir="ltr"
+            value={verificationUri}
+            aria-label={localize('com_ui_login_url')}
+            onFocus={(event) => event.currentTarget.select()}
+            className="h-9 text-xs text-text-secondary"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0 gap-1.5"
+            disabled={!codeCopied}
+            onClick={() => window.open(verificationUri, '_blank', 'noopener,noreferrer')}
+          >
+            {localize('com_ui_open_link')}
+            <ExternalLink className="size-3.5" aria-hidden="true" />
+          </Button>
+        </div>
+        {!codeCopied && (
+          <div className="mt-2 text-xs text-text-secondary">
+            {localize('com_ui_copy_verification_code_first')}
+          </div>
+        )}
+        {codeCopied && (
+          <div className="mt-2 text-xs text-text-secondary">
+            {localize('com_ui_open_link_to_finish_login')}
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <OGDialog open={dialogOpen} onOpenChange={setDialogOpen}>
       <OGDialogContent
@@ -447,88 +527,77 @@ export function OpenAIOAuthCodexLoginDialog() {
         <OGDialogTitle className="text-base font-semibold leading-6 text-text-primary">
           {localize('com_ui_codex_login')}
         </OGDialogTitle>
-        <div className="space-y-4">
-          <OAuthTokenStatusRow
-            label={localize('com_ui_login_status')}
-            value={
-              statusValue ?? (
-                <OpenAIOAuthStatusValue tone="yellow">
-                  {localize('com_ui_login_starting')}
-                </OpenAIOAuthStatusValue>
-              )
-            }
-          />
-          <div className="rounded-lg border border-border-light p-3">
-            <div className="flex items-center gap-2 text-xs text-text-secondary">
-              <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
-                1
-              </span>
-              <span>{localize('com_ui_verification_code')}</span>
-            </div>
-            {userCode ? (
-              <VerificationCodeValue
-                code={userCode}
-                copied={codeCopied}
-                localize={localize}
-                onCopied={setCopiedCode}
-              />
-            ) : (
-              <VerificationCodeSkeleton localize={localize} />
-            )}
-          </div>
-          <div className="rounded-lg border border-border-light p-3">
-            <div className="flex items-center gap-2 text-xs text-text-secondary">
-              <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
-                2
-              </span>
-              <span>{localize('com_ui_login_url')}</span>
-            </div>
-            {verificationUri ? (
-              <>
-                <div className="mt-2 flex items-center gap-2">
-                  <Input
-                    readOnly
-                    dir="ltr"
-                    value={verificationUri}
-                    aria-label={localize('com_ui_login_url')}
-                    onFocus={(event) => event.currentTarget.select()}
-                    className="h-9 text-xs text-text-secondary"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0 gap-1.5"
-                    disabled={!codeCopied}
-                    onClick={() => window.open(verificationUri, '_blank', 'noopener,noreferrer')}
-                  >
-                    {localize('com_ui_open_link')}
-                    <ExternalLink className="size-3.5" aria-hidden="true" />
-                  </Button>
-                </div>
-                {!codeCopied && (
-                  <div className="mt-2 text-xs text-text-secondary">
-                    {localize('com_ui_copy_verification_code_first')}
-                  </div>
-                )}
-                {codeCopied && (
-                  <div className="mt-2 text-xs text-text-secondary">
-                    {localize('com_ui_open_link_to_finish_login')}
-                  </div>
-                )}
-              </>
-            ) : (
-              <LoginUrlSkeleton localize={localize} />
-            )}
-          </div>
-          <div className="flex justify-end pt-2">
-            <OGDialogClose asChild>
-              <Button type="button" variant="outline">
-                {localize('com_ui_close')}
+        {!loginStatus && !loginIsLoading ? (
+          <div className="space-y-4">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button type="button" onClick={() => startCodexLogin('device_code')}>
+                {localize('com_ui_device_code_login')}
               </Button>
-            </OGDialogClose>
+              <Button type="button" variant="outline" onClick={() => startCodexLogin('browser')}>
+                {localize('com_ui_browser_login')}
+              </Button>
+            </div>
+            <div className="text-xs text-text-secondary">
+              {localize('com_ui_device_code_login_recommended')}
+            </div>
+            <div className="flex justify-end pt-2">
+              <OGDialogClose asChild>
+                <Button type="button" variant="outline">
+                  {localize('com_ui_close')}
+                </Button>
+              </OGDialogClose>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="space-y-4">
+            <OAuthTokenStatusRow
+              label={localize('com_ui_login_status')}
+              value={
+                statusValue ?? (
+                  <OpenAIOAuthStatusValue tone="yellow">
+                    {localize('com_ui_login_starting')}
+                  </OpenAIOAuthStatusValue>
+                )
+              }
+            />
+            {loginStatus?.method !== 'browser' && (
+              <div className="rounded-lg border border-border-light p-3">
+                <div className="flex items-center gap-2 text-xs text-text-secondary">
+                  <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
+                    1
+                  </span>
+                  <span>{localize('com_ui_verification_code')}</span>
+                </div>
+                {userCode ? (
+                  <VerificationCodeValue
+                    code={userCode}
+                    copied={codeCopied}
+                    localize={localize}
+                    onCopied={setCopiedCode}
+                  />
+                ) : (
+                  <VerificationCodeSkeleton localize={localize} />
+                )}
+              </div>
+            )}
+            <div className="rounded-lg border border-border-light p-3">
+              <div className="flex items-center gap-2 text-xs text-text-secondary">
+                <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
+                  2
+                </span>
+                <span>{localize('com_ui_login_url')}</span>
+              </div>
+              {loginUrlContent}
+            </div>
+            <div className="flex justify-end pt-2">
+              <OGDialogClose asChild>
+                <Button type="button" variant="outline">
+                  {localize('com_ui_close')}
+                </Button>
+              </OGDialogClose>
+            </div>
+          </div>
+        )}
       </OGDialogContent>
     </OGDialog>
   );
