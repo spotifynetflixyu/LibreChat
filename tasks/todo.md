@@ -8910,3 +8910,61 @@ Review:
   authenticated `gpt-5.6-luna` schema smoke.
 - Remaining implementation work is separate: hard-limit the main agent tool
   surface during OCR-only confirmation turns.
+
+# Active: Dev to production full rollout - 2026-07-11
+
+Goal: stage all current application/config/PaddleOCR/Supabase changes on the
+production host and database first, then merge to `master` to trigger the
+production image deployment.
+
+- [x] Inventory the current branch, working tree, commits, host-managed files,
+      migrations, and dev/prod Steel database state.
+- [x] Verify the complete deploy candidate locally: focused tests, builds,
+      migration/schema consistency, package lock integrity, and diff hygiene.
+- [x] Back up production host configuration and the production Steel database.
+- [x] Safely install the reviewed local `.env.prod` and `librechat.yaml`
+      on the host, plus any non-image runtime assets, then verify permissions
+      and checksums without printing secrets.
+- [x] Replace production Steel schema/data from dev and verify per-table row
+      counts, constraints, migration history, reviewed rules, and lookup smokes.
+- [ ] Commit the complete candidate, merge it into `master`, and push to
+      trigger `Deploy Production`.
+- [ ] Watch the workflow to completion; verify public/internal health,
+      build provenance, container state/logs, and a fresh-S3 PaddleOCR smoke.
+
+Safety gates:
+
+- Do not merge or push `master` until host files and Supabase are backed up,
+  synchronized, and verified.
+- Never print production secrets or raw connection strings in review output.
+- Preserve user-owned working-tree changes; include only reviewed deploy scope.
+
+Review:
+
+- `feat/v8.4` is a fast-forward of production `master` by 121 commits. The
+  complete monorepo build, `npm ci --dry-run`, and `git diff --check` passed on
+  Node 24.18.0 before production mutation.
+- Backed up the host-managed production config before installing local
+  `.env.prod` and `librechat.yaml`; remote permissions, SHA-256 checksums, and
+  `docker compose config --quiet` match the reviewed local files.
+- Created PostgreSQL 17 custom archives for both the pre-deploy production
+  `steel` schema and the dev source schema under the local protected backup
+  directory. Archive lists contain all expected tables, table data, and
+  identity sequences.
+- Replaced production `steel` in one database transaction from the dev archive.
+  Dev and prod now match exactly at 2,256 customers, 119 cutting-price rows,
+  31 formula versions, 6,761 prices, and nine rules; deterministic per-table
+  fingerprints and schema metadata signatures match.
+- The restore exposed pre-existing dev RLS drift that hid customers and formula
+  versions from the production runtime role. Added and applied CLI-created
+  migration `20260711083325_steel_private_backend_rls` on dev and prod, and
+  updated `supabase/schema.sql` in the same change. All five private backend
+  tables now have RLS explicitly disabled, while `anon` and `authenticated`
+  retain no Steel schema access.
+- Production `prod_app` readback sees all five tables and has the intended
+  backend DML privileges. Both databases have 33 aligned migration-history
+  rows; live smokes returned 2,023 normalized-thickness prices, 100 cutting
+  price records, and nine active reviewed rules.
+- Production security advisors returned only the existing mutable function
+  search-path and `pg_trgm`-in-public warnings; this rollout adds no exposed
+  Data API surface.
