@@ -47,20 +47,19 @@ const providerToolNames = new Set<SteelProviderToolName>([
 const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_customers',
-    description:
-      'Search Steel customers using AI-selected keywords across ERP code, display name, legal name, tax id, and aliases.',
+    description: 'Search Steel customers by one or more names, aliases, tax IDs, or ERP codes.',
     argsSchema: steelToolArgsSchemas.search_customers,
   },
   {
     name: 'search_price_candidates',
     description:
-      'Search price candidates for multiple order lines in one call without a top-level query-count cap. Query IDs are assigned from input order as q1, q2, and so on; supplied queryId values are ignored, and result order matches query order. Every first lookup uses a required category enum and may filter by subcategory, contains-match material family (黑鐵, 白鐵, 鋁, 錏, 鋅, 鎢, 塑膠), positive decimal thicknessMm, canonical product/spec keyword, and a per-query limit (default 30; positive values above 100 are clamped to 100). erpItemCode is a DB identity returned by an earlier lookup and is only for a later exact-row retrieval, never a first-lookup prerequisite. Thickness ranges include the lower bound and exclude the upper bound; scalar bounds match exactly. Omit limit normally and use 100 only to expand candidates. Results are grouped by generated queryId. Supported categories receive one parallel automatic cutting catalog lookup with no cutting row limit; backend output is then filtered by matched material candidate specifications, and no-match queries contribute no cutting rows. If category is unclear, use mode=category_discovery with keyword instead of guessing.',
+      'Search price candidates for all known order lines in one call. For a known category, use lookup queries with category and only confirmed filters; when the category is unknown, use category_discovery with keyword. Use erpItemCode only to retrieve an already confirmed row, not for initial discovery. Omit limit normally. Matching cuttingPrices are returned automatically; do not query cutting prices separately.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
   {
     name: 'read_markdown',
     description:
-      'Read the current conversation-scoped Markdown text for either workbook or OCR data only when chat history no longer contains the complete assistant table/evidence. First inspect provider chat history; if the needed OCR/workbook Markdown is already present and complete enough there, do not call this tool. Use scope=workbook without fileKey for the combined current workbook. Use scope=workbook with fileKey=file:<id> when multiple OCR files each have their own order and you need one file-specific workbook; use fileKey=default for the text/manual/default order when it coexists with OCR-file orders. For OCR, call scope=ocr without fileKey/ocrFileKey; the backend returns every current OCR Markdown result, merging all OCR preprocessing chunks per file and labeling each file as <file_key>. Do not pass row queries, quote scope, all scope, or conversation IDs; the backend uses the active conversation.',
+      'Recover workbook or OCR Markdown only when the needed content is absent or incomplete in chat history. For workbook, omit fileKey for the combined workbook; use file:<id> for one OCR-file order or default for a text/manual order. For OCR, omit the file key for all results or provide one file key for one source. Do not call for same-turn OCR already present in runtime context.',
     argsSchema: steelToolArgsSchemas.read_markdown,
     usagePolicy: steelReadMarkdownUsagePolicy,
   },

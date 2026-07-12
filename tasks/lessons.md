@@ -5,6 +5,7 @@
 - Logout confirm modal 在 Confirm 後不得自動關閉：執行中顯示 `Logging out...` 且禁止關閉，完成後在同一 modal 顯示 `Logged out`／`Logout failed`，由使用者自行 Close。
 - OAuth Logout 必須先顯示確認 modal；點擊原 Logout 只開 modal，只有 Confirm 才能觸發 logout mutation，Cancel／Close 不可登出。
 - OAuth token refresh 與 Usage remaining refresh 是兩個獨立動作：登入後的文字按鈕只 refresh token；Usage remaining section 右上 icon button 才 refetch usage，不可讓 token refresh 隱式刷新 usage。
+- Usage window 的 `primary`／`secondary` 是位置 key，不是固定週期語意；必須以 `limit_window_seconds` 判斷 5h／weekly。實際 WHAM 可回 `primary_window = 604800`（weekly）且 `secondary_window = null`，不可固定把 primary 顯示為 5h、secondary 顯示為 weekly。
 - Login Codex modal 的 Close、Esc 與外部關閉都等同取消 login：pending 時先取消 backend session，完成後清除 sessionStorage、polling query 與 local mutation state，不能只把 modal 隱藏。
 - Browser OAuth login 從 mutation loading 開始就只能顯示一個 Login URL skeleton；UI 必須保留使用者剛選的 login method，不能等 status response 才判斷是否隱藏 verification-code skeleton。
 - Browser OAuth login details 只有 Login URL 單欄，不應顯示步驟編號 `2`；只有 device-code 的驗證碼＋URL 雙步驟流程使用 `1`／`2`。
@@ -1059,3 +1060,12 @@
 - 點焊鋼絲網線徑可能寫成 `6.0足`；此處「足」是線徑標示的一部分，parser仍應取得6.0mm，不得因此退回污染的normalized欄位。
 - ST網的4尺/2尺是網寬、100尺是網長，16目是每英吋網孔數；尺原文保留並分別正規化到sheetWidthMm/sheetLengthMm，不得把16目當長度或厚度。
 - 錏浪型網如 `8#(3.6)x38mm □孔`：8#是線號、3.6mm是線徑、38mm是38x38正方孔；parser以thickness=3.6、width/height=38保存，不得採污染的inch衍生值。
+- 方鐵的 query、Kg 密度計重、素材長度來源與「品名未標長度時不補6M」維持在 `方鐵.txt`；但採 direct `支`／`只`／`片` 價時，整支配料、裁切與餘料計算同樣適用 `長條料.txt` 通則。不得再把方鐵整體排除於長條料通則。
+- 方鐵就是實心方形截面的長條料（實心方管），完整適用 `長條料.txt` 通則；`方鐵.txt` 只保存 query、實心截面密度計重、素材長度來源／不補6M與無可用自動切工價等專屬例外。不得把方鐵描述成非長條料或只在 direct 支價時才適用長條料通則。
+- AI rules 只保留會改變模型判斷、查詢、選價、計算或輸出的指示。像 query ID 產生方式、backend 並行查詢、limit clamp、內部 filter、catalog mapping、source provenance、registry metadata 等 Codex/backend 實作契約應由 code 與 tests 保證，不得放進每次注入的 AI prompt 消耗 context。
+- OCR 已有同 file key data 時 runtime 與 AI 都不得自行重做；只有資料缺失／失敗，或使用者明確要求重做 OCR 時才可執行。AI OCR fallback 若已有可用資料也不能單獨成為重做理由。
+- OCR 的 `t／1` 明顯誤判與公式結果不一致要直接修正，並在同列備註保留原辨識值、修正值與原因；operand 本身不清楚時才保留未確認。
+- Chunk organizer 是獨立 subagent，但只需要共用 OCR 規則中的 organizer 核心（來源列、修正、備註、信心、chunk-local 表格），不需要主 Agent 的 OCR 重做條件、tool routing、final file-key 合併或報價規則。Organizer rule hash也應只根據這個子集，避免主流程文字改動使既有 chunks 失效。
+- `customer_data`、`manual_review`、`customer_quote` 是 AI 最終輸出表，不要求 backend 從 assistant Markdown 持久化；不得為了補 persistence 擴張本輪 backend scope。
+- OCR 共享判讀核心必須同時提供給 main AI OCR fallback 與 chunk organizer：旋正後閱讀、繁體中文，以及孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓的視覺判讀與計量。這些直接影響 AI 判斷，不得當成 backend-only 規則刪除。
+- OCR Markdown 的缺值一律留空；不使用「未確認」填滿缺值，也不得以「約、略、大約、約略」等近似詞代替判斷。每筆來源 row 必須獨立保留並帶頁數、項次、件號、圖號或其他可追溯代號；同 file key 只合併表格結構，不得合併或彙總資料列。

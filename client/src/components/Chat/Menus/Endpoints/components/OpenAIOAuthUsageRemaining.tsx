@@ -20,8 +20,17 @@ import {
   useOpenAIOAuthCodexLogin,
 } from './OpenAIOAuthCodexLogin';
 
-function getWindowLabel(window: OpenAIOAuthUsageWindow, localize: LocalizeFunction): string {
-  if (window.key === 'secondary' || window.limitWindowSeconds >= 604800) {
+function getWindowLabel(
+  window: OpenAIOAuthUsageWindow,
+  localize: LocalizeFunction,
+): string | undefined {
+  if (window.key === 'secondary') {
+    return localize('com_ui_weekly');
+  }
+  if (window.limitWindowSeconds === undefined) {
+    return undefined;
+  }
+  if (window.limitWindowSeconds >= 604800) {
     return localize('com_ui_weekly');
   }
 
@@ -34,14 +43,17 @@ function getWindowLabel(window: OpenAIOAuthUsageWindow, localize: LocalizeFuncti
   return `${minutes}m`;
 }
 
-function formatResetLabel(window: OpenAIOAuthUsageWindow): string {
+function formatResetLabel(window: OpenAIOAuthUsageWindow): string | undefined {
+  if (!window.resetAt) {
+    return undefined;
+  }
   const resetAt = new Date(window.resetAt);
   if (Number.isNaN(resetAt.getTime())) {
-    return '';
+    return undefined;
   }
 
   const options: Intl.DateTimeFormatOptions =
-    window.key === 'secondary' || window.limitWindowSeconds >= 86400
+    window.key === 'secondary' || (window.limitWindowSeconds ?? 0) >= 86400
       ? { month: 'short', day: 'numeric' }
       : { hour: 'numeric', minute: '2-digit' };
 
@@ -146,18 +158,23 @@ function UsageRows({
 
   return (
     <div className="space-y-1">
-      {windows.map((window) => (
-        <div
-          key={window.key}
-          className="flex items-center justify-between gap-3 text-xs text-text-secondary"
-        >
-          <span className="min-w-0 truncate">{getWindowLabel(window, localize)}</span>
-          <span className="flex shrink-0 items-center gap-2 tabular-nums">
-            <span>{Math.round(window.remainingPercent)}%</span>
-            <span>{formatResetLabel(window)}</span>
-          </span>
-        </div>
-      ))}
+      {windows.map((window) => {
+        const label = getWindowLabel(window, localize);
+        const resetLabel = formatResetLabel(window);
+
+        return (
+          <div
+            key={window.key}
+            className="flex items-center justify-between gap-3 text-xs text-text-secondary"
+          >
+            {label && <span className="min-w-0 truncate">{label}</span>}
+            <span className="flex shrink-0 items-center gap-2 tabular-nums">
+              <span>{Math.round(window.remainingPercent)}%</span>
+              {resetLabel && <span>{resetLabel}</span>}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

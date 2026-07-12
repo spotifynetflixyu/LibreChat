@@ -87,6 +87,68 @@ describe('OpenAI OAuth usage remaining service', () => {
     );
   });
 
+  it('keeps a weekly primary window when optional usage fields are missing', async () => {
+    const payload = {
+      rate_limit: {
+        primary_window: {
+          used_percent: 45,
+          limit_window_seconds: 604800,
+        },
+        secondary_window: null,
+      },
+    };
+    const result = await getOpenAIOAuthUsageRemaining({
+      cache: {},
+      fetch: jest.fn(async () => new Response(JSON.stringify(payload))),
+      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+      ttlMs: 60_000,
+    });
+
+    expect(result).toEqual({
+      provider: 'openai_oauth_responses',
+      source: 'chatgpt_wham_usage',
+      status: 'available',
+      fetchedAt: '2026-06-26T07:00:00.000Z',
+      cacheExpiresAt: '2026-06-26T07:01:00.000Z',
+      windows: [
+        {
+          key: 'primary',
+          usedPercent: 45,
+          remainingPercent: 55,
+          limitWindowSeconds: 604800,
+          limitReached: false,
+        },
+      ],
+    });
+  });
+
+  it('keeps the usable fields from a partial primary window', async () => {
+    const payload = {
+      rate_limit: {
+        primary_window: {
+          used_percent: 20,
+        },
+      },
+    };
+    const result = await getOpenAIOAuthUsageRemaining({
+      cache: {},
+      fetch: jest.fn(async () => new Response(JSON.stringify(payload))),
+      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('available');
+    expect(result.windows).toEqual([
+      {
+        key: 'primary',
+        usedPercent: 20,
+        remainingPercent: 80,
+        limitReached: false,
+      },
+    ]);
+  });
+
   it('uses the in-memory cache until the TTL expires', async () => {
     const cache = {};
     let nowMs = Date.parse('2026-06-26T07:00:00.000Z');

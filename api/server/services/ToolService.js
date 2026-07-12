@@ -52,6 +52,7 @@ const {
   parseOpenAIConfig,
   resolveOpenAIOAuthAuthFilePath,
   buildOcrOrganizerPrompt,
+  resolveOcrOrganizerRulesText,
   mergeOcrPreprocessingStateMarkdown,
   runOcrPreprocessingBatchPipeline,
   getPaddleOcrResultContent,
@@ -879,7 +880,8 @@ async function resolveSteelOcrPreprocessingRules() {
   try {
     const dependencies = createSteelContextDependencies();
     const otherRules = await dependencies.listOtherGlobalRules();
-    const ocrRulesText = (otherRules.ocrRules ?? []).map(renderSteelOcrRule).join('\n\n');
+    const renderedRules = (otherRules.ocrRules ?? []).map(renderSteelOcrRule).join('\n\n');
+    const ocrRulesText = resolveOcrOrganizerRulesText(renderedRules);
     const versionHash = crypto.createHash('sha256').update(ocrRulesText).digest('hex');
     return {
       ocrRulesText,

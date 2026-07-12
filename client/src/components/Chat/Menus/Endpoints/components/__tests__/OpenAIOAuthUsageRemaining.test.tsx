@@ -185,19 +185,19 @@ describe('OpenAIOAuthUsageRemaining', () => {
             key: 'primary',
             usedPercent: 20,
             remainingPercent: 80,
+            limitReached: false,
             limitWindowSeconds: 18000,
             resetAfterSeconds: 14685,
             resetAt: '2026-06-26T11:06:09.000Z',
-            limitReached: false,
           },
           {
             key: 'secondary',
             usedPercent: 45,
             remainingPercent: 55,
+            limitReached: false,
             limitWindowSeconds: 604800,
             resetAfterSeconds: 517868,
             resetAt: '2026-07-02T06:52:32.000Z',
-            limitReached: false,
           },
         ],
       },
@@ -212,6 +212,63 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.getByText('80%')).toBeInTheDocument();
     expect(screen.getByText('Weekly')).toBeInTheDocument();
     expect(screen.getByText('55%')).toBeInTheDocument();
+  });
+
+  it('renders the available parts of partial usage windows', () => {
+    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
+      data: {
+        status: 'available',
+        windows: [
+          {
+            key: 'primary',
+            usedPercent: 20,
+            remainingPercent: 80,
+            limitReached: false,
+          },
+          {
+            key: 'secondary',
+            usedPercent: 45,
+            remainingPercent: 55,
+            limitReached: false,
+          },
+        ],
+      },
+      isError: false,
+      isLoading: false,
+    });
+
+    renderOpenAIOAuthUsageRemaining();
+
+    expect(screen.getByText('80%')).toBeInTheDocument();
+    expect(screen.getByText('Weekly')).toBeInTheDocument();
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.queryByText('NaNm')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unavailable/)).not.toBeInTheDocument();
+  });
+
+  it('labels a seven-day primary window as weekly when secondary is missing', () => {
+    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
+      data: {
+        status: 'available',
+        windows: [
+          {
+            key: 'primary',
+            usedPercent: 45,
+            remainingPercent: 55,
+            limitWindowSeconds: 604800,
+            limitReached: false,
+          },
+        ],
+      },
+      isError: false,
+      isLoading: false,
+    });
+
+    renderOpenAIOAuthUsageRemaining();
+
+    expect(screen.getByText('Weekly')).toBeInTheDocument();
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.queryByText('5h')).not.toBeInTheDocument();
   });
 
   it('renders loading state', () => {

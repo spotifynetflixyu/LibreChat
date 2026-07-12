@@ -228,22 +228,14 @@ const priceLookupQuerySchema = z
     mode: z.literal('lookup').optional(),
     category: z
       .enum(priceCategories)
-      .describe(
-        'Required price category enum value. If the category is unknown, call category_discovery mode first instead of guessing.',
-      ),
-    subcategory: optionalFilterString.describe(
-      'Optional subcategory enum for the selected category. Empty means no subcategory filter.',
-    ),
-    material: tolerantStringSchema.describe(
-      'Optional tolerant material alias. Supports 黑鐵, 白鐵/ST/不鏽鋼, 2B, NO1, HL/沙面, BA/亮面, 鋁, 錏, 鋅, 鎢, or 塑膠.',
-    ),
-    unit: tolerantStringSchema.describe(
-      'Optional price unit. For 鐵板, Kg/kg stays Kg and every other supplied value becomes 片.',
-    ),
+      .describe('Known price category; use category_discovery when unknown.'),
+    subcategory: optionalFilterString.describe('Optional confirmed subcategory.'),
+    material: tolerantStringSchema.describe('Optional confirmed material or surface.'),
+    unit: tolerantStringSchema.describe('Optional requested price unit.'),
     thicknessMm: z.array(positiveDecimalString).min(1).max(20).optional(),
     stockLengthMm: stockLengthMmSchema
       .optional()
-      .describe('Optional OR filter for candidate stock lengths in millimeters.'),
+      .describe('Optional acceptable stock lengths in millimeters.'),
     erpItemCode: nonEmptyString.optional(),
     keyword: nonEmptyString.optional(),
     limit: priceQueryLimitSchema,
@@ -265,7 +257,7 @@ const priceCategoryDiscoveryQuerySchema = z
   .object({
     queryId: nonEmptyString.optional(),
     mode: z.literal('category_discovery'),
-    keyword: nonEmptyString.describe('Required keyword used to discover candidate categories.'),
+    keyword: nonEmptyString.describe('Keyword for discovering an unknown category.'),
     limit: priceQueryLimitSchema,
   })
   .strict();

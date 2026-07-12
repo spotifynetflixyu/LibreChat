@@ -395,22 +395,20 @@ async function readRuntimeRuleEvidence(
 ): Promise<RuntimeRuleReadback[]> {
   const requiredFragments = {
     'steel-default-agent-instruction': [
-      'OCR 確認閘門',
-      '不得查價',
-      '不得呼叫 `search_price_candidates`',
-      '每件孔數、總孔數',
-      '使用者在後續訊息明確確認 OCR 資料正確',
+      'OCR 與報價階段',
+      '本輪有 PDF／image 且需 OCR 時',
+      '該輪停止於確認階段',
+      '不查價',
+      '使用者後續明確確認或修正 OCR 資料後才進入報價',
     ],
     'steel-workbook-output-policy': [
-      '本輪有 PDF / image OCR 時，第一輪只輸出 OCR 結果確認表',
-      '第一張表必須是 `system_order` 逐項明細',
+      '報價階段第一張表必須是 `system_order` 逐項明細',
       '`型號`、`品名規格`、`材質編號`、`單位`、`數量`',
       '`單重`、`總數`、`單價`、`計價基準`、`公式編號`',
-      'A=1、B=2、C=3、D=4、E=5、F=6',
-      '孔、切工、折工、刀、開槽、切角、缺口、其他加工與外包加工',
-      '次輪報價必須把已確認 `總孔數` 加入獨立孔加工列',
-      '所有孔加工列數量合計必須等於已確認 `總孔數` 合計',
-      '最後一列必須是 `總計`',
+      '`計價基準`只填1至6（A至F）',
+      '孔、切工、折工、刀、開槽、切角、缺口與其他／外包加工',
+      '孔加工列數量合計必須等於已確認總孔數',
+      '最後一列為`總計`',
     ],
   };
   const slugs = Object.keys(requiredFragments);

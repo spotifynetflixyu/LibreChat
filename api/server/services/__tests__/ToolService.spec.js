@@ -477,7 +477,13 @@ describe('ToolService - Action Capability Gating', () => {
             title: 'Steel OCR',
             ruleType: 'ocr',
             ruleSections: ['file_ocr'],
-            prompt: 'OCR rules text',
+            prompt: [
+              'Main-agent OCR rerun policy',
+              '[ocr_organizer]',
+              'OCR rules text',
+              '[/ocr_organizer]',
+              'Final OCR file-key merge policy',
+            ].join('\n'),
             toolPolicy: {},
             outputPolicy: {},
           },
@@ -890,6 +896,10 @@ describe('ToolService - Action Capability Gating', () => {
         }),
       );
       const pipelineInput = mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0];
+      expect(pipelineInput.ocrRulesText).toContain('OCR rules text');
+      expect(pipelineInput.ocrRulesText).not.toContain('Main-agent OCR rerun policy');
+      expect(pipelineInput.ocrRulesText).not.toContain('Final OCR file-key merge policy');
+      expect(pipelineInput.ocrRulesText).not.toContain('[ocr_organizer]');
       const pipelineFileInput = pipelineInput.files[0];
       expect(typeof pipelineFileInput.artifacts.ensurePdfChunkArtifacts).toBe('function');
       expect(typeof pipelineInput.memory.capturePaddleOcrChunkResult).toBe('function');

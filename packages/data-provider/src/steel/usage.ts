@@ -12,9 +12,9 @@ export const openAIOAuthUsageWindowSchema = z.object({
   key: openAIOAuthUsageWindowKeySchema,
   usedPercent: z.number().min(0).max(100),
   remainingPercent: z.number().min(0).max(100),
-  limitWindowSeconds: z.number().int().positive(),
-  resetAfterSeconds: z.number().nonnegative(),
-  resetAt: z.string().datetime(),
+  limitWindowSeconds: z.number().int().positive().optional(),
+  resetAfterSeconds: z.number().nonnegative().optional(),
+  resetAt: z.string().datetime().optional(),
   limitReached: z.boolean(),
 });
 

@@ -1,0 +1,23 @@
+【一般加工類別規則】
+
+孔加工依 `孔.txt`；長條料自動切工依 `切工.txt`。本檔只處理其餘獨立加工價格列。
+
+## 加工/其他
+
+- 首查用 `category` + 可確認的 `subcategory` + 通用加工名稱／規格 keyword；專有加工名只有使用者明示時保留。
+- 依件數或 price row 指定基準 × direct 單價；非 Kg／M ratio 不可自行套用。
+
+## 加工/折工
+
+- 首查用 `category` + 可確認的 `subcategory` + 折型／厚度區間／長度級距 keyword。來源折型 glyph 必須原樣保留，不自行替換。
+- 折數、件數或 price row 指定基準 × direct 單價。
+
+## 加工/切工
+
+- 材料切工已由 `cuttingPrices` 返回時不得另查。只有訂單本身是獨立加工，且未自動返回時，才用 `category` + `subcategory` + 通用切割方式／厚度級距 keyword。
+- 刀數與加價依 `切工.txt`，不得重複計價。
+
+## 加工/開槽
+
+- 首查用 `category` + 可確認的 `subcategory`。H型鋼現有次類別依返回 product_name 選開槽／切斜；無法確認即人工複核，不重查。
+- 槽數、件數或 price row 指定基準 × direct 單價。

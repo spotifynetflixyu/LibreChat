@@ -46,8 +46,6 @@ describe('Steel tool registry', () => {
   it('describes and validates one-call grouped v4.2 price lookup', () => {
     const definition = getSteelToolDefinition('search_price_candidates');
 
-    expect(definition.description).toContain('without a top-level query-count cap');
-
     expect(
       definition.argsSchema.parse({
         queries: [
@@ -97,19 +95,15 @@ describe('Steel tool registry', () => {
     ).toThrow('Unrecognized key');
 
     expect(definition.description).toContain('one call');
-    expect(definition.description).toContain('multiple order lines');
-    expect(definition.description).toContain('input order');
-    expect(definition.description).toContain('q1, q2');
-    expect(definition.description).toContain('subcategory');
+    expect(definition.description).toContain('known order lines');
+    expect(definition.description).toContain('known category');
+    expect(definition.description).toContain('category_discovery');
     expect(definition.description).toContain('erpItemCode');
-    expect(definition.description).not.toContain('keyword, unit');
-    expect(definition.description).toContain('鋅');
-    expect(definition.description).toContain('cutting');
-    expect(definition.description).toContain('matched material candidate specifications');
-    expect(definition.description).toContain('no-match queries contribute no cutting rows');
-    expect(definition.description).toContain('default 30');
-    expect(definition.description).toContain('clamped to 100');
-    expect(definition.description).not.toContain('candidateQueries');
+    expect(definition.description).toContain('cuttingPrices');
+    expect(definition.description).not.toContain('q1');
+    expect(definition.description).not.toContain('clamped');
+    expect(definition.description).not.toContain('parallel');
+    expect(definition.description).not.toContain('no top-level');
   });
   it('uses AI-supplied keyword arrays for customer lookup only', () => {
     expect(
@@ -152,6 +146,10 @@ describe('Steel tool registry', () => {
     const definition = getSteelToolDefinitions().find((entry) => entry.name === 'read_markdown');
 
     expect(definition).toBeDefined();
+    expect(definition?.description).toContain('absent or incomplete in chat history');
+    expect(definition?.description).toContain('same-turn OCR already present');
+    expect(definition?.description).not.toContain('backend');
+    expect(definition?.description).not.toContain('merging all OCR preprocessing chunks');
     expect(definition?.usagePolicy).toEqual({
       requiresMissingMarkdownInHistory: true,
       forbiddenWhenHistoryHasNeededMarkdown: true,

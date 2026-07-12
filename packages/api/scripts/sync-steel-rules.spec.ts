@@ -8,6 +8,7 @@ type DryRunRule = {
   slug: string;
   sourceFile: string;
   factType: string;
+  promptLength: number;
 };
 
 type DryRunSummary = {
@@ -22,17 +23,23 @@ interface SyncClient {
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const oldRulesDir = path.join(repoRoot, 'docs/rules/鋼材規則');
-const categoryRulesDir = path.join(repoRoot, 'docs/rules/類別規則');
-const agentRulePath = path.join(repoRoot, 'docs/rules/agent規則.txt');
+const rulesDir = path.join(repoRoot, 'docs/rules');
+const categoryRulesDir = path.join(rulesDir, '類別規則');
+const agentRulePath = path.join(rulesDir, 'agent規則.txt');
 const guidePath = path.join(categoryRulesDir, '查價方式.txt');
 const plateRulePath = path.join(categoryRulesDir, '鐵板.txt');
-const longMaterialRulePath = path.join(categoryRulesDir, '長條料-切工.txt');
+const meshRulePath = path.join(categoryRulesDir, '網.txt');
+const squareBarRulePath = path.join(categoryRulesDir, '方鐵.txt');
+const longMaterialRulePath = path.join(categoryRulesDir, '長條料.txt');
+const cuttingRulePath = path.join(categoryRulesDir, '切工.txt');
+const outputRulePath = path.join(rulesDir, '輸出規則.txt');
+const ocrRulePath = path.join(rulesDir, '其他規則', 'OCR規則.txt');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
 
-const ruleSync = require('./sync-steel-rules.cjs') as {
+const ruleSync = jest.requireActual<{
   buildRules: (root: string) => object[];
   syncRules: (pool: { connect: () => Promise<SyncClient> }, rules: object[]) => Promise<object[]>;
-};
+}>('./sync-steel-rules.cjs');
 
 function readUtf8(filePath: string): string {
   return fs.readFileSync(filePath, 'utf8');
@@ -53,51 +60,28 @@ function listRuleFiles(directory: string): string[] {
     if (entry.isDirectory()) {
       return listRuleFiles(absolutePath);
     }
-    if (!entry.name.endsWith('.txt')) {
-      return [];
-    }
-    return [path.relative(repoRoot, absolutePath)];
+    return entry.name.endsWith('.txt') ? [path.relative(repoRoot, absolutePath)] : [];
   });
 }
 
-function parseLookupContract(guide: string): Record<string, string> {
-  const block = guide.match(
-    /\[category_lookup_contract\]\n([\s\S]*?)\n\[\/category_lookup_contract\]/u,
-  );
-  if (!block?.[1]) {
-    throw new Error('Missing category lookup contract metadata');
-  }
-
-  return Object.fromEntries(
-    block[1].split('\n').map((line) => {
-      const separator = line.indexOf('=');
-      if (separator < 1) {
-        throw new Error(`Invalid category lookup contract metadata: ${line}`);
-      }
-      return [line.slice(0, separator), line.slice(separator + 1)];
-    }),
-  );
-}
-
 function parseCategorySubcategories(guide: string): Map<string, string[]> {
-  const sections = guide.split(/^## /mu).slice(1);
-
   return new Map(
-    sections.map((section) => {
-      const [category, ...bodyLines] = section.split('\n');
-      const subcategoryLine = bodyLines
-        .join('\n')
-        .match(/^次類別=\[(.*)\];空白=unfiltered$/mu)?.[1];
-      if (!category || subcategoryLine === undefined) {
-        throw new Error(`Missing structured subcategory metadata for ${category ?? 'unknown'}`);
-      }
-      return [category, subcategoryLine ? subcategoryLine.split('|') : []];
-    }),
+    guide
+      .split(/^## /mu)
+      .slice(1)
+      .map((section) => {
+        const [category, ...bodyLines] = section.split('\n');
+        if (!category) {
+          throw new Error('Missing category heading');
+        }
+        const subcategories = bodyLines.join('\n').match(/^次類別=\[(.*)\]$/mu)?.[1];
+        return [category, subcategories ? subcategories.split('|') : []];
+      }),
   );
 }
 
-describe('Steel category rule sources', () => {
-  it('rolls back an interrupted rule publication on its dedicated connection', async () => {
+describe('Steel rule sources', () => {
+  it('rolls back an interrupted publication on its dedicated connection', async () => {
     const client: SyncClient = {
       query: jest.fn(async (sql: string) => {
         if (sql.includes('INSERT INTO steel.rules')) {
@@ -123,43 +107,49 @@ describe('Steel category rule sources', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects conflicting or unknown CLI flags before syncing', () => {
-    expect(() =>
-      execFileSync(process.execPath, [syncScript, '--dry-run', '--apply'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }),
-    ).toThrow();
-    expect(() =>
-      execFileSync(process.execPath, [syncScript, '--unknown'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }),
-    ).toThrow();
+  it('cleans the retired combined long-material source path during publication', async () => {
+    const client: SyncClient = {
+      query: jest.fn(async () => ({ rows: [] })),
+      release: jest.fn(),
+    };
+
+    await ruleSync.syncRules({ connect: async () => client }, ruleSync.buildRules(repoRoot));
+
+    const deleteCall = client.query.mock.calls.find(([sql]) =>
+      sql.includes('DELETE FROM steel.rules'),
+    );
+    const sourceFileRefs = (deleteCall?.[1] as [string[], string[]] | undefined)?.[0] ?? [];
+    expect(sourceFileRefs).toContain(
+      JSON.stringify([{ sourceFile: 'docs/rules/類別規則/長條料-切工.txt' }]),
+    );
+    expect(client.query.mock.calls.map(([sql]) => sql.trim())).toContain('COMMIT');
   });
 
-  it('uses only the renamed category rules directory in sync metadata', () => {
+  it('rejects conflicting or unknown CLI flags', () => {
+    for (const args of [['--dry-run', '--apply'], ['--unknown']]) {
+      expect(() =>
+        execFileSync(process.execPath, [syncScript, ...args], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: 'pipe',
+        }),
+      ).toThrow();
+    }
+  });
+
+  it('syncs every current local rule exactly once', () => {
     expect(fs.existsSync(oldRulesDir)).toBe(false);
-    expect(fs.existsSync(categoryRulesDir)).toBe(true);
+    expect(fs.existsSync(path.join(categoryRulesDir, '長條料-切工.txt'))).toBe(false);
 
     const summary = runDryRun();
-    const syncedCategoryFiles = summary.rules
-      .map((rule) => rule.sourceFile)
-      .filter((sourceFile) => sourceFile.startsWith('docs/rules/類別規則/'))
-      .sort();
-    const currentCategoryFiles = fs
-      .readdirSync(categoryRulesDir)
-      .filter((fileName) => fileName.endsWith('.txt'))
-      .map((fileName) => `docs/rules/類別規則/${fileName}`)
-      .sort();
-    const syncedSourceFiles = summary.rules.map((rule) => rule.sourceFile).sort();
-
+    const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
-    expect(syncedCategoryFiles).toEqual(currentCategoryFiles);
-    expect(syncedSourceFiles).toEqual(listRuleFiles(path.join(repoRoot, 'docs/rules')).sort());
-    expect(summary.rules.every((rule) => !rule.sourceFile.includes('鋼材規則'))).toBe(true);
+    expect(sourceFiles.sort()).toEqual(listRuleFiles(rulesDir).sort());
+    expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
+    expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
+    expect(summary.rules.filter((rule) => rule.factType === 'category_rule').at(-1)?.slug).toBe(
+      'steel_category_price_lookup_guide',
+    );
     expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
       'steel-default-agent-instruction',
       'steel-drawing-ocr-policy',
@@ -168,26 +158,20 @@ describe('Steel category rule sources', () => {
       'steel_quote_rules_c_type',
       'steel_quote_rules_h_beam',
       'steel_quote_rules_hole',
+      'steel_quote_rules_long_material',
       'steel_quote_rules_long_material_cutting',
       'steel_quote_rules_mesh',
+      'steel_quote_rules_other_categories',
       'steel_quote_rules_plate',
+      'steel_quote_rules_processing',
       'steel_quote_rules_square_bar',
     ]);
-    expect(
-      summary.rules
-        .filter((rule) => rule.sourceFile.startsWith('docs/rules/類別規則/'))
-        .map((rule) => rule.factType),
-    ).toEqual(Array(currentCategoryFiles.length).fill('category_rule'));
-    expect(summary.rules.filter((rule) => rule.factType === 'category_rule').at(-1)?.slug).toBe(
-      'steel_category_price_lookup_guide',
-    );
   });
 
-  it('exactly matches every category section subcategory metadata to the registry', () => {
-    const subcategoriesByCategory = parseCategorySubcategories(readUtf8(guidePath));
-
-    expect([...subcategoriesByCategory.keys()]).toEqual([...priceCategories]);
-    expect(Object.fromEntries(subcategoriesByCategory)).toEqual(
+  it('matches every category index entry to the registry', () => {
+    const actual = parseCategorySubcategories(readUtf8(guidePath));
+    expect([...actual.keys()]).toEqual([...priceCategories]);
+    expect(Object.fromEntries(actual)).toEqual(
       Object.fromEntries(
         priceCategories.map((category) => [
           category,
@@ -195,250 +179,130 @@ describe('Steel category rule sources', () => {
         ]),
       ),
     );
-    expect(subcategoriesByCategory.get('加工/其他')).toEqual([
-      '捲門/伸縮門',
-      'H型鋼',
-      '鐵板',
-      'C型鋼',
-      '圓管',
-      '扁鐵',
-      'L',
-      '條',
-      'U',
-      '角鐵',
-      '網',
-      '加工',
-      '管',
-    ]);
   });
 
-  it('keeps round-bar and tube guidance in the long-material cutting rule', () => {
-    const rule = readUtf8(longMaterialRulePath);
+  it('keeps only AI-actionable lookup behavior in the prompt', () => {
+    const guide = readUtf8(guidePath);
 
-    expect(rule).toContain('圓鐵（價格 `category: "圓條"`）query 規則');
-    expect(rule).toContain('未指定材質時預設 `material: "黑鐵"`');
-    expect(rule).toContain('一般圓鐵/圓條');
-    expect(rule).toContain('→ 中碳 → 磨光中碳');
-    expect(rule).toContain('英制分數正規化斜線與引號後保留原分數');
-    expect(rule).toContain('管類通用 query 規則');
-    expect(rule).toContain('素材長度不放 keyword');
-    expect(rule).toContain('圓管 query 規則');
-    expect(rule).toContain('圓管未指定材質時預設 `material: "黑鐵"`');
-    expect(rule).toContain('括號數字是單位重');
-    expect(rule).toContain('不得同時加入等價的英制與公制尺寸');
-    expect(rule).toContain('`連料`、`太陽片` 只有用戶明確指定時才查');
-    expect(rule).toContain('`ratio_only` 且來源 `unit: 支`');
+    expect(guide).not.toContain('[category_lookup_contract]');
+    expect(guide).not.toContain('query_id_generation=');
+    expect(guide).not.toContain('cutting_query_timing=');
+    expect(guide).not.toContain('query_limit_overflow=');
+    expect(guide).toContain('同一輪所有材料與加工放入一次 `queries`');
+    expect(guide).toContain('前次結果已達30');
+    expect(guide).toContain('材料切工只使用同次結果的 `cuttingPrices`');
+  });
+
+  it('keeps OCR rerun, correction, organizer, and final Markdown contracts concise', () => {
+    const rule = readUtf8(ocrRulePath);
+
+    expect(rule.match(/\[ocr_shared\]/gu)).toHaveLength(1);
+    expect(rule.match(/\[\/ocr_shared\]/gu)).toHaveLength(1);
+    expect(rule.match(/\[ocr_organizer\]/gu)).toHaveLength(1);
+    expect(rule.match(/\[\/ocr_organizer\]/gu)).toHaveLength(1);
+    expect(rule).toContain('只有資料缺失、失敗，或使用者明確要求重做 OCR 時');
+    expect(rule).toContain('明顯 OCR 誤判時直接修正');
+    expect(rule).toContain('公式結果與 operands 不一致時，直接以 operands 重算修正');
+    expect(rule).toContain('旋轉的文字或圖面先旋正再判讀');
+    expect(rule).toContain('中文一律保留繁體中文');
+    expect(rule).toContain('開槽連續邊長');
+    expect(rule).toContain('總孔數 = 每件孔數 × 件數');
+    expect(rule).toContain('每筆來源列保持獨立');
+    expect(rule).toContain('每列至少包含來源頁數、項次、件號、圖號或其他可追溯代號');
+    expect(rule).toContain('缺值一律留空');
+    expect(rule).toContain('禁止用「約、略、大約、約略」');
+    expect(rule).toContain('同一 file key 的所有 chunk 合併成一張');
+    expect(rule).not.toContain('OCR process 不得呼叫');
+  });
+
+  it('keeps system-order and customer-facing Markdown decisions without persistence prose', () => {
+    const rule = readUtf8(outputRulePath);
+
+    expect(rule).toContain('凡輸出的表都必須是完整最新版');
     expect(rule).toContain(
-      '{"category":"圓管","subcategory":"鋼管","material":"黑鐵","keyword":"4in"}',
+      '`型號`、`品名規格`、`材質編號`、`單位`、`數量`、`單重`、`總數`、`單價`、`計價基準`、`公式編號`、`厚度`、`寬度`、`長度`、`肚`、`類別`、`備註`',
     );
-    expect(rule).not.toContain('"keyword":"4in 101.6mm"');
+    expect(rule).toContain('孔加工列數量合計必須等於已確認總孔數');
+    expect(rule).toContain('不得顯示內部等級、成本、毛利、計價基準或tier');
+    expect(rule).not.toContain('沿用上一版');
+    expect(rule).not.toContain('逐列 merge');
   });
 
-  it('keeps the confirmed flat-bar lookup and stock-weight contract', () => {
-    const rule = readUtf8(longMaterialRulePath);
+  it('keeps general lookup policy out of the agent rule', () => {
+    const agent = readUtf8(agentRulePath);
     const guide = readUtf8(guidePath);
 
-    for (const source of [rule, guide]) {
-      expect(source).toContain('平鐵未指定材質時預設 `material: "黑鐵"`');
-      expect(source).toContain('keyword 只放寬x厚');
-      expect(source).toContain('括號數字是單位重');
-      expect(source).toContain('沒有素材長度時按6M');
-      expect(source).toContain('明確素材長度時優先');
-    }
-    expect(rule).toContain('{"category":"平鐵","material":"黑鐵","keyword":"50x6mm"}');
-    expect(rule).toContain('`ratio_only` 且來源 `unit: 支`');
-    expect(rule).toContain('有效 `unit: Kg`');
-    expect(rule).not.toContain('"keyword":"50x6mm 6M"');
-    expect(guide).not.toContain('"keyword":"50x6mm 6M"');
+    expect(agent).toContain('一律依 `查價方式.txt` 及對應類別規則');
+    expect(agent).not.toContain('每筆 `limit` 預設30');
+    expect(agent).not.toContain('ST50、SN400B');
+    expect(agent).not.toContain('`ratio_only` 來源 unit');
+    expect(guide).toContain('前次結果已達30');
+    expect(guide).toContain('ST50、SN400B');
+    expect(guide).toContain('候選有效 `unit`');
+    expect(guide).not.toContain('`ratio_only` 來源 unit');
   });
 
-  it('exposes the canonical grouped-query and pricing safety contract', () => {
-    expect(parseLookupContract(readUtf8(guidePath))).toEqual({
-      tool: 'search_price_candidates',
-      grouping: 'one_call_multiple_queries',
-      request_identity: 'query_order',
-      response_identity: 'queryResults_array_order',
-      query_id_generation: 'q{index+1}',
-      query_count_limit: 'unbounded',
-      query_limit_default: '30',
-      query_limit_max: '100',
-      query_limit_overflow: 'clamp',
-      query_filters:
-        'category|subcategory|material|unit|thicknessMm|stockLengthMm|erpItemCode|keyword|limit',
-      material_enum: '黑鐵|白鐵|2B|NO1|HL|BA|鋁|錏|鋅|鎢|塑膠',
-      cutting_query_timing: 'parallel_with_price_queries',
-      cutting_query_filter: 'category_contains_only',
-      cutting_query_limit: 'unbounded',
-      cutting_output: 'cuttingPrices',
-      cutting_output_filter: 'matched_candidate_spec',
-      cutting_no_match_output: 'omit',
-      ratio_quoteable_units: 'Kg|支_as_Kg|M',
-      ratio_unsupported_action: 'category_rule_pending',
-      missing_price_action: 'manual_review',
-      missing_thickness_selection: 'minimum_quoteable_thickness',
-      material_line_rounding: 'ceil_final_subtotal_twd',
-      empty_subcategory: 'unfiltered',
-    });
+  it('separates long-material lookup and cutting concerns', () => {
+    const longMaterial = readUtf8(longMaterialRulePath);
+    const cutting = readUtf8(cuttingRulePath);
+
+    expect(longMaterial).toContain('平鐵、角鐵、圓管、圓條、扁方管、方管、槽鐵');
+    expect(longMaterial).toContain('未標時固定6M');
+    expect(longMaterial).toContain('圓條（圓鐵）');
+    expect(longMaterial).toContain('`10x20x6M` 的6M是長度');
+    expect(longMaterial).not.toContain('切平行斜刀=基本價×2−10');
+    expect(cutting).toContain('切平行斜刀=基本價×2−10');
+    expect(cutting).toContain('一支母材切 n 支且無餘料：n−1刀');
+    expect(cutting).toContain('鐵板、鐵軌、方鐵不得借用其他類別切工');
+    expect(cutting).not.toContain('未標時固定6M');
+    expect(cutting).not.toContain('keyword 只用 `寬x高x壁厚`');
   });
 
-  it('uses category-based first lookups with data-backed category filters', () => {
-    const agentRule = readUtf8(agentRulePath);
-    const guide = readUtf8(guidePath);
-    const plateRule = readUtf8(plateRulePath);
+  it('keeps protected category-specific contracts in their owners', () => {
+    const plate = readUtf8(plateRulePath);
+    const mesh = readUtf8(meshRulePath);
+    const squareBar = readUtf8(squareBarRulePath);
 
-    expect(agentRule).toContain('首次 lookup 一律以已判定的 `category` 為基礎');
-    expect(agentRule).toContain('`erpItemCode` 是價格候選返回後才能取得的 DB 識別欄位');
-    expect(agentRule).toContain('不得作為首次 lookup 的前提');
-    expect(agentRule).toContain('只有 category 未知時');
-    expect(agentRule).toContain('ST50、SN400B 等表單代號只保留在判讀/備註');
-    expect(agentRule).toContain('首次查價的 keyword 只能使用 category/subcategory 尚未表達的');
-    expect(agentRule).toContain('某筆 query 已回傳規格精確且 `quoteEligible: true` 的可用候選後');
-    expect(agentRule).toContain('修正查詢只可包含前次 `no_match`');
-    expect(agentRule).toContain('不得原樣重送未修改的失敗 query');
-    expect(agentRule).toContain('只有前次候選數等於前次 limit');
-    expect(agentRule).toContain('整批沒有 query 數量上限');
-    expect(guide).toContain('首次 lookup 一律以已判定的 `category` 為基礎');
-    expect(guide).toContain('`erpItemCode` 是價格候選返回後才能取得的 DB 識別欄位');
-    expect(guide).toContain('不得作為首次 lookup 的前提');
-    expect(guide).toContain('整批沒有 query 數量上限');
-    expect(guide).toContain('ST50、SN400B 等表單代號只保留在判讀/備註');
-    expect(guide).toContain('首次查價的 keyword 只能使用 category/subcategory 尚未表達的');
-    expect(guide).toContain('某筆 query 已回傳規格精確且 `quoteEligible: true` 的可用候選後');
-    expect(guide).toContain('只有前次候選數等於前次 limit');
-    expect(plateRule).toContain(
-      '{"category":"加工/孔","subcategory":"鐵板","keyword":"鑽孔","thicknessMm":["15"]}',
+    expect(plate).toContain('雷射切割 → 四方切 → 版型切型');
+    expect(plate).toContain('鐵板沒有獨立自動切工價');
+    expect(mesh).toContain('不使用 `keyword`');
+    expect(mesh).toContain('不足一捲仍按一整丸');
+    expect(squareBar).toContain('candidate `density`');
+    expect(squareBar).toContain('品名沒有明示素材長度時不得自行補6M');
+    expect(readUtf8(longMaterialRulePath)).toContain('方鐵是實心方形截面的長條料（實心方管）');
+    expect(readUtf8(longMaterialRulePath)).toContain(
+      'query、Kg 實心截面計重、素材長度來源與不補6M例外依 `方鐵.txt`',
     );
-    expect(plateRule).not.toContain('erpItemCode');
+    expect(readUtf8(longMaterialRulePath)).not.toContain('## 方鐵');
   });
 
-  it('keeps every concrete category first lookup category-based and removes inferred ERP queries', () => {
-    const concreteGuide = readUtf8(guidePath).split('\n三、各類別\n')[1];
-    const concreteRuleFiles = fs
-      .readdirSync(categoryRulesDir)
-      .filter(
-        (fileName) =>
-          fileName.endsWith('.txt') &&
-          fileName !== '查價方式.txt' &&
-          fileName !== '長條料-切工.txt',
-      );
-
-    expect(concreteGuide).toBeDefined();
-    expect(concreteGuide).toContain('`keyword` 只放 `高度x翼寬x腹板厚/翼板厚`');
-    expect(concreteGuide).toContain('`stockLengthMm` array');
-    const queryLines =
-      concreteGuide?.split('\n').filter((line) => line.startsWith('- 查詢：')) ?? [];
-    expect(queryLines).toHaveLength(priceCategories.length);
-    for (const line of queryLines) {
-      expect(line).toContain('category');
-      expect(line).not.toContain('erpItemCode');
-    }
-    for (const fileName of concreteRuleFiles) {
-      const rule = readUtf8(path.join(categoryRulesDir, fileName));
-      if (fileName === 'H型鋼.txt') {
-        expect(rule).toContain('`keyword` 只放完整斷面');
-        expect(rule).toContain('不得再疊加 `thicknessMm`');
-        expect(rule).toContain('`< 6000mm`');
-        expect(rule).toContain('不得再以拆分尺寸、改寫分隔符、加入相同厚度或放大 limit');
-        expect(rule).toContain('H 型鋼材料 query 不另送 `加工/切工` query');
-        expect(rule).toContain('不得依 Ø24、Ø22 等不同孔徑拆成多筆 query');
-        expect(rule).toContain('KZZB11');
-        expect(rule).toContain('unitWeightValue ÷ (lengthMm ÷ 1000)');
+  it('does not duplicate substantive rule segments across files', () => {
+    const ownersBySegment = new Map<string, string[]>();
+    for (const sourceFile of listRuleFiles(rulesDir)) {
+      const segments = readUtf8(path.join(repoRoot, sourceFile))
+        .split(/[。；\n]/u)
+        .map((line) => line.trim().replace(/^[-*0-9.、\s]+/u, ''))
+        .filter(
+          (line) =>
+            Array.from(line).length >= 28 &&
+            !line.startsWith('次類別=[') &&
+            !line.startsWith('query_filters=') &&
+            !line.startsWith('|'),
+        );
+      for (const segment of new Set(segments)) {
+        ownersBySegment.set(segment, [...(ownersBySegment.get(segment) ?? []), sourceFile]);
       }
-      expect(rule).not.toContain('erpItemCode');
     }
-    expect(concreteGuide).toContain('`寬x厚` 規格 `keyword`');
-    expect(concreteGuide).toContain('`高度x寬度x腹厚/翼厚` keyword');
-    expect(concreteGuide).toContain('`邊長x壁厚` keyword');
-    expect(concreteGuide).toContain('圖面 `150x150x6` 必須轉成價格 keyword `150x6`');
-    expect(concreteGuide).toContain('此類沖孔價預設採 KZZB11 `沖孔加工`');
-    expect(concreteGuide).toContain('`寬x高x壁厚` keyword');
-    expect(concreteGuide).toContain('{"category":"網","subcategory":"菱形網","material":"錏"}');
-    expect(concreteGuide).toContain('一般首查只使用 `category: "網"`');
-    expect(concreteGuide).toContain('網類不新增額外query params，也不加keyword');
-    expect(concreteGuide).toContain('不使用 `unit` filter');
-    expect(concreteGuide).toContain('未指定limit時維持通用預設30');
-    expect(concreteGuide).toContain('不足一捲仍按一整丸');
-    expect(concreteGuide).toContain('無條件進位成整才');
-    expect(concreteGuide).toContain('{"category":"圓條","material":"黑鐵","keyword":"10mm"}');
-    expect(concreteGuide).toContain('{"category":"方鐵","material":"黑鐵","keyword":"25mm"}');
-    expect(concreteGuide).toContain('品名沒有素材長度不補6M');
-    expect(concreteGuide).toContain(
-      '重量kg = 邊長mm × 邊長mm × 成品長度mm × candidate density(g/cm³) ÷ 1,000,000',
-    );
-    expect(concreteGuide).toContain('黑鐵一般料、磨光料順序採價');
-    expect(concreteGuide).toContain('{"category":"平鐵","material":"黑鐵","keyword":"50x6mm"}');
-    expect(concreteGuide).toContain('{"category":"角鐵","material":"黑鐵","keyword":"50x6mm"}');
-    expect(concreteGuide).toContain('{"category":"角鐵","material":"黑鐵","keyword":"25x2.5"}');
-    expect(concreteGuide).toContain('12尺是明示產品長度');
-    expect(concreteGuide).toContain('塑膠腳套使用 `subcategory: "配件"`');
-    expect(concreteGuide).toContain('轉mm比對時只用四捨五入整數');
-    expect(concreteGuide).toContain(
-      '{"category":"槽鐵","material":"黑鐵","keyword":"200x90x8/13.5"}',
-    );
-    expect(concreteGuide).toContain('{"category":"槽鐵","material":"黑鐵","keyword":"50x25x5"}');
-    expect(concreteGuide).toContain('品名或訂單指定熱浸鍍時統一使用 `material: "錏"`');
-    expect(concreteGuide).toContain('query 不帶 `stockLengthMm`');
-    expect(concreteGuide).toContain(
-      '{"category":"圓管","subcategory":"鋼管","material":"黑鐵","keyword":"4in"}',
-    );
-    expect(concreteGuide).toContain('`鍍鋅B管 3/8x2.3(17)` 的 17 是6M每支17kg');
-    expect(concreteGuide).not.toContain('"keyword":"4in 101.6mm"');
-    expect(concreteGuide).toContain('{"category":"方管","material":"黑鐵","keyword":"100x6"}');
-    expect(concreteGuide).toContain('{"category":"方管","material":"黑鐵","keyword":"25x1.2"}');
-    expect(concreteGuide).toContain('`太陽片`、`雨棚架`、`沖孔窗`、`連料`、`U型`');
-    expect(concreteGuide).toContain('`11/4` 正規化為 `1 1/4`');
-    expect(concreteGuide).toContain('U型110x480等是成品變體');
-    expect(concreteGuide).toContain(
-      '{"category":"扁方管","material":"黑鐵","keyword":"100x200x4"}',
-    );
-    expect(concreteGuide).toContain('`10x20x6M` 的6M是素材長度');
-    expect(concreteGuide).toContain('{"category":"鐵軌","keyword":"12K"}');
-    expect(concreteGuide).toContain('{"category":"鐵軌","keyword":"12K","stockLengthMm":[10000]}');
-    expect(concreteGuide).toContain('鐵軌不可全類別預設6M');
-    expect(concreteGuide).toContain('`6K鐵軌 6M(38)`應使用38kg');
-    expect(concreteGuide).toContain('{"category":"鋼筋","keyword":"9mm"}');
-    expect(concreteGuide).toContain('現有鋼筋rows全部為no_price');
-    expect(concreteGuide).toContain('不得預設或傳入黑鐵');
-    expect(concreteGuide).toContain('鐵板沒有獨立自動切工價');
+
+    expect(
+      [...ownersBySegment.entries()].filter(([, sourceFiles]) => sourceFiles.length > 1),
+    ).toEqual([]);
   });
 
-  it('keeps the mesh parser, all-candidate query, and whole-unit pricing contract', () => {
-    const rule = readUtf8(path.join(categoryRulesDir, '網.txt'));
-
-    expect(rule).toContain('不使用 `keyword`');
-    expect(rule).toContain('不使用 `unit` filter');
-    expect(rule).toContain('未指定 `limit` 時維持通用預設30');
-    expect(rule).toContain('尾端(6)是每捆／束6片包裝數，不是kg或單重');
-    expect(rule).toContain('來源欄位若把6誤寫為單重，parser必須清除');
-    expect(rule).toContain('不足一捲仍按一整丸');
-    expect(rule).toContain('無條件進位成整才');
-  });
-
-  it('keeps square-bar rules outside the long-material rule', () => {
-    const squareBarRule = readUtf8(path.join(categoryRulesDir, '方鐵.txt'));
-    const longMaterialRule = readUtf8(longMaterialRulePath);
-
-    expect(squareBarRule).toContain('{"category":"方鐵","material":"黑鐵","keyword":"25mm"}');
-    expect(squareBarRule).toContain(
-      '重量kg = 邊長mm × 邊長mm × 成品長度mm × density(g/cm³) ÷ 1,000,000',
-    );
-    expect(squareBarRule).toContain('不加unit filter');
-    expect(squareBarRule).toContain('採支row時');
-    expect(longMaterialRule).not.toContain('- 方鐵：');
-    expect(longMaterialRule).not.toContain('\n方鐵：\n');
-  });
-
-  it('uses only generic first-lookup keywords unless the user supplied a proprietary term', () => {
-    const agentRule = readUtf8(agentRulePath);
-    const guide = readUtf8(guidePath);
-    const allRules = listRuleFiles(path.join(repoRoot, 'docs/rules'))
-      .map((filePath) => readUtf8(path.join(repoRoot, filePath)))
+  it('uses only generic first-lookup keywords unless supplied by the user', () => {
+    const allRules = listRuleFiles(rulesDir)
+      .map((sourceFile) => readUtf8(path.join(repoRoot, sourceFile)))
       .join('\n');
-
-    expect(agentRule).toContain('首次查價的 keyword 只能使用 category/subcategory 尚未表達的');
-    expect(guide).toContain('首次查價的 keyword 只能使用 category/subcategory 尚未表達的');
-    expect(agentRule).toContain('只有用戶明確指定專有名詞時，才可原樣保留於 keyword');
-    expect(guide).toContain('只有用戶明確指定專有名詞時，才可原樣保留於 keyword');
     for (const keyword of [
       '黑鐵平鐵50 50x6mm',
       '黑角鐵50 50x6mm',
@@ -447,15 +311,6 @@ describe('Steel category rule sources', () => {
       '黑鐵扁方管 40x80x3',
       '磨光圓鐵 10mm',
       '磨光方鐵 25mm',
-      '平鐵 50x6mm',
-      '角鐵 50x6mm',
-      '方管 100x6',
-      '扁方管 40x80x3',
-      '圓鐵 10mm',
-      '方鐵 25mm',
-      '槽鐵 200x90x8/13.5',
-      '工字鐵 200x100x7/10',
-      '鋼管 4in 101.6mm',
     ]) {
       expect(allRules).not.toContain(`"keyword":"${keyword}"`);
     }

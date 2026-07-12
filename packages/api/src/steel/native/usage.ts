@@ -85,8 +85,9 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-function toIsoFromEpochSeconds(value: number): string {
-  return new Date(value * 1000).toISOString();
+function toIsoFromEpochSeconds(value: number): string | undefined {
+  const date = new Date(value * 1000);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 function createUnavailableResponse({
@@ -123,22 +124,19 @@ function parseUsageWindow({
   const limitWindowSeconds = getNumber(raw, 'limit_window_seconds');
   const resetAfterSeconds = getNumber(raw, 'reset_after_seconds');
   const resetAt = getNumber(raw, 'reset_at');
-  if (
-    usedPercent === undefined ||
-    limitWindowSeconds === undefined ||
-    resetAfterSeconds === undefined ||
-    resetAt === undefined
-  ) {
+  if (usedPercent === undefined) {
     return undefined;
   }
+
+  const normalizedResetAt = resetAt === undefined ? undefined : toIsoFromEpochSeconds(resetAt);
 
   return {
     key,
     usedPercent: clampPercent(usedPercent),
     remainingPercent: clampPercent(100 - usedPercent),
-    limitWindowSeconds,
-    resetAfterSeconds,
-    resetAt: toIsoFromEpochSeconds(resetAt),
+    ...(limitWindowSeconds !== undefined ? { limitWindowSeconds } : {}),
+    ...(resetAfterSeconds !== undefined ? { resetAfterSeconds } : {}),
+    ...(normalizedResetAt ? { resetAt: normalizedResetAt } : {}),
     limitReached,
   };
 }
