@@ -1,3 +1,28 @@
+# Active: OAuth token UI 單一登入動作 - 2026-07-12
+
+Goal: OAuth token 已登入時只顯示 Logout；未登入／登入失敗時只顯示 Login，
+不再同時顯示 Refresh token、Login、Logout。
+
+- [x] 以 token status 的 `available` 作為已登入判斷；Login／Logout 以條件式二選一 render，禁止用 disabled 隱藏另一狀態。
+- [x] 先更新 OAuth token UI regression tests，覆蓋已登入只有 Logout、未登入只有 Login，並確認另一按鈕不在 DOM。
+- [x] 最小化調整 `OpenAIOAuthUsageRemaining` actions rendering，不改 provider transport。
+- [x] Login Codex 選定登入方式後顯示 Back；返回時取消 pending backend session，再重設 local session、polling query 與複製碼狀態。
+- [x] 新增 device-code 詳情頁返回方式選擇、session cancellation 與 login timeout regression tests。
+- [x] 從 `client/` 執行 focused Jest、targeted type/lint 檢查與 `git diff --check`。
+- [x] 補上 review 與驗證結果。
+
+Review:
+
+- OAuth token actions 現在互斥 render：token available 且沒有 login failure 時只顯示 Logout；未登入、登入失敗或 `login_timeout` 時只顯示 Login。另一個 action 不在 DOM，Refresh token action 也已移除。
+- Login Codex details view 新增 Back。pending session 會先透過 `account/login/cancel` 對應的 admin API 取消，再清除 sessionStorage、polling query、mutation state 與 copied code，回到 device-code/browser 選擇。
+- Browser login details/loading 只有一個無步驟編號的 Login URL 欄位／skeleton；device-code 才顯示 1／2。Close、Esc 與外部關閉同樣會取消 pending login 並清除 session。
+- 登入後 OAuth token actions 顯示 Refresh token + Logout；token refresh 只更新 token query。Usage remaining 標題右上新增獨立 Refresh icon button，只呼叫 usage query refetch。
+- Logout 先開確認 modal，Confirm 後 modal 維持開啟並依序顯示 Logging out／Logged out 或 Logout failed；執行中不可關閉，完成後由使用者自行 Close。
+- Login／Logout modal 與 mutation state 已提升到 ModelSelector 的持久 provider sibling；關閉 model list、unmount Usage rows 時 modal 仍維持顯示與原狀態。
+- `login_timeout` 會優先覆蓋可能過期的 available token snapshot，避免錯誤顯示 Logout。
+- 驗證通過：client OAuth UI 13 tests、client Steel query 2 tests、packages/api token/admin 13 tests、api Steel routes 21 tests、data-provider build、packages/api build、client typecheck、targeted ESLint 與 `git diff --check`。
+- packages/api 全量 `tsc --noEmit` 仍有 68 個既有錯誤；本次 packages/api bundler build 通過，錯誤清單未指向本次新增 cancel/login UI code。
+
 # Active: Structured-first category lookup guidance - 2026-07-11
 
 Goal: remove keyword-led examples from every concrete Steel category rule so
@@ -9365,3 +9390,117 @@ Review:
   Jest 共 7 suites / 59 tests 通過，targeted ESLint 與 `git diff --check` 通過。
 - 使用獨立空白 `CODEX_HOME` 對本機 Codex 0.143 app-server 做 live smoke：
   initialize 與 `account/read` structured request 成功，沒有讀寫目前登入帳號。
+# Active: Codex GPT-5.6 SOL agent roles - 2026-07-12
+
+Goal: configure the global Codex Explore, general-purpose, and oracle roles to
+use only `gpt-5.6-sol`, with the requested reasoning and sandbox boundaries.
+
+- [x] Read the project/global instructions and relevant lessons.
+- [x] Inspect the installed Codex version, global config, role discovery schema,
+      existing role files, and global `AGENTS.md` routing guidance.
+- [x] Obtain user confirmation for the exact implementation plan.
+- [x] Create `/Users/neven/.codex/agents/explore.toml` with low reasoning and
+      read-only sandbox mode.
+- [x] Create `/Users/neven/.codex/agents/general-purpose.toml` with medium
+      reasoning and the requested bounded-work instructions.
+- [x] Create `/Users/neven/.codex/agents/oracle.toml` with high reasoning and
+      read-only sandbox mode.
+- [x] Add the requested role-selection guidance to
+      `/Users/neven/.codex/AGENTS.md`.
+- [x] Parse/validate every TOML file, inspect effective Codex configuration,
+      run a focused role-discovery smoke test, and record review evidence here.
+
+Implementation note:
+
+- The installed Codex is `0.143.0`; it recursively auto-discovers `.toml` role
+  files under the global `/Users/neven/.codex/agents/` directory. Explicit
+  `[agents.<role>]` registration is unnecessary for these canonical paths.
+- Existing `/Users/neven/.codex/config.toml` already sets the main agent model
+  to `gpt-5.6-sol` with medium reasoning and enables multi-agent support.
+
+Review:
+
+- Python `tomllib` parsed all three role files and verified the exact shared
+  model, low/medium/high reasoning levels, and read-only Explore/oracle modes.
+- Codex Desktop's bundled CLI `0.144.0-alpha.4` successfully ran all three
+  read-only discovery smokes with `gpt-5.6-sol`; each returned the canonical
+  `/Users/neven/Documents/projects/LibreChat/CLAUDE.md` path.
+- The Homebrew CLI `0.143.0` loads the configuration but cannot run this model;
+  the service requires a newer Codex version. No unrelated CLI/config upgrade
+  was made as part of this scoped setup.
+- Strict-config validation is currently blocked by the pre-existing unrelated
+  `mcp_servers.openaiDeveloperDocs.cli_auth_credentials_store` field. Normal
+  config loading and the bundled-runtime discovery smokes passed.
+
+# Active: 產品價格 v4.3 分類、命名與計價更新 - 2026-07-12
+
+Goal: 以 `docs/products_db_v4.3.xlsx` 取代 v4.2 價格來源，讓分類／次分類、
+加工品名尺寸解析與管條計價契約在 importer、runtime rules、tests 與 dev Supabase
+保持一致，並以 live readback 證明新資料可查可算。
+
+- [x] 盤點 v4.3 workbook 的 sheets、headers、6761 筆 reconciliation、分類／次分類差異與異常列。
+- [x] 鎖定更新 identity：以 `erp_item_code` 直接覆蓋；category/subcategory/material 採 v4.3 workbook 原值，不自行猜測搬類。
+- [x] 先新增 v4.3 default source、taxonomy 與加工厚度／寬度／長度／直徑／形狀 regression，確認現況 red。
+- [x] 最小化更新 pricing parser/importer、category registry、lookup/計價 rules；DB 欄位未新增，僅建立 category/source constraint migrations。
+- [x] 鎖定管、條單位契約：`Kg` 直接按重量計價；`支` 預設整支、不切清，材料整支價另加適用切工加工費。
+- [x] 執行 importer dry-run、focused Jest、packages/api build 與 `git diff --check`，不執行 Prettier。
+- [x] 僅套用 dev Supabase 價格資料與 reviewed rules，核對資料筆數、分類、代表性命名列與查價結果。
+- [x] 在本節補上 review、live hashes/counts、未決資料品質項目與部署邊界。
+
+Initial evidence:
+
+- v4.3 `products_db_ready` 仍為 39 欄、6761 rows；現行 importer 第一個失敗為
+  `category=其他, subcategory=圓條`，需依使用者 taxonomy 處理，不能只把 registry
+  任意放寬。
+- v4.3 已把主要 `圓鐵` 85 rows 改成 `圓條`，並把原 `節竹鐵` 2 rows 改成
+  `鋼筋`；同時仍有一筆 `T型鋼` 及若干 composite/legacy subcategory，需逐筆確認。
+- 使用者已明確指定依 `erp_item_code` 直接覆蓋，因此 `T型鋼`、composite/legacy
+  subcategory 與 `其他 > 圓條` 均照 workbook 原值保留；程式只更新可接受的來源契約，
+  不改寫這些列。
+- 指定加工範例目前多數只有品名文字，結構欄未完整承載尺寸：角鐵沖孔沒有
+  width/thickness/length，雷射切割與折工沒有 thickness；實作需避免把孔徑誤判為板厚。
+
+Review:
+
+- Importer 預設來源已改為 `products_db_v4.3.xlsx` / `product_price_v4_3`，並由
+  `TRUNCATE + INSERT` 改成以 `erp_item_code` 執行 transaction-safe
+  `INSERT ... ON CONFLICT DO UPDATE`。Dry-run/apply 均核對 6,761 rows、0 duplicate、
+  4,880 confirmed、230 ratio_only、1,651 no_price。
+- Category enum 先完成並通過測試/build，再執行匯入；live canonical constraint 現在
+  只接受 v4.3 dataset 與新版 categories。Dev readback 為 85 筆 `圓條`、2 筆
+  `鋼筋`、0 筆 `圓鐵`，6,761 個 ERP code 全部唯一。
+- 加工品名 parser 已補齊代表性結構：DZA0345 厚度 1-4.5、ELH020 寬 51／厚
+  3.5／長 3000／單沖、KADS06 `hole:3/4|shape:□`、BKZZM2 2mm、BLZZM3
+  3mm、DNB2002 12-30mm、BKZA010 0.8-2mm、EQC0280 直徑 28mm；live DB
+  readback 與 regression 一致。
+- 查價 tool 對圓條與管類 candidate 額外回傳 unit-driven billing policy：`Kg ->
+  weight`、`支/只 -> whole_stock + add_when_cut`。圓條目前沒有可用基本切工價，
+  因此維持人工複核，不借用鐵管價；未裁切整支為 0 刀，不加切工費。
+- Reviewed rules 已同步 dev DB；主要 SHA：agent `32111b13...e2e5e`、孔
+  `8d8c3760...47d52`、長管切工 `28c12e34...b29c`、查價方式
+  `250f697b...aea7`。兩筆 migration `20260712080613`、`20260712081224`
+  均已套用並 readback。
+- 最終 focused Jest 8 suites / 121 tests、packages/api build、import/rule dry-run、
+  live DB readback、`git diff --check` 通過；未執行 Prettier。Supabase advisors 僅回報
+  既有 mutable search_path 與 public extension warnings，本次未新增 advisor issue。
+- 本輪只更新 dev Supabase；production code/data/rules 尚未部署或同步。
+# Active: OAuth token UI 單一登入動作 - 2026-07-12
+
+Goal: OAuth token 已登入時只顯示 Logout；未登入／登入失敗時只顯示 Login，
+不再同時顯示 Refresh token、Login、Logout。
+
+- [ ] 以 token status 的 `available` 作為已登入判斷，鎖定 loading／mutation 中的按鈕行為。
+- [ ] 先更新 OAuth token UI regression tests，覆蓋已登入只顯示 Logout、未登入只顯示 Login。
+- [ ] 最小化調整 `OpenAIOAuthUsageRemaining` actions rendering，不改 login modal、provider transport 或 backend API。
+- [ ] 從 `client/` 執行 focused Jest、targeted type/lint 檢查與 `git diff --check`。
+- [ ] 補上 review 與驗證結果。
+# Active: OAuth token UI 單一登入動作 - 2026-07-12
+
+Goal: OAuth token 已登入時只顯示 Logout；未登入／登入失敗時只顯示 Login，
+不再同時顯示 Refresh token、Login、Logout。
+
+- [ ] 以 token status 的 `available` 作為已登入判斷，鎖定 loading／mutation 中的按鈕行為。
+- [ ] 先更新 OAuth token UI regression tests，覆蓋已登入只顯示 Logout、未登入只顯示 Login。
+- [ ] 最小化調整 `OpenAIOAuthUsageRemaining` actions rendering，不改 login modal、provider transport 或 backend API。
+- [ ] 從 `client/` 執行 focused Jest、targeted type/lint 檢查與 `git diff --check`。
+- [ ] 補上 review 與驗證結果。

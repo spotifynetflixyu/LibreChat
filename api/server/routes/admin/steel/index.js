@@ -13,6 +13,7 @@ router.get('/ai/oauth-token', handlers.readOpenAIOAuthTokenStatus);
 router.post('/ai/oauth-token/refresh', handlers.refreshOpenAIOAuthToken);
 router.post('/ai/oauth-token/login', handlers.startOpenAIOAuthCodexLogin);
 router.get('/ai/oauth-token/login/:sessionId', handlers.readOpenAIOAuthCodexLoginStatus);
+router.post('/ai/oauth-token/login/:sessionId/cancel', handlers.cancelOpenAIOAuthCodexLogin);
 router.post('/ai/oauth-token/logout', handlers.logoutOpenAIOAuthToken);
 router.post('/ai/capability-smoke', handlers.requestCapabilitySmoke);
 

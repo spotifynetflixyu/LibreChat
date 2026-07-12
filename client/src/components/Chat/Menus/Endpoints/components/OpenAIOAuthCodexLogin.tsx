@@ -1,11 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
-import { Check, Copy, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink } from 'lucide-react';
 import {
   Button,
   Input,
   Skeleton,
   OGDialog,
-  OGDialogClose,
   OGDialogContent,
   OGDialogTitle,
 } from '@librechat/client';
@@ -16,7 +15,9 @@ import type {
   OpenAIOAuthTokenLoginStatus,
 } from 'librechat-data-provider';
 import {
+  useCancelOpenAIOAuthCodexLoginMutation,
   useGetOpenAIOAuthCodexLoginStatusQuery,
+  useLogoutOpenAIOAuthCodexMutation,
   useStartOpenAIOAuthCodexLoginMutation,
 } from '~/data-provider';
 import type { LocalizeFunction } from '~/common';
@@ -27,9 +28,20 @@ type OpenAIOAuthCodexLoginContextValue = {
   dialogOpen: boolean;
   loginBusy: boolean;
   loginIsLoading: boolean;
+  loginMethod?: OpenAIOAuthTokenLoginMethod;
   loginPollingIsError: boolean;
   loginStatus?: OpenAIOAuthTokenLoginStatus;
+  logoutDialogOpen: boolean;
+  logoutFailed: boolean;
+  logoutIsLoading: boolean;
+  logoutSucceeded: boolean;
+  closeCodexLogin: () => void;
+  closeCodexLogout: () => void;
+  confirmCodexLogout: () => void;
   openCodexLogin: () => void;
+  openCodexLogout: () => void;
+  returnToLoginMethods: () => void;
+  returningToLoginMethods: boolean;
   resetCodexLogin: () => void;
   setDialogOpen: (open: boolean) => void;
   startCodexLogin: (method: OpenAIOAuthTokenLoginMethod) => void;
@@ -299,10 +311,16 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
     isAdmin ? readStoredCodexLoginSessionId() : undefined,
   );
   const [dialogOpen, setDialogOpen] = useState(Boolean(loginSessionId));
+  const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
   const [loginStartErrorStatus, setLoginStartErrorStatus] = useState<
     OpenAIOAuthTokenLoginStatus | undefined
   >(undefined);
+  const [selectedLoginMethod, setSelectedLoginMethod] = useState<
+    OpenAIOAuthTokenLoginMethod | undefined
+  >(undefined);
   const loginMutation = useStartOpenAIOAuthCodexLoginMutation();
+  const cancelLoginMutation = useCancelOpenAIOAuthCodexLoginMutation();
+  const logoutMutation = useLogoutOpenAIOAuthCodexMutation();
   const loginStatusQuery = useGetOpenAIOAuthCodexLoginStatusQuery(loginSessionId, {
     enabled: isAdmin && Boolean(loginSessionId),
     refetchInterval: (data) => (data?.status === 'pending' ? 2_000 : false),
@@ -319,6 +337,7 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
       setLoginSessionId(undefined);
       setDialogOpen(false);
       setLoginStartErrorStatus(undefined);
+      setSelectedLoginMethod(undefined);
       return;
     }
 
@@ -364,6 +383,7 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
     removeStoredCodexLoginSessionId();
     setLoginSessionId(undefined);
     setLoginStartErrorStatus(undefined);
+    setSelectedLoginMethod(undefined);
     loginMutation.reset();
     queryClient.removeQueries([QueryKeys.openAIOAuthCodexLoginStatus]);
   }, [loginMutation, queryClient]);
@@ -377,6 +397,41 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
     resetCodexLogin();
   }, [loginSessionId, loginStatus?.status, resetCodexLogin]);
 
+  const returnToLoginMethods = useCallback(() => {
+    if (!loginSessionId || loginStatus?.status !== 'pending') {
+      resetCodexLogin();
+      return;
+    }
+    cancelLoginMutation.mutate(loginSessionId, { onSuccess: resetCodexLogin });
+  }, [cancelLoginMutation, loginSessionId, loginStatus?.status, resetCodexLogin]);
+
+  const closeCodexLogin = useCallback(() => {
+    const closeDialog = () => {
+      resetCodexLogin();
+      setDialogOpen(false);
+    };
+    if (!loginSessionId || loginStatus?.status !== 'pending') {
+      closeDialog();
+      return;
+    }
+    cancelLoginMutation.mutate(loginSessionId, { onSuccess: closeDialog });
+  }, [cancelLoginMutation, loginSessionId, loginStatus?.status, resetCodexLogin]);
+
+  const openCodexLogout = useCallback(() => {
+    logoutMutation.reset();
+    setLogoutDialogOpen(true);
+  }, [logoutMutation]);
+
+  const closeCodexLogout = useCallback(() => {
+    if (!logoutMutation.isLoading) {
+      setLogoutDialogOpen(false);
+    }
+  }, [logoutMutation.isLoading]);
+
+  const confirmCodexLogout = useCallback(() => {
+    logoutMutation.mutate(undefined, { onSuccess: resetCodexLogin });
+  }, [logoutMutation, resetCodexLogin]);
+
   const startCodexLogin = useCallback(
     (method: OpenAIOAuthTokenLoginMethod) => {
       setDialogOpen(true);
@@ -387,6 +442,7 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
       removeStoredCodexLoginSessionId();
       setLoginSessionId(undefined);
       setLoginStartErrorStatus(undefined);
+      setSelectedLoginMethod(method);
       loginMutation.mutate(method, {
         onSuccess: (data) => {
           if (data.sessionId) {
@@ -413,11 +469,24 @@ export function OpenAIOAuthCodexLoginProvider({ children }: { children: ReactNod
     <OpenAIOAuthCodexLoginContext.Provider
       value={{
         dialogOpen,
+        closeCodexLogin,
         loginBusy,
         loginIsLoading: loginMutation.isLoading,
+        loginMethod: loginStatus?.method ?? selectedLoginMethod,
         loginPollingIsError: loginStatusQuery.isError,
         loginStatus,
+        logoutDialogOpen,
+        logoutFailed:
+          logoutMutation.isError ||
+          (logoutMutation.isSuccess && logoutMutation.data?.status !== 'succeeded'),
+        logoutIsLoading: logoutMutation.isLoading,
+        logoutSucceeded: logoutMutation.isSuccess && logoutMutation.data?.status === 'succeeded',
         openCodexLogin,
+        openCodexLogout,
+        closeCodexLogout,
+        confirmCodexLogout,
+        returnToLoginMethods,
+        returningToLoginMethods: cancelLoginMutation.isLoading,
         resetCodexLogin,
         setDialogOpen,
         startCodexLogin,
@@ -433,9 +502,13 @@ export function OpenAIOAuthCodexLoginDialog() {
   const [copiedCode, setCopiedCode] = useState<string | undefined>(undefined);
   const {
     dialogOpen,
+    closeCodexLogin,
     loginIsLoading,
+    loginMethod,
     loginPollingIsError,
     loginStatus,
+    returnToLoginMethods,
+    returningToLoginMethods,
     setDialogOpen,
     startCodexLogin,
   } = useOpenAIOAuthCodexLogin();
@@ -519,7 +592,10 @@ export function OpenAIOAuthCodexLoginDialog() {
   }
 
   return (
-    <OGDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+    <OGDialog
+      open={dialogOpen}
+      onOpenChange={(open) => (open ? setDialogOpen(true) : closeCodexLogin())}
+    >
       <OGDialogContent
         showCloseButton={false}
         className="w-11/12 max-w-md overflow-hidden rounded-2xl border-border-light bg-surface-primary text-text-primary"
@@ -541,11 +617,9 @@ export function OpenAIOAuthCodexLoginDialog() {
               {localize('com_ui_device_code_login_recommended')}
             </div>
             <div className="flex justify-end pt-2">
-              <OGDialogClose asChild>
-                <Button type="button" variant="outline">
-                  {localize('com_ui_close')}
-                </Button>
-              </OGDialogClose>
+              <Button type="button" variant="outline" onClick={closeCodexLogin}>
+                {localize('com_ui_close')}
+              </Button>
             </div>
           </div>
         ) : (
@@ -560,7 +634,7 @@ export function OpenAIOAuthCodexLoginDialog() {
                 )
               }
             />
-            {loginStatus?.method !== 'browser' && (
+            {loginMethod !== 'browser' && (
               <div className="rounded-lg border border-border-light p-3">
                 <div className="flex items-center gap-2 text-xs text-text-secondary">
                   <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
@@ -582,22 +656,94 @@ export function OpenAIOAuthCodexLoginDialog() {
             )}
             <div className="rounded-lg border border-border-light p-3">
               <div className="flex items-center gap-2 text-xs text-text-secondary">
-                <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
-                  2
-                </span>
+                {loginMethod !== 'browser' && (
+                  <span className="flex size-5 items-center justify-center rounded-full border border-border-light text-[11px]">
+                    2
+                  </span>
+                )}
                 <span>{localize('com_ui_login_url')}</span>
               </div>
               {loginUrlContent}
             </div>
-            <div className="flex justify-end pt-2">
-              <OGDialogClose asChild>
-                <Button type="button" variant="outline">
-                  {localize('com_ui_close')}
-                </Button>
-              </OGDialogClose>
+            <div className="flex justify-between gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={returningToLoginMethods}
+                onClick={() => {
+                  setCopiedCode(undefined);
+                  returnToLoginMethods();
+                }}
+              >
+                <ArrowLeft className="size-3.5" aria-hidden="true" />
+                {localize('com_ui_back')}
+              </Button>
+              <Button type="button" variant="outline" onClick={closeCodexLogin}>
+                {localize('com_ui_close')}
+              </Button>
             </div>
           </div>
         )}
+      </OGDialogContent>
+    </OGDialog>
+  );
+}
+
+export function OpenAIOAuthCodexLogoutDialog() {
+  const localize = useLocalize();
+  const {
+    closeCodexLogout,
+    confirmCodexLogout,
+    logoutDialogOpen,
+    logoutFailed,
+    logoutIsLoading,
+    logoutSucceeded,
+  } = useOpenAIOAuthCodexLogin();
+
+  let content: ReactNode = (
+    <>
+      <p className="text-sm text-text-secondary">{localize('com_ui_confirm_logout')}</p>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="outline" onClick={closeCodexLogout}>
+          {localize('com_ui_cancel')}
+        </Button>
+        <Button type="button" onClick={confirmCodexLogout}>
+          {localize('com_ui_confirm')}
+        </Button>
+      </div>
+    </>
+  );
+  if (logoutIsLoading) {
+    content = (
+      <OpenAIOAuthStatusValue tone="yellow">
+        {localize('com_ui_logging_out')}
+      </OpenAIOAuthStatusValue>
+    );
+  } else if (logoutSucceeded || logoutFailed) {
+    content = (
+      <>
+        <OpenAIOAuthStatusValue tone={logoutSucceeded ? 'green' : 'red'}>
+          {localize(logoutSucceeded ? 'com_ui_logged_out' : 'com_ui_logout_failed')}
+        </OpenAIOAuthStatusValue>
+        <div className="flex justify-end pt-2">
+          <Button type="button" variant="outline" onClick={closeCodexLogout}>
+            {localize('com_ui_close')}
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <OGDialog open={logoutDialogOpen} onOpenChange={(open) => !open && closeCodexLogout()}>
+      <OGDialogContent
+        showCloseButton={false}
+        className="w-11/12 max-w-sm rounded-2xl border-border-light bg-surface-primary text-text-primary"
+      >
+        <OGDialogTitle className="text-base font-semibold leading-6 text-text-primary">
+          {localize('com_ui_logout')}
+        </OGDialogTitle>
+        {content}
       </OGDialogContent>
     </OGDialog>
   );

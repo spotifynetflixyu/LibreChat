@@ -31,7 +31,7 @@ function createWrapper(queryClient: QueryClient) {
 }
 
 describe('OpenAI OAuth token mutations', () => {
-  it('refreshes token state and refetches usage limits', async () => {
+  it('refreshes only token state', async () => {
     const queryClient = new QueryClient();
     const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
     const refetch = jest.spyOn(queryClient, 'refetchQueries');
@@ -45,8 +45,8 @@ describe('OpenAI OAuth token mutations', () => {
     });
 
     expect(queryClient.getQueryData([QueryKeys.openAIOAuthTokenStatus])).toEqual(token);
-    expect(invalidate).toHaveBeenCalledWith([QueryKeys.openAIOAuthUsage]);
-    expect(refetch).toHaveBeenCalledWith([QueryKeys.openAIOAuthUsage]);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(refetch).not.toHaveBeenCalled();
   });
 
   it('updates token state and refetches usage limits after logout', async () => {

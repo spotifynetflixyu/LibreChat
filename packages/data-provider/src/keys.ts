@@ -102,6 +102,7 @@ export enum MutationKeys {
   createAgentApiKey = 'createAgentApiKey',
   refreshOpenAIOAuthToken = 'refreshOpenAIOAuthToken',
   startOpenAIOAuthCodexLogin = 'startOpenAIOAuthCodexLogin',
+  cancelOpenAIOAuthCodexLogin = 'cancelOpenAIOAuthCodexLogin',
   logoutOpenAIOAuthCodex = 'logoutOpenAIOAuthCodex',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',

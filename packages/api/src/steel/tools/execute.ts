@@ -201,6 +201,23 @@ function hasPriceTierValue(tiers: SteelPriceTierValues): boolean {
   return Object.values(tiers).some((value) => value !== null);
 }
 
+function getLongMaterialBillingPolicy(candidate: SteelPriceItem): SteelRawToolOutput {
+  if (!['圓條', '圓管', '方管', '扁方管'].includes(candidate.category)) {
+    return {};
+  }
+  if (candidate.unit === 'Kg') {
+    return { materialBillingMode: 'weight' };
+  }
+  if (candidate.unit === '支' || candidate.unit === '只') {
+    return {
+      materialBillingMode: 'whole_stock',
+      cuttingFeePolicy: 'add_when_cut',
+    };
+  }
+
+  return { materialBillingMode: 'direct_unit' };
+}
+
 function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
   const {
     tierPrices,
@@ -242,6 +259,7 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
 
   return {
     ...candidateFields,
+    ...getLongMaterialBillingPolicy(candidate),
     quoteEligible: pricingOptions.length > 0,
     pricingOptions,
     skippedPricingOptions,

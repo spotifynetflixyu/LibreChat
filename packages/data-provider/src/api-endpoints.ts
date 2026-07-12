@@ -311,6 +311,8 @@ export const adminOpenAIOAuthTokenRefresh = () => `${adminOpenAIOAuthToken()}/re
 export const adminOpenAIOAuthTokenLogin = () => `${adminOpenAIOAuthToken()}/login`;
 export const adminOpenAIOAuthTokenLoginStatus = (sessionId: string) =>
   `${adminOpenAIOAuthTokenLogin()}/${encodeURIComponent(sessionId)}`;
+export const adminOpenAIOAuthTokenLoginCancel = (sessionId: string) =>
+  `${adminOpenAIOAuthTokenLoginStatus(sessionId)}/cancel`;
 export const adminOpenAIOAuthTokenLogout = () => `${adminOpenAIOAuthToken()}/logout`;
 
 export const mcp = {

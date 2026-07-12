@@ -767,6 +767,24 @@ export function getOpenAIOAuthCodexLoginStatus(
   );
 }
 
+export async function cancelOpenAIOAuthCodexLogin(
+  sessionId: string,
+  deps: OpenAIOAuthCodexLoginDeps = {},
+): Promise<boolean> {
+  const store = deps.loginStore ?? defaultCodexLoginStore;
+  const record = store.get(sessionId);
+  if (!record || record.status.status !== 'pending') {
+    return false;
+  }
+
+  await record.client
+    .request('account/login/cancel', { loginId: record.loginId })
+    .catch(() => undefined);
+  closeLoginRecord(record);
+  store.delete(sessionId);
+  return true;
+}
+
 export async function logoutOpenAIOAuthToken(
   deps: OpenAIOAuthCodexLoginDeps = {},
 ): Promise<OpenAIOAuthTokenLogoutStatus> {

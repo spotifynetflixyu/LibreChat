@@ -15,6 +15,7 @@ import type {
 } from './token';
 
 import {
+  cancelOpenAIOAuthCodexLogin,
   getOpenAIOAuthCodexLoginStatus,
   getOpenAIOAuthTokenStatus,
   logoutOpenAIOAuthToken,
@@ -320,6 +321,37 @@ describe('OpenAI OAuth token status service', () => {
       expect.objectContaining({ reason: 'login_timeout', status: 'failed' }),
     );
     jest.useRealTimers();
+  });
+
+  it('cancels a pending structured login by session id', async () => {
+    const store: OpenAIOAuthCodexLoginStore = new Map();
+    const appServer = createAppServer({
+      'account/login/cancel': { status: 'canceled' },
+      'account/login/start': {
+        loginId: 'login_back',
+        type: 'chatgptDeviceCode',
+        userCode: 'ABCD-12345',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+      },
+    });
+    await startOpenAIOAuthCodexLogin({
+      idFactory: () => 'session_back',
+      loginStore: store,
+      loginTimeoutMs: 60_000,
+      runCodexCommand: workingCodexCommand,
+      startAppServerClient: appServer.startAppServerClient,
+    });
+
+    await expect(cancelOpenAIOAuthCodexLogin('session_back', { loginStore: store })).resolves.toBe(
+      true,
+    );
+    expect(appServer.request).toHaveBeenCalledWith('account/login/cancel', {
+      loginId: 'login_back',
+    });
+    expect(appServer.close).toHaveBeenCalledTimes(1);
+    expect(getOpenAIOAuthCodexLoginStatus('session_back', { loginStore: store })).toEqual(
+      expect.objectContaining({ reason: 'login_not_found', status: 'failed' }),
+    );
   });
 
   it('logs out through app-server and returns the sanitized current token status', async () => {

@@ -93,8 +93,8 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
     [MutationKeys.refreshOpenAIOAuthToken],
     () => dataService.refreshOpenAIOAuthToken(),
     {
-      onSuccess: async (data) => {
-        await refreshOpenAIOAuthQueries(queryClient, data);
+      onSuccess: (data) => {
+        queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], data);
       },
     },
   );
@@ -120,6 +120,17 @@ export const useStartOpenAIOAuthCodexLoginMutation = (): UseMutationResult<
         }
       },
     },
+  );
+};
+
+export const useCancelOpenAIOAuthCodexLoginMutation = (): UseMutationResult<
+  void,
+  unknown,
+  string,
+  unknown
+> => {
+  return useMutation([MutationKeys.cancelOpenAIOAuthCodexLogin], (sessionId) =>
+    dataService.cancelOpenAIOAuthCodexLogin(sessionId),
   );
 };
 

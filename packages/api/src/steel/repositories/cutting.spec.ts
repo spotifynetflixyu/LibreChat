@@ -639,7 +639,7 @@ describe('Steel cutting price repository', () => {
   it('returns only no-cut supplements for round bars without borrowing pipe prices', () => {
     const group = createCuttingGroup({
       cuttingCategory: '鐵管',
-      sourceCategories: ['圓鐵'],
+      sourceCategories: ['圓條'],
       queryIds: ['q1'],
       prices: [
         createCuttingRecord({
@@ -675,10 +675,10 @@ describe('Steel cutting price repository', () => {
       [
         {
           queryId: 'q1',
-          category: '圓鐵',
+          category: '圓條',
           candidates: [
             createPriceItem({
-              category: '圓鐵',
+              category: '圓條',
               productName: '磨光圓鐵 10m/m (6M)',
               normalizedSpecText: '磨光圓鐵 10mm (6M)',
               widthMm: null,
@@ -693,7 +693,7 @@ describe('Steel cutting price repository', () => {
     expect(filtered).toEqual([
       expect.objectContaining({
         cuttingCategory: '鐵管',
-        sourceCategories: ['圓鐵'],
+        sourceCategories: ['圓條'],
         queryIds: ['q1'],
         prices: [],
         supplements: [expect.objectContaining({ id: 114 }), expect.objectContaining({ id: 115 })],
@@ -816,7 +816,7 @@ describe('Steel cutting price repository', () => {
       { queryId: 'pipe-1', category: '圓管' },
       { queryId: 'pipe-2', category: '方管' },
       { queryId: 'pipe-3', category: '扁方管' },
-      { queryId: 'round-bar', category: '圓鐵' },
+      { queryId: 'round-bar', category: '圓條' },
       { queryId: 'flat', category: '平鐵' },
       { queryId: 'plate', category: '鐵板' },
       { queryId: 'i-beam', category: 'I型鋼/工字鐵' },
@@ -841,7 +841,7 @@ describe('Steel cutting price repository', () => {
     expect(groups).toEqual([
       expect.objectContaining({
         cuttingCategory: '鐵管',
-        sourceCategories: ['圓管', '方管', '扁方管', '圓鐵'],
+        sourceCategories: ['圓管', '方管', '扁方管', '圓條'],
         queryIds: ['pipe-1', 'pipe-2', 'pipe-3', 'round-bar'],
         prices: [
           expect.objectContaining({

@@ -9,7 +9,6 @@ import type { ReactNode } from 'react';
 import {
   useGetOpenAIOAuthUsageQuery,
   useGetOpenAIOAuthTokenStatusQuery,
-  useLogoutOpenAIOAuthCodexMutation,
   useRefreshOpenAIOAuthTokenMutation,
 } from '~/data-provider';
 import type { LocalizeFunction } from '~/common';
@@ -171,9 +170,6 @@ function getTokenActionStatusValue({
   logoutFailed,
   logoutIsLoading,
   logoutSucceeded,
-  refreshFailed,
-  refreshIsLoading,
-  refreshSucceeded,
 }: {
   isLoginPollingError: boolean;
   localize: LocalizeFunction;
@@ -182,9 +178,6 @@ function getTokenActionStatusValue({
   logoutFailed: boolean;
   logoutIsLoading: boolean;
   logoutSucceeded: boolean;
-  refreshFailed: boolean;
-  refreshIsLoading: boolean;
-  refreshSucceeded: boolean;
 }): ReactNode | undefined {
   if (logoutIsLoading) {
     return (
@@ -203,12 +196,6 @@ function getTokenActionStatusValue({
       <OpenAIOAuthStatusValue tone="green">{localize('com_ui_logged_out')}</OpenAIOAuthStatusValue>
     );
   }
-  if (refreshIsLoading) {
-    return (
-      <OpenAIOAuthStatusValue tone="yellow">{localize('com_ui_refreshing')}</OpenAIOAuthStatusValue>
-    );
-  }
-
   const loginStatusValue = getCodexLoginStatusValue({
     isLoginPollingError,
     localize,
@@ -218,20 +205,8 @@ function getTokenActionStatusValue({
   if (loginIsLoading || loginStatus?.status === 'pending') {
     return loginStatusValue;
   }
-  if (refreshFailed) {
-    return (
-      <OpenAIOAuthStatusValue tone="red">
-        {localize('com_ui_refresh_failed')}
-      </OpenAIOAuthStatusValue>
-    );
-  }
   if (loginStatusValue) {
     return loginStatusValue;
-  }
-  if (refreshSucceeded) {
-    return (
-      <OpenAIOAuthStatusValue tone="green">{localize('com_ui_checked')}</OpenAIOAuthStatusValue>
-    );
   }
 
   return undefined;
@@ -246,35 +221,30 @@ export default function OpenAIOAuthUsageRemaining() {
     loginIsLoading,
     loginPollingIsError,
     loginStatus,
+    logoutFailed,
+    logoutIsLoading,
+    logoutSucceeded,
     openCodexLogin,
-    resetCodexLogin,
+    openCodexLogout,
   } = useOpenAIOAuthCodexLogin();
   const usageQuery = useGetOpenAIOAuthUsageQuery();
   const tokenQuery = useGetOpenAIOAuthTokenStatusQuery({ enabled: isAdmin });
-  const refreshMutation = useRefreshOpenAIOAuthTokenMutation();
-  const logoutMutation = useLogoutOpenAIOAuthCodexMutation();
+  const refreshTokenMutation = useRefreshOpenAIOAuthTokenMutation();
   const tokenStatus = tokenQuery.data;
   const windows = usageQuery.data?.status === 'available' ? usageQuery.data.windows : [];
   const showUnavailable =
     usageQuery.isError || (usageQuery.data && usageQuery.data.status !== 'available');
-  const refreshFailed =
-    refreshMutation.isError ||
-    (refreshMutation.isSuccess && refreshMutation.data?.status !== 'available');
   const tokenActionStatusValue = getTokenActionStatusValue({
     isLoginPollingError: loginPollingIsError,
     localize,
     loginIsLoading,
     loginStatus,
-    logoutFailed:
-      logoutMutation.isError ||
-      (logoutMutation.isSuccess && logoutMutation.data?.status !== 'succeeded'),
-    logoutIsLoading: logoutMutation.isLoading,
-    logoutSucceeded: logoutMutation.isSuccess && logoutMutation.data?.status === 'succeeded',
-    refreshFailed,
-    refreshIsLoading: refreshMutation.isLoading,
-    refreshSucceeded: refreshMutation.isSuccess,
+    logoutFailed,
+    logoutIsLoading,
+    logoutSucceeded,
   });
-  const loginAvailable = tokenStatus?.login.available === true;
+  const loginFailed = loginStatus?.status === 'failed' || loginStatus?.status === 'unavailable';
+  const isLoggedIn = tokenStatus?.status === 'available' && !loginFailed;
   const unavailableReason = getUnavailableReason({
     dataReason: usageQuery.data?.reason,
     isError: usageQuery.isError,
@@ -318,6 +288,18 @@ export default function OpenAIOAuthUsageRemaining() {
           <Gauge className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
           <span className="truncate">{localize('com_ui_usage_remaining')}</span>
         </span>
+        <button
+          type="button"
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label={localize('com_ui_refresh')}
+          disabled={usageQuery.isFetching}
+          onClick={() => usageQuery.refetch()}
+        >
+          <RefreshCw
+            className={usageQuery.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'}
+            aria-hidden="true"
+          />
+        </button>
       </div>
       {usageContent}
       {isAdmin && (
@@ -329,50 +311,55 @@ export default function OpenAIOAuthUsageRemaining() {
             </span>
           </div>
           {tokenContent}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={refreshMutation.isLoading || logoutMutation.isLoading || loginBusy}
-              onClick={() => refreshMutation.mutate()}
-            >
-              <RefreshCw
-                className={refreshMutation.isLoading ? 'size-3.5 animate-spin' : 'size-3.5'}
-                aria-hidden="true"
-              />
-              {refreshMutation.isLoading
-                ? localize('com_ui_refreshing')
-                : localize('com_ui_refresh_token')}
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!loginAvailable || loginIsLoading || logoutMutation.isLoading}
-              onClick={openCodexLogin}
-            >
-              <LogIn
-                className={loginBusy ? 'size-3.5 animate-pulse' : 'size-3.5'}
-                aria-hidden="true"
-              />
-              {localize('com_ui_codex_login')}
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={
-                tokenStatus?.status !== 'available' || logoutMutation.isLoading || loginBusy
-              }
-              onClick={() => logoutMutation.mutate(undefined, { onSuccess: resetCodexLogin })}
-            >
-              <LogOut
-                className={logoutMutation.isLoading ? 'size-3.5 animate-pulse' : 'size-3.5'}
-                aria-hidden="true"
-              />
-              {logoutMutation.isLoading
-                ? localize('com_ui_logging_out')
-                : localize('com_ui_logout')}
-            </button>
-          </div>
+          {!tokenQuery.isLoading && !tokenQuery.isError && tokenStatus && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {isLoggedIn ? (
+                <>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={refreshTokenMutation.isLoading || logoutIsLoading}
+                    onClick={() => refreshTokenMutation.mutate()}
+                  >
+                    <RefreshCw
+                      className={
+                        refreshTokenMutation.isLoading ? 'size-3.5 animate-spin' : 'size-3.5'
+                      }
+                      aria-hidden="true"
+                    />
+                    {refreshTokenMutation.isLoading
+                      ? localize('com_ui_refreshing')
+                      : localize('com_ui_refresh_token')}
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={logoutIsLoading || loginBusy || refreshTokenMutation.isLoading}
+                    onClick={openCodexLogout}
+                  >
+                    <LogOut
+                      className={logoutIsLoading ? 'size-3.5 animate-pulse' : 'size-3.5'}
+                      aria-hidden="true"
+                    />
+                    {logoutIsLoading ? localize('com_ui_logging_out') : localize('com_ui_logout')}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded border border-border-light px-2 py-1 text-xs text-text-primary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={loginIsLoading || logoutIsLoading}
+                  onClick={openCodexLogin}
+                >
+                  <LogIn
+                    className={loginBusy ? 'size-3.5 animate-pulse' : 'size-3.5'}
+                    aria-hidden="true"
+                  />
+                  {localize('com_ui_codex_login')}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

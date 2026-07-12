@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import OpenAIOAuthUsageRemaining from '../OpenAIOAuthUsageRemaining';
 import {
   OpenAIOAuthCodexLoginDialog,
   OpenAIOAuthCodexLoginProvider,
+  OpenAIOAuthCodexLogoutDialog,
 } from '../OpenAIOAuthCodexLogin';
 
 const mockQueryClientSetQueryData = jest.fn();
@@ -12,6 +13,7 @@ const mockQueryClientRemoveQueries = jest.fn();
 const mockUseGetOpenAIOAuthUsageQuery = jest.fn();
 const mockUseGetOpenAIOAuthCodexLoginStatusQuery = jest.fn();
 const mockUseGetOpenAIOAuthTokenStatusQuery = jest.fn();
+const mockUseCancelOpenAIOAuthCodexLoginMutation = jest.fn();
 const mockUseRefreshOpenAIOAuthTokenMutation = jest.fn();
 const mockUseLogoutOpenAIOAuthCodexMutation = jest.fn();
 const mockUseStartOpenAIOAuthCodexLoginMutation = jest.fn();
@@ -20,6 +22,7 @@ const mockWindowOpen = jest.fn();
 const mockClipboardWriteText = jest.fn();
 
 jest.mock('~/data-provider', () => ({
+  useCancelOpenAIOAuthCodexLoginMutation: () => mockUseCancelOpenAIOAuthCodexLoginMutation(),
   useGetOpenAIOAuthCodexLoginStatusQuery: (...args: unknown[]) =>
     mockUseGetOpenAIOAuthCodexLoginStatusQuery(...args),
   useGetOpenAIOAuthUsageQuery: () => mockUseGetOpenAIOAuthUsageQuery(),
@@ -44,6 +47,7 @@ jest.mock('~/hooks', () => ({
     ({
       com_ui_access_token: 'Access token',
       com_ui_available: 'Available',
+      com_ui_back: 'Back',
       com_ui_checked: 'Checked',
       com_ui_codex_cli: 'Codex CLI',
       com_ui_codex_app_server: 'Codex app-server',
@@ -51,6 +55,9 @@ jest.mock('~/hooks', () => ({
       com_ui_codex_login_unavailable: 'Codex CLI unavailable',
       com_ui_copied: 'Copied!',
       com_ui_browser_login: 'Browser login',
+      com_ui_cancel: 'Cancel',
+      com_ui_confirm: 'Confirm',
+      com_ui_confirm_logout: 'Are you sure you want to log out of OpenAI OAuth?',
       com_ui_copy: 'Copy',
       com_ui_copy_verification_code_first: 'Copy the verification code first.',
       com_ui_device_code_login: 'Device code login',
@@ -71,6 +78,7 @@ jest.mock('~/hooks', () => ({
       com_ui_open_link: 'Open link',
       com_ui_open_link_to_finish_login: 'Open the page to complete login verification.',
       com_ui_refresh_failed: 'Refresh failed',
+      com_ui_refresh: 'Refresh',
       com_ui_refreshing: 'Refreshing...',
       com_ui_refresh_token: 'Refresh token',
       com_ui_status: 'Status',
@@ -88,6 +96,7 @@ function OpenAIOAuthUsageRemainingHarness({ showUsage = true }: { showUsage?: bo
     <OpenAIOAuthCodexLoginProvider>
       {showUsage && <OpenAIOAuthUsageRemaining />}
       <OpenAIOAuthCodexLoginDialog />
+      <OpenAIOAuthCodexLogoutDialog />
     </OpenAIOAuthCodexLoginProvider>
   );
 }
@@ -101,6 +110,7 @@ describe('OpenAIOAuthUsageRemaining', () => {
     mockUseGetOpenAIOAuthUsageQuery.mockReset();
     mockUseGetOpenAIOAuthCodexLoginStatusQuery.mockReset();
     mockUseGetOpenAIOAuthTokenStatusQuery.mockReset();
+    mockUseCancelOpenAIOAuthCodexLoginMutation.mockReset();
     mockUseRefreshOpenAIOAuthTokenMutation.mockReset();
     mockUseLogoutOpenAIOAuthCodexMutation.mockReset();
     mockUseStartOpenAIOAuthCodexLoginMutation.mockReset();
@@ -143,12 +153,18 @@ describe('OpenAIOAuthUsageRemaining', () => {
       isSuccess: false,
       mutate: jest.fn(),
     });
+    mockUseCancelOpenAIOAuthCodexLoginMutation.mockReturnValue({
+      isError: false,
+      isLoading: false,
+      mutate: jest.fn((_sessionId, options?: { onSuccess?: () => void }) => options?.onSuccess?.()),
+    });
     mockUseLogoutOpenAIOAuthCodexMutation.mockReturnValue({
       data: undefined,
       isError: false,
       isLoading: false,
       isSuccess: false,
       mutate: jest.fn(),
+      reset: jest.fn(),
     });
     mockUseStartOpenAIOAuthCodexLoginMutation.mockReturnValue({
       data: undefined,
@@ -227,7 +243,8 @@ describe('OpenAIOAuthUsageRemaining', () => {
   });
 
   it('renders OAuth token status and actions for admins only', () => {
-    const mutate = jest.fn();
+    const refreshToken = jest.fn();
+    const refreshUsage = jest.fn();
     mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
     mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
       data: {
@@ -236,7 +253,9 @@ describe('OpenAIOAuthUsageRemaining', () => {
         windows: [],
       },
       isError: false,
+      isFetching: false,
       isLoading: false,
+      refetch: refreshUsage,
     });
     mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
       data: {
@@ -264,9 +283,8 @@ describe('OpenAIOAuthUsageRemaining', () => {
       isError: false,
       isLoading: false,
       isSuccess: false,
-      mutate,
+      mutate: refreshToken,
     });
-
     renderOpenAIOAuthUsageRemaining();
 
     expect(screen.getByText('OAuth token')).toBeInTheDocument();
@@ -275,9 +293,11 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.getByText('Expires')).toBeInTheDocument();
     expect(screen.getByText('Codex app-server')).toBeInTheDocument();
     expect(screen.getByText('Codex app-server').closest('div')).toHaveTextContent('Unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(refreshUsage).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Refresh token' }));
-    expect(mutate).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: 'Login Codex' })).toBeDisabled();
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Login Codex' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
   });
 
@@ -291,6 +311,9 @@ describe('OpenAIOAuthUsageRemaining', () => {
         expiresAt: '2026-07-08T02:44:02.000Z',
       });
     });
+    const cancelMutate = jest.fn((_sessionId, options?: { onSuccess?: () => void }) =>
+      options?.onSuccess?.(),
+    );
     mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
     mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
       data: {
@@ -344,6 +367,11 @@ describe('OpenAIOAuthUsageRemaining', () => {
       mutate,
       reset: jest.fn(),
     });
+    mockUseCancelOpenAIOAuthCodexLoginMutation.mockReturnValue({
+      isError: false,
+      isLoading: false,
+      mutate: cancelMutate,
+    });
 
     renderOpenAIOAuthUsageRemaining();
 
@@ -378,6 +406,11 @@ describe('OpenAIOAuthUsageRemaining', () => {
       'noopener,noreferrer',
     );
     expect(screen.getByText('ABCD-EFGH1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(cancelMutate).toHaveBeenCalledWith('session_1', expect.any(Object));
+    expect(window.sessionStorage.getItem('openai_oauth_codex_login_session_id')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Device code login' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browser login' })).toBeInTheDocument();
   });
 
   it('logs out from the OAuth token actions and clears the login session', async () => {
@@ -409,16 +442,51 @@ describe('OpenAIOAuthUsageRemaining', () => {
       isLoading: false,
       isSuccess: false,
       mutate,
+      reset: jest.fn(),
     });
 
-    renderOpenAIOAuthUsageRemaining();
+    const { rerender } = renderOpenAIOAuthUsageRemaining();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
 
+    expect(mutate).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('Are you sure you want to log out of OpenAI OAuth?'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(mutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     expect(mutate).toHaveBeenCalledWith(undefined, expect.any(Object));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    rerender(<OpenAIOAuthUsageRemainingHarness showUsage={false} />);
+    expect(screen.queryByText('Usage remaining')).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    mockUseLogoutOpenAIOAuthCodexMutation.mockReturnValue({
+      data: undefined,
+      isError: false,
+      isLoading: true,
+      isSuccess: false,
+      mutate,
+    });
+    rerender(<OpenAIOAuthUsageRemainingHarness />);
+    expect(within(screen.getByRole('dialog')).getByText('Logging out...')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).queryByRole('button')).not.toBeInTheDocument();
+    mockUseLogoutOpenAIOAuthCodexMutation.mockReturnValue({
+      data: { status: 'succeeded', fetchedAt: '2026-07-08T02:35:02.000Z' },
+      isError: false,
+      isLoading: false,
+      isSuccess: true,
+      mutate,
+    });
+    rerender(<OpenAIOAuthUsageRemainingHarness />);
+    expect(within(screen.getByRole('dialog')).getByText('Logged out')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(window.sessionStorage.getItem('openai_oauth_codex_login_session_id')).toBeNull();
     expect(mockQueryClientRemoveQueries).toHaveBeenCalledWith(['openAIOAuthCodexLoginStatus']);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   it('starts structured browser login from the login method dialog', () => {
@@ -474,11 +542,15 @@ describe('OpenAIOAuthUsageRemaining', () => {
     });
 
     renderOpenAIOAuthUsageRemaining();
+    expect(screen.getByRole('button', { name: 'Login Codex' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Logout' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Refresh token' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Login Codex' }));
     fireEvent.click(screen.getByRole('button', { name: 'Browser login' }));
     fireEvent.click(screen.getByRole('button', { name: 'Open link' }));
 
     expect(mutate).toHaveBeenCalledWith('browser', expect.any(Object));
+    expect(screen.getByText('Login URL').previousElementSibling).toBeNull();
     expect(mockWindowOpen).toHaveBeenCalledWith(
       'https://auth.openai.com/oauth/authorize',
       '_blank',
@@ -486,9 +558,58 @@ describe('OpenAIOAuthUsageRemaining', () => {
     );
   });
 
-  it('opens the modal for a pending login instead of starting another session', async () => {
+  it('shows only the Login URL skeleton while browser login is starting', () => {
+    const mutate = jest.fn();
+    mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
+    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
+      data: { status: 'available', windows: [] },
+      isError: false,
+      isLoading: false,
+    });
+    mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
+      data: {
+        provider: 'openai_oauth_responses',
+        status: 'unavailable',
+        fetchedAt: '2026-07-08T02:34:02.000Z',
+        accessToken: { status: 'unknown' },
+        refresh: { available: false },
+        login: { available: true },
+      },
+      isError: false,
+      isLoading: false,
+    });
+    mockUseStartOpenAIOAuthCodexLoginMutation.mockReturnValue({
+      data: undefined,
+      isError: false,
+      isLoading: false,
+      isSuccess: false,
+      mutate,
+      reset: jest.fn(),
+    });
+
+    const { rerender } = render(<OpenAIOAuthUsageRemainingHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Login Codex' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Browser login' }));
+    mockUseStartOpenAIOAuthCodexLoginMutation.mockReturnValue({
+      data: undefined,
+      isError: false,
+      isLoading: true,
+      isSuccess: false,
+      mutate,
+      reset: jest.fn(),
+    });
+    rerender(<OpenAIOAuthUsageRemainingHarness />);
+
+    expect(screen.getAllByRole('status', { name: 'Loading...' })).toHaveLength(1);
+    expect(screen.getByText('Login URL').previousElementSibling).toBeNull();
+  });
+
+  it('cancels and clears a pending login when the modal closes', async () => {
     window.sessionStorage.setItem('openai_oauth_codex_login_session_id', 'stale_session');
     const mutate = jest.fn();
+    const cancelMutate = jest.fn((_sessionId, options?: { onSuccess?: () => void }) =>
+      options?.onSuccess?.(),
+    );
     mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
     mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
       data: {
@@ -541,6 +662,12 @@ describe('OpenAIOAuthUsageRemaining', () => {
       isLoading: false,
       isSuccess: false,
       mutate,
+      reset: jest.fn(),
+    });
+    mockUseCancelOpenAIOAuthCodexLoginMutation.mockReturnValue({
+      isError: false,
+      isLoading: false,
+      mutate: cancelMutate,
     });
 
     renderOpenAIOAuthUsageRemaining();
@@ -548,13 +675,11 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Login Codex' }));
 
     expect(mutate).not.toHaveBeenCalled();
-    expect(window.sessionStorage.getItem('openai_oauth_codex_login_session_id')).toBe(
-      'stale_session',
-    );
-    expect(screen.getByText('ABCD-12345')).toBeInTheDocument();
+    expect(cancelMutate).toHaveBeenCalledWith('stale_session', expect.any(Object));
+    expect(window.sessionStorage.getItem('openai_oauth_codex_login_session_id')).toBeNull();
+    expect(screen.queryByText('ABCD-12345')).not.toBeInTheDocument();
   });
 
   it('shows the sanitized start-login failure reason from an HTTP error body', async () => {
@@ -701,7 +826,7 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.getByText('WXYZ-12345')).toBeInTheDocument();
   });
 
-  it('clears a stale pending Codex login when polling fails', async () => {
+  it('shows Login instead of Logout when a stale token snapshot has a timed-out login', async () => {
     window.sessionStorage.setItem('openai_oauth_codex_login_session_id', 'stale_session');
     mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
     mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
@@ -715,11 +840,10 @@ describe('OpenAIOAuthUsageRemaining', () => {
     mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
       data: {
         provider: 'openai_oauth_responses',
-        status: 'unavailable',
+        status: 'available',
         fetchedAt: '2026-07-08T02:34:02.000Z',
-        reason: 'auth_unavailable',
         accessToken: {
-          status: 'unknown',
+          status: 'valid',
         },
         refresh: {
           available: false,
@@ -732,8 +856,14 @@ describe('OpenAIOAuthUsageRemaining', () => {
       isLoading: false,
     });
     mockUseGetOpenAIOAuthCodexLoginStatusQuery.mockReturnValue({
-      data: undefined,
-      isError: true,
+      data: {
+        status: 'failed',
+        reason: 'login_timeout',
+        sessionId: 'stale_session',
+        startedAt: '2026-07-08T02:34:02.000Z',
+        updatedAt: '2026-07-08T02:44:02.000Z',
+      },
+      isError: false,
       isLoading: false,
     });
 
@@ -741,11 +871,15 @@ describe('OpenAIOAuthUsageRemaining', () => {
 
     await waitFor(() =>
       expect(screen.getByText('Login status').closest('div')).toHaveTextContent(
-        'Failed: login_not_found',
+        'Failed: login_timeout',
       ),
     );
     expect(window.sessionStorage.getItem('openai_oauth_codex_login_session_id')).toBeNull();
-    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Failed: login_not_found');
+    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Failed: login_timeout');
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Login Codex' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Logout' })).not.toBeInTheDocument();
   });
 
   it('does not render stale prose that looks like a Codex device code', () => {
@@ -803,107 +937,6 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.queryByText('OPEN-THIS')).not.toBeInTheDocument();
   });
 
-  it('shows token refresh progress and completion feedback', () => {
-    mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
-    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
-      data: {
-        status: 'available',
-        windows: [],
-      },
-      isError: false,
-      isLoading: false,
-    });
-    mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
-      data: {
-        provider: 'openai_oauth_responses',
-        status: 'available',
-        fetchedAt: '2026-07-08T02:34:02.000Z',
-        accessToken: {
-          status: 'valid',
-          expiresAt: '2026-07-18T02:34:02.000Z',
-          expiresInSeconds: 864000,
-        },
-        refresh: {
-          available: true,
-        },
-        login: {
-          available: false,
-          reason: 'codex_cli_unavailable',
-        },
-      },
-      isError: false,
-      isLoading: false,
-    });
-    mockUseRefreshOpenAIOAuthTokenMutation.mockReturnValue({
-      data: undefined,
-      isError: false,
-      isLoading: true,
-      isSuccess: false,
-      mutate: jest.fn(),
-    });
-
-    const { rerender } = render(<OpenAIOAuthUsageRemainingHarness />);
-
-    expect(screen.getByRole('button', { name: 'Refreshing...' })).toBeDisabled();
-    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Refreshing...');
-
-    mockUseRefreshOpenAIOAuthTokenMutation.mockReturnValue({
-      data: {
-        provider: 'openai_oauth_responses',
-        status: 'available',
-        fetchedAt: '2026-07-08T02:34:03.000Z',
-        accessToken: {
-          status: 'valid',
-          expiresAt: '2026-07-18T02:34:02.000Z',
-          expiresInSeconds: 863999,
-        },
-        refresh: {
-          available: true,
-        },
-        login: {
-          available: false,
-          reason: 'codex_cli_unavailable',
-        },
-      },
-      isError: false,
-      isLoading: false,
-      isSuccess: true,
-      mutate: jest.fn(),
-    });
-
-    rerender(<OpenAIOAuthUsageRemainingHarness />);
-
-    expect(screen.getByRole('button', { name: 'Refresh token' })).not.toBeDisabled();
-    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Checked');
-
-    mockUseRefreshOpenAIOAuthTokenMutation.mockReturnValue({
-      data: {
-        provider: 'openai_oauth_responses',
-        status: 'unavailable',
-        reason: 'refresh_failed',
-        fetchedAt: '2026-07-08T02:34:04.000Z',
-        accessToken: {
-          status: 'unknown',
-        },
-        refresh: {
-          available: false,
-        },
-        login: {
-          available: false,
-          reason: 'codex_cli_unavailable',
-        },
-      },
-      isError: false,
-      isLoading: false,
-      isSuccess: true,
-      mutate: jest.fn(),
-    });
-
-    rerender(<OpenAIOAuthUsageRemainingHarness />);
-
-    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Refresh failed');
-  });
-
   it('does not render OAuth token controls for non-admin users', async () => {
     window.sessionStorage.setItem('openai_oauth_codex_login_session_id', 'stale_session');
     mockUseAuthContext.mockReturnValue({ user: { role: 'USER' } });
@@ -922,6 +955,7 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.queryByText('OAuth token')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Refresh token' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Login Codex' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Logout' })).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     await waitFor(() =>
       expect(window.sessionStorage.getItem('openai_oauth_codex_login_session_id')).toBeNull(),

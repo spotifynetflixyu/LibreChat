@@ -83,7 +83,7 @@ const cuttingLookupTermByCategory: Partial<Record<PriceCategory, string>> = {
   圓管: '鐵管',
   方管: '鐵管',
   扁方管: '鐵管',
-  圓鐵: '鐵管',
+  圓條: '鐵管',
   角鐵: '角鐵',
   槽鐵: '槽鐵',
 };
@@ -168,7 +168,7 @@ function getCandidatePrimarySize(candidate: SteelPriceItem): number | undefined 
 
 function isRoundBar(candidate: SteelPriceItem): boolean {
   return (
-    candidate.category === '圓鐵' ||
+    candidate.category === '圓條' ||
     candidate.subcategory === '圓條' ||
     candidate.productName?.includes('圓條') === true
   );

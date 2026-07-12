@@ -102,6 +102,7 @@ const mockReadOpenAIOAuthCodexLoginStatus = jest.fn((_req, res) =>
     updatedAt: '2026-07-08T02:35:02.000Z',
   }),
 );
+const mockCancelOpenAIOAuthCodexLogin = jest.fn((_req, res) => res.status(204).end());
 const mockLogoutOpenAIOAuthToken = jest.fn((_req, res) =>
   res.status(200).json({
     status: 'succeeded',
@@ -139,6 +140,7 @@ const mockCreateSteelHandlers = jest.fn(() => ({
   streamChat: mockStreamChat,
 }));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
+  cancelOpenAIOAuthCodexLogin: mockCancelOpenAIOAuthCodexLogin,
   logoutOpenAIOAuthToken: mockLogoutOpenAIOAuthToken,
   readOpenAIOAuthCodexLoginStatus: mockReadOpenAIOAuthCodexLoginStatus,
   readOpenAIOAuthTokenStatus: mockReadOpenAIOAuthTokenStatus,
@@ -525,5 +527,14 @@ describe('Steel route shells', () => {
       updatedAt: '2026-07-08T02:35:02.000Z',
     });
     expect(mockReadOpenAIOAuthCodexLoginStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers admin-only OpenAI OAuth Codex login cancel under /api/admin/steel', async () => {
+    const app = createApp();
+
+    const res = await request(app).post('/api/admin/steel/ai/oauth-token/login/session_1/cancel');
+
+    expect(res.status).toBe(204);
+    expect(mockCancelOpenAIOAuthCodexLogin).toHaveBeenCalledTimes(1);
   });
 });

@@ -49,7 +49,7 @@ function makeWorkbookRow(
   };
 }
 
-describe('Steel price v4.2 parser', () => {
+describe('Steel price v4.3 parser', () => {
   it('preserves leading-zero ERP codes and returns every workbook field', () => {
     const [row] = buildSteelPriceV4Rows([makeWorkbookRow()]);
 
@@ -97,7 +97,7 @@ describe('Steel price v4.2 parser', () => {
       costBasis: '2.數量',
       specKey: '00123 H200x100x5.5x8',
       priceKind: 'product',
-      sourceDataset: 'product_price_v4_2',
+      sourceDataset: 'product_price_v4_3',
       sourceRowKey: '00123',
       currency: 'TWD',
       active: true,
@@ -222,6 +222,87 @@ describe('Steel price v4.2 parser', () => {
     expect(exact).toMatchObject({ thicknessMinMm: 3, thicknessMaxMm: 3 });
     expect(sourceRange).toMatchObject({ thicknessMinMm: 20, thicknessMaxMm: 25 });
     expect(diameterRange).toMatchObject({ thicknessMinMm: null, thicknessMaxMm: null });
+  });
+
+  it('derives category-specific attributes from v4.3 processing names', () => {
+    const [angleHole, squareHole, laserLeading, laserParenthesized, plateCut, bend, roundBar] =
+      buildSteelPriceV4Rows([
+        makeWorkbookRow({
+          erp_item_code: 'ELH020',
+          category: '加工/孔',
+          subcategory: '角鐵',
+          product_name: '冷鍍鋅角鐵沖孔 51mm*3.5 單*3M',
+          normalized_spec_text: '冷鍍鋅角鐵沖孔 51mmx3.5 單x3M 2in 50.8mm',
+          dimension_signature: 'in2',
+          source_thickness: '',
+          width_mm: '',
+          length_mm: '',
+        }),
+        makeWorkbookRow({
+          erp_item_code: 'KADS06',
+          category: '加工/孔',
+          subcategory: '鐵板',
+          product_name: '沖3/4□孔',
+          normalized_spec_text: '沖3/4□孔',
+          dimension_signature: '',
+          source_thickness: '',
+        }),
+        makeWorkbookRow({
+          erp_item_code: 'BKZZM2',
+          category: '加工/切工',
+          subcategory: '鐵板',
+          product_name: '2.0 雷射切割',
+          normalized_spec_text: '2.0 雷射切割',
+          source_thickness: '',
+        }),
+        makeWorkbookRow({
+          erp_item_code: 'BLZZM3',
+          category: '加工/切工',
+          subcategory: '鐵板',
+          product_name: '雷射切割(3.0)',
+          normalized_spec_text: '雷射切割(3.0)',
+          source_thickness: '',
+        }),
+        makeWorkbookRow({
+          erp_item_code: 'DNB2002',
+          category: '加工/切工',
+          subcategory: 'H型鋼',
+          product_name: '12.0-30.0mm板切φ',
+          normalized_spec_text: '12.0-30.0mm板切φ t30mm',
+          source_thickness: '30',
+        }),
+        makeWorkbookRow({
+          erp_item_code: 'BKZA010',
+          category: '加工/折工',
+          subcategory: '鐵板',
+          product_name: '板折  型(0.8-2.0)',
+          normalized_spec_text: '板折  型(0.8-2.0)',
+          source_thickness: '',
+        }),
+        makeWorkbookRow({
+          erp_item_code: 'EQC0280',
+          category: '圓條',
+          subcategory: '',
+          product_name: '磨光中碳光圓 28m/m',
+          normalized_spec_text: '磨光中碳光圓 28mm',
+          source_thickness: '',
+          outer_diameter_mm: '',
+        }),
+      ]);
+
+    expect(angleHole).toMatchObject({
+      widthMm: 51,
+      lengthMm: 3000,
+      thicknessMinMm: 3.5,
+      thicknessMaxMm: 3.5,
+      dimensionSignature: 'w51|t3.5|l3000|punch:single',
+    });
+    expect(squareHole).toMatchObject({ dimensionSignature: 'hole:3/4|shape:□' });
+    expect(laserLeading).toMatchObject({ thicknessMinMm: 2, thicknessMaxMm: 2 });
+    expect(laserParenthesized).toMatchObject({ thicknessMinMm: 3, thicknessMaxMm: 3 });
+    expect(plateCut).toMatchObject({ thicknessMinMm: 12, thicknessMaxMm: 30 });
+    expect(bend).toMatchObject({ thicknessMinMm: 0.8, thicknessMaxMm: 2 });
+    expect(roundBar).toMatchObject({ outerDiameterMm: 28 });
   });
 
   it('accepts ratio_only rows only when prices are absent and a ratio exists', () => {

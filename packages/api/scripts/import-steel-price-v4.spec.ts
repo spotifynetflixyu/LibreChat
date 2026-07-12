@@ -42,7 +42,7 @@ interface ImporterModule {
     help: boolean;
     workbookPath: string;
   };
-  replaceSteelPrices: (client: TestClient, rows: readonly SteelPriceV4Row[]) => Promise<void>;
+  upsertSteelPrices: (client: TestClient, rows: readonly SteelPriceV4Row[]) => Promise<void>;
 }
 
 const importer = jest.requireActual<ImporterModule>('./import-steel-price-v4.cjs');
@@ -151,15 +151,15 @@ afterEach(() => {
   });
 });
 
-describe('Steel price v4.2 importer', () => {
-  it('defaults to the repository v4.2 workbook in dry-run mode', () => {
+describe('Steel price v4.3 importer', () => {
+  it('defaults to the repository v4.3 workbook in dry-run mode', () => {
     const args = importer.parseArgs([]);
 
     expect(args).toEqual({
       apply: false,
       dryRun: true,
       help: false,
-      workbookPath: path.resolve(__dirname, '../../../docs/products_db_v4.2.xlsx'),
+      workbookPath: path.resolve(__dirname, '../../../docs/products_db_v4.3.xlsx'),
     });
     expect(importer.DEFAULT_WORKBOOK_PATH).toBe(args.workbookPath);
   });
@@ -179,7 +179,7 @@ describe('Steel price v4.2 importer', () => {
 
     expect(importer.EXPECTED_HEADERS).toEqual(expectedHeaders);
     expect(() => importer.loadWorkbookRows(workbookPath)).toThrow(
-      'products_db_ready headers do not match the exact v4.2 contract',
+      'products_db_ready headers do not match the exact v4.3 contract',
     );
   });
 
@@ -199,7 +199,7 @@ describe('Steel price v4.2 importer', () => {
       mode: 'dry-run',
       workbookPath: '/tmp/prices.xlsx',
       sheet: 'products_db_ready',
-      sourceDataset: 'product_price_v4_2',
+      sourceDataset: 'product_price_v4_3',
       importRows: 3,
       duplicateErpItemCodes: 1,
       activeRows: 3,
@@ -254,8 +254,8 @@ describe('Steel price v4.2 importer', () => {
         }),
       };
 
-      await expect(importer.replaceSteelPrices(client, [makeParsedRow()])).rejects.toThrow(
-        failurePhase === 'insert' ? 'insert failed' : 'Steel price v4.2 readback mismatch',
+      await expect(importer.upsertSteelPrices(client, [makeParsedRow()])).rejects.toThrow(
+        failurePhase === 'insert' ? 'insert failed' : 'Steel price v4.3 readback mismatch',
       );
       expect(statements.at(-1)).toBe('ROLLBACK');
       expect(statements).not.toContain('COMMIT');
@@ -276,10 +276,14 @@ describe('Steel price v4.2 importer', () => {
       }),
     };
 
-    await importer.replaceSteelPrices(client, [makeParsedRow()]);
+    await importer.upsertSteelPrices(client, [makeParsedRow()]);
 
     expect(statements.find((sql) => sql.startsWith('INSERT INTO steel.prices'))).not.toContain(
       'review_state',
+    );
+    expect(statements).not.toContain('TRUNCATE TABLE steel.prices RESTART IDENTITY');
+    expect(statements.find((sql) => sql.startsWith('INSERT INTO steel.prices'))).toContain(
+      'ON CONFLICT (erp_item_code) DO UPDATE',
     );
     expect(statements.find((sql) => sql.includes('COUNT(*)::int AS total'))).not.toContain(
       'review_state',
@@ -308,7 +312,7 @@ describe('Steel price v4.2 importer', () => {
       source_thickness: '6',
     });
 
-    await importer.replaceSteelPrices(client, [row]);
+    await importer.upsertSteelPrices(client, [row]);
 
     const insert = calls.find(({ sql }) => sql.startsWith('INSERT INTO steel.prices'));
     expect(insert?.sql).toContain('thickness_min_mm, thickness_max_mm');

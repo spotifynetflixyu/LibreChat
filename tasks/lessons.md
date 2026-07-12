@@ -1,5 +1,16 @@
 # Lessons
 
+- 所有 modal 都必須有獨立 UI/UX lifecycle：open state、流程 state、mutation 與 render host 不可依附短生命週期的 menu/popover/list row；其他 UI 關閉、切換或 unmount 不得連帶關閉、重設或干擾 modal。
+- OpenAI OAuth Login／Logout modal 必須掛在 model list 內容之外的持久 provider 層；關閉 model list 只能 unmount Usage/endpoint rows，不得連帶清除或關閉 modal 與其 mutation 狀態。
+- Logout confirm modal 在 Confirm 後不得自動關閉：執行中顯示 `Logging out...` 且禁止關閉，完成後在同一 modal 顯示 `Logged out`／`Logout failed`，由使用者自行 Close。
+- OAuth Logout 必須先顯示確認 modal；點擊原 Logout 只開 modal，只有 Confirm 才能觸發 logout mutation，Cancel／Close 不可登出。
+- OAuth token refresh 與 Usage remaining refresh 是兩個獨立動作：登入後的文字按鈕只 refresh token；Usage remaining section 右上 icon button 才 refetch usage，不可讓 token refresh 隱式刷新 usage。
+- Login Codex modal 的 Close、Esc 與外部關閉都等同取消 login：pending 時先取消 backend session，完成後清除 sessionStorage、polling query 與 local mutation state，不能只把 modal 隱藏。
+- Browser OAuth login 從 mutation loading 開始就只能顯示一個 Login URL skeleton；UI 必須保留使用者剛選的 login method，不能等 status response 才判斷是否隱藏 verification-code skeleton。
+- Browser OAuth login details 只有 Login URL 單欄，不應顯示步驟編號 `2`；只有 device-code 的驗證碼＋URL 雙步驟流程使用 `1`／`2`。
+- OAuth token action 判斷不能只依可能過期的 token status snapshot；當目前 login flow 明確為 `failed`、`unavailable` 或 `login_timeout` 時，必須優先顯示 Login，不可繼續顯示 Logout。
+- OAuth token 的 Login／Logout 是互斥顯示契約：依實際 token 登入狀態只 render 其中一個，不可同時 render 後再用 disabled 隱含狀態。
+- OpenAI OAuth Login Codex modal 選定 device-code 或 browser 登入方式後，必須提供 Back 回到登入方式選擇；Back 要清除目前 frontend session/polling state，不能只切換畫面而保留舊 session。
 - Steel `system_order` Markdown 的 `數量`、`單重`、`總數`、`單價`、`厚度`、`寬度`、`長度`、`肚`只能填純數字；不得混入單位、符號或補充文字，無資料留空，補充資訊一律移到`備註`。
 - 類別規則中的 `search_price_candidates` 範例不可只看字面合理；每個 JSON 都要對 dev/prod live `steel.prices` 重播，分別記錄「有 candidate」與「有 `quoteEligible` 價」。例如方管 `150x6` 雖命中 GDB15060，但只有不可用的非 Kg/M ratio，應改用 `100x6` 作可報價範例，並明載 150x6 須人工複核。
 - 切工 candidate-aware matcher 若同時命中一般尺寸 key 與更精確的複合尺寸 key，必須優先複合 key；例如槽鐵 200x90 不可同時回傳一般 `200` 與精確 `200x90` 兩個價格。
@@ -1008,3 +1019,5 @@
   Admin device-code modal UX: show and copy the verification code first, then
   enable the explicit Open URL action. Replace only the backend prose parser;
   browser login is an additional option, not a replacement for device login.
+- 新版 Steel 產品價格 workbook 更新時，以 `erp_item_code` 作唯一鍵直接覆蓋既有價格列；不得因 category/subcategory 看似異常而自行猜測、搬類或修改來源資料。workbook 原值與使用者明示 rename 才是更新依據。
+- 新版 Steel 產品價格匯入順序固定為：先依新版 workbook category/subcategory 整理並驗證程式 enum 與 DB constraint，再執行資料匯入；不得先匯入後補 enum。

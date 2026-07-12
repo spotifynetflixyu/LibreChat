@@ -386,6 +386,50 @@ describe('Steel minimal tool execution', () => {
     expect(JSON.stringify(result.data)).not.toContain('sourceRefs');
   });
 
+  it('labels pipe and bar candidates with unit-driven material billing policies', async () => {
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: [createPriceRow({ category: '圓條', unit: 'Kg' })],
+          category_candidates: [],
+        },
+        {
+          query_index: 1,
+          query_id: 'q2',
+          price_candidates: [createPriceRow({ category: '圓管', unit: '支' })],
+          category_candidates: [],
+        },
+      ],
+      [],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ category: '圓條' }, { category: '圓管' }] },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.queryResults).toEqual([
+      expect.objectContaining({
+        candidates: [expect.objectContaining({ materialBillingMode: 'weight' })],
+      }),
+      expect.objectContaining({
+        candidates: [
+          expect.objectContaining({
+            materialBillingMode: 'whole_stock',
+            cuttingFeePolicy: 'add_when_cut',
+          }),
+        ],
+      }),
+    ]);
+  });
+
   it('returns only candidate-matched cutting rows and excludes no-match query provenance', async () => {
     const client = createClient([
       [

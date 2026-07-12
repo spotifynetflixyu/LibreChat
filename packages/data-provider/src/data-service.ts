@@ -84,6 +84,10 @@ export function getOpenAIOAuthCodexLoginStatus(
   return request.get(endpoints.adminOpenAIOAuthTokenLoginStatus(sessionId));
 }
 
+export function cancelOpenAIOAuthCodexLogin(sessionId: string): Promise<void> {
+  return request.post(endpoints.adminOpenAIOAuthTokenLoginCancel(sessionId));
+}
+
 export function logoutOpenAIOAuthCodex(): Promise<OpenAIOAuthTokenLogoutStatus> {
   return request.post(endpoints.adminOpenAIOAuthTokenLogout());
 }

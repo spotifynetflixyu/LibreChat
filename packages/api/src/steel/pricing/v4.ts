@@ -7,7 +7,7 @@ export type SteelPriceV4ValueState = 'confirmed' | 'ratio_only' | 'no_price';
 export type SteelPriceV4Kind = 'product' | 'cutting' | 'hole';
 export type SteelPriceV4CostBasis = '1.總數' | '2.數量';
 
-export const steelPriceV4SourceDataset = 'product_price_v4_2' as const;
+export const steelPriceV4SourceDataset = 'product_price_v4_3' as const;
 export const steelPriceV4WorkbookHeaders = Object.freeze([
   'erp_item_code',
   'formula_code',
@@ -117,7 +117,7 @@ function parseRequiredText(value: SteelPriceV4Cell, field: string): string {
   const parsed = parseText(value);
 
   if (parsed === null) {
-    throw new Error(`Steel price v4.2 row requires ${field}`);
+    throw new Error(`Steel price v4.3 row requires ${field}`);
   }
 
   return parsed;
@@ -131,7 +131,7 @@ function parseNumber(value: SteelPriceV4Cell, field: string): number | null {
 
   const parsed = Number(text.replace(/,/gu, ''));
   if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid Steel price v4.2 number for ${field}: ${text}`);
+    throw new Error(`Invalid Steel price v4.3 number for ${field}: ${text}`);
   }
 
   return parsed;
@@ -141,7 +141,7 @@ function parseZeroAsNullNumber(value: SteelPriceV4Cell, field: string): number |
   const parsed = parseNumber(value, field);
 
   if (parsed !== null && parsed < 0) {
-    throw new Error(`Steel price v4.2 ${field} must be nonnegative`);
+    throw new Error(`Steel price v4.3 ${field} must be nonnegative`);
   }
 
   return parsed === 0 ? null : parsed;
@@ -183,7 +183,7 @@ function parseValueState(value: SteelPriceV4Cell): SteelPriceV4ValueState {
     return state;
   }
 
-  throw new Error(`Unknown Steel price v4.2 value_state: ${state}`);
+  throw new Error(`Unknown Steel price v4.3 value_state: ${state}`);
 }
 
 function parseCostBasis(value: SteelPriceV4Cell): SteelPriceV4CostBasis {
@@ -192,7 +192,7 @@ function parseCostBasis(value: SteelPriceV4Cell): SteelPriceV4CostBasis {
     return costBasis;
   }
 
-  throw new Error(`Unknown Steel price v4.2 cost_basis: ${costBasis}`);
+  throw new Error(`Unknown Steel price v4.3 cost_basis: ${costBasis}`);
 }
 
 function getPriceKind(category: PriceCategory): SteelPriceV4Kind {
@@ -201,6 +201,96 @@ function getPriceKind(category: PriceCategory): SteelPriceV4Kind {
   }
 
   return category.startsWith('加工/') ? 'cutting' : 'product';
+}
+
+interface ParsedNameAttributes {
+  dimensionSignature?: string;
+  thicknessMinMm?: number;
+  thicknessMaxMm?: number;
+  widthMm?: number;
+  lengthMm?: number;
+  diameterMm?: number;
+}
+
+function parseNameRange(
+  match: RegExpMatchArray | null,
+): { thicknessMinMm: number; thicknessMaxMm: number } | undefined {
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const thicknessMinMm = Number(match[1]);
+  const thicknessMaxMm = Number(match[2] ?? match[1]);
+  if (thicknessMinMm <= 0 || thicknessMaxMm < thicknessMinMm) {
+    return undefined;
+  }
+
+  return { thicknessMinMm, thicknessMaxMm };
+}
+
+function parseNameAttributes(
+  category: PriceCategory,
+  productName: string | null,
+  normalizedSpecText: string | null,
+): ParsedNameAttributes {
+  const text = `${productName ?? ''} ${normalizedSpecText ?? ''}`
+    .normalize('NFKC')
+    .replace(/[＊*×]/gu, 'x');
+
+  if (category === '加工/孔') {
+    const angle = text.match(
+      /(\d+(?:\.\d+)?)\s*mm\s*x\s*(\d+(?:\.\d+)?)\s*(單|雙)\s*x\s*(\d+(?:\.\d+)?)\s*m\b/iu,
+    );
+    if (angle?.[1] && angle[2] && angle[3] && angle[4]) {
+      const widthMm = Number(angle[1]);
+      const thickness = Number(angle[2]);
+      const lengthMm = Number(angle[4]) * 1000;
+      const punch = angle[3] === '單' ? 'single' : 'double';
+
+      return {
+        widthMm,
+        lengthMm,
+        thicknessMinMm: thickness,
+        thicknessMaxMm: thickness,
+        dimensionSignature: `w${widthMm}|t${thickness}|l${lengthMm}|punch:${punch}`,
+      };
+    }
+
+    const hole = text.match(/沖\s*(\d+(?:\s+\d+\/\d+|\/\d+)?)\s*([□○])\s*孔/iu);
+    if (hole?.[1] && hole[2]) {
+      return { dimensionSignature: `hole:${hole[1].replace(/\s+/gu, ' ')}|shape:${hole[2]}` };
+    }
+
+    return (
+      parseNameRange(
+        text.match(
+          /厚度\s*(\d+(?:\.\d+)?)\s*(?:[-~～至]\s*(\d+(?:\.\d+)?))?\s*(?:m\s*\/\s*m|mm|t)?/iu,
+        ),
+      ) ?? {}
+    );
+  }
+
+  if (category === '加工/切工') {
+    return (
+      parseNameRange(text.match(/^(\d+(?:\.\d+)?)\s*[-~～至]\s*(\d+(?:\.\d+)?)\s*mm\s*板切/iu)) ??
+      parseNameRange(text.match(/^(\d+(?:\.\d+)?)\s+雷射切割/iu)) ??
+      parseNameRange(text.match(/雷射切割\(\s*(\d+(?:\.\d+)?)\s*\)/iu)) ??
+      {}
+    );
+  }
+
+  if (category === '加工/折工') {
+    return (
+      parseNameRange(text.match(/型\(\s*(\d+(?:\.\d+)?)\s*[-~～至]\s*(\d+(?:\.\d+)?)\s*\)/iu)) ?? {}
+    );
+  }
+
+  if (category === '圓條') {
+    const diameter = text.match(/(?:光圓|圓條|圓鐵)\s*(\d+(?:\.\d+)?)\s*(?:m\s*\/\s*m|mm)/iu)?.[1];
+    return diameter ? { diameterMm: Number(diameter) } : {};
+  }
+
+  return {};
 }
 
 function parseThicknessBand(
@@ -223,25 +313,15 @@ function parseThicknessBand(
   ) {
     throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
   }
-  if (category !== '加工/孔') {
-    return { thicknessMinMm: sourceMinMm, thicknessMaxMm: sourceMaxMm };
+  const derived = parseNameAttributes(category, productName, normalizedSpecText);
+  if (derived.thicknessMinMm !== undefined && derived.thicknessMaxMm !== undefined) {
+    return {
+      thicknessMinMm: derived.thicknessMinMm,
+      thicknessMaxMm: derived.thicknessMaxMm,
+    };
   }
 
-  const text = `${productName ?? ''} ${normalizedSpecText ?? ''}`.normalize('NFKC');
-  const match = text.match(
-    /厚度\s*([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:m\s*\/\s*m|mm|t)?/iu,
-  );
-  if (!match?.[1]) {
-    return { thicknessMinMm: sourceMinMm, thicknessMaxMm: sourceMaxMm };
-  }
-
-  const thicknessMinMm = Number(match[1]);
-  const thicknessMaxMm = Number(match[2] ?? match[1]);
-  if (thicknessMinMm <= 0 || thicknessMaxMm < thicknessMinMm) {
-    throw new Error(`Invalid Steel hole thickness band: ${match[0]}`);
-  }
-
-  return { thicknessMinMm, thicknessMaxMm };
+  return { thicknessMinMm: sourceMinMm, thicknessMaxMm: sourceMaxMm };
 }
 
 function validateValueState(
@@ -262,7 +342,7 @@ function validateValueState(
     return;
   }
 
-  throw new Error(`Steel price v4.2 ${state} row violates price and ratio invariants`);
+  throw new Error(`Steel price v4.3 ${state} row violates price and ratio invariants`);
 }
 
 function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
@@ -286,6 +366,7 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   const priceRatioF = parseZeroAsNullNumber(row.price_ratio_f, 'price_ratio_f');
   const productName = parseText(row.product_name);
   const sourceThickness = parseZeroAsNullText(row.source_thickness);
+  const nameAttributes = parseNameAttributes(category, productName, normalizedSpecText);
   const thicknessBand = parseThicknessBand(
     category,
     productName,
@@ -307,7 +388,7 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     category,
     subcategory,
     material: parseText(row.material),
-    dimensionSignature: parseText(row.dimension_signature),
+    dimensionSignature: nameAttributes.dimensionSignature ?? parseText(row.dimension_signature),
     unit: parseText(row.unit),
     valueState,
     unitPriceBase,
@@ -328,10 +409,12 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     density: parseZeroAsNullNumber(row.density, 'density'),
     sourceThickness,
     ...thicknessBand,
-    widthMm: parseZeroAsNullNumber(row.width_mm, 'width_mm'),
+    widthMm: nameAttributes.widthMm ?? parseZeroAsNullNumber(row.width_mm, 'width_mm'),
     heightMm: parseZeroAsNullNumber(row.height_mm, 'height_mm'),
-    lengthMm: parseZeroAsNullNumber(row.length_mm, 'length_mm'),
-    outerDiameterMm: parseZeroAsNullNumber(row.outer_diameter_mm, 'outer_diameter_mm'),
+    lengthMm: nameAttributes.lengthMm ?? parseZeroAsNullNumber(row.length_mm, 'length_mm'),
+    outerDiameterMm:
+      nameAttributes.diameterMm ??
+      parseZeroAsNullNumber(row.outer_diameter_mm, 'outer_diameter_mm'),
     nominalInch: parseText(row.nominal_inch),
     webMm: parseZeroAsNullNumber(row.web_mm, 'web_mm'),
     flangeMm: parseZeroAsNullNumber(row.flange_mm, 'flange_mm'),

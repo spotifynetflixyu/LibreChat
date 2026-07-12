@@ -14,6 +14,7 @@ import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
 import {
   OpenAIOAuthCodexLoginDialog,
   OpenAIOAuthCodexLoginProvider,
+  OpenAIOAuthCodexLogoutDialog,
 } from './components/OpenAIOAuthCodexLogin';
 import { getSelectedIcon, getDisplayValue } from './utils';
 import { CustomMenu as Menu } from './CustomMenu';
@@ -131,6 +132,7 @@ function ModelSelectorContent() {
         />
       </div>
       <OpenAIOAuthCodexLoginDialog />
+      <OpenAIOAuthCodexLogoutDialog />
     </OpenAIOAuthCodexLoginProvider>
   );
 }

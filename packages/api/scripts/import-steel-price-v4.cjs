@@ -22,7 +22,7 @@ const {
 
 const SHEET_NAME = 'products_db_ready';
 const SOURCE_DATASET = steelPriceV4SourceDataset;
-const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.2.xlsx');
+const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.3.xlsx');
 const EXPECTED_HEADERS = steelPriceV4WorkbookHeaders;
 const EXPECTED_RECONCILIATION = Object.freeze({
   importRows: 6761,
@@ -147,7 +147,7 @@ function loadWorkbookRows(workbookPath) {
     headers.every((header, index) => header === EXPECTED_HEADERS[index]);
 
   if (!exactHeaders) {
-    throw new Error(`${SHEET_NAME} headers do not match the exact v4.2 contract`);
+    throw new Error(`${SHEET_NAME} headers do not match the exact v4.3 contract`);
   }
 
   return matrix
@@ -212,7 +212,7 @@ function validateExpectedReconciliation(summary) {
 
   if (!matches) {
     throw new Error(
-      `Steel price v4.2 reconciliation mismatch: expected ${JSON.stringify(EXPECTED_RECONCILIATION)}, received ${JSON.stringify(summary)}`,
+      `Steel price v4.3 reconciliation mismatch: expected ${JSON.stringify(EXPECTED_RECONCILIATION)}, received ${JSON.stringify(summary)}`,
     );
   }
 }
@@ -280,9 +280,13 @@ function buildInsert(batch) {
     return `(${rowValues.map((_, columnIndex) => `$${offset + columnIndex + 1}`).join(', ')})`;
   });
 
+  const updateColumns = INSERT_COLUMNS.filter((column) => column !== 'erp_item_code');
+
   return {
     sql: `INSERT INTO steel.prices (${INSERT_COLUMNS.join(', ')})
-VALUES ${placeholders.join(',\n')}`,
+VALUES ${placeholders.join(',\n')}
+ON CONFLICT (erp_item_code) DO UPDATE SET
+${updateColumns.map((column) => `  ${column} = EXCLUDED.${column}`).join(',\n')}`,
     values,
   };
 }
@@ -310,14 +314,12 @@ function readbackMatches(actual, expected) {
   return Object.entries(expected).every(([key, value]) => Number(actual[key]) === value);
 }
 
-async function replaceSteelPrices(client, rows) {
+async function upsertSteelPrices(client, rows) {
   const expectedReadback = buildReadbackExpectation(rows);
 
   await client.query('BEGIN');
   try {
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.prices:v4.2:replace'))");
-    await client.query('LOCK TABLE steel.prices IN ACCESS EXCLUSIVE MODE');
-    await client.query('TRUNCATE TABLE steel.prices RESTART IDENTITY');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.prices:v4.3:upsert'))");
     await insertRows(client, rows);
 
     const result = await client.query(`
@@ -328,11 +330,12 @@ SELECT
   COUNT(*) FILTER (WHERE value_state = 'ratio_only')::int AS ratio_only,
   COUNT(*) FILTER (WHERE value_state = 'no_price')::int AS no_price
 FROM steel.prices
-`);
+WHERE source_dataset = $1
+`, [SOURCE_DATASET]);
     const readback = result.rows[0] || {};
     if (!readbackMatches(readback, expectedReadback)) {
       throw new Error(
-        `Steel price v4.2 readback mismatch: expected ${JSON.stringify(expectedReadback)}, received ${JSON.stringify(readback)}`,
+        `Steel price v4.3 readback mismatch: expected ${JSON.stringify(expectedReadback)}, received ${JSON.stringify(readback)}`,
       );
     }
 
@@ -373,7 +376,7 @@ async function importWorkbook(options) {
   let client;
   try {
     client = await pool.connect();
-    await replaceSteelPrices(client, rows);
+    await upsertSteelPrices(client, rows);
   } finally {
     if (client) {
       client.release();
@@ -404,7 +407,7 @@ module.exports = {
   importWorkbook,
   loadWorkbookRows,
   parseArgs,
-  replaceSteelPrices,
+  upsertSteelPrices,
 };
 
 if (require.main === module) {

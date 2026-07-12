@@ -193,18 +193,19 @@ describe('Steel category rule sources', () => {
       ),
     );
     expect(subcategoriesByCategory.get('加工/其他')).toEqual([
-      'C型鋼',
+      '捲門/伸縮門',
       'H型鋼',
-      'L',
-      'U',
-      '丸條',
-      '加工',
+      '鐵板',
+      'C型鋼',
       '圓管',
       '扁鐵',
-      '捲門/伸縮門',
-      '網',
+      'L',
+      '條',
+      'U',
       '角鐵',
-      '鐵板',
+      '網',
+      '加工',
+      '管',
     ]);
   });
 
@@ -303,10 +304,10 @@ describe('Steel category rule sources', () => {
     expect(concreteGuide).toContain('`高度x寬度x腹厚/翼厚` canonical `keyword`');
     expect(concreteGuide).toContain('`邊長x壁厚` canonical `keyword`');
     expect(concreteGuide).toContain('圖面 `150x150x6` 必須轉成價格 keyword `150x6`');
-    expect(concreteGuide).toContain('H 型鋼的 KZZB11 `沖孔加工` 不以孔徑作價格 key');
+    expect(concreteGuide).toContain('此類沖孔價預設採 KZZB11 `沖孔加工`');
     expect(concreteGuide).toContain('`寬x高x壁厚` canonical `keyword`');
     expect(concreteGuide).toContain(
-      '{"category":"圓鐵","material":"黑鐵","keyword":"磨光圓鐵 10mm"}',
+      '{"category":"圓條","material":"黑鐵","keyword":"磨光圓鐵 10mm"}',
     );
     expect(concreteGuide).toContain(
       '{"category":"方鐵","material":"黑鐵","keyword":"磨光方鐵 25mm"}',

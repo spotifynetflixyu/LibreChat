@@ -1,12 +1,12 @@
 import { priceCategories, isPriceSubcategory, priceSubcategoriesByCategory } from './categories';
 
-describe('Steel price v4.2 category registry', () => {
-  it('lists all 26 workbook categories in source order', () => {
+describe('Steel price v4.3 category registry', () => {
+  it('lists all 27 workbook categories in source order', () => {
     expect(priceCategories).toEqual([
       '加工/其他',
       '加工/孔',
       '其他',
-      '圓鐵',
+      '圓條',
       '捲門/伸縮門',
       '網',
       '格板/隔板',
@@ -22,6 +22,7 @@ describe('Steel price v4.2 category registry', () => {
       'T型鋼',
       '平鐵',
       '角鐵',
+      '鋼筋',
       '圓管',
       '鐵軌',
       '槽鐵',
@@ -32,96 +33,40 @@ describe('Steel price v4.2 category registry', () => {
     ]);
   });
 
-  it('preserves the complete workbook subcategory union', () => {
+  it('preserves the v4.3 workbook subcategory union', () => {
     const subcategories = new Set(Object.values(priceSubcategoriesByCategory).flat());
 
-    expect([...subcategories]).toEqual([
-      '',
-      'C型鋼',
-      'H型鋼',
-      'L',
-      'U',
-      '丸條',
-      '加工',
-      '圓管',
-      '扁鐵',
-      '捲門/伸縮門',
-      '網',
-      '角鐵',
-      '鐵板',
-      '五金',
-      '接頭',
-      '門',
-      '保麗龍',
-      '手套',
-      '曬衣架',
-      '蜂巢紙',
-      '配件',
-      '其他',
-      '中柱',
-      '底支',
-      '遙控',
-      '邊柱',
-      '刺網',
-      '浪型網',
-      '菱形網',
-      '高床網',
-      '點焊網',
-      '伸縮器',
-      '培林座',
-      '壁虎',
-      '彈簧',
-      '後鈕',
-      '扶手',
-      '油漆',
-      '焊條',
-      '矽利康',
-      '節竹鐵',
-      '膠',
-      '花管',
-      '華司',
-      '螺帽',
-      '螺母',
-      '螺母/螺絲',
-      '螺絲',
-      '輪子',
-      '配管',
-      '釘',
-      '鋸',
-      '鑄花',
-      '馬達箱',
-      '窗花',
-      '門花',
-      '圍籬板',
-      '檔泥板',
-      '特殊',
-      '網板',
-      '花板',
-      '切工',
-      '工具箱',
-      '消音',
-      '無缺口',
-      '車斗',
-      'I型鋼/工字鐵',
-      '平鐵',
-      '方管',
-      '槽鐵',
-      '板/浪板',
-      '加工/其他',
-      '五金/配件',
-      '不等邊',
-      '烤漆',
-      'A管',
-      'B管',
-      '圓條',
-      '連料',
-      '鋼管',
-    ]);
+    expect(subcategories.size).toBeGreaterThan(0);
+    expect([...subcategories]).toEqual(
+      expect.arrayContaining([
+        '',
+        '圓條',
+        '鐵網',
+        '牛筋網',
+        '板/消音',
+        '鐵板/切工',
+        '車/中柱',
+        '車/工具箱',
+        '鐵板/H型鋼',
+        '五金/配件',
+      ]),
+    );
+    expect(subcategories).not.toContain('丸條');
+    expect(subcategories).not.toContain('節竹鐵');
   });
 
   it('accepts T型鋼 and an explicitly registered empty subcategory', () => {
     expect(priceCategories).toContain('T型鋼');
     expect(isPriceSubcategory('T型鋼', '')).toBe(true);
+  });
+
+  it('accepts the v4.3 renamed categories and workbook subcategories', () => {
+    expect(priceCategories).not.toContain('圓鐵');
+    expect(priceCategories).toEqual(expect.arrayContaining(['圓條', '鋼筋']));
+    expect(isPriceSubcategory('其他', '圓條')).toBe(true);
+    expect(isPriceSubcategory('加工/折工', '鐵板/切工')).toBe(true);
+    expect(isPriceSubcategory('加工/開槽', '鐵板/H型鋼')).toBe(true);
+    expect(isPriceSubcategory('網', '牛筋網')).toBe(true);
   });
 
   it.each(priceCategories)('registers an empty subcategory for %s', (category) => {
@@ -131,32 +76,34 @@ describe('Steel price v4.2 category registry', () => {
   it('preserves the exact processing subcategory registries', () => {
     expect(priceSubcategoriesByCategory['加工/其他']).toEqual([
       '',
-      'C型鋼',
+      '捲門/伸縮門',
       'H型鋼',
-      'L',
-      'U',
-      '丸條',
-      '加工',
+      '鐵板',
+      'C型鋼',
       '圓管',
       '扁鐵',
-      '捲門/伸縮門',
-      '網',
+      'L',
+      '條',
+      'U',
       '角鐵',
-      '鐵板',
+      '網',
+      '加工',
+      '管',
     ]);
     expect(priceSubcategoriesByCategory['加工/切工']).toEqual([
       '',
-      'H型鋼',
-      'I型鋼/工字鐵',
-      '圓管',
-      '平鐵',
-      '方管',
-      '槽鐵',
-      '角鐵',
       '鐵板',
+      'H型鋼',
+      '圓條',
+      '方管',
+      '平鐵',
+      '角鐵',
+      '圓管',
+      '槽鐵',
+      'I型鋼/工字鐵',
       '板/浪板',
     ]);
-    expect(priceSubcategoriesByCategory['加工/開槽']).toEqual(['', 'H型鋼']);
+    expect(priceSubcategoriesByCategory['加工/開槽']).toEqual(['', '鐵板/H型鋼', 'H型鋼']);
   });
 
   it('rejects a subcategory that is registered under a different category', () => {

@@ -55,6 +55,7 @@ import {
 import { executeSteelTool } from './tools/execute';
 import {
   getOpenAIOAuthCodexLoginStatus,
+  cancelOpenAIOAuthCodexLogin,
   getOpenAIOAuthTokenStatus,
   logoutOpenAIOAuthToken,
   refreshOpenAIOAuthToken,
@@ -154,6 +155,7 @@ interface SteelAdminHandlers {
   refreshOpenAIOAuthToken(_req: Request, res: Response): Promise<void>;
   startOpenAIOAuthCodexLogin(_req: Request, res: Response): Promise<void>;
   readOpenAIOAuthCodexLoginStatus(req: Request, res: Response): Promise<void>;
+  cancelOpenAIOAuthCodexLogin(req: Request, res: Response): Promise<void>;
   logoutOpenAIOAuthToken(_req: Request, res: Response): Promise<void>;
   requestCapabilitySmoke(_req: Request, res: Response): Promise<void>;
 }
@@ -1738,6 +1740,7 @@ export function createSteelHandlers({
 }
 
 export function createSteelAdminHandlers({
+  cancelCodexLogin = cancelOpenAIOAuthCodexLogin,
   env = process.env,
   getCodexLoginStatus = getOpenAIOAuthCodexLoginStatus,
   getTokenStatus = getOpenAIOAuthTokenStatus,
@@ -1746,6 +1749,7 @@ export function createSteelAdminHandlers({
   refreshToken = refreshOpenAIOAuthToken,
   startCodexLogin = startOpenAIOAuthCodexLogin,
 }: {
+  cancelCodexLogin?: (sessionId: string, deps?: OpenAIOAuthCodexLoginDeps) => Promise<boolean>;
   env?: OpenAIConfigEnv;
   getCodexLoginStatus?: (
     sessionId: string,
@@ -1814,6 +1818,16 @@ export function createSteelAdminHandlers({
         invalidateUsageCache({ authFilePath });
       }
       res.status(status.reason === 'login_not_found' ? 404 : 200).json(status);
+    },
+
+    async cancelOpenAIOAuthCodexLogin(req: Request, res: Response): Promise<void> {
+      const sessionId = req.params.sessionId;
+      if (!sessionId) {
+        res.status(400).json({ message: 'Missing Codex login session id' });
+        return;
+      }
+      const cancelled = await cancelCodexLogin(sessionId, { authFilePath, env });
+      res.status(cancelled ? 204 : 404).end();
     },
 
     async logoutOpenAIOAuthToken(_req: Request, res: Response): Promise<void> {
