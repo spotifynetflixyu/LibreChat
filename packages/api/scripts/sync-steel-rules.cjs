@@ -192,7 +192,23 @@ const categoryRuleMetadataByFile = {
     catalogFamily: 'hole',
     priority: 23,
   },
-  'docs/rules/類別規則/長管-切工.txt': {
+  'docs/rules/類別規則/網.txt': {
+    slug: 'steel_quote_rules_mesh',
+    title: 'Steel 網類別規則',
+    locator: '網類別規則',
+    ruleSection: 'mesh',
+    catalogFamily: 'mesh',
+    priority: 22,
+  },
+  'docs/rules/類別規則/方鐵.txt': {
+    slug: 'steel_quote_rules_square_bar',
+    title: 'Steel 方鐵類別規則',
+    locator: '方鐵類別規則',
+    ruleSection: 'square_bar',
+    catalogFamily: 'square_bar',
+    priority: 22,
+  },
+  'docs/rules/類別規則/長條料-切工.txt': {
     slug: 'steel_quote_rules_long_material_cutting',
     title: 'Steel 長條料切工類別規則',
     locator: '長條料切工類別規則',
@@ -438,6 +454,7 @@ async function deleteRemovedRules(client, rules) {
     'docs/rules/鋼材規則/鐵板.txt',
     'docs/rules/鋼材規則/孔.txt',
     'docs/rules/鋼材規則/長管-切工.txt',
+    'docs/rules/類別規則/長管-切工.txt',
   ];
   const sourceFiles = [
     'docs/rules/agent規則.txt',

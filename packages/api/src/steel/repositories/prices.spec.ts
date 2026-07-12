@@ -90,6 +90,7 @@ describe('Steel price candidate repository', () => {
           subcategory: '鋼管',
           material: '黑鐵',
           thicknessMm: ['2', '2.0', '2.3'],
+          stockLengthMm: ['6000', '9000', '9000', '10000.0'],
           erpItemCode: '00123',
           keyword: '黑鐵鋼管 50*2',
           limit: 101,
@@ -98,6 +99,13 @@ describe('Steel price candidate repository', () => {
           queryId: 'discover',
           mode: 'category_discovery',
           keyword: '黑鐵 鋼管',
+        },
+        {
+          queryId: 'plate',
+          category: '鐵板',
+          material: '黑鐵',
+          unit: 'Kg',
+          thicknessMm: ['6'],
         },
       ],
     });
@@ -112,12 +120,14 @@ describe('Steel price candidate repository', () => {
     expect(sql).toContain('p.category = input_query.category');
     expect(sql).toContain('p.subcategory = input_query.subcategory');
     expect(sql).toContain('p.material ILIKE');
+    expect(sql).toContain('p.unit = input_query.unit');
     expect(sql).toContain('p.thickness_min_mm <= requested_thickness::numeric');
     expect(sql).toContain('requested_thickness::numeric < p.thickness_max_mm');
     expect(sql).toContain('p.thickness_min_mm = p.thickness_max_mm');
     expect(sql).toContain('p.thickness_min_mm = requested_thickness::numeric');
+    expect(sql).toContain('p.length_mm = requested_stock_length::numeric');
+    expect(sql).toContain("p.value_state <> 'no_price'");
     expect(sql).not.toContain('p.source_thickness::numeric');
-    expect(sql).not.toContain('p.unit = input_query.unit');
     expect(sql).toContain('p.spec_key ILIKE');
     expect(sql).toContain('p.normalized_spec_text ILIKE');
     expect(sql).not.toContain('review_state');
@@ -136,6 +146,7 @@ describe('Steel price candidate repository', () => {
         material: '黑鐵',
         keyword_terms: ['黑鐵鋼管', '50x2'],
         thickness_mm: ['2', '2.3'],
+        stock_length_mm: ['6000', '9000', '10000'],
         erp_item_code: '00123',
         query_limit: 100,
       }),
@@ -144,6 +155,14 @@ describe('Steel price candidate repository', () => {
         query_id: 'discover',
         mode: 'category_discovery',
         query_limit: 30,
+      }),
+      expect.objectContaining({
+        query_index: 2,
+        query_id: 'plate',
+        category: '鐵板',
+        material: '黑鐵',
+        unit: 'Kg',
+        thickness_mm: ['6'],
       }),
     ]);
     expect(result.map((group) => group.queryId)).toEqual(['line-1', 'discover']);

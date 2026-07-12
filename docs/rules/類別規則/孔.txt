@@ -5,7 +5,7 @@
 查價方式：
 
 1. 孔加工 query 的 `category` 固定使用 `加工/孔`；`subcategory` 使用 `鐵板`、`角鐵`、`接頭`、`五金` 或 `門`，不確定時省略。
-2. 首查使用 `category` + 對應 `subcategory` + live DB 的產品/加工名稱 `keyword`。`厚度1.0-4.5m/m 鐵板鑽孔φ` 的 1.0-4.5 是工件厚度；`冷鍍鋅角鐵沖孔 51mm*3.5 單*3M` 解析為寬 51mm、厚 3.5mm、長 3M、單沖孔。`沖3/4□孔` 的 3/4 是孔徑、□ 是孔型，不得放入 `thicknessMm`；此類沖孔價預設採 KZZB11 `沖孔加工`，孔徑與孔型只保留在報價描述，不作價格 key。
+2. 首查使用 `category` + 對應 `subcategory` + 通用加工名稱/規格 `keyword`，不得複製 live DB 的來源 product_name；專有加工名只有用戶明確指定時才可原樣使用。`厚度1.0-4.5m/m 鐵板鑽孔φ` 的 1.0-4.5 是工件厚度；`冷鍍鋅角鐵沖孔 51mm*3.5 單*3M` 解析為寬 51mm、厚 3.5mm、長 3M、單沖孔。`沖3/4□孔` 的 3/4 是孔徑、□ 是孔型，不得放入 `thicknessMm`；此類沖孔價預設採 KZZB11 `沖孔加工`，孔徑與孔型只保留在報價描述，不作價格 key。
 3. 材料與孔加工放在同一次 grouped query，例如：
    `{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["12"]},{"category":"加工/孔","subcategory":"鐵板","thicknessMm":["12"]}]}`
 4. 孔價厚度區間使用「以上（含）、以下（不含）」比對：`thickness_min_mm <= requestedThicknessMm < thickness_max_mm`。單一厚度上下限相同時使用精確匹配。

@@ -386,6 +386,210 @@ describe('Steel minimal tool execution', () => {
     expect(JSON.stringify(result.data)).not.toContain('sourceRefs');
   });
 
+  it('orders default plate modes and exposes Kg ratio-only rows as normal tier prices', async () => {
+    const ratioOnlyLaser = createPriceRow({
+      id: '21',
+      erp_item_code: 'PLATE-LASER',
+      category: '鐵板',
+      product_name: '28.0mmOT板雷射切割',
+      normalized_spec_text: '28.0mmOT板雷射切割',
+      unit: 'Kg',
+      value_state: 'ratio_only',
+      unit_price_a: null,
+      unit_price_b: null,
+      unit_price_d: null,
+      unit_price_f: null,
+    });
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: [
+            createPriceRow({
+              id: '23',
+              erp_item_code: 'PLATE-SHAPE',
+              category: '鐵板',
+              product_name: '28.0mmOT板版型切割',
+              normalized_spec_text: '28.0mmOT板版型切割',
+            }),
+            createPriceRow({
+              id: '22',
+              erp_item_code: 'PLATE-SQUARE',
+              category: '鐵板',
+              product_name: '28.0mmOT板四方切',
+              normalized_spec_text: '28.0mmOT板四方切',
+            }),
+            ratioOnlyLaser,
+          ],
+          category_candidates: [],
+        },
+      ],
+      [],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ category: '鐵板', thicknessMm: ['28'] }] },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+
+    const candidates = result.data.queryResults[0]?.candidates;
+    expect(candidates?.map((candidate) => candidate.erpItemCode)).toEqual([
+      'PLATE-LASER',
+      'PLATE-SQUARE',
+      'PLATE-SHAPE',
+    ]);
+    expect(candidates?.[0]).toEqual(
+      expect.objectContaining({
+        valueState: 'ratio_only',
+        pricingOptions: [
+          {
+            source: 'tier_price',
+            quoteEligible: true,
+            quoteUnit: 'Kg',
+            tierPrices: { A: 1.4, B: 1.3, C: null, D: 1.2, E: null, F: 1.1 },
+          },
+        ],
+      }),
+    );
+    expect(JSON.stringify(candidates?.[0])).not.toContain('price_ratio');
+  });
+
+  it('exposes Kg ratio-only rows as normal tier prices for every category', async () => {
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: [
+            createPriceRow({
+              category: '圓條',
+              unit: 'Kg',
+              value_state: 'ratio_only',
+              unit_price_a: null,
+              unit_price_b: null,
+              unit_price_d: null,
+              unit_price_f: null,
+            }),
+          ],
+          category_candidates: [],
+        },
+      ],
+      [],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ category: '圓條' }] },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.queryResults[0]?.candidates[0]?.pricingOptions).toEqual([
+      {
+        source: 'tier_price',
+        quoteEligible: true,
+        quoteUnit: 'Kg',
+        tierPrices: { A: 1.4, B: 1.3, C: null, D: 1.2, E: null, F: 1.1 },
+      },
+    ]);
+  });
+
+  it('orders ordinary black square bars before polished candidates unless磨光 is requested', async () => {
+    const polished = createPriceRow({
+      id: '201',
+      erp_item_code: 'SQUARE-POLISHED',
+      category: '方鐵',
+      product_name: '磨光方鐵 25mm',
+      normalized_spec_text: '磨光方鐵 25mm',
+    });
+    const ordinary = createPriceRow({
+      id: '202',
+      erp_item_code: 'SQUARE-ORDINARY',
+      category: '方鐵',
+      product_name: '黑鐵方鐵 25mm',
+      normalized_spec_text: '黑鐵方鐵 25mm',
+    });
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: [polished, ordinary],
+          category_candidates: [],
+        },
+      ],
+      [],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ category: '方鐵', keyword: '25mm' }] },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.queryResults[0]?.candidates.map((candidate) => candidate.erpItemCode)).toEqual([
+      'SQUARE-ORDINARY',
+      'SQUARE-POLISHED',
+    ]);
+  });
+
+  it('keeps every plate-size candidate for unit 片 without a dimension query filter', async () => {
+    const priceCandidates = Array.from({ length: 8 }, (_, index) =>
+      createPriceRow({
+        id: String(100 + index),
+        erp_item_code: `PLATE-SHEET-${index + 1}`,
+        category: '鐵板',
+        unit: '片',
+        sheet_width_mm: String(1200 + index),
+        sheet_length_mm: String(2400 + index),
+      }),
+    );
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: priceCandidates,
+          category_candidates: [],
+        },
+      ],
+      [],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ category: '鐵板', unit: '片', thicknessMm: ['0.5'] }] },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.queryResults[0]?.query).toEqual({
+      queryId: 'q1',
+      category: '鐵板',
+      unit: '片',
+      material: '黑鐵',
+      thicknessMm: ['0.5'],
+    });
+    expect(result.data.queryResults[0]?.candidates).toHaveLength(8);
+  });
+
   it('labels pipe and bar candidates with unit-driven material billing policies', async () => {
     const client = createClient([
       [
@@ -540,7 +744,7 @@ describe('Steel minimal tool execution', () => {
     expect(JSON.stringify(result.data.cuttingPrices)).not.toContain('鐵管');
   });
 
-  it('marks non-Kg/M ratio pricing as skipped and non-quote-eligible', async () => {
+  it('exposes ratio-only rows with source unit 支 as Kg tier prices', async () => {
     const client = createClient([
       [
         {
@@ -583,23 +787,23 @@ describe('Steel minimal tool execution', () => {
         status: 'ok',
         candidates: [
           expect.objectContaining({
-            quoteEligible: false,
-            pricingOptions: [],
-            skippedPricingOptions: [
+            unit: 'Kg',
+            quoteEligible: true,
+            pricingOptions: [
               {
-                source: 'price_ratio',
-                status: 'skipped',
-                reason: 'category_rule_pending',
-                quoteEligible: false,
-                quoteUnit: '支',
+                source: 'tier_price',
+                quoteEligible: true,
+                quoteUnit: 'Kg',
+                tierPrices: { A: 1.4, B: 1.3, C: null, D: 1.2, E: null, F: 1.1 },
               },
             ],
+            skippedPricingOptions: [],
           }),
         ],
       }),
     ]);
     expect(JSON.stringify(result.data)).not.toContain('tierRatios');
-    expect(JSON.stringify(result.data)).not.toContain('"A":1.4');
+    expect(JSON.stringify(result.data)).toContain('"A":1.4');
   });
 
   it('preserves every per-query candidate without a grouped total limit', async () => {

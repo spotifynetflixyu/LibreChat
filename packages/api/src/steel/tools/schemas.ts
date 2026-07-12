@@ -78,7 +78,9 @@ interface SteelPriceLookupQueryInput {
   category: (typeof priceCategories)[number];
   subcategory?: string;
   material?: (typeof priceLookupMaterialKinds)[number];
+  unit?: string;
   thicknessMm?: string[];
+  stockLengthMm?: string[];
   erpItemCode?: string;
   keyword?: string;
   limit?: number;
@@ -156,7 +158,7 @@ const lookupInstructionsSchema = z.object({
   limit: limitSchema,
 });
 
-const legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
+const _legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
   customerContext: z
     .object({
       customerId: z.number().int().positive().optional(),
@@ -167,7 +169,7 @@ const legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
     .optional(),
 });
 
-const lookupDefaultsSchema = z.object({
+const _lookupDefaultsSchema = z.object({
   catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
   customerContext: z
     .object({
@@ -182,6 +184,44 @@ const lookupDefaultsSchema = z.object({
   limit: limitSchema,
 });
 
+const stockLengthMmSchema = z.preprocess(
+  (value) =>
+    Array.isArray(value)
+      ? [
+          ...new Set(
+            value
+              .filter((item) => positiveDecimalString.safeParse(item).success)
+              .map((item) => String(Math.round(Number(item)))),
+          ),
+        ].slice(0, 20)
+      : value,
+  z.array(positiveDecimalString),
+);
+
+const tolerantStringSchema = z.preprocess(
+  (value) => (typeof value === 'string' ? value : undefined),
+  z.string().optional(),
+);
+
+const directMaterialAliases = new Map<string, (typeof priceLookupMaterialKinds)[number]>([
+  ['黑鐵', '黑鐵'],
+  ['2B', '2B'],
+  ['NO1', 'NO1'],
+  ['HL', 'HL'],
+  ['沙面', 'HL'],
+  ['砂面', 'HL'],
+  ['BA', 'BA'],
+  ['亮面', 'BA'],
+  ['鋁', '鋁'],
+  ['錏', '錏'],
+  ['熱浸鍍', '錏'],
+  ['熱浸鍍鋅', '錏'],
+  ['熱進鍍鋅', '錏'],
+  ['鋅', '鋅'],
+  ['鎢', '鎢'],
+  ['塑膠', '塑膠'],
+]);
+
 const priceLookupQuerySchema = z
   .object({
     queryId: nonEmptyString.optional(),
@@ -194,13 +234,16 @@ const priceLookupQuerySchema = z
     subcategory: optionalFilterString.describe(
       'Optional subcategory enum for the selected category. Empty means no subcategory filter.',
     ),
-    material: z
-      .enum(priceLookupMaterialKinds)
-      .optional()
-      .describe(
-        'Optional contains-match material family. Use one of 黑鐵, 白鐵, 鋁, 錏, 鋅, 鎢, or 塑膠.',
-      ),
+    material: tolerantStringSchema.describe(
+      'Optional tolerant material alias. Supports 黑鐵, 白鐵/ST/不鏽鋼, 2B, NO1, HL/沙面, BA/亮面, 鋁, 錏, 鋅, 鎢, or 塑膠.',
+    ),
+    unit: tolerantStringSchema.describe(
+      'Optional price unit. For 鐵板, Kg/kg stays Kg and every other supplied value becomes 片.',
+    ),
     thicknessMm: z.array(positiveDecimalString).min(1).max(20).optional(),
+    stockLengthMm: stockLengthMmSchema
+      .optional()
+      .describe('Optional OR filter for candidate stock lengths in millimeters.'),
     erpItemCode: nonEmptyString.optional(),
     keyword: nonEmptyString.optional(),
     limit: priceQueryLimitSchema,
@@ -232,6 +275,98 @@ const searchPriceCandidateQuerySchema = z.union([
   priceLookupQuerySchema,
 ]);
 
+function normalizeStockLengthMm(
+  values: unknown[] | undefined,
+  category: (typeof priceCategories)[number],
+): string[] | undefined {
+  if (values === undefined) {
+    return undefined;
+  }
+
+  const minimum = category === 'H型鋼' ? 6000 : 0;
+  const normalized = values.flatMap((value) => {
+    if (typeof value !== 'string') {
+      return [];
+    }
+
+    const parsed = positiveDecimalString.safeParse(value.normalize('NFKC').trim());
+    if (!parsed.success || Number(parsed.data) < minimum) {
+      return [];
+    }
+
+    return [String(Number(parsed.data))];
+  });
+
+  return [...new Set(normalized)].slice(0, 20);
+}
+
+function normalizeMaterial(
+  value: string | undefined,
+  category: (typeof priceCategories)[number],
+  thicknessMm: string[] | undefined,
+): (typeof priceLookupMaterialKinds)[number] | undefined {
+  const text = value?.normalize('NFKC').trim();
+  const key = text?.toUpperCase();
+  if (key && (key.includes('2B') || key.includes('霧面'))) {
+    return '2B';
+  }
+  if (key?.includes('NO1')) {
+    return 'NO1';
+  }
+  if (key && (/(?:^|[\s/])HL(?:$|[\s/])/u.test(key) || key === 'STHL' || /[沙砂]面/u.test(key))) {
+    return 'HL';
+  }
+  if (key && (/(?:^|[\s/])BA(?:$|[\s/])/u.test(key) || key === 'STBA' || key.includes('亮面'))) {
+    return 'BA';
+  }
+  const normalized = key ? directMaterialAliases.get(key) : undefined;
+  if (normalized) {
+    return normalized;
+  }
+
+  if (key === '不鏽鋼') {
+    return '白鐵';
+  }
+  if (key !== '白鐵' && key !== 'ST') {
+    return category === '鐵板' ||
+      category === '圓管' ||
+      category === '平鐵' ||
+      category === '方鐵' ||
+      category === '槽鐵' ||
+      category === '角鐵'
+      ? '黑鐵'
+      : undefined;
+  }
+  if (category !== '鐵板' || !thicknessMm || thicknessMm.length === 0) {
+    return '白鐵';
+  }
+
+  const thicknesses = thicknessMm.map(Number);
+  if (thicknesses.every((thickness) => thickness < 3)) {
+    return '2B';
+  }
+  if (thicknesses.every((thickness) => thickness >= 3)) {
+    return 'NO1';
+  }
+
+  return '白鐵';
+}
+
+function normalizeUnit(
+  value: string | undefined,
+  category: (typeof priceCategories)[number],
+): string | undefined {
+  if (category === '鐵板') {
+    return value?.toLowerCase() === 'kg' || value === undefined ? 'Kg' : '片';
+  }
+
+  if (category === '網') {
+    return undefined;
+  }
+
+  return value?.trim() || undefined;
+}
+
 const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
   .object({
     queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1),
@@ -239,10 +374,27 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
   .strict()
   .transform(
     (input): SearchPriceCandidatesInput => ({
-      queries: input.queries.map((query, index) => ({
-        ...query,
-        queryId: `q${index + 1}`,
-      })) as SearchPriceCandidateQueryInput[],
+      queries: input.queries.map((query, index) => {
+        if (query.mode === 'category_discovery') {
+          return { ...query, queryId: `q${index + 1}` };
+        }
+
+        const { material: rawMaterial, unit: rawUnit, limit: rawLimit, ...queryFields } = query;
+        const stockLengthMm = normalizeStockLengthMm(query.stockLengthMm, query.category);
+        const material = normalizeMaterial(rawMaterial, query.category, query.thicknessMm);
+        const unit = normalizeUnit(rawUnit, query.category);
+        const limit = rawLimit;
+        const normalizedQuery = {
+          ...queryFields,
+          ...(material ? { material } : {}),
+          ...(unit ? { unit } : {}),
+          ...(limit === undefined ? {} : { limit }),
+          ...(stockLengthMm === undefined ? {} : { stockLengthMm }),
+          queryId: `q${index + 1}`,
+        };
+
+        return normalizedQuery;
+      }) as SearchPriceCandidateQueryInput[],
     }),
   );
 
@@ -264,7 +416,7 @@ const readMarkdownSchema: z.ZodType<ReadMarkdownInput> = z
     }
   });
 
-const runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
+const _runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
   .object({
     filename: nonEmptyString.optional(),
     fileIndex: z.number().int().min(0).optional(),

@@ -100,7 +100,7 @@
 - Modify: `docs/rules/類別規則/鐵板.txt`
 - Modify: `docs/rules/類別規則/C型鋼.txt`
 - Modify: `docs/rules/類別規則/H型鋼.txt`
-- Modify: `docs/rules/類別規則/長管-切工.txt`
+- Modify: `docs/rules/類別規則/長條料-切工.txt`
 - Modify: `docs/rules/agent規則.txt`
 - Modify: `docs/rules/輸出規則.txt`
 - Modify: `packages/api/scripts/sync-steel-rules.spec.ts`

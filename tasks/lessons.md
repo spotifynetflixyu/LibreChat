@@ -15,6 +15,17 @@
 - 類別規則中的 `search_price_candidates` 範例不可只看字面合理；每個 JSON 都要對 dev/prod live `steel.prices` 重播，分別記錄「有 candidate」與「有 `quoteEligible` 價」。例如方管 `150x6` 雖命中 GDB15060，但只有不可用的非 Kg/M ratio，應改用 `100x6` 作可報價範例，並明載 150x6 須人工複核。
 - 切工 candidate-aware matcher 若同時命中一般尺寸 key 與更精確的複合尺寸 key，必須優先複合 key；例如槽鐵 200x90 不可同時回傳一般 `200` 與精確 `200x90` 兩個價格。
 - Candidate-aware `cuttingPrices` 應保留材料與切工 catalog 的並行 Supabase 查詢，再由 backend code 於兩邊返回後 post-filter；這能降低 AI token 而不增加 DB round-trip。篩選不只處理 base price，補充規則也必須依 candidate 的類別、材質與尺寸排除不適用列。
+- `search_price_candidates` 首次查價的 `keyword` 只能使用通用產品名稱與規格，不得自行使用來源資料中的專有品名、廠牌、系列名或 DB token；例如使用「鋼管」，不得自行使用「黑A鋼管」。只有用戶原文明確指定該專有名詞時才可原樣保留；候選 product_name 不得反向成為初查或修正 query。
+- 已由 `category`／`subcategory` 表達的通用類別名稱不得重複放入 keyword；例如平鐵、角鐵、方管、扁方管、圓鐵、方鐵、槽鐵只保留尺寸規格 keyword。類別詞只有在 category discovery 或用戶明確指定且確有辨識必要時才使用。
+- C型鋼訂單常見格式如 `C 125x2.5 2.3 4m`：首次查價未指定材質時預設 `material: "錏"`；一般材料 keyword 使用截面規格與厚度，但長度不得列入 keyword，因材料按 Kg 計價；樑柱初查的 keyword 只用 `樑柱`；未提供厚度時，在其他條件相符的可報價候選中採最薄厚度。
+- 逐類別整理 Steel keyword 規則時，每個已確認類別只更新本地 `docs/rules`；不得逐類別同步 `steel.rules`。等所有類別都討論、確認並完成本地修改後，才依使用者指示一次 dry-run、apply 與 DB readback。
+- `search_price_candidates` 必須由 backend 候選查詢代碼固定排除 `value_state: "no_price"`，不得把這項限制寫進 AI rules，也不得讓 no-price rows 返回給 AI 判斷或重查；排除後沒有可用候選時，才依既有 no-match/manual-review contract 處理。
+- `stockLengthMm` 採容錯正規化：不合規元素一律靜默移除，不得因單一壞值拒絕整筆 query。H型鋼最短可用母材為 6M，並額外由 tool 代碼移除 `< 6000mm` 的有效數字，`6000mm` 保留；H 型鋼門檻不可誤套其他價格類別。
+- 鐵板同材質、同厚度、同 unit 的價格候選，使用者未指定加工關鍵字時由 backend 依 `雷射切割 -> 四方切 -> 版型切型` 固定順序選價；使用者明確指定其中一種時，只採指定加工類型，不套預設 fallback 順序。這個排序應由代碼保證，不交給 AI 從大量候選自行猜選。
+- 價格查詢的 material parse／alias 正規化必須套用所有類別，不可只為鐵板特判；例如輸入 `NO1` 要匹配 DB `白鐵 / NO1`，輸入 `2B` 要匹配 `白鐵霧面 / ST 2B`，HL/BA 與沙面/亮面同理。只有鐵板的「未指定材質預設黑鐵」及「泛稱白鐵依厚度預設 2B/NO1」是 category-specific default。
+- 鐵板價格匯入不得把表面代碼 `2B` 的 `2` 或 `NO1` 的 `1` 誤認為厚度；parser 應優先從產品名稱辨識實際板厚並覆蓋污染的 source thickness，例如 `ST2B 3.0` -> 3mm、`10.0m/mSTNO1` -> 10mm。使用者要求先修 parser 與本地 parsed data 時，不得提前重匯或更新 Supabase data。
+- 價格 query 的 unit filter 適用所有類別，其他類別必須保留 AI 傳入的 unit 原值並用於查詢。只有鐵板有 category-specific 正規化：unit 缺省時預設 `Kg`，`Kg`/`kg` 保留為 `Kg`，其他值一律轉成 `片`。
+- `unit: 片` 時保留全部尺寸候選並禁止 AI 用尺寸重查，僅限鐵板。`value_state: ratio_only` 且 `unit: Kg` 將 `price_ratio` 轉成一般 `tier_price` / `tierPrices` 輸出則是所有價格類別的通用 backend 邏輯，不可限制在鐵板。
 - `search_price_candidates` 的自動 `cuttingPrices` 不可只依輸入 category 回傳整包切工目錄；應先完成材料查詢，再以實際命中的 candidate 規格做類別專用匹配。材料 `no_match` 時不得附上該類切工，否則既增加 context，也會讓模型誤以為已有可套用切工。
 - 方管價格資料的 canonical keyword 只寫一次邊長，例如圖面 `150x150x6` 要查 `category: "方管" + keyword: "150x6"`；不能把完整方形截面直接當 DB keyword。所有 canonical query 都必須以 live `steel.prices` 的實際 `normalized_spec` 驗證。
 - Production 出現第二次 `search_price_candidates` 時，要先區分「模型針對部分 `no_match` 的 repair/retry」與 backend 自動切工 enrichment。切工 catalog 不會自行觸發第二次 tool call，但重複回傳整包 catalog 會大幅放大第二輪 context；已成功 query 與完全未改寫的失敗 query 都不得重送。
@@ -1021,3 +1032,30 @@
   browser login is an additional option, not a replacement for device login.
 - 新版 Steel 產品價格 workbook 更新時，以 `erp_item_code` 作唯一鍵直接覆蓋既有價格列；不得因 category/subcategory 看似異常而自行猜測、搬類或修改來源資料。workbook 原值與使用者明示 rename 才是更新依據。
 - 新版 Steel 產品價格匯入順序固定為：先依新版 workbook category/subcategory 整理並驗證程式 enum 與 DB constraint，再執行資料匯入；不得先匯入後補 enum。
+- Production Steel schema migrations 與 prod admin link 使用 `.env.prod.admin` 的 `PROD_ADMIN_URL` owner/admin 連線；production 價格與 rules runtime 同步使用 `.env.prod` 的 `STEEL_POSTGRES_URL` (`prod_app`)。不得用 `prod_app` 嘗試 `ALTER TABLE`，也不得因 repo Supabase link/MCP 指向不同 project 而誤套 migration。
+- 長條型鋼材的共用切工規則涵蓋管類、圓條、型鋼等多種長條料時，檔名應使用 `長條料-切工.txt`，不要以 `長管` 誤縮小適用範圍；改名時同步更新 rule metadata、測試排除清單與舊 source-ref cleanup。
+- `ratio_only` 表示比例欄本身就是報價單價；來源列即使標成 `unit: 支`，也要由通用 backend 正規化為有效 `Kg` tier price，輸出、quote unit 與材料計價模式都不得再按支處理。
+- 長條料預設長度與括號／單重語意要分開判斷：平鐵、角鐵、圓管、圓條、扁方管、方管只要 `product_name` 沒有標記長度，就固定以 6M 為預設；即使圓管括號是外徑、方管重量欄有尺度問題，也不影響這六類的 6M 長度預設。
+- 價格 workbook 的禁用品名標記必須由 importer code 統一處理：`沒做`、`勿用`、`沒出`、`沒貨`、`不生產`、`不用`、`沒現貨` 任一命中就強制 `value_state: no_price`，並清空 direct/ratio 價格，不能只依賴來源 value_state。
+- 圓管品名的規格尾端純數字括號依使用者確認是6M整支 kg 單重，例如 `鍍鋅B管 3/8*2.3(17)` 的17是6M約17kg，不是外徑；parser 應保留 nominal pipe size、壁厚與6M單重三種語意。
+- 無長度固定6M的長條類只包含平鐵、角鐵、圓管、圓條、扁方管、方管；方鐵不在此清單。
+- 圓管括號不能用單一全類別語意：使用者已確認 `鍍鋅B管 3/8*2.3(17)` 的 `(17)` 是6M整支重量；配管等其他 family 的括號可能是外徑。parser 必須依 product family 判斷，不能因幾何理論重不符就覆蓋明示來源語意。
+- 方鐵不屬於「品名無長度固定補6M」清單；只解析 product_name 明確提供的 M/L 長度，沒有長度時保持 null。
+- 方鐵不屬於長條料類別；query、長度、單重與計價規則集中於 `docs/rules/類別規則/方鐵.txt`，不得再放入或套用 `長條料-切工.txt` 通則。
+- 方鐵query不得固定unit=Kg，因Kg與支都有可用價格；首查不加unit filter。Kg row以邊長mm平方 × 成品長度mm × candidate density(g/cm³) ÷ 1,000,000計重，支row依明示整支長度配料並按整支direct價；規則只描述計算方式，不類比其他類別。
+- 方管屬於「品名無長度固定補6M」的長條料類別；product_name 明示 M/L 長度時優先，未標長度時一律使用6M。連料、雨棚架、沖孔窗、太陽片等成品尺寸另行解析，不得覆蓋一般方管素材的6M預設語意。
+- Steel 價格品名的禁用標記也包含「無生產」；需與「不生產」同樣由 importer 強制改為 `value_state: no_price` 並清空 direct/ratio 價格。
+- 預設6M的長條材料查價不要固定加入 `stockLengthMm: [6000]`；AI應從返回的6000、12000或其他可用素材長度做不切清配料，訂單成品長度只用於裁切計算，不作母材長度 query filter。
+- 品名中的「熱浸鍍」一律正規化為材質 `錏 / 鍍鋅`，不可因 workbook 原材質欄寫黑鐵而漏掉熱浸鍍候選。
+- 尺、inch、mm 長度的原始表示要保留在品名／備註；正規化成毫米供比對時使用四捨五入整數，不以小數位作匹配條件。台制尺換算採1尺=303mm。
+- 網類 `unit: 丸` 是整捲計價；不足一捲仍按一整丸，除非未來有明確裁售價格列，不得按使用長度比例拆價。
+- 網類 `unit: 才` 的面積數量必須無條件進位成整才後再乘direct單價，不可用小數才計價。
+- 網類首查只用 `category + subcategory + material`，不得用unit、尺寸keyword或長度filter。訂單unit只供候選返回後的計價判斷；AI從候選的整片、整捲或面積規格判斷是否足夠裁切。除了㎡可按實際小數面積外，其餘計價單位進位成整數並維持不切清。
+- 網類品名單獨標示「2尺」通常是網子的高度／寬度，不是整捲長度；parser應寫入sheetWidthMm（2尺=606mm），不得寫成lengthMm。
+- 網類不需要新增額外query params，也不把線徑、孔徑、尺/kg或其他尺寸塞進keyword；首查維持category/subcategory/material，完整網規格由parser放入既有candidate structured fields與dimensionSignature供AI挑選。
+- 網類query未指定limit時維持通用預設30，不得由code自動放大為100；也不得用unit filter縮小候選。
+- 網類規則集中維護於 `docs/rules/類別規則/網.txt`；查價總表保留類別摘要，專屬文件保存完整parser與整數單位計價契約，兩者不可互相矛盾。
+- 點焊鋼絲網品名如 `5.5 15x15 2Mx3M(6)`：5.5是鋼絲直徑mm，15x15是cm網孔（正規化150x150mm），2Mx3M是每片尺寸，尾端(6)是每捆/束6片包裝數，不是kg或單重。
+- 點焊鋼絲網線徑可能寫成 `6.0足`；此處「足」是線徑標示的一部分，parser仍應取得6.0mm，不得因此退回污染的normalized欄位。
+- ST網的4尺/2尺是網寬、100尺是網長，16目是每英吋網孔數；尺原文保留並分別正規化到sheetWidthMm/sheetLengthMm，不得把16目當長度或厚度。
+- 錏浪型網如 `8#(3.6)x38mm □孔`：8#是線號、3.6mm是線徑、38mm是38x38正方孔；parser以thickness=3.6、width/height=38保存，不得採污染的inch衍生值。

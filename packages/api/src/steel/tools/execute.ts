@@ -230,6 +230,15 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
   const skippedPricingOptions: SteelRawToolOutput[] = [];
   const hasTierPrices = hasPriceTierValue(tierPrices);
   const hasTierRatios = hasPriceTierValue(tierRatios);
+  const ratioAsKgTierPrice =
+    candidate.valueState === 'ratio_only' &&
+    (candidate.unit === 'Kg' || candidate.unit === '支') &&
+    !hasTierPrices &&
+    hasTierRatios;
+  const effectiveCandidate = ratioAsKgTierPrice ? { ...candidate, unit: 'Kg' } : candidate;
+  const effectiveCandidateFields = ratioAsKgTierPrice
+    ? { ...candidateFields, unit: 'Kg' }
+    : candidateFields;
 
   if (hasTierPrices) {
     pricingOptions.push({
@@ -240,7 +249,14 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
     });
   }
 
-  if (hasTierRatios && (candidate.unit === 'Kg' || candidate.unit === 'M')) {
+  if (ratioAsKgTierPrice) {
+    pricingOptions.push({
+      source: 'tier_price',
+      quoteEligible: true,
+      quoteUnit: 'Kg',
+      tierPrices: tierRatios,
+    });
+  } else if (hasTierRatios && (candidate.unit === 'Kg' || candidate.unit === 'M')) {
     pricingOptions.push({
       source: 'price_ratio',
       quoteEligible: true,
@@ -258,12 +274,55 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
   }
 
   return {
-    ...candidateFields,
-    ...getLongMaterialBillingPolicy(candidate),
+    ...effectiveCandidateFields,
+    ...getLongMaterialBillingPolicy(effectiveCandidate),
     quoteEligible: pricingOptions.length > 0,
     pricingOptions,
     skippedPricingOptions,
   };
+}
+
+function getPlatePriceModeRank(candidate: SteelPriceItem): number {
+  const text = `${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`;
+  if (text.includes('雷射切割')) {
+    return 0;
+  }
+  if (text.includes('四方切')) {
+    return 1;
+  }
+  if (/版型切型|版型切割|雷切割型|割型/u.test(text)) {
+    return 2;
+  }
+
+  return 3;
+}
+
+function getSquareBarFinishRank(candidate: SteelPriceItem): number {
+  const text = `${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`;
+  return text.includes('磨光') ? 1 : 0;
+}
+
+function orderPriceCandidates(
+  query: SearchPriceCandidatesInput['queries'][number],
+  candidates: readonly SteelPriceItem[],
+): SteelPriceItem[] {
+  if (query.mode === 'category_discovery') {
+    return [...candidates];
+  }
+
+  if (query.category === '方鐵' && !query.keyword?.includes('磨光')) {
+    return [...candidates].sort(
+      (left, right) => getSquareBarFinishRank(left) - getSquareBarFinishRank(right),
+    );
+  }
+
+  if (query.category !== '鐵板' || query.keyword) {
+    return [...candidates];
+  }
+
+  return [...candidates].sort(
+    (left, right) => getPlatePriceModeRank(left) - getPlatePriceModeRank(right),
+  );
 }
 
 async function searchPriceCandidates(
@@ -296,7 +355,9 @@ async function searchPriceCandidates(
   let categoryCandidateCount = 0;
   const queryResults = input.queries.map((query, queryIndex) => {
     const repositoryGroup = groupsByIndex.get(queryIndex);
-    const candidates = (repositoryGroup?.candidates ?? []).map(toSafePriceCandidate);
+    const candidates = orderPriceCandidates(query, repositoryGroup?.candidates ?? []).map(
+      toSafePriceCandidate,
+    );
     const categoryCandidates = repositoryGroup?.categoryCandidates ?? [];
     const matched = candidates.length > 0 || categoryCandidates.length > 0;
 

@@ -29,9 +29,9 @@ const EXPECTED_RECONCILIATION = Object.freeze({
   duplicateErpItemCodes: 0,
   activeRows: 6761,
   byValueState: Object.freeze({
-    confirmed: 4880,
-    ratio_only: 230,
-    no_price: 1651,
+    confirmed: 4787,
+    ratio_only: 190,
+    no_price: 1784,
   }),
 });
 const INSERT_COLUMNS = Object.freeze([

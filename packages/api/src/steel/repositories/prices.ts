@@ -132,7 +132,9 @@ export interface SteelPriceLookupQuery {
   category: PriceCategory;
   subcategory?: string;
   material?: PriceLookupMaterialKind;
+  unit?: string;
   thicknessMm?: readonly string[];
+  stockLengthMm?: readonly string[];
   erpItemCode?: string;
   keyword?: string;
   limit?: number;
@@ -175,7 +177,9 @@ interface SerializedPriceQuery {
   subcategory?: string;
   material?: PriceLookupMaterialKind;
   material_terms?: readonly string[];
+  unit?: string;
   thickness_mm?: readonly string[];
+  stock_length_mm?: readonly string[];
   erp_item_code?: string;
   keyword_terms?: readonly string[];
   query_limit: number;
@@ -205,7 +209,7 @@ function toKeywordTerms(value: string | undefined): string[] | undefined {
   return terms.length > 0 ? terms : undefined;
 }
 
-function formatThicknessMm(value: string): string {
+function formatDecimalString(value: string): string {
   const normalized = value.normalize('NFKC').trim();
   const parsed = Number(normalized);
 
@@ -246,8 +250,12 @@ function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number
     subcategory: query.subcategory,
     material: query.material,
     material_terms: query.material ? [query.material] : undefined,
+    unit: query.unit,
     thickness_mm: query.thicknessMm
-      ? [...new Set(query.thicknessMm.map(formatThicknessMm))]
+      ? [...new Set(query.thicknessMm.map(formatDecimalString))]
+      : undefined,
+    stock_length_mm: query.stockLengthMm
+      ? [...new Set(query.stockLengthMm.map(formatDecimalString))]
       : undefined,
     erp_item_code: query.erpItemCode,
   } satisfies SerializedPriceQuery;
@@ -405,7 +413,9 @@ WITH input_queries AS (
     subcategory TEXT,
     material TEXT,
     material_terms TEXT[],
+    unit TEXT,
     thickness_mm TEXT[],
+    stock_length_mm TEXT[],
     erp_item_code TEXT,
     keyword_terms TEXT[],
     query_limit INTEGER
@@ -469,8 +479,10 @@ SELECT
         FROM steel.prices AS p
         WHERE input_query.mode = 'lookup'
           AND ($2::boolean OR p.active = true)
+          AND p.value_state <> 'no_price'
           AND p.category = input_query.category
           AND (input_query.subcategory IS NULL OR p.subcategory = input_query.subcategory)
+          AND (input_query.unit IS NULL OR p.unit = input_query.unit)
           AND (
             input_query.material_terms IS NULL
             OR EXISTS (
@@ -501,6 +513,14 @@ SELECT
           AND (
             input_query.erp_item_code IS NULL
             OR p.erp_item_code = input_query.erp_item_code
+          )
+          AND (
+            input_query.stock_length_mm IS NULL
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(input_query.stock_length_mm) AS requested_stock_length
+              WHERE p.length_mm = requested_stock_length::numeric
+            )
           )
           AND (
             input_query.keyword_terms IS NULL
@@ -536,6 +556,7 @@ SELECT
         FROM steel.prices AS p
         WHERE input_query.mode = 'category_discovery'
           AND ($2::boolean OR p.active = true)
+          AND p.value_state <> 'no_price'
           AND NOT EXISTS (
             SELECT 1
             FROM unnest(input_query.keyword_terms) AS keyword_term
