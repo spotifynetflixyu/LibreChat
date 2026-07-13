@@ -1,7 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-import * as XLSX from 'xlsx';
-
 import { inferPriceCategory } from './category';
 
 describe('Steel price workbook category classifier', () => {
@@ -92,18 +88,21 @@ describe('Steel price workbook category classifier', () => {
     expect(inferPriceCategory(productName)).toBe(expectedCategory);
   });
 
-  it('audits current workbook category mismatches without rewriting the source file', () => {
-    const workbookPath = path.resolve(__dirname, '../../../../../../docs/products_db_v4.3.xlsx');
-    const before = fs.readFileSync(workbookPath);
-    const workbook = XLSX.readFile(workbookPath, { raw: false });
-    const worksheet = workbook.Sheets.products_db_ready;
-    if (!worksheet) {
-      throw new Error('Expected products_db_ready worksheet');
-    }
-    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(worksheet, {
-      defval: '',
-      raw: false,
-    });
+  it('audits category mismatches without mutating the workbook-row fixture', () => {
+    const rows = [
+      {
+        erp_item_code: 'AX0292',
+        product_name: '百葉窗用銅鏍絲',
+        category: '五金/配件',
+      },
+      {
+        erp_item_code: 'DNB60',
+        product_name: '黑鐵板剪床切倒角',
+        category: '鐵板',
+      },
+      { erp_item_code: 'TEST', product_name: '水電', category: '其他' },
+    ];
+    const before = rows.map((row) => ({ ...row }));
     const mismatches = rows.flatMap((row, index) => {
       const inferred = inferPriceCategory(row.product_name);
       return inferred === row.category
@@ -119,8 +118,15 @@ describe('Steel price workbook category classifier', () => {
           ];
     });
 
-    expect(mismatches.length).toBeGreaterThan(0);
-    expect(mismatches.length).toBeLessThan(rows.length);
-    expect(fs.readFileSync(workbookPath)).toEqual(before);
+    expect(mismatches).toEqual([
+      {
+        row: 3,
+        erp: 'DNB60',
+        productName: '黑鐵板剪床切倒角',
+        expected: '鐵板',
+        inferred: '加工/倒角',
+      },
+    ]);
+    expect(rows).toEqual(before);
   });
 });

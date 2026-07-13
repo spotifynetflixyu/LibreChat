@@ -1,6 +1,3 @@
-import path from 'path';
-import * as XLSX from 'xlsx';
-
 import { normalizeSteelPriceWorkbookRow } from './core';
 import { applyPriceCategory, getPendingPriceCategoryProposal } from './classification';
 
@@ -85,16 +82,39 @@ describe('Steel product category stage', () => {
   });
 
   it('classifies AX-prefix subcategories from category plus product_name', () => {
-    const workbook = XLSX.readFile(
-      path.resolve(__dirname, '../../../../../../docs/products_db_v4.3.xlsx'),
-      { raw: false },
-    );
-    const rows = XLSX.utils
-      .sheet_to_json<SteelPriceV4WorkbookRow>(workbook.Sheets.products_db_ready!, {
-        defval: '',
-        raw: false,
-      })
-      .filter((row) => String(row.erp_item_code).startsWith('AX'));
+    const rows = [
+      makeRow({ erp_item_code: 'AX0000', product_name: '', category: '其他' }),
+      makeRow({ erp_item_code: 'AX0001', product_name: '另加烤漆', category: '其他' }),
+      makeRow({
+        erp_item_code: 'AX0002',
+        product_name: '300扁鐵白鐵伸縮(最小30才)',
+        category: '捲門/伸縮門',
+      }),
+      makeRow({
+        erp_item_code: 'AX0003',
+        product_name: '另加百葉',
+        category: '捲門/伸縮門',
+      }),
+      makeRow({
+        erp_item_code: 'AX0004',
+        product_name: '601台揚白鐵消音典雅型',
+        category: '捲門/伸縮門',
+      }),
+      makeRow({ erp_item_code: 'AX0005', product_name: '虹龍鋁窗 3尺6', category: '其他' }),
+      makeRow({ erp_item_code: 'AX0006', product_name: 'ST花窗1號', category: '其他' }),
+      makeRow({ erp_item_code: 'AX0007', product_name: '中式 AU 型門花', category: '其他' }),
+      makeRow({
+        erp_item_code: 'AX0008',
+        product_name: '銀行 43 號花格',
+        category: '門窗/門板',
+      }),
+      makeRow({ erp_item_code: 'AX0009', product_name: 'ST紗網角雙槽', category: '其他' }),
+      makeRow({
+        erp_item_code: 'AX0292',
+        product_name: '百葉窗用銅鏍絲',
+        category: '其他',
+      }),
+    ];
     const normalized = rows.map(applyPriceCategory).map(normalizeSteelPriceWorkbookRow);
     const counts = normalized.reduce<Record<string, number>>((result, row) => {
       const key = `${row.category} :: ${row.subcategory || '(空)'}`;
@@ -102,7 +122,7 @@ describe('Steel product category stage', () => {
       return result;
     }, {});
 
-    expect(rows).toHaveLength(171);
+    expect(rows).toHaveLength(11);
     expect(normalized.filter((row) => String(row.product_name).trim() && !row.subcategory)).toEqual(
       [],
     );
@@ -113,13 +133,13 @@ describe('Steel product category stage', () => {
     expect(counts).toEqual({
       '其他 :: (空)': 1,
       '加工/其他 :: 烤漆': 1,
-      '捲門/伸縮門 :: 伸縮門': 24,
+      '捲門/伸縮門 :: 伸縮門': 1,
       '捲門/伸縮門 :: 百葉': 1,
-      '捲門/伸縮門 :: 門片/簾片': 31,
-      '門窗/門板 :: 成品窗/百葉': 2,
-      '門窗/門板 :: 窗花': 18,
-      '門窗/門板 :: 門花': 22,
-      '門窗/門板 :: 花格/防盜': 69,
+      '捲門/伸縮門 :: 門片/簾片': 1,
+      '門窗/門板 :: 成品窗/百葉': 1,
+      '門窗/門板 :: 窗花': 1,
+      '門窗/門板 :: 門花': 1,
+      '門窗/門板 :: 花格/防盜': 1,
       '門窗/門板 :: 紗網': 1,
       '五金/配件 :: 螺絲': 1,
     });

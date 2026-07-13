@@ -1,3 +1,58 @@
+# Active: v4.4 schema/data/rules production rollout + master push - 2026-07-13
+
+Goal: 將目前 dev Steel Supabase 的 schema migration state、`steel.prices`、
+`steel.cutting_prices` 與本地 reviewed rules 完整提升到 prod；資料以 dev DB exact snapshot
+覆蓋 prod，不依賴已刪除／ignored workbook。完成 DB readback 與測試後，將目前 feat/v8.5
+成果合併並 push 到 `master`，再驗證 GitHub Actions 與 production health。全程不執行
+Prettier。
+
+Safety gates:
+
+- [x] 確認 `.env` dev runtime、`.env.prod` prod runtime、`.env.prod.admin` prod owner/admin
+  三條連線互不相同，且不輸出 credential。
+- [x] 比對 dev/prod migration history、server version、extensions、schema columns/constraints；
+  只對 prod 套用缺少的 committed migrations。
+- [x] 鎖定 dev exact invariants：prices total/distinct ERP/state/source/processing values、cutting
+  total/type/category，以及 14 個 reviewed active rules/hashes/priority。
+- [x] 以 dev repeatable-read snapshot 作為 authoritative recovery source；prod 先完整執行同一
+  staging/upsert 流程並 `ROLLBACK`，內容 hash 與分布全等後才以第二個 transaction commit。
+
+Rollout:
+
+- [x] 使用 `.env.prod.admin` `PROD_ADMIN_URL` 套用 prod pending migrations，核對 migration
+  history 與 `supabase/schema.sql` 關鍵結構。
+- [x] 以單次可回滾 transaction 將 dev `steel.prices` business-exact snapshot 覆蓋 prod；readback 必須
+  與 dev total/distinct ERP/state/source/欄位 checksum 一致。
+- [x] 以同一可回滾 transaction 將 dev `steel.cutting_prices` business-exact snapshot 覆蓋 prod；
+  readback 必須與 dev total/type/category/checksum 一致。
+- [x] 執行 focused/full tests、production builds 與 `git diff --check`；將 full-suite 中可在
+  `origin/master` detached worktree 重現的既有 failures 與本 release regressions 分開記錄。
+- [ ] 整理 current worktree，commit 到 `master` 並 push `origin/master`；不得遺漏必要 migration、
+  schema snapshot、rules/tests，也不得納入 secrets 或 transient Supabase state。
+- [ ] 監看 `.github/workflows/deploy-prod.yml` 到完成，驗證 production `/health`、build metadata
+  與新 backend contract；舊 backend 不接受 `processingQueries`，因此 rules 必須延後。
+- [ ] 新 backend 上線後使用 `.env.prod` runtime role dry-run/apply reviewed rules；核對 14 rows、
+  所有 sha256，並確認 `steel_category_price_lookup_guide` priority 19 為第一個 Steel rule。
+- [ ] 完成 production DB/rules final readback，補 Review。
+
+Review (pre-deploy):
+
+- Prod 已使用 admin 連線依序套用三筆 pending migrations：processing taxonomy attributes、
+  v4.4 source dataset、diamond hole shape；migration history、欄位與 constraints 回讀相符。
+- Dev repeatable-read snapshot 先在 prod 完整演練並 rollback，再以同一 staging/upsert 流程
+  commit。Prod business-exact readback：prices 6,761 rows／hash
+  `0fc00adb7fa67cc23a8bc70938f68d1d`；cutting 119 rows／hash
+  `4912df68c1bfbe63658a0e9558dd01a6`，state/source/processing/cutting 分布均與 dev 相同。
+- 修正兩個仍讀取已刪除 v4.3 workbook 的 non-hermetic tests，改用自包含 fixture；2 suites／
+  86 tests 通過。另有 API ToolService 79 tests、client UI 58 tests 通過，packages/api 與
+  production client builds 通過，`git diff --check` 通過；未執行 Prettier。
+- `packages/api` 全套為 327 suites／7,590 tests 通過，5 suites／7 tests 失敗。五者均已在
+  exact `origin/master` detached checkout 重現（stale runtime/v3 importer tests、app version
+  assertion、缺少 LibreOffice fixture、Jest 誤收 production `spec.ts`），不是本 release 引入；
+  不為本 rollout 恢復已廢棄契約或擴大修正。
+- 新 rules 使用 `processingQueries`，目前 prod 舊 backend 不接受；為避免不相容窗口，rules
+  明確延後到新 master build 健康上線後才 apply。
+
 # Active: 加工規則去重與孔規則 owner 修正 - 2026-07-13
 
 Goal: 修正近期加工 keyword 規則回流到通用 `查價方式` 的問題；通用檔只保留
