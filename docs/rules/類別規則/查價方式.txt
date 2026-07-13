@@ -5,7 +5,7 @@
 1. 同一輪材料放入一次 `queries`；有明確加工需求時，在同一 tool call 加入 `processingQueries`。同次可返回相符的 `processingPrice`；材料與加工皆依各自 `queryResults` 順序對回，不跨 query 混用候選。
 2. 已知類別首查必須帶 `category`，再依類別規則加入可確認的 structured filters。`unit` 省略時使用類別預設；只有訂單明示計價單位時才傳入覆寫，類別細則禁用 unit filter 時除外。只有類別未知時才先用 `mode: "category_discovery"` + 通用 `keyword`。
 3. `erpItemCode` 只供後續回合精確重取已確認候選；首查不得使用，本輪已返回的候選不得重查。
-4. `subcategory` 不確定時省略。產品 keyword 越短越好，只保留 category／subcategory／material 尚未表達且足以辨識的通用詞或必要規格；移除已由欄位表達的品名、位置、端數、數量與冗餘描述。不得自行加入專有品名、廠牌、系列、來源 DB token、ERP／表單代號。只有使用者原文明示時可保留專有詞；候選 product_name 不得反向成為重查 keyword。ST50、SN400B 只留在備註。
+4. `subcategory` 不確定時省略。`keyword` 以空白切詞，詞間為 AND；每一詞可命中同一候選的任一 keyword 搜尋欄位，但所有詞都必須命中。產品 keyword 越短越好，只保留 category／subcategory／material 尚未表達且足以辨識的通用詞或必要規格；移除已由欄位表達的品名、位置、端數、數量與冗餘描述，不得堆疊同義詞。不得自行加入專有品名、廠牌、系列、來源 DB token、ERP／表單代號。只有使用者原文明示時可保留專有詞；候選 product_name 不得反向成為重查 keyword。ST50、SN400B 只留在備註。
 5. 平時省略 `limit`；只有前次結果已達30且仍無精確可報價候選時，才提高至100。
 6. 已有規格精確且可報價候選就直接選價。只有 `no_match`、無精確候選、精確候選全不可報價或缺必要規格時可修正一次；不得原樣重送、夾帶成功 query 或只改 limit。仍失敗即人工複核。
 

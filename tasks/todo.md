@@ -10779,3 +10779,24 @@ Review:
   worksheet-level AutoFilter refs、SheetJS `!autofilter` readback、非 worksheet ZIP entry
   解壓內容全等、兩個 importer dry-run、visual pass 與 `git diff --check`。
   未匯入 DB、未碰 prod、未 commit、未執行 Prettier。
+
+# Active: keyword AND 語意單一 owner - 2026-07-13
+
+- [x] 將「空白切詞，詞間為 AND」明文保留在 `查價方式.txt` 通用規則。
+- [x] 移除 `孔.txt` 與 `加工.txt` 對 AND 語意的重複敘述，保留各類別何時使用多詞與 canonical 詞限制。
+- [x] 驗證規則同步測試、dry-run 與 diff hygiene。
+
+## Review
+
+- `查價方式.txt` 是 keyword 切詞語意唯一 owner；其他規則不再重複 AND 契約。
+# Active: keyword rules 同步 dev / prod - 2026-07-13
+
+- [x] 確認 dev `.env` 與 prod `.env.prod` 指向不同 Steel runtime credentials。
+- [x] 使用統一 `sync-steel-rules.cjs --apply` 同步 dev rules 並讀回驗證。
+- [x] 使用 `.env.prod` 的 `STEEL_POSTGRES_URL` 同步 prod rules 並讀回驗證。
+- [x] 比對 dev／prod 規則筆數與本次三個變更規則 SHA，完成 diff hygiene。
+
+## Review
+
+- Dev／prod 均同步並讀回 14/14 active reviewed rules；本次變更的通用查價、孔加工、一般加工三筆 SHA 完全一致。
+- `查價方式` SHA `981a7677...b49329c`、`孔` SHA `9a55cb64...b39080`、`加工` SHA `16fc7387...60077`。
