@@ -14,12 +14,13 @@ require('ts-node/register/transpile-only');
 const XLSX = require('xlsx');
 
 const { createSteelPostgresPool } = require('../src/steel/postgres');
+const { normalizeCuttingWorkbookRow } = require('./lib/cutting-normalize.cjs');
 
 const PRICE_SHEET = 'cutting_prices';
 const SUPPLEMENT_SHEET = 'cutting_supplements';
 const DEFAULT_WORKBOOK_PATH = path.resolve(
   __dirname,
-  '../../../docs/reference/切工價錢-clean.xlsx',
+  '../../../docs/切工價錢-v4.4-normalized.xlsx',
 );
 const EXPECTED_HEADERS = Object.freeze([
   'cutting_category',
@@ -250,7 +251,7 @@ function readSheet(workbook, sheetName) {
     const raw = Object.fromEntries(
       EXPECTED_HEADERS.map((header, column) => [header, cells[column] ?? '']),
     );
-    return parseWorkbookRow(raw, sheetName, index + 2);
+    return parseWorkbookRow(normalizeCuttingWorkbookRow(raw), sheetName, index + 2);
   });
 }
 

@@ -10242,3 +10242,48 @@ Review:
 - 驗證通過：7 suites / 349 tests、targeted ESLint、`git diff --check`；LibreOffice 成功
   轉PDF，並用 spreadsheet renderer 抽查全部7個 sheets 的關鍵範圍。未匯入DB、
   未同步rules、未修改v4.3。
+
+# Active: v4.4 search_price_candidates 加工價模擬 - 2026-07-13
+
+Goal: 以尚未匯入 DB 的 `docs/products_db_v4.4.xlsx` 重現
+`search_price_candidates`，驗證各鋼材類別能否在結果尾端取得適用加工價；每個加工類型
+最多10筆，超量時提供可縮小的既有 keyword/category query contract，避免 context 膨脹。
+
+- [x] 從 v4.4 建立離線 candidate replay，對齊現行查價排除、keyword 與回傳欄位。
+- [x] 逐鋼材類別統計通用／指定加工候選，辨識每組超過10筆而需先回 productNames 的情況。
+- [x] 設計最小 processingPrice input/output contract，不增加 processing_method/shape params。
+- [x] 更新 backend repository、tool schema/execute 與 focused regression tests。
+- [x] 更新加工與鋼材加工計價 rules；只改本地規則，不同步 DB。
+- [x] 執行 v4.4 replay、focused Jest、build、lint、rules dry-run 與 diff hygiene，補上 Review。
+
+Review:
+
+- 離線腳本直接讀 `docs/products_db_v4.4.xlsx`，不查 DB。匯入契約仍為6,761 rows、4,787 confirmed、190 ratio_only、1,784 no_price。
+- backend 新增第三個並行 price query，從未來匯入後的 `steel.prices` 取得七個 `加工/*` 類別；結果尾端新增 `processingPrice`。通用與指定鋼材適用性由 backend 判斷，非鋼材 subcategory 不再盲目當通用。
+- `processingQueries` 是最多3筆的 array，每筆可帶多個鋼材 `categories`、多個 `processingCategories` 與 keyword。未增加 processing_method／processing_shape params，既有 normalized text 可直接 keyword 命中。
+- 每筆加工探索不超過10筆時直接回價格；超過10筆只回全部唯一 productNames。AI 選定後以頂層 `{"productNames":[...]}` 作第二段 requery，且不得同時帶 queries／processingQueries；此精確模式同時適用材料產品與加工，返回全部指定品名 prices。
+- 折工 product_name 含 Unicode private-use/replacement 字元由 backend 與 replay 直接排除，不送 AI。排除後 v4.4 鐵板可報價加工共21筆：切工7、孔7、倒角1、開槽1、折工4、其他1；C型鋼7、H型鋼3、角鐵10。鐵板依加工類型拆 query 時每組均不超過10。
+- 本地加工、孔、切工、鐵板、C型鋼、H型鋼與查價通則已更新；折工無精確可讀價格直接 manual_review，不 requery、不借相近折型。未 apply rules DB，也未匯入 v4.4。
+- 驗證通過：focused Jest 7 suites／115 tests、packages/api build、targeted ESLint、v4.4 importer dry-run、rules dry-run、`git diff --check`。完整 packages/api tsc 仍有既有84 errors／23 files，主要為 Redis、OAuth、舊 tests 與 legacy pricing/import，沒有新增本輪 targeted diagnostics。
+
+# Active: cutting_prices workbook normalization 與材料自動切工 - 2026-07-13
+
+Goal: 將 `docs/reference/切工價錢-clean.xlsx` 依 v4.4 `加工/切工` 的正規化語意輸出為可納入 git 的 `docs/切工價錢-v4.4-normalized.xlsx`；材料 query 自動查 `steel.cutting_prices`，再用同次 candidates 做規格比對，只回相關切工。
+
+- [x] 檢查 reference workbook sheets、欄位、格式、資料筆數及現行 importer/table contract。
+- [x] 建立可重跑 normalization 腳本，拒絕 input/output 同路徑並輸出獨立新版 xlsx。
+- [x] 對齊 category/subcategory、processing method/shape、normalized text 與 v4.4 切工語意。
+- [x] 保留 materials queries 自動觸發 cutting_prices，並以 candidate-aware matcher 過濾不相關規格。
+- [x] 方鐵同樣自動觸發，依邊長匹配最相近圓條基本價，不套圓條／管類限制。
+- [x] 擴充 v4.4 離線模擬，逐長條料 category replay 材料候選與 cutting_prices 對應。
+- [x] 更新 tool/rules/tests，執行 render、dry-run、focused Jest、build、lint、rules dry-run與 diff hygiene。
+
+Review:
+
+- 新檔放在 `docs/切工價錢-v4.4-normalized.xlsx`，不改寫 ignored 的 reference source。兩張 sheet 保持原格式與20欄，共100筆 price + 19筆 supplement；119筆的14個來源／價格關鍵欄位逐列比對不變。
+- `normalize-steel-cutting-prices.mjs` 使用共用 normalizer 輸出獨立 workbook，同路徑會直接拒絕。importer 預設已切到新檔，dry-run 對帳仍為119筆。
+- 材料 `queries` 維持自動查 cutting catalog；尺寸 parser 可讀取正規化後的 processing shape 後綴，candidate-aware 結果不回整張 catalog。切工只讀 `加工/切工` price rows，H型鋼的孔／倒角／開槽維持 processingPrice。
+- 方鐵已納入自動切工；以實心方形邊長選最相近圓條基本價，不套管類、方管或圓條 supplement。v4.4 replay 有22筆可報價方鐵候選，21筆得到切工價，1筆無法解析邊長保留人工複核。
+- v4.4 長條料 replay 實際命中：H型鋼433/437、平鐵78/115、圓管148/188、方管159/219、扁方管33/82、圓條60/60、方鐵21/22、角鐵97/121、槽鐵53/55。v4.4 沒有可報價 I型鋼/工字鐵候選，因此該類 replay 為0/0，不來自 matcher 排除。
+- 規則只保留 AI 可執行的 tool output 與計價判斷，未寫 backend／SQL／matcher 實作敘述。未匯入 v4.4、未 apply cutting workbook、未同步 rules DB。
+- 驗證通過：focused Jest 9 suites／103 tests、packages/api build、targeted ESLint、cutting importer dry-run、v4.4 cutting replay、rules dry-run、兩張 sheet render 與 `git diff --check`。

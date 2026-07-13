@@ -701,6 +701,82 @@ describe('Steel cutting price repository', () => {
     ]);
   });
 
+  it('uses the nearest round-bar base price for square bars without pipe supplements', () => {
+    const group = createCuttingGroup({
+      cuttingCategory: '鐵管',
+      sourceCategories: ['方鐵'],
+      queryIds: ['q1'],
+      prices: [
+        createCuttingRecord({
+          id: 55,
+          cuttingCategory: '鐵管',
+          itemName: '3/4"',
+          inchMin: 0.75,
+          inchMax: 0.75,
+          mmMin: 19.05,
+          mmMax: 19.05,
+        }),
+        createCuttingRecord({
+          id: 56,
+          cuttingCategory: '鐵管',
+          itemName: '1"',
+          inchMin: 1,
+          inchMax: 1,
+          mmMin: 25.4,
+          mmMax: 25.4,
+        }),
+      ],
+      supplements: [
+        createCuttingRecord({
+          id: 114,
+          cuttingCategory: '鐵管',
+          recordType: 'supplement',
+          itemName: '圓條不切',
+          cutType: '補充',
+          notes: '圓條不切',
+        }),
+        createCuttingRecord({
+          id: 115,
+          cuttingCategory: '鐵管',
+          recordType: 'supplement',
+          itemName: '方管厚度',
+          cutType: '補充',
+          notes: '方管厚度 1.2 以下不切',
+        }),
+      ],
+    });
+
+    const filtered = filterSteelCuttingPriceGroups(
+      [group],
+      [
+        {
+          queryId: 'q1',
+          category: '方鐵',
+          candidates: [
+            createPriceItem({
+              category: '方鐵',
+              productName: '黑鐵方鐵 25mm',
+              normalizedSpecText: '黑鐵方鐵 25mm s25',
+              widthMm: 25,
+              heightMm: 25,
+              nominalInch: undefined,
+            }),
+          ],
+        },
+      ],
+    );
+
+    expect(filtered).toEqual([
+      expect.objectContaining({
+        cuttingCategory: '鐵管',
+        sourceCategories: ['方鐵'],
+        queryIds: ['q1'],
+        prices: [expect.objectContaining({ id: 56 })],
+        supplements: [],
+      }),
+    ]);
+  });
+
   it('enforces pipe supplement size bands and square-tube no-cut thickness', () => {
     const group = createCuttingGroup({
       cuttingCategory: '鐵管',
@@ -817,6 +893,7 @@ describe('Steel cutting price repository', () => {
       { queryId: 'pipe-2', category: '方管' },
       { queryId: 'pipe-3', category: '扁方管' },
       { queryId: 'round-bar', category: '圓條' },
+      { queryId: 'square-bar', category: '方鐵' },
       { queryId: 'flat', category: '平鐵' },
       { queryId: 'plate', category: '鐵板' },
       { queryId: 'i-beam', category: 'I型鋼/工字鐵' },
@@ -828,7 +905,8 @@ describe('Steel cutting price repository', () => {
     const [sql, values] = query.mock.calls[0] as [string, string[]];
     expect(sql).toContain("c.cutting_category ILIKE '%' || lookup.lookup_term || '%'");
     expect(sql).not.toMatch(/\bLIMIT\b/iu);
-    expect(sql).not.toContain('record_type =');
+    expect(sql).toContain("c.record_type = 'supplement'");
+    expect(sql).toContain("c.cut_type = '加工/切工'");
     expect(sql).not.toContain('review_state');
     expect(sql).not.toContain('thickness');
     expect(sql).not.toContain('normalized_spec_text ILIKE');
@@ -841,8 +919,8 @@ describe('Steel cutting price repository', () => {
     expect(groups).toEqual([
       expect.objectContaining({
         cuttingCategory: '鐵管',
-        sourceCategories: ['圓管', '方管', '扁方管', '圓條'],
-        queryIds: ['pipe-1', 'pipe-2', 'pipe-3', 'round-bar'],
+        sourceCategories: ['圓管', '方管', '扁方管', '圓條', '方鐵'],
+        queryIds: ['pipe-1', 'pipe-2', 'pipe-3', 'round-bar', 'square-bar'],
         prices: [
           expect.objectContaining({
             tierPrices: { A: 10, B: 10, C: 10, F: 10 },

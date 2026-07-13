@@ -53,7 +53,7 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search price candidates for all known order lines in one call. For a known category, use lookup queries with category and only confirmed filters; when the category is unknown, use category_discovery with keyword. Use erpItemCode only to retrieve an already confirmed row, not for initial discovery. Omit limit normally. Matching cuttingPrices are returned automatically; do not query cutting prices separately.',
+      'Search material and processing price candidates for all known order lines in one call. Put materials in queries. Put up to three processing lookups in processingQueries; each may target multiple product categories and processing categories. Processing discovery returns prices when at most 10 rows match, otherwise only productNames. Only after such a discovery result, requery with top-level productNames alone to retrieve every selected product price; never use productNames for initial lookup. Matching legacy cuttingPrices are returned automatically and must not be double charged.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
   {

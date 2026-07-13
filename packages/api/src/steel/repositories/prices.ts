@@ -158,6 +158,10 @@ export interface SearchSteelPriceCandidateGroupsInput {
   includeInactive?: boolean;
 }
 
+export interface SearchSteelProcessingPriceCandidatesInput {
+  includeInactive?: boolean;
+}
+
 export interface SteelPriceCategoryCandidate {
   category: PriceCategory | string;
   material: string | null;
@@ -589,6 +593,67 @@ FROM input_queries AS input_query
 ORDER BY input_query.query_index ASC
 `;
 
+const processingPriceCandidatesSql = `
+SELECT
+  p.id,
+  p.erp_item_code,
+  p.price_kind,
+  p.formula_code,
+  p.spec_key,
+  p.product_name,
+  p.normalized_spec_text,
+  p.category,
+  p.subcategory,
+  p.processing_method,
+  p.processing_shape,
+  p.material,
+  p.dimension_signature,
+  p.unit,
+  p.value_state,
+  p.unit_price_base,
+  p.unit_price_a,
+  p.unit_price_b,
+  p.unit_price_c,
+  p.unit_price_d,
+  p.unit_price_e,
+  p.unit_price_f,
+  p.price_ratio_a,
+  p.price_ratio_b,
+  p.price_ratio_c,
+  p.price_ratio_d,
+  p.price_ratio_e,
+  p.price_ratio_f,
+  p.unit_weight_value,
+  p.unit_weight_basis,
+  p.density,
+  p.source_thickness,
+  p.thickness_min_mm,
+  p.thickness_max_mm,
+  p.width_mm,
+  p.height_mm,
+  p.length_mm,
+  p.outer_diameter_mm,
+  p.nominal_inch,
+  p.web_mm,
+  p.flange_mm,
+  p.lip_mm,
+  p.sheet_width_mm,
+  p.sheet_length_mm,
+  p.spec_sort_key,
+  p.cost_basis,
+  p.currency,
+  p.active,
+  p.source_refs
+FROM steel.prices AS p
+WHERE ($1::boolean OR p.active = true)
+  AND p.value_state <> 'no_price'
+  AND (
+    ($3::text[] IS NULL AND p.category = ANY($2::text[]))
+    OR ($3::text[] IS NOT NULL AND p.product_name = ANY($3::text[]))
+  )
+ORDER BY p.category ASC, p.spec_sort_key ASC NULLS LAST, p.product_name ASC NULLS LAST, p.id ASC
+`;
+
 export async function searchSteelPriceCandidateGroups(
   client: SteelRepositoryClient,
   input: SearchSteelPriceCandidateGroupsInput,
@@ -606,4 +671,34 @@ export async function searchSteelPriceCandidateGroups(
   return result.rows
     .map(toCandidateGroup)
     .sort((left, right) => left.queryIndex - right.queryIndex);
+}
+
+export async function searchSteelProcessingPriceCandidates(
+  client: SteelRepositoryClient,
+  input: SearchSteelProcessingPriceCandidatesInput = {},
+): Promise<SteelPriceItem[]> {
+  const result = await client.query<SteelPriceItemRow>(processingPriceCandidatesSql, [
+    input.includeInactive ?? false,
+    ['加工/切工', '加工/孔', '加工/倒角', '加工/開槽', '加工/折工', '加工/焊接', '加工/其他'],
+    null,
+  ]);
+
+  return dedupePriceItems(result.rows);
+}
+
+export async function searchSteelPricesByProductNames(
+  client: SteelRepositoryClient,
+  productNames: readonly string[],
+): Promise<SteelPriceItem[]> {
+  if (productNames.length === 0) {
+    return [];
+  }
+
+  const result = await client.query<SteelPriceItemRow>(processingPriceCandidatesSql, [
+    false,
+    [],
+    productNames,
+  ]);
+
+  return dedupePriceItems(result.rows);
 }

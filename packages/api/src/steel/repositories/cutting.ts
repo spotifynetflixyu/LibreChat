@@ -84,6 +84,7 @@ const cuttingLookupTermByCategory: Partial<Record<PriceCategory, string>> = {
   方管: '鐵管',
   扁方管: '鐵管',
   圓條: '鐵管',
+  方鐵: '鐵管',
   角鐵: '角鐵',
   槽鐵: '槽鐵',
 };
@@ -109,7 +110,7 @@ function isSameNumber(left: number, right: number): boolean {
 }
 
 function parseDimensionPair(value: string | undefined): readonly [number, number] | undefined {
-  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/iu);
+  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(?=$|\s)/iu);
   if (!match) {
     return undefined;
   }
@@ -118,7 +119,7 @@ function parseDimensionPair(value: string | undefined): readonly [number, number
 }
 
 function parseNumericRange(value: string | undefined): readonly [number, number] | undefined {
-  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)~(\d+(?:\.\d+)?)$/u);
+  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)~(\d+(?:\.\d+)?)(?=$|\s)/u);
   if (!match) {
     return undefined;
   }
@@ -127,11 +128,12 @@ function parseNumericRange(value: string | undefined): readonly [number, number]
 }
 
 function parseNumericValue(value: string | undefined): number | undefined {
-  if (!value?.normalize('NFKC').match(/^\d+(?:\.\d+)?$/u)) {
+  const match = value?.normalize('NFKC').match(/^(\d+(?:\.\d+)?)(?=$|\s)/u);
+  if (!match) {
     return undefined;
   }
 
-  return Number(value);
+  return Number(match[1]);
 }
 
 function parseInchValue(value: string | undefined): number | undefined {
@@ -172,6 +174,41 @@ function isRoundBar(candidate: SteelPriceItem): boolean {
     candidate.subcategory === '圓條' ||
     candidate.productName?.includes('圓條') === true
   );
+}
+
+function isSquareBar(candidate: SteelPriceItem): boolean {
+  return candidate.category === '方鐵';
+}
+
+function getCuttingRecordSizeMm(record: SteelCuttingPriceRecord): number | undefined {
+  if (record.mmMin !== null && record.mmMax !== null) {
+    return (record.mmMin + record.mmMax) / 2;
+  }
+  if (record.inchMin !== null && record.inchMax !== null) {
+    return ((record.inchMin + record.inchMax) / 2) * 25.4;
+  }
+  return parseNumericValue(record.normalizedSpecText ?? record.itemName);
+}
+
+function selectSimilarRoundBarPrice(
+  records: readonly SteelCuttingPriceRecord[],
+  candidate: SteelPriceItem,
+): SteelCuttingPriceRecord[] {
+  const size = getCandidatePrimarySize(candidate);
+  if (size === undefined) {
+    return [];
+  }
+
+  const nearest = records
+    .map((record) => ({ record, sizeMm: getCuttingRecordSizeMm(record) }))
+    .filter((entry): entry is { record: SteelCuttingPriceRecord; sizeMm: number } =>
+      Number.isFinite(entry.sizeMm),
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left.sizeMm - size) - Math.abs(right.sizeMm - size) || right.sizeMm - left.sizeMm,
+    )[0];
+  return nearest ? [nearest.record] : [];
 }
 
 function getRoundBarSize(candidate: SteelPriceItem): number | undefined {
@@ -350,6 +387,9 @@ function selectCuttingPrices(
   group: SteelCuttingPriceGroup,
   candidate: SteelPriceItem,
 ): SteelCuttingPriceRecord[] {
+  if (group.cuttingCategory === '鐵管' && isSquareBar(candidate)) {
+    return selectSimilarRoundBarPrice(group.prices, candidate);
+  }
   const matches = group.prices.filter((record) => matchesCuttingRecord(group, record, candidate));
   if (group.cuttingCategory !== '槽鐵') {
     return matches;
@@ -372,6 +412,9 @@ function matchesCuttingSupplement(
   supplement: SteelCuttingPriceRecord,
   candidates: readonly SteelPriceItem[],
 ): boolean {
+  if (candidates.some(isSquareBar)) {
+    return false;
+  }
   const text = [supplement.itemName, supplement.normalizedSpecText, supplement.notes]
     .filter((value): value is string => value !== undefined)
     .join(' ');
@@ -630,6 +673,7 @@ SELECT
 FROM lookup_terms AS lookup
 JOIN steel.cutting_prices AS c
   ON c.cutting_category ILIKE '%' || lookup.lookup_term || '%'
+  AND (c.cut_type = '加工/切工' OR c.record_type = 'supplement')
 ORDER BY c.cutting_category, c.record_type, c.source_row, c.id
 `;
 
@@ -659,6 +703,9 @@ export async function searchSteelCuttingPriceGroups(
   >();
 
   for (const row of result.rows) {
+    if (row.record_type === 'price' && row.cut_type !== '加工/切工') {
+      continue;
+    }
     const source = provenanceByTerm.get(row.lookup_term);
     if (!source) {
       continue;

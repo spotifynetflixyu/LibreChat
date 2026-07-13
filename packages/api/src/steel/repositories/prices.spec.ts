@@ -1,4 +1,8 @@
-import { searchSteelPriceCandidateGroups } from './prices';
+import {
+  searchSteelPriceCandidateGroups,
+  searchSteelPricesByProductNames,
+  searchSteelProcessingPriceCandidates,
+} from './prices';
 
 import type { SteelRepositoryClient } from './types';
 
@@ -296,5 +300,59 @@ describe('Steel price candidate repository', () => {
         valueState: 'ratio_only',
       }),
     );
+  });
+
+  it('loads every active non-no-price processing category in one SQL round trip', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        createPriceRow({
+          id: '91',
+          category: '加工/孔',
+          subcategory: '鐵板',
+          processing_method: '雷射',
+          processing_shape: '圓孔',
+        }),
+      ],
+    });
+
+    const result = await searchSteelProcessingPriceCandidates({ query } as SteelRepositoryClient);
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+    const values = query.mock.calls[0]?.[1];
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(sql).toContain("p.value_state <> 'no_price'");
+    expect(sql).toContain('p.category = ANY($2::text[])');
+    expect(values?.[1]).toEqual([
+      '加工/切工',
+      '加工/孔',
+      '加工/倒角',
+      '加工/開槽',
+      '加工/折工',
+      '加工/焊接',
+      '加工/其他',
+    ]);
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: 91,
+        category: '加工/孔',
+        processingMethod: '雷射',
+        processingShape: '圓孔',
+      }),
+    ]);
+  });
+
+  it('uses the same selected columns for exact product-name prices across all categories', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [createPriceRow({ product_name: '黑鐵鋼管' })],
+    });
+
+    const result = await searchSteelPricesByProductNames({ query } as SteelRepositoryClient, [
+      '黑鐵鋼管',
+      '倒角加工',
+    ]);
+
+    expect(query.mock.calls[0]?.[1]).toEqual([false, [], ['黑鐵鋼管', '倒角加工']]);
+    expect(String(query.mock.calls[0]?.[0] ?? '')).toContain('p.product_name = ANY($3::text[])');
+    expect(result).toEqual([expect.objectContaining({ productName: '黑鐵鋼管' })]);
   });
 });

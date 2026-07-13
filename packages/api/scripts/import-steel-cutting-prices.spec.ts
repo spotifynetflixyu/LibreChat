@@ -182,7 +182,7 @@ afterEach(() => {
 describe('Steel cutting price importer', () => {
   it('defaults to the clean reference workbook and exact two-sheet headers', () => {
     expect(importer.DEFAULT_WORKBOOK_PATH).toBe(
-      path.resolve(__dirname, '../../../docs/reference/切工價錢-clean.xlsx'),
+      path.resolve(__dirname, '../../../docs/切工價錢-v4.4-normalized.xlsx'),
     );
     expect(importer.EXPECTED_HEADERS).toEqual(headers);
 

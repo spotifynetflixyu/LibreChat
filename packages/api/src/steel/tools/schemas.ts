@@ -99,6 +99,13 @@ type SearchPriceCandidateQueryInput =
 
 interface SearchPriceCandidatesInput {
   queries: SearchPriceCandidateQueryInput[];
+  processingQueries?: {
+    queryId: string;
+    categories: (typeof priceCategories)[number][];
+    processingCategories?: (typeof priceCategories)[number][];
+    keyword?: string;
+  }[];
+  productNames?: string[];
 }
 
 interface SearchCustomersInput {
@@ -265,6 +272,35 @@ const searchPriceCandidateQuerySchema = z.union([
   priceLookupQuerySchema,
 ]);
 
+const processingPriceQuerySchema = z
+  .object({
+    queryId: nonEmptyString.optional(),
+    categories: z.array(z.enum(priceCategories)).min(1).max(20),
+    processingCategories: z.array(z.enum(priceCategories)).min(1).max(7).optional(),
+    keyword: nonEmptyString.optional(),
+  })
+  .strict()
+  .superRefine((query, ctx) => {
+    query.categories?.forEach((category, index) => {
+      if (category.startsWith('加工/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'processingQuery categories must be product or material categories',
+          path: ['categories', index],
+        });
+      }
+    });
+    query.processingCategories?.forEach((category, index) => {
+      if (!category.startsWith('加工/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'processingCategories must contain processing categories',
+          path: ['processingCategories', index],
+        });
+      }
+    });
+  });
+
 function normalizeStockLengthMm(
   values: unknown[] | undefined,
   category: (typeof priceCategories)[number],
@@ -359,11 +395,43 @@ function normalizeUnit(
 
 const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
   .object({
-    queries: z.array(searchPriceCandidateQuerySchema, { required_error: 'Provide queries' }).min(1),
+    queries: z.array(searchPriceCandidateQuerySchema).optional().default([]),
+    processingQueries: z.array(processingPriceQuerySchema).min(1).max(3).optional(),
+    productNames: z
+      .array(nonEmptyString)
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Exact steel.prices.product_name values returned by a prior discovery.'),
   })
   .strict()
+  .superRefine((input, ctx) => {
+    const hasDiscovery = input.queries.length > 0 || input.processingQueries !== undefined;
+    if (!hasDiscovery && !input.productNames) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide queries, processingQueries, or productNames',
+      });
+    }
+    if (hasDiscovery && input.productNames) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'productNames exact lookup cannot include queries or processingQueries',
+        path: ['productNames'],
+      });
+    }
+  })
   .transform(
     (input): SearchPriceCandidatesInput => ({
+      ...(input.processingQueries
+        ? {
+            processingQueries: input.processingQueries.map((query, index) => ({
+              ...query,
+              queryId: `p${index + 1}`,
+            })),
+          }
+        : {}),
+      ...(input.productNames ? { productNames: input.productNames } : {}),
       queries: input.queries.map((query, index) => {
         if (query.mode === 'category_discovery') {
           return { ...query, queryId: `q${index + 1}` };

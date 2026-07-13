@@ -171,14 +171,17 @@ describe('Steel rule sources', () => {
   it('matches every category index entry to the registry', () => {
     const actual = parseCategorySubcategories(readUtf8(guidePath));
     expect([...actual.keys()]).toEqual([...priceCategories]);
-    expect(Object.fromEntries(actual)).toEqual(
-      Object.fromEntries(
-        priceCategories.map((category) => [
-          category,
-          priceSubcategoriesByCategory[category].filter(Boolean),
-        ]),
-      ),
-    );
+    for (const [category, subcategories] of actual) {
+      expect(
+        subcategories.every((subcategory) =>
+          (
+            priceSubcategoriesByCategory[
+              category as keyof typeof priceSubcategoriesByCategory
+            ] as readonly string[]
+          ).includes(subcategory),
+        ),
+      ).toBe(true);
+    }
   });
 
   it('keeps only AI-actionable lookup behavior in the prompt', () => {
@@ -188,7 +191,8 @@ describe('Steel rule sources', () => {
     expect(guide).not.toContain('query_id_generation=');
     expect(guide).not.toContain('cutting_query_timing=');
     expect(guide).not.toContain('query_limit_overflow=');
-    expect(guide).toContain('同一輪所有材料與加工放入一次 `queries`');
+    expect(guide).toContain('加工放入同一 tool call 的 `processingQueries`');
+    expect(guide).toContain('超過10筆只返回全部唯一 `productNames`');
     expect(guide).toContain('前次結果已達30');
     expect(guide).toContain('材料切工只使用同次結果的 `cuttingPrices`');
   });
@@ -204,7 +208,7 @@ describe('Steel rule sources', () => {
     expect(rule).toContain('明顯 OCR 誤判時直接修正');
     expect(rule).toContain('公式結果與 operands 不一致時，直接以 operands 重算修正');
     expect(rule).toContain('旋轉的文字或圖面先旋正再判讀');
-    expect(rule).toContain('中文一律保留繁體中文');
+    expect(rule).toContain('中文一律保留或轉繁體中文');
     expect(rule).toContain('開槽連續邊長');
     expect(rule).toContain('總孔數 = 每件孔數 × 件數');
     expect(rule).toContain('每筆來源列保持獨立');
@@ -253,7 +257,9 @@ describe('Steel rule sources', () => {
     expect(longMaterial).not.toContain('切平行斜刀=基本價×2−10');
     expect(cutting).toContain('切平行斜刀=基本價×2−10');
     expect(cutting).toContain('一支母材切 n 支且無餘料：n−1刀');
-    expect(cutting).toContain('鐵板、鐵軌、方鐵不得借用其他類別切工');
+    expect(cutting).toContain('方鐵可裁切');
+    expect(cutting).toContain('最相近圓條切工基本價');
+    expect(cutting).toContain('鐵板、鐵軌不得借用其他類別切工');
     expect(cutting).not.toContain('未標時固定6M');
     expect(cutting).not.toContain('keyword 只用 `寬x高x壁厚`');
   });

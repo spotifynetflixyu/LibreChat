@@ -34,6 +34,59 @@ describe('Steel price candidate tool schema', () => {
     ).toEqual(['q1', 'q2']);
   });
 
+  it('accepts up to three processing queries and assigns deterministic IDs', () => {
+    expect(
+      schema.parse({
+        queries: [{ category: '鐵板' }, { category: 'C型鋼' }],
+        processingQueries: [
+          {
+            categories: ['鐵板', 'C型鋼'],
+            processingCategories: ['加工/切工', '加工/孔'],
+            keyword: '雷射',
+          },
+          { queryId: 'ignored', categories: ['鐵板'], processingCategories: ['加工/折工'] },
+        ],
+      }).processingQueries,
+    ).toEqual([
+      {
+        queryId: 'p1',
+        categories: ['鐵板', 'C型鋼'],
+        processingCategories: ['加工/切工', '加工/孔'],
+        keyword: '雷射',
+      },
+      { queryId: 'p2', categories: ['鐵板'], processingCategories: ['加工/折工'] },
+    ]);
+  });
+
+  it('accepts top-level exact productNames without either query array', () => {
+    expect(schema.parse({ productNames: ['雷射切工 1', '雷射切工 2'] })).toEqual({
+      queries: [],
+      productNames: ['雷射切工 1', '雷射切工 2'],
+    });
+    expect(() =>
+      schema.parse({
+        queries: [{ category: '鐵板' }],
+        productNames: ['雷射切工 1'],
+      }),
+    ).toThrow('cannot include');
+    expect(() => schema.parse({})).toThrow('Provide queries, processingQueries, or productNames');
+  });
+
+  it('rejects product categories in processingCategories and processing categories as targets', () => {
+    expect(() =>
+      schema.parse({
+        queries: [{ category: '鐵板' }],
+        processingQueries: [{ categories: ['加工/孔'], processingCategories: ['加工/孔'] }],
+      }),
+    ).toThrow('product or material categories');
+    expect(() =>
+      schema.parse({
+        queries: [{ category: '鐵板' }],
+        processingQueries: [{ categories: ['鐵板'], processingCategories: ['鐵板'] }],
+      }),
+    ).toThrow('processing categories');
+  });
+
   it('does not impose a top-level query count limit', () => {
     const queries = Array.from({ length: 25 }, (_, index) => ({
       category: '鐵板' as const,

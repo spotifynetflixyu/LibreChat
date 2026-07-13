@@ -3,7 +3,15 @@ import {
   searchSteelCustomers,
   searchSteelCuttingPriceGroups,
   searchSteelPriceCandidateGroups,
+  searchSteelPricesByProductNames,
+  searchSteelProcessingPriceCandidates,
 } from '../repositories';
+import {
+  hasUnusableProcessingProductName,
+  isProcessingCandidateApplicable,
+  matchesProcessingKeyword,
+  processingPriceCategories,
+} from '../pricing/processing-candidates';
 import { normalizeOcrEvidenceForRuntime } from '../runtime/context';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
@@ -24,6 +32,7 @@ import type {
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
 import type { SteelPriceItem, SteelPriceTierValues } from '../repositories';
+import type { PriceCategory } from '../pricing/enums';
 import type { ReadMarkdownInput, SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
@@ -235,6 +244,11 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
     (candidate.unit === 'Kg' || candidate.unit === '支') &&
     !hasTierPrices &&
     hasTierRatios;
+  const ratioAsProcessingTierPrice =
+    candidate.valueState === 'ratio_only' &&
+    candidate.category.startsWith('加工/') &&
+    !hasTierPrices &&
+    hasTierRatios;
   const effectiveCandidate = ratioAsKgTierPrice ? { ...candidate, unit: 'Kg' } : candidate;
   const effectiveCandidateFields = ratioAsKgTierPrice
     ? { ...candidateFields, unit: 'Kg' }
@@ -254,6 +268,13 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
       source: 'tier_price',
       quoteEligible: true,
       quoteUnit: 'Kg',
+      tierPrices: tierRatios,
+    });
+  } else if (ratioAsProcessingTierPrice) {
+    pricingOptions.push({
+      source: 'tier_price',
+      quoteEligible: true,
+      quoteUnit: candidate.unit ?? null,
       tierPrices: tierRatios,
     });
   } else if (hasTierRatios && (candidate.unit === 'Kg' || candidate.unit === 'M')) {
@@ -325,16 +346,161 @@ function orderPriceCandidates(
   );
 }
 
+const processingPriceItemLimit = 10;
+
+const suggestedProcessingKeywords: Partial<Record<string, readonly string[]>> = {
+  '加工/切工': ['雷射', '電離子', '剪床', '氧切', '切圓'],
+  '加工/孔': ['沖', '鑽孔', '圓孔', '方孔', '橢圓孔', '魚眼'],
+  '加工/折工': ['折型符號', '厚度', '長度'],
+  '加工/其他': ['滾圓', '端板', '喇叭桶', '壓花', '拋光', '雷射畫線'],
+};
+
+function getProcessingQueries(input: SearchPriceCandidatesInput) {
+  if (input.processingQueries) {
+    return input.processingQueries;
+  }
+
+  const categories = [
+    ...new Set(
+      input.queries.flatMap((query) => {
+        if (query.mode === 'category_discovery' || query.category.startsWith('加工/')) {
+          return [];
+        }
+        return [query.category];
+      }),
+    ),
+  ];
+
+  return categories.length > 0 ? [{ queryId: 'p1', categories }] : [];
+}
+
+function buildProcessingPrice(
+  candidates: readonly SteelPriceItem[],
+  targetCategories: readonly PriceCategory[],
+  requestedProcessingCategories: readonly PriceCategory[] | undefined,
+  keyword: string | undefined,
+  productNames: readonly string[] | undefined,
+): SteelRawToolOutput {
+  const targets = new Set(targetCategories);
+  const requested = requestedProcessingCategories
+    ? new Set(requestedProcessingCategories)
+    : undefined;
+  const requestedProductNames = productNames
+    ? new Set(productNames.map((name) => name.normalize('NFKC').trim()))
+    : undefined;
+  const applicable = candidates.flatMap((candidate) => {
+    if (
+      (requested && !requested.has(candidate.category as PriceCategory)) ||
+      (requestedProductNames &&
+        (!candidate.productName ||
+          !requestedProductNames.has(candidate.productName.normalize('NFKC').trim()))) ||
+      (!requestedProductNames && !isProcessingCandidateApplicable(candidate, targets)) ||
+      !matchesProcessingKeyword(candidate, keyword)
+    ) {
+      return [];
+    }
+
+    const safe = toSafePriceCandidate(candidate);
+    return safe.quoteEligible === true ? [safe] : [];
+  });
+  const availableCounts = new Map<string, number>();
+  applicable.forEach((candidate) => {
+    const category = String(candidate.category);
+    availableCounts.set(category, (availableCounts.get(category) ?? 0) + 1);
+  });
+  const allProductNames = [
+    ...new Set(
+      applicable.flatMap((candidate) =>
+        typeof candidate.productName === 'string' ? [candidate.productName] : [],
+      ),
+    ),
+  ];
+  const selectionRequired = !requestedProductNames && applicable.length > processingPriceItemLimit;
+  const returnedCandidates = selectionRequired ? [] : applicable;
+  const grouped = new Map<string, SteelRawToolOutput[]>();
+  returnedCandidates.forEach((candidate) => {
+    const category = String(candidate.category);
+    const items = grouped.get(category) ?? [];
+    items.push(candidate);
+    grouped.set(category, items);
+  });
+  const availableByCategory = processingPriceCategories.flatMap((category) => {
+    const totalAvailable = availableCounts.get(category) ?? 0;
+    return totalAvailable > 0 ? [{ processingCategory: category, totalAvailable }] : [];
+  });
+
+  return {
+    queryId: null,
+    targetCategories,
+    processingCategories: requestedProcessingCategories ?? [...processingPriceCategories],
+    keyword: keyword ?? null,
+    requestedProductNames: productNames ?? [],
+    discoveryItemLimit: processingPriceItemLimit,
+    totalAvailable: applicable.length,
+    returnedCount: returnedCandidates.length,
+    selectionRequired,
+    productNames: selectionRequired ? allProductNames : [],
+    truncated: false,
+    groups: processingPriceCategories.flatMap((category) => {
+      const items = grouped.get(category) ?? [];
+      return items.length > 0
+        ? [{ processingCategory: category, totalAvailable: items.length, items }]
+        : [];
+    }),
+    availableByCategory,
+    suggestedKeywords: availableByCategory.flatMap((group) =>
+      group.totalAvailable > processingPriceItemLimit
+        ? (suggestedProcessingKeywords[group.processingCategory] ?? [])
+        : [],
+    ),
+  };
+}
+
 async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  const [repositoryGroups, cuttingPrices] = await Promise.all([
+  if (input.productNames) {
+    const candidates = await searchSteelPricesByProductNames(client, input.productNames);
+    const productNamePrices = candidates
+      .filter((candidate) => !hasUnusableProcessingProductName(candidate))
+      .map(toSafePriceCandidate);
+
+    return {
+      productNames: input.productNames,
+      productNamePrices,
+      summary: {
+        requestedProductNameCount: input.productNames.length,
+        priceCount: productNamePrices.length,
+      },
+    };
+  }
+
+  const processingQueries = getProcessingQueries(input);
+  const [repositoryGroups, cuttingPrices, processingCandidates] = await Promise.all([
     searchSteelPriceCandidateGroups(client, { queries: input.queries }),
     searchSteelCuttingPriceGroups(client, input.queries),
+    processingQueries.length > 0
+      ? searchSteelProcessingPriceCandidates(client)
+      : Promise.resolve([]),
   ]);
   const groupsByIndex = new Map(repositoryGroups.map((group) => [group.queryIndex, group]));
-  const cuttingCandidateMatches = input.queries.flatMap((query, queryIndex) => {
+  const candidatesByCategory = new Map<PriceCategory, SteelPriceItem[]>();
+  input.queries.forEach((query, queryIndex) => {
+    if (query.mode === 'category_discovery') {
+      return;
+    }
+    const candidates = candidatesByCategory.get(query.category) ?? [];
+    const seen = new Set(candidates.map((candidate) => candidate.id));
+    (groupsByIndex.get(queryIndex)?.candidates ?? []).forEach((candidate) => {
+      if (!seen.has(candidate.id)) {
+        seen.add(candidate.id);
+        candidates.push(candidate);
+      }
+    });
+    candidatesByCategory.set(query.category, candidates);
+  });
+  const cuttingCandidateMatches = input.queries.flatMap((query) => {
     if (query.mode === 'category_discovery') {
       return [];
     }
@@ -342,7 +508,7 @@ async function searchPriceCandidates(
       {
         queryId: query.queryId,
         category: query.category,
-        candidates: groupsByIndex.get(queryIndex)?.candidates ?? [],
+        candidates: candidatesByCategory.get(query.category) ?? [],
       },
     ];
   });
@@ -374,6 +540,21 @@ async function searchPriceCandidates(
       issues: [],
     };
   });
+  const processingQueryResults = processingQueries.map((query) => ({
+    ...buildProcessingPrice(
+      processingCandidates,
+      'categories' in query ? query.categories : [],
+      'processingCategories' in query ? query.processingCategories : undefined,
+      'keyword' in query ? query.keyword : undefined,
+      'productNames' in query ? query.productNames : undefined,
+    ),
+    queryId: query.queryId,
+  }));
+  const processingPrice = {
+    maxQueries: 3,
+    maxDiscoveryItemsPerQuery: processingPriceItemLimit,
+    queryResults: processingQueryResults,
+  };
   return {
     queryResults,
     cuttingPrices: filteredCuttingPrices,
@@ -385,6 +566,7 @@ async function searchPriceCandidates(
       candidateCount,
       categoryCandidateCount,
     },
+    processingPrice,
   };
 }
 

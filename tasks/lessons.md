@@ -1,5 +1,19 @@
 # Lessons
 
+- AI 規則只寫 AI 需要採用的 tool output、契約與計價判斷；不要寫 `backend 會...`、SQL、matcher 或自動觸發的內部實作說明。
+- 方鐵也有切工；材料 query 要自動觸發 cutting catalog，並以方鐵邊長選最相近的圓條切工基本價。只借價格，不可連圓條不切或管類加價一起套用。
+- 最新切工查詢契約是材料 `queries` 自動觸發 `steel.cutting_prices`，不需要 processingQueries 明示加工/切工；但 backend 必須用材料 query results 跑 candidate-aware matcher，只回 category、尺寸、厚度、nominal inch、normalized spec 相符的切工。
+- v4.4 加工價模擬不能只統計 `steel.prices` 的加工 rows；長條料與方鐵另有自動觸發的 `steel.cutting_prices` 切工 catalog，必須用 v4.4 材料候選與正規化 cutting workbook 一起 replay。
+- 頂層 productNames 的值必須是 backend 前輪返回的 `steel.prices.product_name` 完整原值；repository 用 `p.product_name = ANY(...)` exact equality，禁止 keyword、alias、ILIKE 或 normalized text 比對。
+- 頂層 `{"productNames":[...]}` 只能作 AI 第二段 requery：必須先由 queries/processingQueries 探索並收到 backend productNames 清單，才可用它精確取得 prices；首查禁止 productNames。這個跨回合時序由 tool description 與 AI rules 固定。
+- 精確品名取價必須允許只送頂層 `{"productNames":[...]}`，不要求重送材料或加工 queries；schema 只有在 queries、processingQueries、productNames 全部缺少時才拒絕。AI rules 要提供可直接執行的 requery JSON 範例。
+- Backend 已固定過濾折工亂碼後，AI rules 不得重複 Unicode／亂碼辨識邏輯；只需規定沒有精確可讀折工價時直接 manual_review 且不得 requery／借價，避免浪費 prompt tokens。
+- 折工 price data 含亂碼，或排除亂碼後沒有可判讀的精確價格時，規則必須直接送 manual_review；不得 requery、不得用 productNames 重取、不得猜形狀或借相近折型。只有可讀且能精確對應的折工價格可正常採用。
+- `加工/折工` product_name 含 Unicode Private Use Area 或 replacement character 時視為不可判讀亂碼，backend 與 v4.4 模擬都直接排除；不得把亂碼品名回給 AI、不得靠 ERP 或相近折型猜價。
+- 頂層 productNames 是獨立精確取價 mode：request 只帶 `productNames`，不需要也不接受 queries、processingQueries 或其他 params；探索 mode 才使用 categories/processingCategories/keyword。
+- 加工探索超過10筆時只回全部唯一 `productNames`，不回價格明細；AI 選定後以頂層 `productNames` requery 取得全部明確指定品名的價格，不再套10筆結果上限。這是正常兩段式查詢，不是 error。
+- `search_price_candidates` 的加工查詢必須支援同一訂單一次帶多組 processing queries：訂單可同時包含不同鋼材 category，也可同時需要切工、孔、折工等不同加工；不可把整張訂單壓成單一加工 keyword。每組固定最多10筆，整次呼叫另設固定總上限避免 context 膨脹。
+- 尚未匯入 DB 的新版價格 workbook 驗證，必須直接由指定版本 xlsx 模擬 `search_price_candidates`；不可用舊 DB 回傳推論新版分類或加工候選。DB 只可用來核對現行查詢語意，測試證據與筆數一律來自新版 workbook。
 - 價格 workbook 大規模 normalization 必須先以腳本輸出獨立的新 xlsx 驗證，不可直接覆寫 `docs/products_db_v4.3.xlsx`。腳本需拒絕 input/output 同一路徑，以 product_name 推導 category 並逐列對照 protected category；任何 mismatch 都要中止，不可靜默沿用。
 - 新版價格 subcategory 名稱要利用 category 已提供的上下文，採精簡名詞，不重複 `C型鋼/H型鋼/方鐵/鋼筋/槽鐵` 等 category 字樣。例如 C型鋼使用 `加工/輕型/成型/其他`，H型鋼使用 `輕量/標準`，方鐵使用 `切料/加工/磨光/標準`。
 - Steel 價格 workbook 的面積 canonical unit 是 `㎡`；normalization 方向固定為 `m2`／`M2`／`平方公尺` → `㎡`，絕不可反向把 `㎡` 改成 `m2`。

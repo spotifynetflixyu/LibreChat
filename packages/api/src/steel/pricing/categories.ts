@@ -1,4 +1,4 @@
-export const priceCategories = Object.freeze([
+export const priceCategories = [
   '加工/切工',
   '加工/孔',
   '加工/倒角',
@@ -28,23 +28,15 @@ export const priceCategories = Object.freeze([
   'I型鋼/工字鐵',
   '方管',
   '扁方管',
-] as const);
+] as const;
 
 export type PriceCategory = (typeof priceCategories)[number];
 
-export const processingMethods = Object.freeze([
-  '剪床',
-  '雷射',
-  '鋸床',
-  '水刀',
-  '火',
-  '沖床',
-  '鑽床',
-] as const);
+export const processingMethods = ['剪床', '雷射', '鋸床', '水刀', '火', '沖床', '鑽床'] as const;
 
 export type ProcessingMethod = (typeof processingMethods)[number];
 
-export const processingShapes = Object.freeze([
+export const processingShapes = [
   '外形切割',
   '直線切割',
   '圓孔',
@@ -52,12 +44,12 @@ export const processingShapes = Object.freeze([
   '長孔',
   '橢圓孔',
   '其他',
-] as const);
+] as const;
 
 export type ProcessingShape = (typeof processingShapes)[number];
 
-export const priceSubcategoriesByCategory = Object.freeze({
-  '加工/切工': Object.freeze([
+export const priceSubcategoriesByCategory = {
+  '加工/切工': [
     '',
     '通用',
     '鐵板',
@@ -71,11 +63,11 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '槽鐵',
     '角鐵',
     '板/浪板',
-  ] as const),
-  '加工/孔': Object.freeze(['', '通用', 'C型鋼', '鐵板', '角鐵', '門', '接頭', '五金'] as const),
-  '加工/倒角': Object.freeze(['', '通用', '鐵板'] as const),
-  '加工/開槽': Object.freeze(['', '通用', '鐵板', 'H型鋼', '鐵板/H型鋼'] as const),
-  '加工/折工': Object.freeze([
+  ] as const,
+  '加工/孔': ['', '通用', 'C型鋼', '鐵板', '角鐵', '門', '接頭', '五金'] as const,
+  '加工/倒角': ['', '通用', '鐵板'] as const,
+  '加工/開槽': ['', '通用', '鐵板', 'H型鋼', '鐵板/H型鋼'] as const,
+  '加工/折工': [
     '',
     '一般',
     '下軌',
@@ -98,9 +90,9 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '車/工具箱',
     '切工',
     '其他',
-  ] as const),
-  '加工/焊接': Object.freeze(['', '通用'] as const),
-  '加工/其他': Object.freeze([
+  ] as const,
+  '加工/焊接': ['', '通用'] as const,
+  '加工/其他': [
     '',
     '保護',
     '厚板',
@@ -129,8 +121,8 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '網',
     '加工',
     '管',
-  ] as const),
-  其他: Object.freeze([
+  ] as const,
+  其他: [
     '',
     '其他',
     '勞安',
@@ -148,9 +140,9 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '保麗龍',
     '加工',
     '配件',
-  ] as const),
-  圓條: Object.freeze(['', '切料/加工', '標準', '磨光'] as const),
-  '捲門/伸縮門': Object.freeze([
+  ] as const,
+  圓條: ['', '切料/加工', '標準', '磨光'] as const,
+  '捲門/伸縮門': [
     '',
     '中柱',
     '伸縮門',
@@ -169,8 +161,8 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '馬達/控制',
     '配件',
     '五金/配件',
-  ] as const),
-  網: Object.freeze([
+  ] as const,
+  網: [
     '',
     '其他',
     '刺網',
@@ -186,9 +178,9 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '高床網',
     '浪型網',
     '菱形網',
-  ] as const),
-  '格板/隔板': Object.freeze(['', '1HP', '700KG', '850KG', '一般'] as const),
-  '五金/配件': Object.freeze([
+  ] as const,
+  '格板/隔板': ['', '1HP', '700KG', '850KG', '一般'] as const,
+  '五金/配件': [
     '',
     '傳動/軸承',
     '其他',
@@ -230,8 +222,8 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '釘',
     '鋸',
     '加工',
-  ] as const),
-  '門窗/門板': Object.freeze([
+  ] as const,
+  '門窗/門板': [
     '',
     '其他',
     '天地串',
@@ -251,20 +243,10 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '網',
     '配件',
     '角鐵',
-  ] as const),
-  鐵板: Object.freeze([
-    '',
-    '切板',
-    '平板',
-    '成型/配件',
-    '網板',
-    '花板',
-    '檔泥板',
-    '特殊',
-    '圍籬板',
-  ] as const),
-  C型鋼: Object.freeze(['', '加工', '成型', '輕型', '其他', '加工/其他'] as const),
-  '板/浪板': Object.freeze([
+  ] as const,
+  鐵板: ['', '切板', '平板', '成型/配件', '網板', '花板', '檔泥板', '特殊', '圍籬板'] as const,
+  C型鋼: ['', '加工', '成型', '輕型', '其他', '加工/其他'] as const,
+  '板/浪板': [
     '',
     'PC',
     '五金/收邊',
@@ -278,20 +260,20 @@ export const priceSubcategoriesByCategory = Object.freeze({
     '特殊',
     '琉璃瓦',
     '五金/配件',
-  ] as const),
-  方鐵: Object.freeze(['', '切料/加工', '標準', '磨光'] as const),
-  H型鋼: Object.freeze(['', '標準', '輕量'] as const),
-  T型鋼: Object.freeze(['', '標準'] as const),
-  平鐵: Object.freeze(['', '切料/加工', '標準'] as const),
-  角鐵: Object.freeze(['', '不等邊', '等邊', '萬能/成型', '配件', '烤漆'] as const),
-  鋼筋: Object.freeze(['', '竹節', '其他'] as const),
-  圓管: Object.freeze(['', 'A管', 'B管', '一般', '成品/太陽片', '連料', '配管', '鋼管'] as const),
-  鐵軌: Object.freeze(['', '標準'] as const),
-  槽鐵: Object.freeze(['', '切料/加工', '標準'] as const),
-  'I型鋼/工字鐵': Object.freeze(['', '標準'] as const),
-  方管: Object.freeze(['', '一般', '成品/太陽片', '連料', '雨棚'] as const),
-  扁方管: Object.freeze(['', '切料/加工', '一般'] as const),
-} as const satisfies Readonly<Record<PriceCategory, readonly string[]>>);
+  ] as const,
+  方鐵: ['', '切料/加工', '標準', '磨光'] as const,
+  H型鋼: ['', '標準', '輕量'] as const,
+  T型鋼: ['', '標準'] as const,
+  平鐵: ['', '切料/加工', '標準'] as const,
+  角鐵: ['', '不等邊', '等邊', '萬能/成型', '配件', '烤漆'] as const,
+  鋼筋: ['', '竹節', '其他'] as const,
+  圓管: ['', 'A管', 'B管', '一般', '成品/太陽片', '連料', '配管', '鋼管'] as const,
+  鐵軌: ['', '標準'] as const,
+  槽鐵: ['', '切料/加工', '標準'] as const,
+  'I型鋼/工字鐵': ['', '標準'] as const,
+  方管: ['', '一般', '成品/太陽片', '連料', '雨棚'] as const,
+  扁方管: ['', '切料/加工', '一般'] as const,
+} as const satisfies Readonly<Record<PriceCategory, readonly string[]>>;
 
 export type PriceSubcategory = (typeof priceSubcategoriesByCategory)[PriceCategory][number];
 

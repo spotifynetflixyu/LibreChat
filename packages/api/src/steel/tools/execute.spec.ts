@@ -261,6 +261,7 @@ describe('Steel minimal tool execution', () => {
           unit_price_f: '20.0000',
         }),
       ],
+      [],
     ]);
 
     const result = await executeSteelTool({
@@ -287,7 +288,7 @@ describe('Steel minimal tool execution', () => {
       throw new Error(result.errorSummary);
     }
 
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(result.data).not.toHaveProperty('priceCandidates');
     expect(result.data.queryResults).toEqual([
       expect.objectContaining({
@@ -461,6 +462,105 @@ describe('Steel minimal tool execution', () => {
     expect(JSON.stringify(candidates?.[0])).not.toContain('price_ratio');
   });
 
+  it('returns only product names when processing discovery exceeds ten rows', async () => {
+    const processingRows = Array.from({ length: 12 }, (_, index) =>
+      createPriceRow({
+        id: String(500 + index),
+        erp_item_code: `PROCESS-${index + 1}`,
+        category: '加工/切工',
+        subcategory: '通用',
+        product_name: `雷射切工 ${index + 1}`,
+        normalized_spec_text: `雷射 切工 ${index + 1}`,
+        unit: '刀',
+      }),
+    );
+    const client = createClient([
+      [
+        {
+          query_index: 0,
+          query_id: 'q1',
+          price_candidates: [createPriceRow({ category: '鐵板' })],
+          category_candidates: [],
+        },
+        {
+          query_index: 1,
+          query_id: 'q2',
+          price_candidates: [createPriceRow({ id: '20', category: 'C型鋼' })],
+          category_candidates: [],
+        },
+      ],
+      processingRows,
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [{ category: '鐵板' }, { category: 'C型鋼' }],
+        processingQueries: [
+          {
+            categories: ['鐵板', 'C型鋼'],
+            processingCategories: ['加工/切工'],
+            keyword: '雷射',
+          },
+        ],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.processingPrice).toEqual({
+      maxQueries: 3,
+      maxDiscoveryItemsPerQuery: 10,
+      queryResults: [
+        expect.objectContaining({
+          queryId: 'p1',
+          totalAvailable: 12,
+          returnedCount: 0,
+          selectionRequired: true,
+          productNames: Array.from({ length: 12 }, (_, index) => `雷射切工 ${index + 1}`),
+          truncated: false,
+          groups: [],
+        }),
+      ],
+    });
+  });
+
+  it('retrieves exact processing product names without material queries', async () => {
+    const client = createClient([
+      [
+        createPriceRow({
+          id: '701',
+          erp_item_code: 'KZZB12',
+          category: '加工/倒角',
+          subcategory: '通用',
+          product_name: '倒角加工',
+          normalized_spec_text: '倒角加工',
+          unit: '頭',
+        }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { productNames: ['倒角加工'] },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.errorSummary);
+    }
+    expect(result.data.productNames).toEqual(['倒角加工']);
+    expect(result.data.productNamePrices).toEqual([
+      expect.objectContaining({ productName: '倒角加工', quoteEligible: true }),
+    ]);
+    expect(result.data.summary).toEqual({ requestedProductNameCount: 1, priceCount: 1 });
+    expect(client.calls).toHaveLength(1);
+  });
+
   it('exposes Kg ratio-only rows as normal tier prices for every category', async () => {
     const client = createClient([
       [
@@ -541,10 +641,9 @@ describe('Steel minimal tool execution', () => {
     if (!result.ok) {
       throw new Error(result.errorSummary);
     }
-    expect(result.data.queryResults[0]?.candidates.map((candidate) => candidate.erpItemCode)).toEqual([
-      'SQUARE-ORDINARY',
-      'SQUARE-POLISHED',
-    ]);
+    expect(
+      result.data.queryResults[0]?.candidates.map((candidate) => candidate.erpItemCode),
+    ).toEqual(['SQUARE-ORDINARY', 'SQUARE-POLISHED']);
   });
 
   it('keeps every plate-size candidate for unit 片 without a dimension query filter', async () => {
@@ -722,17 +821,12 @@ describe('Steel minimal tool execution', () => {
       throw new Error(result.errorSummary);
     }
 
-    expect(client.calls).toHaveLength(2);
+    expect(client.calls).toHaveLength(3);
     expect(result.data.queryResults).toEqual([
       expect.objectContaining({ queryId: 'q1', status: 'ok' }),
       expect.objectContaining({ queryId: 'q2', status: 'no_match' }),
     ]);
     expect(result.data.cuttingPrices).toEqual([
-      expect.objectContaining({
-        cuttingCategory: 'H型鋼',
-        queryIds: ['q1'],
-        prices: [expect.objectContaining({ id: 2 })],
-      }),
       expect.objectContaining({
         cuttingCategory: '工字鐵/H型鋼',
         queryIds: ['q1'],
