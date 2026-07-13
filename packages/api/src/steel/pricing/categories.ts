@@ -41,6 +41,7 @@ export const processingShapes = [
   '直線切割',
   '圓孔',
   '方孔',
+  '菱形孔',
   '長孔',
   '橢圓孔',
   '其他',

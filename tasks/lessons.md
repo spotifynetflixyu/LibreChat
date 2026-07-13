@@ -1,5 +1,18 @@
 # Lessons
 
+- Steel `查價方式` 通用 owner 只保留跨類別共用的 query envelope、選價與規則索引；
+  正規化加工方式／形狀的具體詞表必須留在對應加工 owner，並直接寫成
+  `processingQueries.keyword` 可用值，不可假裝成額外 query param。孔加工方式、
+  孔型、`□/◇/○` 正規化與禁用來源詞只能寫在【加工/孔 規則】，不可為了統一 keyword
+  寫法又搬回通用規則。類別索引只指向 owner，不複述 owner 內容。
+
+- C型鋼的孔與切一律不計價，只能記備註；不得建立 `加工/孔` 或 `加工/切工`
+  processing query。C2／2C 結筒仍是明示的 `加工/其他` 例外，不得因禁止孔／切而刪除。
+
+- 當使用者要求「parser 未來要自動增加 XLSX 設定」並另行指定現有 reference XLSX 也要更新時，必須拆成兩條路徑：改 parser contract；現有 binary 檔直接編輯。不可為了更新現有檔而重跑 parser，除非使用者明確允許重建。
+
+- 使用者說 Google Drive 的 header「group」時，若接著描述「勾選 category，只顯示符合資料」，契約是所有 header（含 category、subcategory）的多選篩選 dropdown，並可疊加多欄條件；不是合併 header、outline group 或視覺分組，需先以實際互動行為鎖定需求。
+
 - v4.4 subcategory 必須是利用 category 上下文後的精簡值；例如 `網 > 點焊/牛筋/高床/浪型/菱形`，不得回退為 `點焊網/牛筋網/高床網/浪型網/菱形網`。product xlsx normalizer、v4 importer、subcategory enum 與 rules 索引必須使用同一組精簡值。
 - `search_price_candidates.queries.unit` 是可選覆寫值：AI 省略時使用類別 backend 預設，只有訂單明示計價單位時才傳入覆寫。不可因「候選返回 unit」就刪除 query param。
 - 「未指定厚度時，在其他條件相符且可報價的候選中採最小厚度」是鋼材通用選價規則，只在通用查價 owner 寫一次；孔加工區間與類別明示例外優先。
@@ -58,7 +71,7 @@
 - H/C/I/槽鐵/角鐵/圓管/方管/扁方管等具有多維複合規格的類別，首查必須使用 `category + canonical keyword`，不能只靠單一 `thicknessMm`。平鐵、圓鐵、方鐵、鐵軌及大型商品目錄類別也因 structured 欄位缺漏或過寬，需要在 category-based 首查同筆加入可確認的品名/規格 keyword；取得可用候選後禁止改寫同規格或 limit 重查。
 - H 型鋼價格候選的 `unitWeightValue` / `kg_per_piece_or_stock_length` 是 `lengthMm` 對應母材整支總重，不是 kg/m。報價必須先除以母材長度換算 kg/m，再乘成品長度與數量；不得為了找成品同長 row 反覆查價。
 - Steel 各具體類別的首查形狀必須先以 live `steel.prices` 證明。每筆一律帶 `category`；structured 欄位可靠且具選擇性時才加 `subcategory`、`material`、`thicknessMm`，複合規格或大型商品目錄則同筆加入 canonical 品名/規格 `keyword`。不得用跨類別 blanket 規則禁止 keyword，也不得在沒有資料證據時通用化 `thicknessMm`。
-- Steel runtime 類別規則順序必須先放所有具體類別規則，最後才放 `docs/rules/類別規則/查價方式.txt` 通用查價規則；以 DB `priority` 與 build/sync 順序共同鎖定，不能只依檔名排序。
+- Steel runtime 類別規則順序必須先放 `docs/rules/類別規則/查價方式.txt` 通用 query envelope，再放所有具體類別／加工規則；以 DB `priority` 與 build/sync 順序共同鎖定，不能只依檔名排序。具體 block 負責後續細則與例外。
 - Steel 查價首次 lookup 一律以已判定的 `category` 為基礎，再依該類 live 資料加入 structured filters 或 canonical keyword。只有 category 未知時才先使用 `mode: "category_discovery" + keyword`。`erpItemCode` 是 DB 候選返回值，不是首查前提；候選已返回就直接採用，不能為同一列再用 ERP 重查。`ST50`、`SN400B` 等表單代號只留在判讀/備註。
 - 加工/孔厚度區間一律是半開區間：下限「以上（含）」、上限「以下（不含）」，即 `min <= thickness < max`；只有 `min = max` 的單一厚度列使用精確匹配。不可把一般區間的上限當作可命中端點。
 - Steel material-unit defaults are category-specific: C型鋼、H型鋼、方鐵、鐵板 prefer Kg and must go to manual review when no usable Kg price exists, unless the request explicitly says `不切清`, which permits M/支/other direct units. 槽鐵、角鐵、鐵軌、圓管、圓鐵、平鐵、扁方管、方管、網 default to `不切清` and prefer 支/只/片; 板/浪板 pricing is length-led. Preserve precise intermediate values and ceil each final material-line subtotal to an integer TWD.
@@ -1127,3 +1140,12 @@
 - OCR 共享判讀核心必須同時提供給 main AI OCR fallback 與 chunk organizer：旋正後閱讀、繁體中文，以及孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓的視覺判讀與計量。這些直接影響 AI 判斷，不得當成 backend-only 規則刪除。
 - OCR Markdown 的缺值一律留空；不使用「未確認」填滿缺值，也不得以「約、略、大約、約略」等近似詞代替判斷。每筆來源 row 必須獨立保留並帶頁數、項次、件號、圖號或其他可追溯代號；同 file key 只合併表格結構，不得合併或彙總資料列。
 - 注入 Agent context 的 rules 不得寫「依 `某檔案.txt`」或暗示 AI 需要讀取本地檔案；跨規則引用必須使用實際注入的 block name，例如【長條料類別規則】、【長條料切工規則】、【OCR 規則】。
+- Tool-call `Parameters` 的長 nested value 不可只移除 `truncate` 後直接換行；必須提供 value-level 的明確 `Show more / Show less` 展開／收合控制，讓 `processingQueries` 等完整 content 可由使用者主動查看。外層 Parameters accordion 不能取代內層長值展開。
+- Tool-call `Parameters` 的 value 若為 object／array，不可用 compact `JSON.stringify` 擠成單行；應使用縮排 JSON 並保留換行，讓 `queries`、`processingQueries` 的陣列項目與 nested fields 可逐行閱讀，同時保留長值的展開／收合。
+- `search_price_candidates` 的 query correlation ID 由 backend 依 array order 與 query 類型產生：材料／類別查詢使用 `q1...`，加工查詢使用 `p1...`。AI-visible rules 與 tool input schema 都不得再暴露或要求 `queryId`；只保留 backend normalized input、repository correlation 與 tool output 中的分類 internal ID。
+- Conversation tool event 的 debug/reload contract 以 Parameters 為主：backend execution-start log 與 persisted message 都要保留 tool `id/name/args`，讓重新整理後仍可展開重現；debug log 不得包含 result。Reload snapshot 的 result 若存在就照常顯示，只有缺失時才顯示「Result 未保存」，不能讓 event 消失或看起來仍在載入。
+- Steel 產品查價的 `keyword` 應使用最短且足以辨識的通用詞／必要規格，並移除已由 category、subcategory、material 表達的品名，以及位置、端數、數量或冗餘描述；這是通用查價 owner 的規則。加工 `processingQueries.keyword` 只由對應加工 owner 定義，不得混入這段產品通則。
+- 加工 `processingQueries.keyword` 的最短充分詞依各加工 owner 使用 parser 寫入 `normalized_spec_text` 的 canonical `processing_method`／`processing_shape`。鑽孔使用 `鑽床` 或 `圓孔`、`□/◇/○` 孔型正規化與 method/shape AND 語意只屬【加工/孔 規則】，不可放在通用查價 owner。
+- `加工/切工` 的 `processingQueries.keyword` 在已確認加工方式時，優先使用 canonical `processing_method` 詞；不要先用 product_name、冗長描述或較次要的加工形狀。沒有已確認 method 時，才退回足以辨識的最短通用形狀／必要規格詞，且不新增 processing method 專用 query param。
+- 使用者未明確要求開啟 app 或 server 時，交付後不得自行保持 3080／3090 運行。只有開發驗證確實需要時才暫時啟動；測試完成後主動關閉，除非使用者明示要繼續開著。
+- Codex Skill 停用若使用者指定 `gpt-5.6`，範圍包含目前 model catalog 的整個 `gpt-5.6*` family（`luna`、`sol`、`terra`），不得自行縮成只有 `gpt-5.6-sol`；其他 model family 必須維持原設定。

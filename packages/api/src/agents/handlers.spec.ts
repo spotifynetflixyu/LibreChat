@@ -82,6 +82,60 @@ function skillsInScope(): unknown[] {
 }
 
 describe('createToolExecuteHandler', () => {
+  it('logs complete tool Parameters with correlation IDs but never the result', async () => {
+    const resultSentinel = 'SECRET_RESULT_SHOULD_NOT_LOG';
+    const parameters = {
+      queries: [{ category: '鐵板', material: '黑鐵', thicknessMm: ['15'] }],
+      processingQueries: [
+        { categories: ['鐵板'], processingCategories: ['加工/孔'], keyword: '鑽孔' },
+      ],
+    };
+    const tool = {
+      name: 'search_price_candidates',
+      invoke: jest.fn(async () => ({ content: resultSentinel })),
+    };
+    const loadTools: ToolExecuteOptions['loadTools'] = jest.fn(async () => ({
+      loadedTools: [tool] as never[],
+    }));
+    const handler = createToolExecuteHandler({ loadTools });
+    const debugSpy = jest.spyOn(logger, 'debug').mockReturnValue(logger);
+
+    try {
+      await new Promise<ToolExecuteResult[]>((resolve, reject) => {
+        handler.handle('on_tool_execute', {
+          toolCalls: [{ id: 'call_price', name: 'search_price_candidates', args: parameters }],
+          agentId: 'steel-agent',
+          metadata: { thread_id: 'conversation-1', run_id: 'message-1' },
+          resolve,
+          reject,
+        } as ToolExecuteBatchRequest);
+      });
+
+      const logEntry = debugSpy.mock.calls
+        .map(([message]) => message)
+        .find(
+          (message) =>
+            typeof message === 'object' &&
+            message !== null &&
+            (message as { event?: string }).event === 'tool_call_parameters',
+        );
+      expect(logEntry).toEqual({
+        event: 'tool_call_parameters',
+        conversationId: 'conversation-1',
+        messageId: 'message-1',
+        agentId: 'steel-agent',
+        toolCallId: 'call_price',
+        toolName: 'search_price_candidates',
+        parameters,
+      });
+      expect(JSON.stringify(logEntry)).not.toContain(resultSentinel);
+      expect(logEntry).not.toHaveProperty('result');
+      expect(logEntry).not.toHaveProperty('output');
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
   describe('code execution session context passthrough', () => {
     it('passes session_id and _injected_files from codeSessionContext to toolCallConfig', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];

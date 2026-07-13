@@ -1200,7 +1200,7 @@ describe('OpenAI OAuth provider adapter', () => {
     );
   });
 
-  it('assigns query IDs from coalesced array order even when calls supply IDs', async () => {
+  it('assigns query IDs from coalesced array order', async () => {
     const doGenerate = jest
       .fn()
       .mockImplementationOnce(async (_options: LanguageModelV3CallOptions) => ({
@@ -1242,7 +1242,6 @@ describe('OpenAI OAuth provider adapter', () => {
             input: JSON.stringify({
               queries: [
                 {
-                  queryId: 'line-c',
                   category: '鐵板',
                   material: '黑鐵',
                   keyword: 'DNB70060',
@@ -1315,6 +1314,7 @@ describe('OpenAI OAuth provider adapter', () => {
               queryId: 'q1',
               category: '鐵板',
               material: '黑鐵',
+              unit: 'Kg',
               keyword: 'DNB70060',
               limit: 5,
             },
@@ -1322,6 +1322,7 @@ describe('OpenAI OAuth provider adapter', () => {
               queryId: 'q2',
               category: '鐵板',
               material: '黑鐵',
+              unit: 'Kg',
               keyword: 'DNB70060',
               limit: 5,
             },
@@ -1329,6 +1330,7 @@ describe('OpenAI OAuth provider adapter', () => {
               queryId: 'q3',
               category: '鐵板',
               material: '黑鐵',
+              unit: 'Kg',
               keyword: 'DNB70060',
               limit: 5,
             },

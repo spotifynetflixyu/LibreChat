@@ -1,14 +1,21 @@
 import { steelToolArgsSchemas } from './schemas';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
 describe('Steel price candidate tool schema', () => {
   const schema = steelToolArgsSchemas.search_price_candidates;
 
-  it('assigns deterministic query IDs from array order and ignores supplied IDs', () => {
+  it('does not expose backend-generated queryId fields to the AI', () => {
+    const aiVisibleSchema = zodToJsonSchema(schema, { $refStrategy: 'none' });
+
+    expect(JSON.stringify(aiVisibleSchema)).not.toContain('queryId');
+  });
+
+  it('assigns deterministic query IDs from array order', () => {
     expect(
       schema.parse({
         queries: [
           { category: 'H型鋼', keyword: 'H200x100' },
-          { queryId: '  order-line-2  ', category: '加工/其他', subcategory: '厚板' },
+          { category: '加工/其他', subcategory: '厚板' },
           { mode: 'category_discovery', keyword: '不銹鋼管' },
         ],
       }),
@@ -21,17 +28,16 @@ describe('Steel price candidate tool schema', () => {
     });
   });
 
-  it('normalizes duplicate supplied IDs to their array positions', () => {
-    expect(
-      schema
-        .parse({
-          queries: [
-            { queryId: 'same', category: '鐵板' },
-            { queryId: 'same', category: 'H型鋼' },
-          ],
-        })
-        .queries.map((query) => query.queryId),
-    ).toEqual(['q1', 'q2']);
+  it('rejects caller-supplied query IDs in every AI-visible query shape', () => {
+    expect(() => schema.parse({ queries: [{ queryId: 'q1', category: '鐵板' }] })).toThrow(
+      'Unrecognized key',
+    );
+    expect(() =>
+      schema.parse({ queries: [{ queryId: 'q1', mode: 'category_discovery', keyword: '鐵板' }] }),
+    ).toThrow('Unrecognized key');
+    expect(() =>
+      schema.parse({ processingQueries: [{ queryId: 'p1', categories: ['鐵板'] }] }),
+    ).toThrow('Unrecognized key');
   });
 
   it('accepts up to three processing queries and assigns deterministic IDs', () => {
@@ -44,7 +50,7 @@ describe('Steel price candidate tool schema', () => {
             processingCategories: ['加工/切工', '加工/孔'],
             keyword: '雷射',
           },
-          { queryId: 'ignored', categories: ['鐵板'], processingCategories: ['加工/折工'] },
+          { categories: ['鐵板'], processingCategories: ['加工/折工'] },
         ],
       }).processingQueries,
     ).toEqual([
@@ -117,7 +123,6 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           {
-            queryId: 'line-1',
             category: '圓管',
             subcategory: '一般',
             material: '鎢',

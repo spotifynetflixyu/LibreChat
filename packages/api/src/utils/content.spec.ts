@@ -25,6 +25,33 @@ describe('filterMalformedContentParts', () => {
       expect(result[0]).toEqual(parts[0]);
     });
 
+    it('keeps reloadable tool Parameters when a persisted result is unavailable', () => {
+      const parameters = {
+        queries: [{ category: '鐵板', material: '黑鐵', thicknessMm: ['15'] }],
+        processingQueries: [
+          { categories: ['鐵板'], processingCategories: ['加工/孔'], keyword: '鑽孔' },
+        ],
+      };
+      const parts: TMessageContentParts[] = [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'call_price',
+            name: 'search_price_candidates',
+            type: ToolCallTypes.TOOL_CALL,
+            args: parameters,
+            progress: 1,
+          },
+        },
+      ];
+
+      const result = filterMalformedContentParts(parts);
+
+      expect(result).toEqual(parts);
+      expect(result[0]).toHaveProperty('tool_call.args', parameters);
+      expect(result[0]).not.toHaveProperty('tool_call.output');
+    });
+
     it('should filter out malformed tool_call content parts without tool_call property', () => {
       const parts: TMessageContentParts[] = [
         { type: ContentTypes.TOOL_CALL } as TMessageContentParts,

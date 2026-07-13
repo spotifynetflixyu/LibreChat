@@ -173,6 +173,22 @@ describe('Steel price workbook normalization core', () => {
     expect(normalized.normalized_spec_text).toContain('外形切割');
   });
 
+  it('normalizes a diamond hole symbol to the canonical hole shape keyword', () => {
+    const normalized = normalizeSteelPriceWorkbookRow(
+      makeRow({
+        product_name: '沖3/4◇孔',
+        category: '加工/孔',
+        subcategory: '',
+      }),
+    );
+
+    expect(normalized).toMatchObject({
+      processing_method: '沖床',
+      processing_shape: '菱形孔',
+    });
+    expect(normalized.normalized_spec_text).toContain('菱形孔');
+  });
+
   it('normalizes an allowed hot-dip material category', () => {
     const normalized = normalizeSteelPriceWorkbookRow(
       makeRow({

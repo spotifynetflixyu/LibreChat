@@ -1,4 +1,167 @@
+# Active: 加工規則去重與孔規則 owner 修正 - 2026-07-13
+
+Goal: 修正近期加工 keyword 規則回流到通用 `查價方式` 的問題；通用檔只保留
+query envelope、選價與 owner 索引，切工 canonical 詞留在【一般加工類別規則】，孔加工
+方式、孔型與符號正規化只留在【加工/孔 規則】；`查價方式` 先於其他類別規則注入。
+完成後只同步 dev `steel.rules`，不碰 prod、prices 或 cutting prices；不 commit、不執行
+Prettier。
+
+- [x] 重現並盤點 `查價方式.txt`、`加工.txt`、`孔.txt` 與類別檔的加工規則重疊。
+- [x] 確認 runtime/sync 每個 rule file 只註冊一次；根因是近期文字 owner 搬移不完整，
+  不是 build/sync 重複載入。
+- [x] 從通用查價 owner 移除 `processing_method`、`processing_shape`、孔型與孔符號細則。
+- [x] 精簡一般加工規則內重複的 query envelope，將切工與孔 keyword 契約留在各自 owner。
+- [x] 鎖定 C型鋼孔／切不計價，不建立 `加工/孔` 或 `加工/切工` query；保留 C2／2C
+  `加工/其他` 結筒例外。
+- [x] 將 `查價方式.txt` priority 調到所有類別規則之前，補 build 與 dry-run context-order
+  regression。
+- [x] 補 owner-boundary regression，跑 focused Jest、rules dry-run 與 `git diff --check`。
+- [x] 補 Review，記錄修正範圍與驗證結果。
+
+Review:
+
+- Root cause 是近期把加工 canonical 詞表搬進 `查價方式.txt`，造成通用 owner 與
+  `加工.txt`／`孔.txt` 語意重疊；sync manifest 本身每個檔案只載入一次。
+- 通用查價現只保留跨類 query envelope、選價與規則索引；一般加工 block 直接列自己的
+  正規化 `processingQueries.keyword` 值，孔 block 單獨列孔加工方式、孔型、符號正規化與
+  厚度區間判斷。產品名稱精確重取 mechanics 只留在通用 owner。
+- C型鋼孔與切一律不計價，只記備註且禁止 `加工/孔`／`加工/切工` query；C2／2C
+  `加工/其他` 結筒例外保留。
+- `steel_category_price_lookup_guide` priority 由 99 改為 19。dev live readback 證明它是
+  11 個 reviewed active Steel rules 的第一筆，其餘類別規則 priority 為 20～25。
+- dev rules apply/readback 完成：共 14 個 reviewed active rules；本輪關鍵 hashes 為
+  查價 `8bc40754...97a1d`、C型鋼 `6430fdd0...27cc2`、孔 `83f35be5...a80af`、
+  加工 `2faa9aa9...4742`。未同步 prod、prices 或 cutting prices。
+- 驗證通過：rules Jest 16 tests、targeted ESLint、rules dry-run、dev prompt/priority live
+  readback 與 `git diff --check`；未執行 Prettier、未 commit。
+
+# Active: GPT-5.6 global Skill cleanup - 2026-07-13
+
+Scope:
+
+- [x] 保留 `full-output-enforcement`；它不在使用者明列的刪除清單。
+- [x] 確認指定的 10 個獨立 Skill 目錄目前都存在。
+- [x] 刪除 `taste-skill`、`design-taste-frontend-v1`、`project-guidelines-example`、
+  `coding-standards`、`tdd-workflow`、`backend-patterns`、`frontend-patterns`、
+  `frontend-design`、`high-end-visual-design`、`redesign-existing-projects`。
+- [x] 保守盤點與 Awesome Design Skills 明確重疊的其他獨立 Skills；只刪除 strong/exact
+  overlap，不因泛用設計能力相近就擴大刪除。
+- [x] 清理刪除項目的設定與 symlink 引用，驗證無 broken link、Skill inventory 正確、
+  `git diff --check` 通過；不 commit。
+
+Review:
+
+- 共刪除 13 個獨立 Skills：使用者明列 10 個，另加與 Awesome Design Skills 強重疊的
+  `minimalist-ui`、`industrial-brutalist-ui`、`gpt-taste`。
+- 從 `/Users/neven/.agents/.skill-lock.json` 移除 6 筆已刪 Skill lock；JSON parse 通過。
+- 保留 `full-output-enforcement`、`design-taste-frontend`、`stitch-design-taste`、品牌與
+  image workflow Skills；Awesome Design 的 67 個 symlink 全數保留。
+- 驗證結果：13 個目錄皆不存在、broken symlink 0、全域有效 Skill 總數 116；
+  `git diff --check` 通過；fresh `codex debug prompt-input` 已確認 13 個名稱不再注入，
+  且保留的 `design-taste-frontend`、`full-output-enforcement` 仍會注入。既有 task 的
+  Skill catalog 不會熱更新，需開新 task／重啟後才會刷新。
+
+# Active: products / cutting v4.4 + rules 同步 dev Supabase - 2026-07-13
+
+Goal: 以已正規化的 `docs/products_db_v4.4.xlsx` 與
+`docs/切工價錢-v4.4-normalized.xlsx` 重建 dev Supabase 對應資料，並把目前
+`docs/rules` reviewed rules 同步到 dev；prod 不在本輪範圍。
+
+Read-only findings before implementation:
+
+- [x] Products dry-run 通過：6,761 rows / 6,761 unique ERP；`confirmed=4,787`、
+  `ratio_only=190`、`no_price=1,784`。
+- [x] Cutting dry-run 通過：119 rows；`price=100`、`supplement=19`；六個
+  cutting categories 均通過 exact-header、range、JSON 與 reconciliation 驗證。
+- [x] Rules dry-run 通過；本地同步來源會建立 14 個 reviewed active rules。
+- [x] dev live inspection 證明目前仍是舊資料：`steel.prices` 使用
+  `product_price_v4_3`，state totals 為 `4,880 / 230 / 1,651`；rules 只有 9 個
+  reviewed active rows，且 hashes 與本地不同。
+- [x] dev migration history 缺少本地 migration `20260713012203`；dev 的
+  `steel.prices` 尚無 `processing_method` / `processing_shape`，所以不可直接匯入 v4.4。
+- [x] `supabase/schema.sql` 已含 processing 欄位與新 taxonomy constraints，無需再新增
+  v4.4 業務欄位；但 provenance 仍寫死 `product_price_v4_3`，importer 預設檔也仍是
+  v4.3。為避免把 v4.4 資料誤標為 v4.3，需同步更新 schema、migration、constant、
+  importer default/comment/error/lock 文案及 tests。
+
+Implementation plan:
+
+- [x] 將 normalized products dataset provenance 正式升級為 `product_price_v4_4`：
+  更新 `packages/api/src/steel/pricing/v4.ts`、products importer 預設 workbook 與 v4.4
+  文案、相關 tests；schema source constraint 在 migration 過渡期允許 v4.3/v4.4，
+  匯入後 live rows 必須全數為 v4.4。
+- [x] 依專案規範用 `npx supabase migration new <name>` 建立單一 provenance migration，
+  同步更新 `supabase/schema.sql` 的完整 snapshot 與 table comment；不修改既有 migration。
+- [x] 跑 focused tests、products/cutting/rules dry-run、`git diff --check`；任何 reconciliation
+  或 constraint 差異立即停止並重新規劃，不寫 dev。
+- [x] 先對 dev 套用所有 pending migrations（既有 processing taxonomy migration + 新
+  v4.4 provenance migration），再核對 migration history、欄位與 constraints。
+- [x] 以 products importer `--apply` 明示 `docs/products_db_v4.4.xlsx`；live readback 必須是
+  total/distinct ERP `6,761/6,761`、state totals `4,787/190/1,784`、source dataset 全為
+  `product_price_v4_4`，processing method/shape 值皆符合 schema，非加工 category 不得帶值。
+- [x] 以 cutting importer `--apply` 匯入
+  `docs/切工價錢-v4.4-normalized.xlsx`；核對 `119/100/19` 與六類 category totals。
+- [x] 以 rules sync `--dry-run` 後 `--apply` 更新 dev；逐 slug 比對 reviewed/active、priority
+  與 `source_refs.sha256`，並確認已移除的 docs-backed rules 不殘留。
+- [x] 執行 Supabase advisors、代表性 products/cutting lookup readback、focused Jest/build
+  與 `git diff --check`；在本節補 Review，記錄 migration、live totals、rule hashes 與
+  advisors 結果。全程不碰 prod、不 commit。
+
+Review - dev v4.4 rollout completed (2026-07-13):
+
+- 新增並套用 `20260713041735_steel_prices_v4_4_source_dataset.sql`；既有 pending
+  `20260713012203_steel_processing_taxonomy_attributes.sql` 亦已套用，local/remote migration
+  history 完全對齊。
+- `steel.prices` live readback：6,761 total / 6,761 distinct ERP / 6,761 active；
+  `source_dataset=product_price_v4_4` 6,761、其他 dataset 0；`confirmed=4,787`、
+  `ratio_only=190`、`no_price=1,784`；所有 rows 的 `imported_at` 已刷新為本次匯入時間。
+- Products importer 改為跨版本固定 advisory lock、conflict 時刷新 `imported_at`、依 workbook
+  ERP set 刪除 stale rows，並以全表 total/source dataset/state readback 證明 exact snapshot；
+  避免單純 upsert 對 drift DB 產生假成功。
+- `processing_method` / `processing_shape` live distinct values均符合 schema；非 `加工/*`
+  category 帶 processing attributes 的違規列為 0。
+- `steel.cutting_prices` live readback：119 total，100 price / 19 supplement；category totals
+  為 H型鋼22、工字鐵/H型鋼36、鐵管23、角鐵13、槽鐵14、鐵板/平鐵11。
+- `steel.rules` live readback：14 reviewed active / 14 distinct slugs；priority 與每個
+  `source_refs[0].sha256` 均與本地 sync output 一致。
+- Verification：4 focused Jest suites / 162 tests 通過；`packages/api` build 通過；
+  `git diff --check` 通過。Supabase advisors 僅回報既有 4 個 WARN：兩個 mutable
+  function search_path 與 public schema 中的 `vector` / `pg_trgm` extensions，本輪未新增。
+- 本輪只更新 dev Supabase；未碰 prod、未 commit、未執行 Prettier。
+
 # Active: products_db_v4.3 全列 parser 數值修正 - 2026-07-13
+
+## Follow-up: 最新 prices / cutting prices / rules 重新同步 dev - 2026-07-13
+
+Goal: 將目前 `docs/reference` 的最新版 v4.4 products、cutting workbook 與本地 reviewed
+rules 同步至 dev Supabase；先套用 pending processing shape migration，完整 readback 後才完成。
+Prod 不在範圍。
+
+- [x] 驗證 products、cutting、rules dry-run 與 focused regression，確認 reconciliation 不變。
+- [x] 核對 dev migration history，僅套用 pending `steel_processing_diamond_hole_shape` migration。
+- [x] 依序 apply products、cutting prices、rules 到 `.env` `STEEL_POSTGRES_URL`。
+- [x] Readback 驗證 prices totals/state/source/processing values、cutting totals 與 rules hashes。
+- [x] 執行 `git diff --check` 並補 Review；不碰 prod、不 commit、不執行 Prettier。
+
+Review:
+
+- Dev 已套用唯一 pending migration `20260713053905_steel_processing_diamond_hole_shape.sql`；
+  local/remote migration history 完全對齊，live constraint 已包含 `菱形孔`。
+- `steel.prices` 已由 `docs/reference/products_db_v4.4.xlsx` 重建：6,761 total / 6,761
+  distinct ERP / 6,761 active，全部為 `product_price_v4_4`；state totals 為
+  confirmed 4,787、ratio_only 190、no_price 1,784。`菱形孔` 1 筆，非加工 category
+  帶 processing attributes 的違規列為 0。
+- `steel.cutting_prices` 已由 reference normalized workbook 重建：119 total，100 price / 19
+  supplement；category totals 維持 H型鋼22、工字鐵/H型鋼36、鐵管23、角鐵13、槽鐵14、
+  鐵板/平鐵11。
+- `steel.rules` 已同步 14 筆 reviewed active rules；live slug 數與本地 manifest 均為14，
+  `source_refs[0].sha256` mismatch 為 0。`steel_quote_rules_processing` hash 為
+  `bd6311367818ba635448cd671bbcd6e7671b724668c6e88aeeca31de0b7cdd73`。
+- Focused Jest 8 suites / 201 tests、products/cutting/rules dry-run、`packages/api` build、
+  live readback、`/health`、`/readyz` 與 `git diff --check` 全部通過。Backend 已重啟為
+  PID 69913。Supabase advisors 仍只有既有4個 WARN：2個 mutable function search_path
+  與 public schema 的 vector/pg_trgm extensions；本輪未新增。未碰 prod、未 commit、
+  未執行 Prettier。
 
 ## Follow-up: AXP confirmation + processing taxonomy audit - 2026-07-13
 
@@ -10309,3 +10472,250 @@ Review:
 - subcategory 採 category-aware 精簡值；網類固定使用 `點焊/牛筋/高床/浪型/菱形`，不接受 `點焊網/浪型網`。產品正規化 parser 與 v4 importer 分工：normalizer 可依 category + product_name 修正，importer 保留已合法的人工值，只在來源值已失效時以同一 inference 修復。
 - 以唯讀 v4.3 重建獨立 `docs/products_db_v4.4.xlsx`，只新增40筆 subcategory 修正；v4.3 SHA-256 維持 `08caffe690345fc6defceee3ca046d3de56aefa993e99668fdc7cc12a157dec8`。13筆浪型網全部為 `浪型`，第二次 normalization 主表差異0。
 - 驗證通過：focused Jest 9 suites／272 tests、packages/api build、targeted ESLint、v4.4 importer dry-run 6,761 rows、rules dry-run、LibreOffice PDF render 1,570 pages 與 `git diff --check`。未執行 DB import、rules apply 或 Supabase update。
+# Active: search_price_candidates processingQueries invalid_arguments - 2026-07-13
+
+Goal: 修正實際報價對話呼叫 `search_price_candidates` 時，頂層
+`processingQueries` 被 tool input schema 以 unrecognized key 拒絕的錯誤；保留目前材料、
+加工探索與精確 `productNames` 三種契約，不碰既有未完成的 v4.4／Supabase 工作。
+
+- [x] 從對話 `8e1fd7c3-8851-481b-971d-12394f0b2190` 重現錯誤並取得實際 payload。
+- [x] 比對 AI-visible tool schema、runtime validator、registry/serialization 與 execute input，
+  排除 stale build、schema 投影遺漏及模型送錯 mode 等候選根因。
+- [x] 確認既有 schema 與 execute regression 已覆蓋相同 payload；問題不在 current code，
+  因此不新增重複測試或修改 schema。
+- [x] 重建 `packages/api` 並啟動新的 backend process，清除舊 module/schema cache。
+- [x] 跑 focused Jest、build、backend/frontend proxy health 與 `git diff --check`。
+- [x] 補 Review，記錄 root cause、修正範圍與驗證證據；不 commit、不碰 Supabase。
+
+Review:
+
+- 原 backend PID 6427 啟動於 03:44:54；`processingQueries` commit `3b14620a3`
+  於 11:13:56 才加入，`packages/api/dist/index.cjs` 雖於 12:25:12 重建，已載入的
+  CommonJS module 與 process-local JSON schema cache 不會自動更新。
+- 對話在 12:33 的第一個 tool call 實際送出 `queries + processingQueries`，舊 strict Zod
+  schema 只認得 `queries`，所以得到完全一致的 unrecognized-key error；模型第二次移除
+  `processingQueries` 後才成功，導致最終報價的孔／斜切加工仍標示未確認。
+- 現行 source、dist、provider JSON schema 與 execute validator 都包含
+  `processingQueries`；registry 到 OAuth/native transport 沒有刪欄位。既有 execute regression
+  已穿過實際 `safeParse` 邊界並驗證相同輸入成功，因此本輪不需改 production code。
+- 已執行 `npm run build:api -- --force`，並以新的 backend PID 34181 載入目前 bundle；
+  backend `/health` 與 frontend proxy `/health` 均回 200。
+- 驗證通過：focused Jest 2 suites / 59 tests、packages/api build、`git diff --check`。
+  未重送或改寫使用者對話，未碰 Supabase，未 commit。
+# Active: Steel event Parameters content 可展開顯示 - 2026-07-13
+
+Goal: 修正 Steel activity event 中 `Parameters` 的長內容（例如
+`processingQueries`）被 UI 截斷且無法查看完整值；預設維持精簡，使用者可明確展開／收合，
+並支援鍵盤與可存取狀態。
+
+- [x] 在實際報價對話與 RTL fixture 重現長 Parameters content 截斷。
+- [x] 追查 event payload formatting、row component 與 CSS overflow/clamp 的責任邊界。
+- [x] 先新增 failing regression，覆蓋預設收合、點擊展開完整內容、再次收合。
+- [x] 最小化調整現有 activity UI，不改 event payload、backend 或其他 event rows。
+- [x] 更新本地通用查價 rules：產品與加工 keyword 使用最短且足以辨識的通用詞／必要規格，
+  例如 `兩端斜切` 查 `斜切`；
+  補 regression，且不同步 rules DB。
+- [x] 跑 client focused Jest、targeted typecheck/lint、browser interaction 與 `git diff --check`。
+- [x] 補 Review 與 lesson；不 commit、不執行 Prettier。
+
+Review:
+
+- Root cause 在一般 tool-call 的 `ToolCallInfo`，不是 Steel activity payload：nested object／array
+  先被 `formatParamValue` 永久裁成200字，再套 `max-w-[300px] overflow-hidden truncate`，
+  所以外層 Parameters 展開後仍無法查看完整 `processingQueries`。
+- `ComplexInput` 現改為每個 key 垂直排列；短值完整換行／可滾動顯示。長值保留200字摘要，
+  並提供 value-level `Show more / Show less`，以 `aria-expanded` 暴露狀態；展開後使用完整
+  原始 content，收合後可再次展開。
+- Localhost 對話 readback 確認兩筆 `processingQueries` 均顯示完整 JSON，實際 DOM 使用
+  `max-w-full overflow-auto whitespace-pre-wrap break-words`，不再有舊 `truncate` class。
+- 通用查價 owner 現規定產品與加工 keyword 都越短越好，只保留欄位尚未表達且足以辨識的
+  通用詞／必要規格，移除重複品名、位置、端數、數量與冗詞；範例固定為
+  `兩端斜切 -> keyword:"斜切"`。加工段只引用此通則，未在細項 rules 重複。
+- 驗證通過：client ToolCallInfo 13 tests、rules sync 16 tests、client typecheck、targeted
+  ESLint、rules dry-run、localhost DOM interaction 與 `git diff --check`。未執行 Prettier，
+  未同步 rules DB，未碰 Supabase，未 commit。
+
+## Follow-up: array Parameters 多行顯示 - 2026-07-13
+
+Goal: `queries`、`processingQueries` 等 array 參數使用縮排 JSON 多行顯示，保留既有長內容
+展開／收合與捲動行為，不改 tool payload。
+
+- [x] 先補 regression，確認 nested array 會以換行與縮排呈現。
+- [x] 最小化調整 object／array formatting，不影響純字串與 scalar 值。
+- [x] 跑 focused Jest、client typecheck、targeted ESLint 與 `git diff --check`。
+- [x] 補 Review；不 commit、不執行 Prettier。
+
+Review:
+
+- `formatParamValue` 對 object／array 改用兩格縮排的 JSON；現有 `whitespace-pre-wrap`
+  會保留換行，因此 `queries` 與 `processingQueries` 的項目及 nested fields 可逐行閱讀。
+- 長 array 仍維持200字預覽與 value-level `Show more / Show less`；展開後顯示完整縮排 JSON，
+  不改 tool input payload、純字串或 scalar formatting。
+- 驗證通過：client ToolCallInfo 14 tests、client typecheck、targeted ESLint 與
+  `git diff --check`。目前沒有可用 browser session，因此本 follow-up 以 RTL DOM regression
+  驗證實際換行字元與完整展開內容；未執行 Prettier、未 commit。
+
+# Active: search_price_candidates 移除 AI queryId - 2026-07-13
+
+Goal: `search_price_candidates` 的 AI-visible input 不再暴露或要求 `queryId`；材料 query 與
+加工 query 仍由 backend 依陣列順序產生 `q1...`／`p1...`，內部關聯與 tool output 保持不變。
+
+- [x] 稽核 tool schema、provider JSON schema、rules 與 backend ID normalization owner。
+- [x] 先補 regression：AI-visible schema 無 `queryId`，無 ID input 仍產生 deterministic IDs。
+- [x] 從 lookup、category discovery、processing 三個 input 子 schema 移除 `queryId`。
+- [x] 清除只為 AI-supplied queryId 存在的 rules／fixtures，不刪 backend internal/output IDs。
+- [x] 跑 focused Jest、packages/api build、rules dry-run、targeted ESLint 與 `git diff --check`。
+- [x] 補 Review；不 commit、不執行 Prettier。
+
+Review:
+
+- Root cause 是 backend transform 已依 array order 產生 ID，但 lookup、category discovery、
+  processing 三個 raw Zod input object 仍宣告 optional `queryId`，因此 OAuth/native JSON schema
+  仍會把該 backend-only 欄位顯示給 AI。
+- 三個 AI input shape 已移除 `queryId`；材料／類別查詢仍自動產生 `q1...`，加工查詢仍自動
+  產生 `p1...`。Repository、cutting provenance、memory evidence、provider result summary 與 tool
+  output 的 internal query ID 全部保留。
+- Active `docs/rules/**` 稽核後原本就沒有 `queryId`／`q1`／`p1` 指示，因此不改 rule text；
+  rules regression 已加強為禁止任何 `queryId` 變體重新進入查價通則。
+- 已重建 `packages/api` 並將 localhost backend 從 PID 34181 更新為 PID 3424；backend 與
+  frontend proxy `/health` 均為200。
+- 驗證通過：6 focused suites／107 tests、packages/api build、rules dry-run、targeted ESLint
+  0 errors 與 `git diff --check`。ESLint 仍有 provider spec 既有4個 unused-helper warnings，
+  本輪未新增；未執行 Prettier、未同步 rules DB、未 commit。
+
+# Active: conversation tool Parameters log + reload persistence - 2026-07-13
+
+Goal: conversation assistant tool event 的 Parameters 同時保留在 backend structured debug log 與
+persisted message；重新整理 conversation 後仍可展開查看。Debug log 不記錄 result；persisted
+result 若存在照常顯示，只有缺失時 UI 才明確標示「Result 未保存」。
+
+- [x] 追查 provider tool call、executor、SSE event、message persistence/reload 與 logger/redaction owner。
+- [x] 定義安全契約：conversation/message/tool identifiers + redacted Parameters；log 無 result。
+- [x] 先補 regression，覆蓋 execution-start Parameters log、message reload Parameters 與 result-missing UI。
+- [x] 在共用 backend owner 實作 structured log；沿用既有 persisted tool-call snapshot。
+- [x] 更新 UI fallback：保留 Parameters accordion；persisted result 存在時顯示，缺失時標示未保存。
+- [x] 跑 backend/client focused tests、build/typecheck、targeted lint、reload contract 與 `git diff --check`。
+- [x] 補 Review；不 commit、不執行 Prettier。
+
+Review:
+
+- 共用 `createToolExecuteHandler` 現在在 tool 執行前寫入一筆 object-message debug log，欄位為
+  `event=tool_call_parameters`、conversation/message/agent/tool call IDs、tool name 與完整
+  `parameters`。此時 result 尚未產生，log contract 不含 `result`、`output`、`content` 或 artifact。
+- 使用既有 logger redaction/retention：敏感 metadata key 與 token pattern 會遮蔽，object message
+  不走一般 debug metadata 的100字 array condensation；debug file 保留14天。
+- Message persistence 原本已保存完整 `tool_call` snapshot，`filterMalformedContentParts` 不會移除
+  `id/name/args`，因此 reload 可重建 event 與 Parameters；本輪以缺 result fixture 鎖定此契約，
+  不另建重複資料表或 log-result persistence。
+- UI 在 persisted result 存在時沿用既有 OutputRenderer；completed tool call 只有 Parameters、沒有
+  result 時顯示「結果未保存」，Parameters accordion 仍可展開。新增 en／zh-Hans／zh-Hant 文案。
+- 驗證通過：packages/api 2 suites／96 tests、client 3 suites／53 tests、packages/api build、
+  client typecheck、targeted ESLint、translation parity 與 `git diff --check`。Local backend 已更新為
+  PID 48898，backend/frontend proxy health 均為200；未執行 Prettier、未 commit。
+
+# Active: 加工/切工 keyword 優先順序 - 2026-07-13
+
+Goal: 更新本地【一般加工類別規則】，讓獨立 `加工/切工` 的 `processingQueries.keyword`
+優先使用已確認的 canonical `processing_method` 詞；維持現有最短通用 keyword、
+`processingQueries` 與兩段式 productNames 契約，不同步 rules DB。
+
+- [x] 確認 `加工/切工` 現行 rule owner、canonical processing method 值與 keyword 搜尋契約。
+- [x] 在 `docs/rules/類別規則/加工.txt` 寫明 keyword 優先採 processing method；
+  沒有已確認 method 時才使用足以辨識的通用形狀／必要規格詞。
+- [x] 補強 rules regression，鎖定切工 keyword 優先順序且不新增 processing method query param。
+- [x] 執行 focused rules tests、rules dry-run 與 `git diff --check`。
+- [x] 補 Review；不更新 rules DB、不執行 Prettier、不 commit。
+
+Review:
+
+- `加工/切工` 現明定 keyword 優先使用已確認的 canonical `processing_method`：
+  `剪床`、`雷射`、`鋸床`、`水刀`、`火`；只有 method 未確認時才改用
+  `processing_shape`，仍不足才加必要厚度級距。
+- 保留既有 `processingQueries.keyword` 搜尋介面；沒有新增 processing method/shape
+  query param，也未修改 parser、repository 或 tool schema。
+- Rules regression 已鎖定切工專屬優先序，並把同一 suite 的既有過時 keyword 斷言對齊
+  目前 canonical 通則。
+- 驗證通過：rules sync Jest 1 suite／16 tests、rules dry-run 與 `git diff --check`；
+  未同步 rules DB、未執行 Prettier、未 commit。
+# Active: 加工 canonical keyword rules - 2026-07-13
+
+Goal: 所有加工查價指示與超量探索建議優先使用 parser 正規化後的
+`processing_method`／`processing_shape`；孔型符號固定轉為 `方孔／菱形孔／圓孔`，避免 raw
+`鑽孔`、符號、`沖孔`、`氧切` 等詞無法命中 normalized candidate。
+
+- [x] 盤點所有加工 keyword rules、範例、runtime suggestions 與 parser canonical mapping。
+- [x] 以【search_price_candidates 通用查價規則】作唯一詳細 owner，類別細則只保留例外與 fallback。
+- [x] 修正鐵板／C型鋼示例與加工探索 `suggestedKeywords`，移除 raw aliases 與孔型符號。
+- [x] 擴充 parser 與 schema enum：`□`→`方孔`、`◇`→`菱形孔`、`○`→`圓孔`。
+- [x] 以新 parser 更新 `docs/reference/products_db_v4.4.xlsx`，保留 protected 欄位與既有格式。
+- [x] 新增 regression，固定 canonical 建議、孔型正規化與禁止過時 raw keyword 範例。
+- [x] 跑 focused tests、rules dry-run、packages/api build、targeted lint 與 `git diff --check`。
+- [x] 補 Review；不同步 rules DB、不 commit、不執行 Prettier。
+
+Review:
+
+- `processing_shape` enum 新增 `菱形孔`；parser 現將 `□／方孔`、`◇／菱形孔`、
+  `○／φ／圓孔` 分別統一為 `方孔／菱形孔／圓孔`，並寫入 `normalized_spec_text`。
+- `search_price_candidates` 的加工超量探索建議只回 canonical method/shape；rules 的唯一詳細
+  owner 改為 canonical 最短充分詞，孔型符號不再作 keyword。鐵板 `鑽孔` 範例已改 `鑽床`。
+- `docs/reference/products_db_v4.4.xlsx` 共覆核10筆帶孔型符號的 `加工/孔` rows；唯一錯誤列
+  `KAOS06 沖3/4◇孔` 已由 `其他` 改為 `菱形孔`，normalized text 同步加入 `菱形孔`。
+  Protected 欄位逐列未變，7個 sheets 均完成 render 覆核，公式錯誤掃描0。
+- 新增 `20260713053905_steel_processing_diamond_hole_shape.sql` 並同步 schema snapshot；本輪未套用
+  migration、未重匯 DB、未同步 rules DB。
+- 驗證通過：9 focused suites／174 tests、products／cutting／rules dry-run、packages/api build、
+  targeted ESLint 0 errors 與 staged/unstaged `git diff --check`。未執行 Prettier、未 commit。
+# Active: products / cutting XLSX parser 統一 header 多選篩選 - 2026-07-13
+
+Goal: Products 與切工價錢 XLSX normalizer 每次完成輸出時，自動讓其產生的每張資料表
+所有 header 都具備多選篩選 dropdown；`category`、`subcategory` 等欄位可各自多選並
+疊加條件，Google Drive / Google Sheets 開啟後不需人工重新建立 filter。
+
+Read-only findings before implementation:
+
+- [x] Products final normalizer 是 `normalize-steel-price-v4.cjs`；目前已對
+  `products_db_ready` 與 `待確認` 寫入 full-range `!autofilter`，但 tests 沒鎖定，現行
+  reference workbook 也尚未帶入 filter。
+- [x] Cutting final normalizer 是 `normalize-steel-cutting-prices.mjs`；兩張輸出 sheet
+  目前依賴來源 workbook 繼承 Excel Table，normalizer 沒有明確保證 filter button。
+- [x] 兩條路徑使用不同 workbook engine；跨 engine 強抽 serializer helper 會增加風險。
+  採同一行為契約、各自原生實作：SheetJS `!autofilter` 與 artifact-tool Table
+  `showFilterButton`。
+- [x] `docs/reference/切工價錢-clean.xlsx` 在目前 worktree 已被刪除；本輪不還原、不覆蓋
+  使用者既有變更，verification 使用獨立 fixture／明示 input path。
+
+Confirmed implementation scope:
+
+- [x] Products final normalizer 在完成全部 sheet 更新後，對每張有有效 `!ref` 的 worksheet
+  統一寫 full-used-range AutoFilter；補 regression assertions，包含主表、header-only review
+  與保留的 helper sheets，二次 normalization 不得掉失。
+- [x] Cutting 在每張 expected sheet 完成 normalized row write 後，以完整 used range 重建
+  deterministic Table、保留既有 style 並開啟 filter button，避免 partial legacy Table 漏欄。
+- [x] 將 cutting filter adapter 抽成可獨立測試的 module，鎖定 partial existing Table 與
+  無 Table fallback；
+  repo 未安裝 `@oai/artifact-tool`，不新增依賴桌面 runtime path 的 CLI integration Jest。
+- [x] 不執行 parser 來更新現有 reference files；使用 artifact-tool 直接編輯
+  `docs/reference/products_db_v4.4.xlsx` 與
+  `docs/reference/切工價錢-v4.4-normalized.xlsx`，只新增 filter/table metadata。
+- [x] 直接編輯前後逐 sheet 比對 values/formulas/used ranges，並 render 所有 sheets；任何
+  資料或公式差異立即停止，不接受以 parser 重建作 fallback。
+- [x] 跑 focused Jest、XLSX XML/readback、importer dry-run、visual pass 與
+  `git diff --check`；不匯入 DB、不碰 prod、不 commit、不執行 Prettier。
+- [x] 在本節補 Review，記錄實際 filter ranges、測試結果與 Google Sheets 相容性。
+
+Review:
+
+- Products normalizer 現在於所有 sheet 更新完成後統一為每張有效 worksheet 寫入
+  full-used-range `!autofilter`；regression 會逐 sheet 檢查 ref，且二次 normalization
+  仍保留 filter。
+- Cutting normalizer 現在於每張 expected sheet 寫回 normalized rows 後，刪除可能只覆蓋
+  部分欄位的 legacy Table，再以固定名稱與完整 used range 重建，保留既有 style 並開啟 filter。
+- 現有 reference XLSX 是直接以 artifact-tool 編輯，未執行 parser：Products 7 張 sheet
+  filter ranges 為 `A1:AQ6762`、`A1:L81`、`A1:W595`、`A1:D6`、`A1:M2467`、
+  `A1:B16`、`A1:J1`；Cutting 2 張為 `A1:T101`、`A1:T20`。
+- 直接編輯前後所有 sheet 的 values、formulas、used ranges 完全一致；9 張 sheet render
+  visual pass 完成，公式錯誤 0；Products importer dry-run 維持 6,761 rows／6,761 unique ERP
+  與 `4,787 / 190 / 1,784`，Cutting 維持 `119 / 100 / 19`。
+- 驗證通過：2 focused Jest suites／5 tests、targeted ESLint 0 issues、兩份 XLSX Table XML
+  AutoFilter refs、兩個 importer dry-run、source/temp SHA-256 對等與 `git diff --check`。
+  未匯入 DB、未碰 prod、未 commit、未執行 Prettier。

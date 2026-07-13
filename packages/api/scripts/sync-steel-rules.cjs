@@ -158,7 +158,7 @@ const categoryRuleMetadataByFile = {
     title: 'Steel 類別查價方式',
     locator: '類別查價方式',
     ruleSection: 'price_lookup',
-    priority: 99,
+    priority: 19,
   },
   'docs/rules/類別規則/C型鋼.txt': {
     slug: 'steel_quote_rules_c_type',

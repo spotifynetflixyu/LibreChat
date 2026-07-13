@@ -16,6 +16,12 @@ type DryRunSummary = {
   rules: DryRunRule[];
 };
 
+type BuiltRule = {
+  slug: string;
+  priority: number;
+  sourceRefs: { sourceFile: string }[];
+};
+
 interface SyncClient {
   query: jest.Mock<Promise<{ rows: object[] }>, [string, unknown?]>;
   release: jest.Mock<void, []>;
@@ -32,6 +38,8 @@ const meshRulePath = path.join(categoryRulesDir, '網.txt');
 const squareBarRulePath = path.join(categoryRulesDir, '方鐵.txt');
 const hBeamRulePath = path.join(categoryRulesDir, 'H型鋼.txt');
 const holeRulePath = path.join(categoryRulesDir, '孔.txt');
+const processingRulePath = path.join(categoryRulesDir, '加工.txt');
+const cTypeRulePath = path.join(categoryRulesDir, 'C型鋼.txt');
 const longMaterialRulePath = path.join(categoryRulesDir, '長條料.txt');
 const cuttingRulePath = path.join(categoryRulesDir, '切工.txt');
 const outputRulePath = path.join(rulesDir, '輸出規則.txt');
@@ -39,7 +47,7 @@ const ocrRulePath = path.join(rulesDir, '其他規則', 'OCR規則.txt');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
 
 const ruleSync = jest.requireActual<{
-  buildRules: (root: string) => object[];
+  buildRules: (root: string) => BuiltRule[];
   syncRules: (pool: { connect: () => Promise<SyncClient> }, rules: object[]) => Promise<object[]>;
 }>('./sync-steel-rules.cjs');
 
@@ -149,9 +157,16 @@ describe('Steel rule sources', () => {
     expect(sourceFiles.sort()).toEqual(listRuleFiles(rulesDir).sort());
     expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
     expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
-    expect(summary.rules.filter((rule) => rule.factType === 'category_rule').at(-1)?.slug).toBe(
+    expect(summary.rules.filter((rule) => rule.factType === 'category_rule').at(0)?.slug).toBe(
       'steel_category_price_lookup_guide',
     );
+    const builtCategoryRules = ruleSync
+      .buildRules(repoRoot)
+      .filter((rule) => rule.sourceRefs[0]?.sourceFile.startsWith('docs/rules/類別規則/'));
+    expect(builtCategoryRules[0]?.slug).toBe('steel_category_price_lookup_guide');
+    expect(
+      builtCategoryRules.slice(1).every((rule) => rule.priority > builtCategoryRules[0]!.priority),
+    ).toBe(true);
     expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
       'steel-default-agent-instruction',
       'steel-drawing-ocr-policy',
@@ -185,13 +200,31 @@ describe('Steel rule sources', () => {
 
   it('keeps only AI-actionable lookup behavior in the prompt', () => {
     const guide = readUtf8(guidePath);
+    const plateRule = readUtf8(plateRulePath);
+    const holeRule = readUtf8(holeRulePath);
+    const processingRule = readUtf8(processingRulePath);
+    const cTypeRule = readUtf8(cTypeRulePath);
 
     expect(guide).not.toContain('[category_lookup_contract]');
     expect(guide).not.toContain('query_id_generation=');
+    expect(guide).not.toMatch(/query.?id/iu);
     expect(guide).not.toContain('cutting_query_timing=');
     expect(guide).not.toContain('query_limit_overflow=');
     expect(guide).toContain('有明確加工需求時，在同一 tool call 加入 `processingQueries`');
     expect(guide).toContain('同次可返回相符的 `processingPrice`');
+    expect(guide).toContain('`keyword` 依對應加工規則');
+    expect(guide).not.toContain('processing_method');
+    expect(guide).not.toContain('processing_shape');
+    expect(guide).not.toContain('`□`→`方孔`');
+    expect(guide).not.toMatch(/孔加工區間|圓孔|方孔|菱形孔|長孔|橢圓孔|沖床|鑽床/u);
+    expect(plateRule).not.toContain('材料與加工要放在同一次 tool call');
+    expect(holeRule).toContain('不得再以符號查詢');
+    expect(holeRule).toContain('正規化加工方式 `[沖床|雷射|鑽床|水刀]`');
+    expect(holeRule).toContain('孔型 `[圓孔|方孔|菱形孔|長孔|橢圓孔]`');
+    expect(processingRule).toContain('正規化加工方式 `[剪床|雷射|鋸床|水刀|火]`');
+    expect(cTypeRule).not.toContain('"keyword":"加工名稱"');
+    expect(cTypeRule).not.toContain('通用 canonical 優先規則');
+    expect(cTypeRule).not.toContain('材料與加工放在同一次 tool call');
     expect(guide).toContain('超過10筆只返回全部唯一 `productNames`');
     expect(guide).toContain('前次結果已達30');
     expect(guide).toContain('材料切工只使用同次結果的 `cuttingPrices`');
@@ -319,6 +352,8 @@ describe('Steel rule sources', () => {
     const hBeam = readUtf8(hBeamRulePath);
     const hole = readUtf8(holeRulePath);
     const cutting = readUtf8(cuttingRulePath);
+    const processing = readUtf8(processingRulePath);
+    const cType = readUtf8(cTypeRulePath);
     const squareBar = readUtf8(squareBarRulePath);
     const categoryRules = listRuleFiles(categoryRulesDir)
       .map((sourceFile) => readUtf8(path.join(repoRoot, sourceFile)))
@@ -332,6 +367,25 @@ describe('Steel rule sources', () => {
     expect(guide).toContain('原樣放入頂層');
     expect(cutting).toContain('最相近的圓條切工基本價');
     expect(squareBar).not.toContain('最相近的圓條切工基本價');
+    expect(guide).not.toMatch(/processing_(?:method|shape)/u);
+    expect(processing).not.toMatch(/processing_(?:method|shape)/u);
+    expect(processing).toContain('`processingQueries.keyword`');
+    expect(processing).toContain('正規化加工方式 `[剪床|雷射|鋸床|水刀|火]`');
+    expect(processing).toContain('正規化形狀 `[外形切割|直線切割]`');
+    expect(processing).not.toContain('正規化加工方式 `[沖床|雷射|鑽床|水刀]`');
+    expect(processing).not.toContain('`□`、`◇`、`○`');
+    expect(hole).not.toMatch(/processing_(?:method|shape)/u);
+    expect(hole).toContain('`processingQueries.keyword`');
+    expect(hole).toContain('正規化加工方式 `[沖床|雷射|鑽床|水刀]`');
+    expect(hole).toContain('孔型 `[圓孔|方孔|菱形孔|長孔|橢圓孔]`');
+    expect(hole).not.toContain('正規化加工方式 `[剪床|雷射|鋸床|水刀|火]`');
+    expect(hole).not.toMatch(/只返回 `productNames`|精確重取依/u);
+    expect(hole).toContain('C型鋼不適用本 block');
+    expect(cType).toContain('孔與切一律不計價');
+    expect(cType).toContain('processingCategories:["加工/孔"]');
+    expect(cType).toContain('processingCategories:["加工/切工"]');
+    expect(cType).toContain('processingCategories:["加工/其他"]');
+    expect(cType).not.toMatch(/只返回 productNames|精確重取依/u);
   });
 
   it('keeps minimum-thickness and unit override behavior in the common lookup owner', () => {

@@ -18,7 +18,7 @@ export type SteelPriceV4ValueState = 'confirmed' | 'ratio_only' | 'no_price';
 export type SteelPriceV4Kind = 'product' | 'cutting' | 'hole';
 export type SteelPriceV4CostBasis = '1.總數' | '2.數量';
 
-export const steelPriceV4SourceDataset = 'product_price_v4_3' as const;
+export const steelPriceV4SourceDataset = 'product_price_v4_4' as const;
 export const steelPriceV4WorkbookHeaders = Object.freeze([
   'erp_item_code',
   'formula_code',
@@ -135,7 +135,7 @@ function parseRequiredText(value: SteelPriceV4Cell, field: string): string {
   const parsed = parseText(value);
 
   if (parsed === null) {
-    throw new Error(`Steel price v4.3 row requires ${field}`);
+    throw new Error(`Steel price v4.4 row requires ${field}`);
   }
 
   return parsed;
@@ -149,7 +149,7 @@ function parseNumber(value: SteelPriceV4Cell, field: string): number | null {
 
   const parsed = Number(text.replace(/,/gu, ''));
   if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid Steel price v4.3 number for ${field}: ${text}`);
+    throw new Error(`Invalid Steel price v4.4 number for ${field}: ${text}`);
   }
 
   return parsed;
@@ -159,7 +159,7 @@ function parseZeroAsNullNumber(value: SteelPriceV4Cell, field: string): number |
   const parsed = parseNumber(value, field);
 
   if (parsed !== null && parsed < 0) {
-    throw new Error(`Steel price v4.3 ${field} must be nonnegative`);
+    throw new Error(`Steel price v4.4 ${field} must be nonnegative`);
   }
 
   return parsed === 0 ? null : parsed;
@@ -217,7 +217,7 @@ function parseValueState(value: SteelPriceV4Cell): SteelPriceV4ValueState {
     return state;
   }
 
-  throw new Error(`Unknown Steel price v4.3 value_state: ${state}`);
+  throw new Error(`Unknown Steel price v4.4 value_state: ${state}`);
 }
 
 function parseCostBasis(value: SteelPriceV4Cell): SteelPriceV4CostBasis {
@@ -226,7 +226,7 @@ function parseCostBasis(value: SteelPriceV4Cell): SteelPriceV4CostBasis {
     return costBasis;
   }
 
-  throw new Error(`Unknown Steel price v4.3 cost_basis: ${costBasis}`);
+  throw new Error(`Unknown Steel price v4.4 cost_basis: ${costBasis}`);
 }
 
 function getPriceKind(category: PriceCategory): SteelPriceV4Kind {
@@ -1079,7 +1079,7 @@ function validateValueState(
     return;
   }
 
-  throw new Error(`Steel price v4.3 ${state} row violates price and ratio invariants`);
+  throw new Error(`Steel price v4.4 ${state} row violates price and ratio invariants`);
 }
 
 function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {

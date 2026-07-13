@@ -42,7 +42,9 @@ describe('Steel price category registry', () => {
       true,
     );
     expect(
-      ['外形切割', '直線切割', '圓孔', '方孔', '長孔', '橢圓孔', '其他'].every(isProcessingShape),
+      ['外形切割', '直線切割', '圓孔', '方孔', '菱形孔', '長孔', '橢圓孔', '其他'].every(
+        isProcessingShape,
+      ),
     ).toBe(true);
     expect(isProcessingMethod('CNC')).toBe(false);
     expect(isProcessingShape('倒角')).toBe(false);

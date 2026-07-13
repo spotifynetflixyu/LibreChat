@@ -26,11 +26,14 @@ const {
 
 const SHEET_NAME = 'products_db_ready';
 const REVIEW_SHEET_NAME = '待確認';
-const DEFAULT_INPUT_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.3.xlsx');
-const DEFAULT_OUTPUT_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.4.xlsx');
+const DEFAULT_INPUT_PATH = path.resolve(__dirname, '../../../docs/reference/products_db_v4.4.xlsx');
+const DEFAULT_OUTPUT_PATH = path.resolve(
+  __dirname,
+  '../../../docs/reference/products_db_v4.4.xlsx',
+);
 const DEFAULT_REVIEW_PATH = path.resolve(
   __dirname,
-  '../../../docs/products_db_v4.4.pending-review.csv',
+  '../../../docs/reference/products_db_v4.4.pending-review.csv',
 );
 
 function resolveOption(argv, name, fallback) {
@@ -92,7 +95,9 @@ function loadWorkbook(inputPath) {
       headers.every((header, index) => header === candidate[index]),
   );
   if (!valid) {
-    throw new Error(`${SHEET_NAME} headers must match the 39-column source or 43-column target contract`);
+    throw new Error(
+      `${SHEET_NAME} headers must match the 39-column source or 43-column target contract`,
+    );
   }
   const rows = matrix.slice(1).map((cells) =>
     Object.fromEntries(
@@ -125,9 +130,7 @@ function reviewRow(source, classified, normalized, rowNumber) {
         inferred_category: proposal?.category ?? classified.category,
         proposed_subcategory: proposal?.subcategory ?? normalized.subcategory,
         reason: reasons.join('|'),
-        suggested_action: proposal
-          ? `確認 category 是否改為 ${proposal.category}`
-          : '補充分類規則',
+        suggested_action: proposal ? `確認 category 是否改為 ${proposal.category}` : '補充分類規則',
         confirmed_category: '',
         review_note: '',
       };
@@ -161,9 +164,11 @@ function makeDataSheet(rows) {
     ...rows.map((row) => normalizedSteelPriceV4WorkbookHeaders.map((header) => row[header] ?? '')),
   ];
   const worksheet = XLSX.utils.aoa_to_sheet(matrix);
-  worksheet['!autofilter'] = { ref: worksheet['!ref'] };
   worksheet['!cols'] = normalizedSteelPriceV4WorkbookHeaders.map((header) => ({
-    wch: header === 'product_name' || header === 'normalized_spec_text' ? 42 : Math.max(12, header.length + 2),
+    wch:
+      header === 'product_name' || header === 'normalized_spec_text'
+        ? 42
+        : Math.max(12, header.length + 2),
   }));
   return worksheet;
 }
@@ -183,9 +188,18 @@ function makeReviewSheet(rows) {
       'review_note',
     ],
   });
-  worksheet['!autofilter'] = { ref: worksheet['!ref'] };
   worksheet['!cols'] = [8, 16, 52, 18, 18, 24, 36, 34, 20, 36].map((wch) => ({ wch }));
   return worksheet;
+}
+
+function addWorkbookAutoFilters(workbook) {
+  for (const sheetName of workbook.SheetNames) {
+    const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet?.['!ref']) {
+      continue;
+    }
+    worksheet['!autofilter'] = { ref: worksheet['!ref'] };
+  }
 }
 
 function buildNormalization(inputPath) {
@@ -237,6 +251,7 @@ function normalizeWorkbook({ inputPath, outputPath, reviewPath = DEFAULT_REVIEW_
     workbook.SheetNames.push(REVIEW_SHEET_NAME);
   }
   workbook.Sheets[REVIEW_SHEET_NAME] = makeReviewSheet(reviewRows);
+  addWorkbookAutoFilters(workbook);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   XLSX.writeFile(workbook, outputPath, { compression: true });
   fs.mkdirSync(path.dirname(reviewPath), { recursive: true });
@@ -253,7 +268,7 @@ function printUsage() {
   process.stdout.write(`Usage:
   node packages/api/scripts/normalize-steel-price-v4.cjs [--input <xlsx>] [--output <xlsx>] [--review <csv>] [--write]
 
-Default mode is read-only validation. Add --write to create the independent v4.4 workbook.
+Default mode validates the reference v4.4 workbook read-only. Add --write with a separate --output path to create an independent workbook.
 The input and output paths must differ.
 `);
 }
@@ -264,7 +279,9 @@ if (require.main === module) {
     if (options.help) {
       printUsage();
     } else if (!options.write) {
-      process.stdout.write(`${JSON.stringify({ mode: 'dry-run', ...analyzeWorkbook(options.inputPath) }, null, 2)}\n`);
+      process.stdout.write(
+        `${JSON.stringify({ mode: 'dry-run', ...analyzeWorkbook(options.inputPath) }, null, 2)}\n`,
+      );
     } else {
       process.stdout.write(`${JSON.stringify(normalizeWorkbook(options), null, 2)}\n`);
     }

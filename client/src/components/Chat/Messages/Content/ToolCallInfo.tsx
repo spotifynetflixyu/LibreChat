@@ -9,6 +9,8 @@ import UIResourceCarousel from './UIResourceCarousel';
 import { handleUIAction, cn } from '~/utils';
 import { OutputRenderer } from './ToolOutput';
 
+const parameterPreviewLength = 200;
+
 function isSimpleObject(obj: unknown): obj is Record<string, string | number | boolean | null> {
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
     return false;
@@ -43,24 +45,53 @@ function formatParamValue(value: unknown): string {
     return '';
   }
   if (typeof value === 'string') {
-    return value.length > 200 ? value.slice(0, 200) + '...' : value;
+    return value;
   }
   if (typeof value !== 'object') {
     return String(value);
   }
-  const str = JSON.stringify(value);
-  return str.length > 200 ? str.slice(0, 200) + '...' : str;
+  return JSON.stringify(value, null, 2);
+}
+
+function ParameterValue({ name, value }: { name: string; value: unknown }) {
+  const localize = useLocalize();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const content = formatParamValue(value);
+  const canExpand = content.length > parameterPreviewLength;
+  const actionLabel = localize(isExpanded ? 'com_ui_show_less' : 'com_ui_show_more');
+  const visibleContent =
+    canExpand && !isExpanded ? `${content.slice(0, parameterPreviewLength)}…` : content;
+
+  return (
+    <>
+      <span
+        className="mt-1 block max-h-[300px] max-w-full overflow-auto whitespace-pre-wrap break-words rounded bg-surface-tertiary px-1.5 py-0.5 font-mono text-text-primary"
+        aria-label={`${name} parameter value`}
+      >
+        {visibleContent}
+      </span>
+      {canExpand && (
+        <button
+          type="button"
+          className="mt-1 text-xs text-text-secondary underline decoration-border-medium underline-offset-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+          aria-expanded={isExpanded}
+          aria-label={`${actionLabel} ${name}`}
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          {actionLabel}
+        </button>
+      )}
+    </>
+  );
 }
 
 function ComplexInput({ data }: { data: Record<string, unknown> }) {
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+    <div className="grid min-w-0 gap-2 text-xs">
       {Object.entries(data).map(([key, value]) => (
-        <div key={key} className="flex items-baseline gap-1.5">
-          <span className="font-medium text-text-secondary">{key}</span>
-          <span className="max-w-[300px] overflow-hidden truncate rounded bg-surface-tertiary px-1.5 py-0.5 font-mono text-text-primary">
-            {formatParamValue(value)}
-          </span>
+        <div key={key} className="min-w-0">
+          <span className="block font-medium text-text-secondary">{key}</span>
+          <ParameterValue name={key} value={value} />
         </div>
       ))}
     </div>
@@ -96,10 +127,12 @@ export default function ToolCallInfo({
   input,
   output,
   attachments,
+  resultUnavailable = false,
 }: {
   input: string;
   output?: string | null;
   attachments?: TAttachment[];
+  resultUnavailable?: boolean;
 }) {
   const localize = useLocalize();
   const { ask } = useOptionalMessagesOperations();
@@ -131,7 +164,12 @@ export default function ToolCallInfo({
   return (
     <div className="w-full px-3 py-3.5">
       {output && <OutputRenderer text={output} />}
-      {output && hasParams && <div className="my-2 border-t border-border-light" />}
+      {resultUnavailable && (
+        <p className="text-xs text-text-secondary">{localize('com_ui_tool_result_not_saved')}</p>
+      )}
+      {(output || resultUnavailable) && hasParams && (
+        <div className="my-2 border-t border-border-light" />
+      )}
       {hasParams && (
         <>
           <button

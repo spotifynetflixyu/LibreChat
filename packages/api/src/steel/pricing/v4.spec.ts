@@ -49,7 +49,7 @@ function makeWorkbookRow(
   };
 }
 
-describe('Steel price v4.3 parser', () => {
+describe('Steel price v4.4 parser', () => {
   it('preserves leading-zero ERP codes and returns every workbook field', () => {
     const [row] = buildSteelPriceV4Rows([makeWorkbookRow()]);
 
@@ -99,7 +99,7 @@ describe('Steel price v4.3 parser', () => {
       costBasis: '2.數量',
       specKey: '00123 H200x100x5.5x8',
       priceKind: 'product',
-      sourceDataset: 'product_price_v4_3',
+      sourceDataset: 'product_price_v4_4',
       sourceRowKey: '00123',
       currency: 'TWD',
       active: true,
@@ -342,7 +342,7 @@ describe('Steel price v4.3 parser', () => {
     expect(row).toMatchObject({ widthMm: null, heightMm: null, lengthMm: null });
   });
 
-  it('derives category-specific attributes from v4.3 processing names', () => {
+  it('derives category-specific attributes from v4.4 processing names', () => {
     const [angleHole, squareHole, laserLeading, laserParenthesized, plateCut, bend, roundBar] =
       buildSteelPriceV4Rows([
         makeWorkbookRow({

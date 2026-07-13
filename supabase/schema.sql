@@ -285,7 +285,7 @@ ALTER TABLE steel.prices
   ADD CONSTRAINT prices_kind_check
   CHECK (price_kind IN ('product', 'cutting', 'hole')),
   ADD CONSTRAINT prices_source_dataset_check
-  CHECK (source_dataset = 'product_price_v4_3'),
+  CHECK (source_dataset IN ('product_price_v4_3', 'product_price_v4_4')),
   ADD CONSTRAINT prices_currency_check
   CHECK (currency = 'TWD'),
   ADD CONSTRAINT prices_category_check
@@ -316,7 +316,7 @@ ALTER TABLE steel.prices
   ),
   ADD CONSTRAINT prices_processing_shape_check CHECK (
     processing_shape IS NULL
-    OR processing_shape IN ('外形切割', '直線切割', '圓孔', '方孔', '長孔', '橢圓孔', '其他')
+    OR processing_shape IN ('外形切割', '直線切割', '圓孔', '方孔', '菱形孔', '長孔', '橢圓孔', '其他')
   ),
   ADD CONSTRAINT prices_processing_attributes_category_check CHECK (
     category LIKE '加工/%'
@@ -416,7 +416,7 @@ ON steel.prices USING GIN (source_thickness gin_trgm_ops)
 WHERE source_thickness IS NOT NULL;
 
 COMMENT ON TABLE steel.prices IS
-'Steel price v4.3 rows upserted atomically from products_db_ready; erp_item_code is row identity and spec_key is non-unique keyword text.';
+'Steel normalized product price v4.4 rows upserted atomically from products_db_ready; erp_item_code is row identity and spec_key is non-unique keyword text.';
 COMMENT ON COLUMN steel.prices.subcategory IS
 'Validated query-facing subcategory; workbook blanks are stored as SQL NULL.';
 COMMENT ON COLUMN steel.prices.processing_method IS

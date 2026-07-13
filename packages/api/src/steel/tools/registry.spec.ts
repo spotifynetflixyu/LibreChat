@@ -50,9 +50,8 @@ describe('Steel tool registry', () => {
       definition.argsSchema.parse({
         queries: [
           {
-            queryId: 'line-1',
             category: '圓管',
-            subcategory: '鋼管',
+            subcategory: '一般',
             material: '鎢',
             thicknessMm: ['2'],
             erpItemCode: '00123',
@@ -67,7 +66,7 @@ describe('Steel tool registry', () => {
         {
           queryId: 'q1',
           category: '圓管',
-          subcategory: '鋼管',
+          subcategory: '一般',
           material: '鎢',
           thicknessMm: ['2'],
           erpItemCode: '00123',
@@ -96,10 +95,10 @@ describe('Steel tool registry', () => {
 
     expect(definition.description).toContain('one call');
     expect(definition.description).toContain('known order lines');
-    expect(definition.description).toContain('known category');
-    expect(definition.description).toContain('category_discovery');
-    expect(definition.description).toContain('erpItemCode');
+    expect(definition.description).toContain('processingQueries');
+    expect(definition.description).toContain('productNames');
     expect(definition.description).toContain('cuttingPrices');
+    expect(definition.description).not.toContain('queryId');
     expect(definition.description).not.toContain('q1');
     expect(definition.description).not.toContain('clamped');
     expect(definition.description).not.toContain('parallel');

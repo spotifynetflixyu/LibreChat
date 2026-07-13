@@ -2,17 +2,17 @@
 
 一、批次與查詢
 
-1. 同一輪材料放入一次 `queries`；同次可返回相符的 `processingPrice`。有明確加工需求時，在同一 tool call 加入 `processingQueries` 限定工件類別、加工類別與 keyword。材料與加工皆依各自 `queryResults` 順序對回，不跨 query 混用候選。
+1. 同一輪材料放入一次 `queries`；有明確加工需求時，在同一 tool call 加入 `processingQueries`。同次可返回相符的 `processingPrice`；材料與加工皆依各自 `queryResults` 順序對回，不跨 query 混用候選。
 2. 已知類別首查必須帶 `category`，再依類別規則加入可確認的 structured filters。`unit` 省略時使用類別預設；只有訂單明示計價單位時才傳入覆寫，類別細則禁用 unit filter 時除外。只有類別未知時才先用 `mode: "category_discovery"` + 通用 `keyword`。
 3. `erpItemCode` 只供後續回合精確重取已確認候選；首查不得使用，本輪已返回的候選不得重查。
-4. `subcategory` 不確定時省略。keyword 只放 category／subcategory 尚未表達的通用產品特徵或規格；不得自行加入專有品名、廠牌、系列、來源 DB token、ERP／表單代號。只有使用者原文明示時可保留專有詞；候選 product_name 不得反向成為重查 keyword。ST50、SN400B 只留在備註。
+4. `subcategory` 不確定時省略。產品 keyword 越短越好，只保留 category／subcategory／material 尚未表達且足以辨識的通用詞或必要規格；移除已由欄位表達的品名、位置、端數、數量與冗餘描述。不得自行加入專有品名、廠牌、系列、來源 DB token、ERP／表單代號。只有使用者原文明示時可保留專有詞；候選 product_name 不得反向成為重查 keyword。ST50、SN400B 只留在備註。
 5. 平時省略 `limit`；只有前次結果已達30且仍無精確可報價候選時，才提高至100。
 6. 已有規格精確且可報價候選就直接選價。只有 `no_match`、無精確候選、精確候選全不可報價或缺必要規格時可修正一次；不得原樣重送、夾帶成功 query 或只改 limit。仍失敗即人工複核。
 
 二、選價與計算
 
 1. 採符合客戶等級的 `tierPrices` 與候選有效 `unit`；忽略 raw ratio 欄位。缺價為未知，不是0；候選標示不可報價時不得使用。
-2. 未指定厚度時，在其他條件相符且可報價候選中採最小厚度；孔加工區間與細項規則除外。無法唯一確認即人工複核。
+2. 未指定厚度時，在其他條件相符且可報價候選中採最小厚度。無法唯一確認即人工複核；類別或加工規則明示的例外優先。
 3. Kg／M 分別以總 kg／總 m 乘單價；其他單位原則為整數數量 × direct 單價。重量、長度、單價保留原精度，每一材料列最終小計各自 `ceil` 成 TWD 整數；加工列分開進位。
 4. 材質、規格、unit、配料、計重或加工有類別規則時，以該細項規則為準；通用規則不得覆蓋其明示例外。
 5. C型鋼與H型鋼以 Kg 價為主；無可用 Kg 價即人工複核，不自動改用 M、支或其他 unit。只有訂單明示「不切清」時，才採相符整件 direct 單價。
@@ -24,7 +24,7 @@
 四、加工價格
 
 1. `processingPrice` 只使用同次返回且與工件類別相符的通用或指定鋼材加工；不得把非鋼材 subcategory 一律視為通用。
-2. 一次可帶最多3筆 `processingQueries`。每筆 `categories` 可同時列多個訂單鋼材類別，`processingCategories` 可同時列切工、孔、倒角、開槽、折工、焊接或其他；`keyword` 只使用已確認的通用加工名稱、方式、形狀或規格。
+2. 一次可帶最多3筆 `processingQueries`。每筆 `categories` 可同時列多個訂單鋼材類別，`processingCategories` 可同時列切工、孔、倒角、開槽、折工、焊接或其他；`keyword` 依對應加工規則。
 3. 首查不得使用頂層 `productNames`。加工探索不超過10筆會直接返回價格；超過10筆只返回全部唯一 `productNames`。收到清單後，依需求選定加工品名，並原樣放入頂層 `{"productNames":["品名A","品名B"]}` 精確重取價格。此 requery 不帶 `queries`、`processingQueries` 或其他 params；收到 productNames 不是 no_match 或 error。
 4. 同一加工若同時出現在 `cuttingPrices` 與 `processingPrice`，只採與需求精確對應的項目；兩者為同一項目時只計一次。
 

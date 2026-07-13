@@ -92,9 +92,10 @@ function inferHoleMethod(productName: string): ProcessingMethod | null {
 
 function inferHoleShape(productName: string): ProcessingShape {
   if (/橢圓/u.test(productName)) return '橢圓孔';
+  if (/菱形孔|◇/u.test(productName)) return '菱形孔';
   if (/長孔/u.test(productName)) return '長孔';
-  if (/□/u.test(productName)) return '方孔';
-  if (/φ|○/u.test(productName)) return '圓孔';
+  if (/方孔|□/u.test(productName)) return '方孔';
+  if (/圓孔|φ|○/u.test(productName)) return '圓孔';
   return '其他';
 }
 

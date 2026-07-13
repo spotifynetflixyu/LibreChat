@@ -21,7 +21,10 @@ const {
 const SHEET_NAME = 'products_db_ready';
 const REVIEW_SHEET_NAME = 'category_review';
 const DEFAULT_INPUT_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.3.xlsx');
-const DEFAULT_REFERENCE_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.4.xlsx');
+const DEFAULT_REFERENCE_PATH = path.resolve(
+  __dirname,
+  '../../../docs/reference/products_db_v4.4.xlsx',
+);
 const DEFAULT_OUTPUT_PATH = path.resolve(__dirname, '../../../docs/products_db_categorized.xlsx');
 const DEFAULT_REVIEW_PATH = path.resolve(
   __dirname,

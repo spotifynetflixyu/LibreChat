@@ -20,10 +20,13 @@ const {
   processingPriceCategories,
 } = require('../src/steel/pricing/processing-candidates');
 
-const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.4.xlsx');
+const DEFAULT_WORKBOOK_PATH = path.resolve(
+  __dirname,
+  '../../../docs/reference/products_db_v4.4.xlsx',
+);
 const DEFAULT_CUTTING_WORKBOOK_PATH = path.resolve(
   __dirname,
-  '../../../docs/切工價錢-v4.4-normalized.xlsx',
+  '../../../docs/reference/切工價錢-v4.4-normalized.xlsx',
 );
 const PROCESSING_LIMIT = 10;
 const cuttingCategorySources = Object.freeze({

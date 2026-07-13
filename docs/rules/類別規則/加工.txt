@@ -1,29 +1,36 @@
 【一般加工類別規則】
 
-孔加工依【加工/孔 規則】；長條料自動切工依【長條料切工規則】。本 block 只處理其餘獨立加工價格列。
+孔加工依【加工/孔 規則】；長條料自動切工依【長條料切工規則】。本 block 只處理其餘獨立加工價格列。共用 query envelope 與 productNames 精確重取只依【search_price_candidates 通用查價規則】；以下標題就是 `processingCategories` 值，`categories` 使用工件主類別。加工類別已足以辨識時省略 keyword；仍需縮小候選時只使用最短的正規化加工名或必要規格。不得複製來源 product_name，專有加工名只有使用者明示時保留。
+
+本 block 需要用加工方式縮小候選時，`processingQueries.keyword` 只可使用已確認的正規化加工方式 `[剪床|雷射|鋸床|水刀|火]` 之一；不得改用鋸工、氧切、電離子等來源同義詞。
 
 ## 加工/其他
 
-- 首查用 `processingQueries` 的工件 `categories` + `processingCategories:["加工/其他"]` + 通用加工名稱／規格 keyword；專有加工名只有使用者明示時保留。
+- 需要 keyword 時，只使用已確認的正規化加工名 `[保護|厚板|喇叭桶|噴砂/塗裝|壓花|拋光|整平|滾圓|烤漆|熱浸鍍|端板|雕花|雷射畫線|其他|C型鋼]` 之一；這些值直接作為 `processingQueries.keyword`，不得改用來源同義詞。類別規則明示的精確加工名稱例外優先。
 - 依件數或 price row 指定基準 × direct 單價；非 Kg／M ratio 不可自行套用。
 
 ## 加工/折工
 
-- 首查用 `processingQueries` 的工件 `categories` + `processingCategories:["加工/折工"]` + 折型／厚度區間／長度級距 keyword。
+- 需要 keyword 時，優先使用已確認的正規化折型 `[一般|下軌|中柱|含切工|工具箱|斗笠|消音|無缺口|特殊|花板|豬公|車斗]` 之一；這些值直接作為 `processingQueries.keyword`。折型仍不足以辨識時才加必要厚度區間或長度級距。
 - 沒有精確可讀折工價時直接列 `manual_review`；不得 requery、不得猜形狀或借用相近折型價格。
 - 折數、件數或 price row 指定基準 × direct 單價。
 
 ## 加工/切工
 
-- 只有訂單本身是獨立加工時，才用 `processingQueries` + `processingCategories:["加工/切工"]` + 通用切割方式／厚度級距 keyword。
+- 只有訂單本身是獨立加工時才查本類；材料自動切工不得另查。keyword 優先使用上述正規化加工方式；沒有已確認方式時才使用正規化形狀 `[外形切割|直線切割]`，仍不足以辨識時才加必要厚度級距。並列詞為 AND 條件，不得堆疊同義詞。
 - 刀數與加價依【長條料切工規則】，不得重複計價。
 
 ## 加工/開槽
 
-- 首查用 `processingQueries` + `processingCategories:["加工/開槽"]`。H型鋼依返回 product_name 區分開槽與切斜。
+- H型鋼依返回 product_name 區分開槽與切斜。需要 keyword 時優先採上述正規化加工方式；沒有適用方式時才使用最短槽型或必要規格。
 - 槽數、件數或 price row 指定基準 × direct 單價。
 
-## 加工/倒角、加工/焊接
+## 加工/倒角
 
-- 首查用 `processingQueries` 的工件 `categories` + 對應 `processingCategories` + 通用加工名稱／規格 keyword。
+- 倒角需要縮小候選時先採上述正規化加工方式；沒有適用方式時才使用最短倒角規格。
+- 件數或 price row 指定基準 × direct 單價；基準不明即人工複核。
+
+## 加工/焊接
+
+- 加工類別已足以辨識時省略 keyword；仍需縮小候選時只使用已確認的焊接規格。
 - 件數、焊道數、長度或 price row 指定基準 × direct 單價；基準不明即人工複核。

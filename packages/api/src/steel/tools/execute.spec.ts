@@ -270,7 +270,6 @@ describe('Steel minimal tool execution', () => {
       arguments: {
         queries: [
           {
-            queryId: 'line-1',
             category: '鐵板',
             material: '黑鐵',
             thicknessMm: ['6'],
@@ -463,17 +462,29 @@ describe('Steel minimal tool execution', () => {
   });
 
   it('returns only product names when processing discovery exceeds ten rows', async () => {
-    const processingRows = Array.from({ length: 12 }, (_, index) =>
+    const cuttingRows = Array.from({ length: 12 }, (_, index) =>
       createPriceRow({
         id: String(500 + index),
-        erp_item_code: `PROCESS-${index + 1}`,
+        erp_item_code: `CUTTING-${index + 1}`,
         category: '加工/切工',
         subcategory: '通用',
         product_name: `雷射切工 ${index + 1}`,
-        normalized_spec_text: `雷射 切工 ${index + 1}`,
+        normalized_spec_text: `雷射 外形切割 ${index + 1}`,
         unit: '刀',
       }),
     );
+    const holeRows = Array.from({ length: 11 }, (_, index) =>
+      createPriceRow({
+        id: String(600 + index),
+        erp_item_code: `HOLE-${index + 1}`,
+        category: '加工/孔',
+        subcategory: '鐵板',
+        product_name: `雷射菱形孔 ${index + 1}`,
+        normalized_spec_text: `雷射 菱形孔 ${index + 1}`,
+        unit: '孔',
+      }),
+    );
+    const processingRows = [...cuttingRows, ...holeRows];
     const client = createClient([
       [
         {
@@ -500,7 +511,7 @@ describe('Steel minimal tool execution', () => {
         processingQueries: [
           {
             categories: ['鐵板', 'C型鋼'],
-            processingCategories: ['加工/切工'],
+            processingCategories: ['加工/切工', '加工/孔'],
             keyword: '雷射',
           },
         ],
@@ -517,12 +528,33 @@ describe('Steel minimal tool execution', () => {
       queryResults: [
         expect.objectContaining({
           queryId: 'p1',
-          totalAvailable: 12,
+          totalAvailable: 23,
           returnedCount: 0,
           selectionRequired: true,
-          productNames: Array.from({ length: 12 }, (_, index) => `雷射切工 ${index + 1}`),
+          productNames: [
+            ...Array.from({ length: 12 }, (_, index) => `雷射切工 ${index + 1}`),
+            ...Array.from({ length: 11 }, (_, index) => `雷射菱形孔 ${index + 1}`),
+          ],
           truncated: false,
           groups: [],
+          suggestedKeywords: [
+            '剪床',
+            '雷射',
+            '鋸床',
+            '水刀',
+            '火',
+            '外形切割',
+            '直線切割',
+            '沖床',
+            '雷射',
+            '鑽床',
+            '水刀',
+            '圓孔',
+            '方孔',
+            '菱形孔',
+            '長孔',
+            '橢圓孔',
+          ],
         }),
       ],
     });
@@ -866,7 +898,7 @@ describe('Steel minimal tool execution', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ queryId: 'hardware', category: '五金/配件', material: '黑鐵' }],
+        queries: [{ category: '五金/配件', material: '黑鐵' }],
       },
     });
 
@@ -977,7 +1009,7 @@ describe('Steel minimal tool execution', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        queries: [{ queryId: 'missing', category: 'T型鋼', keyword: 'not-found' }],
+        queries: [{ category: 'T型鋼', keyword: 'not-found' }],
       },
     });
 

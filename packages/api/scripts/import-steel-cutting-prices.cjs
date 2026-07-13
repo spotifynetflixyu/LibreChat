@@ -20,7 +20,7 @@ const PRICE_SHEET = 'cutting_prices';
 const SUPPLEMENT_SHEET = 'cutting_supplements';
 const DEFAULT_WORKBOOK_PATH = path.resolve(
   __dirname,
-  '../../../docs/切工價錢-v4.4-normalized.xlsx',
+  '../../../docs/reference/切工價錢-v4.4-normalized.xlsx',
 );
 const EXPECTED_HEADERS = Object.freeze([
   'cutting_category',

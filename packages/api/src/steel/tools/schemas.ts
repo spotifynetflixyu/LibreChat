@@ -231,7 +231,6 @@ const directMaterialAliases = new Map<string, (typeof priceLookupMaterialKinds)[
 
 const priceLookupQuerySchema = z
   .object({
-    queryId: nonEmptyString.optional(),
     mode: z.literal('lookup').optional(),
     category: z
       .enum(priceCategories)
@@ -262,7 +261,6 @@ const priceLookupQuerySchema = z
 
 const priceCategoryDiscoveryQuerySchema = z
   .object({
-    queryId: nonEmptyString.optional(),
     mode: z.literal('category_discovery'),
     keyword: nonEmptyString.describe('Keyword for discovering an unknown category.'),
     limit: priceQueryLimitSchema,
@@ -276,7 +274,6 @@ const searchPriceCandidateQuerySchema = z.union([
 
 const processingPriceQuerySchema = z
   .object({
-    queryId: nonEmptyString.optional(),
     categories: z.array(z.enum(priceCategories)).min(1).max(20),
     processingCategories: z.array(z.enum(priceCategories)).min(1).max(7).optional(),
     keyword: nonEmptyString.optional(),

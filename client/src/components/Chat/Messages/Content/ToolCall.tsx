@@ -157,6 +157,7 @@ export default function ToolCall({
     () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
     [args, output],
   );
+  const resultUnavailable = !isSubmitting && initialProgress >= 1 && !hasOutput;
 
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
@@ -245,7 +246,12 @@ export default function ToolCall({
         <div className="overflow-hidden" ref={expandRef}>
           {hasInfo && (
             <div className="my-2 overflow-hidden rounded-lg border border-border-light bg-surface-secondary">
-              <ToolCallInfo input={args ?? ''} output={output} attachments={attachments} />
+              <ToolCallInfo
+                input={args ?? ''}
+                output={output}
+                attachments={attachments}
+                resultUnavailable={resultUnavailable}
+              />
             </div>
           )}
         </div>

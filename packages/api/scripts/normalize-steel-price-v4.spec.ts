@@ -70,12 +70,19 @@ describe('Steel price v4 workbook normalizer script', () => {
     expect(summary.pendingReviewCount).toBe(0);
     expect(summary.categoryMismatchCount).toBe(0);
     expect(summary.unclassifiedSubcategoryCount).toBe(0);
-    expect(summary.changedCategoryCount).toBe(46);
+    expect(summary.changedCategoryCount).toBe(0);
     expect(sha256(normalizer.DEFAULT_INPUT_PATH)).toBe(beforeHash);
     expect(fs.existsSync(outputPath)).toBe(true);
     expect(fs.existsSync(reviewPath)).toBe(true);
 
     const workbook = XLSX.readFile(outputPath, { raw: false });
+    for (const sheetName of workbook.SheetNames) {
+      const worksheet = workbook.Sheets[sheetName]!;
+      if (!worksheet['!ref']) {
+        continue;
+      }
+      expect(worksheet['!autofilter']).toEqual({ ref: worksheet['!ref'] });
+    }
     const matrix = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets.products_db_ready!, {
       header: 1,
       defval: '',
@@ -133,6 +140,11 @@ describe('Steel price v4 workbook normalizer script', () => {
       subcategory: '加工/孔',
     });
     expect(byErp.get('DZA00')).toMatchObject({ category: '加工/孔', subcategory: '鐵板' });
+    expect(byErp.get('KAOS06')).toMatchObject({
+      category: '加工/孔',
+      processing_method: '沖床',
+      processing_shape: '菱形孔',
+    });
     expect(byErp.get('A9')).toMatchObject({ category: '加工/其他', subcategory: '其他' });
     expect(byErp.get('CCG02')).toMatchObject({ category: '加工/其他', subcategory: 'C型鋼' });
     expect(byErp.get('FSA0001')).toMatchObject({ category: '加工/其他', subcategory: '其他' });
@@ -178,6 +190,13 @@ describe('Steel price v4 workbook normalizer script', () => {
       reviewPath: secondReviewPath,
     });
     const secondWorkbook = XLSX.readFile(secondOutputPath, { raw: false });
+    for (const sheetName of secondWorkbook.SheetNames) {
+      const worksheet = secondWorkbook.Sheets[sheetName]!;
+      if (!worksheet['!ref']) {
+        continue;
+      }
+      expect(worksheet['!autofilter']).toEqual({ ref: worksheet['!ref'] });
+    }
     const secondMatrix = XLSX.utils.sheet_to_json<unknown[]>(
       secondWorkbook.Sheets.products_db_ready!,
       {

@@ -10,6 +10,7 @@ const { FileBlob, SpreadsheetFile } = await import(
   pathToFileURL(require.resolve('@oai/artifact-tool')).href
 );
 const { normalizeCuttingWorkbookRow } = require('./lib/cutting-normalize.cjs');
+const { enableCuttingHeaderFilters } = require('./lib/workbook-filters.cjs');
 
 const DEFAULT_INPUT_PATH = path.resolve(
   import.meta.dirname,
@@ -17,7 +18,7 @@ const DEFAULT_INPUT_PATH = path.resolve(
 );
 const DEFAULT_OUTPUT_PATH = path.resolve(
   import.meta.dirname,
-  '../../../docs/切工價錢-v4.4-normalized.xlsx',
+  '../../../docs/reference/切工價錢-v4.4-normalized.xlsx',
 );
 const EXPECTED_SHEETS = ['cutting_prices', 'cutting_supplements'];
 
@@ -59,6 +60,7 @@ async function normalizeWorkbook({ inputPath, outputPath }) {
       return headers.map((header) => normalized[header] ?? '');
     });
     used.values = [headers, ...normalizedRows];
+    enableCuttingHeaderFilters(sheet, used, sheetName);
     sheets.push({ sheetName, rowCount: normalizedRows.length, columnCount: headers.length });
   }
 

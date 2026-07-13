@@ -25,7 +25,10 @@ const {
 
 const SHEET_NAME = 'products_db_ready';
 const SOURCE_DATASET = steelPriceV4SourceDataset;
-const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.3.xlsx');
+const DEFAULT_WORKBOOK_PATH = path.resolve(
+  __dirname,
+  '../../../docs/reference/products_db_v4.4.xlsx',
+);
 const EXPECTED_HEADERS = steelPriceV4WorkbookHeaders;
 const NORMALIZED_INPUT_HEADERS = normalizedSteelPriceV4WorkbookHeaders.filter(
   (header) => header !== 'thicknessMinMm' && header !== 'thicknessMaxMm',
@@ -130,7 +133,7 @@ Default workbook:
   ${DEFAULT_WORKBOOK_PATH}
 
 Default mode is --dry-run. --apply validates the complete workbook before opening
-one transaction that replaces steel.prices and verifies the readback totals.
+one transaction that reconciles steel.prices to the exact workbook ERP set and verifies readback.
 `);
 }
 
@@ -157,7 +160,7 @@ function loadWorkbookRows(workbookPath) {
   );
 
   if (!exactHeaders) {
-    throw new Error(`${SHEET_NAME} headers do not match the exact v4.3 or normalized v4.4 contract`);
+    throw new Error(`${SHEET_NAME} headers do not match the exact legacy or normalized v4.4 contract`);
   }
 
   return matrix
@@ -222,7 +225,7 @@ function validateExpectedReconciliation(summary) {
 
   if (!matches) {
     throw new Error(
-      `Steel price v4.3 reconciliation mismatch: expected ${JSON.stringify(EXPECTED_RECONCILIATION)}, received ${JSON.stringify(summary)}`,
+      `Steel price v4.4 reconciliation mismatch: expected ${JSON.stringify(EXPECTED_RECONCILIATION)}, received ${JSON.stringify(summary)}`,
     );
   }
 }
@@ -298,7 +301,8 @@ function buildInsert(batch) {
     sql: `INSERT INTO steel.prices (${INSERT_COLUMNS.join(', ')})
 VALUES ${placeholders.join(',\n')}
 ON CONFLICT (erp_item_code) DO UPDATE SET
-${updateColumns.map((column) => `  ${column} = EXCLUDED.${column}`).join(',\n')}`,
+${updateColumns.map((column) => `  ${column} = EXCLUDED.${column}`).join(',\n')},
+  imported_at = NOW()`,
     values,
   };
 }
@@ -317,6 +321,8 @@ function buildReadbackExpectation(rows) {
 
   return {
     total: rows.length,
+    target_dataset: rows.length,
+    other_dataset: 0,
     active: counts.activeRows,
     ...counts.byValueState,
   };
@@ -326,28 +332,33 @@ function readbackMatches(actual, expected) {
   return Object.entries(expected).every(([key, value]) => Number(actual[key]) === value);
 }
 
-async function upsertSteelPrices(client, rows) {
+async function replaceSteelPrices(client, rows) {
   const expectedReadback = buildReadbackExpectation(rows);
 
   await client.query('BEGIN');
   try {
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.prices:v4.3:upsert'))");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.prices:replace'))");
     await insertRows(client, rows);
+    await client.query(
+      'DELETE FROM steel.prices WHERE NOT (erp_item_code = ANY($1::text[]))',
+      [rows.map((row) => row.erpItemCode)],
+    );
 
     const result = await client.query(`
 SELECT
   COUNT(*)::int AS total,
+  COUNT(*) FILTER (WHERE source_dataset = $1)::int AS target_dataset,
+  COUNT(*) FILTER (WHERE source_dataset <> $1)::int AS other_dataset,
   COUNT(*) FILTER (WHERE active)::int AS active,
   COUNT(*) FILTER (WHERE value_state = 'confirmed')::int AS confirmed,
   COUNT(*) FILTER (WHERE value_state = 'ratio_only')::int AS ratio_only,
   COUNT(*) FILTER (WHERE value_state = 'no_price')::int AS no_price
 FROM steel.prices
-WHERE source_dataset = $1
 `, [SOURCE_DATASET]);
     const readback = result.rows[0] || {};
     if (!readbackMatches(readback, expectedReadback)) {
       throw new Error(
-        `Steel price v4.3 readback mismatch: expected ${JSON.stringify(expectedReadback)}, received ${JSON.stringify(readback)}`,
+        `Steel price v4.4 readback mismatch: expected ${JSON.stringify(expectedReadback)}, received ${JSON.stringify(readback)}`,
       );
     }
 
@@ -388,7 +399,7 @@ async function importWorkbook(options) {
   let client;
   try {
     client = await pool.connect();
-    await upsertSteelPrices(client, rows);
+    await replaceSteelPrices(client, rows);
   } finally {
     if (client) {
       client.release();
@@ -419,7 +430,7 @@ module.exports = {
   importWorkbook,
   loadWorkbookRows,
   parseArgs,
-  upsertSteelPrices,
+  replaceSteelPrices,
 };
 
 if (require.main === module) {

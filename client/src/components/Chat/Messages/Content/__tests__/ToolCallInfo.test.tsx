@@ -11,6 +11,9 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
       com_ui_parameters: 'Parameters',
+      com_ui_tool_result_not_saved: 'Result not saved',
+      com_ui_show_less: 'Show less',
+      com_ui_show_more: 'Show more',
     };
     return translations[key] || key;
   },
@@ -191,6 +194,81 @@ describe('ToolCallInfo', () => {
 
       fireEvent.click(paramsButton.closest('button')!);
       expect(paramsButton.closest('button')).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('should expand and collapse a long nested parameter value without losing content', () => {
+      const processingQueries = [
+        {
+          categories: ['鐵板'],
+          processingCategories: ['加工/切工', '加工/孔', '加工/倒角', '加工/開槽'],
+          keyword: '雷射切割與孔加工需求，保留完整加工條件供人工核對，不能只顯示前兩百個字元。',
+        },
+        {
+          categories: ['H型鋼'],
+          processingCategories: ['加工/孔'],
+          keyword: 'final-processing-marker',
+        },
+      ];
+
+      render(
+        <ToolCallInfo
+          input={JSON.stringify({
+            queries: [{ category: '鐵板', thicknessMm: ['15'] }],
+            processingQueries,
+          })}
+        />,
+      );
+
+      fireEvent.click(screen.getByText('Parameters').closest('button')!);
+
+      const showMoreButton = screen.getByRole('button', {
+        name: 'Show more processingQueries',
+      });
+      const formattedProcessingQueries = JSON.stringify(processingQueries, null, 2);
+      expect(showMoreButton).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByLabelText('processingQueries parameter value').textContent).not.toBe(
+        formattedProcessingQueries,
+      );
+
+      fireEvent.click(showMoreButton);
+
+      expect(screen.getByLabelText('processingQueries parameter value').textContent).toBe(
+        formattedProcessingQueries,
+      );
+      const showLessButton = screen.getByRole('button', {
+        name: 'Show less processingQueries',
+      });
+      expect(showLessButton).toHaveAttribute('aria-expanded', 'true');
+
+      fireEvent.click(showLessButton);
+
+      expect(screen.getByLabelText('processingQueries parameter value').textContent).not.toBe(
+        formattedProcessingQueries,
+      );
+      expect(screen.getByRole('button', { name: 'Show more processingQueries' })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+    });
+
+    it('should render array parameter values as indented multiline JSON', () => {
+      const queries = [{ category: '鐵板', material: '黑鐵', thicknessMm: ['15'] }];
+
+      render(<ToolCallInfo input={JSON.stringify({ queries })} />);
+
+      fireEvent.click(screen.getByText('Parameters').closest('button')!);
+
+      const formattedQueries = JSON.stringify(queries, null, 2);
+      const value = screen.getByLabelText('queries parameter value');
+      expect(value.textContent).toBe(formattedQueries);
+      expect(value.textContent).toContain('\n');
+    });
+
+    it('should mark an unavailable persisted result without hiding Parameters', () => {
+      render(<ToolCallInfo input='{"queries":[{"category":"鐵板"}]}' resultUnavailable />);
+
+      expect(screen.getByText('Result not saved')).toBeInTheDocument();
+      expect(screen.getByText('Parameters')).toBeInTheDocument();
     });
 
     it('should render ui_resources section when attachments have ui_resources', () => {

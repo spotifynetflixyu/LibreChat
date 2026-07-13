@@ -29,7 +29,7 @@ const simulator = jest.requireActual<{
 describe('v4.4 processing price simulation', () => {
   it('derives processing candidates from the workbook without reading the database', () => {
     const results = simulator.runSimulation({
-      workbookPath: path.resolve(__dirname, '../../../docs/products_db_v4.4.xlsx'),
+      workbookPath: path.resolve(__dirname, '../../../docs/reference/products_db_v4.4.xlsx'),
       categories: ['鐵板', 'C型鋼', 'H型鋼', '角鐵'],
     });
     const byCategory = new Map(results.map((result) => [result.targetCategories[0], result]));
@@ -65,21 +65,26 @@ describe('v4.4 processing price simulation', () => {
       '槽鐵',
     ];
     const results = simulator.runSimulation({
-      workbookPath: path.resolve(__dirname, '../../../docs/products_db_v4.4.xlsx'),
+      workbookPath: path.resolve(__dirname, '../../../docs/reference/products_db_v4.4.xlsx'),
       cuttingWorkbookPath: path.resolve(
         __dirname,
-        '../../../docs/切工價錢-v4.4-normalized.xlsx',
+        '../../../docs/reference/切工價錢-v4.4-normalized.xlsx',
       ),
       categories,
     });
     const byCategory = new Map(results.map((result) => [result.targetCategories[0], result]));
 
     for (const category of categories.filter((value) => value !== 'I型鋼/工字鐵')) {
-      expect(byCategory.get(category)?.cuttingSimulation?.materialCandidateCount).toBeGreaterThan(0);
+      expect(byCategory.get(category)?.cuttingSimulation?.materialCandidateCount).toBeGreaterThan(
+        0,
+      );
       expect(byCategory.get(category)?.cuttingSimulation?.matchedCandidateCount).toBeGreaterThan(0);
     }
     expect(byCategory.get('I型鋼/工字鐵')?.cuttingSimulation).toEqual(
-      expect.objectContaining({ materialCandidateCount: 0, matchedCandidateCount: 0 }),
+      expect.objectContaining({
+        materialCandidateCount: 0,
+        matchedCandidateCount: 0,
+      }),
     );
     expect(byCategory.get('方鐵')?.cuttingSimulation).toEqual(
       expect.objectContaining({ materialCandidateCount: 22, matchedCandidateCount: 21 }),

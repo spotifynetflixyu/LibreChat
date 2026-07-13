@@ -277,6 +277,15 @@ describe('ToolCall', () => {
 
       expect(props.input).toBe('{"test": "input"}');
       expect(props.output).toBe('Test output');
+      expect(props.resultUnavailable).toBe(false);
+    });
+
+    it('should mark a completed persisted tool call when its result is unavailable', () => {
+      renderWithRecoil(<ToolCall {...mockProps} output="" />);
+
+      const props = JSON.parse(screen.getByTestId('tool-call-info').textContent!);
+      expect(props.input).toBe('{"test": "input"}');
+      expect(props.resultUnavailable).toBe(true);
     });
   });
 

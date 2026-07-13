@@ -3202,6 +3202,18 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
       try {
         await runOutsideTracing(async () => {
           try {
+            toolCalls.forEach((tc: ToolCallRequest) => {
+              const eventMetadata = metadata as Record<string, unknown> | undefined;
+              logger.debug({
+                event: 'tool_call_parameters',
+                conversationId: eventMetadata?.thread_id,
+                messageId: eventMetadata?.run_id,
+                agentId,
+                toolCallId: tc.id,
+                toolName: tc.name,
+                parameters: tc.args,
+              });
+            });
             const toolNames = [...new Set(toolCalls.map((tc: ToolCallRequest) => tc.name))];
             const { loadedTools, configurable: toolConfigurable } = await loadTools(
               toolNames,
