@@ -273,7 +273,7 @@ Implementation safety lock - user approved script-first validation:
 
 - Source `docs/products_db_v4.3.xlsx` must remain byte-for-byte unchanged in this phase.
 - First implement `packages/api/scripts/normalize-steel-price-v4.cjs` with core TS helpers/tests.
-- Script reads the current 39-column workbook and writes a separate 41-column validation workbook;
+- Script reads the current 39-column workbook and writes a separate 43-column validation workbook;
   it must never default output to the input path and must reject same-path input/output.
 - `product_name` alone must infer the current category; compare inferred category to protected workbook
   category for all 6,761 rows. Any unresolved/mismatch aborts output and emits a ledger.
@@ -10214,18 +10214,18 @@ Goal: 以 `products_db_v4.3.xlsx` 為唯讀輸入，完成可重跑的 category/
 xlsx normalization pipeline，產生獨立 v4.4 workbook 及待確認清單；確認前不修改來源
 category，也不覆寫 v4.3。
 
-- [x] 鎖定39欄來源、41欄目標與19個受保護欄位；新增 camelCase thickness 欄。
+- [x] 鎖定39欄來源、43欄目標與19個受保護欄位；新增 processing 與 camelCase thickness 欄。
 - [x] 以 TDD 完成 category candidate 及 structural/catalog/processing subcategory classifiers。
 - [x] 完成 unit、material enum、禁用品名 value_state、structured dimensions 與
   normalized_spec_text normalization core。
-- [x] 完成預設 dry-run、明示 `--write`、拒絕同路徑、支援39/41欄輸入的重跑腳本。
+- [x] 完成預設 dry-run、明示 `--write`、拒絕同路徑、支援39/43欄輸入的重跑腳本。
 - [x] 產生 `docs/products_db_v4.4.xlsx` 及 `docs/products_db_v4.4.pending-review.csv`。
 - [x] 驗證 source hash、受保護欄位、ERP唯一性、material enum、面積unit、no_price、
   idempotency、focused tests、lint、PDF render 與 diff hygiene。
 
 Review:
 
-- v4.4 共6,761筆、41欄；`source_thickness` 後新增 `thicknessMinMm`、
+- v4.4 共6,761筆、43欄；subcategory 後新增 processing 欄，`source_thickness` 後新增 `thicknessMinMm`、
   `thicknessMaxMm`。19個受保護欄位逐格差異為0，ERP code 6,761筆全唯一。
 - category 不改來源值。完成第二輪逐群稽核後，移除185筆由品牌、用途詞、加工詞與
   商品主體優先序造成的 classifier 假陽性；留下10筆真正需要確認的 current/inferred
@@ -10287,3 +10287,25 @@ Review:
 - v4.4 長條料 replay 實際命中：H型鋼433/437、平鐵78/115、圓管148/188、方管159/219、扁方管33/82、圓條60/60、方鐵21/22、角鐵97/121、槽鐵53/55。v4.4 沒有可報價 I型鋼/工字鐵候選，因此該類 replay 為0/0，不來自 matcher 排除。
 - 規則只保留 AI 可執行的 tool output 與計價判斷，未寫 backend／SQL／matcher 實作敘述。未匯入 v4.4、未 apply cutting workbook、未同步 rules DB。
 - 驗證通過：focused Jest 9 suites／103 tests、packages/api build、targeted ESLint、cutting importer dry-run、v4.4 cutting replay、rules dry-run、兩張 sheet render 與 `git diff --check`。
+
+# Active: Steel rules 精確性與去重稽核 - 2026-07-13
+
+Goal: 以目前 `search_price_candidates`、`processingPrice`、`cuttingPrices` 與各類別計價契約為真實來源，檢查本地 AI rules 是否精確、無過時說明，並確保通用規則不在類別檔重複。不同步 rules DB。
+
+- [x] 比對 tool schema、execute output 與 AI-visible registry 的現行契約。
+- [x] 逐檔稽核共用查價、長條料、切工、加工與類別例外。
+- [x] 用 rules regression 的 segment normalization 檢查實質重複，並人工覆核近似改寫。
+- [x] 只修正確認的過時、衝突或重複文字，不改變已確認的計價語意。
+- [x] 將未指定厚度的最小可報價厚度固定為鋼材通用 owner，刪除類別重述。
+- [x] 保留 `unit` 為 AI 可選覆寫 param；省略時使用類別預設，明示傳入時依類別正規化後覆寫。
+- [x] 將 product xlsx normalizer、v4 importer validation、subcategory enum 與 rules index 對齊精簡值。
+- [x] 執行 focused tests、build、rules/import dry-run、workbook replay/render、targeted lint 與 `git diff --check`，補上 Review。
+
+Review:
+
+- 查價通則是共用 owner：未指定厚度時，在其他條件相符且可報價候選中採最小厚度；`unit` 保留為訂單明示時的可選覆寫。C型鋼、鐵板等類別檔不再重述通用契約。
+- 所有 material lookup、category discovery、processing 與 exact `productNames` SQL 路徑都固定排除 `value_state = 'no_price'`，並由 repository tests 覆蓋。
+- 加工、切工與 productNames 規則已移除 legacy／DB table／matcher 等實作文字；KZZB 共用孔價只由 H型鋼 owner 說明，方鐵相似圓條切工只由切工 owner 說明。
+- subcategory 採 category-aware 精簡值；網類固定使用 `點焊/牛筋/高床/浪型/菱形`，不接受 `點焊網/浪型網`。產品正規化 parser 與 v4 importer 分工：normalizer 可依 category + product_name 修正，importer 保留已合法的人工值，只在來源值已失效時以同一 inference 修復。
+- 以唯讀 v4.3 重建獨立 `docs/products_db_v4.4.xlsx`，只新增40筆 subcategory 修正；v4.3 SHA-256 維持 `08caffe690345fc6defceee3ca046d3de56aefa993e99668fdc7cc12a157dec8`。13筆浪型網全部為 `浪型`，第二次 normalization 主表差異0。
+- 驗證通過：focused Jest 9 suites／272 tests、packages/api build、targeted ESLint、v4.4 importer dry-run 6,761 rows、rules dry-run、LibreOffice PDF render 1,570 pages 與 `git diff --check`。未執行 DB import、rules apply 或 Supabase update。

@@ -30,6 +30,8 @@ const guidePath = path.join(categoryRulesDir, '查價方式.txt');
 const plateRulePath = path.join(categoryRulesDir, '鐵板.txt');
 const meshRulePath = path.join(categoryRulesDir, '網.txt');
 const squareBarRulePath = path.join(categoryRulesDir, '方鐵.txt');
+const hBeamRulePath = path.join(categoryRulesDir, 'H型鋼.txt');
+const holeRulePath = path.join(categoryRulesDir, '孔.txt');
 const longMaterialRulePath = path.join(categoryRulesDir, '長條料.txt');
 const cuttingRulePath = path.join(categoryRulesDir, '切工.txt');
 const outputRulePath = path.join(rulesDir, '輸出規則.txt');
@@ -172,15 +174,12 @@ describe('Steel rule sources', () => {
     const actual = parseCategorySubcategories(readUtf8(guidePath));
     expect([...actual.keys()]).toEqual([...priceCategories]);
     for (const [category, subcategories] of actual) {
-      expect(
-        subcategories.every((subcategory) =>
-          (
-            priceSubcategoriesByCategory[
-              category as keyof typeof priceSubcategoriesByCategory
-            ] as readonly string[]
-          ).includes(subcategory),
-        ),
-      ).toBe(true);
+      const expected = (
+        priceSubcategoriesByCategory[
+          category as keyof typeof priceSubcategoriesByCategory
+        ] as readonly string[]
+      ).filter(Boolean);
+      expect([...subcategories].sort()).toEqual([...expected].sort());
     }
   });
 
@@ -191,7 +190,8 @@ describe('Steel rule sources', () => {
     expect(guide).not.toContain('query_id_generation=');
     expect(guide).not.toContain('cutting_query_timing=');
     expect(guide).not.toContain('query_limit_overflow=');
-    expect(guide).toContain('加工放入同一 tool call 的 `processingQueries`');
+    expect(guide).toContain('有明確加工需求時，在同一 tool call 加入 `processingQueries`');
+    expect(guide).toContain('同次可返回相符的 `processingPrice`');
     expect(guide).toContain('超過10筆只返回全部唯一 `productNames`');
     expect(guide).toContain('前次結果已達30');
     expect(guide).toContain('材料切工只使用同次結果的 `cuttingPrices`');
@@ -258,7 +258,7 @@ describe('Steel rule sources', () => {
     expect(cutting).toContain('切平行斜刀=基本價×2−10');
     expect(cutting).toContain('一支母材切 n 支且無餘料：n−1刀');
     expect(cutting).toContain('方鐵可裁切');
-    expect(cutting).toContain('最相近圓條切工基本價');
+    expect(cutting).toContain('最相近的圓條切工基本價');
     expect(cutting).toContain('鐵板、鐵軌不得借用其他類別切工');
     expect(cutting).not.toContain('未標時固定6M');
     expect(cutting).not.toContain('keyword 只用 `寬x高x壁厚`');
@@ -268,14 +268,23 @@ describe('Steel rule sources', () => {
     const plate = readUtf8(plateRulePath);
     const mesh = readUtf8(meshRulePath);
     const squareBar = readUtf8(squareBarRulePath);
+    const longMaterial = readUtf8(longMaterialRulePath);
+    const hole = readUtf8(holeRulePath);
 
     expect(plate).toContain('雷射切割 → 四方切 → 版型切型');
     expect(plate).toContain('鐵板沒有獨立自動切工價');
+    expect(plate).toContain('`切板`、`平板`、`成型/配件`、`網板`、`花板`、`圍籬`');
+    expect(plate).not.toMatch(/圍籬板|檔泥板|`特殊`/u);
     expect(mesh).toContain('不使用 `keyword`');
     expect(mesh).toContain('不足一捲仍按一整丸');
+    expect(longMaterial).toContain('subcategory: "萬能/成型"');
+    expect(longMaterial).not.toContain('subcategory: "烤漆"');
+    expect(hole).toContain('各自主類別加 `subcategory: "加工/孔"`');
+    expect(hole).not.toMatch(/五金或門件|五金或門件上的/u);
     expect(squareBar).toContain('candidate `density`');
     expect(squareBar).toContain('品名沒有明示素材長度時不得自行補6M');
-    expect(readUtf8(longMaterialRulePath)).toContain('方鐵是實心方形截面的長條料（實心方管）');
+    expect(readUtf8(longMaterialRulePath)).toContain('方鐵完整適用長條料通則');
+    expect(squareBar).toContain('方鐵是實心方形截面的長條料（實心方管）');
     expect(readUtf8(longMaterialRulePath)).toContain(
       'query、Kg 實心截面計重、素材長度來源與不補6M例外依【方鐵類別規則】',
     );
@@ -295,7 +304,7 @@ describe('Steel rule sources', () => {
             !line.startsWith('query_filters=') &&
             !line.startsWith('|'),
         );
-      for (const segment of new Set(segments)) {
+      for (const segment of segments) {
         ownersBySegment.set(segment, [...(ownersBySegment.get(segment) ?? []), sourceFile]);
       }
     }
@@ -303,6 +312,46 @@ describe('Steel rule sources', () => {
     expect(
       [...ownersBySegment.entries()].filter(([, sourceFiles]) => sourceFiles.length > 1),
     ).toEqual([]);
+  });
+
+  it('keeps processing and cutting contracts in their single owners', () => {
+    const guide = readUtf8(guidePath);
+    const hBeam = readUtf8(hBeamRulePath);
+    const hole = readUtf8(holeRulePath);
+    const cutting = readUtf8(cuttingRulePath);
+    const squareBar = readUtf8(squareBarRulePath);
+    const categoryRules = listRuleFiles(categoryRulesDir)
+      .map((sourceFile) => readUtf8(path.join(repoRoot, sourceFile)))
+      .join('\n');
+
+    expect(hBeam).toContain('KZZB10、KZZB11、KZZB12');
+    expect(cutting).not.toMatch(/KZZB1[012]/u);
+    expect(hole).not.toMatch(/KZZB1[012]/u);
+    expect(categoryRules).not.toMatch(/legacy|v4\.4|steel\.prices|candidate-aware|catalog/iu);
+    expect(categoryRules.match(/\{"productNames"/gu)).toHaveLength(1);
+    expect(guide).toContain('原樣放入頂層');
+    expect(cutting).toContain('最相近的圓條切工基本價');
+    expect(squareBar).not.toContain('最相近的圓條切工基本價');
+  });
+
+  it('keeps minimum-thickness and unit override behavior in the common lookup owner', () => {
+    const guide = readUtf8(guidePath);
+    const cType = readUtf8(path.join(categoryRulesDir, 'C型鋼.txt'));
+    const plate = readUtf8(plateRulePath);
+
+    expect(guide).toContain('未指定厚度時，在其他條件相符且可報價候選中採最小厚度');
+    expect(guide).toContain('`unit` 省略時使用類別預設');
+    expect(guide).toContain('訂單明示計價單位時才傳入覆寫');
+    expect(cType).not.toContain('未指定厚度時');
+    expect(plate).not.toContain('未指定厚度時');
+  });
+
+  it('keeps the square-metre canonical unit only in mesh pricing', () => {
+    const mesh = readUtf8(meshRulePath);
+
+    expect(mesh).toContain('m2 先正規化為 `㎡`');
+    expect(mesh).not.toContain('m2/㎡');
+    expect(mesh).toContain('`㎡` 是唯一可按實際小數數量計價的單位');
   });
 
   it('uses only generic first-lookup keywords unless supplied by the user', () => {

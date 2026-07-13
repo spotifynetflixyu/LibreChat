@@ -95,6 +95,12 @@ describe('Steel price v4 workbook normalizer script', () => {
       { defval: '', raw: false },
     );
     const byErp = new Map(outputRows.map((row) => [row.erp_item_code, row]));
+    const waveMeshSubcategories = new Set(
+      outputRows
+        .filter((row) => row.category === '網' && row.product_name.includes('浪型網'))
+        .map((row) => row.subcategory),
+    );
+    expect(waveMeshSubcategories).toEqual(new Set(['浪型']));
     expect(byErp.get('AX0290')).toMatchObject({ category: '門窗/門板' });
     expect(byErp.get('AX0291')).toMatchObject({ category: '門窗/門板' });
     expect(byErp.get('AX0292')).toMatchObject({ category: '五金/配件', subcategory: '螺絲' });

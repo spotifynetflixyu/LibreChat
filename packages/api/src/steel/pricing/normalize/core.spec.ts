@@ -123,6 +123,39 @@ describe('Steel price workbook normalization core', () => {
     expect(normalized.subcategory).toBe('塗料/溶劑');
   });
 
+  it('keeps mesh subcategories concise in product workbook normalization', () => {
+    const normalized = normalizeSteelPriceWorkbookRow(
+      makeRow({
+        erp_item_code: 'MESH-WAVE',
+        product_name: '錏浪型網 10#(3.0)x25mm □孔',
+        normalized_spec_text: '錏浪型網 10#(3.0)x25mm □孔',
+        category: '網',
+        subcategory: '菱形',
+      }),
+    );
+
+    expect(normalized.subcategory).toBe('浪型');
+  });
+
+  it.each([
+    ['鐵板', '花板', '黑花 3.0 切'],
+    ['鐵板', '花板', '3.0ST花 雷切割型'],
+    ['門窗/門板', '門花', 'D型同心門[花5公分]'],
+    ['圓管', 'B管', '白B鍍鋅鋼管'],
+    ['網', '鐵網', '錏網'],
+    ['五金/配件', '緊固/錨固', '1/2突緣帽'],
+    ['五金/配件', '緊固/錨固', '磁鋼板專用小六角釘子'],
+  ])(
+    'normalizes %s product names to concise subcategory %s',
+    (category, subcategory, productName) => {
+      const normalized = normalizeSteelPriceWorkbookRow(
+        makeRow({ category, subcategory: '', product_name: productName }),
+      );
+
+      expect(normalized.subcategory).toBe(subcategory);
+    },
+  );
+
   it('adds processing method and shape to normalized_spec_text for keyword lookup', () => {
     const normalized = normalizeSteelPriceWorkbookRow(
       makeRow({

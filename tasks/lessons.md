@@ -1,5 +1,8 @@
 # Lessons
 
+- v4.4 subcategory 必須是利用 category 上下文後的精簡值；例如 `網 > 點焊/牛筋/高床/浪型/菱形`，不得回退為 `點焊網/牛筋網/高床網/浪型網/菱形網`。product xlsx normalizer、v4 importer、subcategory enum 與 rules 索引必須使用同一組精簡值。
+- `search_price_candidates.queries.unit` 是可選覆寫值：AI 省略時使用類別 backend 預設，只有訂單明示計價單位時才傳入覆寫。不可因「候選返回 unit」就刪除 query param。
+- 「未指定厚度時，在其他條件相符且可報價的候選中採最小厚度」是鋼材通用選價規則，只在通用查價 owner 寫一次；孔加工區間與類別明示例外優先。
 - AI 規則只寫 AI 需要採用的 tool output、契約與計價判斷；不要寫 `backend 會...`、SQL、matcher 或自動觸發的內部實作說明。
 - 方鐵也有切工；材料 query 要自動觸發 cutting catalog，並以方鐵邊長選最相近的圓條切工基本價。只借價格，不可連圓條不切或管類加價一起套用。
 - 最新切工查詢契約是材料 `queries` 自動觸發 `steel.cutting_prices`，不需要 processingQueries 明示加工/切工；但 backend 必須用材料 query results 跑 candidate-aware matcher，只回 category、尺寸、厚度、nominal inch、normalized spec 相符的切工。

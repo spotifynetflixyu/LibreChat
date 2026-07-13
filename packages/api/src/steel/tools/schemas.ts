@@ -238,7 +238,9 @@ const priceLookupQuerySchema = z
       .describe('Known price category; use category_discovery when unknown.'),
     subcategory: optionalFilterString.describe('Optional confirmed subcategory.'),
     material: tolerantStringSchema.describe('Optional confirmed material or surface.'),
-    unit: tolerantStringSchema.describe('Optional requested price unit.'),
+    unit: tolerantStringSchema.describe(
+      'Optional requested price unit overriding the category default.',
+    ),
     thicknessMm: z.array(positiveDecimalString).min(1).max(20).optional(),
     stockLengthMm: stockLengthMmSchema
       .optional()
@@ -402,7 +404,7 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
       .min(1)
       .max(100)
       .optional()
-      .describe('Exact steel.prices.product_name values returned by a prior discovery.'),
+      .describe('Exact productName values returned by a prior discovery result.'),
   })
   .strict()
   .superRefine((input, ctx) => {

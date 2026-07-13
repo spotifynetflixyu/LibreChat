@@ -1,8 +1,7 @@
 import { buildSteelPriceV4Rows, steelPriceV4WorkbookHeaders } from '../v4';
 import { materialKinds } from '../enums';
-import { inferCatalogSubcategory } from './catalog';
-import { inferProcessingAttributes, inferProcessingSubcategory } from './processing';
-import { inferStructuralSubcategory } from './structural';
+import { inferProcessingAttributes } from './processing';
+import { inferSteelPriceSubcategory } from '../subcategory';
 
 import type { SteelPriceV4Cell, SteelPriceV4WorkbookRow } from '../v4';
 
@@ -70,15 +69,6 @@ function text(value: SteelPriceV4Cell): string | null {
   }
   const normalized = String(value).normalize('NFKC').trim();
   return normalized || null;
-}
-
-function inferSubcategory(category: string, productName: string): string | null {
-  return (
-    inferProcessingSubcategory(category, productName) ??
-    inferStructuralSubcategory(category, productName) ??
-    inferCatalogSubcategory(category, productName) ??
-    null
-  );
 }
 
 function normalizeUnit(value: SteelPriceV4Cell): string | null {
@@ -214,7 +204,8 @@ export function normalizeSteelPriceWorkbookRow(
   ) as NormalizedSteelPriceV4WorkbookRow;
 
   normalized.normalized_spec_text = buildNormalizedSpecText(productName, parsed, processing);
-  normalized.subcategory = inferSubcategory(String(source.category ?? ''), productName);
+  normalized.subcategory =
+    inferSteelPriceSubcategory(String(source.category ?? ''), productName) ?? null;
   normalized.processing_method = processing?.processingMethod ?? null;
   normalized.processing_shape = processing?.processingShape ?? null;
   normalized.material = normalizeMaterial(

@@ -1,31 +1,27 @@
 【其他產品類別規則】
 
+共通原則：首查使用 `category` + 可確認的 `subcategory`／`material` + 通用品名或完整規格 keyword；專有名稱只有使用者明示時保留。一般單位以數量 × direct 單價，只有 Kg／M row 依總 kg／m 計價。
+
 ## 其他
 
-- 首查用 `category` + 可確認的 `subcategory` + 通用品名／完整規格 keyword；unit／material 只有來源明示且可靠時加入。
-- 數量 × direct 單價；Kg／M row 才依總 kg／m。
+- unit／material 只有來源明示且可靠時加入。
 
 ## 捲門/伸縮門
 
-- 首查用 `category` + 可確認的 `subcategory`／`material` + 通用門型、部位、尺寸 keyword；專有名稱只有使用者明示時保留。
-- 數量 × direct 單價；複合公式或組件範圍不明即人工複核。
+- keyword 使用通用門型、部位與尺寸；複合公式或組件範圍不明即人工複核。
 
 ## 格板/隔板
 
-- 首查用 `category` + 可確認的 `material` + 通用載重、齒規、尺寸 keyword；不得依賴稀疏 `thicknessMm`。
-- Kg／M row 依總 kg／m；片等其他 unit 依數量。
+- keyword 使用通用載重、齒規與尺寸；不得依賴稀疏 `thicknessMm`。
 
 ## 五金/配件
 
-- 首查用 `category` + 可確認的 `subcategory`／`material` + 通用品名／完整規格 keyword；不得用稀疏或誤解析的 `thicknessMm` 作唯一條件。
-- 數量 × direct 單價；Kg／M row 才依總 kg／m。
+- 不得用稀疏或誤解析的 `thicknessMm` 作唯一條件。
 
 ## 門窗/門板
 
-- 首查用 `category` + 可確認的 `subcategory`／`material` + 通用型式／完整規格 keyword。
-- 數量 × direct 單價；特殊公式不明即人工複核。
+- keyword 使用通用門片型式與完整規格；特殊公式不明即人工複核。
 
 ## 板/浪板
 
-- 首查用 `category` + 可確認的 `subcategory`／`material` + 通用板型、塗層、完整規格 keyword；不得依賴稀疏 `thicknessMm`。
-- 以 M、尺或其他明確長度單位按總長度計價；長度單位無法對應即人工複核。切工是獨立加工列，依【一般加工類別規則】。
+- keyword 使用通用板型、塗層與完整規格；不得依賴稀疏 `thicknessMm`。以 M、尺或其他明確長度單位按總長度計價；長度單位無法對應即人工複核。切工是獨立加工列，依【一般加工類別規則】。

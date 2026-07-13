@@ -645,7 +645,7 @@ describe('Steel price v4.3 parser', () => {
     ['不等邊黑角鐵100x75x7.0x6M(56)', '黑鐵 / OT', '不等邊', 100, 75, 7, 6000, 56],
     ['黑角鐵25x2.5(7.6)x8M', '黑鐵 / OT', '', 25, 25, 2.5, 8000, 7.6],
     ['黑角鐵130x9.0(107.5)進口', '黑鐵 / OT', '', 130, 130, 9, 6000, 107.5],
-    ['烤漆萬能角鋼52x32x1.6x12尺', '黑鐵 / OT', '烤漆', 52, 32, 1.6, 3636, null],
+    ['烤漆萬能角鋼52x32x1.6x12尺', '黑鐵 / OT', '萬能/成型', 52, 32, 1.6, 3636, null],
     ['錏成型角鐵25x2.5x6M(5.7)', '錏', '', 25, 25, 2.5, 6000, 5.7],
     ['不等邊熱進鍍鋅角鐵100x75x7.0x6M', '錏/鍍鋅', '不等邊', 100, 75, 7, 6000, null],
     ['白鐵角鐵25 x2.0(4.4)2B', '白鐵霧面 / ST 2B', '', 25, 25, 2, 6000, 4.4],
@@ -714,16 +714,16 @@ describe('Steel price v4.3 parser', () => {
   });
 
   it.each([
-    ['點焊鋼絲網5.5 15x15 2Mx3M(6)', '點焊網', 150, 150, 5.5, 3000, 2000, 3000, null],
-    ['點焊鋼絲網6.0足 15x15 2Mx3M(6)', '點焊網', 150, 150, 6, 3000, 2000, 3000, null],
+    ['點焊鋼絲網5.5 15x15 2Mx3M(6)', '點焊', 150, 150, 5.5, 3000, 2000, 3000, null],
+    ['點焊鋼絲網6.0足 15x15 2Mx3M(6)', '點焊', 150, 150, 6, 3000, 2000, 3000, null],
     ['ST網2尺x100尺33#(0.2)16目(1.6)', '鐵網', 1.6, 1.6, 0.2, 30300, 606, 30300, null],
     ['ST網4尺x100尺(16目)', '鐵網', null, null, null, 30300, 1212, 30300, null],
-    ['牛筋網2尺', '牛筋網', null, null, null, null, 606, null, null],
+    ['牛筋網2尺', '牛筋', null, null, null, null, 606, null, null],
     ['黑鐵刺網105M(8.2KG)', '刺網', null, null, null, 105000, null, null, 8.2],
     ['白鐵刀刺網(蛇腹型) φ500 可拉6 -8 M', '刺網', null, null, null, 8000, null, null, null],
-    ['鍍鋅高床網5.4x(17mmx46mm長方孔)', '高床網', 17, 46, 5.4, null, null, null, null],
-    ['鍍鋅菱形網 8#(3.6)x51mm(60mm) ◇孔', '菱形網', 60, 60, 3.6, null, null, null, null],
-    ['錏浪型網 10#(3.0)x25mm □孔', '浪型網', 25, 25, 3, null, null, null, null],
+    ['鍍鋅高床網5.4x(17mmx46mm長方孔)', '高床', 17, 46, 5.4, null, null, null, null],
+    ['鍍鋅菱形網 8#(3.6)x51mm(60mm) ◇孔', '菱形', 60, 60, 3.6, null, null, null, null],
+    ['錏浪型網 10#(3.0)x25mm □孔', '浪型', 25, 25, 3, null, null, null, null],
   ])(
     'normalizes mesh attributes from %s',
     (
@@ -741,7 +741,7 @@ describe('Steel price v4.3 parser', () => {
         makeWorkbookRow({
           erp_item_code: `MESH-${productName}`,
           category: '網',
-          subcategory: productName.includes('浪型網') ? '菱形網' : subcategory,
+          subcategory: productName.includes('浪型網') ? '浪型網' : subcategory,
           product_name: productName,
           normalized_spec_text: `${productName} polluted t304mm`,
           source_thickness: '304',
@@ -769,6 +769,19 @@ describe('Steel price v4.3 parser', () => {
       });
     },
   );
+
+  it('preserves a valid workbook subcategory instead of replacing an explicit correction', () => {
+    const [row] = buildSteelPriceV4Rows([
+      makeWorkbookRow({
+        erp_item_code: 'MESH-MANUAL',
+        category: '網',
+        subcategory: '菱形',
+        product_name: '錏浪型網 10#(3.0)x25mm □孔',
+      }),
+    ]);
+
+    expect(row?.subcategory).toBe('菱形');
+  });
 
   it('does not parse ST304 mesh accessory grade as thickness', () => {
     const [row] = buildSteelPriceV4Rows([
@@ -1106,12 +1119,14 @@ describe('Steel price v4.3 parser', () => {
     ).toThrow('confirmed');
   });
 
-  it('rejects unknown categories and category-mismatched subcategories', () => {
+  it('rejects unknown categories and corrects stale subcategories from category plus product name', () => {
     expect(() => buildSteelPriceV4Rows([makeWorkbookRow({ category: '未知' })])).toThrow(
       'Unknown Steel price category: 未知',
     );
-    expect(() =>
-      buildSteelPriceV4Rows([makeWorkbookRow({ category: 'T型鋼', subcategory: 'H型鋼' })]),
-    ).toThrow('Invalid Steel price subcategory H型鋼 for category T型鋼');
+    expect(
+      buildSteelPriceV4Rows([
+        makeWorkbookRow({ category: 'T型鋼', subcategory: 'H型鋼', product_name: 'T型鋼' }),
+      ])[0]?.subcategory,
+    ).toBe('標準');
   });
 });

@@ -1,14 +1,15 @@
 【加工/孔 規則】
 
-適用於鐵板、連接板、底板、補強板、角鐵、接頭、五金或門件上的鑽孔、沖孔、雷射孔與其他孔加工價格判斷。
+適用於鐵板、連接板、底板、補強板、C型鋼、角鐵與 H 型鋼上的鑽孔、沖孔、雷射孔及其他鋼材孔加工價格判斷。
 
 查價方式：
 
-1. 孔加工放入 `processingQueries`，`categories` 使用工件主類別，`processingCategories` 使用 `["加工/孔"]`；一次可同時列鐵板、C型鋼、角鐵、五金或門件。
-2. 首查 `keyword` 只用通用加工名稱／規格，不得複製來源 product_name。`processing_method` 與 `processing_shape` 已可由 normalized text 命中，不新增 query params。
-3. 材料與孔加工同次查詢，例如：`{"queries":[{"category":"鐵板","material":"黑鐵","thicknessMm":["12"]}],"processingQueries":[{"categories":["鐵板"],"processingCategories":["加工/孔"],"keyword":"鑽孔"}]}`。
-4. 回傳超過10筆而只有 `productNames` 時，先依孔型、加工方式與工件厚度挑選，再用 `productNames` 精確取價。厚度區間缺口不得靠攏最近區間。
-5. H 型鋼翼厚14mm以上採 `processingPrice` 的 KZZB11；若 legacy `cuttingPrices` 同時返回，只計一次。孔徑／孔型只留在明細，共用價格時合併總孔數，不按孔徑拆查。
+1. 鋼材孔加工放入 `processingQueries`，`categories` 使用工件主類別，`processingCategories` 使用 `["加工/孔"]`；一次可同時列鐵板、C型鋼、H型鋼或角鐵。
+2. 首查 `keyword` 只用已確認的通用加工方式、孔型或規格，不得複製來源 product_name。
+3. 只返回 `productNames` 時，先依孔型、加工方式與工件厚度挑選，精確重取依通用查價規則。厚度區間缺口不得靠攏最近區間。
+4. H 型鋼翼厚14mm以上的共用孔價依【H型鋼類別規則】。孔徑／孔型只留在明細，共用價格時合併總孔數，不按孔徑拆查。
+
+五金／配件或門窗／門板上的孔項目，以各自主類別加 `subcategory: "加工/孔"` 作材料 query，依【其他產品類別規則】選價，不放入鋼材孔加工 `processingQueries`。
 
 計算：
 

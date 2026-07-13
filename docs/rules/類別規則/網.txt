@@ -2,7 +2,7 @@
 
 1. Query
 - 一般首查只使用 `category: "網"` 與可確認的 `subcategory`、`material`，不使用 `unit` filter。即使訂單指定計價單位，unit也只用於取得候選後的計價判斷，不送入query。
-- 例如 `{"category":"網","subcategory":"菱形網","material":"錏"}`、`{"category":"網","subcategory":"刺網","material":"白鐵"}`。
+- 例如 `{"category":"網","subcategory":"菱形","material":"錏"}`、`{"category":"網","subcategory":"刺網","material":"白鐵"}`。
 - 不使用 `keyword`、`unit`、`stockLengthMm` 或訂單長度 filter；由返回候選判斷完整規格。
 - AI依候選的 structured fields 與完整 `product_name` 判斷線徑、孔目、孔型、整片／整捲尺寸、可拉長度與是否足夠裁切；預設不切清。
 - `kg`、`尺`、`inch`、`mm`、`ST304` 等單位、鋼種或代號不得轉成 `keyword`。
@@ -17,9 +17,9 @@
 - `鐵網的固定片(ST304)`：ST304是材質，不是厚度304mm。
 
 3. Unit與計價
-- 訂單中的㎡、m2、才、捲、卷、丸、張、片、只保留供取得候選後的計價判斷，不作價格query filter。
+- 訂單中的 m2 先正規化為 `㎡`；㎡、才、捲、卷、丸、張、片、只只供取得候選後的計價判斷，不作價格 query filter。
 - 全部預設不切清，只採direct tier。AI從全部候選中選擇足夠裁切且成本合適的材料。
-- `m2/㎡` 是唯一可按實際小數數量計價的單位：需求面積㎡直接乘每㎡單價。
+- `㎡` 是唯一可按實際小數數量計價的單位：需求面積㎡直接乘每㎡單價。
 - `才`：以1才=0.091809㎡換算，無條件進位成整才後乘direct單價。
 - `丸`：依候選整捲可用長度計算捲數，不足一捲仍按一整丸，不按使用長度比例拆價。
 - `片`：依候選整片尺寸配料並進位成整片；`只`按整數配件數。

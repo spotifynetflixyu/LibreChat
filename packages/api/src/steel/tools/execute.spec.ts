@@ -646,7 +646,7 @@ describe('Steel minimal tool execution', () => {
     ).toEqual(['SQUARE-ORDINARY', 'SQUARE-POLISHED']);
   });
 
-  it('keeps every plate-size candidate for unit 片 without a dimension query filter', async () => {
+  it('keeps every plate-size candidate for an explicit unit 片 override', async () => {
     const priceCandidates = Array.from({ length: 8 }, (_, index) =>
       createPriceRow({
         id: String(100 + index),

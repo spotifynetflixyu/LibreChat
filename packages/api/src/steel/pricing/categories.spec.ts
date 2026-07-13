@@ -49,10 +49,20 @@ describe('Steel price category registry', () => {
   });
 
   it('accepts all concise normalized workbook subcategories', () => {
+    expect(priceSubcategoriesByCategory.C型鋼).toEqual(
+      expect.arrayContaining(['加工', '輕型', '成型', '其他']),
+    );
+    expect(priceSubcategoriesByCategory.平鐵).toContain('切料/加工');
+    expect(priceSubcategoriesByCategory.鋼筋).toEqual(expect.arrayContaining(['竹節', '其他']));
+    expect(priceSubcategoriesByCategory.槽鐵).toContain('切料/加工');
     expect(isPriceSubcategory('門窗/門板', '門花')).toBe(true);
     expect(isPriceSubcategory('門窗/門板', '加工/孔')).toBe(true);
     expect(isPriceSubcategory('五金/配件', '加工/孔')).toBe(true);
+    expect(isPriceSubcategory('網', '點焊')).toBe(true);
     expect(isPriceSubcategory('網', '牛筋')).toBe(true);
+    expect(isPriceSubcategory('網', '浪型')).toBe(true);
+    expect(isPriceSubcategory('網', '點焊網')).toBe(false);
+    expect(isPriceSubcategory('網', '浪型網')).toBe(false);
     expect(isPriceSubcategory('加工/折工', '含切工')).toBe(true);
     expect(isPriceSubcategory('T型鋼', 'H型鋼')).toBe(false);
   });

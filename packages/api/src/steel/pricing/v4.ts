@@ -4,6 +4,7 @@ import {
   isProcessingMethod,
   isProcessingShape,
 } from './categories';
+import { inferSteelPriceSubcategory } from './subcategory';
 
 import type {
   PriceCategory,
@@ -1086,9 +1087,13 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   const normalizedSpecText = parseText(row.normalized_spec_text);
   const category = parseCategory(row.category);
   const productName = parseText(row.product_name);
-  const parsedSubcategory = parseSubcategory(category, row.subcategory);
-  const subcategory =
-    category === '網' && productName?.includes('浪型網') ? '浪型網' : parsedSubcategory;
+  const sourceSubcategory = parseText(row.subcategory) ?? '';
+  const subcategory = isPriceSubcategory(category, sourceSubcategory)
+    ? sourceSubcategory
+    : parseSubcategory(
+        category,
+        productName ? inferSteelPriceSubcategory(category, productName) : sourceSubcategory,
+      );
   const noPriceByName =
     productName !== null && /沒做|勿用|沒出|沒貨|不生產|無生產|不用|沒現貨/u.test(productName);
   const valueState = noPriceByName ? 'no_price' : parseValueState(row.value_state);

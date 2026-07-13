@@ -8,14 +8,14 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { category: 'H型鋼', keyword: 'H200x100' },
-          { queryId: '  order-line-2  ', category: '加工/其他', subcategory: '扁鐵' },
+          { queryId: '  order-line-2  ', category: '加工/其他', subcategory: '厚板' },
           { mode: 'category_discovery', keyword: '不銹鋼管' },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', category: 'H型鋼', keyword: 'H200x100' },
-        { queryId: 'q2', category: '加工/其他', subcategory: '扁鐵' },
+        { queryId: 'q2', category: '加工/其他', subcategory: '厚板' },
         { queryId: 'q3', mode: 'category_discovery', keyword: '不銹鋼管' },
       ],
     });
@@ -119,7 +119,7 @@ describe('Steel price candidate tool schema', () => {
           {
             queryId: 'line-1',
             category: '圓管',
-            subcategory: '鋼管',
+            subcategory: '一般',
             material: '鎢',
             thicknessMm: ['1.2', '1.5'],
             stockLengthMm: ['6000', '9000', '10000', '12000'],
@@ -135,7 +135,7 @@ describe('Steel price candidate tool schema', () => {
         {
           queryId: 'q1',
           category: '圓管',
-          subcategory: '鋼管',
+          subcategory: '一般',
           material: '鎢',
           thicknessMm: ['1.2', '1.5'],
           stockLengthMm: ['6000', '9000', '10000', '12000'],
@@ -148,7 +148,7 @@ describe('Steel price candidate tool schema', () => {
     });
   });
 
-  it('defaults plate unit/material and tolerantly normalizes unit values', () => {
+  it('defaults plate unit/material and lets explicit unit override the default', () => {
     expect(
       schema.parse({
         queries: [
@@ -294,28 +294,28 @@ describe('Steel price candidate tool schema', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '網', unit: '㎡', subcategory: '點焊網' },
+          { category: '網', unit: '㎡', subcategory: '點焊' },
           { category: '網', unit: '捲', subcategory: '刺網' },
-          { category: '網', unit: '張', subcategory: '點焊網' },
-          { category: '網', subcategory: '菱形網' },
+          { category: '網', unit: '張', subcategory: '點焊' },
+          { category: '網', subcategory: '菱形' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '網', subcategory: '點焊網' },
+        { queryId: 'q1', category: '網', subcategory: '點焊' },
         { queryId: 'q2', category: '網', subcategory: '刺網' },
-        { queryId: 'q3', category: '網', subcategory: '點焊網' },
-        { queryId: 'q4', category: '網', subcategory: '菱形網' },
+        { queryId: 'q3', category: '網', subcategory: '點焊' },
+        { queryId: 'q4', category: '網', subcategory: '菱形' },
       ],
     });
   });
 
   it('uses the caller mesh limit when explicitly supplied', () => {
-    expect(
-      schema.parse({ queries: [{ category: '網', subcategory: '菱形網', limit: 12 }] }),
-    ).toEqual({
-      queries: [{ queryId: 'q1', category: '網', subcategory: '菱形網', limit: 12 }],
-    });
+    expect(schema.parse({ queries: [{ category: '網', subcategory: '菱形', limit: 12 }] })).toEqual(
+      {
+        queries: [{ queryId: 'q1', category: '網', subcategory: '菱形', limit: 12 }],
+      },
+    );
   });
 
   it('validates subcategories against their category and rejects legacy names', () => {

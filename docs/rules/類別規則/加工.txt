@@ -15,10 +15,15 @@
 
 ## 加工/切工
 
-- 材料切工已由 `cuttingPrices` 返回時不得另查。只有訂單本身是獨立加工且未自動返回時，才用 `processingQueries` + `processingCategories:["加工/切工"]` + 通用切割方式／厚度級距 keyword。
+- 只有訂單本身是獨立加工時，才用 `processingQueries` + `processingCategories:["加工/切工"]` + 通用切割方式／厚度級距 keyword。
 - 刀數與加價依【長條料切工規則】，不得重複計價。
 
 ## 加工/開槽
 
-- 首查用 `processingQueries` + `processingCategories:["加工/開槽"]`。H型鋼依返回 product_name 選開槽／切斜；超過10筆先從 productNames 選定後精確取價。
+- 首查用 `processingQueries` + `processingCategories:["加工/開槽"]`。H型鋼依返回 product_name 區分開槽與切斜。
 - 槽數、件數或 price row 指定基準 × direct 單價。
+
+## 加工/倒角、加工/焊接
+
+- 首查用 `processingQueries` 的工件 `categories` + 對應 `processingCategories` + 通用加工名稱／規格 keyword。
+- 件數、焊道數、長度或 price row 指定基準 × direct 單價；基準不明即人工複核。

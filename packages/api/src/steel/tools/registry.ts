@@ -53,7 +53,7 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Search material and processing price candidates for all known order lines in one call. Put materials in queries. Put up to three processing lookups in processingQueries; each may target multiple product categories and processing categories. Processing discovery returns prices when at most 10 rows match, otherwise only productNames. Only after such a discovery result, requery with top-level productNames alone to retrieve every selected product price; never use productNames for initial lookup. Matching legacy cuttingPrices are returned automatically and must not be double charged.',
+      'Search material and processing price candidates for all known order lines in one call. Put materials in queries; omit unit for the category default or provide an explicit unit override when the order requires it. Matching cuttingPrices and applicable processingPrice may be returned with materials. For explicit processing needs, put up to three lookups in processingQueries; each may target multiple product and processing categories. Processing discovery returns prices when at most 10 rows match, otherwise only productNames. Only after such a result, requery with top-level productNames alone to retrieve the selected prices; never use productNames for initial lookup or double charge the same processing item.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
   {

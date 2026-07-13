@@ -130,7 +130,7 @@ describe('Steel price candidate repository', () => {
     expect(sql).toContain('p.thickness_min_mm = p.thickness_max_mm');
     expect(sql).toContain('p.thickness_min_mm = requested_thickness::numeric');
     expect(sql).toContain('p.length_mm = requested_stock_length::numeric');
-    expect(sql).toContain("p.value_state <> 'no_price'");
+    expect(sql.match(/p\.value_state <> 'no_price'/gu)).toHaveLength(2);
     expect(sql).not.toContain('p.source_thickness::numeric');
     expect(sql).toContain('p.spec_key ILIKE');
     expect(sql).toContain('p.normalized_spec_text ILIKE');
@@ -352,7 +352,9 @@ describe('Steel price candidate repository', () => {
     ]);
 
     expect(query.mock.calls[0]?.[1]).toEqual([false, [], ['黑鐵鋼管', '倒角加工']]);
-    expect(String(query.mock.calls[0]?.[0] ?? '')).toContain('p.product_name = ANY($3::text[])');
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+    expect(sql).toContain('p.product_name = ANY($3::text[])');
+    expect(sql).toContain("p.value_state <> 'no_price'");
     expect(result).toEqual([expect.objectContaining({ productName: '黑鐵鋼管' })]);
   });
 });
