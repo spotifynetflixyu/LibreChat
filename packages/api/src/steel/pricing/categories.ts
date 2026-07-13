@@ -1,6 +1,11 @@
-type PriceCategoryTuple = readonly [
-  '加工/其他',
+export const priceCategories = Object.freeze([
+  '加工/切工',
   '加工/孔',
+  '加工/倒角',
+  '加工/開槽',
+  '加工/折工',
+  '加工/焊接',
+  '加工/其他',
   '其他',
   '圓條',
   '捲門/伸縮門',
@@ -9,8 +14,6 @@ type PriceCategoryTuple = readonly [
   '五金/配件',
   '門窗/門板',
   '鐵板',
-  '加工/折工',
-  '加工/切工',
   'C型鋼',
   '板/浪板',
   '方鐵',
@@ -25,138 +28,94 @@ type PriceCategoryTuple = readonly [
   'I型鋼/工字鐵',
   '方管',
   '扁方管',
-  '加工/開槽',
-];
-
-export const priceCategories: PriceCategoryTuple = Object.freeze([
-  '加工/其他',
-  '加工/孔',
-  '其他',
-  '圓條',
-  '捲門/伸縮門',
-  '網',
-  '格板/隔板',
-  '五金/配件',
-  '門窗/門板',
-  '鐵板',
-  '加工/折工',
-  '加工/切工',
-  'C型鋼',
-  '板/浪板',
-  '方鐵',
-  'H型鋼',
-  'T型鋼',
-  '平鐵',
-  '角鐵',
-  '鋼筋',
-  '圓管',
-  '鐵軌',
-  '槽鐵',
-  'I型鋼/工字鐵',
-  '方管',
-  '扁方管',
-  '加工/開槽',
 ] as const);
 
 export type PriceCategory = (typeof priceCategories)[number];
 
-export type PriceSubcategory =
-  | ''
-  | '捲門/伸縮門'
-  | 'H型鋼'
-  | '鐵板'
-  | 'C型鋼'
-  | '圓管'
-  | '扁鐵'
-  | 'L'
-  | '條'
-  | 'U'
-  | '角鐵'
-  | '網'
-  | '加工'
-  | '管'
-  | '門'
-  | '五金'
-  | '接頭'
-  | '圓條'
-  | '曬衣架'
-  | '手套'
-  | '蜂巢紙'
-  | '保麗龍'
-  | '配件'
-  | '底支'
-  | '邊柱'
-  | '中柱'
-  | '遙控'
-  | '其他'
-  | '五金/配件'
-  | '點焊網'
-  | '鐵網'
-  | '牛筋網'
-  | '刺網'
-  | '高床網'
-  | '浪型網'
-  | '菱形網'
-  | '彈簧'
-  | '伸縮器'
-  | '培林座'
-  | '矽利康'
-  | '膠'
-  | '油漆'
-  | '扶手'
-  | '花管'
-  | '焊條'
-  | '輪子'
-  | '配管'
-  | '螺絲'
-  | '後鈕'
-  | '馬達箱'
-  | '華司'
-  | '螺母/螺絲'
-  | '螺母'
-  | '螺帽'
-  | '鑄花'
-  | '壁虎'
-  | '釘'
-  | '鋸'
-  | '門花'
-  | '窗花'
-  | '檔泥板'
-  | '花板'
-  | '特殊'
-  | '網板'
-  | '圍籬板'
-  | '板/消音'
-  | '鐵板/切工'
-  | '車'
-  | '車/中柱'
-  | '車/工具箱'
-  | '無缺口'
-  | '切工'
-  | '工具箱'
-  | '消音'
-  | '車斗'
-  | '方管'
-  | '平鐵'
-  | '槽鐵'
-  | 'I型鋼/工字鐵'
-  | '板/浪板'
-  | '加工/其他'
-  | '不等邊'
-  | '烤漆'
-  | '鋼管'
-  | 'B管'
-  | 'A管'
-  | '連料'
-  | '鐵板/H型鋼';
+export const processingMethods = Object.freeze([
+  '剪床',
+  '雷射',
+  '鋸床',
+  '水刀',
+  '火',
+  '沖床',
+  '鑽床',
+] as const);
 
-type PriceSubcategoryRegistry = Readonly<{
-  [Category in PriceCategory]: readonly PriceSubcategory[];
-}>;
+export type ProcessingMethod = (typeof processingMethods)[number];
 
-export const priceSubcategoriesByCategory: PriceSubcategoryRegistry = Object.freeze({
+export const processingShapes = Object.freeze([
+  '外形切割',
+  '直線切割',
+  '圓孔',
+  '方孔',
+  '長孔',
+  '橢圓孔',
+  '其他',
+] as const);
+
+export type ProcessingShape = (typeof processingShapes)[number];
+
+export const priceSubcategoriesByCategory = Object.freeze({
+  '加工/切工': Object.freeze([
+    '',
+    '通用',
+    '鐵板',
+    'H型鋼',
+    'I型鋼/工字鐵',
+    '圓條',
+    '圓管',
+    '平鐵',
+    '方管',
+    '方鐵',
+    '槽鐵',
+    '角鐵',
+    '板/浪板',
+  ] as const),
+  '加工/孔': Object.freeze(['', '通用', 'C型鋼', '鐵板', '角鐵', '門', '接頭', '五金'] as const),
+  '加工/倒角': Object.freeze(['', '通用', '鐵板'] as const),
+  '加工/開槽': Object.freeze(['', '通用', '鐵板', 'H型鋼', '鐵板/H型鋼'] as const),
+  '加工/折工': Object.freeze([
+    '',
+    '一般',
+    '下軌',
+    '中柱',
+    '含切工',
+    '工具箱',
+    '斗笠',
+    '消音',
+    '無缺口',
+    '特殊',
+    '花板',
+    '豬公',
+    '車斗',
+    '鐵板',
+    '板/消音',
+    '鐵板/切工',
+    '門',
+    '車',
+    '車/中柱',
+    '車/工具箱',
+    '切工',
+    '其他',
+  ] as const),
+  '加工/焊接': Object.freeze(['', '通用'] as const),
   '加工/其他': Object.freeze([
     '',
+    '保護',
+    '厚板',
+    '喇叭桶',
+    '噴砂/塗裝',
+    '壓花',
+    '拋光',
+    '整平',
+    '滾圓',
+    '烤漆',
+    '熱浸鍍',
+    '端板',
+    '雕花',
+    '雷射畫線',
+    '其他',
     '捲門/伸縮門',
     'H型鋼',
     '鐵板',
@@ -171,33 +130,82 @@ export const priceSubcategoriesByCategory: PriceSubcategoryRegistry = Object.fre
     '加工',
     '管',
   ] as const),
-  '加工/孔': Object.freeze(['', 'C型鋼', '門', '鐵板', '角鐵', '五金', '接頭'] as const),
-  其他: Object.freeze(['', '圓條', '曬衣架', '手套', '蜂巢紙', '保麗龍', '加工', '配件'] as const),
-  圓條: Object.freeze([''] as const),
+  其他: Object.freeze([
+    '',
+    '其他',
+    '勞安',
+    '包裝/保護',
+    '家用/成品',
+    '工具/加工',
+    '服務/租借',
+    '油品/化學',
+    '訂單/價差',
+    '門窗/捲門',
+    '圓條',
+    '曬衣架',
+    '手套',
+    '蜂巢紙',
+    '保麗龍',
+    '加工',
+    '配件',
+  ] as const),
+  圓條: Object.freeze(['', '切料/加工', '標準', '磨光'] as const),
   '捲門/伸縮門': Object.freeze([
     '',
-    '配件',
-    '底支',
-    '邊柱',
     '中柱',
-    '遙控',
+    '伸縮門',
+    '伸縮門五金',
     '其他',
+    '安全/感應',
+    '密封',
+    '底支',
+    '捲門五金',
+    '服務/加工',
+    '百葉',
+    '軌道',
+    '遙控',
+    '邊柱',
+    '門片/簾片',
+    '馬達/控制',
+    '配件',
     '五金/配件',
   ] as const),
   網: Object.freeze([
     '',
-    '點焊網',
-    '鐵網',
-    '牛筋網',
+    '其他',
     '刺網',
+    '浪型',
+    '牛筋',
+    '菱形',
+    '配件',
+    '鐵網',
+    '高床',
+    '點焊',
+    '點焊網',
+    '牛筋網',
     '高床網',
     '浪型網',
     '菱形網',
-    '配件',
   ] as const),
-  '格板/隔板': Object.freeze([''] as const),
+  '格板/隔板': Object.freeze(['', '1HP', '700KG', '850KG', '一般'] as const),
   '五金/配件': Object.freeze([
     '',
+    '傳動/軸承',
+    '其他',
+    '切削/鑽孔/研磨',
+    '包裝/防護',
+    '塗料/溶劑',
+    '工具/設備',
+    '扶手/欄杆',
+    '焊接',
+    '管件',
+    '緊固/錨固',
+    '膠黏/密封',
+    '螺絲',
+    '輪具',
+    '鉸鏈/鎖扣',
+    '電機/電氣',
+    '加工/孔',
     '彈簧',
     '配件',
     '伸縮器',
@@ -211,7 +219,6 @@ export const priceSubcategoriesByCategory: PriceSubcategoryRegistry = Object.fre
     '焊條',
     '輪子',
     '配管',
-    '螺絲',
     '後鈕',
     '馬達箱',
     '華司',
@@ -224,58 +231,73 @@ export const priceSubcategoriesByCategory: PriceSubcategoryRegistry = Object.fre
     '鋸',
     '加工',
   ] as const),
-  '門窗/門板': Object.freeze(['', '五金/配件', '門花', '網', '窗花', '配件', '角鐵'] as const),
-  鐵板: Object.freeze(['', '檔泥板', '花板', '特殊', '網板', '圍籬板'] as const),
-  '加工/折工': Object.freeze([
+  '門窗/門板': Object.freeze([
     '',
-    '鐵板',
-    '特殊',
-    '板/消音',
-    '鐵板/切工',
-    '門',
-    '車',
-    '車/中柱',
-    '車/工具箱',
-    '無缺口',
-    '花板',
     '其他',
-    '中柱',
-    '切工',
-    '工具箱',
-    '消音',
-    '車斗',
-  ] as const),
-  '加工/切工': Object.freeze([
-    '',
-    '鐵板',
-    'H型鋼',
-    '圓條',
-    '方管',
-    '平鐵',
+    '天地串',
+    '成品窗/百葉',
+    '擋水',
+    '氣密/消音',
+    '窗花',
+    '紗網',
+    '花格/防盜',
+    '鉸鏈/閉門',
+    '鎖具',
+    '門板/成品門',
+    '門花',
+    '雨棚/扶手',
+    '加工/孔',
+    '五金/配件',
+    '網',
+    '配件',
     '角鐵',
-    '圓管',
-    '槽鐵',
-    'I型鋼/工字鐵',
-    '板/浪板',
   ] as const),
-  C型鋼: Object.freeze(['', '加工/其他'] as const),
-  '板/浪板': Object.freeze(['', '五金/配件'] as const),
-  方鐵: Object.freeze([''] as const),
-  H型鋼: Object.freeze([''] as const),
-  T型鋼: Object.freeze([''] as const),
-  平鐵: Object.freeze([''] as const),
-  角鐵: Object.freeze(['', '不等邊', '烤漆', '配件'] as const),
-  鋼筋: Object.freeze([''] as const),
-  圓管: Object.freeze(['', '鋼管', 'B管', 'A管', '配管', '連料'] as const),
-  鐵軌: Object.freeze([''] as const),
-  槽鐵: Object.freeze([''] as const),
-  'I型鋼/工字鐵': Object.freeze([''] as const),
-  方管: Object.freeze(['', '連料'] as const),
-  扁方管: Object.freeze([''] as const),
-  '加工/開槽': Object.freeze(['', '鐵板/H型鋼', 'H型鋼'] as const),
-});
+  鐵板: Object.freeze([
+    '',
+    '切板',
+    '平板',
+    '成型/配件',
+    '網板',
+    '花板',
+    '檔泥板',
+    '特殊',
+    '圍籬板',
+  ] as const),
+  C型鋼: Object.freeze(['', '加工', '成型', '輕型', '其他', '加工/其他'] as const),
+  '板/浪板': Object.freeze([
+    '',
+    'PC',
+    '五金/收邊',
+    '圍籬',
+    '壁板',
+    '平板/加工',
+    '格柵/溝蓋',
+    '樓層',
+    '樹脂板',
+    '浪板/清板',
+    '特殊',
+    '琉璃瓦',
+    '五金/配件',
+  ] as const),
+  方鐵: Object.freeze(['', '切料/加工', '標準', '磨光'] as const),
+  H型鋼: Object.freeze(['', '標準', '輕量'] as const),
+  T型鋼: Object.freeze(['', '標準'] as const),
+  平鐵: Object.freeze(['', '切料/加工', '標準'] as const),
+  角鐵: Object.freeze(['', '不等邊', '等邊', '萬能/成型', '配件', '烤漆'] as const),
+  鋼筋: Object.freeze(['', '竹節', '其他'] as const),
+  圓管: Object.freeze(['', 'A管', 'B管', '一般', '成品/太陽片', '連料', '配管', '鋼管'] as const),
+  鐵軌: Object.freeze(['', '標準'] as const),
+  槽鐵: Object.freeze(['', '切料/加工', '標準'] as const),
+  'I型鋼/工字鐵': Object.freeze(['', '標準'] as const),
+  方管: Object.freeze(['', '一般', '成品/太陽片', '連料', '雨棚'] as const),
+  扁方管: Object.freeze(['', '切料/加工', '一般'] as const),
+} as const satisfies Readonly<Record<PriceCategory, readonly string[]>>);
+
+export type PriceSubcategory = (typeof priceSubcategoriesByCategory)[PriceCategory][number];
 
 const priceCategorySet = new Set<string>(priceCategories);
+const processingMethodSet = new Set<string>(processingMethods);
+const processingShapeSet = new Set<string>(processingShapes);
 
 export function isPriceCategory(value: string): value is PriceCategory {
   return priceCategorySet.has(value);
@@ -286,4 +308,12 @@ export function isPriceSubcategory(
   value: string,
 ): value is PriceSubcategory {
   return (priceSubcategoriesByCategory[category] as readonly string[]).includes(value);
+}
+
+export function isProcessingMethod(value: string): value is ProcessingMethod {
+  return processingMethodSet.has(value);
+}
+
+export function isProcessingShape(value: string): value is ProcessingShape {
+  return processingShapeSet.has(value);
 }

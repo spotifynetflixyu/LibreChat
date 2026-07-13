@@ -60,6 +60,8 @@ describe('Steel price v4.3 parser', () => {
       normalizedSpecText: 'H200x100x5.5x8',
       category: 'H型鋼',
       subcategory: '',
+      processingMethod: null,
+      processingShape: null,
       material: 'OT 黑鐵',
       dimensionSignature: '200x100x5.5x8',
       unit: '支',
@@ -122,6 +124,20 @@ describe('Steel price v4.3 parser', () => {
       unit: null,
       specKey: '00000',
     });
+  });
+
+  it('does not infer galvanized material from a hot-dip usage description outside material categories', () => {
+    const [row] = buildSteelPriceV4Rows([
+      makeWorkbookRow({
+        erp_item_code: 'FCP1104',
+        product_name: '合金底漆(白鐵熱浸鍍鋅用)-1加',
+        normalized_spec_text: '合金底漆(白鐵熱浸鍍鋅用)-1加',
+        category: '五金/配件',
+        material: '',
+      }),
+    ]);
+
+    expect(row?.material).toBeNull();
   });
 
   it('normalizes optional physical zero placeholders to null', () => {
@@ -585,9 +601,9 @@ describe('Steel price v4.3 parser', () => {
 
   it.each([
     ['槽鐵50x25x5.0x6M(22)', '黑鐵 / OT', 50, 25, 5, 5, 6000, 22],
-    ['熱浸鍍槽鐵75x40x5/7x6M(44.0)', '錏 / 鍍鋅', 75, 40, 5, 7, 6000, 44],
+    ['熱浸鍍槽鐵75x40x5/7x6M(44.0)', '錏/鍍鋅', 75, 40, 5, 7, 6000, 44],
     ['白鐵槽鐵100x50x5.0(台製)', '白鐵 / ST', 100, 50, 5, 5, 6000, null],
-    ['熱浸鍍鋅槽鐵200x80x12M(310)', '錏 / 鍍鋅', 200, 80, null, null, 12000, 310],
+    ['熱浸鍍鋅槽鐵200x80x12M(310)', '錏/鍍鋅', 200, 80, null, null, 12000, 310],
   ])(
     'normalizes channel dimensions, material, stock length, and weight from %s',
     (productName, material, heightMm, widthMm, webMm, flangeMm, lengthMm, unitWeightValue) => {
@@ -631,7 +647,7 @@ describe('Steel price v4.3 parser', () => {
     ['黑角鐵130x9.0(107.5)進口', '黑鐵 / OT', '', 130, 130, 9, 6000, 107.5],
     ['烤漆萬能角鋼52x32x1.6x12尺', '黑鐵 / OT', '烤漆', 52, 32, 1.6, 3636, null],
     ['錏成型角鐵25x2.5x6M(5.7)', '錏', '', 25, 25, 2.5, 6000, 5.7],
-    ['不等邊熱進鍍鋅角鐵100x75x7.0x6M', '錏 / 鍍鋅', '不等邊', 100, 75, 7, 6000, null],
+    ['不等邊熱進鍍鋅角鐵100x75x7.0x6M', '錏/鍍鋅', '不等邊', 100, 75, 7, 6000, null],
     ['白鐵角鐵25 x2.0(4.4)2B', '白鐵霧面 / ST 2B', '', 25, 25, 2, 6000, 4.4],
   ])(
     'normalizes angle dimensions, material, stock length, and weight from %s',

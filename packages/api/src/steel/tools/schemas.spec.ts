@@ -274,6 +274,9 @@ describe('Steel price candidate tool schema', () => {
     );
     expect(() => schema.parse({ queries: [{ category: '鐵板/鋼板' }] })).toThrow();
     expect(() => schema.parse({ queries: [{ category: '孔', keyword: '鐵板' }] })).toThrow();
+    expect(() =>
+      schema.parse({ queries: [{ category: '加工/切工', processingMethod: '雷射' }] }),
+    ).toThrow();
   });
 
   it('keeps 錏 and 鋅 as distinct accepted material filters', () => {

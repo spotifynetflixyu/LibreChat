@@ -1,4 +1,4 @@
-網類 parser、query 與計價規則
+【網類規則】
 
 1. Query
 - 一般首查只使用 `category: "網"` 與可確認的 `subcategory`、`material`，不使用 `unit` filter。即使訂單指定計價單位，unit也只用於取得候選後的計價判斷，不送入query。

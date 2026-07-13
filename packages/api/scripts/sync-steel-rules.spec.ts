@@ -232,7 +232,7 @@ describe('Steel rule sources', () => {
     const agent = readUtf8(agentRulePath);
     const guide = readUtf8(guidePath);
 
-    expect(agent).toContain('一律依 `查價方式.txt` 及對應類別規則');
+    expect(agent).toContain('一律依【search_price_candidates 通用查價規則】');
     expect(agent).not.toContain('每筆 `limit` 預設30');
     expect(agent).not.toContain('ST50、SN400B');
     expect(agent).not.toContain('`ratio_only` 來源 unit');
@@ -271,7 +271,7 @@ describe('Steel rule sources', () => {
     expect(squareBar).toContain('品名沒有明示素材長度時不得自行補6M');
     expect(readUtf8(longMaterialRulePath)).toContain('方鐵是實心方形截面的長條料（實心方管）');
     expect(readUtf8(longMaterialRulePath)).toContain(
-      'query、Kg 實心截面計重、素材長度來源與不補6M例外依 `方鐵.txt`',
+      'query、Kg 實心截面計重、素材長度來源與不補6M例外依【方鐵類別規則】',
     );
     expect(readUtf8(longMaterialRulePath)).not.toContain('## 方鐵');
   });
@@ -315,5 +315,6 @@ describe('Steel rule sources', () => {
       expect(allRules).not.toContain(`"keyword":"${keyword}"`);
     }
     expect(allRules).not.toMatch(/"stockLengthMm"\s*:\s*\[\s*"?6000"?\s*\]/u);
+    expect(allRules).not.toMatch(/依\s*`?[^`\n]+\.txt`?/u);
   });
 });

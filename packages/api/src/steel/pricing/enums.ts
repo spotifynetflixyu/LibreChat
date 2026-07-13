@@ -3,8 +3,8 @@ export type PriceTierCode = (typeof priceTierCodes)[number];
 
 export const defaultPriceTierCode: PriceTierCode = 'B';
 
-export { priceCategories } from './categories';
-export type { PriceCategory } from './categories';
+export { priceCategories, processingMethods, processingShapes } from './categories';
+export type { PriceCategory, ProcessingMethod, ProcessingShape } from './categories';
 
 export const materialKinds = [
   'OT 黑鐵',

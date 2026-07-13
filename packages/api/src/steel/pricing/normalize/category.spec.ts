@@ -1,0 +1,126 @@
+import fs from 'fs';
+import path from 'path';
+import * as XLSX from 'xlsx';
+
+import { inferPriceCategory } from './category';
+
+describe('Steel price workbook category classifier', () => {
+  it.each([
+    ['焊工', '加工/焊接'],
+    ['冷鍍鋅角鐵沖孔 51mm*3.5 單*3M', '加工/孔'],
+    ['水電', '其他'],
+    ['磨光中碳光圓 28mm', '圓條'],
+    ['添誠遙控器', '捲門/伸縮門'],
+    ['點焊鋼絲網5.5 15*15 2M*3M(6)', '網'],
+    ['乙元鏈式白鐵格板', '格板/隔板'],
+    ['黑鐵壁虎 3/8', '五金/配件'],
+    ['ST花窗1號', '門窗/門板'],
+    ["ST2B 1.0*4'*8'", '鐵板'],
+    ['板折  型(0.8-2.0)', '加工/折工'],
+    ['2.0 雷射切割', '加工/切工'],
+    ['黑鐵輕型鋼 100*2.3', 'C型鋼'],
+    ['0.4 白鐵雙層浪板', '板/浪板'],
+    ['磨光方鐵 1/2*6M', '方鐵'],
+    ['H型鋼200*100*5.5/8*6M', 'H型鋼'],
+    ['T型鋼', 'T型鋼'],
+    ['黑鐵平鐵16*3.0*6M', '平鐵'],
+    ['不等邊黑角鐵100*75*7.0*6M', '角鐵'],
+    ['節竹鐵 12m/m (4#)', '鋼筋'],
+    ['白鐵配管 1/2', '圓管'],
+    ['12K鐵軌 10M(122)', '鐵軌'],
+    ['槽鐵100*50*5/7.5*6M', '槽鐵'],
+    ['I字鐵150*75*5.5/9.5*6M', 'I型鋼/工字鐵'],
+    ['黑鐵方管 50*50*2.3', '方管'],
+    ['黑鐵扁方管 20*40*1.2', '扁方管'],
+    ['切斜角-開槽', '加工/開槽'],
+    ['添誠黑鐵格板 1尺0 5/8齒+4"套板', '格板/隔板'],
+    ['ST BA100型1.2', '捲門/伸縮門'],
+    ['格來得馬達加控制箱', '捲門/伸縮門'],
+    ['新型免收邊氣密窗2尺2*1尺5', '門窗/門板'],
+    ['4"北海道切石片(PC板用)', '五金/配件'],
+    ['H 型鋼高速鑽孔機 TC-35', '其他'],
+    ['黑鐵板 CNC切割', '加工/切工'],
+    ['厚度6.0-12.0m/m鐵板鑽 孔φ', '加工/孔'],
+    ['大實154四角雕花大柱附頭', '五金/配件'],
+    ['1.0槽型鐵板入框W1010', '板/浪板'],
+    ['1.6m/mOT板雷射切割', '鐵板'],
+    ['2.0台PC板切(綠)', '板/浪板'],
+    ['1.6錏板折(檔泥板)', '鐵板'],
+    ['白鐵橢圓雕花把手.', '門窗/門板'],
+    ['可快速鑽孔兼鎖螺絲大六角', '其他'],
+    ['天車沖孔(B3)', '其他'],
+    ['鐵板切割器', '五金/配件'],
+    ['鍍鋅收邊柱包', '板/浪板'],
+    ['白鐵圓管 2*1.2*25mm○孔150-150單欄杆用', '圓管'],
+    ['添誠電磁開關', '捲門/伸縮門'],
+    ['格板鏍絲', '捲門/伸縮門'],
+    ['ST底座60型 平鐵', '捲門/伸縮門'],
+    ['黑板切', '鐵板'],
+    ['3.0m/mOT花板切清', '鐵板'],
+    ['曬衣架ST (圓管)L型380*620-(304)', '其他'],
+    ['工具背帶', '其他'],
+    ['黑鐵-鐵板把手 32mm', '五金/配件'],
+    ['白鐵-鐵板把手 32mm', '門窗/門板'],
+    ['六角套筒 8mm*L55 (BITS)5/16 (自攻釘-浪板用)', '其他'],
+    ['鎖浪板機 LY-0855', '其他'],
+    ['鎖浪板機AGP', '五金/配件'],
+    ['鋁料-七字收邊組合', '五金/配件'],
+    ['琉璃瓦梅花封頭', '五金/配件'],
+    ['圓管鋸工--', '加工/切工'],
+    ['黑鐵板切圓φ', '加工/切工'],
+    ['簷口瓦 琉璃瓦用(塑膠)', '五金/配件'],
+    ['簷口瓦 琉璃瓦用(白鐵烤   )', '板/浪板'],
+    ['百葉窗用銅鏍絲', '五金/配件'],
+    ['黑鐵板剪床切倒角', '加工/倒角'],
+    ['倒角加工', '加工/倒角'],
+    ['雷圓○ (3.0~12)', '加工/切工'],
+    ['雷射畫線', '加工/其他'],
+    ['5AU上片不電解(3才)', '門窗/門板'],
+    ['沖 分離式把手孔', '門窗/門板'],
+    ['白鐵萬向接頭 51mm*51mm沖孔', '五金/配件'],
+    ['鐵板魚眼孔', '加工/孔'],
+    ['修改門板工資', '加工/其他'],
+    ['型鋼結筒加工費', '加工/其他'],
+    ['組合工資', '加工/其他'],
+    ['管類滾工', '加工/其他'],
+    ['H 鐵滾工', '加工/其他'],
+    ['雷射', '加工/切工'],
+    ['電離子切割', '加工/切工'],
+    ['折斗笠*φ*H', '加工/折工'],
+    ['電極火嘴(電離子切割機用)', '五金/配件'],
+  ] as const)('infers %s as %s', (productName, expectedCategory) => {
+    expect(inferPriceCategory(productName)).toBe(expectedCategory);
+  });
+
+  it('audits current workbook category mismatches without rewriting the source file', () => {
+    const workbookPath = path.resolve(__dirname, '../../../../../../docs/products_db_v4.3.xlsx');
+    const before = fs.readFileSync(workbookPath);
+    const workbook = XLSX.readFile(workbookPath, { raw: false });
+    const worksheet = workbook.Sheets.products_db_ready;
+    if (!worksheet) {
+      throw new Error('Expected products_db_ready worksheet');
+    }
+    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(worksheet, {
+      defval: '',
+      raw: false,
+    });
+    const mismatches = rows.flatMap((row, index) => {
+      const inferred = inferPriceCategory(row.product_name);
+      return inferred === row.category
+        ? []
+        : [
+            {
+              row: index + 2,
+              erp: row.erp_item_code,
+              productName: row.product_name,
+              expected: row.category,
+              inferred,
+            },
+          ];
+    });
+
+    expect(mismatches.length).toBeGreaterThan(0);
+    expect(mismatches.length).toBeLessThan(rows.length);
+    expect(fs.readFileSync(workbookPath)).toEqual(before);
+  });
+});

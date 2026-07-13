@@ -172,14 +172,14 @@ describe('Steel price v4.3 importer', () => {
     );
   });
 
-  it('requires all 39 workbook headers in exact order', () => {
+  it('requires the exact legacy or normalized workbook headers', () => {
     const reorderedHeaders = [...expectedHeaders];
     [reorderedHeaders[0], reorderedHeaders[1]] = [reorderedHeaders[1], reorderedHeaders[0]];
     const workbookPath = writeWorkbook('products_db_ready', reorderedHeaders);
 
     expect(importer.EXPECTED_HEADERS).toEqual(expectedHeaders);
     expect(() => importer.loadWorkbookRows(workbookPath)).toThrow(
-      'products_db_ready headers do not match the exact v4.3 contract',
+      'products_db_ready headers do not match the exact v4.3 or normalized v4.4 contract',
     );
   });
 

@@ -1,112 +1,59 @@
-import { priceCategories, isPriceSubcategory, priceSubcategoriesByCategory } from './categories';
+import {
+  isPriceSubcategory,
+  isProcessingMethod,
+  isProcessingShape,
+  priceCategories,
+  priceSubcategoriesByCategory,
+} from './categories';
 
-describe('Steel price v4.3 category registry', () => {
-  it('lists all 27 workbook categories in source order', () => {
-    expect(priceCategories).toEqual([
-      '加工/其他',
-      '加工/孔',
-      '其他',
-      '圓條',
-      '捲門/伸縮門',
-      '網',
-      '格板/隔板',
-      '五金/配件',
-      '門窗/門板',
-      '鐵板',
-      '加工/折工',
-      '加工/切工',
-      'C型鋼',
-      '板/浪板',
-      '方鐵',
-      'H型鋼',
-      'T型鋼',
-      '平鐵',
-      '角鐵',
-      '鋼筋',
-      '圓管',
-      '鐵軌',
-      '槽鐵',
-      'I型鋼/工字鐵',
-      '方管',
-      '扁方管',
-      '加工/開槽',
-    ]);
-  });
-
-  it('preserves the v4.3 workbook subcategory union', () => {
-    const subcategories = new Set(Object.values(priceSubcategoriesByCategory).flat());
-
-    expect(subcategories.size).toBeGreaterThan(0);
-    expect([...subcategories]).toEqual(
+describe('Steel price category registry', () => {
+  it('uses the confirmed processing hierarchy', () => {
+    expect(priceCategories).toEqual(
       expect.arrayContaining([
-        '',
-        '圓條',
-        '鐵網',
-        '牛筋網',
-        '板/消音',
-        '鐵板/切工',
-        '車/中柱',
-        '車/工具箱',
-        '鐵板/H型鋼',
-        '五金/配件',
+        '加工/切工',
+        '加工/孔',
+        '加工/倒角',
+        '加工/開槽',
+        '加工/折工',
+        '加工/焊接',
+        '加工/其他',
       ]),
     );
-    expect(subcategories).not.toContain('丸條');
-    expect(subcategories).not.toContain('節竹鐵');
-  });
-
-  it('accepts T型鋼 and an explicitly registered empty subcategory', () => {
-    expect(priceCategories).toContain('T型鋼');
-    expect(isPriceSubcategory('T型鋼', '')).toBe(true);
-  });
-
-  it('accepts the v4.3 renamed categories and workbook subcategories', () => {
-    expect(priceCategories).not.toContain('圓鐵');
-    expect(priceCategories).toEqual(expect.arrayContaining(['圓條', '鋼筋']));
-    expect(isPriceSubcategory('其他', '圓條')).toBe(true);
-    expect(isPriceSubcategory('加工/折工', '鐵板/切工')).toBe(true);
-    expect(isPriceSubcategory('加工/開槽', '鐵板/H型鋼')).toBe(true);
-    expect(isPriceSubcategory('網', '牛筋網')).toBe(true);
+    expect(priceCategories).not.toContain('加工/孔加工');
   });
 
   it.each(priceCategories)('registers an empty subcategory for %s', (category) => {
     expect(isPriceSubcategory(category, '')).toBe(true);
   });
 
-  it('preserves the exact processing subcategory registries', () => {
-    expect(priceSubcategoriesByCategory['加工/其他']).toEqual([
-      '',
-      '捲門/伸縮門',
-      'H型鋼',
-      '鐵板',
-      'C型鋼',
-      '圓管',
-      '扁鐵',
-      'L',
-      '條',
-      'U',
-      '角鐵',
-      '網',
-      '加工',
-      '管',
-    ]);
-    expect(priceSubcategoriesByCategory['加工/切工']).toEqual([
-      '',
-      '鐵板',
-      'H型鋼',
-      '圓條',
-      '方管',
-      '平鐵',
-      '角鐵',
-      '圓管',
-      '槽鐵',
-      'I型鋼/工字鐵',
-      '板/浪板',
-    ]);
-    expect(priceSubcategoriesByCategory['加工/開槽']).toEqual(['', '鐵板/H型鋼', 'H型鋼']);
+  it('keeps processing subcategory focused on target or operation family', () => {
+    expect(priceSubcategoriesByCategory['加工/切工']).toEqual(
+      expect.arrayContaining(['通用', '鐵板', 'H型鋼', '圓條', '方管']),
+    );
+    expect(priceSubcategoriesByCategory['加工/孔']).toEqual(
+      expect.arrayContaining(['通用', '鐵板', '角鐵']),
+    );
+    expect(priceSubcategoriesByCategory['加工/倒角']).toEqual(['', '通用', '鐵板']);
+    expect(priceSubcategoriesByCategory['加工/焊接']).toEqual(['', '通用']);
   });
 
-  it('rejects a subcategory that is registered under a different category', () => {
+  it('registers the fixed processing method and shape enums', () => {
+    expect(['剪床', '雷射', '鋸床', '水刀', '火', '沖床', '鑽床'].every(isProcessingMethod)).toBe(
+      true,
+    );
+    expect(
+      ['外形切割', '直線切割', '圓孔', '方孔', '長孔', '橢圓孔', '其他'].every(isProcessingShape),
+    ).toBe(true);
+    expect(isProcessingMethod('CNC')).toBe(false);
+    expect(isProcessingShape('倒角')).toBe(false);
+  });
+
+  it('accepts all concise normalized workbook subcategories', () => {
+    expect(isPriceSubcategory('門窗/門板', '門花')).toBe(true);
+    expect(isPriceSubcategory('門窗/門板', '加工/孔')).toBe(true);
+    expect(isPriceSubcategory('五金/配件', '加工/孔')).toBe(true);
+    expect(isPriceSubcategory('網', '牛筋')).toBe(true);
+    expect(isPriceSubcategory('加工/折工', '含切工')).toBe(true);
     expect(isPriceSubcategory('T型鋼', 'H型鋼')).toBe(false);
   });
 });

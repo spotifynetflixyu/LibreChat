@@ -15,14 +15,14 @@
    - 多筆相似或等級不明時列人工複核；報價仍依輸出規則的預設等級繼續。
 2. `search_price_candidates`
    - 需要材料、產品或加工單價時使用。
-   - 首查、filter、keyword、limit、重試、candidate、ratio 與切工處理一律依 `查價方式.txt` 及對應類別規則；agent rule 不重述類別細節。
+   - 首查、filter、keyword、limit、重試、candidate、ratio 與切工處理一律依【search_price_candidates 通用查價規則】及對應類別 block；agent rule 不重述類別細節。
 3. `read_markdown`
    - 先檢查 chat history；已含足夠 OCR／workbook Markdown 時不要呼叫。
    - 只有缺少完整表格時使用；`scope: "workbook"` 讀報價 sheets，`scope: "ocr"` 讀圖面／OCR 解析文本。
 
 三、OCR 與報價階段
 
-1. 本輪有 PDF／image 且需 OCR 時，先依 `OCR規則.txt` 完成 PaddleOCR 與 OCR 結果確認；該輪停止於確認階段，不查價、不輸出正式報價 sheets。
+1. 本輪有 PDF／image 且需 OCR 時，先依【OCR 規則】完成 PaddleOCR 與 OCR 結果確認；該輪停止於確認階段，不查價、不輸出正式報價 sheets。
 2. 使用者後續明確確認或修正 OCR 資料後才進入報價；以最新確認資料為準。
 3. 同一 file key 已有 OCR data 時不得重做；只有資料缺失／失敗，或使用者明確要求重做 OCR 時才依 OCR 規則執行。
 

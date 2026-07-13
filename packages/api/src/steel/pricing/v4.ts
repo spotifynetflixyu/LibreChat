@@ -1,6 +1,16 @@
-import { isPriceCategory, isPriceSubcategory } from './categories';
+import {
+  isPriceCategory,
+  isPriceSubcategory,
+  isProcessingMethod,
+  isProcessingShape,
+} from './categories';
 
-import type { PriceCategory, PriceSubcategory } from './categories';
+import type {
+  PriceCategory,
+  PriceSubcategory,
+  ProcessingMethod,
+  ProcessingShape,
+} from './categories';
 
 export type SteelPriceV4Cell = string | number | null | undefined;
 export type SteelPriceV4ValueState = 'confirmed' | 'ratio_only' | 'no_price';
@@ -53,7 +63,10 @@ export const steelPriceV4WorkbookHeaders = Object.freeze([
 export type SteelPriceV4WorkbookRow = Record<
   (typeof steelPriceV4WorkbookHeaders)[number],
   SteelPriceV4Cell
->;
+> & {
+  processing_method?: SteelPriceV4Cell;
+  processing_shape?: SteelPriceV4Cell;
+};
 
 export interface SteelPriceV4Row {
   formulaCode: string | null;
@@ -62,6 +75,8 @@ export interface SteelPriceV4Row {
   normalizedSpecText: string | null;
   category: PriceCategory;
   subcategory: PriceSubcategory;
+  processingMethod: ProcessingMethod | null;
+  processingShape: ProcessingShape | null;
   material: string | null;
   dimensionSignature: string | null;
   unit: string | null;
@@ -178,6 +193,22 @@ function parseSubcategory(category: PriceCategory, value: SteelPriceV4Cell): Pri
   return subcategory;
 }
 
+function parseProcessingMethod(value: SteelPriceV4Cell): ProcessingMethod | null {
+  const method = parseText(value);
+  if (method === null || isProcessingMethod(method)) {
+    return method;
+  }
+  throw new Error(`Unknown Steel processing_method: ${method}`);
+}
+
+function parseProcessingShape(value: SteelPriceV4Cell): ProcessingShape | null {
+  const shape = parseText(value);
+  if (shape === null || isProcessingShape(shape)) {
+    return shape;
+  }
+  throw new Error(`Unknown Steel processing_shape: ${shape}`);
+}
+
 function parseValueState(value: SteelPriceV4Cell): SteelPriceV4ValueState {
   const state = parseRequiredText(value, 'value_state');
 
@@ -222,6 +253,16 @@ interface ParsedNameAttributes {
 }
 
 const sixMeterDefaultCategories = new Set<PriceCategory>([
+  '平鐵',
+  '角鐵',
+  '圓管',
+  '圓條',
+  '扁方管',
+  '方管',
+  '槽鐵',
+]);
+
+const hotDipMaterialCategories = new Set<PriceCategory>([
   '平鐵',
   '角鐵',
   '圓管',
@@ -1127,7 +1168,12 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     normalizedSpecText,
     category,
     subcategory,
-    material: /熱[浸進]鍍/u.test(productName ?? '') ? '錏 / 鍍鋅' : parseText(row.material),
+    processingMethod: parseProcessingMethod(row.processing_method),
+    processingShape: parseProcessingShape(row.processing_shape),
+    material:
+      hotDipMaterialCategories.has(category) && /熱[浸進]鍍/u.test(productName ?? '')
+        ? '錏/鍍鋅'
+        : parseText(row.material),
     dimensionSignature:
       category === '圓管' ||
       category === '方管' ||

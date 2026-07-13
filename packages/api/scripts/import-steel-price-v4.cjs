@@ -19,11 +19,17 @@ const {
   steelPriceV4SourceDataset,
   steelPriceV4WorkbookHeaders,
 } = require('../src/steel/pricing/v4');
+const {
+  normalizedSteelPriceV4WorkbookHeaders,
+} = require('../src/steel/pricing/normalize/core');
 
 const SHEET_NAME = 'products_db_ready';
 const SOURCE_DATASET = steelPriceV4SourceDataset;
 const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/products_db_v4.3.xlsx');
 const EXPECTED_HEADERS = steelPriceV4WorkbookHeaders;
+const NORMALIZED_INPUT_HEADERS = normalizedSteelPriceV4WorkbookHeaders.filter(
+  (header) => header !== 'thicknessMinMm' && header !== 'thicknessMaxMm',
+);
 const EXPECTED_RECONCILIATION = Object.freeze({
   importRows: 6761,
   duplicateErpItemCodes: 0,
@@ -45,6 +51,8 @@ const INSERT_COLUMNS = Object.freeze([
   'spec_key',
   'category',
   'subcategory',
+  'processing_method',
+  'processing_shape',
   'material',
   'dimension_signature',
   'unit',
@@ -142,21 +150,23 @@ function loadWorkbookRows(workbookPath) {
     raw: false,
   });
   const headers = (matrix[0] || []).map((value) => String(value));
-  const exactHeaders =
-    headers.length === EXPECTED_HEADERS.length &&
-    headers.every((header, index) => header === EXPECTED_HEADERS[index]);
+  const exactHeaders = [EXPECTED_HEADERS, normalizedSteelPriceV4WorkbookHeaders].some(
+    (candidate) =>
+      headers.length === candidate.length &&
+      headers.every((header, index) => header === candidate[index]),
+  );
 
   if (!exactHeaders) {
-    throw new Error(`${SHEET_NAME} headers do not match the exact v4.3 contract`);
+    throw new Error(`${SHEET_NAME} headers do not match the exact v4.3 or normalized v4.4 contract`);
   }
 
   return matrix
     .slice(1)
     .map((cells) =>
       Object.fromEntries(
-        EXPECTED_HEADERS.map((header, index) => [
+        NORMALIZED_INPUT_HEADERS.map((header) => [
           header,
-          cells[index] === undefined ? '' : cells[index],
+          cells[headers.indexOf(header)] === undefined ? '' : cells[headers.indexOf(header)],
         ]),
       ),
     );
@@ -229,6 +239,8 @@ function toDbValues(row) {
     row.specKey,
     row.category,
     row.subcategory || null,
+    row.processingMethod,
+    row.processingShape,
     row.material,
     row.dimensionSignature,
     row.unit,

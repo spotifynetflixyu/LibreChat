@@ -1,5 +1,11 @@
 # Lessons
 
+- 價格 workbook 大規模 normalization 必須先以腳本輸出獨立的新 xlsx 驗證，不可直接覆寫 `docs/products_db_v4.3.xlsx`。腳本需拒絕 input/output 同一路徑，以 product_name 推導 category 並逐列對照 protected category；任何 mismatch 都要中止，不可靜默沿用。
+- 新版價格 subcategory 名稱要利用 category 已提供的上下文，採精簡名詞，不重複 `C型鋼/H型鋼/方鐵/鋼筋/槽鐵` 等 category 字樣。例如 C型鋼使用 `加工/輕型/成型/其他`，H型鋼使用 `輕量/標準`，方鐵使用 `切料/加工/磨光/標準`。
+- Steel 價格 workbook 的面積 canonical unit 是 `㎡`；normalization 方向固定為 `m2`／`M2`／`平方公尺` → `㎡`，絕不可反向把 `㎡` 改成 `m2`。
+- 價格 parser 不得只因 `product_name` 含「熱浸鍍／熱進鍍」就覆寫 `material`；必須先確認 `category` 是適用的材料／鍍鋅加工類別。像 `五金/配件 > 油漆` 的「合金底漆(白鐵熱浸鍍鋅用)」是在描述用途，不是產品材質，必須保留原 material。
+- 使用者要求價格 xlsx 新增 `thicknessMinMm`／`thicknessMaxMm` 時，header 必須採使用者指定的 exact camelCase 名稱；不可自行改成 snake_case。欄位應由 parser 的實際厚度區間輸出填入，並納入 importer exact-header、normalization script 與 readback tests。
+- 更新既有價格 workbook 以反映「上輪 parser 調整」時，必須比較調整前後 parser 的實際輸出，只回寫該輪新增／修正規則造成的欄位差異；不得把早已存在的通用正規化（例如所有 `0 -> null`）誤當成本輪修正。若使用者鎖定價格欄，品名命中 `沒做|勿用|沒出|沒貨|不生產|不用|沒現貨|無生產` 時只回寫 `value_state: no_price`，不得清空 workbook 的 `unit_price_*`／`price_ratio_*`。
 - 所有 modal 都必須有獨立 UI/UX lifecycle：open state、流程 state、mutation 與 render host 不可依附短生命週期的 menu/popover/list row；其他 UI 關閉、切換或 unmount 不得連帶關閉、重設或干擾 modal。
 - OpenAI OAuth Login／Logout modal 必須掛在 model list 內容之外的持久 provider 層；關閉 model list 只能 unmount Usage/endpoint rows，不得連帶清除或關閉 modal 與其 mutation 狀態。
 - Logout confirm modal 在 Confirm 後不得自動關閉：執行中顯示 `Logging out...` 且禁止關閉，完成後在同一 modal 顯示 `Logged out`／`Logout failed`，由使用者自行 Close。
@@ -1047,7 +1053,41 @@
 - 方管屬於「品名無長度固定補6M」的長條料類別；product_name 明示 M/L 長度時優先，未標長度時一律使用6M。連料、雨棚架、沖孔窗、太陽片等成品尺寸另行解析，不得覆蓋一般方管素材的6M預設語意。
 - Steel 價格品名的禁用標記也包含「無生產」；需與「不生產」同樣由 importer 強制改為 `value_state: no_price` 並清空 direct/ratio 價格。
 - 預設6M的長條材料查價不要固定加入 `stockLengthMm: [6000]`；AI應從返回的6000、12000或其他可用素材長度做不切清配料，訂單成品長度只用於裁切計算，不作母材長度 query filter。
-- 品名中的「熱浸鍍」一律正規化為材質 `錏 / 鍍鋅`，不可因 workbook 原材質欄寫黑鐵而漏掉熱浸鍍候選。
+- 品名中的「熱浸鍍」不得跨 category 一律改材質；只有平鐵、角鐵、圓管、圓條、
+  扁方管、方管、槽鐵等明確材料 category 才可正規化為 storage enum `錏/鍍鋅`。
+  五金/配件等用途描述（例如底漆標示熱浸鍍鋅用）不可據此推導材質。
+- 價格 workbook 面積 unit 的 canonical 值是 `㎡`；normalization 方向固定為
+  `m2/M2/平方公尺 -> ㎡`，不得反向改成 `m2`。
+- 價格 workbook 的 category 在使用者確認前是受保護欄位；category classifier 的
+  mismatch 只能輸出待確認清單，不能自動覆寫。驗證版必須寫成獨立新 workbook，
+  並以來源 hash 與 protected-field diff 證明沒有碰到原檔。
+- 只看 product_name 分 category 時，先辨識商品主體與 domain family，再看加工、用途、
+  材質關鍵字。`PC板切`、`OT板雷射切割` 是板材商品，`鑽孔機` 是設備，`浪板用鋸片`
+  是五金，`添誠格板` 的添誠只是品牌；不得讓「切、鑽孔、浪板、添誠」等片段搶走
+  明確商品主體。真正不確定的衝突才進待確認清單。
+- 使用者說「AX」時可能指 `erp_item_code` 以 `AX` 開頭的完整產品族，不是 ERP code
+  正好等於 `AX` 的單筆 placeholder。必須先確認代號語意並掃描全部 prefix rows；AX family
+  的 subcategory 仍依 `category + product_name` 規劃，不能以 `AX` prefix 直接指定。
+- `黑鐵板剪床切倒角` 的「倒角」不是開槽；category 應為 `加工/切工`、subcategory
+  應為 `倒角`。`product_name=倒角加工` 也遵循同一契約；分類規則不得因看到「倒角」
+  就歸到 `加工/開槽`。
+- 加工 taxonomy 最新契約把「倒角」提升為獨立 category `加工/倒角`，不再放在
+  `加工/切工`；`黑鐵板剪床切倒角` 與 `倒角加工` 都必須跟著改。這條取代前一版
+  `加工/切工 / 倒角` 契約。分類加工品時先判斷加工語意（切、孔、倒角、開槽、折、焊），
+  再判斷形狀或機台，不可讓機台詞把主要加工類型蓋掉。
+- Steel 報價分類先判斷被報價的完整商品主體，再判斷加工動作。`鎖孔|把手孔|天地串孔`
+  屬 `門窗/門板`、`萬向接頭` 屬 `五金/配件`，subcategory 才標 `加工/孔`；但
+  `鐵板魚眼孔` 的主體明確是鋼材鐵板，所以維持 category `加工/孔`。不可因使用者把
+  多個詞列在同一句就整批套用；若清單與商品主體語意衝突，先指出並確認，不要直接認同。
+- 加工孔類的 canonical category 名稱目前保留 `加工/孔`；使用者描述「孔加工」是階層
+  語意，不應在未確認 exact rename 時自行改成 `加工/孔加工`。
+- `processing_method`、`processing_shape` 是 parser 衍生 metadata，但搜尋介面不新增專用
+  query params；把非空 canonical 值加入 `normalized_spec_text`，沿用既有 keyword 搜尋。
+  不得因資料庫有結構化欄位就自動擴張 tool API。
+- `型鋼結筒加工費` 的報價主體是 C型鋼加工服務，category 為 `加工/其他`、subcategory
+  為 `C型鋼`；不能只因品名有型鋼就留在材料 category `C型鋼`。
+- `修改門板工資`、`組合工資` 已確認為加工服務，category `加工/其他`、subcategory
+  `其他`；不能因前者提到門板就留在捲門商品類，也不能因後者語意泛化就留在 `其他`。
 - 尺、inch、mm 長度的原始表示要保留在品名／備註；正規化成毫米供比對時使用四捨五入整數，不以小數位作匹配條件。台制尺換算採1尺=303mm。
 - 網類 `unit: 丸` 是整捲計價；不足一捲仍按一整丸，除非未來有明確裁售價格列，不得按使用長度比例拆價。
 - 網類 `unit: 才` 的面積數量必須無條件進位成整才後再乘direct單價，不可用小數才計價。
@@ -1069,3 +1109,4 @@
 - `customer_data`、`manual_review`、`customer_quote` 是 AI 最終輸出表，不要求 backend 從 assistant Markdown 持久化；不得為了補 persistence 擴張本輪 backend scope。
 - OCR 共享判讀核心必須同時提供給 main AI OCR fallback 與 chunk organizer：旋正後閱讀、繁體中文，以及孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓的視覺判讀與計量。這些直接影響 AI 判斷，不得當成 backend-only 規則刪除。
 - OCR Markdown 的缺值一律留空；不使用「未確認」填滿缺值，也不得以「約、略、大約、約略」等近似詞代替判斷。每筆來源 row 必須獨立保留並帶頁數、項次、件號、圖號或其他可追溯代號；同 file key 只合併表格結構，不得合併或彙總資料列。
+- 注入 Agent context 的 rules 不得寫「依 `某檔案.txt`」或暗示 AI 需要讀取本地檔案；跨規則引用必須使用實際注入的 block name，例如【長條料類別規則】、【長條料切工規則】、【OCR 規則】。

@@ -242,15 +242,13 @@ const priceLookupQuerySchema = z
   })
   .strict()
   .superRefine((query, ctx) => {
-    if (!query.subcategory || isPriceSubcategory(query.category, query.subcategory)) {
-      return;
+    if (query.subcategory && !isPriceSubcategory(query.category, query.subcategory)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid subcategory ${query.subcategory} for category ${query.category}`,
+        path: ['subcategory'],
+      });
     }
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `Invalid subcategory ${query.subcategory} for category ${query.category}`,
-      path: ['subcategory'],
-    });
   });
 
 const priceCategoryDiscoveryQuerySchema = z

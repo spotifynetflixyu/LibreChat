@@ -22,6 +22,8 @@ interface SteelPriceItemRow {
   normalized_spec_text: string | null;
   category: string;
   subcategory: string | null;
+  processing_method?: string | null;
+  processing_shape?: string | null;
   material: string | null;
   dimension_signature: string | null;
   unit: string | null;
@@ -96,6 +98,8 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   normalizedSpecText?: string;
   category: PriceCategory | string;
   subcategory?: string;
+  processingMethod?: string;
+  processingShape?: string;
   material?: string;
   dimensionSignature?: string;
   unit?: string;
@@ -306,6 +310,8 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     normalizedSpecText: parseNullableString(row.normalized_spec_text),
     category: row.category,
     subcategory: parseNullableString(row.subcategory),
+    processingMethod: parseNullableString(row.processing_method),
+    processingShape: parseNullableString(row.processing_shape),
     material: parseNullableString(row.material),
     dimensionSignature: parseNullableString(row.dimension_signature),
     unit: parseNullableString(row.unit),
@@ -438,6 +444,8 @@ SELECT
           p.normalized_spec_text,
           p.category,
           p.subcategory,
+          p.processing_method,
+          p.processing_shape,
           p.material,
           p.dimension_signature,
           p.unit,

@@ -1,3 +1,291 @@
+# Active: products_db_v4.3 全列 parser 數值修正 - 2026-07-13
+
+## Follow-up: AXP confirmation + processing taxonomy audit - 2026-07-13
+
+Confirmed contract:
+
+- [x] 將 16 筆 AXP（AXPBA、AXPBAB、AXPBAC、AXPBAD、AXPBAE、AXPBAF、AXPSA、
+  AXPSAB、AXPSAC、AXPSAD、AXPSAE、AXPSAF、AXPSB、AXPSBA、AXPSE、AXPSEA）
+  改為 `門窗/門板 / 門花`。
+- [x] 覆核所有現行 `加工/*` rows，並反向掃描 product_name 有加工語意但 category
+  不在加工類的 rows，避免倒角、開槽、孔、切工互相誤分類。
+- [x] 新加工 category 固定為：`加工/切工 | 加工/孔 | 加工/倒角 | 加工/開槽 |
+  加工/折工 | 加工/焊接 | 加工/其他`。
+- [x] `加工/切工` 需區分形狀（外形切割、直線切割）與加工方式（剪床、雷射、鋸床、
+  水刀、火）；`加工/孔` 需區分孔形（圓孔、方孔、長孔、橢圓孔、其他）與加工方式
+  （沖床、雷射、鑽床、水刀）。先盤點來源證據，再決定單一 `subcategory` 的 canonical
+  query 表示，不從缺少證據的品名臆測。
+- [x] 孔加工先辨識報價主體：`鎖孔|把手孔|天地串孔` → `門窗/門板 / 加工/孔`；
+  `萬向接頭` → `五金/配件 / 加工/孔`；`鐵板魚眼孔` 主體是鋼材，維持 category
+  `加工/孔`。只移出前兩組，不整批套用關鍵字。
+- [x] `processing_method`、`processing_shape` 保留為 parser 衍生欄位，並把非空值加入
+  `normalized_spec_text` 供既有 keyword 搜尋；不得新增 tool query params。
+- [x] `加工/其他` 的 subcategory 依 product_name 明確加工 family 再分；焊接移至
+  `加工/焊接`，倒角移至 `加工/倒角`。
+- [x] CCG02 `型鋼結筒加工費` 確認改為 `加工/其他 / C型鋼`。
+- [x] A9 `修改門板工資`、FSA0001 `組合工資` 確認改為 `加工/其他 / 其他`。
+- [x] 只輸出新的 v4.4 驗證檔，不覆寫 v4.3、不匯入 DB、不同步 rules。
+- [x] 驗證 6,761 ERP 唯一、protected fields、全加工 rows 分類覆核、category pipeline、
+  idempotency、focused/full tests、7 sheets render、`git diff --check`。
+
+Goal: 逐筆重新核對 `docs/products_db_v4.3.xlsx` 的 parser 衍生欄位，修正錯誤數值；
+`erp_item_code`、`formula_code`、`product_name`、全部
+`unit_price_*`、全部 `price_ratio_*`、`density`、`cost_basis` 永遠保持原值。
+`category` 只允許套用使用者逐項確認的修正。
+
+Locked scope:
+
+- 鎖定欄位以原始 workbook cell value 為準，更新前後逐格比對；任何差異都視為失敗。
+- `unit_price` 解讀為 `unit_price_base` 與 `unit_price_a`～`unit_price_f` 整組；
+  `price_ratio` 解讀為 `price_ratio_a`～`price_ratio_f` 整組。
+- 本輪只處理 `products_db_ready` 的 6,761 筆產品列。`search_groups`、
+  `processing_items`、`material_aliases`、`manual_review`、`field_guide` 保留原內容；
+  若使用者要同步重建這些分析頁，另列範圍確認。
+- 不 apply dev/prod Supabase，不同步 rules DB，不更動 parser code，除非逐列核對證明
+  現行 parser 本身仍有錯且使用者另行同意擴大範圍。
+- 修正來源限定為上輪 parser delta：以 workbook 建立時的 `e73f9744d` parser 為 before、
+  目前 `HEAD` parser 為 after，只回寫兩者不同且未受保護的 workbook 欄位。
+- 新增使用者指定的 exact headers `thicknessMinMm`、`thicknessMaxMm`，放在
+  `source_thickness` 後、`width_mm` 前；由 parser 的 thickness band 結果填入。
+- 在任何 xlsx 寫回前先新增可重複執行的 normalization script；腳本需支援 dry-run、
+  input/output path、protected-column snapshot、逐欄統計及 idempotency 驗證。
+- 「熱浸鍍／熱進鍍」material override 必須先通過 category allowlist；不得修改
+  `五金/配件 > 油漆` FCP1104 等只描述用途的列。
+- `normalized_spec_text` 需依 corrected structured fields 稽核；若包含已知污染尺寸，
+  由 normalization script 以 deterministic canonical text 重建並補 regression tests。
+
+Review - category stage + v4.4 normalization (2026-07-13):
+
+- [x] 新增獨立 category stage CLI：先以已確認 reference workbook 的 normalized
+  `product_name` 精確分類，未知品名不得默認為 `其他`，只改 `category`，再交給
+  normalization parser。
+- [x] 新增 category/subcategory 規則與 regression tests；`倒角`、`倒角加工`、
+  `黑鐵板剪床切倒角` 統一為獨立 category `加工/倒角`，不再歸切工或開槽。
+- [x] 產出獨立 `docs/products_db_v4.4.xlsx`（43 欄）與
+  `docs/products_db_v4.4.pending-review.csv`，未覆寫 v4.3。
+- [x] 套用 46 筆已確認 category 修正，包括 16 筆 AXP、加工 taxonomy、門孔／萬向接頭
+  主體優先、A9、CCG02、FSA0001，以及先前已確認的 category corrections。
+- [x] 6,761 rows / 6,761 unique ERP；非 category protected fields 0 differences；
+  material enum、area unit、no-price marker violations 皆為 0；AX prefix 171 筆中，
+  非空 product_name 的 subcategory 缺值為 0。
+- [x] category stage → normalization 與直接產出的 v4.4 主表逐格一致；第二次
+  normalization 主表零差異（idempotent）。
+- [x] ESLint 0 issues；14 Jest suites / 466 tests 全數通過；7 sheets 與加工重點 ranges
+  共 10 張 render 完成 visual pass；importer dry-run 6,761 rows、`git diff --check` 通過。
+  visual pass；`git diff --check` 通過。
+- [x] 待確認清單歸零；16 筆 AXP 已確認為 `門窗/門板 / 門花`。
+
+Initial plan (superseded by the reviewed implementation above):
+
+- [x] 讀取 Spreadsheets skill、`CLAUDE.md`、相關 lessons 與現有 v4.3 parser/importer。
+- [x] 唯讀盤點 workbook：6 sheets；主表 `A1:AM6762`、39 欄、6,761 筆資料。
+- [x] 以舊版與新版 `buildSteelPriceV4Rows` 對 6,761 筆做唯讀重播，建立本輪 parser
+  delta；共 1,313 筆、4,743 cells，其中 361 cells 是受保護價格欄，必須排除。
+- [ ] 使用者確認本計畫與工作表範圍後，先建立鎖定欄位 hash/snapshot。
+- [ ] 以 `erp_item_code` 對齊，每筆只寫回下列明確 parser-derived allowlist 中與
+  workbook 不同的值：`subcategory`、`material`、`dimension_signature`、`value_state`、
+  `unit_weight_value`、`unit_weight_basis`、`width_mm`、`height_mm`、`length_mm`、
+  `outer_diameter_mm`、`nominal_inch`、`web_mm`、`flange_mm`、`sheet_width_mm`、
+  `sheet_length_mm`；空字串／0 placeholder 依現行契約正規化為空值。
+- [ ] 不改 parser 沒有重新推導的 `normalized_spec_text`、`unit`、`source_thickness`、
+  `lip_mm`、`spec_sort_key`；即使它們未列入 protected list，也不做無證據的重寫。
+- [ ] `material` 改用 category-aware allowlist；例如 FCP1104「合金底漆
+  (白鐵熱浸鍍鋅用)」不是鍍鋅材料本體，不可因名稱含「熱浸鍍」而改材質。
+- [ ] 保留既有格式、公式、tables、drawings、欄寬、列高、篩選與所有非主表內容。
+- [ ] 匯出後重讀檔案，驗證 6,761 rows、39 headers、ERP 唯一性、value-state invariant、
+  protected columns 全等，以及允許欄位的 parser readback 全等。
+- [ ] 逐 sheet render/visual pass、formula error scan、focused importer Jest、dry-run、
+  `git diff --check`；不執行 DB apply。
+- [ ] 在本節補上 Review，記錄各欄修正筆數、代表列與任何仍需人工確認的例外。
+
+Read-only findings before approval:
+
+- 若盲目用現行 parser 對 workbook 比對，會得到 5,964 筆差異，其中大部分只是舊 parser
+  已有的 `0 -> null` 正規化，並非上輪調整。依使用者修正改採 before/after parser delta：
+  實際候選為 1,313 筆、4,743 cells；排除 361 個受保護價格差異後，最多回寫 4,382 cells。
+- 品名命中 `沒做|勿用|沒出|沒貨|不生產|不用|沒現貨|無生產` 的 133 筆，
+  workbook 只把 `value_state` 改成 `no_price`；`unit_price_*`／`price_ratio_*` 即使新版
+  runtime parser 會清空，也依使用者硬鎖保持原值。
+- `category` 候選差異為 0；計畫仍將它列為獨立硬鎖欄位。
+- 目前 artifact-tool 匯入此 960 KB、含 6 sheets/drawings 的 workbook 未能完成並輸出
+  inspect 結果；確認後若仍無法用規定 runtime 匯入，必須先停下回報 blocker，不改用
+  未經允許的替代 authoring library。
+
+Taxonomy normalization design pending confirmation:
+
+- Query 原則：已知類別永遠先用 `category`；只有 product_name 明確證明時才加
+  `subcategory`／`material`／`unit`。不要為了填滿欄位而製造 filter，避免 exact filter
+  把有效候選排除。
+- Material storage 採既有 `materialKinds` enum；query-facing 仍使用既有簡化 enum。
+  來源 variant 先 canonicalize：黑鐵/OT→`OT 黑鐵`、白鐵/ST→`ST 白鐵`、2B→
+  `2B 白鐵霧面`、BA→`BA 白鐵亮面`、HL→`HL 白鐵沙面`、NO1→`No1 白鐵`、
+  熱浸鍍→`錏/鍍鋅`、中碳→`中碳鋼`。無明確證據保持 null，不自動填 `待確認`。
+- 熱浸鍍 name override 只允許 `平鐵/角鐵/圓管/圓條/扁方管/方管/槽鐵`；
+  `加工/其他` 鍍鋅費保留來源 material，`五金/配件` 用途描述不推導材質。
+- Unit 只正規化同義寫法：kg/KG→`Kg`、公尺/m→`M`、平方公尺/m2→`㎡`；
+  `支/只/個` 不合併。`捲/卷/丸` 只有 product_name 明確表示整捲計價時才統一為`丸`。
+  非空但違反類別契約的 unit 列入 review，不直接猜改。
+- `加工/其他`：subcategory 只取明確被加工族群（H型鋼、鐵板、C型鋼、圓管、
+  平鐵/扁鐵、角鐵、圓條/條、網）；焊工、噴砂、烤漆、板滾等通用加工留空。
+- `加工/孔`：依 product_name 判定 C型鋼/鐵板/角鐵/門/五金；unit 保留加工計價語意
+  `孔/支/片/只/組`，不可跨類強制統一。
+- `加工/切工`：subcategory 表示被切材料（鐵板、H型鋼、方管、圓管、平鐵、角鐵、
+  圓條、槽鐵、I型鋼/工字鐵）；unit 保留 `刀/Kg/片/支/M` 商業語意。
+- `加工/折工`：依品名保留鐵板、花板、特殊、門、車與既有精確分支；一般板折為鐵板。
+  `只/支/片/式` 不互換。
+- `加工/開槽`：現有三筆維持 `鐵板/H型鋼`；unit `頭` 與 `M` 不合併。
+- `鐵板`：subcategory 只分花板、網板、圍籬板、檔泥板、特殊，其餘留空；unit 必須
+  保留 `Kg` vs `片`，這是高價值 query filter；material 優先辨識 2B/NO1/HL/BA。
+- `網`：由 product_name 固定分點焊網、鐵網、牛筋網、刺網、高床網、浪型網、菱形網、
+  配件；unit 保存 `才/丸/片/㎡/只`，query 預設不傳 unit，候選返回後再比較。
+- `圓管`：固定分鋼管、配管、A管、B管、連料；product_name 含太陽片/連料優先連料，
+  A/B 管 family 次之。unit 只允許 `支/只`，query 通常不需 unit。
+- `方管`：只分連料與一般；太陽片、雨棚、沖孔窗等成品 family 依既有規則歸連料，
+  unit `支/只` 保留。
+- `角鐵`：分不等邊、烤漆、配件、一般；unit 一般材料以支為主，腳套等配件保留
+  `只/組/尺`，不得因 category 強制為支。
+- `捲門/伸縮門`：依 product_name 分邊柱、中柱、底支、遙控、配件、五金/配件、其他；
+  unit 異質，不作 category-wide 推導，只有明確產品族群規則才補。
+- `五金/配件`：沿用現有螺絲、輪子、鑄花、油漆、釘、鋸、壁虎、配管、焊條、彈簧、
+  扶手、花管、螺母等 enum，以 longest/specific keyword priority 分類；未命中留空。
+  unit 依包裝/商品名判定，不用 subcategory 預設 unit。
+- `門窗/門板`：分門花、窗花、網、五金/配件、配件；只在名稱明確時分類，避免把
+  材質 ST/鋁誤當 subcategory。unit 保留商品計價方式。
+- `板/浪板`：現行 enum 只可靠區分一般與五金/配件；未新增經確認的新 enum 前，不把
+  樓層板、浪板、封口板等硬塞進其他既有 subcategory。unit `尺/片/才/支/Kg/㎡` 保留。
+- `其他`：只分類既有圓條、曬衣架、手套、蜂巢紙、保麗龍、加工、配件；一般費用、
+  租借、備註型品名留空且不推導 material/unit。
+- `C型鋼`：保持空 subcategory；material 有選擇性，unit 主要 Kg，少數 M/blank 進 review。
+- `H型鋼`：保持空 subcategory；material/unit 幾乎固定黑鐵/Kg，query 不必重複傳入。
+- `I型鋼/工字鐵`、`T型鋼`：保持空 subcategory；unit Kg；material 缺值由明確品名或
+  category rule 補黑鐵，否則 review。
+- `格板/隔板`：保持空 subcategory、unit 組；material 黑鐵/白鐵可作 query filter。
+- `平鐵`：保持空 subcategory；unit 以支為主但保留 M/片例外；material 可作 filter。
+- `方鐵`、`圓條`：保持空 subcategory；`Kg` vs `支` 是高價值 query filter，不互換。
+- `扁方管`、`槽鐵`：保持空 subcategory；unit 多為支，Kg/blank 例外不自動改；material
+  可作 filter。
+- `鋼筋`：保持空 subcategory、unit Kg；目前 material 空白，沒有明示證據不補黑鐵。
+- `鐵軌`：保持空 subcategory、unit 支；material 黑鐵固定但 query 無需重複傳入。
+- `normalized_spec_text` 需要修正：已證明 467 rows 含錯誤/過時衍生 token（圓管197、
+  方管130、角鐵69、鐵板40、方鐵14、圓條5、網4、扁方管4、加工/切工3、槽鐵1）。
+  以 product_name NFKC/x-normalization 為底，只追加 parser 已驗證的 canonical structured
+  tokens；厚度 range 保留 min-max，公制不得盲推英制，null 不追加，禁止 regex 局部修補。
+- Normalization script 預設 dry-run，接受 legacy 39-column 與 target 41-column input，
+  target 依序在 `source_thickness` 後新增 `thicknessMinMm/thicknessMaxMm`；輸出 exact
+  41 headers、change ledger、protected snapshot，並以第二次執行零差異證明 idempotent。
+
+Proposed NEW subcategory taxonomy v2 (supersedes the conservative blank-preserving draft):
+
+- 全域 classifier：NFKC/空白/`*→x` 正規化後採 category-specific ordered rules，
+  first-match-only。優先序為配件/成品/加工 > 明確產品型式 > 一般 fallback；material、
+  品牌、尺寸與禁用詞不得用作 subcategory。所有 secondary matches 寫入 audit ledger。
+- `鐵板`：`成型/配件板 | 圍籬板 | 網板 | 花板 | 切板 | 平板`（估 4/2/31/28/162/210）。
+- `C型鋼`：`加工/其他 | 輕型C型鋼 | 成型C型鋼 | 其他C型鋼`（1/45/9/0）。
+- `H型鋼`：`輕量H型鋼 | 標準H型鋼`（16/639）。
+- `I型鋼/工字鐵`：`標準I型鋼`；`T型鋼`：`標準T型鋼`。
+- `平鐵`：`切料/加工 | 標準平鐵`；`方鐵`：`切料/加工 | 磨光方鐵 | 標準方鐵`
+  （5/12/20）。
+- `角鐵`：`配件 | 萬能/成型角鋼 | 不等邊角鐵 | 等邊角鐵`（3/6/29/155）；
+  `腳套/鏍絲` 配件優先於 `萬能`。
+- `圓條`：`切料/加工 | 磨光圓條 | 標準圓條`（5/45/35）；`鋼筋`：
+  `竹節鋼筋 | 其他鋼筋`；`鐵軌`：`標準鐵軌`；`槽鐵`：`切料/加工 | 標準槽鐵`。
+- `圓管`：`成品/太陽片 | 連料 | 配管 | B管 | A管 | 一般圓管`
+  （2/25/68/18/50/84）。A/B 管是產品 family，不是 material。
+- `方管`：`成品/太陽片 | 雨棚架 | 連料 | 一般方管`（3/22/60/158）；
+  太陽片優先雨棚，雨棚優先連料。
+- `扁方管`：`切料/加工 | 一般扁方管`。
+- `網`：`配件 | 點焊網 | 牛筋網 | 刺網 | 高床網 | 浪型網 | 菱形網 | 鐵網 | 其他網`
+  （1/5/5/9/2/13/15/7/3）；浪型必須優先菱形。
+- `板/浪板`：`五金/收邊配件 | 格柵/溝蓋 | 圍籬板 | 樓層板 | PC板 | 琉璃瓦 |
+  壁板 | 樹脂板 | 特殊板 | 平板/加工料 | 浪板/清板`
+  （53/4/25/5/32/19/17/17/8/47/56）。
+- `格板/隔板`：`700KG隔板 | 850KG隔板 | 1HP隔板 | 一般格板`（21/16/12/79）；
+  廠牌、材質、齒與套板規格不作 subcategory。
+- `加工/其他` 按加工家族：`滾圓 | 熱浸鍍鋅 | 端板 | 喇叭桶滾製 | 壓花 | 焊接 |
+  雷射圓切 | 拋光 | 噴砂塗裝 | 烤漆 | 雕花 | 保護處理 | 厚板加工 | 整平`。
+- `加工/孔` 按目標工件：`鐵板 | 角鐵 | 門 | C型鋼 | 接頭 | 通用`；
+  `加工沖孔切` 無工件證據才使用通用。
+- `加工/切工` 按目標工件：`鐵板 | H型鋼 | 圓條 | 方管 | 方鐵 | 平鐵 | 角鐵 |
+  圓管 | 槽鐵 | I型鋼/工字鐵 | 通用`；明示型材優先一般板切/氧切。
+- `加工/折工`：`鐵板/一般 | 鐵板/特殊 | 鐵板/花板 | 鐵板/含切工 |
+  鐵板/無缺口 | 鐵板/消音 | 車體/中柱 | 車體/車斗 | 車體/工具箱 |
+  捲門/下軌 | 成品/豬公 | 成品/斗笠`；具體成品與複合加工優先一般板折。
+- `加工/開槽`：`鐵板/H型鋼-開槽 | 鐵板/H型鋼-倒角`。
+- `五金/配件`：`切削/鑽孔/研磨工具 | 輪具/滑輪 | 管件/接頭 | 扶手/欄杆裝飾 |
+  塗料/溶劑/清潔 | 膠黏/密封 | 鉸鏈/鎖扣 | 緊固/錨固件 | 焊接耗材 |
+  傳動/張力/軸承 | 電機/箱體/電氣 | 施工工具/設備 | 包裝/防護耗材 |
+  其他五金/待分類`。複合詞優先；例如穴丸鋸先歸工具、電焊彎頭先歸管件。
+- `門窗/門板`：`紗網/紗窗料 | 門鎖/鎖具 | 門閂/天地串 | 鉸鏈/閉門五金 |
+  擋水板系統 | 氣密/消音/密封 | 成品窗/百葉窗 | 門花 | 窗花/花窗 |
+  花格/防盜裝飾 | 門板/成品門 | 門框/軌道 | 雨棚/扶手/外裝 |
+  其他門窗/待分類`。
+- `捲門/伸縮門`：`遙控/發射器 | 馬達/控制系統 | 安全/感應裝置 | 邊柱 | 中柱 |
+  底支 | 軌道/門軌 | 密封/止水/防塵 | 伸縮門本體/框架 | 伸縮門五金 |
+  捲門五金/配件 | 門片/簾片 | 服務/加工 | 其他捲門/待分類`。
+- `其他`：`訂單/價差/暫記 | 服務/工資/租借 | 包裝/保護材料 | 家用/成品 |
+  勞安/耗材 | 油品/化學品 | 門窗/捲門半成品 | 工具/加工用品 |
+  其他商品/待分類`。疑似 category mismatch 只進 review，不改 category。
+- Canonical 面積 unit 固定為 `㎡`；normalization 方向為 `m2/M2/平方公尺 → ㎡`。
+- Acceptance gate：先產出全 6,761 rows proposed ledger；100% review 所有待分類/多重命中，
+  每個自動 subcategory 至少抽查 20 rows（不足20則全查），確認後才更新 enum、parser、xlsx。
+
+Concise subcategory naming v3 (supersedes v2 labels; matching logic/counts unchanged):
+
+- Naming rule：subcategory 不重複 category 已表達的名詞，只保留可區分類型的最短名稱。
+- `鐵板`：`成型/配件 | 圍籬 | 網板 | 花板 | 切板 | 平板`
+- `C型鋼`：`加工 | 輕型 | 成型 | 其他`
+- `H型鋼`：`輕量 | 標準`
+- `I型鋼/工字鐵`：`標準`；`T型鋼`：`標準`
+- `平鐵`：`切料/加工 | 標準`
+- `方鐵`：`切料/加工 | 磨光 | 標準`
+- `角鐵`：`配件 | 萬能/成型 | 不等邊 | 等邊`
+- `圓條`：`切料/加工 | 磨光 | 標準`
+- `鋼筋`：`竹節 | 其他`
+- `鐵軌`：`標準`
+- `槽鐵`：`切料/加工 | 標準`
+- `圓管`：`成品/太陽片 | 連料 | 配管 | B管 | A管 | 一般`
+- `方管`：`成品/太陽片 | 雨棚 | 連料 | 一般`
+- `扁方管`：`切料/加工 | 一般`
+- `網`：`配件 | 點焊 | 牛筋 | 刺網 | 高床 | 浪型 | 菱形 | 鐵網 | 其他`
+- `板/浪板`：`五金/收邊 | 格柵/溝蓋 | 圍籬 | 樓層 | PC | 琉璃瓦 | 壁板 |
+  樹脂 | 特殊 | 平板/加工 | 浪板/清板`
+- `格板/隔板`：`700KG | 850KG | 1HP | 一般`
+- `加工/其他`：`滾圓 | 熱浸鍍 | 端板 | 喇叭桶 | 壓花 | 焊接 | 雷射圓切 |
+  拋光 | 噴砂/塗裝 | 烤漆 | 雕花 | 保護 | 厚板 | 整平`
+- `加工/孔`：`鐵板 | 角鐵 | 門 | C型鋼 | 接頭 | 通用`
+- `加工/切工`：`鐵板 | H型鋼 | 圓條 | 方管 | 方鐵 | 平鐵 | 角鐵 | 圓管 |
+  槽鐵 | I型鋼/工字鐵 | 通用`
+- `加工/折工`：`一般 | 特殊 | 花板 | 含切工 | 無缺口 | 消音 | 中柱 | 車斗 |
+  工具箱 | 下軌 | 豬公 | 斗笠`
+- `加工/開槽`：`開槽 | 倒角`
+- `五金/配件`：`切削/鑽孔/研磨 | 輪具 | 管件 | 扶手/欄杆 | 塗料/溶劑 |
+  膠黏/密封 | 鉸鏈/鎖扣 | 緊固/錨固 | 焊接 | 傳動/軸承 | 電機/電氣 |
+  工具/設備 | 包裝/防護 | 其他`
+- `門窗/門板`：`紗網 | 鎖具 | 天地串 | 鉸鏈/閉門 | 擋水 | 氣密/消音 |
+  成品窗/百葉 | 門花 | 窗花 | 花格/防盜 | 門板/成品門 | 門框/軌道 |
+  雨棚/扶手 | 其他`
+- `捲門/伸縮門`：`遙控 | 馬達/控制 | 安全/感應 | 邊柱 | 中柱 | 底支 | 軌道 |
+  密封 | 伸縮門 | 伸縮門五金 | 捲門五金 | 門片/簾片 | 服務/加工 | 其他`
+- `其他`：`訂單/價差 | 服務/租借 | 包裝/保護 | 家用/成品 | 勞安 |
+  油品/化學 | 門窗/捲門 | 工具/加工 | 其他`
+
+Implementation safety lock - user approved script-first validation:
+
+- Source `docs/products_db_v4.3.xlsx` must remain byte-for-byte unchanged in this phase.
+- First implement `packages/api/scripts/normalize-steel-price-v4.cjs` with core TS helpers/tests.
+- Script reads the current 39-column workbook and writes a separate 41-column validation workbook;
+  it must never default output to the input path and must reject same-path input/output.
+- `product_name` alone must infer the current category; compare inferred category to protected workbook
+  category for all 6,761 rows. Any unresolved/mismatch aborts output and emits a ledger.
+- `category + product_name` must produce exactly one concise v3 subcategory for every row.
+- Validation workbook adds exact `thicknessMinMm`/`thicknessMaxMm` after `source_thickness`,
+  includes normalized parser-derived values, and preserves all protected fields exactly.
+- Keep production importer on the existing source workbook contract until the new workbook is reviewed;
+  do not apply DB data, sync rules, or replace the docs workbook in this phase.
+- Verification: source SHA before/after equal, 6,761 ERP-unique rows, zero category mismatches,
+  zero missing/invalid subcategories, protected-field equality, second normalization zero changes,
+  focused tests, render/visual pass, and `git diff --check`.
+
 # Active: 六類長條6M預設與平鐵 parser/rules - 2026-07-13
 
 Goal: 平鐵、角鐵、圓管、圓條、扁方管、方管、方鐵的 product_name 未標示長度時固定補 6000mm；明確名稱長度優先。新增平鐵寬厚與括號整支單重 parser，圓管括號依確認解析為6M整支單重，並確認平鐵預設黑鐵與查價規則；所有品名禁用標記統一強制 no_price，不同步 Supabase data 或 rules DB。
@@ -9886,6 +10174,7 @@ Review:
 - 第二輪移除不影響 AI 判斷的 backend-only 內容：整段 `category_lookup_contract`、query ID／limit clamp／並行 catalog／provenance metadata、切工 code-level mapping、tool normalization 與 parser 寫入指令。必要 backend 契約由 schema、repository、execute 與 sync tests 保證；AI prompt 只保留 query、選價、計算、人工複核與輸出行動。
 - 第三輪將輸出規則精簡為1,270字、OCR規則精簡為1,745字；OCR 保留旋正、繁中、孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓等 AI 判讀能力。缺值留空，每筆保留頁數／項次／件號／圖號等來源標記，不合併來源列；`t/1` 與公式錯誤直接修正並寫備註。
 - Chunk organizer 現只取得 `[ocr_shared]` + `[ocr_organizer]`，不再載入主 Agent rerun/fallback/final merge 規則；`ocrRuleVersion` 也只 hash organizer 子集。三個 AI-visible Steel tool descriptions 與 schema field descriptions 已移除 q ID、clamp、並行 catalog、chunk merge等 backend-only prose。
+- 所有注入 Agent context 的跨規則引用已由檔名改為實際 block name，例如【長條料類別規則】、【長條料切工規則】、【OCR 規則】；regression 禁止 prompt 再出現「依 `*.txt`」。
 - Sync manifest 保留既有切工 slug，新增長條料／加工／其他類別 rows，並清理舊 `長條料-切工.txt` source ref；dry-run 列出14個本地 rule source，各一次且查價通則最後載入。
 - 驗證通過：rule sync、repository loader、native context focused Jest 3 suites／25 tests，rules dry-run、sentence duplicate scan、`git diff --check`。另跑 runtime context suite 時有1個既有 OCR preprocessing merge case 失敗（expected priorActiveFileEvidence、received []）；本輪未修改該 runtime code，重跑仍可重現，其餘13 tests通過。
 - 未執行 `--apply`，未同步 dev／prod `steel.rules`，未修改 Supabase data。
@@ -9918,3 +10207,38 @@ Review:
 - 驗證通過：packages/api usage 10 tests、client OAuth usage/login 15 tests、
   data-provider build、packages/api build、client typecheck、targeted ESLint 與
   `git diff --check`。未執行 commit，未碰觸既有 Steel rules 工作內容。
+
+# Active: products_db_v4.4 category/subcategory normalization - 2026-07-13
+
+Goal: 以 `products_db_v4.3.xlsx` 為唯讀輸入，完成可重跑的 category/subcategory 與
+xlsx normalization pipeline，產生獨立 v4.4 workbook 及待確認清單；確認前不修改來源
+category，也不覆寫 v4.3。
+
+- [x] 鎖定39欄來源、41欄目標與19個受保護欄位；新增 camelCase thickness 欄。
+- [x] 以 TDD 完成 category candidate 及 structural/catalog/processing subcategory classifiers。
+- [x] 完成 unit、material enum、禁用品名 value_state、structured dimensions 與
+  normalized_spec_text normalization core。
+- [x] 完成預設 dry-run、明示 `--write`、拒絕同路徑、支援39/41欄輸入的重跑腳本。
+- [x] 產生 `docs/products_db_v4.4.xlsx` 及 `docs/products_db_v4.4.pending-review.csv`。
+- [x] 驗證 source hash、受保護欄位、ERP唯一性、material enum、面積unit、no_price、
+  idempotency、focused tests、lint、PDF render 與 diff hygiene。
+
+Review:
+
+- v4.4 共6,761筆、41欄；`source_thickness` 後新增 `thicknessMinMm`、
+  `thicknessMaxMm`。19個受保護欄位逐格差異為0，ERP code 6,761筆全唯一。
+- category 不改來源值。完成第二輪逐群稽核後，移除185筆由品牌、用途詞、加工詞與
+  商品主體優先序造成的 classifier 假陽性；留下10筆真正需要確認的 current/inferred
+  mismatch，另有3筆 product_name 空白 placeholder，合計13筆寫入 `待確認` sheet 與CSV。
+- `待確認` 新增 `suggested_action`、`confirmed_category`、`review_note`，供使用者直接
+  填寫確認結果；10筆 category 衝突為 AX0290/91/92、CNB01、CNBG08、DNB60、
+  FFQ0620/25/30、FLS002，空白品名為 AX、FV、FVG。
+- subcategory 使用已確認的精簡命名；非空 product_name 全部有結果。material 全部落在固定
+  storage enum，`熱浸鍍` 只有允許的型鋼/管材 category 才轉 `錏/鍍鋅`；FCP1104 保持空值。
+- 面積unit固定 `㎡`，沒有殘留 `m2/M2/平方公尺`；8種禁用品名 marker 全部轉
+  `value_state=no_price`，價格與ratio欄仍保留來源值。
+- 來源 SHA-256 維持 `08caffe690345fc6defceee3ca046d3de56aefa993e99668fdc7cc12a157dec8`；
+  v4.4 再跑一次 products sheet 完全一致。
+- 驗證通過：7 suites / 349 tests、targeted ESLint、`git diff --check`；LibreOffice 成功
+  轉PDF，並用 spreadsheet renderer 抽查全部7個 sheets 的關鍵範圍。未匯入DB、
+  未同步rules、未修改v4.3。
