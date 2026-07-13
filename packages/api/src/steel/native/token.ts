@@ -17,7 +17,8 @@ import type {
   StartCodexAppServerClientOptions,
 } from './appserver';
 
-import { startCodexAppServerClient } from './appserver';
+import { CodexAppServerRequestError, startCodexAppServerClient } from './appserver';
+import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
 
 type LoadAuthTokensOptions = {
   authFilePath?: string;
@@ -254,10 +255,12 @@ function toPublicCodexLoginCapability(
 }
 
 function createUnavailableStatus({
+  accessTokenStatus = 'unknown',
   fetchedAt,
   login,
   reason,
 }: {
+  accessTokenStatus?: OpenAIOAuthTokenStatus['accessToken']['status'];
   fetchedAt: Date;
   login: OpenAIOAuthTokenStatus['login'];
   reason: OpenAIOAuthTokenStatus['reason'];
@@ -267,10 +270,20 @@ function createUnavailableStatus({
     status: 'unavailable',
     fetchedAt: fetchedAt.toISOString(),
     reason,
-    accessToken: { status: 'unknown' },
+    accessToken: { status: accessTokenStatus },
     refresh: { available: false },
     login,
   };
+}
+
+function isManagedChatGptAccount(response: CodexAppServerJsonObject): boolean {
+  const account = response.account;
+  return (
+    typeof account === 'object' &&
+    account !== null &&
+    !Array.isArray(account) &&
+    account.type === 'chatgpt'
+  );
 }
 
 function createAvailableStatus({
@@ -311,16 +324,20 @@ async function loadStatus({
   env,
   ensureFresh,
   fetch: fetchImpl = globalThis.fetch,
+  knownLogin,
   loadAuthTokens = loadDefaultAuthTokens,
   now = () => new Date(),
   runCodexCommand,
   unavailableReason,
 }: OpenAIOAuthTokenStatusDeps & {
   ensureFresh: boolean;
+  knownLogin?: OpenAIOAuthTokenStatus['login'];
   unavailableReason: OpenAIOAuthTokenStatus['reason'];
 }): Promise<OpenAIOAuthTokenStatus> {
   const fetchedAt = now();
-  const login = await createCodexLoginCapability({ env, runCodexCommand });
+  const login =
+    knownLogin ??
+    toPublicCodexLoginCapability(await createCodexLoginCapability({ env, runCodexCommand }));
   try {
     const auth = await loadAuthTokens({
       ...(authFilePath ? { authFilePath } : {}),
@@ -330,12 +347,12 @@ async function loadStatus({
     return createAvailableStatus({
       auth,
       fetchedAt,
-      login: toPublicCodexLoginCapability(login),
+      login,
     });
   } catch {
     return createUnavailableStatus({
       fetchedAt,
-      login: toPublicCodexLoginCapability(login),
+      login,
       reason: unavailableReason,
     });
   }
@@ -556,6 +573,9 @@ async function completeLoginRecord({
     ensureFresh: false,
     unavailableReason: 'auth_unavailable',
   });
+  if (token.status === 'available') {
+    clearOpenAIOAuthCredentialInvalid(record.authFilePath);
+  }
   record.status =
     token.status === 'available'
       ? {
@@ -576,40 +596,125 @@ async function completeLoginRecord({
 export function getOpenAIOAuthTokenStatus(
   deps: OpenAIOAuthTokenStatusDeps = {},
 ): Promise<OpenAIOAuthTokenStatus> {
-  return loadStatus({
-    ...deps,
-    ensureFresh: false,
-    unavailableReason: 'auth_unavailable',
+  return verifyOpenAIOAuthManagedAccount({
+    allowLocalFallback: true,
+    deps,
+    loadFailureReason: 'auth_unavailable',
+    preparationFailureReason: 'auth_unavailable',
+    refreshToken: false,
+    verificationFailureReason: 'verification_failed',
   });
 }
 
-export async function refreshOpenAIOAuthToken(
-  deps: OpenAIOAuthTokenStatusDeps = {},
-): Promise<OpenAIOAuthTokenStatus> {
+async function verifyOpenAIOAuthManagedAccount({
+  allowLocalFallback,
+  deps,
+  loadFailureReason,
+  preparationFailureReason,
+  refreshToken,
+  verificationFailureReason,
+}: {
+  allowLocalFallback: boolean;
+  deps: OpenAIOAuthTokenStatusDeps;
+  loadFailureReason: NonNullable<OpenAIOAuthTokenStatus['reason']>;
+  preparationFailureReason: NonNullable<OpenAIOAuthTokenStatus['reason']>;
+  refreshToken: boolean;
+  verificationFailureReason: NonNullable<OpenAIOAuthTokenStatus['reason']>;
+}): Promise<OpenAIOAuthTokenStatus> {
   const prepared = await prepareAppServer(deps);
   if ('reason' in prepared) {
+    if (allowLocalFallback) {
+      return loadStatus({
+        ...deps,
+        ensureFresh: false,
+        knownLogin: prepared.login,
+        unavailableReason: loadFailureReason,
+      });
+    }
     return createUnavailableStatus({
       fetchedAt: deps.now?.() ?? new Date(),
       login: prepared.login,
-      reason: 'refresh_failed',
+      reason: preparationFailureReason,
     });
   }
+  const localStatus = allowLocalFallback
+    ? await loadStatus({
+        ...deps,
+        authFilePath: prepared.authFilePath,
+        ensureFresh: false,
+        knownLogin: { available: true },
+        unavailableReason: loadFailureReason,
+      })
+    : undefined;
   try {
-    await prepared.client.request('account/read', { refreshToken: true });
-  } catch {
-    prepared.client.close();
+    const response = await prepared.client.request<CodexAppServerJsonObject>('account/read', {
+      refreshToken,
+    });
+    if (!isManagedChatGptAccount(response)) {
+      return createUnavailableStatus({
+        accessTokenStatus: 'invalid',
+        fetchedAt: deps.now?.() ?? new Date(),
+        login: { available: true },
+        reason: verificationFailureReason,
+      });
+    }
+    if (isOpenAIOAuthCredentialInvalid(prepared.authFilePath)) {
+      return createUnavailableStatus({
+        accessTokenStatus: 'invalid',
+        fetchedAt: deps.now?.() ?? new Date(),
+        login: { available: true },
+        reason: verificationFailureReason,
+      });
+    }
+  } catch (error) {
+    if (
+      allowLocalFallback &&
+      (!(error instanceof CodexAppServerRequestError) || error.reason !== 'unauthorized')
+    ) {
+      return (
+        localStatus ??
+        createUnavailableStatus({
+          fetchedAt: deps.now?.() ?? new Date(),
+          login: { available: true },
+          reason: loadFailureReason,
+        })
+      );
+    }
     return createUnavailableStatus({
+      accessTokenStatus: 'invalid',
       fetchedAt: deps.now?.() ?? new Date(),
       login: { available: true },
-      reason: 'refresh_failed',
+      reason: verificationFailureReason,
     });
+  } finally {
+    prepared.client.close();
   }
-  prepared.client.close();
-  return loadStatus({
+  if (localStatus) {
+    return localStatus;
+  }
+  const status = await loadStatus({
     ...deps,
     authFilePath: prepared.authFilePath,
     ensureFresh: false,
-    unavailableReason: 'refresh_failed',
+    knownLogin: { available: true },
+    unavailableReason: loadFailureReason,
+  });
+  if (status.status === 'available') {
+    clearOpenAIOAuthCredentialInvalid(prepared.authFilePath);
+  }
+  return status;
+}
+
+export function refreshOpenAIOAuthToken(
+  deps: OpenAIOAuthTokenStatusDeps = {},
+): Promise<OpenAIOAuthTokenStatus> {
+  return verifyOpenAIOAuthManagedAccount({
+    allowLocalFallback: false,
+    deps,
+    loadFailureReason: 'refresh_failed',
+    preparationFailureReason: 'refresh_failed',
+    refreshToken: true,
+    verificationFailureReason: 'refresh_failed',
   });
 }
 
@@ -821,6 +926,7 @@ export async function logoutOpenAIOAuthToken(
     return { status: 'failed', fetchedAt: now.toISOString(), reason: 'logout_failed' };
   }
   prepared.client.close();
+  clearOpenAIOAuthCredentialInvalid(prepared.authFilePath);
   const token = await loadStatus({
     ...deps,
     authFilePath: prepared.authFilePath,

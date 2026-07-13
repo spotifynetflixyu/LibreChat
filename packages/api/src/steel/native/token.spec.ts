@@ -14,6 +14,9 @@ import type {
   OpenAIOAuthTokenLoader,
 } from './token';
 
+import { CodexAppServerRequestError } from './appserver';
+import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
+
 import {
   cancelOpenAIOAuthCodexLogin,
   getOpenAIOAuthCodexLoginStatus,
@@ -79,45 +82,215 @@ function createAppServer(responses: Record<string, CodexAppServerJsonValue | Err
 
 describe('OpenAI OAuth token status service', () => {
   it('returns sanitized access-token expiry and detected app-server capability', async () => {
-    const result = await getOpenAIOAuthTokenStatus({
-      authFilePath: '/data/openai-oauth/auth.json',
-      loadAuthTokens: jest.fn(async () => ({
-        accessToken: createJwt(1783562400),
-        refreshToken: 'refresh_sensitive',
-      })),
-      now: () => new Date('2026-07-08T02:34:02.000Z'),
-      runCodexCommand: workingCodexCommand,
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const authFilePath = path.join(tempDir, 'auth.json');
+    const appServer = createAppServer({
+      'account/read': { account: { type: 'chatgpt' }, requiresOpenaiAuth: true },
     });
+    const loadAuthTokens = jest.fn(async () => ({
+      accessToken: createJwt(1783562400),
+      refreshToken: 'refresh_sensitive',
+    }));
 
-    expect(result).toEqual({
-      provider: 'openai_oauth_responses',
-      status: 'available',
-      fetchedAt: '2026-07-08T02:34:02.000Z',
-      accessToken: {
-        status: 'valid',
-        expiresAt: '2026-07-09T02:00:00.000Z',
-        expiresInSeconds: 84358,
-      },
-      refresh: { available: true },
-      login: { available: true },
-    });
-    expect(JSON.stringify(result)).not.toMatch(
-      /signature_sensitive|refresh_sensitive|auth\.json|\/data/i,
-    );
+    try {
+      const result = await getOpenAIOAuthTokenStatus({
+        authFilePath,
+        loadAuthTokens,
+        now: () => new Date('2026-07-08T02:34:02.000Z'),
+        runCodexCommand: workingCodexCommand,
+        startAppServerClient: appServer.startAppServerClient,
+      });
+
+      expect(appServer.request).toHaveBeenCalledWith('account/read', { refreshToken: false });
+      expect(result).toEqual({
+        provider: 'openai_oauth_responses',
+        status: 'available',
+        fetchedAt: '2026-07-08T02:34:02.000Z',
+        accessToken: {
+          status: 'valid',
+          expiresAt: '2026-07-09T02:00:00.000Z',
+          expiresInSeconds: 84358,
+        },
+        refresh: { available: true },
+        login: { available: true },
+      });
+      expect(JSON.stringify(result)).not.toMatch(
+        /signature_sensitive|refresh_sensitive|auth\.json|codex-auth-test/i,
+      );
+      expect(appServer.close).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 
+  it('does not trust a future local expiry when managed-account verification fails', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const authFilePath = path.join(tempDir, 'auth.json');
+    const appServer = createAppServer({
+      'account/read': new CodexAppServerRequestError('unauthorized'),
+    });
+    const loadAuthTokens = jest.fn(async () => ({
+      accessToken: createJwt(1783562400),
+      refreshToken: 'refresh_sensitive',
+    }));
+
+    try {
+      const result = await getOpenAIOAuthTokenStatus({
+        authFilePath,
+        loadAuthTokens,
+        now: () => new Date('2026-07-08T02:34:02.000Z'),
+        runCodexCommand: workingCodexCommand,
+        startAppServerClient: appServer.startAppServerClient,
+      });
+
+      expect(appServer.request).toHaveBeenCalledWith('account/read', { refreshToken: false });
+      expect(loadAuthTokens).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        provider: 'openai_oauth_responses',
+        status: 'unavailable',
+        fetchedAt: '2026-07-08T02:34:02.000Z',
+        reason: 'verification_failed',
+        accessToken: { status: 'invalid' },
+        refresh: { available: false },
+        login: { available: true },
+      });
+      expect(JSON.stringify(result)).not.toMatch(
+        /token_sensitive|refresh_sensitive|auth\.json|codex-auth-test/i,
+      );
+      expect(appServer.close).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps an unexpired local token valid when verification is transiently unavailable', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const appServer = createAppServer({
+      'account/read': new CodexAppServerRequestError('request_failed'),
+    });
+    try {
+      const result = await getOpenAIOAuthTokenStatus({
+        authFilePath: path.join(tempDir, 'auth.json'),
+        loadAuthTokens: jest.fn(async () => ({
+          accessToken: createJwt(1783562400),
+          refreshToken: 'refresh_sensitive',
+        })),
+        now: () => new Date('2026-07-08T02:34:02.000Z'),
+        runCodexCommand: workingCodexCommand,
+        startAppServerClient: appServer.startAppServerClient,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'available',
+          accessToken: expect.objectContaining({ status: 'valid' }),
+        }),
+      );
+      expect(appServer.request).toHaveBeenCalledWith('account/read', { refreshToken: false });
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it('reports an expired local access token after a successful account check', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const appServer = createAppServer({
+      'account/read': { account: { type: 'chatgpt' } },
+    });
+    try {
+      const result = await getOpenAIOAuthTokenStatus({
+        authFilePath: path.join(tempDir, 'auth.json'),
+        loadAuthTokens: jest.fn(async () => ({ accessToken: createJwt(1783470000) })),
+        now: () => new Date('2026-07-08T02:34:02.000Z'),
+        runCodexCommand: workingCodexCommand,
+        startAppServerClient: appServer.startAppServerClient,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'available',
+          accessToken: expect.objectContaining({ status: 'expired', expiresInSeconds: 0 }),
+        }),
+      );
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it('reports a prior OAuth 401 for the same credential as invalid', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const authFilePath = path.join(tempDir, 'auth.json');
+    const appServer = createAppServer({
+      'account/read': { account: { type: 'chatgpt' } },
+    });
+    markOpenAIOAuthCredentialInvalid(authFilePath);
+    try {
+      const result = await getOpenAIOAuthTokenStatus({
+        authFilePath,
+        loadAuthTokens: jest.fn(async () => ({ accessToken: createJwt(1783562400) })),
+        now: () => new Date('2026-07-08T02:34:02.000Z'),
+        runCodexCommand: workingCodexCommand,
+        startAppServerClient: appServer.startAppServerClient,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'unavailable',
+          reason: 'verification_failed',
+          accessToken: { status: 'invalid' },
+        }),
+      );
+    } finally {
+      clearOpenAIOAuthCredentialInvalid(authFilePath);
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it.each([{ account: null }, { account: { type: 'apiKey' } }])(
+    'rejects a non-ChatGPT managed account response: %j',
+    async (accountResponse) => {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+      const appServer = createAppServer({ 'account/read': accountResponse });
+      try {
+        const result = await getOpenAIOAuthTokenStatus({
+          authFilePath: path.join(tempDir, 'auth.json'),
+          loadAuthTokens: jest.fn(async () => ({ accessToken: createJwt(1783562400) })),
+          runCodexCommand: workingCodexCommand,
+          startAppServerClient: appServer.startAppServerClient,
+        });
+
+        expect(result).toEqual(
+          expect.objectContaining({
+            status: 'unavailable',
+            reason: 'verification_failed',
+            accessToken: { status: 'invalid' },
+          }),
+        );
+      } finally {
+        await rm(tempDir, { force: true, recursive: true });
+      }
+    },
+  );
+
   it('returns sanitized unavailable state when auth loading fails', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const appServer = createAppServer({
+      'account/read': { account: { type: 'chatgpt' }, requiresOpenaiAuth: true },
+    });
     const result = await getOpenAIOAuthTokenStatus({
+      authFilePath: path.join(tempDir, 'auth.json'),
       loadAuthTokens: jest.fn(async () => {
         throw new Error('token_sensitive /data/auth.json');
       }),
       now: () => new Date('2026-07-08T02:34:02.000Z'),
       runCodexCommand: workingCodexCommand,
+      startAppServerClient: appServer.startAppServerClient,
     });
 
     expect(result.status).toBe('unavailable');
     expect(result.reason).toBe('auth_unavailable');
     expect(JSON.stringify(result)).not.toMatch(/token_sensitive|auth\.json|\/data/i);
+    await rm(tempDir, { force: true, recursive: true });
   });
 
   it('refreshes the managed account through app-server before reading token status', async () => {

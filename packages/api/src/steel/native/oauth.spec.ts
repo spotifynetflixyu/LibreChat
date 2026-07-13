@@ -23,7 +23,12 @@ import { RunnableLambda } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
-import { createOpenAIOAuthGraphModel, createOpenAIOAuthModel } from './oauth';
+import {
+  createOpenAIOAuthGraphModel,
+  createOpenAIOAuthModel,
+  createStatelessOpenAIOAuthProvider,
+} from './oauth';
+import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
 
 function createUsage(): LanguageModelV3GenerateResult['usage'] {
   return {
@@ -121,6 +126,37 @@ function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
 }
 
 describe('OpenAI OAuth model adapter', () => {
+  it('records only an OAuth Chat 401 as invalid credential evidence', async () => {
+    const authFilePath = '/tmp/oauth-chat-401-auth.json';
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 403 }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 })) as unknown as FetchFunction;
+    const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn() });
+    try {
+      await createStatelessOpenAIOAuthProvider({
+        authFilePath,
+        ...dependencies.options,
+        fetch: fetchFn,
+      });
+      const transportOptions = (
+        dependencies.options.createOpenAIOAuthTransport as unknown as jest.Mock
+      ).mock.calls[0][0] as { fetch: FetchFunction };
+
+      await transportOptions.fetch('https://chatgpt.com/backend-api/codex/responses');
+      expect(isOpenAIOAuthCredentialInvalid(authFilePath)).toBe(false);
+
+      await transportOptions.fetch('https://chatgpt.com/backend-api/codex/responses');
+      expect(isOpenAIOAuthCredentialInvalid(authFilePath)).toBe(true);
+
+      await transportOptions.fetch('https://chatgpt.com/backend-api/codex/responses');
+      expect(isOpenAIOAuthCredentialInvalid(authFilePath)).toBe(false);
+    } finally {
+      clearOpenAIOAuthCredentialInvalid(authFilePath);
+    }
+  });
+
   it('creates a stateless OAuth provider model and converts LangChain messages to AI SDK prompt', async () => {
     const fetchFn = jest.fn() as unknown as FetchFunction;
     const doGenerate = jest.fn(async () =>

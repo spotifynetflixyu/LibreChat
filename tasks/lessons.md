@@ -1,5 +1,7 @@
 # Lessons
 
+- OpenAI OAuth 401 診斷必須先按 exact error text 分層：`OpenAI OAuth token request failed with HTTP 401` 是 `@openai-oauth/core` 對 OAuth token endpoint 的 refresh request 失敗，不是 LibreChat `requireJwtAuth` 的 `jwt expired`。不可用同時段附近的另一組 401 日誌代替畫面中的實際錯誤；先搜尋錯誤字串的 throw site，再對應 auth refresh/status 路徑。
+
 - `search_price_candidates.keyword` 的空白切詞／詞間 AND 是通用 backend 契約，必須只由【search_price_candidates 通用查價規則】明文作唯一 owner；其他規則可描述何時需要多詞及該類允許的 canonical 詞，但不可重複解釋 AND 語意。
 
 - Google Drive／Google Sheets 不會可靠地把 Excel Table XML 內的 `<autoFilter>` 轉成可操作的欄位篩選；Google-targeted XLSX 必須在每個 `xl/worksheets/sheetN.xml` 寫 worksheet-level `<autoFilter ref="完整 used range">`。artifact-tool 輸出可能沒有 `<dimension>`，range resolver 必須支援從 `<c r="...">` cell refs 計算 bounds，不能只讀 Table 或 dimension。
@@ -995,6 +997,9 @@
 - Steel activity/event messages should start with the action verb. Prefer
   `Saved Working Order Memory`, `Saved Markdown parse`, and `Saved PaddleOCR
   preflight` over noun-first `... saved` wording.
+- When the user asks which Steel events have logs after naming a tool such as
+  `search_price_candidates`, inspect tool execution/activity events and
+  Working Order Memory capture separately; do not assume they mean Admin Audit Log.
 - Before automatic Steel OCR preflight or client initialization starts, persist
   the submitted user message to the `messages` collection, not only to
   `GenerationJobManager` metadata. Preflight/organizer failures can happen
@@ -1153,3 +1158,4 @@
 - `加工/切工` 的 `processingQueries.keyword` 在已確認加工方式時，優先使用 canonical `processing_method` 詞；不要先用 product_name、冗長描述或較次要的加工形狀。沒有已確認 method 時，才退回足以辨識的最短通用形狀／必要規格詞，且不新增 processing method 專用 query param。
 - 使用者未明確要求開啟 app 或 server 時，交付後不得自行保持 3080／3090 運行。只有開發驗證確實需要時才暫時啟動；測試完成後主動關閉，除非使用者明示要繼續開著。
 - Codex Skill 停用若使用者指定 `gpt-5.6`，範圍包含目前 model catalog 的整個 `gpt-5.6*` family（`luna`、`sol`、`terra`），不得自行縮成只有 `gpt-5.6-sol`；其他 model family 必須維持原設定。
+- OAuth token status 檢查不得每次強制 refresh：未過期的本地 access token 預設為 valid，例行 `account/read` 使用 `refreshToken: false`；UI 檢查期間顯示 Loading，完成後才顯示新結果。只有明確 Refresh token 動作使用 `refreshToken: true`。

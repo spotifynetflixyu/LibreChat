@@ -1284,6 +1284,7 @@
   "com_ui_include_shadcnui": "Include shadcn/ui components instructions",
   "com_ui_input": "Input",
   "com_ui_instructions": "Instructions",
+  "com_ui_invalid": "Invalid",
   "com_ui_invalid_json": "Invalid JSON",
   "com_ui_invocation_auto": "Auto",
   "com_ui_invocation_auto_info": "The skill is automatically applied by the agent when relevant to the conversation",

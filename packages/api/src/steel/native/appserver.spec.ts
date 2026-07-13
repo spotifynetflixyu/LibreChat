@@ -1,6 +1,6 @@
 import type { CodexAppServerProcessSpawner } from './appserver';
 
-import { startCodexAppServerClient } from './appserver';
+import { CodexAppServerRequestError, startCodexAppServerClient } from './appserver';
 
 function createSpawner(
   onWrite: (message: Record<string, unknown>, emit: (chunk: string) => void) => void,
@@ -102,9 +102,48 @@ describe('Codex app-server client', () => {
     await expect(client.request('account/logout')).rejects.toThrow(
       'Codex app-server request failed',
     );
+    await expect(client.request('account/logout')).rejects.toMatchObject({
+      reason: 'request_failed',
+    });
     await expect(client.request('account/logout')).rejects.not.toThrow(/sensitive|auth\.json/i);
     client.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies an explicit upstream authorization error without exposing its payload', async () => {
+    const { spawnProcess } = createSpawner((message, emit) => {
+      if (message.method === 'initialize') {
+        emit(`${JSON.stringify({ id: message.id, result: {} })}\n`);
+      }
+      if (message.method === 'account/read') {
+        emit(
+          `${JSON.stringify({
+            id: message.id,
+            error: {
+              code: -32000,
+              data: { status: 401, token: 'token_sensitive' },
+              message: 'OpenAI OAuth token request failed',
+            },
+          })}\n`,
+        );
+      }
+    });
+    const client = await startCodexAppServerClient({
+      command: 'codex',
+      cwd: '/srv/codex-home',
+      env: {},
+      spawnProcess,
+    });
+
+    const error = await client.request('account/read').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CodexAppServerRequestError);
+    expect(error).toMatchObject({
+      message: 'Codex app-server request failed',
+      reason: 'unauthorized',
+    });
+    expect(JSON.stringify(error)).not.toMatch(/token_sensitive/i);
+    client.close();
   });
 
   it('rejects pending requests when the process exits', async () => {

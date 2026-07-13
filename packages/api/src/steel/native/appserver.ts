@@ -26,6 +26,18 @@ type PendingRequest = {
   timeout: NodeJS.Timeout;
 };
 
+export type CodexAppServerRequestErrorReason = 'request_failed' | 'unauthorized';
+
+export class CodexAppServerRequestError extends Error {
+  readonly reason: CodexAppServerRequestErrorReason;
+
+  constructor(reason: CodexAppServerRequestErrorReason) {
+    super('Codex app-server request failed');
+    this.name = 'CodexAppServerRequestError';
+    this.reason = reason;
+  }
+}
+
 export type CodexAppServerClient = {
   close(): void;
   on(method: string, handler: NotificationHandler): () => void;
@@ -114,6 +126,27 @@ function parseMessage(line: string): CodexAppServerJsonObject | undefined {
   }
 }
 
+function hasUnauthorizedSignal(value: CodexAppServerJsonValue, depth = 0): boolean {
+  if (depth > 5) {
+    return false;
+  }
+  if (typeof value === 'number') {
+    return value === 401;
+  }
+  if (typeof value === 'string') {
+    return /\b401\b|unauthoriz|invalid_grant|refresh token.{0,40}(?:invalid|expired|revoked)/iu.test(
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasUnauthorizedSignal(entry, depth + 1));
+  }
+  if (isJsonObject(value)) {
+    return Object.values(value).some((entry) => hasUnauthorizedSignal(entry, depth + 1));
+  }
+  return false;
+}
+
 export async function startCodexAppServerClient({
   command,
   cwd,
@@ -155,7 +188,11 @@ export async function startCodexAppServerClient({
       pending.delete(id);
       clearTimeout(request.timeout);
       if (isJsonObject(message.error)) {
-        request.reject(new Error('Codex app-server request failed'));
+        request.reject(
+          new CodexAppServerRequestError(
+            hasUnauthorizedSignal(message.error) ? 'unauthorized' : 'request_failed',
+          ),
+        );
         return;
       }
       request.resolve(message.result ?? null);

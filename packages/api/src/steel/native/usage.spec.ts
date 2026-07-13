@@ -28,6 +28,61 @@ function createUsagePayload(usedPercent = 20) {
 }
 
 describe('OpenAI OAuth usage remaining service', () => {
+  it('reports an upstream authorization failure separately from transient request errors', async () => {
+    const result = await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/unauthorized-auth.json',
+      cache: {},
+      fetch: jest.fn(async () => new Response(null, { status: 401 })),
+      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+
+    expect(result).toEqual({
+      provider: 'openai_oauth_responses',
+      source: 'chatgpt_wham_usage',
+      status: 'unavailable',
+      fetchedAt: '2026-06-26T07:00:00.000Z',
+      reason: 'unauthorized',
+      windows: [],
+    });
+  });
+
+  it('does not treat an upstream 403 as proof that the OAuth token is invalid', async () => {
+    const result = await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/forbidden-auth.json',
+      cache: {},
+      fetch: jest.fn(async () => new Response(null, { status: 403 })),
+      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'unavailable',
+        reason: 'request_failed',
+      }),
+    );
+  });
+
+  it('reports a token refresh authorization failure as unauthorized', async () => {
+    const result = await getOpenAIOAuthUsageRemaining({
+      authFilePath: '/tmp/refresh-failed-auth.json',
+      cache: {},
+      fetch: jest.fn(),
+      loadAuthTokens: jest.fn(async () => {
+        throw new Error('OpenAI OAuth token request failed with HTTP 401');
+      }),
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'unavailable',
+        reason: 'unauthorized',
+      }),
+    );
+  });
+
   it('fetches ChatGPT OAuth WHAM usage and returns only sanitized remaining windows', async () => {
     const loadAuthTokens = jest.fn(async () => ({
       accessToken: 'token_sensitive',

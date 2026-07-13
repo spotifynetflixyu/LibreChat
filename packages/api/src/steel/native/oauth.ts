@@ -11,7 +11,6 @@ import type {
   LanguageModelV3TextPart,
   LanguageModelV3ToolCall,
   LanguageModelV3ToolCallPart,
-  LanguageModelV3ToolResultPart,
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
@@ -24,6 +23,8 @@ import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } fro
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
+
+import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -101,7 +102,7 @@ function createLocalOpenAIOAuthOptions({
   }) as LocalOpenAIOAuthOptions;
 }
 
-function createCodexCompatibleFetch(fetchFn: FetchFunction): FetchFunction {
+function createCodexCompatibleFetch(fetchFn: FetchFunction, authFilePath?: string): FetchFunction {
   let clientVersion: string | undefined;
 
   return async (input, init) => {
@@ -116,7 +117,13 @@ function createCodexCompatibleFetch(fetchFn: FetchFunction): FetchFunction {
     }
 
     if (!requestUrl?.pathname.endsWith('/responses') || !clientVersion) {
-      return fetchFn(input, init);
+      const response = await fetchFn(input, init);
+      if (response.status === 401) {
+        markOpenAIOAuthCredentialInvalid(authFilePath);
+      } else if (response.ok && requestUrl?.pathname.endsWith('/responses')) {
+        clearOpenAIOAuthCredentialInvalid(authFilePath);
+      }
+      return response;
     }
 
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
@@ -124,10 +131,16 @@ function createCodexCompatibleFetch(fetchFn: FetchFunction): FetchFunction {
     headers.set('originator', 'codex_cli_rs');
     headers.set('user-agent', `codex_cli_rs/${clientVersion}`);
 
-    return fetchFn(input, {
+    const response = await fetchFn(input, {
       ...init,
       headers,
     });
+    if (response.status === 401) {
+      markOpenAIOAuthCredentialInvalid(authFilePath);
+    } else if (response.ok) {
+      clearOpenAIOAuthCredentialInvalid(authFilePath);
+    }
+    return response;
   };
 }
 
@@ -142,7 +155,7 @@ export async function createStatelessOpenAIOAuthProvider(
   const fetchFn = options.fetch ?? globalThis.fetch;
   const transport = createOpenAIOAuthTransport({
     auth: () => credentials.getSession(),
-    fetch: createCodexCompatibleFetch(fetchFn),
+    fetch: createCodexCompatibleFetch(fetchFn, options.authFilePath),
     responsesState: false,
   });
   return createOpenAIOAuth(transport);

@@ -10800,3 +10800,84 @@ Review:
 
 - Dev／prod 均同步並讀回 14/14 active reviewed rules；本次變更的通用查價、孔加工、一般加工三筆 SHA 完全一致。
 - `查價方式` SHA `981a7677...b49329c`、`孔` SHA `9a55cb64...b39080`、`加工` SHA `16fc7387...60077`。
+# Active: OAuth valid status vs usage/chat 401 diagnosis - 2026-07-13
+
+Goal: Explain with current code and runtime evidence why OpenAI OAuth login status can remain
+`valid` while Usage remaining and OAuth chat both return HTTP 401. Diagnosis only; no product
+code changes.
+
+- [x] Build a current runtime feedback loop for token status, usage, and chat.
+- [x] Trace and compare the three authentication/validation paths.
+- [x] Verify the common cause against auth-file metadata and upstream responses.
+- [x] Record the evidence-backed conclusion and next repair options.
+
+## Review
+
+- The captured 401s were LibreChat web-session failures, not OpenAI upstream
+  failures: `api/logs/debug-2026-07-13.log` recorded `jwt expired`,
+  `TokenExpiredError`, and `token_provider: librechat` at `05:41:51Z`.
+- Follow-up screenshot showed a separate exact error:
+  `OpenAI OAuth token request failed with HTTP 401`. This string is thrown by
+  `@openai-oauth/core` only when its OAuth token endpoint POST fails, so the
+  screenshot is an OpenAI refresh-token failure and must not be attributed to
+  the unrelated LibreChat JWT-expiry entries above.
+- Usage and chat are both protected by `requireJwtAuth`, so an expired LibreChat
+  JWT can reject both before their OpenAI OAuth code runs. The prior OAuth chat
+  completed successfully at `05:28:59Z`, and protected requests recovered after
+  the browser refresh flow.
+- The green `valid` flag is separately local-only: the status path loads the auth file with
+  `ensureFresh: false`, decodes the unverified JWT payload, and treats a future
+  `exp` as valid without making an OpenAI request.
+- Production read-only probe at `2026-07-13T08:18:51Z` found the current auth file
+  had been refreshed at `07:00:19Z`, with JWT expiry `2026-07-23T07:00:19Z`.
+  Current WHAM usage and Codex model-catalog probes both returned HTTP 200, so the
+  earlier 401 state is no longer reproducible with the current production token.
+- No runtime/product code was changed.
+# Active: OAuth token status uses official Codex auth state - 2026-07-13
+
+Goal: Keep an unexpired local access token valid by default, then check the documented Codex
+app-server managed-account state without forcing refresh. An observed OAuth 401 must produce an
+invalid status and Login action even when the stored access-token `exp` is still in the future.
+Do not run live OAuth smoke tests.
+
+- [x] Read official Codex app-server auth documentation.
+- [x] Add backend/data-provider regression coverage for verified, unauthorized, expired,
+      unavailable, and sanitized status responses.
+- [x] Verify status through documented `account/read { refreshToken: false }` and validate
+      the returned managed ChatGPT account before trusting local expiry metadata.
+- [x] Update the admin OAuth UI so invalid verification is red and offers Login instead of
+      Refresh/Logout.
+- [x] Run focused backend/client tests, shared-schema build, typecheck/build, ESLint, and
+      `git diff --check`; do not run live smoke tests.
+
+## Design
+
+- Official source: Codex app-server `account/read` returns current account information. Routine
+  status checks use `refreshToken: false`; only the explicit Refresh token action forces refresh.
+- A successful response is trusted only when `account.type === "chatgpt"`; the sanitized
+  public status records that verification and never returns email, account id, token values,
+  raw app-server errors, or auth paths.
+- A future local JWT `exp` is valid by default. A confirmed OAuth 401 from app-server, Usage, or
+  OAuth Chat becomes `status: unavailable`, `reason: verification_failed`, and
+  `accessToken.status: invalid`; transient verification failures retain the local status.
+- While the status check is running, the UI shows Loading instead of a stale result.
+- Local `exp` is the default validity basis; a confirmed OAuth 401 or non-ChatGPT account result
+  overrides it.
+
+## Review
+
+- Routine status reads now call official Codex app-server `account/read` with
+  `refreshToken: false`; explicit Refresh token remains the only forced refresh path.
+- A future local JWT expiry stays green by default. Explicit app-server auth errors and observed
+  Usage/OAuth Chat HTTP 401 responses mark that credential invalid; HTTP 403 and transient
+  app-server failures retain the usable local status.
+- App-server errors preserve only a sanitized `unauthorized` versus `request_failed`
+  classification. Raw upstream messages, token values, account data, and auth paths are not
+  returned to the client.
+- Admin UI has a separate Verify action that does not refresh the token. It shows Loading for
+  initial and manual checks; a confirmed invalid result is red and switches actions to Login,
+  while a Usage 401 updates this immediately.
+- Verification passed: full workspace production build, client typecheck, 50 focused
+  packages/api tests, 21 client tests, 21 API route tests, targeted ESLint, translation JSON
+  parse, and `git diff --check`.
+- Per request, no production or live OAuth smoke test was run.

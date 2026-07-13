@@ -4,6 +4,7 @@ export const openAIOAuthUsageWindowKeySchema = z.enum(['primary', 'secondary']);
 
 export const openAIOAuthUsageUnavailableReasonSchema = z.enum([
   'auth_unavailable',
+  'unauthorized',
   'request_failed',
   'invalid_response',
 ]);
@@ -31,9 +32,15 @@ export const openAIOAuthUsageRemainingSchema = z.object({
 export const openAIOAuthTokenUnavailableReasonSchema = z.enum([
   'auth_unavailable',
   'refresh_failed',
+  'verification_failed',
 ]);
 
-export const openAIOAuthTokenAccessStatusSchema = z.enum(['valid', 'expired', 'unknown']);
+export const openAIOAuthTokenAccessStatusSchema = z.enum([
+  'valid',
+  'invalid',
+  'expired',
+  'unknown',
+]);
 
 export const openAIOAuthTokenLoginUnavailableReasonSchema = z.enum(['codex_cli_unavailable']);
 

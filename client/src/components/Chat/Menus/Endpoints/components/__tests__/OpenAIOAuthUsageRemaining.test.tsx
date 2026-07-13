@@ -64,6 +64,7 @@ jest.mock('~/hooks', () => ({
       com_ui_device_code_login_recommended: 'Device code is recommended.',
       com_ui_expires: 'Expires',
       com_ui_expired: 'Expired',
+      com_ui_invalid: 'Invalid',
       com_ui_login_failed: 'Failed',
       com_ui_login_pending: 'Pending',
       com_ui_login_starting: 'Starting...',
@@ -86,6 +87,7 @@ jest.mock('~/hooks', () => ({
       com_ui_close: 'Close',
       com_ui_usage_remaining: 'Usage remaining',
       com_ui_valid: 'Valid',
+      com_ui_verify: 'Verify',
       com_ui_verification_code: 'Verification code',
       com_ui_weekly: 'Weekly',
     })[key] ?? key,
@@ -301,6 +303,7 @@ describe('OpenAIOAuthUsageRemaining', () => {
 
   it('renders OAuth token status and actions for admins only', () => {
     const refreshToken = jest.fn();
+    const verifyToken = jest.fn();
     const refreshUsage = jest.fn();
     mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
     mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
@@ -333,7 +336,9 @@ describe('OpenAIOAuthUsageRemaining', () => {
         },
       },
       isError: false,
+      isFetching: false,
       isLoading: false,
+      refetch: verifyToken,
     });
     mockUseRefreshOpenAIOAuthTokenMutation.mockReturnValue({
       data: undefined,
@@ -352,10 +357,107 @@ describe('OpenAIOAuthUsageRemaining', () => {
     expect(screen.getByText('Codex app-server').closest('div')).toHaveTextContent('Unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(refreshUsage).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    expect(verifyToken).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Refresh token' }));
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: 'Login Codex' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
+  });
+
+  it('shows Login instead of token actions when upstream verification fails', () => {
+    mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
+    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
+      data: { status: 'unavailable', reason: 'auth_unavailable', windows: [] },
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
+      data: {
+        provider: 'openai_oauth_responses',
+        status: 'unavailable',
+        fetchedAt: '2026-07-13T08:00:00.000Z',
+        reason: 'verification_failed',
+        accessToken: { status: 'invalid' },
+        refresh: { available: false },
+        login: { available: true },
+      },
+      isError: false,
+      isLoading: false,
+    });
+
+    renderOpenAIOAuthUsageRemaining();
+
+    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Invalid');
+    expect(screen.getAllByTestId('openai-oauth-status-dot-red')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Login Codex' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Refresh token' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Logout' })).not.toBeInTheDocument();
+  });
+
+  it('shows Loading while a cached valid token is being checked', () => {
+    mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
+    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
+      data: { status: 'available', windows: [] },
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
+      data: {
+        provider: 'openai_oauth_responses',
+        status: 'available',
+        fetchedAt: '2026-07-13T08:00:00.000Z',
+        accessToken: { status: 'valid' },
+        refresh: { available: true },
+        login: { available: true },
+      },
+      isError: false,
+      isFetching: true,
+      isLoading: false,
+    });
+
+    renderOpenAIOAuthUsageRemaining();
+
+    expect(screen.getByText('OAuth token').closest('div')?.parentElement).toHaveTextContent(
+      'Loading',
+    );
+    expect(screen.queryByText('Valid')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Verify' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Refresh token' })).not.toBeInTheDocument();
+  });
+
+  it('shows the token as invalid when Usage remaining receives an OAuth 401', () => {
+    mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
+    mockUseGetOpenAIOAuthUsageQuery.mockReturnValue({
+      data: { status: 'unavailable', reason: 'unauthorized', windows: [] },
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    mockUseGetOpenAIOAuthTokenStatusQuery.mockReturnValue({
+      data: {
+        provider: 'openai_oauth_responses',
+        status: 'available',
+        fetchedAt: '2026-07-13T08:00:00.000Z',
+        accessToken: { status: 'valid' },
+        refresh: { available: true },
+        login: { available: true },
+      },
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+    });
+
+    renderOpenAIOAuthUsageRemaining();
+
+    expect(screen.getByText('Status').closest('div')).toHaveTextContent('Invalid');
+    expect(screen.getByRole('button', { name: 'Login Codex' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Refresh token' })).not.toBeInTheDocument();
   });
 
   it('starts Codex login and shows the device login details for admins', async () => {

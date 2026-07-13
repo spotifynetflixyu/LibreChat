@@ -5,6 +5,12 @@ import type {
   OpenAIOAuthUsageWindowKey,
 } from 'librechat-data-provider';
 
+import {
+  clearOpenAIOAuthCredentialInvalid,
+  isOpenAIOAuthUnauthorizedError,
+  markOpenAIOAuthCredentialInvalid,
+} from './auth-state';
+
 const usageEndpoint = 'https://chatgpt.com/backend-api/wham/usage';
 const defaultTtlMs = 60_000;
 
@@ -260,7 +266,11 @@ async function loadOpenAIOAuthUsageRemaining({
       ensureFresh,
       fetch: fetchImpl,
     });
-  } catch {
+  } catch (error) {
+    if (isOpenAIOAuthUnauthorizedError(error)) {
+      markOpenAIOAuthCredentialInvalid(authFilePath);
+      return createUnavailableResponse({ fetchedAt, reason: 'unauthorized' });
+    }
     return createUnavailableResponse({ fetchedAt, reason: 'auth_unavailable' });
   }
 
@@ -277,6 +287,10 @@ async function loadOpenAIOAuthUsageRemaining({
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      markOpenAIOAuthCredentialInvalid(authFilePath);
+      return createUnavailableResponse({ fetchedAt, reason: 'unauthorized' });
+    }
     return createUnavailableResponse({ fetchedAt, reason: 'request_failed' });
   }
 
@@ -292,6 +306,7 @@ async function loadOpenAIOAuthUsageRemaining({
     return createUnavailableResponse({ fetchedAt, reason: 'invalid_response' });
   }
 
+  clearOpenAIOAuthCredentialInvalid(authFilePath);
   return parsed;
 }
 
