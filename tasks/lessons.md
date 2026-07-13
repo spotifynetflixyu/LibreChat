@@ -1,5 +1,7 @@
 # Lessons
 
+- Google Drive／Google Sheets 不會可靠地把 Excel Table XML 內的 `<autoFilter>` 轉成可操作的欄位篩選；Google-targeted XLSX 必須在每個 `xl/worksheets/sheetN.xml` 寫 worksheet-level `<autoFilter ref="完整 used range">`。artifact-tool 輸出可能沒有 `<dimension>`，range resolver 必須支援從 `<c r="...">` cell refs 計算 bounds，不能只讀 Table 或 dimension。
+
 - Steel `查價方式` 通用 owner 只保留跨類別共用的 query envelope、選價與規則索引；
   正規化加工方式／形狀的具體詞表必須留在對應加工 owner，並直接寫成
   `processingQueries.keyword` 可用值，不可假裝成額外 query param。孔加工方式、

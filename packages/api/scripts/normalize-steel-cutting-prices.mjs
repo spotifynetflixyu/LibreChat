@@ -10,7 +10,10 @@ const { FileBlob, SpreadsheetFile } = await import(
   pathToFileURL(require.resolve('@oai/artifact-tool')).href
 );
 const { normalizeCuttingWorkbookRow } = require('./lib/cutting-normalize.cjs');
-const { enableCuttingHeaderFilters } = require('./lib/workbook-filters.cjs');
+const {
+  addWorksheetAutoFiltersToXlsx,
+  enableCuttingHeaderFilters,
+} = require('./lib/workbook-filters.cjs');
 
 const DEFAULT_INPUT_PATH = path.resolve(
   import.meta.dirname,
@@ -66,6 +69,7 @@ async function normalizeWorkbook({ inputPath, outputPath }) {
 
   const exported = await SpreadsheetFile.exportXlsx(workbook);
   await exported.save(outputPath);
+  await addWorksheetAutoFiltersToXlsx(outputPath);
   await fs.rm(`${outputPath}.inspect.ndjson`, { force: true });
   return { inputPath, outputPath, sheets };
 }

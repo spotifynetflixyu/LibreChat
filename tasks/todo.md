@@ -10760,17 +10760,22 @@ Confirmed implementation scope:
 
 Review:
 
+- Follow-up correction：Google Drive 實測未顯示 filter，根因是前版只產生 Table XML
+  `<autoFilter>`，9 個 worksheet XML 都沒有 worksheet-level AutoFilter；Table metadata
+  不能視為 Google Sheets 相容性證明。
 - Products normalizer 現在於所有 sheet 更新完成後統一為每張有效 worksheet 寫入
   full-used-range `!autofilter`；regression 會逐 sheet 檢查 ref，且二次 normalization
   仍保留 filter。
-- Cutting normalizer 現在於每張 expected sheet 寫回 normalized rows 後，刪除可能只覆蓋
-  部分欄位的 legacy Table，再以固定名稱與完整 used range 重建，保留既有 style 並開啟 filter。
+- Cutting normalizer 現在除了重建完整 used-range Table，還會在 export 後以 OOXML finalizer
+  寫入 worksheet-level AutoFilter；range 先讀 dimension，缺少時從 worksheet cell refs
+  計算，並支援 namespaced XML、existing filter replacement 與原子 temp-file replace。
 - 現有 reference XLSX 是直接以 artifact-tool 編輯，未執行 parser：Products 7 張 sheet
   filter ranges 為 `A1:AQ6762`、`A1:L81`、`A1:W595`、`A1:D6`、`A1:M2467`、
   `A1:B16`、`A1:J1`；Cutting 2 張為 `A1:T101`、`A1:T20`。
 - 直接編輯前後所有 sheet 的 values、formulas、used ranges 完全一致；9 張 sheet render
   visual pass 完成，公式錯誤 0；Products importer dry-run 維持 6,761 rows／6,761 unique ERP
   與 `4,787 / 190 / 1,784`，Cutting 維持 `119 / 100 / 19`。
-- 驗證通過：2 focused Jest suites／5 tests、targeted ESLint 0 issues、兩份 XLSX Table XML
-  AutoFilter refs、兩個 importer dry-run、source/temp SHA-256 對等與 `git diff --check`。
+- 驗證通過：2 focused Jest suites／8 tests、targeted ESLint 0 issues、兩份 XLSX 的 9 個
+  worksheet-level AutoFilter refs、SheetJS `!autofilter` readback、非 worksheet ZIP entry
+  解壓內容全等、兩個 importer dry-run、visual pass 與 `git diff --check`。
   未匯入 DB、未碰 prod、未 commit、未執行 Prettier。
