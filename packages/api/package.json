@@ -168,14 +168,14 @@
     "zod": "^3.22.4"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.65",
-    "@ai-sdk/provider": "^3.0.10",
-    "@ai-sdk/provider-utils": "^4.0.27",
+    "@ai-sdk/openai": "3.0.85",
+    "@ai-sdk/provider": "3.0.14",
+    "@ai-sdk/provider-utils": "4.0.39",
     "@langchain/langgraph-checkpoint": "^1.1.2",
     "@langchain/langgraph-checkpoint-mongodb": "^1.4.0",
-    "@openai-oauth/ai-sdk": "2.0.0-beta.2",
-    "@openai-oauth/core": "2.0.0-beta.2",
-    "@openai-oauth/local": "2.0.0-beta.2",
+    "@openai-oauth/ai-sdk": "2.0.0-beta.5",
+    "@openai-oauth/core": "2.0.0-beta.5",
+    "@openai-oauth/local": "2.0.0-beta.5",
     "exceljs": "^4.4.0",
     "pdf-lib": "^1.17.1"
   }

@@ -1,9 +1,10 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import filenamify from 'filenamify';
 import { createPortal } from 'react-dom';
 import { ControlCombobox } from '@librechat/client';
 import { Check, Copy, Download, Maximize2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useRecoilState } from 'recoil';
+import { useRecoilState, useRecoilValue } from 'recoil';
 import { buildMarkdownTableCommentId } from '~/common';
 import type { MarkdownTableComment } from '~/common';
 import { useMessageContext } from '~/Providers';
@@ -27,6 +28,7 @@ type ThemeAttributes = {
 type TableToolbarProps = {
   tableRef: React.RefObject<HTMLTableElement>;
   copied: boolean;
+  downloadFilename: string;
   expanded: boolean;
   headerOptions?: readonly TableHeaderOption[];
   onClose?: () => void;
@@ -80,6 +82,22 @@ type CommentableTableChildrenInput = {
 
 const xlsxMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const wideColumnTextThreshold = 36;
+
+function formatFilenameTimestamp(timestamp?: string | null): string {
+  const parsed = timestamp ? new Date(timestamp) : new Date();
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const pad = (value: number) => String(value).padStart(2, '0');
+
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`,
+  ].join('_');
+}
+
+function getDownloadFilename(title: string | null | undefined, timestamp?: string | null): string {
+  const safeTitle = filenamify(title?.trim() || 'Longding');
+  return `${safeTitle}_${formatFilenameTimestamp(timestamp)}.xlsx`;
+}
 
 function encodeText(value: string): Uint8Array {
   if (typeof TextEncoder !== 'undefined') {
@@ -629,6 +647,7 @@ function TableActionButton({
 function TableToolbar({
   tableRef,
   copied,
+  downloadFilename,
   expanded,
   headerOptions = [],
   onClose,
@@ -668,8 +687,8 @@ function TableToolbar({
     void writeClipboardText(tableMatrixToMarkdown(getTableMatrix(tableRef.current))).then(onCopied);
   }, [onCopied, tableRef]);
   const handleDownload = useCallback(() => {
-    downloadBlob(createXlsxBlob(getTableMatrix(tableRef.current)), 'markdown-table.xlsx');
-  }, [tableRef]);
+    downloadBlob(createXlsxBlob(getTableMatrix(tableRef.current)), downloadFilename);
+  }, [downloadFilename, tableRef]);
   const handleStickyColumnChange = useCallback(
     (value: string) => {
       onStickyColumnChange?.(value === '' ? undefined : Number(value));
@@ -741,8 +760,13 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const [modalCopied, setModalCopied] = useState(false);
   const localize = useLocalize();
   const { i18n } = useTranslation();
+  const conversation = useRecoilValue(store.conversationByIndex(0));
   const { conversationId, isCreatedByUser, messageId, messageTimestamp } =
     useMessageContext() ?? {};
+  const downloadFilename = useMemo(
+    () => getDownloadFilename(conversation?.title, messageTimestamp),
+    [conversation?.title, messageTimestamp],
+  );
   const commentConversationId = conversationId ?? '';
   const [pendingComments, setPendingComments] = useRecoilState(
     store.pendingMarkdownTableCommentsByConvoId(commentConversationId),
@@ -953,6 +977,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       <TableToolbar
         tableRef={tableRef}
         copied={copied}
+        downloadFilename={downloadFilename}
         expanded={false}
         onCopied={handleCopied}
         onExpand={openModal}
@@ -973,6 +998,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
               <TableToolbar
                 tableRef={modalTableRef}
                 copied={modalCopied}
+                downloadFilename={downloadFilename}
                 expanded={true}
                 headerOptions={headerOptions}
                 onClose={closeModal}

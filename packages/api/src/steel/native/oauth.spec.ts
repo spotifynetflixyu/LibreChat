@@ -293,6 +293,97 @@ describe('OpenAI OAuth model adapter', () => {
     expect(responseHeaders.get('user-agent')).toBe('codex_cli_rs/0.144.1');
   });
 
+  it('serializes temperature for gpt-5.6-luna when reasoning effort is none', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const newline = String.fromCharCode(10);
+    const fetchFn = jest.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const body = [
+          `data: ${JSON.stringify({
+            type: 'response.created',
+            response: {
+              id: 'resp_luna',
+              created_at: 1,
+              model: 'gpt-5.6-luna',
+            },
+          })}`,
+          `data: ${JSON.stringify({
+            type: 'response.output_text.delta',
+            item_id: 'item_luna',
+            delta: 'ok',
+          })}`,
+          `data: ${JSON.stringify({
+            type: 'response.completed',
+            response: {
+              usage: {
+                input_tokens: 1,
+                output_tokens: 1,
+              },
+            },
+          })}`,
+          'data: [DONE]',
+        ].join(`${newline}${newline}`);
+
+        return new Response(`${body}${newline}${newline}`, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      },
+    ) as unknown as FetchFunction;
+    const transport = {
+      kind: 'openai-compatible' as const,
+      provider: 'chatgpt-codex' as const,
+      baseURL: 'https://openai-oauth.local/v1',
+      fetch: fetchFn,
+      request: jest.fn(),
+      capabilities: {
+        responses: true as const,
+        chatCompletions: true as const,
+        models: true as const,
+        streaming: true as const,
+      },
+    };
+    const nativeRequire = process
+      .getBuiltinModule('module')
+      .createRequire(`${process.cwd()}/package.json`);
+    const { createOpenAIOAuth } = nativeRequire(
+      '@openai-oauth/ai-sdk',
+    ) as typeof import('@openai-oauth/ai-sdk');
+    const provider = createOpenAIOAuth(transport);
+    const result = await provider('gpt-5.6-luna').doGenerate({
+      prompt: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Reply exactly: OK' }],
+        },
+      ],
+      providerOptions: {
+        openai: {
+          reasoningEffort: 'none',
+        },
+      },
+      temperature: 0.2,
+    });
+
+    expect(result.content).toEqual([
+      expect.objectContaining({ type: 'text', text: 'ok' }),
+    ]);
+    expect(requestBody).toEqual(
+      expect.objectContaining({
+        model: 'gpt-5.6-luna',
+        temperature: 0.2,
+        reasoning: { effort: 'none' },
+        stream: true,
+      }),
+    );
+    expect(result.warnings).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'unsupported', feature: 'temperature' }),
+      ]),
+    );
+  });
+
   it('can be piped after a system context runnable in the native graph path', async () => {
     const doGenerate = jest.fn(async () =>
       createGenerateResult([

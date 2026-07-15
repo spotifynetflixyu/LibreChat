@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import Markdown from '../Markdown';
 import MarkdownLite from '../MarkdownLite';
 import { RecoilRoot, useRecoilValue } from 'recoil';
+import type { TConversation } from 'librechat-data-provider';
 import type { MarkdownTableComment } from '~/common';
 import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
 import {
@@ -107,14 +108,23 @@ function PendingCommentsProbe({
 function renderMarkdownWithMessageContext({
   children,
   content,
+  conversationTitle = '',
   messageContext,
 }: {
   children?: React.ReactNode;
   content: string;
+  conversationTitle?: string;
   messageContext?: Record<string, unknown>;
 }) {
   return render(
-    <RecoilRoot>
+    <RecoilRoot
+      initializeState={({ set }) =>
+        set(store.conversationByIndex(0), {
+          conversationId: 'conv1',
+          title: conversationTitle,
+        } as TConversation)
+      }
+    >
       <MessageContext.Provider
         value={
           {
@@ -295,9 +305,17 @@ describe('Markdown table rendering', () => {
   });
 
   it('downloads the rendered table as an XLSX blob', () => {
-    const clickAnchor = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation();
-
-    renderMarkdownWithMessageContext({ content: tableMarkdown });
+    let downloadedFilename = '';
+    const clickAnchor = jest
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
+        downloadedFilename = this.download;
+      });
+    renderMarkdownWithMessageContext({
+      content: tableMarkdown,
+      conversationTitle: 'Steel Pricing Review',
+      messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
+    });
 
     fireEvent.click(screen.getByLabelText('com_ui_download_table_xlsx'));
 
@@ -305,8 +323,28 @@ describe('Markdown table rendering', () => {
     expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
+    expect(downloadedFilename).toBe('Steel Pricing Review_2026-06-27_14-32-05.xlsx');
     expect(clickAnchor).toHaveBeenCalled();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:markdown-table');
+
+    clickAnchor.mockRestore();
+  });
+
+  it('uses Longding when the conversation title is empty', () => {
+    let downloadedFilename = '';
+    const clickAnchor = jest
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
+        downloadedFilename = this.download;
+      });
+    renderMarkdownWithMessageContext({
+      content: tableMarkdown,
+      messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
+    });
+
+    fireEvent.click(screen.getByLabelText('com_ui_download_table_xlsx'));
+
+    expect(downloadedFilename).toBe('Longding_2026-06-27_14-32-05.xlsx');
 
     clickAnchor.mockRestore();
   });
