@@ -2,7 +2,7 @@
 
 **Goal:** Make Steel workflow a global native LibreChat behavior while preserving the original LibreChat UI, chat history, Memory, skills, MCP, tools, presets, model settings, SSE, abort, resume, file handling, and permissions.
 
-**Architecture:** Steel is an additive global augmentation layer inside native LibreChat agent execution. Steel rules are prepended at the top of native context; Steel runtime context, tools, MCP, skills, Markdown persistence, and provider policy are merged through existing LibreChat modules instead of replacing them or routing users through `/steel/oauth-chat`.
+**Architecture:** Steel is an additive global augmentation layer inside native LibreChat agent execution. Steel rules are prepended at the top of native context; Steel runtime context, tools, MCP, skills, Markdown persistence, and provider policy are merged through existing LibreChat modules in the native `/c/` chat path.
 
 **Implementation Plan:** See `docs/plans/2026-06-24-steel-global-native-librechat-integration.md`.
 
@@ -46,7 +46,7 @@ That means:
 - Steel rules must be loaded at the top of context.
 - Existing user-added skills, Memory, MCP servers, and settings must continue to work.
 - Steel-enabled Open Responses requests must be durable and LibreChat-managed, equivalent to `store:true`. `store:false` is outside the supported Steel native framework and does not need a Steel state path.
-- `/steel/oauth-chat` is dev-only. It may be used during development for workflow smoke tests and activity-log inspection, but it is not the user workflow, not the implementation base, and not a production integration path.
+- The former standalone Steel OAuth chat probe and its handler/provider adapter have been removed. Native `/c/` chat is the only browser-facing Steel chat path; the Agents Chat Completions and Open Responses APIs remain supported native ingress paths.
 
 ## Research Conclusions Lock
 
@@ -61,7 +61,7 @@ These conclusions are locked from the current audit and must be treated as imple
 7. Steel context order is stable-to-dynamic: Steel rules, Steel tool policy, LibreChat agent instructions, MCP instructions, stable skills, LibreChat Memory, chat history, Steel runtime data, current-turn skill primes, current user message. Steel rules must not be appended only through `sharedRunContext`.
 8. Markdown auto parse/save/update/overwrite is a required native module. Capture final assistant Markdown after assistant message persistence succeeds: native UI chat should hook around the assistant `databasePromise`; Open Responses should hook `saveResponseOutput()` after `db.saveMessage`. Do not use generic message-save methods or stream-done events as the primary capture point.
 9. LibreChat file messages and attachments stay owned by LibreChat file records and permissions. Native provider vision/file inputs must still be available to the AI agent for drawing reasoning such as holes, bends, slots, and cut marks. When Steel needs structured OCR/table extraction or persisted drawing evidence, use PaddleOCR MCP OCR (server key `PaddleOCR`, model `PaddleOCR-VL-1.6`, tool `paddleocr_vl`) as the required text/table parser. Persist the assistant's OCR confirmation Markdown into Steel structured state and reuse persisted OCR Markdown on follow-up turns unless re-OCR is explicitly requested or state is missing/incomplete.
-10. `/steel/oauth-chat` remains a development probe for smoke tests and activity-log inspection. Any behavior proven there must be moved into native LibreChat hooks before it counts as product architecture.
+10. Steel behavior is owned by native LibreChat hooks; there is no separate Steel chat state or probe route.
 
 ## Architecture Boundary
 
@@ -72,7 +72,7 @@ Native Steel behavior must hook existing LibreChat paths:
 - external Open Responses-compatible Agents API path
 - native tool, MCP, skill, file, stream, and permission services
 
-Do not fork LibreChat chat state or create a second user workflow. The standalone `/steel/oauth-chat` route proves behavior and exposes useful development activity logs, but production behavior must live in the native global layer.
+Do not fork LibreChat chat state or create a second user workflow. Steel production behavior lives in the native global layer and follows LibreChat `/c/` lifecycle and persistence.
 
 ## Module And Entrypoint Map
 
@@ -88,18 +88,17 @@ Use this table to find the design owner and implementation files for each native
 | Dynamic runtime context | Steel runtime adapter | `packages/api/src/steel/runtime/context.ts`, `packages/api/src/steel/native/context.ts` | Runtime workbook/file/quote state belongs near the tail |
 | LibreChat history | Native message persistence | `api/app/clients/BaseClient.js`, data-schemas message/conversation methods | LibreChat chat history remains canonical |
 | LibreChat user Memory | Existing Memory module | `api/server/controllers/agents/client.js`, `packages/api/src/agents/memory.ts` | Keep separate from Steel structured quote/workbook state |
-| Steel structured state | Steel state services keyed to LibreChat ids | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/history/service.ts`, `packages/api/src/steel/native/context.ts`, `packages/api/src/steel/native/markdown.ts` | Existing code names may say memory, but product term is structured state |
-| Markdown auto parse/save/update/overwrite | Steel Markdown persistence adapter | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/history/service.ts`, `packages/data-schemas/src/schema/steel/workingOrderMemory.ts`, `packages/api/src/steel/native/markdown.ts`, `api/app/clients/BaseClient.js`, `api/server/services/Endpoints/agents/initialize.js` | Parse final assistant Markdown and tool results into current Steel structured state; full sheet tables replace the current workbook/quote sheets, while partial row-change tables are evidence/manual-review data rather than backend row patches |
+| Steel structured state | Steel state services keyed to LibreChat ids | `packages/api/src/steel/memory/service.ts`, `packages/api/src/steel/native/context.ts`, `packages/api/src/steel/native/markdown.ts` | Existing code names may say memory, but product term is structured state |
+| Markdown auto parse/save/update/overwrite | Steel Markdown persistence adapter | `packages/api/src/steel/memory/service.ts`, `packages/data-schemas/src/schema/steel/workingOrderMemory.ts`, `packages/api/src/steel/native/markdown.ts`, `api/app/clients/BaseClient.js`, `api/server/services/Endpoints/agents/initialize.js` | Parse final assistant Markdown and tool results into current Steel structured state; full sheet tables replace the current workbook/quote sheets, while partial row-change tables are evidence/manual-review data rather than backend row patches |
 | Tool registry merge | Native tool loading plus Steel adapter | `api/server/services/ToolService.js`, `packages/api/src/steel/native/tools.ts`, `packages/api/src/steel/tools/registry.ts`, `packages/api/src/steel/tools/execute.ts` | Additive merge only; do not replace user tools/MCP/actions |
 | MCP integration | Native MCP services plus Steel adapter | `api/server/services/MCP.js`, `api/server/services/Tools/mcp.js`, planned `packages/api/src/steel/native/mcp.ts` | Preserve existing MCP auth/OAuth flow |
 | Skills integration | Native skill catalog/primes plus Steel adapter | `packages/api/src/agents/skills.ts`, planned `packages/api/src/steel/native/skills.ts` | Preserve manual user skills and active/deactivated state |
 | Native event mapping | LibreChat run events plus Steel adapter | `packages/api/src/steel/native/events.ts`, `api/server/services/Endpoints/agents/initialize.js`, `api/server/services/ToolService.js`, `packages/api/src/stream/GenerationJobManager.ts`, `client/src/hooks/SSE/useSteelEventHandler.ts`, `client/src/store/steel.ts`, `client/src/components/Chat/Messages/Content/SteelActivity.tsx` | Map persisted Steel parse/save/tool capture results into native `steel_event` stream envelopes and live assistant-message activity UI; live provider/OCR progress remains a later mapping slice |
 | File/OCR bridge | Native file handling plus PaddleOCR MCP OCR | `packages/api/src/files/encode/document.ts`, `packages/api/src/agents/responses/service.ts`, `packages/api/src/steel/vision/service.ts`, `packages/api/src/steel/native/context.ts`, `api/server/controllers/agents/client.js`, `api/server/controllers/agents/responses.js` | Use LibreChat file records and reviewed Steel OCR/file rules; parse OCR/table text through PaddleOCR MCP OCR and persist assistant OCR Markdown |
-| Provider policy | Steel native provider adapter and resolver | `packages/api/src/endpoints/openai/llm.ts`, `packages/api/src/steel/ai/provider.ts`, `packages/api/src/steel/native/provider.ts`, `packages/api/src/steel/native/oauth.ts`, `packages/api/src/agents/run.ts`, `api/server/services/Endpoints/agents/initialize.js` | Native chat must support OpenAI OAuth API in stateless reconstructed mode; official OpenAI Responses state is optimization only |
+| Provider policy | Steel native provider adapter and resolver | `packages/api/src/endpoints/openai/llm.ts`, `packages/api/src/steel/native/provider.ts`, `packages/api/src/steel/native/oauth.ts`, `packages/api/src/agents/run.ts`, `api/server/services/Endpoints/agents/initialize.js` | Native chat must support OpenAI OAuth API in stateless reconstructed mode; official OpenAI Responses state is optimization only |
 | Agents API Chat Completions ingress | Remote agents OpenAI-compatible route | `api/server/routes/agents/openai.js`, `api/server/controllers/agents/openai.js`, `packages/api/src/agents/openai/service.ts`, `packages/api/src/steel/native/agents.ts` | Controller path builds `agents_chat_completions` Steel context and applies it to primary/handoff agents before `createRun`; keep exported service parity explicit if that service becomes the mounted route |
 | Agents API Open Responses ingress | Remote agents Open Responses route | `api/server/controllers/agents/responses.js`, `packages/api/src/agents/responses/*` | Builds `open_responses` Steel context from reconstructed previous/current messages and current-turn `input_file` references, resolves generated `resp_*` ids back to LibreChat conversations, applies Steel prefix/runtime context before `createRun`, and runs the post-save Steel Markdown hook |
 | Permissions/config | Existing LibreChat permissions/config | `packages/data-provider/src/config.ts`, `packages/api/src/app/permissions.ts`, `api/server/routes/agents/middleware.js` | Steel modules/tools are globally open; preserve existing checks only for LibreChat-owned resources such as files, MCP auth, provider/model config, and admin settings |
-| Dev-only workflow probe | Standalone Steel OAuth chat | `client/src/routes/SteelOAuthChat.tsx`, `api/server/routes/steel/index.js`, `packages/api/src/steel/handlers.ts`, `packages/api/src/steel/ai/provider.ts` | Development smoke/activity-log surface only |
 
 ## Context Ordering Contract
 
@@ -204,7 +203,7 @@ When a PDF/image/table file needs OCR or table text extraction:
 
 This contract is conditional. Normal non-OCR file handling, native document context, and LibreChat file permissions remain owned by LibreChat.
 
-`fileAnalysis.instructions` is not the Steel OCR rule source of truth. The existing standalone Steel route currently prefixes that YAML text onto user messages with image/PDF attachments through `applyFileInstructionsToMessages()`, but native Steel should avoid duplicating reviewed OCR rules this way. If `fileAnalysis.instructions` remains configured for non-Steel compatibility, keep it as a short generic provider-vision hint only; conflicting or detailed OCR policy belongs in reviewed Steel rules.
+`fileAnalysis.instructions` is not the Steel OCR rule source of truth. Native Steel should not duplicate reviewed OCR rules into user messages. If `fileAnalysis.instructions` remains configured for non-Steel compatibility, keep it as a short generic provider-vision hint only; conflicting or detailed OCR policy belongs in reviewed Steel rules.
 
 ## Markdown Auto Parse And Persistence
 
@@ -212,7 +211,7 @@ This module is required. It is not LibreChat user Memory.
 
 ### Current Implementation Pieces
 
-The standalone Steel route already has the core pieces:
+The native Steel adapter owns the core pieces:
 
 - `packages/api/src/steel/memory/service.ts` parses final assistant Markdown tables through `captureAssistantFinalMarkdown`.
 - `packages/api/src/steel/memory/service.ts` captures successful Steel tool results through `captureToolResult`.
@@ -221,9 +220,8 @@ The standalone Steel route already has the core pieces:
   `derivedIndex.ocrExtracts` from Steel structured state as prior file evidence
   for follow-up turns, keeping OCR/file rules available without copying
   attachment bytes into prompt context.
-- `packages/api/src/steel/history/service.ts` rolls Steel turns and structured state back when an edited user message supersedes later turns.
-- `packages/api/src/steel/handlers.ts` currently wires this into `/steel/oauth-chat` and emits `parse_status` / `memory_saved` events.
-- `packages/data-provider/src/steel/ai.ts` defines the current standalone stream event shapes for parse/save status.
+- Native LibreChat message lifecycle owns edit/regenerate behavior; the Markdown adapter captures only persisted assistant output.
+- Native event adapters emit `parse_status` / `memory_saved` events for the current `/c/` stream.
 - `packages/api/src/steel/native/events.ts` maps native capture results into
   `steel_event` envelopes for LibreChat native streams.
 
@@ -248,7 +246,7 @@ The Markdown persistence adapter must:
 3. Treat an emitted full sheet table as the current sheet replacement: delete the prior current rows for that conversation/sheet and insert the latest complete rows.
 4. Treat a row-change or incomplete table as calculation/manual-review evidence. Do not merge it into current workbook rows; the assistant must output complete updated tables when it wants workbook rows changed.
 5. Save successful Steel tool result facts through the same structured state writer.
-6. On edit/regenerate, call the Steel history rollback path for chat turn replay. Structured workbook/OCR state remains a current conversation dataset, not a versioned history exposed to the AI.
+6. On edit/regenerate, follow native LibreChat message lifecycle. Structured workbook/OCR state remains a current conversation dataset, not a versioned history exposed to the AI.
 7. Emit native LibreChat run-step/custom events for parse/save status, but do not persist internal activity as visible assistant message text.
 8. Keep all records keyed to LibreChat `conversationId`, `messageId`, `requestId`, `turnIndex`, and user scope when available.
 
@@ -326,7 +324,7 @@ LibreChat chat history remains the source of truth in both modes.
 
 For OpenAI OAuth API in normal LibreChat chat:
 
-- Route through the native provider adapter in `packages/api/src/steel/native/provider.ts`, not through `/steel/oauth-chat`.
+- Route through the native provider adapter in `packages/api/src/steel/native/provider.ts`.
 - Keep `responsesState: false`.
 - Do not rely on provider-side `previous_response_id`.
 - Reconstruct full provider prompt from LibreChat history plus Steel global context every turn.
@@ -451,7 +449,7 @@ Main missing implementation modules:
 - file/OCR bridge
 - event mapping
 - permissions/config defaults
-- parity cleanup for `/steel/oauth-chat`
+- native `/c/` lifecycle parity across UI and Agents API routes
 
 ## Verification Expectations
 
@@ -479,7 +477,7 @@ Main missing implementation modules:
 - Merge with existing settings; never replace whole agent/tool/skill arrays.
 - Keep LibreChat user Memory separate from Steel structured quote/workbook state and reviewed Steel defaults.
 - Make provider-state policy explicit and auditable.
-- Keep `/steel/oauth-chat` dev-only and never let it become the owner for product behavior.
+- Keep native LibreChat lifecycles as the Steel chat owners across `/c/` and the supported Agents API ingress paths.
 - If any Steel PostgreSQL schema changes become necessary later, update both `supabase/schema.sql` and a new migration created with `npx supabase migration new`.
 
 ## Done Definition
@@ -490,6 +488,6 @@ The integration is done when a user can use the normal LibreChat interface and g
 - Steel tools/MCP/skills are additive.
 - LibreChat user Memory, manual skills, MCP, files, settings, history, edit/regenerate, SSE, abort/resume, and message persistence still work.
 - OAuth stateless and OpenAI API-key Responses modes both have explicit tested context behavior.
-- Normal LibreChat chat can run through OpenAI OAuth API without using `/steel/oauth-chat` as the product path.
+- Normal LibreChat `/c/` chat can run through OpenAI OAuth API through the native provider adapter.
 - Steel structured quote/workbook state and Markdown persistence are keyed to native LibreChat conversation/message lifecycle.
-- `/steel/oauth-chat` remains dev-only and is no longer required for normal Steel work.
+- No standalone Steel OAuth chat route or handler/provider adapter remains.

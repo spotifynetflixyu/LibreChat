@@ -207,6 +207,30 @@ function getErrorMessage(event: SteelNativeActivityEvent): string | undefined {
   return event.type === 'parse_status' ? event.errorMessage : undefined;
 }
 
+function getMissingPageTexts(events: SteelNativeActivityEvent[], localize: Localize): string[] {
+  const pagesByFileKey = new Map<string, Set<number>>();
+  for (const event of events) {
+    if (event.type !== 'parse_status' || !event.missingPagesByFileKey) {
+      continue;
+    }
+
+    for (const [fileKey, pages] of Object.entries(event.missingPagesByFileKey)) {
+      const currentPages = pagesByFileKey.get(fileKey) ?? new Set<number>();
+      for (const page of pages) {
+        currentPages.add(page);
+      }
+      pagesByFileKey.set(fileKey, currentPages);
+    }
+  }
+
+  return [...pagesByFileKey.entries()].map(([fileKey, pages]) =>
+    localize('com_ui_steel_activity_missing_pages', {
+      fileKey,
+      pages: [...pages].sort((left, right) => left - right).join(', '),
+    }),
+  );
+}
+
 const SteelActivity = memo(function SteelActivity({
   messageId,
   isCreatedByUser,
@@ -222,6 +246,7 @@ const SteelActivity = memo(function SteelActivity({
   }
 
   const totalCountText = getTotalCountText(displayEvents, localize);
+  const missingPageTexts = getMissingPageTexts(displayEvents, localize);
   const isCollapsible = displayEvents.length > collapsedActivityEventCount;
   const firstVisibleIndex =
     isCollapsible && !isExpanded ? displayEvents.length - collapsedActivityEventCount : 0;
@@ -259,6 +284,18 @@ const SteelActivity = memo(function SteelActivity({
         <div className="flex min-h-5 items-center gap-1.5 rounded-md border border-border-light bg-surface-secondary px-2 py-1 font-medium dark:border-border-medium dark:bg-surface-tertiary">
           <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-green-600" />
           <span className="min-w-0 whitespace-normal break-words">{totalCountText}</span>
+        </div>
+      )}
+      {missingPageTexts.length > 0 && (
+        <div className="flex min-h-5 items-start gap-1.5 rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-red-600 dark:border-border-medium dark:bg-surface-tertiary">
+          <AlertTriangle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div className="min-w-0 space-y-0.5">
+            {missingPageTexts.map((missingPageText) => (
+              <div key={missingPageText} className="whitespace-normal break-words">
+                {missingPageText}
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {visibleEvents.map((event, index) => {

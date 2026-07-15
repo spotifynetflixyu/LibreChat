@@ -1,6 +1,5 @@
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
-const mongoose = require('mongoose');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, ToolEndHandler, formatAgentMessages } = require('@librechat/agents');
 const {
@@ -18,6 +17,9 @@ const {
   buildAgentContextAttachmentsByAgentId,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
+  stripPaddleOcrToolsForMainAgent,
+  stripSteelToolsForOcrTurn,
+  stripSteelOcrPartsFromProviderMessages,
   createSafeUser,
   initializeAgent,
   loadSkillStates,
@@ -26,8 +28,6 @@ const {
   extractManualSkills,
   recordCollectedUsage,
   createSubagentUsageSink,
-  sendEvent,
-  GenerationJobManager,
   getTransactionsConfig,
   findPiiMatchInMessages,
   discoverConnectedAgents,
@@ -36,10 +36,7 @@ const {
   resolveAgentScopedSkillIds,
   extractSteelNativeMarkdownText,
   extractSteelNativeResponseOutputText,
-  captureSteelNativeResponseOutput,
-  buildSteelNativeEventEnvelopes,
   buildSteelNativeResponseMessageMetadata,
-  createMongooseSteelWorkingOrderMemoryWriter,
   // Responses API
   writeDone,
   buildResponse,
@@ -87,23 +84,6 @@ const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
-
-let steelWorkingOrderMemoryWriter;
-
-function getSteelWorkingOrderMemoryWriter() {
-  steelWorkingOrderMemoryWriter ??= createMongooseSteelWorkingOrderMemoryWriter(mongoose);
-  return steelWorkingOrderMemoryWriter;
-}
-
-async function emitSteelNativeEvents({ events, res, streamId }) {
-  for (const event of events) {
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, event);
-    } else if (typeof res?.write === 'function' && !res.writableEnded) {
-      sendEvent(res, event);
-    }
-  }
-}
 
 /**
  * Creates a tool loader function for the agent.
@@ -384,7 +364,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @param {string} responseId
  * @param {import('@librechat/api').Response} response
  * @param {string} agentId
- * @returns {Promise<import('@librechat/api').CaptureSteelNativeAssistantMarkdownResult>}
+ * @returns {Promise<void>}
  */
 async function saveResponseOutput(req, conversationId, responseId, response, agentId) {
   const responseText = extractSteelNativeResponseOutputText(response);
@@ -417,29 +397,6 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
     },
     { context: 'Responses API - save assistant response' },
   );
-
-  const captureResult = await captureSteelNativeResponseOutput({
-    writer: getSteelWorkingOrderMemoryWriter(),
-    conversationId,
-    responseId,
-    turnIndex: req.steelNativeContext?.assistantTurnIndex,
-    checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
-    currentTurnFiles: req.steelNativeContext?.currentTurnFiles,
-    currentOcrMarkdownResults:
-      req.steelNativeContext?.paddleOcrPreflight?.currentOcrMarkdownResults,
-    response,
-  });
-
-  logger.debug('[Responses API] Steel native response capture', {
-    responseId,
-    conversationId,
-    status: captureResult.status,
-    reason: captureResult.status === 'skipped' ? captureResult.reason : undefined,
-    parseStatus: captureResult.status === 'captured' ? captureResult.result.parseStatus : undefined,
-    savedCounts: captureResult.status === 'captured' ? captureResult.result.savedCounts : undefined,
-  });
-
-  return captureResult;
 }
 
 /**
@@ -873,9 +830,37 @@ const createResponse = async (req, res) => {
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
       paddleOcrPreflight,
+      ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
     };
-    const openAIOAuthReasoningEffortOverride =
-      paddleOcrPreflight.currentOcrMarkdownResults?.length > 0 ? 'none' : undefined;
+    for (const runAgent of runAgents) {
+      const mainAgent = stripPaddleOcrToolsForMainAgent(runAgent);
+      Object.assign(
+        runAgent,
+        paddleOcrPreflight.ocrTurnActive === true
+          ? stripSteelToolsForOcrTurn(mainAgent)
+          : mainAgent,
+      );
+    }
+    for (const context of agentToolContexts.values()) {
+      if (context?.agent) {
+        const mainAgent = stripPaddleOcrToolsForMainAgent(context.agent);
+        Object.assign(
+          context.agent,
+          paddleOcrPreflight.ocrTurnActive === true
+            ? stripSteelToolsForOcrTurn(mainAgent)
+            : mainAgent,
+        );
+      }
+      if (context) {
+        const mainContext = stripPaddleOcrToolsForMainAgent(context);
+        Object.assign(
+          context,
+          paddleOcrPreflight.ocrTurnActive === true
+            ? stripSteelToolsForOcrTurn(mainContext)
+            : mainContext,
+        );
+      }
+    }
     const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(allMessages);
     if (currentUserTurn && currentTurnFiles.length > 0) {
       currentUserTurn.files = currentTurnFiles;
@@ -888,17 +873,23 @@ const createResponse = async (req, res) => {
     });
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
-      ...(currentTurnFiles.length > 0 || paddleOcrPreflight.currentOcrMarkdownResults?.length > 0
+      ...(currentTurnFiles.length > 0 ||
+      paddleOcrPreflight.currentOcrMarkdownResults?.length > 0 ||
+      paddleOcrPreflight.currentOcrFailures?.length > 0
         ? {
             attachments: {
               ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
               ...(paddleOcrPreflight.currentOcrMarkdownResults?.length > 0
                 ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
                 : {}),
+              ...(paddleOcrPreflight.currentOcrFailures?.length > 0
+                ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
+                : {}),
             },
           }
         : {}),
       renderProfile: 'open_responses',
+      mode: paddleOcrPreflight.ocrTurnActive === true ? 'ocr' : 'standard',
     });
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
@@ -959,6 +950,10 @@ const createResponse = async (req, res) => {
         );
       }
     }
+    const providerMessages =
+      paddleOcrPreflight.ocrTurnActive === true
+        ? formattedMessages
+        : stripSteelOcrPartsFromProviderMessages(formattedMessages, currentTurnFiles);
 
     /* Stable for the turn: the primary prime list is fixed once
        `initializeAgent` resolves and is used as the fallback when a
@@ -1049,7 +1044,7 @@ const createResponse = async (req, res) => {
 
       const run = await createRun({
         agents: runAgents,
-        messages: formattedMessages,
+        messages: providerMessages,
         indexTokenCountMap,
         initialSummary,
         runId: responseId,
@@ -1057,7 +1052,6 @@ const createResponse = async (req, res) => {
         appConfig,
         signal: abortController.signal,
         customHandlers: handlers,
-        openAIOAuthReasoningEffortOverride,
         requestBody: {
           messageId: responseId,
           conversationId,
@@ -1135,24 +1129,13 @@ const createResponse = async (req, res) => {
           const finalResponse = markSteelNativeResponseStored(
             buildResponse(context, tracker, 'completed'),
           );
-          const captureResult = await saveResponseOutput(
+          await saveResponseOutput(
             req,
             conversationId,
             responseId,
             finalResponse,
             agentId,
           );
-          await emitSteelNativeEvents({
-            res,
-            streamId: req._resumableStreamId || null,
-            events: buildSteelNativeEventEnvelopes({
-              source: 'responses_output',
-              conversationId,
-              requestId: responseId,
-              messageId: responseId,
-              capture: captureResult,
-            }),
-          });
 
           logger.debug(
             `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
@@ -1246,7 +1229,7 @@ const createResponse = async (req, res) => {
 
       const run = await createRun({
         agents: runAgents,
-        messages: formattedMessages,
+        messages: providerMessages,
         indexTokenCountMap,
         initialSummary,
         runId: responseId,
@@ -1254,7 +1237,6 @@ const createResponse = async (req, res) => {
         appConfig,
         signal: abortController.signal,
         customHandlers: handlers,
-        openAIOAuthReasoningEffortOverride,
         requestBody: {
           messageId: responseId,
           conversationId,

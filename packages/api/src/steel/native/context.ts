@@ -1,11 +1,6 @@
-import mongoose from 'mongoose';
-import {
-  createEmptySteelOutputSheetMemorySnapshot,
-  prepareLibreChatSteelRuntimeContext,
-  serializeSteelRuntimeContext,
-} from '../runtime/context';
+import { groupSteelOcrMissingPagesByFileKey } from '../ocr/failures';
+import { prepareLibreChatSteelRuntimeContext } from '../runtime/context';
 import { createSteelPostgresPool } from '../postgres';
-import { createMongooseSteelOutputSheetMemoryReader } from '../memory/service';
 import {
   listReviewedSteelAgentRules,
   listReviewedSteelOtherRules,
@@ -14,21 +9,22 @@ import {
   listReviewedSteelQuoteRules,
 } from '../repositories';
 
-import type { SteelOAuthChatMessage, SteelOAuthChatMessageRole } from '../ai/provider';
+import type { SteelRuntimeMessageRole } from '../runtime/types';
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
-import type { SteelOutputSheetMemoryReader } from '../memory/service';
 import type { SteelRepositoryClient } from '../repositories';
 import type {
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
   SteelRuntimeContextDependencies,
-  SteelRuntimeContextMode,
   SteelRuntimeJsonObject,
 } from '../runtime/context';
 
 export const steelNativeContextVersion = 1 as const;
-export const steelNativeDefaultRuntimeContextMode = 'compact_workbook' as const;
+
+export const steelNativeContextModes = ['standard', 'ocr'] as const;
+
+export type SteelNativeContextMode = (typeof steelNativeContextModes)[number];
 
 export const steelNativeInstructionPrefixSections = [
   'agent',
@@ -64,7 +60,7 @@ export interface SteelNativeFileReference {
 }
 
 export interface SteelNativeMessage {
-  role: SteelOAuthChatMessageRole;
+  role: SteelRuntimeMessageRole;
   content: string;
   messageId?: string;
   files?: readonly SteelNativeFileReference[];
@@ -85,16 +81,17 @@ export interface SteelNativeContextAttachmentsInput {
   currentTurnFiles?: readonly SteelNativeFileReference[];
   currentPaddleOcrResults?: readonly SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
+  currentOcrFailures?: readonly SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 }
 
 export interface SteelNativeContextMetadata {
   nativeContextVersion: typeof steelNativeContextVersion;
-  contextMode: SteelRuntimeContextMode;
+  mode?: SteelNativeContextMode;
   renderProfile: SteelNativeRenderProfile;
   globalApplied: true;
   attachmentBytePolicy: 'metadata_references_only';
-  ocrExecutionPolicy: 'direct_paddleocr_mcp';
+  ocrExecutionPolicy: 'preflight_paddleocr_only';
   rulePrefixOrder: typeof steelNativeInstructionPrefixSections;
 }
 
@@ -106,12 +103,12 @@ export interface SteelNativeInstructionPrefixSlot {
 
 export interface BuildSteelNativeInstructionPrefixInput {
   runtimeContext: SteelRuntimeContext;
+  mode?: SteelNativeContextMode;
 }
 
 export interface BuildSteelNativeRuntimeContextTextInput {
   runtimeContext: SteelRuntimeContext;
-  metadata: SteelNativeContextMetadata;
-  attachmentReferences: readonly SteelNativeFileReference[];
+  mode?: SteelNativeContextMode;
 }
 
 export interface BuildSteelGlobalAgentContextInput {
@@ -119,6 +116,7 @@ export interface BuildSteelGlobalAgentContextInput {
   dependencies: SteelRuntimeContextDependencies;
   attachments?: SteelNativeContextAttachmentsInput;
   renderProfile?: SteelNativeRenderProfile;
+  mode?: SteelNativeContextMode;
   prepareRuntimeContext?: (input: PrepareSteelRuntimeContextInput) => Promise<SteelRuntimeContext>;
 }
 
@@ -126,7 +124,6 @@ export interface BuildDefaultSteelGlobalAgentContextInput
   extends Omit<BuildSteelGlobalAgentContextInput, 'dependencies'> {
   dependencies?: SteelRuntimeContextDependencies;
   runtimeRulesClient?: SteelRepositoryClient;
-  createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
 }
 
 export interface SteelNativeContextSlots {
@@ -135,6 +132,7 @@ export interface SteelNativeContextSlots {
 }
 
 export interface SteelNativeGlobalAgentContext {
+  mode: SteelNativeContextMode;
   instructionPrefix: string;
   runtimeContextText: string;
   runtimeContext: SteelRuntimeContext;
@@ -212,36 +210,52 @@ function buildSlot(
   };
 }
 
-function buildOtherRuleItems(runtimeContext: SteelRuntimeContext): string[] {
-  const otherGlobalRules = runtimeContext.rules.otherGlobalRules;
+function getRulePriority(rule: SteelAgentRule): number {
+  return typeof rule.priority === 'number' ? rule.priority : Number.MAX_SAFE_INTEGER;
+}
+
+function buildOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  const ocrRules = runtimeContext.rules.otherGlobalRules.ocrMainAgentRules;
+  const orderedRules = ocrRules
+    .map((rule, index) => ({ rule, index }))
+    .sort((left, right) => {
+      const priorityOrder = getRulePriority(left.rule) - getRulePriority(right.rule);
+      return priorityOrder !== 0 ? priorityOrder : left.index - right.index;
+    });
 
   return [
-    ...(otherGlobalRules.ocrRules ?? []).map(renderAgentRule),
-    ...otherGlobalRules.fileRules.map(renderAgentRule),
-    ...otherGlobalRules.sourcePriorityRules.map(renderAgentRule),
-    ...otherGlobalRules.markdownOutputRules.map(renderAgentRule),
+    ...orderedRules.map(({ rule }) => renderAgentRule(rule)),
   ];
 }
 
 export function buildSteelNativeInstructionPrefix({
   runtimeContext,
+  mode = 'standard',
 }: BuildSteelNativeInstructionPrefixInput): {
   instructionPrefix: string;
   sections: SteelNativeInstructionPrefixSlot[];
 } {
-  const sections = [
-    buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.map(renderAgentRule)),
-    buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
-      ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
-      ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
-    ]),
-    buildSlot(
-      'output',
-      'Steel Output Rules',
-      runtimeContext.rules.outputRules.map(renderAgentRule),
-    ),
-    buildSlot('other', 'Steel Other Rules', buildOtherRuleItems(runtimeContext)),
-  ];
+  const sections =
+    mode === 'ocr'
+      ? [
+          buildSlot('agent', 'Steel Agent Rules', []),
+          buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
+          buildSlot('output', 'Steel Output Rules', []),
+          buildSlot('other', 'Steel OCR Rules', buildOcrRuleItems(runtimeContext)),
+        ]
+      : [
+          buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.map(renderAgentRule)),
+          buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
+            ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
+            ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
+          ]),
+          buildSlot(
+            'output',
+            'Steel Output Rules',
+            runtimeContext.rules.outputRules.map(renderAgentRule),
+          ),
+          buildSlot('other', 'Steel Other Rules', []),
+        ];
 
   return {
     instructionPrefix: compactText(sections.map((section) => section.text)).join('\n\n'),
@@ -254,15 +268,28 @@ function hasRuleSection(rule: SteelAgentRule, matches: readonly string[]): boole
 }
 
 function isOcrRule(rule: SteelAgentRule): boolean {
-  return hasRuleSection(rule, ['file_ocr', 'drawing_ocr', 'vision_evidence']);
+  return hasRuleSection(rule, [
+    'file_ocr',
+    'drawing_ocr',
+    'vision_evidence',
+    'ocr_main_merge',
+    'final_ocr_markdown',
+  ]);
+}
+
+function isOcrOrganizerRule(rule: SteelAgentRule): boolean {
+  return hasRuleSection(rule, ['ocr_organizer']);
 }
 
 function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
-  const ocrRules = rules.filter(isOcrRule);
+  const ocrMainAgentRules = rules.filter(isOcrRule);
 
   return {
-    ocrRules,
-    fileRules: rules.filter((rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule)),
+    ocrSubagentRules: rules.filter(isOcrOrganizerRule),
+    ocrMainAgentRules,
+    fileRules: rules.filter(
+      (rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule) && !isOcrOrganizerRule(rule),
+    ),
     sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
     markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
   };
@@ -275,22 +302,14 @@ function getDefaultSteelNativeRulesClient() {
   return defaultSteelNativeRulesClient;
 }
 
-function createDefaultOutputSheetMemoryReader(conversationId: string) {
-  return createMongooseSteelOutputSheetMemoryReader(mongoose, conversationId);
-}
-
 function resolveSteelNativeContextList<T>(load: () => Promise<T[]>): Promise<T[]> {
   // Global Steel context is fail-open so unavailable Steel rule tables do not block ordinary chat.
   return load().catch(() => []);
 }
 
 export function createSteelContextDependencies({
-  conversationId,
-  createOutputSheetMemoryReader = createDefaultOutputSheetMemoryReader,
   runtimeRulesClient,
 }: {
-  conversationId?: string;
-  createOutputSheetMemoryReader?: (conversationId: string) => SteelOutputSheetMemoryReader;
   runtimeRulesClient?: SteelRepositoryClient;
 } = {}): SteelRuntimeContextDependencies {
   let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
@@ -334,39 +353,24 @@ export function createSteelContextDependencies({
       );
       return filterOtherGlobalRules(await otherRulesPromise);
     },
-    async readOutputSheetMemory() {
-      if (!conversationId) {
-        return createEmptySteelOutputSheetMemorySnapshot();
-      }
-
-      return createOutputSheetMemoryReader(conversationId).readOutputSheetMemory();
-    },
   };
 }
 
 export function createSteelNativeContextMetadata({
-  contextMode,
+  mode = 'standard',
   renderProfile = 'agent_client',
 }: {
-  contextMode: SteelRuntimeContextMode;
+  mode?: SteelNativeContextMode;
   renderProfile?: SteelNativeRenderProfile;
 }): SteelNativeContextMetadata {
   return {
     nativeContextVersion: steelNativeContextVersion,
-    contextMode,
+    mode,
     renderProfile,
     globalApplied: true,
     attachmentBytePolicy: 'metadata_references_only',
-    ocrExecutionPolicy: 'direct_paddleocr_mcp',
+    ocrExecutionPolicy: 'preflight_paddleocr_only',
     rulePrefixOrder: steelNativeInstructionPrefixSections,
-  };
-}
-
-function toRuntimeMessage(message: SteelNativeMessage): SteelOAuthChatMessage {
-  return {
-    role: message.role,
-    content: message.content,
-    messageId: message.messageId,
   };
 }
 
@@ -414,16 +418,7 @@ export function prepareLibreChatSteelChatContext(
 function toRuntimeConversationInput(
   conversation: SteelNativeConversationInput,
 ): PrepareSteelRuntimeContextInput['conversation'] {
-  return {
-    requestId: conversation.requestId,
-    conversationId: conversation.conversationId,
-    activeHistory: conversation.activeHistory.map(toRuntimeMessage),
-    currentUserTurn:
-      conversation.currentUserTurn !== undefined
-        ? toRuntimeMessage(conversation.currentUserTurn)
-        : undefined,
-    edit: conversation.edit,
-  };
+  return { requestId: conversation.requestId };
 }
 
 function getFileReferenceKey(file: SteelNativeFileReference): string {
@@ -453,42 +448,60 @@ function collectAttachmentReferences({
   return [...filesByKey.values()];
 }
 
-function toSerializableFileReference(file: SteelNativeFileReference): SteelRuntimeJsonObject {
-  return {
-    fileId: file.fileId,
-    source: file.source,
-    mediaType: file.mediaType,
-    conversationId: file.conversationId,
-    messageId: file.messageId,
-    filename: file.filename,
-    pageCount: file.pageCount,
-    providerFileId: file.providerFileId,
-    width: file.width,
-    height: file.height,
-  };
-}
-
 export function buildSteelNativeRuntimeContextText({
   runtimeContext,
-  metadata,
-  attachmentReferences,
+  mode = 'standard',
 }: BuildSteelNativeRuntimeContextTextInput): string {
-  const parts = [
-    `# Steel Native Context Metadata\n${JSON.stringify(metadata, null, 2)}`,
-    `# Steel Runtime Context\n${serializeSteelRuntimeContext(runtimeContext)}`,
-  ];
-
-  if (attachmentReferences.length > 0) {
-    parts.push(
-      `# Steel Native File References\n${JSON.stringify(
-        attachmentReferences.map(toSerializableFileReference),
-        null,
-        2,
-      )}`,
-    );
+  if (
+    mode !== 'ocr' ||
+    (runtimeContext.attachments.currentOcrMarkdownResults.length === 0 &&
+      runtimeContext.attachments.currentOcrFailures.length === 0)
+  ) {
+    return '';
   }
 
-  return parts.join('\n\n');
+  const missingPagesByFileKey = groupSteelOcrMissingPagesByFileKey(
+    runtimeContext.attachments.currentOcrFailures,
+  );
+  const failuresByFileKey = new Map<
+    string,
+    { filename: string; stages: Set<string>; errors: Set<string> }
+  >();
+  for (const failure of runtimeContext.attachments.currentOcrFailures) {
+    const key = typeof failure.ocrFileKey === 'string' ? failure.ocrFileKey : 'unknown';
+    const current = failuresByFileKey.get(key) ?? {
+      filename: typeof failure.filename === 'string' ? failure.filename : 'unknown',
+      stages: new Set<string>(),
+      errors: new Set<string>(),
+    };
+    current.stages.add(typeof failure.stage === 'string' ? failure.stage : 'unknown');
+    current.errors.add(
+      typeof failure.errorMessage === 'string' ? failure.errorMessage : 'PaddleOCR failed',
+    );
+    failuresByFileKey.set(key, current);
+  }
+  const failures = [...failuresByFileKey.entries()]
+    .map(([key, failure]) => {
+      const missingPages = missingPagesByFileKey[key];
+      return [
+        '## OCR file failed',
+        `filename: ${failure.filename}`,
+        `file: ${key}`,
+        `stage: ${[...failure.stages].join(', ')}`,
+        `error: ${[...failure.errors].join('; ')}`,
+        `missing_pages: ${missingPages?.join(', ') ?? 'unavailable (entire file failed)'}`,
+        'partial Markdown: none',
+        'action: tell the user the missing pages and offer resubmit or AI OCR regenerate',
+        'regenerate: use AI OCR only for these missing pages or failed file',
+        'annotation: mark every AI OCR recovered row or field as AI OCR',
+      ].join('\n');
+    })
+    .join('\n\n');
+  const markdown = runtimeContext.attachments.currentOcrMarkdownResults
+    .map((result) => (typeof result.content === 'string' ? result.content.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n');
+  return [failures, markdown].filter(Boolean).join('\n\n');
 }
 
 export async function buildSteelGlobalAgentContext({
@@ -496,48 +509,42 @@ export async function buildSteelGlobalAgentContext({
   dependencies,
   attachments,
   renderProfile = 'agent_client',
+  mode = 'standard',
   prepareRuntimeContext = prepareLibreChatSteelRuntimeContext,
 }: BuildSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
   const attachmentReferences = collectAttachmentReferences({ conversation, attachments });
   const preparedRuntimeContext = await prepareRuntimeContext({
     conversation: toRuntimeConversationInput(conversation),
     attachments: {
-      currentTurnFiles:
-        attachments?.currentTurnFiles !== undefined
-          ? attachments.currentTurnFiles.map((file) => ({ ...file }))
-          : undefined,
-      currentPaddleOcrResults:
-        attachments?.currentPaddleOcrResults !== undefined
-          ? [...attachments.currentPaddleOcrResults]
-          : undefined,
       currentOcrMarkdownResults:
         attachments?.currentOcrMarkdownResults !== undefined
           ? [...attachments.currentOcrMarkdownResults]
           : undefined,
-      priorActiveFileEvidence:
-        attachments?.priorActiveFileEvidence !== undefined
-          ? [...attachments.priorActiveFileEvidence]
+      currentOcrFailures:
+        attachments?.currentOcrFailures !== undefined
+          ? [...attachments.currentOcrFailures]
           : undefined,
     },
     dependencies,
   });
   const runtimeContext = preparedRuntimeContext;
   const metadata = createSteelNativeContextMetadata({
-    contextMode: runtimeContext.outputSheets.contextMode,
+    mode,
     renderProfile,
   });
   const { instructionPrefix, sections } = buildSteelNativeInstructionPrefix({
     runtimeContext,
+    mode,
   });
 
   return {
     instructionPrefix,
     runtimeContextText: buildSteelNativeRuntimeContextText({
       runtimeContext,
-      metadata,
-      attachmentReferences,
+      mode,
     }),
     runtimeContext,
+    mode,
     metadata,
     contextSlots: {
       instructionPrefix: 'top_of_context',
@@ -551,7 +558,6 @@ export async function buildSteelGlobalAgentContext({
 export async function buildDefaultSteelGlobalAgentContext({
   dependencies,
   runtimeRulesClient,
-  createOutputSheetMemoryReader,
   ...input
 }: BuildDefaultSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
   return buildSteelGlobalAgentContext({
@@ -559,8 +565,6 @@ export async function buildDefaultSteelGlobalAgentContext({
     dependencies:
       dependencies ??
       createSteelContextDependencies({
-        conversationId: input.conversation.conversationId,
-        createOutputSheetMemoryReader,
         runtimeRulesClient,
       }),
   });

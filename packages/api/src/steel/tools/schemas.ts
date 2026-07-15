@@ -113,13 +113,6 @@ interface SearchCustomersInput {
   limit?: number;
 }
 
-export interface ReadMarkdownInput {
-  scope: 'workbook' | 'ocr';
-  ocrFileKey?: string;
-  fileKey?: string;
-  reason?: string;
-}
-
 export interface RunVisualInspectionInput {
   filename?: string;
   fileIndex?: number;
@@ -455,24 +448,6 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
     }),
   );
 
-const readMarkdownSchema: z.ZodType<ReadMarkdownInput> = z
-  .object({
-    scope: z.enum(['workbook', 'ocr']),
-    ocrFileKey: nonEmptyString.optional(),
-    fileKey: nonEmptyString.optional(),
-    reason: nonEmptyString.optional(),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (value.ocrFileKey && value.fileKey && value.ocrFileKey !== value.fileKey) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'ocrFileKey and fileKey must match when both are provided',
-        path: ['fileKey'],
-      });
-    }
-  });
-
 const _runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
   .object({
     filename: nonEmptyString.optional(),
@@ -516,11 +491,9 @@ const searchCustomersSchema: z.ZodType<SearchCustomersInput> = z.object({
 export const steelToolArgsSchemas: {
   readonly search_customers: z.ZodType<SearchCustomersInput>;
   readonly search_price_candidates: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown>;
-  readonly read_markdown: z.ZodType<ReadMarkdownInput>;
 } = {
   search_customers: searchCustomersSchema,
   search_price_candidates: searchPriceCandidatesSchema,
-  read_markdown: readMarkdownSchema,
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;

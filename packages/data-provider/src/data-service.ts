@@ -2,15 +2,11 @@ import type { AxiosResponse } from 'axios';
 import type { TFileConfig } from './file-config';
 import type * as t from './types';
 import type {
-  SteelConversationMessagesResponse,
   OpenAIOAuthTokenLoginStatus,
   OpenAIOAuthTokenLoginMethod,
   OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
-  SteelProviderChatRequest,
-  SteelProviderChatResponse,
-  SteelProviderChatStreamEvent,
 } from './steel';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
@@ -25,8 +21,6 @@ import * as config from './config';
 import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
-import { getTokenHeader } from './headers-helpers';
-import { parseSteelProviderChatStreamLine } from './steel/ai';
 
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
@@ -46,18 +40,6 @@ export function getFavorites(): Promise<q.TUserFavorite[]> {
 
 export function updateFavorites(favorites: q.TUserFavorite[]): Promise<q.TUserFavorite[]> {
   return request.post(`${endpoints.apiBaseUrl()}/api/user/settings/favorites`, { favorites });
-}
-
-export function sendSteelChat(
-  payload: SteelProviderChatRequest,
-): Promise<SteelProviderChatResponse> {
-  return request.post(endpoints.steelChat(), payload);
-}
-
-export function getSteelConversationMessages(
-  conversationId: string,
-): Promise<SteelConversationMessagesResponse> {
-  return request.get(endpoints.steelConversationMessages(conversationId));
 }
 
 export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
@@ -90,89 +72,6 @@ export function cancelOpenAIOAuthCodexLogin(sessionId: string): Promise<void> {
 
 export function logoutOpenAIOAuthCodex(): Promise<OpenAIOAuthTokenLogoutStatus> {
   return request.post(endpoints.adminOpenAIOAuthTokenLogout());
-}
-
-export async function streamSteelChat(
-  payload: SteelProviderChatRequest,
-  onEvent: (event: SteelProviderChatStreamEvent) => void,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<SteelProviderChatResponse> {
-  const authorization = getTokenHeader();
-  const response = await fetchImpl(endpoints.steelChatStream(), {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {
-      Accept: 'application/x-ndjson',
-      'Content-Type': 'application/json',
-      ...(authorization ? { Authorization: authorization } : {}),
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    let errorSummary = errorText.trim();
-    try {
-      const parsed = JSON.parse(errorText) as { errorSummary?: unknown; message?: unknown };
-      if (typeof parsed.errorSummary === 'string') {
-        errorSummary = parsed.errorSummary;
-      } else if (typeof parsed.message === 'string') {
-        errorSummary = parsed.message;
-      }
-    } catch {
-      // Keep the raw response text when the server did not return JSON.
-    }
-    throw new Error(
-      errorSummary
-        ? `Steel chat stream failed with HTTP ${response.status}: ${errorSummary}`
-        : `Steel chat stream failed with HTTP ${response.status}`,
-    );
-  }
-  if (!response.body) {
-    throw new Error('Steel chat stream response did not include a readable body.');
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finalResponse: SteelProviderChatResponse | undefined;
-
-  const consumeLine = (line: string) => {
-    const event = parseSteelProviderChatStreamLine(line);
-    if (!event) {
-      return;
-    }
-
-    onEvent(event);
-    if (event.type === 'done') {
-      finalResponse = event.response;
-      return;
-    }
-    if (event.type === 'error') {
-      throw new Error(event.errorSummary);
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    lines.forEach(consumeLine);
-  }
-
-  buffer += decoder.decode();
-  consumeLine(buffer);
-
-  if (!finalResponse) {
-    throw new Error('Steel chat stream ended before a done event.');
-  }
-
-  return finalResponse;
 }
 
 /**

@@ -1,15 +1,11 @@
-import type {
-  CaptureSteelNativeAssistantMarkdownResult,
-  CaptureSteelNativeToolResultResult,
-} from './markdown';
+import type { SteelOcrMissingPagesByFileKey } from '../ocr/failures';
+import type { CaptureSteelNativeToolResultResult } from './tool-result';
 
 export const steelNativeStreamEventName = 'steel_event' as const;
 
 export type SteelNativeEventSource =
-  | 'assistant_markdown'
   | 'ocr_preprocessing'
   | 'paddleocr_preflight'
-  | 'responses_output'
   | 'tool_result';
 
 export type SteelNativeSavedCounts = Record<string, number>;
@@ -30,6 +26,7 @@ export interface SteelNativeParseStatusEvent extends SteelNativeEventBase {
   parseStatus: 'saved' | 'partial' | 'skipped';
   errorMessage?: string;
   failedKeys?: readonly string[];
+  missingPagesByFileKey?: SteelOcrMissingPagesByFileKey;
   savedCounts?: SteelNativeSavedCounts;
   savedTableCounts?: SteelNativeTableCounts;
   totalSavedCounts?: SteelNativeSavedCounts;
@@ -52,12 +49,8 @@ export interface SteelNativeEventEnvelope {
   data: SteelNativeStreamEvent;
 }
 
-type CapturedSteelNativeResult =
-  | Extract<CaptureSteelNativeAssistantMarkdownResult, { status: 'captured' }>['result']
-  | Extract<CaptureSteelNativeToolResultResult, { status: 'captured' }>['result'];
-
 export interface BuildSteelNativeEventEnvelopesInput extends SteelNativeEventBase {
-  capture: CaptureSteelNativeAssistantMarkdownResult | CaptureSteelNativeToolResultResult;
+  capture: CaptureSteelNativeToolResultResult;
 }
 
 export interface SteelPaddleOcrPreflightActivityResult {
@@ -89,7 +82,11 @@ export type SteelOcrPreprocessingProgress =
   | { stage: 'organizer_chunk_saved'; chunkIndex: number; chunkCount: number }
   | { stage: 'merged_markdowns_read'; chunkCount: number }
   | { stage: 'processing_with_merged_markdown'; chunkCount: number }
-  | { stage: 'failed'; errorMessage: string };
+  | {
+      stage: 'failed';
+      errorMessage: string;
+      missingPagesByFileKey?: SteelOcrMissingPagesByFileKey;
+    };
 
 export interface BuildSteelOcrPreprocessingEventEnvelopesInput
   extends Omit<SteelNativeEventBase, 'source'> {
@@ -107,7 +104,9 @@ function hasSavedCounts(
   return Object.values(savedCounts).some((count) => Number.isFinite(count) && count > 0);
 }
 
-function captureCountMetadata(result: CapturedSteelNativeResult) {
+function captureCountMetadata(
+  result: Extract<CaptureSteelNativeToolResultResult, { status: 'captured' }>['result'],
+) {
   return {
     ...('savedTableCounts' in result && hasSavedCounts(result.savedTableCounts)
       ? { savedTableCounts: result.savedTableCounts }
@@ -132,24 +131,6 @@ function preflightCountMetadata(preflight: SteelPaddleOcrPreflightActivityResult
   };
 }
 
-function getMemorySavedMessage(savedCounts: SteelNativeSavedCounts): string {
-  if ((savedCounts.ocr_markdown ?? 0) > 0) {
-    return 'Save final OCR markdown';
-  }
-
-  return 'Saved Working Order Memory';
-}
-
-function getMarkdownParseMessage(parseStatus: SteelNativeParseStatusEvent['parseStatus']): string {
-  if (parseStatus === 'saved') {
-    return 'Saved Markdown parse';
-  }
-  if (parseStatus === 'partial') {
-    return 'Partially parsed Markdown';
-  }
-  return 'Skipped Markdown parse';
-}
-
 function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
   return {
     source: input.source,
@@ -169,42 +150,22 @@ export function buildSteelNativeEventEnvelopes({
     return [];
   }
 
-  const events: SteelNativeEventEnvelope[] = [];
-  const eventBase = baseEvent(input);
-
-  if ('parseStatus' in capture.result) {
-    const savedCounts = hasSavedCounts(capture.result.savedCounts)
-      ? capture.result.savedCounts
-      : undefined;
-    const countMetadata = captureCountMetadata(capture.result);
-    events.push({
-      event: steelNativeStreamEventName,
-      data: {
-        type: 'parse_status',
-        message: getMarkdownParseMessage(capture.result.parseStatus),
-        parseStatus: capture.result.parseStatus,
-        ...(savedCounts ? { savedCounts } : {}),
-        ...countMetadata,
-        ...eventBase,
-      },
-    });
+  if (!hasSavedCounts(capture.result.savedCounts)) {
+    return [];
   }
 
-  if (hasSavedCounts(capture.result.savedCounts)) {
-    const countMetadata = captureCountMetadata(capture.result);
-    events.push({
+  return [
+    {
       event: steelNativeStreamEventName,
       data: {
         type: 'memory_saved',
-        message: getMemorySavedMessage(capture.result.savedCounts),
+        message: 'Saved Working Order Memory',
         savedCounts: capture.result.savedCounts,
-        ...countMetadata,
-        ...eventBase,
+        ...captureCountMetadata(capture.result),
+        ...baseEvent(input),
       },
-    });
-  }
-
-  return events;
+    },
+  ];
 }
 
 function getPaddleOcrSavedCount(preflight: SteelPaddleOcrPreflightActivityResult): number {
@@ -401,6 +362,9 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             parseStatus: 'partial',
             errorMessage: progress.errorMessage,
             failedKeys: [ocrFileKey],
+            ...(progress.missingPagesByFileKey
+              ? { missingPagesByFileKey: progress.missingPagesByFileKey }
+              : {}),
             ...eventBase,
           },
         },

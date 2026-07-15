@@ -9,7 +9,6 @@ import {
 } from '@librechat/agents/langchain/messages';
 import { parseMarkdownTables } from '../markdown/table';
 import { createSteelPostgresPool } from '../postgres';
-import { createEmptySteelOutputSheetMemorySnapshot } from '../runtime/context';
 import { createSteelToolRunState, executeSteelTool } from '../tools/execute';
 import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '../ai/config';
 import { buildSteelGlobalAgentContext, createSteelContextDependencies } from './context';
@@ -20,7 +19,7 @@ import type { LCTool } from '@librechat/agents';
 import type { AIMessageChunk, BaseMessage } from '@librechat/agents/langchain/messages';
 import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import type { SteelOAuthChatFile } from '../ai/provider';
+import type { SteelRuntimeFile } from '../runtime/types';
 import type { SteelToolResult } from '../tools/results';
 import type { SteelNativeFileReference, SteelNativeMessage } from './context';
 import type { SteelProviderToolName } from '../tools/registry';
@@ -80,7 +79,7 @@ async function writeEvidence(evidence: Record<string, unknown>) {
   await writeFile(evidenceOutputPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 }
 
-async function loadPLFile(): Promise<SteelOAuthChatFile> {
+async function loadPLFile(): Promise<SteelRuntimeFile> {
   const data = await readFile(plPdfPath);
 
   return {
@@ -119,7 +118,7 @@ function hasSecretMarker(value: unknown): boolean {
   return /access_token|authorization|Bearer|authFile/i.test(JSON.stringify(value));
 }
 
-function toBase64DataUrl(file: SteelOAuthChatFile): string {
+function toBase64DataUrl(file: SteelRuntimeFile): string {
   if (!(file.data instanceof Uint8Array)) {
     throw new Error('PL.pdf live smoke expected Uint8Array fixture data.');
   }
@@ -174,7 +173,7 @@ function createNativeSystemMessages({
   return [new SystemMessage(instructionPrefix), new SystemMessage(runtimeContextText)];
 }
 
-function createOcrHumanMessage(prompt: string, file: SteelOAuthChatFile): HumanMessage {
+function createOcrHumanMessage(prompt: string, file: SteelRuntimeFile): HumanMessage {
   return new HumanMessage({
     content: [
       {
@@ -320,9 +319,6 @@ async function executeNativeToolCall({
     arguments: call.args,
     providerToolCallId,
     runState,
-    outputSheetMemoryReader: {
-      readOutputSheetMemory: async () => createEmptySteelOutputSheetMemorySnapshot(),
-    },
   });
 
   capturedCalls.push({

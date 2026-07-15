@@ -1,5 +1,4 @@
 const { logger } = require('@librechat/data-schemas');
-const mongoose = require('mongoose');
 const { createContentAggregator } = require('@librechat/agents');
 const {
   checkAccess,
@@ -15,14 +14,10 @@ const {
   resolveAgentTokenConfig,
   resolveAgentScopedSkillIds,
   resolveModelSpecSkillIds,
-  captureSteelNativeAssistantMarkdown,
-  buildSteelNativeEventEnvelopes,
-  createMongooseSteelWorkingOrderMemoryWriter,
   buildAgentContextAttachmentsByAgentId,
   isSteelNativeProviderPolicyTarget,
   resolveSteelNativeProviderPolicy,
   toSteelNativeProviderMetadata,
-  sendEvent,
 } = require('@librechat/api');
 const {
   Permissions,
@@ -110,58 +105,6 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
     } catch (error) {
       logger.error('Error loading tools for agent ' + agentId, error);
     }
-  };
-}
-
-async function emitSteelNativeEvents({ events, res, streamId }) {
-  for (const event of events) {
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, event);
-    } else if (typeof res?.write === 'function' && !res.writableEnded) {
-      sendEvent(res, event);
-    }
-  }
-}
-
-function createSteelNativeResponseSaveHook({ req, res, streamId }) {
-  const workingOrderMemoryWriter = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
-
-  return async function onResponseMessageSaved({ responseMessage, turnIndex }) {
-    const result = await captureSteelNativeAssistantMarkdown({
-      writer: workingOrderMemoryWriter,
-      conversationId: responseMessage?.conversationId,
-      requestId: responseMessage?.messageId,
-      messageId: responseMessage?.messageId,
-      turnIndex,
-      text: responseMessage?.text,
-      content: responseMessage?.content,
-      isCreatedByUser: responseMessage?.isCreatedByUser,
-      unfinished: responseMessage?.unfinished,
-      error: responseMessage?.error,
-      temporary: responseMessage?.temporary,
-      currentTurnFiles: req?.steelNativeContext?.currentTurnFiles,
-      currentOcrMarkdownResults:
-        req?.steelNativeContext?.paddleOcrPreflight?.currentOcrMarkdownResults,
-    });
-
-    logger.debug('[AgentClient] Steel native response capture', {
-      messageId: responseMessage?.messageId,
-      status: result.status,
-      reason: result.status === 'skipped' ? result.reason : undefined,
-      parseStatus: result.status === 'captured' ? result.result.parseStatus : undefined,
-      savedCounts: result.status === 'captured' ? result.result.savedCounts : undefined,
-    });
-    await emitSteelNativeEvents({
-      res,
-      streamId,
-      events: buildSteelNativeEventEnvelopes({
-        source: 'assistant_markdown',
-        conversationId: responseMessage?.conversationId,
-        requestId: responseMessage?.messageId,
-        messageId: responseMessage?.messageId,
-        capture: result,
-      }),
-    });
   };
 }
 
@@ -1061,7 +1004,6 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
-    onResponseMessageSaved: createSteelNativeResponseSaveHook({ req, res, streamId }),
     steelProviderMetadata: steelProviderPolicy
       ? toSteelNativeProviderMetadata(steelProviderPolicy)
       : undefined,

@@ -9,7 +9,7 @@ describe('Steel tool registry', () => {
   it('exposes only the minimal AI-led tool surface', () => {
     const toolNames = getSteelToolDefinitions().map((definition) => definition.name);
 
-    expect(toolNames).toEqual(['search_customers', 'search_price_candidates', 'read_markdown']);
+    expect(toolNames).toEqual(['search_customers', 'search_price_candidates']);
     expect(toolNames).not.toContain('run_file_ocr');
     expect(toolNames).not.toContain('lookup_quote_rules');
     expect(toolNames).not.toContain('read_working_order_items');
@@ -141,90 +141,13 @@ describe('Steel tool registry', () => {
     }).toThrow('Unknown Steel provider tool');
   });
 
-  it('exposes file-keyed Markdown-derived current-state reads by default', () => {
-    const definition = getSteelToolDefinitions().find((entry) => entry.name === 'read_markdown');
-
-    expect(definition).toBeDefined();
-    expect(definition?.description).toContain('absent or incomplete in chat history');
-    expect(definition?.description).toContain('same-turn OCR already present');
-    expect(definition?.description).not.toContain('backend');
-    expect(definition?.description).not.toContain('merging all OCR preprocessing chunks');
-    expect(definition?.usagePolicy).toEqual({
-      requiresMissingMarkdownInHistory: true,
-      forbiddenWhenHistoryHasNeededMarkdown: true,
-      allowedScopes: ['workbook', 'ocr'],
-      currentConversationScoped: true,
-      fileKeyParameter: 'fileKey',
-      ocrFileKeyParameter: 'ocrFileKey',
-      defaultWorkbookFileKey: 'default',
-      fileKeyRecommendedWhenMultipleOrders: true,
-      ocrFileKeyRecommendedForFullContent: true,
-    });
-    expect(
-      definition?.argsSchema.parse({
-        scope: 'workbook',
-        reason: 'Need current parsed workbook after compact context',
-      }),
-    ).toEqual({
-      scope: 'workbook',
-      reason: 'Need current parsed workbook after compact context',
-    });
-    expect(
-      definition?.argsSchema.parse({
-        scope: 'workbook',
-        fileKey: 'file:file-d',
-      }),
-    ).toEqual({
-      scope: 'workbook',
-      fileKey: 'file:file-d',
-    });
-    expect(
-      definition?.argsSchema.parse({
-        scope: 'ocr',
-        ocrFileKey: 'file:file-d',
-      }),
-    ).toEqual({
-      scope: 'ocr',
-      ocrFileKey: 'file:file-d',
-    });
-    expect(
-      definition?.argsSchema.parse({
-        scope: 'ocr',
-        fileKey: 'file:file-d',
-      }),
-    ).toEqual({
-      scope: 'ocr',
-      fileKey: 'file:file-d',
-    });
-    expect(() =>
-      definition?.argsSchema.parse({
-        scope: 'ocr',
-        ocrFileKey: 'file:file-d',
-        fileKey: 'file:file-e',
-      }),
-    ).toThrow('ocrFileKey and fileKey must match');
-    expect(() =>
-      definition?.argsSchema.parse({
-        scope: 'quote',
-      }),
-    ).toThrow();
-    expect(() =>
-      definition?.argsSchema.parse({
-        scope: 'all',
-      }),
-    ).toThrow();
-    expect(() =>
-      definition?.argsSchema.parse({
-        query: 'CCG075',
-      }),
-    ).toThrow();
-    expect(() =>
-      definition?.argsSchema.parse({
-        rowNo: 12,
-        sheetIds: ['system_order'],
-      }),
-    ).toThrow();
-    expect(getSteelToolDefinitions().map((entry) => entry.name)).toContain('read_markdown');
+  it('removes Markdown reconstruction from the provider registry', () => {
+    expect(getSteelToolDefinitions().map((entry) => entry.name)).not.toContain('read_markdown');
+    expect(Object.keys(steelToolArgsSchemas)).not.toContain('read_markdown');
+    expect(() => {
+      // @ts-expect-error exercising a deleted provider-visible tool name.
+      getSteelToolDefinition('read_markdown');
+    }).toThrow('Unknown Steel provider tool');
   });
 
   it('does not expose working-order memory reads as a provider tool', () => {

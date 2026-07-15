@@ -59,6 +59,9 @@ const {
   buildAgentScopedContext,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
+  stripPaddleOcrToolsForMainAgent,
+  stripSteelToolsForOcrTurn,
+  stripSteelOcrPartsFromProviderMessages,
   buildSkillPrimeContentParts,
   buildInitialToolSessions,
   hasUrlContextTool,
@@ -654,7 +657,6 @@ class AgentClient extends BaseClient {
         : undefined,
     });
     let paddleOcrPreflight;
-    this.options.openAIOAuthReasoningEffortOverride = undefined;
     if (this.options.req) {
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
@@ -674,10 +676,24 @@ class AgentClient extends BaseClient {
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
         paddleOcrPreflight,
+        ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
       };
-      if (paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0) {
-        this.options.openAIOAuthReasoningEffortOverride = 'none';
+      const runAgents = [
+        this.options.agent,
+        ...(this.agentConfigs ? Array.from(this.agentConfigs.values()) : []),
+      ];
+      for (const runAgent of runAgents) {
+        const mainAgent = stripPaddleOcrToolsForMainAgent(runAgent);
+        Object.assign(
+          runAgent,
+          paddleOcrPreflight?.ocrTurnActive === true
+            ? stripSteelToolsForOcrTurn(mainAgent)
+            : mainAgent,
+        );
       }
+    }
+    if (paddleOcrPreflight?.ocrTurnActive !== true) {
+      payload = stripSteelOcrPartsFromProviderMessages(payload, currentTurnSteelFileReferences);
     }
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
@@ -686,9 +702,13 @@ class AgentClient extends BaseClient {
         ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
           ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
           : {}),
+        ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
+          ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
+          : {}),
         priorActiveFileEvidence: [],
       },
       renderProfile: 'agent_client',
+      mode: paddleOcrPreflight?.ocrTurnActive === true ? 'ocr' : 'standard',
     });
     if (this.options.req) {
       this.options.req.steelNativeContext = {

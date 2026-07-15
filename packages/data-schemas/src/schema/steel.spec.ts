@@ -3,9 +3,6 @@ import mongoose from 'mongoose';
 import {
   createSteelAICapabilityModel,
   createSteelAIRunModel,
-  createSteelAuditLogModel,
-  createSteelConversationMetaModel,
-  createSteelConversationTurnModel,
   createSteelMemoryCandidateModel,
   createSteelOcrPdfChunkArtifactModel,
   createSteelWorkingOrderMemoryModel,
@@ -18,20 +15,14 @@ describe('Steel Mongo schemas', () => {
   });
 
   it('uses steel_ collection names for Phase 1 state', () => {
-    const SteelConversationMeta = createSteelConversationMetaModel(mongoose);
     const SteelAIRun = createSteelAIRunModel(mongoose);
     const SteelAICapability = createSteelAICapabilityModel(mongoose);
-    const SteelAuditLog = createSteelAuditLogModel(mongoose);
     const SteelSourceVersion = createSteelSourceVersionModel(mongoose);
-    const SteelConversationTurn = createSteelConversationTurnModel(mongoose);
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
 
-    expect(SteelConversationMeta.collection.name).toBe('steel_conversation_meta');
-    expect(SteelConversationTurn.collection.name).toBe('steel_conversation_turns');
     expect(SteelWorkingOrderMemory.collection.name).toBe('steel_working_order_memory');
     expect(SteelAIRun.collection.name).toBe('steel_ai_runs');
     expect(SteelAICapability.collection.name).toBe('steel_ai_capabilities');
-    expect(SteelAuditLog.collection.name).toBe('steel_audit_logs');
     expect(SteelSourceVersion.collection.name).toBe('steel_source_versions');
   });
 
@@ -64,63 +55,10 @@ describe('Steel Mongo schemas', () => {
   });
 
   it('indexes account privacy, guest token, and provider capability lookup fields', () => {
-    const SteelConversationMeta = createSteelConversationMetaModel(mongoose);
     const SteelAICapability = createSteelAICapabilityModel(mongoose);
 
-    expect(SteelConversationMeta.schema.indexes()).toContainEqual([
-      { guestTokenHash: 1 },
-      expect.objectContaining({ sparse: true }),
-    ]);
-    expect(SteelConversationMeta.schema.indexes()).toContainEqual([
-      { userId: 1, status: 1, updatedAt: -1 },
-      expect.any(Object),
-    ]);
     expect(SteelAICapability.schema.indexes()).toContainEqual([
       { provider: 1, model: 1, capability: 1 },
-      expect.objectContaining({ unique: true }),
-    ]);
-  });
-
-  it('stores Steel conversation turns with latest-visible and superseded state fields', () => {
-    const SteelConversationTurn = createSteelConversationTurnModel(mongoose);
-
-    expect(SteelConversationTurn.schema.path('role').options.enum).toEqual(['user', 'assistant']);
-    expect(SteelConversationTurn.schema.path('source').options.enum).toEqual([
-      'user_input',
-      'assistant_final',
-      'queued_steer',
-    ]);
-    expect(SteelConversationTurn.schema.path('state').options.enum).toEqual([
-      'active',
-      'superseded',
-    ]);
-    expect(SteelConversationTurn.schema.path('userId')).toBeDefined();
-    expect(SteelConversationTurn.schema.path('finalResponseMetadata.provider')).toBeDefined();
-    expect(SteelConversationTurn.schema.path('finalResponseMetadata.responseId')).toBeDefined();
-    expect(
-      SteelConversationTurn.schema.path('finalResponseMetadata.usage.totalTokens'),
-    ).toBeDefined();
-    expect(SteelConversationTurn.schema.path('queuedSteer.targetRequestId')).toBeDefined();
-    expect(SteelConversationTurn.schema.path('queuedSteer.status').options.enum).toEqual([
-      'queued',
-      'applied',
-      'deferred',
-      'superseded',
-    ]);
-    expect(SteelConversationTurn.schema.indexes()).toContainEqual([
-      { conversationId: 1, state: 1, turnIndex: 1 },
-      expect.any(Object),
-    ]);
-    expect(SteelConversationTurn.schema.indexes()).toContainEqual([
-      { conversationId: 1, userId: 1, state: 1, turnIndex: 1 },
-      expect.any(Object),
-    ]);
-    expect(SteelConversationTurn.schema.indexes()).toContainEqual([
-      { conversationId: 1, createdAt: -1 },
-      expect.any(Object),
-    ]);
-    expect(SteelConversationTurn.schema.indexes()).toContainEqual([
-      { conversationId: 1, messageId: 1 },
       expect.objectContaining({ unique: true }),
     ]);
   });
@@ -187,13 +125,11 @@ describe('Steel Mongo schemas', () => {
 
   it('uses unverified capability status and does not keep stale not_run or tenant fields', () => {
     const SteelAICapability = createSteelAICapabilityModel(mongoose);
-    const SteelConversationMeta = createSteelConversationMetaModel(mongoose);
 
     const statusEnum = SteelAICapability.schema.path('status').options.enum;
 
     expect(statusEnum).toContain('unverified');
     expect(statusEnum).not.toContain('not_run');
-    expect(SteelConversationMeta.schema.path('tenantId')).toBeUndefined();
   });
 
   it('records source version legacy format and conversion metadata', () => {

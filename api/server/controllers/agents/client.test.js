@@ -140,7 +140,7 @@ describe('AgentClient - titleConvo', () => {
       runtimeContext: {},
       metadata: {
         globalApplied: true,
-        contextMode: 'compact_workbook',
+        mode: 'standard',
       },
       contextSlots: {
         instructionPrefix: 'top_of_context',
@@ -2084,7 +2084,7 @@ describe('AgentClient - titleConvo', () => {
         runtimeContext: {},
         metadata: {
           globalApplied: true,
-          contextMode: 'compact_workbook',
+          mode: 'standard',
         },
         contextSlots: {
           instructionPrefix: 'top_of_context',

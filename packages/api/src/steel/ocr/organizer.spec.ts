@@ -1,86 +1,88 @@
 import { buildOcrOrganizerPrompt, resolveOcrOrganizerRulesText } from './organizer';
 
+const organizerRule = 'ORGANIZER_RULE_SENTINEL';
+const rawOcrText = 'RAW_OCR_SENTINEL';
+
 describe('OCR organizer interface', () => {
-  it('includes only the chunk-organizer section from the shared OCR rule', () => {
+  it('extracts only the organizer section and raw OCR text', () => {
     const prompt = buildOcrOrganizerPrompt({
       ocrRulesText: [
-        'Main-agent rerun policy.',
+        'UNMARKED_MAIN_RULE',
         '[ocr_shared]',
-        'Rotate before reading and preserve Traditional Chinese.',
+        'SHARED_RULE_MUST_NOT_BE_INCLUDED',
         '[/ocr_shared]',
         '[ocr_organizer]',
-        'Preserve source rows and correct t/1 with a note.',
-        'Return one chunk-local table.',
+        organizerRule,
         '[/ocr_organizer]',
-        'Final file-key merge policy.',
+        '[ocr_main_merge]',
+        'MAIN_MERGE_RULE_MUST_NOT_BE_INCLUDED',
+        '[/ocr_main_merge]',
+        '[final_ocr_markdown]',
+        'FINAL_RULE_MUST_NOT_BE_INCLUDED',
+        '[/final_ocr_markdown]',
+        'Vision_RULE_MUST_NOT_BE_INCLUDED',
       ].join('\n'),
-      file: {
-        ocrFileKey: 'file:file-100',
-        filename: 'quote.pdf',
-      },
-      chunk: {
-        pipelineVersion: 1,
-        sourcePdfKey: 'source.pdf',
-        ocrFileKey: 'file:file-100',
-        filename: 'quote.pdf',
-        chunkIndex: 1,
-        chunkCount: 2,
-        pageStart: 1,
-        pageEnd: 50,
-        chunkSizePages: 50,
-      },
-      rawOcrText: 'RAW OCR',
+      rawOcrText,
     });
 
-    expect(prompt).toContain('Preserve source rows and correct t/1 with a note.');
-    expect(prompt).toContain('Return one chunk-local table.');
-    expect(prompt).toContain('Rotate before reading and preserve Traditional Chinese.');
-    expect(prompt).not.toContain('Main-agent rerun policy.');
-    expect(prompt).not.toContain('Final file-key merge policy.');
+    expect(prompt).toBe(
+      ['Organizer rules:', organizerRule, '', 'Raw OCR text:', rawOcrText].join('\n'),
+    );
     expect(prompt).not.toContain('[ocr_organizer]');
-    expect(prompt).not.toContain('[ocr_shared]');
+    expect(prompt).not.toContain('UNMARKED_MAIN_RULE');
+    expect(prompt).not.toContain('SHARED_RULE_MUST_NOT_BE_INCLUDED');
+    expect(prompt).not.toContain('MAIN_MERGE_RULE_MUST_NOT_BE_INCLUDED');
+    expect(prompt).not.toContain('FINAL_RULE_MUST_NOT_BE_INCLUDED');
+    expect(prompt).not.toContain('Vision_RULE_MUST_NOT_BE_INCLUDED');
+    expect(prompt).not.toContain('file:');
+    expect(prompt).not.toContain('chunk');
+    expect(prompt).not.toContain('artifact');
   });
 
-  it('falls back to the complete rule when organizer markers are missing or invalid', () => {
-    expect(resolveOcrOrganizerRulesText('Complete OCR rule')).toBe('Complete OCR rule');
-    expect(resolveOcrOrganizerRulesText('[ocr_organizer]\n[/ocr_organizer]')).toBe(
+  it('returns only the marked organizer rule when other rule sections are present', () => {
+    expect(
+      resolveOcrOrganizerRulesText(
+        [
+          '[ocr_shared]',
+          'SHARED_RULE',
+          '[/ocr_shared]',
+          '[ocr_organizer]',
+          organizerRule,
+          '[/ocr_organizer]',
+          '[ocr_main_merge]',
+          'MAIN_RULE',
+          '[/ocr_main_merge]',
+        ].join('\n'),
+      ),
+    ).toBe(organizerRule);
+  });
+
+  it('fails closed when organizer markers are missing, duplicate, empty, or malformed', () => {
+    const invalidRules = [
+      'Complete OCR rule',
+      '[ocr_organizer]\nOrganizer\n[ocr_organizer]\nDuplicate\n[/ocr_organizer]',
+      '[ocr_organizer]\nOrganizer\n[/ocr_organizer]\n[/ocr_organizer]',
       '[ocr_organizer]\n[/ocr_organizer]',
-    );
-    expect(resolveOcrOrganizerRulesText('[ocr_organizer]\nIncomplete')).toBe(
-      '[ocr_organizer]\nIncomplete',
-    );
+      '[/ocr_organizer]\n[ocr_organizer]\nOrganizer',
+    ];
+
+    for (const rules of invalidRules) {
+      expect(() => resolveOcrOrganizerRulesText(rules)).toThrow(
+        /OCR organizer rule markers/u,
+      );
+    }
   });
 
-  it('builds a minimal chunk-only organizer prompt', () => {
+  it('builds a prompt from exactly the two organizer inputs', () => {
     const prompt = buildOcrOrganizerPrompt({
-      ocrRulesText: 'OCR rules text',
-      file: {
-        ocrFileKey: 'file:file-100',
-        fileId: 'file-100',
-        filename: 'quote.pdf',
-      },
-      chunk: {
-        pipelineVersion: 1,
-        sourcePdfKey: 's3://bucket/r/prod/t/tenant/uploads/original.pdf',
-        ocrFileKey: 'file:file-100',
-        fileId: 'file-100',
-        filename: 'quote.pdf',
-        chunkIndex: 3,
-        chunkCount: 5,
-        pageStart: 101,
-        pageEnd: 150,
-        chunkSizePages: 50,
-      },
-      rawOcrText: 'RAW OCR CHUNK 3 ONLY',
+      ocrRulesText: `[ocr_organizer]\n${organizerRule}\n[/ocr_organizer]`,
+      rawOcrText,
     });
 
-    expect(prompt).toContain('OCR rules text');
-    expect(prompt).toContain('file:file-100');
-    expect(prompt).toContain('quote.pdf');
-    expect(prompt).toContain('pages 101-150');
-    expect(prompt).toContain('RAW OCR CHUNK 3 ONLY');
-    expect(prompt).not.toContain('system_order');
-    expect(prompt).not.toContain('priceCandidates');
-    expect(prompt).not.toContain('workbook');
+    expect(prompt).toBe(
+      ['Organizer rules:', organizerRule, '', 'Raw OCR text:', rawOcrText].join('\n'),
+    );
+    expect(prompt).not.toContain('Organize this');
+    expect(prompt).not.toContain('behavioral');
   });
 });

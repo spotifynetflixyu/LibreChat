@@ -6,50 +6,6 @@ import {
 } from './events';
 
 describe('Steel native event mapping', () => {
-  it('maps captured assistant Markdown into parse and save native stream events', () => {
-    const events = buildSteelNativeEventEnvelopes({
-      source: 'assistant_markdown',
-      conversationId: 'conversation_1',
-      requestId: 'request_1',
-      messageId: 'message_2',
-      capture: {
-        status: 'captured',
-        result: {
-          parseStatus: 'saved',
-          savedCounts: { working_order_row: 2 },
-        },
-      },
-    });
-
-    expect(events).toEqual([
-      {
-        event: steelNativeStreamEventName,
-        data: {
-          type: 'parse_status',
-          message: 'Saved Markdown parse',
-          parseStatus: 'saved',
-          savedCounts: { working_order_row: 2 },
-          source: 'assistant_markdown',
-          conversationId: 'conversation_1',
-          requestId: 'request_1',
-          messageId: 'message_2',
-        },
-      },
-      {
-        event: steelNativeStreamEventName,
-        data: {
-          type: 'memory_saved',
-          message: 'Saved Working Order Memory',
-          savedCounts: { working_order_row: 2 },
-          source: 'assistant_markdown',
-          conversationId: 'conversation_1',
-          requestId: 'request_1',
-          messageId: 'message_2',
-        },
-      },
-    ]);
-  });
-
   it('maps captured tool result saves without emitting parse status', () => {
     const events = buildSteelNativeEventEnvelopes({
       source: 'tool_result',
@@ -82,60 +38,25 @@ describe('Steel native event mapping', () => {
     ]);
   });
 
-  it('labels final OCR Markdown saves explicitly', () => {
+  it('includes table counts and active totals on captured tool events', () => {
     const events = buildSteelNativeEventEnvelopes({
-      source: 'assistant_markdown',
+      source: 'tool_result',
       conversationId: 'conversation_1',
       requestId: 'request_1',
-      messageId: 'message_2',
       capture: {
         status: 'captured',
         result: {
-          parseStatus: 'saved',
-          savedCounts: { ocr_markdown: 1 },
-        },
-      },
-    });
-
-    expect(events[1]?.data).toEqual(
-      expect.objectContaining({
-        type: 'memory_saved',
-        message: 'Save final OCR markdown',
-        savedCounts: { ocr_markdown: 1 },
-      }),
-    );
-  });
-
-  it('includes table counts and active totals on captured assistant Markdown events', () => {
-    const events = buildSteelNativeEventEnvelopes({
-      source: 'assistant_markdown',
-      conversationId: 'conversation_1',
-      requestId: 'request_1',
-      messageId: 'message_2',
-      capture: {
-        status: 'captured',
-        result: {
-          parseStatus: 'saved',
-          savedCounts: { ocr_extract: 1, working_order_row: 2 },
-          savedTableCounts: { ocr_table: 1, system_order_table: 1 },
-          totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
-          totalTableCounts: { ocr_table: 2, system_order_table: 1 },
+          savedCounts: { price_evidence: 2 },
+          totalSavedCounts: { price_evidence: 4 },
+          totalTableCounts: {},
         },
       },
     });
 
     expect(events.map((entry) => entry.data)).toEqual([
       expect.objectContaining({
-        type: 'parse_status',
-        savedTableCounts: { ocr_table: 1, system_order_table: 1 },
-        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
-        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
-      }),
-      expect.objectContaining({
         type: 'memory_saved',
-        savedTableCounts: { ocr_table: 1, system_order_table: 1 },
-        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
-        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
+        totalSavedCounts: { price_evidence: 4 },
       }),
     ]);
   });
@@ -143,8 +64,8 @@ describe('Steel native event mapping', () => {
   it('does not emit events for routine skipped captures or empty save counts', () => {
     expect(
       buildSteelNativeEventEnvelopes({
-        source: 'assistant_markdown',
-        capture: { status: 'skipped', reason: 'blank_content' },
+        source: 'tool_result',
+        capture: { status: 'skipped', reason: 'missing_tool_name' },
       }),
     ).toEqual([]);
 
@@ -429,6 +350,9 @@ describe('Steel native event mapping', () => {
         progress: {
           stage: 'failed',
           errorMessage: 'organizer context exceeded token budget',
+          missingPagesByFileKey: {
+            'file:file-a': [1, 2, 4, 5],
+          },
         },
       }).map((entry) => entry.data),
     ).toEqual([
@@ -439,6 +363,9 @@ describe('Steel native event mapping', () => {
         parseStatus: 'partial',
         errorMessage: 'organizer context exceeded token budget',
         failedKeys: ['file:file-a'],
+        missingPagesByFileKey: {
+          'file:file-a': [1, 2, 4, 5],
+        },
       }),
     ]);
   });

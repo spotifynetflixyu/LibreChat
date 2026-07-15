@@ -280,20 +280,29 @@ function createImageFilePart(part: Record<string, unknown>): LanguageModelV3File
 
 function createInputFilePart(part: Record<string, unknown>): LanguageModelV3FilePart | undefined {
   const fileData = part.file_data;
-  if (typeof fileData !== 'string' || fileData === '') {
-    return undefined;
+  if (typeof fileData === 'string' && fileData !== '') {
+    const parsed = parseDataUrl(fileData);
+    if (!parsed) {
+      return undefined;
+    }
+
+    return {
+      type: 'file',
+      filename: typeof part.filename === 'string' ? part.filename : undefined,
+      mediaType: parsed.mediaType,
+      data: parsed.data,
+    };
   }
 
-  const parsed = parseDataUrl(fileData);
-  if (!parsed) {
+  const fileUrl = parseUrl(part.file_url);
+  if (!fileUrl) {
     return undefined;
   }
-
   return {
     type: 'file',
     filename: typeof part.filename === 'string' ? part.filename : undefined,
-    mediaType: parsed.mediaType,
-    data: parsed.data,
+    mediaType: typeof part.media_type === 'string' ? part.media_type : 'application/pdf',
+    data: fileUrl,
   };
 }
 

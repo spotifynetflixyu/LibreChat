@@ -274,6 +274,9 @@ function buildRules(repoRoot) {
   const agent = readRulePrompt(repoRoot, 'docs/rules/agent規則.txt');
   const output = readRulePrompt(repoRoot, 'docs/rules/輸出規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR規則.txt');
+  const vision = readRulePrompt(repoRoot, 'docs/rules/其他規則/Vision規則.txt');
+  const ocrSubagent = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR子Agent整理規則.txt');
+  const ocrMainAgent = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR主Agent整理規則.txt');
   const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
   const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則')
     .map((sourceFile) => {
@@ -299,7 +302,7 @@ function buildRules(repoRoot) {
       },
       prompt: agent.prompt,
       toolPolicy: {
-        availableTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
+        availableTools: ['search_customers', 'search_price_candidates'],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
       priority: 10,
@@ -333,7 +336,7 @@ function buildRules(repoRoot) {
       },
       prompt: output.prompt,
       toolPolicy: {
-        availableTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
+        availableTools: ['search_customers', 'search_price_candidates'],
       },
       outputPolicy: {
         activeSheets: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
@@ -361,7 +364,7 @@ function buildRules(repoRoot) {
       ruleSections: ['file_ocr', 'drawing_ocr', 'vision_evidence'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'other_global_rules'],
-        otherGlobalRulesKey: 'ocrRules',
+        otherGlobalRulesKey: 'ocrMainAgentRules',
         includeWhenFileContext: true,
         sourceKinds: ['image', 'pdf', 'scanned_pdf'],
         requiresDrawingOcr: true,
@@ -387,6 +390,105 @@ function buildRules(repoRoot) {
           '圖面表格局部判讀流程',
           'drawing_ocr_local_table_reading',
           ocr.sha256,
+          'other_rule',
+        ),
+      ],
+    }),
+    unifiedRule({
+      slug: 'steel-drawing-vision-policy',
+      ruleKind: 'other',
+      title: '圖面 Vision 補充判讀流程',
+      ruleSections: ['file_vision', 'drawing_vision', 'vision_evidence'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'other_global_rules'],
+        otherGlobalRulesKey: 'ocrMainAgentRules',
+        includeWhenFileContext: true,
+        sourceKinds: ['image', 'pdf', 'scanned_pdf'],
+        requiresDrawingVision: true,
+        requiresExistingOcrOutput: true,
+        confidence: 'high',
+      },
+      prompt: vision.prompt,
+      toolPolicy: {
+        visionMode: 'supplemental',
+        useOnlyWhen: ['ocr_missing', 'ocr_ambiguous', 'drawing_geometry_required'],
+        preserveOcrOnConflict: true,
+        mustMarkReview: true,
+      },
+      outputPolicy: {
+        outputFormat: 'ocr_field_supplement',
+        onlyFillMissingOrReviewFields: true,
+        requiredReviewLabels: ['Vision補充', 'Vision修正OCR', 'Vision無法確認／人工複核'],
+        unconfirmedValueBehavior: 'leave_blank',
+        forbidPriceLookup: true,
+        forbidFormalQuote: true,
+      },
+      priority: 36,
+      sourceRefs: [
+        sourceRef(
+          'docs/rules/其他規則/Vision規則.txt',
+          'Vision 圖面補充判讀規則',
+          'drawing_vision_supplemental_evidence',
+          vision.sha256,
+          'other_rule',
+        ),
+      ],
+    }),
+    unifiedRule({
+      slug: 'steel-ocr-subagent-organizer-policy',
+      ruleKind: 'other',
+      title: 'OCR 子 Agent 整理流程',
+      ruleSections: ['ocr_organizer'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'steel_ocr_preprocessing', 'other_global_rules'],
+        otherGlobalRulesKey: 'ocrSubagentRules',
+        includeWhenFileContext: true,
+        confidence: 'high',
+      },
+      prompt: ocrSubagent.prompt,
+      outputPolicy: {
+        organizerOutputFormat: 'chunk_local_markdown_table',
+        preserveSourceRows: true,
+        forbidPriceLookup: true,
+        forbidFormalQuote: true,
+      },
+      priority: 37,
+      sourceRefs: [
+        sourceRef(
+          'docs/rules/其他規則/OCR子Agent整理規則.txt',
+          'OCR 子 Agent 整理規則',
+          'ocr_subagent_organizer',
+          ocrSubagent.sha256,
+          'other_rule',
+        ),
+      ],
+    }),
+    unifiedRule({
+      slug: 'steel-ocr-main-agent-organizer-policy',
+      ruleKind: 'other',
+      title: 'OCR 主 Agent 整理與合併流程',
+      ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'other_global_rules'],
+        otherGlobalRulesKey: 'ocrMainAgentRules',
+        includeWhenFileContext: true,
+        confidence: 'high',
+      },
+      prompt: ocrMainAgent.prompt,
+      outputPolicy: {
+        mainOutputFormat: 'final_ocr_markdown',
+        mergeScope: 'same_file_key',
+        preserveSourceRows: true,
+        forbidPriceLookup: true,
+        forbidFormalQuote: true,
+      },
+      priority: 38,
+      sourceRefs: [
+        sourceRef(
+          'docs/rules/其他規則/OCR主Agent整理規則.txt',
+          'OCR 主 Agent 整理與合併規則',
+          'ocr_main_agent_merge',
+          ocrMainAgent.sha256,
           'other_rule',
         ),
       ],
@@ -483,6 +585,8 @@ async function deleteRemovedRules(client, rules) {
     'docs/rules/輸出規則.txt',
     'docs/rules/OCR規則.txt',
     'docs/rules/其他規則/OCR規則.txt',
+    'docs/rules/其他功能/OCR整理規則.txt',
+    'docs/rules/其他規則/OCR整理規則.txt',
     ...legacyCategoryRuleSourceFiles,
     ...rules.flatMap((rule) => rule.sourceRefs.map((ref) => ref.sourceFile)),
   ];

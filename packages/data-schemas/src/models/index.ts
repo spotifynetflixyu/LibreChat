@@ -41,9 +41,6 @@ import {
   createSteelAdminImportSessionModel,
   createSteelAdminMappingProfileModel,
   createSteelAdminMergeTableModel,
-  createSteelAuditLogModel,
-  createSteelConversationMetaModel,
-  createSteelConversationTurnModel,
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,
@@ -96,12 +93,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AuditLog: ReturnType<typeof createAuditLogModel>;
   Group: ReturnType<typeof createGroupModel>;
   Config: ReturnType<typeof createConfigModel>;
-  SteelConversationMeta: ReturnType<typeof createSteelConversationMetaModel>;
-  SteelConversationTurn: ReturnType<typeof createSteelConversationTurnModel>;
   SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
   SteelAIRun: ReturnType<typeof createSteelAIRunModel>;
   SteelAICapability: ReturnType<typeof createSteelAICapabilityModel>;
-  SteelAuditLog: ReturnType<typeof createSteelAuditLogModel>;
   SteelSourceVersion: ReturnType<typeof createSteelSourceVersionModel>;
   SteelToolCall: ReturnType<typeof createSteelToolCallModel>;
   SteelExcelExport: ReturnType<typeof createSteelExcelExportModel>;
@@ -152,12 +146,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AuditLog: createAuditLogModel(mongoose),
     Group: createGroupModel(mongoose),
     Config: createConfigModel(mongoose),
-    SteelConversationMeta: createSteelConversationMetaModel(mongoose),
-    SteelConversationTurn: createSteelConversationTurnModel(mongoose),
     SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
     SteelAIRun: createSteelAIRunModel(mongoose),
     SteelAICapability: createSteelAICapabilityModel(mongoose),
-    SteelAuditLog: createSteelAuditLogModel(mongoose),
     SteelSourceVersion: createSteelSourceVersionModel(mongoose),
     SteelToolCall: createSteelToolCallModel(mongoose),
     SteelExcelExport: createSteelExcelExportModel(mongoose),
@@ -178,9 +169,6 @@ export {
   createSteelAdminImportSessionModel,
   createSteelAdminMappingProfileModel,
   createSteelAdminMergeTableModel,
-  createSteelAuditLogModel,
-  createSteelConversationMetaModel,
-  createSteelConversationTurnModel,
   createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
   createSteelMemoryModel,

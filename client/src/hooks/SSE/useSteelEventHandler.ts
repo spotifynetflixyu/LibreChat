@@ -31,6 +31,21 @@ function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isMissingPagesByFileKey(value: unknown): value is Record<string, readonly number[]> {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const entries = Object.entries(value);
+  return entries.length > 0 && entries.every(
+    ([fileKey, pages]) =>
+      fileKey.length > 0 &&
+      Array.isArray(pages) &&
+      pages.length > 0 &&
+      pages.every((page) => Number.isInteger(page) && page > 0),
+  );
+}
+
 function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
   return {
     ...(isSavedCounts(data.savedTableCounts) ? { savedTableCounts: data.savedTableCounts } : {}),
@@ -82,6 +97,9 @@ function normalizeSteelActivityEvent(
         : {}),
       ...(typeof data.errorMessage === 'string' ? { errorMessage: data.errorMessage } : {}),
       ...(isStringArray(data.failedKeys) ? { failedKeys: data.failedKeys } : {}),
+      ...(isMissingPagesByFileKey(data.missingPagesByFileKey)
+        ? { missingPagesByFileKey: data.missingPagesByFileKey }
+        : {}),
     };
   }
 
@@ -139,6 +157,10 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     savedTableCounts: event.savedTableCounts,
     totalSavedCounts: event.totalSavedCounts,
     totalTableCounts: event.totalTableCounts,
+    errorMessage: event.type === 'parse_status' ? event.errorMessage : undefined,
+    failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
+    missingPagesByFileKey:
+      event.type === 'parse_status' ? event.missingPagesByFileKey : undefined,
   });
 }
 

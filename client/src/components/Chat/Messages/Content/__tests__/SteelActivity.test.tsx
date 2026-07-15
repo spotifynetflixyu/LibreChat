@@ -4,14 +4,25 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import SteelActivity from '../SteelActivity';
 
+type LocalizeOptions = {
+  count?: number;
+  counts?: string;
+  fileKey?: string;
+  pages?: string;
+  source?: string;
+};
+
 jest.mock('~/hooks/useLocalize', () => ({
   __esModule: true,
-  default: () => (key: string, options?: { count?: number; counts?: string; source?: string }) => {
+  default: () => (key: string, options?: LocalizeOptions) => {
     if (key === 'com_ui_steel_activity') {
       return 'Steel activity';
     }
     if (key === 'com_ui_steel_activity_events') {
       return `${options?.count ?? 0} events`;
+    }
+    if (key === 'com_ui_steel_activity_missing_pages') {
+      return `Missing pages (${options?.fileKey ?? ''}): ${options?.pages ?? ''}`;
     }
     if (key === 'com_ui_steel_activity_parse_saved') {
       return 'Steel form parsed';
@@ -389,6 +400,23 @@ describe('SteelActivity', () => {
               parseStatus: 'partial',
               errorMessage: 'OCR preprocessing failed for BH.pdf: organizer timeout',
               failedKeys: ['file:BH.pdf'],
+              missingPagesByFileKey: {
+                'file:BH.pdf': [4, 5],
+              },
+            },
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-ocr-error',
+              message: 'ocr preprocessing failed (file:other.pdf)',
+              parseStatus: 'partial',
+              errorMessage: 'OCR preprocessing failed for other.pdf: provider timeout',
+              failedKeys: ['file:other.pdf'],
+              missingPagesByFileKey: {
+                'file:BH.pdf': [1, 2],
+                'file:other.pdf': [3, 7],
+              },
             },
           ]);
         }}
@@ -400,6 +428,9 @@ describe('SteelActivity', () => {
     expect(
       screen.getByText('OCR preprocessing failed for BH.pdf: organizer timeout'),
     ).toBeInTheDocument();
+    expect(screen.getByText('Missing pages (file:BH.pdf): 1, 2, 4, 5')).toBeInTheDocument();
+    expect(screen.getByText('Missing pages (file:other.pdf): 3, 7')).toBeInTheDocument();
+    expect(screen.queryByText(/1-2/)).not.toBeInTheDocument();
   });
 
   it('does not render Steel activity on user messages', () => {

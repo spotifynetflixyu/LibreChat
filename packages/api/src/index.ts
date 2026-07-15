@@ -76,12 +76,8 @@ export * from './stream';
 export { memoryDiagnostics } from './utils/memory';
 /* Steel */
 export * from './steel/access';
-export * from './steel/audit/service';
+export * from './steel/admin';
 export * from './steel/ai/config';
-export * from './steel/ai/provider';
-export * from './steel/conversations/repository';
-export * from './steel/conversations/service';
-export * from './steel/handlers';
 export * from './steel/memory/service';
 export * from './steel/models';
 export * from './steel/native';
@@ -89,8 +85,9 @@ export * from './steel/normalization';
 export * from './steel/ocr';
 export * from './steel/postgres';
 export * from './steel/repositories';
+export * from './steel/routes';
+export * from './steel/runtime/types';
 export * from './steel/tools';
-export * from './steel/vision/resolver';
 export * from './steel/vision/service';
 /* RUM */
 export * from './rum/proxy';

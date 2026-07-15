@@ -11,31 +11,15 @@ const mockReadOpenAIOAuthUsage = jest.fn((_req, res) =>
     windows: [],
   }),
 );
-const mockChat = jest.fn((_req, res) =>
-  res.status(200).json({
-    provider: 'openai_oauth_responses',
-    model: 'gpt-5.5',
-    text: 'steel-chat-ok',
-    unsupportedSettings: [],
-    warnings: [],
-  }),
+const mockCreateRuleProposal = jest.fn((_req, res) =>
+  res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
-const mockStreamChat = jest.fn((_req, res) => {
-  res.setHeader('Content-Type', 'application/x-ndjson');
-  res.write(
-    `${JSON.stringify({
-      type: 'done',
-      response: {
-        provider: 'openai_oauth_responses',
-        model: 'gpt-5.5',
-        text: 'steel-stream-ok',
-        unsupportedSettings: [],
-        warnings: [],
-      },
-    })}\n`,
-  );
-  res.end();
-});
+const mockCreateSteelRouteHandlers = jest.fn(() => ({
+  createRuleProposal: mockCreateRuleProposal,
+  listModels: mockListModels,
+  readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
+}));
+
 const mockCapabilitySmoke = jest.fn((_req, res) =>
   res.status(200).json({
     provider: 'openai_oauth_responses',
@@ -53,13 +37,8 @@ const mockReadOpenAIOAuthTokenStatus = jest.fn((_req, res) =>
       expiresAt: '2026-07-18T02:34:02.000Z',
       expiresInSeconds: 864000,
     },
-    refresh: {
-      available: true,
-    },
-    login: {
-      available: false,
-      reason: 'codex_cli_unavailable',
-    },
+    refresh: { available: true },
+    login: { available: false, reason: 'codex_cli_unavailable' },
   }),
 );
 const mockRefreshOpenAIOAuthToken = jest.fn((_req, res) =>
@@ -72,13 +51,8 @@ const mockRefreshOpenAIOAuthToken = jest.fn((_req, res) =>
       expiresAt: '2026-07-18T02:35:02.000Z',
       expiresInSeconds: 864000,
     },
-    refresh: {
-      available: true,
-    },
-    login: {
-      available: false,
-      reason: 'codex_cli_unavailable',
-    },
+    refresh: { available: true },
+    login: { available: false, reason: 'codex_cli_unavailable' },
   }),
 );
 const mockStartOpenAIOAuthCodexLogin = jest.fn((_req, res) =>
@@ -104,41 +78,8 @@ const mockReadOpenAIOAuthCodexLoginStatus = jest.fn((_req, res) =>
 );
 const mockCancelOpenAIOAuthCodexLogin = jest.fn((_req, res) => res.status(204).end());
 const mockLogoutOpenAIOAuthToken = jest.fn((_req, res) =>
-  res.status(200).json({
-    status: 'succeeded',
-    fetchedAt: '2026-07-08T02:35:02.000Z',
-  }),
+  res.status(200).json({ status: 'succeeded', fetchedAt: '2026-07-08T02:35:02.000Z' }),
 );
-const mockCreateAuthenticatedConversation = jest.fn((_req, res) =>
-  res.status(201).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
-);
-const mockCreateGuestConversation = jest.fn((_req, res) =>
-  res.status(201).json({
-    id: 'steel_meta_guest_1',
-    createdFrom: 'guest',
-    guestToken: 'guest-token-raw',
-  }),
-);
-const mockReadConversation = jest.fn((_req, res) =>
-  res.status(200).json({ id: 'steel_meta_auth_1', createdFrom: 'authenticated' }),
-);
-const mockReadConversationMessages = jest.fn((_req, res) =>
-  res.status(200).json({ conversationId: 'steel-chat-1', messages: [] }),
-);
-const mockCreateRuleProposal = jest.fn((_req, res) =>
-  res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
-);
-const mockCreateSteelHandlers = jest.fn(() => ({
-  chat: mockChat,
-  createAuthenticatedConversation: mockCreateAuthenticatedConversation,
-  createGuestConversation: mockCreateGuestConversation,
-  createRuleProposal: mockCreateRuleProposal,
-  listModels: mockListModels,
-  readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
-  readConversation: mockReadConversation,
-  readConversationMessages: mockReadConversationMessages,
-  streamChat: mockStreamChat,
-}));
 const mockCreateSteelAdminHandlers = jest.fn(() => ({
   cancelOpenAIOAuthCodexLogin: mockCancelOpenAIOAuthCodexLogin,
   logoutOpenAIOAuthToken: mockLogoutOpenAIOAuthToken,
@@ -153,22 +94,13 @@ const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 
 jest.mock('@librechat/api', () => ({
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
-  createSteelHandlers: (...args) => mockCreateSteelHandlers(...args),
-  resolveEvidenceFileForProvider: jest.fn(),
+  createSteelRouteHandlers: (...args) => mockCreateSteelRouteHandlers(...args),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
   SystemCapabilities: {
     ACCESS_ADMIN: 'ACCESS_ADMIN',
   },
-}));
-
-jest.mock('~/models', () => ({
-  getFiles: jest.fn(),
-}));
-
-jest.mock('~/server/services/Files/strategies', () => ({
-  getStrategyFunctions: jest.fn(() => ({})),
 }));
 
 jest.mock('~/server/middleware', () => ({
@@ -185,20 +117,6 @@ jest.mock('~/server/controllers/ModelController', () => ({
 
 const steelRouter = require('../steel');
 const adminSteelRouter = require('../admin/steel');
-
-async function withNodeEnv(value, testFn) {
-  const previous = process.env.NODE_ENV;
-  process.env.NODE_ENV = value;
-  try {
-    return await testFn();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.NODE_ENV;
-    } else {
-      process.env.NODE_ENV = previous;
-    }
-  }
-}
 
 function createApp() {
   const app = express();
@@ -217,209 +135,50 @@ describe('Steel route shells', () => {
     jest.clearAllMocks();
   });
 
-  it('registers user-facing Steel model options under /api/steel', async () => {
+  it('dispatches preserved model, usage, and rule proposal routes', async () => {
     const app = createApp();
 
-    const res = await request(app).get('/api/steel/ai/models');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ options: [] });
-  });
-
-  it('registers authenticated OpenAI OAuth usage remaining under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).get('/api/steel/ai/oauth-usage');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      provider: 'openai_oauth_responses',
-      source: 'chatgpt_wham_usage',
-      status: 'available',
-      fetchedAt: '2026-06-26T07:00:00.000Z',
-      windows: [],
-    });
-    expect(mockReadOpenAIOAuthUsage).toHaveBeenCalledTimes(1);
-  });
-
-  it('registers authenticated Steel chat under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app)
-      .post('/api/steel/ai/chat')
-      .send({ messages: [{ role: 'user', content: 'Say steel-chat-ok' }] });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      provider: 'openai_oauth_responses',
-      model: 'gpt-5.5',
-      text: 'steel-chat-ok',
-      unsupportedSettings: [],
-      warnings: [],
-    });
-  });
-
-  it('blocks standalone Steel OAuth chat APIs in production', async () =>
-    withNodeEnv('production', async () => {
-      const app = createApp();
-
-      const chatRes = await request(app)
-        .post('/api/steel/ai/chat')
-        .send({ messages: [{ role: 'user', content: 'dev probe' }] });
-      const streamRes = await request(app)
-        .post('/api/steel/ai/chat/stream')
-        .send({ messages: [{ role: 'user', content: 'dev probe' }] });
-      const createRes = await request(app)
-        .post('/api/steel/conversations/authenticated')
-        .send({ libreChatConversationId: 'lc_1' });
-      const guestRes = await request(app)
-        .post('/api/steel/conversations/guest')
-        .send({ libreChatConversationId: 'lc_guest_1' });
-      const readRes = await request(app).get('/api/steel/conversations/steel_meta_1');
-      const messagesRes = await request(app).get('/api/steel/conversations/steel-chat-1/messages');
-
-      expect(chatRes.status).toBe(404);
-      expect(streamRes.status).toBe(404);
-      expect(createRes.status).toBe(404);
-      expect(guestRes.status).toBe(404);
-      expect(readRes.status).toBe(404);
-      expect(messagesRes.status).toBe(404);
-      expect(mockChat).not.toHaveBeenCalled();
-      expect(mockStreamChat).not.toHaveBeenCalled();
-      expect(mockCreateAuthenticatedConversation).not.toHaveBeenCalled();
-      expect(mockCreateGuestConversation).not.toHaveBeenCalled();
-      expect(mockReadConversation).not.toHaveBeenCalled();
-      expect(mockReadConversationMessages).not.toHaveBeenCalled();
-    }));
-
-  it('keeps OpenAI OAuth usage available in production', async () =>
-    withNodeEnv('production', async () => {
-      const app = createApp();
-
-      const res = await request(app).get('/api/steel/ai/oauth-usage');
-
-      expect(res.status).toBe(200);
-      expect(mockReadOpenAIOAuthUsage).toHaveBeenCalledTimes(1);
-    }));
-
-  it('registers authenticated Steel streaming chat under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app)
-      .post('/api/steel/ai/chat/stream')
-      .send({ messages: [{ role: 'user', content: 'Say steel-stream-ok' }] });
-
-    expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toContain('application/x-ndjson');
-    expect(res.text).toContain('"type":"done"');
-    expect(mockStreamChat).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns Steel JSON when the streaming handler rejects before writing headers', async () => {
-    mockStreamChat.mockRejectedValueOnce(new Error('stream setup exploded'));
-    const app = createApp();
-
-    const res = await request(app)
-      .post('/api/steel/ai/chat/stream')
-      .send({ messages: [{ role: 'user', content: 'Say steel-stream-ok' }] });
-
-    expect(res.status).toBe(500);
-    expect(res.body).toMatchObject({
-      provider: 'openai_oauth_responses',
-      text: '',
-      unsupportedSettings: [],
-      warnings: [],
-      errorCategory: 'unknown',
-      errorSummary: 'stream setup exploded',
-    });
-  });
-
-  it('registers authenticated Steel conversation creation under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app)
-      .post('/api/steel/conversations/authenticated')
-      .send({ libreChatConversationId: 'lc_1' });
-
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual({
-      id: 'steel_meta_auth_1',
-      createdFrom: 'authenticated',
-    });
-  });
-
-  it('registers guest Steel conversation creation without JWT middleware', async () => {
-    const app = createApp();
-
-    const res = await request(app)
-      .post('/api/steel/conversations/guest')
-      .send({ libreChatConversationId: 'lc_guest_1' });
-
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual({
-      id: 'steel_meta_guest_1',
-      createdFrom: 'guest',
-      guestToken: 'guest-token-raw',
-    });
-  });
-
-  it('registers Steel conversation read under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).get('/api/steel/conversations/steel_meta_auth_1');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      id: 'steel_meta_auth_1',
-      createdFrom: 'authenticated',
-    });
-    expect(mockRequireJwtAuth).toHaveBeenCalledTimes(1);
-  });
-
-  it('lets guest-token Steel conversation reads reach the service without JWT middleware', async () => {
-    const app = createApp();
-
-    const res = await request(app)
-      .get('/api/steel/conversations/steel_meta_guest_1')
-      .set('x-steel-guest-token', 'guest-token-raw');
-
-    expect(res.status).toBe(200);
-    expect(mockRequireJwtAuth).not.toHaveBeenCalled();
-  });
-
-  it('registers authenticated Steel conversation message reload under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).get('/api/steel/conversations/steel-chat-1/messages');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ conversationId: 'steel-chat-1', messages: [] });
-    expect(mockReadConversationMessages).toHaveBeenCalledTimes(1);
-    expect(mockRequireJwtAuth).toHaveBeenCalled();
-  });
-
-  it('registers authenticated Steel rule proposal creation under /api/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app)
+    const modelsRes = await request(app).get('/api/steel/ai/models');
+    const usageRes = await request(app).get('/api/steel/ai/oauth-usage');
+    const proposalRes = await request(app)
       .post('/api/steel/rule-proposals')
       .send({ proposalType: 'customer_default' });
 
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: 'proposal_1', status: 'needs_review' });
-    expect(mockRequireJwtAuth).toHaveBeenCalledTimes(1);
+    expect(modelsRes.status).toBe(200);
+    expect(modelsRes.body).toEqual({ options: [] });
+    expect(usageRes.status).toBe(200);
+    expect(usageRes.body).toMatchObject({
+      provider: 'openai_oauth_responses',
+      source: 'chatgpt_wham_usage',
+      status: 'available',
+    });
+    expect(proposalRes.status).toBe(201);
+    expect(proposalRes.body).toEqual({ id: 'proposal_1', status: 'needs_review' });
+    expect(mockListModels).toHaveBeenCalledTimes(1);
+    expect(mockReadOpenAIOAuthUsage).toHaveBeenCalledTimes(1);
+    expect(mockCreateRuleProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not register standalone Steel OAuth chat or conversation APIs', async () => {
+    const app = createApp();
+    const responses = await Promise.all([
+      request(app).post('/api/steel/ai/chat'),
+      request(app).post('/api/steel/ai/chat/stream'),
+      request(app).post('/api/steel/conversations/authenticated'),
+      request(app).post('/api/steel/conversations/guest'),
+      request(app).get('/api/steel/conversations/steel_meta_1'),
+      request(app).get('/api/steel/conversations/steel-chat-1/messages'),
+    ]);
+
+    responses.forEach((response) => expect(response.status).toBe(404));
   });
 
   it('does not register Steel workbook or file-analysis REST routes', async () => {
     const app = createApp();
 
-    const createRes = await request(app)
-      .post('/api/steel/workbooks')
-      .send({ conversationMetaId: 'steel_meta_1' });
+    const createRes = await request(app).post('/api/steel/workbooks').send({});
     const readRes = await request(app).get('/api/steel/workbooks/wb_1');
-    const patchRes = await request(app)
-      .patch('/api/steel/workbooks/wb_1')
-      .send({ workbookVersion: 1, operations: [] });
+    const patchRes = await request(app).patch('/api/steel/workbooks/wb_1').send({});
     const fileAnalysisRes = await request(app).get(
       '/api/steel/file-analysis/by-conversation/steel_meta_1',
     );
@@ -430,111 +189,29 @@ describe('Steel route shells', () => {
     expect(fileAnalysisRes.status).toBe(404);
   });
 
-  it('registers admin-only capability smoke under /api/admin/steel', async () => {
+  it('preserves admin-only capability smoke and OAuth token routes', async () => {
     const app = createApp();
 
-    const res = await request(app).post('/api/admin/steel/ai/capability-smoke');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      provider: 'openai_oauth_responses',
-      model: 'gpt-5.5',
-      source: 'code_owned_support_matrix',
-    });
-  });
-
-  it('registers admin-only OpenAI OAuth token status under /api/admin/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).get('/api/admin/steel/ai/oauth-token');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      provider: 'openai_oauth_responses',
-      status: 'available',
-      fetchedAt: '2026-07-08T02:34:02.000Z',
-      accessToken: {
-        status: 'valid',
-        expiresAt: '2026-07-18T02:34:02.000Z',
-        expiresInSeconds: 864000,
-      },
-      refresh: {
-        available: true,
-      },
-      login: {
-        available: false,
-        reason: 'codex_cli_unavailable',
-      },
-    });
-    expect(mockReadOpenAIOAuthTokenStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it('registers admin-only OpenAI OAuth token refresh under /api/admin/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).post('/api/admin/steel/ai/oauth-token/refresh');
-
-    expect(res.status).toBe(200);
-    expect(res.body.accessToken.status).toBe('valid');
-    expect(mockRefreshOpenAIOAuthToken).toHaveBeenCalledTimes(1);
-  });
-
-  it('registers admin-only OpenAI OAuth Codex login start under /api/admin/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app)
+    const capabilityRes = await request(app).post('/api/admin/steel/ai/capability-smoke');
+    const statusRes = await request(app).get('/api/admin/steel/ai/oauth-token');
+    const refreshRes = await request(app).post('/api/admin/steel/ai/oauth-token/refresh');
+    const loginRes = await request(app)
       .post('/api/admin/steel/ai/oauth-token/login')
       .send({ method: 'device_code' });
+    const loginStatusRes = await request(app).get(
+      '/api/admin/steel/ai/oauth-token/login/session_1',
+    );
+    const cancelRes = await request(app).post(
+      '/api/admin/steel/ai/oauth-token/login/session_1/cancel',
+    );
+    const logoutRes = await request(app).post('/api/admin/steel/ai/oauth-token/logout');
 
-    expect(res.status).toBe(202);
-    expect(res.body).toEqual({
-      status: 'pending',
-      sessionId: 'session_1',
-      startedAt: '2026-07-08T02:34:02.000Z',
-      updatedAt: '2026-07-08T02:34:02.000Z',
-      expiresAt: '2026-07-08T02:44:02.000Z',
-      device: {
-        verificationUri: 'https://auth.openai.com/codex/device',
-        userCode: 'ABCD-EFGH',
-      },
-    });
-    expect(mockStartOpenAIOAuthCodexLogin).toHaveBeenCalledTimes(1);
-  });
-
-  it('registers admin-only OpenAI OAuth logout under /api/admin/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).post('/api/admin/steel/ai/oauth-token/logout');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      status: 'succeeded',
-      fetchedAt: '2026-07-08T02:35:02.000Z',
-    });
-    expect(mockLogoutOpenAIOAuthToken).toHaveBeenCalledTimes(1);
-  });
-
-  it('registers admin-only OpenAI OAuth Codex login status under /api/admin/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).get('/api/admin/steel/ai/oauth-token/login/session_1');
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      status: 'succeeded',
-      sessionId: 'session_1',
-      startedAt: '2026-07-08T02:34:02.000Z',
-      updatedAt: '2026-07-08T02:35:02.000Z',
-    });
-    expect(mockReadOpenAIOAuthCodexLoginStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it('registers admin-only OpenAI OAuth Codex login cancel under /api/admin/steel', async () => {
-    const app = createApp();
-
-    const res = await request(app).post('/api/admin/steel/ai/oauth-token/login/session_1/cancel');
-
-    expect(res.status).toBe(204);
-    expect(mockCancelOpenAIOAuthCodexLogin).toHaveBeenCalledTimes(1);
+    expect(capabilityRes.status).toBe(200);
+    expect(statusRes.status).toBe(200);
+    expect(refreshRes.status).toBe(200);
+    expect(loginRes.status).toBe(202);
+    expect(loginStatusRes.status).toBe(200);
+    expect(cancelRes.status).toBe(204);
+    expect(logoutRes.status).toBe(200);
   });
 });

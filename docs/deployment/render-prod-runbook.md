@@ -374,7 +374,7 @@ Expected:
 
 - `/api/config` returns success.
 - `/steel/oauth-chat` returns `404` in production.
-- Unauthenticated `/api/steel/ai/chat` does not expose the dev-only chat route.
+- `/api/steel/ai/chat` is not registered.
 
 Also verify manually:
 

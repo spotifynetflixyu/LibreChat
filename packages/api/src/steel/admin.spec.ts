@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 
-import { createSteelAdminHandlers } from './handlers';
+import { createSteelAdminHandlers } from './admin';
 
 function createResponse(): Response {
   const response = {

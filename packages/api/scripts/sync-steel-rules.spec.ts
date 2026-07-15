@@ -19,6 +19,10 @@ type DryRunSummary = {
 type BuiltRule = {
   slug: string;
   priority: number;
+  ruleSections: string[];
+  selectors: Record<string, unknown>;
+  toolPolicy: Record<string, unknown>;
+  outputPolicy: Record<string, unknown>;
   sourceRefs: { sourceFile: string }[];
 };
 
@@ -43,7 +47,6 @@ const cTypeRulePath = path.join(categoryRulesDir, 'C型鋼.txt');
 const longMaterialRulePath = path.join(categoryRulesDir, '長條料.txt');
 const cuttingRulePath = path.join(categoryRulesDir, '切工.txt');
 const outputRulePath = path.join(rulesDir, '輸出規則.txt');
-const ocrRulePath = path.join(rulesDir, '其他規則', 'OCR規則.txt');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
 
 const ruleSync = jest.requireActual<{
@@ -170,6 +173,9 @@ describe('Steel rule sources', () => {
     expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
       'steel-default-agent-instruction',
       'steel-drawing-ocr-policy',
+      'steel-drawing-vision-policy',
+      'steel-ocr-main-agent-organizer-policy',
+      'steel-ocr-subagent-organizer-policy',
       'steel-workbook-output-policy',
       'steel_category_price_lookup_guide',
       'steel_quote_rules_c_type',
@@ -183,6 +189,81 @@ describe('Steel rule sources', () => {
       'steel_quote_rules_processing',
       'steel_quote_rules_square_bar',
     ]);
+
+    const builtRules = ruleSync.buildRules(repoRoot);
+    const ocrIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-ocr-policy');
+    const visionIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-vision-policy');
+    const subagentIndex = builtRules.findIndex(
+      (rule) => rule.slug === 'steel-ocr-subagent-organizer-policy',
+    );
+    const mainAgentIndex = builtRules.findIndex(
+      (rule) => rule.slug === 'steel-ocr-main-agent-organizer-policy',
+    );
+    expect(ocrIndex).toBeGreaterThanOrEqual(0);
+    expect(visionIndex).toBe(ocrIndex + 1);
+    expect(subagentIndex).toBe(visionIndex + 1);
+    expect(mainAgentIndex).toBe(subagentIndex + 1);
+    expect(builtRules[visionIndex]).toMatchObject({
+      priority: 36,
+      ruleSections: ['file_vision', 'drawing_vision', 'vision_evidence'],
+      selectors: {
+        otherGlobalRulesKey: 'ocrMainAgentRules',
+        requiresDrawingVision: true,
+        requiresExistingOcrOutput: true,
+      },
+      toolPolicy: {
+        visionMode: 'supplemental',
+        preserveOcrOnConflict: true,
+      },
+      outputPolicy: {
+        outputFormat: 'ocr_field_supplement',
+        onlyFillMissingOrReviewFields: true,
+        forbidPriceLookup: true,
+        forbidFormalQuote: true,
+      },
+      sourceRefs: [
+        {
+          sourceFile: 'docs/rules/其他規則/Vision規則.txt',
+        },
+      ],
+    });
+    expect(builtRules[visionIndex]?.priority).toBeGreaterThan(
+      builtRules[ocrIndex]?.priority ?? Number.POSITIVE_INFINITY,
+    );
+    expect(builtRules[subagentIndex]).toMatchObject({
+      priority: 37,
+      ruleSections: ['ocr_organizer'],
+      selectors: {
+        otherGlobalRulesKey: 'ocrSubagentRules',
+      },
+      outputPolicy: {
+        organizerOutputFormat: 'chunk_local_markdown_table',
+        preserveSourceRows: true,
+        forbidPriceLookup: true,
+        forbidFormalQuote: true,
+      },
+      sourceRefs: [
+        {
+          sourceFile: 'docs/rules/其他規則/OCR子Agent整理規則.txt',
+        },
+      ],
+    });
+    expect(builtRules[mainAgentIndex]).toMatchObject({
+      priority: 38,
+      ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
+      selectors: {
+        otherGlobalRulesKey: 'ocrMainAgentRules',
+      },
+      outputPolicy: {
+        mainOutputFormat: 'final_ocr_markdown',
+        mergeScope: 'same_file_key',
+      },
+      sourceRefs: [
+        {
+          sourceFile: 'docs/rules/其他規則/OCR主Agent整理規則.txt',
+        },
+      ],
+    });
   });
 
   it('matches every category index entry to the registry', () => {
@@ -228,28 +309,6 @@ describe('Steel rule sources', () => {
     expect(guide).toContain('超過10筆只返回全部唯一 `productNames`');
     expect(guide).toContain('前次結果已達30');
     expect(guide).toContain('材料切工只使用同次結果的 `cuttingPrices`');
-  });
-
-  it('keeps OCR rerun, correction, organizer, and final Markdown contracts concise', () => {
-    const rule = readUtf8(ocrRulePath);
-
-    expect(rule.match(/\[ocr_shared\]/gu)).toHaveLength(1);
-    expect(rule.match(/\[\/ocr_shared\]/gu)).toHaveLength(1);
-    expect(rule.match(/\[ocr_organizer\]/gu)).toHaveLength(1);
-    expect(rule.match(/\[\/ocr_organizer\]/gu)).toHaveLength(1);
-    expect(rule).toContain('只有資料缺失、失敗，或使用者明確要求重做 OCR 時');
-    expect(rule).toContain('明顯 OCR 誤判時直接修正');
-    expect(rule).toContain('公式結果與 operands 不一致時，直接以 operands 重算修正');
-    expect(rule).toContain('旋轉的文字或圖面先旋正再判讀');
-    expect(rule).toContain('中文一律保留或轉繁體中文');
-    expect(rule).toContain('開槽連續邊長');
-    expect(rule).toContain('總孔數 = 每件孔數 × 件數');
-    expect(rule).toContain('每筆來源列保持獨立');
-    expect(rule).toContain('每列至少包含來源頁數、項次、件號、圖號或其他可追溯代號');
-    expect(rule).toContain('缺值一律留空');
-    expect(rule).toContain('禁止用「約、略、大約、約略」');
-    expect(rule).toContain('同一 file key 的所有 chunk 合併成一張');
-    expect(rule).not.toContain('OCR process 不得呼叫');
   });
 
   it('keeps system-order and customer-facing Markdown decisions without persistence prose', () => {

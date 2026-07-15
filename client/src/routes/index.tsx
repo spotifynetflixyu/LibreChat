@@ -59,24 +59,6 @@ const loadProjectWorkspace = () =>
     Component: m.ProjectWorkspace,
   }));
 
-const loadSteelOAuthChat = () =>
-  import('./SteelOAuthChat').then((m) => ({
-    Component: m.default,
-  }));
-
-export function shouldRegisterSteelOAuthChatRoute(isDevelopment = import.meta.env.DEV): boolean {
-  return isDevelopment;
-}
-
-const steelOAuthChatRoutes = shouldRegisterSteelOAuthChatRoute()
-  ? [
-      {
-        path: 'steel/oauth-chat',
-        lazy: loadSteelOAuthChat,
-      },
-    ]
-  : [];
-
 const baseEl = document.querySelector('base');
 const baseHref = baseEl?.getAttribute('href') || '/';
 
@@ -163,7 +145,6 @@ export const router = createBrowserRouter(
                   path: 'search',
                   element: <Search />,
                 },
-                ...steelOAuthChatRoutes,
                 {
                   path: 'prompts',
                   element: <Navigate to="/prompts/new" replace={true} />,

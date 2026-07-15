@@ -287,6 +287,9 @@ describe('useSteelEventHandler', () => {
             parseStatus: 'partial',
             errorMessage: 'organizer timeout',
             failedKeys: ['file:BH.pdf'],
+            missingPagesByFileKey: {
+              'file:BH.pdf': [1, 2, 4, 5],
+            },
           },
         },
         createSubmission('assistant-live'),
@@ -297,6 +300,9 @@ describe('useSteelEventHandler', () => {
       expect.objectContaining({
         errorMessage: 'organizer timeout',
         failedKeys: ['file:BH.pdf'],
+        missingPagesByFileKey: {
+          'file:BH.pdf': [1, 2, 4, 5],
+        },
       }),
     ]);
   });

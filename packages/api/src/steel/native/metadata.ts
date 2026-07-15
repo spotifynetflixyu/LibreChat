@@ -17,7 +17,7 @@ export interface SteelNativeResponseMessageMetadata {
     native: {
       ingress: 'open_responses';
       nativeContextVersion?: number;
-      contextMode?: string;
+      mode?: string;
       renderProfile?: string;
       globalApplied?: true;
       providerStateMode?: SteelNativeProviderStateMode;
@@ -51,7 +51,7 @@ export function buildSteelNativeResponseMessageMetadata({
         ...(contextMetadata
           ? {
               nativeContextVersion: contextMetadata.nativeContextVersion,
-              contextMode: contextMetadata.contextMode,
+              ...(contextMetadata.mode ? { mode: contextMetadata.mode } : {}),
               renderProfile: contextMetadata.renderProfile,
               globalApplied: contextMetadata.globalApplied,
             }

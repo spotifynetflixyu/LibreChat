@@ -4,14 +4,12 @@ import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
 import type { JsonSchemaType, LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelProviderToolName, SteelToolDefinition } from '../tools/registry';
 import type { SteelToolResult } from '../tools/results';
-import type { SteelRuntimeContext } from '../runtime/context';
 
 export type NativeSteelToolNameMap = Map<SteelProviderToolName, string>;
 
 export interface MergeSteelToolDefinitionsInput {
   toolDefinitions?: readonly LCTool[];
   toolRegistry?: LCToolRegistry;
-  runtimeContext?: Pick<SteelRuntimeContext, 'outputSheets' | 'toolPolicy'>;
   aiVisibleTools?: readonly string[];
 }
 
@@ -19,6 +17,13 @@ export interface MergeSteelToolDefinitionsResult {
   toolDefinitions: LCTool[];
   toolRegistry: LCToolRegistry;
   nameMap: NativeSteelToolNameMap;
+}
+
+export interface SteelNativeToolConfig {
+  tools?: readonly ({ name?: string } | string | null | undefined)[];
+  toolDefinitions?: readonly LCTool[];
+  toolRegistry?: LCToolRegistry;
+  [key: string]: unknown;
 }
 
 export interface SteelNativeToolInvokeConfig {
@@ -96,6 +101,77 @@ export function resolveSteelProviderToolName(
   return isSteelToolName(unprefixedName) ? unprefixedName : undefined;
 }
 
+function isPaddleOcrToolName(toolName: string): boolean {
+  return toolName.toLowerCase().includes('paddleocr_vl');
+}
+
+function isPaddleOcrToolVisibleToMainAgent(toolName: string | undefined): boolean {
+  return typeof toolName !== 'string' || !isPaddleOcrToolName(toolName);
+}
+
+function isSteelToolVisibleInOcrMode(toolName: string | undefined): boolean {
+  if (typeof toolName !== 'string') {
+    return true;
+  }
+  return resolveSteelProviderToolName(toolName) === undefined && !isPaddleOcrToolName(toolName);
+}
+
+/** Removes Steel business tools and the PaddleOCR MCP tool from one initialized agent. */
+export function stripSteelToolsForOcrTurn<T extends SteelNativeToolConfig>(config: T): T {
+  const next = { ...config } as T;
+  if (config.tools) {
+    next.tools = config.tools.filter((tool) => {
+      const toolName = typeof tool === 'string' ? tool : tool?.name;
+      return isSteelToolVisibleInOcrMode(toolName);
+    });
+  }
+  if (config.toolDefinitions) {
+    next.toolDefinitions = config.toolDefinitions.filter((definition) =>
+      isSteelToolVisibleInOcrMode(definition.name),
+    );
+  }
+  if (config.toolRegistry) {
+    next.toolRegistry = new Map(
+      [...config.toolRegistry.entries()].filter(([name, definition]) =>
+        isSteelToolVisibleInOcrMode(name) && isSteelToolVisibleInOcrMode(definition.name),
+      ),
+    );
+  }
+  return next;
+}
+
+/** Removes PaddleOCR from a main agent while leaving the MCP catalog unchanged. */
+export function stripPaddleOcrToolsForMainAgent<T extends SteelNativeToolConfig>(config: T): T {
+  const next = { ...config } as T;
+  if (config.tools) {
+    const tools = config.tools.filter((tool) =>
+      isPaddleOcrToolVisibleToMainAgent(typeof tool === 'string' ? tool : tool?.name),
+    );
+    if (tools.length !== config.tools.length) {
+      next.tools = tools;
+    }
+  }
+  if (config.toolDefinitions) {
+    const toolDefinitions = config.toolDefinitions.filter((definition) =>
+      isPaddleOcrToolVisibleToMainAgent(definition.name),
+    );
+    if (toolDefinitions.length !== config.toolDefinitions.length) {
+      next.toolDefinitions = toolDefinitions;
+    }
+  }
+  if (config.toolRegistry) {
+    const entries = [...config.toolRegistry.entries()].filter(
+      ([name, definition]) =>
+        isPaddleOcrToolVisibleToMainAgent(name) &&
+        isPaddleOcrToolVisibleToMainAgent(definition.name),
+    );
+    if (entries.length !== config.toolRegistry.size) {
+      next.toolRegistry = new Map(entries);
+    }
+  }
+  return next;
+}
+
 function getProviderToolCallId(config?: SteelNativeToolInvokeConfig): string | undefined {
   return typeof config?.toolCall?.id === 'string' ? config.toolCall.id : undefined;
 }
@@ -131,7 +207,6 @@ export function createSteelNativeTool({
 function getAiVisibleTools(input: MergeSteelToolDefinitionsInput): Set<string> {
   return new Set(
     input.aiVisibleTools ??
-      input.runtimeContext?.toolPolicy.aiVisibleTools ??
       getSteelToolDefinitions().map((definition) => definition.name),
   );
 }

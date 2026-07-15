@@ -3,19 +3,19 @@ import type { SteelAIProviderErrorCategory } from 'librechat-data-provider';
 import { buildDrawingEvidencePrompt } from './prompt';
 
 import type {
-  SteelOAuthChatFile,
-  SteelOAuthChatMessage,
-  SteelProviderChatResponse,
-} from '../ai/provider';
+  SteelRuntimeFile,
+  SteelRuntimeMessage,
+  SteelRuntimeProviderResponse,
+} from '../runtime/types';
 
 export type SteelDrawingEvidenceProviderResponse = Pick<
-  SteelProviderChatResponse,
+  SteelRuntimeProviderResponse,
   'provider' | 'model' | 'text' | 'warnings' | 'unsupportedSettings'
 >;
 
 export interface SteelDrawingEvidenceProviderInput {
   model: string;
-  messages: SteelOAuthChatMessage[];
+  messages: SteelRuntimeMessage[];
   steelRuntimePolicy: false;
 }
 
@@ -25,7 +25,7 @@ export type SteelDrawingEvidenceProvider = (
 
 export interface ExtractSteelDrawingEvidenceInput {
   model: string;
-  files: readonly SteelOAuthChatFile[];
+  files: readonly SteelRuntimeFile[];
   userInstruction: string;
   ocrAgentRuleInstruction: string;
   previousAnalysisText?: string;
@@ -64,7 +64,7 @@ export class SteelDrawingEvidenceExtractionError extends Error {
   }
 }
 
-function isVisionFile(file: SteelOAuthChatFile) {
+function isVisionFile(file: SteelRuntimeFile) {
   return file.mediaType.startsWith('image/') || file.mediaType === 'application/pdf';
 }
 

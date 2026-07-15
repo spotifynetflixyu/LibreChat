@@ -11,6 +11,7 @@ export type SteelNativeActivitySource =
 
 export type SteelNativeSavedCounts = Record<string, number>;
 export type SteelNativeTableCounts = Record<string, number>;
+export type SteelOcrMissingPagesByFileKey = Record<string, readonly number[]>;
 
 export type SteelNativeActivityEvent =
   | {
@@ -20,6 +21,7 @@ export type SteelNativeActivityEvent =
       parseStatus: 'saved' | 'partial' | 'skipped';
       errorMessage?: string;
       failedKeys?: readonly string[];
+      missingPagesByFileKey?: SteelOcrMissingPagesByFileKey;
       savedCounts?: SteelNativeSavedCounts;
       savedTableCounts?: SteelNativeTableCounts;
       totalSavedCounts?: SteelNativeSavedCounts;

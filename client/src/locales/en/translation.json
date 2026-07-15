@@ -1651,6 +1651,7 @@
   "com_ui_scope": "Scope",
   "com_ui_steel_activity": "Steel activity",
   "com_ui_steel_activity_events": "{{count}} events",
+  "com_ui_steel_activity_missing_pages": "Missing pages ({{fileKey}}): {{pages}}",
   "com_ui_steel_activity_paddleocr_partial": "PaddleOCR preflight partial",
   "com_ui_steel_activity_paddleocr_saved": "Saved PaddleOCR preflight",
   "com_ui_steel_activity_paddleocr_skipped": "PaddleOCR preflight skipped",

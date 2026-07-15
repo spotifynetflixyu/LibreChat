@@ -1,12 +1,6 @@
 import type { Document } from 'mongoose';
 
 export type SteelProviderId = 'openai_oauth_responses' | 'openai_api';
-export type SteelConversationCreatedFrom = 'authenticated' | 'guest';
-export type SteelConversationStatus = 'active' | 'archived';
-export type SteelConversationTurnRole = 'user' | 'assistant';
-export type SteelConversationTurnSource = 'user_input' | 'assistant_final' | 'queued_steer';
-export type SteelConversationTurnState = 'active' | 'superseded';
-export type SteelQueuedSteerStatus = 'queued' | 'applied' | 'deferred' | 'superseded';
 export type SteelWorkingOrderMemoryKind =
   | 'working_order_row'
   | 'customer_fact'
@@ -28,8 +22,6 @@ export type SteelCapabilityStatus =
   | 'disabled'
   | 'not_applicable';
 
-export type SteelAuditActorType = 'user' | 'guest' | 'system';
-export type SteelAuditResult = 'success' | 'denied' | 'failure';
 export type SteelSourceOriginalFormat = 'xlsx' | 'xls' | 'docx' | 'doc';
 export type SteelSourceNormalizedFormat = 'xlsx' | 'docx';
 export type SteelSourceConversionStatus =
@@ -98,69 +90,6 @@ export interface SteelRuleProposalSourceRef {
   confidence?: SteelRuleProposalConfidence;
   extractedLabel?: string;
   canonicalKey?: string;
-}
-
-export interface ISteelConversationMeta extends Document {
-  libreChatConversationId?: string;
-  userId?: string;
-  guestTokenHash?: string;
-  createdFrom: SteelConversationCreatedFrom;
-  status: SteelConversationStatus;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface SteelConversationTurnRevision {
-  content: string;
-  revisedAt: Date;
-  revisedByUserId?: string;
-}
-
-export interface SteelConversationTurnAttachmentRef {
-  fileId: string;
-  filename?: string;
-  mediaType?: string;
-}
-
-export interface SteelConversationTurnUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-}
-
-export interface SteelConversationTurnFinalResponseMetadata {
-  provider: SteelProviderId;
-  model: string;
-  responseId?: string;
-  usage?: SteelConversationTurnUsage;
-}
-
-export interface SteelConversationTurnQueuedSteer {
-  targetRequestId: string;
-  status: SteelQueuedSteerStatus;
-  appliedAt?: Date;
-  deferredAt?: Date;
-}
-
-export interface ISteelConversationTurn extends Document {
-  conversationId: string;
-  userId?: string;
-  requestId?: string;
-  messageId: string;
-  turnIndex: number;
-  role: SteelConversationTurnRole;
-  source: SteelConversationTurnSource;
-  state: SteelConversationTurnState;
-  content: string;
-  attachments?: SteelConversationTurnAttachmentRef[];
-  tableHashes?: string[];
-  finalResponseMetadata?: SteelConversationTurnFinalResponseMetadata;
-  queuedSteer?: SteelConversationTurnQueuedSteer;
-  revisions?: SteelConversationTurnRevision[];
-  supersededAt?: Date;
-  supersededByMessageId?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
 }
 
 export interface SteelWorkingOrderMemorySourceRef {
@@ -247,20 +176,6 @@ export interface ISteelAICapability extends Document {
   checkedAt?: Date;
   errorCategory?: string;
   errorSummary?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface ISteelAuditLog extends Document {
-  actorType: SteelAuditActorType;
-  actorId?: string;
-  action: string;
-  targetType?: string;
-  targetId?: string;
-  result: SteelAuditResult;
-  errorCategory?: string;
-  correlationId?: string;
-  metadata?: Map<string, string | number | boolean | Date>;
   createdAt?: Date;
   updatedAt?: Date;
 }

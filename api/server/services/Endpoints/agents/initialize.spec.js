@@ -12,8 +12,6 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const mockInitializeAgent = jest.fn();
 const mockValidateAgentModel = jest.fn();
-const mockCaptureSteelNativeAssistantMarkdown = jest.fn();
-const mockEmitChunk = jest.fn();
 
 jest.mock('@librechat/agents', () => ({
   ...jest.requireActual('@librechat/agents'),
@@ -27,12 +25,8 @@ jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   initializeAgent: (...args) => mockInitializeAgent(...args),
   validateAgentModel: (...args) => mockValidateAgentModel(...args),
-  captureSteelNativeAssistantMarkdown: (...args) =>
-    mockCaptureSteelNativeAssistantMarkdown(...args),
-  createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({ capture: jest.fn() })),
   GenerationJobManager: {
     setCollectedUsage: jest.fn(),
-    emitChunk: (...args) => mockEmitChunk(...args),
   },
   getCustomEndpointConfig: jest.fn(),
   createSequentialChainEdges: jest.fn(),
@@ -115,16 +109,6 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
 
     mockValidateAgentModel.mockResolvedValue({ isValid: true });
-    mockCaptureSteelNativeAssistantMarkdown.mockResolvedValue({
-      status: 'captured',
-      result: {
-        parseStatus: 'saved',
-        savedCounts: { working_order_row: 1 },
-        savedTableCounts: { system_order_table: 1 },
-        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 1 },
-        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
-      },
-    });
   });
 
   const makeReq = () => ({
@@ -158,9 +142,8 @@ describe('initializeClient — processAgent ACL gate', () => {
     maxContextTokens: 4096,
   });
 
-  it('emits native Steel parse and save events after assistant message capture', async () => {
+  it('does not install an assistant Markdown persistence hook', async () => {
     const req = makeReq();
-    req._resumableStreamId = 'stream-1';
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
 
     await initializeClient({
@@ -170,46 +153,7 @@ describe('initializeClient — processAgent ACL gate', () => {
       endpointOption: makeEndpointOption(),
     });
 
-    await agentClientArgs.onResponseMessageSaved({
-      responseMessage: {
-        conversationId: 'conv_1',
-        messageId: 'message_2',
-        text: '| row | value |',
-      },
-      turnIndex: 4,
-    });
-
-    expect(mockEmitChunk).toHaveBeenCalledWith('stream-1', {
-      event: 'steel_event',
-      data: {
-        type: 'parse_status',
-        message: 'Saved Markdown parse',
-        parseStatus: 'saved',
-        savedCounts: { working_order_row: 1 },
-        savedTableCounts: { system_order_table: 1 },
-        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 1 },
-        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
-        source: 'assistant_markdown',
-        conversationId: 'conv_1',
-        requestId: 'message_2',
-        messageId: 'message_2',
-      },
-    });
-    expect(mockEmitChunk).toHaveBeenCalledWith('stream-1', {
-      event: 'steel_event',
-      data: {
-        type: 'memory_saved',
-        message: 'Saved Working Order Memory',
-        savedCounts: { working_order_row: 1 },
-        savedTableCounts: { system_order_table: 1 },
-        totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 1 },
-        totalTableCounts: { ocr_table: 2, system_order_table: 1 },
-        source: 'assistant_markdown',
-        conversationId: 'conv_1',
-        requestId: 'message_2',
-        messageId: 'message_2',
-      },
-    });
+    expect(agentClientArgs.onResponseMessageSaved).toBeUndefined();
   });
 
   it('should skip handoff agent and filter its edge when user lacks VIEW access', async () => {

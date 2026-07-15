@@ -4,6 +4,8 @@ import {
   mergeSteelToolDefinitions,
   resolveSteelProviderToolName,
   resolveNativeSteelToolName,
+  stripPaddleOcrToolsForMainAgent,
+  stripSteelToolsForOcrTurn,
 } from './tools';
 
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
@@ -38,7 +40,7 @@ function collectExclusiveBounds(value: JsonSchemaValue): JsonSchemaValue[] {
 }
 
 describe('Steel native tool adapter', () => {
-  it('adds Steel compact workbook tools without removing existing user tools', () => {
+  it('adds Steel business tools without removing existing user tools', () => {
     const existingTool: LCTool = {
       name: 'web_search',
       description: 'Existing web search',
@@ -49,35 +51,26 @@ describe('Steel native tool adapter', () => {
     const result = mergeSteelToolDefinitions({
       toolDefinitions: [existingTool],
       toolRegistry: registry,
-      aiVisibleTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
+      aiVisibleTools: ['search_customers', 'search_price_candidates'],
     });
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'web_search',
       'search_customers',
       'search_price_candidates',
-      'read_markdown',
     ]);
     expect(result.toolRegistry.get('web_search')).toBe(existingTool);
-    expect(result.toolRegistry.get('read_markdown')).toEqual(
-      expect.objectContaining({
-        name: 'read_markdown',
-        toolType: 'builtin',
-      }),
-    );
   });
 
-  it('limits Steel tools to the runtime policy while read_markdown remains globally available', () => {
+  it('limits Steel tools to the runtime policy', () => {
     const result = mergeSteelToolDefinitions({
-      aiVisibleTools: ['search_customers', 'search_price_candidates', 'read_markdown'],
+      aiVisibleTools: ['search_customers', 'search_price_candidates'],
     });
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'search_customers',
       'search_price_candidates',
-      'read_markdown',
     ]);
-    expect(result.toolRegistry.has('read_markdown')).toBe(true);
   });
 
   it('emits provider-compatible schemas for every native Steel tool', () => {
@@ -169,5 +162,44 @@ describe('Steel native tool adapter', () => {
     expect(resolveSteelProviderToolName('steel_search_customers')).toBe('search_customers');
     expect(resolveSteelProviderToolName('steel_lookup_quote_rules')).toBeUndefined();
     expect(resolveSteelProviderToolName('web_search')).toBeUndefined();
+  });
+
+  it('removes Steel and PaddleOCR tools while preserving unrelated tools for OCR turns', () => {
+    const result = stripSteelToolsForOcrTurn({
+      tools: [
+        { name: 'search_customers' },
+        { name: 'paddleocr_vl---PaddleOCR' },
+        { name: 'web_search' },
+      ],
+      toolDefinitions: [
+        { name: 'search_price_candidates', description: '', parameters: {} },
+        { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} },
+        { name: 'web_search', description: '', parameters: {} },
+      ],
+      toolRegistry: new Map([
+        ['search_customers', { name: 'search_customers' }],
+        ['paddleocr_vl---PaddleOCR', { name: 'paddleocr_vl---PaddleOCR' }],
+        ['web_search', { name: 'web_search' }],
+      ]),
+    });
+
+    expect(result.tools?.map((tool) => (typeof tool === 'string' ? tool : tool?.name))).toEqual([
+      'web_search',
+    ]);
+    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual(['web_search']);
+    expect([...result.toolRegistry?.keys() ?? []]).toEqual(['web_search']);
+  });
+
+  it('removes PaddleOCR from a standard main agent without removing Steel tools', () => {
+    const result = stripPaddleOcrToolsForMainAgent({
+      tools: ['search_customers', 'paddleocr_vl---PaddleOCR', 'web_search'],
+      toolDefinitions: [
+        { name: 'search_customers', description: '', parameters: {} },
+        { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} },
+      ],
+    });
+
+    expect(result.tools).toEqual(['search_customers', 'web_search']);
+    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual(['search_customers']);
   });
 });

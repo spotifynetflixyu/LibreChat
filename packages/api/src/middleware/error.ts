@@ -40,52 +40,6 @@ function isCustomError(err: unknown): err is CustomError {
   return err !== null && typeof err === 'object' && 'statusCode' in err && 'body' in err;
 }
 
-function isSteelStreamRequest(req: Request): boolean {
-  return req.originalUrl?.includes('/api/steel/ai/chat/stream') === true;
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function sanitizeErrorSummary(message: string): string {
-  return message
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/access_token\s*[:=]\s*["']?[^"',\s]+/gi, 'access_token=[REDACTED]')
-    .replace(/authorization\s*[:=]\s*["']?[^"',\n]+/gi, 'authorization=[REDACTED]')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function sendSteelStreamError(error: CustomError, req: Request, res: Response): Response {
-  const statusCode =
-    typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode <= 599
-      ? error.statusCode
-      : 500;
-  const isProduction = process.env.NODE_ENV === 'production';
-  const rawSummary = sanitizeErrorSummary(getErrorMessage(error));
-
-  logger.error('ErrorController => steel stream error', {
-    originalUrl: req.originalUrl,
-    statusCode,
-    error,
-  });
-
-  const model =
-    process.env.OPENAI_DEFAULT_MODEL || process.env.STEEL_OPENAI_DEFAULT_MODEL || 'unknown';
-
-  return res.status(statusCode).json({
-    provider: 'openai_oauth_responses',
-    model,
-    text: '',
-    unsupportedSettings: [],
-    warnings: [],
-    errorCategory: 'unknown',
-    errorSummary:
-      isProduction || rawSummary.length === 0 ? 'Steel stream request failed.' : rawSummary,
-  });
-}
-
 export const ErrorController = (
   err: Error | CustomError,
   req: Request,
@@ -106,10 +60,6 @@ export const ErrorController = (
     ) {
       const domain = process.env.DOMAIN_CLIENT || 'http://localhost:3080';
       return res.redirect(`${domain}/login?redirect=false&error=${ErrorTypes.AUTH_FAILED}`);
-    }
-
-    if (isSteelStreamRequest(req)) {
-      return sendSteelStreamError(error, req, res);
     }
 
     if (isValidationError(error)) {

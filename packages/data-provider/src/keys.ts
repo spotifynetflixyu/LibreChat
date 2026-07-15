@@ -87,7 +87,6 @@ export enum QueryKeys {
   favorites = 'favorites',
   /* Steel */
   steelModels = 'steelModels',
-  steelConversation = 'steelConversation',
   openAIOAuthUsage = 'openAIOAuthUsage',
   openAIOAuthTokenStatus = 'openAIOAuthTokenStatus',
   openAIOAuthCodexLoginStatus = 'openAIOAuthCodexLoginStatus',

@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { logger, redactMessage } = require('@librechat/data-schemas');
-const { HumanMessage, SystemMessage } = require('@librechat/agents/langchain/messages');
+const { HumanMessage } = require('@librechat/agents/langchain/messages');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
@@ -35,6 +35,7 @@ const {
   buildSteelNativeEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
+  groupSteelOcrMissingPagesByFileKey,
   isFileAuthoringToolDefinition,
   createSteelNativeTool,
   createSteelPostgresPool,
@@ -42,9 +43,10 @@ const {
   executeSteelTool,
   mergeSteelToolDefinitions,
   resolveSteelProviderToolName,
+  stripSteelToolsForOcrTurn,
+  stripPaddleOcrToolsForMainAgent,
   getSteelOcrFileDescriptor,
   ocrPreprocessingPipelineVersion,
-  createMongooseSteelOutputSheetMemoryReader,
   createMongooseSteelWorkingOrderMemoryWriter,
   createMongooseOcrPdfChunkArtifactRepository,
   createSteelContextDependencies,
@@ -562,38 +564,7 @@ const nativeTools = new Set([
 const defaultSteelNativeToolMaxCalls = 8;
 const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
-const steelPaddleOcrRetryableErrorPatterns = [
-  'connection timeout after',
-  'failed to establish connection',
-  'connection reset by peer',
-  'connectionreseterror',
-  'clientconnectorerror',
-  'clientoserror',
-  'cannot connect to host paddleocr.aistudio-app.com',
-  'econnreset',
-  'socket hang up',
-  'server disconnected',
-  'transport closed',
-];
-const steelOcrOrganizerMaxAttempts = 3;
-const steelOcrOrganizerRetryDelaysMs = [300, 1000];
-const steelOcrOrganizerRetryableErrorPatterns = [
-  ...steelPaddleOcrRetryableErrorPatterns,
-  'terminated',
-  'timeout',
-  'timed out',
-  'fetch failed',
-  'network error',
-  'service unavailable',
-  'temporarily unavailable',
-  'try again later',
-  'too many requests',
-  'rate limit',
-  'rate_limit',
-  'overloaded',
-  '429',
-  '503',
-];
+const steelPaddleOcrMaxAttempts = 2;
 let defaultSteelNativeToolClient;
 
 /** Checks if a tool name is a known built-in tool */
@@ -700,7 +671,6 @@ async function emitSteelNativeEvents({ events, res, streamId }) {
 function createSteelNativeToolExecute({ req, res, streamId, runState }) {
   const conversationId = getRequestConversationId(req);
   let workingOrderMemoryWriter;
-  let outputSheetMemoryReader;
 
   const getWorkingOrderMemoryWriter = () => {
     if (!conversationId) {
@@ -710,17 +680,6 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
     return workingOrderMemoryWriter;
   };
 
-  const getOutputSheetMemoryReader = () => {
-    if (!conversationId) {
-      return undefined;
-    }
-    outputSheetMemoryReader ??= createMongooseSteelOutputSheetMemoryReader(
-      mongoose,
-      conversationId,
-    );
-    return outputSheetMemoryReader;
-  };
-
   return async ({ toolName, arguments: args, providerToolCallId }) => {
     const result = await executeSteelTool({
       client: getDefaultSteelNativeToolClient(),
@@ -728,7 +687,6 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
       arguments: args,
       providerToolCallId,
       runState,
-      outputSheetMemoryReader: getOutputSheetMemoryReader(),
     });
     const captureResult = await captureSteelNativeToolResult({
       writer: getWorkingOrderMemoryWriter(),
@@ -880,11 +838,12 @@ async function resolveSteelOcrPreprocessingRules() {
   try {
     const dependencies = createSteelContextDependencies();
     const otherRules = await dependencies.listOtherGlobalRules();
-    const renderedRules = (otherRules.ocrRules ?? []).map(renderSteelOcrRule).join('\n\n');
-    const ocrRulesText = resolveOcrOrganizerRulesText(renderedRules);
-    const versionHash = crypto.createHash('sha256').update(ocrRulesText).digest('hex');
+    const subagentRules = otherRules.ocrSubagentRules ?? [];
+    const renderedRules = subagentRules.map(renderSteelOcrRule).join('\n\n').trim();
+    const effectiveOrganizerRules = resolveOcrOrganizerRulesText(renderedRules);
+    const versionHash = crypto.createHash('sha256').update(effectiveOrganizerRules).digest('hex');
     return {
-      ocrRulesText,
+      ocrRulesText: renderedRules,
       ocrRuleVersion: `ocr-rules:${versionHash}`,
     };
   } catch (error) {
@@ -935,36 +894,10 @@ function createSteelOcrOrganizer({ signal }) {
         });
       }
 
-      const messages = [
-        new SystemMessage(
-          'You organize a single PaddleOCR chunk into Steel OCR Markdown. Return only Markdown.',
-        ),
-        new HumanMessage(buildOcrOrganizerPrompt(input)),
-      ];
+      const messages = [new HumanMessage(buildOcrOrganizerPrompt(input))];
 
-      for (let attemptIndex = 0; attemptIndex < steelOcrOrganizerMaxAttempts; attemptIndex += 1) {
-        try {
-          const message = await model.invoke(messages, signal ? { signal } : undefined);
-          return { markdown: getMessageContentText(message).trim() };
-        } catch (error) {
-          const canRetry =
-            !isAbortError(error, signal) &&
-            attemptIndex < steelOcrOrganizerMaxAttempts - 1 &&
-            isRetryableSteelOcrOrganizerError(error);
-          if (!canRetry) {
-            throw error;
-          }
-
-          logger.warn('[Steel OCR] OCR organizer transient failure; retrying', {
-            attempt: attemptIndex + 1,
-            maxAttempts: steelOcrOrganizerMaxAttempts,
-            error: redactMessage(error?.message ?? 'OCR organizer failed'),
-          });
-          await sleep(getSteelOcrOrganizerRetryDelayMs(attemptIndex));
-        }
-      }
-
-      throw new Error('OCR organizer retry loop exited unexpectedly.');
+      const message = await model.invoke(messages, signal ? { signal } : undefined);
+      return { markdown: getMessageContentText(message).trim() };
     },
   };
 }
@@ -1247,53 +1180,6 @@ function isAbortError(error, signal) {
   return false;
 }
 
-function collectErrorMessages(error) {
-  const messages = [];
-  const visited = new Set();
-  let current = error;
-  while (current && typeof current === 'object' && !visited.has(current)) {
-    visited.add(current);
-    if (typeof current.name === 'string' && current.name.trim() !== '') {
-      messages.push(current.name);
-    }
-    if (typeof current.code === 'string' && current.code.trim() !== '') {
-      messages.push(current.code);
-    }
-    if (typeof current.message === 'string' && current.message.trim() !== '') {
-      messages.push(current.message);
-    }
-    current = current.cause;
-  }
-  if (typeof error === 'string') {
-    messages.push(error);
-  }
-  return messages;
-}
-
-function isRetryableSteelPaddleOcrPreflightError(error) {
-  const combined = collectErrorMessages(error).join('\n').toLowerCase();
-  if (!combined) {
-    return false;
-  }
-  return steelPaddleOcrRetryableErrorPatterns.some((pattern) => combined.includes(pattern));
-}
-
-function isRetryableSteelOcrOrganizerError(error) {
-  const combined = collectErrorMessages(error).join('\n').toLowerCase();
-  if (!combined) {
-    return false;
-  }
-  return steelOcrOrganizerRetryableErrorPatterns.some((pattern) => combined.includes(pattern));
-}
-
-function getSteelOcrOrganizerRetryDelayMs(attemptIndex) {
-  return (
-    steelOcrOrganizerRetryDelaysMs[attemptIndex] ??
-    steelOcrOrganizerRetryDelaysMs[steelOcrOrganizerRetryDelaysMs.length - 1] ??
-    0
-  );
-}
-
 function createSteelPaddleOcrInvokeConfig({
   configurable,
   req,
@@ -1348,7 +1234,7 @@ async function loadSteelPaddleOcrPreflightTool({
     toolNames: [toolName],
     streamId,
     actionsEnabled: false,
-    transformSteelPaddleOcrResults: false,
+    allowPaddleOcr: true,
     ...(userMCPAuthMap ? { userMCPAuthMap } : {}),
     ...(requestScopedConnections ? { requestScopedConnections } : {}),
   });
@@ -1665,8 +1551,6 @@ function createSteelPaddleOcrChunkRunner({
 
   return {
     async runChunk({ file, chunk, artifact }) {
-      await ensureTool();
-
       const providerToolCallId = `${getSteelPaddleOcrPreflightToolCallId(file.ocrFileKey)}_chunk_${chunk.chunkIndex}`;
       const stepId = getSteelPaddleOcrPreflightStepId(providerToolCallId);
       const index = getNextIndex();
@@ -1692,10 +1576,11 @@ function createSteelPaddleOcrChunkRunner({
         index,
       });
 
-      let result;
-      try {
+      let lastError;
+      for (let attemptIndex = 0; attemptIndex < steelPaddleOcrMaxAttempts; attemptIndex += 1) {
         try {
-          result = await invokeLoadedTool(
+          await ensureTool();
+          const result = await invokeLoadedTool(
             paddleTool,
             args,
             createSteelPaddleOcrInvokeConfig({
@@ -1710,84 +1595,74 @@ function createSteelPaddleOcrChunkRunner({
               args,
             }),
           );
-        } catch (error) {
-          if (isAbortError(error, signal) || !isRetryableSteelPaddleOcrPreflightError(error)) {
-            throw error;
-          }
-          const rebuilt = await rebuildSteelPaddleOcrPreflightTool({
-            req,
+          const rawOcrText = getPaddleOcrResultContent(result);
+          const rawResultHash = hashPaddleOcrText(rawOcrText);
+          await emitSteelPaddleOcrToolCompleted({
             res,
-            signal,
-            agent,
             streamId,
+            stepId,
+            providerToolCallId,
             toolName,
-            conversationId,
-            requestId,
-            file,
-            error,
-            userMCPAuthMap,
-            requestScopedConnections,
-          });
-          if (!rebuilt.paddleTool) {
-            throw error;
-          }
-          paddleTool = rebuilt.paddleTool;
-          configurable = rebuilt.configurable;
-          result = await invokeLoadedTool(
-            paddleTool,
             args,
-            createSteelPaddleOcrInvokeConfig({
-              configurable,
-              req,
-              agent,
-              conversationId,
-              requestId,
-              signal,
-              providerToolCallId,
-              toolName,
-              args,
+            output: createPaddleOcrChunkToolOutput({
+              file,
+              chunk,
+              rawOcrText,
+              rawResultHash,
             }),
-          );
-        }
-
-        const rawOcrText = getPaddleOcrResultContent(result);
-        const rawResultHash = hashPaddleOcrText(rawOcrText);
-        await emitSteelPaddleOcrToolCompleted({
-          res,
-          streamId,
-          stepId,
-          providerToolCallId,
-          toolName,
-          args,
-          output: createPaddleOcrChunkToolOutput({
-            file,
-            chunk,
+            index,
+          });
+          return {
+            rawResult: result,
             rawOcrText,
             rawResultHash,
-          }),
-          index,
-        });
-        return {
-          rawResult: result,
-          rawOcrText,
-          rawResultHash,
-        };
-      } catch (error) {
-        if (isAbortError(error, signal)) {
-          throw error;
+          };
+        } catch (error) {
+          if (isAbortError(error, signal)) {
+            throw error;
+          }
+          lastError = error;
+          const canRetry = attemptIndex < steelPaddleOcrMaxAttempts - 1;
+          if (!canRetry) {
+            break;
+          }
+
+          try {
+            const rebuilt = await rebuildSteelPaddleOcrPreflightTool({
+              req,
+              res,
+              signal,
+              agent,
+              streamId,
+              toolName,
+              conversationId,
+              requestId,
+              file,
+              error,
+              userMCPAuthMap,
+              requestScopedConnections,
+            });
+            paddleTool = rebuilt.paddleTool;
+            configurable = rebuilt.configurable;
+          } catch (rebuildError) {
+            lastError = rebuildError;
+            paddleTool = undefined;
+          }
         }
-        await emitSteelPaddleOcrToolCompleted({
-          res,
-          streamId,
-          stepId,
-          providerToolCallId,
-          toolName,
-          args,
-          output: `Error: ${redactMessage(error?.message ?? 'PaddleOCR preflight failed')}`,
-          index,
-        });
-        throw error;
       }
+
+      const error = lastError ?? new Error('PaddleOCR preflight failed');
+      await emitSteelPaddleOcrToolCompleted({
+        res,
+        streamId,
+        stepId,
+        providerToolCallId,
+        toolName,
+        args,
+        output: `Error: ${redactMessage(error?.message ?? 'PaddleOCR preflight failed')}`,
+        index,
+      });
+      throw error;
     },
   };
 }
@@ -1800,19 +1675,42 @@ function createPreflightResult({
   skippedReason,
   currentPaddleOcrResults = [],
   currentOcrMarkdownResults = [],
+  currentOcrFailures = [],
   totalSavedCounts,
   totalTableCounts,
 }) {
+  const ocrTurnActive =
+    attemptedKeys.length > 0 ||
+    currentOcrMarkdownResults.length > 0 ||
+    currentOcrFailures.length > 0;
   return {
     status,
+    ocrTurnActive,
     completedKeys,
     attemptedKeys,
     failedKeys,
     skippedReason,
     currentPaddleOcrResults,
     ...(currentOcrMarkdownResults.length > 0 ? { currentOcrMarkdownResults } : {}),
+    ...(currentOcrFailures.length > 0 ? { currentOcrFailures } : {}),
     ...(totalSavedCounts ? { totalSavedCounts } : {}),
     ...(totalTableCounts ? { totalTableCounts } : {}),
+  };
+}
+
+function createCurrentOcrFailureResult({ file, result, errorMessage }) {
+  return {
+    ocrFileKey: result?.file?.ocrFileKey ?? file?.ocrFileKey,
+    filename: result?.file?.filename ?? file?.filename,
+    stage: result?.stage ?? 'preflight',
+    ...(result?.chunkIndex !== undefined ? { chunkIndex: result.chunkIndex } : {}),
+    ...(result?.pageStart !== undefined ? { pageStart: result.pageStart } : {}),
+    ...(result?.pageEnd !== undefined ? { pageEnd: result.pageEnd } : {}),
+    errorMessage: redactMessage(
+      result?.errorMessage ?? errorMessage ?? 'OCR preprocessing failed',
+      512,
+    ),
+    partialMarkdown: false,
   };
 }
 
@@ -1853,657 +1751,6 @@ function createPaddleOcrChunkToolOutput({ file, chunk, rawOcrText, rawResultHash
   };
 }
 
-function isSteelPaddleOcrMcpToolName(toolName) {
-  const expectedToolName = buildMCPToolKey(steelPaddleOcrToolName, steelPaddleOcrMcpServerName);
-  return (
-    toolName === expectedToolName ||
-    toolName === steelPaddleOcrToolName ||
-    (typeof toolName === 'string' &&
-      toolName.includes(steelPaddleOcrToolName) &&
-      toolName.endsWith(`${Constants.mcp_delimiter}${steelPaddleOcrMcpServerName}`))
-  );
-}
-
-function getDirectPaddleOcrInputData(args) {
-  if (typeof args === 'string') {
-    return args.trim() || undefined;
-  }
-  if (!args || typeof args !== 'object') {
-    return undefined;
-  }
-
-  const candidates = [
-    args.input_data,
-    args.inputData,
-    args.file,
-    args.filepath,
-    args.path,
-    args.url,
-    args.pdf,
-    args.image,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim() !== '') {
-      return candidate.trim();
-    }
-    if (candidate && typeof candidate === 'object') {
-      const nested = getDirectPaddleOcrInputData(candidate);
-      if (nested) {
-        return nested;
-      }
-    }
-  }
-  return undefined;
-}
-
-function normalizeDirectPaddleOcrLookup(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
-}
-
-function directPaddleOcrFileMatches(inputData, file, fileRecord) {
-  const inputLookup = normalizeDirectPaddleOcrLookup(inputData);
-  if (!inputLookup) {
-    return false;
-  }
-  const values = [
-    file?.ocrFileKey,
-    file?.fileId,
-    file?.file_id,
-    file?.id,
-    file?.storageKey,
-    file?.storage_key,
-    file?.filepath,
-    file?.path,
-    file?.filename,
-    file?.name,
-    fileRecord?.file_id,
-    fileRecord?.storageKey,
-    fileRecord?.filepath,
-    fileRecord?.filename,
-  ]
-    .map(normalizeDirectPaddleOcrLookup)
-    .filter(Boolean);
-
-  return values.some(
-    (value) => inputLookup === value || inputLookup.includes(value) || value.includes(inputLookup),
-  );
-}
-
-async function resolveDirectPaddleOcrFile({ req, args }) {
-  const inputData = getDirectPaddleOcrInputData(args);
-  const files = Array.isArray(req?.steelNativeContext?.currentTurnFiles)
-    ? req.steelNativeContext.currentTurnFiles
-    : [];
-  const fileRecordsById = await getSteelCurrentFileRecords(req, files);
-  const candidates = files
-    .map((file) => {
-      const descriptor = getSteelOcrFileDescriptor(file);
-      if (!descriptor) {
-        return undefined;
-      }
-      const fileId = getSteelFileId(file);
-      const fileRecord = fileId ? fileRecordsById.get(fileId) : undefined;
-      const preprocessingFile = toSteelOcrPreprocessingFile(descriptor, fileRecord);
-      if (!preprocessingFile) {
-        return undefined;
-      }
-      return { file, fileRecord, preprocessingFile };
-    })
-    .filter(Boolean);
-
-  const matched =
-    candidates.find(({ file, fileRecord }) =>
-      directPaddleOcrFileMatches(inputData, file, fileRecord),
-    ) ?? (candidates.length === 1 ? candidates[0] : undefined);
-  if (matched) {
-    return {
-      inputData,
-      file: matched.preprocessingFile,
-    };
-  }
-
-  if (!inputData) {
-    return undefined;
-  }
-  const fallbackKey = `direct-paddleocr:${hashPaddleOcrText(inputData).slice(0, 16)}`;
-  const fallbackDescriptor = getSteelOcrFileDescriptor({
-    storageKey: fallbackKey,
-    filepath: inputData,
-    filename: inputData.includes('.') ? inputData : 'paddleocr-input.pdf',
-    mediaType: 'application/pdf',
-  });
-  if (!fallbackDescriptor) {
-    return undefined;
-  }
-  return {
-    inputData,
-    file: {
-      ...fallbackDescriptor,
-      sourcePdfKey: inputData,
-    },
-  };
-}
-
-function createDirectPaddleOcrChunk({ sourcePdfKey, inputData, chunkSizePages }) {
-  const filepath = inputData || sourcePdfKey;
-  const storageKey = sourcePdfKey && !sourcePdfKey.startsWith('file:') ? sourcePdfKey : filepath;
-  return {
-    pipelineVersion: ocrPreprocessingPipelineVersion,
-    sourcePdfKey,
-    chunkIndex: 1,
-    chunkCount: 1,
-    pageStart: 1,
-    pageEnd: 1,
-    chunkSizePages,
-    pdfChunk: {
-      source: 's3',
-      storageKey,
-      filepath,
-    },
-  };
-}
-
-function mergeSavedDirectOcrMarkdown({ state, ocrFileKey, ocrRuleVersion }) {
-  const markdown = mergeOcrPreprocessingStateMarkdown({ state, ocrFileKey, ocrRuleVersion });
-  if (!markdown) {
-    return undefined;
-  }
-  return {
-    chunkCount: state.chunkCount || state.chunks.length,
-    markdown,
-  };
-}
-
-function replaceToolResultContent(result, content) {
-  if (result && typeof result === 'object') {
-    return {
-      ...result,
-      content,
-      artifact: undefined,
-    };
-  }
-  return {
-    content,
-    artifact: undefined,
-  };
-}
-
-function isDirectPaddleOcrForceNew(args) {
-  return args?.new === true || args?.new === 'true';
-}
-
-function stripDirectPaddleOcrControlArgs(args) {
-  if (!args || typeof args !== 'object' || !Object.prototype.hasOwnProperty.call(args, 'new')) {
-    return args;
-  }
-
-  const { new: _new, ...toolArgs } = args;
-  return toolArgs;
-}
-
-function appendCurrentOcrMarkdownResultToRequest(req, result) {
-  if (!req || !result?.ocrFileKey) {
-    return;
-  }
-
-  const existing = req.steelNativeContext?.paddleOcrPreflight?.currentOcrMarkdownResults ?? [];
-  const next = [...existing.filter((entry) => entry?.ocrFileKey !== result.ocrFileKey), result];
-  req.steelNativeContext = {
-    ...(req.steelNativeContext ?? {}),
-    paddleOcrPreflight: {
-      ...(req.steelNativeContext?.paddleOcrPreflight ?? {}),
-      currentOcrMarkdownResults: next,
-    },
-  };
-}
-
-async function emitDirectOcrProgress({
-  res,
-  streamId,
-  conversationId,
-  requestId,
-  toolName,
-  providerToolCallId,
-  ocrFileKey,
-  progress,
-}) {
-  await emitSteelNativeEvents({
-    res,
-    streamId,
-    events: buildSteelOcrPreprocessingEventEnvelopes({
-      conversationId,
-      requestId,
-      messageId: requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey,
-      progress,
-    }),
-  });
-}
-
-async function prepareDirectPaddleOcrContext({ req, args }) {
-  const conversationId = getRequestConversationId(req);
-  const turnIndex = req?.steelNativeContext?.assistantTurnIndex;
-  if (!conversationId || turnIndex === undefined) {
-    return undefined;
-  }
-
-  const resolved = await resolveDirectPaddleOcrFile({ req, args });
-  if (!resolved?.file) {
-    throw new Error('PaddleOCR result cannot be converted to OCR Markdown without file context');
-  }
-
-  const requestId = req?.steelNativeContext?.requestId;
-  const checkpointTurnIndex =
-    req?.steelNativeContext?.memoryCheckpointTurnIndex ?? Math.max(0, turnIndex - 1);
-  const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
-  const rules = await resolveSteelOcrPreprocessingRules();
-
-  return {
-    conversationId,
-    turnIndex,
-    requestId,
-    checkpointTurnIndex,
-    resolved,
-    writer,
-    rules,
-    stateInput: {
-      conversationId,
-      sourcePdfKey: resolved.file.sourcePdfKey,
-      ocrFileKey: resolved.file.ocrFileKey,
-      ocrRuleVersion: rules.ocrRuleVersion,
-    },
-  };
-}
-
-async function readExistingDirectOcrMarkdown({
-  context,
-  req,
-  res,
-  streamId,
-  toolName,
-  providerToolCallId,
-}) {
-  if (!context) {
-    return undefined;
-  }
-
-  const officialMarkdown =
-    typeof context.writer.readOfficialOcrMarkdown === 'function'
-      ? await context.writer.readOfficialOcrMarkdown(context.stateInput)
-      : undefined;
-  if (officialMarkdown) {
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: { stage: 'merged_markdowns_read', chunkCount: officialMarkdown.chunkCount },
-    });
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: {
-        stage: 'processing_with_merged_markdown',
-        chunkCount: officialMarkdown.chunkCount,
-      },
-    });
-    appendCurrentOcrMarkdownResultToRequest(
-      req,
-      createCurrentOcrMergedMarkdownResult({
-        file: context.resolved.file,
-        markdown: officialMarkdown.markdown,
-        chunkCount: officialMarkdown.chunkCount,
-        ocrRuleVersion: context.rules.ocrRuleVersion,
-      }),
-    );
-    return {
-      content: labelOcrMarkdownResultContent(
-        context.resolved.file.ocrFileKey,
-        officialMarkdown.markdown,
-      ),
-    };
-  }
-
-  const existingState = await context.writer.readOcrPreprocessingState(context.stateInput);
-  const existingMarkdown = mergeSavedDirectOcrMarkdown({
-    state: existingState,
-    ocrFileKey: context.resolved.file.ocrFileKey,
-    ocrRuleVersion: context.rules.ocrRuleVersion,
-  });
-  if (!existingMarkdown) {
-    return undefined;
-  }
-
-  await emitDirectOcrProgress({
-    res,
-    streamId,
-    conversationId: context.conversationId,
-    requestId: context.requestId,
-    toolName,
-    providerToolCallId,
-    ocrFileKey: context.resolved.file.ocrFileKey,
-    progress: { stage: 'merged_markdowns_read', chunkCount: existingMarkdown.chunkCount },
-  });
-  await emitDirectOcrProgress({
-    res,
-    streamId,
-    conversationId: context.conversationId,
-    requestId: context.requestId,
-    toolName,
-    providerToolCallId,
-    ocrFileKey: context.resolved.file.ocrFileKey,
-    progress: {
-      stage: 'processing_with_merged_markdown',
-      chunkCount: existingMarkdown.chunkCount,
-    },
-  });
-
-  appendCurrentOcrMarkdownResultToRequest(
-    req,
-    createCurrentOcrMergedMarkdownResult({
-      file: context.resolved.file,
-      markdown: existingMarkdown.markdown,
-      chunkCount: existingMarkdown.chunkCount,
-      ocrRuleVersion: context.rules.ocrRuleVersion,
-    }),
-  );
-
-  return {
-    content: labelOcrMarkdownResultContent(
-      context.resolved.file.ocrFileKey,
-      existingMarkdown.markdown,
-    ),
-  };
-}
-
-async function throwDirectOcrMarkdownError({
-  context,
-  res,
-  streamId,
-  toolName,
-  providerToolCallId,
-  error,
-}) {
-  const errorMessage = redactMessage(error?.message ?? 'OCR markdown process failed', 512);
-  if (context?.resolved?.file?.ocrFileKey) {
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: { stage: 'failed', errorMessage },
-    });
-  }
-  throw new Error(
-    `OCR markdown process failed for ${
-      context?.resolved?.file?.filename ?? context?.resolved?.file?.ocrFileKey ?? 'PaddleOCR result'
-    }: ${errorMessage}`,
-  );
-}
-
-async function transformDirectPaddleOcrResultToMarkdown({
-  req,
-  res,
-  signal,
-  streamId,
-  toolName,
-  args,
-  result,
-  providerToolCallId,
-  directContext,
-  checkedExistingMarkdown = false,
-}) {
-  const context = directContext ?? (await prepareDirectPaddleOcrContext({ req, args }));
-  if (!context) {
-    return result;
-  }
-
-  try {
-    if (!checkedExistingMarkdown && !isDirectPaddleOcrForceNew(args)) {
-      const existing = await readExistingDirectOcrMarkdown({
-        context,
-        req,
-        res,
-        streamId,
-        toolName,
-        providerToolCallId,
-      });
-      if (existing) {
-        return replaceToolResultContent(result, existing.content);
-      }
-    }
-
-    const rawOcrText = getPaddleOcrResultContent(result);
-    const rawResultHash = hashPaddleOcrText(rawOcrText);
-    const chunkSizePages = resolveOcrPreprocessingChunkSizePages();
-    const chunk = createDirectPaddleOcrChunk({
-      sourcePdfKey: context.resolved.file.sourcePdfKey,
-      inputData: context.resolved.inputData,
-      chunkSizePages,
-    });
-
-    await context.writer.capturePaddleOcrChunkResult({
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      providerToolCallId,
-      turnIndex: context.turnIndex,
-      checkpointTurnIndex: context.checkpointTurnIndex,
-      file: context.resolved.file,
-      chunk,
-      rawResultHash,
-      data: result,
-      includeTotals: false,
-    });
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: { stage: 'paddleocr_chunk_saved', chunkIndex: 1, chunkCount: 1 },
-    });
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: { stage: 'organizer_chunk_started', chunkIndex: 1, chunkCount: 1 },
-    });
-    const organized = await createSteelOcrOrganizer({ signal }).organize({
-      ocrRulesText: context.rules.ocrRulesText,
-      file: context.resolved.file,
-      chunk: {
-        pipelineVersion: chunk.pipelineVersion ?? ocrPreprocessingPipelineVersion,
-        sourcePdfKey: chunk.sourcePdfKey,
-        ocrFileKey: context.resolved.file.ocrFileKey,
-        ...(context.resolved.file.fileId !== undefined
-          ? { fileId: context.resolved.file.fileId }
-          : {}),
-        ...(context.resolved.file.filename !== undefined
-          ? { filename: context.resolved.file.filename }
-          : {}),
-        chunkIndex: chunk.chunkIndex,
-        chunkCount: chunk.chunkCount,
-        pageStart: chunk.pageStart,
-        pageEnd: chunk.pageEnd,
-        chunkSizePages: chunk.chunkSizePages,
-      },
-      rawOcrText,
-    });
-    await context.writer.captureOcrPreprocessingChunkMarkdown({
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      turnIndex: context.turnIndex,
-      checkpointTurnIndex: context.checkpointTurnIndex,
-      file: context.resolved.file,
-      chunk,
-      rawResultHash,
-      ocrRuleVersion: context.rules.ocrRuleVersion,
-      content: organized.markdown,
-      includeTotals: false,
-    });
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: { stage: 'organizer_chunk_saved', chunkIndex: 1, chunkCount: 1 },
-    });
-
-    const finalState = await context.writer.readOcrPreprocessingState(context.stateInput);
-    const mergedMarkdown = mergeSavedDirectOcrMarkdown({
-      state: finalState,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      ocrRuleVersion: context.rules.ocrRuleVersion,
-    }) ?? { chunkCount: 1, markdown: organized.markdown };
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: { stage: 'merged_markdowns_read', chunkCount: mergedMarkdown.chunkCount },
-    });
-    await emitDirectOcrProgress({
-      res,
-      streamId,
-      conversationId: context.conversationId,
-      requestId: context.requestId,
-      toolName,
-      providerToolCallId,
-      ocrFileKey: context.resolved.file.ocrFileKey,
-      progress: {
-        stage: 'processing_with_merged_markdown',
-        chunkCount: mergedMarkdown.chunkCount,
-      },
-    });
-
-    appendCurrentOcrMarkdownResultToRequest(
-      req,
-      createCurrentOcrMergedMarkdownResult({
-        file: context.resolved.file,
-        markdown: mergedMarkdown.markdown,
-        chunkCount: mergedMarkdown.chunkCount,
-        ocrRuleVersion: context.rules.ocrRuleVersion,
-      }),
-    );
-
-    return replaceToolResultContent(
-      result,
-      labelOcrMarkdownResultContent(context.resolved.file.ocrFileKey, mergedMarkdown.markdown),
-    );
-  } catch (error) {
-    return throwDirectOcrMarkdownError({
-      context,
-      res,
-      streamId,
-      toolName,
-      providerToolCallId,
-      error,
-    });
-  }
-}
-
-function wrapSteelPaddleOcrToolsForMarkdown({
-  loadedTools,
-  req,
-  res,
-  signal,
-  streamId,
-  transformSteelPaddleOcrResults,
-}) {
-  if (!transformSteelPaddleOcrResults) {
-    return;
-  }
-  for (const tool of loadedTools) {
-    if (!isSteelPaddleOcrMcpToolName(tool?.name) || typeof tool.invoke !== 'function') {
-      continue;
-    }
-    const originalInvoke = tool.invoke.bind(tool);
-    tool.invoke = async (args, config) => {
-      const providerToolCallId = config?.toolCall?.id;
-      const forceNew = isDirectPaddleOcrForceNew(args);
-      const toolArgs = stripDirectPaddleOcrControlArgs(args);
-      let directContext;
-      try {
-        directContext = await prepareDirectPaddleOcrContext({ req, args: toolArgs });
-        if (!forceNew) {
-          const existing = await readExistingDirectOcrMarkdown({
-            context: directContext,
-            req,
-            res,
-            streamId,
-            toolName: tool.name,
-            providerToolCallId,
-          });
-          if (existing) {
-            return replaceToolResultContent({}, existing.content);
-          }
-        }
-      } catch (error) {
-        return throwDirectOcrMarkdownError({
-          context: directContext,
-          res,
-          streamId,
-          toolName: tool.name,
-          providerToolCallId,
-          error,
-        });
-      }
-
-      if (directContext?.resolved?.file?.ocrFileKey) {
-        await emitDirectOcrProgress({
-          res,
-          streamId,
-          conversationId: directContext.conversationId,
-          requestId: directContext.requestId,
-          toolName: tool.name,
-          providerToolCallId,
-          ocrFileKey: directContext.resolved.file.ocrFileKey,
-          progress: { stage: 'paddleocr_chunk_started', chunkIndex: 1, chunkCount: 1 },
-        });
-      }
-
-      const result = await originalInvoke(toolArgs, config);
-      return transformDirectPaddleOcrResultToMarkdown({
-        req,
-        res,
-        signal,
-        streamId,
-        toolName: tool.name,
-        args: toolArgs,
-        result,
-        providerToolCallId,
-        directContext,
-        checkedExistingMarkdown: true,
-      });
-    };
-  }
-}
-
 async function runSteelPaddleOcrPreflight({
   req,
   res,
@@ -2522,6 +1769,7 @@ async function runSteelPaddleOcrPreflight({
   const failedKeys = [];
   const currentPaddleOcrResults = [];
   const currentOcrMarkdownResults = [];
+  const currentOcrFailures = [];
   let nextToolEventIndex = 0;
   const getNextToolEventIndex = () => nextToolEventIndex++;
   const finishPreflight = async (result) => {
@@ -2622,19 +1870,13 @@ async function runSteelPaddleOcrPreflight({
         file: preprocessingFile,
         ocrRuleVersion: ocrPreprocessingRules.ocrRuleVersion,
       });
-      const existingOfficialMarkdown =
-        typeof writer.readOfficialOcrMarkdown === 'function'
-          ? await writer.readOfficialOcrMarkdown(stateInput)
-          : undefined;
-      const existingState = existingOfficialMarkdown
-        ? undefined
-        : await writer.readOcrPreprocessingState(stateInput);
+      const existingState = await writer.readOcrPreprocessingState(stateInput);
       const reusableChunks = toReusableOcrPreprocessingChunks(
         existingState,
         ocrPreprocessingChunkSizePages,
       );
 
-      if (existingOfficialMarkdown || reusableChunks) {
+      if (reusableChunks) {
         chunks = reusableChunks ?? buildSingleOriginalOcrChunk();
         artifacts = createSteelOcrOriginalFileArtifactStore({
           file: preprocessingFile,
@@ -2684,17 +1926,15 @@ async function runSteelPaddleOcrPreflight({
           },
         }),
       });
+      currentOcrFailures.push(
+        createCurrentOcrFailureResult({ file: preprocessingFile, errorMessage }),
+      );
       logger.warn('[Steel OCR] OCR preprocessing pipeline failed for current PDF', {
         conversationId,
         requestId,
         ocrFileKey: preprocessingFile.ocrFileKey,
         error: errorMessage,
       });
-      throw new Error(
-        `OCR preprocessing failed for ${
-          preprocessingFile.filename ?? preprocessingFile.ocrFileKey
-        }: ${errorMessage}`,
-      );
     }
   }
 
@@ -2739,6 +1979,39 @@ async function runSteelPaddleOcrPreflight({
       });
 
       for (const fileResult of batchResult.files) {
+        if (fileResult.status === 'failed') {
+          if (!failedKeys.includes(fileResult.file.ocrFileKey)) {
+            failedKeys.push(fileResult.file.ocrFileKey);
+          }
+          const failures =
+            Array.isArray(fileResult.failures) && fileResult.failures.length > 0
+              ? fileResult.failures
+              : [fileResult];
+          const currentFileFailures = failures.map((failure) =>
+            createCurrentOcrFailureResult({ file: fileResult.file, result: failure }),
+          );
+          const missingPagesByFileKey =
+            groupSteelOcrMissingPagesByFileKey(currentFileFailures);
+          currentOcrFailures.push(...currentFileFailures);
+          await emitSteelNativeEvents({
+            res,
+            streamId,
+            events: buildSteelOcrPreprocessingEventEnvelopes({
+              conversationId,
+              requestId,
+              messageId: requestId,
+              ocrFileKey: fileResult.file.ocrFileKey,
+              progress: {
+                stage: 'failed',
+                errorMessage: fileResult.errorMessage,
+                ...(Object.keys(missingPagesByFileKey).length > 0
+                  ? { missingPagesByFileKey }
+                  : {}),
+              },
+            }),
+          });
+          continue;
+        }
         currentOcrMarkdownResults.push(
           createCurrentOcrMergedMarkdownResult({
             file: fileResult.file,
@@ -2753,9 +2026,14 @@ async function runSteelPaddleOcrPreflight({
         throw error;
       }
       const errorMessage = redactMessage(error?.message ?? 'OCR preprocessing failed', 512);
-      const failedBatchFiles = batchFiles.map((entry) => entry.file);
-      for (const file of failedBatchFiles) {
-        failedKeys.push(file.ocrFileKey);
+      const failedBatchFiles = [];
+      for (const entry of batchFiles) {
+        const file = entry.file;
+        failedBatchFiles.push(file);
+        if (!failedKeys.includes(file.ocrFileKey)) {
+          failedKeys.push(file.ocrFileKey);
+        }
+        currentOcrFailures.push(createCurrentOcrFailureResult({ file, errorMessage }));
         await emitSteelNativeEvents({
           res,
           streamId,
@@ -2777,15 +2055,6 @@ async function runSteelPaddleOcrPreflight({
         ocrFileKeys: failedBatchFiles.map((file) => file.ocrFileKey),
         error: errorMessage,
       });
-      const firstFailedFile = failedBatchFiles[0];
-      if (failedBatchFiles.length === 1 && firstFailedFile) {
-        throw new Error(
-          `OCR preprocessing failed for ${
-            firstFailedFile.filename ?? firstFailedFile.ocrFileKey
-          }: ${errorMessage}`,
-        );
-      }
-      throw new Error(`OCR preprocessing failed for current files: ${errorMessage}`);
     }
   }
 
@@ -2797,6 +2066,7 @@ async function runSteelPaddleOcrPreflight({
     skippedReason: undefined,
     currentPaddleOcrResults,
     currentOcrMarkdownResults,
+    currentOcrFailures,
   });
 }
 
@@ -3746,6 +3016,7 @@ async function loadAgentTools({
  * @param {Object} [params.tool_resources] - Tool resources
  * @param {string|null} [params.streamId] - Stream ID for web search callbacks
  * @param {boolean} [params.actionsEnabled] - Whether the actions capability is enabled
+ * @param {boolean} [params.allowPaddleOcr] - Internal preflight-only PaddleOCR access
  * @returns {Promise<{ loadedTools: Array, configurable: Object }>}
  */
 async function loadToolsForExecution({
@@ -3761,21 +3032,34 @@ async function loadToolsForExecution({
   tool_resources,
   streamId = null,
   actionsEnabled,
-  transformSteelPaddleOcrResults = true,
+  allowPaddleOcr = false,
 }) {
   const appConfig = req.config;
+  const ocrTurnActive = req?.steelNativeContext?.ocrTurnActive === true;
+  const executionToolNames = toolNames.filter(
+    (name) =>
+      (allowPaddleOcr || !String(name).toLowerCase().includes('paddleocr_vl')) &&
+      (!ocrTurnActive || resolveSteelProviderToolName(name) === undefined),
+  );
+  const mainToolRegistry = allowPaddleOcr
+    ? toolRegistry
+    : stripPaddleOcrToolsForMainAgent({ toolRegistry }).toolRegistry;
+  const executionToolRegistry =
+    !allowPaddleOcr && ocrTurnActive
+      ? stripSteelToolsForOcrTurn({ toolRegistry: mainToolRegistry }).toolRegistry
+      : mainToolRegistry;
   const allLoadedTools = [];
   const mcpRequestScopedConnections = requestScopedConnections ?? getMCPRequestContext(req, res);
   const configurable = { userMCPAuthMap, requestScopedConnections: mcpRequestScopedConnections };
 
-  const isToolSearch = toolNames.includes(AgentConstants.TOOL_SEARCH);
+  const isToolSearch = executionToolNames.includes(AgentConstants.TOOL_SEARCH);
   const ptcToolNames = [
     AgentConstants.BASH_PROGRAMMATIC_TOOL_CALLING,
     AgentConstants.PROGRAMMATIC_TOOL_CALLING,
-  ].filter((name) => toolNames.includes(name));
+  ].filter((name) => executionToolNames.includes(name));
   const isPTCRequested = ptcToolNames.length > 0;
-  const isBashToolRequested = toolNames.includes(AgentConstants.BASH_TOOL);
-  const isLegacyExecuteCodeRequested = toolNames.includes(Tools.execute_code);
+  const isBashToolRequested = executionToolNames.includes(AgentConstants.BASH_TOOL);
+  const isLegacyExecuteCodeRequested = executionToolNames.includes(Tools.execute_code);
   const isCodeExecutionToolRequested = isBashToolRequested || isLegacyExecuteCodeRequested;
 
   let enabledCapabilities;
@@ -3795,20 +3079,20 @@ async function loadToolsForExecution({
     codeExecutionEnabled;
 
   logger.debug(
-    `[loadToolsForExecution] isToolSearch: ${isToolSearch}, toolRegistry: ${toolRegistry?.size ?? 'undefined'}`,
+    `[loadToolsForExecution] isToolSearch: ${isToolSearch}, toolRegistry: ${executionToolRegistry?.size ?? 'undefined'}`,
   );
 
-  if (isToolSearch && toolRegistry) {
+  if (isToolSearch && executionToolRegistry) {
     const toolSearchTool = createToolSearch({
       mode: 'local',
-      toolRegistry,
+      toolRegistry: executionToolRegistry,
     });
     allLoadedTools.push(toolSearchTool);
-    configurable.toolRegistry = toolRegistry;
+    configurable.toolRegistry = executionToolRegistry;
   }
 
-  if (isPTC && toolRegistry) {
-    configurable.toolRegistry = toolRegistry;
+  if (isPTC && executionToolRegistry) {
+    configurable.toolRegistry = executionToolRegistry;
     try {
       /**
        * LibreChat threads per-request Code API auth through the agents
@@ -3829,7 +3113,7 @@ async function loadToolsForExecution({
   const isBashTool =
     isBashToolRequested &&
     codeExecutionEnabled &&
-    toolRegistry?.has(AgentConstants.BASH_TOOL) === true;
+    executionToolRegistry?.has(AgentConstants.BASH_TOOL) === true;
   if (isBashToolRequested && !isBashTool) {
     logger.warn(
       `[loadToolsForExecution] Skipping unregistered or unauthorized ${AgentConstants.BASH_TOOL}. ` +
@@ -3848,8 +3132,8 @@ async function loadToolsForExecution({
   }
 
   const fileAuthoringToolNames = new Set(
-    toolRegistry
-      ? Array.from(toolRegistry.values())
+    executionToolRegistry
+      ? Array.from(executionToolRegistry.values())
           .filter((definition) => isFileAuthoringToolDefinition(definition))
           .map((definition) => definition.name)
       : [],
@@ -3865,18 +3149,21 @@ async function loadToolsForExecution({
   ]);
 
   let ptcOrchestratedToolNames = [];
-  if (isPTC && toolRegistry) {
-    ptcOrchestratedToolNames = Array.from(toolRegistry.keys()).filter(
+  if (isPTC && executionToolRegistry) {
+    ptcOrchestratedToolNames = Array.from(executionToolRegistry.keys()).filter(
       (name) => !specialToolNames.has(name),
     );
   }
 
-  const requestedNonSpecialToolNames = toolNames.filter((name) => !specialToolNames.has(name));
+  const requestedNonSpecialToolNames = executionToolNames.filter(
+    (name) => !specialToolNames.has(name),
+  );
   const allowedNonSpecialToolNames = requestedNonSpecialToolNames.filter((name) => {
     if (name !== Tools.execute_code) {
       return true;
     }
-    const allowed = codeExecutionEnabled && toolRegistry?.has(Tools.execute_code) === true;
+    const allowed =
+      codeExecutionEnabled && executionToolRegistry?.has(Tools.execute_code) === true;
     if (!allowed) {
       logger.warn(
         `[loadToolsForExecution] Skipping unregistered or unauthorized ${Tools.execute_code}. ` +
@@ -3967,15 +3254,6 @@ async function loadToolsForExecution({
         `Skipping action tool execution. User: ${req.user.id} | Agent: ${agent.id} | Tools: ${actionToolNames.join(', ')}`,
     );
   }
-
-  wrapSteelPaddleOcrToolsForMarkdown({
-    loadedTools: allLoadedTools,
-    req,
-    res,
-    signal,
-    streamId,
-    transformSteelPaddleOcrResults,
-  });
 
   if (isPTC && allLoadedTools.length > 0) {
     const ptcToolMap = new Map();

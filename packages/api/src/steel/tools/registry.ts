@@ -4,7 +4,7 @@ import type { ZodType } from 'zod';
 
 export type SteelProviderToolName = Extract<
   SteelToolName,
-  'search_customers' | 'search_price_candidates' | 'read_markdown'
+  'search_customers' | 'search_price_candidates'
 >;
 
 export interface SteelToolDefinition<Name extends SteelToolName = SteelProviderToolName> {
@@ -26,22 +26,9 @@ export interface SteelToolUsagePolicy {
   readonly ocrFileKeyRecommendedForFullContent?: boolean;
 }
 
-export const steelReadMarkdownUsagePolicy = {
-  requiresMissingMarkdownInHistory: true,
-  forbiddenWhenHistoryHasNeededMarkdown: true,
-  allowedScopes: ['workbook', 'ocr'],
-  currentConversationScoped: true,
-  fileKeyParameter: 'fileKey',
-  ocrFileKeyParameter: 'ocrFileKey',
-  defaultWorkbookFileKey: 'default',
-  fileKeyRecommendedWhenMultipleOrders: true,
-  ocrFileKeyRecommendedForFullContent: true,
-} as const satisfies SteelToolUsagePolicy;
-
 const providerToolNames = new Set<SteelProviderToolName>([
   'search_customers',
   'search_price_candidates',
-  'read_markdown',
 ]);
 
 const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
@@ -55,13 +42,6 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
     description:
       'Search material and processing price candidates for all known order lines in one call. Put materials in queries; omit unit for the category default or provide an explicit unit override when the order requires it. Matching cuttingPrices and applicable processingPrice may be returned with materials. For explicit processing needs, put up to three lookups in processingQueries; each may target multiple product and processing categories. Processing discovery returns prices when at most 10 rows match, otherwise only productNames. Only after such a result, requery with top-level productNames alone to retrieve the selected prices; never use productNames for initial lookup or double charge the same processing item.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
-  },
-  {
-    name: 'read_markdown',
-    description:
-      'Recover workbook or OCR Markdown only when the needed content is absent or incomplete in chat history. For workbook, omit fileKey for the combined workbook; use file:<id> for one OCR-file order or default for a text/manual order. For OCR, omit the file key for all results or provide one file key for one source. Do not call for same-turn OCR already present in runtime context.',
-    argsSchema: steelToolArgsSchemas.read_markdown,
-    usagePolicy: steelReadMarkdownUsagePolicy,
   },
 ];
 

@@ -15,11 +15,11 @@ describe('Steel native response metadata', () => {
         providerStateMode: 'openai_responses_reconstructed',
         contextMetadata: {
           nativeContextVersion: 1,
-          contextMode: 'compact_workbook',
+          mode: 'standard',
           renderProfile: 'open_responses',
           globalApplied: true,
           attachmentBytePolicy: 'metadata_references_only',
-          ocrExecutionPolicy: 'direct_paddleocr_mcp',
+          ocrExecutionPolicy: 'preflight_paddleocr_only',
           rulePrefixOrder: steelNativeInstructionPrefixSections,
         },
       }),
@@ -28,7 +28,7 @@ describe('Steel native response metadata', () => {
         native: {
           ingress: 'open_responses',
           nativeContextVersion: 1,
-          contextMode: 'compact_workbook',
+          mode: 'standard',
           renderProfile: 'open_responses',
           globalApplied: true,
           providerStateMode: 'openai_responses_reconstructed',

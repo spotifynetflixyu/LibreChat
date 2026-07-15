@@ -6,9 +6,6 @@ import {
   steelAdminImportSessionSchema,
   steelAdminMappingProfileSchema,
   steelAdminMergeTableSchema,
-  steelAuditLogSchema,
-  steelConversationMetaSchema,
-  steelConversationTurnSchema,
   steelExcelExportSchema,
   steelMemoryCandidateSchema,
   steelMemorySchema,
@@ -35,32 +32,6 @@ function createSteelNamedStateModel(
   return (
     getExistingModel<t.ISteelNamedState>(mongoose, modelName) ||
     mongoose.model<t.ISteelNamedState>(modelName, schema, collectionName)
-  );
-}
-
-export function createSteelConversationMetaModel(
-  mongoose: Mongoose,
-): Model<t.ISteelConversationMeta> {
-  return (
-    getExistingModel<t.ISteelConversationMeta>(mongoose, 'SteelConversationMeta') ||
-    mongoose.model<t.ISteelConversationMeta>(
-      'SteelConversationMeta',
-      steelConversationMetaSchema,
-      'steel_conversation_meta',
-    )
-  );
-}
-
-export function createSteelConversationTurnModel(
-  mongoose: Mongoose,
-): Model<t.ISteelConversationTurn> {
-  return (
-    getExistingModel<t.ISteelConversationTurn>(mongoose, 'SteelConversationTurn') ||
-    mongoose.model<t.ISteelConversationTurn>(
-      'SteelConversationTurn',
-      steelConversationTurnSchema,
-      'steel_conversation_turns',
-    )
   );
 }
 
@@ -105,13 +76,6 @@ export function createSteelAICapabilityModel(mongoose: Mongoose): Model<t.ISteel
       steelAICapabilitySchema,
       'steel_ai_capabilities',
     )
-  );
-}
-
-export function createSteelAuditLogModel(mongoose: Mongoose): Model<t.ISteelAuditLog> {
-  return (
-    getExistingModel<t.ISteelAuditLog>(mongoose, 'SteelAuditLog') ||
-    mongoose.model<t.ISteelAuditLog>('SteelAuditLog', steelAuditLogSchema, 'steel_audit_logs')
   );
 }
 
