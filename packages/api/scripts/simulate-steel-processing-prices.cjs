@@ -18,7 +18,9 @@ const {
   isProcessingCandidateApplicable,
   matchesProcessingKeyword,
   processingPriceCategories,
+  processingPriceDiscoveryLimit,
 } = require('../src/steel/pricing/processing-candidates');
+const { applicableCategoriesByCuttingCategory } = require('./lib/cutting-normalize.cjs');
 
 const DEFAULT_WORKBOOK_PATH = path.resolve(
   __dirname,
@@ -28,16 +30,6 @@ const DEFAULT_CUTTING_WORKBOOK_PATH = path.resolve(
   __dirname,
   '../../../docs/reference/切工價錢-v4.4-normalized.xlsx',
 );
-const PROCESSING_LIMIT = 10;
-const cuttingCategorySources = Object.freeze({
-  H型鋼: ['H型鋼'],
-  '工字鐵/H型鋼': ['I型鋼/工字鐵', 'H型鋼'],
-  '鐵板/平鐵': ['鐵板', '平鐵'],
-  鐵管: ['圓管', '方管', '扁方管', '圓條', '方鐵'],
-  角鐵: ['角鐵'],
-  槽鐵: ['槽鐵'],
-});
-
 function optionValue(argv, name) {
   const index = argv.indexOf(name);
   if (index < 0) {
@@ -114,20 +106,22 @@ function toCuttingRecord(row) {
 }
 
 function buildCuttingGroups(cuttingRows) {
-  return Object.entries(cuttingCategorySources).map(([cuttingCategory, sourceCategories]) => {
-    const records = cuttingRows
-      .filter((row) => row.cuttingCategory === cuttingCategory)
-      .map(toCuttingRecord);
-    return {
-      cuttingCategory,
-      sourceCategories,
-      queryIds: [],
-      prices: records.filter(
-        (record) => record.recordType === 'price' && record.cutType === '加工/切工',
-      ),
-      supplements: records.filter((record) => record.recordType === 'supplement'),
-    };
-  });
+  return Object.entries(applicableCategoriesByCuttingCategory).map(
+    ([cuttingCategory, sourceCategories]) => {
+      const records = cuttingRows
+        .filter((row) => row.cuttingCategory === cuttingCategory)
+        .map(toCuttingRecord);
+      return {
+        cuttingCategory,
+        sourceCategories,
+        queryIds: [],
+        prices: records.filter(
+          (record) => record.recordType === 'price' && record.cutType === '加工/切工',
+        ),
+        supplements: records.filter((record) => record.recordType === 'supplement'),
+      };
+    },
+  );
 }
 
 function describeCuttingSelection(groups) {
@@ -148,7 +142,11 @@ function describeCuttingSelection(groups) {
 }
 
 function simulateCuttingPrices(rows, cuttingRows, category) {
-  if (!Object.values(cuttingCategorySources).some((categories) => categories.includes(category))) {
+  if (
+    !Object.values(applicableCategoriesByCuttingCategory).some((categories) =>
+      categories.includes(category),
+    )
+  ) {
     return null;
   }
 
@@ -245,15 +243,15 @@ function simulateProcessingPrices(rows, targetCategories, keyword) {
     targetCategories,
     keyword: keyword ?? null,
     totalAvailable: processingRows.length,
-    exceedsTotalLimit: processingRows.length > PROCESSING_LIMIT,
-    selectionRequired: processingRows.length > PROCESSING_LIMIT,
+    exceedsTotalLimit: processingRows.length > processingPriceDiscoveryLimit,
+    selectionRequired: processingRows.length > processingPriceDiscoveryLimit,
     productNames:
-      processingRows.length > PROCESSING_LIMIT
+      processingRows.length > processingPriceDiscoveryLimit
         ? [...new Set(processingRows.map((row) => row.productName).filter(Boolean))]
         : [],
     byProcessingCategory,
     oversizedProcessingCategories: Object.entries(byProcessingCategory)
-      .filter(([, count]) => count > PROCESSING_LIMIT)
+      .filter(([, count]) => count > processingPriceDiscoveryLimit)
       .map(([category, count]) => ({ category, count })),
   };
 }

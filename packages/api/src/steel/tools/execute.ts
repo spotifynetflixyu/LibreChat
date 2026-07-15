@@ -7,10 +7,12 @@ import {
   searchSteelProcessingPriceCandidates,
 } from '../repositories';
 import {
+  compileProcessingKeyword,
   hasUnusableProcessingProductName,
   isProcessingCandidateApplicable,
-  matchesProcessingKeyword,
+  matchesProcessingKeywordTerms,
   processingPriceCategories,
+  processingPriceDiscoveryLimit,
 } from '../pricing/processing-candidates';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
@@ -290,7 +292,7 @@ function orderPriceCandidates(
   );
 }
 
-const processingPriceItemLimit = 10;
+const processingPriceItemLimit = processingPriceDiscoveryLimit;
 
 const suggestedProcessingKeywords: Partial<Record<string, readonly string[]>> = {
   '加工/切工': ['剪床', '雷射', '鋸床', '水刀', '火', '外形切割', '直線切割'],
@@ -332,6 +334,7 @@ function buildProcessingPrice(
   const requestedProductNames = productNames
     ? new Set(productNames.map((name) => name.normalize('NFKC').trim()))
     : undefined;
+  const keywordTerms = compileProcessingKeyword(keyword);
   const applicable = candidates.flatMap((candidate) => {
     if (
       (requested && !requested.has(candidate.category as PriceCategory)) ||
@@ -339,7 +342,7 @@ function buildProcessingPrice(
         (!candidate.productName ||
           !requestedProductNames.has(candidate.productName.normalize('NFKC').trim()))) ||
       (!requestedProductNames && !isProcessingCandidateApplicable(candidate, targets)) ||
-      !matchesProcessingKeyword(candidate, keyword)
+      !matchesProcessingKeywordTerms(candidate, keywordTerms)
     ) {
       return [];
     }

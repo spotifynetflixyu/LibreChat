@@ -26,6 +26,11 @@ export interface SteelNativeToolConfig {
   [key: string]: unknown;
 }
 
+export interface SteelNativeToolVisibilityOptions {
+  ocrTurnActive?: boolean;
+  allowPaddleOcr?: boolean;
+}
+
 export interface SteelNativeToolInvokeConfig {
   toolCall?: {
     id?: unknown;
@@ -109,43 +114,36 @@ function isPaddleOcrToolVisibleToMainAgent(toolName: string | undefined): boolea
   return typeof toolName !== 'string' || !isPaddleOcrToolName(toolName);
 }
 
-function isSteelToolVisibleInOcrMode(toolName: string | undefined): boolean {
-  if (typeof toolName !== 'string') {
-    return true;
+function isVisibleForSteelNativeTurn(
+  toolName: string | undefined,
+  { ocrTurnActive, allowPaddleOcr }: Required<SteelNativeToolVisibilityOptions>,
+): boolean {
+  if (!allowPaddleOcr && !isPaddleOcrToolVisibleToMainAgent(toolName)) {
+    return false;
   }
-  return resolveSteelProviderToolName(toolName) === undefined && !isPaddleOcrToolName(toolName);
+  return (
+    !ocrTurnActive ||
+    typeof toolName !== 'string' ||
+    resolveSteelProviderToolName(toolName) === undefined
+  );
 }
 
-/** Removes Steel business tools and the PaddleOCR MCP tool from one initialized agent. */
-export function stripSteelToolsForOcrTurn<T extends SteelNativeToolConfig>(config: T): T {
-  const next = { ...config } as T;
-  if (config.tools) {
-    next.tools = config.tools.filter((tool) => {
-      const toolName = typeof tool === 'string' ? tool : tool?.name;
-      return isSteelToolVisibleInOcrMode(toolName);
-    });
-  }
-  if (config.toolDefinitions) {
-    next.toolDefinitions = config.toolDefinitions.filter((definition) =>
-      isSteelToolVisibleInOcrMode(definition.name),
-    );
-  }
-  if (config.toolRegistry) {
-    next.toolRegistry = new Map(
-      [...config.toolRegistry.entries()].filter(([name, definition]) =>
-        isSteelToolVisibleInOcrMode(name) && isSteelToolVisibleInOcrMode(definition.name),
-      ),
-    );
-  }
-  return next;
-}
-
-/** Removes PaddleOCR from a main agent while leaving the MCP catalog unchanged. */
-export function stripPaddleOcrToolsForMainAgent<T extends SteelNativeToolConfig>(config: T): T {
+/** Applies the shared PaddleOCR and Steel-tool visibility policy to an initialized agent config. */
+export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
+  config: T,
+  options: SteelNativeToolVisibilityOptions = {},
+): T {
+  const visibility = {
+    ocrTurnActive: options.ocrTurnActive === true,
+    allowPaddleOcr: options.allowPaddleOcr === true,
+  };
   const next = { ...config } as T;
   if (config.tools) {
     const tools = config.tools.filter((tool) =>
-      isPaddleOcrToolVisibleToMainAgent(typeof tool === 'string' ? tool : tool?.name),
+      isVisibleForSteelNativeTurn(
+        typeof tool === 'string' ? tool : tool?.name,
+        visibility,
+      ),
     );
     if (tools.length !== config.tools.length) {
       next.tools = tools;
@@ -153,23 +151,32 @@ export function stripPaddleOcrToolsForMainAgent<T extends SteelNativeToolConfig>
   }
   if (config.toolDefinitions) {
     const toolDefinitions = config.toolDefinitions.filter((definition) =>
-      isPaddleOcrToolVisibleToMainAgent(definition.name),
+      isVisibleForSteelNativeTurn(definition.name, visibility),
     );
     if (toolDefinitions.length !== config.toolDefinitions.length) {
       next.toolDefinitions = toolDefinitions;
     }
   }
   if (config.toolRegistry) {
-    const entries = [...config.toolRegistry.entries()].filter(
-      ([name, definition]) =>
-        isPaddleOcrToolVisibleToMainAgent(name) &&
-        isPaddleOcrToolVisibleToMainAgent(definition.name),
+    const entries = [...config.toolRegistry.entries()].filter(([name, definition]) =>
+      isVisibleForSteelNativeTurn(name, visibility) &&
+      isVisibleForSteelNativeTurn(definition.name, visibility),
     );
     if (entries.length !== config.toolRegistry.size) {
       next.toolRegistry = new Map(entries);
     }
   }
   return next;
+}
+
+/** Removes Steel business tools and the PaddleOCR MCP tool from one initialized agent. */
+export function stripSteelToolsForOcrTurn<T extends SteelNativeToolConfig>(config: T): T {
+  return prepareSteelNativeToolConfig(config, { ocrTurnActive: true });
+}
+
+/** Removes PaddleOCR from a main agent while leaving the MCP catalog unchanged. */
+export function stripPaddleOcrToolsForMainAgent<T extends SteelNativeToolConfig>(config: T): T {
+  return prepareSteelNativeToolConfig(config);
 }
 
 function getProviderToolCallId(config?: SteelNativeToolInvokeConfig): string | undefined {

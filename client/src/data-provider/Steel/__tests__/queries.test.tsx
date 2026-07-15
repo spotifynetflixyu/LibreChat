@@ -49,8 +49,9 @@ describe('OpenAI OAuth token mutations', () => {
     expect(refetch).not.toHaveBeenCalled();
   });
 
-  it('updates token state and refetches usage limits after logout', async () => {
+  it('updates token state and invalidates usage limits after logout', async () => {
     const queryClient = new QueryClient();
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
     const refetch = jest.spyOn(queryClient, 'refetchQueries');
     const loggedOutToken: OpenAIOAuthTokenStatus = {
       ...token,
@@ -73,6 +74,7 @@ describe('OpenAI OAuth token mutations', () => {
     });
 
     expect(queryClient.getQueryData([QueryKeys.openAIOAuthTokenStatus])).toEqual(loggedOutToken);
-    expect(refetch).toHaveBeenCalledWith([QueryKeys.openAIOAuthUsage]);
+    expect(invalidate).toHaveBeenCalledWith([QueryKeys.openAIOAuthUsage]);
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 });

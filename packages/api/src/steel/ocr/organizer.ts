@@ -9,6 +9,8 @@ export interface OcrOrganizer {
 
 const organizerRulesStart = '[ocr_organizer]';
 const organizerRulesEnd = '[/ocr_organizer]';
+const fallbackOrganizerRules =
+  'No OCR organizer rules are available. Preserve the raw OCR content faithfully, do not invent values, and return only Markdown.';
 
 function countMarker(rules: string, marker: string): number {
   let count = 0;
@@ -55,6 +57,10 @@ function readMarkedSection(rules: string, sectionName: string, startMarker: stri
 }
 
 export function resolveOcrOrganizerRulesText(rules: string): string {
+  if (!rules.trim()) {
+    return fallbackOrganizerRules;
+  }
+
   return readMarkedSection(
     rules,
     'organizer',

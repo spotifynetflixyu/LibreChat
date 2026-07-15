@@ -802,6 +802,90 @@ describe('ToolService - Action Capability Gating', () => {
       });
     });
 
+    it('fails closed when loaded OCR organizer rules are malformed', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'image-malformed-rules',
+            filename: 'malformed-rules.png',
+            mediaType: 'image/png',
+            storageKey: 'uploads/user/image-malformed-rules.png',
+          },
+        ],
+      };
+      mockCreateSteelContextDependencies.mockReturnValueOnce({
+        listOtherGlobalRules: jest.fn().mockResolvedValue({
+          ocrSubagentRules: [
+            {
+              slug: 'malformed-organizer-rule',
+              title: 'Malformed organizer rule',
+              ruleType: 'other',
+              ruleSections: ['ocr_organizer'],
+              prompt: 'Organizer instructions without required markers',
+            },
+          ],
+        }),
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockRunOcrPreprocessingBatchPipeline).not.toHaveBeenCalled();
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'partial',
+          failedKeys: ['file:image-malformed-rules'],
+          currentOcrFailures: [
+            expect.objectContaining({ errorMessage: expect.stringMatching(/organizer rule markers/u) }),
+          ],
+        }),
+      );
+    });
+
+    it('uses the empty-rule fallback only when OCR rules cannot be loaded', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-1' };
+      req.steelNativeContext = {
+        requestId: 'resp-1',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'image-unavailable-rules',
+            filename: 'unavailable-rules.png',
+            mediaType: 'image/png',
+            storageKey: 'uploads/user/image-unavailable-rules.png',
+          },
+        ],
+      };
+      mockCreateSteelContextDependencies.mockReturnValueOnce({
+        listOtherGlobalRules: jest.fn().mockRejectedValue(new Error('rule database unavailable')),
+      });
+
+      await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ocrRulesText: '',
+          ocrRuleVersion: 'ocr-rules:unavailable',
+        }),
+      );
+    });
+
     it('routes current PDFs through the OCR preprocessing pipeline instead of whole-file raw injection', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.user = { id: 'user_123', tenantId: 'tenant-a' };
@@ -1830,6 +1914,64 @@ describe('ToolService - Action Capability Gating', () => {
           failedKeys: [],
         }),
       );
+    });
+
+    it('does not rebuild or retry non-transient PaddleOCR provider errors', async () => {
+      const file = { fileId: 'file-invalid', filename: 'invalid.jpg', mediaType: 'image/jpeg' };
+      const req = createMockPaddleOcrPreflightReq(file);
+      const providerError = new Error('invalid PaddleOCR authentication configuration');
+      const invoke = jest.fn().mockRejectedValueOnce(providerError);
+      mockSingleFilePaddleOcrPipeline(file);
+      mockPaddleOcrToolLoads(invoke);
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
+      expect(reinitMCPServer).not.toHaveBeenCalled();
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'partial',
+          failedKeys: ['file:file-invalid'],
+          currentOcrFailures: [expect.objectContaining({ errorMessage: providerError.message })],
+        }),
+      );
+    });
+
+    it('keeps the provider error primary when rebuilding PaddleOCR fails', async () => {
+      const file = { fileId: 'file-rebuild', filename: 'rebuild.jpg', mediaType: 'image/jpeg' };
+      const req = createMockPaddleOcrPreflightReq(file);
+      const providerError = new Error('Connection reset by peer');
+      const rebuildError = new Error('PaddleOCR MCP reinitialization failed');
+      const firstInvoke = jest.fn().mockRejectedValueOnce(providerError);
+      mockSingleFilePaddleOcrPipeline(file);
+      mockPaddleOcrToolLoads(firstInvoke);
+      mockLoadToolsUtil.mockRejectedValueOnce(rebuildError);
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
+      });
+
+      expect(firstInvoke).toHaveBeenCalledTimes(1);
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(2);
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'partial',
+          failedKeys: ['file:file-rebuild'],
+          currentOcrFailures: [expect.objectContaining({ errorMessage: providerError.message })],
+        }),
+      );
+      expect(providerError.cause).toBe(rebuildError);
     });
 
     it('retries a real OCR job timeout once and keeps the fallback turn active', async () => {

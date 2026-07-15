@@ -23,7 +23,6 @@ async function refreshOpenAIOAuthQueries(
     queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], token);
   }
   await queryClient.invalidateQueries([QueryKeys.openAIOAuthUsage]);
-  await queryClient.refetchQueries([QueryKeys.openAIOAuthUsage]);
 }
 
 export const useGetOpenAIOAuthUsageQuery = (

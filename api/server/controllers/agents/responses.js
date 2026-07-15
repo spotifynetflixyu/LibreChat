@@ -17,8 +17,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
-  stripPaddleOcrToolsForMainAgent,
-  stripSteelToolsForOcrTurn,
+  prepareSteelNativeToolConfig,
   stripSteelOcrPartsFromProviderMessages,
   createSafeUser,
   initializeAgent,
@@ -833,31 +832,28 @@ const createResponse = async (req, res) => {
       ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
     };
     for (const runAgent of runAgents) {
-      const mainAgent = stripPaddleOcrToolsForMainAgent(runAgent);
       Object.assign(
         runAgent,
-        paddleOcrPreflight.ocrTurnActive === true
-          ? stripSteelToolsForOcrTurn(mainAgent)
-          : mainAgent,
+        prepareSteelNativeToolConfig(runAgent, {
+          ocrTurnActive: paddleOcrPreflight.ocrTurnActive === true,
+        }),
       );
     }
     for (const context of agentToolContexts.values()) {
       if (context?.agent) {
-        const mainAgent = stripPaddleOcrToolsForMainAgent(context.agent);
         Object.assign(
           context.agent,
-          paddleOcrPreflight.ocrTurnActive === true
-            ? stripSteelToolsForOcrTurn(mainAgent)
-            : mainAgent,
+          prepareSteelNativeToolConfig(context.agent, {
+            ocrTurnActive: paddleOcrPreflight.ocrTurnActive === true,
+          }),
         );
       }
       if (context) {
-        const mainContext = stripPaddleOcrToolsForMainAgent(context);
         Object.assign(
           context,
-          paddleOcrPreflight.ocrTurnActive === true
-            ? stripSteelToolsForOcrTurn(mainContext)
-            : mainContext,
+          prepareSteelNativeToolConfig(context, {
+            ocrTurnActive: paddleOcrPreflight.ocrTurnActive === true,
+          }),
         );
       }
     }

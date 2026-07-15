@@ -158,6 +158,7 @@ jest.mock('@librechat/api', () => ({
     processStream: jest.fn().mockResolvedValue(undefined),
   }),
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
+  prepareSteelNativeToolConfig: jest.fn((config) => config),
   stripPaddleOcrToolsForMainAgent: (config) => config,
   stripSteelToolsForOcrTurn: jest.fn((config) => config),
   stripSteelOcrPartsFromProviderMessages: (messages) => [...messages],

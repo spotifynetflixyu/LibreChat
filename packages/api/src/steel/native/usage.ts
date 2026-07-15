@@ -7,6 +7,7 @@ import type {
 
 import {
   clearOpenAIOAuthCredentialInvalid,
+  getOpenAIOAuthCredentialKey,
   isOpenAIOAuthUnauthorizedError,
   markOpenAIOAuthCredentialInvalid,
 } from './auth-state';
@@ -210,7 +211,7 @@ function getCachedResponse({
 }
 
 function getCacheKey({ authFilePath }: Pick<OpenAIOAuthUsageDeps, 'authFilePath'>): string {
-  return authFilePath?.trim() || 'default';
+  return getOpenAIOAuthCredentialKey(authFilePath);
 }
 
 export function invalidateOpenAIOAuthUsageCache({

@@ -1,4 +1,5 @@
 import { getOpenAIOAuthUsageRemaining, invalidateOpenAIOAuthUsageCache } from './usage';
+import { getOpenAIOAuthCredentialKey } from './auth-state';
 
 const primaryResetAt = 1782471969;
 const weeklyResetAt = 1782975152;
@@ -28,6 +29,12 @@ function createUsagePayload(usedPercent = 20) {
 }
 
 describe('OpenAI OAuth usage remaining service', () => {
+  it('uses one stable credential key for default and trimmed auth paths', () => {
+    expect(getOpenAIOAuthCredentialKey()).toBe('default');
+    expect(getOpenAIOAuthCredentialKey('   ')).toBe('default');
+    expect(getOpenAIOAuthCredentialKey(' /tmp/auth.json ')).toBe('/tmp/auth.json');
+  });
+
   it('reports an upstream authorization failure separately from transient request errors', async () => {
     const result = await getOpenAIOAuthUsageRemaining({
       authFilePath: '/tmp/unauthorized-auth.json',

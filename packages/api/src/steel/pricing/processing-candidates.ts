@@ -12,6 +12,8 @@ export const processingPriceCategories = Object.freeze([
   '加工/其他',
 ] as const);
 
+export const processingPriceDiscoveryLimit = 10;
+
 export type ProcessingPriceCategory = (typeof processingPriceCategories)[number];
 
 export interface ProcessingCandidateDescriptor {
@@ -128,7 +130,28 @@ export function matchesProcessingKeyword(
   candidate: ProcessingCandidateDescriptor,
   keyword: string | undefined,
 ): boolean {
+  return matchesProcessingKeywordTerms(candidate, compileProcessingKeyword(keyword));
+}
+
+export function compileProcessingKeyword(keyword: string | undefined): readonly string[] | undefined {
   if (!keyword) {
+    return undefined;
+  }
+
+  return keyword
+    .normalize('NFKC')
+    .replace(/[＊*×]/gu, 'x')
+    .trim()
+    .split(/\s+/u)
+    .map((term) => normalizeSteelSpecKey(term) ?? term)
+    .filter(Boolean);
+}
+
+export function matchesProcessingKeywordTerms(
+  candidate: ProcessingCandidateDescriptor,
+  terms: readonly string[] | undefined,
+): boolean {
+  if (!terms) {
     return true;
   }
 
@@ -136,13 +159,6 @@ export function matchesProcessingKeyword(
     `${candidate.erpItemCode} ${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`
       .normalize('NFKC')
       .replace(/[＊*×]/gu, 'x');
-  const terms = keyword
-    .normalize('NFKC')
-    .replace(/[＊*×]/gu, 'x')
-    .trim()
-    .split(/\s+/u)
-    .map((term) => normalizeSteelSpecKey(term) ?? term)
-    .filter(Boolean);
 
   return terms.every((term) => text.includes(term));
 }

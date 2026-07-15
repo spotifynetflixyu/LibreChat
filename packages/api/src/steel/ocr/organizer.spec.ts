@@ -73,6 +73,16 @@ describe('OCR organizer interface', () => {
     }
   });
 
+  it('uses a safe organizer fallback only when rules are empty', () => {
+    expect(resolveOcrOrganizerRulesText('')).toContain('No OCR organizer rules are available');
+    expect(
+      buildOcrOrganizerPrompt({ ocrRulesText: '  \n', rawOcrText }),
+    ).toContain('Preserve the raw OCR content faithfully');
+    expect(() => resolveOcrOrganizerRulesText('unmarked nonempty rules')).toThrow(
+      /OCR organizer rule markers/u,
+    );
+  });
+
   it('builds a prompt from exactly the two organizer inputs', () => {
     const prompt = buildOcrOrganizerPrompt({
       ocrRulesText: `[ocr_organizer]\n${organizerRule}\n[/ocr_organizer]`,

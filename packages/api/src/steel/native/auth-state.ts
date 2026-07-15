@@ -1,19 +1,19 @@
 const invalidCredentials = new Set<string>();
 
-function getCredentialKey(authFilePath?: string): string {
+export function getOpenAIOAuthCredentialKey(authFilePath?: string): string {
   return authFilePath?.trim() || 'default';
 }
 
 export function clearOpenAIOAuthCredentialInvalid(authFilePath?: string): void {
-  invalidCredentials.delete(getCredentialKey(authFilePath));
+  invalidCredentials.delete(getOpenAIOAuthCredentialKey(authFilePath));
 }
 
 export function isOpenAIOAuthCredentialInvalid(authFilePath?: string): boolean {
-  return invalidCredentials.has(getCredentialKey(authFilePath));
+  return invalidCredentials.has(getOpenAIOAuthCredentialKey(authFilePath));
 }
 
 export function markOpenAIOAuthCredentialInvalid(authFilePath?: string): void {
-  invalidCredentials.add(getCredentialKey(authFilePath));
+  invalidCredentials.add(getOpenAIOAuthCredentialKey(authFilePath));
 }
 
 export function isOpenAIOAuthUnauthorizedError(error: unknown): boolean {

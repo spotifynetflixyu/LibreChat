@@ -1,7 +1,9 @@
 import {
+  compileProcessingKeyword,
   hasUnusableProcessingProductName,
   isProcessingCandidateApplicable,
   matchesProcessingKeyword,
+  matchesProcessingKeywordTerms,
 } from './processing-candidates';
 
 describe('processing price candidate applicability', () => {
@@ -43,5 +45,18 @@ describe('processing price candidate applicability', () => {
 
     expect(matchesProcessingKeyword(candidate, '雷射 圓孔')).toBe(true);
     expect(matchesProcessingKeyword(candidate, '雷射 方孔')).toBe(false);
+  });
+
+  it('matches a precompiled keyword without changing the public matcher contract', () => {
+    const candidate = {
+      category: '加工/孔',
+      productName: '鐵板雷射圓孔',
+      normalizedSpecText: '鐵板 雷射 圓孔',
+      erpItemCode: 'HOLE-1',
+    };
+    const terms = compileProcessingKeyword('雷射 圓孔');
+
+    expect(matchesProcessingKeywordTerms(candidate, terms)).toBe(true);
+    expect(matchesProcessingKeyword(candidate, '雷射 圓孔')).toBe(true);
   });
 });

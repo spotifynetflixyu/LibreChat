@@ -5,6 +5,7 @@ import {
   parseSteelSourceRefs,
 } from './types';
 import { normalizeSteelSpecKey } from '../normalization/spec';
+import { processingPriceCategories } from '../pricing/processing-candidates';
 
 import type { SteelRepositoryClient, SteelSourceBackedRecord, SteelSourceRef } from './types';
 import type { PriceLookupMaterialKind, PriceCategory } from '../pricing/enums';
@@ -679,7 +680,7 @@ export async function searchSteelProcessingPriceCandidates(
 ): Promise<SteelPriceItem[]> {
   const result = await client.query<SteelPriceItemRow>(processingPriceCandidatesSql, [
     input.includeInactive ?? false,
-    ['加工/切工', '加工/孔', '加工/倒角', '加工/開槽', '加工/折工', '加工/焊接', '加工/其他'],
+    processingPriceCategories,
     null,
   ]);
 

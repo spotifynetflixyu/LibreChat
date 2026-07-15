@@ -495,6 +495,57 @@ describe('OCR preprocessing orchestrator', () => {
     ]);
   });
 
+  it('propagates ordinary progress callback failures', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 1 });
+    const state: OcrPreprocessingState = {
+      ...emptyState({
+        ocrFileKey: 'file:file-progress-error',
+        sourcePdfKey: 'uploads/file-progress-error.pdf',
+        ocrRuleVersion: 'rules-v2',
+        chunkCount: 1,
+      }),
+      chunks: [
+        {
+          ...chunks[0],
+          rawSaved: true,
+          organizedSaved: true,
+          rawResultHash: 'hash-progress-error',
+          rawOcrText: 'raw progress error',
+          organizedMarkdown: '| file | value |\n|---|---|\n| A | 1 |',
+        },
+      ],
+    };
+    const progressError = new Error('event sink failed');
+
+    await expect(
+      runOcrPreprocessingPipeline({
+        conversationId: 'steel_conversation_progress_error',
+        file: {
+          ocrFileKey: 'file:file-progress-error',
+          fileId: 'file-progress-error',
+          filename: 'progress-error.pdf',
+          sourcePdfKey: 'uploads/file-progress-error.pdf',
+        },
+        ocrRuleVersion: 'rules-v2',
+        ocrRulesText: 'rules',
+        chunks,
+        artifacts: {
+          ensurePdfChunkArtifacts: jest.fn(),
+        },
+        memory: {
+          readOcrPreprocessingState: jest.fn().mockResolvedValue(state),
+          capturePaddleOcrChunkResult: jest.fn(),
+          captureOcrPreprocessingChunkMarkdown: jest.fn(),
+        },
+        organizer: { organize: jest.fn() },
+        paddleOcr: { runChunk: jest.fn() },
+        onProgress: jest.fn(async () => {
+          throw progressError;
+        }),
+      }),
+    ).rejects.toBe(progressError);
+  });
+
   it('resumes from saved raw chunks and organizes only missing current-rule chunks', async () => {
     const chunks = buildPdfPageChunks({ pageCount: 100 });
     const rawRunner = jest.fn();

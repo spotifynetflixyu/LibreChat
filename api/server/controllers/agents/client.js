@@ -59,8 +59,7 @@ const {
   buildAgentScopedContext,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
-  stripPaddleOcrToolsForMainAgent,
-  stripSteelToolsForOcrTurn,
+  prepareSteelNativeToolConfig,
   stripSteelOcrPartsFromProviderMessages,
   buildSkillPrimeContentParts,
   buildInitialToolSessions,
@@ -683,12 +682,11 @@ class AgentClient extends BaseClient {
         ...(this.agentConfigs ? Array.from(this.agentConfigs.values()) : []),
       ];
       for (const runAgent of runAgents) {
-        const mainAgent = stripPaddleOcrToolsForMainAgent(runAgent);
         Object.assign(
           runAgent,
-          paddleOcrPreflight?.ocrTurnActive === true
-            ? stripSteelToolsForOcrTurn(mainAgent)
-            : mainAgent,
+          prepareSteelNativeToolConfig(runAgent, {
+            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+          }),
         );
       }
     }

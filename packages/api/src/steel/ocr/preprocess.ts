@@ -290,13 +290,7 @@ async function emitFileProgress(
   file: OcrPreprocessingFile,
   progress: OcrPreprocessingPipelineProgress,
 ) {
-  try {
-    await input.onProgress?.({ file, progress });
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error;
-    }
-  }
+  await input.onProgress?.({ file, progress });
 }
 
 async function emitMergedMarkdownProgress(input: {

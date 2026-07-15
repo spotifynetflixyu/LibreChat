@@ -43,8 +43,7 @@ const {
   executeSteelTool,
   mergeSteelToolDefinitions,
   resolveSteelProviderToolName,
-  stripSteelToolsForOcrTurn,
-  stripPaddleOcrToolsForMainAgent,
+  prepareSteelNativeToolConfig,
   getSteelOcrFileDescriptor,
   ocrPreprocessingPipelineVersion,
   createMongooseSteelWorkingOrderMemoryWriter,
@@ -564,6 +563,33 @@ const nativeTools = new Set([
 const defaultSteelNativeToolMaxCalls = 8;
 const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
+const steelPaddleOcrRetryableErrorPatterns = [
+  'connection timeout after',
+  'failed to establish connection',
+  'connection reset by peer',
+  'connectionreseterror',
+  'clientconnectorerror',
+  'clientoserror',
+  'cannot connect to host paddleocr.aistudio-app.com',
+  'econnreset',
+  'socket hang up',
+  'server disconnected',
+  'transport closed',
+  'terminated',
+  'timeout',
+  'timed out',
+  'fetch failed',
+  'network error',
+  'service unavailable',
+  'temporarily unavailable',
+  'try again later',
+  'too many requests',
+  'rate limit',
+  'rate_limit',
+  'overloaded',
+  '429',
+  '503',
+];
 const steelPaddleOcrMaxAttempts = 2;
 let defaultSteelNativeToolClient;
 
@@ -835,17 +861,11 @@ function renderSteelOcrRule(rule) {
 }
 
 async function resolveSteelOcrPreprocessingRules() {
+  let subagentRules;
   try {
     const dependencies = createSteelContextDependencies();
     const otherRules = await dependencies.listOtherGlobalRules();
-    const subagentRules = otherRules.ocrSubagentRules ?? [];
-    const renderedRules = subagentRules.map(renderSteelOcrRule).join('\n\n').trim();
-    const effectiveOrganizerRules = resolveOcrOrganizerRulesText(renderedRules);
-    const versionHash = crypto.createHash('sha256').update(effectiveOrganizerRules).digest('hex');
-    return {
-      ocrRulesText: renderedRules,
-      ocrRuleVersion: `ocr-rules:${versionHash}`,
-    };
+    subagentRules = otherRules.ocrSubagentRules ?? [];
   } catch (error) {
     logger.warn('[Steel OCR] Failed to load OCR rules for preprocessing; continuing fail-open', {
       error: error?.message,
@@ -855,6 +875,14 @@ async function resolveSteelOcrPreprocessingRules() {
       ocrRuleVersion: 'ocr-rules:unavailable',
     };
   }
+
+  const renderedRules = subagentRules.map(renderSteelOcrRule).join('\n\n').trim();
+  const effectiveOrganizerRules = resolveOcrOrganizerRulesText(renderedRules);
+  const versionHash = crypto.createHash('sha256').update(effectiveOrganizerRules).digest('hex');
+  return {
+    ocrRulesText: renderedRules,
+    ocrRuleVersion: `ocr-rules:${versionHash}`,
+  };
 }
 
 function getMessageContentText(message) {
@@ -1178,6 +1206,54 @@ function isAbortError(error, signal) {
   }
 
   return false;
+}
+
+function collectErrorMessages(error) {
+  const messages = [];
+  const visited = new Set();
+  let current = error;
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    if (typeof current.name === 'string' && current.name.trim() !== '') {
+      messages.push(current.name);
+    }
+    if (typeof current.code === 'string' && current.code.trim() !== '') {
+      messages.push(current.code);
+    }
+    if (typeof current.message === 'string' && current.message.trim() !== '') {
+      messages.push(current.message);
+    }
+    current = current.cause;
+  }
+  if (typeof error === 'string') {
+    messages.push(error);
+  }
+  return messages;
+}
+
+function isRetryableSteelPaddleOcrPreflightError(error) {
+  const combined = collectErrorMessages(error).join('\n').toLowerCase();
+  return (
+    Boolean(combined) &&
+    steelPaddleOcrRetryableErrorPatterns.some((pattern) => combined.includes(pattern))
+  );
+}
+
+function retainProviderErrorWithRebuildFailure(providerError, rebuildError) {
+  if (providerError && typeof providerError === 'object') {
+    try {
+      if (providerError.cause === undefined) {
+        providerError.cause = rebuildError;
+      } else {
+        providerError.rebuildError = rebuildError;
+      }
+    } catch (error) {
+      logger.debug('[Steel OCR] Could not attach PaddleOCR rebuild failure to provider error', {
+        error: error?.message,
+      });
+    }
+  }
+  return providerError;
 }
 
 function createSteelPaddleOcrInvokeConfig({
@@ -1622,7 +1698,9 @@ function createSteelPaddleOcrChunkRunner({
             throw error;
           }
           lastError = error;
-          const canRetry = attemptIndex < steelPaddleOcrMaxAttempts - 1;
+          const canRetry =
+            attemptIndex < steelPaddleOcrMaxAttempts - 1 &&
+            isRetryableSteelPaddleOcrPreflightError(error);
           if (!canRetry) {
             break;
           }
@@ -1642,11 +1720,17 @@ function createSteelPaddleOcrChunkRunner({
               userMCPAuthMap,
               requestScopedConnections,
             });
+            if (!rebuilt.paddleTool) {
+              const rebuildError = new Error('missing_paddleocr_tool_after_rebuild');
+              lastError = retainProviderErrorWithRebuildFailure(error, rebuildError);
+              break;
+            }
             paddleTool = rebuilt.paddleTool;
             configurable = rebuilt.configurable;
           } catch (rebuildError) {
-            lastError = rebuildError;
+            lastError = retainProviderErrorWithRebuildFailure(error, rebuildError);
             paddleTool = undefined;
+            break;
           }
         }
       }
@@ -3036,18 +3120,14 @@ async function loadToolsForExecution({
 }) {
   const appConfig = req.config;
   const ocrTurnActive = req?.steelNativeContext?.ocrTurnActive === true;
-  const executionToolNames = toolNames.filter(
-    (name) =>
-      (allowPaddleOcr || !String(name).toLowerCase().includes('paddleocr_vl')) &&
-      (!ocrTurnActive || resolveSteelProviderToolName(name) === undefined),
+  const visibleToolConfig = prepareSteelNativeToolConfig(
+    { tools: toolNames, toolRegistry },
+    { ocrTurnActive, allowPaddleOcr },
   );
-  const mainToolRegistry = allowPaddleOcr
-    ? toolRegistry
-    : stripPaddleOcrToolsForMainAgent({ toolRegistry }).toolRegistry;
-  const executionToolRegistry =
-    !allowPaddleOcr && ocrTurnActive
-      ? stripSteelToolsForOcrTurn({ toolRegistry: mainToolRegistry }).toolRegistry
-      : mainToolRegistry;
+  const executionToolNames = (visibleToolConfig.tools ?? []).filter(
+    (name) => typeof name === 'string',
+  );
+  const executionToolRegistry = visibleToolConfig.toolRegistry;
   const allLoadedTools = [];
   const mcpRequestScopedConnections = requestScopedConnections ?? getMCPRequestContext(req, res);
   const configurable = { userMCPAuthMap, requestScopedConnections: mcpRequestScopedConnections };

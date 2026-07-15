@@ -6,6 +6,7 @@ import {
   priceTierCodes,
 } from '../pricing/enums';
 import { isPriceSubcategory } from '../pricing/categories';
+import { processingPriceCategories } from '../pricing/processing-candidates';
 
 export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
@@ -268,7 +269,11 @@ const searchPriceCandidateQuerySchema = z.union([
 const processingPriceQuerySchema = z
   .object({
     categories: z.array(z.enum(priceCategories)).min(1).max(20),
-    processingCategories: z.array(z.enum(priceCategories)).min(1).max(7).optional(),
+    processingCategories: z
+      .array(z.enum(priceCategories))
+      .min(1)
+      .max(processingPriceCategories.length)
+      .optional(),
     keyword: nonEmptyString.optional(),
   })
   .strict()

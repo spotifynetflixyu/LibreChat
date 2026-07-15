@@ -1,5 +1,6 @@
 import { steelToolArgsSchemas } from './schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { processingPriceCategories } from '../pricing/processing-candidates';
 
 describe('Steel price candidate tool schema', () => {
   const schema = steelToolArgsSchemas.search_price_candidates;
@@ -62,6 +63,16 @@ describe('Steel price candidate tool schema', () => {
       },
       { queryId: 'p2', categories: ['鐵板'], processingCategories: ['加工/折工'] },
     ]);
+  });
+
+  it('accepts the complete canonical processing category list', () => {
+    expect(
+      schema.parse({
+        processingQueries: [
+          { categories: ['鐵板'], processingCategories: [...processingPriceCategories] },
+        ],
+      }).processingQueries?.[0]?.processingCategories,
+    ).toEqual(processingPriceCategories);
   });
 
   it('accepts top-level exact productNames without either query array', () => {

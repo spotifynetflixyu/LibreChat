@@ -2,6 +2,7 @@ import {
   createSteelNativeTool,
   getNativeSteelToolName,
   mergeSteelToolDefinitions,
+  prepareSteelNativeToolConfig,
   resolveSteelProviderToolName,
   resolveNativeSteelToolName,
   stripPaddleOcrToolsForMainAgent,
@@ -201,5 +202,50 @@ describe('Steel native tool adapter', () => {
 
     expect(result.tools).toEqual(['search_customers', 'web_search']);
     expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual(['search_customers']);
+  });
+
+  it.each([
+    {
+      name: 'standard turns remove PaddleOCR and retain Steel tools',
+      options: {},
+      expected: ['search_customers', 'web_search'],
+    },
+    {
+      name: 'OCR turns remove PaddleOCR and Steel tools',
+      options: { ocrTurnActive: true },
+      expected: ['web_search'],
+    },
+    {
+      name: 'preflight turns retain PaddleOCR and Steel tools',
+      options: { allowPaddleOcr: true },
+      expected: ['search_customers', 'paddleocr_vl---PaddleOCR', 'web_search'],
+    },
+    {
+      name: 'OCR preflight turns retain PaddleOCR while removing Steel tools',
+      options: { ocrTurnActive: true, allowPaddleOcr: true },
+      expected: ['paddleocr_vl---PaddleOCR', 'web_search'],
+    },
+  ])('$name across native config collections', ({ options, expected }) => {
+    const paddleTool = { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} };
+    const steelTool = { name: 'search_customers', description: '', parameters: {} };
+    const webTool = { name: 'web_search', description: '', parameters: {} };
+    const result = prepareSteelNativeToolConfig(
+      {
+        tools: [steelTool, paddleTool, 'web_search'],
+        toolDefinitions: [steelTool, paddleTool, webTool],
+        toolRegistry: new Map([
+          [steelTool.name, steelTool],
+          [paddleTool.name, paddleTool],
+          [webTool.name, webTool],
+        ]),
+      },
+      options,
+    );
+
+    expect(result.tools?.map((tool) => (typeof tool === 'string' ? tool : tool?.name))).toEqual(
+      expected,
+    );
+    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual(expected);
+    expect([...result.toolRegistry?.keys() ?? []]).toEqual(expected);
   });
 });
