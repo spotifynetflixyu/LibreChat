@@ -177,6 +177,38 @@ describe('useSteelEventHandler', () => {
     ]);
   });
 
+  it('stores reused PaddleOCR preflight parse activity under the current assistant response id', () => {
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: RecoilRoot,
+    });
+
+    act(() => {
+      result.current.steelEventHandler(
+        {
+          event: 'steel_event',
+          data: {
+            type: 'parse_status',
+            source: 'paddleocr_preflight',
+            conversationId: 'conversation-1',
+            requestId: 'request-1',
+            message: 'Reused PaddleOCR preflight',
+            parseStatus: 'saved',
+          },
+        },
+        createSubmission('assistant-live'),
+      );
+    });
+
+    expect(result.current.activity).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'paddleocr_preflight',
+        message: 'Reused PaddleOCR preflight',
+        parseStatus: 'saved',
+      }),
+    ]);
+  });
+
   it('stores OCR preprocessing progress events and replaces matching running messages', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
       wrapper: RecoilRoot,

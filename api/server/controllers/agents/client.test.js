@@ -1857,6 +1857,7 @@ describe('AgentClient - titleConvo', () => {
         body: {
           endpoint: EModelEndpoint.openAI,
           fileTokenLimit: 1000,
+          isRegenerate: true,
         },
         config: {
           memory: {
@@ -2228,6 +2229,10 @@ describe('AgentClient - titleConvo', () => {
         messageId: 'msg-1',
         filename: 'drawing.pdf',
       };
+      expect(mockRunSteelPaddleOcrPreflight).toHaveBeenCalledTimes(1);
+      expect(
+        mockRunSteelPaddleOcrPreflight.mock.calls[0][0].req.steelNativeContext.currentTurnFiles,
+      ).toEqual([expectedReference]);
       expect(mockRunSteelPaddleOcrPreflight).toHaveBeenCalledWith(
         expect.objectContaining({
           req: mockReq,

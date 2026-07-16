@@ -361,23 +361,28 @@ function mockSingleFilePaddleOcrPipeline(file, markdown = '| OCR |\n| --- |\n| O
   });
   mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
     const pipelineFileInput = input.files[0];
+    const chunk = {
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 1,
+      chunkSizePages: 50,
+    };
     await input.paddleOcr.runChunk({
       file: pipelineFileInput.file,
-      chunk: {
-        chunkIndex: 1,
-        chunkCount: 1,
-        pageStart: 1,
-        pageEnd: 1,
-        chunkSizePages: 50,
-      },
+      chunk,
       artifact: {
-        chunkIndex: 1,
-        chunkCount: 1,
-        pageStart: 1,
-        pageEnd: 1,
-        chunkSizePages: 50,
+        ...chunk,
         filepath: `https://files.example.test/${file.filename}`,
         storageKey: `ocr/${file.filename}`,
+      },
+    });
+    await input.onProgress({
+      file: pipelineFileInput.file,
+      progress: {
+        stage: 'paddleocr_chunk_saved',
+        chunkIndex: 1,
+        chunkCount: 1,
       },
     });
     return createMockOcrBatchResult(input, markdown);
@@ -787,7 +792,14 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockFindMissingPaddleOcrFileKeys).not.toHaveBeenCalled();
       expect(mockLoadToolsUtil).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
-      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          preflight: expect.objectContaining({
+            status: 'completed',
+            paddleOcrSavedCount: 0,
+          }),
+        }),
+      );
       expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
       expect(
         mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(
@@ -1764,10 +1776,22 @@ describe('ToolService - Action Capability Gating', () => {
         chunkCount: 2,
         chunks: savedChunks,
       });
+      mockBuildSteelPaddleOcrPreflightEventEnvelopes.mockReturnValueOnce([
+        {
+          event: 'steel_event',
+          data: {
+            type: 'parse_status',
+            source: 'paddleocr_preflight',
+            message: 'Reused PaddleOCR preflight',
+            parseStatus: 'saved',
+          },
+        },
+      ]);
+      const res = { writableEnded: false, write: jest.fn() };
 
       const result = await runSteelPaddleOcrPreflight({
         req,
-        res: {},
+        res,
         agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
         signal: new AbortController().signal,
       });
@@ -1775,6 +1799,25 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockGetPdfPageCount).not.toHaveBeenCalled();
       expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
       expect(mockBuildPdfPageChunks).not.toHaveBeenCalled();
+      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
+      expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          preflight: expect.objectContaining({
+            attemptedKeys: ['file:file-a'],
+            paddleOcrSavedCount: 0,
+          }),
+        }),
+      );
+      expect(mockSendEvent).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({
+          data: expect.objectContaining({
+            message: 'Reused PaddleOCR preflight',
+            parseStatus: 'saved',
+          }),
+        }),
+      );
       expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
       expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files[0].chunks).toEqual([
         expect.objectContaining({
@@ -1837,7 +1880,14 @@ describe('ToolService - Action Capability Gating', () => {
       );
 
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
-      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          preflight: expect.objectContaining({
+            status: 'partial',
+            paddleOcrSavedCount: 0,
+          }),
+        }),
+      );
       expect(mockEmitChunk.mock.calls.map(([, event]) => event)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1887,6 +1937,14 @@ describe('ToolService - Action Capability Gating', () => {
       expect(firstInvoke).toHaveBeenCalledTimes(1);
       expect(secondInvoke).toHaveBeenCalledTimes(1);
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
+      expect(mockBuildSteelPaddleOcrPreflightEventEnvelopes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          preflight: expect.objectContaining({
+            status: 'completed',
+            paddleOcrSavedCount: 1,
+          }),
+        }),
+      );
       expect(result).toEqual({
         status: 'completed',
         ocrTurnActive: true,

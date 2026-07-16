@@ -519,10 +519,12 @@ export default function useChatFunctions({
       submissionFiles &&
       submissionFiles.length > 0;
 
-    if (setFiles && reuseFiles === true) {
+    if (reuseFiles === true) {
       currentMsg.files = [...submissionFiles];
-      setFiles(new Map());
-      setFilesToDelete({});
+      if (setFiles) {
+        setFiles(new Map());
+        setFilesToDelete({});
+      }
     } else if (setFiles && files && files.size > 0) {
       currentMsg.files = Array.from(files.values()).map((file) => ({
         file_id: file.file_id,

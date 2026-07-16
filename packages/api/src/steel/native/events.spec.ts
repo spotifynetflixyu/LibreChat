@@ -100,6 +100,7 @@ describe('Steel native event mapping', () => {
         completedKeys: ['file:file-a'],
         attemptedKeys: ['file:file-a'],
         failedKeys: [],
+        paddleOcrSavedCount: 1,
         totalSavedCounts: { paddleocr_preflight: 2 },
         totalTableCounts: { ocr_table: 1 },
       },
@@ -121,6 +122,53 @@ describe('Steel native event mapping', () => {
         },
       },
     ]);
+  });
+
+  it('maps cached completed PaddleOCR preflight into reused saved activity', () => {
+    const events = buildSteelPaddleOcrPreflightEventEnvelopes({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_2',
+      preflight: {
+        status: 'completed',
+        completedKeys: ['file:file-a'],
+        attemptedKeys: ['file:file-a'],
+        failedKeys: [],
+        paddleOcrSavedCount: 0,
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        event: steelNativeStreamEventName,
+        data: {
+          type: 'parse_status',
+          message: 'Reused PaddleOCR preflight',
+          parseStatus: 'saved',
+          source: 'paddleocr_preflight',
+          conversationId: 'conversation_1',
+          requestId: 'request_1',
+          messageId: 'message_2',
+        },
+      },
+    ]);
+  });
+
+  it('does not emit PaddleOCR activity when no current files are present', () => {
+    expect(
+      buildSteelPaddleOcrPreflightEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_2',
+        preflight: {
+          status: 'skipped',
+          attemptedKeys: [],
+          failedKeys: [],
+          skippedReason: 'no_current_files',
+          paddleOcrSavedCount: 0,
+        },
+      }),
+    ).toEqual([]);
   });
 
   it('maps partial PaddleOCR preflight into partial activity and saved OCR count', () => {

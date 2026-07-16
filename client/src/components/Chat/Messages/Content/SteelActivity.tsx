@@ -24,6 +24,13 @@ const workbookRowSavedCountKeys = new Set(['working_order_row']);
 const ocrTableCountKeys = new Set(['ocr_table']);
 const workbookTableCountKeys = new Set(['system_order_table']);
 const collapsedActivityEventCount = 3;
+const savedRecordLabelKeys = new Map<string, LocalizeKey>([
+  ['calculation_fact', 'com_ui_steel_activity_record_calculation_facts'],
+  ['customer_fact', 'com_ui_steel_activity_record_customer_facts'],
+  ['ocr_extract', 'com_ui_steel_activity_record_ocr_extracts'],
+  ['price_evidence', 'com_ui_steel_activity_record_price_evidence'],
+  ['working_order_row', 'com_ui_steel_activity_record_working_order_rows'],
+]);
 
 function getSavedCountTotal(event: SteelNativeActivityEvent): number {
   return Object.values(event.savedCounts ?? {}).reduce((total, count) => {
@@ -57,6 +64,27 @@ function formatCountText(localize: Localize, sourceKey: LocalizeKey, count: numb
     source: localize(sourceKey),
     count,
   });
+}
+
+function getSavedRecordCountTexts(
+  savedCounts: SteelNativeSavedCounts | undefined,
+  localize: Localize,
+) {
+  return Object.entries(savedCounts ?? {})
+    .filter(([, count]) => Number.isFinite(count) && count > 0)
+    .map(([key, count]) => {
+      const labelKey = savedRecordLabelKeys.get(key);
+      const source = labelKey ? localize(labelKey) : key.replaceAll('_', ' ');
+      return localize('com_ui_steel_activity_source_count', { source, count });
+    });
+}
+
+function isGenericSavedRecordsEvent(event: SteelNativeActivityEvent): boolean {
+  return (
+    event.type === 'memory_saved' &&
+    event.source !== 'paddleocr_preflight' &&
+    getCountForKeys(event.savedCounts, officialOcrMarkdownSavedCountKeys) === 0
+  );
 }
 
 function getCountTexts({
@@ -135,6 +163,12 @@ function getActivityLabel(
   }
 
   if (event.type === 'memory_saved') {
+    const recordCounts = getSavedRecordCountTexts(event.savedCounts, localize);
+    if (recordCounts.length > 0) {
+      return localize('com_ui_steel_activity_records_saved_detail', {
+        counts: recordCounts.join(', '),
+      });
+    }
     return localize('com_ui_steel_activity_state_saved');
   }
 
@@ -153,6 +187,10 @@ function getSavedCountText(
   event: SteelNativeActivityEvent,
   localize: ReturnType<typeof useLocalize>,
 ) {
+  if (isGenericSavedRecordsEvent(event)) {
+    return null;
+  }
+
   const sourceCounts = getCountTexts({
     savedCounts: event.savedCounts,
     tableCounts: event.savedTableCounts,

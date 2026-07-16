@@ -154,6 +154,47 @@ describe('useChatFunctions regenerate', () => {
     expect(messages.at(-1)?.messageId).toBe('assistant-1_');
   });
 
+  it('retains persisted parent files when regenerating without a compose setter', () => {
+    const persistedFile = {
+      file_id: 'file-bh-pdf',
+      filename: 'BH.pdf',
+      filepath: 'files/user-123/BH.pdf',
+      type: 'application/pdf',
+      bytes: 2048,
+      source: 'local',
+    };
+    const messages = [
+      { ...userMessage('user-1'), files: [persistedFile] },
+      assistantMessage('assistant-1', 'user-1'),
+    ] as TMessage[];
+    const setMessages = jest.fn();
+    const setSubmission = jest.fn();
+    const conversation = {
+      conversationId: 'conversation-1',
+      endpoint: EModelEndpoint.agents,
+      model: 'gpt-4o',
+      agent_id: 'agent-1',
+    } as TConversation;
+
+    const { result } = renderHook(() =>
+      useChatFunctions({
+        isSubmitting: false,
+        latestMessage: messages[1],
+        conversation,
+        getMessages: () => messages,
+        setMessages,
+        setSubmission,
+      }),
+    );
+
+    act(() => {
+      result.current.regenerate(messages[1]);
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.files).toEqual([persistedFile]);
+  });
+
   it('appends and clears pending markdown table comments on a fresh submit', () => {
     const messages = [userMessage('user-1'), assistantMessage('assistant-1', 'user-1')];
     const setMessages = jest.fn((nextMessages: TMessage[]) => {

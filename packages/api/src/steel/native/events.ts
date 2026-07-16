@@ -58,6 +58,7 @@ export interface SteelPaddleOcrPreflightActivityResult {
   completedKeys?: readonly string[];
   attemptedKeys?: readonly string[];
   failedKeys?: readonly string[];
+  paddleOcrSavedCount?: number;
   errorMessage?: string;
   skippedReason?: string;
   totalSavedCounts?: SteelNativeSavedCounts;
@@ -169,14 +170,22 @@ export function buildSteelNativeEventEnvelopes({
 }
 
 function getPaddleOcrSavedCount(preflight: SteelPaddleOcrPreflightActivityResult): number {
+  if (typeof preflight.paddleOcrSavedCount === 'number') {
+    return preflight.paddleOcrSavedCount;
+  }
+
   const failedKeys = new Set(preflight.failedKeys ?? []);
   return (preflight.attemptedKeys ?? []).filter((key) => !failedKeys.has(key)).length;
 }
 
 function getPaddleOcrParseStatus(
   preflight: SteelPaddleOcrPreflightActivityResult,
+  savedCount: number,
 ): SteelNativeParseStatusEvent['parseStatus'] | undefined {
   if (preflight.status === 'completed') {
+    if (savedCount === 0 && (preflight.attemptedKeys?.length ?? 0) > 0) {
+      return 'saved';
+    }
     return undefined;
   }
 
@@ -196,7 +205,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
   ...input
 }: BuildSteelPaddleOcrPreflightEventEnvelopesInput): SteelNativeEventEnvelope[] {
   const savedCount = getPaddleOcrSavedCount(preflight);
-  const parseStatus = getPaddleOcrParseStatus(preflight);
+  const parseStatus = getPaddleOcrParseStatus(preflight, savedCount);
   const eventBase = baseEvent({ ...input, source: 'paddleocr_preflight' });
   const savedCounts = savedCount > 0 ? { paddleocr_preflight: savedCount } : undefined;
   const countMetadata = preflightCountMetadata(preflight);
@@ -207,7 +216,10 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
       event: steelNativeStreamEventName,
       data: {
         type: 'parse_status',
-        message: `PaddleOCR preflight ${parseStatus}`,
+        message:
+          parseStatus === 'saved' && preflight.status === 'completed'
+            ? 'Reused PaddleOCR preflight'
+            : `PaddleOCR preflight ${parseStatus}`,
         parseStatus,
         ...(savedCounts ? { savedCounts } : {}),
         ...(preflight.errorMessage

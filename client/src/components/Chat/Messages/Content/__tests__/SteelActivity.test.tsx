@@ -45,6 +45,9 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_activity_records_saved') {
       return `${options?.count ?? 0} records`;
     }
+    if (key === 'com_ui_steel_activity_records_saved_detail') {
+      return `Saved records (${options?.counts ?? ''})`;
+    }
     if (key === 'com_ui_steel_activity_this_turn_counts') {
       return `This turn: ${options?.counts ?? ''}`;
     }
@@ -77,6 +80,21 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_activity_source_paddleocr') {
       return 'PaddleOCR';
+    }
+    if (key === 'com_ui_steel_activity_record_calculation_facts') {
+      return 'Calculation facts';
+    }
+    if (key === 'com_ui_steel_activity_record_customer_facts') {
+      return 'Customer facts';
+    }
+    if (key === 'com_ui_steel_activity_record_ocr_extracts') {
+      return 'OCR extracts';
+    }
+    if (key === 'com_ui_steel_activity_record_price_evidence') {
+      return 'Price evidence';
+    }
+    if (key === 'com_ui_steel_activity_record_working_order_rows') {
+      return 'Working order rows';
     }
     return key;
   },
@@ -120,9 +138,9 @@ describe('SteelActivity', () => {
 
     expect(screen.getByLabelText('Steel activity')).toBeInTheDocument();
     expect(screen.queryByText('Steel form parsed')).not.toBeInTheDocument();
-    expect(screen.getByText('Saved Working Order Memory')).toBeInTheDocument();
+    expect(screen.getByText('Saved records (Working order rows: 2)')).toBeInTheDocument();
     expect(screen.getByText('Total: Workbook tables: 1, Workbook rows: 2')).toBeInTheDocument();
-    expect(screen.getAllByText('This turn: Workbook tables: 1, Workbook rows: 2')).toHaveLength(1);
+    expect(screen.queryByText('This turn: Workbook tables: 1, Workbook rows: 2')).not.toBeInTheDocument();
   });
 
   it('renders OCR table counts separately from aggregate OCR raw totals', () => {
@@ -148,8 +166,8 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('Saved Working Order Memory')).toBeInTheDocument();
-    expect(screen.getByText('This turn: OCR tables: 1')).toBeInTheDocument();
+    expect(screen.getByText('Saved records (OCR extracts: 1)')).toBeInTheDocument();
+    expect(screen.queryByText('This turn: OCR tables: 1')).not.toBeInTheDocument();
     expect(screen.getByText('Total: OCR raw results: 2, OCR tables: 2')).toBeInTheDocument();
   });
 
@@ -176,6 +194,34 @@ describe('SteelActivity', () => {
 
     expect(screen.getByText('Save final OCR markdown')).toBeInTheDocument();
     expect(screen.queryByText('Saved Working Order Memory')).not.toBeInTheDocument();
+  });
+
+  it('names each saved tool record type in the activity label', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-tool-records'), [
+            {
+              type: 'memory_saved',
+              source: 'tool_result',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-tool-records',
+              message: 'Saved Working Order Memory',
+              savedCounts: {
+                price_evidence: 2,
+                customer_fact: 1,
+              },
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-tool-records" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getByText('Saved records (Price evidence: 2, Customer facts: 1)'),
+    ).toBeInTheDocument();
   });
 
   it('renders combined OCR table and workbook table counts', () => {
@@ -216,7 +262,9 @@ describe('SteelActivity', () => {
     );
 
     expect(
-      screen.getByText('This turn: OCR tables: 1, Workbook tables: 1, Workbook rows: 1'),
+      screen.getByText(
+        'Saved records (OCR extracts: 1, Calculation facts: 1, Working order rows: 1)',
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText('Total: OCR tables: 1, Workbook tables: 1, Workbook rows: 1'),

@@ -1921,6 +1921,7 @@ async function runSteelPaddleOcrPreflight({
   const currentPaddleOcrResults = [];
   const currentOcrMarkdownResults = [];
   const currentOcrFailures = [];
+  let currentPaddleOcrSavedCount = 0;
   let nextToolEventIndex = 0;
   const getNextToolEventIndex = () => nextToolEventIndex++;
   const finishPreflight = async (result) => {
@@ -1931,7 +1932,10 @@ async function runSteelPaddleOcrPreflight({
         conversationId,
         requestId,
         messageId: requestId,
-        preflight: result,
+        preflight: {
+          ...result,
+          paddleOcrSavedCount: currentPaddleOcrSavedCount,
+        },
       }),
     });
     return result;
@@ -2115,8 +2119,11 @@ async function runSteelPaddleOcrPreflight({
           requestScopedConnections,
           getNextIndex: getNextToolEventIndex,
         }),
-        onProgress: ({ file, progress }) =>
-          emitSteelNativeEvents({
+        onProgress: ({ file, progress }) => {
+          if (progress.stage === 'paddleocr_chunk_saved') {
+            currentPaddleOcrSavedCount += 1;
+          }
+          return emitSteelNativeEvents({
             res,
             streamId,
             events: buildSteelOcrPreprocessingEventEnvelopes({
@@ -2126,7 +2133,8 @@ async function runSteelPaddleOcrPreflight({
               ocrFileKey: file.ocrFileKey,
               progress,
             }),
-          }),
+          });
+        },
       });
 
       for (const fileResult of batchResult.files) {
@@ -2209,16 +2217,18 @@ async function runSteelPaddleOcrPreflight({
     }
   }
 
-  return createPreflightResult({
-    status: failedKeys.length > 0 ? 'partial' : 'completed',
-    completedKeys: uniqueStrings(attemptedKeys.filter((key) => !failedKeys.includes(key))),
-    attemptedKeys,
-    failedKeys,
-    skippedReason: undefined,
-    currentPaddleOcrResults,
-    currentOcrMarkdownResults,
-    currentOcrFailures,
-  });
+  return finishPreflight(
+    createPreflightResult({
+      status: failedKeys.length > 0 ? 'partial' : 'completed',
+      completedKeys: uniqueStrings(attemptedKeys.filter((key) => !failedKeys.includes(key))),
+      attemptedKeys,
+      failedKeys,
+      skippedReason: undefined,
+      currentPaddleOcrResults,
+      currentOcrMarkdownResults,
+      currentOcrFailures,
+    }),
+  );
 }
 
 /**
