@@ -232,7 +232,10 @@ describe('Steel native context adapter', () => {
           {
             ocrFileKey: 'file:missing.pdf',
             filename: 'missing.pdf',
+            mediaType: 'application/pdf',
+            fileUrl: 'https://files.example.test/missing.pdf',
             stage: 'paddleocr',
+            chunkIndex: 1,
             pageStart: 1,
             pageEnd: 2,
             errorMessage: 'PaddleOCR timeout 1',
@@ -240,7 +243,10 @@ describe('Steel native context adapter', () => {
           {
             ocrFileKey: 'file:missing.pdf',
             filename: 'missing.pdf',
+            mediaType: 'application/pdf',
+            fileUrl: 'https://files.example.test/missing.pdf',
             stage: 'paddleocr',
+            chunkIndex: 3,
             pageStart: 4,
             pageEnd: 5,
             errorMessage: 'PaddleOCR timeout 2',
@@ -248,10 +254,24 @@ describe('Steel native context adapter', () => {
           {
             ocrFileKey: 'file:other.pdf',
             filename: 'other.pdf',
+            mediaType: 'application/pdf',
+            fileUrl: 'https://files.example.test/other.pdf',
             stage: 'organizer',
+            chunkIndex: 2,
             pageStart: 3,
             pageEnd: 3,
             errorMessage: 'Organizer failed',
+          },
+          {
+            ocrFileKey: 'file:photo.jpg',
+            filename: 'photo.jpg',
+            mediaType: 'image/jpeg',
+            fileUrl: 'https://files.example.test/photo.jpg',
+            stage: 'paddleocr',
+            chunkIndex: 1,
+            pageStart: 1,
+            pageEnd: 1,
+            errorMessage: 'Image OCR failed',
           },
         ],
       },
@@ -270,13 +290,20 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
     expect(context.runtimeContextText).toContain('| 鐵板 | 2 |');
     expect(context.runtimeContextText).toContain(
-      'file: file:missing.pdf\nstage: paddleocr\nerror: PaddleOCR timeout 1; PaddleOCR timeout 2\nmissing_pages: 1, 2, 4, 5',
+      'file_key: file:missing.pdf\nfile_url: https://files.example.test/missing.pdf\nmissing_page_ranges: 1-2, 4-5',
     );
     expect(context.runtimeContextText).toContain(
-      'file: file:other.pdf\nstage: organizer\nerror: Organizer failed\nmissing_pages: 3',
+      'file_key: file:other.pdf\nfile_url: https://files.example.test/other.pdf\nmissing_page_ranges: 3',
     );
-    expect(context.runtimeContextText).not.toContain('missing: pages 1-2');
-    expect(context.runtimeContextText).toContain('AI OCR regenerate');
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:photo.jpg\nfile_url: https://files.example.test/photo.jpg\nmissing_page_ranges: 1',
+    );
+    expect(context.runtimeContextText).not.toContain('PaddleOCR timeout');
+    expect(context.runtimeContextText).not.toContain('Organizer failed');
+    expect(context.runtimeContextText).not.toContain('Image OCR failed');
+    expect(context.runtimeContextText).not.toContain('chunk_indexes');
+    expect(context.runtimeContextText).not.toContain('stage:');
+    expect(context.runtimeContextText).not.toContain('raw OCR');
     expect(context.runtimeContextText).not.toContain('Steel Native Context Metadata');
     expect(context.runtimeContextText).not.toContain('currentOcrMarkdownResults');
   });

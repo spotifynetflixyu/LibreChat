@@ -1,8 +1,19 @@
+jest.mock('./credentials', () => ({
+  loadOpenAIOAuthTokens: jest.fn(),
+}));
+
+import { loadOpenAIOAuthTokens } from './credentials';
 import { getOpenAIOAuthUsageRemaining, invalidateOpenAIOAuthUsageCache } from './usage';
 import { getOpenAIOAuthCredentialKey } from './auth-state';
 
+const defaultLoadAuthTokens = jest.mocked(loadOpenAIOAuthTokens);
 const primaryResetAt = 1782471969;
 const weeklyResetAt = 1782975152;
+
+function createJwt(exp: number): string {
+  const payload = Buffer.from(JSON.stringify({ exp })).toString('base64url');
+  return `header.${payload}.signature_sensitive`;
+}
 
 function createUsagePayload(usedPercent = 20) {
   return {
@@ -29,6 +40,30 @@ function createUsagePayload(usedPercent = 20) {
 }
 
 describe('OpenAI OAuth usage remaining service', () => {
+  it('uses the shared credential loader by default', async () => {
+    const authFilePath = '/tmp/codex-auth-test/auth.json';
+    const fetchImpl = jest.fn(async () => new Response(JSON.stringify(createUsagePayload())));
+    defaultLoadAuthTokens.mockResolvedValueOnce({
+      accessToken: createJwt(1893456000),
+      refreshToken: 'refresh_sensitive',
+    });
+
+    const result = await getOpenAIOAuthUsageRemaining({
+      authFilePath,
+      cache: {},
+      fetch: fetchImpl,
+      now: () => new Date('2026-06-26T07:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('available');
+    expect(defaultLoadAuthTokens).toHaveBeenCalledWith({
+      authFilePath,
+      ensureFresh: true,
+      fetch: fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('uses one stable credential key for default and trimmed auth paths', () => {
     expect(getOpenAIOAuthCredentialKey()).toBe('default');
     expect(getOpenAIOAuthCredentialKey('   ')).toBe('default');

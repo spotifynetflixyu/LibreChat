@@ -207,28 +207,45 @@ function getErrorMessage(event: SteelNativeActivityEvent): string | undefined {
   return event.type === 'parse_status' ? event.errorMessage : undefined;
 }
 
-function getMissingPageTexts(events: SteelNativeActivityEvent[], localize: Localize): string[] {
-  const pagesByFileKey = new Map<string, Set<number>>();
+function formatPageRange(range: { pageStart: number; pageEnd: number }): string {
+  return range.pageStart === range.pageEnd
+    ? String(range.pageStart)
+    : `${range.pageStart}-${range.pageEnd}`;
+}
+
+function getMissingPageRangeTexts(
+  events: SteelNativeActivityEvent[],
+  localize: Localize,
+): string[] {
+  const rangesByFileKey = new Map<string, { pageStart: number; pageEnd: number }[]>();
   for (const event of events) {
-    if (event.type !== 'parse_status' || !event.missingPagesByFileKey) {
+    if (event.type !== 'parse_status' || !event.missingPageRangesByFileKey) {
       continue;
     }
 
-    for (const [fileKey, pages] of Object.entries(event.missingPagesByFileKey)) {
-      const currentPages = pagesByFileKey.get(fileKey) ?? new Set<number>();
-      for (const page of pages) {
-        currentPages.add(page);
-      }
-      pagesByFileKey.set(fileKey, currentPages);
+    for (const [fileKey, ranges] of Object.entries(event.missingPageRangesByFileKey)) {
+      rangesByFileKey.set(fileKey, [...(rangesByFileKey.get(fileKey) ?? []), ...ranges]);
     }
   }
 
-  return [...pagesByFileKey.entries()].map(([fileKey, pages]) =>
-    localize('com_ui_steel_activity_missing_pages', {
+  return [...rangesByFileKey.entries()].map(([fileKey, ranges]) => {
+    const mergedRanges: { pageStart: number; pageEnd: number }[] = [];
+    for (const range of ranges.sort(
+      (left, right) => left.pageStart - right.pageStart || left.pageEnd - right.pageEnd,
+    )) {
+      const previousRange = mergedRanges[mergedRanges.length - 1];
+      if (previousRange && range.pageStart <= previousRange.pageEnd + 1) {
+        previousRange.pageEnd = Math.max(previousRange.pageEnd, range.pageEnd);
+        continue;
+      }
+      mergedRanges.push({ ...range });
+    }
+
+    return localize('com_ui_steel_activity_missing_page_ranges', {
       fileKey,
-      pages: [...pages].sort((left, right) => left - right).join(', '),
-    }),
-  );
+      ranges: mergedRanges.map(formatPageRange).join(', '),
+    });
+  });
 }
 
 const SteelActivity = memo(function SteelActivity({
@@ -246,7 +263,7 @@ const SteelActivity = memo(function SteelActivity({
   }
 
   const totalCountText = getTotalCountText(displayEvents, localize);
-  const missingPageTexts = getMissingPageTexts(displayEvents, localize);
+  const missingPageTexts = getMissingPageRangeTexts(displayEvents, localize);
   const isCollapsible = displayEvents.length > collapsedActivityEventCount;
   const firstVisibleIndex =
     isCollapsible && !isExpanded ? displayEvents.length - collapsedActivityEventCount : 0;

@@ -834,7 +834,6 @@ function getOpenAIOAuthModelOptions(
       reasoningEffortOverride ??
       getOpenAIOAuthReasoningEffort(clientOptions) ??
       openAIConfig.reasoningEffort,
-    temperature: getNumberValue(clientOptions, 'temperature'),
     topP: getNumberValue(clientOptions, 'topP'),
   };
 }

@@ -22,6 +22,78 @@ function emptyState(input: {
   };
 }
 
+function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
+  const chunks = buildPdfPageChunks({ pageCount: 1 });
+  const baseState = emptyState({
+    ocrFileKey: 'file:organizer-retry',
+    sourcePdfKey: 'uploads/organizer-retry.pdf',
+    ocrRuleVersion: 'rules-v2',
+    chunkCount: 1,
+  });
+  const rawState: OcrPreprocessingState = {
+    ...baseState,
+    chunks: [
+      {
+        ...chunks[0],
+        rawSaved: true,
+        organizedSaved: false,
+        rawResultHash: 'hash-1',
+        rawOcrText: 'raw OCR text',
+      },
+    ],
+  };
+  const organizedState: OcrPreprocessingState = {
+    ...rawState,
+    chunks: [
+      {
+        ...rawState.chunks[0],
+        organizedSaved: true,
+        organizedMarkdown: 'organized markdown',
+      },
+    ],
+  };
+  const memory = {
+    readOcrPreprocessingState: jest
+      .fn()
+      .mockResolvedValueOnce(rawState)
+      .mockResolvedValueOnce(rawState)
+      .mockResolvedValueOnce(organizedState),
+    capturePaddleOcrChunkResult: jest.fn(),
+    captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
+      savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+    }),
+  };
+
+  return {
+    chunks,
+    memory,
+    input: {
+      conversationId: 'steel_conversation_organizer_retry',
+      file: {
+        ocrFileKey: 'file:organizer-retry',
+        fileId: 'organizer-retry',
+        filename: 'organizer-retry.pdf',
+        sourcePdfKey: 'uploads/organizer-retry.pdf',
+      },
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      chunks,
+      artifacts: {
+        ensurePdfChunkArtifacts: jest.fn(async () => [
+          {
+            ...chunks[0],
+            filepath: 'https://cdn.example/organizer-retry-1.pdf',
+            storageKey: 'chunks/organizer-retry-1.pdf',
+          },
+        ]),
+      },
+      memory,
+      organizer: input.organizer,
+      paddleOcr: { runChunk: jest.fn() },
+    },
+  };
+}
+
 describe('OCR preprocessing orchestrator', () => {
   it('runs all message PaddleOCR chunks before any organizer chunk across multiple files', async () => {
     const firstChunk = buildPdfPageChunks({ pageCount: 1 });
@@ -1080,5 +1152,74 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     );
     expect(result.files[0]).not.toHaveProperty('markdown');
+  });
+
+  it('retries a transient organizer failure once and persists the second result', async () => {
+    const organizer: OcrOrganizer = {
+      organize: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('transient organizer failure'))
+        .mockResolvedValueOnce({ markdown: 'organized markdown' }),
+    };
+    const fixture = organizerRetryFixture({ organizer });
+
+    const result = await runOcrPreprocessingPipeline(fixture.input);
+
+    expect(organizer.organize).toHaveBeenCalledTimes(2);
+    expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledTimes(1);
+    expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'organized markdown' }),
+    );
+    expect(result).toEqual({ status: 'completed', markdown: 'organized markdown' });
+    expect(result.markdown).not.toContain('raw OCR text');
+  });
+
+  it('returns one ranged organizer failure after both organizer attempts fail', async () => {
+    const finalError = new Error('final organizer failure');
+    const organizer: OcrOrganizer = {
+      organize: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('transient organizer failure'))
+        .mockRejectedValueOnce(finalError),
+    };
+    const fixture = organizerRetryFixture({ organizer });
+
+    const result = await runOcrPreprocessingPipeline(fixture.input);
+
+    expect(organizer.organize).toHaveBeenCalledTimes(2);
+    expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        stage: 'organizer',
+        chunkIndex: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        errorMessage: 'final organizer failure',
+        failures: [
+          {
+            stage: 'organizer',
+            chunkIndex: 1,
+            pageStart: 1,
+            pageEnd: 1,
+            errorMessage: 'final organizer failure',
+          },
+        ],
+      }),
+    );
+    expect(result).not.toHaveProperty('markdown');
+  });
+
+  it('propagates organizer cancellation without retrying', async () => {
+    const abortError = new Error('request canceled');
+    const organizer: OcrOrganizer = {
+      organize: jest.fn().mockRejectedValue(abortError),
+    };
+    const fixture = organizerRetryFixture({ organizer });
+
+    await expect(runOcrPreprocessingPipeline(fixture.input)).rejects.toBe(abortError);
+
+    expect(organizer.organize).toHaveBeenCalledTimes(1);
+    expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
   });
 });

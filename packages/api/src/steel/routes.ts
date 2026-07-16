@@ -26,7 +26,6 @@ interface SteelRequest extends Request {
         preset: {
           endpoint?: string | null;
           model?: string | null;
-          temperature?: number;
           top_p?: number;
           topP?: number;
           max_tokens?: number;

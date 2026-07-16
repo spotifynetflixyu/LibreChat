@@ -31,18 +31,29 @@ function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
-function isMissingPagesByFileKey(value: unknown): value is Record<string, readonly number[]> {
+function isMissingPageRangesByFileKey(
+  value: unknown,
+): value is Record<string, readonly { pageStart: number; pageEnd: number }[]> {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) {
     return false;
   }
 
   const entries = Object.entries(value);
   return entries.length > 0 && entries.every(
-    ([fileKey, pages]) =>
+    ([fileKey, ranges]) =>
       fileKey.length > 0 &&
-      Array.isArray(pages) &&
-      pages.length > 0 &&
-      pages.every((page) => Number.isInteger(page) && page > 0),
+      Array.isArray(ranges) &&
+      ranges.length > 0 &&
+      ranges.every(
+        (range) =>
+          range != null &&
+          typeof range === 'object' &&
+          !Array.isArray(range) &&
+          Number.isInteger(range.pageStart) &&
+          Number.isInteger(range.pageEnd) &&
+          range.pageStart > 0 &&
+          range.pageStart <= range.pageEnd,
+      ),
   );
 }
 
@@ -97,8 +108,8 @@ function normalizeSteelActivityEvent(
         : {}),
       ...(typeof data.errorMessage === 'string' ? { errorMessage: data.errorMessage } : {}),
       ...(isStringArray(data.failedKeys) ? { failedKeys: data.failedKeys } : {}),
-      ...(isMissingPagesByFileKey(data.missingPagesByFileKey)
-        ? { missingPagesByFileKey: data.missingPagesByFileKey }
+      ...(isMissingPageRangesByFileKey(data.missingPageRangesByFileKey)
+        ? { missingPageRangesByFileKey: data.missingPageRangesByFileKey }
         : {}),
     };
   }
@@ -159,8 +170,8 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     totalTableCounts: event.totalTableCounts,
     errorMessage: event.type === 'parse_status' ? event.errorMessage : undefined,
     failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
-    missingPagesByFileKey:
-      event.type === 'parse_status' ? event.missingPagesByFileKey : undefined,
+    missingPageRangesByFileKey:
+      event.type === 'parse_status' ? event.missingPageRangesByFileKey : undefined,
   });
 }
 

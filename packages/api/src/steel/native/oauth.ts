@@ -57,7 +57,6 @@ export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
   model: string;
   presencePenalty?: number;
   reasoningEffort?: string;
-  temperature?: number;
   topP?: number;
   tools?: BindToolsInput[];
 }
@@ -641,7 +640,6 @@ function createCallOptions({
     maxOutputTokens: options.maxOutputTokens,
     presencePenalty: options.presencePenalty,
     prompt: toPrompt(messages),
-    temperature: options.temperature,
     topP: options.topP,
     ...(languageModelTools
       ? {

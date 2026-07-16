@@ -472,10 +472,10 @@ describe('custom endpoint stream usage defaults', () => {
         model: 'gpt-5.6-terra',
         reasoningEffort: 'high',
         maxOutputTokens: 12_345,
-        temperature: 0.2,
         topP: 0.8,
       }),
     );
+    expect(sink.mock.calls[0]?.[0]).not.toHaveProperty('temperature');
   });
 
   it('lets the OCR markdown path force OpenAI OAuth reasoning effort to none', async () => {

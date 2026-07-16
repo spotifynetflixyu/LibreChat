@@ -1,5 +1,9 @@
 import type { Request, Response } from 'express';
 
+jest.mock('./native/credentials', () => ({
+  loadOpenAIOAuthTokens: jest.fn(),
+}));
+
 import { createSteelAdminHandlers } from './admin';
 
 function createResponse(): Response {

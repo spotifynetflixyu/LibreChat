@@ -15,7 +15,6 @@ describe('Steel model options', () => {
             preset: {
               endpoint: 'openAI',
               model: 'gpt-5.5',
-              temperature: 0.2,
             },
           },
           {
@@ -55,9 +54,7 @@ describe('Steel model options', () => {
         provider: 'openai_oauth_responses',
         source: 'librechat_model_spec',
         defaultForSteel: true,
-        requestedSettings: expect.objectContaining({
-          temperature: 0.2,
-        }),
+        requestedSettings: {},
       }),
     ]);
   });

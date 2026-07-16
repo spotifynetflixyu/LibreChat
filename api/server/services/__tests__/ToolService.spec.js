@@ -1533,10 +1533,10 @@ describe('ToolService - Action Capability Gating', () => {
               type: 'parse_status',
               source: 'ocr_preprocessing',
               failedKeys: ['file:pdf-b'],
-              missingPagesByFileKey: {
+              missingPageRangesByFileKey: {
                 'file:pdf-b': [
-                  ...Array.from({ length: 50 }, (_, index) => index + 1),
-                  ...Array.from({ length: 20 }, (_, index) => index + 101),
+                  { pageStart: 1, pageEnd: 50 },
+                  { pageStart: 101, pageEnd: 120 },
                 ],
               },
             }),
@@ -1545,7 +1545,7 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
-    it('does not retry OCR organizer failures and keeps the fallback turn active', async () => {
+    it('keeps organizer failures active without exposing raw OCR to the main turn', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.user = { id: 'user_123', tenantId: 'tenant-a' };
       req.body = { conversationId: 'convo-1' };
@@ -1613,12 +1613,20 @@ describe('ToolService - Action Capability Gating', () => {
       expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('quote.pdf');
       expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('chunk-2.pdf');
       expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('51-100');
+      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
+        expect.not.objectContaining({ temperature: expect.anything() }),
+      );
       expect(result).toEqual(
         expect.objectContaining({
           status: 'partial',
           completedKeys: [],
           failedKeys: ['file:pdf-1'],
-          currentOcrFailures: [expect.objectContaining({ ocrFileKey: 'file:pdf-1' })],
+          currentOcrFailures: [
+            expect.objectContaining({
+              ocrFileKey: 'file:pdf-1',
+              fileUrl: 'https://files.example.test/uploads/user_123/pdf-1__quote.pdf',
+            }),
+          ],
         }),
       );
       expect(result).not.toHaveProperty('currentOcrMarkdownResults');

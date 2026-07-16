@@ -8,7 +8,7 @@ type LocalizeOptions = {
   count?: number;
   counts?: string;
   fileKey?: string;
-  pages?: string;
+  ranges?: string;
   source?: string;
 };
 
@@ -21,8 +21,8 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_activity_events') {
       return `${options?.count ?? 0} events`;
     }
-    if (key === 'com_ui_steel_activity_missing_pages') {
-      return `Missing pages (${options?.fileKey ?? ''}): ${options?.pages ?? ''}`;
+    if (key === 'com_ui_steel_activity_missing_page_ranges') {
+      return `Missing page ranges (${options?.fileKey ?? ''}): ${options?.ranges ?? ''}`;
     }
     if (key === 'com_ui_steel_activity_parse_saved') {
       return 'Steel form parsed';
@@ -400,8 +400,8 @@ describe('SteelActivity', () => {
               parseStatus: 'partial',
               errorMessage: 'OCR preprocessing failed for BH.pdf: organizer timeout',
               failedKeys: ['file:BH.pdf'],
-              missingPagesByFileKey: {
-                'file:BH.pdf': [4, 5],
+              missingPageRangesByFileKey: {
+                'file:BH.pdf': [{ pageStart: 4, pageEnd: 5 }],
               },
             },
             {
@@ -413,9 +413,12 @@ describe('SteelActivity', () => {
               parseStatus: 'partial',
               errorMessage: 'OCR preprocessing failed for other.pdf: provider timeout',
               failedKeys: ['file:other.pdf'],
-              missingPagesByFileKey: {
-                'file:BH.pdf': [1, 2],
-                'file:other.pdf': [3, 7],
+              missingPageRangesByFileKey: {
+                'file:BH.pdf': [{ pageStart: 1, pageEnd: 2 }],
+                'file:other.pdf': [
+                  { pageStart: 3, pageEnd: 3 },
+                  { pageStart: 7, pageEnd: 7 },
+                ],
               },
             },
           ]);
@@ -428,9 +431,8 @@ describe('SteelActivity', () => {
     expect(
       screen.getByText('OCR preprocessing failed for BH.pdf: organizer timeout'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Missing pages (file:BH.pdf): 1, 2, 4, 5')).toBeInTheDocument();
-    expect(screen.getByText('Missing pages (file:other.pdf): 3, 7')).toBeInTheDocument();
-    expect(screen.queryByText(/1-2/)).not.toBeInTheDocument();
+    expect(screen.getByText('Missing page ranges (file:BH.pdf): 1-2, 4-5')).toBeInTheDocument();
+    expect(screen.getByText('Missing page ranges (file:other.pdf): 3, 7')).toBeInTheDocument();
   });
 
   it('does not render Steel activity on user messages', () => {

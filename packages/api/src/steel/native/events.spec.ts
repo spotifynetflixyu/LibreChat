@@ -350,8 +350,11 @@ describe('Steel native event mapping', () => {
         progress: {
           stage: 'failed',
           errorMessage: 'organizer context exceeded token budget',
-          missingPagesByFileKey: {
-            'file:file-a': [1, 2, 4, 5],
+          missingPageRangesByFileKey: {
+            'file:file-a': [
+              { pageStart: 1, pageEnd: 2 },
+              { pageStart: 4, pageEnd: 5 },
+            ],
           },
         },
       }).map((entry) => entry.data),
@@ -363,8 +366,11 @@ describe('Steel native event mapping', () => {
         parseStatus: 'partial',
         errorMessage: 'organizer context exceeded token budget',
         failedKeys: ['file:file-a'],
-        missingPagesByFileKey: {
-          'file:file-a': [1, 2, 4, 5],
+        missingPageRangesByFileKey: {
+          'file:file-a': [
+            { pageStart: 1, pageEnd: 2 },
+            { pageStart: 4, pageEnd: 5 },
+          ],
         },
       }),
     ]);

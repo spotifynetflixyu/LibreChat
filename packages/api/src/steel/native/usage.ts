@@ -4,6 +4,7 @@ import type {
   OpenAIOAuthUsageWindow,
   OpenAIOAuthUsageWindowKey,
 } from 'librechat-data-provider';
+import type { OpenAIOAuthTokenLoader, OpenAIOAuthTokens } from './credentials';
 
 import {
   clearOpenAIOAuthCredentialInvalid,
@@ -11,25 +12,10 @@ import {
   isOpenAIOAuthUnauthorizedError,
   markOpenAIOAuthCredentialInvalid,
 } from './auth-state';
+import { loadOpenAIOAuthTokens } from './credentials';
 
 const usageEndpoint = 'https://chatgpt.com/backend-api/wham/usage';
 const defaultTtlMs = 60_000;
-
-type LoadAuthTokensOptions = {
-  authFilePath?: string;
-  ensureFresh?: boolean;
-  fetch?: typeof fetch;
-};
-
-type EffectiveOpenAIOAuth = {
-  accessToken: string;
-};
-
-type LoadAuthTokens = (options: LoadAuthTokensOptions) => Promise<EffectiveOpenAIOAuth>;
-
-type OpenAIOAuthCoreModule = {
-  loadAuthTokens: LoadAuthTokens;
-};
 
 type CachedUsage = {
   expiresAtMs: number;
@@ -47,24 +33,13 @@ export type OpenAIOAuthUsageDeps = {
   cache?: OpenAIOAuthUsageCache;
   ensureFresh?: boolean;
   fetch?: typeof fetch;
-  loadAuthTokens?: LoadAuthTokens;
+  loadAuthTokens?: OpenAIOAuthTokenLoader;
   now?: () => Date;
   ttlMs?: number;
 };
 
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-  specifier: string,
-) => Promise<OpenAIOAuthCoreModule>;
-
 const defaultCache: OpenAIOAuthUsageCache = {};
 const unavailableTtlMs = 10_000;
-
-async function loadDefaultAuthTokens(
-  options: LoadAuthTokensOptions,
-): Promise<EffectiveOpenAIOAuth> {
-  const core = await dynamicImport('@openai-oauth/core');
-  return core.loadAuthTokens(options);
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -254,13 +229,13 @@ async function loadOpenAIOAuthUsageRemaining({
   authFilePath,
   ensureFresh = true,
   fetch: fetchImpl = globalThis.fetch,
-  loadAuthTokens = loadDefaultAuthTokens,
+  loadAuthTokens = loadOpenAIOAuthTokens,
   fetchedAt,
   ttlMs = defaultTtlMs,
 }: Omit<OpenAIOAuthUsageDeps, 'cache' | 'now'> & {
   fetchedAt: Date;
 }): Promise<OpenAIOAuthUsageRemaining> {
-  let auth: EffectiveOpenAIOAuth;
+  let auth: OpenAIOAuthTokens;
   try {
     auth = await loadAuthTokens({
       ...(authFilePath ? { authFilePath } : {}),
@@ -316,7 +291,7 @@ export async function getOpenAIOAuthUsageRemaining({
   cache = defaultCache,
   ensureFresh = true,
   fetch: fetchImpl = globalThis.fetch,
-  loadAuthTokens = loadDefaultAuthTokens,
+  loadAuthTokens = loadOpenAIOAuthTokens,
   now = () => new Date(),
   ttlMs = defaultTtlMs,
 }: OpenAIOAuthUsageDeps = {}): Promise<OpenAIOAuthUsageRemaining> {

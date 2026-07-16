@@ -63,10 +63,9 @@ describe('Steel native provider policy resolver', () => {
       responsesState: true,
       usedPreviousResponseId: false,
       modelParameters: {
-        temperature: 0.2,
         useResponsesApi: true,
       },
-      unsupportedSettings: [],
+      unsupportedSettings: ['temperature'],
       fallbackReason: 'provider_response_id_missing',
     });
   });

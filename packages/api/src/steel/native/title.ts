@@ -227,8 +227,10 @@ function getTitleClientOptions(
     return clientOptions;
   }
 
+  const titleClientOptions = { ...clientOptions };
+  delete titleClientOptions.temperature;
   return {
-    ...clientOptions,
+    ...titleClientOptions,
     model: OPENAI_TITLE_MODEL,
     reasoning_effort: OPENAI_TITLE_REASONING_EFFORT,
   };
@@ -343,7 +345,6 @@ async function generateResponsesTitle({
     model: OPENAI_TITLE_MODEL,
     openaiCredentials,
     reasoningEffort: OPENAI_TITLE_REASONING_EFFORT,
-    temperature: 0.2,
   });
   const message = await titleModel.invoke(
     [new SystemMessage('Generate only a concise conversation title.'), new HumanMessage(prompt)],

@@ -9,7 +9,6 @@ interface LibreChatModelSpec {
   preset: {
     endpoint?: string | null;
     model?: string | null;
-    temperature?: number;
     top_p?: number;
     topP?: number;
     max_tokens?: number;
@@ -57,9 +56,6 @@ function getRequestedSettings(spec: LibreChatModelSpec) {
   const preset = spec.preset;
   const settings: SteelModelOption['requestedSettings'] = {};
 
-  if (preset.temperature !== undefined) {
-    settings.temperature = preset.temperature;
-  }
   if (preset.top_p !== undefined) {
     settings.top_p = preset.top_p;
   }

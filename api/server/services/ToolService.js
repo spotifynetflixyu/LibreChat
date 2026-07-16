@@ -36,7 +36,7 @@ const {
   buildSteelPaddleOcrPreflightEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
   buildDefaultSteelGlobalAgentContext,
-  groupSteelOcrMissingPagesByFileKey,
+  groupSteelOcrMissingPageRangesByFileKey,
   isFileAuthoringToolDefinition,
   createSteelNativeTool,
   createDelegateOcrTool,
@@ -899,6 +899,7 @@ function toSteelOcrPreprocessingFile(file, fileRecord) {
     fileId: file.fileId ?? fileRecord?.file_id,
     filename: file.filename ?? fileRecord?.filename,
     mediaType: file.mediaType ?? fileRecord?.type ?? fileRecord?.mimetype,
+    filepath: file.filepath ?? fileRecord?.filepath,
     storageKey: file.storageKey ?? fileRecord?.storageKey,
     ocrFileKey: file.ocrFileKey,
     sourcePdfKey,
@@ -979,7 +980,6 @@ function createSteelOcrOrganizer({ signal }) {
           maxOutputTokens: 16000,
           model: config.model,
           reasoningEffort: 'none',
-          temperature: 0.1,
         });
       }
 
@@ -1847,6 +1847,12 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
   return {
     ocrFileKey: result?.file?.ocrFileKey ?? file?.ocrFileKey,
     filename: result?.file?.filename ?? file?.filename,
+    mediaType: result?.file?.mediaType ?? file?.mediaType,
+    fileUrl:
+      result?.file?.filepath ??
+      result?.file?.path ??
+      file?.filepath ??
+      file?.path,
     stage: result?.stage ?? 'preflight',
     ...(result?.chunkIndex !== undefined ? { chunkIndex: result.chunkIndex } : {}),
     ...(result?.pageStart !== undefined ? { pageStart: result.pageStart } : {}),
@@ -2135,8 +2141,8 @@ async function runSteelPaddleOcrPreflight({
           const currentFileFailures = failures.map((failure) =>
             createCurrentOcrFailureResult({ file: fileResult.file, result: failure }),
           );
-          const missingPagesByFileKey =
-            groupSteelOcrMissingPagesByFileKey(currentFileFailures);
+          const missingPageRangesByFileKey =
+            groupSteelOcrMissingPageRangesByFileKey(currentFileFailures);
           currentOcrFailures.push(...currentFileFailures);
           await emitSteelNativeEvents({
             res,
@@ -2149,8 +2155,8 @@ async function runSteelPaddleOcrPreflight({
               progress: {
                 stage: 'failed',
                 errorMessage: fileResult.errorMessage,
-                ...(Object.keys(missingPagesByFileKey).length > 0
-                  ? { missingPagesByFileKey }
+                ...(Object.keys(missingPageRangesByFileKey).length > 0
+                  ? { missingPageRangesByFileKey }
                   : {}),
               },
             }),

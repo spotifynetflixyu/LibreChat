@@ -301,7 +301,7 @@ describe('OpenAI OAuth model adapter', () => {
     expect(responseHeaders.get('user-agent')).toBe('codex_cli_rs/0.144.1');
   });
 
-  it('serializes temperature for gpt-5.6-luna when reasoning effort is none', async () => {
+  it('does not serialize temperature for OpenAI OAuth requests', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const newline = String.fromCharCode(10);
     const fetchFn = jest.fn(
@@ -371,7 +371,6 @@ describe('OpenAI OAuth model adapter', () => {
           reasoningEffort: 'none',
         },
       },
-      temperature: 0.2,
     });
 
     expect(result.content).toEqual([
@@ -380,16 +379,11 @@ describe('OpenAI OAuth model adapter', () => {
     expect(requestBody).toEqual(
       expect.objectContaining({
         model: 'gpt-5.6-luna',
-        temperature: 0.2,
         reasoning: { effort: 'none' },
         stream: true,
       }),
     );
-    expect(result.warnings).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'unsupported', feature: 'temperature' }),
-      ]),
-    );
+    expect(requestBody).not.toHaveProperty('temperature');
   });
 
   it('can be piped after a system context runnable in the native graph path', async () => {

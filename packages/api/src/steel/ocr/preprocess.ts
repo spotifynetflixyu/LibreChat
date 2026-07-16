@@ -537,16 +537,40 @@ export async function runOcrPreprocessingBatchPipeline(
         continue;
       }
 
-      try {
+      let organized: { markdown: string } | undefined;
+      let organizerError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
         await emitFileProgress(input, workItem.file, {
           stage: 'organizer_chunk_started',
           chunkIndex: chunk.chunkIndex,
           chunkCount: workItem.chunkCount,
         });
-        const organized = await input.organizer.organize({
-          ocrRulesText: input.ocrRulesText,
-          rawOcrText: savedChunk.rawOcrText,
-        });
+        try {
+          organized = await input.organizer.organize({
+            ocrRulesText: input.ocrRulesText,
+            rawOcrText: savedChunk.rawOcrText,
+          });
+          break;
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+          organizerError = error;
+        }
+      }
+
+      if (!organized) {
+        workItem.failures.push(
+          toFailure({
+            stage: 'organizer',
+            chunk,
+            error: organizerError ?? new Error('OCR organizer failed'),
+          }),
+        );
+        continue;
+      }
+
+      try {
         await input.memory.captureOcrPreprocessingChunkMarkdown({
           conversationId: input.conversationId,
           requestId: input.requestId,

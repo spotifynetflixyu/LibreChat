@@ -1,4 +1,4 @@
-import type { SteelOcrMissingPagesByFileKey } from '../ocr/failures';
+import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
 
 export const steelNativeStreamEventName = 'steel_event' as const;
@@ -26,7 +26,7 @@ export interface SteelNativeParseStatusEvent extends SteelNativeEventBase {
   parseStatus: 'saved' | 'partial' | 'skipped';
   errorMessage?: string;
   failedKeys?: readonly string[];
-  missingPagesByFileKey?: SteelOcrMissingPagesByFileKey;
+  missingPageRangesByFileKey?: SteelOcrMissingPageRangesByFileKey;
   savedCounts?: SteelNativeSavedCounts;
   savedTableCounts?: SteelNativeTableCounts;
   totalSavedCounts?: SteelNativeSavedCounts;
@@ -85,7 +85,7 @@ export type SteelOcrPreprocessingProgress =
   | {
       stage: 'failed';
       errorMessage: string;
-      missingPagesByFileKey?: SteelOcrMissingPagesByFileKey;
+      missingPageRangesByFileKey?: SteelOcrMissingPageRangesByFileKey;
     };
 
 export interface BuildSteelOcrPreprocessingEventEnvelopesInput
@@ -362,8 +362,8 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             parseStatus: 'partial',
             errorMessage: progress.errorMessage,
             failedKeys: [ocrFileKey],
-            ...(progress.missingPagesByFileKey
-              ? { missingPagesByFileKey: progress.missingPagesByFileKey }
+            ...(progress.missingPageRangesByFileKey
+              ? { missingPageRangesByFileKey: progress.missingPageRangesByFileKey }
               : {}),
             ...eventBase,
           },

@@ -287,8 +287,11 @@ describe('useSteelEventHandler', () => {
             parseStatus: 'partial',
             errorMessage: 'organizer timeout',
             failedKeys: ['file:BH.pdf'],
-            missingPagesByFileKey: {
-              'file:BH.pdf': [1, 2, 4, 5],
+            missingPageRangesByFileKey: {
+              'file:BH.pdf': [
+                { pageStart: 1, pageEnd: 2 },
+                { pageStart: 4, pageEnd: 5 },
+              ],
             },
           },
         },
@@ -300,8 +303,11 @@ describe('useSteelEventHandler', () => {
       expect.objectContaining({
         errorMessage: 'organizer timeout',
         failedKeys: ['file:BH.pdf'],
-        missingPagesByFileKey: {
-          'file:BH.pdf': [1, 2, 4, 5],
+        missingPageRangesByFileKey: {
+          'file:BH.pdf': [
+            { pageStart: 1, pageEnd: 2 },
+            { pageStart: 4, pageEnd: 5 },
+          ],
         },
       }),
     ]);

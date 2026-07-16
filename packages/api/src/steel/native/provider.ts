@@ -58,16 +58,18 @@ export function isSteelNativeProviderPolicyTarget(provider: string): boolean {
   return isOpenAIOAuthProvider(provider) || isOpenAIProvider(provider);
 }
 
-function getModelParametersWithoutPreviousResponseId(
+function getSupportedModelParameters(
   modelParameters: SteelNativeProviderModelParameters = {},
 ): {
   modelParameters: SteelNativeProviderModelParameters;
   hadPreviousResponseId: boolean;
+  hadTemperature: boolean;
 } {
-  const { previous_response_id, ...rest } = modelParameters;
+  const { previous_response_id, temperature, ...rest } = modelParameters;
   return {
     modelParameters: rest,
     hadPreviousResponseId: previous_response_id !== undefined,
+    hadTemperature: temperature !== undefined,
   };
 }
 
@@ -88,8 +90,14 @@ function withResponsesApiDefault({
   return modelParameters;
 }
 
-function getUnsupportedSettings(hadPreviousResponseId: boolean): string[] {
-  return hadPreviousResponseId ? [previousResponseIdKey] : [];
+function getUnsupportedSettings(input: {
+  hadPreviousResponseId: boolean;
+  hadTemperature: boolean;
+}): string[] {
+  return [
+    ...(input.hadPreviousResponseId ? [previousResponseIdKey] : []),
+    ...(input.hadTemperature ? ['temperature'] : []),
+  ];
 }
 
 export function resolveSteelNativeProviderPolicy({
@@ -100,8 +108,12 @@ export function resolveSteelNativeProviderPolicy({
   enforceResponsesApi,
   persistedPreviousResponseId,
 }: ResolveSteelNativeProviderPolicyInput): SteelNativeProviderPolicy {
-  const { modelParameters, hadPreviousResponseId } =
-    getModelParametersWithoutPreviousResponseId(rawModelParameters);
+  const { modelParameters, hadPreviousResponseId, hadTemperature } =
+    getSupportedModelParameters(rawModelParameters);
+  const unsupportedSettings = getUnsupportedSettings({
+    hadPreviousResponseId,
+    hadTemperature,
+  });
 
   if (isOpenAIOAuthProvider(provider)) {
     return {
@@ -111,7 +123,7 @@ export function resolveSteelNativeProviderPolicy({
       responsesState: false,
       usedPreviousResponseId: false,
       modelParameters,
-      unsupportedSettings: getUnsupportedSettings(hadPreviousResponseId),
+      unsupportedSettings,
       fallbackReason: 'oauth_provider_requires_reconstructed_context',
     };
   }
@@ -150,7 +162,7 @@ export function resolveSteelNativeProviderPolicy({
       enforceResponsesApi,
       modelParameters,
     }),
-    unsupportedSettings: getUnsupportedSettings(hadPreviousResponseId),
+    unsupportedSettings,
     fallbackReason: 'provider_response_id_missing',
   };
 }

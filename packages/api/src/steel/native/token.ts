@@ -16,24 +16,13 @@ import type {
   CodexAppServerJsonObject,
   StartCodexAppServerClientOptions,
 } from './appserver';
+import type { OpenAIOAuthTokenLoader as CredentialsLoader, OpenAIOAuthTokens } from './credentials';
 
 import { CodexAppServerRequestError, startCodexAppServerClient } from './appserver';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
+import { loadOpenAIOAuthTokens } from './credentials';
 
-type LoadAuthTokensOptions = {
-  authFilePath?: string;
-  ensureFresh?: boolean;
-  fetch?: typeof fetch;
-};
-
-type EffectiveOpenAIOAuth = {
-  accessToken: string;
-  refreshToken?: string;
-};
-
-export type OpenAIOAuthTokenLoader = (
-  options: LoadAuthTokensOptions,
-) => Promise<EffectiveOpenAIOAuth>;
+export type OpenAIOAuthTokenLoader = CredentialsLoader;
 
 export type OpenAIOAuthTokenEnv = {
   [key: string]: string | undefined;
@@ -110,21 +99,10 @@ export type OpenAIOAuthCodexLoginDeps = OpenAIOAuthTokenStatusDeps & {
   sessionTtlMs?: number;
 };
 
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-  specifier: string,
-) => Promise<{ loadAuthTokens: OpenAIOAuthTokenLoader }>;
-
 const codexCliProbeTimeoutMs = 5_000;
 const defaultLoginTimeoutMs = 10 * 60 * 1000;
 const defaultCompletedSessionTtlMs = 15 * 60 * 1000;
 const defaultCodexLoginStore: OpenAIOAuthCodexLoginStore = new Map();
-
-async function loadDefaultAuthTokens(
-  options: LoadAuthTokensOptions,
-): Promise<EffectiveOpenAIOAuth> {
-  const core = await dynamicImport('@openai-oauth/core');
-  return core.loadAuthTokens(options);
-}
 
 function decodeJwtClaims(token: string | undefined): { exp?: unknown } | undefined {
   if (!token) {
@@ -291,7 +269,7 @@ function createAvailableStatus({
   fetchedAt,
   login,
 }: {
-  auth: EffectiveOpenAIOAuth;
+  auth: OpenAIOAuthTokens;
   fetchedAt: Date;
   login: OpenAIOAuthTokenStatus['login'];
 }): OpenAIOAuthTokenStatus {
@@ -325,7 +303,7 @@ async function loadStatus({
   ensureFresh,
   fetch: fetchImpl = globalThis.fetch,
   knownLogin,
-  loadAuthTokens = loadDefaultAuthTokens,
+  loadAuthTokens = loadOpenAIOAuthTokens,
   now = () => new Date(),
   runCodexCommand,
   unavailableReason,

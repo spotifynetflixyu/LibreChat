@@ -1,15 +1,38 @@
 import type { SteelRuntimeJsonObject } from '../runtime/context';
 
-export type SteelOcrMissingPagesByFileKey = Record<string, number[]>;
-
-function isPageIndex(value: SteelRuntimeJsonObject[string]): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+export interface SteelOcrMissingPageRange {
+  pageStart: number;
+  pageEnd: number;
 }
 
-export function groupSteelOcrMissingPagesByFileKey(
+export type SteelOcrMissingPageRangesByFileKey = Record<string, SteelOcrMissingPageRange[]>;
+
+function isPageIndex(value: SteelRuntimeJsonObject[string]): value is number {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function mergeRanges(ranges: readonly SteelOcrMissingPageRange[]): SteelOcrMissingPageRange[] {
+  const sortedRanges = [...ranges].sort(
+    (left, right) => left.pageStart - right.pageStart || left.pageEnd - right.pageEnd,
+  );
+  const mergedRanges: SteelOcrMissingPageRange[] = [];
+
+  for (const range of sortedRanges) {
+    const previousRange = mergedRanges[mergedRanges.length - 1];
+    if (previousRange && range.pageStart <= previousRange.pageEnd + 1) {
+      previousRange.pageEnd = Math.max(previousRange.pageEnd, range.pageEnd);
+      continue;
+    }
+    mergedRanges.push({ ...range });
+  }
+
+  return mergedRanges;
+}
+
+export function groupSteelOcrMissingPageRangesByFileKey(
   failures: readonly SteelRuntimeJsonObject[],
-): SteelOcrMissingPagesByFileKey {
-  const pagesByFileKey = new Map<string, Set<number>>();
+): SteelOcrMissingPageRangesByFileKey {
+  const rangesByFileKey = new Map<string, SteelOcrMissingPageRange[]>();
 
   for (const failure of failures) {
     const { ocrFileKey, pageStart, pageEnd } = failure;
@@ -23,17 +46,12 @@ export function groupSteelOcrMissingPagesByFileKey(
       continue;
     }
 
-    const pages = pagesByFileKey.get(ocrFileKey) ?? new Set<number>();
-    for (let page = pageStart; page <= pageEnd; page += 1) {
-      pages.add(page);
-    }
-    pagesByFileKey.set(ocrFileKey, pages);
+    const ranges = rangesByFileKey.get(ocrFileKey) ?? [];
+    ranges.push({ pageStart, pageEnd });
+    rangesByFileKey.set(ocrFileKey, ranges);
   }
 
   return Object.fromEntries(
-    [...pagesByFileKey.entries()].map(([fileKey, pages]) => [
-      fileKey,
-      [...pages].sort((left, right) => left - right),
-    ]),
+    [...rangesByFileKey.entries()].map(([fileKey, ranges]) => [fileKey, mergeRanges(ranges)]),
   );
 }

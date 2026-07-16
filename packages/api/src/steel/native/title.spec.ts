@@ -118,6 +118,7 @@ describe('generateTitle', () => {
         reasoningEffort: 'none',
       },
     });
+    expect(callOptions.temperature).toBeUndefined();
     expect(callOptions.tools).toBeUndefined();
     expect(promptText).toContain('OCR檔案內容，逐一列表給我核對。');
     expect(promptText).not.toContain('Assistant OCR table');
@@ -154,7 +155,6 @@ describe('generateTitle', () => {
         clientOptions: {
           model: 'gpt-5.6-luna',
           reasoning_effort: 'none',
-          temperature: 0.4,
         },
       });
       expect(clientOptions).toEqual({

@@ -1,4 +1,4 @@
-import { groupSteelOcrMissingPagesByFileKey } from '../ocr/failures';
+import { groupSteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import { prepareLibreChatSteelRuntimeContext } from '../runtime/context';
 import { createSteelPostgresPool } from '../postgres';
 import {
@@ -79,7 +79,6 @@ export interface SteelNativeConversationInput {
 
 export interface SteelNativeContextAttachmentsInput {
   currentTurnFiles?: readonly SteelNativeFileReference[];
-  currentPaddleOcrResults?: readonly SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
   currentOcrFailures?: readonly SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
@@ -441,40 +440,31 @@ export function buildSteelNativeRuntimeContextText({
     return '';
   }
 
-  const missingPagesByFileKey = groupSteelOcrMissingPagesByFileKey(
+  const missingPageRangesByFileKey = groupSteelOcrMissingPageRangesByFileKey(
     runtimeContext.attachments.currentOcrFailures,
   );
-  const failuresByFileKey = new Map<
-    string,
-    { filename: string; stages: Set<string>; errors: Set<string> }
-  >();
+  const failuresByFileKey = new Map<string, { fileUrl?: string }>();
   for (const failure of runtimeContext.attachments.currentOcrFailures) {
     const key = typeof failure.ocrFileKey === 'string' ? failure.ocrFileKey : 'unknown';
-    const current = failuresByFileKey.get(key) ?? {
-      filename: typeof failure.filename === 'string' ? failure.filename : 'unknown',
-      stages: new Set<string>(),
-      errors: new Set<string>(),
-    };
-    current.stages.add(typeof failure.stage === 'string' ? failure.stage : 'unknown');
-    current.errors.add(
-      typeof failure.errorMessage === 'string' ? failure.errorMessage : 'PaddleOCR failed',
-    );
+    const current = failuresByFileKey.get(key) ?? {};
+    if (current.fileUrl === undefined && typeof failure.fileUrl === 'string') {
+      current.fileUrl = failure.fileUrl;
+    }
     failuresByFileKey.set(key, current);
   }
   const failures = [...failuresByFileKey.entries()]
     .map(([key, failure]) => {
-      const missingPages = missingPagesByFileKey[key];
+      const missingRanges = missingPageRangesByFileKey[key];
       return [
-        '## OCR file failed',
-        `filename: ${failure.filename}`,
-        `file: ${key}`,
-        `stage: ${[...failure.stages].join(', ')}`,
-        `error: ${[...failure.errors].join('; ')}`,
-        `missing_pages: ${missingPages?.join(', ') ?? 'unavailable (entire file failed)'}`,
-        'partial Markdown: none',
-        'action: tell the user the missing pages and offer resubmit or AI OCR regenerate',
-        'regenerate: use AI OCR only for these missing pages or failed file',
-        'annotation: mark every AI OCR recovered row or field as AI OCR',
+        `file_key: ${key}`,
+        `file_url: ${failure.fileUrl ?? 'unavailable'}`,
+        `missing_page_ranges: ${
+          missingRanges
+            ?.map(({ pageStart, pageEnd }) =>
+              pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`,
+            )
+            .join(', ') ?? 'unavailable'
+        }`,
       ].join('\n');
     })
     .join('\n\n');

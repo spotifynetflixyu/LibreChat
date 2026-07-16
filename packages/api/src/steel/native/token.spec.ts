@@ -14,8 +14,13 @@ import type {
   OpenAIOAuthTokenLoader,
 } from './token';
 
+jest.mock('./credentials', () => ({
+  loadOpenAIOAuthTokens: jest.fn(),
+}));
+
 import { CodexAppServerRequestError } from './appserver';
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
+import { loadOpenAIOAuthTokens } from './credentials';
 
 import {
   cancelOpenAIOAuthCodexLogin,
@@ -26,6 +31,7 @@ import {
   startOpenAIOAuthCodexLogin,
 } from './token';
 
+const defaultLoadAuthTokens = jest.mocked(loadOpenAIOAuthTokens);
 const workingCodexCommand: OpenAIOAuthCodexCommandRunner = jest.fn(async () => ({
   exitCode: 0,
   stderr: '',
@@ -81,6 +87,42 @@ function createAppServer(responses: Record<string, CodexAppServerJsonValue | Err
 }
 
 describe('OpenAI OAuth token status service', () => {
+  it('uses the shared credential loader by default', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
+    const authFilePath = path.join(tempDir, 'auth.json');
+    const appServer = createAppServer({
+      'account/read': { account: { type: 'chatgpt' }, requiresOpenaiAuth: true },
+    });
+    defaultLoadAuthTokens.mockResolvedValueOnce({
+      accessToken: createJwt(1783562400),
+      refreshToken: 'refresh_sensitive',
+    });
+
+    try {
+      const result = await getOpenAIOAuthTokenStatus({
+        authFilePath,
+        now: () => new Date('2026-07-08T02:34:02.000Z'),
+        runCodexCommand: workingCodexCommand,
+        startAppServerClient: appServer.startAppServerClient,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'available',
+          accessToken: expect.objectContaining({ status: 'valid' }),
+          refresh: { available: true },
+        }),
+      );
+      expect(defaultLoadAuthTokens).toHaveBeenCalledWith({
+        authFilePath,
+        ensureFresh: false,
+        fetch: globalThis.fetch,
+      });
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
   it('returns sanitized access-token expiry and detected app-server capability', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
     const authFilePath = path.join(tempDir, 'auth.json');
