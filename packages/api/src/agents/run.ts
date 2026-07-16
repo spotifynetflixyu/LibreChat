@@ -33,6 +33,7 @@ import type {
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { SubagentUsageEvent } from '~/agents/usage';
+import type { OpenAIOAuthModelOptions } from '~/steel/native/oauth';
 import type * as t from '~/types';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
@@ -53,6 +54,7 @@ import {
   type OpenAIReasoningEffort,
 } from '~/steel/ai/config';
 import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
+import { delegateOcrToolName } from '~/steel/native/delegate';
 
 /** Expected shape of JSON tool search results */
 interface ToolSearchJsonResult {
@@ -860,6 +862,7 @@ function applyOpenAIOAuthGraphOverride({
   const agentId = agentInput.agentId;
   graph.overrideModel = createOpenAIOAuthGraphModel({
     modelOptions: getOpenAIOAuthModelOptions(agentInput, openAIOAuthReasoningEffortOverride),
+    terminalToolNames: [delegateOcrToolName],
     getSystemRunnable: () => graph.agentContexts?.get(agentId)?.systemRunnable,
     getTools: () =>
       resolveLocalToolsForBinding({
@@ -1028,6 +1031,7 @@ export async function createRun({
   appConfig,
   subagentUsageSink,
   openAIOAuthReasoningEffortOverride,
+  openAIOAuthModelOptionsSink,
   hitlCapable = false,
   streaming = true,
   streamUsage = true,
@@ -1039,6 +1043,7 @@ export async function createRun({
   streamUsage?: boolean;
   requestBody?: t.RequestBody;
   openAIOAuthReasoningEffortOverride?: OpenAIReasoningEffort;
+  openAIOAuthModelOptionsSink?: (options: OpenAIOAuthModelOptions) => void;
   user?: IUser;
   tenantId?: string;
   /** Message history for extracting previously discovered tools */
@@ -1280,6 +1285,17 @@ export async function createRun({
       agentInput.subagentConfigs = subagentConfigs;
     }
     agentInputs.push(agentInput);
+  }
+
+  if (
+    openAIOAuthModelOptionsSink &&
+    agentInputs.length > 0 &&
+    agents.length > 0 &&
+    isOpenAIOAuthAgent(agents[0])
+  ) {
+    openAIOAuthModelOptionsSink(
+      getOpenAIOAuthModelOptions(agentInputs[0], openAIOAuthReasoningEffortOverride),
+    );
   }
 
   const graphConfig: RunConfig['graphConfig'] = {

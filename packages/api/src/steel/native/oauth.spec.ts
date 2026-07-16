@@ -5,18 +5,21 @@ import type {
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
+import { CallbackManager } from '@langchain/core/callbacks/manager';
 import {
   ChatModelStreamHandler,
   ContentTypes,
   GraphEvents,
   Providers,
   StepTypes,
+  ToolNode,
 } from '@librechat/agents';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import {
   AIMessage,
   HumanMessage,
   SystemMessage,
+  ToolMessage,
   type BaseMessage,
 } from '@librechat/agents/langchain/messages';
 import { RunnableLambda } from '@librechat/agents/langchain/runnables';
@@ -28,6 +31,11 @@ import {
   createOpenAIOAuthModel,
   createStatelessOpenAIOAuthProvider,
 } from './oauth';
+import {
+  createDelegateOcrTool,
+  delegateOcrStreamedArtifact,
+  delegateOcrToolName,
+} from './delegate';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
 
 function createUsage(): LanguageModelV3GenerateResult['usage'] {
@@ -462,6 +470,210 @@ describe('OpenAI OAuth model adapter', () => {
         ],
       },
     ]);
+  });
+
+  it('returns terminal tool output directly without another provider invocation', async () => {
+    const answer = '## 原始圖面確認\n\n開槽連續邊長為 1,400mm。';
+    const doGenerate = jest.fn(async () => createGenerateResult([]));
+    const doStream = jest.fn();
+    const runSystemContext = jest.fn((messages: BaseMessage[]) => messages);
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.6-luna',
+      },
+      getSystemRunnable: () => RunnableLambda.from(runSystemContext),
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const messages = [
+      new HumanMessage('請重新確認開槽連續邊長'),
+      new ToolMessage({
+        content: answer,
+        name: 'delegate_ocr',
+        tool_call_id: 'call_delegate_1',
+      }),
+    ];
+
+    await expect(model.invoke(messages)).resolves.toEqual(
+      expect.objectContaining({ content: answer }),
+    );
+    const stream = await model.stream(messages);
+    const chunks = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([answer]);
+    expect(runSystemContext).not.toHaveBeenCalled();
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  it('dedupes an artifact-marked ToolNode delegate while preserving unmarked terminal output', async () => {
+    const delegateMessage = (id: string) =>
+      new AIMessage({
+        content: '',
+        tool_calls: [
+          {
+            name: delegateOcrToolName,
+            args: { fileKeys: ['file:image-1'] },
+            id,
+          },
+        ],
+      });
+    const answer = '## 原始圖面確認\n\n開槽連續邊長為 1,400mm。';
+    const streamedEvents: unknown[] = [];
+    const streamedToolNode = new ToolNode({
+      tools: [
+        createDelegateOcrTool({
+          execute: async ({ onDelta }) => {
+            await onDelta?.('## 原始圖面確認\n\n');
+            await onDelta?.('開槽連續邊長為 1,400mm。');
+            return answer;
+          },
+        }),
+      ],
+    });
+    const streamedToolMessages = (await streamedToolNode.invoke(
+      [delegateMessage('call_streamed_terminal')],
+      {
+        configurable: { delegateOcrStreaming: true },
+        callbacks: new CallbackManager('delegate-parent-run', {
+          handlers: [
+            {
+              handleCustomEvent(_eventName: string, payload: unknown): void {
+                streamedEvents.push(payload);
+              },
+            },
+          ],
+        }),
+      },
+    )) as ToolMessage[];
+    const streamedToolMessage = streamedToolMessages[0];
+    expect(streamedToolMessage).toBeInstanceOf(ToolMessage);
+    expect(streamedToolMessage.content).toBe(answer);
+    expect(streamedToolMessage.artifact).toEqual(delegateOcrStreamedArtifact);
+    expect(streamedEvents).toHaveLength(3);
+
+    const markedDoGenerate = jest.fn(async () => createGenerateResult([]));
+    const markedDoStream = jest.fn();
+    const markedSystemRunnable = jest.fn((messages: BaseMessage[]) => messages);
+    const markedModel = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({
+          doGenerate: markedDoGenerate,
+          doStream: markedDoStream,
+        }).options,
+        model: 'gpt-5.6-luna',
+      },
+      getSystemRunnable: () => RunnableLambda.from(markedSystemRunnable),
+      terminalToolNames: [delegateOcrToolName],
+    });
+    const terminalMessages = [
+      new HumanMessage('請重新確認開槽連續邊長'),
+      delegateMessage('call_streamed_terminal'),
+      streamedToolMessage,
+      new ToolMessage({
+        content: '{"items":[]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_parallel_price',
+      }),
+    ];
+
+    await expect(markedModel.invoke(terminalMessages)).resolves.toEqual(
+      expect.objectContaining({ content: '' }),
+    );
+    const markedStream = await markedModel.stream(terminalMessages);
+    const markedChunks = [];
+    for await (const chunk of markedStream) {
+      markedChunks.push(chunk);
+    }
+    expect(markedChunks.map((chunk) => chunk.content)).toEqual(['']);
+    expect(markedSystemRunnable).not.toHaveBeenCalled();
+    expect(markedDoGenerate).not.toHaveBeenCalled();
+    expect(markedDoStream).not.toHaveBeenCalled();
+
+    const unmarkedToolNode = new ToolNode({
+      tools: [
+        createDelegateOcrTool({
+          execute: async () => answer,
+        }),
+      ],
+    });
+    const unmarkedToolMessages = (await unmarkedToolNode.invoke([
+      delegateMessage('call_unmarked_terminal'),
+    ])) as ToolMessage[];
+    const unmarkedToolMessage = unmarkedToolMessages[0];
+    expect(unmarkedToolMessage.artifact).toBeUndefined();
+    expect(unmarkedToolMessage.content).toBe(answer);
+
+    const unmarkedDoGenerate = jest.fn(async () => createGenerateResult([]));
+    const unmarkedDoStream = jest.fn();
+    const unmarkedSystemRunnable = jest.fn((messages: BaseMessage[]) => messages);
+    const unmarkedModel = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({
+          doGenerate: unmarkedDoGenerate,
+          doStream: unmarkedDoStream,
+        }).options,
+        model: 'gpt-5.6-luna',
+      },
+      getSystemRunnable: () => RunnableLambda.from(unmarkedSystemRunnable),
+      terminalToolNames: [delegateOcrToolName],
+    });
+    const unmarkedTerminalMessages = [
+      new HumanMessage('請重新確認開槽連續邊長'),
+      delegateMessage('call_unmarked_terminal'),
+      unmarkedToolMessage,
+      new ToolMessage({
+        content: '{"items":[]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_parallel_price_unmarked',
+      }),
+    ];
+
+    await expect(unmarkedModel.invoke(unmarkedTerminalMessages)).resolves.toEqual(
+      expect.objectContaining({ content: answer }),
+    );
+    const unmarkedStream = await unmarkedModel.stream(unmarkedTerminalMessages);
+    const unmarkedChunks = [];
+    for await (const chunk of unmarkedStream) {
+      unmarkedChunks.push(chunk);
+    }
+    expect(unmarkedChunks.map((chunk) => chunk.content)).toEqual([answer]);
+    expect(unmarkedSystemRunnable).not.toHaveBeenCalled();
+    expect(unmarkedDoGenerate).not.toHaveBeenCalled();
+    expect(unmarkedDoStream).not.toHaveBeenCalled();
+  });
+
+  it('continues through the provider for non-terminal tool output', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '## 報價結果',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.6-luna',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{"items":[]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(result.content).toBe('## 報價結果');
+    expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
   it('preserves native graph system context after tools are bound', async () => {

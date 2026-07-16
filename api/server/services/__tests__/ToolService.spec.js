@@ -49,6 +49,7 @@ const mockGetCloudFrontDownloadURLForKey = jest.fn();
 const mockCloudFrontObjectExistsByKey = jest.fn();
 const mockSaveBufferToCloudFrontStorageKey = jest.fn();
 const mockCreateSteelContextDependencies = jest.fn();
+const mockBuildDefaultSteelGlobalAgentContext = jest.fn();
 const mockCreateOpenAIOAuthModel = jest.fn();
 const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
   {
@@ -152,7 +153,25 @@ jest.mock('@librechat/api', () => ({
   cloudFrontObjectExistsByKey: (...args) => mockCloudFrontObjectExistsByKey(...args),
   saveBufferToCloudFrontStorageKey: (...args) => mockSaveBufferToCloudFrontStorageKey(...args),
   createSteelContextDependencies: (...args) => mockCreateSteelContextDependencies(...args),
+  buildDefaultSteelGlobalAgentContext: (...args) =>
+    mockBuildDefaultSteelGlobalAgentContext(...args),
   createOpenAIOAuthModel: (...args) => mockCreateOpenAIOAuthModel(...args),
+  normalizeDelegateOcrChunk: (content) => {
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (!Array.isArray(content)) {
+      return '';
+    }
+    return content
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        return typeof part?.text === 'string' ? part.text : '';
+      })
+      .join('');
+  },
   createSteelNativeTool: ({ nativeToolName, steelToolName, execute }) => ({
     name: nativeToolName,
     invoke: (args, config) =>
@@ -283,6 +302,7 @@ function createEndpointsConfig(capabilities) {
 }
 
 const steelNativeToolNames = new Set([
+  'delegate_ocr',
   'search_customers',
   'search_price_candidates',
 ]);
@@ -380,7 +400,7 @@ function mockPaddleOcrToolLoads(...invokes) {
 
 function expectSteelNativeToolDefinitions(definitions) {
   expect(definitions.filter(isSteelNativeToolDefinition).map(getToolDefinitionName).sort()).toEqual(
-    ['search_customers', 'search_price_candidates'],
+    ['delegate_ocr', 'search_customers', 'search_price_candidates'],
   );
 }
 
@@ -502,6 +522,9 @@ describe('ToolService - Action Capability Gating', () => {
     });
     mockCreateOpenAIOAuthModel.mockReturnValue({
       invoke: jest.fn().mockResolvedValue({ content: 'organized OCR Markdown' }),
+    });
+    mockBuildDefaultSteelGlobalAgentContext.mockResolvedValue({
+      instructionPrefix: 'OCR_RULE\nVISION_RULE\nOCR_MAIN_RULE',
     });
     mockGetFiles.mockResolvedValue([]);
     mockGetStrategyFunctions.mockReturnValue({
@@ -3257,6 +3280,141 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           data: expect.objectContaining({ toolName: 'run_file_ocr' }),
         }),
+      );
+    });
+
+    it('loads delegate_ocr with owner-only lookup, fresh backend signing, and full provider history', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const providerHistory = [new HumanMessage('請重新確認開槽連續邊長')];
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: providerHistory,
+          modelOptions: {
+            authFilePath: '/tmp/auth.json',
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'high',
+          },
+          steelConversation: {
+            requestId: 'response-1',
+            activeHistory: [{ role: 'user', content: '請重新確認開槽連續邊長' }],
+          },
+        },
+      };
+      const oldUrl = 'https://old.example/drawing.pdf?expired=true';
+      const freshUrl = 'https://fresh.example/drawing.pdf?expires=43200';
+      const fileRecord = {
+        file_id: 'drawing-1',
+        user: 'user_123',
+        filename: 'drawing.pdf',
+        type: 'application/pdf',
+        source: 's3',
+        storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+        filepath: oldUrl,
+      };
+      const getDownloadURL = jest.fn().mockResolvedValue(freshUrl);
+      const stream = jest.fn(async function* () {
+        yield { content: '連續邊長為 ' };
+        yield { content: [{ type: 'text', text: '1,400mm。' }] };
+      });
+      mockGetFiles.mockResolvedValueOnce([fileRecord]);
+      mockGetStrategyFunctions.mockReturnValueOnce({ getDownloadURL });
+      mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+        enableDelegateOcrStreaming: true,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+      const output = await tool.invoke(
+        { fileKeys: ['file:drawing-1'] },
+        { toolCall: { id: 'call_delegate_1' } },
+      );
+
+      expect(output.content).toBe('連續邊長為 1,400mm。');
+      expect(mockGetFiles).toHaveBeenCalledWith(
+        {
+          user: 'user_123',
+          $or: [{ file_id: { $in: ['drawing-1'] } }],
+        },
+        {},
+        {},
+      );
+      expect(mockGetFiles.mock.calls[0][0]).not.toHaveProperty('tenantId');
+      expect(getDownloadURL).toHaveBeenCalledWith({ file: fileRecord });
+      const nestedMessages = stream.mock.calls[0][0];
+      expect(nestedMessages.slice(1, 2)).toEqual(providerHistory);
+      expect(JSON.stringify(nestedMessages)).toContain(freshUrl);
+      expect(JSON.stringify(nestedMessages)).not.toContain(oldUrl);
+      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
+        req.steelNativeContext.delegateOcrContext.modelOptions,
+      );
+      expect(result.configurable.delegateOcrStreaming).toBe(true);
+    });
+
+    it('lets delegate_ocr signing errors propagate to the generic tool error UI path', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('重新解析')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            requestId: 'response-1',
+            activeHistory: [{ role: 'user', content: '重新解析' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'drawing-1',
+          user: 'user_123',
+          source: 's3',
+          storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+        },
+      ]);
+      mockGetStrategyFunctions.mockReturnValueOnce({
+        getDownloadURL: jest.fn().mockRejectedValue(new Error('S3 signer failed')),
+      });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+
+      await expect(
+        tool.invoke(
+          { fileKeys: ['file:drawing-1'] },
+          { toolCall: { id: 'call_delegate_error' } },
+        ),
+      ).rejects.toThrow('S3 signer failed');
+    });
+
+    it('defers missing delegate_ocr context errors until invocation', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+
+      expect(result.configurable).not.toHaveProperty('delegateOcrStreaming');
+      await expect(tool.invoke({ fileKeys: ['file:drawing-1'] })).rejects.toThrow(
+        'delegate_ocr request context is unavailable',
       );
     });
   });

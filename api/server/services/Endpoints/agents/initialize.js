@@ -238,6 +238,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
         userMCPAuthMap: ctx.userMCPAuthMap,
         tool_resources: ctx.tool_resources,
         actionsEnabled: ctx.actionsEnabled,
+        enableDelegateOcrStreaming: true,
       });
 
       logger.debug(`[ON_TOOL_EXECUTE] loaded ${result.loadedTools?.length ?? 0} tools`);

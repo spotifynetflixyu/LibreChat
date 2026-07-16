@@ -6,6 +6,11 @@ import type {
   ToolCallRequest,
 } from '@librechat/agents';
 import { createToolExecuteHandler, ToolExecuteOptions } from './handlers';
+import {
+  createDelegateOcrTool,
+  delegateOcrStreamEventName,
+  delegateOcrStreamedArtifact,
+} from '~/steel/native/delegate';
 
 function createMockTool(
   name: string,
@@ -82,6 +87,87 @@ function skillsInScope(): unknown[] {
 }
 
 describe('createToolExecuteHandler', () => {
+  it('forwards host-executed delegate OCR stream events and preserves its artifact', async () => {
+    const events: Array<{ name: string; payload: unknown }> = [];
+    const tool = createDelegateOcrTool({
+      execute: async ({ onDelta }) => {
+        await onDelta?.('第一段');
+        await onDelta?.('第二段');
+        return '第一段第二段';
+      },
+    });
+    const handler = createToolExecuteHandler({
+      loadTools: jest.fn(async () => ({
+        loadedTools: [tool] as never[],
+        configurable: { delegateOcrStreaming: true },
+      })),
+    });
+    const graph = {
+      handlerRegistry: {
+        getHandler: (eventName: string) =>
+          eventName === delegateOcrStreamEventName
+            ? {
+                handle: async (name: string, payload: unknown) => {
+                  events.push({ name, payload });
+                },
+              }
+            : undefined,
+      },
+    };
+    const results = await new Promise<ToolExecuteResult[]>((resolve, reject) => {
+      handler.handle(
+        'on_tool_execute',
+        {
+            toolCalls: [
+              {
+                id: 'call_delegate_host',
+                name: 'delegate_ocr',
+                args: { fileKeys: ['file:drawing-1'] },
+              },
+            ],
+            resolve,
+            reject,
+          } as ToolExecuteBatchRequest,
+        undefined,
+        graph as never,
+      );
+    });
+
+    expect(events).toEqual([
+      {
+        name: delegateOcrStreamEventName,
+        payload: {
+          phase: 'delta',
+          providerToolCallId: 'call_delegate_host',
+          delta: '第一段',
+        },
+      },
+      {
+        name: delegateOcrStreamEventName,
+        payload: {
+          phase: 'delta',
+          providerToolCallId: 'call_delegate_host',
+          delta: '第二段',
+        },
+      },
+      {
+        name: delegateOcrStreamEventName,
+        payload: {
+          phase: 'complete',
+          providerToolCallId: 'call_delegate_host',
+        },
+      },
+    ]);
+    expect(results).toEqual([
+      expect.objectContaining({
+        toolCallId: 'call_delegate_host',
+        content: '第一段第二段',
+        artifact: delegateOcrStreamedArtifact,
+        status: 'success',
+      }),
+    ]);
+  });
+
   it('logs complete tool Parameters with correlation IDs but never the result', async () => {
     const resultSentinel = 'SECRET_RESULT_SHOULD_NOT_LOG';
     const parameters = {

@@ -29,6 +29,8 @@ jest.mock('@librechat/api', () => ({
   checkAccess: jest.fn(),
   countFormattedMessageTokens: jest.fn(() => 42),
   countTokens: jest.fn((text) => Math.ceil(String(text ?? '').length / 4)),
+  createTokenCounter: jest.fn(() => jest.fn(() => 1)),
+  hydrateMissingIndexTokenCounts: jest.fn(({ indexTokenCountMap }) => indexTokenCountMap ?? {}),
   generateTitle: jest.fn(),
   buildDefaultSteelGlobalAgentContext: jest.fn(),
   prepareLibreChatSteelChatContext: jest.fn((conversation) => {
@@ -62,6 +64,7 @@ jest.mock('@librechat/api', () => ({
     };
   }),
   initializeAgent: jest.fn(),
+  createRun: jest.fn(),
   createMemoryProcessor: jest.fn(),
   isMemoryAgentEnabled: jest.fn((config) => {
     if (!config || config.disabled === true) return false;
@@ -1317,6 +1320,42 @@ describe('AgentClient - titleConvo', () => {
     });
   });
 
+  describe('delegate_ocr history', () => {
+    it('captures the exact formatted provider history including the latest user message', async () => {
+      const { createRun } = require('@librechat/api');
+      const processStream = jest.fn().mockResolvedValue(undefined);
+      createRun.mockResolvedValueOnce({
+        Graph: undefined,
+        getCalibrationRatio: jest.fn(() => 0),
+        processStream,
+      });
+      mockReq.steelNativeContext = {
+        delegateOcrContext: {
+          steelConversation: { requestId: 'response-123' },
+        },
+      };
+      client.contentParts = [];
+
+      await client.chatCompletion({
+        payload: [{ role: 'user', content: '請重新確認開槽連續邊長' }],
+        abortController: new AbortController(),
+      });
+
+      const providerHistory = createRun.mock.calls.at(-1)[0].messages;
+      expect(mockReq.steelNativeContext.delegateOcrContext.history).toBe(providerHistory);
+      expect(processStream).toHaveBeenCalledWith(
+        { messages: providerHistory },
+        expect.any(Object),
+        expect.any(Object),
+      );
+      expect(providerHistory.every((message) => typeof message._getType === 'function')).toBe(true);
+      expect(providerHistory.at(-1)._getType()).toBe('human');
+      expect(JSON.stringify(providerHistory.at(-1).content)).toContain(
+        '請重新確認開槽連續邊長',
+      );
+    });
+  });
+
   describe('getOptions method - GPT-5+ model handling', () => {
     let mockReq;
     let mockRes;
@@ -2058,7 +2097,7 @@ describe('AgentClient - titleConvo', () => {
       ]);
       client.agentConfigs = new Map();
 
-      await client.buildMessages(
+      const result = await client.buildMessages(
         [
           {
             messageId: 'msg-1',
@@ -2209,6 +2248,12 @@ describe('AgentClient - titleConvo', () => {
         }),
       );
       expect(mockReq.steelNativeContext.currentTurnFiles).toEqual([expectedReference]);
+      expect(mockReq.steelNativeContext.delegateOcrContext).toMatchObject({
+        steelConversation: expect.objectContaining({
+          requestId: expect.any(String),
+        }),
+      });
+      expect(mockReq.steelNativeContext.delegateOcrContext).not.toHaveProperty('history');
     });
   });
 

@@ -20,6 +20,7 @@ const {
   writeAttachmentEvent,
   createToolExecuteHandler,
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
+  delegateOcrStreamEventName,
   isCodeSessionToolName,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
@@ -266,6 +267,61 @@ function feedSubagentAggregator(aggregator, event) {
   aggregator.aggregateContent({ event: graphEvent, data: event.data });
 }
 
+function createDelegateOcrStreamHandler() {
+  const messageStepIds = new Map();
+
+  return {
+    handle: async (_event, data, metadata, graph) => {
+      const providerToolCallId = data?.providerToolCallId;
+      if (!graph || typeof providerToolCallId !== 'string' || providerToolCallId === '') {
+        return;
+      }
+
+      const runId =
+        typeof metadata?.run_id === 'string' && metadata.run_id !== ''
+          ? metadata.run_id
+          : graph.runId || 'run';
+      const streamKey = `${runId}:${providerToolCallId}`;
+      if (data.phase === 'complete' || data.phase === 'error') {
+        messageStepIds.delete(streamKey);
+        return;
+      }
+      if (data.phase !== 'delta' || typeof data.delta !== 'string' || data.delta === '') {
+        return;
+      }
+
+      let messageStepId = messageStepIds.get(streamKey);
+      if (!messageStepId) {
+        messageStepId = await graph.dispatchRunStep(
+          `delegate_ocr_stream:${streamKey}:${nanoid()}`,
+          {
+            type: StepTypes.MESSAGE_CREATION,
+            message_creation: {
+              message_id: streamKey,
+            },
+          },
+          metadata,
+        );
+        messageStepIds.set(streamKey, messageStepId);
+      }
+
+      await graph.dispatchMessageDelta(
+        messageStepId,
+        {
+          content: [
+            {
+              type: 'text',
+              text: data.delta,
+              tool_call_ids: [providerToolCallId],
+            },
+          ],
+        },
+        metadata,
+      );
+    },
+  };
+}
+
 /**
  * @typedef {Object} ToolExecuteOptions
  * @property {(toolNames: string[]) => Promise<{loadedTools: StructuredTool[]}>} loadTools - Function to load tools by name
@@ -450,6 +506,7 @@ function getDefaultHandlers({
   if (toolExecuteOptions) {
     handlers[GraphEvents.ON_TOOL_EXECUTE] = createToolExecuteHandler(toolExecuteOptions);
   }
+  handlers[delegateOcrStreamEventName] = createDelegateOcrStreamHandler();
 
   handlers[GraphEvents.ON_SUBAGENT_UPDATE] = {
     /**
@@ -1238,6 +1295,7 @@ module.exports = {
   agentLogHandler,
   agentLogHandlerObj,
   getDefaultHandlers,
+  createDelegateOcrStreamHandler,
   createToolEndCallback,
   isStreamWritable,
   markSummarizationUsage,

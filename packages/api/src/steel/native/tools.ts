@@ -1,5 +1,6 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
+import { delegateOcrToolName, getDelegateOcrToolDefinition } from './delegate';
 
 import type { JsonSchemaType, LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelProviderToolName, SteelToolDefinition } from '../tools/registry';
@@ -118,6 +119,9 @@ function isVisibleForSteelNativeTurn(
   toolName: string | undefined,
   { ocrTurnActive, allowPaddleOcr }: Required<SteelNativeToolVisibilityOptions>,
 ): boolean {
+  if (ocrTurnActive && toolName === delegateOcrToolName) {
+    return false;
+  }
   if (!allowPaddleOcr && !isPaddleOcrToolVisibleToMainAgent(toolName)) {
     return false;
   }
@@ -314,6 +318,14 @@ export function mergeSteelToolDefinitions(
     ...toolRegistry.keys(),
   ]);
   const nameMap: NativeSteelToolNameMap = new Map();
+
+  if (usedNames.has(delegateOcrToolName)) {
+    throw new Error(`Steel tool name collision: ${delegateOcrToolName}`);
+  }
+  const delegateDefinition = getDelegateOcrToolDefinition();
+  usedNames.add(delegateOcrToolName);
+  toolDefinitions.push(delegateDefinition);
+  toolRegistry.set(delegateOcrToolName, delegateDefinition);
 
   for (const definition of getSteelToolDefinitions()) {
     if (!aiVisibleTools.has(definition.name)) {

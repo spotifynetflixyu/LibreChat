@@ -47,6 +47,7 @@ const cTypeRulePath = path.join(categoryRulesDir, 'C型鋼.txt');
 const longMaterialRulePath = path.join(categoryRulesDir, '長條料.txt');
 const cuttingRulePath = path.join(categoryRulesDir, '切工.txt');
 const outputRulePath = path.join(rulesDir, '輸出規則.txt');
+const ocrRulePath = path.join(rulesDir, '其他規則/OCR規則.txt');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
 
 const ruleSync = jest.requireActual<{
@@ -250,11 +251,12 @@ describe('Steel rule sources', () => {
     });
     expect(builtRules[mainAgentIndex]).toMatchObject({
       priority: 38,
-      ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
+      ruleSections: ['delegate_ocr', 'ocr_main_merge', 'final_ocr_markdown'],
       selectors: {
         otherGlobalRulesKey: 'ocrMainAgentRules',
       },
       outputPolicy: {
+        delegateOutputFormat: 'plain_text_or_markdown',
         mainOutputFormat: 'final_ocr_markdown',
         mergeScope: 'same_file_key',
       },
@@ -264,6 +266,43 @@ describe('Steel rule sources', () => {
         },
       ],
     });
+  });
+
+  it('keeps backend implementation contracts out of every reviewed AI prompt', () => {
+    const sourceFiles = listRuleFiles(rulesDir).sort();
+    const builtSourceFiles = [
+      ...new Set(
+        ruleSync
+          .buildRules(repoRoot)
+          .flatMap((rule) => rule.sourceRefs.map((sourceRef) => sourceRef.sourceFile))
+          .filter((sourceFile) => sourceFile.startsWith('docs/rules/')),
+      ),
+    ].sort();
+    const forbiddenImplementationMarkers = [
+      /instruction prefix/iu,
+      /Runtime 提供/iu,
+      /PaddleOCR preflight/iu,
+      /signed URL/iu,
+      /provider history/iu,
+      /chunk (?:PDF|Markdown)/iu,
+      /file:<id>/iu,
+      /final UI|二次總結/iu,
+      /reviewed zero rule/iu,
+      /raw ratio/iu,
+      /tool schema|source ref JSON|workbook operations|file-analysis workspace|\bSQL\b/iu,
+      /一般 parser/iu,
+      /queryResults 順序/iu,
+      /前次結果已達30/iu,
+      /超過10筆只返回/iu,
+    ];
+
+    expect(builtSourceFiles).toEqual(sourceFiles);
+    for (const sourceFile of sourceFiles) {
+      const prompt = readUtf8(path.join(repoRoot, sourceFile));
+      for (const marker of forbiddenImplementationMarkers) {
+        expect(`${sourceFile}\n${prompt}`).not.toMatch(marker);
+      }
+    }
   });
 
   it('matches every category index entry to the registry', () => {
@@ -291,8 +330,8 @@ describe('Steel rule sources', () => {
     expect(guide).not.toMatch(/query.?id/iu);
     expect(guide).not.toContain('cutting_query_timing=');
     expect(guide).not.toContain('query_limit_overflow=');
-    expect(guide).toContain('有明確加工需求時，在同一 tool call 加入 `processingQueries`');
-    expect(guide).toContain('同次可返回相符的 `processingPrice`');
+    expect(guide).toContain('有明確加工需求時一併使用 `processingQueries`');
+    expect(guide).toContain('材料與加工候選只對應原需求');
     expect(guide).toContain('`keyword` 依對應加工規則');
     expect(guide).not.toContain('processing_method');
     expect(guide).not.toContain('processing_shape');
@@ -306,15 +345,16 @@ describe('Steel rule sources', () => {
     expect(cTypeRule).not.toContain('"keyword":"加工名稱"');
     expect(cTypeRule).not.toContain('通用 canonical 優先規則');
     expect(cTypeRule).not.toContain('材料與加工放在同一次 tool call');
-    expect(guide).toContain('超過10筆只返回全部唯一 `productNames`');
-    expect(guide).toContain('前次結果已達30');
-    expect(guide).toContain('材料切工只使用同次結果的 `cuttingPrices`');
+    expect(guide).not.toContain('超過10筆只返回全部唯一 `productNames`');
+    expect(guide).not.toContain('前次結果已達30');
+    expect(guide).not.toContain('queryResults');
+    expect(guide).toContain('材料切工只採與所選材料相符的切工價格');
   });
 
   it('keeps system-order and customer-facing Markdown decisions without persistence prose', () => {
     const rule = readUtf8(outputRulePath);
 
-    expect(rule).toContain('凡輸出的表都必須是完整最新版');
+    expect(rule).toContain('每張表須呈現目前可確認的完整結果');
     expect(rule).toContain(
       '`型號`、`品名規格`、`材質編號`、`單位`、`數量`、`單重`、`總數`、`單價`、`計價基準`、`公式編號`、`厚度`、`寬度`、`長度`、`肚`、`類別`、`備註`',
     );
@@ -328,14 +368,32 @@ describe('Steel rule sources', () => {
     const agent = readUtf8(agentRulePath);
     const guide = readUtf8(guidePath);
 
-    expect(agent).toContain('一律依【search_price_candidates 通用查價規則】');
+    expect(agent).toContain('一律依【search_price_candidates 查價規則】');
     expect(agent).not.toContain('每筆 `limit` 預設30');
     expect(agent).not.toContain('ST50、SN400B');
     expect(agent).not.toContain('`ratio_only` 來源 unit');
-    expect(guide).toContain('前次結果已達30');
+    expect(guide).not.toContain('前次結果已達30');
     expect(guide).toContain('ST50、SN400B');
     expect(guide).toContain('候選有效 `unit`');
     expect(guide).not.toContain('`ratio_only` 來源 unit');
+  });
+
+  it('keeps delegate_ocr tool selection in the main agent rule only', () => {
+    const agent = readUtf8(agentRulePath);
+    const ocr = readUtf8(ocrRulePath);
+    const agentRule = ruleSync
+      .buildRules(repoRoot)
+      .find((rule) => rule.slug === 'steel-default-agent-instruction');
+
+    expect(agent).toContain('3. `delegate_ocr`');
+    expect(agent).toContain('呼叫`delegate_ocr`並傳入相關附件的 file keys');
+    expect(agent).not.toContain('依【OCR 規則】');
+    expect(ocr).not.toContain('delegate_ocr');
+    expect(agentRule?.toolPolicy.availableTools).toEqual([
+      'search_customers',
+      'search_price_candidates',
+      'delegate_ocr',
+    ]);
   });
 
   it('separates long-material lookup and cutting concerns', () => {
@@ -422,8 +480,8 @@ describe('Steel rule sources', () => {
     expect(cutting).not.toMatch(/KZZB1[012]/u);
     expect(hole).not.toMatch(/KZZB1[012]/u);
     expect(categoryRules).not.toMatch(/legacy|v4\.4|steel\.prices|candidate-aware|catalog/iu);
-    expect(categoryRules.match(/\{"productNames"/gu)).toHaveLength(1);
-    expect(guide).toContain('原樣放入頂層');
+    expect(categoryRules).not.toContain('{"productNames"');
+    expect(guide).not.toContain('原樣放入頂層');
     expect(cutting).toContain('最相近的圓條切工基本價');
     expect(squareBar).not.toContain('最相近的圓條切工基本價');
     expect(guide).not.toMatch(/processing_(?:method|shape)/u);

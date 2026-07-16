@@ -1,5 +1,6 @@
 export * from './agents';
 export * from './context';
+export * from './delegate';
 export * from './events';
 export * from './markdown';
 export * from './tool-result';

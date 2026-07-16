@@ -1827,6 +1827,111 @@ describe('GenerationJobManager Integration Tests', () => {
       await GenerationJobManager.destroy();
     });
 
+    test('should replay partial delegate OCR text before abort finalization', async () => {
+      const manager = createInMemoryManager();
+      const streamId = `delegate-ocr-abort-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1', 'conversation-1');
+
+      const runStep = {
+        id: 'delegate-ocr-message-step',
+        runId: 'response-1',
+        type: 'message_creation' as const,
+        index: 0,
+        stepDetails: {
+          type: 'message_creation' as const,
+          message_creation: {
+            message_id: 'response-1:call-delegate-1',
+          },
+        },
+        usage: null,
+      };
+      const partialContent = [
+        {
+          type: 'text' as const,
+          text: '已確認原始圖面，開槽連續邊長為 1,400mm',
+          tool_call_ids: ['call-delegate-1'],
+        },
+      ];
+      manager.setGraph(
+        streamId,
+        {
+          contentData: [runStep],
+          getContentParts: () => partialContent,
+        } as never,
+      );
+      manager.setContentParts(streamId, partialContent);
+
+      await manager.emitChunk(streamId, {
+        event: 'on_run_step',
+        data: runStep,
+      });
+      await manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: {
+          id: 'delegate-ocr-message-step',
+          delta: {
+            content: [
+              {
+                type: 'text',
+                text: '已確認原始圖面，',
+                tool_call_ids: ['call-delegate-1'],
+              },
+            ],
+          },
+        },
+      });
+      await manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: {
+          id: 'delegate-ocr-message-step',
+          delta: {
+            content: [
+              {
+                type: 'text',
+                text: '開槽連續邊長為 1,400mm',
+                tool_call_ids: ['call-delegate-1'],
+              },
+            ],
+          },
+        },
+      });
+
+      const resumeState = await manager.getResumeState(streamId);
+      expect(resumeState?.runSteps).toEqual([
+        expect.objectContaining({
+          id: 'delegate-ocr-message-step',
+          index: 0,
+          stepDetails: expect.objectContaining({
+            type: 'message_creation',
+          }),
+        }),
+      ]);
+      expect(resumeState?.aggregatedContent).toEqual([
+        {
+          type: 'text',
+          text: '已確認原始圖面，開槽連續邊長為 1,400mm',
+          tool_call_ids: ['call-delegate-1'],
+        },
+      ]);
+
+      const replayedEvents: ServerSentEvent[] = [];
+      const subscription = await manager.subscribe(streamId, (event) => {
+        replayedEvents.push(event);
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(replayedEvents.map((event) => ('event' in event ? event.event : undefined))).toEqual([
+        'on_run_step',
+        'on_message_delta',
+        'on_message_delta',
+      ]);
+
+      await manager.completeJob(streamId, 'Request aborted');
+      expect((await manager.getJob(streamId))?.error).toBe('Request aborted');
+
+      subscription?.unsubscribe();
+      await manager.destroy();
+    });
+
     test('should send stored error to late-connecting subscriber', async () => {
       GenerationJobManager.configure({
         jobStore: new InMemoryJobStore({ ttlAfterComplete: 60000 }),

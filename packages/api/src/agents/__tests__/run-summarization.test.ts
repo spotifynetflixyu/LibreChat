@@ -288,9 +288,15 @@ describe('custom endpoint stream usage defaults', () => {
       }),
     );
     const overrideModel = (graph as { overrideModel?: unknown }).overrideModel as
-      | { options?: { getSystemRunnable?: () => unknown } }
+      | {
+          options?: {
+            getSystemRunnable?: () => unknown;
+            terminalToolNames?: readonly string[];
+          };
+        }
       | undefined;
     expect(overrideModel?.options?.getSystemRunnable?.()).toBe(systemRunnable);
+    expect(overrideModel?.options?.terminalToolNames).toEqual(['delegate_ocr']);
   });
 
   it('uses configured reasoning effort for OpenAI OAuth runs by default', async () => {
@@ -427,6 +433,49 @@ describe('custom endpoint stream usage defaults', () => {
       | { options?: { modelOptions?: { reasoningEffort?: string } } }
       | undefined;
     expect(overrideModel?.options?.modelOptions?.reasoningEffort).toBe('low');
+  });
+
+  it('publishes the exact selected OpenAI OAuth model options for delegate_ocr', async () => {
+    process.env.OPENAI_DEFAULT_MODEL = 'gpt-5.6-luna';
+    process.env.OPENAI_REASONING_EFFORT = 'high';
+    const sink = jest.fn();
+    const graph = {
+      agentContexts: new Map([['agent_1', { getToolsForBinding: jest.fn(() => []) }]]),
+    };
+    (Run.create as jest.Mock).mockResolvedValueOnce({
+      Graph: graph,
+      processStream: jest.fn().mockResolvedValue(undefined),
+    });
+
+    await createRun({
+      agents: [
+        makeAgent({
+          endpoint: 'openai_oauth_responses',
+          model: 'gpt-5.6-terra',
+          model_parameters: {
+            model: 'gpt-5.6-terra',
+            maxOutputTokens: 12_345,
+            temperature: 0.2,
+            topP: 0.8,
+          },
+          provider: 'openai_oauth_responses',
+        }) as never,
+      ],
+      openAIOAuthModelOptionsSink: sink,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    expect(sink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.6-terra',
+        reasoningEffort: 'high',
+        maxOutputTokens: 12_345,
+        temperature: 0.2,
+        topP: 0.8,
+      }),
+    );
   });
 
   it('lets the OCR markdown path force OpenAI OAuth reasoning effort to none', async () => {

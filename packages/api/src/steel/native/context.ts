@@ -159,20 +159,12 @@ function renderJson(value: SteelNativeJsonValue): string {
 }
 
 function renderAgentRule(rule: SteelAgentRule): string {
-  return compactText([
-    `## ${rule.slug}`,
-    rule.title,
-    `ruleType: ${rule.ruleType}`,
-    `ruleSections: ${rule.ruleSections.join(', ')}`,
-    rule.prompt,
-    rule.toolPolicy === null ? undefined : `toolPolicy: ${JSON.stringify(rule.toolPolicy)}`,
-    rule.outputPolicy === null ? undefined : `outputPolicy: ${JSON.stringify(rule.outputPolicy)}`,
-  ]).join('\n');
+  return compactText([`## ${rule.title}`, rule.prompt]).join('\n');
 }
 
 function renderQuoteDefault(quoteDefault: SteelQuoteDefault): string {
   return compactText([
-    `## quote_default:${quoteDefault.id}`,
+    '## Quote default',
     `defaultType: ${quoteDefault.defaultType}`,
     `scopeType: ${quoteDefault.scopeType}`,
     quoteDefault.effect,
@@ -182,18 +174,7 @@ function renderQuoteDefault(quoteDefault: SteelQuoteDefault): string {
 }
 
 function renderQuoteRule(quoteRule: SteelQuoteRule): string {
-  return compactText([
-    `## quote_rule:${quoteRule.id}`,
-    `ruleType: ${quoteRule.ruleType}`,
-    `scopeType: ${quoteRule.scopeType}`,
-    quoteRule.catalogFamily ? `catalogFamily: ${quoteRule.catalogFamily}` : undefined,
-    quoteRule.productFamily ? `productFamily: ${quoteRule.productFamily}` : undefined,
-    quoteRule.chargeType ? `chargeType: ${quoteRule.chargeType}` : undefined,
-    quoteRule.formulaCode ? `formulaCode: ${quoteRule.formulaCode}` : undefined,
-    quoteRule.prompt,
-    `selectors: ${JSON.stringify(quoteRule.selectors)}`,
-    `parameters: ${JSON.stringify(quoteRule.parameters)}`,
-  ]).join('\n');
+  return quoteRule.prompt.trim();
 }
 
 function buildSlot(

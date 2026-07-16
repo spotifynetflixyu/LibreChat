@@ -35,9 +35,14 @@ const {
   buildSteelNativeEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
+  buildDefaultSteelGlobalAgentContext,
   groupSteelOcrMissingPagesByFileKey,
   isFileAuthoringToolDefinition,
   createSteelNativeTool,
+  createDelegateOcrTool,
+  createDelegateOcrRequestExecute,
+  delegateOcrToolName,
+  normalizeDelegateOcrChunk,
   createSteelPostgresPool,
   createSteelToolRunState,
   executeSteelTool,
@@ -747,6 +752,62 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
     });
 
     return result;
+  };
+}
+
+function createDelegateOcrExecute({ req, signal }) {
+  return async (input) => {
+    const delegateContext = req?.steelNativeContext?.delegateOcrContext;
+    if (!delegateContext?.history || !delegateContext?.modelOptions) {
+      throw new Error('delegate_ocr request context is unavailable');
+    }
+
+    const execute = createDelegateOcrRequestExecute({
+      history: delegateContext.history,
+      modelOptions: delegateContext.modelOptions,
+      userId: req.user?.id,
+      getOwnedFileRecords: async (filter) => (await db.getFiles(filter, {}, {})) ?? [],
+      signStoredFile: async (file) => {
+        const source = file.source ?? req.config?.fileStrategy ?? FileSources.local;
+        const { getDownloadURL } = getStrategyFunctions(source);
+        if (typeof getDownloadURL !== 'function') {
+          throw new Error(`delegate_ocr file source "${source}" cannot create a signed URL`);
+        }
+        return getDownloadURL({ file });
+      },
+      loadOcrRules: async () => {
+        const context = await buildDefaultSteelGlobalAgentContext({
+          conversation: delegateContext.steelConversation,
+          renderProfile: 'agent_client',
+          mode: 'ocr',
+        });
+        const rulesText = context.instructionPrefix?.trim();
+        if (!rulesText) {
+          throw new Error('delegate_ocr could not load OCR, Vision, and OCR main-agent rules');
+        }
+        return rulesText;
+      },
+      invokeModel: async ({ messages, modelOptions, signal: modelSignal, onDelta }) => {
+        const model = createOpenAIOAuthModel(modelOptions);
+        const stream = await model.stream(
+          messages,
+          modelSignal ? { signal: modelSignal } : undefined,
+        );
+        let answer = '';
+        for await (const chunk of stream) {
+          const delta = normalizeDelegateOcrChunk(chunk.content);
+          if (delta === '') {
+            continue;
+          }
+          await onDelta?.(delta);
+          answer += delta;
+        }
+        return answer;
+      },
+      signal,
+    });
+
+    return execute(input);
   };
 }
 
@@ -3101,6 +3162,8 @@ async function loadAgentTools({
  * @param {string|null} [params.streamId] - Stream ID for web search callbacks
  * @param {boolean} [params.actionsEnabled] - Whether the actions capability is enabled
  * @param {boolean} [params.allowPaddleOcr] - Internal preflight-only PaddleOCR access
+ * @param {boolean} [params.enableDelegateOcrStreaming] - Whether the caller installed the
+ *   delegate OCR custom-event handler.
  * @returns {Promise<{ loadedTools: Array, configurable: Object }>}
  */
 async function loadToolsForExecution({
@@ -3117,6 +3180,7 @@ async function loadToolsForExecution({
   streamId = null,
   actionsEnabled,
   allowPaddleOcr = false,
+  enableDelegateOcrStreaming = false,
 }) {
   const appConfig = req.config;
   const ocrTurnActive = req?.steelNativeContext?.ocrTurnActive === true;
@@ -3257,12 +3321,15 @@ async function loadToolsForExecution({
     : allowedNonSpecialToolNames;
 
   const steelToolEntries = [];
+  const delegateToolNames = [];
   const actionToolNames = [];
   const regularToolNames = [];
   for (const name of allToolNamesToLoad) {
     const steelToolName = resolveSteelProviderToolName(name);
     if (steelToolName) {
       steelToolEntries.push({ nativeToolName: name, steelToolName });
+    } else if (name === delegateOcrToolName) {
+      delegateToolNames.push(name);
     } else {
       (isActionTool(name) ? actionToolNames : regularToolNames).push(name);
     }
@@ -3283,6 +3350,17 @@ async function loadToolsForExecution({
           execute,
         }),
       ),
+    );
+  }
+
+  if (delegateToolNames.length > 0) {
+    if (enableDelegateOcrStreaming) {
+      configurable.delegateOcrStreaming = true;
+    }
+    allLoadedTools.push(
+      createDelegateOcrTool({
+        execute: createDelegateOcrExecute({ req, signal }),
+      }),
     );
   }
 

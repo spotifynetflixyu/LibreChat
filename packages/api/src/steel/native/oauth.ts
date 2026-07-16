@@ -808,6 +808,7 @@ export interface OpenAIOAuthGraphModelOptions {
     | undefined;
   getTools?: () => BindToolsInput[] | undefined;
   modelOptions: Omit<OpenAIOAuthModelOptions, 'tools'>;
+  terminalToolNames?: readonly string[];
 }
 
 export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChunk, RunnableConfig> {
@@ -839,6 +840,35 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     return this.options.boundTools ?? this.options.getTools?.();
   }
 
+  private getTerminalToolResponse(messages: BaseMessage[]): AIMessageChunk | undefined {
+    let terminalMessage: BaseMessage | undefined;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message._getType() !== 'tool') {
+        break;
+      }
+      const toolName = (message as BaseMessage & { name?: unknown }).name;
+      if (typeof toolName === 'string' && this.options.terminalToolNames?.includes(toolName)) {
+        terminalMessage = message;
+        break;
+      }
+    }
+    if (!terminalMessage) {
+      return undefined;
+    }
+
+    const artifact = (terminalMessage as BaseMessage & { artifact?: unknown }).artifact;
+    return new AIMessageChunk({
+      content:
+        artifact !== null &&
+        typeof artifact === 'object' &&
+        !Array.isArray(artifact) &&
+        (artifact as { delegateOcrStreamed?: unknown }).delegateOcrStreamed === true
+          ? ''
+          : terminalMessage.content,
+    });
+  }
+
   bindTools(tools: BindToolsInput[]): OpenAIOAuthGraphModel {
     return new OpenAIOAuthGraphModel({
       ...this.options,
@@ -847,6 +877,11 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
   }
 
   async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
+    const terminalResponse = this.getTerminalToolResponse(messages);
+    if (terminalResponse) {
+      return terminalResponse;
+    }
+
     const preparedMessages = await this.prepareMessages(messages, config);
     return createOpenAIOAuthModel({
       ...this.options.modelOptions,
@@ -858,6 +893,12 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     messages: BaseMessage[],
     config?: Partial<RunnableConfig>,
   ): AsyncGenerator<AIMessageChunk> {
+    const terminalResponse = this.getTerminalToolResponse(messages);
+    if (terminalResponse) {
+      yield terminalResponse;
+      return;
+    }
+
     const preparedMessages = await this.prepareMessages(messages, config);
     const stream = await createOpenAIOAuthModel({
       ...this.options.modelOptions,

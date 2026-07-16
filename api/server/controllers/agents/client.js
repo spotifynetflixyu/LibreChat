@@ -693,6 +693,15 @@ class AgentClient extends BaseClient {
     if (paddleOcrPreflight?.ocrTurnActive !== true) {
       payload = stripSteelOcrPartsFromProviderMessages(payload, currentTurnSteelFileReferences);
     }
+    if (this.options.req) {
+      this.options.req.steelNativeContext = {
+        ...(this.options.req.steelNativeContext ?? {}),
+        delegateOcrContext: {
+          ...(this.options.req.steelNativeContext?.delegateOcrContext ?? {}),
+          steelConversation,
+        },
+      };
+    }
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
       attachments: {
@@ -1687,6 +1696,10 @@ class AgentClient extends BaseClient {
         indexTokenCountMap,
         tokenCounter,
       });
+      const delegateOcrContext = this.options.req?.steelNativeContext?.delegateOcrContext;
+      if (delegateOcrContext) {
+        delegateOcrContext.history = initialMessages;
+      }
 
       const memoryMessages =
         this.processMemory && this.memoryPayload
@@ -1771,6 +1784,12 @@ class AgentClient extends BaseClient {
           signal: abortController.signal,
           customHandlers: this.options.eventHandlers,
           openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
+          openAIOAuthModelOptionsSink: (modelOptions) => {
+            const delegateOcrContext = this.options.req?.steelNativeContext?.delegateOcrContext;
+            if (delegateOcrContext) {
+              delegateOcrContext.modelOptions = modelOptions;
+            }
+          },
           requestBody: config.configurable.requestBody,
           user: createSafeUser(this.options.req?.user),
           tenantId: this.options.req?.user?.tenantId,
@@ -2090,6 +2109,12 @@ class AgentClient extends BaseClient {
         signal: abortController.signal,
         customHandlers: this.options.eventHandlers,
         openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
+        openAIOAuthModelOptionsSink: (modelOptions) => {
+          const delegateOcrContext = this.options.req?.steelNativeContext?.delegateOcrContext;
+          if (delegateOcrContext) {
+            delegateOcrContext.modelOptions = modelOptions;
+          }
+        },
         requestBody: config.configurable.requestBody,
         user: createSafeUser(this.options.req?.user),
         tenantId: this.options.req?.user?.tenantId,

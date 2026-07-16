@@ -7,6 +7,7 @@ jest.mock('nanoid', () => ({
 
 jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
+  delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   HOST_FILE_AUTHORING_ARTIFACT_KEY: '__librechat_file_authoring',
   isCodeSessionToolName: jest.fn((name) =>
     ['execute_code', 'bash_tool', 'read_file'].includes(name),
@@ -105,6 +106,176 @@ describe('getDefaultHandlers', () => {
     expect(aggregateContent).toHaveBeenCalledWith({ event, data });
     expect(sendEvent).toHaveBeenCalledTimes(1);
     expect(sendEvent).toHaveBeenCalledWith(expect.any(Object), { event, data });
+  });
+
+  it('projects delegate OCR chunks into one real message step and cleans it up', async () => {
+    const handlers = getDefaultHandlers({
+      res: { headersSent: true, write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+    });
+    const handler = handlers.on_delegate_ocr_stream;
+    const graph = {
+      runId: 'run-1',
+      dispatchRunStep: jest
+        .fn()
+        .mockResolvedValueOnce('ocr-message-step-1')
+        .mockResolvedValueOnce('ocr-message-step-2'),
+      dispatchMessageDelta: jest.fn().mockResolvedValue(undefined),
+    };
+    const metadata = { run_id: 'run-1', langgraph_node: 'agent-1' };
+
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'delta',
+        providerToolCallId: 'call-ocr-1',
+        delta: '第一段',
+      },
+      metadata,
+      graph,
+    );
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'delta',
+        providerToolCallId: 'call-ocr-1',
+        delta: '第二段',
+      },
+      metadata,
+      graph,
+    );
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'complete',
+        providerToolCallId: 'call-ocr-1',
+      },
+      metadata,
+      graph,
+    );
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'delta',
+        providerToolCallId: 'call-ocr-1',
+        delta: '新一輪',
+      },
+      metadata,
+      graph,
+    );
+
+    expect(graph.dispatchRunStep).toHaveBeenCalledTimes(2);
+    expect(graph.dispatchRunStep.mock.calls[0][0]).toContain(
+      'delegate_ocr_stream:run-1:call-ocr-1:',
+    );
+    expect(graph.dispatchRunStep.mock.calls[0][1]).toEqual({
+      type: 'message_creation',
+      message_creation: {
+        message_id: 'run-1:call-ocr-1',
+      },
+    });
+    expect(graph.dispatchMessageDelta).toHaveBeenNthCalledWith(
+      1,
+      'ocr-message-step-1',
+      {
+        content: [
+          {
+            type: 'text',
+            text: '第一段',
+            tool_call_ids: ['call-ocr-1'],
+          },
+        ],
+      },
+      metadata,
+    );
+    expect(graph.dispatchMessageDelta).toHaveBeenNthCalledWith(
+      2,
+      'ocr-message-step-1',
+      {
+        content: [
+          {
+            type: 'text',
+            text: '第二段',
+            tool_call_ids: ['call-ocr-1'],
+          },
+        ],
+      },
+      metadata,
+    );
+    expect(graph.dispatchMessageDelta).toHaveBeenNthCalledWith(
+      3,
+      'ocr-message-step-2',
+      {
+        content: [
+          {
+            type: 'text',
+            text: '新一輪',
+            tool_call_ids: ['call-ocr-1'],
+          },
+        ],
+      },
+      metadata,
+    );
+  });
+
+  it('cleans delegate OCR stream state after an error', async () => {
+    const handlers = getDefaultHandlers({
+      res: { headersSent: true, write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+    });
+    const handler = handlers.on_delegate_ocr_stream;
+    const graph = {
+      runId: 'run-1',
+      dispatchRunStep: jest
+        .fn()
+        .mockResolvedValueOnce('ocr-message-step-1')
+        .mockResolvedValueOnce('ocr-message-step-2'),
+      dispatchMessageDelta: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'delta',
+        providerToolCallId: 'call-ocr-error',
+        delta: 'partial',
+      },
+      { run_id: 'run-1' },
+      graph,
+    );
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'error',
+        providerToolCallId: 'call-ocr-error',
+      },
+      { run_id: 'run-1' },
+      graph,
+    );
+    await handler.handle(
+      'on_delegate_ocr_stream',
+      {
+        phase: 'delta',
+        providerToolCallId: 'call-ocr-error',
+        delta: 'retry',
+      },
+      { run_id: 'run-1' },
+      graph,
+    );
+
+    expect(graph.dispatchRunStep).toHaveBeenCalledTimes(2);
+    expect(graph.dispatchMessageDelta).toHaveBeenNthCalledWith(
+      2,
+      'ocr-message-step-2',
+      expect.objectContaining({
+        content: [expect.objectContaining({ text: 'retry' })],
+      }),
+      { run_id: 'run-1' },
+    );
   });
 });
 

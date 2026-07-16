@@ -57,6 +57,7 @@ describe('Steel native tool adapter', () => {
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'web_search',
+      'delegate_ocr',
       'search_customers',
       'search_price_candidates',
     ]);
@@ -69,6 +70,7 @@ describe('Steel native tool adapter', () => {
     });
 
     expect(getNames(result.toolDefinitions)).toEqual([
+      'delegate_ocr',
       'search_customers',
       'search_price_candidates',
     ]);
@@ -100,6 +102,7 @@ describe('Steel native tool adapter', () => {
 
     expect(getNames(result.toolDefinitions)).toEqual([
       'search_customers',
+      'delegate_ocr',
       'steel_search_customers',
     ]);
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
@@ -169,16 +172,19 @@ describe('Steel native tool adapter', () => {
     const result = stripSteelToolsForOcrTurn({
       tools: [
         { name: 'search_customers' },
+        { name: 'delegate_ocr' },
         { name: 'paddleocr_vl---PaddleOCR' },
         { name: 'web_search' },
       ],
       toolDefinitions: [
         { name: 'search_price_candidates', description: '', parameters: {} },
+        { name: 'delegate_ocr', description: '', parameters: {} },
         { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} },
         { name: 'web_search', description: '', parameters: {} },
       ],
       toolRegistry: new Map([
         ['search_customers', { name: 'search_customers' }],
+        ['delegate_ocr', { name: 'delegate_ocr' }],
         ['paddleocr_vl---PaddleOCR', { name: 'paddleocr_vl---PaddleOCR' }],
         ['web_search', { name: 'web_search' }],
       ]),
@@ -193,22 +199,26 @@ describe('Steel native tool adapter', () => {
 
   it('removes PaddleOCR from a standard main agent without removing Steel tools', () => {
     const result = stripPaddleOcrToolsForMainAgent({
-      tools: ['search_customers', 'paddleocr_vl---PaddleOCR', 'web_search'],
+      tools: ['search_customers', 'delegate_ocr', 'paddleocr_vl---PaddleOCR', 'web_search'],
       toolDefinitions: [
         { name: 'search_customers', description: '', parameters: {} },
+        { name: 'delegate_ocr', description: '', parameters: {} },
         { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} },
       ],
     });
 
-    expect(result.tools).toEqual(['search_customers', 'web_search']);
-    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual(['search_customers']);
+    expect(result.tools).toEqual(['search_customers', 'delegate_ocr', 'web_search']);
+    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual([
+      'search_customers',
+      'delegate_ocr',
+    ]);
   });
 
   it.each([
     {
       name: 'standard turns remove PaddleOCR and retain Steel tools',
       options: {},
-      expected: ['search_customers', 'web_search'],
+      expected: ['search_customers', 'delegate_ocr', 'web_search'],
     },
     {
       name: 'OCR turns remove PaddleOCR and Steel tools',
@@ -218,7 +228,12 @@ describe('Steel native tool adapter', () => {
     {
       name: 'preflight turns retain PaddleOCR and Steel tools',
       options: { allowPaddleOcr: true },
-      expected: ['search_customers', 'paddleocr_vl---PaddleOCR', 'web_search'],
+      expected: [
+        'search_customers',
+        'delegate_ocr',
+        'paddleocr_vl---PaddleOCR',
+        'web_search',
+      ],
     },
     {
       name: 'OCR preflight turns retain PaddleOCR while removing Steel tools',
@@ -228,13 +243,15 @@ describe('Steel native tool adapter', () => {
   ])('$name across native config collections', ({ options, expected }) => {
     const paddleTool = { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} };
     const steelTool = { name: 'search_customers', description: '', parameters: {} };
+    const delegateTool = { name: 'delegate_ocr', description: '', parameters: {} };
     const webTool = { name: 'web_search', description: '', parameters: {} };
     const result = prepareSteelNativeToolConfig(
       {
-        tools: [steelTool, paddleTool, 'web_search'],
-        toolDefinitions: [steelTool, paddleTool, webTool],
+        tools: [steelTool, delegateTool, paddleTool, 'web_search'],
+        toolDefinitions: [steelTool, delegateTool, paddleTool, webTool],
         toolRegistry: new Map([
           [steelTool.name, steelTool],
+          [delegateTool.name, delegateTool],
           [paddleTool.name, paddleTool],
           [webTool.name, webTool],
         ]),

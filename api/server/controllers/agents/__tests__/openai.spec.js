@@ -144,6 +144,7 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   writeSSE: jest.fn(),
   createRun: jest.fn().mockResolvedValue({
     processStream: mockProcessStream,
@@ -245,6 +246,7 @@ const mockGetCacheMultiplier = jest.fn().mockReturnValue(null);
 
 jest.mock('~/server/controllers/agents/callbacks', () => ({
   createToolEndCallback: jest.fn().mockReturnValue(jest.fn()),
+  createDelegateOcrStreamHandler: jest.fn().mockReturnValue({ handle: jest.fn() }),
   buildSummarizationHandlers: jest.fn().mockReturnValue({}),
   markSummarizationUsage: jest.fn().mockImplementation((usage) => usage),
   agentLogHandlerObj: { handle: jest.fn() },
@@ -498,6 +500,8 @@ describe('OpenAIChatCompletionController', () => {
 
   describe('Steel native context', () => {
     it('applies Steel global context to OpenAI-compatible run agents before createRun', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const { formatAgentMessages } = require('@librechat/agents');
       const {
         createRun,
         validateRequest,
@@ -521,6 +525,10 @@ describe('OpenAIChatCompletionController', () => {
           messages: [{ role: 'user', content: 'Hello' }],
           stream: false,
         },
+      });
+      formatAgentMessages.mockReturnValueOnce({
+        messages: [new HumanMessage('Hello')],
+        indexTokenCountMap: {},
       });
 
       await OpenAIChatCompletionController(req, res);
@@ -551,6 +559,20 @@ describe('OpenAIChatCompletionController', () => {
         requestId: 'chatcmpl-mock-nanoid-123',
         assistantTurnIndex: 1,
         memoryCheckpointTurnIndex: 0,
+      });
+      expect(req.steelNativeContext.delegateOcrContext).toMatchObject({
+        history: createRunArgs.messages,
+        steelConversation: expect.objectContaining({
+          requestId: 'chatcmpl-mock-nanoid-123',
+        }),
+      });
+      const latestHistoryMessage = createRunArgs.messages.at(-1);
+      expect(latestHistoryMessage._getType()).toBe('human');
+      expect(JSON.stringify(latestHistoryMessage.content)).toContain('Hello');
+      expect(createRunArgs.openAIOAuthModelOptionsSink).toEqual(expect.any(Function));
+      createRunArgs.openAIOAuthModelOptionsSink({ model: 'gpt-5.6-luna' });
+      expect(req.steelNativeContext.delegateOcrContext.modelOptions).toEqual({
+        model: 'gpt-5.6-luna',
       });
     });
   });

@@ -119,6 +119,7 @@ const mockCreatedHandler = jest.fn();
 const mockStepHandler = jest.fn();
 const mockTitleHandler = jest.fn();
 const mockSteelEventHandler = jest.fn();
+const mockTapStream = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
 
@@ -145,6 +146,20 @@ jest.mock('~/hooks/SSE/useEventHandlers', () => {
     })),
   };
 });
+
+jest.mock('~/hooks/SSE/useUsageHandler', () => ({
+  __esModule: true,
+  default: jest.fn(() => ({
+    contextHandler: jest.fn(),
+    usageHandler: jest.fn(),
+    tapStream: mockTapStream,
+    tapContent: jest.fn(),
+    finalizeUsage: jest.fn(),
+    backfillUsage: jest.fn(),
+    resetLive: jest.fn(),
+    seedLive: jest.fn(),
+  })),
+}));
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -249,6 +264,7 @@ describe('useResumableSSE', () => {
     mockStepHandler.mockClear();
     mockTitleHandler.mockClear();
     mockSteelEventHandler.mockClear();
+    mockTapStream.mockClear();
     mockClearStepMaps.mockClear();
     mockSetIsSubmitting.mockClear();
     mockSetQueryData.mockClear();
@@ -1194,6 +1210,74 @@ describe('useResumableSSE', () => {
     expect(mockStepHandler).toHaveBeenNthCalledWith(
       1,
       { event: StepEvents.ON_RUN_STEP, data: runStep },
+      expect.objectContaining({ userMessage: expect.objectContaining({ messageId: 'msg-1' }) }),
+    );
+    expect(mockStepHandler).toHaveBeenNthCalledWith(
+      2,
+      replayEvent,
+      expect.objectContaining({ userMessage: expect.objectContaining({ messageId: 'msg-1' }) }),
+    );
+
+    unmount();
+  });
+
+  it('replays partial delegate OCR message deltas through the normal stream path', async () => {
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const runStep = {
+      id: 'step-delegate-ocr',
+      runId: 'resp-1',
+      index: 0,
+      stepDetails: {
+        type: 'message_creation',
+        message_creation: {
+          message_id: 'resp-1:call-delegate-1',
+        },
+      },
+    };
+    const replayEvent = {
+      event: StepEvents.ON_MESSAGE_DELTA,
+      data: {
+        id: 'step-delegate-ocr',
+        delta: {
+          content: [
+            {
+              type: 'text',
+              text: '開槽連續邊長為 1,400mm',
+              tool_call_ids: ['call-delegate-1'],
+            },
+          ],
+        },
+      },
+    };
+
+    const sse = getLastSSE();
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          sync: true,
+          resumeState: {
+            runSteps: [runStep],
+            replayEvents: [replayEvent],
+          },
+        }),
+      });
+    });
+
+    expect(mockStepHandler).toHaveBeenNthCalledWith(
+      1,
+      { event: StepEvents.ON_RUN_STEP, data: runStep },
+      expect.objectContaining({ userMessage: expect.objectContaining({ messageId: 'msg-1' }) }),
+    );
+    expect(mockTapStream).toHaveBeenCalledWith(
+      replayEvent.data,
       expect.objectContaining({ userMessage: expect.objectContaining({ messageId: 'msg-1' }) }),
     );
     expect(mockStepHandler).toHaveBeenNthCalledWith(

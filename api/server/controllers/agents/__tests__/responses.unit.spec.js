@@ -57,6 +57,7 @@ const mockGetSkillToolDeps = jest.fn(() => ({}));
 const mockBuildAgentScopedContext = jest.fn().mockResolvedValue(new Map());
 const mockBuildAgentContextAttachmentsByAgentId = jest.fn().mockReturnValue(new Map());
 const mockApplyContextToAgent = jest.fn().mockResolvedValue(undefined);
+const mockStripSteelOcrPartsFromProviderMessages = jest.fn((messages) => [...messages]);
 const mockSteelNativeContext = {
   instructionPrefix: 'Steel global prefix',
   runtimeContextText: 'Steel runtime tail',
@@ -154,6 +155,7 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   createRun: jest.fn().mockResolvedValue({
     processStream: jest.fn().mockResolvedValue(undefined),
   }),
@@ -161,7 +163,8 @@ jest.mock('@librechat/api', () => ({
   prepareSteelNativeToolConfig: jest.fn((config) => config),
   stripPaddleOcrToolsForMainAgent: (config) => config,
   stripSteelToolsForOcrTurn: jest.fn((config) => config),
-  stripSteelOcrPartsFromProviderMessages: (messages) => [...messages],
+  stripSteelOcrPartsFromProviderMessages: (...args) =>
+    mockStripSteelOcrPartsFromProviderMessages(...args),
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
   extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
@@ -283,6 +286,7 @@ jest.mock('~/server/controllers/agents/callbacks', () => {
   return {
     createToolEndCallback: jest.fn().mockReturnValue(jest.fn()),
     createResponsesToolEndCallback: jest.fn().mockReturnValue(jest.fn()),
+    createDelegateOcrStreamHandler: jest.fn().mockReturnValue(noop),
     markSummarizationUsage: jest.fn().mockImplementation((usage) => usage),
     agentLogHandlerObj: noop,
     buildSummarizationHandlers: jest.fn().mockReturnValue({
@@ -852,6 +856,8 @@ describe('createResponse controller', () => {
 
     it('passes Open Responses input_file references into Steel native OCR context', async () => {
       const api = require('@librechat/api');
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const { formatAgentMessages } = require('@librechat/agents');
       const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
       api.initializeAgent.mockResolvedValueOnce({
         id: 'agent-123',
@@ -899,6 +905,10 @@ describe('createResponse controller', () => {
           ],
         },
       ]);
+      formatAgentMessages.mockReturnValueOnce({
+        messages: [new HumanMessage('請分析這張圖')],
+        indexTokenCountMap: {},
+      });
       runSteelPaddleOcrPreflight.mockResolvedValueOnce({
         status: 'completed',
         ocrTurnActive: true,
@@ -969,6 +979,89 @@ describe('createResponse controller', () => {
       );
       expect(api.createRun.mock.calls[0][0]).not.toHaveProperty(
         'openAIOAuthReasoningEffortOverride',
+      );
+      const createRunArgs = api.createRun.mock.calls[0][0];
+      expect(req.steelNativeContext.delegateOcrContext).toMatchObject({
+        history: createRunArgs.messages,
+        steelConversation: expect.objectContaining({
+          requestId: 'resp_mock-123',
+        }),
+      });
+      const latestHistoryMessage = createRunArgs.messages.at(-1);
+      expect(latestHistoryMessage._getType()).toBe('human');
+      expect(JSON.stringify(latestHistoryMessage.content)).toContain('請分析這張圖');
+      expect(createRunArgs.openAIOAuthModelOptionsSink).toEqual(expect.any(Function));
+      createRunArgs.openAIOAuthModelOptionsSink({ model: 'gpt-5.6-luna' });
+      expect(req.steelNativeContext.delegateOcrContext.modelOptions).toEqual({
+        model: 'gpt-5.6-luna',
+      });
+    });
+
+    it('captures the same unstripped history passed to the Responses provider', async () => {
+      const api = require('@librechat/api');
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const { formatAgentMessages } = require('@librechat/agents');
+      const db = require('~/models');
+      const formattedHistory = [
+        new HumanMessage({
+          content: [
+            { type: 'text', text: '請重新確認原始 PDF' },
+            { type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' },
+          ],
+        }),
+      ];
+      const strippedHistory = [new HumanMessage('請重新確認原始 PDF')];
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [
+                { type: 'input_text', text: '請重新確認原始 PDF' },
+                { type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' },
+              ],
+            },
+          ],
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '請重新確認原始 PDF' },
+            { type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' },
+          ],
+        },
+      ]);
+      formatAgentMessages.mockReturnValueOnce({
+        messages: formattedHistory,
+        indexTokenCountMap: {},
+      });
+      mockStripSteelOcrPartsFromProviderMessages.mockReturnValueOnce(strippedHistory);
+      db.getFiles.mockResolvedValueOnce([
+        {
+          file_id: 'file-drawing',
+          filename: 'drawing.pdf',
+          type: 'application/pdf',
+        },
+      ]);
+
+      await createResponse(req, res);
+
+      expect(req.steelNativeContext.delegateOcrContext.history).toBe(formattedHistory);
+      expect(api.createRun.mock.calls.at(-1)[0].messages).toBe(strippedHistory);
+      const run = await api.createRun.mock.results.at(-1).value;
+      expect(run.processStream).toHaveBeenCalledWith(
+        { messages: formattedHistory },
+        expect.any(Object),
+        expect.any(Object),
+      );
+      expect(formattedHistory.at(-1)._getType()).toBe('human');
+      expect(JSON.stringify(formattedHistory.at(-1).content)).toContain(
+        '請重新確認原始 PDF',
       );
     });
 

@@ -3178,7 +3178,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
   const { loadTools, toolEndCallback } = options;
 
   return {
-    handle: async (_event: string, data: ToolExecuteBatchRequest) => {
+    handle: async (_event: string, data: ToolExecuteBatchRequest, _metadata, graph) => {
       const { toolCalls, agentId, configurable, metadata, resolve, reject } = data;
       /** Optional per-call channel (agents SDK > 3.2.33); cast keeps older
        * installed SDK typings compiling until the release lands. */
@@ -3226,6 +3226,17 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
               sourceConfigurable,
               loadedConfigurable,
             );
+            const invocationConfigurable =
+              graph?.handlerRegistry == null ||
+              mergedConfigurable?.delegateOcrStreaming !== true
+                ? mergedConfigurable
+                : {
+                    ...mergedConfigurable,
+                    hostCustomEventDispatcher: async (eventName: string, payload: unknown) => {
+                      const handler = graph.handlerRegistry?.getHandler(eventName);
+                      await handler?.handle(eventName, payload as never, metadata, graph);
+                    },
+                  };
             const authoringQueues = new Map<string, Promise<void>>();
             const sandboxAuthoringContexts = new Map<string, SandboxSessionContext>();
 
@@ -3451,7 +3462,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                     const result = await tool.invoke(normalizeToolInvokeArgs(tc.args, tool), {
                       toolCall: toolCallConfig,
-                      configurable: mergedConfigurable,
+                      configurable: invocationConfigurable,
                       metadata,
                     } as Record<string, unknown>);
 

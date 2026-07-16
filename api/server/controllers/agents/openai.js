@@ -34,6 +34,7 @@ const {
   createOpenAIStreamTracker,
   resolveAgentScopedSkillIds,
   buildDefaultSteelGlobalAgentContext,
+  delegateOcrStreamEventName,
   prepareLibreChatSteelChatContext,
   extractSteelNativeMarkdownText,
   createOpenAIContentAggregator,
@@ -44,6 +45,7 @@ const {
   buildSummarizationHandlers,
   markSummarizationUsage,
   createToolEndCallback,
+  createDelegateOcrStreamHandler,
   agentLogHandlerObj,
 } = require('~/server/controllers/agents/callbacks');
 const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
@@ -555,6 +557,7 @@ const OpenAIChatCompletionController = async (req, res) => {
           userMCPAuthMap: ctx.userMCPAuthMap,
           tool_resources: ctx.tool_resources,
           actionsEnabled: ctx.actionsEnabled,
+          enableDelegateOcrStreaming: true,
         });
         return enrichLoadedToolsWithAgentContext({
           result,
@@ -605,6 +608,14 @@ const OpenAIChatCompletionController = async (req, res) => {
         );
       }
     }
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      delegateOcrContext: {
+        ...(req.steelNativeContext?.delegateOcrContext ?? {}),
+        history: formattedMessages,
+        steelConversation,
+      },
+    };
 
     /**
      * Create a simple handler that processes data
@@ -768,6 +779,7 @@ const OpenAIChatCompletionController = async (req, res) => {
       on_agent_log: agentLogHandlerObj,
       on_custom_event: createHandler(),
       on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
+      [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
       ...(summarizationConfig?.enabled !== false
         ? buildSummarizationHandlers({ isStreaming, res })
         : {}),
@@ -796,6 +808,9 @@ const OpenAIChatCompletionController = async (req, res) => {
       },
       user: { id: userId },
       tenantId: req.user?.tenantId,
+      openAIOAuthModelOptionsSink: (modelOptions) => {
+        req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
+      },
       /** Bills subagent child-run model calls (reported outside the
        *  streamEvents loop) into the same collectedUsage array. */
       subagentUsageSink: createSubagentUsageSink(collectedUsage),

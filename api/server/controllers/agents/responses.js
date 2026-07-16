@@ -16,6 +16,7 @@ const {
   buildAgentScopedContext,
   buildAgentContextAttachmentsByAgentId,
   buildDefaultSteelGlobalAgentContext,
+  delegateOcrStreamEventName,
   prepareLibreChatSteelChatContext,
   prepareSteelNativeToolConfig,
   stripSteelOcrPartsFromProviderMessages,
@@ -59,6 +60,7 @@ const {
   buildSummarizationHandlers,
   markSummarizationUsage,
   createToolEndCallback,
+  createDelegateOcrStreamHandler,
   agentLogHandlerObj,
 } = require('~/server/controllers/agents/callbacks');
 const {
@@ -950,6 +952,14 @@ const createResponse = async (req, res) => {
       paddleOcrPreflight.ocrTurnActive === true
         ? formattedMessages
         : stripSteelOcrPartsFromProviderMessages(formattedMessages, currentTurnFiles);
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      delegateOcrContext: {
+        ...(req.steelNativeContext?.delegateOcrContext ?? {}),
+        history: formattedMessages,
+        steelConversation,
+      },
+    };
 
     /* Stable for the turn: the primary prime list is fixed once
        `initializeAgent` resolves and is used as the fallback when a
@@ -994,6 +1004,7 @@ const createResponse = async (req, res) => {
             userMCPAuthMap: ctx.userMCPAuthMap,
             tool_resources: ctx.tool_resources,
             actionsEnabled: ctx.actionsEnabled,
+            enableDelegateOcrStreaming: true,
           });
           return enrichLoadedToolsWithAgentContext({
             result,
@@ -1028,6 +1039,7 @@ const createResponse = async (req, res) => {
         on_agent_update: { handle: () => {} },
         on_custom_event: { handle: () => {} },
         on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
+        [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
         on_agent_log: agentLogHandlerObj,
         ...(summarizationConfig?.enabled !== false
           ? buildSummarizationHandlers({ isStreaming: actuallyStreaming, res })
@@ -1054,6 +1066,9 @@ const createResponse = async (req, res) => {
         },
         user: { id: userId },
         tenantId: req.user?.tenantId,
+        openAIOAuthModelOptionsSink: (modelOptions) => {
+          req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
+        },
         /** Bills subagent child-run model calls (reported outside the
          *  streamEvents loop) into the same collectedUsage array. */
         subagentUsageSink: createSubagentUsageSink(collectedUsage),
@@ -1181,6 +1196,7 @@ const createResponse = async (req, res) => {
             userMCPAuthMap: ctx.userMCPAuthMap,
             tool_resources: ctx.tool_resources,
             actionsEnabled: ctx.actionsEnabled,
+            enableDelegateOcrStreaming: true,
           });
           return enrichLoadedToolsWithAgentContext({
             result,
@@ -1214,6 +1230,7 @@ const createResponse = async (req, res) => {
         on_agent_update: { handle: () => {} },
         on_custom_event: { handle: () => {} },
         on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
+        [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
         on_agent_log: agentLogHandlerObj,
         ...(summarizationConfig?.enabled !== false
           ? buildSummarizationHandlers({ isStreaming: false, res })
@@ -1239,6 +1256,9 @@ const createResponse = async (req, res) => {
         },
         user: { id: userId },
         tenantId: req.user?.tenantId,
+        openAIOAuthModelOptionsSink: (modelOptions) => {
+          req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
+        },
         /** Bills subagent child-run model calls (reported outside the
          *  streamEvents loop) into the same collectedUsage array. */
         subagentUsageSink: createSubagentUsageSink(collectedUsage),

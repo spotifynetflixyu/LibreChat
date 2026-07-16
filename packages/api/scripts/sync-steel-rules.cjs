@@ -302,7 +302,7 @@ function buildRules(repoRoot) {
       },
       prompt: agent.prompt,
       toolPolicy: {
-        availableTools: ['search_customers', 'search_price_candidates'],
+        availableTools: ['search_customers', 'search_price_candidates', 'delegate_ocr'],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
       priority: 10,
@@ -467,7 +467,7 @@ function buildRules(repoRoot) {
       slug: 'steel-ocr-main-agent-organizer-policy',
       ruleKind: 'other',
       title: 'OCR 主 Agent 整理與合併流程',
-      ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
+      ruleSections: ['delegate_ocr', 'ocr_main_merge', 'final_ocr_markdown'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'other_global_rules'],
         otherGlobalRulesKey: 'ocrMainAgentRules',
@@ -476,6 +476,7 @@ function buildRules(repoRoot) {
       },
       prompt: ocrMainAgent.prompt,
       outputPolicy: {
+        delegateOutputFormat: 'plain_text_or_markdown',
         mainOutputFormat: 'final_ocr_markdown',
         mergeScope: 'same_file_key',
         preserveSourceRows: true,
