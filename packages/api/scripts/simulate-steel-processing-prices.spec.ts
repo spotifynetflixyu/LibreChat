@@ -12,7 +12,7 @@ interface SimulationResult {
     matchedCandidateCount: number;
     unmatchedCandidateCount: number;
     examples: Array<{
-      selected: Array<{ recordType: string; itemName: string }>;
+      selected: Array<{ itemName: string }>;
     }>;
   };
 }
@@ -37,7 +37,7 @@ describe('v4.4 processing price simulation', () => {
     expect(byCategory.get('鐵板')).toEqual(
       expect.objectContaining({
         totalAvailable: 21,
-        selectionRequired: true,
+        selectionRequired: false,
         byProcessingCategory: expect.objectContaining({
           '加工/切工': 7,
           '加工/孔': 7,
@@ -45,7 +45,7 @@ describe('v4.4 processing price simulation', () => {
         }),
       }),
     );
-    expect(byCategory.get('鐵板')?.productNames).toHaveLength(21);
+    expect(byCategory.get('鐵板')?.productNames).toEqual([]);
     expect(byCategory.get('C型鋼')?.totalAvailable).toBe(7);
     expect(byCategory.get('H型鋼')?.totalAvailable).toBe(3);
     expect(byCategory.get('角鐵')?.totalAvailable).toBe(10);
@@ -74,9 +74,7 @@ describe('v4.4 processing price simulation', () => {
     });
     const byCategory = new Map(results.map((result) => [result.targetCategories[0], result]));
 
-    for (const category of categories.filter(
-      (value) => value !== 'I型鋼/工字鐵' && value !== '圓條',
-    )) {
+    for (const category of categories.filter((value) => value !== 'I型鋼/工字鐵')) {
       expect(byCategory.get(category)?.cuttingSimulation?.materialCandidateCount).toBeGreaterThan(
         0,
       );
@@ -91,15 +89,15 @@ describe('v4.4 processing price simulation', () => {
     expect(byCategory.get('圓條')?.cuttingSimulation).toEqual(
       expect.objectContaining({
         materialCandidateCount: 60,
-        matchedCandidateCount: 0,
-        unmatchedCandidateCount: 60,
+        matchedCandidateCount: 22,
+        unmatchedCandidateCount: 38,
       }),
     );
     expect(byCategory.get('方鐵')?.cuttingSimulation).toEqual(
-      expect.objectContaining({ materialCandidateCount: 22, matchedCandidateCount: 21 }),
+      expect.objectContaining({ materialCandidateCount: 22, matchedCandidateCount: 10 }),
     );
     expect(byCategory.get('方鐵')?.cuttingSimulation?.examples[0]?.selected).toEqual([
-      expect.objectContaining({ recordType: 'price', itemName: '1/2"' }),
+      expect.objectContaining({ itemName: '1/2"' }),
     ]);
   });
 });

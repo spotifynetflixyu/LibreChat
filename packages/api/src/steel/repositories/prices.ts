@@ -9,6 +9,7 @@ import { processingPriceCategories } from '../pricing/processing-candidates';
 
 import type { SteelRepositoryClient, SteelSourceBackedRecord, SteelSourceRef } from './types';
 import type { PriceLookupMaterialKind, PriceCategory } from '../pricing/enums';
+import type { ProcessingPriceCategory } from '../pricing/processing-candidates';
 
 export type SteelPriceKind = 'product' | 'cutting' | 'hole';
 export type SteelPriceValueState = 'confirmed' | 'ratio_only' | 'no_price';
@@ -142,14 +143,12 @@ export interface SteelPriceLookupQuery {
   stockLengthMm?: readonly string[];
   erpItemCode?: string;
   keyword?: string;
-  limit?: number;
 }
 
 export interface SteelPriceCategoryDiscoveryQuery {
   queryId: string;
   mode: 'category_discovery';
   keyword: string;
-  limit?: number;
 }
 
 export type SteelPriceCandidateQuery = SteelPriceLookupQuery | SteelPriceCategoryDiscoveryQuery;
@@ -161,6 +160,7 @@ export interface SearchSteelPriceCandidateGroupsInput {
 
 export interface SearchSteelProcessingPriceCandidatesInput {
   includeInactive?: boolean;
+  categories?: readonly ProcessingPriceCategory[];
 }
 
 export interface SteelPriceCategoryCandidate {
@@ -191,7 +191,6 @@ interface SerializedPriceQuery {
   stock_length_mm?: readonly string[];
   erp_item_code?: string;
   keyword_terms?: readonly string[];
-  query_limit: number;
 }
 
 function normalizeKeywordText(value: string): string {
@@ -229,24 +228,12 @@ function formatDecimalString(value: string): string {
   return String(parsed);
 }
 
-function getPriceQueryLimit(limit: number | undefined): number {
-  if (limit === undefined) {
-    return 30;
-  }
-  if (!Number.isInteger(limit) || limit < 1) {
-    throw new Error('Steel price query limit must be a positive integer');
-  }
-
-  return Math.min(limit, 100);
-}
-
 function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number) {
   const base = {
     query_index: queryIndex,
     query_id: query.queryId,
     mode: query.mode ?? 'lookup',
     keyword_terms: toKeywordTerms(query.keyword),
-    query_limit: getPriceQueryLimit(query.limit),
   } as const;
 
   if (query.mode === 'category_discovery') {
@@ -428,8 +415,7 @@ WITH input_queries AS (
     thickness_mm TEXT[],
     stock_length_mm TEXT[],
     erp_item_code TEXT,
-    keyword_terms TEXT[],
-    query_limit INTEGER
+    keyword_terms TEXT[]
   )
 )
 SELECT
@@ -549,10 +535,9 @@ SELECT
                 false
               )
             )
-          )
-        ORDER BY p.spec_sort_key ASC NULLS LAST, p.product_name ASC NULLS LAST, p.id ASC
-        LIMIT input_query.query_limit
-      ) AS price_candidate
+        )
+      ORDER BY p.spec_sort_key ASC NULLS LAST, p.product_name ASC NULLS LAST, p.id ASC
+    ) AS price_candidate
     ),
     '[]'::jsonb
   ) AS price_candidates,
@@ -583,10 +568,9 @@ SELECT
               false
             )
           )
-        GROUP BY p.category, p.material
-        ORDER BY candidate_count DESC, p.category ASC, p.material ASC NULLS LAST
-        LIMIT input_query.query_limit
-      ) AS category_candidate
+      GROUP BY p.category, p.material
+      ORDER BY candidate_count DESC, p.category ASC, p.material ASC NULLS LAST
+    ) AS category_candidate
     ),
     '[]'::jsonb
   ) AS category_candidates
@@ -680,7 +664,7 @@ export async function searchSteelProcessingPriceCandidates(
 ): Promise<SteelPriceItem[]> {
   const result = await client.query<SteelPriceItemRow>(processingPriceCandidatesSql, [
     input.includeInactive ?? false,
-    processingPriceCategories,
+    input.categories ?? processingPriceCategories,
     null,
   ]);
 

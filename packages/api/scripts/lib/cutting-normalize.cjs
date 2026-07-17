@@ -1,22 +1,18 @@
 const CUTTING_PRICE_OPERATIONS = Object.freeze([
   '加工/切工',
-  '加工/孔',
-  '加工/倒角',
-  '加工/開槽',
 ]);
 
 const CANONICAL_CUTTING_HEADERS = Object.freeze([
   'cutting_category',
-  'record_type',
   'item_name',
   'cut_type',
   'spec_text',
-  'normalized_spec_text',
   'inch_min',
   'inch_max',
   'mm_min',
   'mm_max',
-  'thickness_axis',
+  'height_mm',
+  'width_mm',
   'thickness_mm_values',
   'thickness_mm_min',
   'thickness_mm_max',
@@ -25,29 +21,23 @@ const CANONICAL_CUTTING_HEADERS = Object.freeze([
   'unit_price_b',
   'unit_price_c',
   'unit_price_f',
-  'conditions_json',
-  'calculation_rule',
   'notes',
-  'source_sheet',
-  'source_row',
-  'spec_selector_json',
 ]);
 
 const EXPECTED_CUTTING_PRICE_RECONCILIATION = Object.freeze({
-  importRows: 100,
-  priceRows: 100,
-  supplementRows: 0,
+  importRows: 97,
   byCategory: Object.freeze({
-    H型鋼: 22,
+    H型鋼: 19,
     '工字鐵/H型鋼': 31,
     鐵管: 13,
     角鐵: 12,
     槽鐵: 12,
-    '鐵板/平鐵': 10,
+    平鐵: 10,
   }),
-  mmRangeRows: 97,
-  unrestrictedRows: 3,
-  thicknessConstrainedRows: 14,
+  profileDimensionRows: 50,
+  mmRangeRows: 47,
+  unrestrictedRows: 0,
+  thicknessConstrainedRows: 11,
 });
 
 const applicableCategoriesByCuttingCategory = Object.freeze({
@@ -56,20 +46,8 @@ const applicableCategoriesByCuttingCategory = Object.freeze({
   鐵管: ['圓管', '方管', '扁方管', '圓條', '方鐵'],
   角鐵: ['角鐵'],
   槽鐵: ['槽鐵'],
-  '鐵板/平鐵': ['鐵板', '平鐵'],
+  平鐵: ['平鐵'],
 });
-
-const CUTTING_SPEC_SELECTOR_VERSION = 1;
-const ALLOWED_SELECTOR_AXES = Object.freeze([
-  'height_mm',
-  'width_mm',
-  'nominal_size_mm',
-  'outer_size_mm',
-  'long_leg_mm',
-  'short_leg_mm',
-  'thickness_mm',
-  'flange_thickness_mm',
-]);
 
 const RAW_FIELD_ALIASES = Object.freeze({
   cutting_category: '來源區塊',
@@ -90,6 +68,18 @@ function normalizeText(value) {
     .replace(/：/gu, ':')
     .replace(/\s+/gu, ' ')
     .trim();
+}
+
+function normalizeCuttingCategory(value) {
+  const category = normalizeText(value);
+  return category === '鐵板/平鐵' || category === '黑平鐵' ? '平鐵' : category;
+}
+
+function appendUniqueNote(value, note) {
+  const notes = normalizeText(value);
+  if (!notes) return note;
+  if (notes.includes(note)) return notes;
+  return `${notes}；${note}`;
 }
 
 function positiveNumber(value, label) {
@@ -141,7 +131,9 @@ function parseRange(value, label) {
 }
 
 function parseThicknesses(notes, label) {
-  const match = normalizeText(notes).match(/厚度\s*:\s*([^\s]+)/u);
+  const match = normalizeText(notes).match(
+    /厚度\s*:\s*([0-9.]+(?:\s*[、,，]\s*[0-9.]+)*)/u,
+  );
   if (!match) throw new Error(`${label} is missing 厚度 notes`);
   const values = match[1]
     .split(/[、,，]/u)
@@ -149,54 +141,6 @@ function parseThicknesses(notes, label) {
     .map((value) => positiveNumber(value, label));
   if (!values.length) throw new Error(`${label} is missing thickness values`);
   return [...new Set(values)].sort((a, b) => a - b);
-}
-
-function exact(value) {
-  return { kind: 'exact', value };
-}
-
-function minimum(value) {
-  return { kind: 'minimum', value, inclusive: true };
-}
-
-function oneOf(values) {
-  return { kind: 'one_of', values: [...new Set(values)].sort((a, b) => a - b) };
-}
-
-function range(min, max) {
-  return { kind: 'range', min, max, min_inclusive: true, max_inclusive: true };
-}
-
-function axisSelector(axes) {
-  return JSON.stringify({
-    version: CUTTING_SPEC_SELECTOR_VERSION,
-    match: 'any',
-    selectors: [{ type: 'axis_constraints', axes }],
-  });
-}
-
-function inferProcessingMethod(text) {
-  if (/剪床/u.test(text)) return '剪床';
-  if (/雷射|CNC/u.test(text)) return '雷射';
-  if (/鋸床|鋸切/u.test(text)) return '鋸床';
-  if (/水刀/u.test(text)) return '水刀';
-  if (/火切|氧切|電離子/u.test(text)) return '火';
-  return null;
-}
-
-function inferProcessingShape(cutType, text) {
-  if (/切斜|翼板切斜|外形|割型|切圓/u.test(`${cutType} ${text}`)) return '外形切割';
-  if (cutType === '加工/切工') return '直線切割';
-  return null;
-}
-
-function parseConditions(value) {
-  const text = normalizeText(value) || '{}';
-  const parsed = JSON.parse(text);
-  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
-    throw new Error('conditions_json must be an object');
-  }
-  return parsed;
 }
 
 function normalizePrice(value) {
@@ -207,143 +151,94 @@ function normalizePrice(value) {
   return number;
 }
 
-function appendUniqueProcessingTokens(searchBase, ...tokens) {
-  const output = normalizeText(searchBase).split(' ').filter(Boolean);
-  for (const token of tokens) if (token && !output.includes(token)) output.push(token);
-  return output.join(' ');
-}
-
-function buildCuttingSpecSelector(raw) {
-  const category = normalizeText(raw.cutting_category);
-  const cutType = normalizeText(raw.cut_type);
-  const specText = normalizeText(raw.spec_text) || normalizeText(raw.item_name);
-  const label = `${category}/${cutType}/${specText || 'unrestricted'}`;
-
-  if (category === 'H型鋼' && ['加工/孔', '加工/倒角', '加工/開槽'].includes(cutType)) {
-    return axisSelector({ flange_thickness_mm: minimum(14) });
-  }
-  if (category === 'H型鋼' && cutType === '加工/切工') {
-    const [height, width] = parseDimensionPair(specText, label);
-    return axisSelector({ height_mm: exact(height), width_mm: exact(width) });
-  }
-  if (category === '工字鐵/H型鋼' && cutType === '加工/切工') {
-    const [height, width] = parseDimensionPair(specText, label);
-    return axisSelector({ height_mm: exact(height), width_mm: exact(width) });
-  }
-  if (category === '鐵管' && cutType === '加工/切工') {
-    return axisSelector(/"/u.test(specText) ? { nominal_size_mm: exact(mmFromInch(parseInch(specText, label))) } : { outer_size_mm: exact(positiveNumber(specText, label)) });
-  }
-  if (category === '角鐵' && cutType === '加工/切工') {
-    if (/x/u.test(specText)) {
-      const [first, second] = parseDimensionPair(specText, label).sort((a, b) => b - a);
-      return axisSelector({ long_leg_mm: exact(first), short_leg_mm: exact(second) });
-    }
-    const size = /"/u.test(specText) ? mmFromInch(parseInch(specText, label)) : positiveNumber(specText, label);
-    return axisSelector({ long_leg_mm: exact(size), short_leg_mm: exact(size) });
-  }
-  if (category === '槽鐵' && cutType === '加工/切工') {
-    if (/x/u.test(specText)) {
-      const [height, second] = parseDimensionPair(specText, label);
-      if (height === 150 && second === 9) return axisSelector({ height_mm: exact(height), thickness_mm: exact(second) });
-      if (height === 200 && second === 90) return axisSelector({ height_mm: exact(height), width_mm: exact(second) });
-      throw new Error(`Unsupported 槽鐵 AxB spec at ${label}`);
-    }
-    return axisSelector({ height_mm: exact(parseMetricOrInch(specText, label)) });
-  }
-  if (category === '鐵板/平鐵' && cutType === '加工/切工') {
-    const dimensions = parseRange(specText, label);
-    const thicknessValues = parseThicknesses(raw.notes, label);
-    return axisSelector({ width_mm: range(dimensions.mmMin, dimensions.mmMax), thickness_mm: oneOf(thicknessValues) });
-  }
-  throw new Error(`Unsupported cutting selector at ${label}`);
-}
-
 function deriveSizing(category, cutType, specText, notes) {
-  if (category === 'H型鋼' && ['加工/孔', '加工/倒角', '加工/開槽'].includes(cutType)) {
-    return { inchMin: null, inchMax: null, mmMin: null, mmMax: null, thicknessAxis: 'flange', thicknessValues: null, thicknessMin: 14, thicknessMax: null };
+  if (cutType !== '加工/切工') {
+    throw new Error(`Unsupported cutting type: ${cutType}`);
+  }
+  if (category === 'H型鋼' || category === '工字鐵/H型鋼') {
+    const [heightMm, widthMm] = parseDimensionPair(specText, `${category}/${specText}`);
+    return {
+      inchMin: null,
+      inchMax: null,
+      mmMin: null,
+      mmMax: null,
+      heightMm,
+      widthMm,
+      thicknessValues: null,
+      thicknessMin: null,
+      thicknessMax: null,
+    };
   }
   if (category === '鐵管' && cutType === '加工/切工') {
     if (/"/u.test(specText)) {
       const inch = parseInch(specText, `${category}/${specText}`);
-      return { inchMin: inch, inchMax: inch, mmMin: mmFromInch(inch), mmMax: mmFromInch(inch), thicknessAxis: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
+      return { inchMin: inch, inchMax: inch, mmMin: mmFromInch(inch), mmMax: mmFromInch(inch), heightMm: null, widthMm: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
     }
     const mm = positiveNumber(specText, `${category}/${specText}`);
-    return { inchMin: null, inchMax: null, mmMin: mm, mmMax: mm, thicknessAxis: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
+    return { inchMin: null, inchMax: null, mmMin: mm, mmMax: mm, heightMm: null, widthMm: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
   }
   if (category === '角鐵' && cutType === '加工/切工') {
     const text = normalizeText(specText);
     const pair = /x/u.test(text) ? parseDimensionPair(text, `${category}/${text}`) : null;
     const raw = pair ? Math.max(...pair) : parseMetricOrInch(text, `${category}/${text}`);
     const inch = !/x/u.test(text) && /"/u.test(text) ? parseInch(text, `${category}/${text}`) : null;
-    return { inchMin: inch, inchMax: inch, mmMin: raw, mmMax: raw, thicknessAxis: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
+    return { inchMin: inch, inchMax: inch, mmMin: raw, mmMax: raw, heightMm: null, widthMm: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
   }
   if (category === '槽鐵' && cutType === '加工/切工') {
     const text = normalizeText(specText);
     if (/x/u.test(text)) {
       const [height, second] = parseDimensionPair(text, `${category}/${text}`);
-      return { inchMin: null, inchMax: null, mmMin: height, mmMax: height, thicknessAxis: height === 150 && second === 9 ? 'material' : null, thicknessValues: height === 150 && second === 9 ? [second] : null, thicknessMin: null, thicknessMax: null };
+      return { inchMin: null, inchMax: null, mmMin: height, mmMax: height, heightMm: null, widthMm: null, thicknessValues: height === 150 && second === 9 ? [second] : null, thicknessMin: null, thicknessMax: null };
     }
     const inch = /"/u.test(text) ? parseInch(text, `${category}/${text}`) : null;
     const mm = inch === null ? positiveNumber(text, `${category}/${text}`) : mmFromInch(inch);
-    return { inchMin: inch, inchMax: inch, mmMin: mm, mmMax: mm, thicknessAxis: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
+    return { inchMin: inch, inchMax: inch, mmMin: mm, mmMax: mm, heightMm: null, widthMm: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
   }
-  if (category === '鐵板/平鐵' && cutType === '加工/切工') {
+  if (category === '平鐵' && cutType === '加工/切工') {
     const dimensions = parseRange(specText, `${category}/${specText}`);
     const thicknessValues = parseThicknesses(notes, `${category}/${specText}`);
-    return { ...dimensions, thicknessAxis: 'material', thicknessValues, thicknessMin: null, thicknessMax: null };
+    return { ...dimensions, heightMm: null, widthMm: null, thicknessValues, thicknessMin: null, thicknessMax: null };
   }
-  const [height] = parseDimensionPair(specText, `${category}/${specText}`);
-  return { inchMin: null, inchMax: null, mmMin: height, mmMax: height, thicknessAxis: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
+  throw new Error(`Unsupported cutting category: ${category}`);
 }
 
 function normalizeCuttingWorkbookRow(raw) {
-  const category = normalizeText(raw.cutting_category);
-  const recordType = normalizeText(raw.record_type);
+  const category = normalizeCuttingCategory(raw.cutting_category);
   const itemName = normalizeText(raw.item_name);
   const cutType = normalizeText(raw.cut_type);
   const specText = normalizeText(raw.spec_text);
-  const notes = normalizeText(raw.notes);
-  const processingText = `${itemName} ${specText} ${notes}`;
-  const normalizedSpecText = appendUniqueProcessingTokens(specText || itemName, inferProcessingMethod(processingText), inferProcessingShape(cutType, processingText));
-  const existingConditions = parseConditions(raw.conditions_json);
-  const sizing = recordType === 'price' ? deriveSizing(category, cutType, specText || itemName, notes) : { inchMin: null, inchMax: null, mmMin: null, mmMax: null, thicknessAxis: null, thicknessValues: null, thicknessMin: null, thicknessMax: null };
-  const conditions = {
-    ...existingConditions,
-    applicable_categories: applicableCategoriesByCuttingCategory[category] ?? [],
-    processing_category: cutType,
-    processing_method: inferProcessingMethod(processingText),
-    processing_shape: inferProcessingShape(cutType, processingText),
-  };
+  const sourceNotes = normalizeText(raw.notes).replace(/白鐵平鐵另計/gu, '白鐵另計');
+  const notes =
+    category === '平鐵' && cutType === '加工/切工'
+      ? appendUniqueNote(sourceNotes, '白鐵另計')
+      : sourceNotes;
+  const sizing = deriveSizing(category, cutType, specText || itemName, notes);
+  const unitPriceA = normalizePrice(raw.unit_price_a);
+  const unitPriceB = normalizePrice(raw.unit_price_b) ?? unitPriceA;
   return {
     cutting_category: category,
-    record_type: recordType,
     item_name: itemName,
     cut_type: cutType,
     spec_text: specText || null,
-    normalized_spec_text: normalizedSpecText || null,
     inch_min: sizing.inchMin,
     inch_max: sizing.inchMax,
     mm_min: sizing.mmMin,
     mm_max: sizing.mmMax,
-    thickness_axis: sizing.thicknessAxis,
+    height_mm: sizing.heightMm,
+    width_mm: sizing.widthMm,
     thickness_mm_values: sizing.thicknessValues ? JSON.stringify(sizing.thicknessValues) : null,
     thickness_mm_min: sizing.thicknessMin,
     thickness_mm_max: sizing.thicknessMax,
-    unit: recordType === 'price' ? '刀' : null,
-    unit_price_a: normalizePrice(raw.unit_price_a),
-    unit_price_b: normalizePrice(raw.unit_price_b),
+    unit: '刀',
+    unit_price_a: unitPriceA,
+    unit_price_b: unitPriceB,
     unit_price_c: normalizePrice(raw.unit_price_c),
     unit_price_f: normalizePrice(raw.unit_price_f),
-    conditions_json: JSON.stringify(conditions),
-    calculation_rule: normalizeText(raw.calculation_rule) || null,
     notes: notes || null,
-    source_sheet: normalizeText(raw.source_sheet),
-    source_row: Number(raw.source_row),
-    spec_selector_json: buildCuttingSpecSelector({ category, cutting_category: category, recordType, record_type: recordType, itemName, item_name: itemName, cutType, cut_type: cutType, specText, spec_text: specText, notes }),
   };
 }
 
-function mapRawCuttingRow(raw, sourceRow) {
+function mapRawCuttingRow(raw) {
   const category = normalizeText(raw[RAW_FIELD_ALIASES.cutting_category]);
   const size = normalizeText(raw[RAW_FIELD_ALIASES.item_name]);
   const cutType = normalizeText(raw[RAW_FIELD_ALIASES.cut_type]);
@@ -351,30 +246,22 @@ function mapRawCuttingRow(raw, sourceRow) {
   const itemName = size || cutType;
   return normalizeCuttingWorkbookRow({
     cutting_category: category,
-    record_type: 'price',
     item_name: itemName,
     cut_type: cutType,
     spec_text: size || null,
-    normalized_spec_text: '',
     unit_price_a: raw[RAW_FIELD_ALIASES.unit_price_acf],
     unit_price_b: raw[RAW_FIELD_ALIASES.unit_price_b],
     unit_price_c: raw[RAW_FIELD_ALIASES.unit_price_acf],
     unit_price_f: raw[RAW_FIELD_ALIASES.unit_price_acf],
-    conditions_json: '{}',
-    calculation_rule: null,
     notes: raw[RAW_FIELD_ALIASES.notes],
-    source_sheet: '全部整理資料',
-    source_row: sourceRow,
   });
 }
 
 module.exports = {
-  ALLOWED_SELECTOR_AXES,
   CANONICAL_CUTTING_HEADERS,
   CUTTING_PRICE_OPERATIONS,
   EXPECTED_CUTTING_PRICE_RECONCILIATION,
   applicableCategoriesByCuttingCategory,
-  buildCuttingSpecSelector,
   deriveSizing,
   mapRawCuttingRow,
   normalizeCuttingWorkbookRow,

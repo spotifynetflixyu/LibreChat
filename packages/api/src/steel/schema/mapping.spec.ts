@@ -80,12 +80,18 @@ describe('Steel source schema mapping', () => {
     expect(
       resolveSourceSchemaMapping({
         sourceFile: 'docs/reference/切工價錢-v4.4-normalized.xlsx',
-        sourceLabel: 'spec_selector_json',
+        sourceLabel: 'height_mm',
       }),
     ).toMatchObject({
-      canonicalKey: 'cutting_spec_selector',
-      target: 'steel.cutting_prices.spec_selector',
+      canonicalKey: 'cutting_height_mm',
+      target: 'steel.cutting_prices.height_mm',
     });
+    expect(
+      resolveSourceSchemaMapping({
+        sourceFile: '切工價錢-v4.4-normalized.xlsx',
+        sourceLabel: 'spec_selector_json',
+      }),
+    ).toBeUndefined();
     expect(
       resolveSourceSchemaMapping({
         sourceFile: '客戶資料.xlsx',
@@ -118,10 +124,27 @@ describe('Steel source schema mapping', () => {
     ).toBeUndefined();
     expect(
       resolveSourceSchemaMapping({
-        sourceFile: '切工價錢-raw.xlsm',
+        sourceFile: '切工價錢-raw.xlsx',
         sourceLabel: 'tier A/C/F',
       }),
-    ).toMatchObject({ canonicalKey: 'unit_price_acf', target: 'steel.cutting_prices.unit_price_a|c|f' });
+    ).toMatchObject({
+      canonicalKey: 'unit_price_acf',
+      target: 'steel.cutting_prices.unit_price_a|c|f',
+    });
+  });
+
+  it('keeps cutting import metadata out of price lookup context', () => {
+    const context = buildSourceSchemaMappingPromptContext({
+      sourceFiles: ['切工價錢-v4.4-normalized.xlsx'],
+      allowedFor: 'price_lookup',
+    });
+
+    expect(context).toContain('cutting_thickness_mm_values');
+    expect(context).toContain('cutting_height_mm');
+    expect(context).toContain('cutting_width_mm');
+    expect(context).not.toContain('cutting_thickness_axis');
+    expect(context).not.toContain('cutting_spec_selector');
+    expect(context).not.toContain('cutting_calculation_rule');
   });
 
   it('builds compact prompt context scoped by source files and target usage', () => {

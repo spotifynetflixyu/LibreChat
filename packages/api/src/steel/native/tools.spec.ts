@@ -82,7 +82,6 @@ describe('Steel native tool adapter', () => {
     );
     const exclusiveBounds = parameters.flatMap(collectExclusiveBounds);
 
-    expect(exclusiveBounds.length).toBeGreaterThan(0);
     expect(exclusiveBounds.every((bound) => typeof bound === 'number')).toBe(true);
     expect(JSON.stringify(parameters)).not.toContain('"const":');
   });
@@ -105,6 +104,9 @@ describe('Steel native tool adapter', () => {
       'delegate_ocr',
       'steel_search_customers',
     ]);
+    expect(result.toolDefinitions?.find(({ name }) => name === 'delegate_ocr')?.description).toBe(
+      '重新讀取或核對原始圖片與 PDF 內容。',
+    );
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
       'steel_search_customers',
     );

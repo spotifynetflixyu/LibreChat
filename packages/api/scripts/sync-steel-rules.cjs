@@ -89,10 +89,6 @@ function readRulePrompt(repoRoot, sourceFile) {
   return { prompt, sha256: sha256(prompt) };
 }
 
-function readFileSha(repoRoot, sourceFile) {
-  return sha256(fs.readFileSync(path.join(repoRoot, sourceFile)));
-}
-
 function listTextFiles(repoRoot, sourceDir) {
   const absoluteDir = path.join(repoRoot, sourceDir);
   if (!fs.existsSync(absoluteDir)) {
@@ -264,9 +260,7 @@ function categoryRule({ sourceFile, prompt, fileSha }) {
     },
     prompt,
     priority: metadata.priority,
-    sourceRefs: [
-      sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule'),
-    ],
+    sourceRefs: [sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule')],
   });
 }
 
@@ -277,7 +271,6 @@ function buildRules(repoRoot) {
   const vision = readRulePrompt(repoRoot, 'docs/rules/其他規則/Vision規則.txt');
   const ocrSubagent = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR子Agent整理規則.txt');
   const ocrMainAgent = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR主Agent整理規則.txt');
-  const handbookSha = readFileSha(repoRoot, 'docs/reference/龍頂鋼鐵手冊__文字版.docx');
   const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則')
     .map((sourceFile) => {
       const rule = readRulePrompt(repoRoot, sourceFile);
@@ -313,13 +306,6 @@ function buildRules(repoRoot) {
           'agent_default_instruction',
           agent.sha256,
           'agent_rule',
-        ),
-        sourceRef(
-          'docs/reference/龍頂鋼鐵手冊__文字版.docx',
-          'Page 14 鋼軌表；Page 21 方鋼表；Page 22 圓鋼表',
-          'steel_density_table_handbook',
-          handbookSha,
-          'reference_handbook',
         ),
       ],
     }),

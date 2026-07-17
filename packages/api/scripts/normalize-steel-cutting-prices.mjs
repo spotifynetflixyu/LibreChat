@@ -13,7 +13,7 @@ const {
   mapRawCuttingRow,
 } = require('./lib/cutting-normalize.cjs');
 
-const DEFAULT_INPUT_PATH = path.resolve(import.meta.dirname, '../../../docs/reference/切工價錢-raw.xlsm');
+const DEFAULT_INPUT_PATH = path.resolve(import.meta.dirname, '../../../docs/reference/切工價錢-raw.xlsx');
 const DEFAULT_OUTPUT_PATH = path.resolve(import.meta.dirname, '../../../docs/reference/切工價錢-v4.4-normalized.xlsx');
 const RAW_SHEET = '全部整理資料';
 
@@ -41,37 +41,46 @@ function sourceRowsFromWorkbook(workbook) {
   if (headers.length !== expected.length || headers.some((header, index) => header !== expected[index])) {
     throw new Error('Raw 全部整理資料 headers do not match the exact cutting catalog contract');
   }
-  return matrix.slice(1).map((cells, index) => ({
-    sourceRow: index + 2,
-    raw: Object.fromEntries(expected.map((header, column) => [header, cells[column] ?? ''])),
-  }));
+  return matrix
+    .slice(1)
+    .map((cells) => Object.fromEntries(expected.map((header, column) => [header, cells[column] ?? ''])));
 }
 
 function mapRawRows(inputPath) {
   const workbook = XLSX.readFile(inputPath, { raw: false, cellDates: false });
-  return sourceRowsFromWorkbook(workbook)
-    .map(({ raw, sourceRow }) => mapRawCuttingRow(raw, sourceRow))
-    .filter(Boolean);
+  return sourceRowsFromWorkbook(workbook).map(mapRawCuttingRow).filter(Boolean);
 }
 
 function validateNormalizedRows(rows) {
   const byCategory = {};
-  const sourceRows = new Set();
+  let profileDimensionRows = 0;
   let mmRangeRows = 0;
   let unrestrictedRows = 0;
   let thicknessConstrainedRows = 0;
   for (const row of rows) {
-    if (row.record_type !== 'price' || row.unit !== '刀') {
-      throw new Error(`Invalid price contract at ${row.source_sheet}:${row.source_row}`);
+    if (row.cut_type !== '加工/切工' || row.unit !== '刀') {
+      throw new Error(`Invalid cutting price contract: ${row.cutting_category}/${row.item_name}`);
     }
-    if (sourceRows.has(row.source_row)) {
-      throw new Error(`Duplicate cutting source row: ${row.source_row}`);
-    }
-    sourceRows.add(row.source_row);
     byCategory[row.cutting_category] = (byCategory[row.cutting_category] ?? 0) + 1;
-    if (row.mm_min === null) unrestrictedRows += 1;
-    else mmRangeRows += 1;
-    if (row.thickness_axis !== null) thicknessConstrainedRows += 1;
+    const hFamily = row.cutting_category === 'H型鋼' || row.cutting_category === '工字鐵/H型鋼';
+    const hasProfileDimensions = row.height_mm !== null && row.width_mm !== null;
+    if (
+      hFamily
+        ? !hasProfileDimensions || row.mm_min !== null || row.mm_max !== null
+        : row.height_mm !== null || row.width_mm !== null
+    ) {
+      throw new Error(`Invalid profile dimensions: ${row.cutting_category}/${row.item_name}`);
+    }
+    if (hasProfileDimensions) profileDimensionRows += 1;
+    else if (row.mm_min !== null && row.mm_max !== null) mmRangeRows += 1;
+    else unrestrictedRows += 1;
+    if (
+      row.thickness_mm_values !== null
+      || row.thickness_mm_min !== null
+      || row.thickness_mm_max !== null
+    ) {
+      thicknessConstrainedRows += 1;
+    }
   }
   const expected = EXPECTED_CUTTING_PRICE_RECONCILIATION;
   const categoryMatches =
@@ -80,6 +89,7 @@ function validateNormalizedRows(rows) {
       .every(([category, count]) => byCategory[category] === count);
   if (
     rows.length !== expected.importRows
+    || profileDimensionRows !== expected.profileDimensionRows
     || mmRangeRows !== expected.mmRangeRows
     || unrestrictedRows !== expected.unrestrictedRows
     || thicknessConstrainedRows !== expected.thicknessConstrainedRows
@@ -89,6 +99,7 @@ function validateNormalizedRows(rows) {
       `Cutting normalization reconciliation mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify({
         importRows: rows.length,
         byCategory,
+        profileDimensionRows,
         mmRangeRows,
         unrestrictedRows,
         thicknessConstrainedRows,
@@ -122,12 +133,9 @@ async function writeNormalizedWorkbook(rows, outputPath) {
     fgColor: { argb: 'FFD9EAF7' },
   };
   sheet.columns.forEach((column, index) => {
-    if (index < 6) column.width = 16;
-    else if (index < 19) column.width = 12;
-    else if (index === 19 || index === 24) column.width = 48;
-    else if (index === 20) column.width = 20;
-    else if (index === 21 || index === 22) column.width = 24;
-    else column.width = 10;
+    if (index < 4) column.width = 18;
+    else if (index === CANONICAL_CUTTING_HEADERS.length - 1) column.width = 36;
+    else column.width = 12;
   });
   await workbook.xlsx.writeFile(outputPath);
 }

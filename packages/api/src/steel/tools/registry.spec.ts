@@ -56,7 +56,6 @@ describe('Steel tool registry', () => {
             thicknessMm: ['2'],
             erpItemCode: '00123',
             keyword: '50x2',
-            limit: 101,
           },
           { mode: 'category_discovery', keyword: '白鐵 方管' },
         ],
@@ -71,7 +70,6 @@ describe('Steel tool registry', () => {
           thicknessMm: ['2'],
           erpItemCode: '00123',
           keyword: '50x2',
-          limit: 100,
         },
         { queryId: 'q2', mode: 'category_discovery', keyword: '白鐵 方管' },
       ],
@@ -93,11 +91,18 @@ describe('Steel tool registry', () => {
       }),
     ).toThrow('Unrecognized key');
 
-    expect(definition.description).toContain('one call');
-    expect(definition.description).toContain('known order lines');
-    expect(definition.description).toContain('processingQueries');
-    expect(definition.description).toContain('productNames');
-    expect(definition.description).toContain('cuttingPrices');
+    expect(definition.description).toBe(
+      'Find material, cutting, and processing price candidates for one or more order lines.',
+    );
+    expect(definition.description).not.toContain('queries');
+    expect(definition.description).not.toContain('processingQueries');
+    expect(definition.description).not.toContain('productNames');
+    expect(definition.description).not.toContain('cuttingPrices');
+    expect(definition.description).not.toContain('processingPrice');
+    expect(definition.description).not.toContain('matchedQueryIds');
+    expect(definition.description).not.toContain('candidateMatches');
+    expect(definition.description).not.toContain('manualReviewNotes');
+    expect(definition.description).not.toContain('10 rows');
     expect(definition.description).not.toContain('queryId');
     expect(definition.description).not.toContain('q1');
     expect(definition.description).not.toContain('clamped');
@@ -105,6 +110,9 @@ describe('Steel tool registry', () => {
     expect(definition.description).not.toContain('no top-level');
   });
   it('uses AI-supplied keyword arrays for customer lookup only', () => {
+    expect(getSteelToolDefinition('search_customers').description).toBe(
+      'Find Steel customer records for quoting.',
+    );
     expect(
       getSteelToolDefinition('search_customers').argsSchema.parse({
         keywords: ['大成', 'A001'],

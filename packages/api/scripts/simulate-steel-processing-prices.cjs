@@ -18,7 +18,6 @@ const {
   isProcessingCandidateApplicable,
   matchesProcessingKeyword,
   processingPriceCategories,
-  processingPriceDiscoveryLimit,
 } = require('../src/steel/pricing/processing-candidates');
 const { applicableCategoriesByCuttingCategory } = require('./lib/cutting-normalize.cjs');
 
@@ -71,26 +70,23 @@ function toCuttingCandidate(row, index) {
   };
 }
 
-function toCuttingRecord(row) {
-  const sharedB = row.unitPriceA ?? row.unitPriceC ?? row.unitPriceF ?? null;
-  let tierBSource = null;
-  if (row.unitPriceB !== null) {
-    tierBSource = 'B';
-  } else if (sharedB !== null) {
-    tierBSource = 'A/C/F';
-  }
+function toCuttingRecord(row, index) {
+  const sharedB = row.unitPriceA ?? null;
   return {
-    id: row.sourceRow,
+    id: index + 1,
     cuttingCategory: row.cuttingCategory,
-    recordType: row.recordType,
     itemName: row.itemName,
     cutType: row.cutType,
     specText: row.specText ?? undefined,
-    normalizedSpecText: row.normalizedSpecText ?? undefined,
     inchMin: row.inchMin,
     inchMax: row.inchMax,
     mmMin: row.mmMin,
     mmMax: row.mmMax,
+    heightMm: row.heightMm,
+    widthMm: row.widthMm,
+    thicknessMmValues: row.thicknessValues,
+    thicknessMmMin: row.thicknessMin,
+    thicknessMmMax: row.thicknessMax,
     unit: row.unit ?? undefined,
     tierPrices: {
       A: row.unitPriceA,
@@ -98,9 +94,6 @@ function toCuttingRecord(row) {
       C: row.unitPriceC,
       F: row.unitPriceF,
     },
-    tierBSource,
-    conditions: row.conditions,
-    calculationRule: row.calculationRule ?? undefined,
     notes: row.notes ?? undefined,
   };
 }
@@ -115,30 +108,21 @@ function buildCuttingGroups(cuttingRows) {
         cuttingCategory,
         sourceCategories,
         queryIds: [],
-        prices: records.filter(
-          (record) => record.recordType === 'price' && record.cutType === '加工/切工',
-        ),
-        supplements: records.filter((record) => record.recordType === 'supplement'),
+        prices: records,
+        candidateMatches: [],
       };
     },
   );
 }
 
 function describeCuttingSelection(groups) {
-  return groups.flatMap((group) => [
-    ...group.prices.map((record) => ({
+  return groups.flatMap((group) =>
+    group.prices.map((record) => ({
       cuttingCategory: group.cuttingCategory,
-      recordType: 'price',
       itemName: record.itemName,
       tierPrices: record.tierPrices,
     })),
-    ...group.supplements.map((record) => ({
-      cuttingCategory: group.cuttingCategory,
-      recordType: 'supplement',
-      itemName: record.itemName,
-      notes: record.notes,
-    })),
-  ]);
+  );
 }
 
 function simulateCuttingPrices(rows, cuttingRows, category) {
@@ -243,16 +227,9 @@ function simulateProcessingPrices(rows, targetCategories, keyword) {
     targetCategories,
     keyword: keyword ?? null,
     totalAvailable: processingRows.length,
-    exceedsTotalLimit: processingRows.length > processingPriceDiscoveryLimit,
-    selectionRequired: processingRows.length > processingPriceDiscoveryLimit,
-    productNames:
-      processingRows.length > processingPriceDiscoveryLimit
-        ? [...new Set(processingRows.map((row) => row.productName).filter(Boolean))]
-        : [],
+    selectionRequired: false,
+    productNames: [],
     byProcessingCategory,
-    oversizedProcessingCategories: Object.entries(byProcessingCategory)
-      .filter(([, count]) => count > processingPriceDiscoveryLimit)
-      .map(([category, count]) => ({ category, count })),
   };
 }
 

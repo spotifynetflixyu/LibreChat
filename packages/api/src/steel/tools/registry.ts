@@ -34,13 +34,13 @@ const providerToolNames = new Set<SteelProviderToolName>([
 const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_customers',
-    description: 'Search Steel customers by one or more names, aliases, tax IDs, or ERP codes.',
+    description: 'Find Steel customer records for quoting.',
     argsSchema: steelToolArgsSchemas.search_customers,
   },
   {
     name: 'search_price_candidates',
     description:
-      'Search material and processing price candidates for all known order lines in one call. Put materials in queries; omit unit for the category default or provide an explicit unit override when the order requires it. Matching cuttingPrices and applicable processingPrice may be returned with materials. For explicit processing needs, put up to three lookups in processingQueries; each may target multiple product and processing categories. Processing discovery returns prices when at most 10 rows match, otherwise only productNames. Only after such a result, requery with top-level productNames alone to retrieve the selected prices; never use productNames for initial lookup or double charge the same processing item.',
+      'Find material, cutting, and processing price candidates for one or more order lines.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
 ];

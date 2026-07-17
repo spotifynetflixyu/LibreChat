@@ -2,7 +2,7 @@ import { normalizeSteelSpecKey } from '../normalization/spec';
 
 import type { PriceCategory } from './enums';
 
-export const processingPriceCategories = Object.freeze([
+const processingPriceCategoryValues = [
   '加工/切工',
   '加工/孔',
   '加工/倒角',
@@ -10,18 +10,27 @@ export const processingPriceCategories = Object.freeze([
   '加工/折工',
   '加工/焊接',
   '加工/其他',
-] as const);
+] as const;
 
-export const processingPriceDiscoveryLimit = 10;
+export type ProcessingPriceCategory = (typeof processingPriceCategoryValues)[number];
 
-export type ProcessingPriceCategory = (typeof processingPriceCategories)[number];
+export const processingPriceCategories: readonly ProcessingPriceCategory[] = Object.freeze(
+  processingPriceCategoryValues,
+);
 
 export interface ProcessingCandidateDescriptor {
   category: PriceCategory | string;
-  subcategory?: string;
+  subcategory?: string | null;
   productName?: string;
   normalizedSpecText?: string;
+  thicknessMinMm?: number | null;
+  thicknessMaxMm?: number | null;
   erpItemCode: string;
+}
+
+export function isGenericProcessingSubcategory(subcategory: string | null | undefined): boolean {
+  const normalized = subcategory?.trim();
+  return !normalized || normalized === '通用';
 }
 
 const materialCategorySet = new Set<PriceCategory>([
@@ -123,7 +132,43 @@ export function isProcessingCandidateApplicable(
     return explicitTargets.some((category) => targetCategories.has(category));
   }
 
-  return candidate.subcategory === '通用' || candidate.category === '加工/焊接';
+  return (
+    (candidate.category === '加工/切工' && isGenericProcessingSubcategory(candidate.subcategory)) ||
+    candidate.subcategory === '通用' ||
+    candidate.category === '加工/焊接'
+  );
+}
+
+export function isProcessingCandidateSpecApplicable(
+  candidate: ProcessingCandidateDescriptor,
+  thicknessMm: readonly string[] | undefined,
+): boolean {
+  if (candidate.category !== '加工/切工') {
+    return true;
+  }
+
+  const { thicknessMinMm, thicknessMaxMm } = candidate;
+  if (thicknessMinMm == null && thicknessMaxMm == null) {
+    return true;
+  }
+  if (thicknessMinMm == null || thicknessMaxMm == null) {
+    return false;
+  }
+  if (!thicknessMm) {
+    return true;
+  }
+
+  return thicknessMm.some((value) => {
+    const requested = Number(value);
+    if (!Number.isFinite(requested)) {
+      return false;
+    }
+    if (thicknessMinMm === thicknessMaxMm) {
+      return requested === thicknessMinMm;
+    }
+
+    return thicknessMinMm <= requested && requested < thicknessMaxMm;
+  });
 }
 
 export function matchesProcessingKeyword(
@@ -133,7 +178,9 @@ export function matchesProcessingKeyword(
   return matchesProcessingKeywordTerms(candidate, compileProcessingKeyword(keyword));
 }
 
-export function compileProcessingKeyword(keyword: string | undefined): readonly string[] | undefined {
+export function compileProcessingKeyword(
+  keyword: string | undefined,
+): readonly string[] | undefined {
   if (!keyword) {
     return undefined;
   }

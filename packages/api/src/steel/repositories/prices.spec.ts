@@ -97,7 +97,6 @@ describe('Steel price candidate repository', () => {
           stockLengthMm: ['6000', '9000', '9000', '10000.0'],
           erpItemCode: '00123',
           keyword: '黑鐵鋼管 50*2',
-          limit: 101,
         },
         {
           queryId: 'discover',
@@ -140,6 +139,8 @@ describe('Steel price candidate repository', () => {
     expect(sql).not.toContain('source_subcategory_label');
     expect(sql).not.toContain('source_spec');
     expect(sql).not.toContain('product_price_unit_weight');
+    expect(sql).not.toContain('query_limit');
+    expect(sql).not.toMatch(/\bLIMIT\b/u);
     expect(serializedQueries).toEqual([
       expect.objectContaining({
         query_index: 0,
@@ -152,13 +153,11 @@ describe('Steel price candidate repository', () => {
         thickness_mm: ['2', '2.3'],
         stock_length_mm: ['6000', '9000', '10000'],
         erp_item_code: '00123',
-        query_limit: 100,
       }),
       expect.objectContaining({
         query_index: 1,
         query_id: 'discover',
         mode: 'category_discovery',
-        query_limit: 30,
       }),
       expect.objectContaining({
         query_index: 2,
@@ -339,6 +338,21 @@ describe('Steel price candidate repository', () => {
         processingShape: '圓孔',
       }),
     ]);
+  });
+
+  it('loads all rows for one requested processing category without spec filters', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await searchSteelProcessingPriceCandidates({ query } as SteelRepositoryClient, {
+      categories: ['加工/切工'],
+    });
+
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[1]).toEqual([false, ['加工/切工'], null]);
+    expect(sql).toContain("p.value_state <> 'no_price'");
+    expect(sql).toContain('p.category = ANY($2::text[])');
+    expect(sql).not.toContain('requested_thickness');
   });
 
   it('uses the same selected columns for exact product-name prices across all categories', async () => {

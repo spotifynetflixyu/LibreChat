@@ -461,8 +461,7 @@ export function createDelegateOcrRequestExecute({
 export function getDelegateOcrToolDefinition(): LCTool {
   return {
     name: delegateOcrToolName,
-    description:
-      '重新讀取、核對或以 Vision 檢查原始 image/PDF。傳入需要重新確認的 file keys；回傳 Native OCR model 的最終答案。',
+    description: '重新讀取或核對原始圖片與 PDF 內容。',
     parameters: zodToJsonSchema(delegateOcrArgsSchema, {
       name: delegateOcrToolName,
       target: 'openApi3',

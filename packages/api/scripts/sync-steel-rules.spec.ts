@@ -293,7 +293,6 @@ describe('Steel rule sources', () => {
       /一般 parser/iu,
       /queryResults 順序/iu,
       /前次結果已達30/iu,
-      /超過10筆只返回/iu,
     ];
 
     expect(builtSourceFiles).toEqual(sourceFiles);
@@ -345,7 +344,8 @@ describe('Steel rule sources', () => {
     expect(cTypeRule).not.toContain('"keyword":"加工名稱"');
     expect(cTypeRule).not.toContain('通用 canonical 優先規則');
     expect(cTypeRule).not.toContain('材料與加工放在同一次 tool call');
-    expect(guide).not.toContain('超過10筆只返回全部唯一 `productNames`');
+    expect(guide).toContain('當單一材料 query 結果超過10筆而只得到 `productNames`');
+    expect(guide).toContain('把所選品名放入頂層 `productNames` 重查完整價格候選');
     expect(guide).not.toContain('前次結果已達30');
     expect(guide).not.toContain('queryResults');
     expect(guide).toContain('材料切工只採與所選材料相符的切工價格');
@@ -393,6 +393,9 @@ describe('Steel rule sources', () => {
       'search_customers',
       'search_price_candidates',
       'delegate_ocr',
+    ]);
+    expect(agentRule?.sourceRefs.map(({ sourceFile }) => sourceFile)).toEqual([
+      'docs/rules/agent規則.txt',
     ]);
   });
 
@@ -487,14 +490,29 @@ describe('Steel rule sources', () => {
     expect(guide).not.toMatch(/processing_(?:method|shape)/u);
     expect(processing).not.toMatch(/processing_(?:method|shape)/u);
     expect(processing).toContain('`processingQueries.keyword`');
+    expect(processing).toContain('各類別 keyword 只依下列對應規則');
+    expect(processing).toContain('不得自行猜測其他 keyword');
+    expect(processing).toContain('加工/切工、加工/開槽與加工/倒角需要用加工方式縮小候選時');
     expect(processing).toContain('正規化加工方式 `[剪床|雷射|鋸床|水刀|火]`');
     expect(processing).toContain('正規化形狀 `[外形切割|直線切割]`');
+    expect(processing).toContain(
+      '`processingQueries.keyword` 只可從需求中已確認的 `[滾圓|端板|喇叭桶|壓花|拋光|雷射畫線]`',
+    );
+    expect(processing).toContain('依序只使用需求中已確認的 `折型符號`、`厚度`、`長度`');
+    expect(processing).not.toContain(
+      '[保護|厚板|喇叭桶|噴砂/塗裝|壓花|拋光|整平|滾圓|烤漆|熱浸鍍|端板|雕花|雷射畫線|其他|C型鋼]',
+    );
+    expect(processing).not.toContain(
+      '[一般|下軌|中柱|含切工|工具箱|斗笠|消音|無缺口|特殊|花板|豬公|車斗]',
+    );
     expect(processing).not.toContain('正規化加工方式 `[沖床|雷射|鑽床|水刀]`');
     expect(processing).not.toContain('`□`、`◇`、`○`');
     expect(hole).not.toMatch(/processing_(?:method|shape)/u);
     expect(hole).toContain('`processingQueries.keyword`');
     expect(hole).toContain('正規化加工方式 `[沖床|雷射|鑽床|水刀]`');
     expect(hole).toContain('孔型 `[圓孔|方孔|菱形孔|長孔|橢圓孔]`');
+    expect(hole).toContain('沒有清單內的已確認值就省略 keyword');
+    expect(hole).toContain('不得自行猜測清單外 keyword');
     expect(hole).not.toContain('正規化加工方式 `[剪床|雷射|鋸床|水刀|火]`');
     expect(hole).not.toMatch(/只返回 `productNames`|精確重取依/u);
     expect(hole).toContain('C型鋼不適用本 block');

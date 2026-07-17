@@ -9,10 +9,11 @@ import {
 import {
   compileProcessingKeyword,
   hasUnusableProcessingProductName,
+  isGenericProcessingSubcategory,
   isProcessingCandidateApplicable,
+  isProcessingCandidateSpecApplicable,
   matchesProcessingKeywordTerms,
   processingPriceCategories,
-  processingPriceDiscoveryLimit,
 } from '../pricing/processing-candidates';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
@@ -25,7 +26,11 @@ import type {
   SteelToolErrorCategory,
 } from './results';
 import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
-import type { SteelPriceItem, SteelPriceTierValues } from '../repositories';
+import type {
+  SteelPriceItem,
+  SteelPriceTierValues,
+  SteelCuttingPriceRecord,
+} from '../repositories';
 import type { PriceCategory } from '../pricing/enums';
 import type { SteelToolName } from './schemas';
 
@@ -175,12 +180,7 @@ function getLongMaterialBillingPolicy(candidate: SteelPriceItem): SteelRawToolOu
 }
 
 function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
-  const {
-    tierPrices,
-    tierRatios,
-    unitPriceBase: _unitPriceBase,
-    ...candidateFields
-  } = candidate;
+  const { tierPrices, tierRatios, unitPriceBase: _unitPriceBase, ...candidateFields } = candidate;
   const pricingOptions: SteelRawToolOutput[] = [];
   const skippedPricingOptions: SteelRawToolOutput[] = [];
   const hasTierPrices = hasPriceTierValue(tierPrices);
@@ -249,6 +249,28 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
   };
 }
 
+function toSafeCuttingPriceRecord(record: SteelCuttingPriceRecord): SteelRawToolOutput {
+  return {
+    id: record.id,
+    cuttingCategory: record.cuttingCategory,
+    itemName: record.itemName,
+    cutType: record.cutType,
+    specText: record.specText,
+    inchMin: record.inchMin,
+    inchMax: record.inchMax,
+    mmMin: record.mmMin,
+    mmMax: record.mmMax,
+    heightMm: record.heightMm,
+    widthMm: record.widthMm,
+    thicknessMmValues: record.thicknessMmValues,
+    thicknessMmMin: record.thicknessMmMin,
+    thicknessMmMax: record.thicknessMmMax,
+    unit: record.unit,
+    tierPrices: record.tierPrices,
+    notes: record.notes,
+  };
+}
+
 function getPlatePriceModeRank(candidate: SteelPriceItem): number {
   const text = `${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`;
   if (text.includes('雷射切割')) {
@@ -292,32 +314,37 @@ function orderPriceCandidates(
   );
 }
 
-const processingPriceItemLimit = processingPriceDiscoveryLimit;
+const materialCandidateSelectionThreshold = 10;
 
-const suggestedProcessingKeywords: Partial<Record<string, readonly string[]>> = {
-  '加工/切工': ['剪床', '雷射', '鋸床', '水刀', '火', '外形切割', '直線切割'],
-  '加工/孔': ['沖床', '雷射', '鑽床', '水刀', '圓孔', '方孔', '菱形孔', '長孔', '橢圓孔'],
-  '加工/折工': ['折型符號', '厚度', '長度'],
-  '加工/其他': ['滾圓', '端板', '喇叭桶', '壓花', '拋光', '雷射畫線'],
-};
+interface ProcessingTargetSpec {
+  queryId: string;
+  category: PriceCategory;
+  thicknessMm?: readonly string[];
+}
 
 function getProcessingQueries(input: SearchPriceCandidatesInput) {
   if (input.processingQueries) {
     return input.processingQueries;
   }
 
-  const categories = [
-    ...new Set(
-      input.queries.flatMap((query) => {
-        if (query.mode === 'category_discovery' || query.category.startsWith('加工/')) {
-          return [];
-        }
-        return [query.category];
-      }),
-    ),
-  ];
+  const targetSpecs = input.queries.flatMap<ProcessingTargetSpec>((query) => {
+    if (query.mode === 'category_discovery' || query.category.startsWith('加工/')) {
+      return [];
+    }
 
-  return categories.length > 0 ? [{ queryId: 'p1', categories }] : [];
+    return [
+      {
+        queryId: query.queryId,
+        category: query.category,
+        ...(query.thicknessMm ? { thicknessMm: query.thicknessMm } : {}),
+      },
+    ];
+  });
+  const categories = [...new Set(targetSpecs.map(({ category }) => category))];
+
+  return categories.length > 0
+    ? [{ queryId: 'p1', categories, processingCategories: ['加工/切工' as const], targetSpecs }]
+    : [];
 }
 
 function buildProcessingPrice(
@@ -325,51 +352,64 @@ function buildProcessingPrice(
   targetCategories: readonly PriceCategory[],
   requestedProcessingCategories: readonly PriceCategory[] | undefined,
   keyword: string | undefined,
-  productNames: readonly string[] | undefined,
+  targetSpecs: readonly ProcessingTargetSpec[] | undefined,
 ): SteelRawToolOutput {
   const targets = new Set(targetCategories);
   const requested = requestedProcessingCategories
     ? new Set(requestedProcessingCategories)
     : undefined;
-  const requestedProductNames = productNames
-    ? new Set(productNames.map((name) => name.normalize('NFKC').trim()))
-    : undefined;
   const keywordTerms = compileProcessingKeyword(keyword);
-  const applicable = candidates.flatMap((candidate) => {
+  const applicable = candidates.flatMap<SteelRawToolOutput>((candidate) => {
+    const matchedTargetSpecs =
+      candidate.category === '加工/切工' && targetSpecs
+        ? targetSpecs.filter(
+            (targetSpec) =>
+              isProcessingCandidateApplicable(candidate, new Set([targetSpec.category])) &&
+              isProcessingCandidateSpecApplicable(candidate, targetSpec.thicknessMm),
+          )
+        : undefined;
     if (
       (requested && !requested.has(candidate.category as PriceCategory)) ||
-      (requestedProductNames &&
-        (!candidate.productName ||
-          !requestedProductNames.has(candidate.productName.normalize('NFKC').trim()))) ||
-      (!requestedProductNames && !isProcessingCandidateApplicable(candidate, targets)) ||
+      !isProcessingCandidateApplicable(candidate, targets) ||
+      (matchedTargetSpecs && matchedTargetSpecs.length === 0) ||
       !matchesProcessingKeywordTerms(candidate, keywordTerms)
     ) {
       return [];
     }
 
     const safe = toSafePriceCandidate(candidate);
-    return safe.quoteEligible === true ? [safe] : [];
+    if (safe.quoteEligible !== true) {
+      return [];
+    }
+
+    return [
+      {
+        ...safe,
+        ...(matchedTargetSpecs
+          ? { matchedQueryIds: matchedTargetSpecs.map(({ queryId }) => queryId) }
+          : {}),
+      },
+    ];
   });
   const availableCounts = new Map<string, number>();
   applicable.forEach((candidate) => {
     const category = String(candidate.category);
     availableCounts.set(category, (availableCounts.get(category) ?? 0) + 1);
   });
-  const allProductNames = [
-    ...new Set(
-      applicable.flatMap((candidate) =>
-        typeof candidate.productName === 'string' ? [candidate.productName] : [],
-      ),
-    ),
-  ];
-  const selectionRequired = !requestedProductNames && applicable.length > processingPriceItemLimit;
-  const returnedCandidates = selectionRequired ? [] : applicable;
   const grouped = new Map<string, SteelRawToolOutput[]>();
-  returnedCandidates.forEach((candidate) => {
+  applicable.forEach((candidate) => {
     const category = String(candidate.category);
     const items = grouped.get(category) ?? [];
     items.push(candidate);
     grouped.set(category, items);
+  });
+  grouped.get('加工/切工')?.sort((left, right) => {
+    const leftSubcategory = typeof left.subcategory === 'string' ? left.subcategory : undefined;
+    const rightSubcategory = typeof right.subcategory === 'string' ? right.subcategory : undefined;
+    return (
+      Number(isGenericProcessingSubcategory(leftSubcategory)) -
+      Number(isGenericProcessingSubcategory(rightSubcategory))
+    );
   });
   const availableByCategory = processingPriceCategories.flatMap((category) => {
     const totalAvailable = availableCounts.get(category) ?? 0;
@@ -381,12 +421,11 @@ function buildProcessingPrice(
     targetCategories,
     processingCategories: requestedProcessingCategories ?? [...processingPriceCategories],
     keyword: keyword ?? null,
-    requestedProductNames: productNames ?? [],
-    discoveryItemLimit: processingPriceItemLimit,
+    targetSpecs: targetSpecs ?? [],
     totalAvailable: applicable.length,
-    returnedCount: returnedCandidates.length,
-    selectionRequired,
-    productNames: selectionRequired ? allProductNames : [],
+    returnedCount: applicable.length,
+    selectionRequired: false,
+    productNames: [],
     truncated: false,
     groups: processingPriceCategories.flatMap((category) => {
       const items = grouped.get(category) ?? [];
@@ -395,11 +434,7 @@ function buildProcessingPrice(
         : [];
     }),
     availableByCategory,
-    suggestedKeywords: availableByCategory.flatMap((group) =>
-      group.totalAvailable > processingPriceItemLimit
-        ? (suggestedProcessingKeywords[group.processingCategory] ?? [])
-        : [],
-    ),
+    suggestedKeywords: [],
   };
 }
 
@@ -428,26 +463,19 @@ async function searchPriceCandidates(
     searchSteelPriceCandidateGroups(client, { queries: input.queries }),
     searchSteelCuttingPriceGroups(client, input.queries),
     processingQueries.length > 0
-      ? searchSteelProcessingPriceCandidates(client)
+      ? searchSteelProcessingPriceCandidates(client, {
+          categories: processingPriceCategories.filter((category) =>
+            processingQueries.some(
+              (query) =>
+                !query.processingCategories ||
+                new Set<PriceCategory>(query.processingCategories).has(category),
+            ),
+          ),
+        })
       : Promise.resolve([]),
   ]);
   const groupsByIndex = new Map(repositoryGroups.map((group) => [group.queryIndex, group]));
-  const candidatesByCategory = new Map<PriceCategory, SteelPriceItem[]>();
-  input.queries.forEach((query, queryIndex) => {
-    if (query.mode === 'category_discovery') {
-      return;
-    }
-    const candidates = candidatesByCategory.get(query.category) ?? [];
-    const seen = new Set(candidates.map((candidate) => candidate.id));
-    (groupsByIndex.get(queryIndex)?.candidates ?? []).forEach((candidate) => {
-      if (!seen.has(candidate.id)) {
-        seen.add(candidate.id);
-        candidates.push(candidate);
-      }
-    });
-    candidatesByCategory.set(query.category, candidates);
-  });
-  const cuttingCandidateMatches = input.queries.flatMap((query) => {
+  const cuttingCandidateMatches = input.queries.flatMap((query, queryIndex) => {
     if (query.mode === 'category_discovery') {
       return [];
     }
@@ -455,7 +483,7 @@ async function searchPriceCandidates(
       {
         queryId: query.queryId,
         category: query.category,
-        candidates: candidatesByCategory.get(query.category) ?? [],
+        candidates: groupsByIndex.get(queryIndex)?.candidates ?? [],
       },
     ];
   });
@@ -468,13 +496,25 @@ async function searchPriceCandidates(
   let categoryCandidateCount = 0;
   const queryResults = input.queries.map((query, queryIndex) => {
     const repositoryGroup = groupsByIndex.get(queryIndex);
-    const candidates = orderPriceCandidates(query, repositoryGroup?.candidates ?? []).map(
-      toSafePriceCandidate,
-    );
+    const orderedCandidates = orderPriceCandidates(query, repositoryGroup?.candidates ?? []);
+    const allCandidates = orderedCandidates.map(toSafePriceCandidate);
+    const selectionRequired =
+      query.mode !== 'category_discovery' &&
+      allCandidates.length > materialCandidateSelectionThreshold;
+    const candidates = selectionRequired ? [] : allCandidates;
+    const productNames = selectionRequired
+      ? [
+          ...new Set(
+            orderedCandidates.flatMap((candidate) =>
+              candidate.productName ? [candidate.productName] : [],
+            ),
+          ),
+        ]
+      : [];
     const categoryCandidates = repositoryGroup?.categoryCandidates ?? [];
-    const matched = candidates.length > 0 || categoryCandidates.length > 0;
+    const matched = allCandidates.length > 0 || categoryCandidates.length > 0;
 
-    candidateCount += candidates.length;
+    candidateCount += allCandidates.length;
     categoryCandidateCount += categoryCandidates.length;
     matchedQueryCount += matched ? 1 : 0;
 
@@ -483,6 +523,10 @@ async function searchPriceCandidates(
       query,
       status: matched ? 'ok' : 'no_match',
       candidates,
+      productNames,
+      totalAvailable: allCandidates.length,
+      returnedCount: candidates.length,
+      selectionRequired,
       categoryCandidates,
       issues: [],
     };
@@ -493,20 +537,20 @@ async function searchPriceCandidates(
       'categories' in query ? query.categories : [],
       'processingCategories' in query ? query.processingCategories : undefined,
       'keyword' in query ? query.keyword : undefined,
-      'productNames' in query && Array.isArray(query.productNames)
-        ? query.productNames.filter((value): value is string => typeof value === 'string')
-        : undefined,
+      'targetSpecs' in query ? query.targetSpecs : undefined,
     ),
     queryId: query.queryId,
   }));
   const processingPrice = {
     maxQueries: 3,
-    maxDiscoveryItemsPerQuery: processingPriceItemLimit,
     queryResults: processingQueryResults,
   };
   return {
     queryResults,
-    cuttingPrices: filteredCuttingPrices,
+    cuttingPrices: filteredCuttingPrices.map((group) => ({
+      ...group,
+      prices: group.prices.map(toSafeCuttingPriceRecord),
+    })),
     summary: {
       queryCount: input.queries.length,
       groupCount: queryResults.length,

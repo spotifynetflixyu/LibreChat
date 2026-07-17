@@ -17,12 +17,6 @@ const positiveDecimalString = z
   .regex(/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/u)
   .refine((value) => Number(value) > 0, 'Thickness must be greater than zero');
 const limitSchema = z.number().int().min(1).max(100).optional();
-const priceQueryLimitSchema = z
-  .number()
-  .int()
-  .positive()
-  .transform((limit) => Math.min(limit, 100))
-  .optional();
 const optionalFilterString = z.preprocess(
   (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
   nonEmptyString.optional(),
@@ -84,14 +78,12 @@ interface SteelPriceLookupQueryInput {
   stockLengthMm?: string[];
   erpItemCode?: string;
   keyword?: string;
-  limit?: number;
 }
 
 interface SteelPriceCategoryDiscoveryQueryInput {
   queryId: string;
   mode: 'category_discovery';
   keyword: string;
-  limit?: number;
 }
 
 type SearchPriceCandidateQueryInput =
@@ -240,7 +232,6 @@ const priceLookupQuerySchema = z
       .describe('Optional acceptable stock lengths in millimeters.'),
     erpItemCode: nonEmptyString.optional(),
     keyword: nonEmptyString.optional(),
-    limit: priceQueryLimitSchema,
   })
   .strict()
   .superRefine((query, ctx) => {
@@ -257,7 +248,6 @@ const priceCategoryDiscoveryQuerySchema = z
   .object({
     mode: z.literal('category_discovery'),
     keyword: nonEmptyString.describe('Keyword for discovering an unknown category.'),
-    limit: priceQueryLimitSchema,
   })
   .strict();
 
@@ -434,16 +424,14 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
           return { ...query, queryId: `q${index + 1}` };
         }
 
-        const { material: rawMaterial, unit: rawUnit, limit: rawLimit, ...queryFields } = query;
+        const { material: rawMaterial, unit: rawUnit, ...queryFields } = query;
         const stockLengthMm = normalizeStockLengthMm(query.stockLengthMm, query.category);
         const material = normalizeMaterial(rawMaterial, query.category, query.thicknessMm);
         const unit = normalizeUnit(rawUnit, query.category);
-        const limit = rawLimit;
         const normalizedQuery = {
           ...queryFields,
           ...(material ? { material } : {}),
           ...(unit ? { unit } : {}),
-          ...(limit === undefined ? {} : { limit }),
           ...(stockLengthMm === undefined ? {} : { stockLengthMm }),
           queryId: `q${index + 1}`,
         };

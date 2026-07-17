@@ -5,16 +5,15 @@
 Update `search_price_candidates`, the Steel price schema, category rules, and
 `system_order` output so one grouped multi-item price lookup returns normal
 price candidates plus one consolidated cutting-price catalog. Build that
-catalog from `docs/reference/切工價錢-raw.xlsm` through a reviewed
-`docs/reference/切工價錢-clean.xlsx`, import it into an independent
+catalog from `docs/reference/切工價錢-raw.xlsx` through a reviewed
+`docs/reference/切工價錢-v4.4-normalized.xlsx`, import it into an independent
 `steel.cutting_prices` table, and roll out to dev Supabase only.
 
 ## Authoritative sources
 
 - `docs/products_db_v4.2.xlsx` remains authoritative for `steel.prices`.
-- `docs/reference/切工價錢-raw.xlsm` is the source for cutting prices and
-  supplemental calculation rules.
-- `docs/reference/切工價錢-clean.xlsx` is the only import source for
+- `docs/reference/切工價錢-raw.xlsx` is the source for concrete cutting prices.
+- `docs/reference/切工價錢-v4.4-normalized.xlsx` is the only import source for
   `steel.cutting_prices`.
 - The clean workbook is generated before the database migration/import is
   applied and is visually and structurally verified before use.
@@ -66,8 +65,8 @@ of candidate data returned to the AI.
 
 ## Consolidated cutting lookup
 
-The system derives one set of unique cutting lookup terms from the lookup-query
-categories and performs one unlimited `steel.cutting_prices` query in parallel
+The system expands lookup-query categories through one shared exact category
+mapping and performs one unlimited `steel.cutting_prices` query in parallel
 with the normal grouped price query. After both return, backend code filters the
 cutting catalog by the successfully matched material candidate specifications
 before adding it to the final price data. Category discovery and no-match
@@ -75,34 +74,38 @@ queries contribute no cutting rows.
 
 Supported mappings are:
 
-| Product category | Cutting lookup term |
+| Product category | Exact cutting categories |
 | --- | --- |
-| H型鋼 | H型鋼 |
+| H型鋼 | H型鋼, 工字鐵/H型鋼 |
+| I型鋼/工字鐵 | 工字鐵/H型鋼 |
 | 平鐵 | 平鐵 |
-| 鐵板 | 鐵板 |
 | 圓管 | 鐵管 |
 | 方管 | 鐵管 |
 | 扁方管 | 鐵管 |
+| 圓條 | 鐵管 |
+| 方鐵 | 鐵管 |
 | 角鐵 | 角鐵 |
 | 槽鐵 | 槽鐵 |
 
-Every cutting lookup uses contains matching:
+Every cutting lookup uses an equality join:
 
 ```sql
-cutting_category ILIKE '%' || lookup_term || '%'
+cutting_category = lookup.cutting_category
 ```
 
-This lets both `平鐵` and `鐵板` match the workbook category
-`鐵板/平鐵`. Only the three pipe categories are transformed, all to `鐵管`.
+The same mapping is used again before candidate-to-cutting-record matching, so
+SQL retrieval and backend filtering cannot drift. `鐵板` is deliberately absent:
+it searches processing rows in `steel.prices` and never queries
+`steel.cutting_prices`.
 
 The database cutting lookup uses no thickness, dimension, keyword,
 active/reviewed, or row limit filter. The AI-visible output is candidate-aware:
-H sections use exact height/width plus the complete section for 14mm processing,
-pipe families prefer nominal inch and otherwise use approved metric aliases,
-and angle/channel/flat rows use their category-specific dimensions. A matched
+H sections use stored `height_mm`/`width_mm`, pipe families prefer nominal inch
+and otherwise use approved aliases or millimeter fallback, and
+angle/channel/flat rows use their category-specific dimensions. All millimeter
+comparisons use integer parts. A matched
 candidate with no unique cutting row does not fall back to the full catalog.
-Supplemental rows are retained only for a cutting group with at least one
-matched base/process row. If no supported product category is present, the
+If no supported product category is present, the
 database cutting query is skipped and the output contains an empty array.
 
 The final output extends the existing grouped price data:
@@ -123,7 +126,6 @@ interface SteelCuttingPriceGroup {
   sourceCategories: string[];
   queryIds: string[];
   prices: SteelCuttingPriceRecord[];
-  supplements: SteelCuttingPriceRecord[];
 }
 ```
 
@@ -133,53 +135,44 @@ from successful candidate matches and preserve only the affected order lines.
 
 ## Clean cutting workbook
 
-`切工價錢-clean.xlsx` contains two import-ready sheets:
-
-1. `cutting_prices`: concrete cutting price rows.
-2. `cutting_supplements`: conditional surcharges, exclusions, formulas, and
-   manual-review notes.
-
-Both sheets preserve source sheet and row for audit. Item/spec text is
-normalized with the same NFKC and `*`/`×`/`＊` to lowercase `x` rules used by
-normal Steel price specifications.
+`切工價錢-v4.4-normalized.xlsx` contains one import-ready `cutting_prices`
+sheet with concrete `加工/切工` price rows. Supplement and other processing
+rows are excluded. `spec_text` is the only stored specification text and uses
+NFKC plus `*`/`×`/`＊` to lowercase `x` normalization.
 
 For inch values and ranges, millimeters are calculated mathematically as
 `inch * 25.4`. The database stores decimal `inch_min`, `inch_max`, `mm_min`,
 and `mm_max` without rounding; a single value uses the same min/max. Cutting
-lookup does not use those values as filters. The AI receives the source inch
-text and exact millimeter endpoints in the returned catalog.
+lookup compares millimeter dimensions by integer part rather than decimal
+precision. Inch rows use their inch bounds and approved nominal-size aliases.
 
-Tier A/C/F uses the workbook's combined A/C/F price. Tier B remains nullable in
-the source and database. The returned cutting record exposes effective B as
-the explicit B price when present, otherwise the shared A/C/F price. This
-preserves the workbook's missing-value truth while giving the AI the applicable
-price.
+Tier A/C/F uses the workbook's combined A/C/F price. During normalization, the
+parser fills a blank Tier B from Tier A; runtime code consumes only the resolved
+`unit_price_b` and does not expose or calculate `tierBSource`.
 
 ## Cutting schema
 
 `steel.cutting_prices` is independent of `steel.prices` and has no ERP code or
-`review_state` requirement. It stores both concrete price and supplemental
-rows:
+`review_state` requirement. It stores only concrete `加工/切工` price rows:
 
 - identity `id`
 - `cutting_category`
-- `record_type` (`price` or `supplement`)
 - `item_name`
 - `cut_type`
 - `spec_text`
-- `normalized_spec_text`
 - `inch_min` and `inch_max`
 - `mm_min` and `mm_max`
+- `height_mm` and `width_mm` for `H型鋼` and `工字鐵/H型鋼`; those rows do not
+  use `inch_min/max` or `mm_min/max`
+- `thickness_mm_values`, `thickness_mm_min`, and `thickness_mm_max`
 - `unit`
 - nullable `unit_price_a`, `unit_price_b`, `unit_price_c`, `unit_price_f`
-- structured `conditions` JSONB
-- nullable `calculation_rule`
 - nullable `notes`
-- `source_sheet` and `source_row`
 - timestamps
 
 The importer validates every clean workbook row before opening a transaction,
-then atomically replaces the full table and verifies source/insert counts.
+then atomically replaces the full table and verifies the complete 97-row
+catalog. Empty Tier B values are filled from Tier A by the parser before import.
 
 ## Category pricing rules
 
@@ -218,15 +211,16 @@ The formulas remain:
 
 ## Error handling and verification
 
-- Workbook normalization rejects unknown record types, missing category/spec
-  identity, malformed numeric values, and duplicate source rows.
+- Workbook normalization rejects missing category/spec identity, malformed
+  numeric values, invalid category-specific sizing, and non-`加工/切工` rows.
 - Import validation finishes before database mutation.
 - Database replacement rolls back on count or readback mismatch.
 - Search returns normal price results even when the consolidated cutting list
   is empty.
-- Tests prove contains matching, numeric thickness equality, removed inputs and
-  source refs, one consolidated unlimited cutting query, category mapping,
-  tier-B fallback, CCG02 rules, and the `肚` output contract.
+- Tests prove exact cutting-category lookup, integer-part millimeter matching,
+  removed inputs and source refs, one consolidated unlimited cutting query,
+  shared category mapping, parser-resolved Tier B, CCG02 rules, and the `肚`
+  output contract.
 - Dev verification includes schema readback, imported row reconciliation,
   representative live grouped lookup, rule hash/readback, package build, and
   `git diff --check`.

@@ -2,6 +2,7 @@ import {
   compileProcessingKeyword,
   hasUnusableProcessingProductName,
   isProcessingCandidateApplicable,
+  isProcessingCandidateSpecApplicable,
   matchesProcessingKeyword,
   matchesProcessingKeywordTerms,
 } from './processing-candidates';
@@ -58,5 +59,80 @@ describe('processing price candidate applicability', () => {
 
     expect(matchesProcessingKeywordTerms(candidate, terms)).toBe(true);
     expect(matchesProcessingKeyword(candidate, '雷射 圓孔')).toBe(true);
+  });
+
+  it('matches multiple cutting thickness specs against structured exact and range fields', () => {
+    const rangeCandidate = {
+      category: '加工/切工',
+      subcategory: '鐵板',
+      productName: '12.0-30.0mm板切φ',
+      normalizedSpecText: '12.0-30.0mm板切φ',
+      erpItemCode: 'DNB2002',
+      thicknessMinMm: 12,
+      thicknessMaxMm: 30,
+    };
+    const exactCandidate = {
+      ...rangeCandidate,
+      erpItemCode: 'DNB3002',
+      thicknessMinMm: 30,
+      thicknessMaxMm: 30,
+    };
+
+    expect(isProcessingCandidateSpecApplicable(rangeCandidate, ['6', '15'])).toBe(true);
+    expect(isProcessingCandidateSpecApplicable(rangeCandidate, ['6'])).toBe(false);
+    expect(isProcessingCandidateSpecApplicable(rangeCandidate, ['30'])).toBe(false);
+    expect(isProcessingCandidateSpecApplicable(exactCandidate, ['30'])).toBe(true);
+  });
+
+  it('keeps generic cutting prices and leaves non-cutting categories outside this matcher', () => {
+    const genericCutting = {
+      category: '加工/切工',
+      subcategory: '通用',
+      productName: '切工',
+      normalizedSpecText: '切工',
+      erpItemCode: 'BKZZB',
+      thicknessMinMm: null,
+      thicknessMaxMm: null,
+    };
+    const hole = {
+      ...genericCutting,
+      category: '加工/孔',
+      thicknessMinMm: 6,
+      thicknessMaxMm: 10,
+    };
+
+    expect(isProcessingCandidateSpecApplicable(genericCutting, ['15'])).toBe(true);
+    expect(isProcessingCandidateSpecApplicable(hole, ['15'])).toBe(true);
+  });
+
+  it.each(['通用', '', null])(
+    'treats cutting subcategory %p as a generic fallback',
+    (subcategory) => {
+      const candidate = {
+        category: '加工/切工',
+        subcategory,
+        productName: '切工',
+        normalizedSpecText: '切工',
+        erpItemCode: 'GENERIC-CUT',
+      };
+
+      expect(isProcessingCandidateApplicable(candidate, new Set(['鐵板']))).toBe(true);
+      expect(isProcessingCandidateApplicable(candidate, new Set(['網']))).toBe(true);
+    },
+  );
+
+  it('rejects a cutting candidate with an incomplete structured thickness range', () => {
+    const candidate = {
+      category: '加工/切工',
+      subcategory: '鐵板',
+      productName: '切工',
+      normalizedSpecText: '切工',
+      erpItemCode: 'BROKEN-CUT',
+      thicknessMinMm: 6,
+      thicknessMaxMm: null,
+    };
+
+    expect(isProcessingCandidateSpecApplicable(candidate, ['6'])).toBe(false);
+    expect(isProcessingCandidateSpecApplicable(candidate, undefined)).toBe(false);
   });
 });

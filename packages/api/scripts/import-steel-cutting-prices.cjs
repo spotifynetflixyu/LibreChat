@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { isDeepStrictEqual } = require('util');
 
 process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', moduleResolution: 'node' });
 process.env.TS_NODE_TRANSPILE_ONLY = 'true';
@@ -11,10 +10,8 @@ require('ts-node/register/transpile-only');
 const XLSX = require('xlsx');
 const { createSteelPostgresPool } = require('../src/steel/postgres');
 const {
-  ALLOWED_SELECTOR_AXES,
   CANONICAL_CUTTING_HEADERS,
   EXPECTED_CUTTING_PRICE_RECONCILIATION,
-  buildCuttingSpecSelector,
   normalizeCuttingWorkbookRow,
 } = require('./lib/cutting-normalize.cjs');
 
@@ -22,10 +19,10 @@ const PRICE_SHEET = 'cutting_prices';
 const DEFAULT_WORKBOOK_PATH = path.resolve(__dirname, '../../../docs/reference/切工價錢-v4.4-normalized.xlsx');
 const EXPECTED_HEADERS = CANONICAL_CUTTING_HEADERS;
 const INSERT_COLUMNS = Object.freeze([
-  'cutting_category', 'record_type', 'item_name', 'cut_type', 'spec_text', 'normalized_spec_text',
-  'inch_min', 'inch_max', 'mm_min', 'mm_max', 'thickness_axis', 'thickness_mm_values',
+  'cutting_category', 'item_name', 'cut_type', 'spec_text',
+  'inch_min', 'inch_max', 'mm_min', 'mm_max', 'height_mm', 'width_mm', 'thickness_mm_values',
   'thickness_mm_min', 'thickness_mm_max', 'unit', 'unit_price_a', 'unit_price_b', 'unit_price_c',
-  'unit_price_f', 'conditions', 'spec_selector', 'calculation_rule', 'notes', 'source_sheet', 'source_row',
+  'unit_price_f', 'notes',
 ]);
 const EXPECTED_RECONCILIATION = EXPECTED_CUTTING_PRICE_RECONCILIATION;
 
@@ -62,70 +59,6 @@ function number(value, field, location) {
   return parsed;
 }
 
-function selectorError(message, location) {
-  throw new Error(`Invalid spec_selector_json at ${location}: ${message}`);
-}
-
-function object(value, label, location) {
-  if (value === null || Array.isArray(value) || typeof value !== 'object') selectorError(`${label} must be an object`, location);
-}
-
-function exactKeys(value, expected, label, location) {
-  const actual = Object.keys(value).sort();
-  const keys = [...expected].sort();
-  if (actual.length !== keys.length || actual.some((key, index) => key !== keys[index])) selectorError(`${label} has unexpected keys`, location);
-}
-
-function positive(value, label, location) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) selectorError(`${label} must be a positive finite number`, location);
-}
-
-function parseSelector(value, location) {
-  const text = required(value, 'spec_selector_json', location);
-  let selector;
-  try { selector = JSON.parse(text); } catch { selectorError('must be valid JSON', location); }
-  object(selector, 'selector', location);
-  if (selector.version !== 1 || selector.match !== 'any') selectorError('version must be 1 and match must be any', location);
-  exactKeys(selector, ['version', 'match', 'selectors'], 'selector', location);
-  if (!Array.isArray(selector.selectors) || selector.selectors.length === 0) selectorError('selectors must be a nonempty array', location);
-  selector.selectors.forEach((entry, index) => {
-    object(entry, `selectors[${index}]`, location);
-    exactKeys(entry, ['type', 'axes'], `selectors[${index}]`, location);
-    if (entry.type !== 'axis_constraints') selectorError(`selectors[${index}].type is unsupported`, location);
-    object(entry.axes, `selectors[${index}].axes`, location);
-    const axes = Object.keys(entry.axes);
-    if (!axes.length || axes.some((axis) => !ALLOWED_SELECTOR_AXES.includes(axis))) selectorError('selector contains unsupported axes', location);
-    axes.forEach((axis) => {
-      const constraint = entry.axes[axis];
-      object(constraint, `${axis} constraint`, location);
-      if (constraint.kind === 'exact' || constraint.kind === 'minimum') {
-        const expected = constraint.kind === 'exact' ? ['kind', 'value'] : ['kind', 'value', 'inclusive'];
-        exactKeys(constraint, expected, `${axis} constraint`, location);
-        positive(constraint.value, `${axis}.value`, location);
-        if (constraint.kind === 'minimum' && constraint.inclusive !== true) selectorError(`${axis}.inclusive must be true`, location);
-      } else if (constraint.kind === 'one_of') {
-        exactKeys(constraint, ['kind', 'values'], `${axis} constraint`, location);
-        if (!Array.isArray(constraint.values) || !constraint.values.length) selectorError(`${axis}.values must be nonempty`, location);
-        constraint.values.forEach((valueItem, valueIndex) => positive(valueItem, `${axis}.values[${valueIndex}]`, location));
-        if (new Set(constraint.values).size !== constraint.values.length || constraint.values.some((item, i) => i > 0 && item <= constraint.values[i - 1])) selectorError(`${axis}.values must be sorted and unique`, location);
-      } else if (constraint.kind === 'range') {
-        exactKeys(constraint, ['kind', 'min', 'max', 'min_inclusive', 'max_inclusive'], `${axis} constraint`, location);
-        positive(constraint.min, `${axis}.min`, location); positive(constraint.max, `${axis}.max`, location);
-        if (constraint.min > constraint.max || constraint.min_inclusive !== true || constraint.max_inclusive !== true) selectorError(`${axis} range must be positive ordered inclusive`, location);
-      } else selectorError(`${axis}.kind is unsupported`, location);
-    });
-  });
-  return selector;
-}
-
-function parseConditions(value, location) {
-  const text = parseNullableText(value) ?? '{}';
-  let parsed;
-  try { parsed = JSON.parse(text); } catch { throw new Error(`Invalid conditions_json at ${location}`); }
-  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error(`conditions_json must be an object at ${location}`);
-  return parsed;
-}
-
 function parseThicknessValues(value, location) {
   const text = parseNullableText(value);
   if (text === null) return null;
@@ -147,59 +80,64 @@ function validateSizing(row, location) {
     const max = Math.round(row.inchMax * 25.4 * 1e9) / 1e9;
     if (row.mmMin !== min || row.mmMax !== max) throw new Error(`inch/mm conversion mismatch at ${location}`);
   }
-  const unrestricted = row.cuttingCategory === 'H型鋼' && ['加工/孔', '加工/倒角', '加工/開槽'].includes(row.cutType);
-  if (unrestricted ? row.mmMin !== null || row.mmMax !== null : row.mmMin === null || row.mmMax === null) throw new Error(`Primary mm selector requirement failed at ${location}`);
+  const hFamily = row.cuttingCategory === 'H型鋼' || row.cuttingCategory === '工字鐵/H型鋼';
+  const hasHeight = row.heightMm !== null;
+  const hasWidth = row.widthMm !== null;
+  if (hasHeight !== hasWidth) throw new Error(`height_mm and width_mm must both be set at ${location}`);
+  if (hFamily) {
+    if (!hasHeight || row.heightMm <= 0 || row.widthMm <= 0) throw new Error(`H-family dimensions are required at ${location}`);
+    if (row.inchMin !== null || row.mmMin !== null) throw new Error(`H-family inch/mm ranges must be empty at ${location}`);
+  } else {
+    if (hasHeight) throw new Error(`Profile dimensions are only valid for H-family rows at ${location}`);
+    if (row.mmMin === null || row.mmMax === null) throw new Error(`Primary mm range is required at ${location}`);
+  }
   const hasValues = row.thicknessValues !== null;
   const hasBounds = row.thicknessMin !== null || row.thicknessMax !== null;
-  if ((row.thicknessAxis === null && (hasValues || hasBounds)) || (row.thicknessAxis !== null && !hasValues && !hasBounds)) throw new Error(`thickness_axis coupling failed at ${location}`);
   if (hasValues && hasBounds) throw new Error(`thickness values/bounds are mutually exclusive at ${location}`);
-  if (row.thicknessAxis !== null && !['material', 'flange'].includes(row.thicknessAxis)) throw new Error(`Invalid thickness_axis at ${location}`);
   if (hasBounds && (row.thicknessMin !== null && row.thicknessMin <= 0 || row.thicknessMax !== null && row.thicknessMax <= 0 || row.thicknessMin !== null && row.thicknessMax !== null && row.thicknessMin > row.thicknessMax)) throw new Error(`Invalid thickness bounds at ${location}`);
 }
 
 function parseWorkbookRow(raw, sheetName, cleanRow) {
   const location = `${sheetName}:${cleanRow}`;
-  const recordType = required(raw.record_type, 'record_type', location);
-  if (recordType !== 'price') throw new Error(`Only price records are allowed at ${location}`);
+  const cutType = required(raw.cut_type, 'cut_type', location);
+  if (cutType !== '加工/切工') throw new Error(`Only 加工/切工 records are allowed at ${location}`);
   const row = {
     cuttingCategory: required(raw.cutting_category, 'cutting_category', location),
-    recordType,
     itemName: required(raw.item_name, 'item_name', location),
-    cutType: required(raw.cut_type, 'cut_type', location),
+    cutType,
     specText: parseNullableText(raw.spec_text),
-    normalizedSpecText: parseNullableText(raw.normalized_spec_text),
     inchMin: number(raw.inch_min, 'inch_min', location), inchMax: number(raw.inch_max, 'inch_max', location),
     mmMin: number(raw.mm_min, 'mm_min', location), mmMax: number(raw.mm_max, 'mm_max', location),
-    thicknessAxis: parseNullableText(raw.thickness_axis), thicknessValues: parseThicknessValues(raw.thickness_mm_values, location),
+    heightMm: number(raw.height_mm, 'height_mm', location), widthMm: number(raw.width_mm, 'width_mm', location),
+    thicknessValues: parseThicknessValues(raw.thickness_mm_values, location),
     thicknessMin: number(raw.thickness_mm_min, 'thickness_mm_min', location), thicknessMax: number(raw.thickness_mm_max, 'thickness_mm_max', location),
     unit: required(raw.unit, 'unit', location),
     unitPriceA: number(raw.unit_price_a, 'unit_price_a', location), unitPriceB: number(raw.unit_price_b, 'unit_price_b', location),
     unitPriceC: number(raw.unit_price_c, 'unit_price_c', location), unitPriceF: number(raw.unit_price_f, 'unit_price_f', location),
-    conditions: parseConditions(raw.conditions_json, location), calculationRule: parseNullableText(raw.calculation_rule), notes: parseNullableText(raw.notes),
-    sourceSheet: required(raw.source_sheet, 'source_sheet', location), sourceRow: number(raw.source_row, 'source_row', location),
+    notes: parseNullableText(raw.notes),
   };
-  if (row.unit !== '刀' || !Number.isInteger(row.sourceRow) || row.sourceRow < 1) throw new Error(`Invalid unit/source_row at ${location}`);
+  if (row.unit !== '刀') throw new Error(`Invalid unit at ${location}`);
   for (const price of [row.unitPriceA, row.unitPriceB, row.unitPriceC, row.unitPriceF]) if (price !== null && price < 0) throw new Error(`Cutting price must be nonnegative at ${location}`);
   validateSizing(row, location);
-  const selector = parseSelector(raw.spec_selector_json, location);
   let normalized;
   try { normalized = normalizeCuttingWorkbookRow(raw); } catch (error) { throw new Error(`${error instanceof Error ? error.message : String(error)} at ${location}`); }
-  const normalizedConditions = JSON.parse(normalized.conditions_json);
   if (
-    normalized.normalized_spec_text !== row.normalizedSpecText
-    || !isDeepStrictEqual(normalizedConditions, row.conditions)
-    || normalized.thickness_axis !== row.thicknessAxis
-    || normalized.thickness_mm_values !== (row.thicknessValues ? JSON.stringify(row.thicknessValues) : null)
+    normalized.unit_price_a !== row.unitPriceA
+    || normalized.unit_price_b !== row.unitPriceB
+    || normalized.unit_price_c !== row.unitPriceC
+    || normalized.unit_price_f !== row.unitPriceF
+  ) throw new Error(`Normalized prices mismatch at ${location}`);
+  if (
+    normalized.thickness_mm_values !== (row.thicknessValues ? JSON.stringify(row.thicknessValues) : null)
     || normalized.thickness_mm_min !== row.thicknessMin
     || normalized.thickness_mm_max !== row.thicknessMax
     || normalized.mm_min !== row.mmMin
     || normalized.mm_max !== row.mmMax
     || normalized.inch_min !== row.inchMin
     || normalized.inch_max !== row.inchMax
-  ) throw new Error(`Normalized sizing/conditions mismatch at ${location}`);
-  const expectedSelector = JSON.parse(buildCuttingSpecSelector(raw));
-  if (!isDeepStrictEqual(selector, expectedSelector)) selectorError('selector axes do not match category/cut_type/spec semantics', location);
-  row.specSelector = selector;
+    || normalized.height_mm !== row.heightMm
+    || normalized.width_mm !== row.widthMm
+  ) throw new Error(`Normalized sizing mismatch at ${location}`);
   return row;
 }
 
@@ -217,14 +155,15 @@ function loadWorkbookRows(workbookPath) {
 }
 
 function buildDryRunSummary(rows, workbookPath) {
-  const byCategory = {}; const axisDistribution = {}; let mmRangeRows = 0; let unrestrictedRows = 0; let thicknessConstrainedRows = 0;
+  const byCategory = {}; let profileDimensionRows = 0; let mmRangeRows = 0; let unrestrictedRows = 0; let thicknessConstrainedRows = 0;
   for (const row of rows) {
     byCategory[row.cuttingCategory] = (byCategory[row.cuttingCategory] || 0) + 1;
-    if (row.mmMin === null) unrestrictedRows += 1; else mmRangeRows += 1;
-    if (row.thicknessAxis !== null) thicknessConstrainedRows += 1;
-    for (const selector of row.specSelector.selectors) { const axes = Object.keys(selector.axes).join('+'); axisDistribution[axes] = (axisDistribution[axes] || 0) + 1; }
+    if (row.heightMm !== null) profileDimensionRows += 1;
+    else if (row.mmMin !== null) mmRangeRows += 1;
+    else unrestrictedRows += 1;
+    if (row.thicknessValues !== null || row.thicknessMin !== null || row.thicknessMax !== null) thicknessConstrainedRows += 1;
   }
-  return { mode: 'dry-run', workbookPath, importRows: rows.length, priceRows: rows.filter((row) => row.recordType === 'price').length, supplementRows: 0, byCategory, mmRangeRows, unrestrictedRows, thicknessConstrainedRows, axisDistribution };
+  return { mode: 'dry-run', workbookPath, importRows: rows.length, byCategory, profileDimensionRows, mmRangeRows, unrestrictedRows, thicknessConstrainedRows };
 }
 
 function validateExpectedReconciliation(summary) {
@@ -232,8 +171,7 @@ function validateExpectedReconciliation(summary) {
     .every(([category, count]) => summary.byCategory[category] === count);
   if (
     summary.importRows !== EXPECTED_RECONCILIATION.importRows
-    || summary.priceRows !== EXPECTED_RECONCILIATION.priceRows
-    || summary.supplementRows !== EXPECTED_RECONCILIATION.supplementRows
+    || summary.profileDimensionRows !== EXPECTED_RECONCILIATION.profileDimensionRows
     || summary.mmRangeRows !== EXPECTED_RECONCILIATION.mmRangeRows
     || summary.unrestrictedRows !== EXPECTED_RECONCILIATION.unrestrictedRows
     || summary.thicknessConstrainedRows !== EXPECTED_RECONCILIATION.thicknessConstrainedRows
@@ -245,7 +183,7 @@ function validateExpectedReconciliation(summary) {
 }
 
 function toDbValues(row) {
-  return [row.cuttingCategory, row.recordType, row.itemName, row.cutType, row.specText, row.normalizedSpecText, row.inchMin, row.inchMax, row.mmMin, row.mmMax, row.thicknessAxis, row.thicknessValues, row.thicknessMin, row.thicknessMax, row.unit, row.unitPriceA, row.unitPriceB, row.unitPriceC, row.unitPriceF, JSON.stringify(row.conditions), JSON.stringify(row.specSelector), row.calculationRule, row.notes, row.sourceSheet, row.sourceRow];
+  return [row.cuttingCategory, row.itemName, row.cutType, row.specText, row.inchMin, row.inchMax, row.mmMin, row.mmMax, row.heightMm, row.widthMm, row.thicknessValues, row.thicknessMin, row.thicknessMax, row.unit, row.unitPriceA, row.unitPriceB, row.unitPriceC, row.unitPriceF, row.notes];
 }
 
 function buildInsert(batch) {
@@ -260,9 +198,11 @@ async function replaceSteelCuttingPrices(client, rows) {
     await client.query('LOCK TABLE steel.cutting_prices IN ACCESS EXCLUSIVE MODE');
     await client.query('TRUNCATE TABLE steel.cutting_prices RESTART IDENTITY');
     const insert = buildInsert(rows); await client.query(insert.sql, insert.values);
-    const result = await client.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE record_type = 'price')::int AS price, COUNT(*) FILTER (WHERE record_type = 'supplement')::int AS supplement FROM steel.cutting_prices");
+    const result = await client.query('SELECT COUNT(*)::int AS total FROM steel.cutting_prices');
     const readback = result.rows[0] || {};
-    if (Number(readback.total) !== 100 || Number(readback.price) !== 100 || Number(readback.supplement) !== 0) throw new Error(`Steel cutting price readback mismatch: ${JSON.stringify(readback)}`);
+    if (
+      Number(readback.total) !== EXPECTED_RECONCILIATION.importRows
+    ) throw new Error(`Steel cutting price readback mismatch: ${JSON.stringify(readback)}`);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
@@ -288,7 +228,6 @@ module.exports = {
   importWorkbook,
   loadWorkbookRows,
   parseArgs,
-  parseSelector,
   replaceSteelCuttingPrices,
   validateExpectedReconciliation,
 };

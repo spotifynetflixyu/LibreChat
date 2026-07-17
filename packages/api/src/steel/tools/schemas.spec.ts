@@ -108,25 +108,18 @@ describe('Steel price candidate tool schema', () => {
     const queries = Array.from({ length: 25 }, (_, index) => ({
       category: '鐵板' as const,
       thicknessMm: [String(index + 1)],
-      limit: 1,
     }));
 
     expect(schema.parse({ queries }).queries).toHaveLength(25);
   });
 
-  it('keeps an omitted limit undefined and clamps every positive integer above 100', () => {
-    expect(schema.parse({ queries: [{ category: '鐵板' }] }).queries[0]?.limit).toBeUndefined();
-    expect(schema.parse({ queries: [{ category: '鐵板', limit: 101 }] }).queries[0]?.limit).toBe(
-      100,
-    );
+  it('rejects AI-controlled limits for lookup and category discovery queries', () => {
+    expect(schema.safeParse({ queries: [{ category: '鐵板', limit: 10 }] }).success).toBe(false);
     expect(
-      schema.parse({ queries: [{ mode: 'category_discovery', keyword: '管', limit: 10_000 }] })
-        .queries[0]?.limit,
-    ).toBe(100);
-  });
-
-  it.each([0, -1, 1.5])('rejects invalid per-query limit %s', (limit) => {
-    expect(() => schema.parse({ queries: [{ category: '鐵板', limit }] })).toThrow();
+      schema.safeParse({
+        queries: [{ mode: 'category_discovery', keyword: '管', limit: 10 }],
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts all v4.2 lookup filters and separate 錏/鋅 material enum values', () => {
@@ -141,7 +134,6 @@ describe('Steel price candidate tool schema', () => {
             stockLengthMm: ['6000', '9000', '10000', '12000'],
             erpItemCode: '00123',
             keyword: '連料',
-            limit: 30,
           },
           { category: '五金/配件', material: '鋅' },
         ],
@@ -157,7 +149,6 @@ describe('Steel price candidate tool schema', () => {
           stockLengthMm: ['6000', '9000', '10000', '12000'],
           erpItemCode: '00123',
           keyword: '連料',
-          limit: 30,
         },
         { queryId: 'q2', category: '五金/配件', material: '鋅' },
       ],
@@ -306,7 +297,7 @@ describe('Steel price candidate tool schema', () => {
     });
   });
 
-  it('removes mesh unit filters and keeps the default limit omitted', () => {
+  it('removes mesh unit filters', () => {
     expect(
       schema.parse({
         queries: [
@@ -324,14 +315,6 @@ describe('Steel price candidate tool schema', () => {
         { queryId: 'q4', category: '網', subcategory: '菱形' },
       ],
     });
-  });
-
-  it('uses the caller mesh limit when explicitly supplied', () => {
-    expect(schema.parse({ queries: [{ category: '網', subcategory: '菱形', limit: 12 }] })).toEqual(
-      {
-        queries: [{ queryId: 'q1', category: '網', subcategory: '菱形', limit: 12 }],
-      },
-    );
   });
 
   it('validates subcategories against their category and rejects legacy names', () => {
