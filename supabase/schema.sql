@@ -444,12 +444,17 @@ CREATE TABLE steel.cutting_prices (
   inch_max NUMERIC(18, 9),
   mm_min NUMERIC(18, 9),
   mm_max NUMERIC(18, 9),
+  thickness_axis TEXT,
+  thickness_mm_values NUMERIC(18, 9)[],
+  thickness_mm_min NUMERIC(18, 9),
+  thickness_mm_max NUMERIC(18, 9),
   unit TEXT,
   unit_price_a NUMERIC(18, 4),
   unit_price_b NUMERIC(18, 4),
   unit_price_c NUMERIC(18, 4),
   unit_price_f NUMERIC(18, 4),
   conditions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  spec_selector JSONB NOT NULL,
   calculation_rule TEXT,
   notes TEXT,
   source_sheet TEXT NOT NULL,
@@ -457,7 +462,7 @@ CREATE TABLE steel.cutting_prices (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT cutting_prices_record_type_check
-  CHECK (record_type IN ('price', 'supplement')),
+  CHECK (record_type = 'price'),
   CONSTRAINT cutting_prices_required_text_check
   CHECK (
     BTRIM(cutting_category) <> ''
@@ -471,6 +476,14 @@ CREATE TABLE steel.cutting_prices (
   UNIQUE (source_sheet, source_row),
   CONSTRAINT cutting_prices_conditions_check
   CHECK (jsonb_typeof(conditions) = 'object'),
+  CONSTRAINT cutting_prices_spec_selector_check
+  CHECK (
+    jsonb_typeof(spec_selector) = 'object'
+    AND spec_selector->>'version' = '1'
+    AND spec_selector->>'match' = 'any'
+    AND jsonb_typeof(spec_selector->'selectors') = 'array'
+    AND jsonb_array_length(spec_selector->'selectors') > 0
+  ),
   CONSTRAINT cutting_prices_values_check
   CHECK (
     (unit_price_a IS NULL OR unit_price_a >= 0)
@@ -480,28 +493,59 @@ CREATE TABLE steel.cutting_prices (
     AND (
       (
         inch_min IS NULL AND inch_max IS NULL
-        AND mm_min IS NULL AND mm_max IS NULL
+        AND (
+          (
+            mm_min IS NULL AND mm_max IS NULL
+            AND cutting_category = 'H型鋼'
+            AND cut_type IN ('加工/孔', '加工/倒角', '加工/開槽')
+          )
+          OR (
+            mm_min IS NOT NULL AND mm_max IS NOT NULL
+            AND mm_min > 0 AND mm_max > 0 AND mm_min <= mm_max
+          )
+        )
       )
       OR (
         inch_min IS NOT NULL AND inch_max IS NOT NULL
         AND mm_min IS NOT NULL AND mm_max IS NOT NULL
-        AND inch_min >= 0 AND inch_min <= inch_max
-        AND mm_min >= 0 AND mm_min <= mm_max
+        AND inch_min > 0 AND inch_max > 0 AND inch_min <= inch_max
+        AND mm_min > 0 AND mm_max > 0 AND mm_min <= mm_max
         AND mm_min = ROUND(inch_min * 25.4, 9)
         AND mm_max = ROUND(inch_max * 25.4, 9)
       )
     )
-  ),
-  CONSTRAINT cutting_prices_supplement_check
-  CHECK (
-    record_type = 'price'
-    OR (
-      unit IS NULL
-      AND unit_price_a IS NULL
-      AND unit_price_b IS NULL
-      AND unit_price_c IS NULL
-      AND unit_price_f IS NULL
+    AND (
+      thickness_axis IS NULL
+      AND thickness_mm_values IS NULL
+      AND thickness_mm_min IS NULL
+      AND thickness_mm_max IS NULL
+      OR thickness_axis IN ('material', 'flange')
+      AND (
+        (
+          thickness_mm_values IS NOT NULL
+          AND cardinality(thickness_mm_values) > 0
+          AND 0 < ALL(thickness_mm_values)
+          AND thickness_mm_min IS NULL
+          AND thickness_mm_max IS NULL
+        )
+        OR (
+          thickness_mm_values IS NULL
+          AND (thickness_mm_min IS NOT NULL OR thickness_mm_max IS NOT NULL)
+          AND (thickness_mm_min IS NULL OR thickness_mm_min > 0)
+          AND (thickness_mm_max IS NULL OR thickness_mm_max > 0)
+          AND (thickness_mm_min IS NULL OR thickness_mm_max IS NULL OR thickness_mm_min <= thickness_mm_max)
+        )
+      )
     )
+  ),
+  CONSTRAINT cutting_prices_thickness_array_nonnull_check
+  CHECK (
+    thickness_mm_values IS NULL
+    OR array_position(thickness_mm_values, NULL) IS NULL
+  ),
+  CONSTRAINT cutting_prices_unit_check
+  CHECK (
+    unit = '刀'
   )
 );
 
@@ -512,7 +556,7 @@ CREATE INDEX cutting_prices_record_type_idx
 ON steel.cutting_prices (record_type, cutting_category);
 
 COMMENT ON TABLE steel.cutting_prices IS
-'Cutting price and supplemental rule catalog atomically imported from docs/reference/切工價錢-clean.xlsx.';
+'Price-only cutting catalog atomically imported from docs/reference/切工價錢-raw.xlsm; non-price supplement rows are excluded.';
 
 DROP TRIGGER IF EXISTS set_cutting_prices_updated_at ON steel.cutting_prices;
 CREATE TRIGGER set_cutting_prices_updated_at

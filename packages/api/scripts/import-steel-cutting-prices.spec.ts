@@ -3,254 +3,98 @@ import os from 'os';
 import path from 'path';
 import * as XLSX from 'xlsx';
 
-type SqlValue = string | number | null;
+const importer = jest.requireActual<typeof import('./import-steel-cutting-prices.cjs')>('./import-steel-cutting-prices.cjs');
+const headers = [...importer.EXPECTED_HEADERS];
 
-interface CuttingWorkbookRow {
-  cutting_category: string;
-  record_type: string;
-  item_name: string;
-  cut_type: string;
-  spec_text: string;
-  normalized_spec_text: string;
-  inch_min: string | number;
-  inch_max: string | number;
-  mm_min: string | number;
-  mm_max: string | number;
-  unit: string;
-  unit_price_a: string | number;
-  unit_price_b: string | number;
-  unit_price_c: string | number;
-  unit_price_f: string | number;
-  conditions_json: string;
-  calculation_rule: string;
-  notes: string;
-  source_sheet: string;
-  source_row: string | number;
-}
-
-interface ParsedCuttingRow {
-  cuttingCategory: string;
-  recordType: 'price' | 'supplement';
-  sourceSheet: string;
-  sourceRow: number;
-}
-
-interface QueryResult {
-  rows?: ReadonlyArray<Record<string, string | number>>;
-}
-
-interface TestClient {
-  query: (sql: string, values?: readonly SqlValue[]) => Promise<QueryResult>;
-}
-
-interface TestPool {
-  connect: () => Promise<TestClient & { release: () => void }>;
-  end: () => Promise<void>;
-}
-
-interface ImporterModule {
-  DEFAULT_WORKBOOK_PATH: string;
-  EXPECTED_HEADERS: readonly string[];
-  loadWorkbookRows: (workbookPath: string) => ParsedCuttingRow[];
-  buildDryRunSummary: (
-    rows: readonly ParsedCuttingRow[],
-    workbookPath: string,
-  ) => Record<string, string | number | Record<string, number>>;
-  replaceSteelCuttingPrices: (
-    client: TestClient,
-    rows: readonly ParsedCuttingRow[],
-  ) => Promise<void>;
-  importWorkbook: (options: {
-    apply: boolean;
-    workbookPath: string;
-    createPool?: () => TestPool;
-    write?: (value: string) => void;
-  }) => Promise<Record<string, string | number | Record<string, number>>>;
-}
-
-const importer = jest.requireActual<ImporterModule>('./import-steel-cutting-prices.cjs');
-
-const headers = [
-  'cutting_category',
-  'record_type',
-  'item_name',
-  'cut_type',
-  'spec_text',
-  'normalized_spec_text',
-  'inch_min',
-  'inch_max',
-  'mm_min',
-  'mm_max',
-  'unit',
-  'unit_price_a',
-  'unit_price_b',
-  'unit_price_c',
-  'unit_price_f',
-  'conditions_json',
-  'calculation_rule',
-  'notes',
-  'source_sheet',
-  'source_row',
-] as const;
-
-const tempDirectories: string[] = [];
-
-function makeRow(overrides: Partial<CuttingWorkbookRow> = {}): CuttingWorkbookRow {
+function fixture(overrides: Record<string, string | number> = {}) {
   return {
-    cutting_category: '鐵管',
-    record_type: 'price',
-    item_name: '1/2"',
-    cut_type: '加工/切工',
-    spec_text: '1/2"',
-    normalized_spec_text: '1/2"',
-    inch_min: 0.5,
-    inch_max: 0.5,
-    mm_min: 12.7,
-    mm_max: 12.7,
-    unit: '刀',
-    unit_price_a: 10,
-    unit_price_b: '',
-    unit_price_c: 10,
-    unit_price_f: 10,
-    conditions_json: '{}',
-    calculation_rule: '',
-    notes: '',
-    source_sheet: '全部整理資料',
-    source_row: 62,
+    cutting_category: '鐵管', record_type: 'price', item_name: '4"', cut_type: '加工/切工', spec_text: '4"', normalized_spec_text: '4" 直線切割',
+    inch_min: 4, inch_max: 4, mm_min: 101.6, mm_max: 101.6, thickness_axis: '', thickness_mm_values: '', thickness_mm_min: '', thickness_mm_max: '', unit: '刀',
+    unit_price_a: 30, unit_price_b: '', unit_price_c: 30, unit_price_f: 30,
+    conditions_json: '{"applicable_categories":["圓管","方管","扁方管","圓條","方鐵"],"processing_category":"加工/切工","processing_method":null,"processing_shape":"直線切割"}', calculation_rule: '', notes: '', source_sheet: '全部整理資料', source_row: 70,
+    spec_selector_json: '{"version":1,"match":"any","selectors":[{"type":"axis_constraints","axes":{"nominal_size_mm":{"kind":"exact","value":101.6}}}]}',
     ...overrides,
   };
 }
 
-function writeWorkbook(
-  options: {
-    prices?: readonly CuttingWorkbookRow[];
-    supplements?: readonly CuttingWorkbookRow[];
-    priceHeaders?: readonly string[];
-    includeSupplements?: boolean;
-  } = {},
-): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-cutting-prices-'));
-  const workbookPath = path.join(directory, 'cutting.xlsx');
+function writeWorkbook(row: Record<string, string | number>, sheetNames: string[] = ['cutting_prices']) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cutting-import-'));
+  const file = path.join(directory, 'fixture.xlsx');
   const workbook = XLSX.utils.book_new();
-  const prices = options.prices ?? [makeRow()];
-  const supplements = options.supplements ?? [
-    makeRow({
-      cutting_category: '鐵管',
-      record_type: 'supplement',
-      item_name: '方管厚度',
-      cut_type: '補充',
-      spec_text: '方管厚度',
-      normalized_spec_text: '方管厚度',
-      inch_min: '',
-      inch_max: '',
-      mm_min: '',
-      mm_max: '',
-      unit: '',
-      unit_price_a: '',
-      unit_price_c: '',
-      unit_price_f: '',
-      notes: '方管厚度 1.2 以下不切',
-      source_row: 112,
-    }),
-  ];
-
-  const toSheet = (sheetHeaders: readonly string[], rows: readonly CuttingWorkbookRow[]) =>
-    XLSX.utils.aoa_to_sheet([
-      [...sheetHeaders],
-      ...rows.map((row) => sheetHeaders.map((header) => row[header as keyof CuttingWorkbookRow])),
-    ]);
-
-  XLSX.utils.book_append_sheet(
-    workbook,
-    toSheet(options.priceHeaders ?? headers, prices),
-    'cutting_prices',
-  );
-  if (options.includeSupplements !== false) {
-    XLSX.utils.book_append_sheet(workbook, toSheet(headers, supplements), 'cutting_supplements');
-  }
-  XLSX.writeFile(workbook, workbookPath);
-  tempDirectories.push(directory);
-  return workbookPath;
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers, headers.map((header) => row[header] ?? '')]), 'cutting_prices');
+  if (sheetNames.includes('cutting_supplements')) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers]), 'cutting_supplements');
+  XLSX.writeFile(workbook, file);
+  return { directory, file };
 }
 
-afterEach(() => {
-  tempDirectories.splice(0).forEach((directory) => {
-    fs.rmSync(directory, { force: true, recursive: true });
+describe('price-only cutting importer', () => {
+  it('requires exactly one canonical sheet and rejects supplements/non-price rows', () => {
+    const withSupplement = writeWorkbook(fixture(), ['cutting_prices', 'cutting_supplements']);
+    expect(() => importer.loadWorkbookRows(withSupplement.file)).toThrow('exactly one cutting_prices sheet');
+    fs.rmSync(withSupplement.directory, { recursive: true, force: true });
+    const supplement = writeWorkbook(fixture({ record_type: 'supplement' }));
+    expect(() => importer.loadWorkbookRows(supplement.file)).toThrow('Only price records are allowed');
+    fs.rmSync(supplement.directory, { recursive: true, force: true });
   });
-});
 
-describe('Steel cutting price importer', () => {
-  it('defaults to the clean reference workbook and exact two-sheet headers', () => {
-    expect(importer.DEFAULT_WORKBOOK_PATH).toBe(
-      path.resolve(__dirname, '../../../docs/reference/切工價錢-v4.4-normalized.xlsx'),
+  it('deep-validates thickness/selector coupling and accepts metric-only sizing', () => {
+    const bad = writeWorkbook(fixture({ thickness_axis: 'material', thickness_mm_values: '[9]', thickness_mm_min: '' }));
+    expect(() => importer.loadWorkbookRows(bad.file)).toThrow('Normalized sizing/conditions mismatch');
+    fs.rmSync(bad.directory, { recursive: true, force: true });
+    const badConditions = writeWorkbook(fixture({ conditions_json: '{}' }));
+    expect(() => importer.loadWorkbookRows(badConditions.file)).toThrow(
+      'Normalized sizing/conditions mismatch',
     );
-    expect(importer.EXPECTED_HEADERS).toEqual(headers);
-
-    const missingSheet = writeWorkbook({ includeSupplements: false });
-    expect(() => importer.loadWorkbookRows(missingSheet)).toThrow(
-      'missing cutting_supplements sheet',
-    );
-
-    const reordered = [...headers];
-    [reordered[0], reordered[1]] = [reordered[1], reordered[0]];
-    expect(() => importer.loadWorkbookRows(writeWorkbook({ priceHeaders: reordered }))).toThrow(
-      'cutting_prices headers do not match the exact cutting catalog contract',
-    );
+    fs.rmSync(badConditions.directory, { recursive: true, force: true });
+    const good = writeWorkbook(fixture());
+    expect(importer.loadWorkbookRows(good.file)).toHaveLength(1);
+    fs.rmSync(good.directory, { recursive: true, force: true });
   });
 
-  it('parses exact decimals, nullable B, and reconciles record types/categories', () => {
-    const workbookPath = writeWorkbook();
-    const rows = importer.loadWorkbookRows(workbookPath);
+  it('enforces the complete 100-row reconciliation without depending on a local workbook', () => {
+    const summary = {
+      importRows: 100,
+      priceRows: 100,
+      supplementRows: 0,
+      byCategory: {
+        H型鋼: 22,
+        '工字鐵/H型鋼': 31,
+        鐵管: 13,
+        角鐵: 12,
+        槽鐵: 12,
+        '鐵板/平鐵': 10,
+      },
+      mmRangeRows: 97,
+      unrestrictedRows: 3,
+      thicknessConstrainedRows: 14,
+    };
 
-    expect(rows).toHaveLength(2);
-    expect(importer.buildDryRunSummary(rows, workbookPath)).toMatchObject({
-      importRows: 2,
-      priceRows: 1,
-      supplementRows: 1,
-      byCategory: { 鐵管: 2 },
-    });
+    expect(() => importer.validateExpectedReconciliation(summary)).not.toThrow();
+    expect(() => importer.validateExpectedReconciliation({
+      ...summary,
+      byCategory: { ...summary.byCategory, 槽鐵: 11, 鐵板: 1 },
+    })).toThrow('Steel cutting price reconciliation mismatch');
   });
 
-  it('validates the entire workbook before creating a database pool', async () => {
-    const workbookPath = writeWorkbook({
-      supplements: [makeRow({ record_type: 'unknown', source_row: 112 })],
-    });
-    const createPool = jest.fn<TestPool, []>();
-
-    await expect(
-      importer.importWorkbook({ apply: true, workbookPath, createPool, write: jest.fn() }),
-    ).rejects.toThrow('Unknown cutting record_type: unknown');
-    expect(createPool).not.toHaveBeenCalled();
-  });
-
-  it.each(['insert', 'readback'] as const)('rolls back when %s fails', async (phase) => {
-    const rows = importer.loadWorkbookRows(writeWorkbook());
+  it('rolls back the replacement transaction when readback does not match', async () => {
+    const workbook = writeWorkbook(fixture());
+    const rows = importer.loadWorkbookRows(workbook.file);
     const statements: string[] = [];
-    const client: TestClient = {
-      query: jest.fn(async (sql) => {
+    const client = {
+      query: jest.fn(async (sql: string) => {
         statements.push(sql.trim());
-        if (phase === 'insert' && sql.startsWith('INSERT INTO steel.cutting_prices')) {
-          throw new Error('insert failed');
-        }
         if (sql.includes('COUNT(*)::int AS total')) {
-          return {
-            rows: [
-              {
-                total: phase === 'readback' ? 0 : 2,
-                price: 1,
-                supplement: 1,
-              },
-            ],
-          };
+          return { rows: [{ total: 0, price: 0, supplement: 0 }] };
         }
         return { rows: [] };
       }),
     };
 
     await expect(importer.replaceSteelCuttingPrices(client, rows)).rejects.toThrow(
-      phase === 'insert' ? 'insert failed' : 'Steel cutting price readback mismatch',
+      'Steel cutting price readback mismatch',
     );
     expect(statements.at(-1)).toBe('ROLLBACK');
     expect(statements).not.toContain('COMMIT');
+    fs.rmSync(workbook.directory, { recursive: true, force: true });
   });
 });

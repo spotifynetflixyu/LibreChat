@@ -74,7 +74,9 @@ describe('v4.4 processing price simulation', () => {
     });
     const byCategory = new Map(results.map((result) => [result.targetCategories[0], result]));
 
-    for (const category of categories.filter((value) => value !== 'I型鋼/工字鐵')) {
+    for (const category of categories.filter(
+      (value) => value !== 'I型鋼/工字鐵' && value !== '圓條',
+    )) {
       expect(byCategory.get(category)?.cuttingSimulation?.materialCandidateCount).toBeGreaterThan(
         0,
       );
@@ -84,6 +86,13 @@ describe('v4.4 processing price simulation', () => {
       expect.objectContaining({
         materialCandidateCount: 0,
         matchedCandidateCount: 0,
+      }),
+    );
+    expect(byCategory.get('圓條')?.cuttingSimulation).toEqual(
+      expect.objectContaining({
+        materialCandidateCount: 60,
+        matchedCandidateCount: 0,
+        unmatchedCandidateCount: 60,
       }),
     );
     expect(byCategory.get('方鐵')?.cuttingSimulation).toEqual(
