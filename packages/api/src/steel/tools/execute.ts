@@ -8,6 +8,7 @@ import {
 } from '../repositories';
 import {
   compileProcessingKeyword,
+  getProcessingCandidateText,
   hasUnusableProcessingProductName,
   isGenericProcessingSubcategory,
   isProcessingCandidateApplicable,
@@ -162,6 +163,58 @@ function hasPriceTierValue(tiers: SteelPriceTierValues): boolean {
   return Object.values(tiers).some((value) => value !== null);
 }
 
+const defaultPriceTierOrder = ['B', 'A', 'C', 'F', 'D', 'E'] as const;
+
+function resolveTierPrices(
+  tierPrices: SteelPriceTierValues,
+  unitPriceBase: number | null,
+): {
+  tierPrices: SteelPriceTierValues;
+  fallbackTiers: Array<keyof SteelPriceTierValues>;
+  defaultQuoteTier: keyof SteelPriceTierValues | null;
+  defaultQuoteUnitPrice: number | null;
+  manualReviewNote?: string;
+} {
+  const defaultExplicitTier = defaultPriceTierOrder.find((tier) => tierPrices[tier] !== null);
+  const fallbackUnitPrice =
+    (defaultExplicitTier === undefined ? null : tierPrices[defaultExplicitTier]) ?? unitPriceBase;
+  const fallbackTiers = (Object.keys(tierPrices) as Array<keyof SteelPriceTierValues>).filter(
+    (tier) => tierPrices[tier] === null && fallbackUnitPrice !== null,
+  );
+  const resolvedTierPrices: SteelPriceTierValues = {
+    A: tierPrices.A ?? fallbackUnitPrice,
+    B: tierPrices.B ?? fallbackUnitPrice,
+    C: tierPrices.C ?? fallbackUnitPrice,
+    D: tierPrices.D ?? fallbackUnitPrice,
+    E: tierPrices.E ?? fallbackUnitPrice,
+    F: tierPrices.F ?? fallbackUnitPrice,
+  };
+  const defaultQuoteTier = defaultExplicitTier ?? (unitPriceBase === null ? null : 'B');
+  const defaultQuoteUnitPrice =
+    defaultExplicitTier === undefined ? unitPriceBase : tierPrices[defaultExplicitTier];
+
+  if (fallbackTiers.length === 0) {
+    return {
+      tierPrices: resolvedTierPrices,
+      fallbackTiers,
+      defaultQuoteTier,
+      defaultQuoteUnitPrice,
+    };
+  }
+
+  const fallbackBasis =
+    defaultExplicitTier === undefined
+      ? 'unit_price_base'
+      : `${defaultExplicitTier} 等級價格（B→A→C→F→D→E）`;
+  return {
+    tierPrices: resolvedTierPrices,
+    fallbackTiers,
+    defaultQuoteTier,
+    defaultQuoteUnitPrice,
+    manualReviewNote: `缺價等級使用 ${fallbackBasis} fallback；採用時須在補充註明並人工確認。`,
+  };
+}
+
 function getLongMaterialBillingPolicy(candidate: SteelPriceItem): SteelRawToolOutput {
   if (!['圓條', '圓管', '方管', '扁方管'].includes(candidate.category)) {
     return {};
@@ -180,10 +233,12 @@ function getLongMaterialBillingPolicy(candidate: SteelPriceItem): SteelRawToolOu
 }
 
 function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
-  const { tierPrices, tierRatios, unitPriceBase: _unitPriceBase, ...candidateFields } = candidate;
+  const { tierPrices, tierRatios, unitPriceBase, ...candidateFields } = candidate;
   const pricingOptions: SteelRawToolOutput[] = [];
   const skippedPricingOptions: SteelRawToolOutput[] = [];
   const hasTierPrices = hasPriceTierValue(tierPrices);
+  const resolvedPriceTiers = resolveTierPrices(tierPrices, unitPriceBase);
+  const hasResolvedTierPrices = hasPriceTierValue(resolvedPriceTiers.tierPrices);
   const hasTierRatios = hasPriceTierValue(tierRatios);
   const ratioAsKgTierPrice =
     candidate.valueState === 'ratio_only' &&
@@ -200,12 +255,21 @@ function toSafePriceCandidate(candidate: SteelPriceItem): SteelRawToolOutput {
     ? { ...candidateFields, unit: 'Kg' }
     : candidateFields;
 
-  if (hasTierPrices) {
+  if (hasResolvedTierPrices) {
     pricingOptions.push({
       source: 'tier_price',
       quoteEligible: true,
       quoteUnit: candidate.unit ?? null,
-      tierPrices,
+      tierPrices: resolvedPriceTiers.tierPrices,
+      defaultQuoteTier: resolvedPriceTiers.defaultQuoteTier,
+      defaultQuoteUnitPrice: resolvedPriceTiers.defaultQuoteUnitPrice,
+      ...(resolvedPriceTiers.fallbackTiers.length > 0
+        ? {
+            fallbackTiers: resolvedPriceTiers.fallbackTiers,
+            manualReviewRequired: true,
+            manualReviewNotes: [resolvedPriceTiers.manualReviewNote],
+          }
+        : {}),
     });
   }
 
@@ -272,7 +336,7 @@ function toSafeCuttingPriceRecord(record: SteelCuttingPriceRecord): SteelRawTool
 }
 
 function getPlatePriceModeRank(candidate: SteelPriceItem): number {
-  const text = `${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`;
+  const text = getProcessingCandidateText(candidate);
   if (text.includes('雷射切割')) {
     return 0;
   }
@@ -287,7 +351,7 @@ function getPlatePriceModeRank(candidate: SteelPriceItem): number {
 }
 
 function getSquareBarFinishRank(candidate: SteelPriceItem): number {
-  const text = `${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`;
+  const text = getProcessingCandidateText(candidate);
   return text.includes('磨光') ? 1 : 0;
 }
 

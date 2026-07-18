@@ -323,6 +323,255 @@ describe('executeSteelTool', () => {
     });
   });
 
+  it('uses an E-only price as a runtime fallback and requires manual confirmation', async () => {
+    const client = createClient([
+      [
+        createProcessingRow({
+          erp_item_code: 'A10E12',
+          product_name: '牙白100型1.2',
+          spec_key: 'A10E12 牙白100型1.2',
+          unit_price_base: null,
+          unit_price_a: null,
+          unit_price_b: null,
+          unit_price_c: null,
+          unit_price_d: null,
+          unit_price_e: '48',
+          unit_price_f: null,
+        }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { productNames: ['牙白100型1.2'] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        productNamePrices: [
+          {
+            erpItemCode: 'A10E12',
+            pricingOptions: [
+              {
+                source: 'tier_price',
+                tierPrices: { A: 48, B: 48, C: 48, D: 48, E: 48, F: 48 },
+                defaultQuoteTier: 'E',
+                defaultQuoteUnitPrice: 48,
+                fallbackTiers: ['A', 'B', 'C', 'D', 'F'],
+                manualReviewRequired: true,
+                manualReviewNotes: [expect.stringMatching(/補充.*人工確認/u)],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('uses B-A-C-F-D-E before base when resolving missing tiers', async () => {
+    const client = createClient([
+      [
+        createProcessingRow({
+          id: '201',
+          erp_item_code: 'BASE-ONLY',
+          product_name: 'base only',
+          spec_key: 'BASE-ONLY base only',
+          unit_price_base: '35',
+          unit_price_a: null,
+          unit_price_b: null,
+          unit_price_c: null,
+          unit_price_d: null,
+          unit_price_e: null,
+          unit_price_f: null,
+        }),
+        createProcessingRow({
+          id: '202',
+          erp_item_code: 'MIXED',
+          product_name: 'mixed tiers',
+          spec_key: 'MIXED mixed tiers',
+          unit_price_base: null,
+          unit_price_a: '41',
+          unit_price_b: null,
+          unit_price_c: '39',
+          unit_price_d: null,
+          unit_price_e: null,
+          unit_price_f: null,
+        }),
+        createProcessingRow({
+          id: '203',
+          erp_item_code: 'B-FIRST',
+          product_name: 'B first',
+          spec_key: 'B-FIRST B first',
+          unit_price_base: '35',
+          unit_price_a: '41',
+          unit_price_b: '42',
+          unit_price_c: null,
+          unit_price_d: null,
+          unit_price_e: null,
+          unit_price_f: null,
+        }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { productNames: ['base only', 'mixed tiers', 'B first'] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        productNamePrices: [
+          {
+            erpItemCode: 'BASE-ONLY',
+            pricingOptions: [
+              {
+                tierPrices: { A: 35, B: 35, C: 35, D: 35, E: 35, F: 35 },
+                defaultQuoteTier: 'B',
+                defaultQuoteUnitPrice: 35,
+              },
+            ],
+          },
+          {
+            erpItemCode: 'MIXED',
+            pricingOptions: [
+              {
+                tierPrices: { A: 41, B: 41, C: 39, D: 41, E: 41, F: 41 },
+                defaultQuoteTier: 'A',
+                defaultQuoteUnitPrice: 41,
+              },
+            ],
+          },
+          {
+            erpItemCode: 'B-FIRST',
+            pricingOptions: [
+              {
+                tierPrices: { A: 41, B: 42, C: 42, D: 42, E: 42, F: 42 },
+                defaultQuoteTier: 'B',
+                defaultQuoteUnitPrice: 42,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('keeps D and E ratios available without mixing them into price fallback', async () => {
+    const client = createClient([
+      [
+        createProcessingRow({
+          erp_item_code: 'RATIO-DE',
+          product_name: 'ratio D E',
+          spec_key: 'RATIO-DE ratio D E',
+          value_state: 'ratio_only',
+          unit_price_base: null,
+          unit_price_a: null,
+          unit_price_b: null,
+          unit_price_c: null,
+          unit_price_d: null,
+          unit_price_e: null,
+          unit_price_f: null,
+          price_ratio_a: null,
+          price_ratio_b: null,
+          price_ratio_c: null,
+          price_ratio_d: '1.2',
+          price_ratio_e: '1.15',
+          price_ratio_f: null,
+        }),
+      ],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { productNames: ['ratio D E'] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        productNamePrices: [
+          {
+            pricingOptions: [
+              {
+                source: 'tier_price',
+                tierPrices: { A: null, B: null, C: null, D: 1.2, E: 1.15, F: null },
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('preserves plate ranking when normalized search text only exists in prefixed specKey', async () => {
+    const generic = createProcessingRow({
+      id: '301',
+      erp_item_code: 'PLATE-GENERIC',
+      product_name: '鐵板加工甲',
+      spec_key: 'PLATE-GENERIC 鐵板加工甲',
+      category: '鐵板',
+    });
+    const shaped = createProcessingRow({
+      id: '302',
+      erp_item_code: 'PLATE-SHAPED',
+      product_name: '鐵板加工乙',
+      spec_key: 'PLATE-SHAPED 版型切割',
+      category: '鐵板',
+    });
+    const square = createProcessingRow({
+      id: '303',
+      erp_item_code: 'PLATE-SQUARE',
+      product_name: '鐵板加工丙',
+      spec_key: 'PLATE-SQUARE 四方切',
+      category: '鐵板',
+    });
+    const laser = createProcessingRow({
+      id: '304',
+      erp_item_code: 'PLATE-LASER',
+      product_name: '鐵板加工丁',
+      spec_key: 'PLATE-LASER 雷射切割',
+      category: '鐵板',
+    });
+    const client = createClient([
+      [
+        {
+          query_index: '0',
+          query_id: 'q1',
+          price_candidates: [generic, shaped, square, laser],
+          category_candidates: [],
+        },
+      ],
+      [],
+    ]);
+
+    const result = await executeSteelTool({
+      client,
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ category: '鐵板' }] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        queryResults: [
+          {
+            candidates: [
+              { erpItemCode: 'PLATE-LASER' },
+              { erpItemCode: 'PLATE-SQUARE' },
+              { erpItemCode: 'PLATE-SHAPED' },
+              { erpItemCode: 'PLATE-GENERIC' },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
   it('returns more than ten explicit processing candidates without names-only compression', async () => {
     const candidates = Array.from({ length: 11 }, (_, index) =>
       createProcessingRow({
@@ -501,7 +750,7 @@ describe('executeSteelTool', () => {
     });
     expect(client.calls).toHaveLength(2);
     expect(client.calls.some(({ sql }) => sql.includes('steel.cutting_prices'))).toBe(false);
-    expect(client.calls[1]?.values?.[1]).toEqual(['加工/切工']);
+    expect(client.calls[1]?.values?.[0]).toEqual(['加工/切工']);
   });
 
   it('keeps query correlation when more than ten automatic cutting candidates match', async () => {
@@ -557,7 +806,7 @@ describe('executeSteelTool', () => {
     });
     expect(client.calls).toHaveLength(2);
     expect(client.calls.some(({ sql }) => sql.includes('steel.cutting_prices'))).toBe(false);
-    expect(client.calls[1]?.values?.[1]).toEqual(['加工/切工']);
+    expect(client.calls[1]?.values?.[0]).toEqual(['加工/切工']);
   });
 
   it('returns the H cutting adjustment only as an AI-visible manual-confirmation note', async () => {

@@ -13,7 +13,7 @@ require('ts-node/register/transpile-only');
 
 const XLSX = require('xlsx');
 
-const { steelPriceV4WorkbookHeaders } = require('../src/steel/pricing/v4');
+const { buildSteelPriceV4Rows } = require('../src/steel/pricing/v4');
 const {
   applyPriceCategory,
   getPendingPriceCategoryProposal,
@@ -35,6 +35,78 @@ const DEFAULT_REVIEW_PATH = path.resolve(
   __dirname,
   '../../../docs/reference/products_db_v4.4.pending-review.csv',
 );
+const legacySteelPriceV4SourceHeaders = Object.freeze([
+  'erp_item_code',
+  'formula_code',
+  'product_name',
+  'normalized_spec_text',
+  'category',
+  'subcategory',
+  'material',
+  'dimension_signature',
+  'unit',
+  'value_state',
+  'unit_price_base',
+  'unit_price_a',
+  'unit_price_b',
+  'unit_price_c',
+  'unit_price_d',
+  'unit_price_e',
+  'unit_price_f',
+  'price_ratio_a',
+  'price_ratio_b',
+  'price_ratio_c',
+  'price_ratio_d',
+  'price_ratio_e',
+  'price_ratio_f',
+  'unit_weight_value',
+  'unit_weight_basis',
+  'density',
+  'source_thickness',
+  'width_mm',
+  'height_mm',
+  'length_mm',
+  'outer_diameter_mm',
+  'nominal_inch',
+  'web_mm',
+  'flange_mm',
+  'lip_mm',
+  'sheet_width_mm',
+  'sheet_length_mm',
+  'spec_sort_key',
+  'cost_basis',
+]);
+const legacySubcategoryIndex = legacySteelPriceV4SourceHeaders.indexOf('subcategory');
+const legacyHeadersWithProcessing = [
+  ...legacySteelPriceV4SourceHeaders.slice(0, legacySubcategoryIndex + 1),
+  'processing_method',
+  'processing_shape',
+  ...legacySteelPriceV4SourceHeaders.slice(legacySubcategoryIndex + 1),
+];
+const legacySourceThicknessIndex = legacyHeadersWithProcessing.indexOf('source_thickness');
+const legacyNormalizedHeaders = [
+  ...legacyHeadersWithProcessing.slice(0, legacySourceThicknessIndex + 1),
+  'thicknessMinMm',
+  'thicknessMaxMm',
+  ...legacyHeadersWithProcessing.slice(legacySourceThicknessIndex + 1),
+];
+const inputHeaders = [
+  ...new Set([
+    ...legacySteelPriceV4SourceHeaders,
+    ...legacyNormalizedHeaders,
+    ...normalizedSteelPriceV4WorkbookHeaders,
+  ]),
+];
+const legacyThicknessIgnoredCategories = new Set([
+  '圓管',
+  '方管',
+  '扁方管',
+  '槽鐵',
+  '角鐵',
+  '網',
+  '鋼筋',
+  '鐵軌',
+]);
 
 function resolveOption(argv, name, fallback) {
   const index = argv.indexOf(name);
@@ -76,6 +148,51 @@ function sameFile(left, right) {
   return path.resolve(left) === path.resolve(right);
 }
 
+function adaptLegacySourceRow(row) {
+  const erpItemCode = String(row.erp_item_code ?? '').normalize('NFKC').trim();
+  const legacySpecText = String(row.normalized_spec_text ?? '').normalize('NFKC').trim();
+  if (!String(row.spec_key ?? '').trim()) {
+    row.spec_key = legacySpecText ? `${erpItemCode} ${legacySpecText}`.trim() : erpItemCode;
+  }
+
+  if (String(row.thicknessMinMm ?? '').trim() || String(row.thicknessMaxMm ?? '').trim()) {
+    return row;
+  }
+  const sourceThickness = String(row.source_thickness ?? '').normalize('NFKC').trim();
+  if (!sourceThickness || sourceThickness === '0') {
+    return row;
+  }
+  const match = sourceThickness.match(
+    /^([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:m\s*\/\s*m|mm|t)?$/iu,
+  );
+  if (!match?.[1]) {
+    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
+  }
+  const min = Number(match[1]);
+  const max = match[2] ? Number(match[2]) : min;
+  if (min <= 0 || max < min) {
+    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
+  }
+  const category = String(row.category ?? '').trim();
+  const productName = String(row.product_name ?? '').normalize('NFKC').toUpperCase();
+  const [parsedWithoutSourceThickness] = buildSteelPriceV4Rows([row]);
+  if (
+    parsedWithoutSourceThickness?.thicknessMinMm !== null ||
+    legacyThicknessIgnoredCategories.has(category)
+  ) {
+    return row;
+  }
+  if (
+    category === '鐵板' &&
+    ((min === 2 && productName.includes('2B')) || (min === 1 && productName.includes('NO1')))
+  ) {
+    return row;
+  }
+  row.thicknessMinMm = min;
+  row.thicknessMaxMm = max;
+  return row;
+}
+
 function loadWorkbook(inputPath) {
   const workbook = XLSX.readFile(inputPath, { raw: false, cellDates: false });
   const worksheet = workbook.Sheets[SHEET_NAME];
@@ -88,7 +205,11 @@ function loadWorkbook(inputPath) {
     raw: false,
   });
   const headers = (matrix[0] || []).map(String);
-  const acceptedHeaders = [steelPriceV4WorkbookHeaders, normalizedSteelPriceV4WorkbookHeaders];
+  const acceptedHeaders = [
+    legacySteelPriceV4SourceHeaders,
+    legacyNormalizedHeaders,
+    normalizedSteelPriceV4WorkbookHeaders,
+  ];
   const valid = acceptedHeaders.some(
     (candidate) =>
       headers.length === candidate.length &&
@@ -96,15 +217,17 @@ function loadWorkbook(inputPath) {
   );
   if (!valid) {
     throw new Error(
-      `${SHEET_NAME} headers must match the 39-column source or 43-column target contract`,
+      `${SHEET_NAME} headers must match the 39-column source or normalized target contract`,
     );
   }
   const rows = matrix.slice(1).map((cells) =>
-    Object.fromEntries(
-      normalizedSteelPriceV4WorkbookHeaders.map((header) => {
-        const index = headers.indexOf(header);
-        return [header, cells[index] === undefined ? '' : cells[index]];
-      }),
+    adaptLegacySourceRow(
+      Object.fromEntries(
+        inputHeaders.map((header) => {
+          const index = headers.indexOf(header);
+          return [header, cells[index] === undefined ? '' : cells[index]];
+        }),
+      ),
     ),
   );
   return { workbook, rows };
@@ -166,7 +289,7 @@ function makeDataSheet(rows) {
   const worksheet = XLSX.utils.aoa_to_sheet(matrix);
   worksheet['!cols'] = normalizedSteelPriceV4WorkbookHeaders.map((header) => ({
     wch:
-      header === 'product_name' || header === 'normalized_spec_text'
+      header === 'product_name' || header === 'spec_key'
         ? 42
         : Math.max(12, header.length + 2),
   }));
@@ -243,14 +366,10 @@ function normalizeWorkbook({ inputPath, outputPath, reviewPath = DEFAULT_REVIEW_
   if (sameFile(inputPath, outputPath)) {
     throw new Error('Input and output paths must differ');
   }
-  const { workbook, normalizedRows, reviewRows, changedCategoryCount } =
-    buildNormalization(inputPath);
-
-  workbook.Sheets[SHEET_NAME] = makeDataSheet(normalizedRows);
-  if (!workbook.SheetNames.includes(REVIEW_SHEET_NAME)) {
-    workbook.SheetNames.push(REVIEW_SHEET_NAME);
-  }
-  workbook.Sheets[REVIEW_SHEET_NAME] = makeReviewSheet(reviewRows);
+  const { normalizedRows, reviewRows, changedCategoryCount } = buildNormalization(inputPath);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, makeDataSheet(normalizedRows), SHEET_NAME);
+  XLSX.utils.book_append_sheet(workbook, makeReviewSheet(reviewRows), REVIEW_SHEET_NAME);
   addWorkbookAutoFilters(workbook);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   XLSX.writeFile(workbook, outputPath, { compression: true });

@@ -68,21 +68,25 @@ function makeRow(overrides: Partial<SteelPriceV4WorkbookRow> = {}): SteelPriceV4
 
 describe('Steel price workbook normalization core', () => {
   it('adds processing attributes and exact camelCase thickness headers', () => {
-    const sourceIndex = normalizedSteelPriceV4WorkbookHeaders.indexOf('source_thickness');
+    const densityIndex = normalizedSteelPriceV4WorkbookHeaders.indexOf('density');
     const subcategoryIndex = normalizedSteelPriceV4WorkbookHeaders.indexOf('subcategory');
 
     expect(
       normalizedSteelPriceV4WorkbookHeaders.slice(subcategoryIndex, subcategoryIndex + 4),
     ).toEqual(['subcategory', 'processing_method', 'processing_shape', 'material']);
 
-    expect(normalizedSteelPriceV4WorkbookHeaders.slice(sourceIndex, sourceIndex + 5)).toEqual([
-      'source_thickness',
+    expect(normalizedSteelPriceV4WorkbookHeaders.slice(densityIndex, densityIndex + 5)).toEqual([
+      'density',
       'thicknessMinMm',
       'thicknessMaxMm',
       'width_mm',
       'height_mm',
     ]);
-    expect(normalizedSteelPriceV4WorkbookHeaders).toHaveLength(43);
+    expect(normalizedSteelPriceV4WorkbookHeaders).toHaveLength(41);
+    expect(normalizedSteelPriceV4WorkbookHeaders).toContain('spec_key');
+    expect(normalizedSteelPriceV4WorkbookHeaders).not.toContain('normalized_spec_text');
+    expect(normalizedSteelPriceV4WorkbookHeaders).not.toContain('dimension_signature');
+    expect(normalizedSteelPriceV4WorkbookHeaders).not.toContain('source_thickness');
   });
 
   it('normalizes parser fields while preserving protected source cells', () => {
@@ -99,8 +103,8 @@ describe('Steel price workbook normalization core', () => {
     expect(normalized.unit).toBe('㎡');
     expect(normalized.thicknessMinMm).toBe(0.5);
     expect(normalized.thicknessMaxMm).toBe(0.5);
-    expect(normalized.normalized_spec_text).toContain('t0.5mm');
-    expect(normalized.normalized_spec_text).not.toContain('t2mm');
+    expect(normalized.spec_key).toContain('t0.5mm');
+    expect(normalized.spec_key).not.toContain('t2mm');
     expect(parsed.thicknessMinMm).toBe(0.5);
     for (const header of protectedSteelPriceWorkbookHeaders) {
       expect(normalized[header]).toBe(source[header]);
@@ -156,7 +160,7 @@ describe('Steel price workbook normalization core', () => {
     },
   );
 
-  it('adds processing method and shape to normalized_spec_text for keyword lookup', () => {
+  it('adds processing method and shape to spec_key for keyword lookup', () => {
     const normalized = normalizeSteelPriceWorkbookRow(
       makeRow({
         product_name: '3.0 雷射切割',
@@ -169,8 +173,8 @@ describe('Steel price workbook normalization core', () => {
       processing_method: '雷射',
       processing_shape: '外形切割',
     });
-    expect(normalized.normalized_spec_text).toContain('雷射');
-    expect(normalized.normalized_spec_text).toContain('外形切割');
+    expect(normalized.spec_key).toContain('雷射');
+    expect(normalized.spec_key).toContain('外形切割');
   });
 
   it('normalizes a diamond hole symbol to the canonical hole shape keyword', () => {
@@ -186,7 +190,7 @@ describe('Steel price workbook normalization core', () => {
       processing_method: '沖床',
       processing_shape: '菱形孔',
     });
-    expect(normalized.normalized_spec_text).toContain('菱形孔');
+    expect(normalized.spec_key).toContain('菱形孔');
   });
 
   it('normalizes an allowed hot-dip material category', () => {

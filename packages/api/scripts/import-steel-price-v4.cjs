@@ -14,29 +14,18 @@ require('ts-node/register/transpile-only');
 const XLSX = require('xlsx');
 
 const { createSteelPostgresPool } = require('../src/steel/postgres');
-const {
-  buildSteelPriceV4Rows,
-  steelPriceV4SourceDataset,
-  steelPriceV4WorkbookHeaders,
-} = require('../src/steel/pricing/v4');
-const {
-  normalizedSteelPriceV4WorkbookHeaders,
-} = require('../src/steel/pricing/normalize/core');
+const { buildSteelPriceV4Rows, steelPriceV4WorkbookHeaders } = require('../src/steel/pricing/v4');
 
 const SHEET_NAME = 'products_db_ready';
-const SOURCE_DATASET = steelPriceV4SourceDataset;
 const DEFAULT_WORKBOOK_PATH = path.resolve(
   __dirname,
   '../../../docs/reference/products_db_v4.4.xlsx',
 );
 const EXPECTED_HEADERS = steelPriceV4WorkbookHeaders;
-const NORMALIZED_INPUT_HEADERS = normalizedSteelPriceV4WorkbookHeaders.filter(
-  (header) => header !== 'thicknessMinMm' && header !== 'thicknessMaxMm',
-);
+const INPUT_HEADERS = EXPECTED_HEADERS;
 const EXPECTED_RECONCILIATION = Object.freeze({
   importRows: 6761,
   duplicateErpItemCodes: 0,
-  activeRows: 6761,
   byValueState: Object.freeze({
     confirmed: 4787,
     ratio_only: 190,
@@ -44,20 +33,15 @@ const EXPECTED_RECONCILIATION = Object.freeze({
   }),
 });
 const INSERT_COLUMNS = Object.freeze([
-  'price_kind',
-  'source_dataset',
-  'source_row_key',
   'erp_item_code',
   'formula_code',
   'product_name',
-  'normalized_spec_text',
   'spec_key',
   'category',
   'subcategory',
   'processing_method',
   'processing_shape',
   'material',
-  'dimension_signature',
   'unit',
   'value_state',
   'unit_price_base',
@@ -76,7 +60,6 @@ const INSERT_COLUMNS = Object.freeze([
   'unit_weight_value',
   'unit_weight_basis',
   'density',
-  'source_thickness',
   'thickness_min_mm',
   'thickness_max_mm',
   'width_mm',
@@ -91,9 +74,6 @@ const INSERT_COLUMNS = Object.freeze([
   'sheet_length_mm',
   'spec_sort_key',
   'cost_basis',
-  'currency',
-  'active',
-  'source_refs',
 ]);
 
 function parseArgs(argv) {
@@ -153,21 +133,19 @@ function loadWorkbookRows(workbookPath) {
     raw: false,
   });
   const headers = (matrix[0] || []).map((value) => String(value));
-  const exactHeaders = [EXPECTED_HEADERS, normalizedSteelPriceV4WorkbookHeaders].some(
-    (candidate) =>
-      headers.length === candidate.length &&
-      headers.every((header, index) => header === candidate[index]),
-  );
+  const exactHeaders =
+    headers.length === EXPECTED_HEADERS.length &&
+    headers.every((header, index) => header === EXPECTED_HEADERS[index]);
 
   if (!exactHeaders) {
-    throw new Error(`${SHEET_NAME} headers do not match the exact legacy or normalized v4.4 contract`);
+    throw new Error(`${SHEET_NAME} headers do not match the normalized v4.4 contract`);
   }
 
   return matrix
     .slice(1)
     .map((cells) =>
       Object.fromEntries(
-        NORMALIZED_INPUT_HEADERS.map((header) => [
+        INPUT_HEADERS.map((header) => [
           header,
           cells[headers.indexOf(header)] === undefined ? '' : cells[headers.indexOf(header)],
         ]),
@@ -179,7 +157,6 @@ function buildReconciliationCounts(rows) {
   const seen = new Set();
   const counts = {
     duplicateErpItemCodes: 0,
-    activeRows: 0,
     byValueState: {
       confirmed: 0,
       ratio_only: 0,
@@ -194,7 +171,6 @@ function buildReconciliationCounts(rows) {
       seen.add(row.erpItemCode);
     }
 
-    counts.activeRows += row.active ? 1 : 0;
     counts.byValueState[row.valueState] += 1;
   }
 
@@ -208,7 +184,6 @@ function buildDryRunSummary(rows, workbookPath) {
     mode: 'dry-run',
     workbookPath,
     sheet: SHEET_NAME,
-    sourceDataset: SOURCE_DATASET,
     importRows: rows.length,
     ...counts,
   };
@@ -218,7 +193,6 @@ function validateExpectedReconciliation(summary) {
   const matches =
     summary.importRows === EXPECTED_RECONCILIATION.importRows &&
     summary.duplicateErpItemCodes === EXPECTED_RECONCILIATION.duplicateErpItemCodes &&
-    summary.activeRows === EXPECTED_RECONCILIATION.activeRows &&
     summary.byValueState.confirmed === EXPECTED_RECONCILIATION.byValueState.confirmed &&
     summary.byValueState.ratio_only === EXPECTED_RECONCILIATION.byValueState.ratio_only &&
     summary.byValueState.no_price === EXPECTED_RECONCILIATION.byValueState.no_price;
@@ -232,20 +206,15 @@ function validateExpectedReconciliation(summary) {
 
 function toDbValues(row) {
   return [
-    row.priceKind,
-    row.sourceDataset,
-    row.sourceRowKey,
     row.erpItemCode,
     row.formulaCode,
     row.productName,
-    row.normalizedSpecText,
     row.specKey,
     row.category,
     row.subcategory || null,
     row.processingMethod,
     row.processingShape,
     row.material,
-    row.dimensionSignature,
     row.unit,
     row.valueState,
     row.unitPriceBase,
@@ -264,7 +233,6 @@ function toDbValues(row) {
     row.unitWeightValue,
     row.unitWeightBasis,
     row.density,
-    row.sourceThickness,
     row.thicknessMinMm,
     row.thicknessMaxMm,
     row.widthMm,
@@ -279,9 +247,6 @@ function toDbValues(row) {
     row.sheetLengthMm,
     row.specSortKey,
     row.costBasis,
-    row.currency,
-    row.active,
-    JSON.stringify([]),
   ];
 }
 
@@ -301,8 +266,7 @@ function buildInsert(batch) {
     sql: `INSERT INTO steel.prices (${INSERT_COLUMNS.join(', ')})
 VALUES ${placeholders.join(',\n')}
 ON CONFLICT (erp_item_code) DO UPDATE SET
-${updateColumns.map((column) => `  ${column} = EXCLUDED.${column}`).join(',\n')},
-  imported_at = NOW()`,
+${updateColumns.map((column) => `  ${column} = EXCLUDED.${column}`).join(',\n')}`,
     values,
   };
 }
@@ -321,9 +285,6 @@ function buildReadbackExpectation(rows) {
 
   return {
     total: rows.length,
-    target_dataset: rows.length,
-    other_dataset: 0,
-    active: counts.activeRows,
     ...counts.byValueState,
   };
 }
@@ -347,14 +308,11 @@ async function replaceSteelPrices(client, rows) {
     const result = await client.query(`
 SELECT
   COUNT(*)::int AS total,
-  COUNT(*) FILTER (WHERE source_dataset = $1)::int AS target_dataset,
-  COUNT(*) FILTER (WHERE source_dataset <> $1)::int AS other_dataset,
-  COUNT(*) FILTER (WHERE active)::int AS active,
   COUNT(*) FILTER (WHERE value_state = 'confirmed')::int AS confirmed,
   COUNT(*) FILTER (WHERE value_state = 'ratio_only')::int AS ratio_only,
   COUNT(*) FILTER (WHERE value_state = 'no_price')::int AS no_price
 FROM steel.prices
-`, [SOURCE_DATASET]);
+`);
     const readback = result.rows[0] || {};
     if (!readbackMatches(readback, expectedReadback)) {
       throw new Error(

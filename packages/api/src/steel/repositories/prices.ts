@@ -1,33 +1,24 @@
-import {
-  parseNullableNumber,
-  parseNullableString,
-  parseRequiredNumber,
-  parseSteelSourceRefs,
-} from './types';
+import { parseNullableNumber, parseNullableString, parseRequiredNumber } from './types';
 import { normalizeSteelSpecKey } from '../normalization/spec';
 import { processingPriceCategories } from '../pricing/processing-candidates';
 
-import type { SteelRepositoryClient, SteelSourceBackedRecord, SteelSourceRef } from './types';
+import type { SteelRepositoryClient } from './types';
 import type { PriceLookupMaterialKind, PriceCategory } from '../pricing/enums';
 import type { ProcessingPriceCategory } from '../pricing/processing-candidates';
 
-export type SteelPriceKind = 'product' | 'cutting' | 'hole';
 export type SteelPriceValueState = 'confirmed' | 'ratio_only' | 'no_price';
 
 interface SteelPriceItemRow {
   id: string | number;
   erp_item_code: string;
-  price_kind: string;
   formula_code: string | null;
   spec_key: string;
   product_name: string | null;
-  normalized_spec_text: string | null;
   category: string;
   subcategory: string | null;
   processing_method?: string | null;
   processing_shape?: string | null;
   material: string | null;
-  dimension_signature: string | null;
   unit: string | null;
   value_state: string;
   unit_price_base: string | number | null;
@@ -46,7 +37,6 @@ interface SteelPriceItemRow {
   unit_weight_value: string | number | null;
   unit_weight_basis: string | null;
   density: string | number | null;
-  source_thickness: string | null;
   thickness_min_mm: string | number | null;
   thickness_max_mm: string | number | null;
   width_mm: string | number | null;
@@ -61,9 +51,6 @@ interface SteelPriceItemRow {
   sheet_length_mm: string | number | null;
   spec_sort_key: string | null;
   cost_basis: string;
-  currency: string;
-  active: boolean;
-  source_refs: unknown;
 }
 
 interface SteelPriceCategoryCandidateRow {
@@ -90,20 +77,17 @@ export interface SteelPriceTierValues {
   F: number | null;
 }
 
-export interface SteelPriceItem extends SteelSourceBackedRecord {
+export interface SteelPriceItem {
   id: number;
   erpItemCode: string;
-  priceKind: SteelPriceKind;
   formulaCode?: string;
   specKey: string;
   productName?: string;
-  normalizedSpecText?: string;
   category: PriceCategory | string;
   subcategory?: string;
   processingMethod?: string;
   processingShape?: string;
   material?: string;
-  dimensionSignature?: string;
   unit?: string;
   valueState: SteelPriceValueState;
   unitPriceBase: number | null;
@@ -112,7 +96,6 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   unitWeightValue: number | null;
   unitWeightBasis?: string;
   density: number | null;
-  sourceThickness?: string;
   thicknessMinMm: number | null;
   thicknessMaxMm: number | null;
   widthMm: number | null;
@@ -127,9 +110,6 @@ export interface SteelPriceItem extends SteelSourceBackedRecord {
   sheetLengthMm: number | null;
   specSortKey?: string;
   costBasis: string;
-  currency: string;
-  active: boolean;
-  sourceRefs: SteelSourceRef[];
 }
 
 export interface SteelPriceLookupQuery {
@@ -155,11 +135,9 @@ export type SteelPriceCandidateQuery = SteelPriceLookupQuery | SteelPriceCategor
 
 export interface SearchSteelPriceCandidateGroupsInput {
   queries: readonly SteelPriceCandidateQuery[];
-  includeInactive?: boolean;
 }
 
 export interface SearchSteelProcessingPriceCandidatesInput {
-  includeInactive?: boolean;
   categories?: readonly ProcessingPriceCategory[];
 }
 
@@ -257,14 +235,6 @@ function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number
   } satisfies SerializedPriceQuery;
 }
 
-function parsePriceKind(value: string): SteelPriceKind {
-  if (value === 'product' || value === 'cutting' || value === 'hole') {
-    return value;
-  }
-
-  throw new Error(`Unexpected Steel price_kind: ${value}`);
-}
-
 function parsePriceValueState(value: string): SteelPriceValueState {
   if (value === 'confirmed' || value === 'ratio_only' || value === 'no_price') {
     return value;
@@ -295,17 +265,14 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
   return {
     id: parseRequiredNumber(row.id),
     erpItemCode: row.erp_item_code,
-    priceKind: parsePriceKind(row.price_kind),
     formulaCode: parseNullableString(row.formula_code),
     specKey: row.spec_key,
     productName: parseNullableString(row.product_name),
-    normalizedSpecText: parseNullableString(row.normalized_spec_text),
     category: row.category,
     subcategory: parseNullableString(row.subcategory),
     processingMethod: parseNullableString(row.processing_method),
     processingShape: parseNullableString(row.processing_shape),
     material: parseNullableString(row.material),
-    dimensionSignature: parseNullableString(row.dimension_signature),
     unit: parseNullableString(row.unit),
     valueState: parsePriceValueState(row.value_state),
     unitPriceBase: parseNullableNumber(row.unit_price_base),
@@ -328,7 +295,6 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     unitWeightValue: parseNullableNumber(row.unit_weight_value),
     unitWeightBasis: parseNullableString(row.unit_weight_basis),
     density: parseNullableNumber(row.density),
-    sourceThickness: parseNullableString(row.source_thickness),
     thicknessMinMm: parseNullableNumber(row.thickness_min_mm),
     thicknessMaxMm: parseNullableNumber(row.thickness_max_mm),
     widthMm: parseNullableNumber(row.width_mm),
@@ -343,9 +309,6 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     sheetLengthMm: parseNullableNumber(row.sheet_length_mm),
     specSortKey: parseNullableString(row.spec_sort_key),
     costBasis: row.cost_basis,
-    currency: row.currency,
-    active: row.active,
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
 }
 
@@ -428,17 +391,14 @@ SELECT
         SELECT
           p.id,
           p.erp_item_code,
-          p.price_kind,
           p.formula_code,
           p.spec_key,
           p.product_name,
-          p.normalized_spec_text,
           p.category,
           p.subcategory,
           p.processing_method,
           p.processing_shape,
           p.material,
-          p.dimension_signature,
           p.unit,
           p.value_state,
           p.unit_price_base,
@@ -457,7 +417,6 @@ SELECT
           p.unit_weight_value,
           p.unit_weight_basis,
           p.density,
-          p.source_thickness,
           p.thickness_min_mm,
           p.thickness_max_mm,
           p.width_mm,
@@ -471,13 +430,9 @@ SELECT
           p.sheet_width_mm,
           p.sheet_length_mm,
           p.spec_sort_key,
-          p.cost_basis,
-          p.currency,
-          p.active,
-          p.source_refs
+          p.cost_basis
         FROM steel.prices AS p
         WHERE input_query.mode = 'lookup'
-          AND ($2::boolean OR p.active = true)
           AND p.value_state <> 'no_price'
           AND p.category = input_query.category
           AND (input_query.subcategory IS NULL OR p.subcategory = input_query.subcategory)
@@ -527,10 +482,8 @@ SELECT
               SELECT 1
               FROM unnest(input_query.keyword_terms) AS keyword_term
               WHERE NOT COALESCE(
-                p.spec_key ILIKE '%' || keyword_term || '%'
+                  p.spec_key ILIKE '%' || keyword_term || '%'
                   OR p.product_name ILIKE '%' || keyword_term || '%'
-                  OR p.normalized_spec_text ILIKE '%' || keyword_term || '%'
-                  OR p.dimension_signature ILIKE '%' || keyword_term || '%'
                   OR p.erp_item_code ILIKE '%' || keyword_term || '%',
                 false
               )
@@ -553,7 +506,6 @@ SELECT
           MIN(p.product_name) AS example_product_name
         FROM steel.prices AS p
         WHERE input_query.mode = 'category_discovery'
-          AND ($2::boolean OR p.active = true)
           AND p.value_state <> 'no_price'
           AND NOT EXISTS (
             SELECT 1
@@ -561,8 +513,6 @@ SELECT
             WHERE NOT COALESCE(
               p.spec_key ILIKE '%' || keyword_term || '%'
                 OR p.product_name ILIKE '%' || keyword_term || '%'
-                OR p.normalized_spec_text ILIKE '%' || keyword_term || '%'
-                OR p.dimension_signature ILIKE '%' || keyword_term || '%'
                 OR p.material ILIKE '%' || keyword_term || '%'
                 OR p.erp_item_code ILIKE '%' || keyword_term || '%',
               false
@@ -582,17 +532,14 @@ const processingPriceCandidatesSql = `
 SELECT
   p.id,
   p.erp_item_code,
-  p.price_kind,
   p.formula_code,
   p.spec_key,
   p.product_name,
-  p.normalized_spec_text,
   p.category,
   p.subcategory,
   p.processing_method,
   p.processing_shape,
   p.material,
-  p.dimension_signature,
   p.unit,
   p.value_state,
   p.unit_price_base,
@@ -611,7 +558,6 @@ SELECT
   p.unit_weight_value,
   p.unit_weight_basis,
   p.density,
-  p.source_thickness,
   p.thickness_min_mm,
   p.thickness_max_mm,
   p.width_mm,
@@ -625,16 +571,12 @@ SELECT
   p.sheet_width_mm,
   p.sheet_length_mm,
   p.spec_sort_key,
-  p.cost_basis,
-  p.currency,
-  p.active,
-  p.source_refs
+  p.cost_basis
 FROM steel.prices AS p
-WHERE ($1::boolean OR p.active = true)
-  AND p.value_state <> 'no_price'
+WHERE p.value_state <> 'no_price'
   AND (
-    ($3::text[] IS NULL AND p.category = ANY($2::text[]))
-    OR ($3::text[] IS NOT NULL AND p.product_name = ANY($3::text[]))
+    ($2::text[] IS NULL AND p.category = ANY($1::text[]))
+    OR ($2::text[] IS NOT NULL AND p.product_name = ANY($2::text[]))
   )
 ORDER BY p.category ASC, p.spec_sort_key ASC NULLS LAST, p.product_name ASC NULLS LAST, p.id ASC
 `;
@@ -650,7 +592,6 @@ export async function searchSteelPriceCandidateGroups(
   const serializedQueries = input.queries.map(serializePriceQuery);
   const result = await client.query<SteelPriceCandidateGroupRow>(groupedPriceCandidatesSql, [
     JSON.stringify(serializedQueries),
-    input.includeInactive ?? false,
   ]);
 
   return result.rows
@@ -663,7 +604,6 @@ export async function searchSteelProcessingPriceCandidates(
   input: SearchSteelProcessingPriceCandidatesInput = {},
 ): Promise<SteelPriceItem[]> {
   const result = await client.query<SteelPriceItemRow>(processingPriceCandidatesSql, [
-    input.includeInactive ?? false,
     input.categories ?? processingPriceCategories,
     null,
   ]);
@@ -680,7 +620,6 @@ export async function searchSteelPricesByProductNames(
   }
 
   const result = await client.query<SteelPriceItemRow>(processingPriceCandidatesSql, [
-    false,
     [],
     productNames,
   ]);

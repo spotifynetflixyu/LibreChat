@@ -27,23 +27,7 @@ export const protectedSteelPriceWorkbookHeaders = Object.freeze([
   'cost_basis',
 ] as const);
 
-const subcategoryIndex = steelPriceV4WorkbookHeaders.indexOf('subcategory');
-
-const workbookHeadersWithProcessing = Object.freeze([
-  ...steelPriceV4WorkbookHeaders.slice(0, subcategoryIndex + 1),
-  'processing_method',
-  'processing_shape',
-  ...steelPriceV4WorkbookHeaders.slice(subcategoryIndex + 1),
-] as const);
-
-const normalizedSourceThicknessIndex = workbookHeadersWithProcessing.indexOf('source_thickness');
-
-export const normalizedSteelPriceV4WorkbookHeaders = Object.freeze([
-  ...workbookHeadersWithProcessing.slice(0, normalizedSourceThicknessIndex + 1),
-  'thicknessMinMm',
-  'thicknessMaxMm',
-  ...workbookHeadersWithProcessing.slice(normalizedSourceThicknessIndex + 1),
-] as const);
+export const normalizedSteelPriceV4WorkbookHeaders = steelPriceV4WorkbookHeaders;
 
 export type NormalizedSteelPriceV4WorkbookRow = Record<
   (typeof normalizedSteelPriceV4WorkbookHeaders)[number],
@@ -163,8 +147,17 @@ function buildNormalizedSpecText(
       .replace(/\s+/gu, ' ')
       .trim(),
   ];
-  if (parsed.dimensionSignature) {
-    tokens.push(parsed.dimensionSignature);
+  if (parsed.outerDiameterMm !== null) {
+    tokens.push(`od${compactNumber(parsed.outerDiameterMm)}`);
+  }
+  if (parsed.heightMm !== null && parsed.widthMm !== null) {
+    tokens.push(`h${compactNumber(parsed.heightMm)}|w${compactNumber(parsed.widthMm)}`);
+  }
+  if (parsed.webMm !== null) {
+    tokens.push(`web${compactNumber(parsed.webMm)}`);
+  }
+  if (parsed.flangeMm !== null) {
+    tokens.push(`flange${compactNumber(parsed.flangeMm)}`);
   }
   if (parsed.thicknessMinMm !== null) {
     const max = parsed.thicknessMaxMm ?? parsed.thicknessMinMm;
@@ -203,7 +196,9 @@ export function normalizeSteelPriceWorkbookRow(
     ]),
   ) as NormalizedSteelPriceV4WorkbookRow;
 
-  normalized.normalized_spec_text = buildNormalizedSpecText(productName, parsed, processing);
+  const normalizedSpecText = buildNormalizedSpecText(productName, parsed, processing);
+  normalized.spec_key =
+    text(source.spec_key) ?? `${parsed.erpItemCode} ${normalizedSpecText}`.trim();
   normalized.subcategory =
     inferSteelPriceSubcategory(String(source.category ?? ''), productName) ?? null;
   normalized.processing_method = processing?.processingMethod ?? null;
@@ -213,12 +208,10 @@ export function normalizeSteelPriceWorkbookRow(
     productName,
     source.material,
   );
-  normalized.dimension_signature = parsed.dimensionSignature;
   normalized.unit = normalizeUnit(source.unit);
   normalized.value_state = noPriceNamePattern.test(productName) ? 'no_price' : parsed.valueState;
   normalized.unit_weight_value = parsed.unitWeightValue;
   normalized.unit_weight_basis = parsed.unitWeightBasis;
-  normalized.source_thickness = parsed.sourceThickness;
   normalized.thicknessMinMm = parsed.thicknessMinMm;
   normalized.thicknessMaxMm = parsed.thicknessMaxMm;
   normalized.width_mm = parsed.widthMm;

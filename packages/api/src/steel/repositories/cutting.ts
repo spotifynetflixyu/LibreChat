@@ -372,6 +372,7 @@ function hasTierValue(values: SteelPriceItem['tierPrices']): boolean {
 
 function isQuoteableCandidate(candidate: SteelPriceItem): boolean {
   return (
+    candidate.unitPriceBase !== null ||
     hasTierValue(candidate.tierPrices) ||
     ((candidate.unit === 'Kg' || candidate.unit === 'M') && hasTierValue(candidate.tierRatios))
   );

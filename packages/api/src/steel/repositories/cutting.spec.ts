@@ -45,10 +45,8 @@ function createPriceItem(overrides: Partial<SteelPriceItem> = {}): SteelPriceIte
   return {
     id: 1,
     erpItemCode: 'EHS252510',
-    priceKind: 'product',
     specKey: 'EHS252510 H型鋼250x250x9/14x10M',
     productName: 'H型鋼250*250*9/14*10M',
-    normalizedSpecText: 'H型鋼250x250x9/14x10M',
     category: 'H型鋼',
     unit: 'Kg',
     valueState: 'confirmed',
@@ -69,9 +67,6 @@ function createPriceItem(overrides: Partial<SteelPriceItem> = {}): SteelPriceIte
     sheetWidthMm: null,
     sheetLengthMm: null,
     costBasis: 'tier_price',
-    currency: 'TWD',
-    active: true,
-    sourceRefs: [],
     ...overrides,
   };
 }
@@ -152,6 +147,28 @@ describe('Steel cutting price repository', () => {
           },
         ],
       }),
+    ]);
+  });
+
+  it('keeps base-only candidates eligible for cutting-price matching', () => {
+    const [filtered] = filterSteelCuttingPriceGroups(
+      [createCuttingGroup({ prices: [createCuttingRecord()] })],
+      [
+        {
+          queryId: 'q1',
+          category: 'H型鋼',
+          candidates: [
+            createPriceItem({
+              unitPriceBase: 35,
+              tierPrices: { A: null, B: null, C: null, D: null, E: null, F: null },
+            }),
+          ],
+        },
+      ],
+    );
+
+    expect(filtered.candidateMatches).toEqual([
+      expect.objectContaining({ priceCandidateId: 1, cuttingPriceIds: [1] }),
     ]);
   });
 

@@ -13,7 +13,7 @@ describe('processing price candidate applicability', () => {
       category: '加工/折工',
       subcategory: '一般',
       productName: '板折 \uE000 型(0.8-2.0)',
-      normalizedSpecText: '板折 型 0.8-2.0',
+      specKey: 'BKZA010 板折 型 0.8-2.0',
       erpItemCode: 'BKZA010',
     };
 
@@ -26,7 +26,7 @@ describe('processing price candidate applicability', () => {
       category: '加工/折工',
       subcategory: '一般',
       productName: '鐵板折工 90度',
-      normalizedSpecText: '鐵板折工 90度',
+      specKey: 'BEND-90 鐵板折工 90度',
       erpItemCode: 'BEND-90',
     };
 
@@ -40,7 +40,7 @@ describe('processing price candidate applicability', () => {
       category: '加工/孔',
       subcategory: '鐵板',
       productName: '鐵板雷射圓孔',
-      normalizedSpecText: '鐵板 雷射 圓孔',
+      specKey: 'HOLE-1 鐵板 雷射 圓孔',
       erpItemCode: 'HOLE-1',
     };
 
@@ -52,7 +52,7 @@ describe('processing price candidate applicability', () => {
     const candidate = {
       category: '加工/孔',
       productName: '鐵板雷射圓孔',
-      normalizedSpecText: '鐵板 雷射 圓孔',
+      specKey: 'HOLE-1 鐵板 雷射 圓孔',
       erpItemCode: 'HOLE-1',
     };
     const terms = compileProcessingKeyword('雷射 圓孔');
@@ -66,7 +66,7 @@ describe('processing price candidate applicability', () => {
       category: '加工/切工',
       subcategory: '鐵板',
       productName: '12.0-30.0mm板切φ',
-      normalizedSpecText: '12.0-30.0mm板切φ',
+      specKey: 'DNB2002 12.0-30.0mm板切φ',
       erpItemCode: 'DNB2002',
       thicknessMinMm: 12,
       thicknessMaxMm: 30,
@@ -89,7 +89,7 @@ describe('processing price candidate applicability', () => {
       category: '加工/切工',
       subcategory: '通用',
       productName: '切工',
-      normalizedSpecText: '切工',
+      specKey: 'BKZZB 切工',
       erpItemCode: 'BKZZB',
       thicknessMinMm: null,
       thicknessMaxMm: null,
@@ -112,7 +112,7 @@ describe('processing price candidate applicability', () => {
         category: '加工/切工',
         subcategory,
         productName: '切工',
-        normalizedSpecText: '切工',
+        specKey: 'GENERIC-CUT 切工',
         erpItemCode: 'GENERIC-CUT',
       };
 
@@ -126,7 +126,7 @@ describe('processing price candidate applicability', () => {
       category: '加工/切工',
       subcategory: '鐵板',
       productName: '切工',
-      normalizedSpecText: '切工',
+      specKey: 'BROKEN-CUT 切工',
       erpItemCode: 'BROKEN-CUT',
       thicknessMinMm: 6,
       thicknessMaxMm: null,

@@ -140,7 +140,6 @@ function simulateCuttingPrices(rows, cuttingRows, category) {
     .filter(
       (row) =>
         row.category === category &&
-        row.active &&
         row.valueState !== 'no_price' &&
         isQuoteEligible(row),
     );
@@ -200,7 +199,6 @@ function toDescriptor(row) {
     category: row.category,
     subcategory: row.subcategory || undefined,
     productName: row.productName || undefined,
-    normalizedSpecText: row.normalizedSpecText || undefined,
     erpItemCode: row.erpItemCode,
   };
 }

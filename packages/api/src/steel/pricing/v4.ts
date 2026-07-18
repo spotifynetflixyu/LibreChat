@@ -15,19 +15,18 @@ import type {
 
 export type SteelPriceV4Cell = string | number | null | undefined;
 export type SteelPriceV4ValueState = 'confirmed' | 'ratio_only' | 'no_price';
-export type SteelPriceV4Kind = 'product' | 'cutting' | 'hole';
 export type SteelPriceV4CostBasis = '1.總數' | '2.數量';
 
-export const steelPriceV4SourceDataset = 'product_price_v4_4' as const;
 export const steelPriceV4WorkbookHeaders = Object.freeze([
   'erp_item_code',
   'formula_code',
   'product_name',
-  'normalized_spec_text',
+  'spec_key',
   'category',
   'subcategory',
+  'processing_method',
+  'processing_shape',
   'material',
-  'dimension_signature',
   'unit',
   'value_state',
   'unit_price_base',
@@ -46,7 +45,8 @@ export const steelPriceV4WorkbookHeaders = Object.freeze([
   'unit_weight_value',
   'unit_weight_basis',
   'density',
-  'source_thickness',
+  'thicknessMinMm',
+  'thicknessMaxMm',
   'width_mm',
   'height_mm',
   'length_mm',
@@ -64,22 +64,17 @@ export const steelPriceV4WorkbookHeaders = Object.freeze([
 export type SteelPriceV4WorkbookRow = Record<
   (typeof steelPriceV4WorkbookHeaders)[number],
   SteelPriceV4Cell
-> & {
-  processing_method?: SteelPriceV4Cell;
-  processing_shape?: SteelPriceV4Cell;
-};
+>;
 
 export interface SteelPriceV4Row {
   formulaCode: string | null;
   erpItemCode: string;
   productName: string | null;
-  normalizedSpecText: string | null;
   category: PriceCategory;
   subcategory: PriceSubcategory;
   processingMethod: ProcessingMethod | null;
   processingShape: ProcessingShape | null;
   material: string | null;
-  dimensionSignature: string | null;
   unit: string | null;
   valueState: SteelPriceV4ValueState;
   unitPriceBase: number | null;
@@ -98,7 +93,6 @@ export interface SteelPriceV4Row {
   unitWeightValue: number | null;
   unitWeightBasis: string | null;
   density: number | null;
-  sourceThickness: string | null;
   thicknessMinMm: number | null;
   thicknessMaxMm: number | null;
   widthMm: number | null;
@@ -114,11 +108,6 @@ export interface SteelPriceV4Row {
   specSortKey: string | null;
   costBasis: SteelPriceV4CostBasis;
   specKey: string;
-  priceKind: SteelPriceV4Kind;
-  sourceDataset: typeof steelPriceV4SourceDataset;
-  sourceRowKey: string;
-  currency: 'TWD';
-  active: boolean;
 }
 
 function parseText(value: SteelPriceV4Cell): string | null {
@@ -163,17 +152,6 @@ function parseZeroAsNullNumber(value: SteelPriceV4Cell, field: string): number |
   }
 
   return parsed === 0 ? null : parsed;
-}
-
-function parseZeroAsNullText(value: SteelPriceV4Cell): string | null {
-  const parsed = parseText(value);
-  if (parsed === null) {
-    return null;
-  }
-
-  const numericValue = Number(parsed.replace(/,/gu, ''));
-
-  return Number.isFinite(numericValue) && numericValue === 0 ? null : parsed;
 }
 
 function parseCategory(value: SteelPriceV4Cell): PriceCategory {
@@ -227,14 +205,6 @@ function parseCostBasis(value: SteelPriceV4Cell): SteelPriceV4CostBasis {
   }
 
   throw new Error(`Unknown Steel price v4.4 cost_basis: ${costBasis}`);
-}
-
-function getPriceKind(category: PriceCategory): SteelPriceV4Kind {
-  if (category === '加工/孔') {
-    return 'hole';
-  }
-
-  return category.startsWith('加工/') ? 'cutting' : 'product';
 }
 
 interface ParsedNameAttributes {
@@ -1021,22 +991,7 @@ function parseThicknessBand(
   category: PriceCategory,
   productName: string | null,
   normalizedSpecText: string | null,
-  sourceThickness: string | null,
 ): { thicknessMinMm: number | null; thicknessMaxMm: number | null } {
-  const sourceMatch = sourceThickness?.match(
-    /^([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:m\s*\/\s*m|mm|t)?$/iu,
-  );
-  if (sourceThickness !== null && !sourceMatch?.[1]) {
-    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
-  }
-  const sourceMinMm = sourceMatch?.[1] ? Number(sourceMatch[1]) : null;
-  const sourceMaxMm = sourceMatch?.[2] ? Number(sourceMatch[2]) : sourceMinMm;
-  if (
-    sourceMinMm !== null &&
-    (sourceMinMm <= 0 || sourceMaxMm === null || sourceMaxMm < sourceMinMm)
-  ) {
-    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
-  }
   const derived = parseNameAttributes(category, productName, normalizedSpecText);
   if (derived.thicknessMinMm !== undefined && derived.thicknessMaxMm !== undefined) {
     return {
@@ -1049,16 +1004,27 @@ function parseThicknessBand(
     return { thicknessMinMm: null, thicknessMaxMm: null };
   }
 
-  const plateName = productName?.normalize('NFKC').toUpperCase() ?? '';
-  const surfaceCodeOnlyThickness =
-    category === '鐵板' &&
-    ((sourceMinMm === 2 && plateName.includes('2B')) ||
-      (sourceMinMm === 1 && plateName.includes('NO1')));
-  if (surfaceCodeOnlyThickness) {
-    return { thicknessMinMm: null, thicknessMaxMm: null };
+  return { thicknessMinMm: null, thicknessMaxMm: null };
+}
+
+function parseNormalizedThicknessBand(
+  row: SteelPriceV4WorkbookRow,
+): { thicknessMinMm: number; thicknessMaxMm: number } | null {
+  const thicknessMinMm = parseZeroAsNullNumber(row.thicknessMinMm, 'thicknessMinMm');
+  const thicknessMaxMm = parseZeroAsNullNumber(row.thicknessMaxMm, 'thicknessMaxMm');
+  if (thicknessMinMm === null && thicknessMaxMm === null) {
+    return null;
+  }
+  if (
+    thicknessMinMm === null ||
+    thicknessMaxMm === null ||
+    thicknessMinMm <= 0 ||
+    thicknessMaxMm < thicknessMinMm
+  ) {
+    throw new Error('Invalid Steel normalized thickness range');
   }
 
-  return { thicknessMinMm: sourceMinMm, thicknessMaxMm: sourceMaxMm };
+  return { thicknessMinMm, thicknessMaxMm };
 }
 
 function validateValueState(
@@ -1084,7 +1050,10 @@ function validateValueState(
 
 function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   const erpItemCode = parseRequiredText(row.erp_item_code, 'erp_item_code');
-  const normalizedSpecText = parseText(row.normalized_spec_text);
+  const sourceSpecKey = parseText(row.spec_key);
+  const normalizedSpecText = sourceSpecKey?.startsWith(`${erpItemCode} `)
+    ? sourceSpecKey.slice(erpItemCode.length + 1)
+    : sourceSpecKey;
   const category = parseCategory(row.category);
   const productName = parseText(row.product_name);
   const sourceSubcategory = parseText(row.subcategory) ?? '';
@@ -1112,7 +1081,6 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
   const priceRatioD = parsePrice(row.price_ratio_d, 'price_ratio_d');
   const priceRatioE = parsePrice(row.price_ratio_e, 'price_ratio_e');
   const priceRatioF = parsePrice(row.price_ratio_f, 'price_ratio_f');
-  const sourceThickness = parseZeroAsNullText(row.source_thickness);
   const nameAttributes = parseNameAttributes(category, productName, normalizedSpecText);
   const longMaterialLengthMm = parseLongMaterialLengthMm(category, productName);
   let parsedLengthMm =
@@ -1126,7 +1094,8 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     parsedLengthMm = null;
   }
   const thicknessBand =
-    category === '方管' ||
+    parseNormalizedThicknessBand(row) ??
+    (category === '方管' ||
     category === '扁方管' ||
     category === '槽鐵' ||
     category === '角鐵' ||
@@ -1137,7 +1106,7 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
           thicknessMinMm: nameAttributes.thicknessMinMm ?? null,
           thicknessMaxMm: nameAttributes.thicknessMaxMm ?? null,
         }
-      : parseThicknessBand(category, productName, normalizedSpecText, sourceThickness);
+      : parseThicknessBand(category, productName, normalizedSpecText));
 
   validateValueState(
     valueState,
@@ -1170,7 +1139,6 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     formulaCode: parseText(row.formula_code),
     erpItemCode,
     productName,
-    normalizedSpecText,
     category,
     subcategory,
     processingMethod: parseProcessingMethod(row.processing_method),
@@ -1179,15 +1147,6 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
       hotDipMaterialCategories.has(category) && /熱[浸進]鍍/u.test(productName ?? '')
         ? '錏/鍍鋅'
         : parseText(row.material),
-    dimensionSignature:
-      category === '圓管' ||
-      category === '方管' ||
-      category === '扁方管' ||
-      category === '槽鐵' ||
-      category === '角鐵' ||
-      category === '網'
-        ? (nameAttributes.dimensionSignature ?? null)
-        : (nameAttributes.dimensionSignature ?? parseText(row.dimension_signature)),
     unit: parseText(row.unit),
     valueState,
     unitPriceBase,
@@ -1206,7 +1165,6 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     unitWeightValue,
     unitWeightBasis,
     density: parseZeroAsNullNumber(row.density, 'density'),
-    sourceThickness,
     ...thicknessBand,
     widthMm:
       category === '方鐵' ||
@@ -1255,12 +1213,8 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
         : parseZeroAsNullNumber(row.sheet_length_mm, 'sheet_length_mm'),
     specSortKey: parseText(row.spec_sort_key),
     costBasis: parseCostBasis(row.cost_basis),
-    specKey: normalizedSpecText ? `${erpItemCode} ${normalizedSpecText}` : erpItemCode,
-    priceKind: getPriceKind(category),
-    sourceDataset: steelPriceV4SourceDataset,
-    sourceRowKey: erpItemCode,
-    currency: 'TWD',
-    active: true,
+    specKey:
+      sourceSpecKey ?? (normalizedSpecText ? `${erpItemCode} ${normalizedSpecText}` : erpItemCode),
   };
 }
 

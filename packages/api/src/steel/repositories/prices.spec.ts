@@ -10,15 +10,12 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: '10',
     erp_item_code: '00123',
-    price_kind: 'product',
     formula_code: null,
     spec_key: '00123 黑鐵鋼管 50x2.0',
     product_name: '黑鐵鋼管',
-    normalized_spec_text: '50x2.0',
     category: '圓管',
     subcategory: '鋼管',
     material: '黑鐵 / OT',
-    dimension_signature: 'OD50-T2',
     unit: 'Kg',
     value_state: 'confirmed',
     unit_price_base: '35.0000',
@@ -37,7 +34,6 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     unit_weight_value: '12.345000',
     unit_weight_basis: 'Kg/M',
     density: '7.850000',
-    source_thickness: '2.0',
     thickness_min_mm: '1.000000',
     thickness_max_mm: '4.500000',
     width_mm: null,
@@ -52,9 +48,6 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     sheet_length_mm: null,
     spec_sort_key: '050.000-002.000',
     cost_basis: 'Kg',
-    currency: 'TWD',
-    active: true,
-    source_refs: [],
     ...overrides,
   };
 }
@@ -132,9 +125,18 @@ describe('Steel price candidate repository', () => {
     expect(sql.match(/p\.value_state <> 'no_price'/gu)).toHaveLength(2);
     expect(sql).not.toContain('p.source_thickness::numeric');
     expect(sql).toContain('p.spec_key ILIKE');
-    expect(sql).toContain('p.normalized_spec_text ILIKE');
     expect(sql).not.toContain('review_state');
-    expect(sql).toContain('p.active = true');
+    for (const retiredColumn of [
+      'price_kind',
+      'normalized_spec_text',
+      'dimension_signature',
+      'source_thickness',
+      'currency',
+      'active',
+      'source_refs',
+    ]) {
+      expect(sql).not.toContain(retiredColumn);
+    }
     expect(sql).toContain('NOT EXISTS');
     expect(sql).not.toContain('source_subcategory_label');
     expect(sql).not.toContain('source_spec');
@@ -173,7 +175,6 @@ describe('Steel price candidate repository', () => {
       expect.objectContaining({
         id: 10,
         erpItemCode: '00123',
-        normalizedSpecText: '50x2.0',
         category: '圓管',
         subcategory: '鋼管',
         unit: 'Kg',
@@ -301,7 +302,7 @@ describe('Steel price candidate repository', () => {
     );
   });
 
-  it('loads every active non-no-price processing category in one SQL round trip', async () => {
+  it('loads every non-no-price processing category in one SQL round trip', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         createPriceRow({
@@ -320,8 +321,8 @@ describe('Steel price candidate repository', () => {
 
     expect(query).toHaveBeenCalledTimes(1);
     expect(sql).toContain("p.value_state <> 'no_price'");
-    expect(sql).toContain('p.category = ANY($2::text[])');
-    expect(values?.[1]).toEqual([
+    expect(sql).toContain('p.category = ANY($1::text[])');
+    expect(values?.[0]).toEqual([
       '加工/切工',
       '加工/孔',
       '加工/倒角',
@@ -349,9 +350,9 @@ describe('Steel price candidate repository', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
     expect(query).toHaveBeenCalledTimes(1);
-    expect(query.mock.calls[0]?.[1]).toEqual([false, ['加工/切工'], null]);
+    expect(query.mock.calls[0]?.[1]).toEqual([['加工/切工'], null]);
     expect(sql).toContain("p.value_state <> 'no_price'");
-    expect(sql).toContain('p.category = ANY($2::text[])');
+    expect(sql).toContain('p.category = ANY($1::text[])');
     expect(sql).not.toContain('requested_thickness');
   });
 
@@ -365,9 +366,9 @@ describe('Steel price candidate repository', () => {
       '倒角加工',
     ]);
 
-    expect(query.mock.calls[0]?.[1]).toEqual([false, [], ['黑鐵鋼管', '倒角加工']]);
+    expect(query.mock.calls[0]?.[1]).toEqual([[], ['黑鐵鋼管', '倒角加工']]);
     const sql = String(query.mock.calls[0]?.[0] ?? '');
-    expect(sql).toContain('p.product_name = ANY($3::text[])');
+    expect(sql).toContain('p.product_name = ANY($2::text[])');
     expect(sql).toContain("p.value_state <> 'no_price'");
     expect(result).toEqual([expect.objectContaining({ productName: '黑鐵鋼管' })]);
   });

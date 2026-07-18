@@ -22,7 +22,7 @@ export interface ProcessingCandidateDescriptor {
   category: PriceCategory | string;
   subcategory?: string | null;
   productName?: string;
-  normalizedSpecText?: string;
+  specKey: string;
   thicknessMinMm?: number | null;
   thicknessMaxMm?: number | null;
   erpItemCode: string;
@@ -72,8 +72,12 @@ function isProcessingPriceCategory(value: string): value is ProcessingPriceCateg
   return processingPriceCategories.some((category) => category === value);
 }
 
-function getCandidateText(candidate: ProcessingCandidateDescriptor): string {
-  return `${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`.normalize('NFKC');
+export function getProcessingCandidateText(candidate: ProcessingCandidateDescriptor): string {
+  const prefix = `${candidate.erpItemCode} `;
+  const specText = candidate.specKey.startsWith(prefix)
+    ? candidate.specKey.slice(prefix.length)
+    : candidate.specKey;
+  return `${candidate.productName ?? ''} ${specText}`.normalize('NFKC');
 }
 
 export function hasUnusableProcessingProductName(
@@ -108,7 +112,7 @@ function getExplicitTargets(candidate: ProcessingCandidateDescriptor): readonly 
     }
   }
   if (candidate.category === '加工/其他') {
-    const text = getCandidateText(candidate);
+    const text = getProcessingCandidateText(candidate);
     const match = otherTargetRules.find(([, pattern]) => pattern.test(text));
     return match ? [match[0]] : [];
   }
@@ -202,10 +206,9 @@ export function matchesProcessingKeywordTerms(
     return true;
   }
 
-  const text =
-    `${candidate.erpItemCode} ${candidate.productName ?? ''} ${candidate.normalizedSpecText ?? ''}`
-      .normalize('NFKC')
-      .replace(/[＊*×]/gu, 'x');
+  const text = `${candidate.erpItemCode} ${getProcessingCandidateText(candidate)}`
+    .normalize('NFKC')
+    .replace(/[＊*×]/gu, 'x');
 
   return terms.every((term) => text.includes(term));
 }

@@ -1,17 +1,24 @@
 import { buildSteelPriceV4Rows } from './v4';
 
-import type { SteelPriceV4WorkbookRow } from './v4';
+import type { SteelPriceV4Cell, SteelPriceV4WorkbookRow } from './v4';
 
-function makeWorkbookRow(
-  overrides: Partial<SteelPriceV4WorkbookRow> = {},
-): SteelPriceV4WorkbookRow {
-  return {
+type LegacyTestWorkbookRow = SteelPriceV4WorkbookRow & {
+  normalized_spec_text: SteelPriceV4Cell;
+  dimension_signature: SteelPriceV4Cell;
+  source_thickness: SteelPriceV4Cell;
+};
+
+function makeWorkbookRow(overrides: Partial<LegacyTestWorkbookRow> = {}): LegacyTestWorkbookRow {
+  const row: LegacyTestWorkbookRow = {
     formula_code: 'H200100',
     erp_item_code: '00123',
     product_name: 'H型鋼 200x100',
+    spec_key: '',
     normalized_spec_text: 'H200x100x5.5x8',
     category: 'H型鋼',
     subcategory: '',
+    processing_method: '',
+    processing_shape: '',
     material: 'OT 黑鐵',
     dimension_signature: '200x100x5.5x8',
     unit: '支',
@@ -33,6 +40,8 @@ function makeWorkbookRow(
     unit_weight_basis: 'M',
     density: '7.85',
     source_thickness: '5.5',
+    thicknessMinMm: '',
+    thicknessMaxMm: '',
     width_mm: '200',
     height_mm: '100',
     length_mm: '6000',
@@ -47,23 +56,61 @@ function makeWorkbookRow(
     cost_basis: '2.數量',
     ...overrides,
   };
+  const legacySpecText = String(row.normalized_spec_text ?? '').trim();
+  if (!String(row.spec_key ?? '').trim()) {
+    row.spec_key = legacySpecText ? `${row.erp_item_code} ${legacySpecText}` : row.erp_item_code;
+  }
+  if (!String(row.thicknessMinMm ?? '').trim() && !String(row.thicknessMaxMm ?? '').trim()) {
+    const sourceThickness = String(row.source_thickness ?? '').trim();
+    const match = sourceThickness.match(
+      /^([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?/u,
+    );
+    const [parsedWithoutSourceThickness] = buildSteelPriceV4Rows([row]);
+    const ignoredCategory = new Set([
+      '圓管',
+      '方管',
+      '扁方管',
+      '槽鐵',
+      '角鐵',
+      '網',
+      '鋼筋',
+      '鐵軌',
+    ]).has(String(row.category));
+    const min = match?.[1] ? Number(match[1]) : null;
+    const productName = String(row.product_name ?? '')
+      .normalize('NFKC')
+      .toUpperCase();
+    const surfaceCodeOnly =
+      row.category === '鐵板' &&
+      ((min === 2 && productName.includes('2B')) || (min === 1 && productName.includes('NO1')));
+    if (
+      match?.[1] &&
+      min !== null &&
+      min > 0 &&
+      parsedWithoutSourceThickness?.thicknessMinMm === null &&
+      !ignoredCategory &&
+      !surfaceCodeOnly
+    ) {
+      row.thicknessMinMm = match[1];
+      row.thicknessMaxMm = match[2] ?? match[1];
+    }
+  }
+  return row;
 }
 
 describe('Steel price v4.4 parser', () => {
-  it('preserves leading-zero ERP codes and returns every workbook field', () => {
+  it('preserves leading-zero ERP codes and returns only importable quote fields', () => {
     const [row] = buildSteelPriceV4Rows([makeWorkbookRow()]);
 
     expect(row).toEqual({
       formulaCode: 'H200100',
       erpItemCode: '00123',
       productName: 'H型鋼 200x100',
-      normalizedSpecText: 'H200x100x5.5x8',
       category: 'H型鋼',
       subcategory: '',
       processingMethod: null,
       processingShape: null,
       material: 'OT 黑鐵',
-      dimensionSignature: '200x100x5.5x8',
       unit: '支',
       valueState: 'confirmed',
       unitPriceBase: null,
@@ -82,7 +129,6 @@ describe('Steel price v4.4 parser', () => {
       unitWeightValue: 21.3,
       unitWeightBasis: 'M',
       density: 7.85,
-      sourceThickness: '5.5',
       thicknessMinMm: 5.5,
       thicknessMaxMm: 5.5,
       widthMm: 200,
@@ -98,13 +144,23 @@ describe('Steel price v4.4 parser', () => {
       specSortKey: '0200|0100|0055|0080',
       costBasis: '2.數量',
       specKey: '00123 H200x100x5.5x8',
-      priceKind: 'product',
-      sourceDataset: 'product_price_v4_4',
-      sourceRowKey: '00123',
-      currency: 'TWD',
-      active: true,
     });
-    expect(row).not.toHaveProperty('reviewState');
+    for (const retiredField of [
+      'priceKind',
+      'sourceDataset',
+      'sourceRowKey',
+      'normalizedSpecText',
+      'dimensionSignature',
+      'sourceThickness',
+      'currency',
+      'active',
+      'sourceRefs',
+      'importedAt',
+      'createdAt',
+      'updatedAt',
+    ]) {
+      expect(row).not.toHaveProperty(retiredField);
+    }
   });
 
   it('keeps nullable product, normalized spec, and unit fields as null', () => {
@@ -120,7 +176,6 @@ describe('Steel price v4.4 parser', () => {
     expect(row).toMatchObject({
       erpItemCode: '00000',
       productName: null,
-      normalizedSpecText: null,
       unit: null,
       specKey: '00000',
     });
@@ -161,7 +216,6 @@ describe('Steel price v4.4 parser', () => {
     expect(row).toMatchObject({
       unitWeightValue: null,
       density: null,
-      sourceThickness: null,
       widthMm: null,
       heightMm: null,
       lengthMm: null,
@@ -203,16 +257,6 @@ describe('Steel price v4.4 parser', () => {
 
   it.each(['', 'bogus'])('rejects unsupported cost basis %s', (costBasis) => {
     expect(() => buildSteelPriceV4Rows([makeWorkbookRow({ cost_basis: costBasis })])).toThrow();
-  });
-
-  it('derives hole and cutting price kinds from processing categories', () => {
-    const [hole, cutting] = buildSteelPriceV4Rows([
-      makeWorkbookRow({ erp_item_code: 'HOLE01', category: '加工/孔', subcategory: '' }),
-      makeWorkbookRow({ erp_item_code: 'CUT01', category: '加工/折工', subcategory: '' }),
-    ]);
-
-    expect(hole?.priceKind).toBe('hole');
-    expect(cutting?.priceKind).toBe('cutting');
   });
 
   it('derives inclusive material-thickness bands without treating hole diameters as thickness', () => {
@@ -413,9 +457,8 @@ describe('Steel price v4.4 parser', () => {
       lengthMm: 3000,
       thicknessMinMm: 3.5,
       thicknessMaxMm: 3.5,
-      dimensionSignature: 'w51|t3.5|l3000|punch:single',
     });
-    expect(squareHole).toMatchObject({ dimensionSignature: 'hole:3/4|shape:□' });
+    expect(squareHole).toMatchObject({ specKey: 'KADS06 沖3/4□孔' });
     expect(laserLeading).toMatchObject({ thicknessMinMm: 2, thicknessMaxMm: 2 });
     expect(laserParenthesized).toMatchObject({ thicknessMinMm: 3, thicknessMaxMm: 3 });
     expect(plateCut).toMatchObject({ thicknessMinMm: 12, thicknessMaxMm: 30 });
@@ -471,7 +514,6 @@ describe('Steel price v4.4 parser', () => {
     expect(row).toMatchObject({
       outerDiameterMm: 38,
       nominalInch: null,
-      dimensionSignature: 'od38',
     });
   });
 
@@ -804,9 +846,9 @@ describe('Steel price v4.4 parser', () => {
   });
 
   it.each([
-    ['節竹鐵 9m/m (3#)', 9, 'od9|rebar3'],
-    ['節竹鐵 12m/m (4#)', 12, 'od12|rebar4'],
-  ])('normalizes rebar diameter and number from %s', (productName, diameterMm, signature) => {
+    ['節竹鐵 9m/m (3#)', 9],
+    ['節竹鐵 12m/m (4#)', 12],
+  ])('normalizes rebar diameter and number from %s', (productName, diameterMm) => {
     const [row] = buildSteelPriceV4Rows([
       makeWorkbookRow({
         erp_item_code: `REBAR-${diameterMm}`,
@@ -821,7 +863,6 @@ describe('Steel price v4.4 parser', () => {
     ]);
 
     expect(row).toMatchObject({
-      dimensionSignature: signature,
       outerDiameterMm: diameterMm,
       thicknessMinMm: null,
       thicknessMaxMm: null,
@@ -853,7 +894,6 @@ describe('Steel price v4.4 parser', () => {
       ]);
 
       expect(row).toMatchObject({
-        dimensionSignature: signature,
         thicknessMinMm: null,
         thicknessMaxMm: null,
         lengthMm,
@@ -878,7 +918,6 @@ describe('Steel price v4.4 parser', () => {
     ]);
 
     expect(row).toMatchObject({
-      dimensionSignature: null,
       lengthMm: null,
       unitWeightValue: null,
     });
@@ -1039,7 +1078,6 @@ describe('Steel price v4.4 parser', () => {
       unitPriceC: null,
       unitPriceF: null,
       priceRatioB: 1.25,
-      active: true,
     });
     expect(() =>
       buildSteelPriceV4Rows([makeWorkbookRow({ value_state: 'ratio_only', unit_price_a: '100' })]),
@@ -1061,7 +1099,6 @@ describe('Steel price v4.4 parser', () => {
 
     expect(row).toMatchObject({
       valueState: 'no_price',
-      active: true,
     });
     expect(() =>
       buildSteelPriceV4Rows([makeWorkbookRow({ value_state: 'no_price', price_ratio_a: '1.1' })]),

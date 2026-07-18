@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import * as XLSX from 'xlsx';
 
-import { buildSteelPriceV4Rows } from '../src/steel/pricing/v4';
+import { buildSteelPriceV4Rows, steelPriceV4WorkbookHeaders } from '../src/steel/pricing/v4';
 
 import type { SteelPriceV4Row, SteelPriceV4WorkbookRow } from '../src/steel/pricing/v4';
 
@@ -47,47 +47,7 @@ interface ImporterModule {
 
 const importer = jest.requireActual<ImporterModule>('./import-steel-price-v4.cjs');
 
-const expectedHeaders = [
-  'erp_item_code',
-  'formula_code',
-  'product_name',
-  'normalized_spec_text',
-  'category',
-  'subcategory',
-  'material',
-  'dimension_signature',
-  'unit',
-  'value_state',
-  'unit_price_base',
-  'unit_price_a',
-  'unit_price_b',
-  'unit_price_c',
-  'unit_price_d',
-  'unit_price_e',
-  'unit_price_f',
-  'price_ratio_a',
-  'price_ratio_b',
-  'price_ratio_c',
-  'price_ratio_d',
-  'price_ratio_e',
-  'price_ratio_f',
-  'unit_weight_value',
-  'unit_weight_basis',
-  'density',
-  'source_thickness',
-  'width_mm',
-  'height_mm',
-  'length_mm',
-  'outer_diameter_mm',
-  'nominal_inch',
-  'web_mm',
-  'flange_mm',
-  'lip_mm',
-  'sheet_width_mm',
-  'sheet_length_mm',
-  'spec_sort_key',
-  'cost_basis',
-] as const;
+const expectedHeaders = steelPriceV4WorkbookHeaders;
 
 const tempDirectories: string[] = [];
 
@@ -102,7 +62,7 @@ function makeWorkbookRow(
   Object.assign(row, {
     erp_item_code: 'ERP001',
     product_name: 'H型鋼',
-    normalized_spec_text: 'H100x100',
+    spec_key: 'ERP001 H100x100',
     category: 'H型鋼',
     subcategory: '',
     material: 'OT 黑鐵',
@@ -172,14 +132,14 @@ describe('Steel price v4.4 importer', () => {
     );
   });
 
-  it('requires the exact legacy or normalized workbook headers', () => {
+  it('requires the exact normalized workbook headers', () => {
     const reorderedHeaders = [...expectedHeaders];
     [reorderedHeaders[0], reorderedHeaders[1]] = [reorderedHeaders[1], reorderedHeaders[0]];
     const workbookPath = writeWorkbook('products_db_ready', reorderedHeaders);
 
     expect(importer.EXPECTED_HEADERS).toEqual(expectedHeaders);
     expect(() => importer.loadWorkbookRows(workbookPath)).toThrow(
-      'products_db_ready headers do not match the exact legacy or normalized v4.4 contract',
+      'products_db_ready headers do not match the normalized v4.4 contract',
     );
   });
 
@@ -199,10 +159,8 @@ describe('Steel price v4.4 importer', () => {
       mode: 'dry-run',
       workbookPath: '/tmp/prices.xlsx',
       sheet: 'products_db_ready',
-      sourceDataset: 'product_price_v4_4',
       importRows: 3,
       duplicateErpItemCodes: 1,
-      activeRows: 3,
       byValueState: {
         confirmed: 1,
         ratio_only: 1,
@@ -241,9 +199,6 @@ describe('Steel price v4.4 importer', () => {
               rows: [
                 {
                   total: failurePhase === 'readback' ? 0 : 1,
-                  target_dataset: 1,
-                  other_dataset: 0,
-                  active: 1,
                   confirmed: 1,
                   ratio_only: 0,
                   no_price: 0,
@@ -274,9 +229,6 @@ describe('Steel price v4.4 importer', () => {
             rows: [
               {
                 total: 1,
-                target_dataset: 1,
-                other_dataset: 0,
-                active: 1,
                 confirmed: 1,
                 ratio_only: 0,
                 no_price: 0,
@@ -297,9 +249,23 @@ describe('Steel price v4.4 importer', () => {
     expect(statements.find((sql) => sql.startsWith('INSERT INTO steel.prices'))).toContain(
       'ON CONFLICT (erp_item_code) DO UPDATE',
     );
-    expect(statements.find((sql) => sql.startsWith('INSERT INTO steel.prices'))).toContain(
-      'imported_at = NOW()',
-    );
+    const insertSql = statements.find((sql) => sql.startsWith('INSERT INTO steel.prices')) ?? '';
+    for (const retiredColumn of [
+      'price_kind',
+      'source_dataset',
+      'source_row_key',
+      'normalized_spec_text',
+      'dimension_signature',
+      'source_thickness',
+      'currency',
+      'active',
+      'source_refs',
+      'imported_at',
+      'created_at',
+      'updated_at',
+    ]) {
+      expect(insertSql).not.toContain(retiredColumn);
+    }
     expect(statements).toContain("SELECT pg_advisory_xact_lock(hashtext('steel.prices:replace'))");
     expect(statements).toContain(
       'DELETE FROM steel.prices WHERE NOT (erp_item_code = ANY($1::text[]))',
@@ -319,9 +285,6 @@ describe('Steel price v4.4 importer', () => {
             rows: [
               {
                 total: 1,
-                target_dataset: 1,
-                other_dataset: 0,
-                active: 1,
                 confirmed: 1,
                 ratio_only: 0,
                 no_price: 0,

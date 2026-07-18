@@ -51,7 +51,7 @@ describe('Steel price v4 workbook normalizer script', () => {
     ).toThrow('must differ');
   });
 
-  it('writes an independent 43-column workbook and review CSV without changing the input', () => {
+  it('writes an independent 41-column workbook without retired source columns', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-v4-normalize-'));
     tempDirectories.push(directory);
     const outputPath = path.join(directory, 'products_db_v4.4.xlsx');
@@ -76,12 +76,31 @@ describe('Steel price v4 workbook normalizer script', () => {
     expect(fs.existsSync(reviewPath)).toBe(true);
 
     const workbook = XLSX.readFile(outputPath, { raw: false });
+    expect(workbook.SheetNames).toEqual(['products_db_ready', '待確認']);
+    const retiredHeaders = new Set([
+      'source_row_key',
+      'source_dataset',
+      'source_refs',
+      'normalized_spec_text',
+      'dimension_signature',
+      'source_thickness',
+      'active',
+      'imported_at',
+      'created_at',
+      'updated_at',
+    ]);
     for (const sheetName of workbook.SheetNames) {
       const worksheet = workbook.Sheets[sheetName]!;
       if (!worksheet['!ref']) {
         continue;
       }
       expect(worksheet['!autofilter']).toEqual({ ref: worksheet['!ref'] });
+      const [sheetHeaders = []] = XLSX.utils.sheet_to_json<string[]>(worksheet, {
+        header: 1,
+        defval: '',
+        raw: false,
+      });
+      expect(sheetHeaders.filter((header) => retiredHeaders.has(header))).toEqual([]);
     }
     const matrix = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets.products_db_ready!, {
       header: 1,
@@ -89,13 +108,17 @@ describe('Steel price v4 workbook normalizer script', () => {
       raw: false,
     });
     const headers = matrix[0] as string[];
-    expect(headers).toHaveLength(43);
+    expect(headers).toHaveLength(41);
     expect(
       headers.slice(headers.indexOf('subcategory'), headers.indexOf('subcategory') + 4),
     ).toEqual(['subcategory', 'processing_method', 'processing_shape', 'material']);
-    expect(
-      headers.slice(headers.indexOf('source_thickness'), headers.indexOf('source_thickness') + 3),
-    ).toEqual(['source_thickness', 'thicknessMinMm', 'thicknessMaxMm']);
+    expect(headers).not.toContain('dimension_signature');
+    expect(headers).not.toContain('source_thickness');
+    expect(headers.slice(headers.indexOf('density'), headers.indexOf('density') + 3)).toEqual([
+      'density',
+      'thicknessMinMm',
+      'thicknessMaxMm',
+    ]);
     expect(workbook.SheetNames).toContain('待確認');
     const outputRows = XLSX.utils.sheet_to_json<Record<string, string>>(
       workbook.Sheets.products_db_ready!,

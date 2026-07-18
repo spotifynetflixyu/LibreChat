@@ -46,10 +46,9 @@ is required for pricing.
 `錏` matches text containing `錏`. `鋅` matches text containing `鋅`, including
 `鍍鋅`. These families are not aliases for one another.
 
-`thicknessMm` is compared numerically when both input and stored
-`source_thickness` are numeric. An AI input of `2` therefore matches stored
-values such as `2`, `2.0`, or `2.00`. Non-numeric source thickness text does
-not satisfy a numeric thickness filter.
+`thicknessMm` is compared numerically with stored `thickness_min_mm` and
+`thickness_max_mm`. Exact ranges require equality; interval ranges include the
+lower bound and exclude the upper bound.
 
 `limit` is optional and defaults to 30. The AI omits it normally and uses 100
 only when expanding the candidate set. Positive values over 100 clamp to 100
@@ -59,9 +58,9 @@ without rejecting the call.
 lookup no longer accepts or applies a reviewed filter. The independent
 `steel.rules.review_state` publication workflow remains unchanged.
 
-AI-visible price candidates omit `sourceRefs`. Database source metadata may
-remain available to import validation and internal logging, but it is not part
-of candidate data returned to the AI.
+Price rows no longer store import/source metadata, activity flags, timestamps,
+`dimension_signature`, `source_thickness`, or `normalized_spec_text`.
+`spec_key` is the canonical searchable specification text.
 
 ## Consolidated cutting lookup
 
@@ -98,8 +97,8 @@ SQL retrieval and backend filtering cannot drift. `鐵板` is deliberately absen
 it searches processing rows in `steel.prices` and never queries
 `steel.cutting_prices`.
 
-The database cutting lookup uses no thickness, dimension, keyword,
-active/reviewed, or row limit filter. The AI-visible output is candidate-aware:
+The database cutting lookup uses no thickness, dimension, keyword, or row limit
+filter. The AI-visible output is candidate-aware:
 H sections use stored `height_mm`/`width_mm`, pipe families prefer nominal inch
 and otherwise use approved aliases or millimeter fallback, and
 angle/channel/flat rows use their category-specific dimensions. All millimeter
