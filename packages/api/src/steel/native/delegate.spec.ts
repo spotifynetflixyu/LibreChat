@@ -11,6 +11,7 @@ import {
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
   normalizeDelegateOcrChunk,
+  resolveDelegateOcrFileKeys,
   type DelegateOcrFileRecord,
 } from './delegate';
 
@@ -79,6 +80,38 @@ describe('delegate_ocr', () => {
     });
   });
 
+  it('parses common model-generated file key variants without attachment metadata', () => {
+    const fileId = '676b6f2c-0361-412a-92f0-92711c94ffef';
+
+    expect(
+      resolveDelegateOcrFileKeys(
+        [
+          `file:${fileId}.pdf`,
+          `files:${fileId}.pdf`,
+          `file_id:${fileId}.pdf`,
+          `<file:${fileId}.pdf>`,
+          `${fileId}.pdf`,
+        ],
+        undefined,
+      ),
+    ).toEqual([`file:${fileId}`]);
+    expect(resolveDelegateOcrFileKeys(['file:drawing-1.pdf'], undefined)).toEqual([
+      'file:drawing-1',
+    ]);
+  });
+
+  it('resolves multiple file keys in order and deduplicates aliases', () => {
+    expect(
+      resolveDelegateOcrFileKeys(
+        ['files:drawing-1.pdf', 'file:drawing-2.png', 'filename:A.pdf'],
+        [
+          { fileId: 'drawing-1', filename: 'A.pdf' },
+          { fileId: 'drawing-2', filename: 'B.png' },
+        ],
+      ),
+    ).toEqual(['file:drawing-1', 'file:drawing-2']);
+  });
+
   it('keeps the stored record for fresh signing instead of signing its old URL', async () => {
     const history = [new HumanMessage('重新解析原始 PDF')];
     const storedFile = {
@@ -116,6 +149,82 @@ describe('delegate_ocr', () => {
     expect(JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages)).not.toContain(
       'https://old.example',
     );
+  });
+
+  it('resolves a displayed file-id extension through backend attachment metadata', async () => {
+    const fileId = '676b6f2c-0361-412a-92f0-92711c94ffef';
+    const storedFile = {
+      file_id: fileId,
+      filename: 'PL.pdf',
+      mimetype: 'application/pdf',
+      source: 's3',
+      storageKey: `uploads/user-1/${fileId}__PL.pdf`,
+    };
+    const getOwnedFileRecords = jest.fn(async () => [storedFile]);
+    const signStoredFile = jest.fn(async () => 'https://fresh.example/PL.pdf');
+    const invokeModel = jest.fn(async () => '已依原始圖面完成 Vision 判讀。');
+    const execute = createDelegateOcrRequestExecute({
+      history: [new HumanMessage('看一下圖面切工')],
+      modelOptions,
+      userId: 'user-1',
+      availableFiles: [{ fileId, filename: 'PL.pdf' }],
+      getOwnedFileRecords,
+      signStoredFile,
+      loadOcrRules: async () => 'OCR rules',
+      invokeModel,
+    });
+
+    await expect(execute({ fileKeys: [`${fileId}.pdf`] })).resolves.toBe(
+      '已依原始圖面完成 Vision 判讀。',
+    );
+    expect(getOwnedFileRecords).toHaveBeenCalledWith({
+      user: 'user-1',
+      $or: [{ file_id: { $in: [fileId] } }],
+    });
+    expect(signStoredFile).toHaveBeenCalledWith(storedFile);
+    expect(invokeModel).toHaveBeenCalledTimes(1);
+
+    await expect(execute({ fileKeys: [`files:${fileId}.pdf`] })).resolves.toBe(
+      '已依原始圖面完成 Vision 判讀。',
+    );
+    expect(getOwnedFileRecords).toHaveBeenLastCalledWith({
+      user: 'user-1',
+      $or: [{ file_id: { $in: [fileId] } }],
+    });
+
+    await expect(execute({ fileKeys: [`file:${fileId}.pdf`] })).resolves.toBe(
+      '已依原始圖面完成 Vision 判讀。',
+    );
+    expect(getOwnedFileRecords).toHaveBeenLastCalledWith({
+      user: 'user-1',
+      $or: [{ file_id: { $in: [fileId] } }],
+    });
+  });
+
+  it('rejects unknown and ambiguous backend attachment aliases', async () => {
+    const createExecute = (availableFiles: { fileId: string; filename?: string }[]) =>
+      createDelegateOcrRequestExecute({
+        history: [new HumanMessage('看圖面')],
+        modelOptions,
+        userId: 'user-1',
+        availableFiles,
+        getOwnedFileRecords: async () => [],
+        signStoredFile: async () => 'unused',
+        loadOcrRules: async () => 'OCR rules',
+        invokeModel: async () => 'unused',
+      });
+
+    await expect(
+      createExecute([{ fileId: 'file-1', filename: 'PL.pdf' }])({
+        fileKeys: ['unknown.pdf'],
+      }),
+    ).rejects.toThrow('delegate_ocr could not resolve attachment file keys: unknown.pdf');
+    await expect(
+      createExecute([
+        { fileId: 'file-1', filename: 'PL.pdf' },
+        { fileId: 'file-2', filename: 'PL.pdf' },
+      ])({ fileKeys: ['PL.pdf'] }),
+    ).rejects.toThrow('delegate_ocr attachment file key is ambiguous: PL.pdf');
   });
 
   it('keeps the provider history intact and sends freshly signed original sources once', async () => {

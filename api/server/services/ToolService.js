@@ -755,6 +755,30 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
   };
 }
 
+function collectDelegateOcrAvailableFiles(req, delegateContext) {
+  const filesById = new Map();
+  const addFiles = (files) => {
+    for (const file of files ?? []) {
+      const fileId = getSteelFileId(file);
+      if (!fileId) {
+        continue;
+      }
+      const filename = typeof file?.filename === 'string' ? file.filename.trim() : undefined;
+      const current = filesById.get(fileId);
+      if (!current || (!current.filename && filename)) {
+        filesById.set(fileId, { fileId, ...(filename ? { filename } : {}) });
+      }
+    }
+  };
+
+  for (const message of delegateContext?.steelConversation?.activeHistory ?? []) {
+    addFiles(message.files);
+  }
+  addFiles(delegateContext?.steelConversation?.currentUserTurn?.files);
+  addFiles(req?.steelNativeContext?.currentTurnFiles);
+  return [...filesById.values()];
+}
+
 function createDelegateOcrExecute({ req, signal }) {
   return async (input) => {
     const delegateContext = req?.steelNativeContext?.delegateOcrContext;
@@ -766,6 +790,7 @@ function createDelegateOcrExecute({ req, signal }) {
       history: delegateContext.history,
       modelOptions: delegateContext.modelOptions,
       userId: req.user?.id,
+      availableFiles: collectDelegateOcrAvailableFiles(req, delegateContext),
       getOwnedFileRecords: async (filter) => (await db.getFiles(filter, {}, {})) ?? [],
       signStoredFile: async (file) => {
         const source = file.source ?? req.config?.fileStrategy ?? FileSources.local;

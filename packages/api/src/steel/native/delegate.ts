@@ -60,9 +60,16 @@ export const delegateOcrArgsSchema: z.ZodType<DelegateOcrArgs> = z
     fileKeys: z
       .array(z.string().trim().min(1))
       .min(1)
-      .describe('Original image or PDF file keys to reread with OCR and Vision.'),
+      .describe(
+        'One or more attachment keys to inspect with Vision. Use `file:<file_id>`.',
+      ),
   })
   .strict();
+
+export interface DelegateOcrAvailableFile {
+  fileId: string;
+  filename?: string;
+}
 
 export interface DelegateOcrFileRecord {
   fileId: string;
@@ -142,6 +149,7 @@ export interface CreateDelegateOcrRequestExecuteInput {
   history: readonly BaseMessage[];
   modelOptions: OpenAIOAuthModelOptions;
   userId: string;
+  availableFiles?: readonly DelegateOcrAvailableFile[];
   getOwnedFileRecords: (
     filter: DelegateOcrFileFilter,
   ) => Promise<DelegateOcrStoredFileRecord[]>;
@@ -192,6 +200,133 @@ function getRecordFileKeys(file: DelegateOcrFileRecord): string[] {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.filter((value) => value.trim() !== ''))];
+}
+
+function getFilenameExtension(filename: string | undefined): string | undefined {
+  if (!filename) {
+    return undefined;
+  }
+  const basename = filename.split(/[\\/]/).at(-1) ?? filename;
+  const extensionIndex = basename.lastIndexOf('.');
+  if (extensionIndex <= 0 || extensionIndex === basename.length - 1) {
+    return undefined;
+  }
+  return basename.slice(extensionIndex).toLowerCase();
+}
+
+const delegateOcrFileExtensions = new Set([
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.gif',
+  '.bmp',
+  '.tif',
+  '.tiff',
+  '.heic',
+  '.heif',
+]);
+
+function stripDelegateOcrFileExtension(value: string): string {
+  const extension = getFilenameExtension(value);
+  return extension && delegateOcrFileExtensions.has(extension)
+    ? value.slice(0, -extension.length)
+    : value;
+}
+
+function parseCanonicalDelegateOcrFileKey(fileKey: string): string | undefined {
+  const unwrapped = fileKey.startsWith('<') && fileKey.endsWith('>')
+    ? fileKey.slice(1, -1).trim()
+    : fileKey;
+  const prefixed = /^(?:file|files|file_id):(.+)$/i.exec(unwrapped);
+  if (prefixed) {
+    const fileId = stripDelegateOcrFileExtension(prefixed[1].trim());
+    return fileId ? `file:${fileId}` : undefined;
+  }
+
+  const rawFileId = stripDelegateOcrFileExtension(unwrapped);
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawFileId)) {
+    return `file:${rawFileId}`;
+  }
+  return undefined;
+}
+
+export function resolveDelegateOcrFileKeys(
+  fileKeys: readonly string[],
+  availableFiles: readonly DelegateOcrAvailableFile[] | undefined,
+): string[] {
+  const requestedKeys = uniqueStrings(fileKeys);
+  const hasAvailableFiles = availableFiles !== undefined && availableFiles.length > 0;
+
+  const fileIdsByAlias = new Map<string, Set<string>>();
+  const addAlias = (alias: string | undefined, fileId: string) => {
+    const normalizedAlias = alias?.trim().toLowerCase();
+    if (!normalizedAlias) {
+      return;
+    }
+    const fileIds = fileIdsByAlias.get(normalizedAlias) ?? new Set<string>();
+    fileIds.add(fileId);
+    fileIdsByAlias.set(normalizedAlias, fileIds);
+  };
+
+  for (const file of availableFiles ?? []) {
+    const fileId = file.fileId.trim();
+    if (!fileId) {
+      continue;
+    }
+    const extension = getFilenameExtension(file.filename);
+    addAlias(fileId, fileId);
+    addAlias(`file:${fileId}`, fileId);
+    addAlias(`files:${fileId}`, fileId);
+    addAlias(file.filename, fileId);
+    addAlias(file.filename ? `filename:${file.filename}` : undefined, fileId);
+    addAlias(extension ? `${fileId}${extension}` : undefined, fileId);
+    addAlias(extension ? `file:${fileId}${extension}` : undefined, fileId);
+    addAlias(extension ? `files:${fileId}${extension}` : undefined, fileId);
+  }
+
+  const unresolvedKeys: string[] = [];
+  const resolvedKeys: string[] = [];
+  for (const fileKey of requestedKeys) {
+    if (fileKey.startsWith('storage:') || fileKey.startsWith('path:')) {
+      resolvedKeys.push(fileKey);
+      continue;
+    }
+    const fileIds = fileIdsByAlias.get(fileKey.toLowerCase());
+    if (fileIds && fileIds.size > 1) {
+      throw new Error(`delegate_ocr attachment file key is ambiguous: ${fileKey}`);
+    }
+    if (fileIds?.size === 1) {
+      resolvedKeys.push(`file:${[...fileIds][0]}`);
+      continue;
+    }
+
+    const parsedFileKey = parseCanonicalDelegateOcrFileKey(fileKey);
+    if (parsedFileKey) {
+      resolvedKeys.push(parsedFileKey);
+      continue;
+    }
+
+    if (fileKey.startsWith('filename:')) {
+      resolvedKeys.push(fileKey);
+      continue;
+    }
+
+    if (!hasAvailableFiles) {
+      resolvedKeys.push(fileKey);
+      continue;
+    }
+    unresolvedKeys.push(fileKey);
+  }
+
+  if (unresolvedKeys.length > 0) {
+    throw new Error(
+      `delegate_ocr could not resolve attachment file keys: ${unresolvedKeys.join(', ')}`,
+    );
+  }
+
+  return uniqueStrings(resolvedKeys);
 }
 
 export function buildDelegateOcrFileFilter(
@@ -416,6 +551,7 @@ export function createDelegateOcrRequestExecute({
   history,
   modelOptions,
   userId,
+  availableFiles,
   getOwnedFileRecords,
   signStoredFile,
   loadOcrRules,
@@ -424,8 +560,9 @@ export function createDelegateOcrRequestExecute({
 }: CreateDelegateOcrRequestExecuteInput): DelegateOcrExecute {
   return async ({ fileKeys, onDelta }) => {
     const storedFileById = new Map<string, DelegateOcrStoredFileRecord>();
+    const resolvedFileKeys = resolveDelegateOcrFileKeys(fileKeys, availableFiles);
     return delegateOcr({
-      fileKeys,
+      fileKeys: resolvedFileKeys,
       history,
       modelOptions,
       ocrRulesText: await loadOcrRules(),
@@ -461,7 +598,8 @@ export function createDelegateOcrRequestExecute({
 export function getDelegateOcrToolDefinition(): LCTool {
   return {
     name: delegateOcrToolName,
-    description: '重新讀取或核對原始圖片與 PDF 內容。',
+    description:
+      'Whenever the user mentions any drawing-related information, you MUST call this tool to inspect the original attached images or PDFs with Vision. Pass one or more relevant attachment keys as `file:<file_id>`.',
     parameters: zodToJsonSchema(delegateOcrArgsSchema, {
       name: delegateOcrToolName,
       target: 'openApi3',

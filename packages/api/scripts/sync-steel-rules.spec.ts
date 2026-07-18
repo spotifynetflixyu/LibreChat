@@ -396,7 +396,10 @@ describe('Steel rule sources', () => {
       .find((rule) => rule.slug === 'steel-default-agent-instruction');
 
     expect(agent).toContain('3. `delegate_ocr`');
-    expect(agent).toContain('呼叫`delegate_ocr`並傳入相關附件的 file keys');
+    expect(agent).toContain('使用者只要提到任何圖面相關資訊，必須呼叫 `delegate_ocr`');
+    expect(agent).toContain('可傳入一個或多個相關附件');
+    expect(agent).not.toContain('後端');
+    expect(agent).toContain('不得自行把副檔名接到 file_id');
     expect(agent).not.toContain('依【OCR 規則】');
     expect(ocr).not.toContain('delegate_ocr');
     expect(agentRule?.toolPolicy.availableTools).toEqual([

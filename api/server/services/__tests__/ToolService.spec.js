@@ -3364,7 +3364,22 @@ describe('ToolService - Action Capability Gating', () => {
           },
           steelConversation: {
             requestId: 'response-1',
-            activeHistory: [{ role: 'user', content: '請重新確認開槽連續邊長' }],
+            activeHistory: [
+              {
+                role: 'user',
+                content: 'OCR檔案內容，逐一列表給我核對。',
+                files: [
+                  {
+                    fileId: 'drawing-1',
+                    filename: 'drawing.pdf',
+                    mediaType: 'application/pdf',
+                    source: 'librechat_file_record',
+                  },
+                ],
+              },
+              { role: 'assistant', content: '已完成 OCR。' },
+              { role: 'user', content: 'ocr看一下切工' },
+            ],
           },
         },
       };
@@ -3398,7 +3413,7 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
       const output = await tool.invoke(
-        { fileKeys: ['file:drawing-1'] },
+        { fileKeys: ['file:drawing-1.pdf'] },
         { toolCall: { id: 'call_delegate_1' } },
       );
 

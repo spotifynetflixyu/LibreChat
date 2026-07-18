@@ -105,7 +105,7 @@ describe('Steel native tool adapter', () => {
       'steel_search_customers',
     ]);
     expect(result.toolDefinitions?.find(({ name }) => name === 'delegate_ocr')?.description).toBe(
-      '重新讀取或核對原始圖片與 PDF 內容。',
+      'Whenever the user mentions any drawing-related information, you MUST call this tool to inspect the original attached images or PDFs with Vision. Pass one or more relevant attachment keys as `file:<file_id>`.',
     );
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
       'steel_search_customers',
