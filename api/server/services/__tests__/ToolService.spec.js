@@ -3371,7 +3371,6 @@ describe('ToolService - Action Capability Gating', () => {
                 files: [
                   {
                     fileId: 'drawing-1',
-                    filename: 'drawing.pdf',
                     mediaType: 'application/pdf',
                     source: 'librechat_file_record',
                   },
@@ -3413,7 +3412,7 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
       const output = await tool.invoke(
-        { fileKeys: ['file:drawing-1.pdf'] },
+        { fileKeys: ['file:pdf'] },
         { toolCall: { id: 'call_delegate_1' } },
       );
 

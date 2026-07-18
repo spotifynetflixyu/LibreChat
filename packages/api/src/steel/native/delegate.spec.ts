@@ -112,6 +112,35 @@ describe('delegate_ocr', () => {
     ).toEqual(['file:drawing-1', 'file:drawing-2']);
   });
 
+  it('resolves generic PDF aliases only when one PDF attachment is available', () => {
+    const availableFiles = [
+      { fileId: 'pdf-1', filename: 'PL.pdf' },
+      { fileId: 'image-1', filename: 'drawing.png' },
+    ];
+
+    expect(
+      resolveDelegateOcrFileKeys(
+        ['pdf', 'file:pdf', 'files:pdf', 'file_id:pdf', '<file:pdf>'],
+        availableFiles,
+      ),
+    ).toEqual(['file:pdf-1']);
+    expect(() =>
+      resolveDelegateOcrFileKeys(
+        ['file:pdf'],
+        [
+          { fileId: 'pdf-1', filename: 'PL.pdf' },
+          { fileId: 'pdf-2', filename: 'BH.PDF' },
+        ],
+      ),
+    ).toThrow('delegate_ocr attachment file key is ambiguous: file:pdf');
+    expect(
+      resolveDelegateOcrFileKeys(
+        ['file:pdf'],
+        [{ fileId: 'mime-only-pdf', mediaType: 'application/pdf' }],
+      ),
+    ).toEqual(['file:mime-only-pdf']);
+  });
+
   it('keeps the stored record for fresh signing instead of signing its old URL', async () => {
     const history = [new HumanMessage('重新解析原始 PDF')];
     const storedFile = {
@@ -193,6 +222,14 @@ describe('delegate_ocr', () => {
     });
 
     await expect(execute({ fileKeys: [`file:${fileId}.pdf`] })).resolves.toBe(
+      '已依原始圖面完成 Vision 判讀。',
+    );
+    expect(getOwnedFileRecords).toHaveBeenLastCalledWith({
+      user: 'user-1',
+      $or: [{ file_id: { $in: [fileId] } }],
+    });
+
+    await expect(execute({ fileKeys: ['file:pdf'] })).resolves.toBe(
       '已依原始圖面完成 Vision 判讀。',
     );
     expect(getOwnedFileRecords).toHaveBeenLastCalledWith({

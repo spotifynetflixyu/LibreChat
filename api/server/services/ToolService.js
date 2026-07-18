@@ -764,10 +764,16 @@ function collectDelegateOcrAvailableFiles(req, delegateContext) {
         continue;
       }
       const filename = typeof file?.filename === 'string' ? file.filename.trim() : undefined;
-      const current = filesById.get(fileId);
-      if (!current || (!current.filename && filename)) {
-        filesById.set(fileId, { fileId, ...(filename ? { filename } : {}) });
-      }
+      const rawMediaType = file?.mediaType ?? file?.mimeType ?? file?.type;
+      const mediaType = typeof rawMediaType === 'string' ? rawMediaType.trim() : undefined;
+      const current = filesById.get(fileId) ?? {};
+      const resolvedFilename = current.filename ?? filename;
+      const resolvedMediaType = current.mediaType ?? mediaType;
+      filesById.set(fileId, {
+        fileId,
+        ...(resolvedFilename ? { filename: resolvedFilename } : {}),
+        ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
+      });
     }
   };
 

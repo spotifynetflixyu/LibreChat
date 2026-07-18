@@ -69,6 +69,7 @@ export const delegateOcrArgsSchema: z.ZodType<DelegateOcrArgs> = z
 export interface DelegateOcrAvailableFile {
   fileId: string;
   filename?: string;
+  mediaType?: string;
 }
 
 export interface DelegateOcrFileRecord {
@@ -214,6 +215,16 @@ function getFilenameExtension(filename: string | undefined): string | undefined 
   return basename.slice(extensionIndex).toLowerCase();
 }
 
+function getAvailableFileExtension(file: DelegateOcrAvailableFile): string | undefined {
+  const filenameExtension = getFilenameExtension(file.filename);
+  if (filenameExtension && delegateOcrFileExtensions.has(filenameExtension)) {
+    return filenameExtension;
+  }
+  return file.mediaType?.split(';')[0]?.trim().toLowerCase() === 'application/pdf'
+    ? '.pdf'
+    : undefined;
+}
+
 const delegateOcrFileExtensions = new Set([
   '.pdf',
   '.png',
@@ -235,10 +246,19 @@ function stripDelegateOcrFileExtension(value: string): string {
     : value;
 }
 
+function unwrapDelegateOcrFileKey(fileKey: string): string {
+  return fileKey.startsWith('<') && fileKey.endsWith('>') ? fileKey.slice(1, -1).trim() : fileKey;
+}
+
+function getGenericDelegateOcrFileExtension(fileKey: string): string | undefined {
+  const unwrapped = unwrapDelegateOcrFileKey(fileKey);
+  const prefixed = /^(?:file|files|file_id):(.+)$/i.exec(unwrapped);
+  const candidate = (prefixed?.[1] ?? unwrapped).trim().toLowerCase();
+  return candidate === 'pdf' ? '.pdf' : undefined;
+}
+
 function parseCanonicalDelegateOcrFileKey(fileKey: string): string | undefined {
-  const unwrapped = fileKey.startsWith('<') && fileKey.endsWith('>')
-    ? fileKey.slice(1, -1).trim()
-    : fileKey;
+  const unwrapped = unwrapDelegateOcrFileKey(fileKey);
   const prefixed = /^(?:file|files|file_id):(.+)$/i.exec(unwrapped);
   if (prefixed) {
     const fileId = stripDelegateOcrFileExtension(prefixed[1].trim());
@@ -260,6 +280,7 @@ export function resolveDelegateOcrFileKeys(
   const hasAvailableFiles = availableFiles !== undefined && availableFiles.length > 0;
 
   const fileIdsByAlias = new Map<string, Set<string>>();
+  const fileIdsByExtension = new Map<string, Set<string>>();
   const addAlias = (alias: string | undefined, fileId: string) => {
     const normalizedAlias = alias?.trim().toLowerCase();
     if (!normalizedAlias) {
@@ -275,7 +296,7 @@ export function resolveDelegateOcrFileKeys(
     if (!fileId) {
       continue;
     }
-    const extension = getFilenameExtension(file.filename);
+    const extension = getAvailableFileExtension(file);
     addAlias(fileId, fileId);
     addAlias(`file:${fileId}`, fileId);
     addAlias(`files:${fileId}`, fileId);
@@ -284,6 +305,11 @@ export function resolveDelegateOcrFileKeys(
     addAlias(extension ? `${fileId}${extension}` : undefined, fileId);
     addAlias(extension ? `file:${fileId}${extension}` : undefined, fileId);
     addAlias(extension ? `files:${fileId}${extension}` : undefined, fileId);
+    if (extension) {
+      const fileIds = fileIdsByExtension.get(extension) ?? new Set<string>();
+      fileIds.add(fileId);
+      fileIdsByExtension.set(extension, fileIds);
+    }
   }
 
   const unresolvedKeys: string[] = [];
@@ -299,6 +325,22 @@ export function resolveDelegateOcrFileKeys(
     }
     if (fileIds?.size === 1) {
       resolvedKeys.push(`file:${[...fileIds][0]}`);
+      continue;
+    }
+
+    const genericExtension = hasAvailableFiles
+      ? getGenericDelegateOcrFileExtension(fileKey)
+      : undefined;
+    if (genericExtension) {
+      const matchingFileIds = fileIdsByExtension.get(genericExtension);
+      if (matchingFileIds && matchingFileIds.size > 1) {
+        throw new Error(`delegate_ocr attachment file key is ambiguous: ${fileKey}`);
+      }
+      if (matchingFileIds?.size === 1) {
+        resolvedKeys.push(`file:${[...matchingFileIds][0]}`);
+        continue;
+      }
+      unresolvedKeys.push(fileKey);
       continue;
     }
 

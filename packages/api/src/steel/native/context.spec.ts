@@ -189,6 +189,32 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContext).not.toHaveProperty('toolPolicy');
   });
 
+  it('renders attachment filenames and file keys into the provider context', async () => {
+    const context = await buildDefaultSteelGlobalAgentContext({
+      conversation: {
+        requestId: 'request_with_attachment',
+        activeHistory: [],
+        currentUserTurn: {
+          role: 'user',
+          content: '請依附件報價',
+          files: [
+            {
+              fileId: '676b6f2c-0361-412a-92f0-92711c94ffef',
+              source: 'librechat_file_record',
+              mediaType: 'application/pdf',
+              filename: 'PL.pdf',
+            },
+          ],
+        },
+      },
+      dependencies: createDependencies(),
+    });
+
+    expect(context.runtimeContextText).toContain(
+      '# Source attachment metadata\nfile_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\nmedia_type: "application/pdf"',
+    );
+  });
+
   it('keeps backend rule metadata out of the rendered instruction prefix', async () => {
     const dependencies = createDependencies();
     dependencies.listAgentRules = jest.fn(async () => [
@@ -223,9 +249,10 @@ describe('Steel native context adapter', () => {
       attachments: {
         currentOcrMarkdownResults: [
           {
-            ocrFileKey: 'file:quote.pdf',
-            filename: 'quote.pdf',
-            content: '<file:quote.pdf>\n| 品名 | 數量 |\n|---|---:|\n| 鐵板 | 2 |',
+            ocrFileKey: 'file:676b6f2c-0361-412a-92f0-92711c94ffef',
+            filename: 'PL.pdf',
+            content:
+              '<file:676b6f2c-0361-412a-92f0-92711c94ffef>\n| 品名 | 數量 |\n|---|---:|\n| 鐵板 | 2 |',
           },
         ],
         currentOcrFailures: [
@@ -288,6 +315,9 @@ describe('Steel native context adapter', () => {
     );
     expect(context.instructionPrefix).toContain('OCR main organizer rule fixture');
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
+    );
     expect(context.runtimeContextText).toContain('| 鐵板 | 2 |');
     expect(context.runtimeContextText).toContain(
       'file_key: file:missing.pdf\nfile_url: https://files.example.test/missing.pdf\nmissing_page_ranges: 1-2, 4-5',
@@ -306,5 +336,27 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContextText).not.toContain('raw OCR');
     expect(context.runtimeContextText).not.toContain('Steel Native Context Metadata');
     expect(context.runtimeContextText).not.toContain('currentOcrMarkdownResults');
+  });
+
+  it('does not invent source filenames for OCR Markdown results', async () => {
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_without_filename', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        currentOcrMarkdownResults: [
+          {
+            ocrFileKey: 'file:file-without-name',
+            filename: '   ',
+            content: '<file:file-without-name>\nOCR Markdown',
+          },
+        ],
+      },
+    });
+
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:file-without-name\n<file:file-without-name>\nOCR Markdown',
+    );
+    expect(context.runtimeContextText).not.toContain('source_filename:');
   });
 });

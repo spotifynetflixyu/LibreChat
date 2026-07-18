@@ -108,6 +108,7 @@ export interface BuildSteelNativeInstructionPrefixInput {
 export interface BuildSteelNativeRuntimeContextTextInput {
   runtimeContext: SteelRuntimeContext;
   mode?: SteelNativeContextMode;
+  attachmentReferences?: readonly SteelNativeFileReference[];
 }
 
 export interface BuildSteelGlobalAgentContextInput {
@@ -431,13 +432,44 @@ function collectAttachmentReferences({
 export function buildSteelNativeRuntimeContextText({
   runtimeContext,
   mode = 'standard',
+  attachmentReferences = [],
 }: BuildSteelNativeRuntimeContextTextInput): string {
+  const referencesByFileKey = new Map<string, { filename?: string; mediaType?: string }>();
+  for (const reference of attachmentReferences) {
+    const fileId = reference.fileId.trim();
+    if (!fileId) {
+      continue;
+    }
+    const fileKey = fileId.startsWith('file:') ? fileId : `file:${fileId}`;
+    const current = referencesByFileKey.get(fileKey) ?? {};
+    const filename = reference.filename?.trim();
+    const mediaType = reference.mediaType.trim();
+    referencesByFileKey.set(fileKey, {
+      filename: current.filename ?? (filename || undefined),
+      mediaType: current.mediaType ?? (mediaType || undefined),
+    });
+  }
+  const attachmentContext = [...referencesByFileKey.entries()]
+    .map(([fileKey, reference]) =>
+      [
+        `file_key: ${fileKey}`,
+        reference.filename ? `source_filename: ${JSON.stringify(reference.filename)}` : '',
+        reference.mediaType ? `media_type: ${JSON.stringify(reference.mediaType)}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .join('\n\n');
+  const attachmentContextText = attachmentContext
+    ? `# Source attachment metadata\n${attachmentContext}`
+    : '';
+
   if (
     mode !== 'ocr' ||
     (runtimeContext.attachments.currentOcrMarkdownResults.length === 0 &&
       runtimeContext.attachments.currentOcrFailures.length === 0)
   ) {
-    return '';
+    return attachmentContextText;
   }
 
   const missingPageRangesByFileKey = groupSteelOcrMissingPageRangesByFileKey(
@@ -469,10 +501,25 @@ export function buildSteelNativeRuntimeContextText({
     })
     .join('\n\n');
   const markdown = runtimeContext.attachments.currentOcrMarkdownResults
-    .map((result) => (typeof result.content === 'string' ? result.content.trim() : ''))
+    .map((result) => {
+      const content = typeof result.content === 'string' ? result.content.trim() : '';
+      if (!content) {
+        return '';
+      }
+
+      const fileKey = typeof result.ocrFileKey === 'string' ? result.ocrFileKey.trim() : '';
+      const filename = typeof result.filename === 'string' ? result.filename.trim() : '';
+      return [
+        fileKey ? `file_key: ${fileKey}` : '',
+        filename ? `source_filename: ${JSON.stringify(filename)}` : '',
+        content,
+      ]
+        .filter(Boolean)
+        .join('\n');
+    })
     .filter(Boolean)
     .join('\n\n');
-  return [failures, markdown].filter(Boolean).join('\n\n');
+  return [attachmentContextText, failures, markdown].filter(Boolean).join('\n\n');
 }
 
 export async function buildSteelGlobalAgentContext({
@@ -513,6 +560,7 @@ export async function buildSteelGlobalAgentContext({
     runtimeContextText: buildSteelNativeRuntimeContextText({
       runtimeContext,
       mode,
+      attachmentReferences,
     }),
     runtimeContext,
     mode,
