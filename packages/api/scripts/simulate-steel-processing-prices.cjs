@@ -199,6 +199,7 @@ function toDescriptor(row) {
     category: row.category,
     subcategory: row.subcategory || undefined,
     productName: row.productName || undefined,
+    specKey: row.specKey,
     erpItemCode: row.erpItemCode,
   };
 }
@@ -207,7 +208,6 @@ function simulateProcessingPrices(rows, targetCategories, keyword) {
   const targets = new Set(targetCategories);
   const processingRows = rows.filter(
     (row) =>
-      row.active &&
       row.valueState !== 'no_price' &&
       processingPriceCategories.includes(row.category) &&
       isQuoteEligible(row) &&

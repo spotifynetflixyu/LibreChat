@@ -49,6 +49,13 @@ const cuttingRulePath = path.join(categoryRulesDir, '切工.txt');
 const outputRulePath = path.join(rulesDir, '輸出規則.txt');
 const ocrRulePath = path.join(rulesDir, '其他規則/OCR規則.txt');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
+const aiSubcategoryOrderOverrides: Partial<Record<string, readonly string[]>> = {
+  C型鋼: [],
+  H型鋼: ['輕量', '標準'],
+  圓管: ['一般', '成品/太陽片', '配管', '連料', 'A管', 'B管'],
+  方管: ['一般', '成品/太陽片', '雨棚', '連料'],
+  網: ['點焊', '鐵網', '牛筋', '刺網', '高床', '浪型', '菱形', '配件', '其他'],
+};
 
 const ruleSync = jest.requireActual<{
   buildRules: (root: string) => BuiltRule[];
@@ -308,12 +315,15 @@ describe('Steel rule sources', () => {
     const actual = parseCategorySubcategories(readUtf8(guidePath));
     expect([...actual.keys()]).toEqual([...priceCategories]);
     for (const [category, subcategories] of actual) {
-      const expected = (
-        priceSubcategoriesByCategory[
-          category as keyof typeof priceSubcategoriesByCategory
-        ] as readonly string[]
-      ).filter(Boolean);
-      expect([...subcategories].sort()).toEqual([...expected].sort());
+      const expected =
+        aiSubcategoryOrderOverrides[category] ??
+        (
+          priceSubcategoriesByCategory[
+            category as keyof typeof priceSubcategoriesByCategory
+          ] as readonly string[]
+        ).filter((subcategory) => subcategory && subcategory !== '通用');
+      expect([...subcategories]).toEqual(expected);
+      expect(subcategories).not.toContain('通用');
     }
   });
 
