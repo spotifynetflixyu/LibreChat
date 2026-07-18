@@ -546,7 +546,9 @@ describe('Steel rule sources', () => {
         },
       },
     });
-    expect(builtRules.find((rule) => rule.slug === 'steel_category_price_lookup_guide')).toMatchObject({
+    expect(
+      builtRules.find((rule) => rule.slug === 'steel_category_price_lookup_guide'),
+    ).toMatchObject({
       outputPolicy: {
         materialPriceIncludesProcessing: false,
         separateProcessingCategories: ['加工/切工', '加工/孔', '加工/折工'],
@@ -565,6 +567,16 @@ describe('Steel rule sources', () => {
         },
         separateFrom: ['加工/孔', '加工/折工'],
         missingPriceBehavior: 'retain_blank_and_manual_review',
+        unitBilling: {
+          source: 'price_row.unit',
+          quantityByUnit: {
+            刀: 'confirmed_knife_count',
+            片: 'confirmed_steel_piece_count',
+          },
+          pieceUnitKnifeCount: 'note_only',
+          pieceUnitExcludedCategories: ['圓條', '圓管', '方管', '扁方管'],
+          missingOrIncompatibleUnitOrQuantity: 'blank_and_manual_review',
+        },
       },
     });
   });

@@ -12,7 +12,7 @@
 3. 已知客戶等級且該等級有價時直接採用；該等級缺價時，依 B→A→C→F→D→E 取第一個已有的等級價格 fallback；六個等級皆無價時才用 `unit_price_base`。只要 base 或 A至F 至少有一個價格，該品項即可暫時報價；fallback 不得覆寫原始價格資料。
 4. 實際採用任何 fallback 時，須列入 `manual_review`，並在報價表後的補充明寫「fallback 價格，須人工確認」及採用的價格基準。
 5. 最終回覆只呈現報價表、必要補充與說明，不附內部處理資料。
-6. 每張 Markdown 表標題必須使用 `## <markdown_name>` 並保留原名：`system_order`、`customer_data`、`customer_quote`、`manual_review`；有來源檔案時才輸出 `## <markdown_name>｜<filename>（<file_key>）`，多檔依來源順序以`、`連接，不得以檔名或 file key 取代 Markdown 原名；沒有來源檔案時只輸出 `## <markdown_name>`，不得虛構檔案資訊。
+6. 每張 Markdown 表標題必須使用 `## <markdown_name>` 並保留原名：`system_order`、`customer_data`、`customer_quote`、`manual_review`；有來源檔案時才輸出 `## <markdown_name>｜<filename>（<file_id>）`，多檔依來源順序以`、`連接，不得以檔名或 file_id 取代 Markdown 原名；沒有來源檔案時只輸出 `## <markdown_name>`，不得虛構檔案資訊。
 
 三、`system_order`
 
