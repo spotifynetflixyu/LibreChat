@@ -155,6 +155,11 @@ const categoryRuleMetadataByFile = {
     locator: '類別查價方式',
     ruleSection: 'price_lookup',
     priority: 19,
+    outputPolicy: {
+      materialPriceIncludesProcessing: false,
+      separateProcessingCategories: ['加工/切工', '加工/孔', '加工/折工'],
+      noChargeRequiresExplicitCategoryRule: true,
+    },
   },
   'docs/rules/類別規則/C型鋼.txt': {
     slug: 'steel_quote_rules_c_type',
@@ -217,6 +222,15 @@ const categoryRuleMetadataByFile = {
     locator: '一般加工類別規則',
     ruleSection: 'processing',
     priority: 23,
+    toolPolicy: {
+      processingQueries: {
+        '加工/切工': {
+          keywordPolicy: 'omit',
+          deduplicateBy: ['categories', 'processingCategories'],
+          excludesAutomaticLongMaterialCutting: true,
+        },
+      },
+    },
   },
   'docs/rules/類別規則/長條料.txt': {
     slug: 'steel_quote_rules_long_material',
@@ -231,6 +245,16 @@ const categoryRuleMetadataByFile = {
     locator: '長條料切工類別規則',
     ruleSection: 'bar_cutting',
     priority: 24,
+    outputPolicy: {
+      drawingKnifeCount: {
+        outerStraightEdge: 1,
+        bevel: 1,
+        cutCorner: 1,
+        multiplyByQuantity: true,
+      },
+      separateFrom: ['加工/孔', '加工/折工'],
+      missingPriceBehavior: 'retain_blank_and_manual_review',
+    },
   },
 };
 
@@ -259,6 +283,8 @@ function categoryRule({ sourceFile, prompt, fileSha }) {
       confidence: 'high',
     },
     prompt,
+    toolPolicy: metadata.toolPolicy,
+    outputPolicy: metadata.outputPolicy,
     priority: metadata.priority,
     sourceRefs: [sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule')],
   });

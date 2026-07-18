@@ -505,9 +505,7 @@ describe('Steel rule sources', () => {
     expect(processing).toContain('`processingQueries.keyword`');
     expect(processing).toContain('各類別 keyword 只依下列對應規則');
     expect(processing).toContain('不得自行猜測其他 keyword');
-    expect(processing).toContain('加工/切工、加工/開槽與加工/倒角需要用加工方式縮小候選時');
     expect(processing).toContain('正規化加工方式 `[剪床|雷射|鋸床|水刀|火]`');
-    expect(processing).toContain('正規化形狀 `[外形切割|直線切割]`');
     expect(processing).toContain(
       '`processingQueries.keyword` 只可從需求中已確認的 `[滾圓|端板|喇叭桶|壓花|拋光|雷射畫線]`',
     );
@@ -534,6 +532,40 @@ describe('Steel rule sources', () => {
     expect(cType).toContain('processingCategories:["加工/切工"]');
     expect(cType).toContain('processingCategories:["加工/其他"]');
     expect(cType).not.toMatch(/只返回 productNames|精確重取依/u);
+
+    const builtRules = ruleSync.buildRules(repoRoot);
+    expect(builtRules.find((rule) => rule.slug === 'steel_quote_rules_processing')).toMatchObject({
+      toolPolicy: {
+        processingQueries: {
+          '加工/切工': {
+            keywordPolicy: 'omit',
+            deduplicateBy: ['categories', 'processingCategories'],
+            excludesAutomaticLongMaterialCutting: true,
+          },
+        },
+      },
+    });
+    expect(builtRules.find((rule) => rule.slug === 'steel_category_price_lookup_guide')).toMatchObject({
+      outputPolicy: {
+        materialPriceIncludesProcessing: false,
+        separateProcessingCategories: ['加工/切工', '加工/孔', '加工/折工'],
+        noChargeRequiresExplicitCategoryRule: true,
+      },
+    });
+    expect(
+      builtRules.find((rule) => rule.slug === 'steel_quote_rules_long_material_cutting'),
+    ).toMatchObject({
+      outputPolicy: {
+        drawingKnifeCount: {
+          outerStraightEdge: 1,
+          bevel: 1,
+          cutCorner: 1,
+          multiplyByQuantity: true,
+        },
+        separateFrom: ['加工/孔', '加工/折工'],
+        missingPriceBehavior: 'retain_blank_and_manual_review',
+      },
+    });
   });
 
   it('keeps minimum-thickness and unit override behavior in the common lookup owner', () => {
