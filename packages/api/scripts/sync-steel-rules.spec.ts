@@ -438,8 +438,9 @@ describe('Steel rule sources', () => {
     const hole = readUtf8(holeRulePath);
 
     expect(plate).toContain('雷射切割 → 四方切 → 版型切型');
-    expect(plate).toContain('鐵板沒有獨立自動切工價');
-    expect(plate).toContain('`切板`、`平板`、`成型/配件`、`網板`、`花板`、`圍籬`');
+    expect(plate).toContain(
+      '`切板`、`切圓`、`切內外圓`、`平板`、`成型/配件`、`網板`、`花板`、`圍籬`',
+    );
     expect(plate).not.toMatch(/圍籬板|檔泥板|`特殊`/u);
     expect(mesh).toContain('不使用 `keyword`');
     expect(mesh).toContain('不足一捲仍按一整丸');

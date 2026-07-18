@@ -16,11 +16,16 @@ import type {
   CodexAppServerJsonObject,
   StartCodexAppServerClientOptions,
 } from './appserver';
-import type { OpenAIOAuthTokenLoader as CredentialsLoader, OpenAIOAuthTokens } from './credentials';
+import type {
+  OpenAIOAuthCredentialRefreshOptions,
+  OpenAIOAuthCredentialRefreshResult,
+  OpenAIOAuthTokenLoader as CredentialsLoader,
+  OpenAIOAuthTokens,
+} from './credentials';
 
 import { CodexAppServerRequestError, startCodexAppServerClient } from './appserver';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
-import { loadOpenAIOAuthTokens } from './credentials';
+import { loadOpenAIOAuthTokens, refreshOpenAIOAuthCredentials } from './credentials';
 
 export type OpenAIOAuthTokenLoader = CredentialsLoader;
 
@@ -87,6 +92,9 @@ export type OpenAIOAuthTokenStatusDeps = {
   fetch?: typeof fetch;
   loadAuthTokens?: OpenAIOAuthTokenLoader;
   now?: () => Date;
+  refreshCredentials?: (
+    options: OpenAIOAuthCredentialRefreshOptions,
+  ) => Promise<OpenAIOAuthCredentialRefreshResult>;
   runCodexCommand?: OpenAIOAuthCodexCommandRunner;
   startAppServerClient?: OpenAIOAuthAppServerFactory;
 };
@@ -683,15 +691,29 @@ async function verifyOpenAIOAuthManagedAccount({
   return status;
 }
 
-export function refreshOpenAIOAuthToken(
+export async function refreshOpenAIOAuthToken(
   deps: OpenAIOAuthTokenStatusDeps = {},
 ): Promise<OpenAIOAuthTokenStatus> {
+  try {
+    await (deps.refreshCredentials ?? refreshOpenAIOAuthCredentials)({
+      ...(deps.authFilePath ? { authFilePath: deps.authFilePath } : {}),
+      fetch: deps.fetch ?? globalThis.fetch,
+      force: true,
+      now: deps.now,
+    });
+  } catch {
+    return createUnavailableStatus({
+      fetchedAt: deps.now?.() ?? new Date(),
+      login: toPublicCodexLoginCapability(await createCodexLoginCapability(deps)),
+      reason: 'refresh_failed',
+    });
+  }
   return verifyOpenAIOAuthManagedAccount({
     allowLocalFallback: false,
     deps,
     loadFailureReason: 'refresh_failed',
     preparationFailureReason: 'refresh_failed',
-    refreshToken: true,
+    refreshToken: false,
     verificationFailureReason: 'refresh_failed',
   });
 }

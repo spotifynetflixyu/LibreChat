@@ -16,6 +16,7 @@ import type {
 
 jest.mock('./credentials', () => ({
   loadOpenAIOAuthTokens: jest.fn(),
+  refreshOpenAIOAuthCredentials: jest.fn(),
 }));
 
 import { CodexAppServerRequestError } from './appserver';
@@ -345,17 +346,31 @@ describe('OpenAI OAuth token status service', () => {
       accessToken: createJwt(1783562400),
       refreshToken: 'refresh_sensitive',
     }));
+    const refreshCredentials = jest.fn(async () => ({
+      auth: {
+        accessToken: createJwt(1783562400),
+        accountId: 'account_test',
+      },
+      refreshed: true,
+    }));
 
     try {
       const result = await refreshOpenAIOAuthToken({
         authFilePath,
         loadAuthTokens,
         now: () => new Date('2026-07-08T02:34:02.000Z'),
+        refreshCredentials,
         runCodexCommand: workingCodexCommand,
         startAppServerClient: appServer.startAppServerClient,
       });
 
-      expect(appServer.request).toHaveBeenCalledWith('account/read', { refreshToken: true });
+      expect(refreshCredentials).toHaveBeenCalledWith({
+        authFilePath,
+        fetch: globalThis.fetch,
+        force: true,
+        now: expect.any(Function),
+      });
+      expect(appServer.request).toHaveBeenCalledWith('account/read', { refreshToken: false });
       expect(loadAuthTokens).toHaveBeenCalledWith({
         authFilePath,
         ensureFresh: false,
@@ -366,6 +381,24 @@ describe('OpenAI OAuth token status service', () => {
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
+  });
+
+  it('maps forced credential refresh failures without reading the managed account', async () => {
+    const appServer = createAppServer({
+      'account/read': { account: { type: 'chatgpt' } },
+    });
+    const result = await refreshOpenAIOAuthToken({
+      refreshCredentials: jest.fn(async () => {
+        throw new Error('refresh failed');
+      }),
+      runCodexCommand: workingCodexCommand,
+      startAppServerClient: appServer.startAppServerClient,
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ reason: 'refresh_failed', status: 'unavailable' }),
+    );
+    expect(appServer.request).not.toHaveBeenCalled();
   });
 
   it.each([

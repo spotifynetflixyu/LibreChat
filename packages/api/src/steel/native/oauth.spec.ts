@@ -134,6 +134,38 @@ function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
 }
 
 describe('OpenAI OAuth model adapter', () => {
+  it('uses the LibreChat credential loader for default provider credentials', async () => {
+    const fetchFn = jest.fn() as unknown as FetchFunction;
+    const loadAuthTokens = jest.fn(async () => ({
+      accessToken: 'access_sensitive',
+      accountId: 'account_test',
+      sourcePath: '/tmp/default-provider-auth.json',
+    }));
+    const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn() });
+
+    await createStatelessOpenAIOAuthProvider({
+      authFilePath: '/tmp/default-provider-auth.json',
+      createOpenAIOAuth: dependencies.options.createOpenAIOAuth,
+      createOpenAIOAuthTransport: dependencies.options.createOpenAIOAuthTransport,
+      ensureFresh: false,
+      fetch: fetchFn,
+      loadAuthTokens,
+    });
+
+    const transportOptions = (
+      dependencies.options.createOpenAIOAuthTransport as unknown as jest.Mock
+    ).mock.calls[0][0] as { auth: () => Promise<unknown> };
+    await expect(transportOptions.auth()).resolves.toEqual(
+      expect.objectContaining({ accessToken: 'access_sensitive' }),
+    );
+    expect(loadAuthTokens).toHaveBeenCalledWith({
+      authFilePath: '/tmp/default-provider-auth.json',
+      ensureFresh: false,
+      fetch: fetchFn,
+    });
+    expect(dependencies.options.openaiCredentials).not.toHaveBeenCalled();
+  });
+
   it('records only an OAuth Chat 401 as invalid credential evidence', async () => {
     const authFilePath = '/tmp/oauth-chat-401-auth.json';
     const fetchFn = jest

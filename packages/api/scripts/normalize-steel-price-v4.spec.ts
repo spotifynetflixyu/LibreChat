@@ -162,9 +162,34 @@ describe('Steel price v4 workbook normalizer script', () => {
       workbook.Sheets.products_db_ready!,
       { defval: '', raw: false },
     );
-    expect(new Map(outputRows.map((row) => [row.erp_item_code, row])).get('CCG01')).toMatchObject({
+    const outputRowsByCode = new Map(outputRows.map((row) => [row.erp_item_code, row]));
+    expect(outputRowsByCode.get('CCG01')).toMatchObject({
       unit: 'M',
     });
+    expect(outputRowsByCode.get('DNB40')).toMatchObject({
+      formula_code: 'BH',
+      category: '鐵板',
+      subcategory: '切板',
+      material: 'OT 黑鐵',
+    });
+    for (const erpItemCode of ['DNB20', 'DNB2001', 'DNB2002', 'DNB2003']) {
+      expect(outputRowsByCode.get(erpItemCode)).toMatchObject({
+        formula_code: 'BH',
+        category: '鐵板',
+        subcategory: '切圓',
+        material: 'OT 黑鐵',
+        spec_key: expect.stringContaining('切圓'),
+      });
+    }
+    for (const erpItemCode of ['DNB30', 'DNB3001', 'DNB3002', 'DNB3003']) {
+      expect(outputRowsByCode.get(erpItemCode)).toMatchObject({
+        formula_code: 'BH',
+        category: '鐵板',
+        subcategory: '切內外圓',
+        material: 'OT 黑鐵',
+        spec_key: expect.stringContaining('切內外圓'),
+      });
+    }
     expect(importer.loadWorkbookRows(outputPath)).toHaveLength(6761);
 
     const styledWorkbook = new ExcelJS.Workbook();

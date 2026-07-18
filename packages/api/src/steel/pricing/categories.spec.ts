@@ -51,6 +51,9 @@ describe('Steel price category registry', () => {
   });
 
   it('accepts all concise normalized workbook subcategories', () => {
+    expect(priceSubcategoriesByCategory.鐵板).toEqual(
+      expect.arrayContaining(['切板', '切圓', '切內外圓']),
+    );
     expect(priceSubcategoriesByCategory.C型鋼).toEqual(
       expect.arrayContaining(['加工', '輕型', '成型', '其他']),
     );

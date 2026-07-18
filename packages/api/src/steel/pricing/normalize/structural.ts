@@ -6,6 +6,8 @@ const structuralSubcategoryRules: Readonly<Record<string, readonly SubcategoryRu
     ['圍籬', /圍籬/u],
     ['網板', /網板/u],
     ['花板', /花板|花紋|(?:黑|白|錏)花|ST花/iu],
+    ['切內外圓', /切內外圓|◎/u],
+    ['切圓', /切圓|φ/u],
     ['切板', /切/u],
     ['平板', /./u],
   ],

@@ -81,6 +81,55 @@ describe('Steel product category stage', () => {
     expect(normalizeSteelPriceWorkbookRow(source).category).toBe('其他');
   });
 
+  it.each([
+    ['DNB20', '黑鐵板切圓φ'],
+    ['DNB2001', '6.0-10.0mm板切φ'],
+    ['DNB2002', '12.0-30.0mm板切φ'],
+    ['DNB2003', '32.0-50.0mm板切φ'],
+    ['DNB30', '黑鐵板切內外圓◎'],
+    ['DNB3001', '6mm-10mm板切 ◎'],
+    ['DNB3002', '12mm-30mm板切 ◎'],
+    ['DNB3003', '32mm-50mm板切 ◎'],
+    ['DNB40', '黑鐵板 CNC切割'],
+  ])('uses formula code BH to keep %s in the plate catalog', (erpItemCode, productName) => {
+    expect(
+      applyPriceCategory(
+        makeRow({
+          erp_item_code: erpItemCode,
+          formula_code: 'BH',
+          product_name: productName,
+          category: '鐵板',
+        }),
+      ).category,
+    ).toBe('鐵板');
+  });
+
+  it('does not apply the BH plate override to an unconfirmed ERP code', () => {
+    expect(
+      applyPriceCategory(
+        makeRow({
+          erp_item_code: 'TEST',
+          formula_code: 'BH',
+          product_name: '黑鐵板 CNC切割',
+          category: '鐵板',
+        }),
+      ).category,
+    ).toBe('加工/切工');
+  });
+
+  it('does not apply the plate override when the formula code differs', () => {
+    expect(
+      applyPriceCategory(
+        makeRow({
+          erp_item_code: 'DNB20',
+          formula_code: 'OTHER',
+          product_name: '黑鐵板切圓φ',
+          category: '鐵板',
+        }),
+      ).category,
+    ).toBe('加工/切工');
+  });
+
   it('classifies AX-prefix subcategories from category plus product_name', () => {
     const rows = [
       makeRow({ erp_item_code: 'AX0000', product_name: '', category: '其他' }),

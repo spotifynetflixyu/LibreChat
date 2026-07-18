@@ -24,7 +24,10 @@ import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/l
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
+import type { OpenAIOAuthTokenLoader } from './credentials';
+
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
+import { loadOpenAIOAuthTokens } from './credentials';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -32,10 +35,6 @@ const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specif
 const dynamicImportOpenAIOAuthCore = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<typeof import('@openai-oauth/core')>;
-const dynamicImportOpenAIOAuthLocal = new Function('specifier', 'return import(specifier)') as (
-  specifier: string,
-) => Promise<typeof import('@openai-oauth/local')>;
-
 type CreateOpenAIOAuth = typeof createOpenAIOAuthType;
 type CreateOpenAIOAuthTransport = typeof createOpenAIOAuthTransportType;
 type OpenAICredentials = typeof openaiCredentialsType;
@@ -48,6 +47,7 @@ export interface OpenAIOAuthProviderOptions {
   createOpenAIOAuthTransport?: CreateOpenAIOAuthTransport;
   ensureFresh?: boolean;
   fetch?: FetchFunction;
+  loadAuthTokens?: OpenAIOAuthTokenLoader;
   openaiCredentials?: OpenAICredentials;
 }
 
@@ -69,11 +69,6 @@ async function loadCreateOpenAIOAuth(): Promise<CreateOpenAIOAuth> {
 async function loadCreateOpenAIOAuthTransport(): Promise<CreateOpenAIOAuthTransport> {
   const core = await dynamicImportOpenAIOAuthCore('@openai-oauth/core');
   return core.createOpenAIOAuthTransport;
-}
-
-async function loadOpenAICredentials(): Promise<OpenAICredentials> {
-  const local = await dynamicImportOpenAIOAuthLocal('@openai-oauth/local');
-  return local.openaiCredentials;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -99,6 +94,26 @@ function createLocalOpenAIOAuthOptions({
     ensureFresh,
     fetch,
   }) as LocalOpenAIOAuthOptions;
+}
+
+function createLibreChatOpenAIOAuthCredentials({
+  authFilePath,
+  ensureFresh,
+  fetch,
+  loadAuthTokens = loadOpenAIOAuthTokens,
+}: Pick<
+  OpenAIOAuthModelOptions,
+  'authFilePath' | 'ensureFresh' | 'fetch' | 'loadAuthTokens'
+>): ReturnType<OpenAICredentials> {
+  return {
+    kind: 'openai-oauth',
+    getSession: () =>
+      loadAuthTokens({
+        authFilePath,
+        ensureFresh,
+        fetch,
+      }),
+  };
 }
 
 function createCodexCompatibleFetch(fetchFn: FetchFunction, authFilePath?: string): FetchFunction {
@@ -149,8 +164,9 @@ export async function createStatelessOpenAIOAuthProvider(
   const createOpenAIOAuth = options.createOpenAIOAuth ?? (await loadCreateOpenAIOAuth());
   const createOpenAIOAuthTransport =
     options.createOpenAIOAuthTransport ?? (await loadCreateOpenAIOAuthTransport());
-  const openaiCredentials = options.openaiCredentials ?? (await loadOpenAICredentials());
-  const credentials = openaiCredentials(createLocalOpenAIOAuthOptions(options));
+  const credentials = options.openaiCredentials
+    ? options.openaiCredentials(createLocalOpenAIOAuthOptions(options))
+    : createLibreChatOpenAIOAuthCredentials(options);
   const fetchFn = options.fetch ?? globalThis.fetch;
   const transport = createOpenAIOAuthTransport({
     auth: () => credentials.getSession(),

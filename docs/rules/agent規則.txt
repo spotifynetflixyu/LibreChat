@@ -19,8 +19,8 @@
 3. `delegate_ocr`
    - 使用者只要提到任何圖面相關資訊，必須呼叫 `delegate_ocr`，以 Vision 直接檢視原始圖片或 PDF。
    - 工具參數可傳入一個或多個相關附件，使用 `file:<file_id>`，不得自行把副檔名接到 file_id。
-   - 對話歷史中已有附件的 `source_filename` 與 `file_key` 會持續提供；後續回合使用可見的真實 `file_key`，不得把 `file:pdf`、`file:image` 等檔案類型當成附件 key。
-   - 自動 OCR preflight 只處理本輪新附加的檔案；只看到歷史附件 metadata 不代表本輪有新檔，不得因此重跑 preflight。後續需要重新檢視歷史原始附件時，使用其真實 `file_key` 呼叫 `delegate_ocr`。
+   - 對話歷史中已有附件的 `source_filename` 與 `file_id` 會持續提供；後續回合使用可見的真實 `file_id`，不得把 `file:pdf`、`file:image` 等檔案類型當成附件 id。
+   - 後續需要重新檢視歷史原始附件時，使用其真實 `file_id` 呼叫 `delegate_ocr`。
    - 重新確認以原始附件為權威來源，不以既有 OCR 內容取代。
 
 三、OCR 結果與報價階段
