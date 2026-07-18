@@ -1,4 +1,4 @@
-import { buildSteelPriceV4Rows } from '../v4';
+import { buildSteelPriceV4Rows, steelPriceV4WorkbookHeaders } from '../v4';
 import {
   normalizeSteelPriceWorkbookRow,
   normalizedSteelPriceV4WorkbookHeaders,
@@ -7,54 +7,11 @@ import {
 
 import type { SteelPriceV4WorkbookRow } from '../v4';
 
-const legacyHeaders = [
-  'erp_item_code',
-  'formula_code',
-  'product_name',
-  'normalized_spec_text',
-  'category',
-  'subcategory',
-  'material',
-  'dimension_signature',
-  'unit',
-  'value_state',
-  'unit_price_base',
-  'unit_price_a',
-  'unit_price_b',
-  'unit_price_c',
-  'unit_price_d',
-  'unit_price_e',
-  'unit_price_f',
-  'price_ratio_a',
-  'price_ratio_b',
-  'price_ratio_c',
-  'price_ratio_d',
-  'price_ratio_e',
-  'price_ratio_f',
-  'unit_weight_value',
-  'unit_weight_basis',
-  'density',
-  'source_thickness',
-  'width_mm',
-  'height_mm',
-  'length_mm',
-  'outer_diameter_mm',
-  'nominal_inch',
-  'web_mm',
-  'flange_mm',
-  'lip_mm',
-  'sheet_width_mm',
-  'sheet_length_mm',
-  'spec_sort_key',
-  'cost_basis',
-] as const;
-
 function makeRow(overrides: Partial<SteelPriceV4WorkbookRow> = {}): SteelPriceV4WorkbookRow {
   return {
-    ...Object.fromEntries(legacyHeaders.map((header) => [header, ''])),
+    ...Object.fromEntries(steelPriceV4WorkbookHeaders.map((header) => [header, ''])),
     erp_item_code: 'ERP001',
     product_name: 'ST2B 0.5 切',
-    normalized_spec_text: 'ST2B 0.5 切 t2mm',
     category: '鐵板',
     material: '白鐵霧面 / ST 2B',
     unit: 'm2',
@@ -111,12 +68,15 @@ describe('Steel price workbook normalization core', () => {
     }
   });
 
+  it('normalizes the raw ERP meter unit alias', () => {
+    expect(normalizeSteelPriceWorkbookRow(makeRow({ unit: '米' })).unit).toBe('M');
+  });
+
   it('does not infer hot-dip material from an accessory usage description', () => {
     const normalized = normalizeSteelPriceWorkbookRow(
       makeRow({
         erp_item_code: 'FCP1104',
         product_name: '合金底漆(白鐵熱浸鍍鋅用)-1加',
-        normalized_spec_text: '合金底漆(白鐵熱浸鍍鋅用)-1加',
         category: '五金/配件',
         material: '',
         unit: '加',
@@ -132,7 +92,6 @@ describe('Steel price workbook normalization core', () => {
       makeRow({
         erp_item_code: 'MESH-WAVE',
         product_name: '錏浪型網 10#(3.0)x25mm □孔',
-        normalized_spec_text: '錏浪型網 10#(3.0)x25mm □孔',
         category: '網',
         subcategory: '菱形',
       }),
@@ -197,7 +156,6 @@ describe('Steel price workbook normalization core', () => {
     const normalized = normalizeSteelPriceWorkbookRow(
       makeRow({
         product_name: '熱浸鍍槽鐵100*50*5/7.5*6M(59)',
-        normalized_spec_text: '熱浸鍍槽鐵100x50x5/7.5x6M(59)',
         category: '槽鐵',
         material: '黑鐵 / OT',
         unit: '支',

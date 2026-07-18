@@ -65,6 +65,7 @@ function normalizeUnit(value: SteelPriceV4Cell): string | null {
     kg: 'Kg',
     KG: 'Kg',
     m: 'M',
+    米: 'M',
     m2: '㎡',
     M2: '㎡',
     平方公尺: '㎡',

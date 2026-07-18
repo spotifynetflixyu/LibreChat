@@ -12,8 +12,11 @@ process.env.TS_NODE_TRANSPILE_ONLY = 'true';
 require('ts-node/register/transpile-only');
 
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 
-const { buildSteelPriceV4Rows } = require('../src/steel/pricing/v4');
+const { steelPriceV4WorkbookHeaders } = require('../src/steel/pricing/v4');
+const { isPriceCategory } = require('../src/steel/pricing/categories');
+const { materialKinds } = require('../src/steel/pricing/enums');
 const {
   applyPriceCategory,
   getPendingPriceCategoryProposal,
@@ -26,86 +29,100 @@ const {
 
 const SHEET_NAME = 'products_db_ready';
 const REVIEW_SHEET_NAME = '待確認';
-const DEFAULT_INPUT_PATH = path.resolve(__dirname, '../../../docs/reference/products_db_v4.4.xlsx');
+const RAW_SHEET_NAME = '工作表2';
+const RAW_HEADER_ROW_INDEX = 4;
+const DEFAULT_INPUT_PATH = path.resolve(__dirname, '../../../docs/reference/0701.xlsx');
 const DEFAULT_OUTPUT_PATH = path.resolve(
   __dirname,
   '../../../docs/reference/products_db_v4.4.xlsx',
 );
+const DEFAULT_ENRICHMENT_PATH = path.resolve(__dirname, './steel-price-v4.4-enrichment.json');
 const DEFAULT_REVIEW_PATH = path.resolve(
   __dirname,
   '../../../docs/reference/products_db_v4.4.pending-review.csv',
 );
-const legacySteelPriceV4SourceHeaders = Object.freeze([
-  'erp_item_code',
-  'formula_code',
-  'product_name',
-  'normalized_spec_text',
-  'category',
-  'subcategory',
-  'material',
-  'dimension_signature',
-  'unit',
-  'value_state',
-  'unit_price_base',
-  'unit_price_a',
-  'unit_price_b',
-  'unit_price_c',
-  'unit_price_d',
-  'unit_price_e',
-  'unit_price_f',
-  'price_ratio_a',
-  'price_ratio_b',
-  'price_ratio_c',
-  'price_ratio_d',
-  'price_ratio_e',
-  'price_ratio_f',
-  'unit_weight_value',
-  'unit_weight_basis',
+const rawSteelPriceHeaders = Object.freeze([
+  '_流水號_',
+  '型號',
+  '品名規格',
+  '公式編號',
+  '本倉數量',
+  '本倉總數',
+  '單位',
+  '售價',
+  '進價',
+  '成本基準',
+  '金額',
+  '售價A',
+  '售價B',
+  '售價C',
+  '售價D',
+  '售價E',
+  '售價F',
+  '單位重',
+  '比重',
+  '異動日期',
+  '備註',
+  '比率A',
+  '比率B',
+  '比率C',
+  '比率D',
+  '比率E',
+  '比率F',
+]);
+const enrichmentNumericFields = Object.freeze([
   'density',
-  'source_thickness',
+  'thicknessMinMm',
+  'thicknessMaxMm',
   'width_mm',
   'height_mm',
   'length_mm',
   'outer_diameter_mm',
-  'nominal_inch',
   'web_mm',
   'flange_mm',
   'lip_mm',
   'sheet_width_mm',
   'sheet_length_mm',
   'spec_sort_key',
-  'cost_basis',
 ]);
-const legacySubcategoryIndex = legacySteelPriceV4SourceHeaders.indexOf('subcategory');
-const legacyHeadersWithProcessing = [
-  ...legacySteelPriceV4SourceHeaders.slice(0, legacySubcategoryIndex + 1),
-  'processing_method',
-  'processing_shape',
-  ...legacySteelPriceV4SourceHeaders.slice(legacySubcategoryIndex + 1),
-];
-const legacySourceThicknessIndex = legacyHeadersWithProcessing.indexOf('source_thickness');
-const legacyNormalizedHeaders = [
-  ...legacyHeadersWithProcessing.slice(0, legacySourceThicknessIndex + 1),
-  'thicknessMinMm',
-  'thicknessMaxMm',
-  ...legacyHeadersWithProcessing.slice(legacySourceThicknessIndex + 1),
-];
-const inputHeaders = [
-  ...new Set([
-    ...legacySteelPriceV4SourceHeaders,
-    ...legacyNormalizedHeaders,
-    ...normalizedSteelPriceV4WorkbookHeaders,
-  ]),
-];
-const legacyThicknessIgnoredCategories = new Set([
-  '圓管',
-  '方管',
-  '扁方管',
-  '槽鐵',
-  '角鐵',
-  '網',
-  '鋼筋',
-  '鐵軌',
+const enrichmentOptionalFields = Object.freeze([
+  'product_name',
+  'material',
+  'unit_weight_basis',
+  'nominal_inch',
+  ...enrichmentNumericFields.filter((field) => field !== 'density'),
+]);
+const enrichmentFields = new Set([
+  'erp_item_code',
+  'category',
+  'density',
+  'spec_key',
+  ...enrichmentOptionalFields,
+]);
+const canonicalMaterialKinds = new Set(materialKinds);
+const unitWeightBases = new Set([
+  'kg_per_m',
+  'kg_per_piece_or_stock_length',
+  'kg_per_stock_length',
+  'unknown',
+]);
+const blankProductNameCodes = new Set(['AX', 'FV', 'FVG']);
+const alternatingRowFill = Object.freeze({
+  type: 'pattern',
+  pattern: 'solid',
+  fgColor: { argb: 'FFF3F4F6' },
+});
+const reviewHeaders = Object.freeze([
+  'row',
+  'erp_item_code',
+  'product_name',
+  'current_category',
+  'inferred_category',
+  'proposed_subcategory',
+  'reason',
+  'suggested_action',
+  'confirmed_category',
+  'review_note',
 ]);
 
 function resolveOption(argv, name, fallback) {
@@ -125,112 +142,243 @@ function parseArgs(argv) {
   const write = argv.includes('--write');
   const inputPath = resolveOption(argv, '--input', DEFAULT_INPUT_PATH);
   const outputPath = resolveOption(argv, '--output', DEFAULT_OUTPUT_PATH);
+  const enrichmentPath = resolveOption(argv, '--enrichment', DEFAULT_ENRICHMENT_PATH);
   const reviewPath = resolveOption(argv, '--review', DEFAULT_REVIEW_PATH);
   const known = new Set([
     '--help',
     '-h',
     '--input',
     '--output',
+    '--enrichment',
     '--review',
     '--write',
     argv[argv.indexOf('--input') + 1],
     argv[argv.indexOf('--output') + 1],
+    argv[argv.indexOf('--enrichment') + 1],
     argv[argv.indexOf('--review') + 1],
   ]);
   const unknown = argv.find((argument) => !known.has(argument));
   if (unknown) {
     throw new Error(`Unknown argument: ${unknown}`);
   }
-  return { help, write, inputPath, outputPath, reviewPath };
+  return { help, write, inputPath, outputPath, enrichmentPath, reviewPath };
 }
 
 function sameFile(left, right) {
   return path.resolve(left) === path.resolve(right);
 }
 
-function adaptLegacySourceRow(row) {
-  const erpItemCode = String(row.erp_item_code ?? '').normalize('NFKC').trim();
-  const legacySpecText = String(row.normalized_spec_text ?? '').normalize('NFKC').trim();
-  if (!String(row.spec_key ?? '').trim()) {
-    row.spec_key = legacySpecText ? `${erpItemCode} ${legacySpecText}`.trim() : erpItemCode;
-  }
-
-  if (String(row.thicknessMinMm ?? '').trim() || String(row.thicknessMaxMm ?? '').trim()) {
-    return row;
-  }
-  const sourceThickness = String(row.source_thickness ?? '').normalize('NFKC').trim();
-  if (!sourceThickness || sourceThickness === '0') {
-    return row;
-  }
-  const match = sourceThickness.match(
-    /^([0-9]+(?:\.[0-9]+)?)\s*(?:[-~～至]\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:m\s*\/\s*m|mm|t)?$/iu,
-  );
-  if (!match?.[1]) {
-    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
-  }
-  const min = Number(match[1]);
-  const max = match[2] ? Number(match[2]) : min;
-  if (min <= 0 || max < min) {
-    throw new Error(`Invalid Steel source thickness: ${sourceThickness}`);
-  }
-  const category = String(row.category ?? '').trim();
-  const productName = String(row.product_name ?? '').normalize('NFKC').toUpperCase();
-  const [parsedWithoutSourceThickness] = buildSteelPriceV4Rows([row]);
-  if (
-    parsedWithoutSourceThickness?.thicknessMinMm !== null ||
-    legacyThicknessIgnoredCategories.has(category)
-  ) {
-    return row;
-  }
-  if (
-    category === '鐵板' &&
-    ((min === 2 && productName.includes('2B')) || (min === 1 && productName.includes('NO1')))
-  ) {
-    return row;
-  }
-  row.thicknessMinMm = min;
-  row.thicknessMaxMm = max;
-  return row;
+function cellText(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .trim();
 }
 
-function loadWorkbook(inputPath) {
+function hasPositiveValue(row, fields) {
+  return fields.some((field) => Number(cellText(row[field]).replace(/,/gu, '')) > 0);
+}
+
+function numericCell(value, field) {
+  const text = cellText(value);
+  if (!text) {
+    return '';
+  }
+  const parsed = Number(text.replace(/,/gu, ''));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid 0701 numeric value for ${field}: ${text}`);
+  }
+  return String(parsed);
+}
+
+function buildRawSourceRow(row) {
+  const source = Object.fromEntries(steelPriceV4WorkbookHeaders.map((header) => [header, '']));
+  const hasPrice = hasPositiveValue(row, [
+    '售價',
+    '售價A',
+    '售價B',
+    '售價C',
+    '售價D',
+    '售價E',
+    '售價F',
+  ]);
+  const hasRatio = hasPositiveValue(row, ['比率A', '比率B', '比率C', '比率D', '比率E', '比率F']);
+  let valueState = 'no_price';
+  if (hasPrice) {
+    valueState = 'confirmed';
+  } else if (hasRatio) {
+    valueState = 'ratio_only';
+  }
+
+  Object.assign(source, {
+    erp_item_code: cellText(row['型號']),
+    formula_code: cellText(row['公式編號']),
+    product_name: cellText(row['品名規格']),
+    unit: cellText(row['單位']),
+    value_state: valueState,
+    unit_price_base: numericCell(row['售價'], '售價'),
+    unit_price_a: numericCell(row['售價A'], '售價A'),
+    unit_price_b: numericCell(row['售價B'], '售價B'),
+    unit_price_c: numericCell(row['售價C'], '售價C'),
+    unit_price_d: numericCell(row['售價D'], '售價D'),
+    unit_price_e: numericCell(row['售價E'], '售價E'),
+    unit_price_f: numericCell(row['售價F'], '售價F'),
+    price_ratio_a: numericCell(row['比率A'], '比率A'),
+    price_ratio_b: numericCell(row['比率B'], '比率B'),
+    price_ratio_c: numericCell(row['比率C'], '比率C'),
+    price_ratio_d: numericCell(row['比率D'], '比率D'),
+    price_ratio_e: numericCell(row['比率E'], '比率E'),
+    price_ratio_f: numericCell(row['比率F'], '比率F'),
+    unit_weight_value: cellText(row['單位重']),
+    cost_basis: cellText(row['成本基準']),
+  });
+  return source;
+}
+
+function assertExactHeaders(headers) {
+  const matches =
+    headers.length === rawSteelPriceHeaders.length &&
+    headers.every((header, index) => header === rawSteelPriceHeaders[index]);
+  if (!matches) {
+    throw new Error(`${RAW_SHEET_NAME} row 5 headers do not match the 0701 raw contract`);
+  }
+}
+
+function loadRawWorkbook(inputPath) {
   const workbook = XLSX.readFile(inputPath, { raw: false, cellDates: false });
-  const worksheet = workbook.Sheets[SHEET_NAME];
+  const worksheet = workbook.Sheets[RAW_SHEET_NAME];
   if (!worksheet) {
-    throw new Error(`${inputPath} missing ${SHEET_NAME} sheet`);
+    throw new Error(`${inputPath} missing ${RAW_SHEET_NAME} sheet`);
   }
   const matrix = XLSX.utils.sheet_to_json(worksheet, {
     header: 1,
     defval: '',
     raw: false,
   });
-  const headers = (matrix[0] || []).map(String);
-  const acceptedHeaders = [
-    legacySteelPriceV4SourceHeaders,
-    legacyNormalizedHeaders,
-    normalizedSteelPriceV4WorkbookHeaders,
-  ];
-  const valid = acceptedHeaders.some(
-    (candidate) =>
-      headers.length === candidate.length &&
-      headers.every((header, index) => header === candidate[index]),
-  );
-  if (!valid) {
-    throw new Error(
-      `${SHEET_NAME} headers must match the 39-column source or normalized target contract`,
-    );
-  }
-  const rows = matrix.slice(1).map((cells) =>
-    adaptLegacySourceRow(
-      Object.fromEntries(
-        inputHeaders.map((header) => {
-          const index = headers.indexOf(header);
-          return [header, cells[index] === undefined ? '' : cells[index]];
-        }),
+  const headers = (matrix[RAW_HEADER_ROW_INDEX] || []).map(String);
+  assertExactHeaders(headers);
+  const rows = matrix
+    .slice(RAW_HEADER_ROW_INDEX + 1)
+    .map((cells) =>
+      buildRawSourceRow(
+        Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? ''])),
       ),
-    ),
-  );
+    );
   return { workbook, rows };
+}
+
+function assertNumericEnrichmentField(record, field, erpItemCode) {
+  const value = record[field];
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new Error(`Invalid Steel price enrichment ${field} for ${erpItemCode}`);
+  }
+  const parsed = Number(cellText(value).replace(/,/gu, ''));
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid Steel price enrichment ${field} for ${erpItemCode}`);
+  }
+}
+
+function validateEnrichmentRecord(record, index) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    throw new Error(`Steel price enrichment row ${index + 1} must be an object`);
+  }
+  const unknownField = Object.keys(record).find((field) => !enrichmentFields.has(field));
+  if (unknownField) {
+    throw new Error(`Unknown Steel price enrichment field: ${unknownField}`);
+  }
+
+  const erpItemCode = cellText(record.erp_item_code);
+  if (!erpItemCode) {
+    throw new Error(`Steel price enrichment row ${index + 1} requires erp_item_code`);
+  }
+  const category = cellText(record.category);
+  if (!isPriceCategory(category)) {
+    throw new Error(`Invalid Steel price enrichment category for ${erpItemCode}`);
+  }
+  if (typeof record.spec_key !== 'string' || !cellText(record.spec_key)) {
+    throw new Error(`Steel price enrichment requires spec_key for ${erpItemCode}`);
+  }
+  assertNumericEnrichmentField(record, 'density', erpItemCode);
+  if (record.density === undefined) {
+    throw new Error(`Steel price enrichment requires density for ${erpItemCode}`);
+  }
+  for (const field of enrichmentNumericFields) {
+    assertNumericEnrichmentField(record, field, erpItemCode);
+  }
+  if (record.product_name !== undefined && typeof record.product_name !== 'string') {
+    throw new Error(`Invalid Steel price enrichment product_name for ${erpItemCode}`);
+  }
+  if (record.material !== undefined && !canonicalMaterialKinds.has(cellText(record.material))) {
+    throw new Error(`Invalid Steel price enrichment material for ${erpItemCode}`);
+  }
+  if (
+    record.unit_weight_basis !== undefined &&
+    !unitWeightBases.has(cellText(record.unit_weight_basis))
+  ) {
+    throw new Error(`Invalid Steel price enrichment unit_weight_basis for ${erpItemCode}`);
+  }
+  if (record.nominal_inch !== undefined) {
+    const validType =
+      typeof record.nominal_inch === 'string' || typeof record.nominal_inch === 'number';
+    if (!validType || !cellText(record.nominal_inch)) {
+      throw new Error(`Invalid Steel price enrichment nominal_inch for ${erpItemCode}`);
+    }
+  }
+  return { ...record, erp_item_code: erpItemCode, category };
+}
+
+function loadEnrichment(enrichmentPath) {
+  const parsed = JSON.parse(fs.readFileSync(enrichmentPath, 'utf8'));
+  if (!Array.isArray(parsed)) {
+    throw new Error('Steel price enrichment must be a JSON array');
+  }
+  const records = parsed.map(validateEnrichmentRecord);
+  const byErpItemCode = new Map();
+  for (const record of records) {
+    if (byErpItemCode.has(record.erp_item_code)) {
+      throw new Error(`Duplicate Steel price enrichment ERP code: ${record.erp_item_code}`);
+    }
+    byErpItemCode.set(record.erp_item_code, record);
+  }
+  return byErpItemCode;
+}
+
+function applyEnrichment(rows, enrichmentPath) {
+  const byErpItemCode = loadEnrichment(enrichmentPath);
+  const seen = new Set();
+  const enrichedRows = rows.map((row) => {
+    const erpItemCode = cellText(row.erp_item_code);
+    if (!erpItemCode || seen.has(erpItemCode)) {
+      throw new Error(`Duplicate 0701 ERP code: ${erpItemCode || '(blank)'}`);
+    }
+    seen.add(erpItemCode);
+    const enrichment = byErpItemCode.get(erpItemCode);
+    if (!enrichment) {
+      throw new Error(`Missing Steel price enrichment for ERP code: ${erpItemCode}`);
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(enrichment, 'product_name') &&
+      String(enrichment.product_name) === String(row.product_name)
+    ) {
+      throw new Error(`Redundant Steel price product_name enrichment for ${erpItemCode}`);
+    }
+    const enriched = { ...row, ...enrichment, erp_item_code: erpItemCode };
+    const productName = cellText(enriched.product_name);
+    if (!productName && !blankProductNameCodes.has(erpItemCode)) {
+      throw new Error(`Steel price row requires product_name for ${erpItemCode}`);
+    }
+    if (productName && blankProductNameCodes.has(erpItemCode)) {
+      throw new Error(`Steel price placeholder product_name must stay blank for ${erpItemCode}`);
+    }
+    return enriched;
+  });
+  const extra = [...byErpItemCode.keys()].find((erpItemCode) => !seen.has(erpItemCode));
+  if (extra) {
+    throw new Error(`Steel price enrichment has unknown ERP code: ${extra}`);
+  }
+  return enrichedRows;
 }
 
 function reviewRow(source, classified, normalized, rowNumber) {
@@ -281,52 +429,57 @@ function assertSourceProtected(sourceRows, normalizedRows) {
   });
 }
 
-function makeDataSheet(rows) {
-  const matrix = [
+function makeDataMatrix(rows) {
+  return [
     [...normalizedSteelPriceV4WorkbookHeaders],
     ...rows.map((row) => normalizedSteelPriceV4WorkbookHeaders.map((header) => row[header] ?? '')),
   ];
-  const worksheet = XLSX.utils.aoa_to_sheet(matrix);
-  worksheet['!cols'] = normalizedSteelPriceV4WorkbookHeaders.map((header) => ({
-    wch:
-      header === 'product_name' || header === 'spec_key'
-        ? 42
-        : Math.max(12, header.length + 2),
-  }));
-  return worksheet;
 }
 
-function makeReviewSheet(rows) {
-  const worksheet = XLSX.utils.json_to_sheet(rows, {
-    header: [
-      'row',
-      'erp_item_code',
-      'product_name',
-      'current_category',
-      'inferred_category',
-      'proposed_subcategory',
-      'reason',
-      'suggested_action',
-      'confirmed_category',
-      'review_note',
-    ],
-  });
-  worksheet['!cols'] = [8, 16, 52, 18, 18, 24, 36, 34, 20, 36].map((wch) => ({ wch }));
-  return worksheet;
+function makeReviewMatrix(rows) {
+  return [reviewHeaders, ...rows.map((row) => reviewHeaders.map((header) => row[header] ?? ''))];
 }
 
-function addWorkbookAutoFilters(workbook) {
-  for (const sheetName of workbook.SheetNames) {
-    const worksheet = workbook.Sheets[sheetName];
-    if (!worksheet?.['!ref']) {
-      continue;
+function applyAlternatingRowFill(worksheet, dataRowCount, columnCount) {
+  for (let rowNumber = 3; rowNumber <= dataRowCount + 1; rowNumber += 2) {
+    for (let columnNumber = 1; columnNumber <= columnCount; columnNumber += 1) {
+      worksheet.getCell(rowNumber, columnNumber).fill = alternatingRowFill;
     }
-    worksheet['!autofilter'] = { ref: worksheet['!ref'] };
   }
 }
 
-function buildNormalization(inputPath) {
-  const { workbook, rows } = loadWorkbook(inputPath);
+function addWorkbookSheet(workbook, name, matrix, widths) {
+  const worksheet = workbook.addWorksheet(name);
+  worksheet.addRows(matrix);
+  worksheet.columns = widths.map((width) => ({ width }));
+  worksheet.autoFilter = {
+    from: { row: 1, column: 1 },
+    to: { row: matrix.length, column: matrix[0].length },
+  };
+  applyAlternatingRowFill(worksheet, matrix.length - 1, matrix[0].length);
+  return worksheet;
+}
+
+async function writeWorkbook(outputPath, normalizedRows, reviewRows) {
+  const workbook = new ExcelJS.Workbook();
+  const dataMatrix = makeDataMatrix(normalizedRows);
+  const dataWidths = normalizedSteelPriceV4WorkbookHeaders.map((header) =>
+    header === 'product_name' || header === 'spec_key' ? 42 : Math.max(12, header.length + 2),
+  );
+  const reviewMatrix = makeReviewMatrix(reviewRows);
+  addWorkbookSheet(workbook, SHEET_NAME, dataMatrix, dataWidths);
+  addWorkbookSheet(
+    workbook,
+    REVIEW_SHEET_NAME,
+    reviewMatrix,
+    [8, 16, 52, 18, 18, 24, 36, 34, 20, 36],
+  );
+  await workbook.xlsx.writeFile(outputPath);
+}
+
+function buildNormalization(inputPath, enrichmentPath) {
+  const { workbook, rows: rawRows } = loadRawWorkbook(inputPath);
+  const rows = applyEnrichment(rawRows, enrichmentPath);
   const classifiedRows = rows.map(applyPriceCategory);
   const normalizedRows = classifiedRows.map(normalizeSteelPriceWorkbookRow);
   assertParserProtected(classifiedRows, normalizedRows);
@@ -357,24 +510,32 @@ function summarize(inputPath, normalizedRows, reviewRows, changedCategoryCount) 
   };
 }
 
-function analyzeWorkbook(inputPath) {
-  const { normalizedRows, reviewRows, changedCategoryCount } = buildNormalization(inputPath);
+function analyzeWorkbook(inputPath, enrichmentPath = DEFAULT_ENRICHMENT_PATH) {
+  const { normalizedRows, reviewRows, changedCategoryCount } = buildNormalization(
+    inputPath,
+    enrichmentPath,
+  );
   return summarize(inputPath, normalizedRows, reviewRows, changedCategoryCount);
 }
 
-function normalizeWorkbook({ inputPath, outputPath, reviewPath = DEFAULT_REVIEW_PATH }) {
+async function normalizeWorkbook({
+  inputPath,
+  outputPath,
+  enrichmentPath = DEFAULT_ENRICHMENT_PATH,
+  reviewPath = DEFAULT_REVIEW_PATH,
+}) {
   if (sameFile(inputPath, outputPath)) {
     throw new Error('Input and output paths must differ');
   }
-  const { normalizedRows, reviewRows, changedCategoryCount } = buildNormalization(inputPath);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, makeDataSheet(normalizedRows), SHEET_NAME);
-  XLSX.utils.book_append_sheet(workbook, makeReviewSheet(reviewRows), REVIEW_SHEET_NAME);
-  addWorkbookAutoFilters(workbook);
+  const { normalizedRows, reviewRows, changedCategoryCount } = buildNormalization(
+    inputPath,
+    enrichmentPath,
+  );
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  XLSX.writeFile(workbook, outputPath, { compression: true });
+  await writeWorkbook(outputPath, normalizedRows, reviewRows);
   fs.mkdirSync(path.dirname(reviewPath), { recursive: true });
-  fs.writeFileSync(reviewPath, XLSX.utils.sheet_to_csv(workbook.Sheets[REVIEW_SHEET_NAME]), 'utf8');
+  const reviewWorksheet = XLSX.utils.aoa_to_sheet(makeReviewMatrix(reviewRows));
+  fs.writeFileSync(reviewPath, XLSX.utils.sheet_to_csv(reviewWorksheet), 'utf8');
 
   return {
     ...summarize(inputPath, normalizedRows, reviewRows, changedCategoryCount),
@@ -385,24 +546,31 @@ function normalizeWorkbook({ inputPath, outputPath, reviewPath = DEFAULT_REVIEW_
 
 function printUsage() {
   process.stdout.write(`Usage:
-  node packages/api/scripts/normalize-steel-price-v4.cjs [--input <xlsx>] [--output <xlsx>] [--review <csv>] [--write]
+  node packages/api/scripts/normalize-steel-price-v4.cjs [--input <xlsx>] [--output <xlsx>] [--enrichment <json>] [--review <csv>] [--write]
 
-Default mode validates the reference v4.4 workbook read-only. Add --write with a separate --output path to create an independent workbook.
+Default mode validates docs/reference/0701.xlsx read-only. Add --write with a separate --output path to create the normalized v4.4 workbook.
 The input and output paths must differ.
 `);
 }
 
-if (require.main === module) {
+async function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
       printUsage();
     } else if (!options.write) {
       process.stdout.write(
-        `${JSON.stringify({ mode: 'dry-run', ...analyzeWorkbook(options.inputPath) }, null, 2)}\n`,
+        `${JSON.stringify(
+          {
+            mode: 'dry-run',
+            ...analyzeWorkbook(options.inputPath, options.enrichmentPath),
+          },
+          null,
+          2,
+        )}\n`,
       );
     } else {
-      process.stdout.write(`${JSON.stringify(normalizeWorkbook(options), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(await normalizeWorkbook(options), null, 2)}\n`);
     }
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -410,12 +578,18 @@ if (require.main === module) {
   }
 }
 
+if (require.main === module) {
+  void main();
+}
+
 module.exports = {
   DEFAULT_INPUT_PATH,
   DEFAULT_OUTPUT_PATH,
+  DEFAULT_ENRICHMENT_PATH,
   DEFAULT_REVIEW_PATH,
   analyzeWorkbook,
-  loadWorkbook,
+  loadEnrichment,
+  loadRawWorkbook,
   normalizeWorkbook,
   parseArgs,
 };
