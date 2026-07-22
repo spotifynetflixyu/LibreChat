@@ -21,3 +21,5 @@ with `npx supabase migration new <change_name>` instead of asking the user to
 create them manually. Keep Steel database setup on Supabase cloud Postgres
 through `.env` `STEEL_POSTGRES_URL` and cloud MongoDB through `MONGO_URI`; do
 not introduce Docker-dependent setup for Steel database work.
+
+When adding or changing code that mutates user documents, invalidate the auth user document cache for affected users. This includes single-user updates and bulk role/user mutations; otherwise OpenID JWT request burst caching can serve a stale `req.user` until its TTL expires.

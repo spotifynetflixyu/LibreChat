@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { Constants, EModelEndpoint } from 'librechat-data-provider';
 import type { TConversation, TMessage, TSubmission } from 'librechat-data-provider';
 import useChatFunctions from '../useChatFunctions';
 
@@ -13,6 +13,7 @@ const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockGetQueryData = jest.fn(() => ({}));
 const mockResetRecoil = jest.fn();
 let mockRecoilLoadables: Record<string, unknown[]> = {};
+const mockLoggerWarn = jest.fn();
 
 jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
@@ -21,6 +22,7 @@ jest.mock('react-router-dom', () => ({
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({
     getQueryData: mockGetQueryData,
+    getQueryState: jest.fn(() => undefined),
   }),
 }));
 
@@ -64,11 +66,12 @@ jest.mock('~/utils', () => ({
   logger: {
     log: jest.fn(),
     dir: jest.fn(),
-    warn: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
   },
   hasStreamStartFailed: jest.fn(() => false),
   createDualMessageContent: jest.fn(() => []),
   getRouteChatProjectId: jest.fn(() => null),
+  requestChatFocus: jest.fn(),
 }));
 
 const userMessage = (messageId: string, parentMessageId = '00000000-0000-0000-0000-000000000000') =>
@@ -90,6 +93,94 @@ const assistantMessage = (messageId: string, parentMessageId: string) =>
     sender: 'Assistant',
     text: messageId,
   }) as TMessage;
+
+const conversation = (conversationId: string) =>
+  ({
+    conversationId,
+    endpoint: EModelEndpoint.agents,
+    model: 'gpt-4o',
+    agent_id: 'agent-1',
+  }) as TConversation;
+
+function renderAsk(messages: TMessage[] | undefined, conversationId = 'conversation-1') {
+  const setMessages = jest.fn();
+  const setSubmission = jest.fn();
+  const getMessages = jest.fn(() => messages);
+  const hook = renderHook(() =>
+    useChatFunctions({
+      isSubmitting: false,
+      latestMessage: messages?.at(-1) ?? null,
+      conversation: conversation(conversationId),
+      getMessages,
+      setMessages,
+      setSubmission,
+    }),
+  );
+
+  return { ...hook, getMessages, setMessages, setSubmission };
+}
+
+describe('useChatFunctions ask', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetQueryData.mockReturnValue({});
+    mockRecoilLoadables = {};
+  });
+
+  it('refuses to send to an existing conversation before its history loads', () => {
+    const { result, getMessages, setMessages, setSubmission } = renderAsk(undefined);
+
+    let askResult: ReturnType<typeof result.current.ask>;
+    act(() => {
+      askResult = result.current.ask({ text: 'Hello', conversationId: 'conversation-1' });
+    });
+
+    expect(askResult!).toBe(false);
+    expect(getMessages).toHaveBeenCalledWith('conversation-1');
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(setSubmission).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      '[useChatFunctions] Refusing to send before existing conversation history loads',
+    );
+  });
+
+  it('allows an existing conversation whose loaded history is empty', () => {
+    const { result, setMessages, setSubmission } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Hello', conversationId: 'conversation-1' });
+    });
+
+    expect(setMessages).toHaveBeenCalled();
+    expect(setSubmission).toHaveBeenCalled();
+  });
+
+  it('allows a new conversation before its message cache exists', () => {
+    const newConversationId = Constants.NEW_CONVO as string;
+    const { result, setMessages, setSubmission } = renderAsk(undefined, newConversationId);
+
+    act(() => {
+      result.current.ask({ text: 'Hello', conversationId: newConversationId });
+    });
+
+    expect(setMessages).toHaveBeenCalled();
+    expect(setSubmission).toHaveBeenCalled();
+  });
+
+  it('allows explicit override messages before the cache exists', () => {
+    const { result, setMessages, setSubmission } = renderAsk(undefined);
+
+    act(() => {
+      result.current.ask(
+        { text: 'Hello', conversationId: 'conversation-1' },
+        { overrideMessages: [] },
+      );
+    });
+
+    expect(setMessages).toHaveBeenCalled();
+    expect(setSubmission).toHaveBeenCalled();
+  });
+});
 
 describe('useChatFunctions regenerate', () => {
   beforeEach(() => {
@@ -247,6 +338,45 @@ describe('useChatFunctions regenerate', () => {
     expect(submission.userMessage.text).toContain('Comment: 改成 12');
     expect(submission.userMessage.text).toContain('分別輸出每個 Markdown 的完整新表格');
     expect(mockResetRecoil).toHaveBeenCalledWith('pendingMarkdownTableComments');
+  });
+
+  it('uses an explicit queued comment snapshot without draining newer composer comments', () => {
+    const messages = [userMessage('user-1'), assistantMessage('assistant-1', 'user-1')];
+    const setSubmission = jest.fn();
+    mockRecoilLoadables.pendingMarkdownTableComments = [
+      {
+        id: 'newer-comment',
+        conversationId: 'conversation-1',
+        messageId: 'assistant-1',
+        messageTimestampLabel: '10:01',
+        markdownIndex: 0,
+        markdownLabel: 'Newer table comment',
+        tableFingerprint: '| A |',
+        rowIndex: 1,
+        columnIndex: 1,
+        columnHeader: 'A',
+        oldValue: 'old',
+        comment: 'newer composer comment',
+      },
+    ];
+    const { result } = renderHook(() =>
+      useChatFunctions({
+        isSubmitting: false,
+        latestMessage: messages[1],
+        conversation: conversation('conversation-1'),
+        getMessages: () => messages,
+        setMessages: jest.fn(),
+        setSubmission,
+      }),
+    );
+
+    act(() => {
+      result.current.ask({ text: 'queued text' }, { overrideMarkdownTableComments: [] });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.text).toBe('queued text');
+    expect(mockResetRecoil).not.toHaveBeenCalledWith('pendingMarkdownTableComments');
   });
 
   it('includes filename-bearing file metadata on a fresh submit', () => {

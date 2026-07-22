@@ -7,6 +7,7 @@ import type { ColumnDef } from '@tanstack/react-table';
 import type * as t from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
 import type { TranslationKeys } from '~/hooks';
+import type { MarkdownTableComment } from './markdown';
 import { MCPServerDefinition } from '~/hooks/MCP/useMCPServerManager';
 
 export function isEphemeralAgent(agentId: string | null | undefined): boolean {
@@ -375,6 +376,9 @@ export type TOptions = {
    * context even though the references still show on the user bubble.
    */
   overrideQuotes?: string[];
+  /** Markdown table comments captured with a queued submission. An explicit empty
+   *  array prevents that submission from draining newer composer comments. */
+  overrideMarkdownTableComments?: MarkdownTableComment[];
   /** Added conversation for multi-convo feature - sent to server as part of submission payload */
   addedConvo?: t.TConversation;
 };

@@ -59,10 +59,14 @@ const mockActiveRunAtom = { key: 'activeRun' };
 const mockAbortScrollAtom = { key: 'abortScroll' };
 const mockSubmissionAtom = { key: 'submission' };
 const mockShowStopButtonAtom = { key: 'showStopButton' };
+const mockRunEndAtom = { key: 'runEnd' };
+const mockPendingSteersAtom = { key: 'pendingSteers' };
+const mockQueuedMessagesAtom = { key: 'queuedMessages' };
 const mockSetActiveRun = jest.fn();
 const mockSetAbortScroll = jest.fn();
 const mockSetSubmission = jest.fn();
 const mockSetShowStopButton = jest.fn();
+const mockSetRunEnd = jest.fn();
 const mockUseSetRecoilStateMock = jest.fn((atom: unknown) => {
   if (atom === mockActiveRunAtom) {
     return mockSetActiveRun;
@@ -75,6 +79,9 @@ const mockUseSetRecoilStateMock = jest.fn((atom: unknown) => {
   }
   if (atom === mockShowStopButtonAtom) {
     return mockSetShowStopButton;
+  }
+  if (atom === mockRunEndAtom) {
+    return mockSetRunEnd;
   }
   return jest.fn();
 });
@@ -90,6 +97,9 @@ jest.mock('@tanstack/react-query', () => ({
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useSetRecoilState: mockUseSetRecoilState,
+  // The hook's steer-chip/queue callbacks need a RecoilRoot; these tests
+  // render bare, so return inert callbacks (chip state is not under test here).
+  useRecoilCallback: () => jest.fn(),
 }));
 
 jest.mock('~/store', () => ({
@@ -99,6 +109,9 @@ jest.mock('~/store', () => ({
     abortScrollFamily: jest.fn(() => mockAbortScrollAtom),
     submissionByIndex: jest.fn(() => mockSubmissionAtom),
     showStopButtonByIndex: jest.fn(() => mockShowStopButtonAtom),
+    runEndByIndex: jest.fn(() => mockRunEndAtom),
+    pendingSteersByConvoId: jest.fn(() => mockPendingSteersAtom),
+    queuedMessagesByConvoId: jest.fn(() => mockQueuedMessagesAtom),
   },
 }));
 
@@ -106,11 +119,20 @@ jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: () => ({ token: 'test-token', isAuthenticated: true }),
 }));
 
+const mockFetchStreamStatus = jest.fn();
+const mockConvertSteersToQueued = jest.fn();
+
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: { balance: { enabled: false } } }),
   useGetUserBalance: () => ({ refetch: jest.fn() }),
   queueTitleGeneration: jest.fn(),
   streamStatusQueryKey: (conversationId: string) => ['streamStatus', conversationId],
+  fetchStreamStatus: (conversationId: string) => mockFetchStreamStatus(conversationId),
+}));
+
+jest.mock('~/hooks/Chat/useSteerConvert', () => ({
+  __esModule: true,
+  default: () => mockConvertSteersToQueued,
 }));
 
 const mockErrorHandler = jest.fn();
@@ -140,6 +162,7 @@ jest.mock('~/hooks/SSE/useEventHandlers', () => {
       resetContentHandler: jest.fn(),
       syncStepMessage: jest.fn(),
       clearStepMaps: mockClearStepMaps,
+      flushPendingDeltas: jest.fn(),
       messageHandler: jest.fn(),
       setIsSubmitting: mockSetIsSubmitting,
       setShowStopButton: jest.fn(),
@@ -277,6 +300,10 @@ describe('useResumableSSE', () => {
     mockSetAbortScroll.mockClear();
     mockSetSubmission.mockClear();
     mockSetShowStopButton.mockClear();
+    mockSetRunEnd.mockClear();
+    mockConvertSteersToQueued.mockClear();
+    mockFetchStreamStatus.mockReset();
+    mockFetchStreamStatus.mockResolvedValue({ active: false });
     (request.post as jest.Mock).mockReset();
     (request.post as jest.Mock).mockResolvedValue({ streamId: 'stream-123' });
   });
@@ -408,10 +435,103 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it('reconciles conversations via refetch instead of removing them on a resume 404', async () => {
+    mockFindAll.mockReturnValue([{ queryKey: [QueryKeys.allConversations] }]);
+    // A deduped start returns status: 'resumed', so the client subscribes with resume=true.
+    (request.post as jest.Mock).mockResolvedValue({ streamId: 'stream-123', status: 'resumed' });
+    const submission = buildSubmission({
+      conversation: {},
+      userMessage: {
+        messageId: 'msg-1',
+        conversationId: null,
+        text: 'Hello',
+        isCreatedByUser: true,
+        sender: 'User',
+        parentMessageId: Constants.NO_PARENT,
+      },
+      initialResponse: {
+        messageId: 'msg-1_',
+        conversationId: null,
+        text: '',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+      },
+    });
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const sse = getLastSSE();
+    await act(async () => {
+      sse._emit('error', { responseCode: 404 });
+    });
+
+    // Reconcile against the server (refetch) rather than dropping a possibly-persisted
+    // conversation. The handler is a mutually-exclusive isResume ? invalidate : remove, so
+    // asserting the invalidate proves the immediate removal did not run.
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: [QueryKeys.allConversations],
+    });
+    unmount();
+  });
+
   it('closes the SSE connection on 404', async () => {
     const { sse, unmount } = await render404Scenario();
 
     expect(sse.close).toHaveBeenCalled();
+    unmount();
+  });
+
+  it('claims parked steers and writes a non-completed run end on 404', async () => {
+    const parked = [{ steerId: 'p1', text: 'parked words', createdAt: 1 }];
+    mockFetchStreamStatus.mockResolvedValue({ active: false, unrecoveredSteers: parked });
+
+    const { unmount } = await render404Scenario(CONV_ID);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockFetchStreamStatus).toHaveBeenCalledTimes(1);
+    expect(mockFetchStreamStatus).toHaveBeenCalledWith(CONV_ID);
+    expect(mockConvertSteersToQueued).toHaveBeenCalledWith(CONV_ID, parked);
+    // The true outcome is unknown — the run-end signal must release parked
+    // interrupt flags WITHOUT auto-sending queued messages.
+    expect(mockSetRunEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: CONV_ID, outcome: 'aborted' }),
+    );
+    expect(mockSetRunEnd).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'completed' }),
+    );
+    unmount();
+  });
+
+  it('does not convert anything when the 404 status claim returns no parked steers', async () => {
+    const { unmount } = await render404Scenario(CONV_ID);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
+    expect(mockSetRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+    unmount();
+  });
+
+  it('still completes 404 cleanup when the status claim fails', async () => {
+    mockFetchStreamStatus.mockRejectedValue(new Error('network down'));
+
+    const { unmount } = await render404Scenario(CONV_ID);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
+    expect(mockSetRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+    expect(mockSetIsSubmitting).toHaveBeenCalledWith(false);
     unmount();
   });
 

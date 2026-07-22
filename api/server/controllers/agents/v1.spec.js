@@ -38,6 +38,7 @@ jest.mock('sharp', () =>
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
+  mergeDeploymentSkillIds: jest.fn((ids) => ids),
   refreshS3Url: jest.fn(),
 }));
 
@@ -92,7 +93,7 @@ const {
   getResourcePermissionsMap,
 } = require('~/server/services/PermissionService');
 
-const { refreshS3Url } = require('@librechat/api');
+const { mergeDeploymentSkillIds, refreshS3Url } = require('@librechat/api');
 
 /**
  * @type {import('mongoose').Model<import('@librechat/data-schemas').IAgent>}
@@ -155,6 +156,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
     // Reset all mocks
     jest.clearAllMocks();
+    mergeDeploymentSkillIds.mockImplementation((ids) => ids);
 
     // Setup mock request and response objects
     mockReq = {
@@ -634,6 +636,27 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
       expect(response.owner_contact).toBeUndefined();
     });
+
+    test('should include conversation_starters in the basic VIEW response', async () => {
+      const starters = ['Summarize this page', 'What can you do?'];
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Starter Agent',
+        description: 'Exposes conversation starters',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        conversation_starters: starters,
+      });
+
+      mockReq.params = { id: agent.id };
+
+      await getAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(200);
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.conversation_starters).toEqual(starters);
+    });
   });
 
   describe('getAgentVersionsHandler', () => {
@@ -807,7 +830,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(updatedAgent.name).toBe('Admin Update');
     });
 
-    test('should prune admin-supplied file_ids against the agent author', async () => {
+    test('should allow an editor to add their own file but not another user file', async () => {
       const File = mongoose.models.File;
       const adminUserId = new mongoose.Types.ObjectId().toString();
       const authorFileId = `file_${uuidv4()}`;
@@ -846,7 +869,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       await updateAgentHandler(mockReq, mockRes);
 
       const agentInDb = await Agent.findOne({ id: existingAgentId }).lean();
-      expect(agentInDb.tool_resources.file_search.file_ids).toEqual([authorFileId]);
+      expect(agentInDb.tool_resources.file_search.file_ids).toEqual([adminFileId]);
     });
 
     test('should validate tool_resources in updates', async () => {
@@ -1153,6 +1176,31 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         const agentInDb = await Agent.findOne({ id: existingAgentId }).lean();
         expect(agentInDb.tool_resources.file_search.file_ids).toEqual([keeper]);
       });
+
+      test('preserves existing attached file_ids owned by another user', async () => {
+        const authorFile = `file_${uuidv4()}`;
+        const editorFile = `file_${uuidv4()}`;
+        const editorId = new mongoose.Types.ObjectId();
+        await createFileDoc(authorFile, existingAgentAuthorId);
+        await createFileDoc(editorFile, editorId);
+        await Agent.updateOne(
+          { id: existingAgentId },
+          { $set: { tool_resources: { file_search: { file_ids: [editorFile] } } } },
+        );
+
+        mockReq.user.id = existingAgentAuthorId.toString();
+        mockReq.params.id = existingAgentId;
+        mockReq.body = {
+          tool_resources: {
+            file_search: { file_ids: [authorFile, editorFile] },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        const agentInDb = await Agent.findOne({ id: existingAgentId }).lean();
+        expect(agentInDb.tool_resources.file_search.file_ids).toEqual([authorFile, editorFile]);
+      });
     });
   });
 
@@ -1202,11 +1250,12 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(agent.tool_resources.context.file_ids).toEqual([cloneAuthorFileId]);
     });
 
-    test('revertAgentVersionHandler should prune restored file_ids not owned by the agent author', async () => {
+    test('revertAgentVersionHandler should preserve restored attached file_ids with metadata', async () => {
       const agentAuthorId = new mongoose.Types.ObjectId();
       const otherUserId = new mongoose.Types.ObjectId();
       const ownedFileId = `file_${uuidv4()}`;
       const otherFileId = `file_${uuidv4()}`;
+      const orphanFileId = `file_${uuidv4()}`;
 
       await createFileDoc(ownedFileId, agentAuthorId);
       await createFileDoc(otherFileId, otherUserId);
@@ -1223,7 +1272,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
             provider: 'openai',
             model: 'gpt-4',
             tool_resources: {
-              file_search: { file_ids: [ownedFileId, otherFileId] },
+              file_search: { file_ids: [ownedFileId, otherFileId, orphanFileId] },
             },
           },
         ],
@@ -1237,7 +1286,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       expect(mockRes.json).toHaveBeenCalled();
       const agentInDb = await Agent.findOne({ id: agent.id }).lean();
-      expect(agentInDb.tool_resources.file_search.file_ids).toEqual([ownedFileId]);
+      expect(agentInDb.tool_resources.file_search.file_ids).toEqual([ownedFileId, otherFileId]);
     });
   });
 
@@ -1599,6 +1648,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           'author',
           'avatar',
           'category',
+          'conversation_starters',
           'description',
           'id',
           'is_promoted',
@@ -1800,6 +1850,32 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(response.data).toHaveLength(1);
       expect(response.data[0].skills).toBeUndefined();
       expect(response.data[0].skills_enabled).toBeUndefined();
+    });
+
+    test('should preserve deployment skill scope for VIEW list callers', async () => {
+      const deploymentSkillId = new mongoose.Types.ObjectId();
+      await Agent.findByIdAndUpdate(agentA1._id, {
+        skills_enabled: true,
+        skills: [deploymentSkillId.toString()],
+      });
+
+      mockReq.user.id = userB.toString();
+      mockReq.query.requiredPermission = String(PermissionBits.VIEW);
+      findAccessibleResources.mockImplementation(({ resourceType }) => {
+        if (resourceType === ResourceType.AGENT) {
+          return Promise.resolve([agentA1._id]);
+        }
+        return Promise.resolve([]);
+      });
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      mergeDeploymentSkillIds.mockImplementation((ids) => [...ids, deploymentSkillId]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.data).toHaveLength(1);
+      expect(response.data[0].skills_enabled).toBe(true);
+      expect(response.data[0].skills).toEqual([deploymentSkillId.toString()]);
     });
 
     test('should preserve enabled skill scope for VIEW list callers with an empty allowlist', async () => {

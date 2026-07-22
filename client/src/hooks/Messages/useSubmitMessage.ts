@@ -1,11 +1,13 @@
 import { useCallback } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { Constants, replaceSpecialVars } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import { useChatContext, useChatFormContext, useAddedChatContext } from '~/Providers';
-import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
+import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useLocalize from '~/hooks/useLocalize';
 import { mainTextareaId } from '~/common';
+import type { MarkdownTableComment } from '~/common';
 import store from '~/store';
 
 const emptyFiles = new Map();
@@ -23,7 +25,7 @@ export default function useSubmitMessage() {
     conversation,
     files = emptyFiles,
   } = useChatContext();
-  const latestMessage = useLatestMessage(index);
+  const getLatestMessage = useGetLatestMessage(index);
 
   const autoSendPrompts = useRecoilValue(store.autoSendPrompts);
   const setActivePrompt = useSetRecoilState(store.activePromptByIndex(index));
@@ -34,7 +36,13 @@ export default function useSubmitMessage() {
   const hasPendingMarkdownTableComments = pendingMarkdownTableComments.length > 0;
 
   const submitMessage = useCallback(
-    (data?: { text: string }) => {
+    (data?: {
+      text: string;
+      overrideFiles?: TMessage['files'];
+      overrideQuotes?: string[];
+      overrideManualSkills?: string[];
+      overrideMarkdownTableComments?: MarkdownTableComment[];
+    }) => {
       if (!data) {
         return console.warn('No data provided to submitMessage');
       }
@@ -46,6 +54,7 @@ export default function useSubmitMessage() {
       if (!text.trim() && !hasPendingMarkdownTableComments) {
         return false;
       }
+      const latestMessage = getLatestMessage();
       const rootMessages = getMessages();
       const isLatestInRootMessages = rootMessages?.some(
         (message) => message.messageId === latestMessage?.messageId,
@@ -60,6 +69,12 @@ export default function useSubmitMessage() {
         },
         {
           addedConvo: addedConvo ?? undefined,
+          // Queued during-run messages carry their own consumed attachments,
+          // quote chips, and manual skill picks (undefined = drain composer).
+          overrideFiles: data.overrideFiles,
+          overrideQuotes: data.overrideQuotes,
+          overrideManualSkills: data.overrideManualSkills,
+          overrideMarkdownTableComments: data.overrideMarkdownTableComments,
         },
       );
       if (submitted === false) {
@@ -73,10 +88,10 @@ export default function useSubmitMessage() {
       addedConvo,
       setMessages,
       getMessages,
-      latestMessage,
       files,
       localize,
       hasPendingMarkdownTableComments,
+      getLatestMessage,
     ],
   );
 

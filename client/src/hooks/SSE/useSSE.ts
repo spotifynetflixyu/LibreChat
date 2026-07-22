@@ -62,6 +62,8 @@ export default function useSSE(
     abortConversation,
     steelEventHandler,
     syncStepMessage,
+    cancelPendingDeltaFlush,
+    flushPendingDeltas,
   } = useEventHandlers({
     setMessages,
     getMessages,
@@ -119,6 +121,9 @@ export default function useSSE(
       const data = JSON.parse(e.data);
 
       if (data.final != null) {
+        /** A queued delta flush reading the older streaming copy must never
+         * land on top of the server-final write. */
+        cancelPendingDeltaFlush();
         clearAllDrafts(submission.conversation?.conversationId);
         try {
           finalHandler(data, submission as EventSubmission);
@@ -150,6 +155,9 @@ export default function useSSE(
       } else if (data.event === UsageEvents.ON_TOKEN_USAGE) {
         usageHandler(data.data, { ...submission, userMessage });
       } else if (data.event === ApprovalEvents.ON_PENDING_ACTION) {
+        /** The pause card must attach to the same message state the stream
+         * produced — apply any queued delta before reading the cache. */
+        flushPendingDeltas();
         const pendingAction = data.data as Agents.PendingAction;
         const messages = getMessages() ?? [];
         const index = findPendingActionMessageIndex(messages, pendingAction);
@@ -207,6 +215,9 @@ export default function useSSE(
     });
 
     sse.addEventListener('cancel', async () => {
+      /** FLUSH (not cancel): the abort below synthesizes the partial response
+       * from the cache, so the last queued tokens must land first. */
+      flushPendingDeltas();
       const streamKey = (submission as TSubmission | null)?.['initialResponse']?.messageId;
       if (completed.has(streamKey)) {
         setIsSubmitting(false);
@@ -280,6 +291,9 @@ export default function useSSE(
         setIsSubmitting(false);
       }
 
+      /** FLUSH (not cancel): the error card is built from the cache tail, so
+       * the last queued tokens must land before it is synthesized. */
+      flushPendingDeltas();
       errorHandler({ data, submission: { ...submission, userMessage } as EventSubmission });
     });
 
