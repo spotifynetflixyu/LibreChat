@@ -1,0 +1,13 @@
+{
+  "lastSuccessfulUpdate": "2026-07-30T07:07:14Z",
+  "scope": "initial LibreChat code wiki",
+  "pages": [
+    "quickstart.md",
+    "architecture/overview.md",
+    "workflows/chat-and-agent-execution.md",
+    "domain/product-and-data.md",
+    "operations/configuration-and-deployment.md",
+    "testing/verification.md",
+    "source-map.md"
+  ]
+}

@@ -173,6 +173,7 @@ Open source, actively developed, and built for anyone who values control over th
 **Other:**
   - **Website:** [librechat.ai](https://librechat.ai)
   - **Documentation:** [librechat.ai/docs](https://librechat.ai/docs)
+  - **Code Wiki:** [OpenWiki engineering guide](openwiki/quickstart.md)
   - **Blog:** [librechat.ai/blog](https://librechat.ai/blog)
 
 ---
