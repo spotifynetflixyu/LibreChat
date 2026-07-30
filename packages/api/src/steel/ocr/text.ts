@@ -41,3 +41,32 @@ export function getPaddleOcrResultContent(result: unknown): string {
   }
   return String(result ?? '');
 }
+
+export function getPaddleOcrResultError(result: unknown): string | undefined {
+  if (!isRecord(result)) {
+    if (typeof result !== 'string') {
+      return undefined;
+    }
+
+    const content = result.trim();
+    return /^error$/iu.test(content) || /^error calling tool(?:\b|$)/iu.test(content)
+      ? result
+      : undefined;
+  }
+
+  const topLevelStatus = result.status;
+  const nestedStatus = getNestedString(result, ['lc_kwargs', 'status']);
+  if (topLevelStatus === 'error' || nestedStatus === 'error') {
+    return getPaddleOcrResultContent(result);
+  }
+
+  const content = getPaddleOcrResultText(result);
+  if (content === undefined) {
+    return undefined;
+  }
+
+  const trimmedContent = content.trim();
+  return /^error$/iu.test(trimmedContent) || /^error calling tool(?:\b|$)/iu.test(trimmedContent)
+    ? content
+    : undefined;
+}

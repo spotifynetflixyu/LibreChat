@@ -62,6 +62,7 @@ const {
   mergeOcrPreprocessingStateMarkdown,
   runOcrPreprocessingBatchPipeline,
   getPaddleOcrResultContent,
+  getPaddleOcrResultError,
   resolveOcrPreprocessingChunkSizePages,
   buildPdfPageChunks,
   getPdfPageCount,
@@ -592,6 +593,7 @@ const steelPaddleOcrRetryableErrorPatterns = [
   'too many requests',
   'rate limit',
   'rate_limit',
+  'error calling tool',
   'overloaded',
   '429',
   '503',
@@ -1764,6 +1766,10 @@ function createSteelPaddleOcrChunkRunner({
               args,
             }),
           );
+          const resultError = getPaddleOcrResultError(result);
+          if (resultError) {
+            throw new Error(resultError);
+          }
           const rawOcrText = getPaddleOcrResultContent(result);
           const rawResultHash = hashPaddleOcrText(rawOcrText);
           await emitSteelPaddleOcrToolCompleted({

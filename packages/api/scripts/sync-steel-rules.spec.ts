@@ -20,6 +20,7 @@ type BuiltRule = {
   slug: string;
   priority: number;
   ruleSections: string[];
+  prompt: string;
   selectors: Record<string, unknown>;
   toolPolicy: Record<string, unknown>;
   outputPolicy: Record<string, unknown>;
@@ -273,6 +274,25 @@ describe('Steel rule sources', () => {
         },
       ],
     });
+
+    const ocrPrompt = builtRules[ocrIndex]?.prompt ?? '';
+    const mainOcrPrompt = builtRules[mainAgentIndex]?.prompt ?? '';
+    expect(ocrPrompt).toMatch(/所有格式[^。；]*逐筆註明 OCR 來源/u);
+    expect(ocrPrompt).toMatch(/欄位與位置[^。；]*模型自行安排/u);
+    expect(ocrPrompt).toMatch(/僅有 PaddleOCR[^；。]*`PaddleOCR`/u);
+    expect(ocrPrompt).toMatch(/AI OCR 另行補充[^；。]*`PaddleOCR\/ AI OCR`/u);
+    expect(ocrPrompt).toMatch(/PaddleOCR 失敗或不可用[^；。]*`AI OCR`/u);
+    expect(ocrPrompt).toMatch(/`PaddleOCR`[^。；]*優先於 `AI OCR`/u);
+    expect(ocrPrompt).toMatch(/AI OCR[^。\n]*不可蓋掉或省略 PaddleOCR 來源/u);
+    expect(ocrPrompt).not.toContain('PaddleOCR/AI OCR');
+    expect(mainOcrPrompt).toMatch(/不論輸出格式[^。；]*每筆 OCR 資料[^。；]*標示來源/u);
+    expect(mainOcrPrompt).toMatch(/欄位與位置[^。；]*模型決定/u);
+    expect(mainOcrPrompt).toMatch(/PaddleOCR 標 `PaddleOCR`/u);
+    expect(mainOcrPrompt).toMatch(/AI OCR 補充標 `PaddleOCR\/ AI OCR`/u);
+    expect(mainOcrPrompt).toMatch(/PaddleOCR 失敗／不可用才標 `AI OCR`/u);
+    expect(mainOcrPrompt).toMatch(/資料優先為 `PaddleOCR`\s*>\s*`AI OCR`/u);
+    expect(mainOcrPrompt).toMatch(/AI OCR 不得覆蓋或漏標 PaddleOCR/u);
+    expect(mainOcrPrompt).not.toContain('PaddleOCR/AI OCR');
   });
 
   it('keeps backend implementation contracts out of every reviewed AI prompt', () => {
