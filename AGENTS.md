@@ -9,6 +9,13 @@ Every final or wrap-up response must include a `Next Tasks` section with
 concrete options for the user to choose from. Keep the options short,
 actionable, and specific to the current work.
 
+## Text-Only Changes
+
+Do not create or modify tests for prose-only changes to documentation, prompts,
+or rule text. Verify these changes with the relevant parser or dry run, sync
+readback when applicable, and `git diff --check`. Add tests only when executable
+behavior changes or the user explicitly requests tests.
+
 ## Supabase Schema Rule
 
 Steel PostgreSQL schema changes must always update both files:

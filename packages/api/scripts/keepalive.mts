@@ -68,6 +68,13 @@ interface RunEnvironment {
   GITHUB_RUN_ATTEMPT?: string;
 }
 
+type KeepaliveStage = 'connect' | 'insert' | 'read' | 'delete' | 'count' | 'close' | 'unknown';
+
+interface KeepaliveFailure {
+  stage: KeepaliveStage;
+  error: Error;
+}
+
 export interface PostgresQueryable {
   query: (text: string, values?: unknown[]) => Promise<PostgresQueryResult>;
   end: () => Promise<void>;
@@ -76,30 +83,108 @@ export interface PostgresQueryable {
 export class KeepaliveTargetError extends Error {
   readonly targetName: string;
   readonly operationError: Error;
+  readonly operationStage?: KeepaliveStage;
   readonly cleanupError?: Error;
+  readonly cleanupFailures: readonly KeepaliveFailure[];
 
-  constructor(targetName: string, operationError: Error, cleanupError?: Error) {
+  constructor(
+    targetName: string,
+    operationFailure: KeepaliveFailure | undefined,
+    cleanupFailures: readonly KeepaliveFailure[],
+  ) {
+    const cleanupError =
+      cleanupFailures.length > 0
+        ? new AggregateError(
+            cleanupFailures.map((failure) => failure.error),
+            'Keepalive cleanup failed',
+          )
+        : undefined;
     super(
-      cleanupError
+      operationFailure && cleanupError
         ? `Database keepalive target ${targetName} failed and cleanup also failed`
-        : `Database keepalive target ${targetName} failed`,
-      { cause: operationError },
+        : operationFailure
+          ? `Database keepalive target ${targetName} failed`
+          : `Database keepalive target ${targetName} cleanup failed`,
+      { cause: operationFailure?.error ?? cleanupError },
     );
     this.name = 'KeepaliveTargetError';
     this.targetName = targetName;
-    this.operationError = operationError;
+    this.operationError = operationFailure?.error ?? cleanupError!;
+    this.operationStage = operationFailure?.stage;
     this.cleanupError = cleanupError;
+    this.cleanupFailures = cleanupFailures;
   }
 }
 
 export class KeepaliveRunError extends Error {
   readonly failures: readonly KeepaliveTargetError[];
+  readonly runId: string;
 
-  constructor(failures: readonly KeepaliveTargetError[]) {
+  constructor(failures: readonly KeepaliveTargetError[], runId: string) {
     super(`Database keepalive failed for ${failures.length} target(s)`);
     this.name = 'KeepaliveRunError';
     this.failures = failures;
+    this.runId = runId;
   }
+}
+
+const DATABASE_URL_PATTERN = /\b(?:mongodb(?:\+srv)?|postgres(?:ql)?):\/\/[^\s]+/gi;
+const ERROR_STACK_FRAME_LIMIT = 12;
+
+function appendErrorDetails(
+  lines: string[],
+  error: Error,
+  indent: string,
+  label: string,
+  seen: Set<Error>,
+): void {
+  if (seen.has(error)) {
+    lines.push(`${indent}${label}: [circular error]`);
+    return;
+  }
+  seen.add(error);
+
+  if (label === 'Error') {
+    lines.push(`${indent}Error type: ${error.name}`, `${indent}Error: ${error.message}`);
+  } else {
+    lines.push(`${indent}${label}: ${error.name}: ${error.message}`);
+  }
+
+  const stackFrames = error.stack
+    ?.split('\n')
+    .slice(1, ERROR_STACK_FRAME_LIMIT + 1)
+    .map((frame) => frame.trim())
+    .filter(Boolean);
+  if (stackFrames?.length) {
+    lines.push(`${indent}Stack:`, ...stackFrames.map((frame) => `${indent}  ${frame}`));
+  }
+
+  if (error.cause instanceof Error) {
+    appendErrorDetails(lines, error.cause, indent, 'Cause', seen);
+  }
+  if (error instanceof AggregateError) {
+    error.errors.forEach((nestedError, index) => {
+      if (nestedError instanceof Error) {
+        appendErrorDetails(lines, nestedError, indent, `Nested error ${index + 1}`, seen);
+      }
+    });
+  }
+}
+
+export function formatKeepaliveRunError(error: KeepaliveRunError): string {
+  const lines = [error.message, `Run ID: ${error.runId}`];
+  for (const failure of error.failures) {
+    lines.push(`Target: ${failure.targetName}`);
+    if (failure.operationStage) {
+      lines.push(`  Operation stage: ${failure.operationStage}`);
+      appendErrorDetails(lines, failure.operationError, '  ', 'Error', new Set());
+    }
+    for (const cleanupFailure of failure.cleanupFailures) {
+      lines.push(`  Cleanup stage: ${cleanupFailure.stage}`);
+      appendErrorDetails(lines, cleanupFailure.error, '  ', 'Error', new Set());
+    }
+  }
+  return lines.join('\n').replace(DATABASE_URL_PATTERN, '<redacted-database-url>');
 }
 
 function asError(value: Error | string | object): Error {
@@ -313,50 +398,67 @@ export async function runTarget(target: KeepaliveTarget, runId: string): Promise
   const expected = createKeepaliveRecords(runId);
   let store: KeepaliveStore | undefined;
   let inserted = false;
-  let operationError: Error | undefined;
-  let cleanupError: Error | undefined;
+  let operationStage: KeepaliveStage = 'connect';
+  let operationFailure: KeepaliveFailure | undefined;
+  const cleanupFailures: KeepaliveFailure[] = [];
 
   try {
     store = await target.createStore();
+    operationStage = 'insert';
     await store.insert(expected);
     inserted = true;
+    operationStage = 'read';
     verifyKeepaliveRecords(expected, await store.read(runId));
   } catch (error) {
-    operationError = asError(error as Error | string | object);
+    operationFailure = {
+      stage: operationStage,
+      error: asError(error as Error | string | object),
+    };
   } finally {
     if (store) {
-      const cleanupErrors: Error[] = [];
       try {
         const deleted = await store.delete(runId);
         if (inserted && deleted !== KEEPALIVE_RECORD_COUNT) {
-          cleanupErrors.push(
-            new Error(`Keepalive cleanup deleted ${deleted} instead of ${KEEPALIVE_RECORD_COUNT}`),
-          );
+          cleanupFailures.push({
+            stage: 'delete',
+            error: new Error(
+              `Keepalive cleanup deleted ${deleted} instead of ${KEEPALIVE_RECORD_COUNT}`,
+            ),
+          });
         }
       } catch (error) {
-        cleanupErrors.push(asError(error as Error | string | object));
+        cleanupFailures.push({
+          stage: 'delete',
+          error: asError(error as Error | string | object),
+        });
       }
       try {
         const remaining = await store.count(runId);
         if (remaining !== 0) {
-          cleanupErrors.push(new Error(`Keepalive cleanup left ${remaining} record(s)`));
+          cleanupFailures.push({
+            stage: 'count',
+            error: new Error(`Keepalive cleanup left ${remaining} record(s)`),
+          });
         }
       } catch (error) {
-        cleanupErrors.push(asError(error as Error | string | object));
+        cleanupFailures.push({
+          stage: 'count',
+          error: asError(error as Error | string | object),
+        });
       }
       try {
         await store.close();
       } catch (error) {
-        cleanupErrors.push(asError(error as Error | string | object));
-      }
-      if (cleanupErrors.length > 0) {
-        cleanupError = new AggregateError(cleanupErrors, 'Keepalive cleanup failed');
+        cleanupFailures.push({
+          stage: 'close',
+          error: asError(error as Error | string | object),
+        });
       }
     }
   }
 
-  if (operationError || cleanupError) {
-    throw new KeepaliveTargetError(target.name, operationError ?? cleanupError!, cleanupError);
+  if (operationFailure || cleanupFailures.length > 0) {
+    throw new KeepaliveTargetError(target.name, operationFailure, cleanupFailures);
   }
 }
 
@@ -381,13 +483,15 @@ export async function runTargets(
     return [
       new KeepaliveTargetError(
         targets[index]?.name ?? 'unknown',
-        asError(result.reason as Error | string | object),
+        { stage: 'unknown', error: asError(result.reason as Error | string | object) },
+        [],
       ),
     ];
   });
   if (failures.length > 0) {
-    logger.error?.(`Database keepalive failed for ${failures.length} target(s)`);
-    throw new KeepaliveRunError(failures);
+    const error = new KeepaliveRunError(failures, runId);
+    logger.error?.(formatKeepaliveRunError(error));
+    throw error;
   }
 }
 

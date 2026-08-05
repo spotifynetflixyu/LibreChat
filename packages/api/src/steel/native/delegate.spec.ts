@@ -11,6 +11,8 @@ import {
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
   normalizeDelegateOcrChunk,
+  parseDelegateOcrPageRangesFromTurn,
+  delegateOcrArgsSchema,
   resolveDelegateOcrFileKeys,
   type DelegateOcrFileRecord,
 } from './delegate';
@@ -40,6 +42,186 @@ const files: DelegateOcrFileRecord[] = [
 ];
 
 describe('delegate_ocr', () => {
+  it('parses and canonicalizes explicit page expressions from the current turn', () => {
+    expect(parseDelegateOcrPageRangesFromTurn('重新核對第 35 頁至第 37 頁、pages 40-41')).toEqual([
+      { pageStart: 35, pageEnd: 37 },
+      { pageStart: 40, pageEnd: 41 },
+    ]);
+  });
+
+  it('does not mistake a full-document page count for a selected page', () => {
+    expect(parseDelegateOcrPageRangesFromTurn('完整 OCR 106 頁 PDF')).toBeUndefined();
+  });
+
+  it('rejects non-positive or inverted page ranges at the public tool seam', () => {
+    expect(() =>
+      delegateOcrArgsSchema.parse({
+        fileKeys: ['file:pdf-1'],
+        pageRanges: [{ pageStart: 0, pageEnd: 1 }],
+      }),
+    ).toThrow();
+    expect(() =>
+      delegateOcrArgsSchema.parse({
+        fileKeys: ['file:pdf-1'],
+        pageRanges: [{ pageStart: 3, pageEnd: 2 }],
+      }),
+    ).toThrow('pageEnd must be greater than or equal to pageStart');
+  });
+
+  it('sends only the exact current turn and omits older provider history', async () => {
+    const invokeModel = jest.fn(async () => '已完成。');
+
+    await delegateOcr({
+      fileKeys: ['file:image-1'],
+      history: [new HumanMessage('舊問題'), new AIMessage('舊回答')],
+      currentUserTurn: '重新核對第 35 頁孔數',
+      modelOptions,
+      ocrRulesText: 'OCR rules',
+      userId: 'user-1',
+      findOwnedFiles: async () => [files[0]],
+      signFile: async () => 'https://fresh.example/drawing.png',
+      invokeModel,
+    });
+
+    const messages = invokeModel.mock.calls[0]?.[0]?.messages ?? [];
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toBeInstanceOf(SystemMessage);
+    expect(messages[1]).toBeInstanceOf(HumanMessage);
+    expect(messages[1]?.content).toBe('重新核對第 35 頁孔數');
+    expect(JSON.stringify(messages)).not.toContain('舊問題');
+    expect(JSON.stringify(messages)).not.toContain('舊回答');
+  });
+
+  it('uses the current-turn page range over conflicting tool ranges and batches exact artifacts', async () => {
+    const prepareBatches = jest.fn(async ({ pageRanges }) => {
+      expect(pageRanges).toEqual([{ pageStart: 35, pageEnd: 35 }]);
+      return [
+        {
+          files: [
+            {
+              ...files[1],
+              fileId: 'pdf-1#35-35',
+              storageKey: 'ocr/pages-000035-000035.pdf',
+              filepath: 'https://fresh.example/pages-000035-000035.pdf',
+              pageStart: 35,
+              pageEnd: 35,
+            },
+          ],
+          signFile: async (file: DelegateOcrFileRecord) => file.filepath ?? '',
+        },
+      ];
+    });
+    const invokeModel = jest.fn(async () => '孔數為 4。');
+
+    await delegateOcr({
+      fileKeys: ['file:pdf-1'],
+      pageRanges: [{ pageStart: 1, pageEnd: 50 }],
+      currentUserTurn: '重新核對第 35 頁孔數',
+      history: [new HumanMessage('舊問題')],
+      modelOptions,
+      ocrRulesText: 'OCR rules',
+      userId: 'user-1',
+      findOwnedFiles: async () => [files[1]],
+      signFile: async () => 'unexpected original sign',
+      prepareBatches,
+      invokeModel,
+    });
+
+    expect(invokeModel).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages)).toContain(
+      'pages-000035-000035.pdf',
+    );
+    expect(JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages)).toContain(
+      '原始頁碼 35-35',
+    );
+    expect(JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages)).not.toContain(
+      'pages-000001-000050.pdf',
+    );
+  });
+
+  it('runs 106 pages as three ordered sequential batches and fails fast with the original range', async () => {
+    const order: string[] = [];
+    const prepareBatches = async () =>
+      [
+        { pageStart: 1, pageEnd: 50 },
+        { pageStart: 51, pageEnd: 100 },
+        { pageStart: 101, pageEnd: 106 },
+      ].map((range) => ({
+        files: [
+          {
+            ...files[1],
+            fileId: `pdf-1#${range.pageStart}-${range.pageEnd}`,
+            filepath: `https://fresh.example/${range.pageStart}-${range.pageEnd}.pdf`,
+          },
+        ],
+        signFile: async (file: DelegateOcrFileRecord) => file.filepath ?? '',
+        range,
+      }));
+    const invokeModel = jest.fn(async ({ messages }) => {
+      const text = JSON.stringify(messages);
+      const range = text.match(/(1-50|51-100|101-106)/)?.[1] ?? '';
+      order.push(range);
+      if (range === '51-100') {
+        throw new Error('Vision failed');
+      }
+      return range;
+    });
+
+    await expect(
+      delegateOcr({
+        fileKeys: ['file:pdf-1'],
+        currentUserTurn: '重新核對整份 106 頁 PDF',
+        history: [],
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => [files[1]],
+        signFile: async () => 'unexpected original sign',
+        prepareBatches,
+        invokeModel,
+      }),
+    ).rejects.toThrow('51-100');
+    expect(order).toEqual(['1-50', '51-100']);
+    expect(invokeModel).toHaveBeenCalledTimes(2);
+  });
+
+  it('emits a separator between streamed batch responses', async () => {
+    const prepareBatches = async () =>
+      [1, 2].map((page) => ({
+        files: [
+          {
+            ...files[1],
+            fileId: `pdf-1#${page}-${page}`,
+            filepath: `https://fresh.example/${page}.pdf`,
+            pageStart: page,
+            pageEnd: page,
+          },
+        ],
+        range: { pageStart: page, pageEnd: page },
+        signFile: async (file: DelegateOcrFileRecord) => file.filepath ?? '',
+      }));
+    const deltas: string[] = [];
+    const invokeModel = jest.fn(async ({ onDelta }) => {
+      await onDelta?.('batch');
+      return 'batch';
+    });
+
+    await delegateOcr({
+      fileKeys: ['file:pdf-1'],
+      currentUserTurn: '重新核對圖面',
+      history: [],
+      modelOptions,
+      ocrRulesText: 'OCR rules',
+      userId: 'user-1',
+      findOwnedFiles: async () => [files[1]],
+      signFile: async () => 'unused',
+      prepareBatches,
+      invokeModel,
+      onDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(deltas).toEqual(['batch', '\n\n', 'batch']);
+  });
   it('normalizes streamed chunks without inserting delimiters', () => {
     expect(normalizeDelegateOcrChunk('a')).toBe('a');
     expect(
@@ -264,7 +446,7 @@ describe('delegate_ocr', () => {
     ).rejects.toThrow('delegate_ocr attachment file key is ambiguous: PL.pdf');
   });
 
-  it('keeps the provider history intact and sends freshly signed original sources once', async () => {
+  it('sends freshly signed original sources once with the latest user turn only', async () => {
     const history = [
       new SystemMessage('existing provider system context'),
       new HumanMessage('請重新確認開槽連續邊長'),
@@ -296,7 +478,10 @@ describe('delegate_ocr', () => {
 
     const invocation = invokeModel.mock.calls[0]?.[0];
     expect(invocation?.modelOptions).toEqual(modelOptions);
-    expect(invocation?.messages.slice(1, 4)).toEqual(history);
+    expect(invocation?.messages[1]).toBeInstanceOf(HumanMessage);
+    expect(invocation?.messages[1]?.content).toBe('請重新確認開槽連續邊長');
+    expect(JSON.stringify(invocation?.messages)).not.toContain('existing provider system context');
+    expect(JSON.stringify(invocation?.messages)).not.toContain('我會重新確認原始圖面。');
     expect(invocation?.messages[0]).toBeInstanceOf(SystemMessage);
     expect(invocation?.messages[0]?.content).toBe('OCR_RULE\nVISION_RULE\nOCR_MAIN_RULE');
 

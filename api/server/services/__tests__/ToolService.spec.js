@@ -884,6 +884,57 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
+    it('omits delegate_ocr from quote-only definitions and registry while retaining it for inspection turns', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const quoteReq = createMockReq(capabilities);
+      quoteReq.steelNativeContext = {
+        delegateOcrContext: {
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '第35頁報價' },
+            activeHistory: [{ role: 'user', content: '第35頁報價' }],
+          },
+        },
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const quoteResult = await loadAgentTools({
+        req: quoteReq,
+        res: {},
+        agent: { id: 'agent_quote', tools: [regularTool, 'delegate_ocr'] },
+        definitionsOnly: true,
+      });
+
+      expect(quoteResult.toolDefinitions.map(getToolDefinitionName)).not.toContain('delegate_ocr');
+      expect(quoteResult.toolRegistry.has('delegate_ocr')).toBe(false);
+
+      jest.clearAllMocks();
+      mockLoadToolDefinitions.mockResolvedValue({
+        toolDefinitions: [],
+        toolRegistry: new Map(),
+        hasDeferredTools: false,
+      });
+      const inspectionReq = createMockReq(capabilities);
+      inspectionReq.steelNativeContext = {
+        delegateOcrContext: {
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新核對第35頁孔數' },
+            activeHistory: [{ role: 'user', content: '重新核對第35頁孔數' }],
+          },
+        },
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const inspectionResult = await loadAgentTools({
+        req: inspectionReq,
+        res: {},
+        agent: { id: 'agent_inspection', tools: [regularTool, 'delegate_ocr'] },
+        definitionsOnly: true,
+      });
+
+      expect(inspectionResult.toolDefinitions.map(getToolDefinitionName)).toContain('delegate_ocr');
+      expect(inspectionResult.toolRegistry.has('delegate_ocr')).toBe(true);
+    });
+
     it('routes every current OCR-capable file through the preprocessing pipeline', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.body = { conversationId: 'convo-1' };
@@ -3584,7 +3635,7 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
-    it('loads delegate_ocr with owner-only lookup, fresh backend signing, and full provider history', async () => {
+    it('loads delegate_ocr with owner-only lookup, fresh range-artifact signing, and current turn only', async () => {
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const providerHistory = [new HumanMessage('請重新確認開槽連續邊長')];
       const req = createMockReq([AgentCapabilities.tools]);
@@ -3599,6 +3650,10 @@ describe('ToolService - Action Capability Gating', () => {
           },
           steelConversation: {
             requestId: 'response-1',
+            currentUserTurn: {
+              role: 'user',
+              content: '重新核對第 35 頁孔數',
+            },
             activeHistory: [
               {
                 role: 'user',
@@ -3629,12 +3684,35 @@ describe('ToolService - Action Capability Gating', () => {
         filepath: oldUrl,
       };
       const getDownloadURL = jest.fn().mockResolvedValue(freshUrl);
+      const getDownloadStream = jest.fn().mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield Buffer.from('%PDF-1.7');
+        },
+      });
       const stream = jest.fn(async function* () {
         yield { content: '連續邊長為 ' };
         yield { content: [{ type: 'text', text: '1,400mm。' }] };
       });
       mockGetFiles.mockResolvedValueOnce([fileRecord]);
-      mockGetStrategyFunctions.mockReturnValueOnce({ getDownloadURL });
+      mockGetStrategyFunctions.mockReturnValueOnce({ getDownloadURL, getDownloadStream });
+      mockGetPdfPageCount.mockResolvedValueOnce(35);
+      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([
+        {
+          sourcePdfKey: fileRecord.storageKey,
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 35,
+          pageEnd: 35,
+          chunkSizePages: 1,
+          source: 's3',
+          storageKey: fileRecord.storageKey,
+          filepath: freshUrl,
+          filename: fileRecord.filename,
+          bytes: 100,
+          contentType: 'application/pdf',
+          artifactOrigin: 'uploaded',
+        },
+      ]);
       mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
 
       const result = await loadToolsForExecution({
@@ -3661,15 +3739,421 @@ describe('ToolService - Action Capability Gating', () => {
         {},
       );
       expect(mockGetFiles.mock.calls[0][0]).not.toHaveProperty('tenantId');
-      expect(getDownloadURL).toHaveBeenCalledWith({ file: fileRecord });
+      expect(getDownloadURL).not.toHaveBeenCalledWith({ file: fileRecord });
       const nestedMessages = stream.mock.calls[0][0];
-      expect(nestedMessages.slice(1, 2)).toEqual(providerHistory);
+      expect(nestedMessages[1].content).toBe('重新核對第 35 頁孔數');
+      expect(JSON.stringify(nestedMessages)).not.toContain('請重新確認開槽連續邊長');
       expect(JSON.stringify(nestedMessages)).toContain(freshUrl);
       expect(JSON.stringify(nestedMessages)).not.toContain(oldUrl);
       expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
         req.steelNativeContext.delegateOcrContext.modelOptions,
       );
       expect(result.configurable.delegateOcrStreaming).toBe(true);
+    });
+
+    it('hard-stops quote-only delegation before any file, signer, rules, or model dependency', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('第35頁報價')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '第35頁報價' },
+            activeHistory: [{ role: 'user', content: '第35頁報價' }],
+          },
+        },
+      };
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      expect(result.loadedTools.find((entry) => entry.name === 'delegate_ocr')).toBeUndefined();
+      expect(result.configurable).not.toHaveProperty('delegateOcrStreaming');
+      expect(mockGetFiles).not.toHaveBeenCalled();
+      expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
+      expect(mockBuildDefaultSteelGlobalAgentContext).not.toHaveBeenCalled();
+      expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
+    });
+
+    it('allows mixed page inspection followed by quoting and scopes the current turn', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新核對第 35 頁孔數後報價' },
+            activeHistory: [{ role: 'user', content: '重新核對第 35 頁孔數後報價' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'drawing-1',
+          user: 'user_123',
+          filename: 'drawing.png',
+          type: 'image/png',
+          source: 's3',
+          storageKey: 'uploads/user_123/drawing-1__drawing.png',
+        },
+      ]);
+      mockGetStrategyFunctions.mockReturnValue({
+        getDownloadURL: jest.fn().mockResolvedValue('https://fresh.example/drawing.png'),
+      });
+      const stream = jest.fn(async function* () {
+        yield { content: '孔數為 4。' };
+      });
+      mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+      const output = await tool.invoke({ fileKeys: ['file:drawing-1'] });
+
+      expect(output.content).toBe('孔數為 4。');
+      expect(mockGetFiles).toHaveBeenCalledTimes(1);
+      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledTimes(1);
+      expect(stream).toHaveBeenCalledTimes(1);
+      expect(stream.mock.calls[0][0][1].content).toBe('重新核對第 35 頁孔數後報價');
+    });
+
+    it('rejects an out-of-bounds page range before creating any PDF artifact', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('重新核對第 35 頁孔數')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新核對第 35 頁孔數' },
+            activeHistory: [{ role: 'user', content: '重新核對第 35 頁孔數' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'drawing-1',
+          user: 'user_123',
+          filename: 'drawing.pdf',
+          type: 'application/pdf',
+          source: 's3',
+          storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+        },
+      ]);
+      mockGetStrategyFunctions.mockReturnValueOnce({
+        getDownloadStream: jest.fn().mockResolvedValue({
+          async *[Symbol.asyncIterator]() {
+            yield Buffer.from('%PDF-1.7');
+          },
+        }),
+      });
+      mockGetPdfPageCount.mockResolvedValueOnce(34);
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+
+      await expect(tool.invoke({ fileKeys: ['file:drawing-1'] })).rejects.toThrow(
+        'exceeds PDF page count 34',
+      );
+      expect(mockEnsurePdfChunkArtifacts).not.toHaveBeenCalled();
+      expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
+    });
+
+    it('physically splits an explicit page-1 range instead of sending the full PDF', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('重新核對第 1 頁孔數')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新核對第 1 頁孔數' },
+            activeHistory: [{ role: 'user', content: '重新核對第 1 頁孔數' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'drawing-1',
+          filename: 'drawing.pdf',
+          type: 'application/pdf',
+          source: 's3',
+          storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+        },
+      ]);
+      mockGetStrategyFunctions.mockReturnValueOnce({
+        getDownloadStream: jest.fn().mockResolvedValue({
+          async *[Symbol.asyncIterator]() {
+            yield Buffer.from('%PDF-1.7');
+          },
+        }),
+      });
+      mockGetPdfPageCount.mockResolvedValueOnce(3);
+      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([
+        {
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 1,
+          pageEnd: 1,
+          chunkSizePages: 1,
+          filepath: 'https://fresh.example/pages-1-1.pdf',
+          storageKey: 'ocr/pages-1-1.pdf',
+          filename: 'pages-1-1.pdf',
+          source: 's3',
+        },
+      ]);
+      const stream = jest.fn(async function* (messages) {
+        yield { content: JSON.stringify(messages.at(-1)?.content) };
+      });
+      mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+      await tool.invoke({ fileKeys: ['file:drawing-1'] });
+
+      expect(mockEnsurePdfChunkArtifacts).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(stream.mock.calls[0][0].at(-1)?.content)).toContain(
+        'pages-1-1.pdf',
+      );
+    });
+
+    it('runs a 106-page PDF through three ordered 50-page Vision batches', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('完整 OCR 106 頁 PDF')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '完整 OCR 106 頁 PDF' },
+            activeHistory: [{ role: 'user', content: '完整 OCR 106 頁 PDF' }],
+          },
+        },
+      };
+      const fileRecord = {
+        file_id: 'drawing-1',
+        user: 'user_123',
+        filename: 'drawing.pdf',
+        type: 'application/pdf',
+        source: 's3',
+        storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+      };
+      mockGetFiles.mockResolvedValueOnce([fileRecord]);
+      mockGetStrategyFunctions.mockReturnValueOnce({
+        getDownloadStream: jest.fn().mockResolvedValue({
+          async *[Symbol.asyncIterator]() {
+            yield Buffer.from('%PDF-1.7');
+          },
+        }),
+      });
+      mockGetPdfPageCount.mockResolvedValueOnce(106);
+      mockBuildPdfPageChunks.mockReturnValueOnce([
+        { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
+        { chunkIndex: 2, chunkCount: 3, pageStart: 51, pageEnd: 100, chunkSizePages: 50 },
+        { chunkIndex: 3, chunkCount: 3, pageStart: 101, pageEnd: 106, chunkSizePages: 50 },
+      ]);
+      mockEnsurePdfChunkArtifacts.mockImplementation(async ({ chunks }) =>
+        chunks.map(({ chunkIndex, chunkCount, pageStart, pageEnd, chunkSizePages }) => ({
+          chunkIndex,
+          chunkCount,
+          pageStart,
+          pageEnd,
+          chunkSizePages,
+          filepath: `https://fresh.example/pages-${pageStart}-${pageEnd}.pdf`,
+          storageKey: `ocr/pages-${pageStart}-${pageEnd}.pdf`,
+          filename: `pages-${pageStart}-${pageEnd}.pdf`,
+          source: 's3',
+        })),
+      );
+      const stream = jest.fn(async function* (messages) {
+        yield { content: JSON.stringify(messages.at(-1)?.content) };
+      });
+      mockCreateOpenAIOAuthModel.mockReturnValue({ stream });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+      const output = await tool.invoke({ fileKeys: ['file:drawing-1'] });
+
+      expect(stream).toHaveBeenCalledTimes(3);
+      expect(stream.mock.calls.map(([messages]) => JSON.stringify(messages.at(-1)?.content))).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('pages-1-50.pdf'),
+          expect.stringContaining('pages-51-100.pdf'),
+          expect.stringContaining('pages-101-106.pdf'),
+        ]),
+      );
+      expect(output.content).toContain('pages-101-106.pdf');
+    });
+
+    it('names the failing original range when PDF artifact preparation fails', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('重新核對整份圖面')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新核對整份圖面' },
+            activeHistory: [{ role: 'user', content: '重新核對整份圖面' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'drawing-1',
+          filename: 'drawing.pdf',
+          type: 'application/pdf',
+          source: 's3',
+          storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+        },
+      ]);
+      mockGetStrategyFunctions.mockReturnValueOnce({
+        getDownloadStream: jest.fn().mockResolvedValue({
+          async *[Symbol.asyncIterator]() {
+            yield Buffer.from('%PDF-1.7');
+          },
+        }),
+      });
+      mockGetPdfPageCount.mockResolvedValueOnce(106);
+      mockBuildPdfPageChunks.mockReturnValueOnce([
+        { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
+        { chunkIndex: 2, chunkCount: 3, pageStart: 51, pageEnd: 100, chunkSizePages: 50 },
+        { chunkIndex: 3, chunkCount: 3, pageStart: 101, pageEnd: 106, chunkSizePages: 50 },
+      ]);
+      mockEnsurePdfChunkArtifacts.mockImplementation(async ({ chunks }) => {
+        if (chunks[0]?.pageStart === 51) {
+          throw new Error('storage unavailable');
+        }
+        return chunks.map((chunk) => ({
+          ...chunk,
+          filepath: `https://fresh.example/pages-${chunk.pageStart}-${chunk.pageEnd}.pdf`,
+          storageKey: `ocr/pages-${chunk.pageStart}-${chunk.pageEnd}.pdf`,
+          filename: `pages-${chunk.pageStart}-${chunk.pageEnd}.pdf`,
+          source: 's3',
+        }));
+      });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+
+      await expect(tool.invoke({ fileKeys: ['file:drawing-1'] })).rejects.toThrow(
+        'failed preparing pages 51-100',
+      );
+      expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
+      expect(mockEnsurePdfChunkArtifacts).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a selected non-PDF source alongside the first PDF range batch', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          history: [new HumanMessage('重新核對第 35 頁孔數')],
+          modelOptions: { model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新核對第 35 頁孔數' },
+            activeHistory: [{ role: 'user', content: '重新核對第 35 頁孔數' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'drawing-1',
+          filename: 'drawing.pdf',
+          type: 'application/pdf',
+          source: 's3',
+          storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+        },
+        {
+          file_id: 'detail-1',
+          filename: 'detail.png',
+          type: 'image/png',
+          source: 's3',
+          storageKey: 'uploads/user_123/detail-1__detail.png',
+        },
+      ]);
+      mockGetStrategyFunctions.mockReturnValue({
+        getDownloadStream: jest.fn().mockResolvedValue({
+          async *[Symbol.asyncIterator]() {
+            yield Buffer.from('%PDF-1.7');
+          },
+        }),
+        getDownloadURL: jest.fn(({ file }) =>
+          Promise.resolve(`https://fresh.example/${file.filename}`),
+        ),
+      });
+      mockGetPdfPageCount.mockResolvedValueOnce(35);
+      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([
+        {
+          chunkIndex: 1,
+          chunkCount: 1,
+          pageStart: 35,
+          pageEnd: 35,
+          chunkSizePages: 1,
+          filepath: 'https://fresh.example/pages-35-35.pdf',
+          storageKey: 'ocr/pages-35-35.pdf',
+          filename: 'pages-35-35.pdf',
+          source: 's3',
+        },
+      ]);
+      const stream = jest.fn(async function* (messages) {
+        yield { content: JSON.stringify(messages.at(-1)?.content) };
+      });
+      mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+      await tool.invoke({ fileKeys: ['file:drawing-1', 'file:detail-1'] });
+
+      expect(stream).toHaveBeenCalledTimes(1);
+      const source = JSON.stringify(stream.mock.calls[0][0].at(-1)?.content);
+      expect(source).toContain('pages-35-35.pdf');
+      expect(source).toContain('detail.png');
     });
 
     it('lets delegate_ocr signing errors propagate to the generic tool error UI path', async () => {

@@ -461,6 +461,7 @@ export class RedisJobStore implements IJobStore {
       // its own discovery would otherwise inherit the prior run's tool names and force-load
       // deferred tools it never discovered on resume.
       'discoveredTools',
+      'delegateOcrQuoteOnlyTurn',
       // A replacement must start with an open steer channel — the closed flag
       // belongs to the finalized run this hash is being reused from.
       'steersClosed',
@@ -1794,6 +1795,8 @@ export class RedisJobStore implements IJobStore {
       isTemporary: data.isTemporary != null ? data.isTemporary === '1' : undefined,
       // Deferred tools discovered before a HITL pause; replayed into createRun on resume.
       discoveredTools: data.discoveredTools ? JSON.parse(data.discoveredTools) : undefined,
+      delegateOcrQuoteOnlyTurn:
+        data.delegateOcrQuoteOnlyTurn != null ? data.delegateOcrQuoteOnlyTurn === '1' : undefined,
       titleEvent: data.titleEvent || undefined,
       replayEvents: data.replayEvents || undefined,
       contextUsage: data.contextUsage || undefined,

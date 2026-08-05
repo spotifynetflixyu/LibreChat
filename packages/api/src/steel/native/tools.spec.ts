@@ -11,7 +11,7 @@ import {
 
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelNativeToolExecute } from './tools';
-import type { SteelToolResult } from '../tools/results';
+import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 
 function getNames(tools: readonly LCTool[] | undefined): string[] {
   return tools?.map((tool) => tool.name) ?? [];
@@ -38,6 +38,35 @@ function collectExclusiveBounds(value: JsonSchemaValue): JsonSchemaValue[] {
       ? [nested]
       : collectExclusiveBounds(nested),
   );
+}
+
+function findSchemaProperty(value: JsonSchemaValue, propertyName: string): JsonSchemaValue | undefined {
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const found = findSchemaProperty(nested, propertyName);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const properties = value.properties;
+  if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+    if (propertyName in properties) {
+      return properties[propertyName];
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const found = findSchemaProperty(nested, propertyName);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 describe('Steel native tool adapter', () => {
@@ -77,13 +106,21 @@ describe('Steel native tool adapter', () => {
   });
 
   it('emits provider-compatible schemas for every native Steel tool', () => {
-    const parameters = mergeSteelToolDefinitions().toolDefinitions.map(
+    const result = mergeSteelToolDefinitions();
+    const parameters = result.toolDefinitions.map(
       (definition) => definition.parameters as JsonSchemaValue,
     );
     const exclusiveBounds = parameters.flatMap(collectExclusiveBounds);
+    const pageStart = findSchemaProperty(
+      result.toolDefinitions.find(({ name }) => name === 'delegate_ocr')
+        ?.parameters as JsonSchemaValue,
+      'pageStart',
+    );
 
     expect(exclusiveBounds.every((bound) => typeof bound === 'number')).toBe(true);
     expect(JSON.stringify(parameters)).not.toContain('"const":');
+    expect(pageStart).toEqual(expect.objectContaining({ minimum: 1 }));
+    expect(pageStart).not.toHaveProperty('exclusiveMinimum');
   });
 
   it('namespaces Steel tools deterministically when an existing tool has the same name', () => {
@@ -105,7 +142,7 @@ describe('Steel native tool adapter', () => {
       'steel_search_customers',
     ]);
     expect(result.toolDefinitions?.find(({ name }) => name === 'delegate_ocr')?.description).toBe(
-      'Whenever the user mentions any drawing-related information, you MUST call this tool to inspect the original attached images or PDFs with Vision. Pass one or more relevant attachment keys as `file:<file_id>`.',
+      'Use this tool only when the user explicitly asks to inspect or verify drawing-related information in original attached images or PDFs. Do not call it during quoting when confirmed OCR or table data is already available. Pass one or more relevant attachment keys as `file:<file_id>`.',
     );
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
       'steel_search_customers',
@@ -161,6 +198,390 @@ describe('Steel native tool adapter', () => {
         toolName: 'search_customers',
       }),
     );
+  });
+
+  it('compacts successful price results for providers while preserving the full artifact', async () => {
+    const tierPrices = { A: 101, B: 102, C: 103, D: 104, E: 105, F: 106 };
+    const priceCandidate: SteelToolJsonObject = {
+      id: 27,
+      erpItemCode: 'DNB2001',
+      productName: 'H型鋼 200x100x5.5x8 L6000',
+      specKey: 'DNB2001 H200x100x5.5x8 L6000',
+      category: 'H型鋼',
+      subcategory: '一般',
+      processingMethod: '鋸床',
+      processingShape: '直線切割',
+      material: 'SS400',
+      unit: '支',
+      formulaCode: 'DA',
+      valueState: 'confirmed',
+      unitPriceBase: 100,
+      tierPrices,
+      tierRatios: { A: null, B: null, C: null, D: null, E: null, F: null },
+      unitWeightValue: 128.4,
+      unitWeightBasis: 'kg_per_piece_or_stock_length',
+      density: 7.85,
+      thicknessMinMm: 5.5,
+      thicknessMaxMm: 8,
+      widthMm: 100,
+      heightMm: 200,
+      lengthMm: 6000,
+      outerDiameterMm: null,
+      nominalInch: null,
+      webMm: 5.5,
+      flangeMm: 8,
+      lipMm: null,
+      sheetWidthMm: null,
+      sheetLengthMm: null,
+      specSortKey: '0200-0100',
+      costBasis: 'erp_price_list',
+      quoteEligible: true,
+      materialBillingMode: 'whole_stock',
+      cuttingFeePolicy: 'add_when_cut',
+      pricingOptions: [
+        {
+          source: 'tier_price',
+          quoteEligible: true,
+          quoteUnit: '支',
+          tierPrices,
+          defaultQuoteTier: 'B',
+          defaultQuoteUnitPrice: 102,
+          fallbackTiers: ['D', 'E'],
+          manualReviewRequired: true,
+          manualReviewNotes: ['fallback price requires human review'],
+        },
+      ],
+      skippedPricingOptions: [
+        {
+          source: 'price_ratio',
+          status: 'skipped',
+          reason: 'category rule pending',
+        },
+      ],
+    };
+    const fullResult: SteelToolResult = {
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: {
+        queryResults: [
+          {
+            queryId: 'q1',
+            query: { category: 'H型鋼', keyword: '200x100' },
+            status: 'ok',
+            candidates: [priceCandidate],
+            productNames: [],
+            totalAvailable: 1,
+            returnedCount: 1,
+            selectionRequired: false,
+            categoryCandidates: [
+              {
+                category: 'H型鋼',
+                material: 'SS400',
+                candidateCount: 1,
+                exampleErpItemCode: 'DNB2001',
+                exampleProductName: 'H型鋼 200x100x5.5x8 L6000',
+              },
+            ],
+            issues: ['human explanation'],
+          },
+          {
+            queryId: 'q2',
+            query: { category: '槽鐵' },
+            status: 'no_match',
+            candidates: [],
+            productNames: [],
+            totalAvailable: 0,
+            returnedCount: 0,
+            selectionRequired: false,
+            categoryCandidates: [],
+            issues: [],
+          },
+        ],
+        cuttingPrices: [
+          {
+            cuttingCategory: '工字鐵/H型鋼',
+            sourceCategories: ['H型鋼'],
+            queryIds: ['q1'],
+            candidateMatches: [
+              {
+                queryId: 'q1',
+                priceCandidateId: 27,
+                erpItemCode: 'DNB2001',
+                specKey: 'DNB2001 H200x100x5.5x8 L6000',
+                cuttingPriceIds: [91],
+              },
+            ],
+            manualReviewRequired: true,
+            manualReviewNotes: ['cutting price requires human review'],
+            prices: [
+              {
+                id: 91,
+                cuttingCategory: '工字鐵/H型鋼',
+                itemName: 'H型鋼切斷',
+                cutType: '鋸切',
+                specText: 'H200x100',
+                inchMin: null,
+                inchMax: null,
+                mmMin: null,
+                mmMax: null,
+                heightMm: 200,
+                widthMm: 100,
+                thicknessMmValues: [5.5, 8],
+                thicknessMmMin: 5.5,
+                thicknessMmMax: 8,
+                unit: '刀',
+                tierPrices: { A: 11, B: 12, C: 13, F: 16 },
+                notes: 'human cutting note',
+              },
+            ],
+          },
+        ],
+        processingPrice: {
+          maxQueries: 3,
+          queryResults: [
+            {
+              queryId: 'p1',
+              targetCategories: ['H型鋼'],
+              processingCategories: ['加工/切工'],
+              targetSpecs: [{ queryId: 'q1', category: 'H型鋼' }],
+              totalAvailable: 1,
+              returnedCount: 1,
+              selectionRequired: false,
+              productNames: [],
+              groups: [
+                {
+                  processingCategory: '加工/切工',
+                  totalAvailable: 1,
+                  items: [{ ...priceCandidate, matchedQueryIds: ['q1'] }],
+                },
+              ],
+              availableByCategory: [{ processingCategory: '加工/切工', totalAvailable: 1 }],
+              suggestedKeywords: ['human suggestion'],
+            },
+          ],
+        },
+        summary: {
+          queryCount: 2,
+          matchedQueryCount: 1,
+          noMatchQueryCount: 1,
+        },
+      },
+      sourceRefs: [],
+      durationMs: 41,
+      redactionVersion: 1,
+    };
+    const execute = jest.fn(
+      async (_input: Parameters<SteelNativeToolExecute>[0]): Promise<SteelToolResult> => fullResult,
+    );
+    const tool = createSteelNativeTool({
+      nativeToolName: 'search_price_candidates',
+      steelToolName: 'search_price_candidates',
+      execute,
+    });
+
+    const result = await tool.invoke({ queries: [] });
+    const content = JSON.parse(result.content) as {
+      ok: true;
+      toolName: 'search_price_candidates';
+      data: {
+        queryResults: SteelToolJsonObject[];
+        cuttingPrices: SteelToolJsonObject[];
+        processingPrice: { queryResults: SteelToolJsonObject[] };
+      };
+    };
+
+    expect(content).toEqual(
+      expect.objectContaining({ ok: true, toolName: 'search_price_candidates' }),
+    );
+    expect(Object.keys(content)).toEqual(['ok', 'toolName', 'data']);
+    expect(content.data.queryResults).toEqual([
+      expect.objectContaining({
+        queryId: 'q1',
+        status: 'ok',
+        totalAvailable: 1,
+        returnedCount: 1,
+        selectionRequired: false,
+        productNames: [],
+        categoryCandidates: [
+          {
+            category: 'H型鋼',
+            material: 'SS400',
+            candidateCount: 1,
+            exampleErpItemCode: 'DNB2001',
+            exampleProductName: 'H型鋼 200x100x5.5x8 L6000',
+          },
+        ],
+        candidates: [
+          expect.objectContaining({
+            erpItemCode: 'DNB2001',
+            productName: 'H型鋼 200x100x5.5x8 L6000',
+            category: 'H型鋼',
+            material: 'SS400',
+            unit: '支',
+            formulaCode: 'DA',
+            unitWeightValue: 128.4,
+            density: 7.85,
+            lengthMm: 6000,
+            quoteEligible: true,
+            pricingOptions: [
+              {
+                source: 'tier_price',
+                quoteEligible: true,
+                quoteUnit: '支',
+                tierPrices,
+                defaultQuoteTier: 'B',
+                defaultQuoteUnitPrice: 102,
+                fallbackTiers: ['D', 'E'],
+              },
+            ],
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        queryId: 'q2',
+        status: 'no_match',
+        totalAvailable: 0,
+        returnedCount: 0,
+        candidates: [],
+      }),
+    ]);
+    expect(content.data.cuttingPrices).toEqual([
+      {
+        cuttingCategory: '工字鐵/H型鋼',
+        sourceCategories: ['H型鋼'],
+        queryIds: ['q1'],
+        prices: [
+          {
+            cuttingCategory: '工字鐵/H型鋼',
+            itemName: 'H型鋼切斷',
+            cutType: '鋸切',
+            specText: 'H200x100',
+            heightMm: 200,
+            widthMm: 100,
+            thicknessMmValues: [5.5, 8],
+            thicknessMmMin: 5.5,
+            thicknessMmMax: 8,
+            unit: '刀',
+            tierPrices: { A: 11, B: 12, C: 13, F: 16 },
+          },
+        ],
+      },
+    ]);
+    expect(content.data.processingPrice.queryResults).toEqual([
+      expect.objectContaining({
+        queryId: 'p1',
+        totalAvailable: 1,
+        returnedCount: 1,
+        groups: [
+          expect.objectContaining({
+            processingCategory: '加工/切工',
+            items: [expect.objectContaining({ erpItemCode: 'DNB2001', matchedQueryIds: ['q1'] })],
+          }),
+        ],
+      }),
+    ]);
+    expect(result.content).not.toContain('manualReviewNotes');
+    expect(result.content).not.toContain('manualReviewRequired');
+    expect(result.content).not.toContain('specKey');
+    expect(result.content).not.toContain('unitWeightBasis');
+    expect(result.content).not.toContain('skippedPricingOptions');
+    expect(result.content).not.toContain('candidateMatches');
+    expect(result.content).not.toContain('human');
+    expect(result.content).not.toContain('sourceRefs');
+    expect(result.content).not.toContain('durationMs');
+    expect(result.content).not.toContain('redactionVersion');
+    expect(result.content.length).toBeLessThan(JSON.stringify(fullResult).length * 0.75);
+    expect(result.artifact?.result).toBe(fullResult);
+  });
+
+  it('compacts exact product-name price results', async () => {
+    const fullResult: SteelToolResult = {
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: {
+        productNames: ['方鐵 25mm'],
+        productNamePrices: [
+          {
+            id: 12,
+            erpItemCode: 'SQ25',
+            productName: '方鐵 25mm',
+            category: '方鐵',
+            material: '黑鐵',
+            unit: 'Kg',
+            density: 7.85,
+            widthMm: 25,
+            quoteEligible: true,
+            pricingOptions: [
+              {
+                quoteEligible: true,
+                quoteUnit: 'Kg',
+                tierPrices: { A: 30, B: 31 },
+                manualReviewNotes: ['omit this prose'],
+              },
+            ],
+          },
+        ],
+      },
+      sourceRefs: [],
+      durationMs: 10,
+      redactionVersion: 1,
+    };
+    const tool = createSteelNativeTool({
+      nativeToolName: 'search_price_candidates',
+      steelToolName: 'search_price_candidates',
+      execute: async () => fullResult,
+    });
+
+    const result = await tool.invoke({ productNames: ['方鐵 25mm'] });
+
+    expect(JSON.parse(result.content)).toEqual({
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: {
+        productNames: ['方鐵 25mm'],
+        productNamePrices: [
+          {
+            erpItemCode: 'SQ25',
+            productName: '方鐵 25mm',
+            category: '方鐵',
+            material: '黑鐵',
+            unit: 'Kg',
+            density: 7.85,
+            widthMm: 25,
+            quoteEligible: true,
+            pricingOptions: [
+              {
+                quoteEligible: true,
+                quoteUnit: 'Kg',
+                tierPrices: { A: 30, B: 31 },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(result.artifact?.result).toBe(fullResult);
+  });
+
+  it('leaves price lookup errors unchanged for the provider', async () => {
+    const fullResult: SteelToolResult = {
+      ok: false,
+      toolName: 'search_price_candidates',
+      errorCategory: 'invalid_arguments',
+      errorSummary: 'queries are required',
+      durationMs: 2,
+      redactionVersion: 1,
+    };
+    const tool = createSteelNativeTool({
+      nativeToolName: 'search_price_candidates',
+      steelToolName: 'search_price_candidates',
+      execute: async () => fullResult,
+    });
+
+    const result = await tool.invoke({});
+
+    expect(JSON.parse(result.content)).toEqual(fullResult);
+    expect(result.artifact?.result).toBe(fullResult);
   });
 
   it('resolves original and namespaced native tool names back to Steel provider tools', () => {
@@ -241,6 +662,11 @@ describe('Steel native tool adapter', () => {
       name: 'OCR preflight turns retain PaddleOCR while removing Steel tools',
       options: { ocrTurnActive: true, allowPaddleOcr: true },
       expected: ['paddleocr_vl---PaddleOCR', 'web_search'],
+    },
+    {
+      name: 'quote-only turns remove delegate OCR across native config collections',
+      options: { excludeDelegateOcr: true },
+      expected: ['search_customers', 'web_search'],
     },
   ])('$name across native config collections', ({ options, expected }) => {
     const paddleTool = { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: {} };

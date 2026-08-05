@@ -4,7 +4,7 @@ import { delegateOcrToolName, getDelegateOcrToolDefinition } from './delegate';
 
 import type { JsonSchemaType, LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelProviderToolName, SteelToolDefinition } from '../tools/registry';
-import type { SteelToolResult } from '../tools/results';
+import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
 
 export type NativeSteelToolNameMap = Map<SteelProviderToolName, string>;
 
@@ -30,6 +30,7 @@ export interface SteelNativeToolConfig {
 export interface SteelNativeToolVisibilityOptions {
   ocrTurnActive?: boolean;
   allowPaddleOcr?: boolean;
+  excludeDelegateOcr?: boolean;
 }
 
 export interface SteelNativeToolInvokeConfig {
@@ -117,8 +118,11 @@ function isPaddleOcrToolVisibleToMainAgent(toolName: string | undefined): boolea
 
 function isVisibleForSteelNativeTurn(
   toolName: string | undefined,
-  { ocrTurnActive, allowPaddleOcr }: Required<SteelNativeToolVisibilityOptions>,
+  { ocrTurnActive, allowPaddleOcr, excludeDelegateOcr }: Required<SteelNativeToolVisibilityOptions>,
 ): boolean {
+  if (excludeDelegateOcr && toolName === delegateOcrToolName) {
+    return false;
+  }
   if (ocrTurnActive && toolName === delegateOcrToolName) {
     return false;
   }
@@ -140,6 +144,7 @@ export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
   const visibility = {
     ocrTurnActive: options.ocrTurnActive === true,
     allowPaddleOcr: options.allowPaddleOcr === true,
+    excludeDelegateOcr: options.excludeDelegateOcr === true,
   };
   const next = { ...config } as T;
   if (config.tools) {
@@ -187,6 +192,199 @@ function getProviderToolCallId(config?: SteelNativeToolInvokeConfig): string | u
   return typeof config?.toolCall?.id === 'string' ? config.toolCall.id : undefined;
 }
 
+function getJsonObject(value: SteelToolJsonValue | undefined): SteelToolJsonObject | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+function pickJsonFields(
+  source: SteelToolJsonObject,
+  fields: readonly string[],
+): SteelToolJsonObject {
+  return fields.reduce<SteelToolJsonObject>((result, field) => {
+    const value = source[field];
+    if (value !== undefined && value !== null) {
+      result[field] = value;
+    }
+    return result;
+  }, {});
+}
+
+function compactJsonObjects(
+  value: SteelToolJsonValue | undefined,
+  compact: (source: SteelToolJsonObject) => SteelToolJsonObject,
+): SteelToolJsonObject[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
+        const source = getJsonObject(entry);
+        return source ? [compact(source)] : [];
+      })
+    : [];
+}
+
+const compactCandidateFields = [
+  'erpItemCode',
+  'productName',
+  'category',
+  'subcategory',
+  'processingMethod',
+  'processingShape',
+  'material',
+  'unit',
+  'formulaCode',
+  'unitWeightValue',
+  'density',
+  'thicknessMinMm',
+  'thicknessMaxMm',
+  'widthMm',
+  'heightMm',
+  'lengthMm',
+  'outerDiameterMm',
+  'nominalInch',
+  'webMm',
+  'flangeMm',
+  'lipMm',
+  'sheetWidthMm',
+  'sheetLengthMm',
+  'quoteEligible',
+  'matchedQueryIds',
+  'materialBillingMode',
+  'cuttingFeePolicy',
+] as const;
+
+function compactPricingOption(source: SteelToolJsonObject): SteelToolJsonObject {
+  return pickJsonFields(source, [
+    'source',
+    'quoteEligible',
+    'quoteUnit',
+    'tierPrices',
+    'defaultQuoteTier',
+    'defaultQuoteUnitPrice',
+    'fallbackTiers',
+  ]);
+}
+
+function compactCandidate(source: SteelToolJsonObject): SteelToolJsonObject {
+  const candidate = pickJsonFields(source, compactCandidateFields);
+  if (Array.isArray(source.pricingOptions)) {
+    candidate.pricingOptions = compactJsonObjects(source.pricingOptions, compactPricingOption);
+  }
+
+  return candidate;
+}
+
+function compactCandidates(value: SteelToolJsonValue | undefined): SteelToolJsonValue[] {
+  return compactJsonObjects(value, compactCandidate);
+}
+
+function compactCategoryCandidate(source: SteelToolJsonObject): SteelToolJsonObject {
+  return pickJsonFields(source, [
+    'category',
+    'material',
+    'candidateCount',
+    'exampleErpItemCode',
+    'exampleProductName',
+  ]);
+}
+
+function compactQueryResult(source: SteelToolJsonObject): SteelToolJsonObject {
+  const queryResult = pickJsonFields(source, [
+    'queryId',
+    'status',
+    'totalAvailable',
+    'returnedCount',
+    'selectionRequired',
+    'productNames',
+  ]);
+  queryResult.candidates = compactCandidates(source.candidates);
+  if (Array.isArray(source.categoryCandidates)) {
+    queryResult.categoryCandidates = compactJsonObjects(
+      source.categoryCandidates,
+      compactCategoryCandidate,
+    );
+  }
+  return queryResult;
+}
+
+function compactCuttingPrice(source: SteelToolJsonObject): SteelToolJsonObject {
+  return pickJsonFields(source, [
+    'cuttingCategory',
+    'itemName',
+    'cutType',
+    'specText',
+    'inchMin',
+    'inchMax',
+    'mmMin',
+    'mmMax',
+    'heightMm',
+    'widthMm',
+    'thicknessMmValues',
+    'thicknessMmMin',
+    'thicknessMmMax',
+    'unit',
+    'tierPrices',
+  ]);
+}
+
+function compactCuttingGroup(source: SteelToolJsonObject): SteelToolJsonObject {
+  const group = pickJsonFields(source, ['cuttingCategory', 'sourceCategories', 'queryIds']);
+  group.prices = compactJsonObjects(source.prices, compactCuttingPrice);
+  return group;
+}
+
+function compactProcessingGroup(source: SteelToolJsonObject): SteelToolJsonObject {
+  const group = pickJsonFields(source, ['processingCategory', 'totalAvailable']);
+  group.items = compactCandidates(source.items);
+  return group;
+}
+
+function compactProcessingQueryResult(source: SteelToolJsonObject): SteelToolJsonObject {
+  const queryResult = pickJsonFields(source, [
+    'queryId',
+    'totalAvailable',
+    'returnedCount',
+    'selectionRequired',
+    'productNames',
+  ]);
+  queryResult.groups = compactJsonObjects(source.groups, compactProcessingGroup);
+  return queryResult;
+}
+
+function compactPriceCandidateData(data: SteelToolJsonObject): SteelToolJsonObject {
+  if (data.productNamePrices !== undefined) {
+    return {
+      productNames: data.productNames ?? [],
+      productNamePrices: compactCandidates(data.productNamePrices),
+    };
+  }
+
+  const compactData: SteelToolJsonObject = {
+    queryResults: compactJsonObjects(data.queryResults, compactQueryResult),
+    cuttingPrices: compactJsonObjects(data.cuttingPrices, compactCuttingGroup),
+  };
+  const processingPrice = getJsonObject(data.processingPrice);
+  if (processingPrice) {
+    compactData.processingPrice = {
+      queryResults: compactJsonObjects(processingPrice.queryResults, compactProcessingQueryResult),
+    };
+  }
+  return compactData;
+}
+
+function getProviderVisibleResult(
+  result: SteelToolResult,
+  steelToolName: SteelProviderToolName,
+): SteelToolResult | { ok: true; toolName: SteelProviderToolName; data: SteelToolJsonObject } {
+  if (!result.ok || steelToolName !== 'search_price_candidates') {
+    return result;
+  }
+
+  return {
+    ok: true,
+    toolName: result.toolName,
+    data: compactPriceCandidateData(result.data),
+  };
+}
+
 export function createSteelNativeTool({
   execute,
   nativeToolName,
@@ -203,7 +401,7 @@ export function createSteelNativeTool({
       });
 
       return {
-        content: JSON.stringify(result),
+        content: JSON.stringify(getProviderVisibleResult(result, steelToolName)),
         artifact: {
           type: 'steel_tool_result',
           toolName: steelToolName,

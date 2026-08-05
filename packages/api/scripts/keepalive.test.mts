@@ -228,3 +228,50 @@ test('attempts every target and preserves operation and cleanup failures', async
       Boolean((error as { cleanupError?: Error }).cleanupError),
   );
 });
+
+test('logs actionable target and stage failures without exposing database URLs', async () => {
+  const errorLogs: string[] = [];
+  const operationCause = new Error('socket timed out');
+  const failingStore: KeepaliveStore = {
+    async insert() {
+      throw new Error(
+        'insert failed for postgresql://prod_app:super-secret@db.example.com:5432/postgres',
+        { cause: operationCause },
+      );
+    },
+    async read() {
+      return [];
+    },
+    async delete() {
+      throw new Error('delete failed for mongodb+srv://admin:mongo-secret@cluster.example.com/app');
+    },
+    async count() {
+      return 1;
+    },
+    async close() {
+      throw new Error('close failed');
+    },
+  };
+
+  await assert.rejects(
+    runTargets(
+      [{ name: 'supabase-prod', createStore: async () => failingStore }],
+      'github:123:2',
+      { error: (message) => errorLogs.push(message) },
+    ),
+    (error: Error) => error instanceof KeepaliveRunError,
+  );
+
+  const log = errorLogs.join('\n');
+  assert.match(log, /Database keepalive failed for 1 target\(s\)/);
+  assert.match(log, /Run ID: github:123:2/);
+  assert.match(log, /Target: supabase-prod/);
+  assert.match(log, /Operation stage: insert/);
+  assert.match(log, /Error: insert failed/);
+  assert.match(log, /Cause: Error: socket timed out/);
+  assert.match(log, /Cleanup stage: delete/);
+  assert.match(log, /Cleanup stage: count/);
+  assert.match(log, /Cleanup stage: close/);
+  assert.match(log, /<redacted-database-url>/);
+  assert.doesNotMatch(log, /super-secret|mongo-secret|db\.example\.com|cluster\.example\.com/);
+});

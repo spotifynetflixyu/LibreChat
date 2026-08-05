@@ -30,6 +30,8 @@ export interface GenerationJobMetadata {
    * without them the paused deferred tool would be missing from the schema-only toolMap.
    */
   discoveredTools?: string[];
+  /** Whether a paused turn was quote-only and must omit delegate_ocr on resume. */
+  delegateOcrQuoteOnlyTurn?: boolean;
   /** Set when the job is paused for human review (status === 'requires_action') */
   pendingAction?: Agents.PendingAction;
 }

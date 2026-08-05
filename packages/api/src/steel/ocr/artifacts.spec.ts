@@ -1,5 +1,9 @@
 import { buildPdfPageChunks } from './chunks';
-import { buildOcrPdfChunkArtifactStorageKey, ensurePdfChunkArtifacts } from './artifacts';
+import {
+  buildOcrPdfChunkArtifactStorageKey,
+  ensurePdfChunkArtifacts,
+  type OcrPdfChunkArtifactRecord,
+} from './artifacts';
 
 describe('OCR PDF chunk artifacts', () => {
   it('builds deterministic storage keys from source PDF key and page range', () => {
@@ -112,5 +116,52 @@ describe('OCR PDF chunk artifacts', () => {
     expect(recreated[0]).toEqual(
       expect.objectContaining({ artifactOrigin: 'uploaded', source: 'cloudfront' }),
     );
+  });
+
+  it('does not reuse a cached page-35 row for a page-36 request with the same chunk index', async () => {
+    const rows = new Map<string, OcrPdfChunkArtifactRecord>();
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [...rows.values()]),
+      upsert: jest.fn(async (artifact) => {
+        rows.set(`${artifact.chunkIndex}:${artifact.pageStart}:${artifact.pageEnd}`, artifact);
+      }),
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      saveBuffer: jest.fn(async () => ({ bytes: 10 })),
+      getDownloadUrl: jest.fn(async ({ storageKey }) => `https://cdn.example/${storageKey}`),
+    };
+    const createPdfChunk = jest.fn(async () => new Uint8Array([1, 2, 3]));
+    const baseInput = {
+      sourcePdfKey: 's3://bucket/original.pdf',
+      sourceFilename: 'quote.pdf',
+      repository,
+      storage,
+      createPdfChunk,
+    };
+
+    await ensurePdfChunkArtifacts({
+      ...baseInput,
+      chunks: [
+        { chunkIndex: 1, chunkCount: 1, pageStart: 35, pageEnd: 35, chunkSizePages: 1 },
+      ],
+    });
+    const page36 = await ensurePdfChunkArtifacts({
+      ...baseInput,
+      chunks: [
+        { chunkIndex: 1, chunkCount: 1, pageStart: 36, pageEnd: 36, chunkSizePages: 1 },
+      ],
+    });
+
+    expect(page36[0]).toEqual(
+      expect.objectContaining({
+        pageStart: 36,
+        pageEnd: 36,
+        storageKey: expect.stringContaining('pages-000036-000036.pdf'),
+      }),
+    );
+    expect(page36[0]?.storageKey).not.toContain('pages-000035-000035.pdf');
+    expect(repository.upsert).toHaveBeenCalledTimes(2);
   });
 });

@@ -74,7 +74,12 @@ import {
   type OpenAIReasoningEffort,
 } from '~/steel/ai/config';
 import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
-import { delegateOcrToolName } from '~/steel/native/delegate';
+import {
+  delegateOcrToolName,
+  isDelegateOcrQuoteOnlyTurn,
+  normalizeDelegateOcrChunk,
+} from '~/steel/native/delegate';
+import { prepareSteelNativeToolConfig } from '~/steel/native/tools';
 
 /** Expected shape of JSON tool search results */
 interface ToolSearchJsonResult {
@@ -83,6 +88,13 @@ interface ToolSearchJsonResult {
 }
 
 const openAIOAuthProvider = 'openai_oauth_responses';
+
+export function getLatestHumanMessageText(messages?: BaseMessage[]): string {
+  const latestHumanMessage = [...(messages ?? [])]
+    .reverse()
+    .find((message) => (message.getType?.() ?? message._getType?.()) === 'human');
+  return normalizeDelegateOcrChunk(latestHumanMessage?.content);
+}
 
 /**
  * Parses tool names from JSON-formatted tool_search output.
@@ -1167,6 +1179,7 @@ export async function createRun({
   signal,
   agents,
   messages,
+  delegateOcrQuoteOnlyTurn,
   discoveredToolNames,
   requestBody,
   user,
@@ -1206,6 +1219,8 @@ export async function createRun({
   centralTraceExportEnabled?: boolean;
   /** Message history for extracting previously discovered tools */
   messages?: BaseMessage[];
+  /** Explicit quote-only classification used by HITL resume when messages are rehydrated. */
+  delegateOcrQuoteOnlyTurn?: boolean;
   /**
    * Pre-discovered deferred-tool names to force-load directly, bypassing message
    * extraction. The HITL resume path rebuilds the graph with `messages: []` (state
@@ -1268,6 +1283,8 @@ export async function createRun({
    * where no agent uses deferred tool loading.
    */
   const hasAnyDeferredTools = agents.some((agent) => agent.hasDeferredTools === true);
+  const excludeDelegateOcr =
+    delegateOcrQuoteOnlyTurn ?? isDelegateOcrQuoteOnlyTurn(getLatestHumanMessageText(messages));
 
   const discoveredTools = new Set<string>();
   if (hasAnyDeferredTools) {
@@ -1443,6 +1460,14 @@ export async function createRun({
         ];
       }
     }
+
+    const visibleToolConfig = prepareSteelNativeToolConfig(
+      { tools, toolDefinitions, toolRegistry },
+      { excludeDelegateOcr },
+    );
+    tools = visibleToolConfig.tools as GenericTool[] | undefined;
+    toolDefinitions = visibleToolConfig.toolDefinitions ?? [];
+    toolRegistry = visibleToolConfig.toolRegistry;
 
     const effectiveMaxContextTokens = computeEffectiveMaxContextTokens(
       summarization.reserveRatio,

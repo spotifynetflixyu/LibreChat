@@ -614,6 +614,45 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
     });
 
+    it('propagates persisted delegate OCR quote-only state through resume', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({
+          metadata: {
+            delegateOcrQuoteOnlyTurn: true,
+            userMessage: { messageId: USER_MSG_ID, text: '重新核對第35頁孔數後報價' },
+          },
+        }),
+      );
+
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ delegateOcrQuoteOnlyTurn: true }),
+      );
+    });
+
+    it('classifies legacy paused jobs from persisted user message text when flag is absent', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({
+          metadata: {
+            userMessage: { messageId: USER_MSG_ID, text: '第35頁報價' },
+          },
+        }),
+      );
+
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ delegateOcrQuoteOnlyTurn: true }),
+      );
+    });
+
     it('restores the paused user message files before reconstruction (execute-code files)', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
       // The resume body carries no files; the controller must source them from the

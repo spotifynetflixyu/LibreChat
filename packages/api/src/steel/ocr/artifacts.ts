@@ -127,11 +127,18 @@ export async function ensurePdfChunkArtifacts(
     pipelineVersion,
     chunkSizePages,
   });
-  const existingByChunkIndex = new Map(existingRows.map((row) => [row.chunkIndex, row]));
+  const existingByIdentity = new Map(
+    existingRows.map((row) => [
+      `${row.chunkIndex}:${row.pageStart}:${row.pageEnd}`,
+      row,
+    ]),
+  );
   const artifacts: EnsuredOcrPdfChunkArtifact[] = [];
 
   for (const chunk of input.chunks) {
-    const existing = existingByChunkIndex.get(chunk.chunkIndex);
+    const existing = existingByIdentity.get(
+      `${chunk.chunkIndex}:${chunk.pageStart}:${chunk.pageEnd}`,
+    );
     if (existing) {
       const existingObjectIsPresent = await input.storage.exists({
         storageKey: existing.artifact.storageKey,

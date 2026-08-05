@@ -17,6 +17,7 @@ const {
   decrementPendingRequest,
   checkAndIncrementPendingRequest,
   toPendingSteer,
+  isDelegateOcrQuoteOnlyTurn,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -658,6 +659,12 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       GenerationJobManager.setContentParts(streamId, client.contentParts);
     }
 
+    const persistedQuoteOnly = job.metadata?.delegateOcrQuoteOnlyTurn;
+    const delegateOcrQuoteOnlyTurn =
+      typeof persistedQuoteOnly === 'boolean'
+        ? persistedQuoteOnly
+        : isDelegateOcrQuoteOnlyTurn(job.metadata?.userMessage?.text);
+
     await client.resumeCompletion({
       resumeValue: mapped.resumeValue,
       seedContent,
@@ -668,6 +675,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       // graph passes `messages: []`, so without these an approved deferred tool would be
       // absent from the schema-only toolMap and resume would fail with "unknown tool".
       discoveredToolNames: job.metadata?.discoveredTools,
+      delegateOcrQuoteOnlyTurn,
     });
 
     // The model may pause AGAIN (another tool, or a follow-up question). The pending

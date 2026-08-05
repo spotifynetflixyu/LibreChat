@@ -382,7 +382,7 @@ function createDelegateOcrStreamHandler() {
  * @param {UsageCostDeps} [options.usageCost] - Pricing context for authoritative per-event cost.
  * @param {{ latest: TContextUsageEvent | null, count: number }} [options.contextUsageSink] - Mutable
  *   holder for the latest visible context snapshot + a count of visible snapshots (model calls),
- *   used to persist the breakdown only when the final call emitted usage.
+ *   used to persist the breakdown for completed and non-aborted failed calls.
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
  * @returns {Record<string, t.EventHandler>} The default handlers.

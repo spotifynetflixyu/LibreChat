@@ -544,6 +544,7 @@ class GenerationJobManagerClass {
         // Surface deferred tools discovered before the pause so the resume route can
         // replay them into createRun (the rebuilt graph passes `messages: []`).
         discoveredTools: jobData.discoveredTools,
+        delegateOcrQuoteOnlyTurn: jobData.delegateOcrQuoteOnlyTurn,
         // Surface the pending review so status/resume routes built on the
         // facade can render the prompt for a `requires_action` job.
         pendingAction: jobData.pendingAction,
@@ -1647,6 +1648,9 @@ class GenerationJobManagerClass {
     }
     if (metadata.discoveredTools) {
       updates.discoveredTools = metadata.discoveredTools;
+    }
+    if (metadata.delegateOcrQuoteOnlyTurn !== undefined) {
+      updates.delegateOcrQuoteOnlyTurn = metadata.delegateOcrQuoteOnlyTurn;
     }
     await this.jobStore.updateJob(streamId, updates);
   }

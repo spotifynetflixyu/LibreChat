@@ -51,6 +51,9 @@ export interface SerializableJobData {
    */
   discoveredTools?: string[];
 
+  /** Whether paused turn is quote-only and must omit delegate_ocr on resume. */
+  delegateOcrQuoteOnlyTurn?: boolean;
+
   /** Whether the user-message created event has been emitted */
   createdEventEmitted?: boolean;
 

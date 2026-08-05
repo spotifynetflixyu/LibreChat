@@ -64,6 +64,13 @@ personal secrets.
 
 ## Code Style
 
+### Text-Only Changes
+
+Do not create or modify tests for prose-only changes to documentation, prompts,
+or rule text. Verify these changes with the relevant parser or dry run, sync
+readback when applicable, and `git diff --check`. Add tests only when executable
+behavior changes or the user explicitly requests tests.
+
 ### Naming and File Organization
 
 - **Single-word file names** whenever possible (e.g., `permissions.ts`, `capabilities.ts`, `service.ts`).

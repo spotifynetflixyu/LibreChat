@@ -42,6 +42,7 @@ const {
   createDelegateOcrTool,
   createDelegateOcrRequestExecute,
   delegateOcrToolName,
+  isDelegateOcrQuoteOnlyTurn,
   normalizeDelegateOcrChunk,
   createSteelPostgresPool,
   createSteelToolRunState,
@@ -679,16 +680,17 @@ function addSteelPaddleOcrMcpTool(selectedTools, req, requestAttachments) {
   return [...selectedTools, serverToken];
 }
 
-function mergeSteelNativeToolDefinitions(result) {
+function mergeSteelNativeToolDefinitions(result, visibilityOptions = {}) {
   const merged = mergeSteelToolDefinitions({
     toolDefinitions: result.toolDefinitions ?? [],
     toolRegistry: result.toolRegistry,
   });
+  const visible = prepareSteelNativeToolConfig(merged, visibilityOptions);
 
   return {
     ...result,
-    toolDefinitions: merged.toolDefinitions,
-    toolRegistry: merged.toolRegistry,
+    toolDefinitions: visible.toolDefinitions,
+    toolRegistry: visible.toolRegistry,
   };
 }
 
@@ -788,30 +790,183 @@ function collectDelegateOcrAvailableFiles(req, delegateContext) {
   return [...filesById.values()];
 }
 
+function getDelegateOcrCurrentUserTurn(delegateContext) {
+  const currentTurn = delegateContext?.steelConversation?.currentUserTurn;
+  const currentTurnText = getMessageContentText(currentTurn);
+  if (currentTurnText.trim() !== '') {
+    return currentTurnText;
+  }
+  const activeHistory = delegateContext?.steelConversation?.activeHistory;
+  if (Array.isArray(activeHistory)) {
+    const latestUser = [...activeHistory]
+      .reverse()
+      .find((message) => message?.role === 'user');
+    const latestUserText = getMessageContentText(latestUser);
+    if (latestUserText.trim() !== '') {
+      return latestUserText;
+    }
+  }
+  return '';
+}
+
 function createDelegateOcrExecute({ req, signal }) {
   return async (input) => {
     const delegateContext = req?.steelNativeContext?.delegateOcrContext;
-    if (!delegateContext?.history || !delegateContext?.modelOptions) {
+    if (!delegateContext?.modelOptions) {
       throw new Error('delegate_ocr request context is unavailable');
     }
 
+    const steelConversation = delegateContext.steelConversation;
+    const currentUserTurn = getDelegateOcrCurrentUserTurn(delegateContext);
+    if (!currentUserTurn) {
+      throw new Error('delegate_ocr current user turn is unavailable');
+    }
+    if (isDelegateOcrQuoteOnlyTurn(currentUserTurn)) {
+      throw new Error(
+        'delegate_ocr is not used for quote-only requests when OCR or table data is already available',
+      );
+    }
+
+    const signStoredFile = async (file) => {
+      const source = file.source ?? req.config?.fileStrategy ?? FileSources.local;
+      const { getDownloadURL } = getStrategyFunctions(source);
+      if (typeof getDownloadURL !== 'function') {
+        throw new Error(`delegate_ocr file source "${source}" cannot create a signed URL`);
+      }
+      return getDownloadURL({ file });
+    };
+
+    const prepareBatches = async ({ files, storedFiles, pageRanges }) => {
+      const storedById = new Map(
+        storedFiles
+          .map((record) => [getSteelFileId(record), record])
+          .filter(([fileId]) => fileId),
+      );
+      const pdfFiles = files.filter((file) => isPdfSteelFile(file));
+      const nonPdfFiles = files.filter((file) => !isPdfSteelFile(file));
+      if (pdfFiles.length === 0) {
+        return [
+          {
+            files,
+            signFile: async (file) => {
+              const storedFile = storedById.get(file.fileId);
+              if (!storedFile) {
+                throw new Error(`delegate_ocr file record disappeared: file:${file.fileId}`);
+              }
+              return signStoredFile(storedFile);
+            },
+          },
+        ];
+      }
+
+      const batches = [];
+      for (const file of pdfFiles) {
+        const storedFile = storedById.get(file.fileId);
+        if (!storedFile) {
+          throw new Error(`delegate_ocr file record disappeared: file:${file.fileId}`);
+        }
+        const pdfBytes = await readSteelStoredFileBytes({ req, fileRecord: storedFile });
+        const pageCount = await getPdfPageCount({ pdfBytes });
+        const configuredChunkSizePages = resolveOcrPreprocessingChunkSizePages();
+        const chunks = pageRanges?.length
+          ? pageRanges.map((range, index) => ({
+              chunkIndex: index + 1,
+              chunkCount: pageRanges.length,
+              pageStart: range.pageStart,
+              pageEnd: range.pageEnd,
+              chunkSizePages: configuredChunkSizePages,
+            }))
+          : buildPdfPageChunks({
+              pageCount,
+              chunkSizePages: configuredChunkSizePages,
+            });
+        const effectiveRanges = chunks.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }));
+        for (const range of effectiveRanges) {
+          if (range.pageEnd > pageCount) {
+            throw new Error(
+              `delegate_ocr page range ${range.pageStart}-${range.pageEnd} exceeds PDF page count ${pageCount}`,
+            );
+          }
+        }
+        const preprocessingFile = toSteelOcrPreprocessingFile(file, storedFile);
+        if (!preprocessingFile) {
+          throw new Error(`delegate_ocr PDF source is unavailable for file:${file.fileId}`);
+        }
+        const artifactStore = createSteelOcrPdfChunkArtifactStore({
+          file: preprocessingFile,
+          fileRecord: storedFile,
+          pdfBytes,
+          forceSplit: pageRanges?.length > 0,
+        });
+        const artifacts = [];
+        for (const chunk of chunks) {
+          try {
+            const ensured = await artifactStore.ensurePdfChunkArtifacts({
+              sourcePdfKey: preprocessingFile.sourcePdfKey,
+              chunks: [chunk],
+            });
+            artifacts.push(...ensured);
+          } catch (error) {
+            throw new Error(
+              `delegate_ocr failed preparing pages ${chunk.pageStart}-${chunk.pageEnd}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              { cause: error },
+            );
+          }
+        }
+        for (let index = 0; index < artifacts.length; index += 1) {
+          const artifact = artifacts[index];
+          const range = effectiveRanges[index];
+          const artifactFile = {
+            ...file,
+            fileId: `${file.fileId}#${range.pageStart}-${range.pageEnd}`,
+            filename: artifact.filename,
+            filepath: artifact.filepath,
+            storageKey: artifact.storageKey,
+            mediaType: 'application/pdf',
+            pageStart: range.pageStart,
+            pageEnd: range.pageEnd,
+          };
+          const batchFiles =
+            batches.length === 0
+              ? [artifactFile, ...nonPdfFiles]
+              : [artifactFile];
+          batches.push({
+            files: batchFiles,
+            range,
+            signFile: async (batchFile) => {
+              if (batchFile.pageStart !== undefined) {
+                if (!batchFile.filepath) {
+                  throw new Error(
+                    `delegate_ocr range artifact URL is unavailable for pages ${batchFile.pageStart}-${batchFile.pageEnd}`,
+                  );
+                }
+                return batchFile.filepath;
+              }
+              const nonPdfRecord = storedById.get(batchFile.fileId);
+              if (!nonPdfRecord) {
+                throw new Error(`delegate_ocr file record disappeared: file:${batchFile.fileId}`);
+              }
+              return signStoredFile(nonPdfRecord);
+            },
+          });
+        }
+      }
+      return batches;
+    };
+
     const execute = createDelegateOcrRequestExecute({
-      history: delegateContext.history,
+      currentUserTurn,
       modelOptions: delegateContext.modelOptions,
       userId: req.user?.id,
       availableFiles: collectDelegateOcrAvailableFiles(req, delegateContext),
       getOwnedFileRecords: async (filter) => (await db.getFiles(filter, {}, {})) ?? [],
-      signStoredFile: async (file) => {
-        const source = file.source ?? req.config?.fileStrategy ?? FileSources.local;
-        const { getDownloadURL } = getStrategyFunctions(source);
-        if (typeof getDownloadURL !== 'function') {
-          throw new Error(`delegate_ocr file source "${source}" cannot create a signed URL`);
-        }
-        return getDownloadURL({ file });
-      },
+      signStoredFile,
+      prepareBatches,
       loadOcrRules: async () => {
         const context = await buildDefaultSteelGlobalAgentContext({
-          conversation: delegateContext.steelConversation,
+          conversation: steelConversation,
           renderProfile: 'agent_client',
           mode: 'ocr',
         });
@@ -1122,7 +1277,7 @@ async function createOriginalPdfChunkArtifact({ file, fileRecord, storage, chunk
   };
 }
 
-function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes }) {
+function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, forceSplit = false }) {
   const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
   const storage = createSteelOcrPdfChunkStorage({ fileRecord });
   let createPdfChunkPromise;
@@ -1133,7 +1288,7 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes }) {
 
   return {
     async ensurePdfChunkArtifacts({ sourcePdfKey, chunks }) {
-      if (isSingleOriginalPdfChunk(chunks)) {
+      if (!forceSplit && isSingleOriginalPdfChunk(chunks)) {
         const originalArtifact = await createOriginalPdfChunkArtifact({
           file,
           fileRecord,
@@ -2295,6 +2450,10 @@ async function loadToolDefinitionsWrapper({
   requestAttachments,
 }) {
   const appConfig = req.config;
+  const delegateOcrContext = req?.steelNativeContext?.delegateOcrContext;
+  const excludeDelegateOcr = isDelegateOcrQuoteOnlyTurn(
+    getDelegateOcrCurrentUserTurn(delegateOcrContext),
+  );
   const enabledCapabilities = await resolveAgentCapabilities(req, appConfig, agent.id);
   const selectedTools = addSteelPaddleOcrMcpTool(
     Array.isArray(agent.tools) ? agent.tools : [],
@@ -2332,6 +2491,9 @@ async function loadToolDefinitionsWrapper({
     if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       return checkCapability(AgentCapabilities.ask_user_question);
     }
+    if (excludeDelegateOcr && tool === delegateOcrToolName) {
+      return false;
+    }
     if (isActionTool(tool)) {
       return actionsEnabled;
     }
@@ -2353,7 +2515,9 @@ async function loadToolDefinitionsWrapper({
       toolRegistry: new Map(),
       actionsEnabled,
     };
-    return areToolsEnabled ? mergeSteelNativeToolDefinitions(baseResult) : baseResult;
+    return areToolsEnabled
+      ? mergeSteelNativeToolDefinitions(baseResult, { excludeDelegateOcr })
+      : baseResult;
   }
 
   /** @type {Record<string, Record<string, string>>} */
@@ -2811,7 +2975,7 @@ async function loadToolDefinitionsWrapper({
     const mergedResult = mergeSteelNativeToolDefinitions({
       toolDefinitions,
       toolRegistry,
-    });
+    }, { excludeDelegateOcr });
     toolDefinitions = mergedResult.toolDefinitions;
     toolRegistry = mergedResult.toolRegistry;
   }
@@ -3245,9 +3409,12 @@ async function loadToolsForExecution({
 }) {
   const appConfig = req.config;
   const ocrTurnActive = req?.steelNativeContext?.ocrTurnActive === true;
+  const excludeDelegateOcr = isDelegateOcrQuoteOnlyTurn(
+    getDelegateOcrCurrentUserTurn(req?.steelNativeContext?.delegateOcrContext),
+  );
   const visibleToolConfig = prepareSteelNativeToolConfig(
     { tools: toolNames, toolRegistry },
-    { ocrTurnActive, allowPaddleOcr },
+    { ocrTurnActive, allowPaddleOcr, excludeDelegateOcr },
   );
   const executionToolNames = (visibleToolConfig.tools ?? []).filter(
     (name) => typeof name === 'string',

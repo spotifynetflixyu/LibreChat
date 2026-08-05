@@ -426,12 +426,16 @@ describe('GenerationJobManager HITL resume metadata (round 19)', () => {
 
   // H1: round-18 captured discoveredTools but the metadata allowlists (updateMetadata,
   // Redis deserialize, buildJobFacade) dropped it, so resume replayed `undefined`.
-  test('updateMetadata persists discoveredTools and the job facade exposes them', async () => {
+  test('updateMetadata persists discovered tools and delegate OCR quote-only state', async () => {
     const streamId = 'stream-discovered';
     await manager.createJob(streamId, 'user-1');
-    await manager.updateMetadata(streamId, { discoveredTools: ['deep_tool', 'other_tool'] });
+    await manager.updateMetadata(streamId, {
+      discoveredTools: ['deep_tool', 'other_tool'],
+      delegateOcrQuoteOnlyTurn: true,
+    });
     const job = await manager.getJob(streamId);
     expect(job?.metadata.discoveredTools).toEqual(['deep_tool', 'other_tool']);
+    expect(job?.metadata.delegateOcrQuoteOnlyTurn).toBe(true);
   });
 
   // H4: a pause that lands AFTER the resume snapshot but before the subscription must

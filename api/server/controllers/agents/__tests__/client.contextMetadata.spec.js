@@ -13,6 +13,7 @@ const snapshot = (summaryTokens) => ({
     toolSchemaTokens: 0,
     summaryTokens,
     toolCount: 0,
+    toolTokenCounts: { search: 12 },
     messageCount: 1,
     messageTokens: 20,
     availableForMessages: 900,
@@ -34,9 +35,10 @@ const primaryFor = (runId, output_tokens) => ({
   runId,
 });
 
-function buildMeta({ snap, latestUsageIndex, usageEvents }) {
+function buildMeta({ snap, latestUsageIndex, usageEvents, chatCompletionAborted = false }) {
   const self = {
     collectedThoughtSignatures: null,
+    chatCompletionAborted,
     usageEmitSink: usageEvents,
     contextUsageSink: snap
       ? { latest: snap, count: 1, latestUsageIndex }
@@ -68,36 +70,54 @@ describe('AgentClient.buildResponseMetadata — snapshot persistence + summary m
     expect(meta.summaryUsedTokens).toBe(295);
   });
 
-  it('still emits the summary marker when the final call emitted no usage', () => {
+  it('persists the snapshot and summary marker when the final call emitted no usage', () => {
     /** Interrupted summarized turn: no primary usage follows the latest snapshot,
-     *  so the snapshot is (correctly) not persisted — but the coarse marker
-     *  survives so the client estimate still caps the discarded history. The
-     *  summarization output (5) is subtracted (300 − 5 = 295). */
+     *  so the pre-invoke snapshot persists without a completed output delta. The
+     *  coarse marker survives so the client estimate still caps discarded history.
+     *  The summarization output (5) is subtracted (300 − 5 = 295). */
     const meta = buildMeta({
       snap: snapshot(80),
       latestUsageIndex: 1,
       usageEvents: [summarizationUsage],
     });
-    expect(meta.contextUsage).toBeUndefined();
+    expect(meta.contextUsage).toBeDefined();
+    expect(meta.contextUsage.completedOutputTokens).toBeUndefined();
     expect(meta.summaryUsedTokens).toBe(295);
   });
 
-  it('drops the snapshot and emits no marker when the final call had no usage and no summary', () => {
-    const meta = buildMeta({ snap: snapshot(0), latestUsageIndex: 1, usageEvents: [primary] });
+  it('persists the snapshot without completed output when the final call emits no usage', () => {
+    const meta = buildMeta({
+      snap: snapshot(0),
+      latestUsageIndex: 1,
+      usageEvents: [primary],
+    });
+    expect(meta.contextUsage).toBeDefined();
+    expect(meta.contextUsage.completedOutputTokens).toBeUndefined();
+    expect(meta.summaryUsedTokens).toBeUndefined();
+  });
+
+  it('omits the snapshot when the response was aborted', () => {
+    const meta = buildMeta({
+      snap: snapshot(0),
+      latestUsageIndex: 1,
+      usageEvents: [primary],
+      chatCompletionAborted: true,
+    });
     expect(meta.contextUsage).toBeUndefined();
     expect(meta.summaryUsedTokens).toBeUndefined();
   });
 
-  it('does not persist the snapshot when only a parallel run produced post-snapshot usage', () => {
-    /** A snapshot (run-1) → B snapshot (run-1 is latest) but the only following
-     *  usage belongs to a sibling run (run-2). The guard must NOT persist run-1's
-     *  snapshot with run-2's output — it falls back to the per-message estimate. */
+  it('persists raw snapshot when only a parallel run produced post-snapshot usage', () => {
+    /** The only post-snapshot usage belongs to a sibling run (run-2), so the
+     *  snapshot persists without attributing run-2 output to run-1. */
     const meta = buildMeta({
       snap: snapshot(0),
       latestUsageIndex: 0,
       usageEvents: [primaryFor('run-2', 99)],
     });
-    expect(meta.contextUsage).toBeUndefined();
+    expect(meta.contextUsage).toBeDefined();
+    expect(meta.contextUsage.completedOutputTokens).toBeUndefined();
+    expect(meta.contextUsage.breakdown.toolTokenCounts).toEqual({ search: 12 });
   });
 
   it('persists with the snapshot run output when its own primary usage follows', () => {
@@ -113,15 +133,15 @@ describe('AgentClient.buildResponseMetadata — snapshot persistence + summary m
   it('subtracts earlier tool-loop output from the summary marker (interrupted turn)', () => {
     /** Multi-call summarized turn stopped before the final usage: the earlier
      *  call (output 40) is baked into baseUsed (300), so the marker is 300 − 40 =
-     *  260. No primary follows the snapshot, so the full snapshot is not persisted
-     *  and the client uses this marker — which must not double-count the 40 that
-     *  the response tokenCount also carries. */
+     *  260. No primary follows the snapshot, so it persists without a completed
+     *  output delta; the marker must not double-count the 40 in tokenCount. */
     const meta = buildMeta({
       snap: snapshot(80),
       latestUsageIndex: 1,
       usageEvents: [primaryFor('run-1', 40)],
     });
-    expect(meta.contextUsage).toBeUndefined();
+    expect(meta.contextUsage).toBeDefined();
+    expect(meta.contextUsage.completedOutputTokens).toBeUndefined();
     expect(meta.summaryUsedTokens).toBe(260);
   });
 

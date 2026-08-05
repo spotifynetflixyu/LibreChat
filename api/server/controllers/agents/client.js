@@ -38,6 +38,8 @@ const {
   toClientPendingAction,
   computeAgentRequestFingerprint,
   extractDiscoveredToolsFromHistory,
+  getLatestHumanMessageText,
+  isDelegateOcrQuoteOnlyTurn,
   captureResumeModelParameters,
   pickResumeContext,
   getApprovalTtlMs,
@@ -228,6 +230,9 @@ class AgentClient extends BaseClient {
     this._runReady = null;
     /** @type {((run: AgentRun | null) => void) | null} */
     this._resolveRun = null;
+    /** Whether the most recent chatCompletion ended after its abort signal fired.
+     *  Aborted turns keep the existing partial-response metadata behavior. */
+    this.chatCompletionAborted = false;
 
     const {
       agentConfigs,
@@ -1337,30 +1342,28 @@ class AgentClient extends BaseClient {
       metadata.thoughtSignatures = signatures;
     }
     const usageEvents = this.usageEmitSink ?? [];
-    /** Persist the breakdown only when the latest snapshot's OWN run completed —
-     *  i.e. a PRIMARY usage event (usage_type == null) from that run's id arrived
-     *  AFTER the snapshot. Matching by run id keeps `completedOutputTokens` a real
-     *  post-snapshot delta even when parallel/direct runs interleave (A snapshot →
-     *  B snapshot → A usage must NOT persist B's snapshot with A's output); an
-     *  interrupted final call that emits no usage falls back to the per-message
-     *  estimate. It still keeps the post-summary snapshot: the summarization detour
-     *  emits an extra snapshot whose following primary usage shares that run's id,
-     *  which the old snapshot-count guard miscounted and wrongly dropped. Events
-     *  without a run id (older lib / resume) match any snapshot for back-compat. */
+    /** Persist the latest visible snapshot for every non-aborted response. A PRIMARY
+     *  usage event (usage_type == null) from that snapshot's run arriving AFTER it
+     *  reconciles prompt tokens and records `completedOutputTokens`. Without such a
+     *  usage event, persist only the post-snapshot slice so an earlier primary cannot
+     *  reconcile this pre-invoke snapshot; parallel-run usage remains un-attributed.
+     *  Matching by run id keeps output deltas correct when runs interleave (A snapshot
+     *  → B snapshot → A usage). Events without a run id (older lib / resume) match any
+     *  snapshot for back-compat. Aborted responses omit the full context snapshot. */
     const latestSnapshot = this.contextUsageSink?.latest;
     const latestSnapshotUsageIndex = this.contextUsageSink?.latestUsageIndex ?? 0;
     const latestSnapshotRunId = latestSnapshot?.runId;
-    const hasPrimaryAfterSnapshot = usageEvents
-      .slice(latestSnapshotUsageIndex)
-      .some(
-        (event) =>
-          event.usage_type == null &&
-          (latestSnapshotRunId == null ||
-            event.runId == null ||
-            event.runId === latestSnapshotRunId),
+    const postSnapshotUsageEvents = usageEvents.slice(latestSnapshotUsageIndex);
+    const hasPrimaryAfterSnapshot = postSnapshotUsageEvents.some(
+      (event) =>
+        event.usage_type == null &&
+        (latestSnapshotRunId == null || event.runId == null || event.runId === latestSnapshotRunId),
+    );
+    if (latestSnapshot && !this.chatCompletionAborted) {
+      metadata.contextUsage = buildPersistedContextUsage(
+        latestSnapshot,
+        hasPrimaryAfterSnapshot ? usageEvents : postSnapshotUsageEvents,
       );
-    if (latestSnapshot && hasPrimaryAfterSnapshot) {
-      metadata.contextUsage = buildPersistedContextUsage(latestSnapshot, usageEvents);
     }
     /** Lightweight summarization marker — persisted whenever this turn compacted
      *  the context, INDEPENDENT of the snapshot guard above. When the client has
@@ -1669,15 +1672,16 @@ class AgentClient extends BaseClient {
     // deferred tool discovered aren't present there — without this the paused deferred
     // tool would be missing from the rebuilt schema-only toolMap and resume would fail
     // with "unknown tool". Inert for non-deferred turns (the set comes back empty).
+    let discoveredTools = [];
+    let delegateOcrQuoteOnlyTurn;
     try {
       const runMessages =
         typeof run.getRunMessages === 'function' ? run.getRunMessages() : undefined;
-      if (Array.isArray(runMessages) && runMessages.length > 0) {
-        const discovered = extractDiscoveredToolsFromHistory(runMessages);
-        if (discovered.size > 0) {
-          await GenerationJobManager.updateMetadata(streamId, {
-            discoveredTools: Array.from(discovered),
-          });
+      if (Array.isArray(runMessages)) {
+        discoveredTools = Array.from(extractDiscoveredToolsFromHistory(runMessages));
+        const latestHumanMessageText = getLatestHumanMessageText(runMessages);
+        if (latestHumanMessageText) {
+          delegateOcrQuoteOnlyTurn = isDelegateOcrQuoteOnlyTurn(latestHumanMessageText);
         }
       }
     } catch (err) {
@@ -1686,6 +1690,11 @@ class AgentClient extends BaseClient {
         err?.message ?? err,
       );
     }
+    const interruptMetadata = { discoveredTools };
+    if (delegateOcrQuoteOnlyTurn !== undefined) {
+      interruptMetadata.delegateOcrQuoteOnlyTurn = delegateOcrQuoteOnlyTurn;
+    }
+    await GenerationJobManager.updateMetadata(streamId, interruptMetadata);
 
     this.pendingApproval = pendingAction;
     // Release the concurrency slot this request held the MOMENT the turn is durably
@@ -2130,6 +2139,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
+      this.chatCompletionAborted = abortController?.signal?.aborted === true;
       /** Capture calibration state from the run for persistence on the response message.
        *  Runs in finally so values are captured even on abort. */
       const ratio = this.run?.getCalibrationRatio() ?? 0;
@@ -2231,6 +2241,7 @@ class AgentClient extends BaseClient {
     commandOptions,
     userMCPAuthMap,
     discoveredToolNames,
+    delegateOcrQuoteOnlyTurn,
   }) {
     /** @type {Partial<GraphRunnableConfig>} */
     let config;
@@ -2325,6 +2336,7 @@ class AgentClient extends BaseClient {
         // would be absent from the rebuilt toolMap; these names (captured at pause)
         // force it back in. Undefined/empty for non-deferred turns — a harmless no-op.
         discoveredToolNames,
+        delegateOcrQuoteOnlyTurn,
         initialSessions,
         runId: this.responseMessageId,
         signal: abortController.signal,

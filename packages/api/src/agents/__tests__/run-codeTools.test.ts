@@ -1,4 +1,5 @@
-import { createRun } from '~/agents/run';
+import { HumanMessage } from '@librechat/agents/langchain/messages';
+import { createRun, getLatestHumanMessageText } from '~/agents/run';
 
 /**
  * Guards the code-tool eager/session wiring in `createRun`. The whole
@@ -109,5 +110,130 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(runConfig.codeSessionToolNames).toEqual(
       expect.arrayContaining(['create_file', 'edit_file', 'read_file']),
     );
+  });
+
+  it('filters quote-only delegate_ocr from AgentInputs collections before provider binding', async () => {
+    const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
+    const search = { name: 'search_customers', description: 'search', parameters: {} };
+    const agent = makeAgent({
+      tools: [delegate, search],
+      toolDefinitions: [delegate, search],
+      toolRegistry: new Map([
+        [delegate.name, delegate],
+        [search.name, search],
+      ]),
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [new HumanMessage({ content: [{ type: 'text', text: '報價' }] })],
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect((input.tools as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      'search_customers',
+    ]);
+    expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      'search_customers',
+    ]);
+    expect(Array.from((input.toolRegistry as Map<string, unknown>).keys())).toEqual([
+      'search_customers',
+    ]);
+  });
+
+  it('retains delegate_ocr for mixed inspection and quote requests', async () => {
+    const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
+    const agent = makeAgent({
+      tools: [delegate],
+      toolDefinitions: [delegate],
+      toolRegistry: new Map([[delegate.name, delegate]]),
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [new HumanMessage('重新核對第35頁孔數後報價')],
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      'delegate_ocr',
+    ]);
+    expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(true);
+  });
+
+  it('extracts latest human text from string and array content', () => {
+    expect(
+      getLatestHumanMessageText([
+        new HumanMessage('舊問題'),
+        new HumanMessage({ content: [{ type: 'text', text: '報價' }] }),
+      ]),
+    ).toBe('報價');
+  });
+
+  it('applies explicit quote-only override when resuming with empty messages and deferred tools', async () => {
+    const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
+    const agent = makeAgent({
+      tools: [delegate],
+      toolDefinitions: [delegate],
+      toolRegistry: new Map([[delegate.name, delegate]]),
+      hasDeferredTools: true,
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [],
+      discoveredToolNames: ['delegate_ocr'],
+      delegateOcrQuoteOnlyTurn: true,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect(input.tools).toEqual([]);
+    expect(input.toolDefinitions).toEqual([]);
+    expect((input.toolRegistry as Map<string, unknown>).size).toBe(0);
+  });
+
+  it('keeps delegate_ocr when explicit resume quote-only override is false', async () => {
+    const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
+    const agent = makeAgent({
+      tools: [delegate],
+      toolDefinitions: [delegate],
+      toolRegistry: new Map([[delegate.name, delegate]]),
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [],
+      delegateOcrQuoteOnlyTurn: false,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      'delegate_ocr',
+    ]);
+    expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(true);
   });
 });
