@@ -1,0 +1,101 @@
+name: Refresh OpenAI OAuth token
+
+on:
+  schedule:
+    # 19:00 Asia/Taipei (UTC+8)
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openai-oauth-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh OpenAI OAuth token on production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Prepare SSH
+        env:
+          SSH_HOST: ${{ secrets.DO_PROD_HOST }}
+          SSH_KEY: ${{ secrets.DO_PROD_SSH_KEY }}
+          SSH_KNOWN_HOST: ${{ secrets.DO_PROD_KNOWN_HOST }}
+          SSH_USER: ${{ secrets.DO_PROD_USER }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_KEY" ] || [ -z "$SSH_KNOWN_HOST" ] || [ -z "$SSH_USER" ]; then
+            echo "::error::Production SSH secrets are incomplete"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/do_prod_key
+          chmod 600 ~/.ssh/do_prod_key
+          printf '%s\n' "$SSH_KNOWN_HOST" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host prod
+            HostName $SSH_HOST
+            User $SSH_USER
+            IdentityFile ~/.ssh/do_prod_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Refresh token in production API container
+        run: |
+          set -euo pipefail
+          ssh prod bash -se <<'REMOTE'
+          set -euo pipefail
+          cd /srv/librechat/app
+          docker compose -f deploy-compose.prod.yml exec -T api node <<'NODE'
+          (async () => {
+            let status;
+            try {
+              const {
+                refreshOpenAIOAuthToken,
+                resolveOpenAIOAuthAuthFilePath,
+              } = require('@librechat/api');
+              const authFilePath = resolveOpenAIOAuthAuthFilePath(process.env);
+              status = await refreshOpenAIOAuthToken({
+                authFilePath,
+                env: process.env,
+              });
+            } catch {
+              console.error('OpenAI OAuth refresh failed: reason=execution_error');
+              process.exitCode = 1;
+              return;
+            }
+
+            const statusValue = status?.status === 'available' ? 'available' : 'unavailable';
+            const accessTokenStatus = status?.accessToken?.status;
+            const accessTokenValue =
+              accessTokenStatus === 'valid' ||
+              accessTokenStatus === 'invalid' ||
+              accessTokenStatus === 'expired' ||
+              accessTokenStatus === 'unknown'
+                ? accessTokenStatus
+                : 'unknown';
+            const refreshValue = status?.refresh?.available === true ? 'available' : 'unavailable';
+            if (
+              statusValue !== 'available' ||
+              accessTokenValue !== 'valid' ||
+              refreshValue !== 'available'
+            ) {
+              console.error(
+                `OpenAI OAuth refresh failed: status=${statusValue} access_token=${accessTokenValue} refresh=${refreshValue}`,
+              );
+              process.exitCode = 1;
+              return;
+            }
+
+            console.log(
+              'OpenAI OAuth refresh succeeded: status=available access_token=valid refresh=available',
+            );
+          })();
+          NODE
+          REMOTE
