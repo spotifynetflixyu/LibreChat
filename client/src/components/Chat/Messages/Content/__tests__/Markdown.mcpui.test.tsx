@@ -218,6 +218,8 @@ describe('Markdown table rendering', () => {
     '| one | two | three | four | five | six | seven | eight |',
     '| nine | ten | eleven | twelve | thirteen | fourteen | fifteen | sixteen |',
   ].join('\n');
+  let downloadedFilename: string;
+  let clickAnchor: jest.SpyInstance;
   let writeClipboardText: jest.Mock;
   let createObjectURL: jest.Mock;
   let revokeObjectURL: jest.Mock;
@@ -228,6 +230,12 @@ describe('Markdown table rendering', () => {
     document.documentElement.removeAttribute('data-theme');
     mockUseLocalize.mockReturnValue(((key: string) => key) as any);
 
+    downloadedFilename = '';
+    clickAnchor = jest
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
+        downloadedFilename = this.download;
+      });
     writeClipboardText = jest.fn().mockResolvedValue(undefined);
     createObjectURL = jest.fn(() => 'blob:markdown-table');
     revokeObjectURL = jest.fn();
@@ -244,6 +252,11 @@ describe('Markdown table rendering', () => {
       configurable: true,
       value: revokeObjectURL,
     });
+  });
+
+  afterEach(() => {
+    clickAnchor.mockRestore();
+    jest.useRealTimers();
   });
 
   it('wraps GFM tables in a horizontally scrollable container', () => {
@@ -274,7 +287,7 @@ describe('Markdown table rendering', () => {
     renderMarkdownWithMessageContext({ content: tableMarkdown });
 
     expect(screen.getByLabelText('com_ui_copy_markdown_table')).toBeInTheDocument();
-    expect(screen.getByLabelText('com_ui_download_table_xlsx')).toBeInTheDocument();
+    expect(screen.getByLabelText('com_ui_download_table_csv')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_expand_table')).toBeInTheDocument();
   });
 
@@ -304,56 +317,74 @@ describe('Markdown table rendering', () => {
     );
   });
 
-  it('downloads the rendered table as an XLSX blob', () => {
-    let downloadedFilename = '';
-    const clickAnchor = jest
-      .spyOn(HTMLAnchorElement.prototype, 'click')
-      .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
-        downloadedFilename = this.download;
-      });
+  it('downloads the rendered table as a UTF-8 CSV blob', async () => {
+    jest.useFakeTimers();
     renderMarkdownWithMessageContext({
-      content: tableMarkdown,
+      content: [
+        '| 名稱 | 說明 | 公式 | 命令 | 參照 |',
+        '| --- | --- | --- | --- | --- |',
+        '| 台灣鋼鐵 🏗️ | He said "yes", today | =SUM(1,2) | +cmd | @A1 |',
+        '| 正常 | plain | -1 | text | value |',
+      ].join('\n'),
       conversationTitle: 'Steel Pricing Review',
       messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
     });
 
-    fireEvent.click(screen.getByLabelText('com_ui_download_table_xlsx'));
+    fireEvent.click(screen.getByLabelText('com_ui_download_table_csv'));
 
     expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
-    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    );
-    expect(downloadedFilename).toBe('Steel Pricing Review_2026-06-27_14-32-05.xlsx');
-    expect(clickAnchor).toHaveBeenCalled();
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:markdown-table');
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    const bytes = await new Promise<Uint8Array>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(blob);
+    });
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).replace(/^\uFEFF/, ''));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob, 'UTF-8');
+    });
 
-    clickAnchor.mockRestore();
+    expect(blob.type).toBe('text/csv;charset=utf-8');
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    expect(text).toBe(
+      [
+        '名稱,說明,公式,命令,參照',
+        '台灣鋼鐵 🏗️,"He said ""yes"", today","\'=SUM(1,2)",\'+cmd,\'@A1',
+        "正常,plain,'-1,text,value",
+      ].join('\r\n'),
+    );
+    expect(downloadedFilename).toBe('Steel Pricing Review_2026-06-27_14-32-05.csv');
+    expect(clickAnchor).toHaveBeenCalled();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1000);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:markdown-table');
   });
 
   it('uses Longding when the conversation title is empty', () => {
-    let downloadedFilename = '';
-    const clickAnchor = jest
-      .spyOn(HTMLAnchorElement.prototype, 'click')
-      .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
-        downloadedFilename = this.download;
-      });
+    jest.useFakeTimers();
     renderMarkdownWithMessageContext({
       content: tableMarkdown,
       messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
     });
 
-    fireEvent.click(screen.getByLabelText('com_ui_download_table_xlsx'));
+    fireEvent.click(screen.getByLabelText('com_ui_download_table_csv'));
 
-    expect(downloadedFilename).toBe('Longding_2026-06-27_14-32-05.xlsx');
-
-    clickAnchor.mockRestore();
+    expect(downloadedFilename).toBe('Longding_2026-06-27_14-32-05.csv');
   });
 
   it('opens a themed full-viewport table modal with table actions', () => {
+    jest.useFakeTimers();
     document.documentElement.classList.add('dark');
     document.documentElement.setAttribute('data-theme', 'dark');
 
-    renderMarkdownWithMessageContext({ content: tableMarkdown });
+    renderMarkdownWithMessageContext({
+      content: tableMarkdown,
+      conversationTitle: 'Modal Table',
+      messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
+    });
 
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
 
@@ -361,8 +392,13 @@ describe('Markdown table rendering', () => {
     expect(modal).toHaveClass('markdown-table-modal', 'dark');
     expect(modal).toHaveAttribute('data-theme', 'dark');
     expect(within(modal).getByLabelText('com_ui_copy_markdown_table')).toBeInTheDocument();
-    expect(within(modal).getByLabelText('com_ui_download_table_xlsx')).toBeInTheDocument();
+    expect(within(modal).getByLabelText('com_ui_download_table_csv')).toBeInTheDocument();
     expect(within(modal).getByLabelText('com_ui_close_table')).toBeInTheDocument();
+
+    fireEvent.click(within(modal).getByLabelText('com_ui_download_table_csv'));
+
+    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('text/csv;charset=utf-8');
+    expect(downloadedFilename).toBe('Modal Table_2026-06-27_14-32-05.csv');
 
     fireEvent.click(within(modal).getByLabelText('com_ui_close_table'));
 
