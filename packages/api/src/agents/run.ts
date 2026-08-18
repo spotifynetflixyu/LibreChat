@@ -32,6 +32,7 @@ import type {
   RunConfig,
   IState,
   LCTool,
+  SubagentTaskConfig,
 } from '@librechat/agents';
 import type {
   Agent,
@@ -51,6 +52,7 @@ import type { OpenAIOAuthModelOptions } from '~/steel/native/oauth';
 import type * as t from '~/types';
 import {
   CHECK_BACKGROUND_TASK_NAME,
+  registerBackgroundTaskTool,
   stripBackgroundFromToolRegistry,
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
@@ -1205,6 +1207,7 @@ function buildSubagentConfigs(
   ancestors: Set<string> = new Set(),
   depth = 0,
   prebuiltGraphInputs?: ReadonlyMap<string, AgentInputs>,
+  detachedTasksEnabled = false,
 ): SubagentConfigEntry[] {
   if (!agent.subagents?.enabled) {
     return [];
@@ -1225,8 +1228,12 @@ function buildSubagentConfigs(
      * invocations would forward to tools that never declared it. The
      * resolver keeps a provided `agentInputs` even with `self: true`.
      */
-    const hasBackground = (agent.backgroundToolNames?.length ?? 0) > 0;
+    const hasBackground = detachedTasksEnabled || (agent.backgroundToolNames?.length ?? 0) > 0;
     const hasInjectedIntent = (agent.intentToolNames?.length ?? 0) > 0;
+    const sanitizedToolRegistry = stripIntentFromToolRegistry(
+      stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
+      agent.intentToolNames,
+    );
     configs.push({
       self: true,
       type: SELF_SUBAGENT_TYPE,
@@ -1245,10 +1252,13 @@ function buildSubagentConfigs(
                 ),
                 agent.intentToolNames,
               ),
-              toolRegistry: stripIntentFromToolRegistry(
-                stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
-                agent.intentToolNames,
-              ),
+              /** `registerBackgroundTaskTool` mutates the parent registry after
+               * configs are built. Detach its self-child snapshot so the host
+               * poll tool cannot appear there through that shared Map. */
+              toolRegistry:
+                detachedTasksEnabled && sanitizedToolRegistry != null
+                  ? new Map(sanitizedToolRegistry)
+                  : sanitizedToolRegistry,
             },
           }
         : {}),
@@ -1404,6 +1414,7 @@ export async function createRun({
   subagentUsageSink,
   openAIOAuthReasoningEffortOverride,
   openAIOAuthModelOptionsSink,
+  subagentTasks,
   steering,
   activityLabel,
   activityPhase,
@@ -1461,6 +1472,8 @@ export async function createRun({
    * Switch to the `RunConfig` pick once the dependency is bumped.
    */
   subagentUsageSink?: (event: SubagentUsageEvent) => void;
+  /** Host-owned detached-subagent task store and trusted parent-thread scope. */
+  subagentTasks?: SubagentTaskConfig;
   /**
    * The run-scoped steer-drain hook (a `PostToolBatch` callback built via
    * `createSteerDrainHook`). Registered on the run's hook registry independent
@@ -1785,11 +1798,18 @@ export async function createRun({
       undefined,
       0,
       prebuiltGraphInputs,
+      subagentTasks != null,
     );
     if (subagentConfigs.length > 0) {
       agentInput.subagentConfigs = subagentConfigs;
       /** Seed the SDK countdown that bounds nested delegation across isolated child graphs. */
       agentInput.maxSubagentDepth = MAX_SUBAGENT_DEPTH;
+    }
+    if (subagentTasks != null) {
+      agentInput.toolDefinitions = registerBackgroundTaskTool({
+        toolRegistry: agentInput.toolRegistry,
+        toolDefinitions: agentInput.toolDefinitions,
+      }).toolDefinitions;
     }
     agentInputs.push(agentInput);
   }
@@ -1965,6 +1985,7 @@ export async function createRun({
     calibrationRatio,
     indexTokenCountMap,
     subagentUsageSink,
+    subagentTasks,
     // Exclude side-effecting / large-free-form-arg tools from eager execution.
     // Eager speculatively runs a tool mid-stream; for a big streamed arg (a
     // file body, a bash heredoc, a code block) the accumulated args can diverge

@@ -70,13 +70,18 @@ function getInitializationFailure(error) {
   };
 }
 
-function toValidISOString(value) {
-  if (value == null) {
-    return null;
-  }
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+function resolveConversationCreatedAt({ userId, conversationId, isNewConvo, conversation }) {
+  return resolveConversationAnchor({
+    isNewConversation: isNewConvo,
+    loadConversation: () =>
+      conversation !== undefined ? Promise.resolve(conversation) : getConvo(userId, conversationId),
+    onLoadError: (error) => {
+      logger.warn('[AgentController] Failed to resolve conversation timestamp anchor', {
+        conversationId,
+        error: error.message,
+      });
+    },
+  });
 }
 
 function hasRealTitle(title) {
@@ -95,35 +100,9 @@ function shouldGenerateTitleAfterTurn({
   );
 }
 
-async function resolveConversationCreatedAt({ userId, conversationId, isNewConvo }) {
-  if (isNewConvo) {
-    return { createdAt: new Date().toISOString(), conversation: undefined };
-  }
-
-  try {
-    const conversation = await getConvo(userId, conversationId);
-    return {
-      conversation,
-      createdAt: toValidISOString(conversation?.createdAt) ?? new Date().toISOString(),
-    };
-  } catch (error) {
-    logger.warn('[AgentController] Failed to resolve conversation timestamp anchor', {
-      conversationId,
-      error: error?.message ?? error,
-    });
-    return { createdAt: new Date().toISOString(), conversation: undefined };
-  }
-}
-
-async function attachConversationCreatedAt(req, optionsOrConversationId, conversationAnchorPromise) {
-  const options =
-    typeof optionsOrConversationId === 'object'
-      ? optionsOrConversationId
-      : { conversationId: optionsOrConversationId };
-  const { userId, conversationId, isNewConvo } = options;
+async function attachConversationCreatedAt(req, conversationId, conversationAnchorPromise) {
   req.body.conversationId = conversationId;
-  const resolved = await (conversationAnchorPromise ??
-    resolveConversationCreatedAt({ userId, conversationId, isNewConvo }));
+  const resolved = await conversationAnchorPromise;
   req.conversationCreatedAt = resolved.createdAt;
   if (resolved.conversation !== undefined) {
     req.resolvedConversation = resolved.conversation ?? null;
@@ -577,6 +556,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     userId,
     conversationId,
     isNewConvo,
+    conversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation')
+      ? req.resolvedConversation
+      : undefined,
   });
 
   if (

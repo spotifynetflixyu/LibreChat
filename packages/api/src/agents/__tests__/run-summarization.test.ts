@@ -7,6 +7,7 @@ import {
 } from 'librechat-data-provider';
 import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
 import type { BaseMessage } from '@langchain/core/messages';
+import type { SubagentTaskConfig } from '@librechat/agents';
 import type { AppConfig } from '@librechat/data-schemas';
 import { createRun } from '~/agents/run';
 
@@ -87,7 +88,7 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { Run, buildChildInputs } from '@librechat/agents';
+import { Run, buildChildInputs, InMemorySubagentTaskStore } from '@librechat/agents';
 
 /** Minimal RunAgent factory */
 function makeAgent(
@@ -166,6 +167,7 @@ async function callAndCapture(
     appConfig?: AppConfig;
     messages?: BaseMessage[];
     discoveredToolNames?: string[];
+    subagentTasks?: SubagentTaskConfig;
   } = {},
 ) {
   const agents = opts.agents ?? [makeAgent()];
@@ -179,6 +181,7 @@ async function callAndCapture(
     appConfig: opts.appConfig,
     messages: opts.messages,
     discoveredToolNames: opts.discoveredToolNames,
+    subagentTasks: opts.subagentTasks,
     streaming: true,
     streamUsage: true,
   });
@@ -1296,6 +1299,20 @@ describe('subagentConfigs', () => {
   it('is undefined when subagents are not enabled', async () => {
     const agents = await callAndCapture({});
     expect(agents[0].subagentConfigs).toBeUndefined();
+  });
+
+  it('keeps the poll tool available for existing tasks after spawning is disabled', async () => {
+    const agents = await callAndCapture({
+      subagentTasks: {
+        store: new InMemorySubagentTaskStore(),
+        scopeId: 'existing-task-scope',
+      },
+    });
+
+    expect(agents[0].subagentConfigs).toBeUndefined();
+    expect(agents[0].toolDefinitions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'check_background_task' })]),
+    );
   });
 
   it('adds self-spawn when enabled and allowSelf defaults to true', async () => {
