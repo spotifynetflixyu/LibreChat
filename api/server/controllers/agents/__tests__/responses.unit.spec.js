@@ -478,6 +478,15 @@ describe('createResponse controller', () => {
       endpointTokenConfig: { 'custom-model': { prompt: 7 } },
       agentContextAttachments: [{ file_id: 'member-file' }],
     };
+    mockBuildAgentScopedContext.mockResolvedValueOnce(
+      new Map([
+        [primaryConfig.id, 'Primary scoped context'],
+        [memberConfig.id, 'Member scoped context'],
+      ]),
+    );
+    mockBuildInlineMemoryContext
+      .mockImplementationOnce(async () => 'Primary inline memory')
+      .mockImplementationOnce(async () => 'Member inline memory');
     resolveSubagentGraphs.mockImplementationOnce(async ({ rootConfigs }, deps) => {
       rootConfigs[0].subagentGraphConfigs = [
         { definition: { type: 'team' }, memberConfigs: [memberConfig] },
@@ -504,8 +513,24 @@ describe('createResponse controller', () => {
     expect(mockBuildAgentScopedContext).toHaveBeenCalledWith(
       expect.objectContaining({ agentIds: ['agent-123', 'agent-graph-member'] }),
     );
-    expect(mockApplyContextToAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: memberConfig, agentId: 'agent-graph-member' }),
+    const appliedCallsByAgentId = new Map();
+    for (const [call] of mockApplyContextToAgent.mock.calls) {
+      const agentId = call.agentId;
+      appliedCallsByAgentId.set(agentId, [
+        ...(appliedCallsByAgentId.get(agentId) ?? []),
+        call,
+      ]);
+    }
+    expect(appliedCallsByAgentId.get(primaryConfig.id)).toHaveLength(1);
+    expect(appliedCallsByAgentId.get(memberConfig.id)).toHaveLength(1);
+    expect(appliedCallsByAgentId.get(memberConfig.id)?.[0]).toEqual(
+      expect.objectContaining({
+        agent: memberConfig,
+        agentId: memberConfig.id,
+        globalInstructionPrefix: 'Steel global prefix',
+        sharedRunContext:
+          'Member inline memory\n\nMember scoped context\n\nSteel runtime tail',
+      }),
     );
     expect(mockBuildInlineMemoryContext).toHaveBeenCalledWith(
       expect.objectContaining({ agent: memberConfig, memoryAvailable: true }),

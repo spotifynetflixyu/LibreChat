@@ -272,8 +272,12 @@ function collectSteelNativeResponseMessages(messages) {
   return { activeHistory, currentUserTurn };
 }
 
-function buildSharedRunContextWithSteel(agentScopedContext, steelRuntimeContext) {
-  return [agentScopedContext, steelRuntimeContext]
+function buildSharedRunContextWithSteel(
+  inlineMemoryContext,
+  agentScopedContext,
+  steelRuntimeContext,
+) {
+  return [inlineMemoryContext, agentScopedContext, steelRuntimeContext]
     .map((part) => (typeof part === 'string' ? part.trim() : ''))
     .filter(Boolean)
     .join('\n\n');
@@ -820,6 +824,7 @@ const executeResponse = async (envelope, { req, res }) => {
     const mcpManager = getMCPManager();
     const configServers = await resolveConfigServers(req);
 
+    const inlineMemoryContextByAgentId = new Map();
     await Promise.all(
       contextAgents.map(async (runAgent) => {
         const memoryContext = await buildInlineMemoryContext({
@@ -829,16 +834,9 @@ const executeResponse = async (envelope, { req, res }) => {
           memoryAvailable,
           getFormattedMemories: db.getFormattedMemories,
         });
-        return applyContextToAgent({
-          agent: runAgent,
-          agentId: runAgent.id,
-          logger,
-          mcpManager,
-          configServers,
-          sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
-            .filter(Boolean)
-            .join('\n\n'),
-        });
+        if (memoryContext) {
+          inlineMemoryContextByAgentId.set(runAgent.id, memoryContext);
+        }
       }),
     );
     // Determine if streaming is enabled (check both request and agent config)
@@ -978,7 +976,7 @@ const executeResponse = async (envelope, { req, res }) => {
     };
 
     await Promise.all(
-      runAgents.map((runAgent) =>
+      contextAgents.map((runAgent) =>
         applyContextToAgent({
           agent: runAgent,
           agentId: runAgent.id,
@@ -987,6 +985,7 @@ const executeResponse = async (envelope, { req, res }) => {
           configServers,
           globalInstructionPrefix: steelNativeContext.instructionPrefix,
           sharedRunContext: buildSharedRunContextWithSteel(
+            inlineMemoryContextByAgentId.get(runAgent.id),
             agentScopedContext.get(runAgent.id),
             steelNativeContext.runtimeContextText,
           ),
