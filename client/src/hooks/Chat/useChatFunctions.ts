@@ -534,11 +534,12 @@ export default function useChatFunctions({
       endpointOption.key = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     }
     const responseSender = getSender({ model: conversation?.model, ...endpointOption });
+    const clientTimestamp = new Date().toLocaleString('sv').replace(' ', 'T');
 
     const currentMsg: TMessage = {
       text,
       sender: 'User',
-      clientTimestamp: new Date().toLocaleString('sv').replace(' ', 'T'),
+      clientTimestamp,
       isCreatedByUser: true,
       parentMessageId,
       conversationId,
@@ -613,6 +614,7 @@ export default function useChatFunctions({
       messageId: initialResponseId,
       thread_id,
       conversationId,
+      clientTimestamp,
       unfinished: false,
       isCreatedByUser: false,
       model: convo?.model,

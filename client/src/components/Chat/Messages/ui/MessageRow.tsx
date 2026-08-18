@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import MessageTimestamp from './MessageTimestamp';
+import MessageElapsedTimer from './MessageElapsedTimer';
 import HeaderLabel from './HeaderLabel';
 import { cn } from '~/utils';
 
@@ -11,6 +12,8 @@ type MessageRowProps = {
   children: ReactNode;
   footer: ReactNode;
   timestamp?: string | null;
+  isSubmitting?: boolean;
+  parentMessageId?: string | null;
   ariaLabel?: string;
   headerPrefix?: string;
   isCreatedByUser: boolean;
@@ -32,6 +35,8 @@ export default function MessageRow({
   className,
   headerPrefix,
   isCreatedByUser,
+  isSubmitting = false,
+  parentMessageId,
   hasParallelContent = false,
   fullWidth = false,
   isEditing = false,
@@ -71,10 +76,12 @@ export default function MessageRow({
       >
         {!hasParallelContent &&
           (isCreatedByUser ? (
-            <h2 className="sr-only">
-              {headerPrefix}
-              {label}
-              <MessageTimestamp value={timestamp} />
+            <h2 className="mb-1 flex min-h-7 w-full select-none items-center justify-end text-sm">
+              <span className="sr-only">
+                {headerPrefix}
+                {label}
+              </span>
+              <MessageTimestamp value={timestamp} className="ml-auto shrink-0 font-normal" />
             </h2>
           ) : (
             /** `mb-1` keeps the name off its own first line of body text. */
@@ -87,7 +94,19 @@ export default function MessageRow({
               </span>
               <span className="sr-only">{headerPrefix}</span>
               <HeaderLabel label={label} hoverLabel={hoverLabel} />
-              <MessageTimestamp value={timestamp} className="ml-auto shrink-0 font-normal" />
+              {isSubmitting ? (
+                <span className="ml-auto shrink-0">
+                  <MessageElapsedTimer
+                    timerKey={id}
+                    startedAt={timestamp}
+                    parentMessageId={parentMessageId}
+                    isSubmitting
+                    isCreatedByUser={isCreatedByUser}
+                  />
+                </span>
+              ) : (
+                <MessageTimestamp value={timestamp} className="ml-auto shrink-0 font-normal" />
+              )}
             </h2>
           ))}
 

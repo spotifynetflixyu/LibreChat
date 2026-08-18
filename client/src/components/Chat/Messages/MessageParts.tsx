@@ -7,6 +7,7 @@ import {
   getMessageAriaLabel,
   areMessageRowPropsEqual,
   getHeaderPrefixForScreenReader,
+  isValidTimestamp,
 } from '~/utils';
 import { useMessageHelpers, useLocalize, useAttachments, useContentMetadata } from '~/hooks';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
@@ -114,7 +115,11 @@ function MessageParts(props: TMessageProps) {
             message.model,
             conversation?.model,
           )}
-          timestamp={message.createdAt ?? message.clientTimestamp}
+          timestamp={
+            isValidTimestamp(message.createdAt) ? message.createdAt : message.clientTimestamp
+          }
+          isSubmitting={isSubmitting}
+          parentMessageId={message.parentMessageId}
           ariaLabel={getMessageAriaLabel(message, localize)}
           headerPrefix={getHeaderPrefixForScreenReader(message, localize)}
           isCreatedByUser={isCreatedByUser === true}
@@ -162,7 +167,9 @@ function MessageParts(props: TMessageProps) {
             manualSkills={message.manualSkills}
             messageId={message.messageId}
             authorHeader={authorHeader}
-            createdAt={message.createdAt ?? message.clientTimestamp}
+            createdAt={
+              isValidTimestamp(message.createdAt) ? message.createdAt : message.clientTimestamp
+            }
             setSiblingIdx={setSiblingIdx}
             isCreatedByUser={message.isCreatedByUser}
             conversationId={conversation?.conversationId}

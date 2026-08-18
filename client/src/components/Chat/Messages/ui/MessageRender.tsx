@@ -7,6 +7,7 @@ import {
   cn,
   getHeaderPrefixForScreenReader,
   getMessageAriaLabel,
+  isValidTimestamp,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
@@ -156,7 +157,9 @@ const MessageRender = memo(function MessageRender({
         msg.model,
         conversation?.model,
       )}
-      timestamp={msg.createdAt ?? msg.clientTimestamp}
+      timestamp={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+      isSubmitting={isSubmitting}
+      parentMessageId={msg.parentMessageId}
       ariaLabel={getMessageAriaLabel(msg, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
       isCreatedByUser={msg.isCreatedByUser === true}

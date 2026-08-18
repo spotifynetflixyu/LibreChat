@@ -29,6 +29,7 @@ import {
   getConversationDraftId,
   scrollToEnd,
   hasRealTitle,
+  isValidTimestamp,
   setDocumentTitle,
   requestChatFocus,
   getAllContentText,
@@ -115,6 +116,54 @@ export const buildCreatedInitialResponse = ({
       : responseMessageId || `${userMessage.messageId}_`,
   conversationId: userMessage.conversationId ?? initialResponse.conversationId,
 });
+
+export const mergeFinalResponseTimestamp = ({
+  initialResponse,
+  responseMessage,
+}: {
+  initialResponse: TMessage;
+  responseMessage?: TMessage;
+}): TMessage | undefined => {
+  if (!responseMessage) {
+    return responseMessage;
+  }
+  if (
+    isValidTimestamp(responseMessage.createdAt) ||
+    isValidTimestamp(responseMessage.clientTimestamp)
+  ) {
+    return responseMessage;
+  }
+  if (!isValidTimestamp(initialResponse.clientTimestamp)) {
+    return responseMessage;
+  }
+  return {
+    ...responseMessage,
+    clientTimestamp: initialResponse.clientTimestamp,
+  };
+};
+
+export const mergeRunMessagesTimestamp = ({
+  initialResponse,
+  runMessages,
+}: {
+  initialResponse: TMessage;
+  runMessages: TMessage[];
+}): TMessage[] => {
+  const responseIndex = runMessages.findLastIndex((message) => message.isCreatedByUser !== true);
+  if (responseIndex < 0) {
+    return runMessages;
+  }
+
+  const responseMessage = runMessages[responseIndex];
+  const mergedResponse = mergeFinalResponseTimestamp({ initialResponse, responseMessage });
+  if (!mergedResponse || mergedResponse === responseMessage) {
+    return runMessages;
+  }
+
+  const nextMessages = [...runMessages];
+  nextMessages[responseIndex] = mergedResponse;
+  return nextMessages;
+};
 
 export const isInitialNewConversationSubmission = ({
   userMessage,
@@ -740,7 +789,12 @@ export default function useEventHandlers({
 
   const finalHandler = useCallback(
     (data: TFinalResData, submission: EventSubmission) => {
-      const { requestMessage, responseMessage, conversation, runMessages } = data;
+      const {
+        requestMessage,
+        responseMessage: serverResponseMessage,
+        conversation,
+        runMessages,
+      } = data;
       const {
         messages,
         userMessage,
@@ -748,6 +802,10 @@ export default function useEventHandlers({
         isRegenerate = false,
         isTemporary: _isTemporary = false,
       } = submission;
+      const responseMessage = mergeFinalResponseTimestamp({
+        initialResponse: submission.initialResponse,
+        responseMessage: serverResponseMessage,
+      });
       const serverConversation = conversation as TConversation;
 
       try {
@@ -882,7 +940,10 @@ export default function useEventHandlers({
         /* Update messages; if assistants endpoint, client doesn't receive responseMessage */
         let finalMessages: TMessage[] = [];
         if (runMessages) {
-          finalMessages = [...runMessages];
+          finalMessages = mergeRunMessagesTimestamp({
+            initialResponse: submission.initialResponse,
+            runMessages,
+          });
         } else if (isRegenerate && responseMessage) {
           finalMessages = mergeRegenerateFinalMessages({
             messages: submission.regenerateMessages ?? currentMessages ?? messages,

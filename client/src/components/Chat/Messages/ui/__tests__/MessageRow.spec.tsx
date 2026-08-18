@@ -8,6 +8,29 @@ jest.mock('../MessageTimestamp', () => ({
   ),
 }));
 
+jest.mock('../MessageElapsedTimer', () => ({
+  __esModule: true,
+  default: ({
+    isSubmitting,
+    timerKey,
+    parentMessageId,
+    startedAt,
+  }: {
+    isSubmitting?: boolean;
+    timerKey?: string | null;
+    parentMessageId?: string | null;
+    startedAt?: string | null;
+  }) => (
+    <span
+      data-testid="message-elapsed-timer"
+      data-is-submitting={isSubmitting}
+      data-timer-key={timerKey}
+      data-parent-message-id={parentMessageId}
+      data-started-at={startedAt}
+    />
+  ),
+}));
+
 const MESSAGE_BODY = 'Message body';
 
 const renderRow = ({
@@ -15,11 +38,15 @@ const renderRow = ({
   hasParallelContent = false,
   fullWidth = false,
   isEditing = false,
+  isSubmitting = false,
+  timestamp,
 }: {
   isCreatedByUser: boolean;
   hasParallelContent?: boolean;
   fullWidth?: boolean;
   isEditing?: boolean;
+  isSubmitting?: boolean;
+  timestamp?: string;
 }) =>
   render(
     <MessageRow
@@ -31,6 +58,9 @@ const renderRow = ({
       ariaLabel={isCreatedByUser ? 'User message' : 'Assistant message'}
       headerPrefix="Message from "
       isCreatedByUser={isCreatedByUser}
+      isSubmitting={isSubmitting}
+      parentMessageId="parent-message"
+      timestamp={timestamp}
       hasParallelContent={hasParallelContent}
       fullWidth={fullWidth}
       isEditing={isEditing}
@@ -40,8 +70,8 @@ const renderRow = ({
   );
 
 describe('MessageRow', () => {
-  it('renders user content as a right-aligned semantic surface without a visible avatar', () => {
-    renderRow({ isCreatedByUser: true });
+  it('renders user content with a right-aligned hover timestamp and no visible avatar', () => {
+    renderRow({ isCreatedByUser: true, timestamp: '2026-08-18T12:00:00.000Z' });
 
     const row = screen.getByLabelText('User message');
     const userTurn = row.querySelector('.user-turn');
@@ -52,7 +82,11 @@ describe('MessageRow', () => {
     expect(userTurn).toHaveClass('items-end');
     expect(messageSurface).toHaveClass('bg-surface-tertiary', 'rounded-theme-surface');
     expect(screen.queryByTestId('message-icon')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { hidden: true })).toHaveClass('sr-only');
+    expect(screen.getByRole('heading', { name: 'Message from You' })).toHaveClass(
+      'w-full',
+      'justify-end',
+    );
+    expect(screen.getByTestId('message-timestamp')).toHaveClass('ml-auto', 'shrink-0');
   });
 
   it('keeps assistant identity visible beside an open reading column', () => {
@@ -98,6 +132,40 @@ describe('MessageRow', () => {
 
     expect(heading).toHaveClass('w-full', 'gap-2');
     expect(screen.getByTestId('message-timestamp')).toHaveClass('ml-auto');
+  });
+
+  it('shows only elapsed timer in the right metadata slot while assistant submits', () => {
+    renderRow({
+      isCreatedByUser: false,
+      isSubmitting: true,
+      timestamp: '2026-08-18T12:00:00.000Z',
+    });
+
+    const timer = screen.getByTestId('message-elapsed-timer');
+    expect(timer).toHaveAttribute('data-is-submitting', 'true');
+    expect(timer).toHaveAttribute('data-timer-key', 'message-1');
+    expect(timer).toHaveAttribute('data-parent-message-id', 'parent-message');
+    expect(timer).toHaveAttribute('data-started-at', '2026-08-18T12:00:00.000Z');
+    expect(timer.parentElement).toHaveClass('ml-auto', 'shrink-0');
+    expect(screen.queryByTestId('message-timestamp')).not.toBeInTheDocument();
+  });
+
+  it('shows only timestamp in the same metadata slot after assistant completes', () => {
+    renderRow({ isCreatedByUser: false, timestamp: '2026-08-18T12:00:00.000Z' });
+
+    expect(screen.getByTestId('message-timestamp')).toHaveClass('ml-auto', 'shrink-0');
+    expect(screen.queryByTestId('message-elapsed-timer')).not.toBeInTheDocument();
+  });
+
+  it('shows only the hover timestamp and never an elapsed timer for user messages', () => {
+    renderRow({
+      isCreatedByUser: true,
+      isSubmitting: true,
+      timestamp: '2026-08-18T12:00:00.000Z',
+    });
+
+    expect(screen.queryByTestId('message-elapsed-timer')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-timestamp')).toHaveClass('ml-auto', 'shrink-0');
   });
 
   it('keeps the model name ready to replace the provider on hover', () => {

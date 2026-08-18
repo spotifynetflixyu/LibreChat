@@ -2,6 +2,8 @@ import { Constants } from 'librechat-data-provider';
 import type { EventSubmission, TMessage } from 'librechat-data-provider';
 import {
   buildCreatedInitialResponse,
+  mergeFinalResponseTimestamp,
+  mergeRunMessagesTimestamp,
   getExistingConversationAbortMessages,
   isInitialNewConversationSubmission,
   mergeRegenerateFinalMessages,
@@ -54,6 +56,97 @@ describe('buildCreatedInitialResponse', () => {
         parentMessageId: 'original-user-message',
       }),
     );
+  });
+});
+
+describe('mergeFinalResponseTimestamp', () => {
+  const initialResponse = {
+    clientTimestamp: '2026-08-18T12:00:00.000Z',
+  } as TMessage;
+
+  it('falls back to initial client timestamp when final response has no timestamp', () => {
+    const responseMessage = { messageId: 'response-1' } as TMessage;
+
+    expect(mergeFinalResponseTimestamp({ initialResponse, responseMessage })).toEqual(
+      expect.objectContaining({ clientTimestamp: initialResponse.clientTimestamp }),
+    );
+  });
+
+  it('treats an empty createdAt as missing when preserving the fallback', () => {
+    const responseMessage = {
+      messageId: 'response-1',
+      createdAt: '',
+    } as TMessage;
+
+    expect(mergeFinalResponseTimestamp({ initialResponse, responseMessage })).toEqual(
+      expect.objectContaining({
+        createdAt: '',
+        clientTimestamp: initialResponse.clientTimestamp,
+      }),
+    );
+  });
+
+  it('keeps valid server timestamps authoritative', () => {
+    const responseMessage = {
+      messageId: 'response-1',
+      createdAt: '2026-08-18T12:01:00.000Z',
+      clientTimestamp: '2026-08-18T12:01:01.000Z',
+    } as TMessage;
+
+    expect(mergeFinalResponseTimestamp({ initialResponse, responseMessage })).toBe(responseMessage);
+  });
+
+  it('keeps a valid server client timestamp authoritative when createdAt is empty', () => {
+    const responseMessage = {
+      messageId: 'response-1',
+      createdAt: '',
+      clientTimestamp: '2026-08-18T12:01:00.000Z',
+    } as TMessage;
+
+    expect(mergeFinalResponseTimestamp({ initialResponse, responseMessage })).toBe(responseMessage);
+  });
+});
+
+describe('mergeRunMessagesTimestamp', () => {
+  const initialResponse = {
+    clientTimestamp: '2026-08-18T12:00:00.000Z',
+  } as TMessage;
+
+  it('adds the fallback to the last assistant message only', () => {
+    const firstAssistant = {
+      messageId: 'assistant-1',
+      isCreatedByUser: false,
+      createdAt: '2026-08-18T11:00:00.000Z',
+    } as TMessage;
+    const finalAssistant = {
+      messageId: 'assistant-2',
+      isCreatedByUser: false,
+    } as TMessage;
+    const runMessages = [
+      firstAssistant,
+      { messageId: 'user-2', isCreatedByUser: true } as TMessage,
+      finalAssistant,
+    ];
+
+    const result = mergeRunMessagesTimestamp({ initialResponse, runMessages });
+
+    expect(result).not.toBe(runMessages);
+    expect(result[0]).toBe(firstAssistant);
+    expect(result[2]).toEqual(
+      expect.objectContaining({ clientTimestamp: initialResponse.clientTimestamp }),
+    );
+  });
+
+  it('keeps run messages unchanged when the final assistant already has a timestamp', () => {
+    const runMessages = [
+      {
+        messageId: 'assistant-1',
+        isCreatedByUser: false,
+        createdAt: '2026-08-18T12:01:00.000Z',
+      } as TMessage,
+    ];
+
+    expect(mergeRunMessagesTimestamp({ initialResponse, runMessages })).toBe(runMessages);
   });
 });
 describe('isInitialNewConversationSubmission', () => {

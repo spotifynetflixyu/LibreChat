@@ -7,6 +7,7 @@ import {
   cn,
   getHeaderPrefixForScreenReader,
   getMessageAriaLabel,
+  isValidTimestamp,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { useAttachments, useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
@@ -158,7 +159,9 @@ const ContentRender = memo(function ContentRender({
         msg.model,
         conversation?.model,
       )}
-      timestamp={msg.createdAt ?? msg.clientTimestamp}
+      timestamp={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+      isSubmitting={isSubmitting}
+      parentMessageId={msg.parentMessageId}
       ariaLabel={getMessageAriaLabel(msg, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
       isCreatedByUser={msg.isCreatedByUser === true}
@@ -208,7 +211,7 @@ const ContentRender = memo(function ContentRender({
         isLatestMessage={isLatestMessage}
         isSubmitting={isSubmitting}
         isCreatedByUser={msg.isCreatedByUser}
-        createdAt={msg.createdAt ?? msg.clientTimestamp}
+        createdAt={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
         conversationId={conversation?.conversationId}
         content={msg.content as Array<TMessageContentParts | undefined>}
       />

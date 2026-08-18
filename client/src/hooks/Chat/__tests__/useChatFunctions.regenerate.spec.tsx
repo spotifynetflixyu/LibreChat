@@ -211,6 +211,10 @@ describe('useChatFunctions ask', () => {
 
     expect(setMessages).toHaveBeenCalled();
     expect(setSubmission).toHaveBeenCalled();
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.initialResponse?.clientTimestamp).toBe(
+      submission.userMessage.clientTimestamp,
+    );
   });
 
   it('allows a new conversation before its message cache exists', () => {
