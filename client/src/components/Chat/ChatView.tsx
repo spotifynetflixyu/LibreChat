@@ -17,7 +17,6 @@ import {
 import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } from '~/Providers';
 import ConversationStarters from './Input/ConversationStarters';
 import { useGetMessagesByConvoId } from '~/data-provider';
-import ProjectLandingChip from './ProjectLandingChip';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -114,12 +113,22 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
       ? localize('com_ui_new_chat_in_project', { name: project.name })
       : undefined;
 
+  // Recoil conversation can lag the route during navigation; only announce a
+  // title that belongs to the conversation currently in the URL.
+  const conversationTitle =
+    chatHelpers.conversation?.conversationId === conversationId
+      ? chatHelpers.conversation?.title?.trim()
+      : undefined;
+  const pageHeading =
+    isLandingPage || !conversationTitle ? localize('com_ui_new_chat') : conversationTitle;
+
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <AddedChatContext.Provider value={addedChatHelpers}>
           <Presentation>
             <div className="relative flex h-full w-full flex-col">
+              <h1 className="sr-only">{pageHeading}</h1>
               <Header />
               <>
                 <div
@@ -134,12 +143,16 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                   <div
                     className={cn(
                       'w-full',
+                      !isLandingPage && 'scrollbar-gutter-spacer',
                       isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
                     )}
                   >
-                    {isProjectLandingPage && project && <ProjectLandingChip project={project} />}
                     {isLandingPage && <ConversationStarters />}
-                    <ChatForm index={index} placeholder={chatFormPlaceholder} />
+                    <ChatForm
+                      index={index}
+                      placeholder={chatFormPlaceholder}
+                      project={isProjectLandingPage ? project : undefined}
+                    />
                     {!isLandingPage && <Footer />}
                   </div>
                 </div>

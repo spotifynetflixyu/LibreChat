@@ -2,11 +2,10 @@ import { Constants } from 'librechat-data-provider';
 import type { EventSubmission, TMessage } from 'librechat-data-provider';
 import {
   buildCreatedInitialResponse,
-  getConcreteEarlyAbortMessages,
   getExistingConversationAbortMessages,
   isInitialNewConversationSubmission,
   mergeRegenerateFinalMessages,
-  shouldQueueTitleGenerationForFinal,
+  startedAsNewConversation,
 } from '~/hooks/SSE/useEventHandlers';
 
 describe('buildCreatedInitialResponse', () => {
@@ -42,22 +41,6 @@ describe('buildCreatedInitialResponse', () => {
     );
   });
 
-  it('uses the server response id from the created event when present', () => {
-    expect(
-      buildCreatedInitialResponse({
-        initialResponse,
-        userMessage,
-        responseMessageId: 'server-response-message',
-        isRegenerate: false,
-      }),
-    ).toEqual(
-      expect.objectContaining({
-        messageId: 'server-response-message',
-        parentMessageId: 'server-user-message',
-      }),
-    );
-  });
-
   it('preserves the regenerated prelim response id and parent', () => {
     expect(
       buildCreatedInitialResponse({
@@ -73,7 +56,6 @@ describe('buildCreatedInitialResponse', () => {
     );
   });
 });
-
 describe('isInitialNewConversationSubmission', () => {
   it('treats a root user message as an optimistic new chat', () => {
     expect(
@@ -98,34 +80,58 @@ describe('isInitialNewConversationSubmission', () => {
   });
 });
 
-describe('shouldQueueTitleGenerationForFinal', () => {
-  it('queues follow-up title generation when the saved conversation still has New Chat title', () => {
+describe('startedAsNewConversation', () => {
+  const rootUserMessage = {
+    messageId: 'user-1',
+    parentMessageId: Constants.NO_PARENT,
+  } as TMessage;
+
+  it('treats an unsaved conversation as a new chat', () => {
+    for (const conversationId of [undefined, Constants.NEW_CONVO, Constants.PENDING_CONVO]) {
+      expect(
+        startedAsNewConversation({
+          conversation: { conversationId },
+          userMessage: rootUserMessage,
+        } as EventSubmission),
+      ).toBe(true);
+    }
+  });
+
+  it('treats a first turn without a saved id as a new chat', () => {
     expect(
-      shouldQueueTitleGenerationForFinal({
-        conversationId: 'conversation-1',
-        title: 'New Chat',
-        isTemporary: false,
-      }),
+      startedAsNewConversation({
+        conversation: {},
+        userMessage: rootUserMessage,
+      } as EventSubmission),
     ).toBe(true);
   });
 
-  it('does not queue title generation when the conversation already has a real title', () => {
+  it('does not treat a regenerated first reply of a saved conversation as a new chat', () => {
     expect(
-      shouldQueueTitleGenerationForFinal({
-        conversationId: 'conversation-1',
-        title: '報價單整理',
-        isTemporary: false,
-      }),
+      startedAsNewConversation({
+        conversation: { conversationId: 'conversation-1' },
+        userMessage: rootUserMessage,
+        isRegenerate: true,
+      } as EventSubmission),
     ).toBe(false);
   });
 
-  it('does not queue title generation for temporary conversations', () => {
+  it('does not treat a resubmitted first message of a saved conversation as a new chat', () => {
     expect(
-      shouldQueueTitleGenerationForFinal({
-        conversationId: 'conversation-1',
-        title: 'New Chat',
-        isTemporary: true,
-      }),
+      startedAsNewConversation({
+        conversation: { conversationId: 'conversation-1' },
+        userMessage: rootUserMessage,
+        isEdited: true,
+      } as EventSubmission),
+    ).toBe(false);
+  });
+
+  it('does not treat a follow-up turn of a saved conversation as a new chat', () => {
+    expect(
+      startedAsNewConversation({
+        conversation: { conversationId: 'conversation-1' },
+        userMessage: { messageId: 'user-2', parentMessageId: 'assistant-1' } as TMessage,
+      } as EventSubmission),
     ).toBe(false);
   });
 });
@@ -219,37 +225,6 @@ describe('getExistingConversationAbortMessages', () => {
       getExistingConversationAbortMessages({
         messages: submissionMessages,
         currentMessages,
-      }).map(({ messageId }) => messageId),
-    ).toEqual(['user-1']);
-  });
-});
-
-describe('getConcreteEarlyAbortMessages', () => {
-  const userMessage = {
-    messageId: 'user-1',
-    conversationId: 'conversation-1',
-    text: 'OCR檔案內容，逐一列表給我核對。',
-    isCreatedByUser: true,
-    sender: 'User',
-    parentMessageId: Constants.NO_PARENT,
-  } as TMessage;
-
-  const assistantPlaceholder = {
-    messageId: 'user-1_',
-    parentMessageId: 'user-1',
-    conversationId: 'conversation-1',
-    text: '',
-    isCreatedByUser: false,
-    sender: 'Assistant',
-  } as TMessage;
-
-  it('keeps the already-created user message when a new conversation is stopped during preflight', () => {
-    expect(
-      getConcreteEarlyAbortMessages({
-        currentMessages: [userMessage, assistantPlaceholder],
-        submissionMessages: [],
-        userMessage,
-        isInitialNewConvo: true,
       }).map(({ messageId }) => messageId),
     ).toEqual(['user-1']);
   });

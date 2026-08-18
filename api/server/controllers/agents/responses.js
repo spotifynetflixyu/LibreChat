@@ -12,8 +12,12 @@ const {
 const {
   createRun,
   applyContextToAgent,
+  buildInitialToolSessions,
   buildToolSet,
+  AgentRunEnvelopeError,
+  createAgentRunEnvelope,
   buildAgentScopedContext,
+  buildInlineMemoryContext,
   buildAgentContextAttachmentsByAgentId,
   buildDefaultSteelGlobalAgentContext,
   delegateOcrStreamEventName,
@@ -29,8 +33,10 @@ const {
   recordCollectedUsage,
   createSubagentUsageSink,
   getTransactionsConfig,
+  resolveAgentTokenConfig,
   findPiiMatchInMessages,
   discoverConnectedAgents,
+  resolveSubagentGraphs,
   createToolExecuteHandler,
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
@@ -54,6 +60,8 @@ const {
   sendResponsesErrorResponse,
   createResponsesEventHandlers,
   createAggregatorEventHandlers,
+  getLangfuseTraceMessageFields,
+  stripActivityLabelParts,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -67,6 +75,7 @@ const {
   loadAgentTools,
   loadToolsForExecution,
   runSteelPaddleOcrPreflight,
+  isFatalAgentInitializationError,
 } = require('~/server/services/ToolService');
 const {
   findAccessibleResources,
@@ -78,13 +87,18 @@ const {
   canAuthorSkillFiles,
   withDeploymentSkillIds,
   buildAgentToolContext,
+  resolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext,
 } = require('~/server/services/Endpoints/agents/skillDeps');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
-const { resolveConfigServers } = require('~/server/services/MCP');
+const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
+const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
+
+const filterFilesByRemoteAgentAccess = (params) =>
+  filterFilesByAgentAccess({ ...params, resourceType: ResourceType.REMOTE_AGENT });
 
 /**
  * Creates a tool loader function for the agent.
@@ -102,6 +116,8 @@ function createToolLoader(signal, definitionsOnly = true) {
     provider,
     tool_options,
     tool_resources,
+    codeExecutionContext,
+    accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
     try {
@@ -111,10 +127,16 @@ function createToolLoader(signal, definitionsOnly = true) {
         agent,
         signal,
         tool_resources,
+        codeExecutionContext,
+        agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
+        accessibleMcpServerNames,
         streamId: null,
       });
     } catch (error) {
+      if (isFatalAgentInitializationError(error)) {
+        throw error;
+      }
       logger.error('Error loading tools for agent ' + agentId, error);
     }
   };
@@ -370,6 +392,8 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
 async function saveResponseOutput(req, conversationId, responseId, response, agentId) {
   const responseText = extractSteelNativeResponseOutputText(response);
 
+  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
+
   // Save the assistant message
   await db.saveMessage(
     req,
@@ -378,6 +402,7 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
       conversationId,
       parentMessageId: null,
       isCreatedByUser: false,
+      ...langfuseTraceFields,
       text: responseText,
       sender: 'Agent',
       endpoint: EModelEndpoint.agents,
@@ -456,25 +481,20 @@ function convertMessagesToOutputItems(messages) {
 }
 
 /**
- * Create Response - POST /v1/responses
+ * Runs a validated Responses envelope in the current process.
+ * Express remains runtime-only state while the envelope is the portable run input.
  *
- * Creates a model response following the Open Responses API specification.
- * Supports both streaming and non-streaming responses.
- *
- * @param {import('express').Request} req
- * @param {import('express').Response} res
+ * @param {import('@librechat/api').ResponsesRunEnvelope} envelope
+ * @param {{req: import('express').Request, res: import('express').Response}} runtime
  */
-const createResponse = async (req, res) => {
+const executeResponse = async (envelope, { req, res }) => {
   const appConfig = req.config;
-  const requestStartTime = Date.now();
-
-  // Validate request
-  const validation = validateResponseRequest(req.body);
-  if (isValidationFailure(validation)) {
-    return sendResponsesErrorResponse(res, 400, validation.error);
-  }
-
-  const request = validation.request;
+  const requestStartTime = envelope.receivedAt;
+  const { principal } = envelope;
+  const request = envelope.payload;
+  // The local executor keeps the current Express-dependent initialization path,
+  // but all request-body reads now observe the detached envelope payload.
+  req.body = request;
   const requestedStore = request.store;
   const shouldStoreResponse = normalizeSteelNativeResponseStorage(request);
   const agentId = request.model;
@@ -525,7 +545,7 @@ const createResponse = async (req, res) => {
       }
       const continuation = await resolveResponseConversation(
         request.previous_response_id,
-        req.user?.id,
+        principal?.userId ?? req.user?.id,
       );
       continuationConversationId = continuation?.conversationId ?? null;
       if (!continuationConversationId) {
@@ -535,11 +555,10 @@ const createResponse = async (req, res) => {
 
     const conversationId = continuationConversationId ?? uuidv4();
     const parentMessageId = null;
+    const agentsEConfig = appConfig?.endpoints?.[EModelEndpoint.agents];
 
     // Build allowed providers set
-    const allowedProviders = new Set(
-      appConfig?.endpoints?.[EModelEndpoint.agents]?.allowedProviders,
-    );
+    const allowedProviders = new Set(agentsEConfig?.allowedProviders);
 
     // Create tool loader
     const loadTools = createToolLoader(abortController.signal);
@@ -551,17 +570,13 @@ const createResponse = async (req, res) => {
       model_parameters: agent.model_parameters ?? {},
     };
 
-    // `filterFilesByAgentAccess` is intentionally omitted: it calls
-    // `checkPermission` with `resourceType: AGENT`, but this route
-    // authorizes callers through `REMOTE_AGENT` (via
-    // `getRemoteAgentPermissions`), so including it would silently drop
-    // owner-attached context files for any remote user who has
-    // `REMOTE_AGENT_VIEWER` but not direct `AGENT_VIEW`.
     const dbMethods = {
       getConvoFiles: db.getConvoFiles,
       getFiles: db.getFiles,
+      filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
       getUserKey: db.getUserKey,
       getMessages: db.getMessages,
+      getAccessibleMcpServerNames,
       updateFilesUsage: db.updateFilesUsage,
       getUserKeyValues: db.getUserKeyValues,
       getUserCodeFiles: db.getUserCodeFiles,
@@ -572,16 +587,20 @@ const createResponse = async (req, res) => {
       getSkillByName: skillDbMethods.getSkillByName,
     };
 
-    const enabledCapabilities = new Set(
-      appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities,
-    );
+    const enabledCapabilities = new Set(agentsEConfig?.capabilities);
+    const memoryAvailable = await resolveMemoryAvailability({
+      enabledCapabilities,
+      memoryConfig: appConfig?.memory,
+      user: req.user,
+      getRoleByName: db.getRoleByName,
+    });
     const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
-    const ephemeralSkillsToggle = req.body?.ephemeralAgent?.skills === true;
+    const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
     const accessibleSkillIds = skillsCapabilityEnabled
       ? withDeploymentSkillIds(
           await findAccessibleResources({
-            userId: req.user.id,
-            role: req.user.role,
+            userId: principal.userId,
+            role: principal.role,
             resourceType: ResourceType.SKILL,
             requiredPermissions: PermissionBits.VIEW,
           }),
@@ -589,8 +608,8 @@ const createResponse = async (req, res) => {
       : [];
     const editableSkillIds = skillsCapabilityEnabled
       ? await findAccessibleResources({
-          userId: req.user.id,
-          role: req.user.role,
+          userId: principal.userId,
+          role: principal.role,
           resourceType: ResourceType.SKILL,
           requiredPermissions: PermissionBits.EDIT,
         })
@@ -600,13 +619,13 @@ const createResponse = async (req, res) => {
       : false;
 
     const { skillStates, defaultActiveOnShare } = await loadSkillStates({
-      userId: req.user.id,
+      userId: principal.userId,
       appConfig,
       getUserById: db.getUserById,
       accessibleSkillIds,
     });
 
-    const manualSkills = extractManualSkills(req.body);
+    const manualSkills = extractManualSkills(request);
 
     const primaryScopedSkillIds = resolveAgentScopedSkillIds({
       agent,
@@ -643,9 +662,12 @@ const createResponse = async (req, res) => {
         }),
         codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
         backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
+        toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
         statefulSessionsAvailable: enabledCapabilities.has(
           AgentCapabilities.stateful_code_sessions,
         ),
+        allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
+        memoryAvailable,
         skillStates,
         defaultActiveOnShare,
         manualSkills,
@@ -672,95 +694,125 @@ const createResponse = async (req, res) => {
       buildAgentToolContext({ agent, config: primaryConfig }),
     );
 
-    // Only run BFS discovery (and pay `getModelsConfig` upfront) when the
-    // primary has edges to follow — the common API case is single-agent.
     let handoffAgentConfigs = new Map();
     let discoveredEdges = [];
     let discoveredMCPAuthMap;
-    if (primaryConfig.edges?.length) {
+    const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+    const primaryHasGraphSubagents =
+      subagentsCapabilityEnabled &&
+      primaryConfig.subagents?.enabled === true &&
+      (primaryConfig.subagents.graphs?.length ?? 0) > 0;
+    if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
       const modelsConfig = await getModelsConfig(req);
-      ({
-        agentConfigs: handoffAgentConfigs,
-        edges: discoveredEdges,
-        userMCPAuthMap: discoveredMCPAuthMap,
-      } = await discoverConnectedAgents(
-        {
-          req,
-          res,
-          primaryConfig,
-          endpointOption,
-          allowedProviders,
-          modelsConfig,
-          loadTools,
-          requestFiles: [],
-          conversationId,
-          parentMessageId,
-          // The route enforces REMOTE_AGENT on the primary; every discovered
-          // sub-agent must clear the same sharing boundary, not the looser
-          // in-app AGENT one.
-          resourceType: ResourceType.REMOTE_AGENT,
-          computeAccessibleSkillIds: (handoffAgent) =>
-            resolveAgentScopedSkillIds({
+      const discoveryParams = {
+        req,
+        res,
+        primaryConfig,
+        endpointOption,
+        allowedProviders,
+        modelsConfig,
+        loadTools,
+        requestFiles: [],
+        conversationId,
+        parentMessageId,
+        resourceType: ResourceType.REMOTE_AGENT,
+        computeAccessibleSkillIds: (handoffAgent) =>
+          resolveAgentScopedSkillIds({
+            agent: handoffAgent,
+            accessibleSkillIds,
+            skillsCapabilityEnabled,
+            ephemeralSkillsToggle,
+          }),
+        computeSkillAuthoringAvailable: (handoffAgent) =>
+          canAuthorSkillFiles({
+            agent: handoffAgent,
+            scopedEditableSkillIds: resolveAgentScopedSkillIds({
               agent: handoffAgent,
-              accessibleSkillIds,
+              accessibleSkillIds: editableSkillIds,
               skillsCapabilityEnabled,
               ephemeralSkillsToggle,
             }),
-          computeSkillAuthoringAvailable: (handoffAgent) =>
-            canAuthorSkillFiles({
-              agent: handoffAgent,
-              scopedEditableSkillIds: resolveAgentScopedSkillIds({
-                agent: handoffAgent,
-                accessibleSkillIds: editableSkillIds,
-                skillsCapabilityEnabled,
-                ephemeralSkillsToggle,
-              }),
-              skillCreateAllowed,
-              skillsCapabilityEnabled,
-              ephemeralSkillsToggle,
-            }),
-          skillStates,
-          defaultActiveOnShare,
-          /** @see DiscoverConnectedAgentsParams.codeEnvAvailable */
-          codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
-          backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
-          statefulSessionsAvailable: enabledCapabilities.has(
-            AgentCapabilities.stateful_code_sessions,
-          ),
+            skillCreateAllowed,
+            skillsCapabilityEnabled,
+            ephemeralSkillsToggle,
+          }),
+        skillStates,
+        defaultActiveOnShare,
+        codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
+        backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
+        toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
+        memoryAvailable,
+      };
+      const discoveryDeps = {
+        getAgent: db.getAgent,
+        checkPermission: async ({ userId, role, resourceId, requiredPermission }) => {
+          const permissions = await getRemoteAgentPermissions(
+            { getEffectivePermissions },
+            userId,
+            role,
+            resourceId,
+          );
+          return hasPermissions(permissions, requiredPermission);
         },
-        {
-          getAgent: db.getAgent,
-          // Use `getRemoteAgentPermissions` so sub-agent authorization
-          // matches what the route's `createCheckRemoteAgentAccess`
-          // middleware does for the primary: AGENT owners with the SHARE
-          // bit are treated as remotely authorized even without an
-          // explicit REMOTE_AGENT grant.
-          checkPermission: async ({ userId, role, resourceId, requiredPermission }) => {
-            const permissions = await getRemoteAgentPermissions(
-              { getEffectivePermissions },
-              userId,
-              role,
-              resourceId,
-            );
-            return hasPermissions(permissions, requiredPermission);
-          },
-          logViolation,
-          db: dbMethods,
-          onAgentInitialized: (agentId, handoffAgent, config) => {
-            agentToolContexts.set(agentId, buildAgentToolContext({ agent: handoffAgent, config }));
-          },
-          initializeAgent,
+        logViolation,
+        db: dbMethods,
+        onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
+          agentToolContexts.set(
+            loadedAgentId,
+            buildAgentToolContext({ agent: loadedAgent, config }),
+          );
         },
-      ));
+        initializeAgent,
+      };
+      if (primaryConfig.edges?.length) {
+        ({
+          agentConfigs: handoffAgentConfigs,
+          edges: discoveredEdges,
+          userMCPAuthMap: discoveredMCPAuthMap,
+        } = await discoverConnectedAgents(discoveryParams, discoveryDeps));
+      }
+      if (subagentsCapabilityEnabled) {
+        discoveredMCPAuthMap = await resolveSubagentGraphs(
+          {
+            ...discoveryParams,
+            rootConfigs: [primaryConfig, ...handoffAgentConfigs.values()],
+          },
+          discoveryDeps,
+        );
+      }
     }
 
     primaryConfig.edges = discoveredEdges;
+    const endpointTokenConfigByAgentId = new Map();
+    for (const [agentId, context] of agentToolContexts) {
+      endpointTokenConfigByAgentId.set(agentId, context.endpointTokenConfig);
+    }
+    const resolveEndpointTokenConfig = (usage) =>
+      resolveAgentTokenConfig({
+        agentId: usage?.agentId,
+        byAgentId: endpointTokenConfigByAgentId,
+        fallback: primaryConfig.endpointTokenConfig,
+      });
     const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
+    const initialSessions = buildInitialToolSessions({ agents: runAgents });
+    const contextAgentsById = new Map(runAgents.map((runAgent) => [runAgent.id, runAgent]));
+    for (const runAgent of runAgents) {
+      for (const graph of runAgent.subagentGraphConfigs ?? []) {
+        for (const memberConfig of graph.memberConfigs) {
+          contextAgentsById.set(memberConfig.id, memberConfig);
+        }
+      }
+    }
+    const contextAgents = [...contextAgentsById.values()];
     const mergedMCPAuthMap = discoveredMCPAuthMap ?? primaryConfig.userMCPAuthMap;
 
-    const agentContextAttachmentsByAgentId = buildAgentContextAttachmentsByAgentId(runAgents);
+    const agentContextAttachmentsByAgentId = buildAgentContextAttachmentsByAgentId(contextAgents);
     const agentScopedContext = await buildAgentScopedContext({
-      agentIds: runAgents.map(({ id }) => id),
+      agentIds: contextAgents.map(({ id }) => id),
       attachmentsByAgentId: agentContextAttachmentsByAgentId,
       req,
     });
@@ -768,6 +820,27 @@ const createResponse = async (req, res) => {
     const mcpManager = getMCPManager();
     const configServers = await resolveConfigServers(req);
 
+    await Promise.all(
+      contextAgents.map(async (runAgent) => {
+        const memoryContext = await buildInlineMemoryContext({
+          agent: runAgent,
+          req,
+          userId: principal.userId,
+          memoryAvailable,
+          getFormattedMemories: db.getFormattedMemories,
+        });
+        return applyContextToAgent({
+          agent: runAgent,
+          agentId: runAgent.id,
+          logger,
+          mcpManager,
+          configServers,
+          sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
+            .filter(Boolean)
+            .join('\n\n'),
+        });
+      }),
+    );
     // Determine if streaming is enabled (check both request and agent config)
     const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
     const actuallyStreaming = isStreaming && !streamingDisabled;
@@ -775,7 +848,7 @@ const createResponse = async (req, res) => {
     // Load previous messages if previous_response_id is provided
     let previousMessages = [];
     if (request.previous_response_id) {
-      const userId = req.user?.id ?? 'api-user';
+      const userId = principal?.userId ?? req.user?.id ?? 'api-user';
       previousMessages = await loadPreviousMessages(conversationId, userId);
     }
 
@@ -792,7 +865,9 @@ const createResponse = async (req, res) => {
       return sendResponsesErrorResponse(
         res,
         400,
-        `Message contains a ${piiHit.label}. Remove it and try again.`,
+        piiHit.misconfigured
+          ? 'Message filtering is misconfigured; contact your administrator.'
+          : `Message contains a ${piiHit.label}. Remove it and try again.`,
         'invalid_request',
         'message_filter_pii_block',
       );
@@ -920,7 +995,7 @@ const createResponse = async (req, res) => {
     );
 
     const toolSet = buildToolSet(primaryConfig);
-    const formatted = formatAgentMessages(allMessages, {}, toolSet);
+    const formatted = formatAgentMessages(stripActivityLabelParts(allMessages), {}, toolSet);
     const formattedMessages = formatted.messages;
     const initialSummary = formatted.summary;
     let indexTokenCountMap = formatted.indexTokenCountMap;
@@ -1003,17 +1078,21 @@ const createResponse = async (req, res) => {
           const result = await loadToolsForExecution({
             req,
             res,
+            agentResourceType: ResourceType.REMOTE_AGENT,
+            conversationId,
             toolNames,
             agent: ctx.agent ?? agent,
             signal: abortController.signal,
             toolRegistry: ctx.toolRegistry,
             backgroundToolNames: ctx.backgroundToolNames,
+            intentToolNames: ctx.intentToolNames,
             mcpAvailableTools: ctx.mcpAvailableTools,
             requestScopedConnections: ctx.requestScopedConnections,
             userMCPAuthMap: ctx.userMCPAuthMap,
             tool_resources: ctx.tool_resources,
             actionsEnabled: ctx.actionsEnabled,
             enableDelegateOcrStreaming: true,
+            accessibleMcpServerNames: ctx.accessibleMcpServerNames,
           });
           return enrichLoadedToolsWithAgentContext({
             result,
@@ -1056,7 +1135,7 @@ const createResponse = async (req, res) => {
       };
 
       // Create and run the agent
-      const userId = req.user?.id ?? 'api-user';
+      const userId = principal.userId;
       const userMCPAuthMap = mergedMCPAuthMap;
 
       const run = await createRun({
@@ -1069,18 +1148,23 @@ const createResponse = async (req, res) => {
         appConfig,
         signal: abortController.signal,
         customHandlers: handlers,
+        initialSessions,
         requestBody: {
           messageId: responseId,
           conversationId,
         },
         user: { id: userId },
-        tenantId: req.user?.tenantId,
+        tenantId: principal?.tenantId ?? req.user?.tenantId,
         openAIOAuthModelOptionsSink: (modelOptions) => {
           req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
         },
         /** Bills subagent child-run model calls (reported outside the
          *  streamEvents loop) into the same collectedUsage array. */
-        subagentUsageSink: createSubagentUsageSink(collectedUsage),
+        subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) => {
+          responsesHandlers.on_chat_model_end.handle('on_chat_model_end', {
+            output: { usage_metadata: usage },
+          });
+        }),
       });
 
       if (!run) {
@@ -1132,6 +1216,8 @@ const createResponse = async (req, res) => {
           balance: balanceConfig,
           transactions: transactionsConfig,
           model: primaryConfig.model || agent.model_parameters?.model,
+          endpointTokenConfig: primaryConfig.endpointTokenConfig,
+          resolveEndpointTokenConfig,
         },
       ).catch((err) => {
         logger.error('[Responses API] Error recording usage:', err);
@@ -1196,17 +1282,21 @@ const createResponse = async (req, res) => {
           const result = await loadToolsForExecution({
             req,
             res,
+            agentResourceType: ResourceType.REMOTE_AGENT,
+            conversationId,
             toolNames,
             agent: ctx.agent ?? agent,
             signal: abortController.signal,
             toolRegistry: ctx.toolRegistry,
             backgroundToolNames: ctx.backgroundToolNames,
+            intentToolNames: ctx.intentToolNames,
             mcpAvailableTools: ctx.mcpAvailableTools,
             requestScopedConnections: ctx.requestScopedConnections,
             userMCPAuthMap: ctx.userMCPAuthMap,
             tool_resources: ctx.tool_resources,
             actionsEnabled: ctx.actionsEnabled,
             enableDelegateOcrStreaming: true,
+            accessibleMcpServerNames: ctx.accessibleMcpServerNames,
           });
           return enrichLoadedToolsWithAgentContext({
             result,
@@ -1247,7 +1337,7 @@ const createResponse = async (req, res) => {
           : {}),
       };
 
-      const userId = req.user?.id ?? 'api-user';
+      const userId = principal.userId;
       const userMCPAuthMap = mergedMCPAuthMap;
 
       const run = await createRun({
@@ -1260,18 +1350,23 @@ const createResponse = async (req, res) => {
         appConfig,
         signal: abortController.signal,
         customHandlers: handlers,
+        initialSessions,
         requestBody: {
           messageId: responseId,
           conversationId,
         },
         user: { id: userId },
-        tenantId: req.user?.tenantId,
+        tenantId: principal?.tenantId ?? req.user?.tenantId,
         openAIOAuthModelOptionsSink: (modelOptions) => {
           req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
         },
         /** Bills subagent child-run model calls (reported outside the
          *  streamEvents loop) into the same collectedUsage array. */
-        subagentUsageSink: createSubagentUsageSink(collectedUsage),
+        subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) => {
+          aggregatorHandlers.on_chat_model_end.handle('on_chat_model_end', {
+            output: { usage_metadata: usage },
+          });
+        }),
       });
 
       if (!run) {
@@ -1322,6 +1417,8 @@ const createResponse = async (req, res) => {
           balance: balanceConfig,
           transactions: transactionsConfig,
           model: primaryConfig.model || agent.model_parameters?.model,
+          endpointTokenConfig: primaryConfig.endpointTokenConfig,
+          resolveEndpointTokenConfig,
         },
       ).catch((err) => {
         logger.error('[Responses API] Error recording usage:', err);
@@ -1377,9 +1474,49 @@ const createResponse = async (req, res) => {
           ? error.status
           : 500;
       const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
-      sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
+      const errorCode = typeof error?.code === 'string' ? error.code : undefined;
+      if (errorCode === undefined) {
+        sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
+      } else {
+        sendResponsesErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
+      }
     }
   }
+};
+
+/**
+ * Open Responses ingress adapter for agents.
+ * Authentication and remote-agent authorization have already run in route middleware.
+ *
+ * POST /v1/responses
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ */
+const createResponse = async (req, res) => {
+  const receivedAt = Date.now();
+  const validation = validateResponseRequest(req.body);
+  if (isValidationFailure(validation)) {
+    return sendResponsesErrorResponse(res, 400, validation.error);
+  }
+
+  let envelope;
+  try {
+    envelope = createAgentRunEnvelope({
+      protocol: 'responses',
+      requestId: req.requestId ?? req.id ?? `agent-run-${nanoid()}`,
+      receivedAt,
+      principal: req.user,
+      payload: validation.request,
+    });
+  } catch (error) {
+    if (error instanceof AgentRunEnvelopeError) {
+      return sendResponsesErrorResponse(res, 400, error.message, 'invalid_request');
+    }
+    throw error;
+  }
+
+  return executeResponse(envelope, { req, res });
 };
 
 /**

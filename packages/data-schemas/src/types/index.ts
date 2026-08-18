@@ -29,6 +29,7 @@ export * from './prompts';
 /* Skills */
 export * from './skill';
 export * from './skillSync';
+export * from './triggerDelivery';
 /* Access Control */
 export * from './accessRole';
 export * from './aclEntry';
@@ -45,3 +46,4 @@ export * from './web';
 export * from './mcp';
 /* Steel */
 export * from './steel';
+export * from './mcpAuthority';

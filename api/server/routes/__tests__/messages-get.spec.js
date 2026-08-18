@@ -1,3 +1,4 @@
+const { CLIENT_MESSAGE_SELECT } = require('@librechat/data-schemas');
 const express = require('express');
 const request = require('supertest');
 
@@ -110,13 +111,20 @@ describe('message route conversation ownership filters', () => {
     });
   });
 
-  it('should save POST messages with the validated URL conversationId', async () => {
+  it('should pass only mutable conversation fields to saveConvo', async () => {
     const urlConversationId = '11111111-1111-4111-8111-111111111111';
     const bodyConversationId = '22222222-2222-4222-8222-222222222222';
     const savedMessage = {
+      _id: 'message-object-id',
+      __v: 0,
       messageId: 'message-1',
       conversationId: urlConversationId,
       text: 'hello',
+      endpoint: 'openAI',
+      model: 'gpt-5',
+      iconURL: 'https://example.com/icon.png',
+      isTemporary: false,
+      files: [{ file_id: 'file-1' }],
       user: authenticatedUserId,
     };
 
@@ -127,6 +135,9 @@ describe('message route conversation ownership filters', () => {
       messageId: savedMessage.messageId,
       conversationId: bodyConversationId,
       text: savedMessage.text,
+      endpoint: savedMessage.endpoint,
+      model: savedMessage.model,
+      iconURL: savedMessage.iconURL,
     });
 
     expect(response.status).toBe(201);
@@ -143,7 +154,12 @@ describe('message route conversation ownership filters', () => {
     expect(saveMessage.mock.calls[0][1].conversationId).not.toBe(bodyConversationId);
     expect(saveConvo).toHaveBeenCalledWith(
       expect.objectContaining({ userId: authenticatedUserId }),
-      savedMessage,
+      {
+        conversationId: urlConversationId,
+        endpoint: savedMessage.endpoint,
+        model: savedMessage.model,
+        iconURL: savedMessage.iconURL,
+      },
       { context: 'POST /api/messages/:conversationId' },
     );
   });
@@ -156,7 +172,7 @@ describe('message route conversation ownership filters', () => {
     expect(response.status).toBe(200);
     expect(getMessages).toHaveBeenCalledWith(
       { conversationId: 'convo-1', user: authenticatedUserId },
-      '-_id -__v -user',
+      CLIENT_MESSAGE_SELECT,
     );
   });
 
@@ -201,7 +217,7 @@ describe('message route conversation ownership filters', () => {
     expect(eventsBeforeValidation).toEqual(['messages-started']);
     expect(getMessages).toHaveBeenCalledWith(
       { conversationId: 'convo-1', user: authenticatedUserId },
-      '-_id -__v -user',
+      CLIENT_MESSAGE_SELECT,
     );
 
     expect(response.status).toBe(200);
@@ -227,7 +243,7 @@ describe('message route conversation ownership filters', () => {
 
     expect(getMessages).toHaveBeenCalledWith(
       { conversationId: 'convo-1', user: authenticatedUserId },
-      '-_id -__v -user',
+      CLIENT_MESSAGE_SELECT,
     );
     expect(response.status).toBe(404);
     expect(response.body).toEqual({ error: 'Conversation not found' });
@@ -241,7 +257,7 @@ describe('message route conversation ownership filters', () => {
     expect(response.status).toBe(200);
     expect(getMessages).toHaveBeenCalledWith(
       { conversationId: 'convo-1', messageId: 'message-1', user: authenticatedUserId },
-      '-_id -__v -user',
+      CLIENT_MESSAGE_SELECT,
     );
   });
 });

@@ -17,7 +17,9 @@ const {
   extractCodeArtifactText,
   getExtractedTextFormat,
   getStorageMetadata,
+  getCodeExecutionBaseUrl,
   buildCodeEnvDownloadQuery,
+  CODE_API_EXPECTED_PROFILE_HEADER,
 } = require('@librechat/api');
 const {
   Tools,
@@ -29,7 +31,11 @@ const {
   inferMimeType,
   EToolResources,
   EModelEndpoint,
+  ErrorTypes,
   mergeFileConfig,
+  getCodeEnvRefs,
+  mergeCodeEnvRef,
+  getCodeEnvRefForProfile,
   getEndpointFileConfig,
 } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
@@ -52,25 +58,30 @@ const axios = createAxiosInstance();
  * @param {string} params.toolCallId - The tool call ID that generated the file.
  * @param {string} params.messageId - The current message ID.
  * @param {number} params.expiresAt - Expiration timestamp (24 hours from creation).
+ * @param {'default'|'stateful'} [params.executionProfile] - Code API route for later fallback download.
  * @returns {Object} Fallback response with download URL.
  */
 const createDownloadFallback = ({
   id,
   name,
+  agentId,
   messageId,
   expiresAt,
   session_id,
   toolCallId,
   conversationId,
+  executionProfile,
 }) => {
   const basePath = getBasePath();
+  const profileQuery = executionProfile === 'stateful' ? '?execution_profile=stateful' : '';
   return {
     filename: name,
-    filepath: `${basePath}/api/files/code/download/${session_id}/${id}`,
+    filepath: `${basePath}/api/files/code/download/${session_id}/${id}${profileQuery}`,
     expiresAt,
     conversationId,
     toolCallId,
     messageId,
+    agentId,
   };
 };
 
@@ -311,6 +322,8 @@ const runPreviewFinalize = ({ finalize, fileId, previewRevision, onResolved }) =
  * @param {string} params.session_id - The code execution session ID.
  * @param {string} params.conversationId - The current conversation ID.
  * @param {string} params.messageId - The current message ID.
+ * @param {string} [params.codeApiBaseUrl] - Trusted per-agent Code API endpoint.
+ * @param {'default'|'stateful'} [params.executionProfile] - Trusted execution profile.
  * @returns {Promise<{ file: MongoFile & { messageId: string, toolCallId: string }, finalize?: () => Promise<MongoFile | null> }>}
  */
 const processCodeOutput = async ({
@@ -321,10 +334,14 @@ const processCodeOutput = async ({
   conversationId,
   messageId,
   session_id,
+  agentId,
+  freshClaimAfter,
+  codeApiBaseUrl,
+  executionProfile = 'default',
 }) => {
   const appConfig = req.config;
   const currentDate = new Date();
-  const baseURL = getCodeBaseURL();
+  const baseURL = codeApiBaseUrl ?? getCodeExecutionBaseUrl(executionProfile);
   const fileExt = path.extname(name).toLowerCase();
   const isImage = fileExt && imageExtRegex.test(name);
 
@@ -351,6 +368,7 @@ const processCodeOutput = async ({
       headers: {
         'User-Agent': 'LibreChat/1.0',
         ...authHeaders,
+        [CODE_API_EXPECTED_PROFILE_HEADER]: executionProfile,
       },
       httpAgent: codeServerHttpAgent,
       httpsAgent: codeServerHttpsAgent,
@@ -368,10 +386,12 @@ const processCodeOutput = async ({
         file: createDownloadFallback({
           id,
           name,
+          agentId,
           messageId,
           toolCallId,
           session_id,
           conversationId,
+          executionProfile,
           expiresAt: currentDate.getTime() + 86400000,
         }),
       };
@@ -385,6 +405,7 @@ const processCodeOutput = async ({
       id: req.user.id,
       storage_session_id: session_id,
       file_id: id,
+      executionProfile,
     };
 
     /* `safeName` keeps the directory structure (`a/b/file.txt` -> `a/b/file.txt`)
@@ -410,6 +431,16 @@ const processCodeOutput = async ({
      * (e.g. `"proj name/file@v1.txt"`) would claim under the raw name and
      * then write under the sanitized one, leaving the claim row orphaned.
      */
+    /**
+     * Dispatch-order stamp persisted with every write AND every claim insert
+     * (foreground writes dispatch ≈ now): the out-of-order guard below
+     * compares WRITER dispatch order, not wall-clock write time — an older
+     * task writing late must not make a newer task's harvest look stale, and
+     * a freshly claimed row must carry its claimant's stamp before the
+     * content write lands.
+     */
+    const sourceDispatchedAt = freshClaimAfter ?? Date.now();
+
     const newFileId = v4();
     const claimed = await claimCodeFile({
       filename: safeName,
@@ -417,15 +448,67 @@ const processCodeOutput = async ({
       file_id: newFileId,
       user: req.user.id,
       tenantId: req.user.tenantId,
+      sourceDispatchedAt,
     });
     const file_id = claimed.file_id;
     const isUpdate = file_id !== newFileId;
+
+    /**
+     * Out-of-order guard for detached (background) harvests: when the claimed
+     * row's last writer was dispatched AFTER this task (`freshClaimAfter` =
+     * this task's dispatch time), a newer run owns this filename slot. The
+     * `(filename, conversationId)` unique index means the stale bytes have
+     * nowhere else to live, so skip this file rather than overwrite fresh
+     * content — the harvest's stdout patch still lands, only the superseded
+     * attachment is omitted. Falls back to `updatedAt` for rows written
+     * before the stamp existed (the claim itself is timestamp-neutral).
+     */
+    const lastWriterDispatchedAt =
+      claimed.metadata?.sourceDispatchedAt ??
+      (claimed.updatedAt != null ? new Date(claimed.updatedAt).getTime() : null);
+    if (isUpdate && freshClaimAfter != null && lastWriterDispatchedAt > freshClaimAfter) {
+      logger.warn(
+        `[processCodeOutput] Skipping stale background output "${safeName}" (${file_id}): a newer run owns this filename`,
+      );
+      return null;
+    }
 
     if (isUpdate) {
       logger.debug(
         `[processCodeOutput] Updating existing file "${safeName}" (${file_id}) instead of creating duplicate`,
       );
     }
+
+    /**
+     * Background harvests commit through a CONDITIONAL write: the ownership
+     * predicate (last writer's dispatch stamp not newer than ours) is part of
+     * the update's filter, so check and write are one atomic operation — a
+     * stale harvest's commit simply misses and its attachment is skipped.
+     * The row always exists here (the claim inserted it), so the non-upsert
+     * `updateFile` matches `createFile(data, true)` semantics ($set + TTL
+     * unset). Bytes a loser may have already uploaded to the shared storage
+     * key are a narrow residual that per-file locking would be needed to
+     * close. Foreground writes keep the unconditional `createFile` path.
+     */
+    const commitCodeFile = async (fileData) => {
+      if (freshClaimAfter == null) {
+        await createFile(fileData, true);
+        return true;
+      }
+      const committed = await updateFile(fileData, {
+        $or: [
+          { 'metadata.sourceDispatchedAt': { $exists: false } },
+          { 'metadata.sourceDispatchedAt': { $lte: sourceDispatchedAt } },
+        ],
+      });
+      if (!committed) {
+        logger.warn(
+          `[processCodeOutput] Skipping stale background output "${safeName}" (${file_id}): a newer run owns this filename`,
+        );
+        return false;
+      }
+      return true;
+    };
 
     /**
      * Preserve the original `messageId` on update. Each `processCodeOutput`
@@ -436,6 +519,14 @@ const processCodeOutput = async ({
      * silently excludes the file from priming on subsequent turns.
      */
     const persistedMessageId = isUpdate ? (claimed.messageId ?? messageId) : messageId;
+    /* A generated-output write replaces the file's bytes, so pointers to
+     * earlier content in another profile must not survive as reusable refs. */
+    const codeEnvReferenceSet = mergeCodeEnvRef(undefined, codeEnvRef);
+    const codeEnvMetadata = {
+      ...claimed.metadata,
+      ...codeEnvReferenceSet,
+      sourceDispatchedAt,
+    };
 
     if (isImage) {
       const usage = isUpdate ? (claimed.usage ?? 0) + 1 : 1;
@@ -456,6 +547,7 @@ const processCodeOutput = async ({
         usage,
         filename: safeName,
         conversationId,
+        executionProfile,
         user: req.user.id,
         tenantId: req.user.tenantId,
         type: `image/${appConfig.imageOutputType}`,
@@ -463,11 +555,13 @@ const processCodeOutput = async ({
         updatedAt: formattedDate,
         source: appConfig.fileStrategy,
         context: FileContext.execute_code,
-        metadata: { codeEnvRef },
+        metadata: codeEnvMetadata,
         ...(await getRetentionExpiry(req)),
       };
-      await createFile(file, true);
-      return { file: Object.assign(file, { messageId, toolCallId }) };
+      if (!(await commitCodeFile(file))) {
+        return null;
+      }
+      return { file: Object.assign(file, { messageId, toolCallId, agentId }) };
     }
 
     const { saveBuffer } = getStrategyFunctions(appConfig.fileStrategy);
@@ -479,10 +573,12 @@ const processCodeOutput = async ({
         file: createDownloadFallback({
           id,
           name,
+          agentId,
           messageId,
           toolCallId,
           session_id,
           conversationId,
+          executionProfile,
           expiresAt: currentDate.getTime() + 86400000,
         }),
       };
@@ -562,7 +658,7 @@ const processCodeOutput = async ({
       tenantId: req.user.tenantId,
       bytes: buffer.length,
       updatedAt: formattedDate,
-      metadata: { codeEnvRef },
+      metadata: codeEnvMetadata,
       source: appConfig.fileStrategy,
       context: FileContext.execute_code,
       usage: isUpdate ? (claimed.usage ?? 0) + 1 : 1,
@@ -592,9 +688,11 @@ const processCodeOutput = async ({
         previewError: null,
         previewRevision,
       };
-      await createFile(file, true);
+      if (!(await commitCodeFile(file))) {
+        return null;
+      }
       return {
-        file: Object.assign(file, { messageId, toolCallId }),
+        file: Object.assign(file, { messageId, toolCallId, agentId }),
         finalize: () =>
           finalizePreview({ buffer, leafName, mimeType, category, file_id, previewRevision }),
         previewRevision,
@@ -630,8 +728,10 @@ const processCodeOutput = async ({
       previewRevision: null,
     };
 
-    await createFile(file, true);
-    return { file: Object.assign(file, { messageId, toolCallId }) };
+    if (!(await commitCodeFile(file))) {
+      return null;
+    }
+    return { file: Object.assign(file, { messageId, toolCallId, agentId }) };
   } catch (error) {
     if (error?.message === 'Path traversal detected in filename') {
       logger.warn(
@@ -651,10 +751,12 @@ const processCodeOutput = async ({
       file: createDownloadFallback({
         id,
         name,
+        agentId,
         messageId,
         toolCallId,
         session_id,
         conversationId,
+        executionProfile,
         expiresAt: currentDate.getTime() + 86400000,
       }),
     };
@@ -676,14 +778,16 @@ function checkIfActive(dateString) {
  *   into codeapi storage. Carries kind/id/storage_session_id/file_id;
  *   codeapi resolves the sessionKey from the request's auth context.
  * @param {ServerRequest} [req] - Current authenticated request, used to mint Code API auth.
+ * @param {{baseUrl?: string, executionProfile?: 'default'|'stateful'}} [route]
+ *   Trusted host-selected Code API route.
  *
  * @returns {Promise<string|null>}
  *          A promise that resolves to the `lastModified` time string of the file if successful, or null if there is an
  *          error in initialization or fetching the info.
  */
-async function getSessionInfo(ref, req) {
+async function getSessionInfo(ref, req, route = {}) {
   try {
-    const baseURL = getCodeBaseURL();
+    const baseURL = route.baseUrl ?? getCodeBaseURL();
     const authHeaders = await getCodeApiAuthHeaders(req);
     /* `/sessions/.../objects/...` is gated by codeapi's `sessionAuth`
      * middleware (post-Phase C). The middleware reconstructs the
@@ -702,6 +806,9 @@ async function getSessionInfo(ref, req) {
       headers: {
         'User-Agent': 'LibreChat/1.0',
         ...authHeaders,
+        ...(route.executionProfile
+          ? { [CODE_API_EXPECTED_PROFILE_HEADER]: route.executionProfile }
+          : {}),
       },
       httpAgent: codeServerHttpAgent,
       httpsAgent: codeServerHttpsAgent,
@@ -709,10 +816,8 @@ async function getSessionInfo(ref, req) {
     });
 
     return response.data?.lastModified;
-  } catch (error) {
-    logger.debug(
-      `[getSessionInfo] session lookup failed (treating as cache miss): ${error?.message ?? String(error)}`,
-    );
+  } catch (_error) {
+    logger.debug('[getSessionInfo] session lookup failed (treating as cache miss)');
     return null;
   }
 }
@@ -752,22 +857,85 @@ const appendVisibleCodeFileContext = (toolContext, contextLine) => {
   return `- Note: The following files are available in the "${Tools.execute_code}" tool environment:${contextLine}`;
 };
 
+class CodeResourceRecoveryError extends Error {
+  constructor({ required, primed, failed }) {
+    super(JSON.stringify({ type: ErrorTypes.RESOURCE_RECOVERY_REQUIRED }));
+    this.name = 'CodeResourceRecoveryError';
+    this.code = ErrorTypes.RESOURCE_RECOVERY_REQUIRED;
+    this.status = 409;
+    this.statusCode = 409;
+    this.details = { required, primed, failed };
+    this.required = required;
+    this.primed = primed;
+    this.failed = failed;
+  }
+}
+
+const getPrimingCorrelation = (req) => ({
+  requestId: req?.requestId ?? req?.id ?? 'unknown',
+  runId: req?.body?.messageId ?? req?.body?.conversationId ?? 'unknown',
+});
+
+const getReuploadFailureCategory = (error) => {
+  const status =
+    error?.response?.status ??
+    error?.statusCode ??
+    error?.status ??
+    error?.$metadata?.httpStatusCode;
+  const code = error?.code ?? error?.name;
+  if (
+    status === 404 ||
+    code === 'NoSuchKey' ||
+    code === 'NotFound' ||
+    code === 'BlobNotFound' ||
+    code === 'ResourceNotFound'
+  ) {
+    return 'missing_backing_object';
+  }
+  if (
+    status === 401 ||
+    status === 403 ||
+    code === 'AccessDenied' ||
+    code === 'AccessDeniedException' ||
+    code === 'Forbidden'
+  ) {
+    return 'resource_access_denied';
+  }
+  return 'reupload_failed';
+};
+
 /**
  *
  * @param {Object} options
  * @param {ServerRequest} options.req
  * @param {Agent['tool_resources']} options.tool_resources
  * @param {string} [options.agentId] - The agent ID for file access control
+ * @param {string} [options.agentResourceType] - Permission resource type for the authorized agent route
  * @returns {Promise<{
  * files: Array<{ id: string; session_id: string; name: string }>,
  * toolContext: string,
  * }>}
  */
 const primeFiles = async (options) => {
-  const { tool_resources, req, agentId } = options;
+  const {
+    tool_resources,
+    req,
+    agentId,
+    agentResourceType,
+    codeApiBaseUrl,
+    executionProfile = 'default',
+  } = options;
+  const codeApiRoute = { baseUrl: codeApiBaseUrl, executionProfile };
   const file_ids = tool_resources?.[EToolResources.execute_code]?.file_ids ?? [];
   const agentResourceIds = new Set(file_ids);
   const resourceFiles = tool_resources?.[EToolResources.execute_code]?.files ?? [];
+  /** Runtime entries identify candidates only; database records remain authoritative for storage metadata. */
+  const candidateFileIds = new Set(file_ids);
+  for (const file of resourceFiles) {
+    if (typeof file?.file_id === 'string') {
+      candidateFileIds.add(file.file_id);
+    }
+  }
 
   /* Step 1 of the priming trace: input volume. Pair with the
    * per-file `[primeCodeFiles] file=...` lines and the final
@@ -779,7 +947,8 @@ const primeFiles = async (options) => {
   );
 
   // Get all files first
-  const allFiles = (await getFiles({ file_id: { $in: file_ids } }, null, { text: 0 })) ?? [];
+  const allFiles =
+    (await getFiles({ file_id: { $in: Array.from(candidateFileIds) } }, null, { text: 0 })) ?? [];
 
   // Filter by access if user and agent are provided
   let dbFiles;
@@ -789,12 +958,11 @@ const primeFiles = async (options) => {
       userId: req.user.id,
       role: req.user.role,
       agentId,
+      resourceType: agentResourceType,
     });
   } else {
     dbFiles = allFiles;
   }
-
-  dbFiles = dbFiles.concat(resourceFiles);
 
   const files = [];
   const sessions = new Map();
@@ -805,6 +973,8 @@ const primeFiles = async (options) => {
    * paths taken, and the final dispatch summary in one trace. */
   let skippedNoRef = 0;
   let reuploadFailures = 0;
+  let requiredCodeFiles = 0;
+  const reuploadFailureCategories = new Set();
 
   for (let i = 0; i < dbFiles.length; i++) {
     const file = dbFiles[i];
@@ -812,16 +982,16 @@ const primeFiles = async (options) => {
       continue;
     }
 
-    const ref = file.metadata?.codeEnvRef;
-    if (!ref) {
+    const ref = getCodeEnvRefForProfile(file.metadata, executionProfile);
+    const sourceRef = ref ?? getCodeEnvRefs(file.metadata)[0]?.[1];
+    if (!sourceRef) {
       skippedNoRef += 1;
-      logger.debug(
-        `[primeCodeFiles] file=${file.file_id} path=skip reason=no-codeenvref filename=${file.filename}`,
-      );
+      logger.debug(`[primeCodeFiles] file=${file.file_id} path=skip reason=no-codeenvref`);
       continue;
     }
-    const session_id = ref.storage_session_id;
-    const id = ref.file_id;
+    requiredCodeFiles += 1;
+    const session_id = sourceRef.storage_session_id;
+    const id = sourceRef.file_id;
 
     /**
      * `pushFile` accepts optional overrides so the reupload path can
@@ -852,21 +1022,13 @@ const primeFiles = async (options) => {
        * we still send it for shape uniformity with shared kinds. */
       files.push({
         id: overrideId ?? id,
-        resource_id: ref.id,
+        resource_id: sourceRef.id,
         storage_session_id: overrideSessionId ?? session_id,
         name: file.filename,
-        kind: ref.kind,
-        ...(ref.kind === 'skill' ? { version: ref.version } : {}),
+        kind: sourceRef.kind,
+        ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
       });
     };
-
-    if (sessions.has(session_id)) {
-      logger.debug(
-        `[primeCodeFiles] file=${file.file_id} path=cache-hit-by-session storage_session_id=${session_id}`,
-      );
-      pushFile();
-      continue;
-    }
 
     const reuploadFile = async () => {
       try {
@@ -884,9 +1046,11 @@ const primeFiles = async (options) => {
           req: options.req,
           stream,
           filename: file.filename,
-          kind: ref.kind,
-          id: ref.id,
-          ...(ref.kind === 'skill' ? { version: ref.version } : {}),
+          kind: sourceRef.kind,
+          id: sourceRef.id,
+          ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
+          codeApiBaseUrl,
+          executionProfile,
         });
 
         /**
@@ -903,21 +1067,20 @@ const primeFiles = async (options) => {
          * pointer changes.
          */
         const newRef = {
-          kind: ref.kind,
-          id: ref.id,
+          kind: sourceRef.kind,
+          id: sourceRef.id,
           storage_session_id: uploaded.storage_session_id,
           file_id: uploaded.file_id,
-          ...(ref.kind === 'skill' ? { version: ref.version } : {}),
+          executionProfile,
+          ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
         };
 
-        const updatedMetadata = {
-          ...file.metadata,
-          codeEnvRef: newRef,
-        };
+        const updatedRefs = mergeCodeEnvRef(file.metadata, newRef);
 
         await updateFile({
           file_id: file.file_id,
-          metadata: updatedMetadata,
+          'metadata.codeEnvRef': updatedRefs.codeEnvRef,
+          [`metadata.codeEnvRefs.${executionProfile}`]: newRef,
         });
         sessions.set(newRef.storage_session_id, true);
         pushFile(newRef.storage_session_id, newRef.file_id);
@@ -927,13 +1090,31 @@ const primeFiles = async (options) => {
         );
       } catch (error) {
         reuploadFailures += 1;
+        const failureCategory = getReuploadFailureCategory(error);
+        reuploadFailureCategories.add(failureCategory);
+        const { requestId, runId } = getPrimingCorrelation(req);
         logger.error(
-          `[primeCodeFiles] file=${file.file_id} path=reupload-failed session=${session_id}: ${error.message}`,
-          error,
+          `[primeCodeFiles] reupload-failed requestId=${requestId} runId=${runId} ` +
+            `category=${failureCategory}`,
         );
       }
     };
-    const uploadTime = await getSessionInfo(ref, req);
+    if (!ref) {
+      logger.debug(
+        `[primeCodeFiles] file=${file.file_id} path=reupload reason=profile-missing ` +
+          `requestedProfile=${executionProfile}`,
+      );
+      await reuploadFile();
+      continue;
+    }
+    if (sessions.has(session_id)) {
+      logger.debug(
+        `[primeCodeFiles] file=${file.file_id} path=cache-hit-by-session storage_session_id=${session_id}`,
+      );
+      pushFile();
+      continue;
+    }
+    const uploadTime = await getSessionInfo(ref, req, codeApiRoute);
     if (!uploadTime) {
       logger.debug(
         `[primeCodeFiles] file=${file.file_id} path=reupload reason=no-uploadtime ` +
@@ -960,10 +1141,31 @@ const primeFiles = async (options) => {
   /* Dispatch summary — emitted unconditionally so a single grep on
    * `[primeCodeFiles] out` always shows the final state, not only
    * the per-path trail leading up to it. */
+  const primedCodeFiles = files.length;
+  const allRequiredResourcesFailed =
+    requiredCodeFiles > 0 && primedCodeFiles === 0 && reuploadFailures === requiredCodeFiles;
+  const { requestId, runId } = getPrimingCorrelation(req);
   logger.debug(
     `[primeCodeFiles] out: returned=${files.length} ` +
-      `skippedNoRef=${skippedNoRef} reuploadFailures=${reuploadFailures}`,
+      `required=${requiredCodeFiles} skippedNoRef=${skippedNoRef} reuploadFailures=${reuploadFailures}`,
   );
+
+  if (allRequiredResourcesFailed) {
+    const failureCategory =
+      reuploadFailureCategories.size === 1
+        ? Array.from(reuploadFailureCategories)[0]
+        : 'mixed_reupload_failure';
+    logger.warn(
+      `[primeCodeFiles] resource-recovery-required requestId=${requestId} runId=${runId} ` +
+        `required=${requiredCodeFiles} primed=${primedCodeFiles} failed=${reuploadFailures} ` +
+        `category=${failureCategory}`,
+    );
+    throw new CodeResourceRecoveryError({
+      required: requiredCodeFiles,
+      primed: primedCodeFiles,
+      failed: reuploadFailures,
+    });
+  }
 
   return { files, toolContext };
 };
@@ -990,8 +1192,16 @@ const primeFiles = async (options) => {
  * @param {ServerRequest} [params.req] - Current authenticated request, used to mint Code API auth.
  * @returns {Promise<{content: string} | null>}
  */
-async function readSandboxFile({ file_path, session_id, files, runtime_session_hint, req }) {
-  const baseURL = getCodeBaseURL();
+async function readSandboxFile({
+  file_path,
+  session_id,
+  files,
+  runtime_session_hint,
+  codeApiBaseUrl,
+  executionProfile,
+  req,
+}) {
+  const baseURL = codeApiBaseUrl ?? getCodeBaseURL();
   if (!baseURL) {
     return null;
   }
@@ -1023,6 +1233,7 @@ async function readSandboxFile({ file_path, session_id, files, runtime_session_h
         'Content-Type': 'application/json',
         'User-Agent': 'LibreChat/1.0',
         ...authHeaders,
+        ...(executionProfile ? { [CODE_API_EXPECTED_PROFILE_HEADER]: executionProfile } : {}),
       },
       httpAgent: codeServerHttpAgent,
       httpsAgent: codeServerHttpsAgent,
@@ -1071,10 +1282,12 @@ async function readSandboxImage({
   session_id,
   files,
   runtime_session_hint,
+  codeApiBaseUrl,
+  executionProfile,
   maxBytes,
   req,
 }) {
-  const baseURL = getCodeBaseURL();
+  const baseURL = codeApiBaseUrl ?? getCodeBaseURL();
   if (!baseURL) {
     return null;
   }
@@ -1133,6 +1346,7 @@ async function readSandboxImage({
       file_path,
       session_id,
       runtime_session_hint,
+      executionProfile,
       files,
       req,
       chunkBytes,
@@ -1203,6 +1417,7 @@ async function execSandboxImageChunk({
   file_path,
   session_id,
   runtime_session_hint,
+  executionProfile,
   files,
   req,
   chunkBytes,
@@ -1229,6 +1444,7 @@ async function execSandboxImageChunk({
         'Content-Type': 'application/json',
         'User-Agent': 'LibreChat/1.0',
         ...authHeaders,
+        ...(executionProfile ? { [CODE_API_EXPECTED_PROFILE_HEADER]: executionProfile } : {}),
       },
       httpAgent: codeServerHttpAgent,
       httpsAgent: codeServerHttpsAgent,
@@ -1294,9 +1510,11 @@ async function writeSandboxFile({
   session_id,
   files,
   runtime_session_hint,
+  codeApiBaseUrl,
+  executionProfile,
   req,
 }) {
-  const baseURL = getCodeBaseURL();
+  const baseURL = codeApiBaseUrl ?? getCodeBaseURL();
   if (!baseURL) {
     return null;
   }
@@ -1346,6 +1564,7 @@ async function writeSandboxFile({
         'Content-Type': 'application/json',
         'User-Agent': 'LibreChat/1.0',
         ...authHeaders,
+        ...(executionProfile ? { [CODE_API_EXPECTED_PROFILE_HEADER]: executionProfile } : {}),
       },
       httpAgent: codeServerHttpAgent,
       httpsAgent: codeServerHttpsAgent,
@@ -1374,6 +1593,7 @@ async function writeSandboxFile({
 }
 
 module.exports = {
+  CodeResourceRecoveryError,
   primeFiles,
   checkIfActive,
   getSessionInfo,

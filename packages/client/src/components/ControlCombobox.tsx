@@ -28,6 +28,15 @@ interface ControlComboboxProps {
   selectId?: string;
   placement?: Ariakit.SelectStoreProps['placement'];
   popoverClassName?: string;
+  matchTriggerWidth?: boolean;
+  gutter?: number;
+  /**
+   * Radix dialogs trap focus, so a portaled popover rendered outside the dialog
+   * cannot receive typing in its search field. Pass `false` from inside a dialog
+   * to keep the list in the dialog, and give that dialog `overflow-visible` so
+   * the popover is not clipped.
+   */
+  portal?: boolean;
 }
 
 const ROW_HEIGHT = 36;
@@ -51,6 +60,9 @@ function ControlCombobox({
   selectId,
   placement,
   popoverClassName,
+  matchTriggerWidth = true,
+  gutter = 4,
+  portal = true,
 }: ControlComboboxProps): JSX.Element {
   const [searchValue, setSearchValue] = useState('');
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -124,7 +136,9 @@ function ControlCombobox({
   );
   const popoverStyle = {
     ...(popoverClassName ? {} : { zIndex: popoverZIndex }),
-    width: isCollapsed ? '300px' : (buttonWidth ?? '300px'),
+    ...(matchTriggerWidth
+      ? { width: isCollapsed ? '300px' : (buttonWidth ?? '300px') }
+      : { minWidth: '16rem' }),
   };
 
   return (
@@ -167,8 +181,8 @@ function ControlCombobox({
       </Ariakit.Select>
       <Ariakit.SelectPopover
         store={select}
-        gutter={4}
-        portal
+        gutter={gutter}
+        portal={portal}
         className={cn(
           'animate-popover z-40 overflow-hidden rounded-xl border border-border-light bg-surface-secondary shadow-lg',
           popoverClassName,

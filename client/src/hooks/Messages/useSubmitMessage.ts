@@ -2,12 +2,12 @@ import { useCallback } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { Constants, replaceSpecialVars } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
+import type { MarkdownTableComment } from '~/common';
 import { useChatContext, useChatFormContext, useAddedChatContext } from '~/Providers';
 import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useLocalize from '~/hooks/useLocalize';
 import { mainTextareaId } from '~/common';
-import type { MarkdownTableComment } from '~/common';
 import store from '~/store';
 
 const emptyFiles = new Map();
@@ -42,6 +42,10 @@ export default function useSubmitMessage() {
       overrideQuotes?: string[];
       overrideManualSkills?: string[];
       overrideMarkdownTableComments?: MarkdownTableComment[];
+      overrideClientRequestId?: string;
+      overrideRecoverySteerId?: string;
+      overrideExpectedPredecessorCreatedAt?: number;
+      overrideQueuedMessageOrigin?: unknown;
     }) => {
       if (!data) {
         return console.warn('No data provided to submitMessage');
@@ -51,7 +55,8 @@ export default function useSubmitMessage() {
         : files.size > 0
           ? localize('com_ui_steel_file_ocr_default_prompt')
           : '';
-      if (!text.trim() && !hasPendingMarkdownTableComments) {
+      const hasOverrideMarkdownTableComments = (data.overrideMarkdownTableComments?.length ?? 0) > 0;
+      if (!text.trim() && !hasPendingMarkdownTableComments && !hasOverrideMarkdownTableComments) {
         return false;
       }
       const latestMessage = getLatestMessage();
@@ -66,6 +71,9 @@ export default function useSubmitMessage() {
       const submitted = ask(
         {
           text,
+          ...(data.overrideRecoverySteerId != null && {
+            overrideUserMessageId: data.overrideRecoverySteerId,
+          }),
         },
         {
           addedConvo: addedConvo ?? undefined,
@@ -75,6 +83,10 @@ export default function useSubmitMessage() {
           overrideQuotes: data.overrideQuotes,
           overrideManualSkills: data.overrideManualSkills,
           overrideMarkdownTableComments: data.overrideMarkdownTableComments,
+          overrideClientRequestId: data.overrideClientRequestId,
+          overrideRecoverySteerId: data.overrideRecoverySteerId,
+          overrideExpectedPredecessorCreatedAt: data.overrideExpectedPredecessorCreatedAt,
+          overrideQueuedMessageOrigin: data.overrideQueuedMessageOrigin,
         },
       );
       if (submitted === false) {

@@ -21,7 +21,7 @@ import {
   isDocumentSupportedProvider,
   fileConfig as defaultFileConfig,
 } from 'librechat-data-provider';
-import type { TFile, EndpointFileConfig, FileConfig } from 'librechat-data-provider';
+import type { TFile, EndpointFileConfig, FileConfig, RegexLike } from 'librechat-data-provider';
 import type { QueryClient } from '@tanstack/react-query';
 import type { ExtendedFile } from '~/common';
 
@@ -50,6 +50,15 @@ const getFileExtension = (fileName: string) => fileName.split('.').pop()?.toLowe
 
 const inferUploadMimeType = (file: File) =>
   inferMimeType(file.name, file.type) || paddleOCRExtensionMimeTypes[getFileExtension(file.name)];
+
+export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
+  for (const file of files.values()) {
+    if (file.progress < 1) {
+      return true;
+    }
+  }
+  return false;
+}
 
 const textDocument = {
   paths: TextPaths,
@@ -251,12 +260,83 @@ export function formatBytes(bytes: number, decimals = 2) {
 
 const { checkType } = defaultFileConfig;
 
+type FileSizeValidationParams = {
+  fileList: File[];
+  files: Map<string, ExtendedFile>;
+  setError: (error: string) => void;
+  endpointFileConfig: EndpointFileConfig;
+};
+
+export const validateFileSizes = ({
+  files,
+  fileList,
+  setError,
+  endpointFileConfig,
+}: FileSizeValidationParams): boolean => {
+  const { fileSizeLimit, totalSizeLimit } = endpointFileConfig;
+
+  for (const file of fileList) {
+    if (fileSizeLimit && file.size >= fileSizeLimit) {
+      setError(`File size limit exceeded: ${fileSizeLimit / megabyte} MB`);
+      return false;
+    }
+  }
+
+  if (totalSizeLimit) {
+    const currentTotalSize = Array.from(files.values()).reduce(
+      (total, file) => total + file.size,
+      0,
+    );
+    const incomingTotalSize = fileList.reduce((total, file) => total + file.size, 0);
+    if (currentTotalSize + incomingTotalSize > totalSizeLimit) {
+      setError(`Total file size limit exceeded: ${totalSizeLimit / megabyte} MB`);
+      return false;
+    }
+  }
+
+  return true;
+};
+
+type FileDuplicateValidationParams = {
+  fileList: File[];
+  files: Map<string, ExtendedFile>;
+  setError: (error: string) => void;
+};
+
+export const validateFileDuplicates = ({
+  files,
+  fileList,
+  setError,
+}: FileDuplicateValidationParams): boolean => {
+  const combinedFilesInfo = [
+    ...Array.from(files.values()).map(
+      (file) =>
+        `${file.file?.name ?? file.filename}-${file.size}-${file.type?.split('/')[0] ?? 'file'}`,
+    ),
+    ...fileList.map(
+      (file: File | undefined) =>
+        `${file?.name}-${file?.size}-${file?.type.split('/')[0] ?? 'file'}`,
+    ),
+  ];
+
+  const uniqueFilesSet = new Set(combinedFilesInfo);
+
+  if (uniqueFilesSet.size !== combinedFilesInfo.length) {
+    setError('com_error_files_dupe');
+    return false;
+  }
+
+  return true;
+};
+
 export const validateFiles = ({
   files,
   fileList,
   setError,
   endpointFileConfig,
   toolResource,
+  fileConfig,
+  skipSizeValidation = false,
 }: {
   fileList: File[];
   files: Map<string, ExtendedFile>;
@@ -264,8 +344,9 @@ export const validateFiles = ({
   endpointFileConfig: EndpointFileConfig;
   toolResource?: string;
   fileConfig: FileConfig | null;
+  skipSizeValidation?: boolean;
 }) => {
-  const { fileLimit, fileSizeLimit, totalSizeLimit, supportedMimeTypes, disabled } =
+  const { fileLimit, fileSizeLimit, supportedMimeTypes, disabled } =
     endpointFileConfig;
   const isPaddleOCRUpload = toolResource === EToolResources.context;
   const effectiveFileLimit = isPaddleOCRUpload ? PADDLEOCR_BATCH_FILE_LIMIT : fileLimit;
@@ -274,13 +355,11 @@ export const validateFiles = ({
     setError('com_ui_attach_error_disabled');
     return false;
   }
-  const existingFiles = Array.from(files.values());
   const incomingTotalSize = fileList.reduce((total, file) => total + file.size, 0);
   if (incomingTotalSize === 0) {
     setError('com_error_files_empty');
     return false;
   }
-  const currentTotalSize = existingFiles.reduce((total, file) => total + file.size, 0);
 
   if (effectiveFileLimit && fileList.length + files.size > effectiveFileLimit) {
     setError(
@@ -321,7 +400,6 @@ export const validateFiles = ({
       );
       return false;
     }
-
     if (
       isPaddleOCRUpload &&
       checkType(originalFile.type, paddleOCRImageMimeTypes) &&
@@ -344,32 +422,13 @@ export const validateFiles = ({
 
   if (
     !isPaddleOCRUpload &&
-    totalSizeLimit &&
-    currentTotalSize + incomingTotalSize > totalSizeLimit
+    !skipSizeValidation &&
+    !validateFileSizes({ files, fileList, setError, endpointFileConfig })
   ) {
-    setError(`Total file size limit exceeded: ${totalSizeLimit / megabyte} MB`);
     return false;
   }
 
-  const combinedFilesInfo = [
-    ...existingFiles.map(
-      (file) =>
-        `${file.file?.name ?? file.filename}-${file.size}-${file.type?.split('/')[0] ?? 'file'}`,
-    ),
-    ...fileList.map(
-      (file: File | undefined) =>
-        `${file?.name}-${file?.size}-${file?.type.split('/')[0] ?? 'file'}`,
-    ),
-  ];
-
-  const uniqueFilesSet = new Set(combinedFilesInfo);
-
-  if (uniqueFilesSet.size !== combinedFilesInfo.length) {
-    setError('com_error_files_dupe');
-    return false;
-  }
-
-  return true;
+  return validateFileDuplicates({ files, fileList, setError });
 };
 
 export type UploadOptionContext = {
@@ -383,7 +442,7 @@ export type UploadOptionContext = {
   fileSearchAllowedByAgent: boolean;
   codeAllowedByAgent: boolean;
   fileConfig: FileConfig | null;
-  endpointSupportedMimeTypes?: RegExp[];
+  endpointSupportedMimeTypes?: RegexLike[];
 };
 
 const isProviderAttachType = (type: string, ctx: UploadOptionContext): boolean => {
@@ -477,6 +536,81 @@ export const getViableUploadOptions = (
   return options;
 };
 
+/**
+ * Character count past which a plain-text paste is attached as a file rather than inserted
+ * into the composer. Roughly a screenful of prose, so ordinary pastes are untouched.
+ */
+export const PASTE_AS_FILE_MIN_LENGTH = 2500;
+
+export const PASTED_TEXT_FILENAME = 'pasted-text.txt';
+
+export type PasteAsFileContext = {
+  /** The user's `pasteLongTextAsFile` preference. */
+  enabled: boolean;
+  uploadsDisabled: boolean;
+  isAssistants: boolean;
+  /** Names already attached to the composer, used to keep successive pastes distinct. */
+  attachedFilenames: Set<string>;
+  /** The file config the destination check reads has not arrived yet. */
+  configPending: boolean;
+  getOptions: (files: File[]) => (EToolResources | undefined)[];
+};
+
+/**
+ * Uploads are deduped on name + size + type, so a fixed name would collapse that key to size
+ * alone for pastes and reject a second, different paste that merely matched the first one's
+ * length. Numbering keeps every paste attachable while staying readable in the UI.
+ */
+const nextPastedTextFilename = (taken: Set<string>): string => {
+  let candidate = PASTED_TEXT_FILENAME;
+  let suffix = 1;
+  while (taken.has(candidate)) {
+    suffix += 1;
+    candidate = `pasted-text-${suffix}.txt`;
+  }
+  return candidate;
+};
+
+export type PastedTextAttachment = {
+  file: File;
+  /** Context for non-assistant attachments; assistants resolve their destination on upload. */
+  toolResource?: EToolResources;
+};
+
+/**
+ * Turns a long plain-text paste into a text attachment, keeping the composer readable while
+ * preserving the exact paste in the generated file. Context attachments follow the same
+ * configured token limits as other uploaded text files. Returns `null` whenever the paste
+ * should stay inline, so the caller can leave the browser's native paste untouched.
+ */
+export const resolvePastedTextFile = (
+  text: string,
+  ctx: PasteAsFileContext,
+): PastedTextAttachment | null => {
+  if (!ctx.enabled || ctx.uploadsDisabled || text.length <= PASTE_AS_FILE_MIN_LENGTH) {
+    return null;
+  }
+
+  const name = nextPastedTextFilename(ctx.attachedFilenames);
+  const file = new File([text], name, { type: 'text/plain' });
+  if (ctx.isAssistants) {
+    return { file };
+  }
+
+  /** `context` is the only automatic non-assistant destination because retrieval-based routes
+   * can change what the model sees. Pasting text must never pop a destination picker.
+   *
+   * That check reads MIME lists that arrive with the file config, so declining while the config
+   * is still in flight would quietly ignore the setting on a slow first load. Routing the paste
+   * instead hands the decision to the upload, which waits for the same config and restores the
+   * text inline if it turns out the destination is unavailable. */
+  if (!ctx.configPending && !ctx.getOptions([file]).includes(EToolResources.context)) {
+    return null;
+  }
+
+  return { file, toolResource: EToolResources.context };
+};
+
 export function sortPagesByRelevance(
   pages: number[],
   pageRelevance: Record<number, number>,
@@ -485,4 +619,13 @@ export function sortPagesByRelevance(
     return pages;
   }
   return [...pages].sort((a, b) => (pageRelevance[b] || 0) - (pageRelevance[a] || 0));
+}
+
+/**
+ * Collapses whitespace runs to underscores so export filenames come out
+ * identical across all export formats: `export-from-json`'s default formatter
+ * only replaces the first whitespace run, while direct downloads replace none.
+ */
+export function normalizeExportFilename(filename: string): string {
+  return filename.replace(/\s+/g, '_');
 }

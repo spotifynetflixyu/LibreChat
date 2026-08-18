@@ -4,9 +4,11 @@ const {
   Tools,
   StepTypes,
   StepEvents,
+  ContentTypes,
   FileContext,
   ErrorTypes,
   UsageEvents,
+  getRunStepDurationMs,
 } = require('librechat-data-provider');
 const {
   GraphEvents,
@@ -20,6 +22,7 @@ const {
   GenerationJobManager,
   writeAttachmentEvent,
   createToolExecuteHandler,
+  createBackgroundCodeResultHandler: createCodeHarvestHandler,
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   delegateOcrStreamEventName,
   isCodeSessionToolName,
@@ -222,11 +225,12 @@ function checkIfLastAgent(last_agent_id, langgraph_node) {
  * @param {ServerResponse} res - The server response object
  * @param {string | null} streamId - The stream ID for resumable mode, or null for standard mode
  * @param {Object} eventData - The event data to send
+ * @param {number} [expectedCreatedAt] - The generation epoch that produced the event
  * @returns {Promise<void>}
  */
-async function emitEvent(res, streamId, eventData) {
+async function emitEvent(res, streamId, eventData, expectedCreatedAt) {
   if (streamId) {
-    await GenerationJobManager.emitChunk(streamId, eventData);
+    await GenerationJobManager.emitChunk(streamId, eventData, { expectedCreatedAt });
   } else {
     sendEvent(res, eventData);
   }
@@ -239,13 +243,12 @@ async function emitEvent(res, streamId, eventData) {
  * running state. Only signals while a fired prewarm remains unresolved
  * ({@link shouldSignalSandboxStart}); stateless deployments never fire one
  * and completed boots clear the marker, so both stay on the generic label.
- * @param {ServerResponse} res - The server response object
- * @param {string | null} streamId - The stream ID for resumable mode, or null for standard mode
+ * @param {(eventData: Object) => Promise<void>} emitForJob - Generation-fenced event emitter
  * @param {StreamEventData} data - The `on_run_step` event data
  * @param {GraphRunnableConfig['configurable']} [metadata] The runnable metadata
  * @returns {Promise<void>}
  */
-async function maybeEmitSandboxStarting(res, streamId, data, metadata) {
+async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
   const conversationId = metadata?.thread_id;
   if (!conversationId || !(await shouldSignalSandboxStart(conversationId))) {
     return;
@@ -256,7 +259,7 @@ async function maybeEmitSandboxStarting(res, streamId, data, metadata) {
     if (!toolCall?.id || name == null || !isCodeSessionToolName(name)) {
       continue;
     }
-    await emitEvent(res, streamId, {
+    await emitForJob({
       event: StepEvents.ON_SANDBOX_STARTING,
       data: { tool_call_id: toolCall.id, runId: metadata?.run_id },
     });
@@ -378,6 +381,7 @@ function createDelegateOcrStreamHandler() {
  * @param {ToolEndCallback} options.toolEndCallback - Callback to use when tool ends.
  * @param {Array<UsageMetadata>} options.collectedUsage - The list of collected usage metadata.
  * @param {string | null} [options.streamId] - The stream ID for resumable mode, or null for standard mode.
+ * @param {number} [options.jobCreatedAt] - The generation epoch that owns emitted events.
  * @param {ToolExecuteOptions} [options.toolExecuteOptions] - Options for event-driven tool execution.
  * @param {UsageCostDeps} [options.usageCost] - Pricing context for authoritative per-event cost.
  * @param {{ latest: TContextUsageEvent | null, count: number }} [options.contextUsageSink] - Mutable
@@ -398,6 +402,7 @@ function getDefaultHandlers({
   collectedUsage,
   collectedThoughtSignatures = null,
   streamId = null,
+  jobCreatedAt,
   toolExecuteOptions = null,
   summarizationOptions = null,
   subagentAggregatorsByToolCallId = null,
@@ -410,6 +415,7 @@ function getDefaultHandlers({
       `[getDefaultHandlers] Missing required options: res: ${!res}, aggregateContent: ${!aggregateContent}`,
     );
   }
+  const emitForJob = (eventData) => emitEvent(res, streamId, eventData, jobCreatedAt);
   /**
    * Emit a token-usage event, attaching the authoritative per-event USD cost
    * when cost display is enabled. The backend is the single source of truth
@@ -440,7 +446,7 @@ function getDefaultHandlers({
     if (usageEmitSink) {
       usageEmitSink.push(payload);
     }
-    return emitEvent(res, streamId, { event: UsageEvents.ON_TOKEN_USAGE, data: payload });
+    return emitForJob({ event: UsageEvents.ON_TOKEN_USAGE, data: payload });
   };
   const handlers = {
     [GraphEvents.CHAT_MODEL_END]: new ModelEndHandler(
@@ -459,17 +465,17 @@ function getDefaultHandlers({
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
         if (data?.stepDetails.type === StepTypes.TOOL_CALLS) {
-          await emitEvent(res, streamId, { event, data });
-          await maybeEmitSandboxStarting(res, streamId, data, metadata);
+          await emitForJob({ event, data });
+          await maybeEmitSandboxStarting(emitForJob, data, metadata);
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (!metadata?.hide_sequential_outputs) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else {
           const agentName = metadata?.name ?? 'Agent';
           const isToolCall = data?.stepDetails.type === StepTypes.TOOL_CALLS;
           const action = isToolCall ? 'performing a task...' : 'thinking...';
-          await emitEvent(res, streamId, {
+          await emitForJob({
             event: 'on_agent_update',
             data: {
               runId: metadata?.run_id,
@@ -477,6 +483,54 @@ function getDefaultHandlers({
             },
           });
         }
+      },
+    },
+    [GraphEvents.ON_RUN_STEP_CLOSED]: {
+      /**
+       * Handle ON_RUN_STEP_CLOSED event — the terminal signal for a run step.
+       *
+       * Stamped onto the aggregated part before it is forwarded. The SDK's
+       * `aggregateContent` has no notion of this event, so without stamping
+       * here the status would exist only on the live client message: a reload
+       * or a resumable reconnect would drop it and fall back to inferring
+       * "stopped" from `isSubmitting`, which is the behavior this fixes.
+       *
+       * Forwarded unconditionally, without the visibility gating the other
+       * step events apply — a step whose `on_run_step` reached the client must
+       * get its closure, or the client is left inferring again.
+       *
+       * @param {string} event - The event name.
+       * @param {RunStepClosedEvent} data - The event data.
+       */
+      handle: async (event, data) => {
+        const stepId = data?.id;
+        if (typeof stepId === 'string' && contentParts) {
+          /**
+           * Resolved through `stepMap` only. The event's own `index` is the
+           * SDK's, and the steer/HITL offset wrappers shift `ON_RUN_STEP` but
+           * pass closures through untouched — so falling back to it would
+           * stamp an unrelated part in any run containing an injection.
+           * Skipping is the safe failure here; a missing status degrades to
+           * the old heuristic, a misplaced one mislabels the wrong card.
+           */
+          const index = stepMap?.get(stepId)?.index;
+          const part = typeof index === 'number' ? contentParts[index] : undefined;
+          if (part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+            part.tool_call.runStepStatus = data.status;
+            /**
+             * The raw derivable duration, left unset rather than zeroed when
+             * the event cannot support a trustworthy one — no `created_at`,
+             * or clocks that disagree. Whether it is *worth showing* is the
+             * renderer's call; persisting the fact unfiltered keeps that
+             * threshold adjustable without data loss.
+             */
+            const durationMs = getRunStepDurationMs(data);
+            if (durationMs != null) {
+              part.tool_call.runStepDurationMs = durationMs;
+            }
+          }
+        }
+        await emitForJob({ event, data });
       },
     },
     [GraphEvents.ON_RUN_STEP_DELTA]: {
@@ -489,11 +543,11 @@ function getDefaultHandlers({
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
         if (data?.delta.type === StepTypes.TOOL_CALLS) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (!metadata?.hide_sequential_outputs) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         }
       },
     },
@@ -532,11 +586,11 @@ function getDefaultHandlers({
           }
         }
         if (data?.result != null) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (!metadata?.hide_sequential_outputs) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         }
       },
     },
@@ -550,9 +604,9 @@ function getDefaultHandlers({
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
         if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (!metadata?.hide_sequential_outputs) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         }
       },
     },
@@ -566,9 +620,9 @@ function getDefaultHandlers({
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
         if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         } else if (!metadata?.hide_sequential_outputs) {
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         }
       },
     },
@@ -624,14 +678,14 @@ function getDefaultHandlers({
           );
         }
       }
-      await emitEvent(res, streamId, { event, data });
+      await emitForJob({ event, data });
     },
   };
 
   if (summarizationOptions?.enabled !== false) {
     handlers[GraphEvents.ON_SUMMARIZE_START] = {
       handle: async (_event, data) => {
-        await emitEvent(res, streamId, {
+        await emitForJob({
           event: GraphEvents.ON_SUMMARIZE_START,
           data,
         });
@@ -640,7 +694,7 @@ function getDefaultHandlers({
     handlers[GraphEvents.ON_SUMMARIZE_DELTA] = {
       handle: async (_event, data) => {
         aggregateContent({ event: GraphEvents.ON_SUMMARIZE_DELTA, data });
-        await emitEvent(res, streamId, {
+        await emitForJob({
           event: GraphEvents.ON_SUMMARIZE_DELTA,
           data,
         });
@@ -649,7 +703,7 @@ function getDefaultHandlers({
     handlers[GraphEvents.ON_SUMMARIZE_COMPLETE] = {
       handle: async (_event, data) => {
         aggregateContent({ event: GraphEvents.ON_SUMMARIZE_COMPLETE, data });
-        await emitEvent(res, streamId, {
+        await emitForJob({
           event: GraphEvents.ON_SUMMARIZE_COMPLETE,
           data,
         });
@@ -690,7 +744,7 @@ function getDefaultHandlers({
             contextUsageSink.count = (contextUsageSink.count ?? 0) + 1;
             contextUsageSink.latestUsageIndex = usageEmitSink?.length ?? 0;
           }
-          await emitEvent(res, streamId, { event, data });
+          await emitForJob({ event, data });
         }
       },
     };
@@ -705,10 +759,15 @@ function getDefaultHandlers({
  * @param {ServerResponse} res - The server response object
  * @param {string | null} streamId - The stream ID for resumable mode, or null for standard mode
  * @param {Object} attachment - The attachment data
+ * @param {number} [expectedCreatedAt] - The generation epoch that produced the attachment
  */
-function writeAttachment(res, streamId, attachment) {
+function writeAttachment(res, streamId, attachment, expectedCreatedAt) {
   if (streamId) {
-    GenerationJobManager.emitChunk(streamId, { event: 'attachment', data: attachment });
+    GenerationJobManager.emitChunk(
+      streamId,
+      { event: 'attachment', data: attachment },
+      { expectedCreatedAt },
+    );
   } else {
     res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
@@ -755,12 +814,13 @@ function isStreamWritable(res, streamId) {
  * @param {ServerResponse} res
  * @param {string | null} streamId
  * @param {Object} attachment - Updated attachment payload (must carry `file_id`).
+ * @param {number} [expectedCreatedAt] - The generation epoch that produced the attachment
  */
-function writeAttachmentUpdate(res, streamId, attachment) {
+function writeAttachmentUpdate(res, streamId, attachment, expectedCreatedAt) {
   if (!isStreamWritable(res, streamId)) {
     return;
   }
-  writeAttachment(res, streamId, attachment);
+  writeAttachment(res, streamId, attachment, expectedCreatedAt);
 }
 
 /**
@@ -770,9 +830,10 @@ function writeAttachmentUpdate(res, streamId, attachment) {
  * @param {ServerResponse} params.res
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
  * @param {string | null} [params.streamId] - The stream ID for resumable mode, or null for standard mode.
+ * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted attachments.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createToolEndCallback({ req, res, artifactPromises, streamId = null }) {
+function createToolEndCallback({ req, res, artifactPromises, streamId = null, jobCreatedAt }) {
   /**
    * @type {ToolEndCallback}
    */
@@ -803,7 +864,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
           if (!streamId && !res.headersSent) {
             return attachment;
           }
-          writeAttachment(res, streamId, attachment);
+          writeAttachment(res, streamId, attachment, jobCreatedAt);
           return attachment;
         })().catch((error) => {
           logger.error('Error processing file citations:', error);
@@ -825,7 +886,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
           if (!streamId && !res.headersSent) {
             return attachment;
           }
-          writeAttachment(res, streamId, attachment);
+          writeAttachment(res, streamId, attachment, jobCreatedAt);
           return attachment;
         })().catch((error) => {
           logger.error('Error processing artifact content:', error);
@@ -847,7 +908,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
           if (!streamId && !res.headersSent) {
             return attachment;
           }
-          writeAttachment(res, streamId, attachment);
+          writeAttachment(res, streamId, attachment, jobCreatedAt);
           return attachment;
         })().catch((error) => {
           logger.error('Error processing artifact content:', error);
@@ -869,7 +930,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
           if (!streamId && !res.headersSent) {
             return attachment;
           }
-          writeAttachment(res, streamId, attachment);
+          writeAttachment(res, streamId, attachment, jobCreatedAt);
           return attachment;
         })().catch((error) => {
           logger.error('Error processing memory artifact content:', error);
@@ -914,7 +975,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
               return null;
             }
 
-            writeAttachment(res, streamId, fileMetadata);
+            writeAttachment(res, streamId, fileMetadata, jobCreatedAt);
             return fileMetadata;
           })().catch((error) => {
             logger.error('Error processing artifact content:', error);
@@ -972,6 +1033,8 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
              * ids.
              */
             session_id: file.storage_session_id ?? output.artifact.session_id,
+            codeApiBaseUrl: metadata.codeExecutionContext?.baseUrl,
+            executionProfile: metadata.codeExecutionContext?.executionProfile,
           });
           const fileMetadata = result?.file ?? null;
           const finalize = result?.finalize;
@@ -991,7 +1054,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
            * IIFE catch but logged as noise). Same gate the Responses
            * path uses below. */
           if (isStreamWritable(res, streamId)) {
-            writeAttachment(res, streamId, fileMetadata);
+            writeAttachment(res, streamId, fileMetadata, jobCreatedAt);
           }
           /* Deferred preview rendering: extraction continues running
            * even after the HTTP response closes. If the stream is still
@@ -1014,11 +1077,16 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
             fileId: fileMetadata.file_id,
             previewRevision: result?.previewRevision,
             onResolved: (updated) => {
-              writeAttachmentUpdate(res, streamId, {
-                ...updated,
-                messageId: metadata.run_id,
-                toolCallId,
-              });
+              writeAttachmentUpdate(
+                res,
+                streamId,
+                {
+                  ...updated,
+                  messageId: metadata.run_id,
+                  toolCallId,
+                },
+                jobCreatedAt,
+              );
             },
           });
           return fileMetadata;
@@ -1029,6 +1097,56 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
       );
     }
   };
+}
+
+/**
+ * Emitter for `attachment` SSE events on the current request's live stream,
+ * for re-emitting background-harvested attachments on a poll turn. Safe to
+ * call after the stream closes (silently dropped).
+ *
+ * @param {Object} params
+ * @param {ServerResponse} params.res
+ * @param {string | null} [params.streamId]
+ * @param {number} [params.jobCreatedAt]
+ * @returns {(attachment: Object) => void}
+ */
+function createAttachmentEmitter({ res, streamId = null, jobCreatedAt }) {
+  return (attachment) => {
+    if (!attachment || !isStreamWritable(res, streamId)) {
+      return;
+    }
+    writeAttachment(res, streamId, attachment, jobCreatedAt);
+  };
+}
+
+/**
+ * Leading sub-second retries cover the common case of a fast background task
+ * settling moments before the dispatch turn finalizes its message row — an
+ * immediate follow-up turn should find the attachments already anchored.
+ * The long tail covers dispatch turns that keep running for minutes.
+ */
+/**
+ * Thin wrapper binding the host file services into the TS harvest
+ * implementation (`@librechat/api` `createBackgroundCodeResultHandler`).
+ *
+ * @param {Object} params
+ * @param {ServerRequest} params.req
+ * @param {(params: {
+ *   userId: string;
+ *   messageId: string;
+ *   conversationId: string;
+ *   toolCallId: string;
+ *   output?: string;
+ *   attachments?: Object[];
+ * }) => Promise<boolean>} params.updateToolCallResult
+ */
+function createBackgroundCodeResultHandler({ req, updateToolCallResult }) {
+  return createCodeHarvestHandler({
+    req,
+    updateToolCallResult,
+    processCodeOutput,
+    runPreviewFinalize,
+  });
 }
 
 /**
@@ -1239,6 +1357,8 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
              * ids.
              */
             session_id: file.storage_session_id ?? output.artifact.session_id,
+            codeApiBaseUrl: metadata.codeExecutionContext?.baseUrl,
+            executionProfile: metadata.codeExecutionContext?.executionProfile,
           });
           const fileMetadata = result?.file ?? null;
           const finalize = result?.finalize;
@@ -1368,6 +1488,8 @@ module.exports = {
   getDefaultHandlers,
   createDelegateOcrStreamHandler,
   createToolEndCallback,
+  createAttachmentEmitter,
+  createBackgroundCodeResultHandler,
   isStreamWritable,
   markSummarizationUsage,
   buildSummarizationHandlers,

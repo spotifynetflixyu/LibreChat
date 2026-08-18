@@ -415,8 +415,9 @@ export function registerMemoryTools({
   toolRegistry?: LCToolRegistry;
   toolDefinitions?: LCTool[];
   validKeys?: string[];
-}): { toolDefinitions: LCTool[]; registered: string[] } {
+}): { toolDefinitions: LCTool[]; registered: string[]; toolNames: string[] } {
   const memoryToolDefinitions = getMemoryToolDefinitions(validKeys);
+  const toolNames = memoryToolDefinitions.map((def) => def.name);
   const inputDefinitions = toolDefinitions ?? [];
   const newDefs: LCTool[] = [];
   const registered: string[] = [];
@@ -433,9 +434,9 @@ export function registerMemoryTools({
   }
 
   if (newDefs.length === 0) {
-    return { toolDefinitions: inputDefinitions, registered };
+    return { toolDefinitions: inputDefinitions, registered, toolNames };
   }
-  return { toolDefinitions: [...inputDefinitions, ...newDefs], registered };
+  return { toolDefinitions: [...inputDefinitions, ...newDefs], registered, toolNames };
 }
 
 type GetRoleByName = (
@@ -486,6 +487,39 @@ export function agentHasInlineMemoryTools(agent: InlineMemoryAgent): boolean {
     (entry) =>
       (typeof entry === 'string' ? entry : (entry as { name?: string })?.name) === Tools.memory,
   );
+}
+
+/** Builds the existing-memory system context for an inline-memory agent. */
+export async function buildInlineMemoryContext({
+  agent,
+  req,
+  userId,
+  memoryAvailable,
+  getFormattedMemories,
+}: {
+  agent: InlineMemoryAgent;
+  req: ServerRequest;
+  userId: string | ObjectId;
+  memoryAvailable: boolean;
+  getFormattedMemories: MemoryMethods['getFormattedMemories'];
+}): Promise<string> {
+  if (!memoryAvailable || !agentHasInlineMemoryTools(agent)) {
+    return '';
+  }
+  try {
+    const memories = await getRequestMemories({
+      req,
+      userId,
+      agentId: getMemoryAgentId(agent),
+      getFormattedMemories,
+    });
+    return memories.withKeys
+      ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memories.withKeys}`
+      : '';
+  } catch (error) {
+    logger.error('[memory] Error loading inline agent memory context', error);
+    return '';
+  }
 }
 
 /**
@@ -701,6 +735,7 @@ export async function processMemory({
   tokenLimit,
   totalTokens = 0,
   streamId = null,
+  jobCreatedAt,
   user,
 }: {
   res: ServerResponse;
@@ -719,6 +754,7 @@ export async function processMemory({
   totalTokens?: number;
   llmConfig?: Partial<LLMConfig>;
   streamId?: string | null;
+  jobCreatedAt?: number;
   user?: IUser;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
@@ -826,7 +862,12 @@ ${memory ?? 'No existing memories'}`;
     });
 
     const artifactPromises: Promise<TAttachment | null>[] = [];
-    const memoryCallback = createMemoryCallback({ res, artifactPromises, streamId });
+    const memoryCallback = createMemoryCallback({
+      res,
+      artifactPromises,
+      streamId,
+      jobCreatedAt,
+    });
     const customHandlers = {
       [GraphEvents.TOOL_END]: new BasicToolEndHandler(memoryCallback),
     };
@@ -926,6 +967,7 @@ export async function createMemoryProcessor({
   conversationId,
   config = {},
   streamId = null,
+  jobCreatedAt,
   user,
 }: {
   res: ServerResponse;
@@ -937,6 +979,7 @@ export async function createMemoryProcessor({
   memoryMethods: RequiredMemoryMethods;
   config?: MemoryConfig;
   streamId?: string | null;
+  jobCreatedAt?: number;
   user?: IUser;
 }): Promise<[string, (messages: BaseMessage[]) => Promise<(TAttachment | null)[] | undefined>]> {
   const { validKeys, instructions, llmConfig, tokenLimit } = config;
@@ -961,6 +1004,7 @@ export async function createMemoryProcessor({
           messageId,
           tokenLimit,
           streamId,
+          jobCreatedAt,
           conversationId,
           memory: withKeys,
           totalTokens: totalTokens || 0,
@@ -981,11 +1025,13 @@ async function handleMemoryArtifact({
   data,
   metadata,
   streamId = null,
+  jobCreatedAt,
 }: {
   res: ServerResponse;
   data: ToolEndData;
   metadata?: ToolEndMetadata;
   streamId?: string | null;
+  jobCreatedAt?: number;
 }) {
   const output = data?.output as ToolMessage | undefined;
   if (!output) {
@@ -1012,7 +1058,11 @@ async function handleMemoryArtifact({
     return attachment;
   }
   if (streamId) {
-    GenerationJobManager.emitChunk(streamId, { event: 'attachment', data: attachment });
+    GenerationJobManager.emitChunk(
+      streamId,
+      { event: 'attachment', data: attachment },
+      { expectedCreatedAt: jobCreatedAt },
+    );
   } else {
     res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
@@ -1025,16 +1075,19 @@ async function handleMemoryArtifact({
  * @param params.res - The server response object
  * @param params.artifactPromises - Array to collect artifact promises
  * @param params.streamId - The stream ID for resumable mode, or null for standard mode
+ * @param params.jobCreatedAt - The generation epoch that owns emitted artifacts
  * @returns The memory callback function
  */
 export function createMemoryCallback({
   res,
   artifactPromises,
   streamId = null,
+  jobCreatedAt,
 }: {
   res: ServerResponse;
   artifactPromises: Promise<Partial<TAttachment> | null>[];
   streamId?: string | null;
+  jobCreatedAt?: number;
 }): ToolEndCallback {
   return async (data: ToolEndData, metadata?: Record<string, unknown>) => {
     const output = data?.output as ToolMessage | undefined;
@@ -1043,7 +1096,7 @@ export function createMemoryCallback({
       return;
     }
     artifactPromises.push(
-      handleMemoryArtifact({ res, data, metadata, streamId }).catch((error) => {
+      handleMemoryArtifact({ res, data, metadata, streamId, jobCreatedAt }).catch((error) => {
         logger.error('Error processing memory artifact content:', error);
         return null;
       }),

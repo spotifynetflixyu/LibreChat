@@ -8,6 +8,9 @@ jest.mock('nanoid', () => ({
 jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
+  GenerationJobManager: {
+    emitChunk: jest.fn(),
+  },
   HOST_FILE_AUTHORING_ARTIFACT_KEY: '__librechat_file_authoring',
   getToolInputValidationDetails: jest.fn((result, validationError) =>
     validationError != null
@@ -285,6 +288,61 @@ describe('getDefaultHandlers', () => {
         content: [expect.objectContaining({ text: 'retry' })],
       }),
       { run_id: 'run-1' },
+    );
+  });
+});
+
+describe('resumable event generation fencing', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('forwards the originating job epoch with run-step events', async () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const data = {
+      id: 'step-1',
+      index: 0,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'approval_probe', args: '{}' }],
+      },
+    };
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, data);
+
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'conversation-1',
+      { event: GraphEvents.ON_RUN_STEP, data },
+      { expectedCreatedAt: 1234 },
+    );
+  });
+
+  it('forwards the originating job epoch with deferred attachments', () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { createAttachmentEmitter } = require('../callbacks');
+    const attachment = { file_id: 'file-1', status: 'ready' };
+    const emitAttachment = createAttachmentEmitter({
+      res: { write: jest.fn() },
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+
+    emitAttachment(attachment);
+
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'conversation-1',
+      { event: 'attachment', data: attachment },
+      { expectedCreatedAt: 1234 },
     );
   });
 });
@@ -601,6 +659,7 @@ describe('createToolEndCallback', () => {
       name,
       toolName = 'execute_code',
       hostFileAuthoring = false,
+      codeExecutionContext,
     }) {
       return {
         output: {
@@ -612,7 +671,7 @@ describe('createToolEndCallback', () => {
             files: [{ id: fileId, name, session_id: 'sess-1' }],
           },
         },
-        metadata: { run_id: runId, thread_id: threadId },
+        metadata: { run_id: runId, thread_id: threadId, codeExecutionContext },
       };
     }
 
@@ -836,6 +895,10 @@ describe('createToolEndCallback', () => {
         name: 'created.txt',
         toolName: 'create_file',
         hostFileAuthoring: true,
+        codeExecutionContext: {
+          baseUrl: 'https://code-stateful.example.com',
+          executionProfile: 'stateful',
+        },
       });
       await toolEndCallback({ output: event.output }, event.metadata);
       await Promise.all(artifactPromises);
@@ -847,6 +910,8 @@ describe('createToolEndCallback', () => {
           messageId: 'run-create',
           toolCallId: 'tool-create',
           conversationId: 'thread789',
+          codeApiBaseUrl: 'https://code-stateful.example.com',
+          executionProfile: 'stateful',
         }),
       );
       expect(res.write).toHaveBeenCalledTimes(1);

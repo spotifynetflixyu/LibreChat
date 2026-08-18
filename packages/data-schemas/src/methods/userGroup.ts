@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 import { AsyncLocalStorage } from 'async_hooks';
 import { CacheKeys, PrincipalType } from 'librechat-data-provider';
-import type { TUser, TPrincipalSearchResult } from 'librechat-data-provider';
+import type { TPrincipalSearchResult } from 'librechat-data-provider';
 import type { Model, ClientSession, FilterQuery } from 'mongoose';
 import type { CacheStore, IGroup, IRole, IUser } from '~/types';
 import { isValidObjectIdString } from '~/utils/objectId';
@@ -14,13 +14,6 @@ export interface UserGroupDeps {
 }
 
 type PendingGroupLookup = { promise: Promise<Types.ObjectId[]>; markStale: () => void };
-type UserSearchPrincipal = Pick<
-  TUser,
-  'avatar' | 'email' | 'id' | 'name' | 'provider' | 'username'
-> & {
-  idOnTheSource?: string;
-};
-
 /** Same-process dedup of concurrent cache builds, keyed by scoped member cache key. */
 const pendingGroupLookups = new Map<string, PendingGroupLookup>();
 const GROUP_LOCK_POLL_MS = 50;
@@ -1026,7 +1019,10 @@ export function createUserGroupMethods(
    * @returns Transformed user result
    */
   function transformUserToTPrincipalSearchResult(
-    user: UserSearchPrincipal,
+    user: Pick<
+      IUser,
+      'id' | 'name' | 'email' | 'username' | 'avatar' | 'provider' | 'idOnTheSource'
+    >,
   ): TPrincipalSearchResult {
     return {
       id: user.id,
@@ -1101,18 +1097,17 @@ export function createUserGroupMethods(
 
       promises.push(
         userQuery.lean<IUser[]>().then((users) =>
-          users.map((user) => {
-            const userWithId = user as IUser & { idOnTheSource?: string };
-            return transformUserToTPrincipalSearchResult({
-              id: userWithId._id?.toString() || '',
-              name: userWithId.name,
-              email: userWithId.email,
-              username: userWithId.username,
-              avatar: userWithId.avatar,
-              provider: userWithId.provider,
-              idOnTheSource: userWithId.idOnTheSource,
-            });
-          }),
+          users.map((user) =>
+            transformUserToTPrincipalSearchResult({
+              id: user._id?.toString() || '',
+              name: user.name,
+              email: user.email,
+              username: user.username,
+              avatar: user.avatar,
+              provider: user.provider,
+              idOnTheSource: user.idOnTheSource,
+            }),
+          ),
         ),
       );
     } else {

@@ -36,11 +36,6 @@ jest.mock('winston', () => ({
   transports: { Console: jest.fn(), DailyRotateFile: jest.fn(), File: jest.fn() },
 }));
 
-jest.mock('~/utils/env', () => ({
-  resolveHeaders: jest.fn((opts: { headers: unknown }) => opts?.headers ?? {}),
-  createSafeUser: jest.fn(() => ({})),
-}));
-
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   logger: { debug: jest.fn(), warn: jest.fn(), error: jest.fn(), info: jest.fn() },
@@ -78,9 +73,9 @@ function makeAgent(overrides?: Record<string, unknown>) {
   };
 }
 
-async function captureRunConfig(): Promise<Record<string, unknown>> {
+async function captureRunConfig(agent = makeAgent()): Promise<Record<string, unknown>> {
   await createRun({
-    agents: [makeAgent()] as never,
+    agents: [agent] as never,
     signal: new AbortController().signal,
     streaming: true,
     streamUsage: true,
@@ -235,5 +230,12 @@ describe('createRun code-tool eager/session wiring', () => {
       'delegate_ocr',
     ]);
     expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(true);
+  });
+  it('passes the trusted per-agent code-session partition to the SDK', async () => {
+    const codeSessionKey = 'execute_code:stateful:v1:user';
+    const runConfig = await captureRunConfig(makeAgent({ codeSessionKey }));
+    const [agentInput] = (runConfig.graphConfig as { agents: Array<Record<string, unknown>> })
+      .agents;
+    expect(agentInput.codeSessionKey).toBe(codeSessionKey);
   });
 });

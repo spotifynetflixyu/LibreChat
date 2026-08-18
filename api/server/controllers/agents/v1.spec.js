@@ -3,6 +3,7 @@ const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
 const { agentSchema, aclEntrySchema, fileSchema, userSchema } = require('@librechat/data-schemas');
 const {
+  Tools,
   FileSources,
   PermissionBits,
   PrincipalModel,
@@ -181,6 +182,28 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
   });
 
   describe('createAgentHandler', () => {
+    test('rejects a stateful environment excluded by deployment policy', async () => {
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { allowedEnvironments: ['user'] },
+          },
+        },
+      };
+      mockReq.body = {
+        name: 'Disallowed Stateful Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        stateful_code_sessions: true,
+        stateful_code_environment: 'conversation',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(await Agent.countDocuments()).toBe(0);
+    });
+
     test('should create agent with allowed fields only', async () => {
       const validData = {
         name: 'Test Agent',
@@ -319,6 +342,35 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       // Verify in database
       const agentInDb = await Agent.findOne({ id: createdAgent.id });
       expect(agentInDb.tool_resources.invalid_resource).toBeUndefined();
+    });
+
+    test('should strip runtime file records before persisting an agent', async () => {
+      mockReq.body = {
+        provider: 'openai',
+        model: 'gpt-4',
+        name: 'Agent with forged runtime file',
+        tool_resources: {
+          execute_code: {
+            files: [
+              {
+                file_id: 'forged-file',
+                filepath: '/etc/passwd',
+                source: FileSources.local,
+              },
+            ],
+          },
+        },
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const createdAgent = mockRes.json.mock.calls[0][0];
+      expect(createdAgent.tool_resources?.execute_code?.files).toBeUndefined();
+
+      const agentInDb = await Agent.findOne({ id: createdAgent.id }).lean();
+      expect(agentInDb.tool_resources?.execute_code?.files).toBeUndefined();
+      expect(agentInDb.versions[0].tool_resources?.execute_code?.files).toBeUndefined();
     });
 
     test('should strip file_ids not owned by the creator from tool_resources', async () => {
@@ -603,10 +655,30 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       expect(mockRes.status).toHaveBeenCalledWith(200);
       const response = mockRes.json.mock.calls[0][0];
-      expect(response.owner_contact).toEqual({
-        name: 'Primary Owner',
-        email: 'primary.owner@example.com',
+      expect(response.owner_contact).toEqual({ name: 'Primary Owner' });
+      expect(response.owner_contact).not.toHaveProperty('email');
+    });
+
+    test('should omit owner_contact when the owner name and username are the account email', async () => {
+      const email = 'sso.owner@example.com';
+      const owner = await createOwner({ name: email, username: email, email });
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'SSO Owner Agent',
+        description: 'Owner has email-shaped name from SSO fallback',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: owner._id,
       });
+      await grantAgentOwner({ agent, owner });
+
+      mockReq.params = { id: agent.id };
+
+      await getAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(200);
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.owner_contact).toBeUndefined();
     });
 
     test('should not return owner_contact when support_contact is present', async () => {
@@ -750,6 +822,115 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       // Verify in database
       const agentInDb = await Agent.findOne({ id: existingAgentId });
       expect(agentInDb.name).toBe('Updated Agent');
+    });
+
+    test('rejects selecting a stateful environment excluded by deployment policy', async () => {
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { allowedEnvironments: ['user'] },
+          },
+        },
+      };
+      mockReq.body = {
+        stateful_code_sessions: true,
+        stateful_code_environment: 'conversation',
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.stateful_code_sessions).not.toBe(true);
+    });
+
+    test('allows unrelated edits to an existing scope after policy is tightened', async () => {
+      await Agent.updateOne(
+        { id: existingAgentId },
+        { stateful_code_sessions: true, stateful_code_environment: 'conversation' },
+      );
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { allowedEnvironments: ['user'] },
+          },
+        },
+      };
+      mockReq.body = {
+        name: 'Still editable',
+        stateful_code_sessions: true,
+        stateful_code_environment: 'conversation',
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(403);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.name).toBe('Still editable');
+      expect(agentInDb.stateful_code_environment).toBe('conversation');
+    });
+
+    test('rejects reactivating code execution with a retained disallowed scope', async () => {
+      await Agent.updateOne(
+        { id: existingAgentId },
+        {
+          tools: [],
+          stateful_code_sessions: true,
+          stateful_code_environment: 'conversation',
+        },
+      );
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { allowedEnvironments: ['user'] },
+          },
+        },
+      };
+      mockReq.body = { tools: [Tools.execute_code] };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.tools).not.toContain(Tools.execute_code);
+    });
+
+    test('rejects graph topology that becomes invalid after self-placeholder rewrite', async () => {
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: { agents: { capabilities: ['subagents'] } },
+      };
+      mockReq.body = {
+        subagents: {
+          enabled: true,
+          allowSelf: false,
+          graphs: [
+            {
+              type: 'collapsed_team',
+              name: 'Collapsed team',
+              description: 'Becomes invalid after placeholder replacement',
+              agent_ids: ['', existingAgentId],
+              edges: [{ from: '', to: existingAgentId, edgeType: 'direct' }],
+              entry_agent_id: '',
+              result_agent_id: existingAgentId,
+            },
+          ],
+        },
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'Invalid request data' }),
+      );
     });
 
     test('should sanitize corrupt numeric model_parameters on update', async () => {
@@ -918,6 +1099,32 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(updatedAgent.tool_resources.context).toBeDefined();
       expect(updatedAgent.tool_resources.execute_code).toBeDefined();
       expect(updatedAgent.tool_resources.invalid_tool).toBeUndefined();
+    });
+
+    test('should strip runtime file records before persisting an update', async () => {
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        tool_resources: {
+          execute_code: {
+            files: [
+              {
+                file_id: 'forged-file',
+                filepath: '/etc/passwd',
+                source: FileSources.local,
+              },
+            ],
+          },
+        },
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const agentInDb = await Agent.findOne({ id: existingAgentId }).lean();
+      expect(agentInDb.tool_resources.execute_code.files).toBeUndefined();
+      const latestVersion = agentInDb.versions[agentInDb.versions.length - 1];
+      expect(latestVersion.tool_resources.execute_code.files).toBeUndefined();
     });
 
     test('should remove empty strings from model_parameters during update (Issue Fix)', async () => {
@@ -1556,10 +1763,8 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       await getListAgentsHandler(mockReq, mockRes);
 
       const response = mockRes.json.mock.calls[0][0];
-      expect(response.data[0].owner_contact).toEqual({
-        name: 'List Owner',
-        email: 'list.owner@example.com',
-      });
+      expect(response.data[0].owner_contact).toEqual({ name: 'List Owner' });
+      expect(response.data[0].owner_contact).not.toHaveProperty('email');
     });
 
     test('should use the first ACL owner when an agent has multiple owners', async () => {
@@ -1589,10 +1794,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       await getListAgentsHandler(mockReq, mockRes);
 
       const response = mockRes.json.mock.calls[0][0];
-      expect(response.data[0].owner_contact).toEqual({
-        name: 'First Owner',
-        email: 'first.owner@example.com',
-      });
+      expect(response.data[0].owner_contact).toEqual({ name: 'First Owner' });
     });
 
     test('should omit owner_contact when no owner user can be resolved', async () => {
@@ -1604,6 +1806,65 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       const response = mockRes.json.mock.calls[0][0];
       expect(response.data[0].owner_contact).toBeUndefined();
+    });
+
+    test('should mark isEditable per agent on a VIEW-scoped list', async () => {
+      mockReq.user.id = userA.toString();
+      mockReq.query = { requiredPermission: String(PermissionBits.VIEW) };
+      /** VIEW reaches all three; the EDIT lookup only reaches agentA1. */
+      findAccessibleResources.mockImplementation(({ resourceType, requiredPermissions }) => {
+        if (resourceType === 'agent' && requiredPermissions === PermissionBits.EDIT) {
+          return Promise.resolve([agentA1._id]);
+        }
+        if (resourceType === 'agent') {
+          return Promise.resolve([agentA1._id, agentA2._id, agentA3._id]);
+        }
+        return Promise.resolve([]);
+      });
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const byId = Object.fromEntries(
+        mockRes.json.mock.calls[0][0].data.map((a) => [a.id, a.isEditable]),
+      );
+      expect(byId[agentA1.id]).toBe(true);
+      expect(byId[agentA2.id]).toBe(false);
+      expect(byId[agentA3.id]).toBe(false);
+    });
+
+    test('should forward idOnTheSource to every ACL lookup', async () => {
+      /** Without it `getUserPrincipals` reads the user document once per lookup, so the
+       *  handler pays an extra `User.findById` for each permission it resolves. */
+      mockReq.user.id = userA.toString();
+      mockReq.user.idOnTheSource = 'external-oid-1';
+      findAccessibleResources.mockResolvedValue([agentA1._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      expect(findAccessibleResources.mock.calls.length).toBeGreaterThan(1);
+      for (const [args] of findAccessibleResources.mock.calls) {
+        expect(args.idOnTheSource).toBe('external-oid-1');
+      }
+    });
+
+    test('should mark every agent editable when the request is already EDIT-scoped', async () => {
+      mockReq.user.id = userA.toString();
+      mockReq.query = { requiredPermission: String(PermissionBits.EDIT) };
+      findAccessibleResources.mockResolvedValue([agentA1._id, agentA2._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.data.every((a) => a.isEditable === true)).toBe(true);
+      /** No extra EDIT lookup: an EDIT-scoped match is editable by definition. */
+      const editCalls = findAccessibleResources.mock.calls.filter(
+        ([args]) =>
+          args.resourceType === 'agent' && args.requiredPermissions === PermissionBits.EDIT,
+      );
+      expect(editCalls).toHaveLength(1);
     });
 
     test('should return only expected safe list fields for VIEW callers', async () => {
@@ -1651,6 +1912,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           'conversation_starters',
           'description',
           'id',
+          'isEditable',
           'is_promoted',
           'name',
           'support_contact',
@@ -2165,6 +2427,110 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json).toHaveBeenCalled();
     });
 
+    test('should finish avatar writes before snapshotting the paginated list query', async () => {
+      /** `updateAgent` bumps `updatedAt`, which is the field `getListAgentsByAccess`
+       *  sorts and cursors on. If the list query snapshots before a refresh write
+       *  lands, that agent jumps ahead of the returned cursor and vanishes from every
+       *  later page. Assert the ordering rather than the symptom, which only shows up
+       *  on multi-page S3 accounts under a specific interleaving. */
+      const db = require('~/models');
+      const order = [];
+      /** Yield a macrotask so a parallelized refresh would lose the race, the way a real
+       *  S3 presign round trip does. */
+      refreshS3Url.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push('avatar-write');
+        return 'new-s3-path.jpg';
+      });
+      const realList = db.getListAgentsByAccess;
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockImplementation(async (params) => {
+        if (params.includeSkillConfig) {
+          order.push('list-query');
+          return { object: 'list', data: [], has_more: false, after: null };
+        }
+        return realList(params);
+      });
+      mockCache.get.mockResolvedValue(false);
+      findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      const mockReq = { user: { id: userA.toString(), role: 'USER' }, query: {} };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
+        expect(order).toContain('avatar-write');
+        expect(order.indexOf('avatar-write')).toBeLessThan(order.indexOf('list-query'));
+      } finally {
+        listSpy.mockRestore();
+        refreshS3Url.mockReset();
+      }
+    });
+
+    test('should serve the refreshed filepath in the same response on cache miss', async () => {
+      const agentId = agentWithS3Avatar.id;
+      mockCache.get.mockResolvedValue(false);
+      findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('new-s3-path.jpg');
+
+      const mockReq = {
+        user: { id: userA.toString(), role: 'USER' },
+        query: {},
+      };
+      const mockRes = {
+        status: jest.fn().mockReturnThis(),
+        json: jest.fn().mockReturnThis(),
+      };
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const responseData = mockRes.json.mock.calls[0][0];
+      const agent = responseData.data.find((a) => a.id === agentId);
+      /** The refresh runs alongside the list query, so the refreshed path must reach the
+       *  response through `urlCache` rather than through what the list query read. */
+      expect(agent.avatar.filepath).toBe('new-s3-path.jpg');
+    });
+
+    test('should scope the refresh query to S3 avatars without filtering the list query', async () => {
+      const db = require('~/models');
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess');
+      mockCache.get.mockResolvedValue(false);
+      findAccessibleResources.mockResolvedValue([agentWithLocalAvatar._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      const mockReq = {
+        user: { id: userA.toString(), role: 'USER' },
+        query: {},
+      };
+      const mockRes = {
+        status: jest.fn().mockReturnThis(),
+        json: jest.fn().mockReturnThis(),
+      };
+
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
+
+        /** The refresh pass must query only S3-avatar agents — `refreshListAvatars`
+         *  skips non-S3 entries anyway, so without this assertion the filter could
+         *  regress to `{}` (reloading the whole accessible set) unnoticed. */
+        expect(listSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ otherParams: { 'avatar.source': FileSources.s3 } }),
+        );
+        /** The user-facing list query keeps the request filter, not the refresh scope. */
+        expect(listSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ includeSkillConfig: true, otherParams: {} }),
+        );
+
+        expect(refreshS3Url).not.toHaveBeenCalled();
+        const responseData = mockRes.json.mock.calls[0][0];
+        const agent = responseData.data.find((a) => a.id === agentWithLocalAvatar.id);
+        expect(agent.avatar.filepath).toBe('local-path.jpg');
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
     test('should refresh avatars for all accessible agents (VIEW permission)', async () => {
       mockCache.get.mockResolvedValue(false);
       // User A has access to both their own agent and userB's agent
@@ -2475,7 +2841,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         name: 'Attacker Agent',
         provider: 'openai',
         model: 'gpt-4',
-        edges: [{ from: 'self_placeholder', to: targetAgent.id, edgeType: 'handoff' }],
+        edges: [{ from: '', to: targetAgent.id, edgeType: 'handoff' }],
       };
 
       await createAgentHandler(mockReq, mockRes);
@@ -2483,6 +2849,76 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).toHaveBeenCalledWith(403);
       const response = mockRes.json.mock.calls[0][0];
       expect(response.agent_ids).toContain(targetAgent.id);
+    });
+
+    test('createAgentHandler should reject a missing graph-subagent member', async () => {
+      const missingMemberId = 'agent_missing_graph_member';
+      mockReq.config = {
+        endpoints: { agents: { capabilities: ['subagents'] } },
+      };
+      mockReq.body = {
+        name: 'Graph Parent',
+        provider: 'openai',
+        model: 'gpt-4',
+        subagents: {
+          enabled: true,
+          allowSelf: false,
+          graphs: [
+            {
+              type: 'research_team',
+              name: 'Research team',
+              description: 'Researches before answering',
+              agent_ids: [targetAgent.id, missingMemberId],
+              edges: [{ from: targetAgent.id, to: missingMemberId, edgeType: 'direct' }],
+              entry_agent_id: targetAgent.id,
+              result_agent_id: missingMemberId,
+            },
+          ],
+        },
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'One or more agents referenced in subagents do not exist',
+        agent_ids: [missingMemberId],
+      });
+    });
+
+    test('createAgentHandler should rewrite a graph self placeholder to the generated ID', async () => {
+      mockReq.config = {
+        endpoints: { agents: { capabilities: ['subagents'] } },
+      };
+      mockReq.body = {
+        name: 'Self Graph Parent',
+        provider: 'openai',
+        model: 'gpt-4',
+        subagents: {
+          enabled: true,
+          graphs: [
+            {
+              type: 'self_review',
+              name: 'Self review',
+              description: 'Runs the new agent in an isolated context',
+              agent_ids: [''],
+              edges: [],
+              entry_agent_id: '',
+              result_agent_id: '',
+            },
+          ],
+        },
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const createdAgent = mockRes.json.mock.calls[0][0];
+      expect(createdAgent.subagents.graphs[0]).toMatchObject({
+        agent_ids: [createdAgent.id],
+        entry_agent_id: createdAgent.id,
+        result_agent_id: createdAgent.id,
+      });
     });
 
     test('createAgentHandler should succeed when user has VIEW on all edge-referenced agents', async () => {
@@ -2493,25 +2929,33 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         name: 'Legit Agent',
         provider: 'openai',
         model: 'gpt-4',
-        edges: [{ from: 'self_placeholder', to: targetAgent.id, edgeType: 'handoff' }],
+        edges: [{ from: '', to: targetAgent.id, edgeType: 'handoff' }],
       };
 
       await createAgentHandler(mockReq, mockRes);
 
       expect(mockRes.status).toHaveBeenCalledWith(201);
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.edges).toEqual([
+        { from: response.id, to: targetAgent.id, edgeType: 'handoff' },
+      ]);
     });
 
-    test('createAgentHandler should allow edges referencing non-existent agents (self-reference at create time)', async () => {
+    test('createAgentHandler should reject a non-existent handoff target', async () => {
       mockReq.body = {
-        name: 'Self-Ref Agent',
+        name: 'Dangling Edge Agent',
         provider: 'openai',
         model: 'gpt-4',
-        edges: [{ from: 'agent_does_not_exist_yet', to: 'agent_also_new', edgeType: 'handoff' }],
+        edges: [{ from: '', to: 'agent_missing_target', edgeType: 'handoff' }],
       };
 
       await createAgentHandler(mockReq, mockRes);
 
-      expect(mockRes.status).toHaveBeenCalledWith(201);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'One or more agents referenced in edges do not exist',
+        agent_ids: ['agent_missing_target'],
+      });
     });
 
     test('updateAgentHandler should return 403 when user lacks VIEW on an edge-referenced agent', async () => {
@@ -2540,6 +2984,42 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(response.agent_ids).not.toContain(ownedAgent.id);
     });
 
+    test('updateAgentHandler should repair a legacy empty handoff source', async () => {
+      const ownedAgent = await Agent.create({
+        id: `agent_${nanoid()}`,
+        author: mockReq.user.id,
+        name: 'Legacy Router',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        edges: [{ from: '', to: targetAgent.id, edgeType: 'handoff' }],
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(
+        new Map([
+          [ownedAgent._id.toString(), PermissionBits.VIEW],
+          [targetAgent._id.toString(), PermissionBits.VIEW],
+        ]),
+      );
+
+      mockReq.params = { id: ownedAgent.id };
+      mockReq.body = {
+        edges: [{ from: '', to: targetAgent.id, edgeType: 'handoff' }],
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          edges: [{ from: ownedAgent.id, to: targetAgent.id, edgeType: 'handoff' }],
+        }),
+      );
+      const persisted = await Agent.findOne({ id: ownedAgent.id }).lean();
+      expect(persisted.edges).toEqual([
+        { from: ownedAgent.id, to: targetAgent.id, edgeType: 'handoff' },
+      ]);
+    });
+
     test('updateAgentHandler should succeed when edges field is absent from payload', async () => {
       const ownedAgent = await Agent.create({
         id: `agent_${nanoid()}`,
@@ -2558,6 +3038,370 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).not.toHaveBeenCalledWith(403);
       const response = mockRes.json.mock.calls[0][0];
       expect(response.name).toBe('Renamed Agent');
+    });
+
+    test('duplicateAgentHandler should move current and legacy handoff sources to the clone', async () => {
+      const sourceAgentId = `agent_${nanoid()}`;
+      const secondTarget = await Agent.create({
+        id: `agent_${nanoid()}`,
+        author: new mongoose.Types.ObjectId().toString(),
+        name: 'Second Target Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+      });
+      const sourceAgent = await Agent.create({
+        id: sourceAgentId,
+        author: mockReq.user.id,
+        name: 'Legacy Clone Source',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        edges: [
+          { from: sourceAgentId, to: targetAgent.id, edgeType: 'handoff' },
+          { from: '', to: secondTarget.id, edgeType: 'handoff' },
+        ],
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(
+        new Map([
+          [targetAgent._id.toString(), PermissionBits.VIEW],
+          [secondTarget._id.toString(), PermissionBits.VIEW],
+        ]),
+      );
+      jest.spyOn(require('~/models'), 'getActions').mockResolvedValueOnce([]);
+
+      mockReq.params = { id: sourceAgent.id };
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const { agent } = mockRes.json.mock.calls[0][0];
+      expect(agent.edges).toEqual([
+        { from: agent.id, to: targetAgent.id, edgeType: 'handoff' },
+        { from: agent.id, to: secondTarget.id, edgeType: 'handoff' },
+      ]);
+    });
+
+    test('duplicateAgentHandler should rewrite and allow a graph-team self member', async () => {
+      const sourceAgentId = `agent_${nanoid()}`;
+      await Agent.create({
+        id: sourceAgentId,
+        author: mockReq.user.id,
+        name: 'Self Graph Clone Source',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        subagents: {
+          enabled: true,
+          allowSelf: false,
+          graphs: [
+            {
+              type: 'self_team',
+              name: 'Self team',
+              description: 'Contains the parent and a worker',
+              agent_ids: [sourceAgentId, targetAgent.id],
+              edges: [{ from: sourceAgentId, to: targetAgent.id, edgeType: 'direct' }],
+              entry_agent_id: sourceAgentId,
+              result_agent_id: targetAgent.id,
+            },
+          ],
+        },
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(
+        new Map([[targetAgent._id.toString(), PermissionBits.VIEW]]),
+      );
+      jest.spyOn(require('~/models'), 'getActions').mockResolvedValueOnce([]);
+      mockReq.config = { endpoints: { agents: { capabilities: ['subagents'] } } };
+      mockReq.params = { id: sourceAgentId };
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const { agent } = mockRes.json.mock.calls[0][0];
+      expect(agent.subagents.graphs[0]).toMatchObject({
+        agent_ids: [agent.id, targetAgent.id],
+        edges: [{ from: agent.id, to: targetAgent.id, edgeType: 'direct' }],
+        entry_agent_id: agent.id,
+        result_agent_id: targetAgent.id,
+      });
+    });
+
+    test('duplicateAgentHandler should return 400 for a missing handoff target', async () => {
+      const missingTargetId = `agent_${nanoid()}`;
+      const sourceAgent = await Agent.create({
+        id: `agent_${nanoid()}`,
+        author: mockReq.user.id,
+        name: 'Stale Clone Source',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        edges: [{ from: '', to: missingTargetId, edgeType: 'handoff' }],
+      });
+
+      mockReq.params = { id: sourceAgent.id };
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'One or more agents referenced in edges do not exist',
+        agent_ids: [missingTargetId],
+      });
+      expect(await Agent.countDocuments()).toBe(2);
+    });
+
+    test('duplicateAgentHandler should return 403 without VIEW access to a handoff target', async () => {
+      const sourceAgentId = `agent_${nanoid()}`;
+      const sourceAgent = await Agent.create({
+        id: sourceAgentId,
+        author: mockReq.user.id,
+        name: 'Restricted Clone Source',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        edges: [{ from: sourceAgentId, to: targetAgent.id, edgeType: 'handoff' }],
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(new Map());
+
+      mockReq.params = { id: sourceAgent.id };
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'You do not have access to one or more agents referenced in edges',
+        agent_ids: [targetAgent.id],
+      });
+      expect(await Agent.countDocuments()).toBe(2);
+    });
+
+    test('duplicateAgentHandler should return 403 without VIEW access to a graph-subagent member', async () => {
+      const sourceAgent = await Agent.create({
+        id: `agent_${nanoid()}`,
+        author: mockReq.user.id,
+        name: 'Restricted Graph Clone Source',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        subagents: {
+          enabled: true,
+          allowSelf: false,
+          graphs: [
+            {
+              type: 'restricted_team',
+              name: 'Restricted team',
+              description: 'Contains a restricted member',
+              agent_ids: [targetAgent.id],
+              edges: [],
+              entry_agent_id: targetAgent.id,
+              result_agent_id: targetAgent.id,
+            },
+          ],
+        },
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(new Map());
+      mockReq.config = { endpoints: { agents: { capabilities: ['subagents'] } } };
+      mockReq.params = { id: sourceAgent.id };
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'You do not have access to one or more agents referenced in subagents',
+        agent_ids: [targetAgent.id],
+      });
+      expect(await Agent.countDocuments()).toBe(2);
+    });
+
+    test('revertAgentVersionHandler should clear handoffs when the historical version has none', async () => {
+      const agentId = `agent_${nanoid()}`;
+      await Agent.create({
+        id: agentId,
+        author: mockReq.user.id,
+        name: 'Current Router',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        edges: [{ from: agentId, to: targetAgent.id, edgeType: 'handoff' }],
+        versions: [
+          {
+            name: 'Historical Router',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+          },
+        ],
+      });
+
+      mockReq.params = { id: agentId };
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      const persisted = await Agent.findOne({ id: agentId }).lean();
+      expect(persisted.name).toBe('Historical Router');
+      expect(persisted.edges).toEqual([]);
+    });
+
+    test('revertAgentVersionHandler should restore accessible historical handoffs', async () => {
+      const agentId = `agent_${nanoid()}`;
+      const sourceAgent = await Agent.create({
+        id: agentId,
+        author: mockReq.user.id,
+        name: 'Current Router',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        edges: [],
+        versions: [
+          {
+            name: 'Historical Router',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            edges: [{ from: '', to: targetAgent.id, edgeType: 'handoff' }],
+          },
+        ],
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(
+        new Map([
+          [sourceAgent._id.toString(), PermissionBits.VIEW],
+          [targetAgent._id.toString(), PermissionBits.VIEW],
+        ]),
+      );
+
+      mockReq.params = { id: agentId };
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      expect(mockRes.status).not.toHaveBeenCalledWith(403);
+      const persisted = await Agent.findOne({ id: agentId }).lean();
+      expect(persisted.name).toBe('Historical Router');
+      expect(persisted.edges).toEqual([{ from: agentId, to: targetAgent.id, edgeType: 'handoff' }]);
+    });
+
+    test('revertAgentVersionHandler should return 400 before restoring a missing handoff target', async () => {
+      const agentId = `agent_${nanoid()}`;
+      const missingTargetId = `agent_${nanoid()}`;
+      await Agent.create({
+        id: agentId,
+        author: mockReq.user.id,
+        name: 'Current Router',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        versions: [
+          {
+            name: 'Stale Historical Router',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            edges: [{ from: agentId, to: missingTargetId, edgeType: 'handoff' }],
+          },
+        ],
+      });
+
+      mockReq.params = { id: agentId };
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'One or more agents referenced in edges do not exist',
+        agent_ids: [missingTargetId],
+      });
+      const persisted = await Agent.findOne({ id: agentId }).lean();
+      expect(persisted.name).toBe('Current Router');
+    });
+
+    test('revertAgentVersionHandler should return 400 before restoring a missing graph-subagent member', async () => {
+      const agentId = `agent_${nanoid()}`;
+      const missingMemberId = `agent_${nanoid()}`;
+      await Agent.create({
+        id: agentId,
+        author: mockReq.user.id,
+        name: 'Current Graph Parent',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        versions: [
+          {
+            name: 'Historical Graph Parent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            subagents: {
+              enabled: true,
+              allowSelf: false,
+              graphs: [
+                {
+                  type: 'missing_team',
+                  name: 'Missing team',
+                  description: 'Contains a deleted member',
+                  agent_ids: [missingMemberId],
+                  edges: [],
+                  entry_agent_id: missingMemberId,
+                  result_agent_id: missingMemberId,
+                },
+              ],
+            },
+          },
+        ],
+      });
+      mockReq.config = { endpoints: { agents: { capabilities: ['subagents'] } } };
+      mockReq.params = { id: agentId };
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'One or more agents referenced in subagents do not exist',
+        agent_ids: [missingMemberId],
+      });
+      const persisted = await Agent.findOne({ id: agentId }).lean();
+      expect(persisted.name).toBe('Current Graph Parent');
+    });
+
+    test('revertAgentVersionHandler should return 403 before restoring a restricted handoff target', async () => {
+      const agentId = `agent_${nanoid()}`;
+      const sourceAgent = await Agent.create({
+        id: agentId,
+        author: mockReq.user.id,
+        name: 'Current Router',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+        versions: [
+          {
+            name: 'Restricted Historical Router',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            edges: [{ from: agentId, to: targetAgent.id, edgeType: 'handoff' }],
+          },
+        ],
+      });
+      getResourcePermissionsMap.mockResolvedValueOnce(
+        new Map([[sourceAgent._id.toString(), PermissionBits.VIEW]]),
+      );
+
+      mockReq.params = { id: agentId };
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'You do not have access to one or more agents referenced in edges',
+        agent_ids: [targetAgent.id],
+      });
+      const persisted = await Agent.findOne({ id: agentId }).lean();
+      expect(persisted.name).toBe('Current Router');
     });
   });
 });

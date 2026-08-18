@@ -42,8 +42,12 @@ export const code: React.ElementType = memo(function MarkdownCode({
   const isMermaid = lang === 'mermaid';
   const isSingleLine = isSingleLineCode(children);
 
-  const { getNextIndex, resetCounter } = useCodeBlockContext();
+  const { getNextIndex, getNextMermaidIndex, resetCounter } = useCodeBlockContext();
   const blockIndex = useRef(getNextIndex(isMath || isMermaid || isSingleLine)).current;
+  /* Mermaid fences do not consume a code-block index, so every one of them in a
+   * message would otherwise share `blockIndex` and collapse onto a single
+   * artifact id. They carry their own sequence instead. */
+  const mermaidIndex = useRef(isMermaid ? getNextMermaidIndex() : -1).current;
 
   useEffect(() => {
     resetCounter();
@@ -55,7 +59,7 @@ export const code: React.ElementType = memo(function MarkdownCode({
     const content = typeof children === 'string' ? children : String(children);
     return (
       <MermaidErrorBoundary code={content}>
-        <Mermaid id={`mermaid-${blockIndex}`}>{content}</Mermaid>
+        <Mermaid id={`mermaid-${mermaidIndex}`}>{content}</Mermaid>
       </MermaidErrorBoundary>
     );
   } else if (isSingleLine) {

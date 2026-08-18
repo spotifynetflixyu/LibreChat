@@ -1,7 +1,12 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { logger } = require('@librechat/data-schemas');
-const { ContentTypes, isAssistantsEndpoint } = require('librechat-data-provider');
+const { logger, CLIENT_MESSAGE_SELECT } = require('@librechat/data-schemas');
+const {
+  ContentTypes,
+  feedbackSchema,
+  isAssistantsEndpoint,
+  stripReasoningLabelMetadata,
+} = require('librechat-data-provider');
 const {
   unescapeLaTeX,
   countTokens,
@@ -284,7 +289,7 @@ router.get('/:conversationId', prepareMessageRequestValidation, async (req, res)
     // This intentionally starts a user-scoped read before validation resolves;
     // the response remains gated on validation success below.
     const messagesPromise = validation.shouldFetchMessages
-      ? db.getMessages({ conversationId, user: req.user.id }, '-_id -__v -user').then(
+      ? db.getMessages({ conversationId, user: req.user.id }, CLIENT_MESSAGE_SELECT).then(
           (messages) => ({ messages }),
           (error) => ({ error }),
         )
@@ -324,7 +329,15 @@ router.post('/:conversationId', validateMessageReq, async (req, res) => {
     if (!savedMessage) {
       return res.status(400).json({ error: 'Message not saved' });
     }
-    await db.saveConvo(reqCtx, savedMessage, { context: 'POST /api/messages/:conversationId' });
+    const conversationUpdate = {
+      conversationId: savedMessage.conversationId,
+      ...(message.endpoint !== undefined && { endpoint: savedMessage.endpoint }),
+      ...(message.model !== undefined && { model: savedMessage.model }),
+      ...(message.iconURL !== undefined && { iconURL: savedMessage.iconURL }),
+    };
+    await db.saveConvo(reqCtx, conversationUpdate, {
+      context: 'POST /api/messages/:conversationId',
+    });
     res.status(201).json(savedMessage);
   } catch (error) {
     logger.error('Error saving message:', error);
@@ -337,7 +350,7 @@ router.get('/:conversationId/:messageId', validateMessageReq, async (req, res) =
     const { conversationId, messageId } = req.params;
     const message = await db.getMessages(
       { conversationId, messageId, user: req.user.id },
-      '-_id -__v -user',
+      CLIENT_MESSAGE_SELECT,
     );
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
@@ -401,8 +414,21 @@ router.put('/:conversationId/:messageId', validateMessageReq, async (req, res) =
       return res.status(400).json({ error: 'Cannot update non-text content' });
     }
 
-    const oldText = updatedContent[index][currentPartType];
-    updatedContent[index] = { type: currentPartType, [currentPartType]: text };
+    /** A text part is `string | { value, annotations }`. The Assistants thread sync
+     *  persists the structured form with its file citations intact, and the editor
+     *  reads it through the same union, so an edit has to be written into `value`
+     *  rather than over the whole part. The same object is what gets counted below,
+     *  and the tokenizer measures `length`, which an object does not have. */
+    const currentPart = updatedContent[index];
+    const currentValue = currentPart[currentPartType];
+    const isStructuredValue = currentValue != null && typeof currentValue === 'object';
+    const oldText = isStructuredValue ? (currentValue.value ?? '') : currentValue;
+    const editedPart = {
+      ...currentPart,
+      [currentPartType]: isStructuredValue ? { ...currentValue, value: text } : text,
+    };
+    updatedContent[index] =
+      currentPartType === ContentTypes.THINK ? stripReasoningLabelMetadata(editedPart) : editedPart;
 
     let tokenCount = message.tokenCount;
     if (tokenCount !== undefined) {
@@ -431,12 +457,17 @@ router.put(
     try {
       const { conversationId, messageId } = req.params;
       const { feedback } = req.body;
+      const feedbackResult = feedback == null ? null : feedbackSchema.safeParse(feedback);
+
+      if (feedbackResult && !feedbackResult.success) {
+        return res.status(400).json({ error: 'Invalid feedback' });
+      }
 
       const updatedMessage = await db.updateMessage(
         req?.user?.id,
         {
           messageId,
-          feedback: feedback || null,
+          feedback: feedbackResult?.data ?? null,
         },
         { context: 'updateFeedback' },
       );
@@ -445,6 +476,8 @@ router.put(
       if (!isAssistantsEndpoint(updatedMessage.endpoint)) {
         sendFeedbackScore({
           traceId: traceIdForMessage(messageId),
+          sampled: updatedMessage.langfuseSampled,
+          destinationIds: updatedMessage.langfuseDestinationIds,
           feedback: updatedMessage.feedback,
           appConfig: req.config,
           metadata: {
