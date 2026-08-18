@@ -24,6 +24,9 @@ The source code for `@librechat/agents` (major backend dependency, same team) is
 - Database-specific shared logic goes in `/packages/data-schemas`.
 - Frontend/backend shared API logic (endpoints, types, data-service) goes in `/packages/data-provider`.
 - Build data-provider from project root: `npm run build:data-provider`.
+- Before merging upstream changes that touch agent message formatting, provider
+  streams, or Steel OCR routing, apply
+  `docs/steel-provider-input-merge-guards.md` and pass every listed check.
 
 ## Supabase Schema Workflow
 
