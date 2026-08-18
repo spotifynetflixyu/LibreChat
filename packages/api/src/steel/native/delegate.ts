@@ -564,7 +564,15 @@ export function isDelegateOcrQuoteOnlyTurn(currentUserTurn: string | undefined):
     /inspect|verify|ocr|vision|核對|核对|核查|確認|确认|檢查|检查|查看|看一下|看圖|看图|檢視|检视|解析|辨識|辨识|辨讀|辨读|讀取|读取/iu.test(
       text,
     );
-  return quoteIntent && !inspectionIntent;
+  const priorResultConfirmation =
+    /(?:確認|确认)\s*(?:以上|上述|前述)\s*(?:ocr\s*)?(?:明細|明细|結果|结果|內容|内容)/iu.test(
+      text,
+    );
+  const reinspectionIntent =
+    /(?:重新|再(?:次|度)?)\s*(?:inspect|verify|ocr|vision|核對|核对|核查|確認|确认|檢查|检查|查看|看一下|看圖|看图|檢視|检视|解析|辨識|辨识|辨讀|辨读|讀取|读取)/iu.test(
+      text,
+    );
+  return quoteIntent && (!inspectionIntent || (priorResultConfirmation && !reinspectionIntent));
 }
 
 export function normalizeDelegateOcrPageRanges(

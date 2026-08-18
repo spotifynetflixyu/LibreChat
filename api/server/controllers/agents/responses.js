@@ -1105,7 +1105,7 @@ const createResponse = async (req, res) => {
         version: 'v2',
       };
 
-      await run.processStream({ messages: formattedMessages }, config, {
+      await run.processStream({ messages: providerMessages }, config, {
         callbacks: {
           [Callback.TOOL_ERROR]: (graph, error, toolId) => {
             logger.error(`[Responses API] Tool Error "${toolId}"`, error);
@@ -1295,7 +1295,7 @@ const createResponse = async (req, res) => {
         version: 'v2',
       };
 
-      await run.processStream({ messages: formattedMessages }, config, {
+      await run.processStream({ messages: providerMessages }, config, {
         callbacks: {
           [Callback.TOOL_ERROR]: (graph, error, toolId) => {
             logger.error(`[Responses API] Tool Error "${toolId}"`, error);

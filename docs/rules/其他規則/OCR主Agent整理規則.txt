@@ -9,18 +9,18 @@
 [/delegate_ocr]
 
 [ocr_main_merge]
-1. 依來源檔案分組，同一來源的已整理內容合併成一張 OCR 結果確認表；不同來源不混表。
+1. 依來源檔案分組。不論同一來源有多少 OCR chunks、頁段或整理後 Markdown，必須先合併全部列；每檔最終恰好輸出一個粗體標題與一張連續九欄 Markdown 表格，只能有一組表頭。禁止依 chunk／頁段分表、重複標題、頁段／chunk 小標、說明段、表外複核清單或其他分段結果；所有說明與複核都放入同列「信心／複核備註」欄。不同來源不混表；同輪多來源時，各來源表仍置於同一份最終 Markdown 回覆。
 2. 合併時保留每筆來源列，不彙總、不合併同品名／規格，並維持來源頁數、項次、件號、圖號或其他可追溯代號。
-3. 欄位以已提供的整理內容為準；缺值保持空白，信心與複核原因保留在同一列，不重新辨識來源、不查價、不產生正式報價。
+3. 欄位值以已提供的整理內容為準；缺值保持空白，信心與複核原因保留在同一列，不重新辨識來源、不查價、不產生正式報價。
 4. 本輪 OCR 預處理提供的整理後 Markdown 是由 raw PaddleOCR text 產生，屬於 PaddleOCR 結果。合併時必須保留 `PaddleOCR` 來源；舊整理內容若未附來源標籤，應補標 `PaddleOCR`，不得推定為 `AI OCR`。
 [/ocr_main_merge]
 
 [final_ocr_markdown]
-1. Markdown 原名固定為 `OCR 結果確認表`；標題依通用格式輸出為 `## OCR 結果確認表｜<filename>（<file_key>）`，檔案資訊只是原名後的補充。
-2. 每列依來源與報價需要包含品名／規格、尺寸／厚度、數量／單位、孔數、折邊、割型、開槽連續邊長、切角、缺口、輪廓、信心與複核原因；缺值一律留空。
-3. OCR 或 Vision 已修正的內容直接使用修正值，並在同列`備註`保留原辨識值、修正內容與原因。
+1. Markdown 原名固定為 `OCR 結果確認表`；每個來源標題固定為 `**OCR 結果確認表｜<filename>（<file_key>）**`，例如 `**OCR 結果確認表｜BH.pdf（file:3ff04e38-bd5e-4fb7-82ce-866ad49ce5b9）**`。
+2. 每列固定依附件順序使用九欄：頁／圖號、零件編號、規格／材質、長度 mm、所屬構件數量合計、孔數（每件×件數＝總孔）、割型／斜切、信心／複核備註、OCR來源；缺值留空。本 `final_ocr_markdown` 固定 schema 優先於通用 OCR 規則中「欄位與位置由模型決定」的規定。
+3. OCR 或 Vision 已修正的內容直接使用修正值，並在同列`信心／複核備註`保留原辨識值、修正內容與原因。
 4. 模糊、缺字、遮擋、反光、低解析、字元歧義、規格／數量／尺寸不完整、列數不一致或需 Vision 幾何判讀時，在同一表的信心／複核欄標示，不另建立第二張複核表。
 5. raw PaddleOCR text、OCR 子 Agent 整理結果，以及本輪提供的整理後 OCR Markdown，都是同一條 PaddleOCR 來源鏈；AI 的整理、合併、格式化或文字修正不會把來源變成 AI OCR。沒有看到 raw payload、工具事件或原始 PaddleOCR 回傳，不代表 PaddleOCR 失敗。
-6. 不論輸出格式，每筆 OCR 資料都要標示來源，欄位與位置由模型決定：只使用 PaddleOCR 來源鏈時標 `PaddleOCR`；另由 AI OCR／Vision 直接讀取原始附件補充或修正欄位時標 `PaddleOCR/ AI OCR`；只有收到明確的 PaddleOCR 失敗或不可用結果，且該筆資料完全由 AI OCR 取得時才標 `AI OCR`。
+6. 每筆 OCR 資料都必須在第九欄`OCR來源`標示來源：只使用 PaddleOCR 來源鏈時標 `PaddleOCR`；另由 AI OCR／Vision 直接讀取原始附件補充或修正欄位時標 `PaddleOCR/ AI OCR`；只有收到明確的 PaddleOCR 失敗或不可用結果，且該筆資料完全由 AI OCR 取得時才標 `AI OCR`。
 7. 不得因內容已整理成 Markdown、經過 AI 處理或缺少 raw payload 而改標 `AI OCR`，也不得宣稱未取得 PaddleOCR 資料。資料優先為 `PaddleOCR` > `AI OCR`；AI OCR 不得覆蓋、漏標或降級 PaddleOCR。
 [/final_ocr_markdown]

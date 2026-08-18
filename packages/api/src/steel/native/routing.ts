@@ -12,7 +12,11 @@ function isRecord(value: unknown): value is ProviderMessageRecord {
 }
 
 function getFileId(part: ProviderMessageRecord): string | undefined {
-  return typeof part.file_id === 'string' ? part.file_id : undefined;
+  if (typeof part.file_id === 'string') {
+    return part.file_id;
+  }
+  const file = isRecord(part.file) ? part.file : undefined;
+  return typeof file?.file_id === 'string' ? file.file_id : undefined;
 }
 
 function getDataUrlMediaType(value: unknown): string | undefined {
@@ -26,6 +30,10 @@ function getDataUrlMediaType(value: unknown): string | undefined {
 function getPartUrl(part: ProviderMessageRecord): string | undefined {
   if (typeof part.file_data === 'string') {
     return part.file_data;
+  }
+  const file = isRecord(part.file) ? part.file : undefined;
+  if (typeof file?.file_data === 'string') {
+    return file.file_data;
   }
   const imageUrl = part.image_url;
   if (typeof imageUrl === 'string') {
@@ -58,9 +66,17 @@ function isOcrProviderPart(
   const mediaType =
     (typeof part.media_type === 'string' && part.media_type) ||
     (typeof part.mediaType === 'string' && part.mediaType) ||
+    (isRecord(part.file) && typeof part.file.media_type === 'string' && part.file.media_type) ||
+    (isRecord(part.file) && typeof part.file.mediaType === 'string' && part.file.mediaType) ||
+    (isRecord(part.source) &&
+      typeof part.source.media_type === 'string' &&
+      part.source.media_type) ||
     getDataUrlMediaType(part.file_data) ||
     getDataUrlMediaType(getPartUrl(part));
-  const filename = typeof part.filename === 'string' ? part.filename : undefined;
+  const filename =
+    (typeof part.filename === 'string' && part.filename) ||
+    (isRecord(part.file) && typeof part.file.filename === 'string' && part.file.filename) ||
+    undefined;
   if (mediaType === undefined && filename === undefined) {
     return false;
   }

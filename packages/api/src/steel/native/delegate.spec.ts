@@ -10,6 +10,7 @@ import {
   delegateOcrStreamEventName,
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
+  isDelegateOcrQuoteOnlyTurn,
   normalizeDelegateOcrChunk,
   parseDelegateOcrPageRangesFromTurn,
   delegateOcrArgsSchema,
@@ -42,6 +43,19 @@ const files: DelegateOcrFileRecord[] = [
 ];
 
 describe('delegate_ocr', () => {
+  it('classifies confirmed OCR details followed by a quote request as quote-only', () => {
+    expect(isDelegateOcrQuoteOnlyTurn('確認以上 OCR 明細，依 B 價報價')).toBe(true);
+  });
+
+  it.each([
+    '請重新 OCR 這份 PDF 後報價',
+    '請核對原始 PDF 後報價',
+    '確認以上 OCR 明細，但請重新核對原始 PDF 後報價',
+    '確認以上 OCR 明細，但請再核對原始 PDF 後報價',
+  ])('keeps fresh or reinspection quote request bound to delegate OCR: %s', (prompt) => {
+    expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(false);
+  });
+
   it('parses and canonicalizes explicit page expressions from the current turn', () => {
     expect(parseDelegateOcrPageRangesFromTurn('重新核對第 35 頁至第 37 頁、pages 40-41')).toEqual([
       { pageStart: 35, pageEnd: 37 },

@@ -41,4 +41,44 @@ describe('Steel native provider file routing', () => {
       { role: 'user', content: [] },
     ]);
   });
+
+  it('strips nested OpenAI file blocks for historical PDFs but keeps non-OCR documents', () => {
+    const messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Use the existing OCR table' },
+          {
+            type: 'file',
+            file: {
+              filename: 'BH.pdf',
+              file_data: 'data:application/pdf;base64,cGRm',
+            },
+          },
+          {
+            type: 'file',
+            file: {
+              filename: 'prices.csv',
+              file_data: 'data:text/csv;base64,Y29sMQ==',
+            },
+          },
+        ],
+      },
+    ];
+
+    expect(stripSteelOcrPartsFromProviderMessages(messages)).toEqual([
+      expect.objectContaining({
+        content: [
+          { type: 'text', text: 'Use the existing OCR table' },
+          {
+            type: 'file',
+            file: {
+              filename: 'prices.csv',
+              file_data: 'data:text/csv;base64,Y29sMQ==',
+            },
+          },
+        ],
+      }),
+    ]);
+  });
 });

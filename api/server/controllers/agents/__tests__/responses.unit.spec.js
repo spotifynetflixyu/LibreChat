@@ -990,6 +990,12 @@ describe('createResponse controller', () => {
       const latestHistoryMessage = createRunArgs.messages.at(-1);
       expect(latestHistoryMessage._getType()).toBe('human');
       expect(JSON.stringify(latestHistoryMessage.content)).toContain('請分析這張圖');
+      const run = await api.createRun.mock.results.at(-1).value;
+      expect(run.processStream).toHaveBeenCalledWith(
+        { messages: createRunArgs.messages },
+        expect.any(Object),
+        expect.any(Object),
+      );
       expect(createRunArgs.openAIOAuthModelOptionsSink).toEqual(expect.any(Function));
       createRunArgs.openAIOAuthModelOptionsSink({ model: 'gpt-5.6-luna' });
       expect(req.steelNativeContext.delegateOcrContext.modelOptions).toEqual({
@@ -997,7 +1003,7 @@ describe('createResponse controller', () => {
       });
     });
 
-    it('captures the same unstripped history passed to the Responses provider', async () => {
+    it('strips OCR parts from provider messages while preserving delegate OCR history', async () => {
       const api = require('@librechat/api');
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const { formatAgentMessages } = require('@librechat/agents');
@@ -1055,7 +1061,7 @@ describe('createResponse controller', () => {
       expect(api.createRun.mock.calls.at(-1)[0].messages).toBe(strippedHistory);
       const run = await api.createRun.mock.results.at(-1).value;
       expect(run.processStream).toHaveBeenCalledWith(
-        { messages: formattedHistory },
+        { messages: strippedHistory },
         expect.any(Object),
         expect.any(Object),
       );
@@ -1157,6 +1163,35 @@ describe('createResponse controller', () => {
       api.validateResponseRequest.mockReturnValue({
         request: { model: 'agent-123', input: 'Hello', stream: true },
       });
+    });
+
+    it('uses stripped provider messages for the streaming model input', async () => {
+      const api = require('@librechat/api');
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const { formatAgentMessages } = require('@librechat/agents');
+      const formattedHistory = [
+        new HumanMessage({
+          content: [
+            { type: 'text', text: '請依前輪 OCR 結果報價' },
+            { type: 'input_file', file_id: 'file-drawing', filename: 'drawing.pdf' },
+          ],
+        }),
+      ];
+      const strippedHistory = [new HumanMessage('請依前輪 OCR 結果報價')];
+      formatAgentMessages.mockReturnValueOnce({
+        messages: formattedHistory,
+        indexTokenCountMap: {},
+      });
+      mockStripSteelOcrPartsFromProviderMessages.mockReturnValueOnce(strippedHistory);
+
+      await createResponse(req, res);
+
+      const run = await api.createRun.mock.results.at(-1).value;
+      expect(run.processStream).toHaveBeenCalledWith(
+        { messages: strippedHistory },
+        expect.any(Object),
+        expect.any(Object),
+      );
     });
 
     it('should call recordCollectedUsage after successful streaming completion', async () => {
