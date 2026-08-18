@@ -2494,16 +2494,6 @@ async function loadToolDefinitionsWrapper({
     req,
     requestAttachments,
   );
-  if (selectedTools.length === 0) {
-    return { toolDefinitions: [] };
-  }
-
-  if (
-    selectedTools.length === 1 &&
-    (selectedTools[0] === AgentCapabilities.context || selectedTools[0] === AgentCapabilities.ocr)
-  ) {
-    return { toolDefinitions: [] };
-  }
 
   const appConfig = req.config;
   const hasExpectedMCPTools = Array.isArray(agent.tools) && agent.tools.some(isExpectedMCPTool);

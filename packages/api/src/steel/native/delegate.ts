@@ -557,22 +557,75 @@ export function isDelegateOcrQuoteOnlyTurn(currentUserTurn: string | undefined):
   if (!text) {
     return false;
   }
-  const quoteIntent = /報價|报价|估價|估价|價格|价格|單價|单价|quote|pricing|price|cost|estimate/iu.test(
-    text,
-  );
-  const inspectionIntent =
-    /inspect|verify|ocr|vision|核對|核对|核查|確認|确认|檢查|检查|查看|看一下|看圖|看图|檢視|检视|解析|辨識|辨识|辨讀|辨读|讀取|读取/iu.test(
-      text,
-    );
-  const priorResultConfirmation =
-    /(?:確認|确认)\s*(?:以上|上述|前述)\s*(?:ocr\s*)?(?:明細|明细|結果|结果|內容|内容)/iu.test(
-      text,
-    );
-  const reinspectionIntent =
-    /(?:重新|再(?:次|度)?)\s*(?:inspect|verify|ocr|vision|核對|核对|核查|確認|确认|檢查|检查|查看|看一下|看圖|看图|檢視|检视|解析|辨識|辨识|辨讀|辨读|讀取|读取)/iu.test(
-      text,
-    );
-  return quoteIntent && (!inspectionIntent || (priorResultConfirmation && !reinspectionIntent));
+  const quoteIntentPattern =
+    /(?:報|报)\s*(?:個|个|一個|一个)?\s*(?:價|价)|估價|估价|價格|价格|單價|单价|價錢|价钱|多少錢|多少钱|多少費用|多少费用|費用|费用|金額|金额|總價|总价|總計|总计|怎麼賣|怎么卖|quote|pricing|price|cost|estimate|how\s+much/giu;
+  const clauseBoundaries = [
+    '，',
+    ',',
+    '。',
+    '.',
+    '；',
+    ';',
+    '！',
+    '!',
+    '？',
+    '?',
+    '：',
+    ':',
+    '但是',
+    '但',
+    '不過',
+    '不过',
+    '而是',
+    '改成',
+    '改為',
+    '改为',
+    'however',
+    'but',
+  ];
+
+  for (const match of text.matchAll(quoteIntentPattern)) {
+    const beforeMatch = text.slice(0, match.index);
+    let clauseStart = 0;
+    for (const boundary of clauseBoundaries) {
+      const boundaryIndex = beforeMatch.toLowerCase().lastIndexOf(boundary);
+      if (boundaryIndex >= 0) {
+        clauseStart = Math.max(clauseStart, boundaryIndex + boundary.length);
+      }
+    }
+    const clausePrefix = beforeMatch.slice(clauseStart).slice(-40);
+    const inspectionTerms =
+      /看圖|看图|核對|核对|核查|附件|ocr|vision|檢查|检查|檢視|检视|解析|辨識|辨识|讀取|读取|pdf|圖片|图片|inspect|review|verify|check/iu;
+    const chineseNegators = [
+      ...clausePrefix.matchAll(/不要|不用|不需(?:要)?|無需|无需|暫不|暂不|先不|不想|別|别/gu),
+    ];
+    const lastChineseNegator = chineseNegators.at(-1);
+    const chineseNegated =
+      lastChineseNegator != null &&
+      !inspectionTerms.test(
+        clausePrefix.slice((lastChineseNegator.index ?? 0) + lastChineseNegator[0].length),
+      );
+    const englishNegators = [
+      ...clausePrefix.matchAll(
+        /don't|dont|do\s+not|no\s+need(?:\s+to|\s+for)?|not\s+now|without/giu,
+      ),
+    ];
+    const lastEnglishNegator = englishNegators.at(-1);
+    const englishNegated =
+      lastEnglishNegator != null &&
+      !inspectionTerms.test(
+        clausePrefix.slice((lastEnglishNegator.index ?? 0) + lastEnglishNegator[0].length),
+      );
+    const afterMatch = text.slice((match.index ?? 0) + match[0].length);
+    const chinesePostfixNegated =
+      /^(?:\s*先\s*)?(?:不要|不用(?:了)?|不需(?:要)?|無需|无需|暫不|暂不|先不|不想|別|别)\s*(?=$|[，,。\.；;！!？?：:]|但是|但|不過|不过|而是|改成|改為|改为|however|but)/iu.test(
+        afterMatch,
+      );
+    if (!chineseNegated && !englishNegated && !chinesePostfixNegated) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function normalizeDelegateOcrPageRanges(

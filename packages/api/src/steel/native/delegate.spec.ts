@@ -52,9 +52,50 @@ describe('delegate_ocr', () => {
     '請核對原始 PDF 後報價',
     '確認以上 OCR 明細，但請重新核對原始 PDF 後報價',
     '確認以上 OCR 明細，但請再核對原始 PDF 後報價',
-  ])('keeps fresh or reinspection quote request bound to delegate OCR: %s', (prompt) => {
-    expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(false);
+  ])('removes delegate OCR for any quote-intent turn: %s', (prompt) => {
+    expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(true);
   });
+
+  it.each(['重新核對附件', '請重新 OCR 這份 PDF'])(
+    'keeps delegate OCR bound for current-turn inspection without quote intent: %s',
+    (prompt) => {
+      expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(false);
+    },
+  );
+
+  it.each([
+    '先不要報價，請重新核對附件',
+    '先不要再報價，請重新核對附件',
+    '報價先不要，請重新核對附件',
+    '報價不用了，重新核對附件',
+    '不用算費用，先檢查 PDF',
+    "I don't need a quote; inspect the PDF",
+  ])(
+    'does not treat a negated quote phrase as quote intent: %s',
+    (prompt) => {
+      expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(false);
+    },
+  );
+
+  it.each([
+    '這批多少錢？',
+    '請幫我算費用',
+    '請幫我報個價',
+    '请帮我报个价',
+    '请帮我报一个价',
+    'how much is this batch?',
+    '先不要報價，但請告訴我總價',
+    '報價先不要，請重新核對附件，但最後請告訴我總價',
+    '報價先不要，但最後請告訴我總價，也重新核對附件',
+    '不要看圖直接幫我報價',
+    '我不想核對附件只要知道總價',
+    "I don't need OCR just quote it",
+  ])(
+    'recognizes quote synonyms and remaining positive quote intent: %s',
+    (prompt) => {
+      expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(true);
+    },
+  );
 
   it('parses and canonicalizes explicit page expressions from the current turn', () => {
     expect(parseDelegateOcrPageRangesFromTurn('重新核對第 35 頁至第 37 頁、pages 40-41')).toEqual([

@@ -944,6 +944,73 @@ describe('ToolService - Action Capability Gating', () => {
       expect(callArgs.tools).toContain(regularTool);
     });
 
+    it('exposes Steel native tools for an empty agent on a quote-only turn', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '第35頁報價' },
+            activeHistory: [{ role: 'user', content: '第35頁報價' }],
+          },
+        },
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_quote_empty', tools: [] },
+        definitionsOnly: true,
+      });
+
+      const definitionNames = result.toolDefinitions.map(getToolDefinitionName);
+      expect(definitionNames).toEqual(
+        expect.arrayContaining(['search_customers', 'search_price_candidates']),
+      );
+      expect(definitionNames).not.toContain('delegate_ocr');
+      expect(result.toolRegistry.has('search_customers')).toBe(true);
+      expect(result.toolRegistry.has('search_price_candidates')).toBe(true);
+      expect(result.toolRegistry.has('delegate_ocr')).toBe(false);
+    });
+
+    it('keeps Steel native tools empty when the tools capability is disabled', async () => {
+      const req = createMockReq([]);
+      req.steelNativeContext = {};
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([]));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_tools_disabled', tools: [] },
+        definitionsOnly: true,
+      });
+
+      expect(result.toolDefinitions).toEqual([]);
+      expect(result.toolRegistry.size).toBe(0);
+    });
+
+    it('exposes Steel native tools for an empty agent without Steel context', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_empty_without_context', tools: [] },
+        definitionsOnly: true,
+      });
+
+      const definitionNames = result.toolDefinitions.map(getToolDefinitionName);
+      expect(definitionNames).toEqual(
+        expect.arrayContaining(['delegate_ocr', 'search_customers', 'search_price_candidates']),
+      );
+      expect(result.toolRegistry.has('search_customers')).toBe(true);
+      expect(result.toolRegistry.has('search_price_candidates')).toBe(true);
+      expect(result.toolRegistry.has('delegate_ocr')).toBe(true);
+    });
+
     it('injects PaddleOCR MCP for Steel native PDF/image turns before tool definitions load', async () => {
       const capabilities = [AgentCapabilities.tools];
       const req = createMockReq(capabilities);
@@ -1067,8 +1134,13 @@ describe('ToolService - Action Capability Gating', () => {
       inspectionReq.steelNativeContext = {
         delegateOcrContext: {
           steelConversation: {
-            currentUserTurn: { role: 'user', content: '重新核對第35頁孔數' },
-            activeHistory: [{ role: 'user', content: '重新核對第35頁孔數' }],
+            currentUserTurn: {
+              role: 'user',
+              content: "I don't need a quote; inspect the PDF",
+            },
+            activeHistory: [
+              { role: 'user', content: "I don't need a quote; inspect the PDF" },
+            ],
           },
         },
       };
@@ -4355,9 +4427,8 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
     });
 
-    it('allows mixed page inspection followed by quoting and scopes the current turn', async () => {
+    it('hard-stops delegate OCR for mixed inspection and quote intent', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
-      req.config.fileStrategy = 's3';
       req.steelNativeContext = {
         delegateOcrContext: {
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4367,23 +4438,6 @@ describe('ToolService - Action Capability Gating', () => {
           },
         },
       };
-      mockGetFiles.mockResolvedValueOnce([
-        {
-          file_id: 'drawing-1',
-          user: 'user_123',
-          filename: 'drawing.png',
-          type: 'image/png',
-          source: 's3',
-          storageKey: 'uploads/user_123/drawing-1__drawing.png',
-        },
-      ]);
-      mockGetStrategyFunctions.mockReturnValue({
-        getDownloadURL: jest.fn().mockResolvedValue('https://fresh.example/drawing.png'),
-      });
-      const stream = jest.fn(async function* () {
-        yield { content: '孔數為 4。' };
-      });
-      mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
 
       const result = await loadToolsForExecution({
         req,
@@ -4392,14 +4446,12 @@ describe('ToolService - Action Capability Gating', () => {
         toolNames: ['delegate_ocr'],
         actionsEnabled: false,
       });
-      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
-      const output = await tool.invoke({ fileKeys: ['file:drawing-1'] });
-
-      expect(output.content).toBe('孔數為 4。');
-      expect(mockGetFiles).toHaveBeenCalledTimes(1);
-      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledTimes(1);
-      expect(stream).toHaveBeenCalledTimes(1);
-      expect(stream.mock.calls[0][0][1].content).toBe('重新核對第 35 頁孔數後報價');
+      expect(result.loadedTools.find((entry) => entry.name === 'delegate_ocr')).toBeUndefined();
+      expect(result.configurable).not.toHaveProperty('delegateOcrStreaming');
+      expect(mockGetFiles).not.toHaveBeenCalled();
+      expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
+      expect(mockBuildDefaultSteelGlobalAgentContext).not.toHaveBeenCalled();
+      expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
     });
 
     it('rejects an out-of-bounds page range before creating any PDF artifact', async () => {

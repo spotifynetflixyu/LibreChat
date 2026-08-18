@@ -110,19 +110,21 @@ describe('createRun code-tool eager/session wiring', () => {
   it('filters quote-only delegate_ocr from AgentInputs collections before provider binding', async () => {
     const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
     const search = { name: 'search_customers', description: 'search', parameters: {} };
+    const price = { name: 'search_price_candidates', description: 'price', parameters: {} };
     const agent = makeAgent({
-      tools: [delegate, search],
-      toolDefinitions: [delegate, search],
+      tools: [delegate, search, price],
+      toolDefinitions: [delegate, search, price],
       toolRegistry: new Map([
         [delegate.name, delegate],
         [search.name, search],
+        [price.name, price],
       ]),
     });
 
     await createRun({
       agents: [agent] as never,
       signal: new AbortController().signal,
-      messages: [new HumanMessage({ content: [{ type: 'text', text: '報價' }] })],
+      messages: [new HumanMessage({ content: [{ type: 'text', text: '請幫我報個價' }] })],
       streaming: true,
       streamUsage: true,
     });
@@ -133,16 +135,56 @@ describe('createRun code-tool eager/session wiring', () => {
     const input = runConfig.graphConfig.agents[0];
     expect((input.tools as Array<{ name: string }>).map(({ name }) => name)).toEqual([
       'search_customers',
+      'search_price_candidates',
     ]);
     expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
       'search_customers',
+      'search_price_candidates',
     ]);
     expect(Array.from((input.toolRegistry as Map<string, unknown>).keys())).toEqual([
       'search_customers',
+      'search_price_candidates',
     ]);
   });
 
-  it('retains delegate_ocr for mixed inspection and quote requests', async () => {
+  it('removes delegate_ocr but retains search tools for mixed inspection and quote requests', async () => {
+    const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
+    const customerSearch = { name: 'search_customers', description: 'customer', parameters: {} };
+    const priceSearch = {
+      name: 'search_price_candidates',
+      description: 'price',
+      parameters: {},
+    };
+    const agent = makeAgent({
+      tools: [delegate, customerSearch, priceSearch],
+      toolDefinitions: [delegate, customerSearch, priceSearch],
+      toolRegistry: new Map([
+        [delegate.name, delegate],
+        [customerSearch.name, customerSearch],
+        [priceSearch.name, priceSearch],
+      ]),
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [new HumanMessage('重新核對第35頁孔數後報價')],
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      'search_customers',
+      'search_price_candidates',
+    ]);
+    expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(false);
+  });
+
+  it('retains delegate_ocr when the quote phrase is explicitly negated', async () => {
     const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
     const agent = makeAgent({
       tools: [delegate],
@@ -153,7 +195,7 @@ describe('createRun code-tool eager/session wiring', () => {
     await createRun({
       agents: [agent] as never,
       signal: new AbortController().signal,
-      messages: [new HumanMessage('重新核對第35頁孔數後報價')],
+      messages: [new HumanMessage('先不要再報價，請重新核對附件')],
       streaming: true,
       streamUsage: true,
     });

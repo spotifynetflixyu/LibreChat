@@ -2,12 +2,13 @@
 
 一、批次與查詢
 
-1. 同一輪材料集中於一次 `queries`；有明確加工需求時一併使用 `processingQueries`。材料與加工候選只對應原需求，不跨品項混用。
-2. 已知類別首查必須帶 `category`，再依類別規則加入可確認的 structured filters。`unit` 省略時使用類別預設；只有訂單明示計價單位時才傳入覆寫，類別細則禁用 unit filter 時除外。只有類別未知時才先用 `mode: "category_discovery"` + 通用 `keyword`。
-3. `erpItemCode` 只供後續回合精確重取已確認候選；首查不得使用，本輪已返回的候選不得重查。
-4. `subcategory` 不確定時省略。產品 keyword 越短越好，只保留 category／subcategory／material 尚未表達且足以辨識的通用詞或必要規格；移除已由欄位表達的品名、位置、端數、數量與冗餘描述，不得堆疊同義詞。不得自行加入專有品名、廠牌、系列、內部資料代號或表單代號。只有使用者原文明示時可保留專有詞；候選 product_name 不得反向成為重查 keyword。ST50、SN400B 只留在備註。
-5. 已有規格精確且可報價候選就直接選價。只有 `no_match`、無精確候選、精確候選全不可報價或缺必要規格時可修正一次；不得原樣重送或夾帶成功 query。仍失敗即人工複核。
-6. 範例：當單一材料 query 結果超過10筆而只得到 `productNames`，先依訂單規格選出合適的品名，再把所選品名放入頂層 `productNames` 重查完整價格候選；不得把候選品名改成 keyword 重查。
+1. 每次報價的材料首查預設只用 `category` 與已知厚度；同類材料建立一筆通用 query，將去重後的厚度字串集中在同一個 `thicknessMm` array。首查預設不得帶 `subcategory`、`material`、`unit`、`keyword` 或 `stockLengthMm`，也不得為每個品項或每個厚度各送一筆重複 query；個別類別規則明示其他首查預設時，由該類別規則覆蓋，例如 C 型鋼的預設材質與 H 型鋼的完整斷面查法。
+2. 加工需求依相同 `categories`、`processingCategories` 合併為通用 `processingQueries`；加工首查也省略 `keyword`，且不得傳 `thicknessMm`。材料與加工集中在同一次批次呼叫，不得因預期無價或缺欄位省略；返回候選再依原需求逐項配對，不跨品項混用。正確範例：`{"queries":[{"category":"鐵板","thicknessMm":["10","12","16","20","28"]}],"processingQueries":[{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}`。
+3. 已知類別首查必須帶 `category`。只有類別未知時才先用 `mode: "category_discovery"` + 最短通用 `keyword`；類別確認後再依第1條首查，不把 discovery keyword 沿用到材料 query。
+4. `erpItemCode` 只供後續回合精確重取已確認候選；首查不得使用，本輪已返回的候選不得重查。
+5. 首查返回候選後才可在允許的一次修正重試加入必要的 `subcategory`、`material`、`unit`、`stockLengthMm` 或最短 `keyword`；只加入能排除錯誤候選的欄位，不得逐步加減 keyword 反覆查詢。移除位置、端數、數量、已由其他欄位表達的內容與冗餘同義詞。不得自行加入專有品名、廠牌、系列、內部資料代號或表單代號；只有使用者原文明示時可保留專有詞。候選 product_name 不得改成 keyword；需要精確重取時使用頂層 `productNames`。ST50、SN400B 只留在備註。
+6. 已有規格精確且可報價候選就直接選價。只有 `no_match`、無精確候選、精確候選全不可報價或缺必要規格時，每筆材料／加工 query 可修正重試一次；不得原樣重送或夾帶成功 query。修正重試仍失敗才可視為缺價，保留空白並列人工複核，仍須完成報價。
+7. 範例：當單一材料 query 結果超過10筆而只得到 `productNames`，先依訂單規格選出合適的品名，再把所選品名放入頂層 `productNames` 重查完整價格候選；不得把候選品名改成 keyword 重查。
 
 二、選價與計算
 

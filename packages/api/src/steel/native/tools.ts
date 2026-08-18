@@ -123,16 +123,20 @@ function isVisibleForSteelNativeTurn(
   if (excludeDelegateOcr && toolName === delegateOcrToolName) {
     return false;
   }
-  if (ocrTurnActive && toolName === delegateOcrToolName) {
-    return false;
-  }
   if (!allowPaddleOcr && !isPaddleOcrToolVisibleToMainAgent(toolName)) {
     return false;
   }
+  const steelProviderToolName =
+    typeof toolName === 'string' ? resolveSteelProviderToolName(toolName) : undefined;
+  const isAlwaysVisibleSteelTool =
+    toolName === delegateOcrToolName ||
+    steelProviderToolName === 'search_customers' ||
+    steelProviderToolName === 'search_price_candidates';
   return (
     !ocrTurnActive ||
     typeof toolName !== 'string' ||
-    resolveSteelProviderToolName(toolName) === undefined
+    steelProviderToolName === undefined ||
+    isAlwaysVisibleSteelTool
   );
 }
 
@@ -178,7 +182,7 @@ export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
   return next;
 }
 
-/** Removes Steel business tools and the PaddleOCR MCP tool from one initialized agent. */
+/** Removes the PaddleOCR MCP tool while preserving Steel tools for one OCR turn. */
 export function stripSteelToolsForOcrTurn<T extends SteelNativeToolConfig>(config: T): T {
   return prepareSteelNativeToolConfig(config, { ocrTurnActive: true });
 }
