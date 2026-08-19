@@ -333,6 +333,7 @@ jest.mock('~/cache', () => ({
 const {
   loadAgentTools,
   loadToolsForExecution,
+  resolveDelegateOcrPolicyForRequest,
   processRequiredActions,
   runSteelPaddleOcrPreflight,
   resolveAgentCapabilities,
@@ -753,6 +754,77 @@ describe('ToolService - Action Capability Gating', () => {
     });
   });
 
+  describe('delegate_ocr backend availability policy', () => {
+    it('authorizes current conversation attachments once and skips quote/preflight queries', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新確認圖面' },
+            activeHistory: [
+              {
+                role: 'user',
+                files: [
+                  { fileId: 'owned-file', filename: 'owned.pdf', mediaType: 'application/pdf' },
+                  { fileId: 'foreign-file', filename: 'foreign.pdf', mediaType: 'application/pdf' },
+                ],
+              },
+            ],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        { file_id: 'owned-file', user: 'user_123', filename: 'owned.pdf', type: 'application/pdf' },
+      ]);
+
+      const policy = await resolveDelegateOcrPolicyForRequest({
+        req,
+        currentUserTurn: '重新確認圖面',
+      });
+      const cachedPolicy = await resolveDelegateOcrPolicyForRequest({
+        req,
+        currentUserTurn: '重新確認圖面',
+      });
+
+      expect(policy).toEqual({
+        resolved: true,
+        allowed: true,
+        allowedFileKeys: ['file:owned-file'],
+      });
+      expect(cachedPolicy).toEqual(policy);
+      expect(mockGetFiles).toHaveBeenCalledTimes(1);
+      expect(mockGetFiles).toHaveBeenCalledWith(
+        {
+          user: 'user_123',
+          $or: [{ file_id: { $in: ['owned-file', 'foreign-file'] } }],
+        },
+        {},
+        {},
+      );
+
+      const quotePolicy = await resolveDelegateOcrPolicyForRequest({
+        req,
+        currentUserTurn: '重新確認圖面後報價',
+      });
+      expect(quotePolicy).toEqual({
+        resolved: true,
+        allowed: false,
+        allowedFileKeys: [],
+      });
+      const preflightPolicy = await resolveDelegateOcrPolicyForRequest({
+        req,
+        currentUserTurn: '重新確認圖面',
+        ocrTurnActive: true,
+      });
+      expect(preflightPolicy).toEqual({
+        resolved: true,
+        allowed: false,
+        allowedFileKeys: [],
+      });
+      expect(mockGetFiles).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('loadAgentTools (definitionsOnly=true) — action tool filtering', () => {
     const actionToolName = `get_weather${actionDelimiter}api_example_com`;
     const regularTool = 'calculator';
@@ -948,6 +1020,11 @@ describe('ToolService - Action Capability Gating', () => {
       const capabilities = [AgentCapabilities.tools];
       const req = createMockReq(capabilities);
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           steelConversation: {
             currentUserTurn: { role: 'user', content: '第35頁報價' },
@@ -4288,6 +4365,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           history: providerHistory,
           modelOptions: {
@@ -4402,6 +4484,11 @@ describe('ToolService - Action Capability Gating', () => {
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const req = createMockReq([AgentCapabilities.tools]);
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('第35頁報價')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4430,6 +4517,11 @@ describe('ToolService - Action Capability Gating', () => {
     it('hard-stops delegate OCR for mixed inspection and quote intent', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           modelOptions: { model: 'gpt-5.6-luna' },
           steelConversation: {
@@ -4459,6 +4551,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('重新核對第 35 頁孔數')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4508,6 +4605,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1', 'file:detail-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('重新核對第 1 頁孔數')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4573,6 +4675,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('完整 OCR 106 頁 PDF')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4648,6 +4755,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('重新核對整份圖面')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4713,6 +4825,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1', 'file:detail-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('重新核對第 35 頁孔數')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4788,6 +4905,11 @@ describe('ToolService - Action Capability Gating', () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
       req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
         delegateOcrContext: {
           history: [new HumanMessage('重新解析')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -4826,7 +4948,7 @@ describe('ToolService - Action Capability Gating', () => {
       ).rejects.toThrow('S3 signer failed');
     });
 
-    it('defers missing delegate_ocr context errors until invocation', async () => {
+    it('removes delegate_ocr when request policy is unavailable', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
 
       const result = await loadToolsForExecution({
@@ -4839,9 +4961,7 @@ describe('ToolService - Action Capability Gating', () => {
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
 
       expect(result.configurable).not.toHaveProperty('delegateOcrStreaming');
-      await expect(tool.invoke({ fileKeys: ['file:drawing-1'] })).rejects.toThrow(
-        'delegate_ocr request context is unavailable',
-      );
+      expect(tool).toBeUndefined();
     });
   });
 

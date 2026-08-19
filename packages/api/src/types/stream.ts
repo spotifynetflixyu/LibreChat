@@ -3,6 +3,7 @@ import type { EventEmitter } from 'events';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
 import type { ServerSentEvent } from './events';
+import type { DelegateOcrPolicy } from '../steel/native/delegate';
 
 export interface GenerationJobMetadata {
   userId: string;
@@ -39,6 +40,8 @@ export interface GenerationJobMetadata {
   discoveredTools?: string[];
   /** Whether a paused turn was quote-only and must omit delegate_ocr on resume. */
   delegateOcrQuoteOnlyTurn?: boolean;
+  /** Resolved delegate OCR availability and canonical authorized attachment keys. */
+  delegateOcrPolicy?: DelegateOcrPolicy;
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** See `SerializableJobData.preemptCapable`. */

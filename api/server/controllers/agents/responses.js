@@ -23,6 +23,7 @@ const {
   delegateOcrStreamEventName,
   prepareLibreChatSteelChatContext,
   prepareSteelNativeToolConfig,
+  getLatestHumanMessageText,
   stripSteelOcrPartsFromProviderMessages,
   createSafeUser,
   initializeAgent,
@@ -75,6 +76,7 @@ const {
 const {
   loadAgentTools,
   loadToolsForExecution,
+  resolveDelegateOcrPolicyForRequest,
   runSteelPaddleOcrPreflight,
   isFatalAgentInitializationError,
 } = require('~/server/services/ToolService');
@@ -224,7 +226,18 @@ function collectSteelNativeInputFileReferencesFromMessages(messages, conversatio
     if (message?.role !== 'user') {
       continue;
     }
-    for (const part of collectSteelNativeFilePartsFromContent(message.content)) {
+    const fileParts = [...collectSteelNativeFilePartsFromContent(message.content)];
+    for (const file of message.files ?? []) {
+      const fileId = file?.file_id ?? file?.fileId;
+      if (typeof fileId !== 'string' || fileId.trim() === '') {
+        continue;
+      }
+      fileParts.push({
+        ...file,
+        file_id: fileId,
+      });
+    }
+    for (const part of fileParts) {
       addSteelNativeFileReference(filesById, part, conversationId);
     }
   }
@@ -250,7 +263,7 @@ function collectSteelNativeInputFileReferences({ requestInput, inputMessages, co
   return [...filesById.values()];
 }
 
-function collectSteelNativeResponseMessages(messages) {
+function collectSteelNativeResponseMessages(messages, conversationId) {
   const activeHistory = [];
   let currentUserTurn;
 
@@ -259,10 +272,15 @@ function collectSteelNativeResponseMessages(messages) {
       continue;
     }
 
+    const files =
+      message.role === 'user'
+        ? [...collectSteelNativeInputFileReferencesFromMessages([message], conversationId).values()]
+        : [];
     const steelMessage = {
       role: message.role,
       content: extractSteelNativeMarkdownText({ content: message.content }),
       ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+      ...(files.length > 0 ? { files } : {}),
     };
     activeHistory.push(steelMessage);
     if (steelMessage.role === 'user') {
@@ -340,12 +358,21 @@ async function loadPreviousMessages(conversationId, userId) {
 
       // Handle content - could be string or array
       if (typeof msg.text === 'string') {
-        internalMsg.content = msg.text;
+        try {
+          const parsedText = JSON.parse(msg.text);
+          internalMsg.content = Array.isArray(parsedText) ? parsedText : msg.text;
+        } catch {
+          internalMsg.content = msg.text;
+        }
       } else if (Array.isArray(msg.content)) {
         // Handle content parts
         internalMsg.content = msg.content;
       } else if (msg.text) {
         internalMsg.content = String(msg.text);
+      }
+
+      if (Array.isArray(msg.files)) {
+        internalMsg.files = msg.files;
       }
 
       return internalMsg;
@@ -924,33 +951,10 @@ const executeResponse = async (envelope, { req, res }) => {
       paddleOcrPreflight,
       ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
     };
-    for (const runAgent of runAgents) {
-      Object.assign(
-        runAgent,
-        prepareSteelNativeToolConfig(runAgent, {
-          ocrTurnActive: paddleOcrPreflight.ocrTurnActive === true,
-        }),
-      );
-    }
-    for (const context of agentToolContexts.values()) {
-      if (context?.agent) {
-        Object.assign(
-          context.agent,
-          prepareSteelNativeToolConfig(context.agent, {
-            ocrTurnActive: paddleOcrPreflight.ocrTurnActive === true,
-          }),
-        );
-      }
-      if (context) {
-        Object.assign(
-          context,
-          prepareSteelNativeToolConfig(context, {
-            ocrTurnActive: paddleOcrPreflight.ocrTurnActive === true,
-          }),
-        );
-      }
-    }
-    const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(allMessages);
+    const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(
+      allMessages,
+      conversationId,
+    );
     if (currentUserTurn && currentTurnFiles.length > 0) {
       currentUserTurn.files = currentTurnFiles;
     }
@@ -960,25 +964,66 @@ const executeResponse = async (envelope, { req, res }) => {
       activeHistory,
       ...(currentUserTurn ? { currentUserTurn } : {}),
     });
+    const currentUserTurnText = getLatestHumanMessageText(inputMessages);
+    req.steelNativeContext.delegateOcrContext = {
+      ...(req.steelNativeContext.delegateOcrContext ?? {}),
+      currentUserTurnText,
+      steelConversation,
+    };
+    const delegateOcrPolicy = await resolveDelegateOcrPolicyForRequest({
+      req,
+      currentUserTurn: currentUserTurnText,
+      ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+    });
+    req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
+    for (const runAgent of runAgents) {
+      Object.assign(
+        runAgent,
+        prepareSteelNativeToolConfig(runAgent, {
+          ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+          delegateOcrPolicy,
+        }),
+      );
+    }
+    for (const context of agentToolContexts.values()) {
+      if (context?.agent) {
+        Object.assign(
+          context.agent,
+          prepareSteelNativeToolConfig(context.agent, {
+            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+            delegateOcrPolicy,
+          }),
+        );
+      }
+      if (context) {
+        Object.assign(
+          context,
+          prepareSteelNativeToolConfig(context, {
+            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+            delegateOcrPolicy,
+          }),
+        );
+      }
+    }
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
       ...(currentTurnFiles.length > 0 ||
-      paddleOcrPreflight.currentOcrMarkdownResults?.length > 0 ||
-      paddleOcrPreflight.currentOcrFailures?.length > 0
+      paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0 ||
+      paddleOcrPreflight?.currentOcrFailures?.length > 0
         ? {
             attachments: {
               ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
-              ...(paddleOcrPreflight.currentOcrMarkdownResults?.length > 0
+              ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
                 ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
                 : {}),
-              ...(paddleOcrPreflight.currentOcrFailures?.length > 0
+              ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
                 ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
                 : {}),
             },
           }
         : {}),
       renderProfile: 'open_responses',
-      mode: paddleOcrPreflight.ocrTurnActive === true ? 'ocr' : 'standard',
+      mode: paddleOcrPreflight?.ocrTurnActive === true ? 'ocr' : 'standard',
     });
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
@@ -1041,7 +1086,7 @@ const executeResponse = async (envelope, { req, res }) => {
       }
     }
     const providerMessages =
-      paddleOcrPreflight.ocrTurnActive === true
+      paddleOcrPreflight?.ocrTurnActive === true
         ? formattedMessages
         : stripSteelOcrPartsFromProviderMessages(formattedMessages, currentTurnFiles);
     req.steelNativeContext = {
@@ -1158,6 +1203,7 @@ const executeResponse = async (envelope, { req, res }) => {
         signal: abortController.signal,
         customHandlers: handlers,
         initialSessions,
+        delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
         requestBody: {
           messageId: responseId,
           conversationId,
@@ -1360,6 +1406,7 @@ const executeResponse = async (envelope, { req, res }) => {
         signal: abortController.signal,
         customHandlers: handlers,
         initialSessions,
+        delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
         requestBody: {
           messageId: responseId,
           conversationId,

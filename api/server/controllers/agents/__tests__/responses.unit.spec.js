@@ -192,6 +192,15 @@ jest.mock('@librechat/api', () => ({
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
   prepareSteelNativeToolConfig: jest.fn((config) => config),
+  getLatestHumanMessageText: jest.fn((messages) => {
+    const latest = [...(messages ?? [])].reverse().find((message) => message?.getType?.() === 'human');
+    const content = latest?.content;
+    return typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.map((part) => part?.text ?? '').join('')
+        : '';
+  }),
   stripPaddleOcrToolsForMainAgent: (config) => config,
   stripSteelToolsForOcrTurn: jest.fn((config) => config),
   stripSteelOcrPartsFromProviderMessages: (...args) =>
@@ -311,6 +320,11 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn().mockResolvedValue([]),
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
+  resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
+    resolved: true,
+    allowed: false,
+    allowedFileKeys: [],
+  }),
   runSteelPaddleOcrPreflight: jest.fn().mockResolvedValue({
     status: 'skipped',
     completedKeys: [],
@@ -1397,6 +1411,104 @@ describe('createResponse controller', () => {
       createRunArgs.openAIOAuthModelOptionsSink({ model: 'gpt-5.6-luna' });
       expect(req.steelNativeContext.delegateOcrContext.modelOptions).toEqual({
         model: 'gpt-5.6-luna',
+      });
+    });
+
+    it('hydrates historical attachment references for previous_response_id policy authorization', async () => {
+      const api = require('@librechat/api');
+      const { getConvo, getMessages, getFiles } = require('~/models');
+      const { formatAgentMessages } = require('@librechat/agents');
+      const { resolveDelegateOcrPolicyForRequest } = require('~/server/services/ToolService');
+      const historicalFileId = 'historical-file';
+      const foreignFileId = 'foreign-file';
+      const capturedPolicyRequest = {};
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: '重新確認歷史圖面' }],
+            },
+          ],
+          previous_response_id: 'convo-history',
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '重新確認歷史圖面' }],
+        },
+      ]);
+      getConvo.mockResolvedValueOnce({ conversationId: 'convo-history', user: 'user-123' });
+      getMessages.mockResolvedValueOnce([
+        {
+          isCreatedByUser: true,
+          messageId: 'historical-user',
+          text: JSON.stringify([
+            { type: 'text', text: '上一輪圖面' },
+            { type: 'input_file', file_id: historicalFileId, filename: 'historical.pdf' },
+            { type: 'input_file', file_id: foreignFileId, filename: 'foreign.pdf' },
+          ]),
+        },
+        { isCreatedByUser: false, messageId: 'historical-assistant', text: '已整理' },
+      ]);
+      formatAgentMessages.mockReturnValueOnce({
+        messages: [],
+        indexTokenCountMap: {},
+      });
+      getFiles.mockResolvedValueOnce([
+        { file_id: historicalFileId, user: 'user-123', filename: 'historical.pdf' },
+      ]);
+      resolveDelegateOcrPolicyForRequest.mockImplementationOnce(async ({ req: policyReq }) => {
+        capturedPolicyRequest.context = policyReq.steelNativeContext.delegateOcrContext;
+        const historicalFiles =
+          policyReq.steelNativeContext.delegateOcrContext.steelConversation.activeHistory.flatMap(
+            (message) => message.files ?? [],
+          );
+        const candidateIds = historicalFiles.map((file) => file.fileId);
+        const owned = await getFiles(
+          { user: policyReq.user.id, $or: [{ file_id: { $in: candidateIds } }] },
+          {},
+          {},
+        );
+        return {
+          resolved: true,
+          allowed: owned.length > 0,
+          allowedFileKeys: owned.map((file) => `file:${file.file_id}`),
+        };
+      });
+
+      await createResponse(req, res);
+
+      const historicalMessage = capturedPolicyRequest.context.steelConversation.activeHistory.find(
+        (message) => message.messageId === 'historical-user',
+      );
+      expect(historicalMessage.files).toEqual([
+        expect.objectContaining({
+          fileId: historicalFileId,
+          filename: 'historical.pdf',
+        }),
+        expect.objectContaining({
+          fileId: foreignFileId,
+          filename: 'foreign.pdf',
+        }),
+      ]);
+      expect(req.steelNativeContext.currentTurnFiles).toEqual([]);
+      expect(getFiles).toHaveBeenCalledWith(
+        {
+          user: 'user-123',
+          $or: [{ file_id: { $in: [historicalFileId, foreignFileId] } }],
+        },
+        {},
+        {},
+      );
+      expect(req.steelNativeContext.delegateOcrPolicy).toEqual({
+        resolved: true,
+        allowed: true,
+        allowedFileKeys: [`file:${historicalFileId}`],
       });
     });
 

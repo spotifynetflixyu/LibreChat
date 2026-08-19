@@ -3,6 +3,7 @@ import type { StandardGraph } from '@librechat/agents';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
+import type { DelegateOcrPolicy } from '~/steel/native/delegate';
 
 /**
  * A pause owner has this long to durably persist the interrupted turn before
@@ -116,6 +117,8 @@ export interface SerializableJobData {
 
   /** Whether paused turn is quote-only and must omit delegate_ocr on resume. */
   delegateOcrQuoteOnlyTurn?: boolean;
+  /** Resolved delegate OCR availability and canonical authorized attachment keys. */
+  delegateOcrPolicy?: DelegateOcrPolicy;
 
   /** Whether the user-message created event has been emitted */
   createdEventEmitted?: boolean;
@@ -282,6 +285,8 @@ export type JobMetadataPatch = Partial<
     | 'isTemporary'
     | 'promptTokens'
     | 'discoveredTools'
+    | 'delegateOcrQuoteOnlyTurn'
+    | 'delegateOcrPolicy'
     | 'activityPhaseSnapshot'
     | 'preemptCapable'
     | 'providerExecutionId'

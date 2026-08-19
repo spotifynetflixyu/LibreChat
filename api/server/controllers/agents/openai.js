@@ -44,6 +44,7 @@ const {
   resolveAgentScopedSkillIds,
   buildDefaultSteelGlobalAgentContext,
   delegateOcrStreamEventName,
+  normalizeDelegateOcrChunk,
   prepareLibreChatSteelChatContext,
   extractSteelNativeMarkdownText,
   createOpenAIContentAggregator,
@@ -61,6 +62,7 @@ const {
 const {
   loadAgentTools,
   loadToolsForExecution,
+  resolveDelegateOcrPolicyForRequest,
   getAccessibleMcpServerNames,
   isFatalAgentInitializationError,
 } = require('~/server/services/ToolService');
@@ -528,6 +530,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       activeHistory: steelNativeMessages,
       ...(currentUserTurn ? { currentUserTurn } : {}),
     });
+    const currentUserTurnText = normalizeDelegateOcrChunk(currentUserTurn?.content);
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
       renderProfile: 'agents_chat_completions',
@@ -543,7 +546,17 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       requestId: responseId,
       assistantTurnIndex,
       memoryCheckpointTurnIndex: Math.max(0, assistantTurnIndex - 1),
+      delegateOcrContext: {
+        ...(req.steelNativeContext?.delegateOcrContext ?? {}),
+        currentUserTurnText,
+        steelConversation,
+      },
     };
+    req.steelNativeContext.delegateOcrPolicy = await resolveDelegateOcrPolicyForRequest({
+      req,
+      currentUserTurn: currentUserTurnText,
+      ocrTurnActive: false,
+    });
     const endpointTokenConfigByAgentId = new Map();
     for (const [agentId, context] of agentToolContexts) {
       endpointTokenConfigByAgentId.set(agentId, context.endpointTokenConfig);
@@ -909,6 +922,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         messageId: responseId,
         conversationId,
       },
+      delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
       user: { id: userId },
       tenantId: req.user?.tenantId,
       openAIOAuthModelOptionsSink: (modelOptions) => {

@@ -1,6 +1,10 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
-import { delegateOcrToolName, getDelegateOcrToolDefinition } from './delegate';
+import {
+  delegateOcrToolName,
+  getDelegateOcrToolDefinition,
+  isResolvedDelegateOcrPolicy,
+} from './delegate';
 
 import type { JsonSchemaType, LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelProviderToolName, SteelToolDefinition } from '../tools/registry';
@@ -31,6 +35,9 @@ export interface SteelNativeToolVisibilityOptions {
   ocrTurnActive?: boolean;
   allowPaddleOcr?: boolean;
   excludeDelegateOcr?: boolean;
+  delegateOcrPolicy?: unknown;
+  /** Internal initialization-only escape hatch. Never pass to provider binding. */
+  initializationDefer?: boolean;
 }
 
 export interface SteelNativeToolInvokeConfig {
@@ -118,8 +125,28 @@ function isPaddleOcrToolVisibleToMainAgent(toolName: string | undefined): boolea
 
 function isVisibleForSteelNativeTurn(
   toolName: string | undefined,
-  { ocrTurnActive, allowPaddleOcr, excludeDelegateOcr }: Required<SteelNativeToolVisibilityOptions>,
+  {
+    ocrTurnActive,
+    allowPaddleOcr,
+    excludeDelegateOcr,
+    delegateOcrPolicy,
+    initializationDefer,
+  }: Required<SteelNativeToolVisibilityOptions>,
 ): boolean {
+  if (toolName === delegateOcrToolName) {
+    const policyAllowsDelegate =
+      isResolvedDelegateOcrPolicy(delegateOcrPolicy) &&
+      delegateOcrPolicy.allowed === true &&
+      delegateOcrPolicy.allowedFileKeys.length > 0;
+    if (
+      excludeDelegateOcr ||
+      ocrTurnActive ||
+      (!policyAllowsDelegate &&
+        !(initializationDefer && delegateOcrPolicy === undefined))
+    ) {
+      return false;
+    }
+  }
   if (excludeDelegateOcr && toolName === delegateOcrToolName) {
     return false;
   }
@@ -149,6 +176,8 @@ export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
     ocrTurnActive: options.ocrTurnActive === true,
     allowPaddleOcr: options.allowPaddleOcr === true,
     excludeDelegateOcr: options.excludeDelegateOcr === true,
+    delegateOcrPolicy: options.delegateOcrPolicy,
+    initializationDefer: options.initializationDefer === true,
   };
   const next = { ...config } as T;
   if (config.tools) {

@@ -142,7 +142,7 @@ describe('Steel native tool adapter', () => {
       'steel_search_customers',
     ]);
     expect(result.toolDefinitions?.find(({ name }) => name === 'delegate_ocr')?.description).toBe(
-      'Use this tool only when the user explicitly asks to inspect or verify drawing-related information in original attached images or PDFs. Do not call it during quoting when confirmed OCR or table data is already available. Pass one or more relevant attachment keys as `file:<file_id>`.',
+      'Use this tool only when you must independently reopen an original attached image or PDF with Vision to verify uncertain visual evidence. Do not call it when the user directly supplies or corrects a value, asks only to update or organize confirmed OCR/table data, or the request can be answered from confirmed data. Quote and pricing requests forbid this tool. Pass one or more relevant attachment keys as `file:<file_id>`.',
     );
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
       'steel_search_customers',
@@ -619,19 +619,16 @@ describe('Steel native tool adapter', () => {
     expect(result.tools?.map((tool) => (typeof tool === 'string' ? tool : tool?.name))).toEqual([
       'search_customers',
       'search_price_candidates',
-      'delegate_ocr',
       'web_search',
     ]);
     expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual([
       'search_customers',
       'search_price_candidates',
-      'delegate_ocr',
       'web_search',
     ]);
     expect([...result.toolRegistry?.keys() ?? []]).toEqual([
       'search_customers',
       'search_price_candidates',
-      'delegate_ocr',
       'web_search',
     ]);
   });
@@ -646,10 +643,9 @@ describe('Steel native tool adapter', () => {
       ],
     });
 
-    expect(result.tools).toEqual(['search_customers', 'delegate_ocr', 'web_search']);
+    expect(result.tools).toEqual(['search_customers', 'web_search']);
     expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual([
       'search_customers',
-      'delegate_ocr',
     ]);
   });
 
@@ -657,23 +653,17 @@ describe('Steel native tool adapter', () => {
     {
       name: 'standard turns remove PaddleOCR and retain Steel tools',
       options: {},
-      expected: ['search_customers', 'search_price_candidates', 'delegate_ocr', 'web_search'],
+      expected: ['search_customers', 'search_price_candidates', 'web_search'],
     },
     {
       name: 'OCR turns remove PaddleOCR while retaining all Steel tools',
       options: { ocrTurnActive: true },
-      expected: ['search_customers', 'search_price_candidates', 'delegate_ocr', 'web_search'],
+      expected: ['search_customers', 'search_price_candidates', 'web_search'],
     },
     {
       name: 'preflight turns retain PaddleOCR and Steel tools',
       options: { allowPaddleOcr: true },
-      expected: [
-        'search_customers',
-        'search_price_candidates',
-        'delegate_ocr',
-        'paddleocr_vl---PaddleOCR',
-        'web_search',
-      ],
+      expected: ['search_customers', 'search_price_candidates', 'paddleocr_vl---PaddleOCR', 'web_search'],
     },
     {
       name: 'OCR preflight turns retain PaddleOCR and all Steel tools',
@@ -681,10 +671,65 @@ describe('Steel native tool adapter', () => {
       expected: [
         'search_customers',
         'search_price_candidates',
-        'delegate_ocr',
         'paddleocr_vl---PaddleOCR',
         'web_search',
       ],
+    },
+    {
+      name: 'OCR preflight removes delegate despite an allowed attachment policy',
+      options: {
+        ocrTurnActive: true,
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:attachment-1'],
+        },
+      },
+      expected: ['search_customers', 'search_price_candidates', 'web_search'],
+    },
+    {
+      name: 'authorized attachment policy retains delegate OCR',
+      options: {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:attachment-1'],
+        },
+      },
+      expected: ['search_customers', 'search_price_candidates', 'delegate_ocr', 'web_search'],
+    },
+    {
+      name: 'malformed delegate OCR policy removes the tool',
+      options: {
+        delegateOcrPolicy: {
+          resolved: false,
+          allowed: true,
+          allowedFileKeys: ['file:attachment-1'],
+        },
+      },
+      expected: ['search_customers', 'search_price_candidates', 'web_search'],
+    },
+    {
+      name: 'non-canonical delegate OCR keys remove the tool',
+      options: {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['attachment-1'],
+        },
+      },
+      expected: ['search_customers', 'search_price_candidates', 'web_search'],
+    },
+    {
+      name: 'whitespace-padded delegate OCR keys remove the tool',
+      options: {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: [' file:attachment-1 '],
+        },
+      },
+      expected: ['search_customers', 'search_price_candidates', 'web_search'],
     },
     {
       name: 'quote-only turns remove delegate OCR across native config collections',

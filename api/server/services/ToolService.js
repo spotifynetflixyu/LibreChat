@@ -43,6 +43,7 @@ const {
   createDelegateOcrRequestExecute,
   delegateOcrToolName,
   isDelegateOcrQuoteOnlyTurn,
+  resolveDelegateOcrPolicy,
   normalizeDelegateOcrChunk,
   createSteelPostgresPool,
   createSteelToolRunState,
@@ -825,6 +826,10 @@ function collectDelegateOcrAvailableFiles(req, delegateContext) {
 }
 
 function getDelegateOcrCurrentUserTurn(delegateContext) {
+  const rawCurrentTurnText = delegateContext?.currentUserTurnText;
+  if (typeof rawCurrentTurnText === 'string' && rawCurrentTurnText.trim() !== '') {
+    return rawCurrentTurnText;
+  }
   const currentTurn = delegateContext?.steelConversation?.currentUserTurn;
   const currentTurnText = getMessageContentText(currentTurn);
   if (currentTurnText.trim() !== '') {
@@ -841,6 +846,49 @@ function getDelegateOcrCurrentUserTurn(delegateContext) {
     }
   }
   return '';
+}
+
+async function resolveDelegateOcrPolicyForRequest({ req, currentUserTurn, ocrTurnActive }) {
+  const context = req?.steelNativeContext ?? {};
+  const delegateContext = context.delegateOcrContext;
+  const userId = req?.user?.id;
+  const availableFiles = collectDelegateOcrAvailableFiles(req, delegateContext);
+  const candidateIds = [
+    ...new Set(
+      availableFiles
+        .map((file) => file.fileId)
+        .filter((fileId) => typeof fileId === 'string' && fileId.trim() !== ''),
+    ),
+  ];
+  if (
+    !userId ||
+    ocrTurnActive === true ||
+    isDelegateOcrQuoteOnlyTurn(currentUserTurn) ||
+    candidateIds.length === 0
+  ) {
+    return resolveDelegateOcrPolicy({
+      currentUserTurn,
+      ocrTurnActive,
+      attachmentFileKeys: [],
+    });
+  }
+
+  if (!context.delegateOcrAuthorizedFilesPromise) {
+    context.delegateOcrAuthorizedFilesPromise = db.getFiles(
+      { user: userId, $or: [{ file_id: { $in: candidateIds } }] },
+      {},
+      {},
+    );
+  }
+  const ownedFiles = (await context.delegateOcrAuthorizedFilesPromise) ?? [];
+  const ownedIds = ownedFiles
+    .map((file) => getSteelFileId(file))
+    .filter((fileId) => typeof fileId === 'string' && fileId.trim() !== '');
+  return resolveDelegateOcrPolicy({
+    currentUserTurn,
+    ocrTurnActive,
+    attachmentFileKeys: ownedIds.map((fileId) => `file:${fileId}`),
+  });
 }
 
 function createDelegateOcrExecute({ req, signal }) {
@@ -992,6 +1040,8 @@ function createDelegateOcrExecute({ req, signal }) {
 
     const execute = createDelegateOcrRequestExecute({
       currentUserTurn,
+      policy:
+        delegateContext.delegateOcrPolicy ?? req?.steelNativeContext?.delegateOcrPolicy,
       modelOptions: delegateContext.modelOptions,
       userId: req.user?.id,
       availableFiles: collectDelegateOcrAvailableFiles(req, delegateContext),
@@ -2573,7 +2623,10 @@ async function loadToolDefinitionsWrapper({
       actionsEnabled,
     };
     return areToolsEnabled
-      ? mergeSteelNativeToolDefinitions(baseResult, { excludeDelegateOcr })
+      ? mergeSteelNativeToolDefinitions(baseResult, {
+          excludeDelegateOcr,
+          initializationDefer: true,
+        })
       : baseResult;
   }
 
@@ -3153,7 +3206,10 @@ async function loadToolDefinitionsWrapper({
     const mergedResult = mergeSteelNativeToolDefinitions({
       toolDefinitions,
       toolRegistry,
-    }, { excludeDelegateOcr });
+    }, {
+      excludeDelegateOcr,
+      initializationDefer: true,
+    });
     toolDefinitions = mergedResult.toolDefinitions;
     toolRegistry = mergedResult.toolRegistry;
   }
@@ -3650,7 +3706,12 @@ async function loadToolsForExecution({
   );
   const visibleToolConfig = prepareSteelNativeToolConfig(
     { tools: toolNames, toolRegistry },
-    { ocrTurnActive, allowPaddleOcr, excludeDelegateOcr },
+    {
+      ocrTurnActive,
+      allowPaddleOcr,
+      excludeDelegateOcr,
+      delegateOcrPolicy: req?.steelNativeContext?.delegateOcrPolicy,
+    },
   );
   const executionToolNames = (visibleToolConfig.tools ?? []).filter(
     (name) => typeof name === 'string',
@@ -4086,6 +4147,7 @@ module.exports = {
   getToolkitKey,
   loadAgentTools,
   loadToolsForExecution,
+  resolveDelegateOcrPolicyForRequest,
   runSteelPaddleOcrPreflight,
   processRequiredActions,
   resolveAgentCapabilities,

@@ -42,6 +42,7 @@ import {
 } from '~/stream/internal/coalescing';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
+import { isResolvedDelegateOcrPolicy } from '~/steel/native/delegate';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
 
@@ -4470,6 +4471,20 @@ export class RedisJobStore implements IJobStoreV2 {
       discoveredTools: data.discoveredTools ? JSON.parse(data.discoveredTools) : undefined,
       delegateOcrQuoteOnlyTurn:
         data.delegateOcrQuoteOnlyTurn != null ? data.delegateOcrQuoteOnlyTurn === '1' : undefined,
+      delegateOcrPolicy: (() => {
+        if (!data.delegateOcrPolicy) {
+          return undefined;
+        }
+        try {
+          const policy = JSON.parse(data.delegateOcrPolicy);
+          return isResolvedDelegateOcrPolicy(policy) &&
+            (policy.allowed === false || policy.allowedFileKeys.length > 0)
+            ? policy
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       activityPhaseSnapshot: data.activityPhaseSnapshot
         ? JSON.parse(data.activityPhaseSnapshot)
         : undefined,

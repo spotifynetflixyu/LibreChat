@@ -223,6 +223,32 @@ describe('RedisJobStore Integration Tests', () => {
       await store.destroy();
     });
 
+    test('drops a malformed delegate OCR policy read from Redis', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient);
+      await store.initialize();
+
+      const streamId = `test-stream-delegate-policy-${Date.now()}`;
+      await store.createJob(streamId, 'user-1', streamId);
+      await ioredisClient.hset(
+        `stream:{${streamId}}:job`,
+        'delegateOcrPolicy',
+        JSON.stringify({
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: [' file:drawing-1 '],
+        }),
+      );
+
+      expect((await store.getJob(streamId))?.delegateOcrPolicy).toBeUndefined();
+
+      await store.destroy();
+    });
+
     test('atomically rewrites a requires_action barrier in the same status', async () => {
       if (!ioredisClient) {
         return;

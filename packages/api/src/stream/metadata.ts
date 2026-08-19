@@ -1,5 +1,6 @@
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
+import { isResolvedDelegateOcrPolicy } from '~/steel/native/delegate';
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
@@ -41,6 +42,22 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.discoveredTools) {
     patch.discoveredTools = metadata.discoveredTools;
+  }
+  if (metadata.delegateOcrQuoteOnlyTurn !== undefined) {
+    patch.delegateOcrQuoteOnlyTurn = metadata.delegateOcrQuoteOnlyTurn;
+  }
+  if (
+    isResolvedDelegateOcrPolicy(metadata.delegateOcrPolicy) &&
+    (metadata.delegateOcrPolicy.allowed === false ||
+      metadata.delegateOcrPolicy.allowedFileKeys.length > 0)
+  ) {
+    patch.delegateOcrPolicy = {
+      resolved: true,
+      allowed: metadata.delegateOcrPolicy.allowed,
+      allowedFileKeys: [
+        ...new Set(metadata.delegateOcrPolicy.allowedFileKeys.map((key) => key.trim())),
+      ],
+    };
   }
   if (metadata.activityPhaseSnapshot) {
     patch.activityPhaseSnapshot = metadata.activityPhaseSnapshot;

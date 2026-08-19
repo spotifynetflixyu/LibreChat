@@ -888,6 +888,11 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         makeToolApprovalJob({
           metadata: {
             delegateOcrQuoteOnlyTurn: true,
+            delegateOcrPolicy: {
+              resolved: true,
+              allowed: true,
+              allowedFileKeys: ['file:drawing-1'],
+            },
             userMessage: { messageId: USER_MSG_ID, text: '重新核對第35頁孔數後報價' },
           },
         }),
@@ -898,7 +903,15 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
 
       const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
       expect(client.resumeCompletion).toHaveBeenCalledWith(
-        expect.objectContaining({ delegateOcrQuoteOnlyTurn: true }),
+        expect.objectContaining({
+          delegateOcrQuoteOnlyTurn: true,
+          delegateOcrPolicy: {
+            resolved: true,
+            allowed: true,
+            allowedFileKeys: ['file:drawing-1'],
+          },
+          currentUserTurnText: '重新核對第35頁孔數後報價',
+        }),
       );
     });
 

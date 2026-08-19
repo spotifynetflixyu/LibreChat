@@ -190,7 +190,7 @@ describe('createRun code-tool eager/session wiring', () => {
     expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(false);
   });
 
-  it('retains delegate_ocr when the quote phrase is explicitly negated', async () => {
+  it('removes delegate_ocr when conversation has no attachments', async () => {
     const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
     const agent = makeAgent({
       tools: [delegate],
@@ -210,10 +210,8 @@ describe('createRun code-tool eager/session wiring', () => {
       graphConfig: { agents: Array<Record<string, unknown>> };
     };
     const input = runConfig.graphConfig.agents[0];
-    expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
-      'delegate_ocr',
-    ]);
-    expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(true);
+    expect(input.toolDefinitions).toEqual([]);
+    expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(false);
   });
 
   it('extracts latest human text from string and array content', () => {
@@ -253,7 +251,7 @@ describe('createRun code-tool eager/session wiring', () => {
     expect((input.toolRegistry as Map<string, unknown>).size).toBe(0);
   });
 
-  it('keeps delegate_ocr when explicit resume quote-only override is false', async () => {
+  it('removes delegate_ocr on empty resume without persisted policy', async () => {
     const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
     const agent = makeAgent({
       tools: [delegate],
@@ -266,6 +264,35 @@ describe('createRun code-tool eager/session wiring', () => {
       signal: new AbortController().signal,
       messages: [],
       delegateOcrQuoteOnlyTurn: false,
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect(input.toolDefinitions).toEqual([]);
+    expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(false);
+  });
+
+  it('binds delegate_ocr only with resolved authorized attachment policy', async () => {
+    const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
+    const agent = makeAgent({
+      tools: [delegate],
+      toolDefinitions: [delegate],
+      toolRegistry: new Map([[delegate.name, delegate]]),
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [new HumanMessage('請重新確認 file:file-1 原始圖面')],
+      delegateOcrPolicy: {
+        resolved: true,
+        allowed: true,
+        allowedFileKeys: ['file:file-1'],
+      },
       streaming: true,
       streamUsage: true,
     });

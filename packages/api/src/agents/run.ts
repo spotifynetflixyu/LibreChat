@@ -90,6 +90,7 @@ import {
   isDelegateOcrQuoteOnlyTurn,
   normalizeDelegateOcrChunk,
 } from '~/steel/native/delegate';
+import type { DelegateOcrPolicy } from '~/steel/native/delegate';
 import { prepareSteelNativeToolConfig } from '~/steel/native/tools';
 
 /** Expected shape of JSON tool search results */
@@ -1398,6 +1399,7 @@ export async function createRun({
   agents,
   messages,
   delegateOcrQuoteOnlyTurn,
+  delegateOcrPolicy,
   discoveredToolNames,
   requestBody,
   user,
@@ -1443,6 +1445,8 @@ export async function createRun({
   messages?: BaseMessage[];
   /** Explicit quote-only classification used by HITL resume when messages are rehydrated. */
   delegateOcrQuoteOnlyTurn?: boolean;
+  /** Request-resolved delegate OCR visibility and authorized attachment keys. */
+  delegateOcrPolicy?: DelegateOcrPolicy;
   /**
    * Pre-discovered deferred-tool names to force-load directly, bypassing message
    * extraction. The HITL resume path rebuilds the graph with `messages: []` (state
@@ -1711,7 +1715,7 @@ export async function createRun({
 
     const visibleToolConfig = prepareSteelNativeToolConfig(
       { tools, toolDefinitions, toolRegistry },
-      { excludeDelegateOcr },
+      { excludeDelegateOcr, delegateOcrPolicy },
     );
     tools = visibleToolConfig.tools as GenericTool[] | undefined;
     toolDefinitions = visibleToolConfig.toolDefinitions ?? [];

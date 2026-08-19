@@ -14,6 +14,7 @@ import {
   normalizeDelegateOcrChunk,
   parseDelegateOcrPageRangesFromTurn,
   delegateOcrArgsSchema,
+  resolveDelegateOcrPolicy,
   resolveDelegateOcrFileKeys,
   type DelegateOcrFileRecord,
 } from './delegate';
@@ -43,6 +44,33 @@ const files: DelegateOcrFileRecord[] = [
 ];
 
 describe('delegate_ocr', () => {
+  it('resolves delegate_ocr backend availability from preflight, quote, and attachments', () => {
+    expect(
+      resolveDelegateOcrPolicy({
+        currentUserTurn: '請重新確認原始圖面',
+        attachmentFileKeys: ['file:a', 'file:a'],
+      }),
+    ).toEqual({ resolved: true, allowed: true, allowedFileKeys: ['file:a'] });
+    expect(
+      resolveDelegateOcrPolicy({
+        currentUserTurn: '請重新確認原始圖面',
+        ocrTurnActive: true,
+        attachmentFileKeys: ['file:a'],
+      }),
+    ).toEqual({ resolved: true, allowed: false, allowedFileKeys: ['file:a'] });
+    expect(
+      resolveDelegateOcrPolicy({
+        currentUserTurn: '請重新確認圖面後報價',
+        attachmentFileKeys: ['file:a'],
+      }),
+    ).toEqual({ resolved: true, allowed: false, allowedFileKeys: ['file:a'] });
+    expect(
+      resolveDelegateOcrPolicy({
+        currentUserTurn: '請重新確認原始圖面',
+      }),
+    ).toEqual({ resolved: true, allowed: false, allowedFileKeys: [] });
+  });
+
   it('classifies confirmed OCR details followed by a quote request as quote-only', () => {
     expect(isDelegateOcrQuoteOnlyTurn('確認以上 OCR 明細，依 B 價報價')).toBe(true);
   });
@@ -393,6 +421,7 @@ describe('delegate_ocr', () => {
     const invokeModel = jest.fn(async () => '原始 PDF 已重新確認。');
     const execute = createDelegateOcrRequestExecute({
       history,
+      policy: { resolved: true, allowed: true, allowedFileKeys: ['file:pdf-1'] },
       modelOptions,
       userId: 'user-1',
       getOwnedFileRecords,
@@ -431,6 +460,7 @@ describe('delegate_ocr', () => {
     const invokeModel = jest.fn(async () => '已依原始圖面完成 Vision 判讀。');
     const execute = createDelegateOcrRequestExecute({
       history: [new HumanMessage('看一下圖面切工')],
+      policy: { resolved: true, allowed: true, allowedFileKeys: [`file:${fileId}`] },
       modelOptions,
       userId: 'user-1',
       availableFiles: [{ fileId, filename: 'PL.pdf' }],
@@ -499,6 +529,36 @@ describe('delegate_ocr', () => {
         { fileId: 'file-2', filename: 'PL.pdf' },
       ])({ fileKeys: ['PL.pdf'] }),
     ).rejects.toThrow('delegate_ocr attachment file key is ambiguous: PL.pdf');
+  });
+
+  it('rejects an attachment outside the resolved policy before loading dependencies', async () => {
+    const getOwnedFileRecords = jest.fn(async () => []);
+    const signStoredFile = jest.fn(async () => 'unused');
+    const loadOcrRules = jest.fn(async () => 'OCR rules');
+    const invokeModel = jest.fn(async () => 'unused');
+    const execute = createDelegateOcrRequestExecute({
+      history: [new HumanMessage('重新確認原始圖面')],
+      currentUserTurn: '重新確認原始圖面',
+      policy: { resolved: true, allowed: true, allowedFileKeys: ['file:allowed'] },
+      modelOptions,
+      userId: 'user-1',
+      availableFiles: [
+        { fileId: 'allowed', filename: 'allowed.pdf' },
+        { fileId: 'other', filename: 'other.pdf' },
+      ],
+      getOwnedFileRecords,
+      signStoredFile,
+      loadOcrRules,
+      invokeModel,
+    });
+
+    await expect(execute({ fileKeys: ['file:other'] })).rejects.toThrow(
+      'delegate_ocr attachment file keys are not allowed: file:other',
+    );
+    expect(getOwnedFileRecords).not.toHaveBeenCalled();
+    expect(loadOcrRules).not.toHaveBeenCalled();
+    expect(signStoredFile).not.toHaveBeenCalled();
+    expect(invokeModel).not.toHaveBeenCalled();
   });
 
   it('sends freshly signed original sources once with the latest user turn only', async () => {

@@ -959,6 +959,11 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       typeof persistedQuoteOnly === 'boolean'
         ? persistedQuoteOnly
         : isDelegateOcrQuoteOnlyTurn(job.metadata?.userMessage?.text);
+    const persistedDelegateOcrPolicy = job.metadata?.delegateOcrPolicy;
+    const delegateOcrPolicy =
+      persistedDelegateOcrPolicy && typeof persistedDelegateOcrPolicy === 'object'
+        ? persistedDelegateOcrPolicy
+        : undefined;
 
     await client.resumeCompletion({
       resumeValue: mapped.resumeValue,
@@ -971,6 +976,8 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       // graph passes `messages: []`, so without these the model would lose their schemas.
       discoveredToolNames: job.metadata?.discoveredTools,
       delegateOcrQuoteOnlyTurn,
+      delegateOcrPolicy,
+      currentUserTurnText: job.metadata?.userMessage?.text,
       activityPhaseSnapshot: job.metadata?.activityPhaseSnapshot,
     });
 

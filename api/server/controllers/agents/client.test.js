@@ -27,6 +27,11 @@ const mockRunSteelPaddleOcrPreflight = jest.fn().mockResolvedValue({
   currentOcrMarkdownResults: [],
 });
 jest.mock('~/server/services/ToolService', () => ({
+  resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
+    resolved: true,
+    allowed: false,
+    allowedFileKeys: [],
+  }),
   runSteelPaddleOcrPreflight: (...args) => mockRunSteelPaddleOcrPreflight(...args),
 }));
 const { GenerationJobManager, createStreamServices } = require('@librechat/api');

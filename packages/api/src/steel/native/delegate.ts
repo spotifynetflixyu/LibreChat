@@ -88,6 +88,58 @@ export interface DelegateOcrAvailableFile {
   mediaType?: string;
 }
 
+export interface DelegateOcrPolicy {
+  resolved: true;
+  allowed: boolean;
+  allowedFileKeys: string[];
+}
+
+export interface ResolveDelegateOcrPolicyInput {
+  currentUserTurn?: string;
+  ocrTurnActive?: boolean;
+  attachmentFileKeys?: readonly string[];
+}
+
+export function isResolvedDelegateOcrPolicy(value: unknown): value is DelegateOcrPolicy {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    (value as { resolved?: unknown }).resolved === true &&
+    typeof (value as { allowed?: unknown }).allowed === 'boolean' &&
+    Array.isArray((value as { allowedFileKeys?: unknown }).allowedFileKeys) &&
+    (value as { allowedFileKeys: unknown[] }).allowedFileKeys.every(
+      (key) =>
+        typeof key === 'string' && key === key.trim() && /^file:[^\s:]+$/u.test(key),
+    )
+  );
+}
+
+export function resolveDelegateOcrPolicy({
+  currentUserTurn,
+  ocrTurnActive = false,
+  attachmentFileKeys = [],
+}: ResolveDelegateOcrPolicyInput): DelegateOcrPolicy {
+  const allowedFileKeys = [
+    ...new Set(
+      attachmentFileKeys
+        .filter(
+          (fileKey): fileKey is string =>
+            typeof fileKey === 'string' && /^file:[^\s:]+$/u.test(fileKey.trim()),
+        )
+        .map((fileKey) => fileKey.trim()),
+    ),
+  ];
+  return {
+    resolved: true,
+    allowed:
+      !ocrTurnActive &&
+      !isDelegateOcrQuoteOnlyTurn(currentUserTurn) &&
+      allowedFileKeys.length > 0,
+    allowedFileKeys,
+  };
+}
+
 export interface DelegateOcrFileRecord {
   fileId: string;
   filepath?: string;
@@ -188,6 +240,7 @@ export type DelegateOcrExecute = (input: DelegateOcrExecuteInput) => Promise<str
 export interface CreateDelegateOcrRequestExecuteInput {
   history?: readonly BaseMessage[];
   currentUserTurn?: string;
+  policy?: DelegateOcrPolicy;
   modelOptions: OpenAIOAuthModelOptions;
   userId: string;
   availableFiles?: readonly DelegateOcrAvailableFile[];
@@ -819,6 +872,7 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
 export function createDelegateOcrRequestExecute({
   history,
   currentUserTurn,
+  policy,
   modelOptions,
   userId,
   availableFiles,
@@ -830,8 +884,28 @@ export function createDelegateOcrRequestExecute({
   signal,
 }: CreateDelegateOcrRequestExecuteInput): DelegateOcrExecute {
   return async ({ fileKeys, pageRanges, onDelta }) => {
+    if (!Array.isArray(fileKeys) || fileKeys.length === 0) {
+      throw new Error('delegate_ocr requires at least one attachment file key');
+    }
     const storedFileById = new Map<string, DelegateOcrStoredFileRecord>();
     const resolvedFileKeys = resolveDelegateOcrFileKeys(fileKeys, availableFiles);
+    if (resolvedFileKeys.length === 0) {
+      throw new Error('delegate_ocr requires at least one resolved attachment file key');
+    }
+    if (
+      !isResolvedDelegateOcrPolicy(policy) ||
+      policy.allowed !== true ||
+      policy.allowedFileKeys.length === 0
+    ) {
+      throw new Error('delegate_ocr policy is unavailable or unresolved');
+    }
+    const allowedFileKeys = new Set(policy.allowedFileKeys);
+    const unauthorizedKeys = resolvedFileKeys.filter((key) => !allowedFileKeys.has(key));
+    if (unauthorizedKeys.length > 0) {
+      throw new Error(
+        `delegate_ocr attachment file keys are not allowed: ${unauthorizedKeys.join(', ')}`,
+      );
+    }
     const rulesText = await loadOcrRules();
     return delegateOcr({
       fileKeys: resolvedFileKeys,
@@ -881,7 +955,7 @@ export function getDelegateOcrToolDefinition(): LCTool {
   return {
     name: delegateOcrToolName,
     description:
-      'Use this tool only when the user explicitly asks to inspect or verify drawing-related information in original attached images or PDFs. Do not call it during quoting when confirmed OCR or table data is already available. Pass one or more relevant attachment keys as `file:<file_id>`.',
+      'Use this tool only when you must independently reopen an original attached image or PDF with Vision to verify uncertain visual evidence. Do not call it when the user directly supplies or corrects a value, asks only to update or organize confirmed OCR/table data, or the request can be answered from confirmed data. Quote and pricing requests forbid this tool. Pass one or more relevant attachment keys as `file:<file_id>`.',
     parameters: zodToJsonSchema(delegateOcrArgsSchema, {
       name: delegateOcrToolName,
       target: 'openApi3',

@@ -2494,6 +2494,7 @@ class GenerationJobManagerClass {
         // replay them into createRun (the rebuilt graph passes `messages: []`).
         discoveredTools: jobData.discoveredTools,
         delegateOcrQuoteOnlyTurn: jobData.delegateOcrQuoteOnlyTurn,
+        delegateOcrPolicy: jobData.delegateOcrPolicy,
         activityPhaseSnapshot: jobData.activityPhaseSnapshot,
         // Surface the owning replica's seal capability so the steer route can
         // honour it instead of probing its own (possibly older) SDK.

@@ -1246,10 +1246,20 @@ describe('GenerationJobManager HITL resume metadata (round 19)', () => {
     await manager.updateMetadata(streamId, {
       discoveredTools: ['deep_tool', 'other_tool'],
       delegateOcrQuoteOnlyTurn: true,
+      delegateOcrPolicy: {
+        resolved: true,
+        allowed: true,
+        allowedFileKeys: ['file:drawing-1'],
+      },
     });
     const job = await manager.getJob(streamId);
     expect(job?.metadata.discoveredTools).toEqual(['deep_tool', 'other_tool']);
     expect(job?.metadata.delegateOcrQuoteOnlyTurn).toBe(true);
+    expect(job?.metadata.delegateOcrPolicy).toEqual({
+      resolved: true,
+      allowed: true,
+      allowedFileKeys: ['file:drawing-1'],
+    });
   });
 
   // H4: a pause that lands AFTER the resume snapshot but before the subscription must

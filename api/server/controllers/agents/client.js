@@ -142,7 +142,10 @@ const { encodeAndFormat } = require('~/server/services/Files/images/encode');
 const { createContextHandlers } = require('~/app/clients/prompts');
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { getMCPServerTools } = require('~/server/services/Config');
-const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
+const {
+  resolveDelegateOcrPolicyForRequest,
+  runSteelPaddleOcrPreflight,
+} = require('~/server/services/ToolService');
 const BaseClient = require('~/app/clients/BaseClient');
 const { getMCPManager } = require('~/config');
 const db = require('~/models');
@@ -1885,6 +1888,7 @@ class AgentClient extends BaseClient {
     });
     let paddleOcrPreflight;
     if (this.options.req) {
+      const currentUserTurnText = latestOrdered?.text ?? '';
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
         conversationId: this.conversationId,
@@ -1892,6 +1896,11 @@ class AgentClient extends BaseClient {
         assistantTurnIndex: orderedMessages.length,
         memoryCheckpointTurnIndex: Math.max(0, orderedMessages.length - 1),
         currentTurnFiles: currentTurnSteelFileReferences,
+        delegateOcrContext: {
+          ...(this.options.req.steelNativeContext?.delegateOcrContext ?? {}),
+          currentUserTurnText,
+          steelConversation,
+        },
       };
       paddleOcrPreflight = await runSteelPaddleOcrPreflight({
         req: this.options.req,
@@ -1905,6 +1914,12 @@ class AgentClient extends BaseClient {
         paddleOcrPreflight,
         ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
       };
+      const delegateOcrPolicy = await resolveDelegateOcrPolicyForRequest({
+        req: this.options.req,
+        currentUserTurn: currentUserTurnText,
+        ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+      });
+      this.options.req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
       const runAgents = [
         this.options.agent,
         ...(this.agentConfigs ? Array.from(this.agentConfigs.values()) : []),
@@ -1914,6 +1929,7 @@ class AgentClient extends BaseClient {
           runAgent,
           prepareSteelNativeToolConfig(runAgent, {
             ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+            delegateOcrPolicy,
           }),
         );
       }
@@ -1926,6 +1942,7 @@ class AgentClient extends BaseClient {
         ...(this.options.req.steelNativeContext ?? {}),
         delegateOcrContext: {
           ...(this.options.req.steelNativeContext?.delegateOcrContext ?? {}),
+          currentUserTurnText: latestOrdered?.text ?? '',
           steelConversation,
         },
       };
@@ -3083,6 +3100,10 @@ class AgentClient extends BaseClient {
       );
     }
     const interruptMetadata = { discoveredTools };
+    const delegateOcrPolicy = this.options.req?.steelNativeContext?.delegateOcrPolicy;
+    if (delegateOcrPolicy && typeof delegateOcrPolicy === 'object') {
+      interruptMetadata.delegateOcrPolicy = delegateOcrPolicy;
+    }
     if (delegateOcrQuoteOnlyTurn !== undefined) {
       interruptMetadata.delegateOcrQuoteOnlyTurn = delegateOcrQuoteOnlyTurn;
     }
@@ -3478,6 +3499,7 @@ class AgentClient extends BaseClient {
           signal: abortController.signal,
           customHandlers: reasoningLabel?.handlers(activityHandlers) ?? activityHandlers,
           openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
+          delegateOcrPolicy: this.options.req?.steelNativeContext?.delegateOcrPolicy,
           openAIOAuthModelOptionsSink: (modelOptions) => {
             const delegateOcrContext = this.options.req?.steelNativeContext?.delegateOcrContext;
             if (delegateOcrContext) {
@@ -3752,6 +3774,8 @@ class AgentClient extends BaseClient {
     userMCPAuthMap,
     discoveredToolNames,
     delegateOcrQuoteOnlyTurn,
+    delegateOcrPolicy,
+    currentUserTurnText,
     activityPhaseSnapshot,
   }) {
     /** @type {Partial<GraphRunnableConfig>} */
@@ -3759,6 +3783,16 @@ class AgentClient extends BaseClient {
     /** @type {ReturnType<createRun>} */
     let run;
     const appConfig = this.options.req.config;
+    this.options.req.steelNativeContext = {
+      ...(this.options.req.steelNativeContext ?? {}),
+      delegateOcrPolicy,
+      delegateOcrContext: {
+        ...(this.options.req.steelNativeContext?.delegateOcrContext ?? {}),
+        currentUserTurnText:
+          typeof currentUserTurnText === 'string' ? currentUserTurnText : undefined,
+        delegateOcrPolicy,
+      },
+    };
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
     try {
@@ -3873,6 +3907,7 @@ class AgentClient extends BaseClient {
         // rebuilt model binding. Undefined/empty for non-deferred turns is a no-op.
         discoveredToolNames,
         delegateOcrQuoteOnlyTurn,
+        delegateOcrPolicy,
         initialSessions,
         runId: this.responseMessageId,
         signal: abortController.signal,

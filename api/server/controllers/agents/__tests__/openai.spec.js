@@ -215,6 +215,12 @@ jest.mock('@librechat/api', () => ({
   recordCollectedUsage: mockRecordCollectedUsage,
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
+  normalizeDelegateOcrChunk: (content) =>
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.map((part) => part?.text ?? '').join('')
+        : '',
   extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
   applySteelNativeGlobalContextToAgentConfigs: mockApplySteelNativeGlobalContextToAgentConfigs,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
@@ -293,6 +299,11 @@ jest.mock('~/cache', () => ({
 jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn().mockResolvedValue([]),
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
+  resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
+    resolved: true,
+    allowed: false,
+    allowedFileKeys: [],
+  }),
   isFatalAgentInitializationError: (error) =>
     ['AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE', 'resource_recovery_required'].includes(error?.code),
 }));
