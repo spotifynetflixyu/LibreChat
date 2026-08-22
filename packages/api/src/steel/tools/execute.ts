@@ -1,11 +1,20 @@
-import {
-  filterSteelCuttingPriceGroups,
-  searchSteelCustomers,
-  searchSteelCuttingPriceGroups,
-  searchSteelPriceCandidateGroups,
-  searchSteelPricesByProductNames,
-  searchSteelProcessingPriceCandidates,
+import type {
+  SteelPriceItem,
+  SteelCuttingPriceRecord,
+  SteelPriceLookupQuery,
+  SteelPriceTierValues,
+  SteelPriceCategoryCandidate,
 } from '../repositories';
+import type {
+  SteelToolResult,
+  SteelToolLogger,
+  SteelToolJsonObject,
+  SteelToolErrorCategory,
+} from './results';
+import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
+import type { PriceCategory, PriceLookupMaterialKind } from '../pricing/enums';
+import type { SteelToolName } from './schemas';
+
 import {
   compileProcessingKeyword,
   getProcessingCandidateText,
@@ -16,24 +25,18 @@ import {
   matchesProcessingKeywordTerms,
   processingPriceCategories,
 } from '../pricing/processing-candidates';
+import {
+  filterSteelCuttingPriceGroups,
+  searchSteelCustomers,
+  searchSteelCuttingPriceGroups,
+  searchSteelPriceCandidateGroups,
+  searchSteelPricesByErpItemCodes,
+  searchSteelProcessingPriceCandidates,
+} from '../repositories';
 import { getExecutableSteelToolDefinition, isExecutableSteelToolName } from './registry';
 import { sanitizeSteelToolOutput, steelToolRedactionVersion } from './sanitize';
+import { priceLookupMaterialKinds } from '../pricing/enums';
 import { steelToolArgsSchemas } from './schemas';
-
-import type {
-  SteelToolResult,
-  SteelToolLogger,
-  SteelToolJsonObject,
-  SteelToolErrorCategory,
-} from './results';
-import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
-import type {
-  SteelPriceItem,
-  SteelPriceTierValues,
-  SteelCuttingPriceRecord,
-} from '../repositories';
-import type { PriceCategory } from '../pricing/enums';
-import type { SteelToolName } from './schemas';
 
 type SteelRawToolOutput = { [key: string]: unknown };
 type SearchCustomersInput = ReturnType<typeof steelToolArgsSchemas.search_customers.parse>;
@@ -356,13 +359,9 @@ function getSquareBarFinishRank(candidate: SteelPriceItem): number {
 }
 
 function orderPriceCandidates(
-  query: SearchPriceCandidatesInput['queries'][number],
+  query: { category: PriceCategory; keyword?: string },
   candidates: readonly SteelPriceItem[],
 ): SteelPriceItem[] {
-  if (query.mode === 'category_discovery') {
-    return [...candidates];
-  }
-
   if (query.category === '方鐵' && !query.keyword?.includes('磨光')) {
     return [...candidates].sort(
       (left, right) => getSquareBarFinishRank(left) - getSquareBarFinishRank(right),
@@ -378,7 +377,12 @@ function orderPriceCandidates(
   );
 }
 
-const materialCandidateSelectionThreshold = 10;
+const materialCandidateSelectionThreshold = 20;
+
+type PriceQuery = SearchPriceCandidatesInput['queries'][number];
+type ProcessingPriceQuery = Extract<PriceQuery, { processingCategories: PriceCategory[] }>;
+type ExactPriceQuery = Extract<PriceQuery, { erpItemCodes: string[] }>;
+type MaterialPriceQuery = Exclude<PriceQuery, ProcessingPriceQuery | ExactPriceQuery>;
 
 interface ProcessingTargetSpec {
   queryId: string;
@@ -386,29 +390,133 @@ interface ProcessingTargetSpec {
   thicknessMm?: readonly string[];
 }
 
-function getProcessingQueries(input: SearchPriceCandidatesInput) {
-  if (input.processingQueries) {
-    return input.processingQueries;
+function isExactPriceQuery(
+  query: SearchPriceCandidatesInput['queries'][number],
+): query is ExactPriceQuery {
+  return 'erpItemCodes' in query;
+}
+
+function isProcessingPriceQuery(
+  query: SearchPriceCandidatesInput['queries'][number],
+): query is ProcessingPriceQuery {
+  return 'processingCategories' in query;
+}
+
+function isMaterialPriceQuery(
+  query: SearchPriceCandidatesInput['queries'][number],
+): query is MaterialPriceQuery {
+  return !isExactPriceQuery(query) && !isProcessingPriceQuery(query);
+}
+
+function normalizeMaterial(
+  value: string | undefined,
+  category: PriceCategory,
+  thicknessMm: readonly string[] | undefined,
+): PriceLookupMaterialKind | undefined {
+  const key = value?.normalize('NFKC').trim().toUpperCase();
+  if (key && (key.includes('2B') || key.includes('霧面'))) return '2B';
+  if (key?.includes('NO1')) return 'NO1';
+  if (key && (/(?:^|[\s/])HL(?:$|[\s/])/u.test(key) || key === 'STHL' || /[沙砂]面/u.test(key))) {
+    return 'HL';
+  }
+  if (key && (/(?:^|[\s/])BA(?:$|[\s/])/u.test(key) || key === 'STBA' || key.includes('亮面'))) {
+    return 'BA';
+  }
+  if (key === '熱浸鍍' || key === '熱浸鍍鋅' || key === '熱進鍍鋅') return '錏';
+  if (key && priceLookupMaterialKinds.includes(key as PriceLookupMaterialKind)) {
+    return key as PriceLookupMaterialKind;
+  }
+  if (key === '不鏽鋼' || key?.includes('白鐵')) return '白鐵';
+  if (key === 'ST') {
+    if (category !== '鐵板' || !thicknessMm || thicknessMm.length === 0) return '白鐵';
+    const thicknesses = thicknessMm.map(Number);
+    if (thicknesses.every((thickness) => thickness < 3)) return '2B';
+    if (thicknesses.every((thickness) => thickness >= 3)) return 'NO1';
+    return '白鐵';
+  }
+  return undefined;
+}
+
+function normalizeUnit(value: string | undefined, category: PriceCategory): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value.trim().toLowerCase() === 'kg') {
+    return 'Kg';
+  }
+  if (category === '鐵板') {
+    return value;
+  }
+  return value.trim() || undefined;
+}
+
+function toRepositoryMaterialQueries(
+  query: MaterialPriceQuery,
+): Array<SteelPriceLookupQuery> {
+  return query.categories.map((category, categoryIndex) => {
+    const material = normalizeMaterial(query.material, category, query.thicknessMm);
+    const unit = normalizeUnit(query.unit, category);
+    return {
+      queryId: `${query.queryId}:c${categoryIndex + 1}`,
+      category,
+      ...(query.subcategory ? { subcategory: query.subcategory } : {}),
+      ...(material ? { material } : {}),
+      ...(unit ? { unit } : {}),
+      ...(query.thicknessMm ? { thicknessMm: query.thicknessMm } : {}),
+      ...(query.stockLengthMm ? { stockLengthMm: query.stockLengthMm } : {}),
+      ...(query.keyword ? { keyword: query.keyword } : {}),
+    };
+  });
+}
+
+const candidateRefFields = [
+  'lengthMm',
+  'unitWeightValue',
+  'thicknessMinMm',
+  'thicknessMaxMm',
+  'widthMm',
+  'heightMm',
+  'outerDiameterMm',
+  'nominalInch',
+  'webMm',
+  'flangeMm',
+  'lipMm',
+  'sheetWidthMm',
+  'sheetLengthMm',
+  'unit',
+] as const satisfies readonly (keyof SteelPriceItem)[];
+
+function toCandidateRef(candidate: SteelPriceItem): SteelRawToolOutput | undefined {
+  if (
+    typeof candidate.erpItemCode !== 'string' ||
+    candidate.erpItemCode.trim() === '' ||
+    !candidate.productName ||
+    candidate.productName.trim() === ''
+  ) {
+    return undefined;
   }
 
-  const targetSpecs = input.queries.flatMap<ProcessingTargetSpec>((query) => {
-    if (query.mode === 'category_discovery' || query.category.startsWith('加工/')) {
-      return [];
+  const ref: SteelRawToolOutput = {
+    erpItemCode: candidate.erpItemCode,
+    productName: candidate.productName,
+    category: candidate.category,
+  };
+  for (const field of candidateRefFields) {
+    const value = candidate[field];
+    if (value !== null && value !== undefined) {
+      ref[field] = value;
     }
+  }
+  return ref;
+}
 
-    return [
-      {
-        queryId: query.queryId,
-        category: query.category,
-        ...(query.thicknessMm ? { thicknessMm: query.thicknessMm } : {}),
-      },
-    ];
-  });
-  const categories = [...new Set(targetSpecs.map(({ category }) => category))];
-
-  return categories.length > 0
-    ? [{ queryId: 'p1', categories, processingCategories: ['加工/切工' as const], targetSpecs }]
-    : [];
+function isUsablePriceCandidate(candidate: SteelPriceItem): boolean {
+  return (
+    typeof candidate.erpItemCode === 'string' &&
+    candidate.erpItemCode.trim() !== '' &&
+    typeof candidate.productName === 'string' &&
+    candidate.productName.trim() !== ''
+  );
 }
 
 function buildProcessingPrice(
@@ -416,7 +524,7 @@ function buildProcessingPrice(
   targetCategories: readonly PriceCategory[],
   requestedProcessingCategories: readonly PriceCategory[] | undefined,
   keyword: string | undefined,
-  targetSpecs: readonly ProcessingTargetSpec[] | undefined,
+  targetSpecs: readonly { queryId: string; category: PriceCategory; thicknessMm?: readonly string[] }[] | undefined,
 ): SteelRawToolOutput {
   const targets = new Set(targetCategories);
   const requested = requestedProcessingCategories
@@ -433,6 +541,7 @@ function buildProcessingPrice(
           )
         : undefined;
     if (
+      !isUsablePriceCandidate(candidate) ||
       (requested && !requested.has(candidate.category as PriceCategory)) ||
       !isProcessingCandidateApplicable(candidate, targets) ||
       (matchedTargetSpecs && matchedTargetSpecs.length === 0) ||
@@ -489,7 +598,6 @@ function buildProcessingPrice(
     totalAvailable: applicable.length,
     returnedCount: applicable.length,
     selectionRequired: false,
-    productNames: [],
     truncated: false,
     groups: processingPriceCategories.flatMap((category) => {
       const items = grouped.get(category) ?? [];
@@ -506,76 +614,147 @@ async function searchPriceCandidates(
   client: SteelRepositoryClient,
   input: SearchPriceCandidatesInput,
 ): Promise<SteelRawToolOutput> {
-  if (input.productNames) {
-    const candidates = await searchSteelPricesByProductNames(client, input.productNames);
-    const productNamePrices = candidates
-      .filter((candidate) => !hasUnusableProcessingProductName(candidate))
-      .map(toSafePriceCandidate);
+  const exactQueries = input.queries.filter(isExactPriceQuery);
+  const materialQueries = input.queries.filter(isMaterialPriceQuery);
+  const processingQueries = input.queries.filter(isProcessingPriceQuery);
 
-    return {
-      productNames: input.productNames,
-      productNamePrices,
-      summary: {
-        requestedProductNameCount: input.productNames.length,
-        priceCount: productNamePrices.length,
-      },
+  const exactRequestedCodes = exactQueries.flatMap((query) => query.erpItemCodes);
+  if (exactQueries.length > 0 && materialQueries.length === 0 && processingQueries.length === 0) {
+    const requestedErpItemCodes = [...new Set(exactRequestedCodes)];
+    const selectedCandidates = await searchSteelPricesByErpItemCodes(client, requestedErpItemCodes);
+    const candidatesByErpItemCode = new Map(
+      selectedCandidates
+        .filter(
+          (candidate) =>
+            isUsablePriceCandidate(candidate) && !hasUnusableProcessingProductName(candidate),
+        )
+        .map((candidate) => [candidate.erpItemCode, toSafePriceCandidate(candidate)]),
+    );
+    const buildExactResult = (query: ExactPriceQuery): SteelRawToolOutput => {
+      const candidates = query.erpItemCodes.flatMap((erpItemCode) => {
+        const candidate = candidatesByErpItemCode.get(erpItemCode);
+        return candidate ? [candidate] : [];
+      });
+      const missingErpItemCodes = query.erpItemCodes.filter(
+        (erpItemCode) => !candidatesByErpItemCode.has(erpItemCode),
+      );
+      return {
+        ...(exactQueries.length > 1 ? { queryId: query.queryId } : {}),
+        erpItemCodes: query.erpItemCodes,
+        candidates,
+        missingErpItemCodes,
+        nextAction: missingErpItemCodes.length === 0 ? 'use_candidates' : 'manual_review',
+      };
     };
+
+    if (exactQueries.length === 1) {
+      return buildExactResult(exactQueries[0]!);
+    }
+
+    return { exactResults: exactQueries.map(buildExactResult) };
   }
 
-  const processingQueries = getProcessingQueries(input);
-  const [repositoryGroups, cuttingPrices, processingCandidates] = await Promise.all([
-    searchSteelPriceCandidateGroups(client, { queries: input.queries }),
-    searchSteelCuttingPriceGroups(client, input.queries),
+  const expandedMaterialQueries = materialQueries.flatMap(toRepositoryMaterialQueries);
+  const allRepositoryQueries = expandedMaterialQueries;
+  const automaticProcessingQueries =
     processingQueries.length > 0
+      ? []
+      : materialQueries.length > 0
+        ? [
+            {
+              queryId: 'p1',
+              categories: [...new Set(materialQueries.flatMap((query) => query.categories))],
+              processingCategories: ['加工/切工' as const],
+              targetSpecs: materialQueries.flatMap((query) =>
+                query.categories.map<ProcessingTargetSpec>((category) => ({
+                  queryId: query.queryId,
+                  category,
+                  ...(query.thicknessMm ? { thicknessMm: query.thicknessMm } : {}),
+                })),
+              ),
+            },
+          ]
+        : [];
+  const processingPriceQueries = [...automaticProcessingQueries, ...processingQueries];
+  const processingCategories = [
+    ...new Set(processingPriceQueries.flatMap((query) => query.processingCategories)),
+  ];
+  const [repositoryGroups, cuttingPrices, processingCandidates] = await Promise.all([
+    allRepositoryQueries.length > 0
+      ? searchSteelPriceCandidateGroups(client, { queries: allRepositoryQueries })
+      : Promise.resolve([]),
+    allRepositoryQueries.length > 0
+      ? searchSteelCuttingPriceGroups(client, allRepositoryQueries)
+      : Promise.resolve([]),
+    processingCategories.length > 0
       ? searchSteelProcessingPriceCandidates(client, {
-          categories: processingPriceCategories.filter((category) =>
-            processingQueries.some(
-              (query) =>
-                !query.processingCategories ||
-                new Set<PriceCategory>(query.processingCategories).has(category),
-            ),
-          ),
+          categories: processingCategories,
         })
       : Promise.resolve([]),
   ]);
   const groupsByIndex = new Map(repositoryGroups.map((group) => [group.queryIndex, group]));
-  const cuttingCandidateMatches = input.queries.flatMap((query, queryIndex) => {
-    if (query.mode === 'category_discovery') {
-      return [];
-    }
-    return [
-      {
-        queryId: query.queryId,
-        category: query.category,
-        candidates: groupsByIndex.get(queryIndex)?.candidates ?? [],
-      },
-    ];
-  });
+  const cuttingCandidateMatches = expandedMaterialQueries.map((query, queryIndex) => ({
+    queryId: query.queryId,
+    category: query.category,
+    candidates: groupsByIndex.get(queryIndex)?.candidates ?? [],
+  }));
   const filteredCuttingPrices = filterSteelCuttingPriceGroups(
     cuttingPrices,
     cuttingCandidateMatches,
   );
+  const expandedQueryToInputQuery = new Map<string, string>();
+  materialQueries.forEach((query) => {
+    query.categories.forEach((_, categoryIndex) => {
+      expandedQueryToInputQuery.set(`${query.queryId}:c${categoryIndex + 1}`, query.queryId);
+    });
+  });
   let matchedQueryCount = 0;
   let candidateCount = 0;
   let categoryCandidateCount = 0;
-  const queryResults = input.queries.map((query, queryIndex) => {
-    const repositoryGroup = groupsByIndex.get(queryIndex);
-    const orderedCandidates = orderPriceCandidates(query, repositoryGroup?.candidates ?? []);
-    const allCandidates = orderedCandidates.map(toSafePriceCandidate);
-    const selectionRequired =
-      query.mode !== 'category_discovery' &&
-      allCandidates.length > materialCandidateSelectionThreshold;
+  let materialOffset = 0;
+  const queryResults = materialQueries.map((query) => {
+    const combinedCandidates: SteelPriceItem[] = [];
+    const categoryCandidates: SteelPriceCategoryCandidate[] = [];
+    const seenErpItemCodes = new Set<string>();
+    let omittedCandidateCount = 0;
+    query.categories.forEach((category, categoryIndex) => {
+      const repositoryGroup = groupsByIndex.get(materialOffset + categoryIndex);
+      const orderedCandidates = orderPriceCandidates(
+        { category, keyword: query.keyword },
+        repositoryGroup?.candidates ?? [],
+      );
+      orderedCandidates.forEach((candidate) => {
+        if (!isUsablePriceCandidate(candidate)) {
+          omittedCandidateCount += 1;
+          return;
+        }
+        if (seenErpItemCodes.has(candidate.erpItemCode)) return;
+        seenErpItemCodes.add(candidate.erpItemCode);
+        combinedCandidates.push(candidate);
+      });
+      categoryCandidates.push(...(repositoryGroup?.categoryCandidates ?? []));
+    });
+    materialOffset += query.categories.length;
+    const allCandidates = combinedCandidates.map(toSafePriceCandidate);
+    const selectionRequired = allCandidates.length > materialCandidateSelectionThreshold;
     const candidates = selectionRequired ? [] : allCandidates;
-    const productNames = selectionRequired
-      ? [
-          ...new Set(
-            orderedCandidates.flatMap((candidate) =>
-              candidate.productName ? [candidate.productName] : [],
-            ),
-          ),
-        ]
-      : [];
-    const categoryCandidates = repositoryGroup?.categoryCandidates ?? [];
+    const candidateRefs = selectionRequired
+      ? combinedCandidates.reduce<{ refs: SteelRawToolOutput[]; omitted: number }>(
+          (result, candidate) => {
+            const ref = toCandidateRef(candidate);
+            if (!ref || typeof ref.erpItemCode !== 'string') {
+              result.omitted += 1;
+              return result;
+            }
+            if (result.refs.some((item) => item.erpItemCode === ref.erpItemCode)) {
+              return result;
+            }
+            result.refs.push(ref);
+            return result;
+          },
+          { refs: [], omitted: 0 },
+        )
+      : { refs: [], omitted: 0 };
     const matched = allCandidates.length > 0 || categoryCandidates.length > 0;
 
     candidateCount += allCandidates.length;
@@ -587,19 +766,34 @@ async function searchPriceCandidates(
       query,
       status: matched ? 'ok' : 'no_match',
       candidates,
-      productNames,
+      ...(selectionRequired ? { candidateRefs: candidateRefs.refs } : {}),
       totalAvailable: allCandidates.length,
       returnedCount: candidates.length,
       selectionRequired,
+      nextAction: selectionRequired
+        ? 'select_erp_item_codes'
+        : matched
+          ? 'use_candidates'
+          : 'retry_query_once',
+      ...(omittedCandidateCount + candidateRefs.omitted > 0
+        ? { candidateRefsOmittedCount: omittedCandidateCount + candidateRefs.omitted }
+        : {}),
       categoryCandidates,
-      issues: [],
+      issues:
+        omittedCandidateCount + candidateRefs.omitted > 0
+          ? [
+              `candidate_refs_omitted_missing_display_fields:${
+                omittedCandidateCount + candidateRefs.omitted
+              }`,
+            ]
+          : [],
     };
   });
-  const processingQueryResults = processingQueries.map((query) => ({
+  const processingQueryResults = processingPriceQueries.map((query) => ({
     ...buildProcessingPrice(
       processingCandidates,
-      'categories' in query ? query.categories : [],
-      'processingCategories' in query ? query.processingCategories : undefined,
+      query.categories,
+      query.processingCategories,
       'keyword' in query ? query.keyword : undefined,
       'targetSpecs' in query ? query.targetSpecs : undefined,
     ),
@@ -609,17 +803,68 @@ async function searchPriceCandidates(
     maxQueries: 3,
     queryResults: processingQueryResults,
   };
+  let exactResults: SteelRawToolOutput[] = [];
+  if (exactQueries.length > 0) {
+    const requestedErpItemCodes = [...new Set(exactRequestedCodes)];
+    const selectedCandidates = await searchSteelPricesByErpItemCodes(client, requestedErpItemCodes);
+    const candidatesByErpItemCode = new Map(
+      selectedCandidates
+        .filter(
+          (candidate) =>
+            isUsablePriceCandidate(candidate) && !hasUnusableProcessingProductName(candidate),
+        )
+        .map((candidate) => [candidate.erpItemCode, toSafePriceCandidate(candidate)]),
+    );
+    exactResults = exactQueries.map((query) => {
+      const candidates = query.erpItemCodes.flatMap((erpItemCode) => {
+        const candidate = candidatesByErpItemCode.get(erpItemCode);
+        return candidate ? [candidate] : [];
+      });
+      const missingErpItemCodes = query.erpItemCodes.filter(
+        (erpItemCode) => !candidatesByErpItemCode.has(erpItemCode),
+      );
+      return {
+        queryId: query.queryId,
+        erpItemCodes: query.erpItemCodes,
+        candidates,
+        missingErpItemCodes,
+        nextAction: missingErpItemCodes.length === 0 ? 'use_candidates' : 'manual_review',
+      };
+    });
+  }
+
+  const explicitProcessingResults = processingQueryResults.slice(
+    automaticProcessingQueries.length,
+  );
+  const matchedProcessingQueryCount = explicitProcessingResults.filter(
+    (result) =>
+      typeof result.totalAvailable === 'number' && result.totalAvailable > 0,
+  ).length;
+  const matchedExactQueryCount = exactResults.filter(
+    (result) => Array.isArray(result.candidates) && result.candidates.length > 0,
+  ).length;
+  const totalMatchedQueryCount =
+    matchedQueryCount + matchedProcessingQueryCount + matchedExactQueryCount;
+
   return {
     queryResults,
+    ...(exactResults.length > 0 ? { exactResults } : {}),
     cuttingPrices: filteredCuttingPrices.map((group) => ({
       ...group,
+      queryIds: [
+        ...new Set(group.queryIds.map((queryId) => expandedQueryToInputQuery.get(queryId) ?? queryId)),
+      ],
+      candidateMatches: group.candidateMatches.map((match) => ({
+        ...match,
+        queryId: expandedQueryToInputQuery.get(match.queryId) ?? match.queryId,
+      })),
       prices: group.prices.map(toSafeCuttingPriceRecord),
     })),
     summary: {
       queryCount: input.queries.length,
       groupCount: queryResults.length,
-      matchedQueryCount,
-      noMatchQueryCount: input.queries.length - matchedQueryCount,
+      matchedQueryCount: totalMatchedQueryCount,
+      noMatchQueryCount: input.queries.length - totalMatchedQueryCount,
       candidateCount,
       categoryCandidateCount,
     },

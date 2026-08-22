@@ -309,6 +309,28 @@ function compactCandidates(value: SteelToolJsonValue | undefined): SteelToolJson
   return compactJsonObjects(value, compactCandidate);
 }
 
+function compactCandidateRef(source: SteelToolJsonObject): SteelToolJsonObject {
+  return pickJsonFields(source, [
+    'erpItemCode',
+    'productName',
+    'category',
+    'lengthMm',
+    'unitWeightValue',
+    'thicknessMinMm',
+    'thicknessMaxMm',
+    'widthMm',
+    'heightMm',
+    'outerDiameterMm',
+    'nominalInch',
+    'webMm',
+    'flangeMm',
+    'lipMm',
+    'sheetWidthMm',
+    'sheetLengthMm',
+    'unit',
+  ]);
+}
+
 function compactCategoryCandidate(source: SteelToolJsonObject): SteelToolJsonObject {
   return pickJsonFields(source, [
     'category',
@@ -326,9 +348,13 @@ function compactQueryResult(source: SteelToolJsonObject): SteelToolJsonObject {
     'totalAvailable',
     'returnedCount',
     'selectionRequired',
-    'productNames',
+    'nextAction',
+    'candidateRefsOmittedCount',
   ]);
   queryResult.candidates = compactCandidates(source.candidates);
+  if (Array.isArray(source.candidateRefs)) {
+    queryResult.candidateRefs = compactJsonObjects(source.candidateRefs, compactCandidateRef);
+  }
   if (Array.isArray(source.categoryCandidates)) {
     queryResult.categoryCandidates = compactJsonObjects(
       source.categoryCandidates,
@@ -376,17 +402,29 @@ function compactProcessingQueryResult(source: SteelToolJsonObject): SteelToolJso
     'totalAvailable',
     'returnedCount',
     'selectionRequired',
-    'productNames',
   ]);
   queryResult.groups = compactJsonObjects(source.groups, compactProcessingGroup);
   return queryResult;
 }
 
+function compactExactResult(source: SteelToolJsonObject): SteelToolJsonObject {
+  const exactResult = pickJsonFields(source, [
+    'queryId',
+    'erpItemCodes',
+    'missingErpItemCodes',
+    'nextAction',
+  ]);
+  exactResult.candidates = compactCandidates(source.candidates);
+  return exactResult;
+}
+
 function compactPriceCandidateData(data: SteelToolJsonObject): SteelToolJsonObject {
-  if (data.productNamePrices !== undefined) {
+  if (data.erpItemCodes !== undefined) {
     return {
-      productNames: data.productNames ?? [],
-      productNamePrices: compactCandidates(data.productNamePrices),
+      erpItemCodes: data.erpItemCodes,
+      candidates: compactCandidates(data.candidates),
+      missingErpItemCodes: data.missingErpItemCodes ?? [],
+      nextAction: data.nextAction,
     };
   }
 
@@ -399,6 +437,9 @@ function compactPriceCandidateData(data: SteelToolJsonObject): SteelToolJsonObje
     compactData.processingPrice = {
       queryResults: compactJsonObjects(processingPrice.queryResults, compactProcessingQueryResult),
     };
+  }
+  if (Array.isArray(data.exactResults)) {
+    compactData.exactResults = compactJsonObjects(data.exactResults, compactExactResult);
   }
   return compactData;
 }

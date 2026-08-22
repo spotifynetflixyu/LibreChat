@@ -144,6 +144,11 @@ export interface ISteelOcrPdfChunkArtifact extends Document {
   pageStart: number;
   pageEnd: number;
   chunkSizePages: number;
+  supersededByRanges?: {
+    pageStart: number;
+    pageEnd: number;
+  }[];
+  supersededAt?: Date;
   artifact: SteelOcrPdfChunkArtifactFile;
   createdAt?: Date;
   updatedAt?: Date;

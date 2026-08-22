@@ -1,5 +1,6 @@
 import {
   searchSteelPriceCandidateGroups,
+  searchSteelPricesByErpItemCodes,
   searchSteelPricesByProductNames,
   searchSteelProcessingPriceCandidates,
 } from './prices';
@@ -88,7 +89,6 @@ describe('Steel price candidate repository', () => {
           material: '黑鐵',
           thicknessMm: ['2', '2.0', '2.3'],
           stockLengthMm: ['6000', '9000', '9000', '10000.0'],
-          erpItemCode: '00123',
           keyword: '黑鐵鋼管 50*2',
         },
         {
@@ -112,7 +112,6 @@ describe('Steel price candidate repository', () => {
     const serializedQueries = JSON.parse(values[0] ?? '[]') as Array<Record<string, unknown>>;
 
     expect(sql).toContain('jsonb_to_recordset($1::jsonb)');
-    expect(sql).toContain('p.erp_item_code = input_query.erp_item_code');
     expect(sql).toContain('p.category = input_query.category');
     expect(sql).toContain('p.subcategory = input_query.subcategory');
     expect(sql).toContain('p.material ILIKE');
@@ -154,7 +153,6 @@ describe('Steel price candidate repository', () => {
         keyword_terms: ['黑鐵鋼管', '50x2'],
         thickness_mm: ['2', '2.3'],
         stock_length_mm: ['6000', '9000', '10000'],
-        erp_item_code: '00123',
       }),
       expect.objectContaining({
         query_index: 1,
@@ -371,5 +369,27 @@ describe('Steel price candidate repository', () => {
     expect(sql).toContain('p.product_name = ANY($2::text[])');
     expect(sql).toContain("p.value_state <> 'no_price'");
     expect(result).toEqual([expect.objectContaining({ productName: '黑鐵鋼管' })]);
+  });
+
+  it('loads exact ERP item codes uniquely and preserves requested code order', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        createPriceRow({ id: '12', erp_item_code: 'ERP-2' }),
+        createPriceRow({ id: '13', erp_item_code: 'ERP-2' }),
+      ],
+    });
+
+    const result = await searchSteelPricesByErpItemCodes({ query } as SteelRepositoryClient, [
+      'ERP-2',
+      'ERP-2',
+      'ERP-missing',
+    ]);
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[1]).toEqual([['ERP-2', 'ERP-missing']]);
+    const sql = String(query.mock.calls[0]?.[0] ?? '');
+    expect(sql).toContain('p.erp_item_code = ANY($1::text[])');
+    expect(sql).toContain('array_position($1::text[], p.erp_item_code)');
+    expect(result).toEqual([expect.objectContaining({ erpItemCode: 'ERP-2', id: 12 })]);
   });
 });

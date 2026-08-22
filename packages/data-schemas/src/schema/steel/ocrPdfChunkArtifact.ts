@@ -38,6 +38,14 @@ const steelOcrPdfChunkArtifactFileSchema: Schema<SteelOcrPdfChunkArtifactFile> =
     { _id: false },
   );
 
+const steelOcrPdfChunkArtifactRangeSchema = new Schema(
+  {
+    pageStart: { type: Number, required: true },
+    pageEnd: { type: Number, required: true },
+  },
+  { _id: false },
+);
+
 const steelOcrPdfChunkArtifactSchema: Schema<ISteelOcrPdfChunkArtifact> =
   new Schema<ISteelOcrPdfChunkArtifact>(
     {
@@ -82,6 +90,13 @@ const steelOcrPdfChunkArtifactSchema: Schema<ISteelOcrPdfChunkArtifact> =
         type: Number,
         required: true,
       },
+      supersededByRanges: {
+        type: [steelOcrPdfChunkArtifactRangeSchema],
+        default: undefined,
+      },
+      supersededAt: {
+        type: Date,
+      },
       artifact: {
         type: steelOcrPdfChunkArtifactFileSchema,
         required: true,
@@ -94,8 +109,6 @@ steelOcrPdfChunkArtifactSchema.index(
   {
     sourcePdfKey: 1,
     pipelineVersion: 1,
-    chunkSizePages: 1,
-    chunkIndex: 1,
     pageStart: 1,
     pageEnd: 1,
   },

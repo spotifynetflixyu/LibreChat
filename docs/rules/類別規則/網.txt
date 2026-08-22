@@ -1,10 +1,9 @@
 【網類規則】
 
 1. Query
-- 一般首查只使用 `category: "網"` 與可確認的 `subcategory`、`material`，不使用 `unit` filter。即使訂單指定計價單位，unit也只用於取得候選後的計價判斷，不送入query。
-- 例如 `{"category":"網","subcategory":"菱形","material":"錏"}`、`{"category":"網","subcategory":"刺網","material":"白鐵"}`。
-- 不使用 `keyword`、`unit`、`stockLengthMm` 或訂單長度 filter；由返回候選判斷完整規格。
-- AI依候選的 structured fields 與完整 `product_name` 判斷線徑、孔目、孔型、整片／整捲尺寸、可拉長度與是否足夠裁切；預設不切清。
+- 首查併入一般材料 item，只傳 `categories: ["網"]`。例：`{"queries":[{"categories":["網"]}]}`。
+- `subcategory`、`material`、`unit`、`keyword`、`stockLengthMm` 或訂單長度不作首查參數；由返回候選判斷完整規格。
+- AI依候選的 structured fields 與完整 `productName` 判斷線徑、孔目、孔型、材質、整片／整捲尺寸、可拉長度與是否足夠裁切；預設不切清。
 - `kg`、`尺`、`inch`、`mm`、`ST304` 等單位、鋼種或代號不得轉成 `keyword`。
 
 2. 品名判讀

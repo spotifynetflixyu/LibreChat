@@ -43,58 +43,58 @@ describe('Steel tool registry', () => {
     }).toThrow('Unknown Steel executable tool');
   });
 
-  it('describes and validates one-call grouped v4.2 price lookup', () => {
+  it('describes and validates the unified grouped price lookup contract', () => {
     const definition = getSteelToolDefinition('search_price_candidates');
 
     expect(
       definition.argsSchema.parse({
         queries: [
           {
-            category: '圓管',
+            categories: ['圓管'],
             subcategory: '一般',
             material: '鎢',
             thicknessMm: ['2'],
-            erpItemCode: '00123',
             keyword: '50x2',
           },
-          { mode: 'category_discovery', keyword: '白鐵 方管' },
+          { categories: ['鐵板'], processingCategories: ['加工/孔'] },
+          { erpItemCodes: ['00123'] },
         ],
       }),
     ).toEqual({
       queries: [
         {
           queryId: 'q1',
-          category: '圓管',
+          categories: ['圓管'],
           subcategory: '一般',
           material: '鎢',
           thicknessMm: ['2'],
-          erpItemCode: '00123',
           keyword: '50x2',
         },
-        { queryId: 'q2', mode: 'category_discovery', keyword: '白鐵 方管' },
+        { queryId: 'q2', categories: ['鐵板'], processingCategories: ['加工/孔'] },
+        { queryId: 'q3', erpItemCodes: ['00123'] },
       ],
     });
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ category: '加工/其他', subcategory: '扁' }],
+        queries: [{ categories: ['加工/其他'] }],
       }),
-    ).toThrow('扁');
+    ).toThrow('product or material categories');
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ category: '鐵板/鋼板', material: '鋅' }],
+        queries: [{ categories: ['鐵板/鋼板'], material: '鋅' }],
       }),
     ).toThrow();
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ category: '鐵板' }],
+        queries: [{ categories: ['鐵板'] }],
         customerTier: 'A',
       }),
     ).toThrow('Unrecognized key');
 
-    expect(definition.description).toBe(
-      'Find material, cutting, and processing price candidates for one or more order lines.',
-    );
-    expect(definition.description).not.toContain('queries');
+    expect(definition.description).toContain('one queries array');
+    expect(definition.description).toContain('more than 20');
+    expect(definition.description).toContain('candidateRefs.productName');
+    expect(definition.description).toContain('candidateRefs.erpItemCode');
     expect(definition.description).not.toContain('processingQueries');
     expect(definition.description).not.toContain('productNames');
     expect(definition.description).not.toContain('cuttingPrices');

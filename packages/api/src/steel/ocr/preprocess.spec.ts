@@ -22,6 +22,12 @@ function emptyState(input: {
   };
 }
 
+function adaptiveSplitEligibleError(message: string) {
+  const error = new Error(message) as Error & { ocrAdaptiveSplitEligible: boolean };
+  error.ocrAdaptiveSplitEligible = true;
+  return error;
+}
+
 function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
   const chunks = buildPdfPageChunks({ pageCount: 1 });
   const baseState = emptyState({
@@ -453,7 +459,7 @@ describe('OCR preprocessing orchestrator', () => {
       'artifact:file:file-a',
       'artifact:file:file-b',
       'paddle:file:file-b:1',
-      'save-raw:file:file-b:ocr_preprocessing_file_file-b_chunk_1:1',
+      'save-raw:file:file-b:ocr_preprocessing_file_file-b_pages_1_1:1',
       'organize:raw a',
       'save-md:file:file-a:1',
       'organize:raw b',
@@ -949,6 +955,18 @@ describe('OCR preprocessing orchestrator', () => {
     expect(merged).toContain('| 白鐵管 |  | 304 | 急件 |');
   });
 
+  it('orders merged Markdown by page range rather than historical chunk index', () => {
+    const merged = mergeChunkMarkdownForFileKey({
+      ocrFileKey: 'file:range-order',
+      ocrRuleVersion: 'rules-v2',
+      chunks: [
+        { chunkIndex: 1, pageStart: 51, pageEnd: 100, markdown: 'later range' },
+        { chunkIndex: 99, pageStart: 1, pageEnd: 50, markdown: 'first range' },
+      ],
+    });
+    expect(merged.indexOf('first range')).toBeLessThan(merged.indexOf('later range'));
+  });
+
   it('returns a resumable file failure instead of throwing', async () => {
     const chunks = buildPdfPageChunks({ pageCount: 10 });
     const paddleOcr = { runChunk: jest.fn() };
@@ -1065,7 +1083,7 @@ describe('OCR preprocessing orchestrator', () => {
   });
 
   it('continues later chunks in the same file after one PaddleOCR chunk fails', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 120, chunkSizePages: 50 });
+    const chunks = buildPdfPageChunks({ pageCount: 70, chunkSizePages: 25 });
     const initialState = emptyState({
       ocrFileKey: 'file:partial',
       sourcePdfKey: 'uploads/partial.pdf',
@@ -1145,13 +1163,284 @@ describe('OCR preprocessing orchestrator', () => {
           expect.objectContaining({
             stage: 'paddleocr',
             chunkIndex: 2,
-            pageStart: 51,
-            pageEnd: 100,
+            pageStart: 26,
+            pageEnd: 50,
           }),
         ],
       }),
     );
     expect(result.files[0]).not.toHaveProperty('markdown');
+  });
+
+  it('splits an exhausted exact 50-page parent, preserves later siblings, and suppresses the parent failure', async () => {
+    const initialChunks = buildPdfPageChunks({ pageCount: 100, chunkSizePages: 50 });
+    let effectiveChunks = initialChunks;
+    const rawRanges = new Set<string>();
+    const markdownRanges = new Set<string>();
+    const rangeKey = (chunk: { pageStart: number; pageEnd: number }) =>
+      `${chunk.pageStart}-${chunk.pageEnd}`;
+    const readState = () => ({
+      ocrFileKey: 'file:split-parent',
+      sourcePdfKey: 'uploads/split-parent.pdf',
+      pipelineVersion: 1,
+      ocrRuleVersion: 'rules-v2',
+      chunkSizePages: 50,
+      chunkCount: effectiveChunks.length,
+      chunks: effectiveChunks.map((chunk) => ({
+        ...chunk,
+        rawSaved: rawRanges.has(rangeKey(chunk)),
+        organizedSaved: markdownRanges.has(rangeKey(chunk)),
+        ...(rawRanges.has(rangeKey(chunk)) ? { rawResultHash: `hash-${rangeKey(chunk)}`, rawOcrText: `raw-${rangeKey(chunk)}` } : {}),
+        ...(markdownRanges.has(rangeKey(chunk)) ? { organizedMarkdown: `markdown-${rangeKey(chunk)}` } : {}),
+      })),
+    });
+    const paddleRanges: string[] = [];
+    const paddleOcr = {
+      runChunk: jest.fn(async ({ chunk }) => {
+        paddleRanges.push(rangeKey(chunk));
+        if (rangeKey(chunk) === '1-50') {
+          throw adaptiveSplitEligibleError('parent exhausted');
+        }
+        return {
+          rawResult: { text: `raw-${rangeKey(chunk)}` },
+          rawOcrText: `raw-${rangeKey(chunk)}`,
+          rawResultHash: `hash-${rangeKey(chunk)}`,
+        };
+      }),
+    };
+    const memory = {
+      readOcrPreprocessingState: jest.fn(async () => readState()),
+      capturePaddleOcrChunkResult: jest.fn(async ({ chunk }) => {
+        rawRanges.add(rangeKey(chunk));
+        return { savedCounts: { paddleocr_preflight: 1 } };
+      }),
+      captureOcrPreprocessingChunkMarkdown: jest.fn(async ({ chunk }) => {
+        markdownRanges.add(rangeKey(chunk));
+        return { savedCounts: { ocr_preprocessing_chunk_markdown: 1 } };
+      }),
+    };
+    const artifacts = {
+      ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) =>
+        chunks.map((chunk) => ({
+          ...chunk,
+          filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
+          storageKey: `chunks/${rangeKey(chunk)}.pdf`,
+        })),
+      ),
+      commitPdfChunkSplit: jest.fn(async ({ chunks }) => {
+        effectiveChunks = [...chunks];
+        return chunks.map((chunk) => ({
+          ...chunk,
+          filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
+          storageKey: `chunks/${rangeKey(chunk)}.pdf`,
+        }));
+      }),
+    };
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_split_parent',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [
+        {
+          file: {
+            ocrFileKey: 'file:split-parent',
+            filename: 'split-parent.pdf',
+            sourcePdfKey: 'uploads/split-parent.pdf',
+          },
+          chunks: initialChunks,
+          artifacts,
+        },
+      ],
+      memory,
+      organizer: { organize: jest.fn(async ({ rawOcrText }) => ({ markdown: `organized-${rawOcrText}` })) },
+      paddleOcr,
+    });
+
+    expect(paddleRanges).toEqual(['1-50', '1-25', '26-50', '51-100']);
+    expect(artifacts.commitPdfChunkSplit).toHaveBeenCalledTimes(1);
+    expect(result.files[0]).toEqual(expect.objectContaining({ status: 'completed', chunkCount: 3 }));
+    expect(result.files[0]).not.toHaveProperty('failures');
+  });
+
+  it('does not split an exact 50-page parent before two PaddleOCR invokes are exhausted', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
+    const state = emptyState({
+      ocrFileKey: 'file:no-early-split',
+      sourcePdfKey: 'uploads/no-early-split.pdf',
+      ocrRuleVersion: 'rules-v2',
+      chunkCount: 1,
+    });
+    const commitPdfChunkSplit = jest.fn();
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_no_early_split',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [
+        {
+          file: {
+            ocrFileKey: 'file:no-early-split',
+            filename: 'no-early-split.pdf',
+            sourcePdfKey: 'uploads/no-early-split.pdf',
+          },
+          chunks,
+          artifacts: {
+            ensurePdfChunkArtifacts: jest.fn(async () => [
+              {
+                ...chunks[0]!,
+                filepath: 'https://cdn.example/parent.pdf',
+                storageKey: 'chunks/parent.pdf',
+              },
+            ]),
+            commitPdfChunkSplit,
+          },
+        },
+      ],
+      memory: {
+        readOcrPreprocessingState: jest.fn(async () => state),
+        capturePaddleOcrChunkResult: jest.fn(),
+        captureOcrPreprocessingChunkMarkdown: jest.fn(),
+      },
+      organizer: { organize: jest.fn() },
+      paddleOcr: { runChunk: jest.fn(async () => { throw new Error('invalid credentials'); }) },
+    });
+
+    expect(commitPdfChunkSplit).not.toHaveBeenCalled();
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        pageStart: 1,
+        pageEnd: 50,
+        failures: [expect.objectContaining({ pageStart: 1, pageEnd: 50 })],
+      }),
+    );
+  });
+
+  it('reports only the unresolved 25-page child when a split child fails', async () => {
+    const initialChunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
+    let effectiveChunks = initialChunks;
+    const rawRanges = new Set<string>();
+    const rangeKey = (chunk: { pageStart: number; pageEnd: number }) => `${chunk.pageStart}-${chunk.pageEnd}`;
+    const memory = {
+      readOcrPreprocessingState: jest.fn(async () => ({
+        ocrFileKey: 'file:split-child-failure',
+        sourcePdfKey: 'uploads/split-child-failure.pdf',
+        pipelineVersion: 1,
+        ocrRuleVersion: 'rules-v2',
+        chunkSizePages: 50,
+        chunkCount: effectiveChunks.length,
+        chunks: effectiveChunks.map((chunk) => ({
+          ...chunk,
+          rawSaved: rawRanges.has(rangeKey(chunk)),
+          organizedSaved: false,
+          ...(rawRanges.has(rangeKey(chunk))
+            ? { rawResultHash: `hash-${rangeKey(chunk)}`, rawOcrText: `raw-${rangeKey(chunk)}` }
+            : {}),
+        })),
+      })),
+      capturePaddleOcrChunkResult: jest.fn(async ({ chunk }) => {
+        rawRanges.add(rangeKey(chunk));
+        return { savedCounts: { paddleocr_preflight: 1 } };
+      }),
+      captureOcrPreprocessingChunkMarkdown: jest.fn(),
+    };
+    const artifacts = {
+      ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) =>
+        chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) })),
+      ),
+      commitPdfChunkSplit: jest.fn(async ({ chunks }) => {
+        effectiveChunks = [...chunks];
+        return chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) }));
+      }),
+    };
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_split_child_failure',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [{ file: { ocrFileKey: 'file:split-child-failure', filename: 'split.pdf', sourcePdfKey: 'uploads/split-child-failure.pdf' }, chunks: initialChunks, artifacts }],
+      memory,
+      organizer: { organize: jest.fn(async () => ({ markdown: 'organized' })) },
+      paddleOcr: {
+        runChunk: jest.fn(async ({ chunk }) => {
+          if (rangeKey(chunk) === '1-50') {
+            throw adaptiveSplitEligibleError('failed 1-50');
+          }
+          if (rangeKey(chunk) === '26-50') {
+            throw new Error(`failed ${rangeKey(chunk)}`);
+          }
+          return { rawResult: { text: 'raw' }, rawOcrText: 'raw', rawResultHash: 'hash' };
+        }),
+      },
+    });
+
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        pageStart: 26,
+        pageEnd: 50,
+        failures: [expect.objectContaining({ pageStart: 26, pageEnd: 50 })],
+      }),
+    );
+    expect(result.files[0]?.failures).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ pageStart: 1, pageEnd: 50 })]),
+    );
+  });
+
+  it('uses the committed mixed plan on the next run and retries only a missing 25-page child', async () => {
+    const mixedChunks = [
+      { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 25, chunkSizePages: 25 },
+      { chunkIndex: 2, chunkCount: 3, pageStart: 26, pageEnd: 50, chunkSizePages: 25 },
+      { chunkIndex: 3, chunkCount: 3, pageStart: 51, pageEnd: 100, chunkSizePages: 50 },
+    ];
+    const rawRanges = new Set(['1-25', '51-100']);
+    const markdownRanges = new Set(['1-25', '51-100']);
+    const rangeKey = (chunk: { pageStart: number; pageEnd: number }) => `${chunk.pageStart}-${chunk.pageEnd}`;
+    const memory = {
+      readOcrPreprocessingState: jest.fn(async () => ({
+        ocrFileKey: 'file:mixed-resume',
+        sourcePdfKey: 'uploads/mixed-resume.pdf',
+        pipelineVersion: 1,
+        ocrRuleVersion: 'rules-v2',
+        chunkSizePages: 25,
+        chunkCount: mixedChunks.length,
+        chunks: mixedChunks.filter((chunk) => rawRanges.has(rangeKey(chunk))).map((chunk) => ({
+          ...chunk,
+          rawSaved: true,
+          organizedSaved: markdownRanges.has(rangeKey(chunk)),
+          rawResultHash: `hash-${rangeKey(chunk)}`,
+          rawOcrText: `raw-${rangeKey(chunk)}`,
+          ...(markdownRanges.has(rangeKey(chunk)) ? { organizedMarkdown: `md-${rangeKey(chunk)}` } : {}),
+        })),
+      })),
+      capturePaddleOcrChunkResult: jest.fn(async ({ chunk }) => {
+        rawRanges.add(rangeKey(chunk));
+        return { savedCounts: { paddleocr_preflight: 1 } };
+      }),
+      captureOcrPreprocessingChunkMarkdown: jest.fn(async ({ chunk }) => {
+        markdownRanges.add(rangeKey(chunk));
+        return { savedCounts: { ocr_preprocessing_chunk_markdown: 1 } };
+      }),
+    };
+    const paddleOcr = { runChunk: jest.fn(async ({ chunk }) => ({ rawResult: { text: 'missing' }, rawOcrText: 'missing', rawResultHash: 'missing' })) };
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_mixed_resume',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [{
+        file: { ocrFileKey: 'file:mixed-resume', filename: 'mixed.pdf', sourcePdfKey: 'uploads/mixed-resume.pdf' },
+        chunks: [{ chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 50, chunkSizePages: 50 }, { chunkIndex: 2, chunkCount: 2, pageStart: 51, pageEnd: 100, chunkSizePages: 50 }],
+        artifacts: {
+          resolveCanonicalChunks: jest.fn(async () => mixedChunks),
+          ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) => chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) }))),
+        },
+      }],
+      memory,
+      organizer: { organize: jest.fn(async () => ({ markdown: 'organized missing child' })) },
+      paddleOcr,
+    });
+
+    expect(paddleOcr.runChunk).toHaveBeenCalledTimes(1);
+    expect(paddleOcr.runChunk).toHaveBeenCalledWith(expect.objectContaining({ chunk: expect.objectContaining({ pageStart: 26, pageEnd: 50 }) }));
+    expect(result.files[0]).toEqual(expect.objectContaining({ status: 'completed', chunkCount: 3 }));
   });
 
   it('retries a transient organizer failure once and persists the second result', async () => {

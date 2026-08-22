@@ -2,9 +2,14 @@ import { createHash } from 'crypto';
 import { createSteelOcrPdfChunkArtifactModel } from '@librechat/data-schemas';
 
 import { ocrPreprocessingPipelineVersion } from '../memory/service';
-import { resolveOcrPreprocessingChunkSizePages } from './config';
 
-import type { OcrPreprocessingPageChunk } from './chunks';
+import {
+  getOcrPageRangeKey,
+  normalizeOcrPageChunks,
+  type OcrPageRange,
+  type OcrPreprocessingPageChunk,
+  validateExactFiftyPageSplit,
+} from './chunks';
 
 type Mongoose = typeof import('mongoose');
 
@@ -15,6 +20,8 @@ export interface OcrPdfChunkArtifactRecord extends OcrPreprocessingPageChunk {
   sourceFilename?: string;
   sourceBytes?: number;
   pipelineVersion: number;
+  supersededByRanges?: OcrPageRange[];
+  supersededAt?: Date;
   artifact: {
     source: 's3' | 'cloudfront';
     storageKey: string;
@@ -42,9 +49,15 @@ export interface OcrPdfChunkArtifactRepository {
   findBySourcePdfKey(input: {
     sourcePdfKey: string;
     pipelineVersion: number;
-    chunkSizePages: number;
+    chunkSizePages?: number;
   }): Promise<OcrPdfChunkArtifactRecord[]>;
   upsert(artifact: OcrPdfChunkArtifactRecord): Promise<void>;
+  compareAndSetSupersededByRanges?(input: {
+    sourcePdfKey: string;
+    pipelineVersion: number;
+    parent: OcrPageRange;
+    supersededByRanges: readonly OcrPageRange[];
+  }): Promise<'updated' | 'idempotent'>;
 }
 
 export function createMongooseOcrPdfChunkArtifactRepository(
@@ -53,30 +66,137 @@ export function createMongooseOcrPdfChunkArtifactRepository(
   const SteelOcrPdfChunkArtifact = createSteelOcrPdfChunkArtifactModel(mongoose);
 
   return {
-    async findBySourcePdfKey({ sourcePdfKey, pipelineVersion, chunkSizePages }) {
+    async findBySourcePdfKey({ sourcePdfKey, pipelineVersion }) {
       return await SteelOcrPdfChunkArtifact.find({
         sourcePdfKey,
         pipelineVersion,
-        chunkSizePages,
       })
-        .sort({ chunkIndex: 1 })
+        .sort({ pageStart: 1, pageEnd: 1 })
         .lean<OcrPdfChunkArtifactRecord[]>();
     },
     async upsert(artifact) {
+      const rangeIdentity = {
+        sourcePdfKey: artifact.sourcePdfKey,
+        pipelineVersion: artifact.pipelineVersion,
+        pageStart: artifact.pageStart,
+        pageEnd: artifact.pageEnd,
+      };
+      const existing = await SteelOcrPdfChunkArtifact.findOne(rangeIdentity)
+        .select({ _id: 1 })
+        .lean<{ _id: unknown } | null>();
+      const deterministicId = new mongoose.Types.ObjectId(
+        createHash('sha256').update(JSON.stringify(rangeIdentity)).digest('hex').slice(0, 24),
+      );
       await SteelOcrPdfChunkArtifact.updateOne(
-        {
-          sourcePdfKey: artifact.sourcePdfKey,
-          pipelineVersion: artifact.pipelineVersion,
-          chunkSizePages: artifact.chunkSizePages,
-          chunkIndex: artifact.chunkIndex,
-          pageStart: artifact.pageStart,
-          pageEnd: artifact.pageEnd,
-        },
+        { _id: existing?._id ?? deterministicId },
         { $set: artifact },
         { upsert: true },
       );
     },
+    async compareAndSetSupersededByRanges({
+      sourcePdfKey,
+      pipelineVersion,
+      parent,
+      supersededByRanges,
+    }) {
+      const expected = validateExactFiftyPageSplit({ parent, children: supersededByRanges });
+      const existingRows = await SteelOcrPdfChunkArtifact.find({
+        sourcePdfKey,
+        pipelineVersion,
+        pageStart: parent.pageStart,
+        pageEnd: parent.pageEnd,
+      })
+        .limit(2)
+        .lean<Array<OcrPdfChunkArtifactRecord & { _id: unknown }>>();
+      if (existingRows.length !== 1) {
+        throw new Error(
+          `${existingRows.length === 0 ? 'Missing' : 'Duplicate'} OCR parent artifact row for ${parent.pageStart}-${parent.pageEnd}`,
+        );
+      }
+      const existing = existingRows[0]!;
+      if (existing.supersededByRanges) {
+        const current = normalizeOcrPageChunks(existing.supersededByRanges).map(
+          ({ pageStart, pageEnd }) => ({ pageStart, pageEnd }),
+        );
+        if (JSON.stringify(current) !== JSON.stringify(expected)) {
+          throw new Error(
+            `Conflicting OCR split marker for ${parent.pageStart}-${parent.pageEnd}`,
+          );
+        }
+        return 'idempotent';
+      }
+      const result = await SteelOcrPdfChunkArtifact.updateOne(
+        {
+          _id: existing._id,
+          supersededByRanges: { $exists: false },
+        },
+        {
+          $set: {
+            supersededByRanges: expected,
+            supersededAt: new Date(),
+          },
+        },
+      );
+      if (result.modifiedCount === 1) {
+        return 'updated';
+      }
+      const raced = await SteelOcrPdfChunkArtifact.findOne({
+        _id: existing._id,
+      }).lean<OcrPdfChunkArtifactRecord | null>();
+      if (
+        raced?.supersededByRanges &&
+        JSON.stringify(
+          normalizeOcrPageChunks(raced.supersededByRanges).map(({ pageStart, pageEnd }) => ({
+            pageStart,
+            pageEnd,
+          })),
+        ) === JSON.stringify(expected)
+      ) {
+        return 'idempotent';
+      }
+      throw new Error(`Conflicting OCR split marker for ${parent.pageStart}-${parent.pageEnd}`);
+    },
   };
+}
+
+export function resolveCanonicalOcrPageChunks(input: {
+  defaultChunks: readonly OcrPreprocessingPageChunk[];
+  artifactRows: readonly OcrPdfChunkArtifactRecord[];
+}): OcrPreprocessingPageChunk[] {
+  let chunks = normalizeOcrPageChunks(input.defaultChunks);
+  const rowsByRange = new Map<string, OcrPdfChunkArtifactRecord>();
+  for (const row of input.artifactRows) {
+    const key = getOcrPageRangeKey(row);
+    if (row.supersededByRanges) {
+      validateExactFiftyPageSplit({ parent: row, children: row.supersededByRanges });
+    }
+    const existing = rowsByRange.get(key);
+    if (existing) {
+      throw new Error(`Duplicate OCR artifact rows for ${row.pageStart}-${row.pageEnd}`);
+    }
+    rowsByRange.set(key, row);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const next: OcrPreprocessingPageChunk[] = [];
+    for (const chunk of chunks) {
+      const row = rowsByRange.get(getOcrPageRangeKey(chunk));
+      if (!row?.supersededByRanges) {
+        next.push(chunk);
+        continue;
+      }
+      const children = validateExactFiftyPageSplit({
+        parent: chunk,
+        children: row.supersededByRanges,
+      });
+      next.push(...children.map((child) => ({ ...child, chunkIndex: 1, chunkCount: 2 })));
+      changed = true;
+    }
+    chunks = normalizeOcrPageChunks(next);
+  }
+  return chunks;
 }
 
 export interface OcrPdfChunkArtifactStorage {
@@ -103,6 +223,11 @@ export interface EnsurePdfChunkArtifactsInput {
   createPdfChunk(input: { chunk: OcrPreprocessingPageChunk }): Promise<Uint8Array>;
 }
 
+export interface CommitOcrPdfChunkSplitInput extends EnsurePdfChunkArtifactsInput {
+  parent: OcrPageRange;
+  children: readonly OcrPageRange[];
+}
+
 export function buildOcrPdfChunkArtifactStorageKey(input: {
   sourcePdfKey: string;
   pipelineVersion?: number;
@@ -119,26 +244,25 @@ export function buildOcrPdfChunkArtifactStorageKey(input: {
 export async function ensurePdfChunkArtifacts(
   input: EnsurePdfChunkArtifactsInput,
 ): Promise<EnsuredOcrPdfChunkArtifact[]> {
-  const firstChunk = input.chunks[0];
   const pipelineVersion = ocrPreprocessingPipelineVersion;
-  const chunkSizePages = firstChunk?.chunkSizePages ?? resolveOcrPreprocessingChunkSizePages();
   const existingRows = await input.repository.findBySourcePdfKey({
     sourcePdfKey: input.sourcePdfKey,
     pipelineVersion,
-    chunkSizePages,
+  });
+  const chunks = resolveCanonicalOcrPageChunks({
+    defaultChunks: input.chunks,
+    artifactRows: existingRows,
   });
   const existingByIdentity = new Map(
     existingRows.map((row) => [
-      `${row.chunkIndex}:${row.pageStart}:${row.pageEnd}`,
+      getOcrPageRangeKey(row),
       row,
     ]),
   );
   const artifacts: EnsuredOcrPdfChunkArtifact[] = [];
 
-  for (const chunk of input.chunks) {
-    const existing = existingByIdentity.get(
-      `${chunk.chunkIndex}:${chunk.pageStart}:${chunk.pageEnd}`,
-    );
+  for (const chunk of chunks) {
+    const existing = existingByIdentity.get(getOcrPageRangeKey(chunk));
     if (existing) {
       const existingObjectIsPresent = await input.storage.exists({
         storageKey: existing.artifact.storageKey,
@@ -146,11 +270,11 @@ export async function ensurePdfChunkArtifacts(
       if (existingObjectIsPresent) {
         artifacts.push({
           sourcePdfKey: existing.sourcePdfKey,
-          chunkIndex: existing.chunkIndex,
-          chunkCount: existing.chunkCount,
-          pageStart: existing.pageStart,
-          pageEnd: existing.pageEnd,
-          chunkSizePages: existing.chunkSizePages,
+          chunkIndex: chunk.chunkIndex,
+          chunkCount: chunk.chunkCount,
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
+          chunkSizePages: chunk.chunkSizePages,
           source: existing.artifact.source,
           storageKey: existing.artifact.storageKey,
           storageRegion: existing.artifact.storageRegion,
@@ -227,7 +351,35 @@ export async function ensurePdfChunkArtifacts(
     });
   }
 
-  return artifacts.sort((left, right) => left.chunkIndex - right.chunkIndex);
+  return artifacts.sort((left, right) => left.pageStart - right.pageStart || left.pageEnd - right.pageEnd);
+}
+
+export async function commitOcrPdfChunkSplit(
+  input: CommitOcrPdfChunkSplitInput,
+): Promise<EnsuredOcrPdfChunkArtifact[]> {
+  const children = validateExactFiftyPageSplit({
+    parent: input.parent,
+    children: input.children,
+  });
+  const artifacts = await ensurePdfChunkArtifacts({
+    ...input,
+    chunks: input.chunks,
+  });
+  const childKeys = new Set(children.map(getOcrPageRangeKey));
+  const childArtifacts = artifacts.filter((artifact) => childKeys.has(getOcrPageRangeKey(artifact)));
+  if (childArtifacts.length !== children.length) {
+    throw new Error('OCR split child artifacts could not be addressed after upload');
+  }
+  if (!input.repository.compareAndSetSupersededByRanges) {
+    throw new Error('OCR artifact repository cannot commit split markers');
+  }
+  await input.repository.compareAndSetSupersededByRanges({
+    sourcePdfKey: input.sourcePdfKey,
+    pipelineVersion: ocrPreprocessingPipelineVersion,
+    parent: input.parent,
+    supersededByRanges: children,
+  });
+  return artifacts;
 }
 
 function buildChunkFilename(

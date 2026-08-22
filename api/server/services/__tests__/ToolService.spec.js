@@ -547,6 +547,7 @@ function expectSteelNativeToolDefinitions(definitions) {
 describe('ToolService - Action Capability Gating', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockLoadToolsUtil.mockReset();
     mockLoadToolDefinitions.mockResolvedValue({
       toolDefinitions: [],
       toolRegistry: new Map(),
@@ -610,7 +611,7 @@ describe('ToolService - Action Capability Gating', () => {
       },
     ]);
     mockCreateMongooseOcrPdfChunkArtifactRepository.mockReturnValue({
-      findBySourcePdfKey: jest.fn(),
+      findBySourcePdfKey: jest.fn().mockResolvedValue([]),
       upsert: jest.fn(),
     });
     mockGetS3DownloadURLForKey.mockResolvedValue('https://files.example.test/original.pdf');
@@ -2434,28 +2435,33 @@ describe('ToolService - Action Capability Gating', () => {
       });
     });
 
-    it('rebuilds and retries PaddleOCR when the provider returns an error-content success result', async () => {
+    it('retries PaddleOCR error-content without rebuilding MCP and refreshes the input URL', async () => {
       const file = {
         fileId: 'file-error-content',
         filename: 'error-content.jpg',
         mediaType: 'image/jpeg',
       };
       const req = createMockPaddleOcrPreflightReq(file);
-      const firstInvoke = jest.fn().mockResolvedValueOnce({
-        status: 'success',
-        content: "Error calling tool 'paddleocr_vl'",
-      });
-      const secondInvoke = jest.fn().mockResolvedValueOnce({
-        status: 'success',
-        content: 'Recovered OCR text',
-      });
+      const invoke = jest
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'success',
+          content: "Error calling tool 'paddleocr_vl'",
+        })
+        .mockResolvedValueOnce({
+          status: 'success',
+          content: 'Recovered OCR text',
+        });
       const organizerInputs = [];
       mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
         completedKeys: [],
         missingFiles: [],
         missingKeys: [`file:${file.fileId}`],
       });
-      mockPaddleOcrToolLoads(firstInvoke, secondInvoke);
+      mockGetS3DownloadURLForKey.mockResolvedValueOnce(
+        'https://files.example.test/refreshed-error-content.jpg',
+      );
+      mockPaddleOcrToolLoads(invoke);
       mockPaddleOcrBatchWithOrganizer(organizerInputs);
 
       const result = await runSteelPaddleOcrPreflight({
@@ -2466,9 +2472,16 @@ describe('ToolService - Action Capability Gating', () => {
         streamId: 'stream-1',
       });
 
-      expect(firstInvoke).toHaveBeenCalledTimes(1);
-      expect(secondInvoke).toHaveBeenCalledTimes(1);
-      expect(mockMCPManager.appConnections.disconnect).toHaveBeenCalledWith('PaddleOCR');
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(invoke.mock.calls[0][0].input_data).toBe(
+        'https://files.example.test/ocr-input.pdf',
+      );
+      expect(invoke.mock.calls[1][0].input_data).toBe(
+        'https://files.example.test/refreshed-error-content.jpg',
+      );
+      expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
+      expect(reinitMCPServer).not.toHaveBeenCalled();
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
       expect(mockCapturePaddleOcrChunkResult).toHaveBeenCalledTimes(1);
       expect(organizerInputs).toEqual([
         expect.objectContaining({ rawOcrText: 'Recovered OCR text' }),
@@ -2493,11 +2506,7 @@ describe('ToolService - Action Capability Gating', () => {
         mediaType: 'image/jpeg',
       };
       const req = createMockPaddleOcrPreflightReq(file);
-      const firstInvoke = jest.fn().mockResolvedValueOnce({
-        status: 'success',
-        content: "Error calling tool 'paddleocr_vl'",
-      });
-      const secondInvoke = jest.fn().mockResolvedValueOnce({
+      const invoke = jest.fn().mockResolvedValue({
         status: 'success',
         content: "Error calling tool 'paddleocr_vl'",
       });
@@ -2507,7 +2516,7 @@ describe('ToolService - Action Capability Gating', () => {
         missingFiles: [],
         missingKeys: [`file:${file.fileId}`],
       });
-      mockPaddleOcrToolLoads(firstInvoke, secondInvoke);
+      mockPaddleOcrToolLoads(invoke);
       mockPaddleOcrBatchWithOrganizer(organizerInputs);
 
       const result = await runSteelPaddleOcrPreflight({
@@ -2518,9 +2527,9 @@ describe('ToolService - Action Capability Gating', () => {
         streamId: 'stream-1',
       });
 
-      expect(firstInvoke).toHaveBeenCalledTimes(1);
-      expect(secondInvoke).toHaveBeenCalledTimes(1);
-      expect(mockMCPManager.appConnections.disconnect).toHaveBeenCalledWith('PaddleOCR');
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
+      expect(reinitMCPServer).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrChunkResult).not.toHaveBeenCalled();
       expect(organizerInputs).toEqual([]);
@@ -2533,7 +2542,7 @@ describe('ToolService - Action Capability Gating', () => {
           currentOcrFailures: [
             expect.objectContaining({
               ocrFileKey: 'file:file-error-content-failure',
-              errorMessage: "Error calling tool 'paddleocr_vl'",
+              errorMessage: expect.stringContaining("Error calling tool 'paddleocr_vl'"),
             }),
           ],
         }),
@@ -2545,7 +2554,7 @@ describe('ToolService - Action Capability Gating', () => {
             event: 'steel_event',
             data: expect.objectContaining({
               source: 'ocr_preprocessing',
-              errorMessage: "Error calling tool 'paddleocr_vl'",
+              errorMessage: expect.stringContaining("Error calling tool 'paddleocr_vl'"),
             }),
           }),
         ]),
@@ -2648,21 +2657,18 @@ describe('ToolService - Action Capability Gating', () => {
       expect(providerError.cause).toBe(rebuildError);
     });
 
-    it('retries a real OCR job timeout once and keeps the fallback turn active', async () => {
+    it('retries HTTP 408 once without rebuilding MCP and keeps the fallback turn active', async () => {
       const file = {
         fileId: 'file-timeout',
         filename: 'timeout.pdf',
         mediaType: 'application/pdf',
       };
       const req = createMockPaddleOcrPreflightReq(file);
-      const firstInvoke = jest
+      const invoke = jest
         .fn()
-        .mockRejectedValueOnce(new Error('PaddleOCR MCP OCR timed out after 600000 ms.'));
-      const secondInvoke = jest
-        .fn()
-        .mockRejectedValueOnce(new Error('PaddleOCR MCP OCR timed out after 600000 ms.'));
+        .mockRejectedValue(new Error('HTTP 408: Request Timeout'));
       mockSingleFilePaddleOcrPipeline(file);
-      mockPaddleOcrToolLoads(firstInvoke, secondInvoke);
+      mockPaddleOcrToolLoads(invoke);
 
       const result = await runSteelPaddleOcrPreflight({
         req,
@@ -2672,10 +2678,10 @@ describe('ToolService - Action Capability Gating', () => {
         streamId: 'stream-1',
       });
 
-      expect(reinitMCPServer).toHaveBeenCalledTimes(1);
-      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(2);
-      expect(firstInvoke).toHaveBeenCalledTimes(1);
-      expect(secondInvoke).toHaveBeenCalledTimes(1);
+      expect(reinitMCPServer).not.toHaveBeenCalled();
+      expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
+      expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledTimes(2);
       expect(result).toEqual(
         expect.objectContaining({
           status: 'partial',

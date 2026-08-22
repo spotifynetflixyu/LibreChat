@@ -3,6 +3,7 @@ import {
   type ISteelWorkingOrderMemory,
 } from '@librechat/data-schemas';
 import { resolveOcrPreprocessingChunkSizePages } from '../ocr/config';
+import { getOcrPageRangeKey, normalizeOcrPageChunks } from '../ocr/chunks';
 import { getPaddleOcrResultText } from '../ocr/text';
 
 type Mongoose = typeof import('mongoose');
@@ -730,7 +731,7 @@ function toOcrPreprocessingState({
   input: Required<OcrPreprocessingStateInput>;
   documents: SteelWorkingOrderMemoryDocument[];
 }): OcrPreprocessingState {
-  const chunksByIndex = new Map<number, OcrPreprocessingChunkState>();
+  const chunksByRange = new Map<string, OcrPreprocessingChunkState>();
 
   for (const document of documents) {
     if (!isJsonObject(document.payload)) {
@@ -746,13 +747,14 @@ function toOcrPreprocessingState({
     if (!nextChunk) {
       continue;
     }
-    const currentChunk = chunksByIndex.get(nextChunk.chunkIndex) ?? nextChunk;
+    const currentChunk =
+      chunksByRange.get(getOcrPageRangeKey(nextChunk)) ?? nextChunk;
 
     if (
       document.memoryKind === 'paddleocr_preflight' &&
       isOcrPreprocessingKind(document.payload, 'paddleocr_mcp_chunk_result')
     ) {
-      chunksByIndex.set(nextChunk.chunkIndex, {
+      chunksByRange.set(getOcrPageRangeKey(nextChunk), {
         ...nextChunk,
         ...currentChunk,
         rawResultHash: nextChunk.rawResultHash ?? currentChunk.rawResultHash,
@@ -767,7 +769,7 @@ function toOcrPreprocessingState({
       isCurrentRule &&
       isOcrPreprocessingKind(document.payload, 'ocr_preprocessing_chunk_markdown')
     ) {
-      chunksByIndex.set(nextChunk.chunkIndex, {
+      chunksByRange.set(getOcrPageRangeKey(nextChunk), {
         ...nextChunk,
         ...currentChunk,
         rawResultHash: nextChunk.rawResultHash ?? currentChunk.rawResultHash,
@@ -778,9 +780,7 @@ function toOcrPreprocessingState({
     }
   }
 
-  const chunks = [...chunksByIndex.values()].sort(
-    (left, right) => left.chunkIndex - right.chunkIndex,
-  );
+  const chunks = normalizeOcrPageChunks([...chunksByRange.values()]);
   const firstChunk = chunks[0];
 
   return {
@@ -789,7 +789,7 @@ function toOcrPreprocessingState({
     pipelineVersion: input.pipelineVersion,
     ocrRuleVersion: input.ocrRuleVersion,
     chunkSizePages: firstChunk?.chunkSizePages ?? resolveOcrPreprocessingChunkSizePages(),
-    chunkCount: firstChunk?.chunkCount ?? 0,
+    chunkCount: chunks.length,
     chunks,
   };
 }
@@ -997,7 +997,7 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         'payload.ocrPreprocessing.sourcePdfKey': input.sourcePdfKey,
         'payload.ocrPreprocessing.pipelineVersion': pipelineVersion,
       })
-        .sort({ 'payload.ocrPreprocessing.chunkIndex': 1, turnIndex: 1, createdAt: 1 })
+        .sort({ 'payload.ocrPreprocessing.pageStart': 1, 'payload.ocrPreprocessing.pageEnd': 1, turnIndex: 1, createdAt: 1 })
         .lean<SteelWorkingOrderMemoryDocument[]>();
 
       return toOcrPreprocessingState({
@@ -1067,7 +1067,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         'payload.ocrFileKey': getStringProperty(payload, 'ocrFileKey'),
         'payload.ocrPreprocessing.sourcePdfKey': input.chunk.sourcePdfKey,
         'payload.ocrPreprocessing.pipelineVersion': pipelineVersion,
-        'payload.ocrPreprocessing.chunkIndex': input.chunk.chunkIndex,
         'payload.ocrPreprocessing.pageStart': input.chunk.pageStart,
         'payload.ocrPreprocessing.pageEnd': input.chunk.pageEnd,
       });
@@ -1126,7 +1125,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         'payload.ocrPreprocessing.sourcePdfKey': input.chunk.sourcePdfKey,
         'payload.ocrPreprocessing.pipelineVersion': pipelineVersion,
         'payload.ocrPreprocessing.ocrRuleVersion': input.ocrRuleVersion,
-        'payload.ocrPreprocessing.chunkIndex': input.chunk.chunkIndex,
         'payload.ocrPreprocessing.pageStart': input.chunk.pageStart,
         'payload.ocrPreprocessing.pageEnd': input.chunk.pageEnd,
       });

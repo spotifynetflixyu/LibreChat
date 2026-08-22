@@ -2,6 +2,8 @@ import { parseMarkdownTables } from '../markdown/table';
 
 interface OcrPreprocessingMarkdownChunk {
   chunkIndex: number;
+  pageStart?: number;
+  pageEnd?: number;
   organizedSaved?: boolean;
   organizedMarkdown?: string;
 }
@@ -13,17 +15,27 @@ interface OcrPreprocessingMarkdownState {
 export function mergeChunkMarkdownForFileKey(input: {
   ocrFileKey: string;
   ocrRuleVersion: string;
-  chunks: readonly { chunkIndex: number; markdown: string }[];
+  chunks: readonly {
+    chunkIndex: number;
+    pageStart?: number;
+    pageEnd?: number;
+    markdown: string;
+  }[];
 }): string {
   return mergeChunkMarkdownTables(input.chunks);
 }
 
 export function getSavedOcrPreprocessingChunkMarkdowns(
   state: OcrPreprocessingMarkdownState,
-): { chunkIndex: number; markdown: string }[] {
+): { chunkIndex: number; pageStart?: number; pageEnd?: number; markdown: string }[] {
   return state.chunks
     .filter((chunk) => chunk.organizedSaved && chunk.organizedMarkdown !== undefined)
-    .map((chunk) => ({ chunkIndex: chunk.chunkIndex, markdown: chunk.organizedMarkdown ?? '' }));
+    .map((chunk) => ({
+      chunkIndex: chunk.chunkIndex,
+      ...(chunk.pageStart !== undefined ? { pageStart: chunk.pageStart } : {}),
+      ...(chunk.pageEnd !== undefined ? { pageEnd: chunk.pageEnd } : {}),
+      markdown: chunk.organizedMarkdown ?? '',
+    }));
 }
 
 export function mergeOcrPreprocessingStateMarkdown(input: {
@@ -41,8 +53,20 @@ export function mergeOcrPreprocessingStateMarkdown(input: {
     : undefined;
 }
 
-function mergeChunkMarkdownTables(chunks: readonly { chunkIndex: number; markdown: string }[]) {
-  const orderedChunks = [...chunks].sort((left, right) => left.chunkIndex - right.chunkIndex);
+function mergeChunkMarkdownTables(
+  chunks: readonly {
+    chunkIndex: number;
+    pageStart?: number;
+    pageEnd?: number;
+    markdown: string;
+  }[],
+) {
+  const orderedChunks = [...chunks].sort(
+    (left, right) =>
+      (left.pageStart ?? Number.MAX_SAFE_INTEGER) - (right.pageStart ?? Number.MAX_SAFE_INTEGER) ||
+      (left.pageEnd ?? Number.MAX_SAFE_INTEGER) - (right.pageEnd ?? Number.MAX_SAFE_INTEGER) ||
+      left.chunkIndex - right.chunkIndex,
+  );
   const tables = orderedChunks.flatMap((chunk) => parseMarkdownTables(chunk.markdown));
   if (tables.length === 0) {
     return orderedChunks.map((chunk) => chunk.markdown).join('\n\n');

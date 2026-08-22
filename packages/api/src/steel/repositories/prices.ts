@@ -121,7 +121,6 @@ export interface SteelPriceLookupQuery {
   unit?: string;
   thicknessMm?: readonly string[];
   stockLengthMm?: readonly string[];
-  erpItemCode?: string;
   keyword?: string;
 }
 
@@ -167,7 +166,6 @@ interface SerializedPriceQuery {
   unit?: string;
   thickness_mm?: readonly string[];
   stock_length_mm?: readonly string[];
-  erp_item_code?: string;
   keyword_terms?: readonly string[];
 }
 
@@ -231,7 +229,6 @@ function serializePriceQuery(query: SteelPriceCandidateQuery, queryIndex: number
     stock_length_mm: query.stockLengthMm
       ? [...new Set(query.stockLengthMm.map(formatDecimalString))]
       : undefined,
-    erp_item_code: query.erpItemCode,
   } satisfies SerializedPriceQuery;
 }
 
@@ -352,6 +349,23 @@ function dedupePriceItems(rows: readonly SteelPriceItemRow[]): SteelPriceItem[] 
   return candidates;
 }
 
+function dedupePriceItemsByErpItemCode(rows: readonly SteelPriceItemRow[]): SteelPriceItem[] {
+  const seen = new Set<string>();
+  const candidates: SteelPriceItem[] = [];
+
+  for (const row of rows) {
+    const candidate = toPriceItem(row);
+    if (!candidate.erpItemCode || seen.has(candidate.erpItemCode)) {
+      continue;
+    }
+
+    seen.add(candidate.erpItemCode);
+    candidates.push(candidate);
+  }
+
+  return candidates;
+}
+
 function toCandidateGroup(row: SteelPriceCandidateGroupRow): SteelPriceCandidateGroup {
   return {
     queryIndex: parseRequiredNumber(row.query_index),
@@ -377,7 +391,6 @@ WITH input_queries AS (
     unit TEXT,
     thickness_mm TEXT[],
     stock_length_mm TEXT[],
-    erp_item_code TEXT,
     keyword_terms TEXT[]
   )
 )
@@ -463,10 +476,6 @@ SELECT
                   )
                 )
             )
-          )
-          AND (
-            input_query.erp_item_code IS NULL
-            OR p.erp_item_code = input_query.erp_item_code
           )
           AND (
             input_query.stock_length_mm IS NULL
@@ -581,6 +590,56 @@ WHERE p.value_state <> 'no_price'
 ORDER BY p.category ASC, p.spec_sort_key ASC NULLS LAST, p.product_name ASC NULLS LAST, p.id ASC
 `;
 
+const exactPriceCandidatesByErpItemCodesSql = `
+SELECT
+  p.id,
+  p.erp_item_code,
+  p.formula_code,
+  p.spec_key,
+  p.product_name,
+  p.category,
+  p.subcategory,
+  p.processing_method,
+  p.processing_shape,
+  p.material,
+  p.unit,
+  p.value_state,
+  p.unit_price_base,
+  p.unit_price_a,
+  p.unit_price_b,
+  p.unit_price_c,
+  p.unit_price_d,
+  p.unit_price_e,
+  p.unit_price_f,
+  p.price_ratio_a,
+  p.price_ratio_b,
+  p.price_ratio_c,
+  p.price_ratio_d,
+  p.price_ratio_e,
+  p.price_ratio_f,
+  p.unit_weight_value,
+  p.unit_weight_basis,
+  p.density,
+  p.thickness_min_mm,
+  p.thickness_max_mm,
+  p.width_mm,
+  p.height_mm,
+  p.length_mm,
+  p.outer_diameter_mm,
+  p.nominal_inch,
+  p.web_mm,
+  p.flange_mm,
+  p.lip_mm,
+  p.sheet_width_mm,
+  p.sheet_length_mm,
+  p.spec_sort_key,
+  p.cost_basis
+FROM steel.prices AS p
+WHERE p.value_state <> 'no_price'
+  AND p.erp_item_code = ANY($1::text[])
+ORDER BY array_position($1::text[], p.erp_item_code), p.id ASC
+`;
+
 export async function searchSteelPriceCandidateGroups(
   client: SteelRepositoryClient,
   input: SearchSteelPriceCandidateGroupsInput,
@@ -625,4 +684,20 @@ export async function searchSteelPricesByProductNames(
   ]);
 
   return dedupePriceItems(result.rows);
+}
+
+export async function searchSteelPricesByErpItemCodes(
+  client: SteelRepositoryClient,
+  erpItemCodes: readonly string[],
+): Promise<SteelPriceItem[]> {
+  const uniqueErpItemCodes = [...new Set(erpItemCodes)].filter((code) => code.trim() !== '');
+  if (uniqueErpItemCodes.length === 0) {
+    return [];
+  }
+
+  const result = await client.query<SteelPriceItemRow>(exactPriceCandidatesByErpItemCodesSql, [
+    uniqueErpItemCodes,
+  ]);
+
+  return dedupePriceItemsByErpItemCode(result.rows);
 }

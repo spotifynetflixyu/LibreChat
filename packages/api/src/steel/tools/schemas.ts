@@ -1,12 +1,15 @@
 import { z } from 'zod';
+
+import type { ProcessingPriceCategory } from '../pricing/processing-candidates';
+
 import {
   defaultPriceTierCode,
-  priceLookupMaterialKinds,
   priceCategories,
+  priceLookupMaterialKinds,
   priceTierCodes,
 } from '../pricing/enums';
-import { isPriceSubcategory } from '../pricing/categories';
 import { processingPriceCategories } from '../pricing/processing-candidates';
+import { isPriceSubcategory } from '../pricing/categories';
 
 export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
@@ -69,36 +72,34 @@ export interface LookupQuoteRulesInput extends Omit<LookupInstructionsInput, 'cu
 
 interface SteelPriceLookupQueryInput {
   queryId: string;
-  mode?: 'lookup';
-  category: (typeof priceCategories)[number];
+  categories: (typeof priceCategories)[number][];
   subcategory?: string;
-  material?: (typeof priceLookupMaterialKinds)[number];
+  material?: string;
   unit?: string;
   thicknessMm?: string[];
   stockLengthMm?: string[];
-  erpItemCode?: string;
   keyword?: string;
 }
 
-interface SteelPriceCategoryDiscoveryQueryInput {
+interface SteelPriceProcessingQueryInput {
   queryId: string;
-  mode: 'category_discovery';
-  keyword: string;
+  categories: (typeof priceCategories)[number][];
+  processingCategories: ProcessingPriceCategory[];
+  keyword?: string;
+}
+
+interface SteelPriceExactQueryInput {
+  queryId: string;
+  erpItemCodes: string[];
 }
 
 type SearchPriceCandidateQueryInput =
   | SteelPriceLookupQueryInput
-  | SteelPriceCategoryDiscoveryQueryInput;
+  | SteelPriceProcessingQueryInput
+  | SteelPriceExactQueryInput;
 
 interface SearchPriceCandidatesInput {
   queries: SearchPriceCandidateQueryInput[];
-  processingQueries?: {
-    queryId: string;
-    categories: (typeof priceCategories)[number][];
-    processingCategories?: (typeof priceCategories)[number][];
-    keyword?: string;
-  }[];
-  productNames?: string[];
 }
 
 interface SearchCustomersInput {
@@ -177,27 +178,11 @@ const _lookupDefaultsSchema = z.object({
   limit: limitSchema,
 });
 
-const stockLengthMmSchema = z.preprocess(
-  (value) =>
-    Array.isArray(value)
-      ? [
-          ...new Set(
-            value
-              .filter((item) => positiveDecimalString.safeParse(item).success)
-              .map((item) => String(Math.round(Number(item)))),
-          ),
-        ].slice(0, 20)
-      : value,
-  z.array(positiveDecimalString),
-);
-
-const tolerantStringSchema = z.preprocess(
-  (value) => (typeof value === 'string' ? value : undefined),
-  z.string().optional(),
-);
+const stockLengthMmSchema = z.array(positiveDecimalString).min(1).max(20);
 
 const directMaterialAliases = new Map<string, (typeof priceLookupMaterialKinds)[number]>([
   ['黑鐵', '黑鐵'],
+  ['白鐵', '白鐵'],
   ['2B', '2B'],
   ['NO1', 'NO1'],
   ['HL', 'HL'],
@@ -215,56 +200,124 @@ const directMaterialAliases = new Map<string, (typeof priceLookupMaterialKinds)[
   ['塑膠', '塑膠'],
 ]);
 
-const priceLookupQuerySchema = z
+const materialPriceQuerySchema = z
   .object({
-    mode: z.literal('lookup').optional(),
-    category: z
-      .enum(priceCategories)
-      .describe('Known price category; use category_discovery when unknown.'),
-    subcategory: optionalFilterString.describe('Optional confirmed subcategory.'),
-    material: tolerantStringSchema.describe('Optional confirmed material or surface.'),
-    unit: tolerantStringSchema.describe(
-      'Optional requested price unit overriding the category default.',
-    ),
-    thicknessMm: z.array(positiveDecimalString).min(1).max(20).optional(),
+    categories: z
+      .array(z.enum(priceCategories))
+      .min(1)
+      .max(20)
+      .describe(
+        'Ordered OR material categories. First query is category-only unless a category rule allows a filter, e.g. {"categories":["鐵板"]}; add other filters only on a corrected retry.',
+      ),
+    subcategory: nonEmptyString
+      .optional()
+      .describe('Confirmed subcategory; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"subcategory":"平板"}.'),
+    material: nonEmptyString
+      .optional()
+      .describe('Confirmed material/surface; retry-only unless a category rule allows first query, e.g. {"categories":["圓管"],"material":"黑鐵"}.'),
+    unit: nonEmptyString
+      .optional()
+      .describe('Confirmed unit; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"unit":"Kg"}.'),
+    thicknessMm: z
+      .array(positiveDecimalString)
+      .min(1)
+      .max(20)
+      .optional()
+      .describe(
+        'Material thickness in mm, never finished/stock length; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"thicknessMm":["6"]}.',
+      ),
     stockLengthMm: stockLengthMmSchema
       .optional()
-      .describe('Optional acceptable stock lengths in millimeters.'),
-    erpItemCode: nonEmptyString.optional(),
-    keyword: nonEmptyString.optional(),
+      .describe(
+        'Acceptable mother-stock lengths in mm; a relevant category rule may allow first query (H型鋼 example), otherwise retry-only, e.g. {"categories":["H型鋼"],"stockLengthMm":["6000","9000"]}.',
+      ),
+    keyword: nonEmptyString
+      .optional()
+      .describe('Category/spec text, never an ERP code; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"keyword":"雷射"}.'),
   })
   .strict()
   .superRefine((query, ctx) => {
-    if (query.subcategory && !isPriceSubcategory(query.category, query.subcategory)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Invalid subcategory ${query.subcategory} for category ${query.category}`,
-        path: ['subcategory'],
-      });
+    query.categories.forEach((category, categoryIndex) => {
+      if (category.startsWith('加工/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Material categories must be product or material categories',
+          path: ['categories', categoryIndex],
+        });
+      }
+      if (query.subcategory && !isPriceSubcategory(category, query.subcategory)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Invalid subcategory ${query.subcategory} for category ${category}`,
+          path: ['categories', categoryIndex],
+        });
+      }
+      if (query.stockLengthMm?.some((value) => category === 'H型鋼' && Number(value) < 6000)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'H型鋼 stockLengthMm must be at least 6000',
+          path: ['stockLengthMm'],
+        });
+      }
+      if (category === 'H型鋼' && query.keyword) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'H型鋼 queries must not use keyword',
+          path: ['keyword'],
+        });
+      }
+      if (
+        query.unit &&
+        ((category === '鐵板' && !['kg', '片'].includes(query.unit.toLowerCase())) ||
+          (category === '網' && query.unit.trim() !== ''))
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Invalid unit ${query.unit} for category ${category}`,
+          path: ['unit'],
+        });
+      }
+    });
+    if (query.material) {
+      const key = query.material.normalize('NFKC').trim().toUpperCase();
+      const recognized =
+        directMaterialAliases.has(key) ||
+        key === '不鏽鋼' ||
+        key.includes('白鐵') ||
+        key === '白鐵' ||
+        key === 'ST' ||
+        key.includes('2B') ||
+        key.includes('NO1') ||
+        key.includes('霧面') ||
+        key.includes('亮面') ||
+        /(?:^|[\s/])HL(?:$|[\s/])/u.test(key) ||
+        /(?:^|[\s/])BA(?:$|[\s/])/u.test(key) ||
+        key === 'STHL' ||
+        key === 'STBA' ||
+        /[沙砂]面/u.test(key);
+      if (!recognized) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Invalid material ${query.material}`,
+          path: ['material'],
+        });
+      }
     }
   });
 
-const priceCategoryDiscoveryQuerySchema = z
-  .object({
-    mode: z.literal('category_discovery'),
-    keyword: nonEmptyString.describe('Keyword for discovering an unknown category.'),
-  })
-  .strict();
-
-const searchPriceCandidateQuerySchema = z.union([
-  priceCategoryDiscoveryQuerySchema,
-  priceLookupQuerySchema,
-]);
-
 const processingPriceQuerySchema = z
   .object({
-    categories: z.array(z.enum(priceCategories)).min(1).max(20),
+    categories: z
+      .array(z.enum(priceCategories))
+      .min(1)
+      .max(20)
+      .describe('Processing target categories only; use with processingCategories, e.g. {"categories":["鐵板"],"processingCategories":["加工/切工"]}.'),
     processingCategories: z
       .array(z.enum(priceCategories))
       .min(1)
       .max(processingPriceCategories.length)
-      .optional(),
-    keyword: nonEmptyString.optional(),
+      .describe('Processing-only categories, never material filters, e.g. {"categories":["鐵板"],"processingCategories":["加工/切工"]}.'),
+    keyword: nonEmptyString.optional().describe('Category-rule-specific processing text; never an ERP code, e.g. {"categories":["鐵板"],"processingCategories":["加工/孔"],"keyword":"圓孔"}.'),
   })
   .strict()
   .superRefine((query, ctx) => {
@@ -277,7 +330,7 @@ const processingPriceQuerySchema = z
         });
       }
     });
-    query.processingCategories?.forEach((category, index) => {
+    query.processingCategories.forEach((category, index) => {
       if (!category.startsWith('加工/')) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -288,155 +341,67 @@ const processingPriceQuerySchema = z
     });
   });
 
-function normalizeStockLengthMm(
-  values: unknown[] | undefined,
-  category: (typeof priceCategories)[number],
-): string[] | undefined {
-  if (values === undefined) {
-    return undefined;
-  }
-
-  const minimum = category === 'H型鋼' ? 6000 : 0;
-  const normalized = values.flatMap((value) => {
-    if (typeof value !== 'string') {
-      return [];
-    }
-
-    const parsed = positiveDecimalString.safeParse(value.normalize('NFKC').trim());
-    if (!parsed.success || Number(parsed.data) < minimum) {
-      return [];
-    }
-
-    return [String(Number(parsed.data))];
-  });
-
-  return [...new Set(normalized)].slice(0, 20);
-}
-
-function normalizeMaterial(
-  value: string | undefined,
-  category: (typeof priceCategories)[number],
-  thicknessMm: string[] | undefined,
-): (typeof priceLookupMaterialKinds)[number] | undefined {
-  const text = value?.normalize('NFKC').trim();
-  const key = text?.toUpperCase();
-  if (key && (key.includes('2B') || key.includes('霧面'))) {
-    return '2B';
-  }
-  if (key?.includes('NO1')) {
-    return 'NO1';
-  }
-  if (key && (/(?:^|[\s/])HL(?:$|[\s/])/u.test(key) || key === 'STHL' || /[沙砂]面/u.test(key))) {
-    return 'HL';
-  }
-  if (key && (/(?:^|[\s/])BA(?:$|[\s/])/u.test(key) || key === 'STBA' || key.includes('亮面'))) {
-    return 'BA';
-  }
-  const normalized = key ? directMaterialAliases.get(key) : undefined;
-  if (normalized) {
-    return normalized;
-  }
-
-  if (key === '不鏽鋼') {
-    return '白鐵';
-  }
-  if (key !== '白鐵' && key !== 'ST') {
-    return category === '鐵板' ||
-      category === '圓管' ||
-      category === '平鐵' ||
-      category === '方鐵' ||
-      category === '槽鐵' ||
-      category === '角鐵'
-      ? '黑鐵'
-      : undefined;
-  }
-  if (category !== '鐵板' || !thicknessMm || thicknessMm.length === 0) {
-    return '白鐵';
-  }
-
-  const thicknesses = thicknessMm.map(Number);
-  if (thicknesses.every((thickness) => thickness < 3)) {
-    return '2B';
-  }
-  if (thicknesses.every((thickness) => thickness >= 3)) {
-    return 'NO1';
-  }
-
-  return '白鐵';
-}
-
-function normalizeUnit(
-  value: string | undefined,
-  category: (typeof priceCategories)[number],
-): string | undefined {
-  if (category === '鐵板') {
-    return value?.toLowerCase() === 'kg' || value === undefined ? 'Kg' : '片';
-  }
-
-  if (category === '網') {
-    return undefined;
-  }
-
-  return value?.trim() || undefined;
-}
-
-const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
+const exactPriceQuerySchema = z
   .object({
-    queries: z.array(searchPriceCandidateQuerySchema).optional().default([]),
-    processingQueries: z.array(processingPriceQuerySchema).min(1).max(3).optional(),
-    productNames: z
+    erpItemCodes: z
       .array(nonEmptyString)
       .min(1)
       .max(100)
-      .optional()
-      .describe('Exact productName values returned by a prior discovery result.'),
+      .describe('Exact-only ERP codes used after a material result exceeds 20 and returns selectionRequired=true; choose by candidateRefs.productName, copy each paired erpItemCode, and never infer codes, e.g. {"erpItemCodes":["ERP-1"]}.'),
+  })
+  .strict()
+  .superRefine((query, ctx) => {
+    if (new Set(query.erpItemCodes).size !== query.erpItemCodes.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'erpItemCodes must contain unique values',
+        path: ['erpItemCodes'],
+      });
+    }
+  });
+
+const searchPriceCandidateQuerySchema = z.union([
+  materialPriceQuerySchema,
+  processingPriceQuerySchema,
+  exactPriceQuerySchema,
+]);
+
+const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
+  .object({
+    queries: z
+      .array(searchPriceCandidateQuerySchema)
+      .min(1)
+      .max(100)
+      .describe(
+        'Strict nonempty union in input order: material {categories:[...]}, processing {categories:[...],processingCategories:[...]}, or exact {erpItemCodes:[...]}; material and processing example: {"queries":[{"categories":["鐵板"]},{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}.',
+      ),
   })
   .strict()
   .superRefine((input, ctx) => {
-    const hasDiscovery = input.queries.length > 0 || input.processingQueries !== undefined;
-    if (!hasDiscovery && !input.productNames) {
+    const processingQueryCount = input.queries.filter(
+      (query) => 'processingCategories' in query,
+    ).length;
+    if (processingQueryCount > 3) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Provide queries, processingQueries, or productNames',
-      });
-    }
-    if (hasDiscovery && input.productNames) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'productNames exact lookup cannot include queries or processingQueries',
-        path: ['productNames'],
+        message: 'At most three processing query items are allowed',
+        path: ['queries'],
       });
     }
   })
   .transform(
     (input): SearchPriceCandidatesInput => ({
-      ...(input.processingQueries
-        ? {
-            processingQueries: input.processingQueries.map((query, index) => ({
-              ...query,
-              queryId: `p${index + 1}`,
-            })),
-          }
-        : {}),
-      ...(input.productNames ? { productNames: input.productNames } : {}),
       queries: input.queries.map((query, index) => {
-        if (query.mode === 'category_discovery') {
-          return { ...query, queryId: `q${index + 1}` };
-        }
-
-        const { material: rawMaterial, unit: rawUnit, ...queryFields } = query;
-        const stockLengthMm = normalizeStockLengthMm(query.stockLengthMm, query.category);
-        const material = normalizeMaterial(rawMaterial, query.category, query.thicknessMm);
-        const unit = normalizeUnit(rawUnit, query.category);
-        const normalizedQuery = {
-          ...queryFields,
-          ...(material ? { material } : {}),
-          ...(unit ? { unit } : {}),
-          ...(stockLengthMm === undefined ? {} : { stockLengthMm }),
-          queryId: `q${index + 1}`,
-        };
-
-        return normalizedQuery;
+        const normalizedQuery =
+          'stockLengthMm' in query && query.stockLengthMm
+            ? {
+                ...query,
+                stockLengthMm: [
+                  ...new Set(query.stockLengthMm.map((value) => String(Math.round(Number(value))))),
+                ],
+              }
+            : query;
+        return { ...normalizedQuery, queryId: `q${index + 1}` };
       }) as SearchPriceCandidateQueryInput[],
     }),
   );

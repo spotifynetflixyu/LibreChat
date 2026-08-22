@@ -228,8 +228,8 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         queries: [
-          { category: 'H型鋼', keyword: '200' },
-          { category: 'H型鋼', keyword: '400' },
+          { categories: ['H型鋼'], stockLengthMm: ['6000'] },
+          { categories: ['H型鋼'], stockLengthMm: ['9000'] },
         ],
       },
     });
@@ -241,11 +241,14 @@ describe('executeSteelTool', () => {
           {
             queryId: 'q1',
             status: 'ok',
-            candidates: [],
-            productNames: manyCandidates.map(({ product_name }) => product_name),
+            candidates: expect.arrayContaining([
+              expect.objectContaining({ id: 1000 }),
+              expect.objectContaining({ id: 1010 }),
+            ]),
             totalAvailable: 11,
-            returnedCount: 0,
-            selectionRequired: true,
+            returnedCount: 11,
+            selectionRequired: false,
+            nextAction: 'use_candidates',
           },
           {
             queryId: 'q2',
@@ -254,10 +257,10 @@ describe('executeSteelTool', () => {
               expect.objectContaining({ id: 1100 }),
               expect.objectContaining({ id: 1101 }),
             ]),
-            productNames: [],
             totalAvailable: 10,
             returnedCount: 10,
             selectionRequired: false,
+            nextAction: 'use_candidates',
           },
         ],
       },
@@ -265,14 +268,16 @@ describe('executeSteelTool', () => {
     if (!result.ok) {
       throw new Error('Expected material candidate search to succeed');
     }
-    const data = JSON.parse(JSON.stringify(result.data));
+    const data = JSON.parse(JSON.stringify(result.data)) as {
+      cuttingPrices: Array<{ candidateMatches: Array<{ queryId: string }> }>;
+    };
     const q1Matches = data.cuttingPrices.flatMap((group) =>
       group.candidateMatches.filter((match) => match.queryId === 'q1'),
     );
     expect(q1Matches).toHaveLength(11);
   });
 
-  it('requeries a selected material productName after a names-only result', async () => {
+  it('retrieves an exact selected ERP code after discovery', async () => {
     const candidates = Array.from({ length: 11 }, (_, index) =>
       createHMaterialRow(1400 + index, 500 + index, 200),
     );
@@ -294,12 +299,12 @@ describe('executeSteelTool', () => {
     const discovery = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { queries: [{ category: 'H型鋼' }] },
+      arguments: { queries: [{ categories: ['H型鋼'] }] },
     });
     const exact = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { productNames: selected ? [selected.product_name] : [] },
+      arguments: { queries: [{ erpItemCodes: selected ? [selected.erp_item_code] : [] }] },
     });
 
     expect(discovery).toMatchObject({
@@ -307,9 +312,11 @@ describe('executeSteelTool', () => {
       data: {
         queryResults: [
           {
-            candidates: [],
-            productNames: candidates.map(({ product_name }) => product_name),
-            selectionRequired: true,
+            candidates: expect.arrayContaining([
+              expect.objectContaining({ erpItemCode: candidates[0]?.erp_item_code }),
+            ]),
+            selectionRequired: false,
+            nextAction: 'use_candidates',
           },
         ],
       },
@@ -317,8 +324,10 @@ describe('executeSteelTool', () => {
     expect(exact).toMatchObject({
       ok: true,
       data: {
-        productNamePrices: [expect.objectContaining({ id: Number(selected?.id) })],
-        summary: { requestedProductNameCount: 1, priceCount: 1 },
+        erpItemCodes: [selected?.erp_item_code],
+        candidates: [expect.objectContaining({ id: Number(selected?.id) })],
+        missingErpItemCodes: [],
+        nextAction: 'use_candidates',
       },
     });
   });
@@ -344,13 +353,14 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { productNames: ['牙白100型1.2'] },
+      arguments: { queries: [{ erpItemCodes: ['A10E12'] }] },
     });
 
     expect(result).toMatchObject({
       ok: true,
       data: {
-        productNamePrices: [
+        erpItemCodes: ['A10E12'],
+        candidates: [
           {
             erpItemCode: 'A10E12',
             pricingOptions: [
@@ -366,6 +376,8 @@ describe('executeSteelTool', () => {
             ],
           },
         ],
+        missingErpItemCodes: [],
+        nextAction: 'use_candidates',
       },
     });
   });
@@ -418,13 +430,14 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { productNames: ['base only', 'mixed tiers', 'B first'] },
+      arguments: { queries: [{ erpItemCodes: ['BASE-ONLY', 'MIXED', 'B-FIRST'] }] },
     });
 
     expect(result).toMatchObject({
       ok: true,
       data: {
-        productNamePrices: [
+        erpItemCodes: ['BASE-ONLY', 'MIXED', 'B-FIRST'],
+        candidates: [
           {
             erpItemCode: 'BASE-ONLY',
             pricingOptions: [
@@ -456,6 +469,8 @@ describe('executeSteelTool', () => {
             ],
           },
         ],
+        missingErpItemCodes: [],
+        nextAction: 'use_candidates',
       },
     });
   });
@@ -488,13 +503,14 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { productNames: ['ratio D E'] },
+      arguments: { queries: [{ erpItemCodes: ['RATIO-DE'] }] },
     });
 
     expect(result).toMatchObject({
       ok: true,
       data: {
-        productNamePrices: [
+        erpItemCodes: ['RATIO-DE'],
+        candidates: [
           {
             pricingOptions: [
               {
@@ -504,6 +520,8 @@ describe('executeSteelTool', () => {
             ],
           },
         ],
+        missingErpItemCodes: [],
+        nextAction: 'use_candidates',
       },
     });
   });
@@ -552,7 +570,7 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { queries: [{ category: '鐵板' }] },
+      arguments: { queries: [{ categories: ['鐵板'] }] },
     });
 
     expect(result).toMatchObject({
@@ -590,7 +608,7 @@ describe('executeSteelTool', () => {
       client,
       toolName: 'search_price_candidates',
       arguments: {
-        processingQueries: [
+        queries: [
           { categories: ['鐵板'], processingCategories: ['加工/孔'], keyword: '圓孔' },
         ],
       },
@@ -605,7 +623,6 @@ describe('executeSteelTool', () => {
               totalAvailable: 11,
               returnedCount: 11,
               selectionRequired: false,
-              productNames: [],
               groups: [
                 {
                   processingCategory: '加工/孔',
@@ -703,9 +720,9 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         queries: [
-          { category: '鐵板', thicknessMm: ['6'] },
-          { category: '鐵板', thicknessMm: ['15'] },
-          { category: '網', thicknessMm: ['15'] },
+          { categories: ['鐵板'], thicknessMm: ['6'] },
+          { categories: ['鐵板'], thicknessMm: ['15'] },
+          { categories: ['網'], thicknessMm: ['15'] },
         ],
       },
     });
@@ -773,7 +790,7 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { queries: [{ category: '鐵板', thicknessMm: ['6'] }] },
+      arguments: { queries: [{ categories: ['鐵板'], thicknessMm: ['6'] }] },
     });
 
     expect(result).toMatchObject({
@@ -870,7 +887,7 @@ describe('executeSteelTool', () => {
     const result = await executeSteelTool({
       client,
       toolName: 'search_price_candidates',
-      arguments: { queries: [{ category: 'H型鋼' }] },
+      arguments: { queries: [{ categories: ['H型鋼'] }] },
     });
 
     expect(result).toMatchObject({
@@ -952,8 +969,8 @@ describe('executeSteelTool', () => {
       toolName: 'search_price_candidates',
       arguments: {
         queries: [
-          { category: 'H型鋼', keyword: '250x250' },
-          { category: 'H型鋼', keyword: '340x250' },
+          { categories: ['H型鋼'], stockLengthMm: ['6000'] },
+          { categories: ['H型鋼'], stockLengthMm: ['9000'] },
         ],
       },
     });
@@ -977,6 +994,206 @@ describe('executeSteelTool', () => {
             ],
           },
         ],
+      },
+    });
+  });
+
+  it('uses the twenty-candidate boundary after filtering unusable names', async () => {
+    const run = async (rows: object[]) => {
+      const result = await executeSteelTool({
+        client: createClient([
+          [{ query_index: '0', query_id: 'q1', price_candidates: rows, category_candidates: [] }],
+          [],
+          [],
+        ]),
+        toolName: 'search_price_candidates',
+        arguments: { queries: [{ categories: ['H型鋼'] }] },
+      });
+      if (!result.ok) throw new Error(result.errorSummary);
+      const data = JSON.parse(JSON.stringify(result.data)) as {
+        queryResults?: Array<Record<string, unknown>>;
+      };
+      return data.queryResults?.[0] ?? {};
+    };
+
+    const twenty = await run(
+      Array.from({ length: 20 }, (_, index) => createHMaterialRow(3000 + index, 200 + index, 100)),
+    );
+    const twentyOne = await run(
+      Array.from({ length: 21 }, (_, index) => createHMaterialRow(4000 + index, 200 + index, 100)),
+    );
+    const duplicateNameRows = Array.from({ length: 21 }, (_, index) =>
+      createHMaterialRow(5000 + index, 300 + index, 100),
+    );
+    duplicateNameRows[1]!.product_name = duplicateNameRows[0]!.product_name;
+    const duplicateNames = await run(duplicateNameRows);
+
+    expect(twenty).toMatchObject({
+      totalAvailable: 20,
+      returnedCount: 20,
+      selectionRequired: false,
+      nextAction: 'use_candidates',
+    });
+    expect(twentyOne).toMatchObject({
+      totalAvailable: 21,
+      returnedCount: 0,
+      selectionRequired: true,
+      nextAction: 'select_erp_item_codes',
+      candidates: [],
+      candidateRefs: expect.arrayContaining([
+        expect.objectContaining({ productName: 'H型鋼200*100', erpItemCode: 'EHS-200-100' }),
+      ]),
+    });
+    expect((twentyOne.candidateRefs as object[]).every((ref) => 'productName' in ref && 'erpItemCode' in ref)).toBe(
+      true,
+    );
+    expect(duplicateNames.candidateRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ productName: 'H型鋼300*100', erpItemCode: 'EHS-300-100' }),
+        expect.objectContaining({ productName: 'H型鋼300*100', erpItemCode: 'EHS-301-100' }),
+      ]),
+    );
+  });
+
+  it('filters missing product names before threshold and preserves ordered OR dedupe', async () => {
+    const missingName = createHMaterialRow(5000, 500, 100);
+    missingName.product_name = '   ';
+    const cCandidate = createHMaterialRow(5002, 502, 100);
+    cCandidate.category = 'C型鋼';
+    const rows = [
+      createHMaterialRow(5001, 501, 100),
+      missingName,
+      cCandidate,
+    ];
+    const result = await executeSteelTool({
+      client: createClient([
+        [
+          {
+            query_index: 0,
+            query_id: 'q1:c1',
+            price_candidates: [rows[0], rows[1]],
+            category_candidates: [],
+          },
+          {
+            query_index: 1,
+            query_id: 'q1:c2',
+            price_candidates: [rows[2], rows[0]],
+            category_candidates: [],
+          },
+        ],
+        [],
+        [],
+      ]),
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ categories: ['H型鋼', 'C型鋼'] }] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        queryResults: [
+          {
+            queryId: 'q1',
+            totalAvailable: 2,
+            returnedCount: 2,
+            selectionRequired: false,
+            nextAction: 'use_candidates',
+            candidateRefsOmittedCount: 1,
+            candidates: [
+              expect.objectContaining({ erpItemCode: 'EHS-501-100' }),
+              expect.objectContaining({ erpItemCode: 'EHS-502-100' }),
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('returns exact ERP candidates in request order with missing codes', async () => {
+    const first = createHMaterialRow(6001, 601, 100);
+    first.erp_item_code = 'ERP-A';
+    const second = createHMaterialRow(6002, 602, 100);
+    second.erp_item_code = 'ERP-B';
+    const unnamed = createHMaterialRow(6003, 603, 100);
+    unnamed.erp_item_code = 'ERP-C';
+    unnamed.product_name = ' ';
+    const result = await executeSteelTool({
+      client: createClient([[first, second, unnamed]]),
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ erpItemCodes: ['ERP-B', 'ERP-A', 'ERP-C', 'ERP-MISSING'] }] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        erpItemCodes: ['ERP-B', 'ERP-A', 'ERP-C', 'ERP-MISSING'],
+        candidates: [
+          expect.objectContaining({ erpItemCode: 'ERP-B' }),
+          expect.objectContaining({ erpItemCode: 'ERP-A' }),
+        ],
+        missingErpItemCodes: ['ERP-C', 'ERP-MISSING'],
+        nextAction: 'manual_review',
+      },
+    });
+  });
+
+  it('executes mixed material and processing items independently in input order', async () => {
+    const material = createHMaterialRow(6100, 610, 100);
+    const exact = createHMaterialRow(6102, 612, 100);
+    exact.erp_item_code = 'ERP-EXACT';
+    const processing = createProcessingRow({
+      id: '6101',
+      erp_item_code: 'CUT-6101',
+      category: '加工/孔',
+      subcategory: '鐵板',
+      product_name: '鐵板圓孔',
+      normalized_spec_text: '鐵板圓孔',
+      spec_key: 'CUT-6101 鐵板圓孔',
+    });
+    const unnamedProcessing = createProcessingRow({
+      id: '6103',
+      erp_item_code: 'CUT-6103',
+      category: '加工/孔',
+      subcategory: '鐵板',
+      product_name: ' ',
+      normalized_spec_text: '鐵板圓孔',
+      spec_key: 'CUT-6103 鐵板圓孔',
+    });
+    const result = await executeSteelTool({
+      client: createClient([
+        [{ query_index: 0, query_id: 'q1:c1', price_candidates: [material], category_candidates: [] }],
+        [],
+        [processing, unnamedProcessing],
+        [exact],
+      ]),
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [
+          { categories: ['H型鋼'] },
+          { categories: ['鐵板'], processingCategories: ['加工/孔'], keyword: '圓孔' },
+          { erpItemCodes: ['ERP-EXACT'] },
+        ],
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        queryResults: [expect.objectContaining({ queryId: 'q1' })],
+        processingPrice: {
+          queryResults: [expect.objectContaining({ queryId: 'q2', totalAvailable: 1 })],
+        },
+        exactResults: [
+          expect.objectContaining({
+            queryId: 'q3',
+            candidates: [expect.objectContaining({ erpItemCode: 'ERP-EXACT' })],
+          }),
+        ],
+        summary: expect.objectContaining({
+          queryCount: 3,
+          matchedQueryCount: 3,
+          noMatchQueryCount: 0,
+        }),
       },
     });
   });

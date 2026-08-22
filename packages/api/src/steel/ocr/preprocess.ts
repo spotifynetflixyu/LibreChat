@@ -8,7 +8,12 @@ import type {
   OcrPreprocessingStateInput,
   SteelOcrFileReference,
 } from '../memory/service';
-import type { OcrPreprocessingPageChunk } from './chunks';
+import {
+  getOcrPageRangeKey,
+  normalizeOcrPageChunks,
+  splitExactFiftyPageRange,
+  type OcrPreprocessingPageChunk,
+} from './chunks';
 import type { OcrOrganizer } from './organizer';
 
 export interface OcrPreprocessingFile extends SteelOcrFileReference {
@@ -25,11 +30,27 @@ export interface OcrPdfChunkArtifact extends OcrPreprocessingPageChunk {
 }
 
 export interface OcrPreprocessingArtifactStore {
+  resolveCanonicalChunks?(input: {
+    sourcePdfKey: string;
+    chunks: readonly OcrPreprocessingPageChunk[];
+  }): Promise<OcrPreprocessingPageChunk[]>;
   ensurePdfChunkArtifacts(input: {
     file: OcrPreprocessingFile;
     sourcePdfKey: string;
     chunks: readonly OcrPreprocessingPageChunk[];
   }): Promise<OcrPdfChunkArtifact[]>;
+  commitPdfChunkSplit?(input: {
+    file: OcrPreprocessingFile;
+    sourcePdfKey: string;
+    parent: OcrPreprocessingPageChunk;
+    children: readonly OcrPreprocessingPageChunk[];
+    chunks: readonly OcrPreprocessingPageChunk[];
+  }): Promise<OcrPdfChunkArtifact[]>;
+  refreshPdfChunkArtifact?(input: {
+    file: OcrPreprocessingFile;
+    chunk: OcrPreprocessingPageChunk;
+    artifact: OcrPdfChunkArtifact;
+  }): Promise<OcrPdfChunkArtifact>;
 }
 
 export interface PaddleOcrChunkRunResult {
@@ -157,7 +178,7 @@ export interface RunOcrPreprocessingBatchPipelineInput {
 interface OcrPreprocessingBatchWorkItem {
   index: number;
   file: OcrPreprocessingFile;
-  chunks: readonly OcrPreprocessingPageChunk[];
+  chunks: OcrPreprocessingPageChunk[];
   artifactStore: OcrPreprocessingArtifactStore;
   chunkCount: number;
   initialState: OcrPreprocessingState;
@@ -186,6 +207,14 @@ function isAbortError(error: unknown): boolean {
   }
 
   return candidate.cause !== undefined && isAbortError(candidate.cause);
+}
+
+function isAdaptiveSplitEligiblePaddleOcrError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      (error as { ocrAdaptiveSplitEligible?: unknown }).ocrAdaptiveSplitEligible === true,
+  );
 }
 
 function toErrorMessage(error: unknown): string {
@@ -237,21 +266,29 @@ function findArtifact(input: {
   artifacts: readonly OcrPdfChunkArtifact[];
   chunk: OcrPreprocessingPageChunk;
 }): OcrPdfChunkArtifact {
-  const artifact = input.artifacts.find((entry) => entry.chunkIndex === input.chunk.chunkIndex);
+  const artifact = input.artifacts.find(
+    (entry) =>
+      entry.pageStart === input.chunk.pageStart && entry.pageEnd === input.chunk.pageEnd,
+  );
   if (!artifact) {
     throw new Error(
-      `Missing OCR preprocessing PDF chunk artifact ${input.chunk.chunkIndex} for ${input.file.ocrFileKey}`,
+      `Missing OCR preprocessing PDF chunk artifact ${input.chunk.pageStart}-${input.chunk.pageEnd} for ${input.file.ocrFileKey}`,
     );
   }
   return artifact;
 }
 
-function getSavedChunk(currentState: OcrPreprocessingState, chunkIndex: number) {
-  return currentState.chunks.find((entry) => entry.chunkIndex === chunkIndex);
+function getSavedChunk(
+  currentState: OcrPreprocessingState,
+  chunk: Pick<OcrPreprocessingPageChunk, 'pageStart' | 'pageEnd'>,
+) {
+  return currentState.chunks.find(
+    (entry) => entry.pageStart === chunk.pageStart && entry.pageEnd === chunk.pageEnd,
+  );
 }
 
 function getExpectedChunkCount(chunks: readonly OcrPreprocessingPageChunk[]) {
-  return chunks[0]?.chunkCount ?? chunks.length;
+  return chunks.length;
 }
 
 function getPageCount(chunks: readonly OcrPreprocessingPageChunk[]) {
@@ -262,7 +299,32 @@ function hasMissingRawChunk(
   state: OcrPreprocessingState,
   chunks: readonly OcrPreprocessingPageChunk[],
 ) {
-  return chunks.some((chunk) => !getSavedChunk(state, chunk.chunkIndex)?.rawSaved);
+  return chunks.some((chunk) => !getSavedChunk(state, chunk)?.rawSaved);
+}
+
+function hasCompleteOrganizedChunks(
+  state: OcrPreprocessingState,
+  chunks: readonly OcrPreprocessingPageChunk[],
+): boolean {
+  const saved = new Set(
+    state.chunks
+      .filter((chunk) => chunk.organizedSaved && chunk.organizedMarkdown !== undefined)
+      .map(getOcrPageRangeKey),
+  );
+  return chunks.every((chunk) => saved.has(getOcrPageRangeKey(chunk)));
+}
+
+function getExpectedSavedChunkMarkdowns(
+  state: OcrPreprocessingState,
+  chunks: readonly OcrPreprocessingPageChunk[],
+) {
+  const expectedRanges = new Set(chunks.map(getOcrPageRangeKey));
+  return getSavedOcrPreprocessingChunkMarkdowns(state).filter(
+    (chunk) =>
+      chunk.pageStart !== undefined &&
+      chunk.pageEnd !== undefined &&
+      expectedRanges.has(getOcrPageRangeKey(chunk)),
+  );
 }
 
 function getOcrPreprocessingProviderToolCallId(input: {
@@ -270,7 +332,7 @@ function getOcrPreprocessingProviderToolCallId(input: {
   chunk: OcrPreprocessingPageChunk;
 }) {
   const safeFileKey = input.file.ocrFileKey.replace(/[^A-Za-z0-9_-]+/g, '_');
-  return `ocr_preprocessing_${safeFileKey}_chunk_${input.chunk.chunkIndex}`;
+  return `ocr_preprocessing_${safeFileKey}_pages_${input.chunk.pageStart}_${input.chunk.pageEnd}`;
 }
 
 async function readPreprocessingState(
@@ -321,7 +383,25 @@ export async function runOcrPreprocessingBatchPipeline(
     if (!entry) {
       continue;
     }
-    const chunkCount = getExpectedChunkCount(entry.chunks);
+    let effectiveChunks = [...entry.chunks];
+    try {
+      if (entry.artifacts.resolveCanonicalChunks) {
+        effectiveChunks = await entry.artifacts.resolveCanonicalChunks({
+          sourcePdfKey: entry.file.sourcePdfKey,
+          chunks: effectiveChunks,
+        });
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      resultSlots[index] = toFailedFileResult({
+        file: entry.file,
+        failures: [toFailure({ stage: 'artifacts', error })],
+      });
+      continue;
+    }
+    const chunkCount = getExpectedChunkCount(effectiveChunks);
     let state: OcrPreprocessingState;
     try {
       state = await readPreprocessingState(input, entry.file);
@@ -335,8 +415,8 @@ export async function runOcrPreprocessingBatchPipeline(
       });
       continue;
     }
-    const savedChunkMarkdowns = getSavedOcrPreprocessingChunkMarkdowns(state);
-    if (savedChunkMarkdowns.length === entry.chunks.length && entry.chunks.length > 0) {
+    const savedChunkMarkdowns = getExpectedSavedChunkMarkdowns(state, effectiveChunks);
+    if (effectiveChunks.length > 0 && hasCompleteOrganizedChunks(state, effectiveChunks)) {
       await emitMergedMarkdownProgress({
         pipeline: input,
         file: entry.file,
@@ -358,7 +438,7 @@ export async function runOcrPreprocessingBatchPipeline(
     workItems.push({
       index,
       file: entry.file,
-      chunks: entry.chunks,
+      chunks: effectiveChunks,
       artifactStore: entry.artifacts,
       chunkCount,
       initialState: state,
@@ -370,7 +450,7 @@ export async function runOcrPreprocessingBatchPipeline(
     const needsArtifacts =
       hasMissingRawChunk(workItem.initialState, workItem.chunks) ||
       workItem.chunks.some((chunk) => {
-        const savedChunk = getSavedChunk(workItem.initialState, chunk.chunkIndex);
+        const savedChunk = getSavedChunk(workItem.initialState, chunk);
         return !savedChunk?.organizedSaved || savedChunk.organizedMarkdown === undefined;
       });
     if (!needsArtifacts) {
@@ -405,66 +485,185 @@ export async function runOcrPreprocessingBatchPipeline(
     });
   }
 
+  const runRawChunk = async (captureInput: {
+    workItem: OcrPreprocessingBatchWorkItem;
+    chunk: OcrPreprocessingPageChunk;
+    artifact: OcrPdfChunkArtifact;
+  }) => {
+    const { workItem, chunk, artifact } = captureInput;
+    await emitFileProgress(input, workItem.file, {
+      stage: 'paddleocr_chunk_started',
+      chunkIndex: chunk.chunkIndex,
+      chunkCount: workItem.chunkCount,
+    });
+    return await input.paddleOcr.runChunk({
+      file: workItem.file,
+      chunk,
+      artifact,
+    });
+  };
+
+  const saveRawChunk = async (captureInput: {
+    workItem: OcrPreprocessingBatchWorkItem;
+    chunk: OcrPreprocessingPageChunk;
+    artifact: OcrPdfChunkArtifact;
+    raw: PaddleOcrChunkRunResult;
+  }) => {
+    const { workItem, chunk, artifact, raw } = captureInput;
+    await input.memory.capturePaddleOcrChunkResult({
+      conversationId: input.conversationId,
+      requestId: input.requestId,
+      providerToolCallId: getOcrPreprocessingProviderToolCallId({ file: workItem.file, chunk }),
+      turnIndex,
+      checkpointTurnIndex,
+      file: workItem.file,
+      chunk: {
+        ...chunk,
+        sourcePdfKey: workItem.file.sourcePdfKey,
+        pdfChunk: {
+          source: artifact.source ?? 's3',
+          storageKey: artifact.storageKey,
+          ...(artifact.storageRegion !== undefined
+            ? { storageRegion: artifact.storageRegion }
+            : {}),
+          filepath: artifact.filepath,
+        },
+      },
+      rawResultHash: raw.rawResultHash,
+      data: raw.rawResult,
+      includeTotals: false,
+    });
+    await emitFileProgress(input, workItem.file, {
+      stage: 'paddleocr_chunk_saved',
+      chunkIndex: chunk.chunkIndex,
+      chunkCount: workItem.chunkCount,
+    });
+  };
+
   for (const workItem of workItems) {
     if (resultSlots[workItem.index]?.status === 'failed') {
       continue;
     }
-    for (const chunk of workItem.chunks) {
-      const savedChunk = getSavedChunk(workItem.initialState, chunk.chunkIndex);
+    for (let chunkPosition = 0; chunkPosition < workItem.chunks.length; chunkPosition += 1) {
+      const chunk = workItem.chunks[chunkPosition];
+      if (!chunk) {
+        continue;
+      }
+      const savedChunk = getSavedChunk(workItem.initialState, chunk);
 
       if (savedChunk?.rawSaved) {
         continue;
       }
 
+      let artifact: OcrPdfChunkArtifact;
       try {
-        const artifact = findArtifact({
+        artifact = findArtifact({
           file: workItem.file,
           artifacts: workItem.pdfChunkArtifacts ?? [],
           chunk,
         });
-        await emitFileProgress(input, workItem.file, {
-          stage: 'paddleocr_chunk_started',
-          chunkIndex: chunk.chunkIndex,
-          chunkCount: workItem.chunkCount,
-        });
-        const raw = await input.paddleOcr.runChunk({
-          file: workItem.file,
-          chunk,
-          artifact,
-        });
-        await input.memory.capturePaddleOcrChunkResult({
-          conversationId: input.conversationId,
-          requestId: input.requestId,
-          providerToolCallId: getOcrPreprocessingProviderToolCallId({ file: workItem.file, chunk }),
-          turnIndex,
-          checkpointTurnIndex,
-          file: workItem.file,
-          chunk: {
-            ...chunk,
-            sourcePdfKey: workItem.file.sourcePdfKey,
-            pdfChunk: {
-              source: artifact.source ?? 's3',
-              storageKey: artifact.storageKey,
-              ...(artifact.storageRegion !== undefined
-                ? { storageRegion: artifact.storageRegion }
-                : {}),
-              filepath: artifact.filepath,
-            },
-          },
-          rawResultHash: raw.rawResultHash,
-          data: raw.rawResult,
-          includeTotals: false,
-        });
-        await emitFileProgress(input, workItem.file, {
-          stage: 'paddleocr_chunk_saved',
-          chunkIndex: chunk.chunkIndex,
-          chunkCount: workItem.chunkCount,
-        });
+      } catch (artifactError) {
+        workItem.failures.push(toFailure({ stage: 'artifacts', chunk, error: artifactError }));
+        continue;
+      }
+      try {
+        const raw = await runRawChunk({ workItem, chunk, artifact });
+        try {
+          await saveRawChunk({ workItem, chunk, artifact, raw });
+        } catch (saveError) {
+          workItem.failures.push(toFailure({ stage: 'state', chunk, error: saveError }));
+        }
       } catch (error) {
         if (isAbortError(error)) {
           throw error;
         }
-        workItem.failures.push(toFailure({ stage: 'paddleocr', chunk, error }));
+        if (!isAdaptiveSplitEligiblePaddleOcrError(error)) {
+          workItem.failures.push(toFailure({ stage: 'paddleocr', chunk, error }));
+          continue;
+        }
+        const split = splitExactFiftyPageRange(chunk);
+        if (!split) {
+          workItem.failures.push(toFailure({ stage: 'paddleocr', chunk, error }));
+          continue;
+        }
+        const nextChunks = normalizeOcrPageChunks([
+          ...workItem.chunks.filter((candidate) => candidate !== chunk),
+          ...split,
+        ]);
+        let nextArtifacts: OcrPdfChunkArtifact[];
+        try {
+          if (!workItem.artifactStore.commitPdfChunkSplit) {
+            throw new Error('OCR artifact store cannot commit split markers');
+          }
+          nextArtifacts = await workItem.artifactStore.commitPdfChunkSplit({
+            file: workItem.file,
+            sourcePdfKey: workItem.file.sourcePdfKey,
+            parent: chunk,
+            children: split,
+            chunks: nextChunks,
+          });
+        } catch (splitError) {
+          workItem.failures.push(toFailure({ stage: 'artifacts', chunk, error: splitError }));
+          continue;
+        }
+        workItem.chunks = nextChunks;
+        workItem.chunkCount = nextChunks.length;
+        workItem.pdfChunkArtifacts = nextArtifacts;
+        for (const child of split) {
+          const childChunk = nextChunks.find(
+            (candidate) =>
+              candidate.pageStart === child.pageStart && candidate.pageEnd === child.pageEnd,
+          );
+          if (!childChunk) {
+            workItem.failures.push(toFailure({ stage: 'paddleocr', chunk: child, error: new Error('Missing OCR split child range') }));
+            continue;
+          }
+          let childArtifact: OcrPdfChunkArtifact;
+          try {
+            childArtifact = findArtifact({
+              file: workItem.file,
+              artifacts: nextArtifacts,
+              chunk: childChunk,
+            });
+          } catch (childArtifactError) {
+            workItem.failures.push(
+              toFailure({ stage: 'artifacts', chunk: childChunk, error: childArtifactError }),
+            );
+            continue;
+          }
+          let childRaw: PaddleOcrChunkRunResult;
+          try {
+            childRaw = await runRawChunk({
+              workItem,
+              chunk: childChunk,
+              artifact: childArtifact,
+            });
+          } catch (childError) {
+            if (isAbortError(childError)) {
+              throw childError;
+            }
+            workItem.failures.push(
+              toFailure({ stage: 'paddleocr', chunk: childChunk, error: childError }),
+            );
+            continue;
+          }
+          try {
+            await saveRawChunk({
+              workItem,
+              chunk: childChunk,
+              artifact: childArtifact,
+              raw: childRaw,
+            });
+          } catch (childSaveError) {
+            if (isAbortError(childSaveError)) {
+              throw childSaveError;
+            }
+            workItem.failures.push(
+              toFailure({ stage: 'state', chunk: childChunk, error: childSaveError }),
+            );
+          }
+        }
+        chunkPosition += 1;
         continue;
       }
     }
@@ -502,14 +701,15 @@ export async function runOcrPreprocessingBatchPipeline(
     }
 
     for (const chunk of workItem.chunks) {
-      const savedChunk = getSavedChunk(preflightState, chunk.chunkIndex);
+      const savedChunk = getSavedChunk(preflightState, chunk);
 
       if (savedChunk?.organizedSaved && savedChunk.organizedMarkdown !== undefined) {
         continue;
       }
       if (!savedChunk?.rawSaved) {
         const alreadyFailed = workItem.failures.some(
-          (failure) => failure.chunkIndex === chunk.chunkIndex,
+          (failure) =>
+            failure.pageStart === chunk.pageStart && failure.pageEnd === chunk.pageEnd,
         );
         if (!alreadyFailed) {
           workItem.failures.push(
@@ -625,15 +825,22 @@ export async function runOcrPreprocessingBatchPipeline(
       });
       continue;
     }
-    const chunkMarkdowns = getSavedOcrPreprocessingChunkMarkdowns(finalState);
-    if (chunkMarkdowns.length !== workItem.chunks.length) {
+    const chunkMarkdowns = getExpectedSavedChunkMarkdowns(finalState, workItem.chunks);
+    if (!hasCompleteOrganizedChunks(finalState, workItem.chunks)) {
+      const expectedRanges = new Set(workItem.chunks.map(getOcrPageRangeKey));
+      const actualRanges = chunkMarkdowns.filter(
+        (chunk) =>
+          chunk.pageStart !== undefined &&
+          chunk.pageEnd !== undefined &&
+          expectedRanges.has(getOcrPageRangeKey(chunk)),
+      ).length;
       resultSlots[workItem.index] = toFailedFileResult({
         file: workItem.file,
         failures: [
           toFailure({
             stage: 'merge',
             error: new Error(
-              `Missing OCR preprocessing markdown chunks for ${workItem.file.ocrFileKey}: expected ${workItem.chunks.length}, got ${chunkMarkdowns.length}`,
+              `Missing OCR preprocessing markdown chunks for ${workItem.file.ocrFileKey}: expected ${workItem.chunks.length}, got ${actualRanges}`,
             ),
           }),
         ],

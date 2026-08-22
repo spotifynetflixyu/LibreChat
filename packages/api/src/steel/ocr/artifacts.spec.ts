@@ -1,7 +1,9 @@
 import { buildPdfPageChunks } from './chunks';
 import {
   buildOcrPdfChunkArtifactStorageKey,
+  commitOcrPdfChunkSplit,
   ensurePdfChunkArtifacts,
+  resolveCanonicalOcrPageChunks,
   type OcrPdfChunkArtifactRecord,
 } from './artifacts';
 
@@ -163,5 +165,130 @@ describe('OCR PDF chunk artifacts', () => {
     );
     expect(page36[0]?.storageKey).not.toContain('pages-000035-000035.pdf');
     expect(repository.upsert).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires a committed parent marker before child rows supersede the default plan', () => {
+    const defaults = buildPdfPageChunks({ pageCount: 50 });
+    const childRows = [
+      {
+        ...defaults[0],
+        chunkIndex: 1,
+        chunkCount: 2,
+        pageStart: 1,
+        pageEnd: 25,
+        chunkSizePages: 25,
+      },
+      {
+        ...defaults[0],
+        chunkIndex: 2,
+        chunkCount: 2,
+        pageStart: 26,
+        pageEnd: 50,
+        chunkSizePages: 25,
+      },
+    ] as OcrPdfChunkArtifactRecord[];
+    expect(resolveCanonicalOcrPageChunks({ defaultChunks: defaults, artifactRows: childRows })).toEqual(
+      defaults,
+    );
+    expect(
+      resolveCanonicalOcrPageChunks({
+        defaultChunks: defaults,
+        artifactRows: [
+          {
+            ...defaults[0],
+            supersededByRanges: [
+              { pageStart: 1, pageEnd: 25 },
+              { pageStart: 26, pageEnd: 50 },
+            ],
+          },
+          ...childRows,
+        ],
+      }),
+    ).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 25, chunkSizePages: 25 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 26, pageEnd: 50, chunkSizePages: 25 },
+    ]);
+  });
+
+  it('persists both child artifacts before committing the parent split marker', async () => {
+    const parent = buildPdfPageChunks({ pageCount: 50 })[0]!;
+    const children = [
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 25, chunkSizePages: 25 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 26, pageEnd: 50, chunkSizePages: 25 },
+    ];
+    const events: string[] = [];
+    const parentRow = {
+      ...parent,
+      sourcePdfKey: 's3://bucket/original.pdf',
+      pipelineVersion: 1,
+      artifact: {
+        source: 's3' as const,
+        storageKey: 'chunks/parent.pdf',
+        filepath: 'https://cdn.example/chunks/parent.pdf',
+        filename: 'parent.pdf',
+        bytes: 100,
+        contentType: 'application/pdf' as const,
+      },
+    };
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [parentRow]),
+      upsert: jest.fn(async (artifact) => {
+        events.push(`upsert:${artifact.pageStart}-${artifact.pageEnd}`);
+      }),
+      compareAndSetSupersededByRanges: jest.fn(async () => {
+        events.push('commit-marker');
+        return 'updated' as const;
+      }),
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn(async () => false),
+      saveBuffer: jest.fn(async ({ filename }) => {
+        events.push(`save:${filename}`);
+        return { bytes: 25 };
+      }),
+      getDownloadUrl: jest.fn(async ({ storageKey }) => `https://cdn.example/${storageKey}`),
+    };
+
+    const artifacts = await commitOcrPdfChunkSplit({
+      sourcePdfKey: 's3://bucket/original.pdf',
+      sourceFilename: 'original.pdf',
+      parent,
+      children,
+      chunks: children,
+      repository,
+      storage,
+      createPdfChunk: jest.fn(async () => new Uint8Array([1, 2, 3])),
+    });
+
+    expect(artifacts.map(({ pageStart, pageEnd }) => [pageStart, pageEnd])).toEqual([
+      [1, 25],
+      [26, 50],
+    ]);
+    expect(events.at(-1)).toBe('commit-marker');
+    expect(repository.upsert).toHaveBeenCalledTimes(2);
+    expect(repository.compareAndSetSupersededByRanges).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parent: expect.objectContaining({ pageStart: 1, pageEnd: 50 }),
+        supersededByRanges: [
+          { pageStart: 1, pageEnd: 25 },
+          { pageStart: 26, pageEnd: 50 },
+        ],
+      }),
+    );
+  });
+
+  it('rejects malformed parent markers', () => {
+    expect(() =>
+      resolveCanonicalOcrPageChunks({
+        defaultChunks: buildPdfPageChunks({ pageCount: 50 }),
+        artifactRows: [
+          {
+            ...buildPdfPageChunks({ pageCount: 50 })[0],
+            supersededByRanges: [{ pageStart: 1, pageEnd: 25 }],
+          } as OcrPdfChunkArtifactRecord,
+        ],
+      }),
+    ).toThrow();
   });
 });

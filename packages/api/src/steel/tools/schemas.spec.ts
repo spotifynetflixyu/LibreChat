@@ -1,6 +1,7 @@
-import { steelToolArgsSchemas } from './schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+
 import { processingPriceCategories } from '../pricing/processing-candidates';
+import { steelToolArgsSchemas } from './schemas';
 
 describe('Steel price candidate tool schema', () => {
   const schema = steelToolArgsSchemas.search_price_candidates;
@@ -15,111 +16,133 @@ describe('Steel price candidate tool schema', () => {
     expect(
       schema.parse({
         queries: [
-          { category: 'H型鋼', keyword: 'H200x100' },
-          { category: '加工/其他', subcategory: '厚板' },
-          { mode: 'category_discovery', keyword: '不銹鋼管' },
+          { categories: ['H型鋼'], stockLengthMm: ['6000', '9000'] },
+          { categories: ['鐵板'], subcategory: '平板' },
+          { erpItemCodes: ['ERP-1'] },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: 'H型鋼', keyword: 'H200x100' },
-        { queryId: 'q2', category: '加工/其他', subcategory: '厚板' },
-        { queryId: 'q3', mode: 'category_discovery', keyword: '不銹鋼管' },
+        { queryId: 'q1', categories: ['H型鋼'], stockLengthMm: ['6000', '9000'] },
+        { queryId: 'q2', categories: ['鐵板'], subcategory: '平板' },
+        { queryId: 'q3', erpItemCodes: ['ERP-1'] },
       ],
     });
   });
 
   it('rejects caller-supplied query IDs in every AI-visible query shape', () => {
-    expect(() => schema.parse({ queries: [{ queryId: 'q1', category: '鐵板' }] })).toThrow(
+    expect(() => schema.parse({ queries: [{ queryId: 'q1', categories: ['鐵板'] }] })).toThrow(
       'Unrecognized key',
     );
-    expect(() =>
-      schema.parse({ queries: [{ queryId: 'q1', mode: 'category_discovery', keyword: '鐵板' }] }),
-    ).toThrow('Unrecognized key');
-    expect(() =>
-      schema.parse({ processingQueries: [{ queryId: 'p1', categories: ['鐵板'] }] }),
-    ).toThrow('Unrecognized key');
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板'], productNames: ['x'] }] })).toThrow(
+      'Unrecognized key',
+    );
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板'], processingQueries: [] }] })).toThrow(
+      'Unrecognized key',
+    );
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板'], erpItemCode: 'ERP-1' }] })).toThrow(
+      'Unrecognized key',
+    );
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板'] }], processingQueries: [] })).toThrow();
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板'] }], erpItemCodes: ['ERP-1'] })).toThrow();
   });
 
   it('accepts up to three processing queries and assigns deterministic IDs', () => {
     expect(
       schema.parse({
-        queries: [{ category: '鐵板' }, { category: 'C型鋼' }],
-        processingQueries: [
+        queries: [
           {
             categories: ['鐵板', 'C型鋼'],
             processingCategories: ['加工/切工', '加工/孔'],
             keyword: '雷射',
           },
           { categories: ['鐵板'], processingCategories: ['加工/折工'] },
+          { categories: ['H型鋼'], processingCategories: ['加工/孔'] },
         ],
-      }).processingQueries,
+      }).queries,
     ).toEqual([
       {
-        queryId: 'p1',
+        queryId: 'q1',
         categories: ['鐵板', 'C型鋼'],
         processingCategories: ['加工/切工', '加工/孔'],
         keyword: '雷射',
       },
-      { queryId: 'p2', categories: ['鐵板'], processingCategories: ['加工/折工'] },
+      { queryId: 'q2', categories: ['鐵板'], processingCategories: ['加工/折工'] },
+      { queryId: 'q3', categories: ['H型鋼'], processingCategories: ['加工/孔'] },
     ]);
+
+    expect(() =>
+      schema.parse({
+        queries: [
+          { categories: ['鐵板'], processingCategories: ['加工/切工'] },
+          { categories: ['鐵板'], processingCategories: ['加工/孔'] },
+          { categories: ['鐵板'], processingCategories: ['加工/折工'] },
+          { categories: ['鐵板'], processingCategories: ['加工/其他'] },
+        ],
+      }),
+    ).toThrow('At most three processing query items');
+  });
+
+  it('rejects keyword for H型鋼 while allowing its category-rule stock lengths', () => {
+    expect(() =>
+      schema.parse({ queries: [{ categories: ['H型鋼'], keyword: '300x300x10/15' }] }),
+    ).toThrow('must not use keyword');
+    expect(
+      schema.parse({
+        queries: [{ categories: ['H型鋼'], stockLengthMm: ['6000', '9000', '12000'] }],
+      }).queries[0],
+    ).toEqual({
+      queryId: 'q1',
+      categories: ['H型鋼'],
+      stockLengthMm: ['6000', '9000', '12000'],
+    });
   });
 
   it('accepts the complete canonical processing category list', () => {
     expect(
       schema.parse({
-        processingQueries: [
-          { categories: ['鐵板'], processingCategories: [...processingPriceCategories] },
-        ],
-      }).processingQueries?.[0]?.processingCategories,
-    ).toEqual(processingPriceCategories);
+        queries: [{ categories: ['鐵板'], processingCategories: [...processingPriceCategories] }],
+      }).queries[0],
+    ).toMatchObject({ processingCategories: processingPriceCategories });
   });
 
-  it('accepts top-level exact productNames without either query array', () => {
-    expect(schema.parse({ productNames: ['雷射切工 1', '雷射切工 2'] })).toEqual({
-      queries: [],
-      productNames: ['雷射切工 1', '雷射切工 2'],
+  it('accepts exact ERP queries and rejects legacy or mixed top-level fields', () => {
+    expect(schema.parse({ queries: [{ erpItemCodes: ['ERP-1', 'ERP-2'] }] })).toEqual({
+      queries: [{ queryId: 'q1', erpItemCodes: ['ERP-1', 'ERP-2'] }],
     });
-    expect(() =>
-      schema.parse({
-        queries: [{ category: '鐵板' }],
-        productNames: ['雷射切工 1'],
-      }),
-    ).toThrow('cannot include');
-    expect(() => schema.parse({})).toThrow('Provide queries, processingQueries, or productNames');
+    expect(() => schema.parse({ queries: [{ erpItemCodes: ['ERP-1', 'ERP-1'] }] })).toThrow(
+      'unique',
+    );
+    expect(() => schema.parse({ productNames: ['雷射切工 1'] })).toThrow();
+    expect(() => schema.parse({ queries: [{ erpItemCodes: ['ERP-1'], categories: ['鐵板'] }] })).toThrow();
+    expect(() => schema.parse({})).toThrow();
   });
 
   it('rejects product categories in processingCategories and processing categories as targets', () => {
     expect(() =>
       schema.parse({
-        queries: [{ category: '鐵板' }],
-        processingQueries: [{ categories: ['加工/孔'], processingCategories: ['加工/孔'] }],
+        queries: [{ categories: ['加工/孔'], processingCategories: ['加工/孔'] }],
       }),
     ).toThrow('product or material categories');
     expect(() =>
       schema.parse({
-        queries: [{ category: '鐵板' }],
-        processingQueries: [{ categories: ['鐵板'], processingCategories: ['鐵板'] }],
+        queries: [{ categories: ['鐵板'], processingCategories: ['鐵板'] }],
       }),
-    ).toThrow('processing categories');
+    ).toThrow();
   });
 
-  it('does not impose a top-level query count limit', () => {
+  it('accepts a bounded batch of strict query items', () => {
     const queries = Array.from({ length: 25 }, (_, index) => ({
-      category: '鐵板' as const,
+      categories: ['鐵板'] as const,
       thicknessMm: [String(index + 1)],
     }));
 
     expect(schema.parse({ queries }).queries).toHaveLength(25);
   });
 
-  it('rejects AI-controlled limits for lookup and category discovery queries', () => {
-    expect(schema.safeParse({ queries: [{ category: '鐵板', limit: 10 }] }).success).toBe(false);
-    expect(
-      schema.safeParse({
-        queries: [{ mode: 'category_discovery', keyword: '管', limit: 10 }],
-      }).success,
-    ).toBe(false);
+  it('rejects AI-controlled limits and obsolete query modes', () => {
+    expect(schema.safeParse({ queries: [{ categories: ['鐵板'], limit: 10 }] }).success).toBe(false);
+    expect(schema.safeParse({ queries: [{ mode: 'category_discovery', keyword: '管' }] }).success).toBe(false);
   });
 
   it('accepts all v4.2 lookup filters and separate 錏/鋅 material enum values', () => {
@@ -127,267 +150,222 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           {
-            category: '圓管',
+            categories: ['圓管'],
             subcategory: '一般',
             material: '鎢',
             thicknessMm: ['1.2', '1.5'],
             stockLengthMm: ['6000', '9000', '10000', '12000'],
-            erpItemCode: '00123',
             keyword: '連料',
           },
-          { category: '五金/配件', material: '鋅' },
+          { categories: ['五金/配件'], material: '鋅' },
         ],
       }),
     ).toEqual({
       queries: [
         {
           queryId: 'q1',
-          category: '圓管',
+          categories: ['圓管'],
           subcategory: '一般',
           material: '鎢',
           thicknessMm: ['1.2', '1.5'],
           stockLengthMm: ['6000', '9000', '10000', '12000'],
-          erpItemCode: '00123',
           keyword: '連料',
         },
-        { queryId: 'q2', category: '五金/配件', material: '鋅' },
+        { queryId: 'q2', categories: ['五金/配件'], material: '鋅' },
       ],
     });
   });
 
-  it('defaults plate unit/material and lets explicit unit override the default', () => {
+  it('accepts omitted and explicit plate filters without silently inventing values', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '鐵板' },
-          { category: '鐵板', unit: 'kg', material: 'bad-material' },
-          { category: '鐵板', unit: '支', material: null },
+          { categories: ['鐵板'] },
+          { categories: ['鐵板'], unit: 'kg', material: '黑鐵' },
+          { categories: ['鐵板'], unit: '片', material: '黑鐵' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '鐵板', unit: 'Kg', material: '黑鐵' },
-        { queryId: 'q2', category: '鐵板', unit: 'Kg', material: '黑鐵' },
-        { queryId: 'q3', category: '鐵板', unit: '片', material: '黑鐵' },
+        { queryId: 'q1', categories: ['鐵板'] },
+        { queryId: 'q2', categories: ['鐵板'], unit: 'kg', material: '黑鐵' },
+        { queryId: 'q3', categories: ['鐵板'], unit: '片', material: '黑鐵' },
       ],
     });
   });
 
-  it('normalizes material aliases for every category without rejecting invalid values', () => {
+  it('accepts recognized material aliases and rejects unknown explicit values', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '鐵板', material: 'ST', thicknessMm: ['2.9'] },
-          { category: '鐵板', material: 'st', thicknessMm: ['3'] },
-          { category: '圓管', material: 'NO1' },
-          { category: '圓管', material: '沙面' },
-          { category: '圓管', material: '亮面' },
-          { category: '圓管', material: '不鏽鋼' },
-          { category: '圓管', material: '白鐵 / NO1' },
-          { category: '圓管', material: '白鐵霧面 / ST 2B' },
-          { category: '圓管', material: '白鐵沙面 / ST HL' },
-          { category: '圓管', material: '白鐵亮面 / ST BA' },
-          { category: '圓管', material: 'invalid' },
-          { category: '圓管', unit: 'Kg' },
+          { categories: ['鐵板'], material: 'ST', thicknessMm: ['2.9'] },
+          { categories: ['圓管'], material: 'NO1' },
+          { categories: ['圓管'], material: '白鐵 / ST' },
+          { categories: ['圓管'], material: '白鐵 / NO1' },
+          { categories: ['圓管'], material: '白鐵霧面 / ST 2B' },
+        ],
+      }).queries,
+    ).toEqual([
+      { queryId: 'q1', categories: ['鐵板'], material: 'ST', thicknessMm: ['2.9'] },
+      { queryId: 'q2', categories: ['圓管'], material: 'NO1' },
+      { queryId: 'q3', categories: ['圓管'], material: '白鐵 / ST' },
+      { queryId: 'q4', categories: ['圓管'], material: '白鐵 / NO1' },
+      { queryId: 'q5', categories: ['圓管'], material: '白鐵霧面 / ST 2B' },
+    ]);
+    expect(() => schema.parse({ queries: [{ categories: ['圓管'], material: 'invalid' }] })).toThrow(
+      'Invalid material',
+    );
+  });
+
+  it('leaves omitted 圓管 material for backend defaults and preserves valid filters', () => {
+    expect(
+      schema.parse({
+        queries: [
+          { categories: ['圓管'] },
+          { categories: ['圓管'], material: '黑鐵' },
+          { categories: ['圓管'], material: '白鐵' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '鐵板', unit: 'Kg', material: '2B', thicknessMm: ['2.9'] },
-        { queryId: 'q2', category: '鐵板', unit: 'Kg', material: 'NO1', thicknessMm: ['3'] },
-        { queryId: 'q3', category: '圓管', material: 'NO1' },
-        { queryId: 'q4', category: '圓管', material: 'HL' },
-        { queryId: 'q5', category: '圓管', material: 'BA' },
-        { queryId: 'q6', category: '圓管', material: '白鐵' },
-        { queryId: 'q7', category: '圓管', material: 'NO1' },
-        { queryId: 'q8', category: '圓管', material: '2B' },
-        { queryId: 'q9', category: '圓管', material: 'HL' },
-        { queryId: 'q10', category: '圓管', material: 'BA' },
-        { queryId: 'q11', category: '圓管', material: '黑鐵' },
-        { queryId: 'q12', category: '圓管', material: '黑鐵', unit: 'Kg' },
+        { queryId: 'q1', categories: ['圓管'] },
+        { queryId: 'q2', categories: ['圓管'], material: '黑鐵' },
+        { queryId: 'q3', categories: ['圓管'], material: '白鐵' },
       ],
     });
   });
 
-  it('defaults 圓管 material to 黑鐵 unless a valid material is supplied', () => {
+  it('accepts explicit 平鐵 material filters and leaves omitted defaults to execution', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '圓管' },
-          { category: '圓管', material: 'invalid' },
-          { category: '圓管', material: '白鐵' },
+          { categories: ['平鐵'] },
+          { categories: ['平鐵'], material: '黑鐵' },
+          { categories: ['平鐵'], material: '白鐵' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '圓管', material: '黑鐵' },
-        { queryId: 'q2', category: '圓管', material: '黑鐵' },
-        { queryId: 'q3', category: '圓管', material: '白鐵' },
+        { queryId: 'q1', categories: ['平鐵'] },
+        { queryId: 'q2', categories: ['平鐵'], material: '黑鐵' },
+        { queryId: 'q3', categories: ['平鐵'], material: '白鐵' },
       ],
     });
   });
 
-  it('defaults 平鐵 material to 黑鐵 unless a valid material is supplied', () => {
+  it('accepts explicit 方鐵 material filters and leaves omitted defaults to execution', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '平鐵' },
-          { category: '平鐵', material: 'invalid' },
-          { category: '平鐵', material: '白鐵' },
+          { categories: ['方鐵'] },
+          { categories: ['方鐵'], material: '黑鐵' },
+          { categories: ['方鐵'], material: '白鐵' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '平鐵', material: '黑鐵' },
-        { queryId: 'q2', category: '平鐵', material: '黑鐵' },
-        { queryId: 'q3', category: '平鐵', material: '白鐵' },
+        { queryId: 'q1', categories: ['方鐵'] },
+        { queryId: 'q2', categories: ['方鐵'], material: '黑鐵' },
+        { queryId: 'q3', categories: ['方鐵'], material: '白鐵' },
       ],
     });
   });
 
-  it('defaults 方鐵 material to 黑鐵 unless a valid material is supplied', () => {
+  it('accepts 槽鐵 material aliases without silently rewriting input', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '方鐵' },
-          { category: '方鐵', material: 'invalid' },
-          { category: '方鐵', material: '白鐵' },
+          { categories: ['槽鐵'], keyword: '50x25x5' },
+          { categories: ['槽鐵'], material: '熱浸鍍', keyword: '75x40x5/7' },
+          { categories: ['槽鐵'], material: '熱浸鍍鋅', keyword: '75x40x5/7' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '方鐵', material: '黑鐵' },
-        { queryId: 'q2', category: '方鐵', material: '黑鐵' },
-        { queryId: 'q3', category: '方鐵', material: '白鐵' },
+        { queryId: 'q1', categories: ['槽鐵'], keyword: '50x25x5' },
+        { queryId: 'q2', categories: ['槽鐵'], material: '熱浸鍍', keyword: '75x40x5/7' },
+        { queryId: 'q3', categories: ['槽鐵'], material: '熱浸鍍鋅', keyword: '75x40x5/7' },
       ],
     });
   });
 
-  it('defaults 槽鐵 material to 黑鐵 and normalizes 熱浸鍍 to 錏', () => {
+  it('accepts 角鐵 material aliases without silently rewriting input', () => {
     expect(
       schema.parse({
         queries: [
-          { category: '槽鐵', keyword: '50x25x5' },
-          { category: '槽鐵', material: '熱浸鍍', keyword: '75x40x5/7' },
-          { category: '槽鐵', material: '熱浸鍍鋅', keyword: '75x40x5/7' },
+          { categories: ['角鐵'], keyword: '25x2.5' },
+          { categories: ['角鐵'], material: '熱進鍍鋅', keyword: '100x75x7' },
         ],
       }),
     ).toEqual({
       queries: [
-        { queryId: 'q1', category: '槽鐵', material: '黑鐵', keyword: '50x25x5' },
-        { queryId: 'q2', category: '槽鐵', material: '錏', keyword: '75x40x5/7' },
-        { queryId: 'q3', category: '槽鐵', material: '錏', keyword: '75x40x5/7' },
+        { queryId: 'q1', categories: ['角鐵'], keyword: '25x2.5' },
+        { queryId: 'q2', categories: ['角鐵'], material: '熱進鍍鋅', keyword: '100x75x7' },
       ],
     });
   });
 
-  it('defaults 角鐵 material to 黑鐵 and normalizes 熱進鍍鋅 to 錏', () => {
-    expect(
-      schema.parse({
-        queries: [
-          { category: '角鐵', keyword: '25x2.5' },
-          { category: '角鐵', material: '熱進鍍鋅', keyword: '100x75x7' },
-        ],
-      }),
-    ).toEqual({
-      queries: [
-        { queryId: 'q1', category: '角鐵', material: '黑鐵', keyword: '25x2.5' },
-        { queryId: 'q2', category: '角鐵', material: '錏', keyword: '100x75x7' },
-      ],
-    });
-  });
-
-  it('removes mesh unit filters', () => {
-    expect(
-      schema.parse({
-        queries: [
-          { category: '網', unit: '㎡', subcategory: '點焊' },
-          { category: '網', unit: '捲', subcategory: '刺網' },
-          { category: '網', unit: '張', subcategory: '點焊' },
-          { category: '網', subcategory: '菱形' },
-        ],
-      }),
-    ).toEqual({
-      queries: [
-        { queryId: 'q1', category: '網', subcategory: '點焊' },
-        { queryId: 'q2', category: '網', subcategory: '刺網' },
-        { queryId: 'q3', category: '網', subcategory: '點焊' },
-        { queryId: 'q4', category: '網', subcategory: '菱形' },
-      ],
+  it('rejects invalid mesh unit filters instead of silently dropping them', () => {
+    expect(() => schema.parse({ queries: [{ categories: ['網'], unit: '㎡', subcategory: '點焊' }] })).toThrow(
+      'Invalid unit',
+    );
+    expect(schema.parse({ queries: [{ categories: ['網'], subcategory: '菱形' }] })).toEqual({
+      queries: [{ queryId: 'q1', categories: ['網'], subcategory: '菱形' }],
     });
   });
 
   it('validates subcategories against their category and rejects legacy names', () => {
-    expect(() => schema.parse({ queries: [{ category: '加工/其他', subcategory: '扁' }] })).toThrow(
-      '扁',
-    );
-    expect(() => schema.parse({ queries: [{ category: '鐵板', subcategory: '鋼管' }] })).toThrow(
-      '鋼管',
-    );
-    expect(() => schema.parse({ queries: [{ category: '鐵板/鋼板' }] })).toThrow();
-    expect(() => schema.parse({ queries: [{ category: '孔', keyword: '鐵板' }] })).toThrow();
+    expect(() => schema.parse({ queries: [{ categories: ['加工/其他'], subcategory: '扁' }] })).toThrow();
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板'], subcategory: '鋼管' }] })).toThrow();
+    expect(() => schema.parse({ queries: [{ categories: ['鐵板/鋼板'] }] })).toThrow();
+    expect(schema.parse({ queries: [{ categories: ['其他'], keyword: '鐵板' }] })).toBeDefined();
     expect(() =>
-      schema.parse({ queries: [{ category: '加工/切工', processingMethod: '雷射' }] }),
+      schema.parse({ queries: [{ categories: ['加工/切工'], processingMethod: '雷射' }] }),
     ).toThrow();
   });
 
   it('keeps 錏 and 鋅 as distinct accepted material filters', () => {
-    expect(schema.parse({ queries: [{ category: '鐵板', material: '錏' }] })).toBeDefined();
-    expect(schema.parse({ queries: [{ category: '鐵板', material: '鋅' }] })).toBeDefined();
+    expect(schema.parse({ queries: [{ categories: ['鐵板'], material: '錏' }] })).toBeDefined();
+    expect(schema.parse({ queries: [{ categories: ['鐵板'], material: '鋅' }] })).toBeDefined();
   });
 
   it.each(['0', '-1', '6mm', 'NaN', 'Infinity', '1e2'])(
     'rejects non-positive or non-decimal thickness %s',
     (thicknessMm) => {
       expect(() =>
-        schema.parse({ queries: [{ category: '加工/孔', thicknessMm: [thicknessMm] }] }),
+        schema.parse({ queries: [{ categories: ['鐵板'], thicknessMm: [thicknessMm] }] }),
       ).toThrow();
     },
   );
 
-  it('silently removes invalid stock lengths without rejecting the query', () => {
-    expect(
-      schema.parse({
-        queries: [
-          {
-            category: '圓管',
-            stockLengthMm: ['0', '-1', '6m', 'NaN', 'Infinity', '1e4', 6000, null, '6000'],
-          },
-        ],
-      }),
-    ).toEqual({
-      queries: [{ queryId: 'q1', category: '圓管', material: '黑鐵', stockLengthMm: ['6000'] }],
-    });
+  it('rejects invalid stock lengths instead of silently dropping them', () => {
+    expect(() => schema.parse({
+      queries: [{ categories: ['圓管'], stockLengthMm: ['0', '-1', '6m', 'NaN'] }],
+    })).toThrow();
   });
 
   it('rounds normalized stock-length millimeters to integers and deduplicates them', () => {
     expect(
       schema.parse({
-        queries: [{ category: '圓管', stockLengthMm: ['5999.6', '6000.4', '6000.6'] }],
+        queries: [{ categories: ['圓管'], stockLengthMm: ['5999.6', '6000.4', '6000.6'] }],
       }),
     ).toEqual({
       queries: [
         {
           queryId: 'q1',
-          category: '圓管',
-          material: '黑鐵',
+          categories: ['圓管'],
           stockLengthMm: ['6000', '6001'],
         },
       ],
     });
   });
 
-  it('silently removes H型鋼 stock lengths below 6000mm without rejecting the query', () => {
-    expect(
-      schema.parse({
-        queries: [{ category: 'H型鋼', stockLengthMm: ['3000', '5000', '5999.9', '6000'] }],
-      }),
-    ).toEqual({
-      queries: [{ queryId: 'q1', category: 'H型鋼', stockLengthMm: ['6000'] }],
-    });
-
-    expect(schema.parse({ queries: [{ category: 'H型鋼', stockLengthMm: ['4000'] }] })).toEqual({
-      queries: [{ queryId: 'q1', category: 'H型鋼', stockLengthMm: [] }],
+  it('allows H型鋼 stock lengths only at or above 6000mm', () => {
+    expect(() => schema.parse({
+      queries: [{ categories: ['H型鋼'], stockLengthMm: ['3000', '6000'] }],
+    })).toThrow('at least 6000');
+    expect(schema.parse({ queries: [{ categories: ['H型鋼'], stockLengthMm: ['6000', '9000'] }] })).toEqual({
+      queries: [{ queryId: 'q1', categories: ['H型鋼'], stockLengthMm: ['6000', '9000'] }],
     });
   });
 });

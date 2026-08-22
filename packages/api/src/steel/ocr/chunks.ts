@@ -16,6 +16,113 @@ export interface OcrPreprocessingPageChunk {
   chunkSizePages: number;
 }
 
+export type OcrPageRange = Pick<OcrPreprocessingPageChunk, 'pageStart' | 'pageEnd'>;
+
+export function getOcrPageRangeKey(range: OcrPageRange): string {
+  return `${range.pageStart}:${range.pageEnd}`;
+}
+
+export function getOcrPageRangePageCount(range: OcrPageRange): number {
+  return range.pageEnd - range.pageStart + 1;
+}
+
+function assertOcrPageRange(range: OcrPageRange): void {
+  if (!Number.isInteger(range.pageStart) || range.pageStart < 1) {
+    throw new Error('OCR page range pageStart must be a positive integer');
+  }
+  if (!Number.isInteger(range.pageEnd) || range.pageEnd < range.pageStart) {
+    throw new Error('OCR page range pageEnd must be greater than or equal to pageStart');
+  }
+}
+
+/**
+ * Normalizes historical chunk metadata into the effective range identity used by OCR.
+ * Chunk indexes and counts are deliberately recomputed from page ranges.
+ */
+export function normalizeOcrPageChunks<
+  T extends OcrPageRange & Partial<OcrPreprocessingPageChunk>,
+>(chunks: readonly T[]): (T & OcrPreprocessingPageChunk)[] {
+  const sorted = [...chunks]
+    .map((chunk) => {
+      assertOcrPageRange(chunk);
+      const chunkSizePages = chunk.chunkSizePages ?? getOcrPageRangePageCount(chunk);
+      if (!Number.isInteger(chunkSizePages) || chunkSizePages < 1) {
+        throw new Error('OCR preprocessing chunk size must be a positive integer');
+      }
+      return { ...chunk, chunkSizePages };
+    })
+    .sort((left, right) => left.pageStart - right.pageStart || left.pageEnd - right.pageEnd);
+
+  const seen = new Set<string>();
+  for (let index = 0; index < sorted.length; index += 1) {
+    const chunk = sorted[index];
+    const key = getOcrPageRangeKey(chunk);
+    if (seen.has(key)) {
+      throw new Error(`Duplicate OCR page range ${chunk.pageStart}-${chunk.pageEnd}`);
+    }
+    seen.add(key);
+    const previous = sorted[index - 1];
+    if (previous && chunk.pageStart <= previous.pageEnd) {
+      throw new Error(
+        `Overlapping OCR page ranges ${previous.pageStart}-${previous.pageEnd} and ${chunk.pageStart}-${chunk.pageEnd}`,
+      );
+    }
+  }
+
+  const chunkCount = sorted.length;
+  return sorted.map((chunk, index) => ({
+    ...chunk,
+    chunkIndex: index + 1,
+    chunkCount,
+    chunkSizePages: chunk.chunkSizePages,
+  }));
+}
+
+export function splitExactFiftyPageRange(
+  range: OcrPageRange,
+): [OcrPreprocessingPageChunk, OcrPreprocessingPageChunk] | undefined {
+  assertOcrPageRange(range);
+  if (getOcrPageRangePageCount(range) !== 50) {
+    return undefined;
+  }
+  const middle = range.pageStart + 24;
+  return [
+    {
+      chunkIndex: 1,
+      chunkCount: 2,
+      pageStart: range.pageStart,
+      pageEnd: middle,
+      chunkSizePages: 25,
+    },
+    {
+      chunkIndex: 2,
+      chunkCount: 2,
+      pageStart: middle + 1,
+      pageEnd: range.pageEnd,
+      chunkSizePages: 25,
+    },
+  ];
+}
+
+export function validateExactFiftyPageSplit(input: {
+  parent: OcrPageRange;
+  children: readonly OcrPageRange[];
+}): [OcrPageRange, OcrPageRange] {
+  const expected = splitExactFiftyPageRange(input.parent);
+  if (!expected || input.children.length !== 2) {
+    throw new Error('OCR split must replace one exact 50-page range with two exact 25-page ranges');
+  }
+  const actual = normalizeOcrPageChunks(input.children).map(({ pageStart, pageEnd }) => ({
+    pageStart,
+    pageEnd,
+  }));
+  const expectedRanges = expected.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }));
+  if (JSON.stringify(actual) !== JSON.stringify(expectedRanges)) {
+    throw new Error('OCR split children must be the two contiguous exact 25-page ranges');
+  }
+  return expectedRanges as [OcrPageRange, OcrPageRange];
+}
+
 export function buildPdfPageChunks(input: {
   pageCount: number;
   chunkSizePages?: number;

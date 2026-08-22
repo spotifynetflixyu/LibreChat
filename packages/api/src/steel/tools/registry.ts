@@ -40,7 +40,7 @@ const executableSteelToolDefinitions: SteelToolDefinition<SteelToolName>[] = [
   {
     name: 'search_price_candidates',
     description:
-      'Find material, cutting, and processing price candidates for one or more order lines.',
+      'Find material, cutting, and processing prices with one queries array. Use a categories item for material, add processingCategories for processing, or use an erpItemCodes-only item for exact retrieval. Material results up to 20 return full candidates. When more than 20 return selectionRequired=true, choose by candidateRefs.productName and copy the paired candidateRefs.erpItemCode values into one erpItemCodes-only query; never infer or rewrite ERP codes.',
     argsSchema: steelToolArgsSchemas.search_price_candidates,
   },
 ];

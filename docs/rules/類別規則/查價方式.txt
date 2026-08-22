@@ -2,13 +2,31 @@
 
 一、批次與查詢
 
-1. 每次報價的材料首查預設只用 `category` 與已知厚度；同類材料建立一筆通用 query，將去重後的厚度字串集中在同一個 `thicknessMm` array。首查預設不得帶 `subcategory`、`material`、`unit`、`keyword` 或 `stockLengthMm`，也不得為每個品項或每個厚度各送一筆重複 query；個別類別規則明示其他首查預設時，由該類別規則覆蓋，例如 C 型鋼的預設材質與 H 型鋼的完整斷面查法。
-2. 加工需求依相同 `categories`、`processingCategories` 合併為通用 `processingQueries`；加工首查也省略 `keyword`，且不得傳 `thicknessMm`。材料與加工集中在同一次批次呼叫，不得因預期無價或缺欄位省略；返回候選再依原需求逐項配對，不跨品項混用。正確範例：`{"queries":[{"category":"鐵板","thicknessMm":["10","12","16","20","28"]}],"processingQueries":[{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}`。
-3. 已知類別首查必須帶 `category`。只有類別未知時才先用 `mode: "category_discovery"` + 最短通用 `keyword`；類別確認後再依第1條首查，不把 discovery keyword 沿用到材料 query。
-4. `erpItemCode` 只供後續回合精確重取已確認候選；首查不得使用，本輪已返回的候選不得重查。
-5. 首查返回候選後才可在允許的一次修正重試加入必要的 `subcategory`、`material`、`unit`、`stockLengthMm` 或最短 `keyword`；只加入能排除錯誤候選的欄位，不得逐步加減 keyword 反覆查詢。移除位置、端數、數量、已由其他欄位表達的內容與冗餘同義詞。不得自行加入專有品名、廠牌、系列、內部資料代號或表單代號；只有使用者原文明示時可保留專有詞。候選 product_name 不得改成 keyword；需要精確重取時使用頂層 `productNames`。ST50、SN400B 只留在備註。
+1. 每次報價的材料首查 item 通常只用 `categories`，相同查價條件的類別可放在同一個 array。通用預設不帶 `subcategory`、`material`、`unit`、`thicknessMm`、`keyword` 或 `stockLengthMm`；個別鋼材類別規則若明示首查參數，依個別規則覆蓋，不限特定類別。H 型鋼目前明示可同時帶去重後的多個 `stockLengthMm`，但不得帶 `keyword`。不得為每個品項各送一筆重複 query。
+2. 加工需求建立另一筆 query item，使用相同工件主類別的 `categories` 與所需加工的 `processingCategories`；加工首查省略 `keyword`，且不得傳材料 filters。材料與加工 items 集中在同一次頂層 `queries` 呼叫，不得因預期無價或缺欄位省略。正確範例：`{"queries":[{"categories":["鐵板"]},{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}`。
+3. 首查必須使用已判定的 `categories`；類別仍不明時列人工複核，不得猜類別、code 或 keyword。
+4. 材料查詢結果為 0 至 20 筆並返回 `candidates` 時，直接依候選報價，不再精確重取。結果超過 20 筆時會返回 `selectionRequired: true` 與 `candidateRefs`；逐筆對照同一 `candidateRefs` 物件內的 `productName` 與訂單材料／規格，選定後只複製同一物件配對的 `erpItemCode`，下一次在 `queries` 放一筆只含 `erpItemCodes` 的 item。`productName` 只供判斷，`erpItemCode` 才是精確重取參數；不得自行推導、改寫、用陣列位置配對或把候選品名傳回查詢。
+5. 首查返回候選後才可在允許的一次修正重試加入必要的 `subcategory`、`material`、`unit`、`stockLengthMm` 或最短 `keyword`；只加入能排除錯誤候選的欄位，不得逐步加減 keyword 反覆查詢。移除位置、端數、數量、已由其他欄位表達的內容與冗餘同義詞。不得自行加入專有品名、廠牌、系列、內部資料代號或表單代號；只有使用者原文明示時可保留專有詞。候選 `productName` 不得改成 `keyword`。ST50、SN400B 只留在備註。
 6. 已有規格精確且可報價候選就直接選價。只有 `no_match`、無精確候選、精確候選全不可報價或缺必要規格時，每筆材料／加工 query 可修正重試一次；不得原樣重送或夾帶成功 query。修正重試仍失敗才可視為缺價，保留空白並列人工複核，仍須完成報價。
-7. 範例：當單一材料 query 結果超過10筆而只得到 `productNames`，先依訂單規格選出合適的品名，再把所選品名放入頂層 `productNames` 重查完整價格候選；不得把候選品名改成 keyword 重查。
+7. 精確重取範例：`{"queries":[{"erpItemCodes":["<同一 candidateRefs 物件的 erpItemCode>"]}]}`。所有選定 codes 集中在同一個 exact item；不得重送已成功的 query、已取得完整價格的 code 或相同 selection。返回可報價 `candidates` 後立即使用；`missingErpItemCodes` 留空並列人工複核，不改用 `productName`、`keyword` 或其他 code 猜測重查。
+
+參數使用情境與範例：
+
+1. 一般材料首查：只傳 `categories`。例：`{"queries":[{"categories":["鐵板","網"]}]}`。
+2. H 型鋼材料首查：`categories` 只放 H 型鋼；依成品長度與數量規劃後，`stockLengthMm` 可一次放多個去重母材長度，不傳 `keyword`。例：`{"queries":[{"categories":["H型鋼"],"stockLengthMm":["6000","9000","10000","12000"]}]}`。
+3. 加工首查：`categories` 放工件主類別，`processingCategories` 放加工類別；相同需求合併。例：`{"queries":[{"categories":["H型鋼"],"processingCategories":["加工/孔","加工/開槽"]}]}`。
+4. 材料 filters：通用預設只有首查未取得可判定的精確候選時才可在一次修正重試使用；個別鋼材類別規則若明示某 filter 可用於首查，依個別規則覆蓋。各 filter 只放已確認值：
+   - `subcategory`：需要排除同主類別的其他次類別時使用。例：`{"queries":[{"categories":["網"],"subcategory":"菱形"}]}`。
+   - `material`：需要排除不同材質或表面時使用。例：`{"queries":[{"categories":["C型鋼"],"material":"錏"}]}`。
+   - `unit`：需求明確限定報價單位時使用。例：`{"queries":[{"categories":["鐵板"],"unit":"Kg"}]}`。
+   - `thicknessMm`：需要以材料厚度縮小候選時使用；一次放同類需求所有去重厚度字串，不放成品長度。例：`{"queries":[{"categories":["鐵板"],"thicknessMm":["10","12"]}]}`。
+   - `stockLengthMm`：需要排除無法供料的母材長度時使用；放規劃後可供料、去重的長度字串。個別類別規則明示時可在首查使用；H 型鋼例：`{"queries":[{"categories":["H型鋼"],"stockLengthMm":["7000","9000","12000"]}]}`。
+   - `keyword`：只有個別類別規則允許、來源已確認且其他欄位無法表達時，放一個最短通用品名或規格；是否可用於首查亦以個別規則為準。不得放候選 `productName`。例：`{"queries":[{"categories":["C型鋼"],"keyword":"樑柱"}]}`。
+5. 加工修正重試：只有加工首查返回多個無法判定的候選，且加工細項規則允許時，才加入一個已確認的最短 `keyword`。例：`{"queries":[{"categories":["鐵板"],"processingCategories":["加工/孔"],"keyword":"圓孔"}]}`。
+6. `erpItemCodes` 精確重取：只在材料結果超過 20 筆且返回 `selectionRequired: true` 時使用。AI 先以每個 ref 的 `productName` 判斷材料，再複製同一物件配對的 `erpItemCode`：例如 refs 為 `[{"productName":"H型鋼300x300x10/15 12M","erpItemCode":"EHS303006"},{"productName":"H型鋼340x250x9/14 12M","erpItemCode":"EHS342509"}]`，重查傳 `{"queries":[{"erpItemCodes":["EHS303006","EHS342509"]}]}`。不得在 0 至 20 筆已有完整 `candidates` 時重查，也不得使用未出現在 refs 的 code。
+7. 同批次材料與加工：`{"queries":[{"categories":["H型鋼"],"stockLengthMm":["6000","9000","12000"]},{"categories":["H型鋼"],"processingCategories":["加工/孔"]}]}`。
+
+每個 query item 只能是 material、processing 或 exact 其中一種。不得在 `erpItemCodes` item 加入 `categories` 或其他欄位；不得使用頂層 `processingQueries`、頂層 `erpItemCodes`、`productNames`、單數 `category`、`category_discovery` 或單筆 `erpItemCode`。
 
 二、選價與計算
 
@@ -25,7 +43,7 @@
 四、加工價格
 
 1. 加工價格優先採與工件類別和加工需求相符的鋼材加工。
-2. 每筆 `processingQueries` 的 `categories` 可列訂單鋼材類別，`processingCategories` 可列切工、孔、倒角、開槽、折工、焊接或其他；`keyword` 依對應加工規則。
+2. 加工 query item 的 `categories` 可列訂單鋼材類別，`processingCategories` 可列切工、孔、倒角、開槽、折工、焊接或其他；`keyword` 依對應加工規則。
 3. 同一加工若同時有多個相符價格來源，只採與需求精確對應的項目；同一項目只計一次。
 4. 材料品名、單位或單價描述不得視為加工已含。訂單或圖面有切工、孔、折工或其他加工需求時，必須分開查價、計量與分列；只有對應類別規則明示不計價時才不收該加工費。
 

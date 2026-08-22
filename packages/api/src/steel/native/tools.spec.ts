@@ -269,7 +269,6 @@ describe('Steel native tool adapter', () => {
             query: { category: 'H型鋼', keyword: '200x100' },
             status: 'ok',
             candidates: [priceCandidate],
-            productNames: [],
             totalAvailable: 1,
             returnedCount: 1,
             selectionRequired: false,
@@ -289,7 +288,6 @@ describe('Steel native tool adapter', () => {
             query: { category: '槽鐵' },
             status: 'no_match',
             candidates: [],
-            productNames: [],
             totalAvailable: 0,
             returnedCount: 0,
             selectionRequired: false,
@@ -347,7 +345,6 @@ describe('Steel native tool adapter', () => {
               totalAvailable: 1,
               returnedCount: 1,
               selectionRequired: false,
-              productNames: [],
               groups: [
                 {
                   processingCategory: '加工/切工',
@@ -401,7 +398,6 @@ describe('Steel native tool adapter', () => {
         totalAvailable: 1,
         returnedCount: 1,
         selectionRequired: false,
-        productNames: [],
         categoryCandidates: [
           {
             category: 'H型鋼',
@@ -494,13 +490,13 @@ describe('Steel native tool adapter', () => {
     expect(result.artifact?.result).toBe(fullResult);
   });
 
-  it('compacts exact product-name price results', async () => {
+  it('compacts exact ERP-code price results', async () => {
     const fullResult: SteelToolResult = {
       ok: true,
       toolName: 'search_price_candidates',
       data: {
-        productNames: ['方鐵 25mm'],
-        productNamePrices: [
+        erpItemCodes: ['SQ25'],
+        candidates: [
           {
             id: 12,
             erpItemCode: 'SQ25',
@@ -521,6 +517,8 @@ describe('Steel native tool adapter', () => {
             ],
           },
         ],
+        missingErpItemCodes: [],
+        nextAction: 'use_candidates',
       },
       sourceRefs: [],
       durationMs: 10,
@@ -532,14 +530,14 @@ describe('Steel native tool adapter', () => {
       execute: async () => fullResult,
     });
 
-    const result = await tool.invoke({ productNames: ['方鐵 25mm'] });
+    const result = await tool.invoke({ erpItemCodes: ['SQ25'] });
 
     expect(JSON.parse(result.content)).toEqual({
       ok: true,
       toolName: 'search_price_candidates',
       data: {
-        productNames: ['方鐵 25mm'],
-        productNamePrices: [
+        erpItemCodes: ['SQ25'],
+        candidates: [
           {
             erpItemCode: 'SQ25',
             productName: '方鐵 25mm',
@@ -558,9 +556,123 @@ describe('Steel native tool adapter', () => {
             ],
           },
         ],
+        missingErpItemCodes: [],
+        nextAction: 'use_candidates',
       },
     });
     expect(result.artifact?.result).toBe(fullResult);
+  });
+
+  it('preserves exact ERP selection fields while compacting provider output', async () => {
+    const fullResult: SteelToolResult = {
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: {
+        erpItemCodes: ['ERP-2', 'ERP-missing'],
+        candidates: [
+          {
+            id: 2,
+            erpItemCode: 'ERP-2',
+            productName: 'H型鋼 200',
+            category: 'H型鋼',
+            unit: 'Kg',
+            widthMm: 200,
+            unitPriceBase: 99,
+            pricingOptions: [],
+          },
+        ],
+        missingErpItemCodes: ['ERP-missing'],
+        nextAction: 'manual_review',
+      },
+      sourceRefs: [],
+      durationMs: 10,
+      redactionVersion: 1,
+    };
+    const tool = createSteelNativeTool({
+      nativeToolName: 'search_price_candidates',
+      steelToolName: 'search_price_candidates',
+      execute: async () => fullResult,
+    });
+
+    const result = await tool.invoke({ erpItemCodes: ['ERP-2', 'ERP-missing'] });
+
+    expect(JSON.parse(result.content)).toEqual({
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: {
+        erpItemCodes: ['ERP-2', 'ERP-missing'],
+        candidates: [
+          {
+            erpItemCode: 'ERP-2',
+            productName: 'H型鋼 200',
+            category: 'H型鋼',
+            unit: 'Kg',
+            widthMm: 200,
+            pricingOptions: [],
+          },
+        ],
+        missingErpItemCodes: ['ERP-missing'],
+        nextAction: 'manual_review',
+      },
+    });
+  });
+
+  it('preserves compact ERP candidate refs and next actions for material discovery', async () => {
+    const fullResult: SteelToolResult = {
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: {
+        queryResults: [
+          {
+            queryId: 'q1',
+            status: 'ok',
+            selectionRequired: true,
+            nextAction: 'select_erp_item_codes',
+            candidateRefsOmittedCount: 2,
+            candidateRefs: [
+              {
+                erpItemCode: 'ERP-1',
+                productName: 'H型鋼 200',
+                category: 'H型鋼',
+                heightMm: 200,
+                unit: 'Kg',
+                unitPriceBase: 99,
+              },
+            ],
+            candidates: [],
+          },
+        ],
+        cuttingPrices: [],
+      },
+      sourceRefs: [],
+      durationMs: 1,
+      redactionVersion: 1,
+    };
+    const tool = createSteelNativeTool({
+      nativeToolName: 'search_price_candidates',
+      steelToolName: 'search_price_candidates',
+      execute: async () => fullResult,
+    });
+    const result = await tool.invoke({ queries: [{ categories: ['H型鋼'] }] });
+    expect(JSON.parse(result.content).data.queryResults).toEqual([
+      {
+        queryId: 'q1',
+        status: 'ok',
+        selectionRequired: true,
+        nextAction: 'select_erp_item_codes',
+        candidateRefsOmittedCount: 2,
+        candidates: [],
+        candidateRefs: [
+          {
+            erpItemCode: 'ERP-1',
+            productName: 'H型鋼 200',
+            category: 'H型鋼',
+            heightMm: 200,
+            unit: 'Kg',
+          },
+        ],
+      },
+    ]);
   });
 
   it('leaves price lookup errors unchanged for the provider', async () => {
