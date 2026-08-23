@@ -36,7 +36,6 @@ describe('native direct candidate compaction', () => {
             truncated: false,
             defaultMaterial: '黑鐵',
             availableMaterials: ['黑鐵'],
-            defaultWhiteSteelSurface: '2B',
             availableWhiteSteelSurfaces: [],
             groups: [],
           }],
@@ -64,7 +63,7 @@ describe('native direct candidate compaction', () => {
     expect(queryResults[0].candidates[0].erpItemCode).toBe('ERP-0');
     expect(queryResults[1].candidates[0].erpItemCode).toBe('ERP-250');
     expect((payload.data.processingPrice as { queryResults: Array<Record<string, unknown>> }).queryResults[0]).toEqual(
-      expect.objectContaining({ defaultMaterial: '黑鐵', defaultWhiteSteelSurface: '2B' }),
+      expect.objectContaining({ defaultMaterial: '黑鐵' }),
     );
     expect(result.content).not.toContain('pricingOptions');
     expect(result.content).not.toContain('skippedPricingOptions');
@@ -146,7 +145,7 @@ describe('native direct candidate compaction', () => {
                 category: '方管',
                 defaultMaterial: '黑鐵',
                 availableMaterials: ['黑鐵', '白鐵', '錶'],
-                defaultWhiteSteelSurface: '2B',
+                defaultWhiteSteelSurface: 'ST',
                 availableWhiteSteelSurfaces: ['ST', 'BA'],
               },
               {

@@ -38,12 +38,14 @@ import {
   getSteelPriceAvailableWhiteSteelSurfaces,
   getSteelPriceCommonMaterials,
   getSteelPriceCommonWhiteSteelSurfaces,
+  getSteelPriceDefaultWhiteSteelSurface,
   getSteelPriceDefaultMaterial,
   getSteelPriceMaterialCatalog,
   isSteelPriceMaterialSupported,
   normalizeSteelPriceMaterialFamily,
   normalizeSteelPriceWhiteSteelSurface,
   type SteelMaterialFamily,
+  type SteelWhiteSteelSurface,
 } from '../pricing/materials';
 import { steelToolArgsSchemas } from './schemas';
 
@@ -445,24 +447,25 @@ function isUsablePriceCandidate(candidate: SteelPriceItem): boolean {
 function getMaterialQueryMetadata(query: MaterialPriceQuery): {
   defaultMaterial: SteelMaterialFamily;
   availableMaterials: SteelMaterialFamily[];
-  defaultWhiteSteelSurface: '2B';
-  availableWhiteSteelSurfaces: string[];
+  defaultWhiteSteelSurface?: SteelWhiteSteelSurface;
+  availableWhiteSteelSurfaces: SteelWhiteSteelSurface[];
   categoryMaterialOptions: Array<{
     category: PriceCategory;
     defaultMaterial: SteelMaterialFamily;
     availableMaterials: readonly SteelMaterialFamily[];
-    defaultWhiteSteelSurface: '2B';
-    availableWhiteSteelSurfaces: readonly string[];
+    defaultWhiteSteelSurface?: SteelWhiteSteelSurface;
+    availableWhiteSteelSurfaces: readonly SteelWhiteSteelSurface[];
   }>;
   mixedDefault: boolean;
 } {
   const defaults = query.categories.map(getSteelPriceDefaultMaterial);
   const availableMaterials = getSteelPriceCommonMaterials(query.categories);
   const surfaces = getSteelPriceCommonWhiteSteelSurfaces(query.categories);
+  const defaultWhiteSteelSurface = getSteelPriceDefaultWhiteSteelSurface(surfaces);
   return {
     defaultMaterial: defaults[0] ?? '黑鐵',
     availableMaterials,
-    defaultWhiteSteelSurface: '2B',
+    ...(defaultWhiteSteelSurface ? { defaultWhiteSteelSurface } : {}),
     availableWhiteSteelSurfaces: surfaces,
     categoryMaterialOptions: query.categories.map((category) => {
       const catalog = getSteelPriceMaterialCatalog(category);
@@ -470,7 +473,9 @@ function getMaterialQueryMetadata(query: MaterialPriceQuery): {
         category,
         defaultMaterial: catalog.defaultMaterial,
         availableMaterials: catalog.availableMaterials,
-        defaultWhiteSteelSurface: catalog.defaultWhiteSteelSurface,
+        ...(catalog.defaultWhiteSteelSurface
+          ? { defaultWhiteSteelSurface: catalog.defaultWhiteSteelSurface }
+          : {}),
         availableWhiteSteelSurfaces: catalog.availableWhiteSteelSurfaces,
       };
     }),
@@ -504,7 +509,9 @@ function getUnsupportedMaterialResult(
       : 'unsupported_material',
     defaultMaterial: metadata.defaultMaterial,
     availableMaterials: allowedMaterials,
-    defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface,
+    ...(metadata.defaultWhiteSteelSurface
+      ? { defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface }
+      : {}),
     availableWhiteSteelSurfaces: allowedSurfaces,
     categoryMaterialOptions: metadata.categoryMaterialOptions,
     issue,
@@ -529,7 +536,9 @@ function getMixedDefaultMaterialResult(
       categories: query.categories.filter((category) => getSteelPriceDefaultMaterial(category) === defaultMaterial),
     })),
     availableMaterials: metadata.availableMaterials,
-    defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface,
+    ...(metadata.defaultWhiteSteelSurface
+      ? { defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface }
+      : {}),
     availableWhiteSteelSurfaces: metadata.availableWhiteSteelSurfaces,
     categoryMaterialOptions: metadata.categoryMaterialOptions,
     issue: `categories have different defaults (${defaults.join(', ')}); split query by default material`,
@@ -616,14 +625,19 @@ function buildProcessingPrice(
     returnedByCategory.set(category, items);
   });
 
+  const availableWhiteSteelSurfaces =
+    getSteelPriceAvailableWhiteSteelSurfaces(targetCategories);
+  const defaultWhiteSteelSurface = getSteelPriceDefaultWhiteSteelSurface(
+    availableWhiteSteelSurfaces,
+  );
+
   return {
     queryId: null,
     targetCategories,
     defaultMaterial: getSteelPriceDefaultMaterial(targetCategories[0] ?? '其他'),
     availableMaterials: getSteelPriceAvailableMaterials(targetCategories),
-    defaultWhiteSteelSurface: '2B',
-    availableWhiteSteelSurfaces:
-      getSteelPriceAvailableWhiteSteelSurfaces(targetCategories),
+    ...(defaultWhiteSteelSurface ? { defaultWhiteSteelSurface } : {}),
+    availableWhiteSteelSurfaces,
     processingCategories: requestedProcessingCategories ?? [...processingPriceCategories],
     keyword: keyword ?? null,
     targetSpecs: targetSpecs ?? [],
@@ -837,7 +851,9 @@ async function searchPriceCandidates(
       truncated: candidates.length < totalAvailable,
       defaultMaterial: metadata.defaultMaterial,
       availableMaterials: metadata.availableMaterials,
-      defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface,
+      ...(metadata.defaultWhiteSteelSurface
+        ? { defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface }
+        : {}),
       availableWhiteSteelSurfaces: metadata.availableWhiteSteelSurfaces,
       categoryMaterialOptions: metadata.categoryMaterialOptions,
       categoryCandidates,

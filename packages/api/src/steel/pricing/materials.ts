@@ -27,11 +27,25 @@ export type SteelMaterialFamily = (typeof steelMaterialFamilies)[number];
 export const steelWhiteSteelSurfaces = ['ST', '2B', 'NO1', 'HL', 'BA'] as const;
 export type SteelWhiteSteelSurface = (typeof steelWhiteSteelSurfaces)[number];
 
+const steelWhiteSteelSurfaceDefaultPreferences = [
+  '2B',
+  'ST',
+  'NO1',
+  'HL',
+  'BA',
+] as const satisfies readonly SteelWhiteSteelSurface[];
+
+export function getSteelPriceDefaultWhiteSteelSurface(
+  surfaces: readonly SteelWhiteSteelSurface[],
+): SteelWhiteSteelSurface | undefined {
+  return steelWhiteSteelSurfaceDefaultPreferences.find((surface) => surfaces.includes(surface));
+}
+
 export interface SteelPriceMaterialCatalogEntry {
   readonly category: SteelMaterialPriceCategory;
   readonly defaultMaterial: SteelMaterialFamily;
   readonly availableMaterials: readonly SteelMaterialFamily[];
-  readonly defaultWhiteSteelSurface: '2B';
+  readonly defaultWhiteSteelSurface?: SteelWhiteSteelSurface;
   readonly availableWhiteSteelSurfaces: readonly SteelWhiteSteelSurface[];
 }
 
@@ -59,26 +73,40 @@ const catalogOverrides: Partial<
   '門窗/門板': ['黑鐵', '白鐵', '鋁', '錏'],
 };
 
-const whiteSteelSurfaceOverrides: Partial<
-  Record<SteelMaterialPriceCategory, readonly SteelWhiteSteelSurface[]>
+interface SteelWhiteSteelSurfaceCatalogEntry {
+  readonly defaultWhiteSteelSurface: SteelWhiteSteelSurface;
+  readonly availableWhiteSteelSurfaces: readonly SteelWhiteSteelSurface[];
+}
+
+const steelWhiteSteelSurfaceCatalog: Partial<
+  Record<SteelMaterialPriceCategory, SteelWhiteSteelSurfaceCatalogEntry>
 > = {
-  'C型鋼': ['ST'],
-  '五金/配件': ['ST'],
-  其他: ['ST'],
-  圓條: ['ST'],
-  圓管: ['ST'],
-  平鐵: ['ST'],
-  扁方管: ['ST'],
-  '捲門/伸縮門': ['ST', '2B', 'BA'],
-  方管: ['ST', 'BA'],
-  方鐵: ['ST'],
-  '板/浪板': ['ST'],
-  '格板/隔板': ['ST'],
-  槽鐵: ['ST'],
-  網: ['ST'],
-  角鐵: ['ST', '2B', 'BA'],
-  鐵板: ['ST', '2B', 'NO1', 'HL', 'BA'],
-  '門窗/門板': ['ST'],
+  'C型鋼': { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  '五金/配件': { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  其他: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  圓條: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  圓管: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  平鐵: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  扁方管: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  '捲門/伸縮門': {
+    defaultWhiteSteelSurface: '2B',
+    availableWhiteSteelSurfaces: ['ST', '2B', 'BA'],
+  },
+  方管: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST', 'BA'] },
+  方鐵: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  '板/浪板': { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  '格板/隔板': { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  槽鐵: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  網: { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
+  角鐵: {
+    defaultWhiteSteelSurface: '2B',
+    availableWhiteSteelSurfaces: ['ST', '2B', 'BA'],
+  },
+  鐵板: {
+    defaultWhiteSteelSurface: '2B',
+    availableWhiteSteelSurfaces: ['ST', '2B', 'NO1', 'HL', 'BA'],
+  },
+  '門窗/門板': { defaultWhiteSteelSurface: 'ST', availableWhiteSteelSurfaces: ['ST'] },
 };
 
 const entries = new Map<SteelMaterialPriceCategory, SteelPriceMaterialCatalogEntry>();
@@ -96,12 +124,15 @@ export function getSteelPriceMaterialCatalog(
   }
 
   const availableMaterials = catalogOverrides[category] ?? ['黑鐵'];
+  const surfaceCatalog = steelWhiteSteelSurfaceCatalog[category];
   const entry: SteelPriceMaterialCatalogEntry = {
     category,
     defaultMaterial: category === 'C型鋼' ? '錏' : '黑鐵',
     availableMaterials,
-    defaultWhiteSteelSurface: '2B',
-    availableWhiteSteelSurfaces: whiteSteelSurfaceOverrides[category] ?? [],
+    ...(surfaceCatalog
+      ? { defaultWhiteSteelSurface: surfaceCatalog.defaultWhiteSteelSurface }
+      : {}),
+    availableWhiteSteelSurfaces: surfaceCatalog?.availableWhiteSteelSurfaces ?? [],
   };
   entries.set(category, entry);
   return entry;

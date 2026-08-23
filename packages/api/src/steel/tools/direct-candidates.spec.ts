@@ -153,6 +153,7 @@ describe('direct price candidates contract', () => {
       expect.objectContaining({
         queryId: 'q1',
         status: 'ok',
+        defaultWhiteSteelSurface: 'ST',
         candidates: [expect.objectContaining({ erpItemCode: 'ERP-1', category: '鐵板' })],
         availableWhiteSteelSurfaces: ['ST', 'BA'],
         categoryMaterialOptions: [
@@ -240,6 +241,27 @@ describe('direct price candidates contract', () => {
       material_terms: string[];
     }>;
     expect(serializedQueries[0]?.material_terms).toEqual(['ST', '2B', '黑鐵']);
+  });
+
+  it('omits processing default surface when target categories have no surfaces', async () => {
+    const mock = client([[]]);
+    const result = await executeSteelTool({
+      client: mock,
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [{ categories: ['H型鋼'], processingCategories: ['加工/切工'] }],
+      },
+    });
+
+    if (!result.ok) throw new Error(result.errorSummary);
+    const processingPrice = result.data.processingPrice as {
+      queryResults: Array<Record<string, unknown>>;
+    };
+    const [processingQuery] = processingPrice.queryResults;
+    expect(processingQuery).toEqual(
+      expect.objectContaining({ availableWhiteSteelSurfaces: [] }),
+    );
+    expect(processingQuery).not.toHaveProperty('defaultWhiteSteelSurface');
   });
 
   it('enforces optional per-tool limits while preserving total call limit', async () => {
