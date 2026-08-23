@@ -18,14 +18,14 @@ describe('Steel price candidate tool schema', () => {
         queries: [
           { categories: ['H型鋼'], stockLengthMm: ['6000', '9000'] },
           { categories: ['鐵板'], subcategory: '平板' },
-          { erpItemCodes: ['ERP-1'] },
+          { categories: ['圓管'], materials: ['BA'] },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['H型鋼'], stockLengthMm: ['6000', '9000'] },
         { queryId: 'q2', categories: ['鐵板'], subcategory: '平板' },
-        { queryId: 'q3', erpItemCodes: ['ERP-1'] },
+        { queryId: 'q3', categories: ['圓管'], materials: ['BA'] },
       ],
     });
   });
@@ -106,13 +106,8 @@ describe('Steel price candidate tool schema', () => {
     ).toMatchObject({ processingCategories: processingPriceCategories });
   });
 
-  it('accepts exact ERP queries and rejects legacy or mixed top-level fields', () => {
-    expect(schema.parse({ queries: [{ erpItemCodes: ['ERP-1', 'ERP-2'] }] })).toEqual({
-      queries: [{ queryId: 'q1', erpItemCodes: ['ERP-1', 'ERP-2'] }],
-    });
-    expect(() => schema.parse({ queries: [{ erpItemCodes: ['ERP-1', 'ERP-1'] }] })).toThrow(
-      'unique',
-    );
+  it('rejects exact ERP queries and legacy or mixed top-level fields', () => {
+    expect(() => schema.parse({ queries: [{ erpItemCodes: ['ERP-1', 'ERP-2'] }] })).toThrow();
     expect(() => schema.parse({ productNames: ['雷射切工 1'] })).toThrow();
     expect(() => schema.parse({ queries: [{ erpItemCodes: ['ERP-1'], categories: ['鐵板'] }] })).toThrow();
     expect(() => schema.parse({})).toThrow();
@@ -152,12 +147,12 @@ describe('Steel price candidate tool schema', () => {
           {
             categories: ['圓管'],
             subcategory: '一般',
-            material: '鎢',
+            materials: ['鎢'],
             thicknessMm: ['1.2', '1.5'],
             stockLengthMm: ['6000', '9000', '10000', '12000'],
             keyword: '連料',
           },
-          { categories: ['五金/配件'], material: '鋅' },
+          { categories: ['五金/配件'], materials: ['鋅'] },
         ],
       }),
     ).toEqual({
@@ -166,12 +161,12 @@ describe('Steel price candidate tool schema', () => {
           queryId: 'q1',
           categories: ['圓管'],
           subcategory: '一般',
-          material: '鎢',
+          materials: ['鎢'],
           thicknessMm: ['1.2', '1.5'],
           stockLengthMm: ['6000', '9000', '10000', '12000'],
           keyword: '連料',
         },
-        { queryId: 'q2', categories: ['五金/配件'], material: '鋅' },
+        { queryId: 'q2', categories: ['五金/配件'], materials: ['鋅'] },
       ],
     });
   });
@@ -181,15 +176,15 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { categories: ['鐵板'] },
-          { categories: ['鐵板'], unit: 'kg', material: '黑鐵' },
-          { categories: ['鐵板'], unit: '片', material: '黑鐵' },
+          { categories: ['鐵板'], unit: 'kg', materials: ['黑鐵'] },
+          { categories: ['鐵板'], unit: '片', materials: ['黑鐵'] },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['鐵板'] },
-        { queryId: 'q2', categories: ['鐵板'], unit: 'kg', material: '黑鐵' },
-        { queryId: 'q3', categories: ['鐵板'], unit: '片', material: '黑鐵' },
+        { queryId: 'q2', categories: ['鐵板'], unit: 'kg', materials: ['黑鐵'] },
+        { queryId: 'q3', categories: ['鐵板'], unit: '片', materials: ['黑鐵'] },
       ],
     });
   });
@@ -198,23 +193,40 @@ describe('Steel price candidate tool schema', () => {
     expect(
       schema.parse({
         queries: [
-          { categories: ['鐵板'], material: 'ST', thicknessMm: ['2.9'] },
-          { categories: ['圓管'], material: 'NO1' },
-          { categories: ['圓管'], material: '白鐵 / ST' },
-          { categories: ['圓管'], material: '白鐵 / NO1' },
-          { categories: ['圓管'], material: '白鐵霧面 / ST 2B' },
+          { categories: ['鐵板'], materials: ['ST'], thicknessMm: ['2.9'] },
+          { categories: ['圓管'], materials: ['NO1'] },
+          { categories: ['圓管'], materials: ['白鐵 / ST'] },
+          { categories: ['圓管'], materials: ['白鐵 / NO1'] },
+          { categories: ['圓管'], materials: ['白鐵霧面 / ST 2B'] },
         ],
       }).queries,
     ).toEqual([
-      { queryId: 'q1', categories: ['鐵板'], material: 'ST', thicknessMm: ['2.9'] },
-      { queryId: 'q2', categories: ['圓管'], material: 'NO1' },
-      { queryId: 'q3', categories: ['圓管'], material: '白鐵 / ST' },
-      { queryId: 'q4', categories: ['圓管'], material: '白鐵 / NO1' },
-      { queryId: 'q5', categories: ['圓管'], material: '白鐵霧面 / ST 2B' },
+      { queryId: 'q1', categories: ['鐵板'], materials: ['ST'], thicknessMm: ['2.9'] },
+      { queryId: 'q2', categories: ['圓管'], materials: ['NO1'] },
+      { queryId: 'q3', categories: ['圓管'], materials: ['白鐵 / ST'] },
+      { queryId: 'q4', categories: ['圓管'], materials: ['白鐵 / NO1'] },
+      { queryId: 'q5', categories: ['圓管'], materials: ['白鐵霧面 / ST 2B'] },
     ]);
-    expect(() => schema.parse({ queries: [{ categories: ['圓管'], material: 'invalid' }] })).toThrow(
+    expect(() => schema.parse({ queries: [{ categories: ['圓管'], materials: ['invalid'] }] })).toThrow(
       'Invalid material',
     );
+  });
+
+  it('rejects retired singular material input and enforces materials bounds', () => {
+    expect(() => schema.parse({ queries: [{ categories: ['圓管'], material: '黑鐵' }] })).toThrow(
+      'Unrecognized key',
+    );
+    expect(() => schema.parse({ queries: [{ categories: ['圓管'], materials: [] }] })).toThrow();
+    expect(() =>
+      schema.parse({
+        queries: [{ categories: ['圓管'], materials: Array.from({ length: 21 }, () => '黑鐵') }],
+      }),
+    ).toThrow();
+    expect(
+      schema.parse({
+        queries: [{ categories: ['鐵板'], materials: ['黑鐵', '2B', 'ST'] }],
+      }).queries[0],
+    ).toEqual({ queryId: 'q1', categories: ['鐵板'], materials: ['黑鐵', '2B', 'ST'] });
   });
 
   it('leaves omitted 圓管 material for backend defaults and preserves valid filters', () => {
@@ -222,15 +234,15 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { categories: ['圓管'] },
-          { categories: ['圓管'], material: '黑鐵' },
-          { categories: ['圓管'], material: '白鐵' },
+          { categories: ['圓管'], materials: ['黑鐵'] },
+          { categories: ['圓管'], materials: ['白鐵'] },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['圓管'] },
-        { queryId: 'q2', categories: ['圓管'], material: '黑鐵' },
-        { queryId: 'q3', categories: ['圓管'], material: '白鐵' },
+        { queryId: 'q2', categories: ['圓管'], materials: ['黑鐵'] },
+        { queryId: 'q3', categories: ['圓管'], materials: ['白鐵'] },
       ],
     });
   });
@@ -240,15 +252,15 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { categories: ['平鐵'] },
-          { categories: ['平鐵'], material: '黑鐵' },
-          { categories: ['平鐵'], material: '白鐵' },
+          { categories: ['平鐵'], materials: ['黑鐵'] },
+          { categories: ['平鐵'], materials: ['白鐵'] },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['平鐵'] },
-        { queryId: 'q2', categories: ['平鐵'], material: '黑鐵' },
-        { queryId: 'q3', categories: ['平鐵'], material: '白鐵' },
+        { queryId: 'q2', categories: ['平鐵'], materials: ['黑鐵'] },
+        { queryId: 'q3', categories: ['平鐵'], materials: ['白鐵'] },
       ],
     });
   });
@@ -258,15 +270,15 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { categories: ['方鐵'] },
-          { categories: ['方鐵'], material: '黑鐵' },
-          { categories: ['方鐵'], material: '白鐵' },
+          { categories: ['方鐵'], materials: ['黑鐵'] },
+          { categories: ['方鐵'], materials: ['白鐵'] },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['方鐵'] },
-        { queryId: 'q2', categories: ['方鐵'], material: '黑鐵' },
-        { queryId: 'q3', categories: ['方鐵'], material: '白鐵' },
+        { queryId: 'q2', categories: ['方鐵'], materials: ['黑鐵'] },
+        { queryId: 'q3', categories: ['方鐵'], materials: ['白鐵'] },
       ],
     });
   });
@@ -276,15 +288,15 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { categories: ['槽鐵'], keyword: '50x25x5' },
-          { categories: ['槽鐵'], material: '熱浸鍍', keyword: '75x40x5/7' },
-          { categories: ['槽鐵'], material: '熱浸鍍鋅', keyword: '75x40x5/7' },
+          { categories: ['槽鐵'], materials: ['熱浸鍍'], keyword: '75x40x5/7' },
+          { categories: ['槽鐵'], materials: ['熱浸鍍鋅'], keyword: '75x40x5/7' },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['槽鐵'], keyword: '50x25x5' },
-        { queryId: 'q2', categories: ['槽鐵'], material: '熱浸鍍', keyword: '75x40x5/7' },
-        { queryId: 'q3', categories: ['槽鐵'], material: '熱浸鍍鋅', keyword: '75x40x5/7' },
+        { queryId: 'q2', categories: ['槽鐵'], materials: ['熱浸鍍'], keyword: '75x40x5/7' },
+        { queryId: 'q3', categories: ['槽鐵'], materials: ['熱浸鍍鋅'], keyword: '75x40x5/7' },
       ],
     });
   });
@@ -294,13 +306,13 @@ describe('Steel price candidate tool schema', () => {
       schema.parse({
         queries: [
           { categories: ['角鐵'], keyword: '25x2.5' },
-          { categories: ['角鐵'], material: '熱進鍍鋅', keyword: '100x75x7' },
+          { categories: ['角鐵'], materials: ['熱進鍍鋅'], keyword: '100x75x7' },
         ],
       }),
     ).toEqual({
       queries: [
         { queryId: 'q1', categories: ['角鐵'], keyword: '25x2.5' },
-        { queryId: 'q2', categories: ['角鐵'], material: '熱進鍍鋅', keyword: '100x75x7' },
+        { queryId: 'q2', categories: ['角鐵'], materials: ['熱進鍍鋅'], keyword: '100x75x7' },
       ],
     });
   });
@@ -325,8 +337,8 @@ describe('Steel price candidate tool schema', () => {
   });
 
   it('keeps 錏 and 鋅 as distinct accepted material filters', () => {
-    expect(schema.parse({ queries: [{ categories: ['鐵板'], material: '錏' }] })).toBeDefined();
-    expect(schema.parse({ queries: [{ categories: ['鐵板'], material: '鋅' }] })).toBeDefined();
+    expect(schema.parse({ queries: [{ categories: ['鐵板'], materials: ['錏'] }] })).toBeDefined();
+    expect(schema.parse({ queries: [{ categories: ['鐵板'], materials: ['鋅'] }] })).toBeDefined();
   });
 
   it.each(['0', '-1', '6mm', 'NaN', 'Infinity', '1e2'])(

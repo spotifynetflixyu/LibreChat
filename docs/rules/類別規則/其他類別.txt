@@ -1,10 +1,10 @@
 【其他產品類別規則】
 
-共通原則：本節各類別首查併入一般材料 item，只傳 `categories`。依返回候選的 `productName` 與 structured fields 判斷品名、規格、材質、單位、厚度與尺寸；這些欄位不作首查參數。一般單位以數量 × direct 單價，只有 Kg／M row 依總 kg／m 計價。
+共通原則：本節各類別首查併入一般材料 item，使用 `categories`；來源明示一個或多個材質或表面時首查加 `materials` array，各值為 OR，可混合材質族與白鐵表面；未明示依回傳 `defaultMaterial`（黑鐵）判讀。其餘品名、規格、單位、厚度與尺寸依返回候選的 `productName` 與 structured fields 判斷。一般單位以數量 × direct 單價，只有 Kg／M row 依總 kg／m 計價。
 
 ## 其他
 
-- unit／material 只有來源明示且可靠，並需要一次修正重試時才加入。
+- `unit` 只有需求明示且需要縮小候選時才加入；來源明示材質或表面時，`materials` array 首查即傳。
 
 ## 捲門/伸縮門
 

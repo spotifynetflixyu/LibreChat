@@ -236,28 +236,9 @@ describe('Steel native tool adapter', () => {
       specSortKey: '0200-0100',
       costBasis: 'erp_price_list',
       quoteEligible: true,
-      materialBillingMode: 'whole_stock',
-      cuttingFeePolicy: 'add_when_cut',
-      pricingOptions: [
-        {
-          source: 'tier_price',
-          quoteEligible: true,
-          quoteUnit: '支',
-          tierPrices,
-          defaultQuoteTier: 'B',
-          defaultQuoteUnitPrice: 102,
-          fallbackTiers: ['D', 'E'],
-          manualReviewRequired: true,
-          manualReviewNotes: ['fallback price requires human review'],
-        },
-      ],
-      skippedPricingOptions: [
-        {
-          source: 'price_ratio',
-          status: 'skipped',
-          reason: 'category rule pending',
-        },
-      ],
+      priceSource: 'tier_price',
+      quoteUnit: '支',
+      fallbackTiers: ['D', 'E'],
     };
     const fullResult: SteelToolResult = {
       ok: true,
@@ -397,7 +378,6 @@ describe('Steel native tool adapter', () => {
         status: 'ok',
         totalAvailable: 1,
         returnedCount: 1,
-        selectionRequired: false,
         categoryCandidates: [
           {
             category: 'H型鋼',
@@ -419,17 +399,10 @@ describe('Steel native tool adapter', () => {
             density: 7.85,
             lengthMm: 6000,
             quoteEligible: true,
-            pricingOptions: [
-              {
-                source: 'tier_price',
-                quoteEligible: true,
-                quoteUnit: '支',
-                tierPrices,
-                defaultQuoteTier: 'B',
-                defaultQuoteUnitPrice: 102,
-                fallbackTiers: ['D', 'E'],
-              },
-            ],
+            priceSource: 'tier_price',
+            quoteUnit: '支',
+            tierPrices,
+            fallbackTiers: ['D', 'E'],
           }),
         ],
       }),
@@ -471,7 +444,7 @@ describe('Steel native tool adapter', () => {
         groups: [
           expect.objectContaining({
             processingCategory: '加工/切工',
-            items: [expect.objectContaining({ erpItemCode: 'DNB2001', matchedQueryIds: ['q1'] })],
+            items: [expect.objectContaining({ erpItemCode: 'DNB2001' })],
           }),
         ],
       }),
@@ -479,7 +452,7 @@ describe('Steel native tool adapter', () => {
     expect(result.content).not.toContain('manualReviewNotes');
     expect(result.content).not.toContain('manualReviewRequired');
     expect(result.content).not.toContain('specKey');
-    expect(result.content).not.toContain('unitWeightBasis');
+    expect(result.content).toContain('unitWeightBasis');
     expect(result.content).not.toContain('skippedPricingOptions');
     expect(result.content).not.toContain('candidateMatches');
     expect(result.content).not.toContain('human');
@@ -490,7 +463,7 @@ describe('Steel native tool adapter', () => {
     expect(result.artifact?.result).toBe(fullResult);
   });
 
-  it('compacts exact ERP-code price results', async () => {
+  it('drops legacy ERP-code result branches', async () => {
     const fullResult: SteelToolResult = {
       ok: true,
       toolName: 'search_price_candidates',
@@ -536,34 +509,14 @@ describe('Steel native tool adapter', () => {
       ok: true,
       toolName: 'search_price_candidates',
       data: {
-        erpItemCodes: ['SQ25'],
-        candidates: [
-          {
-            erpItemCode: 'SQ25',
-            productName: '方鐵 25mm',
-            category: '方鐵',
-            material: '黑鐵',
-            unit: 'Kg',
-            density: 7.85,
-            widthMm: 25,
-            quoteEligible: true,
-            pricingOptions: [
-              {
-                quoteEligible: true,
-                quoteUnit: 'Kg',
-                tierPrices: { A: 30, B: 31 },
-              },
-            ],
-          },
-        ],
-        missingErpItemCodes: [],
-        nextAction: 'use_candidates',
+        queryResults: [],
+        cuttingPrices: [],
       },
     });
     expect(result.artifact?.result).toBe(fullResult);
   });
 
-  it('preserves exact ERP selection fields while compacting provider output', async () => {
+  it('drops legacy ERP selection fields while compacting provider output', async () => {
     const fullResult: SteelToolResult = {
       ok: true,
       toolName: 'search_price_candidates',
@@ -600,24 +553,13 @@ describe('Steel native tool adapter', () => {
       ok: true,
       toolName: 'search_price_candidates',
       data: {
-        erpItemCodes: ['ERP-2', 'ERP-missing'],
-        candidates: [
-          {
-            erpItemCode: 'ERP-2',
-            productName: 'H型鋼 200',
-            category: 'H型鋼',
-            unit: 'Kg',
-            widthMm: 200,
-            pricingOptions: [],
-          },
-        ],
-        missingErpItemCodes: ['ERP-missing'],
-        nextAction: 'manual_review',
+        queryResults: [],
+        cuttingPrices: [],
       },
     });
   });
 
-  it('preserves compact ERP candidate refs and next actions for material discovery', async () => {
+  it('drops legacy ERP candidate refs and next actions for material discovery', async () => {
     const fullResult: SteelToolResult = {
       ok: true,
       toolName: 'search_price_candidates',
@@ -655,23 +597,7 @@ describe('Steel native tool adapter', () => {
     });
     const result = await tool.invoke({ queries: [{ categories: ['H型鋼'] }] });
     expect(JSON.parse(result.content).data.queryResults).toEqual([
-      {
-        queryId: 'q1',
-        status: 'ok',
-        selectionRequired: true,
-        nextAction: 'select_erp_item_codes',
-        candidateRefsOmittedCount: 2,
-        candidates: [],
-        candidateRefs: [
-          {
-            erpItemCode: 'ERP-1',
-            productName: 'H型鋼 200',
-            category: 'H型鋼',
-            heightMm: 200,
-            unit: 'Kg',
-          },
-        ],
-      },
+      { queryId: 'q1', status: 'ok', candidates: [] },
     ]);
   });
 

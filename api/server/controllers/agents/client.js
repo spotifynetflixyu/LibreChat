@@ -154,6 +154,82 @@ const loadAgent = (params) => loadAgentFn(params, { getAgent: db.getAgent, getMC
 
 const MEMORY_INPUT_CHARS_PER_TOKEN = 8;
 const steelOcrReviewPromptPattern = /OCR檔案內容.*核對/;
+const maxLoggedErrorCauseDepth = 3;
+const maxLoggedErrorSerializedChars = 24_000;
+const maxLoggedErrorStringChars = Object.freeze({
+  name: 128,
+  message: 1_500,
+  code: 256,
+  status: 256,
+  statusCode: 256,
+  stack: 3_000,
+});
+
+function readErrorProperty(error, property) {
+  try {
+    return error[property];
+  } catch {
+    return undefined;
+  }
+}
+
+function truncateLoggedErrorString(value, maxChars) {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  const marker = '…[truncated]';
+  return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
+}
+
+function removeLoggedErrorStacks(error) {
+  if (!error || typeof error !== 'object') {
+    return;
+  }
+  delete error.stack;
+  removeLoggedErrorStacks(error.cause);
+}
+
+function serializeErrorForLogging(error, depth = 0, seen = new WeakSet()) {
+  if (error == null) {
+    return undefined;
+  }
+
+  if (typeof error !== 'object') {
+    return {
+      message: truncateLoggedErrorString(
+        String(error),
+        maxLoggedErrorStringChars.message,
+      ),
+    };
+  }
+
+  if (seen.has(error)) {
+    return { message: '[Circular error cause]' };
+  }
+  seen.add(error);
+
+  const serialized = {};
+  for (const key of ['name', 'message', 'code', 'status', 'statusCode', 'stack']) {
+    const value = readErrorProperty(error, key);
+    if (typeof value === 'string') {
+      serialized[key] = truncateLoggedErrorString(value, maxLoggedErrorStringChars[key]);
+    } else if (typeof value === 'number') {
+      serialized[key] = value;
+    }
+  }
+
+  const cause = readErrorProperty(error, 'cause');
+  if (depth < maxLoggedErrorCauseDepth && cause != null) {
+    serialized.cause = serializeErrorForLogging(cause, depth + 1, seen);
+  }
+
+  if (depth === 0 && JSON.stringify(serialized).length > maxLoggedErrorSerializedChars) {
+    removeLoggedErrorStacks(serialized);
+    serialized.loggingTruncated = true;
+  }
+
+  return serialized;
+}
 
 function toSteelNativeFileReference(file, { conversationId, messageId } = {}) {
   const fileId = file?.file_id ?? file?.fileId ?? file?.id;
@@ -3652,7 +3728,7 @@ class AgentClient extends BaseClient {
       } else {
         logger.error(
           '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error type',
-          err,
+          serializeErrorForLogging(err),
         );
         const videoError = resolveGoogleVideoError({
           error: err,

@@ -585,6 +585,16 @@ const nativeTools = new Set([
   Tools.memory,
 ]);
 const defaultSteelNativeToolMaxCalls = 8;
+const steelNativeToolPerToolLimits = Object.freeze({
+  search_price_candidates: 2,
+});
+/**
+ * The provider event handlers load native tools on demand for each tool round.
+ * Keep the budget keyed by the request/run-scoped MCP context (or the request
+ * itself when no context is available) so reloaded tool instances share one
+ * cap without introducing process-global state.
+ */
+const steelNativeToolRunStates = new WeakMap();
 const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
 const steelPaddleOcrRetryableErrorPatterns = [
@@ -670,6 +680,19 @@ const isBuiltInTool = (toolName) =>
 function getDefaultSteelNativeToolClient() {
   defaultSteelNativeToolClient ??= createSteelPostgresPool();
   return defaultSteelNativeToolClient;
+}
+
+function getSteelNativeToolRunState({ req, requestScopedConnections }) {
+  const scope = requestScopedConnections ?? req;
+  let runState = steelNativeToolRunStates.get(scope);
+  if (!runState) {
+    runState = createSteelToolRunState(
+      defaultSteelNativeToolMaxCalls,
+      steelNativeToolPerToolLimits,
+    );
+    steelNativeToolRunStates.set(scope, runState);
+  }
+  return runState;
 }
 
 function getRequestConversationId(req) {
@@ -4073,7 +4096,10 @@ async function loadToolsForExecution({
       req,
       res,
       streamId,
-      runState: createSteelToolRunState(defaultSteelNativeToolMaxCalls),
+      runState: getSteelNativeToolRunState({
+        req,
+        requestScopedConnections: mcpRequestScopedConnections,
+      }),
     });
     allLoadedTools.push(
       ...steelToolEntries.map(({ nativeToolName, steelToolName }) =>

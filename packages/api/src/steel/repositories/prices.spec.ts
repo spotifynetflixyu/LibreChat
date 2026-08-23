@@ -1,7 +1,5 @@
 import {
   searchSteelPriceCandidateGroups,
-  searchSteelPricesByErpItemCodes,
-  searchSteelPricesByProductNames,
   searchSteelProcessingPriceCandidates,
 } from './prices';
 
@@ -86,7 +84,7 @@ describe('Steel price candidate repository', () => {
           queryId: 'line-1',
           category: '圓管',
           subcategory: '鋼管',
-          material: '黑鐵',
+          materials: ['黑鐵', '黑鐵', '2B'],
           thicknessMm: ['2', '2.0', '2.3'],
           stockLengthMm: ['6000', '9000', '9000', '10000.0'],
           keyword: '黑鐵鋼管 50*2',
@@ -99,7 +97,7 @@ describe('Steel price candidate repository', () => {
         {
           queryId: 'plate',
           category: '鐵板',
-          material: '黑鐵',
+          materials: ['黑鐵'],
           unit: 'Kg',
           thicknessMm: ['6'],
         },
@@ -115,6 +113,8 @@ describe('Steel price candidate repository', () => {
     expect(sql).toContain('p.category = input_query.category');
     expect(sql).toContain('p.subcategory = input_query.subcategory');
     expect(sql).toContain('p.material ILIKE');
+    expect(sql).toContain("material_term = 'ST'");
+    expect(sql).toContain("p.material NOT ILIKE '%2B%'");
     expect(sql).toContain('p.unit = input_query.unit');
     expect(sql).toContain('p.thickness_min_mm <= requested_thickness::numeric');
     expect(sql).toContain('requested_thickness::numeric < p.thickness_max_mm');
@@ -149,7 +149,7 @@ describe('Steel price candidate repository', () => {
         mode: 'lookup',
         category: '圓管',
         subcategory: '鋼管',
-        material: '黑鐵',
+        material_terms: ['黑鐵', '2B'],
         keyword_terms: ['黑鐵鋼管', '50x2'],
         thickness_mm: ['2', '2.3'],
         stock_length_mm: ['6000', '9000', '10000'],
@@ -163,7 +163,7 @@ describe('Steel price candidate repository', () => {
         query_index: 2,
         query_id: 'plate',
         category: '鐵板',
-        material: '黑鐵',
+        material_terms: ['黑鐵'],
         unit: 'Kg',
         thickness_mm: ['6'],
       }),
@@ -209,8 +209,8 @@ describe('Steel price candidate repository', () => {
 
     await searchSteelPriceCandidateGroups({ query } as SteelRepositoryClient, {
       queries: [
-        { queryId: 'galvanized', category: '圓管', material: '錏' },
-        { queryId: 'zinc', category: '圓管', material: '鋅' },
+        { queryId: 'galvanized', category: '圓管', materials: ['錏'] },
+        { queryId: 'zinc', category: '圓管', materials: ['鋅'] },
       ],
     });
 
@@ -219,13 +219,13 @@ describe('Steel price candidate repository', () => {
 
     expect(serializedQueries[0]).toEqual(
       expect.objectContaining({
-        material: '錏',
+        material_terms: ['錏'],
         material_terms: ['錏'],
       }),
     );
     expect(serializedQueries[1]).toEqual(
       expect.objectContaining({
-        material: '鋅',
+        material_terms: ['鋅'],
         material_terms: ['鋅'],
       }),
     );
@@ -348,48 +348,10 @@ describe('Steel price candidate repository', () => {
 
     const sql = String(query.mock.calls[0]?.[0] ?? '');
     expect(query).toHaveBeenCalledTimes(1);
-    expect(query.mock.calls[0]?.[1]).toEqual([['加工/切工'], null]);
+    expect(query.mock.calls[0]?.[1]).toEqual([['加工/切工']]);
     expect(sql).toContain("p.value_state <> 'no_price'");
     expect(sql).toContain('p.category = ANY($1::text[])');
     expect(sql).not.toContain('requested_thickness');
   });
 
-  it('uses the same selected columns for exact product-name prices across all categories', async () => {
-    const query = jest.fn().mockResolvedValue({
-      rows: [createPriceRow({ product_name: '黑鐵鋼管' })],
-    });
-
-    const result = await searchSteelPricesByProductNames({ query } as SteelRepositoryClient, [
-      '黑鐵鋼管',
-      '倒角加工',
-    ]);
-
-    expect(query.mock.calls[0]?.[1]).toEqual([[], ['黑鐵鋼管', '倒角加工']]);
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-    expect(sql).toContain('p.product_name = ANY($2::text[])');
-    expect(sql).toContain("p.value_state <> 'no_price'");
-    expect(result).toEqual([expect.objectContaining({ productName: '黑鐵鋼管' })]);
-  });
-
-  it('loads exact ERP item codes uniquely and preserves requested code order', async () => {
-    const query = jest.fn().mockResolvedValue({
-      rows: [
-        createPriceRow({ id: '12', erp_item_code: 'ERP-2' }),
-        createPriceRow({ id: '13', erp_item_code: 'ERP-2' }),
-      ],
-    });
-
-    const result = await searchSteelPricesByErpItemCodes({ query } as SteelRepositoryClient, [
-      'ERP-2',
-      'ERP-2',
-      'ERP-missing',
-    ]);
-
-    expect(query).toHaveBeenCalledTimes(1);
-    expect(query.mock.calls[0]?.[1]).toEqual([['ERP-2', 'ERP-missing']]);
-    const sql = String(query.mock.calls[0]?.[0] ?? '');
-    expect(sql).toContain('p.erp_item_code = ANY($1::text[])');
-    expect(sql).toContain('array_position($1::text[], p.erp_item_code)');
-    expect(result).toEqual([expect.objectContaining({ erpItemCode: 'ERP-2', id: 12 })]);
-  });
 });

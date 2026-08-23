@@ -41,3 +41,5 @@ export const priceLookupMaterialKinds = [
   '塑膠',
 ] as const;
 export type PriceLookupMaterialKind = (typeof priceLookupMaterialKinds)[number];
+
+export * from './materials';

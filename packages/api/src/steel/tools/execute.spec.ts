@@ -247,8 +247,6 @@ describe('executeSteelTool', () => {
             ]),
             totalAvailable: 11,
             returnedCount: 11,
-            selectionRequired: false,
-            nextAction: 'use_candidates',
           },
           {
             queryId: 'q2',
@@ -259,8 +257,6 @@ describe('executeSteelTool', () => {
             ]),
             totalAvailable: 10,
             returnedCount: 10,
-            selectionRequired: false,
-            nextAction: 'use_candidates',
           },
         ],
       },
@@ -275,255 +271,6 @@ describe('executeSteelTool', () => {
       group.candidateMatches.filter((match) => match.queryId === 'q1'),
     );
     expect(q1Matches).toHaveLength(11);
-  });
-
-  it('retrieves an exact selected ERP code after discovery', async () => {
-    const candidates = Array.from({ length: 11 }, (_, index) =>
-      createHMaterialRow(1400 + index, 500 + index, 200),
-    );
-    const selected = candidates[7];
-    const client = createClient([
-      [
-        {
-          query_index: '0',
-          query_id: 'q1',
-          price_candidates: candidates,
-          category_candidates: [],
-        },
-      ],
-      [],
-      [],
-      selected ? [selected] : [],
-    ]);
-
-    const discovery = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: { queries: [{ categories: ['H型鋼'] }] },
-    });
-    const exact = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: { queries: [{ erpItemCodes: selected ? [selected.erp_item_code] : [] }] },
-    });
-
-    expect(discovery).toMatchObject({
-      ok: true,
-      data: {
-        queryResults: [
-          {
-            candidates: expect.arrayContaining([
-              expect.objectContaining({ erpItemCode: candidates[0]?.erp_item_code }),
-            ]),
-            selectionRequired: false,
-            nextAction: 'use_candidates',
-          },
-        ],
-      },
-    });
-    expect(exact).toMatchObject({
-      ok: true,
-      data: {
-        erpItemCodes: [selected?.erp_item_code],
-        candidates: [expect.objectContaining({ id: Number(selected?.id) })],
-        missingErpItemCodes: [],
-        nextAction: 'use_candidates',
-      },
-    });
-  });
-
-  it('uses an E-only price as a runtime fallback and requires manual confirmation', async () => {
-    const client = createClient([
-      [
-        createProcessingRow({
-          erp_item_code: 'A10E12',
-          product_name: '牙白100型1.2',
-          spec_key: 'A10E12 牙白100型1.2',
-          unit_price_base: null,
-          unit_price_a: null,
-          unit_price_b: null,
-          unit_price_c: null,
-          unit_price_d: null,
-          unit_price_e: '48',
-          unit_price_f: null,
-        }),
-      ],
-    ]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: { queries: [{ erpItemCodes: ['A10E12'] }] },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        erpItemCodes: ['A10E12'],
-        candidates: [
-          {
-            erpItemCode: 'A10E12',
-            pricingOptions: [
-              {
-                source: 'tier_price',
-                tierPrices: { A: 48, B: 48, C: 48, D: 48, E: 48, F: 48 },
-                defaultQuoteTier: 'E',
-                defaultQuoteUnitPrice: 48,
-                fallbackTiers: ['A', 'B', 'C', 'D', 'F'],
-                manualReviewRequired: true,
-                manualReviewNotes: [expect.stringMatching(/補充.*人工確認/u)],
-              },
-            ],
-          },
-        ],
-        missingErpItemCodes: [],
-        nextAction: 'use_candidates',
-      },
-    });
-  });
-
-  it('uses B-A-C-F-D-E before base when resolving missing tiers', async () => {
-    const client = createClient([
-      [
-        createProcessingRow({
-          id: '201',
-          erp_item_code: 'BASE-ONLY',
-          product_name: 'base only',
-          spec_key: 'BASE-ONLY base only',
-          unit_price_base: '35',
-          unit_price_a: null,
-          unit_price_b: null,
-          unit_price_c: null,
-          unit_price_d: null,
-          unit_price_e: null,
-          unit_price_f: null,
-        }),
-        createProcessingRow({
-          id: '202',
-          erp_item_code: 'MIXED',
-          product_name: 'mixed tiers',
-          spec_key: 'MIXED mixed tiers',
-          unit_price_base: null,
-          unit_price_a: '41',
-          unit_price_b: null,
-          unit_price_c: '39',
-          unit_price_d: null,
-          unit_price_e: null,
-          unit_price_f: null,
-        }),
-        createProcessingRow({
-          id: '203',
-          erp_item_code: 'B-FIRST',
-          product_name: 'B first',
-          spec_key: 'B-FIRST B first',
-          unit_price_base: '35',
-          unit_price_a: '41',
-          unit_price_b: '42',
-          unit_price_c: null,
-          unit_price_d: null,
-          unit_price_e: null,
-          unit_price_f: null,
-        }),
-      ],
-    ]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: { queries: [{ erpItemCodes: ['BASE-ONLY', 'MIXED', 'B-FIRST'] }] },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        erpItemCodes: ['BASE-ONLY', 'MIXED', 'B-FIRST'],
-        candidates: [
-          {
-            erpItemCode: 'BASE-ONLY',
-            pricingOptions: [
-              {
-                tierPrices: { A: 35, B: 35, C: 35, D: 35, E: 35, F: 35 },
-                defaultQuoteTier: 'B',
-                defaultQuoteUnitPrice: 35,
-              },
-            ],
-          },
-          {
-            erpItemCode: 'MIXED',
-            pricingOptions: [
-              {
-                tierPrices: { A: 41, B: 41, C: 39, D: 41, E: 41, F: 41 },
-                defaultQuoteTier: 'A',
-                defaultQuoteUnitPrice: 41,
-              },
-            ],
-          },
-          {
-            erpItemCode: 'B-FIRST',
-            pricingOptions: [
-              {
-                tierPrices: { A: 41, B: 42, C: 42, D: 42, E: 42, F: 42 },
-                defaultQuoteTier: 'B',
-                defaultQuoteUnitPrice: 42,
-              },
-            ],
-          },
-        ],
-        missingErpItemCodes: [],
-        nextAction: 'use_candidates',
-      },
-    });
-  });
-
-  it('keeps D and E ratios available without mixing them into price fallback', async () => {
-    const client = createClient([
-      [
-        createProcessingRow({
-          erp_item_code: 'RATIO-DE',
-          product_name: 'ratio D E',
-          spec_key: 'RATIO-DE ratio D E',
-          value_state: 'ratio_only',
-          unit_price_base: null,
-          unit_price_a: null,
-          unit_price_b: null,
-          unit_price_c: null,
-          unit_price_d: null,
-          unit_price_e: null,
-          unit_price_f: null,
-          price_ratio_a: null,
-          price_ratio_b: null,
-          price_ratio_c: null,
-          price_ratio_d: '1.2',
-          price_ratio_e: '1.15',
-          price_ratio_f: null,
-        }),
-      ],
-    ]);
-
-    const result = await executeSteelTool({
-      client,
-      toolName: 'search_price_candidates',
-      arguments: { queries: [{ erpItemCodes: ['RATIO-DE'] }] },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        erpItemCodes: ['RATIO-DE'],
-        candidates: [
-          {
-            pricingOptions: [
-              {
-                source: 'tier_price',
-                tierPrices: { A: null, B: null, C: null, D: 1.2, E: 1.15, F: null },
-              },
-            ],
-          },
-        ],
-        missingErpItemCodes: [],
-        nextAction: 'use_candidates',
-      },
-    });
   });
 
   it('preserves plate ranking when normalized search text only exists in prefixed specKey', async () => {
@@ -622,7 +369,6 @@ describe('executeSteelTool', () => {
             {
               totalAvailable: 11,
               returnedCount: 11,
-              selectionRequired: false,
               groups: [
                 {
                   processingCategory: '加工/孔',
@@ -742,22 +488,19 @@ describe('executeSteelTool', () => {
               groups: [
                 {
                   processingCategory: '加工/切工',
-                  items: [
-                    expect.objectContaining({ erpItemCode: 'DNB2001', matchedQueryIds: ['q1'] }),
-                    expect.objectContaining({ erpItemCode: 'DNB2002', matchedQueryIds: ['q2'] }),
+                  items: expect.arrayContaining([
+                    expect.objectContaining({ erpItemCode: 'DNB2001' }),
+                    expect.objectContaining({ erpItemCode: 'DNB2002' }),
                     expect.objectContaining({
                       erpItemCode: 'BKZZ-EMPTY',
-                      matchedQueryIds: ['q1', 'q2', 'q3'],
                     }),
                     expect.objectContaining({
                       erpItemCode: 'BKZZ-NULL',
-                      matchedQueryIds: ['q1', 'q2', 'q3'],
                     }),
                     expect.objectContaining({
                       erpItemCode: 'BKZZB',
-                      matchedQueryIds: ['q1', 'q2', 'q3'],
                     }),
-                  ],
+                  ]),
                 },
               ],
             },
@@ -799,7 +542,6 @@ describe('executeSteelTool', () => {
         processingPrice: {
           queryResults: [
             {
-              selectionRequired: false,
               returnedCount: 11,
               groups: [
                 {
@@ -807,11 +549,9 @@ describe('executeSteelTool', () => {
                   items: expect.arrayContaining([
                     expect.objectContaining({
                       erpItemCode: 'GENERIC-0',
-                      matchedQueryIds: ['q1'],
                     }),
                     expect.objectContaining({
                       erpItemCode: 'GENERIC-10',
-                      matchedQueryIds: ['q1'],
                     }),
                   ]),
                 },
@@ -998,7 +738,7 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('uses the twenty-candidate boundary after filtering unusable names', async () => {
+  it('uses the 250-candidate cap after filtering unusable names', async () => {
     const run = async (rows: object[]) => {
       const result = await executeSteelTool({
         client: createClient([
@@ -1031,28 +771,15 @@ describe('executeSteelTool', () => {
     expect(twenty).toMatchObject({
       totalAvailable: 20,
       returnedCount: 20,
-      selectionRequired: false,
-      nextAction: 'use_candidates',
+      truncated: false,
     });
     expect(twentyOne).toMatchObject({
       totalAvailable: 21,
-      returnedCount: 0,
-      selectionRequired: true,
-      nextAction: 'select_erp_item_codes',
-      candidates: [],
-      candidateRefs: expect.arrayContaining([
-        expect.objectContaining({ productName: 'H型鋼200*100', erpItemCode: 'EHS-200-100' }),
-      ]),
+      returnedCount: 21,
+      truncated: false,
+      candidates: expect.any(Array),
     });
-    expect((twentyOne.candidateRefs as object[]).every((ref) => 'productName' in ref && 'erpItemCode' in ref)).toBe(
-      true,
-    );
-    expect(duplicateNames.candidateRefs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ productName: 'H型鋼300*100', erpItemCode: 'EHS-300-100' }),
-        expect.objectContaining({ productName: 'H型鋼300*100', erpItemCode: 'EHS-301-100' }),
-      ]),
-    );
+    expect(duplicateNames).toMatchObject({ totalAvailable: 21, returnedCount: 21, truncated: false });
   });
 
   it('filters missing product names before threshold and preserves ordered OR dedupe', async () => {
@@ -1085,7 +812,7 @@ describe('executeSteelTool', () => {
         [],
       ]),
       toolName: 'search_price_candidates',
-      arguments: { queries: [{ categories: ['H型鋼', 'C型鋼'] }] },
+      arguments: { queries: [{ categories: ['H型鋼', 'C型鋼'], materials: ['黑鐵'] }] },
     });
 
     expect(result).toMatchObject({
@@ -1096,9 +823,7 @@ describe('executeSteelTool', () => {
             queryId: 'q1',
             totalAvailable: 2,
             returnedCount: 2,
-            selectionRequired: false,
-            nextAction: 'use_candidates',
-            candidateRefsOmittedCount: 1,
+            truncated: false,
             candidates: [
               expect.objectContaining({ erpItemCode: 'EHS-501-100' }),
               expect.objectContaining({ erpItemCode: 'EHS-502-100' }),
@@ -1109,38 +834,8 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('returns exact ERP candidates in request order with missing codes', async () => {
-    const first = createHMaterialRow(6001, 601, 100);
-    first.erp_item_code = 'ERP-A';
-    const second = createHMaterialRow(6002, 602, 100);
-    second.erp_item_code = 'ERP-B';
-    const unnamed = createHMaterialRow(6003, 603, 100);
-    unnamed.erp_item_code = 'ERP-C';
-    unnamed.product_name = ' ';
-    const result = await executeSteelTool({
-      client: createClient([[first, second, unnamed]]),
-      toolName: 'search_price_candidates',
-      arguments: { queries: [{ erpItemCodes: ['ERP-B', 'ERP-A', 'ERP-C', 'ERP-MISSING'] }] },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        erpItemCodes: ['ERP-B', 'ERP-A', 'ERP-C', 'ERP-MISSING'],
-        candidates: [
-          expect.objectContaining({ erpItemCode: 'ERP-B' }),
-          expect.objectContaining({ erpItemCode: 'ERP-A' }),
-        ],
-        missingErpItemCodes: ['ERP-C', 'ERP-MISSING'],
-        nextAction: 'manual_review',
-      },
-    });
-  });
-
   it('executes mixed material and processing items independently in input order', async () => {
     const material = createHMaterialRow(6100, 610, 100);
-    const exact = createHMaterialRow(6102, 612, 100);
-    exact.erp_item_code = 'ERP-EXACT';
     const processing = createProcessingRow({
       id: '6101',
       erp_item_code: 'CUT-6101',
@@ -1164,14 +859,12 @@ describe('executeSteelTool', () => {
         [{ query_index: 0, query_id: 'q1:c1', price_candidates: [material], category_candidates: [] }],
         [],
         [processing, unnamedProcessing],
-        [exact],
       ]),
       toolName: 'search_price_candidates',
       arguments: {
         queries: [
           { categories: ['H型鋼'] },
           { categories: ['鐵板'], processingCategories: ['加工/孔'], keyword: '圓孔' },
-          { erpItemCodes: ['ERP-EXACT'] },
         ],
       },
     });
@@ -1183,17 +876,54 @@ describe('executeSteelTool', () => {
         processingPrice: {
           queryResults: [expect.objectContaining({ queryId: 'q2', totalAvailable: 1 })],
         },
-        exactResults: [
-          expect.objectContaining({
-            queryId: 'q3',
-            candidates: [expect.objectContaining({ erpItemCode: 'ERP-EXACT' })],
-          }),
-        ],
         summary: expect.objectContaining({
-          queryCount: 3,
-          matchedQueryCount: 3,
+          queryCount: 2,
+          matchedQueryCount: 2,
           noMatchQueryCount: 0,
         }),
+      },
+    });
+  });
+
+  it('deduplicates merged candidates by price row id while retaining ERP surface rows', async () => {
+    const black = createHMaterialRow(7001, 500, 100);
+    black.erp_item_code = 'ERP-SAME';
+    black.category = '鐵板';
+    black.material = '黑鐵 / OT';
+    const white = createHMaterialRow(7002, 500, 100);
+    white.erp_item_code = 'ERP-SAME';
+    white.category = '鐵板';
+    white.material = '2B 白鐵霧面';
+    const result = await executeSteelTool({
+      client: createClient([
+        [
+          {
+            query_index: 0,
+            query_id: 'q1:c1',
+            price_candidates: [black, black, white],
+            category_candidates: [],
+          },
+        ],
+        [],
+        [],
+      ]),
+      toolName: 'search_price_candidates',
+      arguments: { queries: [{ categories: ['鐵板'], materials: ['黑鐵', '2B'] }] },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        queryResults: [
+          {
+            candidates: [
+              expect.objectContaining({ erpItemCode: 'ERP-SAME', material: '黑鐵 / OT' }),
+              expect.objectContaining({ erpItemCode: 'ERP-SAME', material: '2B 白鐵霧面' }),
+            ],
+            totalAvailable: 2,
+            returnedCount: 2,
+          },
+        ],
       },
     });
   });

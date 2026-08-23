@@ -74,7 +74,7 @@ interface SteelPriceLookupQueryInput {
   queryId: string;
   categories: (typeof priceCategories)[number][];
   subcategory?: string;
-  material?: string;
+  materials?: string[];
   unit?: string;
   thicknessMm?: string[];
   stockLengthMm?: string[];
@@ -88,15 +88,9 @@ interface SteelPriceProcessingQueryInput {
   keyword?: string;
 }
 
-interface SteelPriceExactQueryInput {
-  queryId: string;
-  erpItemCodes: string[];
-}
-
 type SearchPriceCandidateQueryInput =
   | SteelPriceLookupQueryInput
-  | SteelPriceProcessingQueryInput
-  | SteelPriceExactQueryInput;
+  | SteelPriceProcessingQueryInput;
 
 interface SearchPriceCandidatesInput {
   queries: SearchPriceCandidateQueryInput[];
@@ -181,8 +175,10 @@ const _lookupDefaultsSchema = z.object({
 const stockLengthMmSchema = z.array(positiveDecimalString).min(1).max(20);
 
 const directMaterialAliases = new Map<string, (typeof priceLookupMaterialKinds)[number]>([
+  ['OT', '黑鐵'],
   ['黑鐵', '黑鐵'],
   ['白鐵', '白鐵'],
+  ['ST', '白鐵'],
   ['2B', '2B'],
   ['NO1', 'NO1'],
   ['HL', 'HL'],
@@ -192,6 +188,7 @@ const directMaterialAliases = new Map<string, (typeof priceLookupMaterialKinds)[
   ['亮面', 'BA'],
   ['鋁', '鋁'],
   ['錏', '錏'],
+  ['鍍鋅', '錏'],
   ['熱浸鍍', '錏'],
   ['熱浸鍍鋅', '錏'],
   ['熱進鍍鋅', '錏'],
@@ -207,33 +204,36 @@ const materialPriceQuerySchema = z
       .min(1)
       .max(20)
       .describe(
-        'Ordered OR material categories. First query is category-only unless a category rule allows a filter, e.g. {"categories":["鐵板"]}; add other filters only on a corrected retry.',
+        'Ordered OR material categories. Use category-only when optional facts are unknown; use one or more confirmed OR materials, including mixed families/surfaces, e.g. {"categories":["鐵板"],"materials":["OT"]}, {"categories":["鐵板"],"materials":["ST","2B"]}.',
       ),
     subcategory: nonEmptyString
       .optional()
-      .describe('Confirmed subcategory; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"subcategory":"平板"}.'),
-    material: nonEmptyString
+      .describe('Confirmed subcategory needed to distinguish products, e.g. {"categories":["鐵板"],"subcategory":"平板"}.'),
+    materials: z
+      .array(nonEmptyString)
+      .min(1)
+      .max(20)
       .optional()
-      .describe('Confirmed material/surface; retry-only unless a category rule allows first query, e.g. {"categories":["圓管"],"material":"黑鐵"}.'),
+      .describe('Optional OR material list. Use one family or surface, multiple surfaces, or mixed families/surfaces, e.g. {"categories":["圓管"],"materials":["BA"]}, {"categories":["鐵板"],"materials":["ST","2B"]}, or {"categories":["鐵板"],"materials":["黑鐵","2B"]}.'),
     unit: nonEmptyString
       .optional()
-      .describe('Confirmed unit; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"unit":"Kg"}.'),
+      .describe('Confirmed quote unit needed to distinguish products, e.g. {"categories":["鐵板"],"unit":"Kg"}.'),
     thicknessMm: z
       .array(positiveDecimalString)
       .min(1)
       .max(20)
       .optional()
       .describe(
-        'Material thickness in mm, never finished/stock length; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"thicknessMm":["6"]}.',
+        'Confirmed material thicknesses in mm, never finished/stock length, e.g. {"categories":["鐵板"],"thicknessMm":["6"]}.',
       ),
     stockLengthMm: stockLengthMmSchema
       .optional()
       .describe(
-        'Acceptable mother-stock lengths in mm; a relevant category rule may allow first query (H型鋼 example), otherwise retry-only, e.g. {"categories":["H型鋼"],"stockLengthMm":["6000","9000"]}.',
+        'Confirmed acceptable mother-stock lengths in mm; H型鋼 may send multiple planned lengths together, e.g. {"categories":["H型鋼"],"stockLengthMm":["6000","9000"]}.',
       ),
     keyword: nonEmptyString
       .optional()
-      .describe('Category/spec text, never an ERP code; retry-only unless a category rule allows first query, e.g. {"categories":["鐵板"],"keyword":"雷射"}.'),
+      .describe('Confirmed category/spec text allowed by the category rule; never a candidate productName or ERP code, e.g. {"categories":["鐵板"],"keyword":"雷射"}.'),
   })
   .strict()
   .superRefine((query, ctx) => {
@@ -278,8 +278,8 @@ const materialPriceQuerySchema = z
         });
       }
     });
-    if (query.material) {
-      const key = query.material.normalize('NFKC').trim().toUpperCase();
+    query.materials?.forEach((material, materialIndex) => {
+      const key = material.normalize('NFKC').trim().toUpperCase();
       const recognized =
         directMaterialAliases.has(key) ||
         key === '不鏽鋼' ||
@@ -298,11 +298,11 @@ const materialPriceQuerySchema = z
       if (!recognized) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `Invalid material ${query.material}`,
-          path: ['material'],
+          message: `Invalid material ${material}`,
+          path: ['materials', materialIndex],
         });
       }
-    }
+    });
   });
 
 const processingPriceQuerySchema = z
@@ -341,30 +341,7 @@ const processingPriceQuerySchema = z
     });
   });
 
-const exactPriceQuerySchema = z
-  .object({
-    erpItemCodes: z
-      .array(nonEmptyString)
-      .min(1)
-      .max(100)
-      .describe('Exact-only ERP codes used after a material result exceeds 20 and returns selectionRequired=true; choose by candidateRefs.productName, copy each paired erpItemCode, and never infer codes, e.g. {"erpItemCodes":["ERP-1"]}.'),
-  })
-  .strict()
-  .superRefine((query, ctx) => {
-    if (new Set(query.erpItemCodes).size !== query.erpItemCodes.length) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'erpItemCodes must contain unique values',
-        path: ['erpItemCodes'],
-      });
-    }
-  });
-
-const searchPriceCandidateQuerySchema = z.union([
-  materialPriceQuerySchema,
-  processingPriceQuerySchema,
-  exactPriceQuerySchema,
-]);
+const searchPriceCandidateQuerySchema = z.union([materialPriceQuerySchema, processingPriceQuerySchema]);
 
 const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTypeDef, unknown> = z
   .object({
@@ -373,7 +350,7 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
       .min(1)
       .max(100)
       .describe(
-        'Strict nonempty union in input order: material {categories:[...]}, processing {categories:[...],processingCategories:[...]}, or exact {erpItemCodes:[...]}; material and processing example: {"queries":[{"categories":["鐵板"]},{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}.',
+        'Strict nonempty union in input order: material {categories:[...]} or processing {categories:[...],processingCategories:[...]}. Results contain direct flat candidates.',
       ),
   })
   .strict()

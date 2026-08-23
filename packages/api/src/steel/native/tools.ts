@@ -265,6 +265,7 @@ const compactCandidateFields = [
   'unit',
   'formulaCode',
   'unitWeightValue',
+  'unitWeightBasis',
   'density',
   'thicknessMinMm',
   'thicknessMaxMm',
@@ -279,56 +280,18 @@ const compactCandidateFields = [
   'sheetWidthMm',
   'sheetLengthMm',
   'quoteEligible',
-  'matchedQueryIds',
-  'materialBillingMode',
-  'cuttingFeePolicy',
+  'priceSource',
+  'quoteUnit',
+  'tierPrices',
+  'fallbackTiers',
 ] as const;
 
-function compactPricingOption(source: SteelToolJsonObject): SteelToolJsonObject {
-  return pickJsonFields(source, [
-    'source',
-    'quoteEligible',
-    'quoteUnit',
-    'tierPrices',
-    'defaultQuoteTier',
-    'defaultQuoteUnitPrice',
-    'fallbackTiers',
-  ]);
-}
-
 function compactCandidate(source: SteelToolJsonObject): SteelToolJsonObject {
-  const candidate = pickJsonFields(source, compactCandidateFields);
-  if (Array.isArray(source.pricingOptions)) {
-    candidate.pricingOptions = compactJsonObjects(source.pricingOptions, compactPricingOption);
-  }
-
-  return candidate;
+  return pickJsonFields(source, compactCandidateFields);
 }
 
 function compactCandidates(value: SteelToolJsonValue | undefined): SteelToolJsonValue[] {
   return compactJsonObjects(value, compactCandidate);
-}
-
-function compactCandidateRef(source: SteelToolJsonObject): SteelToolJsonObject {
-  return pickJsonFields(source, [
-    'erpItemCode',
-    'productName',
-    'category',
-    'lengthMm',
-    'unitWeightValue',
-    'thicknessMinMm',
-    'thicknessMaxMm',
-    'widthMm',
-    'heightMm',
-    'outerDiameterMm',
-    'nominalInch',
-    'webMm',
-    'flangeMm',
-    'lipMm',
-    'sheetWidthMm',
-    'sheetLengthMm',
-    'unit',
-  ]);
 }
 
 function compactCategoryCandidate(source: SteelToolJsonObject): SteelToolJsonObject {
@@ -347,13 +310,20 @@ function compactQueryResult(source: SteelToolJsonObject): SteelToolJsonObject {
     'status',
     'totalAvailable',
     'returnedCount',
-    'selectionRequired',
-    'nextAction',
-    'candidateRefsOmittedCount',
+    'truncated',
+    'defaultMaterial',
+    'availableMaterials',
+    'defaultWhiteSteelSurface',
+    'availableWhiteSteelSurfaces',
+    'categoryMaterialOptions',
+    'issue',
+    'allowedMaterials',
+    'allowedSurfaces',
+    'unsupportedMaterials',
+    'defaultMaterialGroups',
   ]);
-  queryResult.candidates = compactCandidates(source.candidates);
-  if (Array.isArray(source.candidateRefs)) {
-    queryResult.candidateRefs = compactJsonObjects(source.candidateRefs, compactCandidateRef);
+  if (Array.isArray(source.candidates)) {
+    queryResult.candidates = compactCandidates(source.candidates);
   }
   if (Array.isArray(source.categoryCandidates)) {
     queryResult.categoryCandidates = compactJsonObjects(
@@ -391,7 +361,12 @@ function compactCuttingGroup(source: SteelToolJsonObject): SteelToolJsonObject {
 }
 
 function compactProcessingGroup(source: SteelToolJsonObject): SteelToolJsonObject {
-  const group = pickJsonFields(source, ['processingCategory', 'totalAvailable']);
+  const group = pickJsonFields(source, [
+    'processingCategory',
+    'totalAvailable',
+    'returnedCount',
+    'truncated',
+  ]);
   group.items = compactCandidates(source.items);
   return group;
 }
@@ -401,33 +376,172 @@ function compactProcessingQueryResult(source: SteelToolJsonObject): SteelToolJso
     'queryId',
     'totalAvailable',
     'returnedCount',
-    'selectionRequired',
+    'truncated',
+    'defaultMaterial',
+    'availableMaterials',
+    'defaultWhiteSteelSurface',
+    'availableWhiteSteelSurfaces',
   ]);
   queryResult.groups = compactJsonObjects(source.groups, compactProcessingGroup);
   return queryResult;
 }
 
-function compactExactResult(source: SteelToolJsonObject): SteelToolJsonObject {
-  const exactResult = pickJsonFields(source, [
-    'queryId',
-    'erpItemCodes',
-    'missingErpItemCodes',
-    'nextAction',
-  ]);
-  exactResult.candidates = compactCandidates(source.candidates);
-  return exactResult;
+const essentialCandidateFields = [
+  'erpItemCode',
+  'productName',
+  'category',
+  'material',
+  'unit',
+  'formulaCode',
+  'quoteEligible',
+  'priceSource',
+  'quoteUnit',
+  'tierPrices',
+  'fallbackTiers',
+] as const;
+
+interface CandidateCollection {
+  query: SteelToolJsonObject;
+  items: SteelToolJsonValue[];
+  originalCount: number;
 }
 
-function compactPriceCandidateData(data: SteelToolJsonObject): SteelToolJsonObject {
-  if (data.erpItemCodes !== undefined) {
-    return {
-      erpItemCodes: data.erpItemCodes,
-      candidates: compactCandidates(data.candidates),
-      missingErpItemCodes: data.missingErpItemCodes ?? [],
-      nextAction: data.nextAction,
-    };
+function updateCandidateCollection(entry: CandidateCollection): void {
+  entry.query.returnedCount = entry.items.length;
+  const totalAvailable =
+    typeof entry.query.totalAvailable === 'number' ? entry.query.totalAvailable : undefined;
+  entry.query.truncated =
+    totalAvailable === undefined
+      ? entry.items.length < entry.originalCount
+      : entry.items.length < totalAvailable;
+}
+
+function updateProcessingReturnedCounts(processingQueries: SteelToolJsonObject[]): void {
+  processingQueries.forEach((query) => {
+    if (!Array.isArray(query.groups)) return;
+    let returnedCount = 0;
+    let truncated = false;
+    query.groups.forEach((value) => {
+      const group = getJsonObject(value);
+      if (!group || !Array.isArray(group.items)) return;
+      returnedCount += group.items.length;
+      truncated ||= group.truncated === true;
+    });
+    query.returnedCount = returnedCount;
+    const totalAvailable =
+      typeof query.totalAvailable === 'number' ? query.totalAvailable : undefined;
+    query.truncated =
+      totalAvailable === undefined ? truncated : returnedCount < totalAvailable;
+  });
+}
+
+function compactEssentialCandidates(queryResults: SteelToolJsonObject[]): void {
+  queryResults.forEach((query) => {
+    if (!Array.isArray(query.candidates)) return;
+    query.candidates = compactJsonObjects(query.candidates, (candidate) =>
+      pickJsonFields(candidate, essentialCandidateFields),
+    );
+    query.returnedCount = query.candidates.length;
+  });
+}
+
+function trimCompactPriceResult(
+  data: SteelToolJsonObject,
+  maxSerializedChars: number,
+): boolean {
+  const serializedLength = () => JSON.stringify(data).length;
+  if (serializedLength() <= maxSerializedChars) return true;
+
+  data.responseTruncated = true;
+  const queryResults = Array.isArray(data.queryResults)
+    ? data.queryResults.flatMap((value) => {
+        const query = getJsonObject(value);
+        return query ? [query] : [];
+      })
+    : [];
+  queryResults.forEach((query) => {
+    delete query.categoryCandidates;
+  });
+  const materialCollections: CandidateCollection[] = [];
+  const processingCollections: CandidateCollection[] = [];
+  const cuttingCollections: CandidateCollection[] = [];
+  queryResults.forEach((query) => {
+    if (Array.isArray(query.candidates)) {
+      materialCollections.push({
+        query,
+        items: query.candidates,
+        originalCount: query.candidates.length,
+      });
+    }
+  });
+  const processing = getJsonObject(data.processingPrice);
+  const processingQueries = processing && Array.isArray(processing.queryResults)
+    ? processing.queryResults.flatMap((value) => {
+        const query = getJsonObject(value);
+        return query ? [query] : [];
+      })
+    : [];
+  processingQueries.forEach((query) => {
+    if (!Array.isArray(query.groups)) return;
+    query.groups.forEach((value) => {
+      const group = getJsonObject(value);
+      if (group && Array.isArray(group.items)) {
+        processingCollections.push({
+          query: group,
+          items: group.items,
+          originalCount: group.items.length,
+        });
+      }
+    });
+  });
+  if (Array.isArray(data.cuttingPrices)) {
+    data.cuttingPrices.forEach((value) => {
+      const group = getJsonObject(value);
+      if (group && Array.isArray(group.prices)) {
+        cuttingCollections.push({
+          query: group,
+          items: group.prices,
+          originalCount: group.prices.length,
+        });
+      }
+    });
   }
 
+  const candidateCollections = [
+    ...materialCollections,
+    ...processingCollections,
+    ...cuttingCollections,
+  ];
+  for (const entry of candidateCollections) updateCandidateCollection(entry);
+  while (serializedLength() > maxSerializedChars) {
+    let removed = false;
+    for (const entry of candidateCollections) {
+      if (serializedLength() <= maxSerializedChars) break;
+      if (entry.items.length <= 1) continue;
+      entry.items.pop();
+      updateCandidateCollection(entry);
+      removed = true;
+    }
+    if (!removed) break;
+  }
+
+  updateProcessingReturnedCounts(processingQueries);
+  if (serializedLength() <= maxSerializedChars) return true;
+
+  delete data.processingPrice;
+  delete data.cuttingPrices;
+  if (serializedLength() <= maxSerializedChars) return true;
+
+  compactEssentialCandidates(queryResults);
+  if (serializedLength() <= maxSerializedChars) return true;
+
+  return false;
+}
+
+function compactPriceCandidateData(
+  data: SteelToolJsonObject,
+  maxSerializedChars = 79_500,
+): SteelToolJsonObject | undefined {
   const compactData: SteelToolJsonObject = {
     queryResults: compactJsonObjects(data.queryResults, compactQueryResult),
     cuttingPrices: compactJsonObjects(data.cuttingPrices, compactCuttingGroup),
@@ -438,10 +552,8 @@ function compactPriceCandidateData(data: SteelToolJsonObject): SteelToolJsonObje
       queryResults: compactJsonObjects(processingPrice.queryResults, compactProcessingQueryResult),
     };
   }
-  if (Array.isArray(data.exactResults)) {
-    compactData.exactResults = compactJsonObjects(data.exactResults, compactExactResult);
-  }
-  return compactData;
+
+  return trimCompactPriceResult(compactData, maxSerializedChars) ? compactData : undefined;
 }
 
 function getProviderVisibleResult(
@@ -452,10 +564,22 @@ function getProviderVisibleResult(
     return result;
   }
 
+  const compactData = compactPriceCandidateData(result.data);
+  if (!compactData) {
+    return {
+      ok: false,
+      toolName: result.toolName,
+      errorCategory: 'repository_error',
+      errorSummary: 'price_candidate_response_too_large',
+      durationMs: result.durationMs,
+      redactionVersion: 1,
+    };
+  }
+
   return {
     ok: true,
     toolName: result.toolName,
-    data: compactPriceCandidateData(result.data),
+    data: compactData,
   };
 }
 

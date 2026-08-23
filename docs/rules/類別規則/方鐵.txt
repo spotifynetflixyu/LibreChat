@@ -5,8 +5,8 @@
 
 2. Query
 - 首查併入一般材料 item，只傳 `categories: ["方鐵"]`。例：`{"queries":[{"categories":["方鐵"]}]}`。
-- 未指定材質時，選候選預設採黑鐵。依 `productName` 與 structured fields 判斷邊長、材質、磨光與素材長度；公制正規化邊長，英制分數換算公厘並保留候選 `nominalInch`。
-- 材質、單一邊長、unit、磨光、素材長度或括號單重不作首查參數。
+- 未指定材質時依回傳 `defaultMaterial` 採黑鐵。來源明示一個或多個材質或表面時，首查材料 item 加 `materials` array；各值為 OR，可混合材質族與白鐵表面。依 `productName` 與 structured fields 判斷邊長、材質、磨光與素材長度；公制正規化邊長，英制分數換算公厘並保留候選 `nominalInch`。
+- 單一邊長、unit、磨光、素材長度或括號單重不作首查參數；首查缺少必要識別資料且其後由使用者／來源確認時，才另送只含受影響方鐵 item 與新確認參數的 query，不重送原 query。
 - 未指定磨光時，同尺寸候選依黑鐵一般料、磨光料順序採價。此類沒有可靠 `thicknessMm`。
 - `25mm-38mm切`、`60m/m以上切` 等切割級距品名不得折成單一材料尺寸。
 

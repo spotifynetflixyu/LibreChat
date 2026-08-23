@@ -52,12 +52,12 @@ describe('Steel tool registry', () => {
           {
             categories: ['圓管'],
             subcategory: '一般',
-            material: '鎢',
+            materials: ['鎢'],
             thicknessMm: ['2'],
             keyword: '50x2',
           },
           { categories: ['鐵板'], processingCategories: ['加工/孔'] },
-          { erpItemCodes: ['00123'] },
+          { categories: ['圓管'], materials: ['BA'] },
         ],
       }),
     ).toEqual({
@@ -66,12 +66,12 @@ describe('Steel tool registry', () => {
           queryId: 'q1',
           categories: ['圓管'],
           subcategory: '一般',
-          material: '鎢',
+          materials: ['鎢'],
           thicknessMm: ['2'],
           keyword: '50x2',
         },
         { queryId: 'q2', categories: ['鐵板'], processingCategories: ['加工/孔'] },
-        { queryId: 'q3', erpItemCodes: ['00123'] },
+        { queryId: 'q3', categories: ['圓管'], materials: ['BA'] },
       ],
     });
     expect(() =>
@@ -81,7 +81,7 @@ describe('Steel tool registry', () => {
     ).toThrow('product or material categories');
     expect(() =>
       definition.argsSchema.parse({
-        queries: [{ categories: ['鐵板/鋼板'], material: '鋅' }],
+        queries: [{ categories: ['鐵板/鋼板'], materials: ['鋅'] }],
       }),
     ).toThrow();
     expect(() =>
@@ -92,9 +92,13 @@ describe('Steel tool registry', () => {
     ).toThrow('Unrecognized key');
 
     expect(definition.description).toContain('one queries array');
-    expect(definition.description).toContain('more than 20');
-    expect(definition.description).toContain('candidateRefs.productName');
-    expect(definition.description).toContain('candidateRefs.erpItemCode');
+    expect(definition.description).not.toContain('250');
+    expect(definition.description).not.toContain('truncation');
+    expect(definition.description).toContain('direct flat');
+    expect(definition.description).toContain('multiple surfaces');
+    expect(definition.description).toContain('mixed families/surfaces');
+    expect(definition.description).not.toContain('exact');
+    expect(definition.description).not.toContain('candidateRefs');
     expect(definition.description).not.toContain('processingQueries');
     expect(definition.description).not.toContain('productNames');
     expect(definition.description).not.toContain('cuttingPrices');
