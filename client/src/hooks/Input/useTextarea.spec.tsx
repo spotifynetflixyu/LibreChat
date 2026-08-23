@@ -186,6 +186,20 @@ describe('useTextarea long-paste fallback', () => {
     expect(mockRouteFiles).not.toHaveBeenCalled();
   });
 
+  it('keeps a long plain-text paste inline when the resolver rejects PaddleOCR context', () => {
+    mockResolvePastedTextFile.mockReturnValueOnce(null);
+    const { result } = renderTextareaHook();
+    const event = createPasteEvent();
+
+    act(() =>
+      result.current.handlePaste(event as unknown as React.ClipboardEvent<HTMLTextAreaElement>),
+    );
+
+    expect(mockResolvePastedTextFile).toHaveBeenCalledTimes(1);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mockRouteFiles).not.toHaveBeenCalled();
+  });
+
   it('restores the paste when attachment validation rejects the file', async () => {
     mockRouteFiles.mockResolvedValueOnce(false);
     const { result, textArea } = renderTextareaHook();
@@ -746,25 +760,24 @@ describe('useTextarea long-paste fallback', () => {
     consoleError.mockRestore();
   });
 
-  it('routes a paste to context while the file config is still pending', async () => {
+  it('keeps a paste inline while the file config is still pending', () => {
     mockIsUploadConfigPending = true;
     mockGetUploadOptions.mockReturnValue([]);
-    mockRouteFiles.mockResolvedValueOnce(true);
+    mockResolvePastedTextFile.mockReturnValueOnce(null);
     const { result } = renderTextareaHook();
+    const event = createPasteEvent();
 
     act(() =>
-      result.current.handlePaste(
-        createPasteEvent() as unknown as React.ClipboardEvent<HTMLTextAreaElement>,
-      ),
+      result.current.handlePaste(event as unknown as React.ClipboardEvent<HTMLTextAreaElement>),
     );
 
-    await waitFor(() => expect(mockRouteFiles).toHaveBeenCalledTimes(1));
-    expect(mockRouteFiles.mock.calls[0][1]).toBe(EToolResources.context);
-    expect(mockGetUploadOptions).not.toHaveBeenCalled();
-    expect(mockShowToast).not.toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'com_error_files_unsupported' }),
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mockRouteFiles).not.toHaveBeenCalled();
+    expect(mockResolvePastedTextFile).toHaveBeenCalledWith(
+      pastedText,
+      expect.objectContaining({ configPending: true }),
     );
-    expect(mockOpenModal).not.toHaveBeenCalled();
+    expect(mockGetUploadOptions).not.toHaveBeenCalled();
   });
 
   it('still rejects a paste once the loaded config offers nothing', async () => {

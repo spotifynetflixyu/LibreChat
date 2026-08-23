@@ -2,9 +2,9 @@
 
 1. Query
 - 首查併入一般材料 item，只傳 `categories: ["網"]`。例：`{"queries":[{"categories":["網"]}]}`。
-- 來源明示一個或多個材質或表面時，首查材料 item 加 `materials` array；各值為 OR，可混合材質族與白鐵表面。未明示省略並依回傳 `defaultMaterial`（黑鐵）判讀。`subcategory`、`unit`、`keyword`、`stockLengthMm` 或訂單長度由返回候選判斷。首查缺少必要識別資料且其後由使用者／來源確認時，才另送只含受影響網類 item 與新確認參數的 query。
+- 首查預設省略 `materials`，依回傳 `defaultMaterial`（黑鐵）判讀；只有訂單自然語意明確要求且 category-supported、不同於黑鐵的 canonical 材質族／白鐵表面時才加入，單一需求一值，明確 alternatives 才多值 OR。欄名與材料／鋼種代號不算明示。訂單已確認非 Kg 計價所需的供料／母材長度時，依【search_price_candidates 查價規則】首查加 `stockLengthMm`，明示「不切清」亦同；`subcategory`、`unit` 與 `keyword` 由返回候選判斷。首查缺少必要識別資料且其後由使用者／來源確認時，才另送只含受影響網類 item 與新確認參數的 query。
 - AI依候選的 structured fields 與完整 `productName` 判斷線徑、孔目、孔型、材質、整片／整捲尺寸、可拉長度與是否足夠裁切；預設不切清。
-- `kg`、`尺`、`inch`、`mm`、`ST304` 等單位、鋼種或代號不得轉成 `keyword`。
+- `kg`、`尺`、`inch`、`mm`、`ST304` 等單位、鋼種或代號不得轉成 `keyword` 或其他 `search_price_candidates` 參數；只原樣保留。
 
 2. 品名判讀
 - 尺、inch、mm原文保留在品名／備註；轉mm比較時四捨五入為整數。

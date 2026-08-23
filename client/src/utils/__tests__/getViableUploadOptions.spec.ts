@@ -1,21 +1,8 @@
 import { EToolResources } from 'librechat-data-provider';
-import type { FileConfig } from 'librechat-data-provider';
 import { getViableUploadOptions, type UploadOptionContext } from '../files';
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const POTX = 'application/vnd.openxmlformats-officedocument.presentationml.template';
-
-/** context accepts plain text + csv (text), pdf + xlsx (ocr); nothing else */
-const fileConfig = {
-  text: { supportedMimeTypes: [/^text\/(plain|csv)$/] },
-  ocr: {
-    supportedMimeTypes: [
-      /^application\/pdf$/,
-      /^application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet$/,
-    ],
-  },
-  stt: { supportedMimeTypes: [] },
-} as unknown as FileConfig;
 
 const baseCtx = (over: Partial<UploadOptionContext> = {}): UploadOptionContext => ({
   provider: 'anthropic',
@@ -27,7 +14,6 @@ const baseCtx = (over: Partial<UploadOptionContext> = {}): UploadOptionContext =
   contextEnabled: true,
   fileSearchAllowedByAgent: true,
   codeAllowedByAgent: true,
-  fileConfig,
   ...over,
 });
 
@@ -43,11 +29,17 @@ describe('getViableUploadOptions', () => {
   });
 
   describe('Anthropic (PDF/image only for provider attach)', () => {
-    it('routes a spreadsheet to code + text, not the provider', () => {
+    it('routes a spreadsheet to code, not the provider or PaddleOCR context', () => {
       expect(getViableUploadOptions([file(XLSX, 'report.xlsx')], baseCtx())).toEqual([
         EToolResources.execute_code,
-        EToolResources.context,
       ]);
+    });
+
+    it('does not offer PaddleOCR context for plain text', () => {
+      const options = getViableUploadOptions([file('text/plain', 'notes.txt')], baseCtx());
+
+      expect(options).toEqual([EToolResources.file_search, EToolResources.execute_code]);
+      expect(options).not.toContain(EToolResources.context);
     });
 
     it('routes a PowerPoint template to file search and code, not the provider', () => {
@@ -64,6 +56,12 @@ describe('getViableUploadOptions', () => {
         EToolResources.execute_code,
         EToolResources.context,
       ]);
+    });
+
+    it('keeps supported images context-viable', () => {
+      expect(getViableUploadOptions([file('image/png', 'drawing.png')], baseCtx())).toContain(
+        EToolResources.context,
+      );
     });
 
     it('yields a single option for a zip (code only) so it can auto-route', () => {

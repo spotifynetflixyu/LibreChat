@@ -260,6 +260,9 @@ export function formatBytes(bytes: number, decimals = 2) {
 
 const { checkType } = defaultFileConfig;
 
+const isPaddleOCRSupportedType = (type: string): boolean =>
+  checkType(type, paddleOCRSupportedMimeTypes);
+
 type FileSizeValidationParams = {
   fileList: File[];
   files: Map<string, ExtendedFile>;
@@ -387,12 +390,10 @@ export const validateFiles = ({
       fileList[i] = newFile;
     }
 
-    let mimeTypesToCheck = supportedMimeTypes;
-    if (isPaddleOCRUpload) {
-      mimeTypesToCheck = paddleOCRSupportedMimeTypes;
-    }
-
-    if (!checkType(originalFile.type, mimeTypesToCheck)) {
+    const supported = isPaddleOCRUpload
+      ? isPaddleOCRSupportedType(originalFile.type)
+      : checkType(originalFile.type, supportedMimeTypes);
+    if (!supported) {
       setError(
         isPaddleOCRUpload
           ? 'PaddleOCR supports PDF, PNG, JPG, BMP, or CIF files only'
@@ -441,7 +442,6 @@ export type UploadOptionContext = {
   contextEnabled: boolean;
   fileSearchAllowedByAgent: boolean;
   codeAllowedByAgent: boolean;
-  fileConfig: FileConfig | null;
   endpointSupportedMimeTypes?: RegexLike[];
 };
 
@@ -485,13 +485,6 @@ const isProviderAttachType = (type: string, ctx: UploadOptionContext): boolean =
   return type.startsWith('image/');
 };
 
-const isContextType = (type: string, fileConfig: FileConfig | null): boolean =>
-  checkType(type, [
-    ...(fileConfig?.text?.supportedMimeTypes || []),
-    ...(fileConfig?.ocr?.supportedMimeTypes || []),
-    ...(fileConfig?.stt?.supportedMimeTypes || []),
-  ]);
-
 /**
  * Upload destinations a file set can be routed to, given the active endpoint and agent
  * capabilities. `undefined` is direct provider attachment; the rest are tool resources.
@@ -505,7 +498,7 @@ export const getViableUploadOptions = (
   if (fileList.length === 0) {
     return [];
   }
-  const types = fileList.map((file) => inferMimeType(file.name, file.type));
+  const types = fileList.map((file) => inferUploadMimeType(file));
   if (types.some((type) => !type)) {
     return [];
   }
@@ -530,7 +523,7 @@ export const getViableUploadOptions = (
   ) {
     options.push(EToolResources.execute_code);
   }
-  if (ctx.contextEnabled && every((type) => isContextType(type, ctx.fileConfig))) {
+  if (ctx.contextEnabled && every(isPaddleOCRSupportedType)) {
     options.push(EToolResources.context);
   }
   return options;
@@ -579,9 +572,10 @@ export type PastedTextAttachment = {
 
 /**
  * Turns a long plain-text paste into a text attachment, keeping the composer readable while
- * preserving the exact paste in the generated file. Context attachments follow the same
- * configured token limits as other uploaded text files. Returns `null` whenever the paste
- * should stay inline, so the caller can leave the browser's native paste untouched.
+ * preserving the exact paste in the generated file. Non-assistant attachments are only allowed
+ * when the active upload policy explicitly accepts the generated text file. Returns `null`
+ * whenever the paste should stay inline, so the caller can leave the browser's native paste
+ * untouched.
  */
 export const resolvePastedTextFile = (
   text: string,
@@ -598,13 +592,9 @@ export const resolvePastedTextFile = (
   }
 
   /** `context` is the only automatic non-assistant destination because retrieval-based routes
-   * can change what the model sees. Pasting text must never pop a destination picker.
-   *
-   * That check reads MIME lists that arrive with the file config, so declining while the config
-   * is still in flight would quietly ignore the setting on a slow first load. Routing the paste
-   * instead hands the decision to the upload, which waits for the same config and restores the
-   * text inline if it turns out the destination is unavailable. */
-  if (!ctx.configPending && !ctx.getOptions([file]).includes(EToolResources.context)) {
+   * can change what the model sees. Pasting text must never pop a destination picker, and a
+   * pending file config cannot safely establish that destination. */
+  if (ctx.configPending || !ctx.getOptions([file]).includes(EToolResources.context)) {
     return null;
   }
 

@@ -65,7 +65,6 @@ export default function useUploadOptions() {
         contextEnabled: capabilities.contextEnabled,
         fileSearchAllowedByAgent,
         codeAllowedByAgent,
-        fileConfig,
         endpointSupportedMimeTypes,
       }),
     [
@@ -78,7 +77,6 @@ export default function useUploadOptions() {
       capabilities.contextEnabled,
       fileSearchAllowedByAgent,
       codeAllowedByAgent,
-      fileConfig,
       endpointSupportedMimeTypes,
     ],
   );

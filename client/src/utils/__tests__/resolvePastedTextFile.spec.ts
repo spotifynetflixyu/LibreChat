@@ -1,5 +1,4 @@
 import { EToolResources } from 'librechat-data-provider';
-import type { FileConfig } from 'librechat-data-provider';
 import {
   getViableUploadOptions,
   resolvePastedTextFile,
@@ -8,13 +7,6 @@ import {
   type UploadOptionContext,
   type PasteAsFileContext,
 } from '../files';
-
-/** context accepts plain text; matches the shape the app ships for text uploads */
-const fileConfig = {
-  text: { supportedMimeTypes: [/^text\/(plain|csv)$/] },
-  ocr: { supportedMimeTypes: [] },
-  stt: { supportedMimeTypes: [] },
-} as unknown as FileConfig;
 
 const uploadCtx = (over: Partial<UploadOptionContext> = {}): UploadOptionContext => ({
   provider: 'anthropic',
@@ -26,7 +18,6 @@ const uploadCtx = (over: Partial<UploadOptionContext> = {}): UploadOptionContext
   contextEnabled: true,
   fileSearchAllowedByAgent: true,
   codeAllowedByAgent: true,
-  fileConfig,
   ...over,
 });
 
@@ -50,24 +41,9 @@ const longText = 'a'.repeat(PASTE_AS_FILE_MIN_LENGTH + 1);
 const thresholdText = 'a'.repeat(PASTE_AS_FILE_MIN_LENGTH);
 const shortText = 'a'.repeat(PASTE_AS_FILE_MIN_LENGTH - 1);
 
-/** jsdom's File has no `text()`, so read it the way the browser upload path would */
-const readFile = (file: File) =>
-  new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsText(file);
-  });
-
 describe('resolvePastedTextFile', () => {
-  it('attaches a long paste as a plain text file routed to context', async () => {
-    const attachment = resolvePastedTextFile(longText, baseCtx());
-
-    expect(attachment?.file).toBeInstanceOf(File);
-    expect(attachment?.file.name).toBe(PASTED_TEXT_FILENAME);
-    expect(attachment?.file.type).toBe('text/plain');
-    expect(attachment?.toolResource).toBe(EToolResources.context);
-    await expect(readFile(attachment?.file as File)).resolves.toBe(longText);
+  it('leaves a long paste inline when only PaddleOCR context is available', () => {
+    expect(resolvePastedTextFile(longText, baseCtx())).toBeNull();
   });
 
   it('leaves a paste one character below the threshold inline', () => {
@@ -106,12 +82,10 @@ describe('resolvePastedTextFile', () => {
     expect(resolvePastedTextFile(longText, baseCtx({ getOptions }))).toBeNull();
   });
 
-  it('prefers context over file search rather than prompting', () => {
+  it('leaves the paste inline when file search and code are viable but context is not', () => {
     const getOptions = realOptions({ fileSearchEnabled: true, codeEnabled: true });
 
-    expect(resolvePastedTextFile(longText, baseCtx({ getOptions }))?.toolResource).toBe(
-      EToolResources.context,
-    );
+    expect(resolvePastedTextFile(longText, baseCtx({ getOptions }))).toBeNull();
   });
 
   it('leaves the paste inline when several destinations compete without context', () => {
@@ -124,26 +98,15 @@ describe('resolvePastedTextFile', () => {
     expect(resolvePastedTextFile(longText, baseCtx({ getOptions }))).toBeNull();
   });
 
-  it('routes a long paste while the file config has not arrived', () => {
-    const loading = realOptions({ fileConfig: null });
-    /** The MIME lists live in that config, so nothing is viable until it lands */
-    expect(loading([new File(['x'], 'notes.txt', { type: 'text/plain' })])).toEqual([]);
-
+  it('leaves a long paste inline while the file config is pending', () => {
+    const getOptions = jest.fn(() => [EToolResources.context]);
     const attachment = resolvePastedTextFile(
       longText,
-      baseCtx({ configPending: true, getOptions: loading }),
+      baseCtx({ configPending: true, getOptions }),
     );
 
-    expect(attachment?.file.name).toBe(PASTED_TEXT_FILENAME);
-    expect(attachment?.toolResource).toBe(EToolResources.context);
-  });
-
-  it('leaves the paste inline once a loaded config offers no context destination', () => {
-    const getOptions = realOptions({ fileConfig: null });
-
-    expect(
-      resolvePastedTextFile(longText, baseCtx({ configPending: false, getOptions })),
-    ).toBeNull();
+    expect(attachment).toBeNull();
+    expect(getOptions).not.toHaveBeenCalled();
   });
 
   it('skips option resolution for assistants, which route their own uploads', () => {
@@ -159,9 +122,12 @@ describe('resolvePastedTextFile', () => {
     it('numbers the next paste so a same-length paste is not seen as a duplicate', () => {
       const attachedFilenames = new Set([PASTED_TEXT_FILENAME]);
 
-      expect(resolvePastedTextFile(longText, baseCtx({ attachedFilenames }))?.file.name).toBe(
-        'pasted-text-2.txt',
-      );
+      expect(
+        resolvePastedTextFile(
+          longText,
+          baseCtx({ attachedFilenames, isAssistants: true }),
+        )?.file.name,
+      ).toBe('pasted-text-2.txt');
     });
 
     it('keeps counting past the numbered names already attached', () => {
@@ -171,25 +137,34 @@ describe('resolvePastedTextFile', () => {
         'pasted-text-3.txt',
       ]);
 
-      expect(resolvePastedTextFile(longText, baseCtx({ attachedFilenames }))?.file.name).toBe(
-        'pasted-text-4.txt',
-      );
+      expect(
+        resolvePastedTextFile(
+          longText,
+          baseCtx({ attachedFilenames, isAssistants: true }),
+        )?.file.name,
+      ).toBe('pasted-text-4.txt');
     });
 
     it('reuses a freed name when an earlier paste was removed', () => {
       const attachedFilenames = new Set(['pasted-text-2.txt']);
 
-      expect(resolvePastedTextFile(longText, baseCtx({ attachedFilenames }))?.file.name).toBe(
-        PASTED_TEXT_FILENAME,
-      );
+      expect(
+        resolvePastedTextFile(
+          longText,
+          baseCtx({ attachedFilenames, isAssistants: true }),
+        )?.file.name,
+      ).toBe(PASTED_TEXT_FILENAME);
     });
 
     it('ignores unrelated attachments when picking the name', () => {
       const attachedFilenames = new Set(['report.pdf', 'notes.txt']);
 
-      expect(resolvePastedTextFile(longText, baseCtx({ attachedFilenames }))?.file.name).toBe(
-        PASTED_TEXT_FILENAME,
-      );
+      expect(
+        resolvePastedTextFile(
+          longText,
+          baseCtx({ attachedFilenames, isAssistants: true }),
+        )?.file.name,
+      ).toBe(PASTED_TEXT_FILENAME);
     });
   });
 

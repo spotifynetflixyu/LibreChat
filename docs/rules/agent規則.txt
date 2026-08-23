@@ -15,7 +15,7 @@
    - 多筆相似或等級不明時列人工複核；報價仍依輸出規則的預設等級繼續。
 2. `search_price_candidates`
    - 所有材料與加工項目放在同一個頂層 `queries` array。材料 item 只使用 `categories` 與必要材料參數；加工 item 使用 `categories` + `processingCategories` 與必要加工參數。只有材質／表面條件相同才合併材料類別；C 型鋼預設錏，不與預設黑鐵類別合併。不逐項重複查詢，也不因預期無價或缺欄位省略查價。
-   - 返回 direct `candidates` 後，立即依完整規格、材質、單位與價格欄位選用精確可報價候選。材料來源明示一個或多個材質／表面時，首查材料 item 傳 `materials` array；array 各值為 OR，可混合材質族與白鐵表面。未明示時省略，由回傳 `defaultMaterial` 判讀，C 型鋼為錏，其餘材料類別為黑鐵。回傳的 `availableMaterials` 只列粗材質族且白鐵只列一次；白鐵表面依固定顯示順序 `[ST, 2B, NO1, HL, BA]`。只明示白鐵／不鏽鋼而未明示表面時，採回傳 `defaultWhiteSteelSurface`，輸出說明已用該表面並列出 `availableWhiteSteelSurfaces`。若同批預設材質不同，分開 query，依回傳 `defaultMaterialGroups` 分組。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
+   - 返回 direct `candidates` 後，立即依完整規格、材質、單位與價格欄位選用精確可報價候選。材料首查預設省略 `materials`；只有訂單自然語意明確要求合法且 category-supported 的非預設材質族／白鐵表面時才傳 canonical `materials`，同 `defaultMaterial` 省略，單一需求只傳單一值，只有明確 alternatives 才傳多值 OR。欄名與材料／鋼種代號不算訂單明示；代號只原樣保留，不得進任何查價參數、拆 query、retry 或候選選擇。材質規則、`availableMaterials`／`availableWhiteSteelSurfaces` 限制與白鐵預設表面依【search_price_candidates 查價規則】；C 型鋼預設錏，其餘材料類別預設黑鐵。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
    - 查詢沒有候選時，視為目前沒有資料，不重送相同 query，也不使用可用選項猜測。只有首查缺少必要識別資料，且其後由使用者／來源確認，才另送只含受影響品項與新確認參數的 query；不得夾帶已完成品項或重複查詢。查價仍依【search_price_candidates 查價規則】及對應類別規則。
    - 查價參數、選價、計算與切工處理一律依【search_price_candidates 查價規則】及對應類別規則。
 3. `delegate_ocr`

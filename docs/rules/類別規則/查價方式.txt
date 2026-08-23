@@ -2,31 +2,29 @@
 
 一、批次與查詢
 
-1. 每次報價把所有材料與加工 query item 放在同一個頂層 `queries` array。材料 item 形為 `{"categories":[...], ...}`；加工 item 形為 `{"categories":[...],"processingCategories":[...], ...}`。只有材質／表面與其他參數條件相同才合併材料類別；C 型鋼預設錏，不與預設黑鐵類別合併。不為每個品項重複送 query。
-2. 材料首查通常只用 `categories`。來源明示一個或多個材質／表面時，首查立即加入 `materials` array；array 各值為 OR，可混合材質族與白鐵表面。未明示時省略，由結果的 `defaultMaterial` 判讀（C 型鋼為錏，其餘材料類別為黑鐵）。H 型鋼可首查一次帶多個去重後的 `stockLengthMm`，但不得帶 `keyword`。
+1. 每次報價把所有材料與加工 query item 放在同一個頂層 `queries` array。材料 item 形為 `{"categories":[...], ...}`；加工 item 形為 `{"categories":[...],"processingCategories":[...], ...}`。只有 `defaultMaterial`、材質／表面與其他參數條件相同才合併材料類別；不同預設材質群組必須分開。不為每個品項重複送 query。
+2. 材料首查預設只用 `categories`。`materials` 只有個別鋼材規則或先前後端結果已確認該 category 的 `defaultMaterial` 與可用選項，且訂單自然語意明確要求不同於 default、同時受 `availableMaterials`／`availableWhiteSteelSurfaces` 支援的 canonical 合法值時才加入；預設與可用選項尚未確認時仍省略。合法材質族只有 `黑鐵`、`白鐵`、`錏`、`鋁`、`鋅`、`鎢`、`塑膠`，合法白鐵表面只有 `ST`、`2B`、`NO1`、`HL`、`BA`。同 `defaultMaterial` 省略；未明示或不支援不得猜測，由結果的 `defaultMaterial` 判讀。「訂單明示」只認訂單自然語意中的上述合法材質族／白鐵表面，不認表單欄名 `材質`、`材料代號`、`材質編號`、`鋼種`、`material` 或欄位內代號。單一需求只傳單一 canonical 值；只有訂單明確要求多個材質／表面 alternatives 才傳多值 OR，不串接值。所有表單材料／鋼種／等級代號與查價無關，例如但不限於 `SN490B`、`SN400B`、`STKR400`、`ST50` 及同類英數代號；只原樣保留，不得進 `search_price_candidates` 任一參數（含 `materials`／`keyword`）、拆 query、retry、候選選擇或推導材質族／表面，也不得因代號不同拆分其他條件相同的 query。
 3. 加工首查只傳工件主類別 `categories` 與 `processingCategories`，省略 `keyword` 與材料 filters。材料和加工 item 集中同一批查詢；例：`{"queries":[{"categories":["鐵板"]},{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}`。
-4. 首查必須使用已判定的 `categories`；類別仍不明時列人工複核，不猜類別或參數。返回 direct `candidates` 後，直接依完整規格、材質、單位與價格欄位選用精確可報價候選。
-5. 材料結果回傳 `defaultMaterial`、粗材質族 `availableMaterials`、`defaultWhiteSteelSurface` 與白鐵表面 `availableWhiteSteelSurfaces` 時，`availableMaterials` 中白鐵只列一次；白鐵表面固定依 `[ST, 2B, NO1, HL, BA]` 顯示，不列為獨立材質族。多類別 query 依 `categoryMaterialOptions` 逐類別判讀預設材質、可用材質與白鐵表面，不把某類別的選項套用到其他類別。來源明示一個或多個表面時，首查 `materials` 傳值 array；只明示白鐵／不鏽鋼而未明示表面時，採回傳 `defaultWhiteSteelSurface`，並在輸出說明已用該表面及可用表面選項。若同批預設材質不同，分開 query，依回傳 `defaultMaterialGroups` 分組。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
-6. 查詢沒有候選時，視為目前沒有資料，不重送相同 query，也不使用 `availableMaterials` 或 `availableWhiteSteelSurfaces` 猜測。只有首查缺少必要識別資料，且其後由使用者／來源確認，才另送只含受影響品項與新確認 `subcategory`、`materials`、`unit`、`thicknessMm`、`stockLengthMm` 或最短 `keyword` 的 query；不得夾帶已完成 item、複製候選 `productName` 或重複查詢。ST50、SN400B 只留在備註。
+4. 首查先套用本規則的預設 query shape，再依已判定的個別鋼材規則加入該類允許且已確認的參數；不得把某類特例套到其他類別。`categories` 仍不明時列人工複核，不猜類別或參數。返回 direct `candidates` 後，直接依完整規格、材質、單位與價格欄位選用精確可報價候選。
+5. 材料結果回傳 `defaultMaterial`、粗材質族 `availableMaterials`、`defaultWhiteSteelSurface` 與白鐵表面 `availableWhiteSteelSurfaces` 時，`availableMaterials` 中白鐵只列一次；白鐵表面固定依 `[ST, 2B, NO1, HL, BA]` 顯示，不列為獨立材質族。多類別 query 依 `categoryMaterialOptions` 逐類別判讀預設材質、可用材質與白鐵表面，不把某類別的選項套用到其他類別。訂單明示白鐵／不鏽鋼但未明示表面時，依回傳 `defaultWhiteSteelSurface`，並在輸出說明已用該表面及可用表面選項；是否傳 `materials` 仍依前項非預設且 supported 條件。若同批預設材質不同，分開 query，依回傳 `defaultMaterialGroups` 分組。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
+6. 查詢沒有候選時，視為目前沒有資料，不重送相同 query，也不使用 `availableMaterials` 或 `availableWhiteSteelSurfaces` 猜測。只有首查缺少必要識別資料，且其後由使用者／來源確認，才另送只含受影響品項與新確認 `subcategory`、`materials`、`unit`、`thicknessMm`、`stockLengthMm` 或最短 `keyword` 的 query；不得夾帶已完成 item、複製候選 `productName` 或重複查詢。所有表單材料／鋼種／等級代號只原樣保留，不得作任何查價參數或 retry 條件。
 7. 已有精確且可報價候選就直接選價；沒有候選時保留品項、空白價格並列人工複核，仍須完成報價。
 
 參數使用情境與範例：
 
-`materials` 是材料族／表面的 OR 篩選；同一 array 可混合不同材質族與表面。單一材質例：`{"queries":[{"categories":["鐵板"],"materials":["黑鐵"]}]}`。多個白鐵表面例：`{"queries":[{"categories":["鐵板"],"materials":["ST","2B"]}]}`。混合材質族與表面例：`{"queries":[{"categories":["鐵板"],"materials":["黑鐵","2B"]}]}`。
+`materials` 是材料族／表面的 OR 篩選；同一 array 可混合不同材質族與表面，但只傳訂單明確要求且 category-supported 的 canonical 值。單一非預設材質例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"]}]}`。多個明確白鐵表面 alternatives 例：`{"queries":[{"categories":["鐵板"],"materials":["ST","2B"]}]}`。混合材質族與表面 alternatives 例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵","2B"]}]}`。
 
-1. 一般材料首查：只傳 `categories`；來源明示材質或表面時於首查加 `materials` array。例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"]},{"categories":["網"]}]}`。
-2. H 型鋼材料首查：`categories` 只放 H 型鋼；依成品長度與數量規劃後，`stockLengthMm` 可一次放多個去重母材長度；來源明示材質或表面時同時加入 `materials` array，不傳 `keyword`。例：`{"queries":[{"categories":["H型鋼"],"materials":["黑鐵"],"stockLengthMm":["6000","9000","10000","12000"]}]}`。
-3. 加工首查：`categories` 放工件主類別，`processingCategories` 放加工類別；相同需求合併。例：`{"queries":[{"categories":["H型鋼"],"processingCategories":["加工/孔","加工/開槽"]}]}`。
-4. 材料參數只放已確認值：
+1. 一般材料首查：預設傳 `categories`；已確認訂單所需供料／母材長度且該長度影響查價時，同一 item 加 `stockLengthMm`；訂單明確要求非預設合法材質／表面時才加 canonical `materials` array。
+2. 加工首查：`categories` 放工件主類別，`processingCategories` 放加工類別；相同需求合併。例：`{"queries":[{"categories":["鐵板"],"processingCategories":["加工/孔","加工/折工"]}]}`。
+3. 材料參數只放已確認值：
    - `subcategory`：需要排除同主類別的其他次類別時使用。例：`{"queries":[{"categories":["網"],"subcategory":"菱形"}]}`。
-   - `materials`：來源明示一個或多個材質或表面時首查即傳 array；各值為 OR，可混合材質族與白鐵表面；未明示省略。例：`{"queries":[{"categories":["C型鋼"],"materials":["錏"]}]}`。
+   - `materials`：只有訂單明確要求且 category-supported、不同於 `defaultMaterial` 的 canonical 材質族／白鐵表面才傳；同 default 省略。單一需求一值，明確 alternatives 才多值 OR；各類別的預設材質與例外依個別鋼材規則。
    - `unit`：需求明確限定報價單位時使用。例：`{"queries":[{"categories":["鐵板"],"unit":"Kg"}]}`。
    - `thicknessMm`：需要以材料厚度縮小候選時使用；一次放同類需求所有去重厚度字串，不放成品長度。例：`{"queries":[{"categories":["鐵板"],"thicknessMm":["10","12"]}]}`。
-   - `stockLengthMm`：需要排除無法供料的母材長度時使用；放規劃後可供料、去重的長度字串。個別類別規則明示時可在首查使用；H 型鋼例：`{"queries":[{"categories":["H型鋼"],"stockLengthMm":["7000","9000","12000"]}]}`。
-   - `keyword`：只有個別類別規則允許、來源已確認且其他欄位無法表達時，放一個最短通用品名或規格；是否可用於首查亦以個別規則為準。不得放候選 `productName`。例：`{"queries":[{"categories":["C型鋼"],"keyword":"樑柱"}]}`。
-5. 補充查詢例：首查缺少材質與厚度，之後來源確認時，只送受影響材料 item：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"],"thicknessMm":["10"]}]}`。不得重送原 query；`availableMaterials` 僅供說明，不可用來猜材質。
-6. 同批次材料與加工：`{"queries":[{"categories":["H型鋼"],"stockLengthMm":["6000","9000","12000"]},{"categories":["H型鋼"],"processingCategories":["加工/孔"]}]}`。
-7. 同批次條件須一致才合併 material item；C 型鋼預設錏，不得與預設黑鐵的其他材料類別合併。每個 query item 只能是材料或加工；材料 item 使用 `categories` 與必要材料參數，加工 item 使用 `categories`、`processingCategories` 與必要加工參數。
+   - `stockLengthMm`：普遍用訂單已確認、且個別類別規則認定會影響查價的所需供料／母材長度；array 放母材長度的 mm 字串。成品裁切長度只有同時就是訂單要求的供料長度時才能傳。一般單一母材長度例：`{"queries":[{"categories":["圓管"],"stockLengthMm":["6000"]}]}`；是否使用、多長度規劃與限制依個別類別規則。
+   - `keyword`：只有個別類別規則允許、來源已確認且其他欄位無法表達時，放一個最短通用品名或規格；是否可用於首查亦以個別規則為準。不得放候選 `productName` 或自行創造未經個別規則允許的範例值。
+4. 補充查詢例：首查缺少材質與厚度，之後來源確認時，只送受影響材料 item：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"],"thicknessMm":["10"]}]}`。不得重送原 query；`availableMaterials` 僅供說明，不可用來猜材質。
+5. 同批次的 `defaultMaterial`、材質／表面與其他條件須一致才合併 material item；不同預設材質群組不得合併。每個 query item 只能是材料或加工；材料 item 使用 `categories` 與必要材料參數，加工 item 使用 `categories`、`processingCategories` 與必要加工參數。
 
 
 二、選價與計算
@@ -35,7 +33,6 @@
 2. 未指定厚度時，在其他條件相符且可報價候選中採最小厚度。無法確認唯一產品則優先以標準的報價；類別或加工規則明示的例外優先。
 3. Kg／M 分別以總 kg／總 m 乘單價；其他單位原則為整數數量 × direct 單價。重量、長度、單價保留原精度，每一材料列最終小計各自 `ceil` 成 TWD 整數；加工列分開進位。
 4. 材質、規格、unit、配料、計重或加工有類別規則時，以該細項規則為準；通用規則不得覆蓋其明示例外。
-5. C型鋼與H型鋼以 Kg 價為主；無可用 Kg 價即人工複核，不自動改用 M、支或其他 unit。只有訂單明示「不切清」時，才採相符整件 direct 單價。
 
 三、切工
 
