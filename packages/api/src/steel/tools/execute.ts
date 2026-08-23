@@ -818,12 +818,12 @@ async function searchPriceCandidates(
       categoryCandidates.push(...(repositoryGroup?.categoryCandidates ?? []));
     });
     materialOffset += supportedQuery.categories.length;
-    const allCandidates = combinedCandidates.map(toSafePriceCandidate);
-    const candidates = allCandidates.slice(0, 250);
+    const totalAvailable = combinedCandidates.length;
+    const candidates = combinedCandidates.slice(0, 250).map(toSafePriceCandidate);
     const metadata = metadataByQueryId.get(supportedQuery.queryId)!;
-    const matched = allCandidates.length > 0 || categoryCandidates.length > 0;
+    const matched = totalAvailable > 0 || categoryCandidates.length > 0;
 
-    candidateCount += allCandidates.length;
+    candidateCount += totalAvailable;
     categoryCandidateCount += categoryCandidates.length;
     matchedQueryCount += matched ? 1 : 0;
 
@@ -832,9 +832,9 @@ async function searchPriceCandidates(
       query: materialQueries.find((materialQuery) => materialQuery.queryId === supportedQuery.queryId) ?? supportedQuery,
       status: matched ? 'ok' : 'no_match',
       candidates,
-      totalAvailable: allCandidates.length,
+      totalAvailable,
       returnedCount: candidates.length,
-      truncated: candidates.length < allCandidates.length,
+      truncated: candidates.length < totalAvailable,
       defaultMaterial: metadata.defaultMaterial,
       availableMaterials: metadata.availableMaterials,
       defaultWhiteSteelSurface: metadata.defaultWhiteSteelSurface,

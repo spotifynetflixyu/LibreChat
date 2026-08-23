@@ -1361,6 +1361,16 @@ function createSteelOcrPdfChunkStorage({ fileRecord, contentType = 'application/
   };
 }
 
+async function refreshSteelOcrPdfChunkArtifact({ artifact, storage }) {
+  if (!artifact.storageKey || isHttpUrl(artifact.storageKey)) {
+    return artifact;
+  }
+  return {
+    ...artifact,
+    filepath: await storage.getDownloadUrl({ storageKey: artifact.storageKey }),
+  };
+}
+
 function isSingleOriginalPdfChunk(chunks) {
   const chunk = chunks?.[0];
   return (
@@ -1483,10 +1493,7 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, force
       }));
     },
     async refreshPdfChunkArtifact({ artifact }) {
-      return {
-        ...artifact,
-        filepath: await storage.getDownloadUrl({ storageKey: artifact.storageKey }),
-      };
+      return refreshSteelOcrPdfChunkArtifact({ artifact, storage });
     },
   };
 }
@@ -1553,13 +1560,7 @@ function createSteelOcrOriginalFileArtifactStore({ file, fileRecord }) {
       return [originalArtifact];
     },
     async refreshPdfChunkArtifact({ artifact }) {
-      if (!artifact.storageKey) {
-        return artifact;
-      }
-      return {
-        ...artifact,
-        filepath: await storage.getDownloadUrl({ storageKey: artifact.storageKey }),
-      };
+      return refreshSteelOcrPdfChunkArtifact({ artifact, storage });
     },
   };
 }

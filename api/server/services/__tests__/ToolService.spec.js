@@ -1633,6 +1633,56 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
+    it('keeps URL-only original PDF artifacts when refreshing without signing', async () => {
+      const filepath = 'https://files.example.test/url-only.pdf';
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.user = { id: 'user_123', tenantId: 'tenant-a' };
+      req.body = { conversationId: 'convo-url-only' };
+      req.steelNativeContext = {
+        requestId: 'resp-url-only',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'pdf-url-only',
+            filename: 'url-only.pdf',
+            mediaType: 'application/pdf',
+            filepath,
+          },
+        ],
+      };
+
+      await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      const pipelineInput = mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0];
+      const pipelineFileInput = pipelineInput.files[0];
+      const chunk = {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        chunkSizePages: 50,
+      };
+      const artifacts = await pipelineFileInput.artifacts.ensurePdfChunkArtifacts({
+        file: pipelineFileInput.file,
+        chunks: [chunk],
+      });
+      const refreshed = await pipelineFileInput.artifacts.refreshPdfChunkArtifact({
+        file: pipelineFileInput.file,
+        chunk,
+        artifact: artifacts[0],
+      });
+
+      expect(artifacts[0]).toEqual(expect.objectContaining({ storageKey: filepath, filepath }));
+      expect(refreshed).toBe(artifacts[0]);
+      expect(mockGetS3DownloadURLForKey).not.toHaveBeenCalled();
+    });
+
     it('emits compact PaddleOCR chunk tool output while preserving raw result for DB capture', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.user = { id: 'user_123', tenantId: 'tenant-a' };

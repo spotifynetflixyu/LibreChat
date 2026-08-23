@@ -1499,6 +1499,59 @@ describe('OCR preprocessing orchestrator', () => {
     expect(result).not.toHaveProperty('markdown');
   });
 
+  it('propagates PaddleOCR save cancellation without continuing to organizer', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 1 });
+    const state = emptyState({
+      ocrFileKey: 'file:save-cancel',
+      sourcePdfKey: 'uploads/save-cancel.pdf',
+      ocrRuleVersion: 'rules-v2',
+      chunkCount: 1,
+    });
+    const abortError = new Error('request canceled');
+    const organizer: OcrOrganizer = { organize: jest.fn() };
+    const memory = {
+      readOcrPreprocessingState: jest.fn(async () => state),
+      capturePaddleOcrChunkResult: jest.fn().mockRejectedValue(abortError),
+      captureOcrPreprocessingChunkMarkdown: jest.fn(),
+    };
+
+    await expect(
+      runOcrPreprocessingPipeline({
+        conversationId: 'steel_conversation_save_cancel',
+        file: {
+          ocrFileKey: 'file:save-cancel',
+          fileId: 'save-cancel',
+          filename: 'save-cancel.pdf',
+          sourcePdfKey: 'uploads/save-cancel.pdf',
+        },
+        ocrRuleVersion: 'rules-v2',
+        ocrRulesText: 'rules',
+        chunks,
+        artifacts: {
+          ensurePdfChunkArtifacts: jest.fn(async () => [
+            {
+              ...chunks[0]!,
+              filepath: 'https://cdn.example/save-cancel.pdf',
+              storageKey: 'chunks/save-cancel.pdf',
+            },
+          ]),
+        },
+        memory,
+        organizer,
+        paddleOcr: {
+          runChunk: jest.fn(async () => ({
+            rawResult: { text: 'raw OCR text' },
+            rawOcrText: 'raw OCR text',
+            rawResultHash: 'hash-save-cancel',
+          })),
+        },
+      }),
+    ).rejects.toBe(abortError);
+
+    expect(organizer.organize).not.toHaveBeenCalled();
+    expect(memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
+  });
+
   it('propagates organizer cancellation without retrying', async () => {
     const abortError = new Error('request canceled');
     const organizer: OcrOrganizer = {

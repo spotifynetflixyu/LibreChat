@@ -571,6 +571,9 @@ export async function runOcrPreprocessingBatchPipeline(
         try {
           await saveRawChunk({ workItem, chunk, artifact, raw });
         } catch (saveError) {
+          if (isAbortError(saveError)) {
+            throw saveError;
+          }
           workItem.failures.push(toFailure({ stage: 'state', chunk, error: saveError }));
         }
       } catch (error) {
