@@ -24,10 +24,6 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
-const ASSERT_STEEL_NATIVE_MARKER = 'E2E_ASSERT_STEEL_NATIVE';
-const ASSERT_STEEL_NATIVE_FILE_MARKER = 'E2E_ASSERT_STEEL_NATIVE_FILE:';
-const ASSERT_STEEL_NATIVE_PL_OCR_MARKER = 'E2E_ASSERT_STEEL_NATIVE_PL_OCR:';
-const ASSERT_STEEL_NATIVE_PL_QUOTE_MARKER = 'E2E_ASSERT_STEEL_NATIVE_PL_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
@@ -71,10 +67,6 @@ const SKILL_TOOL_ASSERTION_FINAL_TEXT = 'E2E skill tool assertion passed';
 const PROVIDER_FILE_ASSERTION_FINAL_TEXT = 'E2E provider file assertion passed';
 const AGENT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E agent context assertion passed';
 const QUOTE_ASSERTION_FINAL_TEXT = 'E2E quote assertion passed';
-const STEEL_NATIVE_ASSERTION_FINAL_TEXT = 'E2E Steel native assertion passed';
-const STEEL_NATIVE_FILE_ASSERTION_FINAL_TEXT = 'E2E Steel native file assertion passed';
-const STEEL_NATIVE_PL_OCR_FINAL_TEXT = 'E2E Steel native PL OCR confirmation passed';
-const STEEL_NATIVE_PL_QUOTE_FINAL_TEXT = 'E2E Steel native PL quote passed';
 const STEER_TOOL_FINAL_TEXT = 'E2E steer tool reply done';
 const STEER_SPLIT_FINAL_TEXT = 'E2E steer split reply done';
 const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
@@ -109,13 +101,6 @@ const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
 const MODEL_SPEC_ACCESSIBLE_SKILL = 'e2e-model-spec-allowed';
 const DEPLOYMENT_SKILL_NAME = 'e2e-deployment-skill';
 const ALWAYS_APPLY_BODY_MARKER = 'E2E_ALWAYS_APPLY_BODY_MARKER';
-const STEEL_NATIVE_REQUIRED_TOOL_NAMES = ['search_price_candidates', 'read_markdown'];
-const STEEL_NATIVE_CONTEXT_MARKERS = [
-  'Steel Native Context Metadata',
-  'Steel Runtime Context',
-  'Steel Tool Policy',
-  '10、20、30',
-];
 const DEPLOYMENT_SKILL_BODY_MARKER = 'E2E deployment skill loaded through Playwright';
 const SKILL_DESCRIPTION =
   'Use this skill to verify LibreChat skill file authoring in mock end-to-end tests.';
@@ -248,20 +233,6 @@ async function getStreamAgentView({ graph, messages, options, runManager }) {
     messages: promptMessages,
     toolNames: collectToolNames(agentContext ? [agentContext] : []),
   };
-}
-
-function collectAgentVisibleInstructions(agents) {
-  return (agents ?? [])
-    .flatMap((agent) => [
-      typeof agent?.instructions === 'string' ? agent.instructions : '',
-      typeof agent?.additional_instructions === 'string' ? agent.additional_instructions : '',
-    ])
-    .filter(Boolean)
-    .join('\n');
-}
-
-function collectMessageText(messages) {
-  return (messages ?? []).map((message) => getContentText(message?.content)).join('\n');
 }
 
 function collectPromptText(value, parts = []) {
@@ -411,187 +382,6 @@ function quoteAssertionResponses({ messages, text }) {
   }
   return {
     responses: [`E2E quote assertion failed: no blockquote containing "${expected}" in the prompt`],
-  };
-}
-
-function collectSteelNativeAssertionFailures({ agents, messages, toolNames }) {
-  const failures = [];
-  const visibleText = [collectAgentVisibleInstructions(agents), collectMessageText(messages)]
-    .filter(Boolean)
-    .join('\n');
-
-  for (const toolName of STEEL_NATIVE_REQUIRED_TOOL_NAMES) {
-    if (!toolNames.has(toolName)) {
-      failures.push(`${toolName} tool was not advertised`);
-    }
-  }
-
-  for (const marker of STEEL_NATIVE_CONTEXT_MARKERS) {
-    if (!visibleText.includes(marker)) {
-      failures.push(`${marker} was not model-visible`);
-    }
-  }
-
-  return failures;
-}
-
-const STEEL_NATIVE_SYSTEM_ORDER_HEADER =
-  '| 型號 | 品名規格 | 材質編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 肚 | 類別 | 備註 |';
-const STEEL_NATIVE_SYSTEM_ORDER_SEPARATOR =
-  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
-
-function buildSteelNativeSystemOrderMarkdown(finalText) {
-  return [
-    finalText,
-    '',
-    STEEL_NATIVE_SYSTEM_ORDER_HEADER,
-    STEEL_NATIVE_SYSTEM_ORDER_SEPARATOR,
-    '| CCG075 | 錏輕型鋼 75x45x15x2.3 |  | 支 | 2 | 4 | 8 | 26.8 | 2 | F1 | 2.3 | 75 | 6000 |  | C型鋼 | E2E native smoke |',
-  ].join('\n');
-}
-
-function steelNativeAssertionResponses({ agents, messages, toolNames }) {
-  const failures = collectSteelNativeAssertionFailures({ agents, messages, toolNames });
-
-  if (failures.length > 0) {
-    return {
-      responses: [`E2E Steel native assertion failed: ${failures.join('; ')}`],
-    };
-  }
-
-  return {
-    responses: [buildSteelNativeSystemOrderMarkdown(STEEL_NATIVE_ASSERTION_FINAL_TEXT)],
-  };
-}
-
-function steelNativeFileAssertionResponses({ agents, messages, text, toolNames }) {
-  const filename = getMarkerValue(text, ASSERT_STEEL_NATIVE_FILE_MARKER);
-  if (!filename) {
-    return null;
-  }
-
-  const failures = collectSteelNativeAssertionFailures({ agents, messages, toolNames });
-  const latestUserMessage = getLatestUserMessage(messages);
-  const providerFileNames = collectProviderFileNames(latestUserMessage?.content);
-  if (!providerFileNames.has(filename)) {
-    failures.push(
-      `expected provider file ${filename}; saw ${
-        Array.from(providerFileNames).join(', ') || 'no provider files'
-      }`,
-    );
-  }
-
-  if (failures.length > 0) {
-    return {
-      responses: [`E2E Steel native file assertion failed: ${failures.join('; ')}`],
-    };
-  }
-
-  return {
-    responses: [
-      buildSteelNativeSystemOrderMarkdown(`${STEEL_NATIVE_FILE_ASSERTION_FINAL_TEXT}: ${filename}`),
-    ],
-  };
-}
-
-function buildSteelNativePlOcrMarkdown(filename) {
-  return [
-    `${STEEL_NATIVE_PL_OCR_FINAL_TEXT}: ${filename}`,
-    '',
-    '## OCR 結果確認',
-    '',
-    '| 來源 | 件號 | 規格 | 材質 | 數量 | 孔數 / 件 | 總孔數 | 低信心 / 人工複核 |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- |',
-    `| ${filename} | PL1 | PL6*80*1000 | 黑鐵 | 2 | 4 | 8 | mock OCR confirmation row |`,
-    `| ${filename} | PL2 | PL15*500*800 | 黑鐵 | 1 | 6 | 6 | mock OCR confirmation row |`,
-  ].join('\n');
-}
-
-function buildSteelNativePlQuoteMarkdown(filename) {
-  return [
-    `${STEEL_NATIVE_PL_QUOTE_FINAL_TEXT}: ${filename}`,
-    '',
-    STEEL_NATIVE_SYSTEM_ORDER_HEADER,
-    STEEL_NATIVE_SYSTEM_ORDER_SEPARATOR,
-    `| 01 | 10 | A | DNB006 | PL6*80*1000 黑鐵板 |  |  | 片 | 2 | 3.77 | 7.54 | 28 | 2 | PL | 6 | 80 | 1000 |  | 鐵板/鋼板 |  | from confirmed OCR ${filename} PL1 |`,
-    `| 01 | 11 | A | KZZ001 | 鐵板鑽孔 |  |  | 孔 | 8 |  | 8 | 10 | 2 |  |  |  |  |  | 孔 |  | confirmed OCR total holes PL1 |`,
-    `| 01 | 20 | A | DNB015 | PL15*500*800 黑鐵板 |  |  | 片 | 1 | 47.1 | 47.1 | 28 | 2 | PL | 15 | 500 | 800 |  | 鐵板/鋼板 |  | from confirmed OCR ${filename} PL2 |`,
-    `| 01 | 21 | A | KZZ001 | 鐵板鑽孔 |  |  | 孔 | 6 |  | 6 | 10 | 2 |  |  |  |  |  | 孔 |  | confirmed OCR total holes PL2 |`,
-  ].join('\n');
-}
-
-function latestProviderFileFailures({ messages, filename }) {
-  const latestUserMessage = getLatestUserMessage(messages);
-  const providerFileNames = collectProviderFileNames(latestUserMessage?.content);
-  if (providerFileNames.has(filename)) {
-    return [];
-  }
-
-  return [
-    `expected provider file ${filename}; saw ${
-      Array.from(providerFileNames).join(', ') || 'no provider files'
-    }`,
-  ];
-}
-
-function hasPriorPlOcrConfirmation({ messages, filename }) {
-  return (messages ?? []).some((message) => {
-    const type = messageType(message);
-    if (type !== 'ai' && type !== 'assistant') {
-      return false;
-    }
-    const content = getContentText(message.content);
-    return (
-      content.includes(STEEL_NATIVE_PL_OCR_FINAL_TEXT) &&
-      content.includes(filename) &&
-      content.includes('OCR 結果確認') &&
-      content.includes('孔數 / 件') &&
-      content.includes('總孔數')
-    );
-  });
-}
-
-function steelNativePlOcrAssertionResponses({ agents, messages, text, toolNames }) {
-  const filename = getMarkerValue(text, ASSERT_STEEL_NATIVE_PL_OCR_MARKER);
-  if (!filename) {
-    return null;
-  }
-
-  const failures = [
-    ...collectSteelNativeAssertionFailures({ agents, messages, toolNames }),
-    ...latestProviderFileFailures({ messages, filename }),
-  ];
-
-  if (failures.length > 0) {
-    return {
-      responses: [`E2E Steel native PL OCR assertion failed: ${failures.join('; ')}`],
-    };
-  }
-
-  return {
-    responses: [buildSteelNativePlOcrMarkdown(filename)],
-  };
-}
-
-function steelNativePlQuoteAssertionResponses({ agents, messages, text, toolNames }) {
-  const filename = getMarkerValue(text, ASSERT_STEEL_NATIVE_PL_QUOTE_MARKER);
-  if (!filename) {
-    return null;
-  }
-
-  const failures = collectSteelNativeAssertionFailures({ agents, messages, toolNames });
-  if (!hasPriorPlOcrConfirmation({ messages, filename })) {
-    failures.push(`previous assistant OCR confirmation for ${filename} was not reconstructed`);
-  }
-
-  if (failures.length > 0) {
-    return {
-      responses: [`E2E Steel native PL quote assertion failed: ${failures.join('; ')}`],
-    };
-  }
-
-  return {
-    responses: [buildSteelNativePlQuoteMarkdown(filename)],
   };
 }
 
@@ -2457,40 +2247,6 @@ function resolveResponses({ graph, messages, text, toolNames }) {
       skillName: invokedSkillName,
       toolNames,
     });
-  }
-
-  const steelNativePlOcrAssertion = steelNativePlOcrAssertionResponses({
-    agents,
-    messages,
-    text,
-    toolNames,
-  });
-  if (steelNativePlOcrAssertion) {
-    return steelNativePlOcrAssertion;
-  }
-
-  const steelNativePlQuoteAssertion = steelNativePlQuoteAssertionResponses({
-    agents,
-    messages,
-    text,
-    toolNames,
-  });
-  if (steelNativePlQuoteAssertion) {
-    return steelNativePlQuoteAssertion;
-  }
-
-  const steelNativeFileAssertion = steelNativeFileAssertionResponses({
-    agents,
-    messages,
-    text,
-    toolNames,
-  });
-  if (steelNativeFileAssertion) {
-    return steelNativeFileAssertion;
-  }
-
-  if (text.includes(ASSERT_STEEL_NATIVE_MARKER)) {
-    return steelNativeAssertionResponses({ agents, messages, toolNames });
   }
 
   const createSkillName = getRequestedSkillName(text, CREATE_SKILL_MARKER);
