@@ -31,6 +31,77 @@ const useHarness = (messageId: string) => {
 };
 
 describe('useSteelEventHandler', () => {
+  it('normalizes and deduplicates quote audit events under current response', () => {
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: RecoilRoot,
+    });
+
+    const event = {
+      event: 'steel_event' as const,
+      data: {
+        type: 'quote_audit' as const,
+        source: 'quote_runtime' as const,
+        message: 'Stage 2 started' as const,
+        stage: 'stage_2' as const,
+        status: 'started' as const,
+      },
+    };
+
+    act(() => {
+      result.current.steelEventHandler(event, createSubmission('assistant-live'));
+      result.current.steelEventHandler(event, createSubmission('assistant-live'));
+    });
+
+    expect(result.current.activity).toEqual([
+      {
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        message: 'Stage 2 started',
+        stage: 'stage_2',
+        status: 'started',
+        receivedAt: expect.any(Number),
+      },
+    ]);
+  });
+
+  it('keeps distinct Code Interpreter executions and deduplicates replayed ids', () => {
+    const { result } = renderHook(() => useHarness('assistant-ci-audit'), {
+      wrapper: RecoilRoot,
+    });
+    const createEvent = (providerToolCallId: string) => ({
+      event: 'steel_event' as const,
+      data: {
+        type: 'quote_audit' as const,
+        source: 'quote_runtime' as const,
+        message: 'Code Interpreter executed' as const,
+        stage: 'stage_2' as const,
+        status: 'executed' as const,
+        toolName: 'code_interpreter' as const,
+        providerToolCallId,
+      },
+    });
+
+    act(() => {
+      result.current.steelEventHandler(
+        createEvent('call_python_1'),
+        createSubmission('assistant-ci-audit'),
+      );
+      result.current.steelEventHandler(
+        createEvent('call_python_1'),
+        createSubmission('assistant-ci-audit'),
+      );
+      result.current.steelEventHandler(
+        createEvent('call_python_2'),
+        createSubmission('assistant-ci-audit'),
+      );
+    });
+
+    expect(result.current.activity).toEqual([
+      expect.objectContaining({ providerToolCallId: 'call_python_1' }),
+      expect.objectContaining({ providerToolCallId: 'call_python_2' }),
+    ]);
+  });
+
   it('stores Steel parse activity under the event message id', () => {
     const { result } = renderHook(() => useHarness('assistant-2'), {
       wrapper: RecoilRoot,

@@ -68,28 +68,32 @@ function QueuedRow({
    * cancel that source by receipt; local-only rows settle synchronously through
    * the same control. The ref closes the pre-render double-click window. */
   const afterDiscard = useCallback(
-    (action: () => boolean) => {
+    (
+      action: (claimed: QueuedMessage) => boolean,
+      options?: { allowAbsentRecoverySource?: boolean },
+    ) => {
       if (actionPendingRef.current) {
         return;
       }
       actionPendingRef.current = true;
       setActionPending(true);
       void (async () => {
-        let discarded = false;
+        let completed = false;
         try {
-          discarded = await steering.discardQueued(message);
+          if (typeof steering.runQueuedAction === 'function') {
+            completed = await steering.runQueuedAction(message, action, options);
+          } else {
+            const discarded = await steering.discardQueued(message);
+            completed = discarded && action(message);
+          }
         } catch {
           // The steering hook reports request failures and leaves the row in
           // place. Keep this guard for test/custom control implementations.
         }
-        if (!discarded) {
+        if (!completed) {
           actionPendingRef.current = false;
           setActionPending(false);
           return;
-        }
-        if (!action()) {
-          actionPendingRef.current = false;
-          setActionPending(false);
         }
       })();
     },
@@ -119,18 +123,25 @@ function QueuedRow({
           markdownTableComments: message.markdownTableComments,
         };
         if (!isRecovered) {
-          steering.removeQueued(message.id);
-          onEditToComposer(message.text, message.files, {
-            quotes: message.quotes,
-            manualSkills: message.manualSkills,
-            markdownTableComments: message.markdownTableComments,
+          if (typeof steering.runQueuedAction !== 'function') {
+            steering.removeQueued(message.id);
+            onEditToComposer(message.text, message.files, context);
+            return;
+          }
+          afterDiscard((claimed) => {
+            onEditToComposer(claimed.text, claimed.files, {
+              quotes: claimed.quotes,
+              manualSkills: claimed.manualSkills,
+              markdownTableComments: claimed.markdownTableComments,
+            });
+            return true;
           });
           return;
         }
-        afterDiscard(() => {
+        afterDiscard((claimed) => {
           const restored = onRestoreToComposer(
-            message.text,
-            message.files,
+            claimed.text,
+            claimed.files,
             context,
             conversationId,
           );
@@ -138,7 +149,9 @@ function QueuedRow({
             showToast({ message: localize('com_ui_steer_edit_queued'), status: 'info' });
             return false;
           }
-          steering.removeQueued(message.id);
+          if (typeof steering.runQueuedAction !== 'function') {
+            steering.removeQueued(claimed.id);
+          }
           return true;
         });
       },
@@ -189,28 +202,26 @@ function QueuedRow({
         aria-label={localize('com_ui_remove_queued')}
         disabled={actionPending}
         onClick={() => {
-          const remove = () => {
+          const remove = (claimed: QueuedMessage) => {
             /* Same safety net as the in-flight cancel: once removal is safely
              * settled, return the words to the composer when it is free (the
              * gated restore refuses rather than clobber a draft). */
             onRestoreToComposer(
-              message.text,
-              message.files,
+              claimed.text,
+              claimed.files,
               {
-                quotes: message.quotes,
-                manualSkills: message.manualSkills,
-                markdownTableComments: message.markdownTableComments,
+                quotes: claimed.quotes,
+                manualSkills: claimed.manualSkills,
+                markdownTableComments: claimed.markdownTableComments,
               },
               conversationId,
             );
-            steering.removeQueued(message.id);
+            if (typeof steering.runQueuedAction !== 'function') {
+              steering.removeQueued(claimed.id);
+            }
             return true;
           };
-          if (!isRecovered) {
-            remove();
-            return;
-          }
-          afterDiscard(remove);
+          afterDiscard(remove, isRecovered ? { allowAbsentRecoverySource: true } : undefined);
         }}
         className={ICON_BTN_CLASS}
       >

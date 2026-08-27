@@ -207,6 +207,55 @@ describe('PendingSteerChips — queued trash', () => {
     });
   });
 
+  it('claims an ordinary queued row before Delete when the ownership transaction is available', async () => {
+    const queued = { id: 'q-owned', text: 'claim before delete', createdAt: 1 };
+    const runQueuedAction = jest.fn(
+      async (
+        item: QueuedMessage,
+        action: (claimed: QueuedMessage) => boolean | void | Promise<boolean | void>,
+      ) => (await action(item)) !== false,
+    );
+    renderChips([queued], { steering: { runQueuedAction } });
+
+    fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+
+    await waitFor(() => {
+      expect(runQueuedAction).toHaveBeenCalledWith(queued, expect.any(Function), undefined);
+      expect(mockRestoreToComposer).toHaveBeenCalledWith(
+        'claim before delete',
+        undefined,
+        { quotes: undefined, manualSkills: undefined },
+        CONVO_ID,
+      );
+    });
+    expect(mockRemoveQueued).not.toHaveBeenCalled();
+  });
+
+  it('claims an ordinary queued row before Edit when the ownership transaction is available', async () => {
+    const user = userEvent.setup();
+    const queued = { id: 'q-edit-owned', text: 'claim before edit', createdAt: 1 };
+    const runQueuedAction = jest.fn(
+      async (
+        item: QueuedMessage,
+        action: (claimed: QueuedMessage) => boolean | void | Promise<boolean | void>,
+      ) => (await action(item)) !== false,
+    );
+    renderChips([queued], { steering: { runQueuedAction } });
+
+    await user.click(screen.getByLabelText('com_ui_more_options'));
+    await user.click(await screen.findByRole('menuitem', { name: 'com_ui_edit_message' }));
+
+    await waitFor(() => {
+      expect(runQueuedAction).toHaveBeenCalledWith(queued, expect.any(Function), undefined);
+      expect(mockEditToComposer).toHaveBeenCalledWith('claim before edit', undefined, {
+        quotes: undefined,
+        manualSkills: undefined,
+        markdownTableComments: undefined,
+      });
+    });
+    expect(mockRemoveQueued).not.toHaveBeenCalled();
+  });
+
   it('discards a recovered source before restoring and removing its queued row', async () => {
     let confirmDiscard: ((discarded: boolean) => void) | undefined;
     mockDiscardQueued.mockImplementationOnce(

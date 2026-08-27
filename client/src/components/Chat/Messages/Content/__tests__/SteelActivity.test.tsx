@@ -101,6 +101,93 @@ jest.mock('~/hooks/useLocalize', () => ({
 }));
 
 describe('SteelActivity', () => {
+  it('renders persisted PaddleOCR preflight activity without live Recoil events', () => {
+    render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-persisted-preflight"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              type: 'memory_saved',
+              source: 'paddleocr_preflight',
+              message: 'Saved PaddleOCR preflight',
+              savedCounts: { paddleocr_preflight: 1 },
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Saved PaddleOCR preflight')).toBeInTheDocument();
+  });
+
+  it('deduplicates identical persisted and live activity events', () => {
+    const persistedEvent = {
+      type: 'memory_saved' as const,
+      source: 'paddleocr_preflight' as const,
+      message: 'Saved PaddleOCR preflight' as const,
+      savedCounts: { paddleocr_preflight: 1 },
+    };
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-persisted-live'), [persistedEvent]);
+        }}
+      >
+        <SteelActivity
+          messageId="assistant-persisted-live"
+          isCreatedByUser={false}
+          persistedActivityEvents={[persistedEvent]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Saved PaddleOCR preflight')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '2 events' })).not.toBeInTheDocument();
+  });
+
+  it('ignores malformed persisted activity events', () => {
+    render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-malformed-persisted"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            null,
+            ['not-an-event'],
+            { type: 'memory_saved', source: 'paddleocr_preflight', message: 'missing counts' },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.queryByLabelText('Steel activity')).not.toBeInTheDocument();
+  });
+
+  it('renders quote audit activity using its raw message', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quote-audit'), [
+            {
+              type: 'quote_audit',
+              source: 'quote_runtime',
+              message: 'Stage 2 started',
+              stage: 'stage_2',
+              status: 'started',
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quote-audit" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Stage 2 started')).toBeInTheDocument();
+  });
+
   it('renders native Steel save status without successful parse rows', () => {
     render(
       <RecoilRoot

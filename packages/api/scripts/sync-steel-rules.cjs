@@ -302,6 +302,7 @@ function categoryRule({ sourceFile, prompt, fileSha }) {
 
 function buildRules(repoRoot) {
   const agent = readRulePrompt(repoRoot, 'docs/rules/agent規則.txt');
+  const quoteCalculation = readRulePrompt(repoRoot, 'docs/rules/報價計算驗證規則.txt');
   const output = readRulePrompt(repoRoot, 'docs/rules/輸出規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR規則.txt');
   const vision = readRulePrompt(repoRoot, 'docs/rules/其他規則/Vision規則.txt');
@@ -342,6 +343,43 @@ function buildRules(repoRoot) {
           'agent_default_instruction',
           agent.sha256,
           'agent_rule',
+        ),
+      ],
+    }),
+    unifiedRule({
+      slug: 'steel-quote-calculation-verification-policy',
+      ruleKind: 'output',
+      title: 'Steel 報價計算驗證規則',
+      ruleSections: ['quote_calculation', 'quote_subtotal_validation', 'quote_total_validation'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'output_sheet_context'],
+        scopeType: 'company',
+        activeSheets: ['system_order', 'customer_quote', 'manual_review'],
+        confidence: 'high',
+      },
+      prompt: quoteCalculation.prompt,
+      toolPolicy: {
+        requiredTool: 'OpenAI Python',
+        runAfter: 'price_lookup',
+      },
+      outputPolicy: {
+        subtotalSource: 'current_turn_python_results',
+        totalInput: 'ordered_displayed_nonblank_subtotals',
+        blankSubtotalHandling: 'exclude_from_total_and_manual_review',
+        totalRequired: true,
+        emptyConfirmedSubtotalTotal: 0,
+        preOutputTotalGate:
+          'displayed_nonblank_count_equals_python_input_count_and_total_equals_python_sum',
+        verificationFailure: 'correct_and_recalculate_before_output',
+      },
+      priority: 10,
+      sourceRefs: [
+        sourceRef(
+          'docs/rules/報價計算驗證規則.txt',
+          '報價計算驗證規則',
+          'steel-quote-calculation-verification-policy',
+          quoteCalculation.sha256,
+          'output_rule',
         ),
       ],
     }),

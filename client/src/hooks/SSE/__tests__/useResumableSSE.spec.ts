@@ -2764,6 +2764,259 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it('downgrades a recovery row once when a v2 payload mismatch proves its source absent', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 409, data: { code: 'RECOVERY_PAYLOAD_MISMATCH' } },
+    });
+    mockFetchStreamStatus.mockResolvedValueOnce({
+      active: false,
+      generationProtocolVersion: 2,
+      unrecoveredSteers: [],
+    });
+    const queuedMessageOrigin = {
+      item: {
+        id: 'queued-recovery',
+        text: 'send once',
+        createdAt: 3,
+        clientRequestId: 'old-attempt',
+        recoverySteerId: 'source-steer',
+        recoveryClientSteerId: 'old-client',
+      },
+      beforeIds: [],
+      afterIds: [],
+    };
+    const submission = buildSubmission({
+      clientRequestId: 'old-attempt',
+      recoverySteerId: 'source-steer',
+      queuedMessageOrigin,
+    });
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+
+    expect(mockRestoreQueuedSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queuedMessageOrigin: {
+          ...queuedMessageOrigin,
+          item: {
+            id: 'queued-recovery',
+            text: 'send once',
+            createdAt: 3,
+          },
+        },
+      }),
+    );
+    expect(mockFetchStreamStatus).toHaveBeenCalledTimes(1);
+    expect(mockFetchQuery).toHaveBeenCalledTimes(2);
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('re-queues the authoritative recovery source once on a v2 payload mismatch', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 409, data: { code: 'RECOVERY_PAYLOAD_MISMATCH' } },
+    });
+    mockFetchStreamStatus.mockResolvedValueOnce({
+      active: false,
+      generationProtocolVersion: 2,
+      unrecoveredSteers: [
+        {
+          steerId: 'source-steer',
+          clientSteerId: 'source-client',
+          text: 'authoritative words',
+          createdAt: 2,
+          files: [{ file_id: 'authoritative-file' }],
+        },
+      ],
+    });
+    const queuedMessageOrigin = {
+      item: {
+        id: 'queued-recovery',
+        text: 'stale local words',
+        createdAt: 2,
+        files: [{ file_id: 'stale-local-file' }],
+        quotes: ['keep local context'],
+        clientRequestId: 'old-attempt',
+        recoverySteerId: 'source-steer',
+        recoveryClientSteerId: 'old-client',
+      },
+      beforeIds: [],
+      afterIds: [],
+    };
+    const submission = buildSubmission({
+      clientRequestId: 'old-attempt',
+      recoverySteerId: 'source-steer',
+      queuedMessageOrigin,
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+
+    expect(mockConvertSteersToQueued).toHaveBeenCalledTimes(1);
+    expect(mockConvertSteersToQueued).toHaveBeenCalledWith(
+      CONV_ID,
+      [
+        expect.objectContaining({
+          steerId: 'source-steer',
+          queuedOrigin: {
+            ...queuedMessageOrigin,
+            item: {
+              id: 'queued-recovery',
+              text: 'authoritative words',
+              createdAt: 2,
+              files: [{ file_id: 'authoritative-file' }],
+              quotes: ['keep local context'],
+            },
+          },
+        }),
+      ],
+      {
+        generationProtocolVersion: 2,
+        allowPreviouslyConvertedIds: ['source-steer'],
+      },
+    );
+    expect(mockRestoreQueuedSubmission).not.toHaveBeenCalled();
+    expect(mockFetchStreamStatus).toHaveBeenCalledTimes(1);
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('suppresses a downgraded retry when a second messages read proves concurrent delivery', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 409, data: { code: 'RECOVERY_PAYLOAD_MISMATCH' } },
+    });
+    mockFetchQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        messageId: 'source-steer',
+        isCreatedByUser: true,
+        text: 'delivered by another tab',
+      } as TMessage,
+    ]);
+    mockFetchStreamStatus.mockResolvedValueOnce({
+      active: false,
+      generationProtocolVersion: 2,
+      unrecoveredSteers: [],
+    });
+    const queuedMessageOrigin = {
+      item: {
+        id: 'queued-recovery',
+        text: 'do not duplicate',
+        createdAt: 2,
+        clientRequestId: 'old-attempt',
+        recoverySteerId: 'source-steer',
+      },
+      beforeIds: [],
+      afterIds: [],
+    };
+    const submission = buildSubmission({
+      clientRequestId: 'old-attempt',
+      recoverySteerId: 'source-steer',
+      queuedMessageOrigin,
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+
+    expect(mockFetchQuery).toHaveBeenCalledTimes(2);
+    expect(mockRestoreQueuedSubmission).not.toHaveBeenCalled();
+    expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('does not restore a recovery row when persisted messages prove delivery before active status', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 409, data: { code: 'RECOVERY_PAYLOAD_MISMATCH' } },
+    });
+    mockFetchQuery.mockResolvedValueOnce([
+      {
+        messageId: 'assistant-1',
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.STEER,
+            steerId: 'source-steer',
+            clientSteerId: 'source-client',
+          },
+        ],
+      } as unknown as TMessage,
+    ]);
+    mockFetchStreamStatus.mockResolvedValueOnce({
+      active: true,
+      generationProtocolVersion: 2,
+      unrecoveredSteers: [
+        {
+          steerId: 'source-steer',
+          clientSteerId: 'source-client',
+          text: 'already sent',
+          createdAt: 2,
+        },
+      ],
+    });
+    const queuedMessageOrigin = {
+      item: {
+        id: 'queued-recovery',
+        text: 'already sent',
+        createdAt: 2,
+        clientRequestId: 'old-attempt',
+        recoverySteerId: 'source-steer',
+      },
+      beforeIds: [],
+      afterIds: [],
+    };
+    const submission = buildSubmission({
+      clientRequestId: 'old-attempt',
+      recoverySteerId: 'source-steer',
+      queuedMessageOrigin,
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+
+    expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
+    expect(mockRestoreQueuedSubmission).not.toHaveBeenCalled();
+    expect(mockFetchStreamStatus).not.toHaveBeenCalled();
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps the exact recovery row on an ambiguous payload mismatch status', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 409, data: { code: 'RECOVERY_PAYLOAD_MISMATCH' } },
+    });
+    mockFetchStreamStatus.mockResolvedValueOnce({
+      active: true,
+      generationProtocolVersion: 2,
+      createdAt: 99,
+      unrecoveredSteers: [],
+    });
+    const queuedMessageOrigin = {
+      item: {
+        id: 'queued-recovery',
+        text: 'keep me queued',
+        createdAt: 2,
+        clientRequestId: 'old-attempt',
+        recoverySteerId: 'source-steer',
+        recoveryClientSteerId: 'source-client',
+      },
+      beforeIds: [],
+      afterIds: [],
+    };
+    const submission = buildSubmission({
+      clientRequestId: 'old-attempt',
+      recoverySteerId: 'source-steer',
+      queuedMessageOrigin,
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+
+    expect(mockRestoreQueuedSubmission).toHaveBeenCalledWith(submission);
+    expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it('surfaces SSE error bodies returned while starting generation', async () => {
     (request.post as jest.Mock).mockResolvedValueOnce(
       'event: error\ndata: {"text":"No model spec selected"}\n\n',

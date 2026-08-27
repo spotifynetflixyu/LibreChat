@@ -430,6 +430,36 @@ export const isValidTimestamp = (value?: string | null): value is string => {
   return !Number.isNaN(new Date(value).getTime());
 };
 
+/**
+ * Preserve an optimistic user timestamp when a server request message omits
+ * both timestamp fields during sync/final/cancel replacement.
+ */
+export const mergeRequestMessageTimestamp = ({
+  serverMessage,
+  optimisticMessage,
+}: {
+  serverMessage?: TMessage | null;
+  optimisticMessage?: TMessage | null;
+}): TMessage | undefined => {
+  if (!serverMessage) {
+    return undefined;
+  }
+  if (
+    isValidTimestamp(serverMessage.createdAt) ||
+    isValidTimestamp(serverMessage.clientTimestamp)
+  ) {
+    return serverMessage;
+  }
+
+  let fallback: string | undefined;
+  if (isValidTimestamp(optimisticMessage?.clientTimestamp)) {
+    fallback = optimisticMessage.clientTimestamp;
+  } else if (isValidTimestamp(optimisticMessage?.createdAt)) {
+    fallback = optimisticMessage.createdAt;
+  }
+  return fallback ? { ...serverMessage, clientTimestamp: fallback } : serverMessage;
+};
+
 const RELATIVE_TIME_DIVISIONS: { amount: number; unit: Intl.RelativeTimeFormatUnit }[] = [
   { amount: 60, unit: 'second' },
   { amount: 60, unit: 'minute' },
@@ -473,13 +503,14 @@ const formatRelativeTime = (from: Date, to: Date, locale?: string): string => {
 export const getMessageTimestamp = (
   value?: string | null,
   locale?: string,
+  nowMs = Date.now(),
 ): MessageTimestamp | null => {
   if (!isValidTimestamp(value)) {
     return null;
   }
 
   const date = new Date(value);
-  const now = new Date(Date.now());
+  const now = new Date(nowMs);
   const safeLocale = resolveLocale(locale);
 
   return {
@@ -626,6 +657,8 @@ export function areMessageFieldsEqual(
     prevMsg.error === nextMsg.error &&
     prevMsg.unfinished === nextMsg.unfinished &&
     prevMsg.createdAt === nextMsg.createdAt &&
+    prevMsg.clientTimestamp === nextMsg.clientTimestamp &&
+    prevMsg.processingDurationMs === nextMsg.processingDurationMs &&
     prevMsg.depth === nextMsg.depth &&
     prevMsg.isCreatedByUser === nextMsg.isCreatedByUser &&
     (prevMsg.children?.length ?? 0) === (nextMsg.children?.length ?? 0) &&

@@ -3,8 +3,18 @@ import MessageRow from '../MessageRow';
 
 jest.mock('../MessageTimestamp', () => ({
   __esModule: true,
-  default: ({ className }: { className?: string }) => (
-    <span data-testid="message-timestamp" className={className} />
+  default: ({
+    className,
+    processingDurationMs,
+  }: {
+    className?: string;
+    processingDurationMs?: number;
+  }) => (
+    <span
+      data-testid="message-timestamp"
+      data-processing-duration-ms={processingDurationMs}
+      className={className}
+    />
   ),
 }));
 
@@ -40,6 +50,8 @@ const renderRow = ({
   isEditing = false,
   isSubmitting = false,
   timestamp,
+  processingStartedAt,
+  processingDurationMs,
 }: {
   isCreatedByUser: boolean;
   hasParallelContent?: boolean;
@@ -47,6 +59,8 @@ const renderRow = ({
   isEditing?: boolean;
   isSubmitting?: boolean;
   timestamp?: string;
+  processingStartedAt?: string;
+  processingDurationMs?: number;
 }) =>
   render(
     <MessageRow
@@ -61,6 +75,8 @@ const renderRow = ({
       isSubmitting={isSubmitting}
       parentMessageId="parent-message"
       timestamp={timestamp}
+      processingStartedAt={processingStartedAt}
+      processingDurationMs={processingDurationMs}
       hasParallelContent={hasParallelContent}
       fullWidth={fullWidth}
       isEditing={isEditing}
@@ -139,13 +155,14 @@ describe('MessageRow', () => {
       isCreatedByUser: false,
       isSubmitting: true,
       timestamp: '2026-08-18T12:00:00.000Z',
+      processingStartedAt: '2026-08-18T11:59:00.000Z',
     });
 
     const timer = screen.getByTestId('message-elapsed-timer');
     expect(timer).toHaveAttribute('data-is-submitting', 'true');
     expect(timer).toHaveAttribute('data-timer-key', 'message-1');
     expect(timer).toHaveAttribute('data-parent-message-id', 'parent-message');
-    expect(timer).toHaveAttribute('data-started-at', '2026-08-18T12:00:00.000Z');
+    expect(timer).toHaveAttribute('data-started-at', '2026-08-18T11:59:00.000Z');
     expect(timer.parentElement).toHaveClass('ml-auto', 'shrink-0');
     expect(screen.queryByTestId('message-timestamp')).not.toBeInTheDocument();
   });
@@ -155,6 +172,19 @@ describe('MessageRow', () => {
 
     expect(screen.getByTestId('message-timestamp')).toHaveClass('ml-auto', 'shrink-0');
     expect(screen.queryByTestId('message-elapsed-timer')).not.toBeInTheDocument();
+  });
+
+  it('passes processing duration only to completed assistant timestamp', () => {
+    renderRow({
+      isCreatedByUser: false,
+      timestamp: '2026-08-18T12:00:00.000Z',
+      processingDurationMs: 12_000,
+    });
+
+    expect(screen.getByTestId('message-timestamp')).toHaveAttribute(
+      'data-processing-duration-ms',
+      '12000',
+    );
   });
 
   it('shows only the hover timestamp and never an elapsed timer for user messages', () => {

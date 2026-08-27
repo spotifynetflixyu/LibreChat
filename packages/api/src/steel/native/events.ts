@@ -3,10 +3,18 @@ import type { CaptureSteelNativeToolResultResult } from './tool-result';
 
 export const steelNativeStreamEventName = 'steel_event' as const;
 
+export const steelNativeActivityEventMaxBytes: number = 16 * 1024;
+export const steelNativeActivityEventMaxCount: number = 100;
+export const steelNativeActivityEventsMaxBytes: number = 128 * 1024;
+export const steelNativePreflightToolCallMaxBytes: number = 4 * 1024;
+export const steelNativePreflightToolCallMaxCount: number = 100;
+export const steelNativePreflightToolCallIdMaxBytes: number = 256;
+
 export type SteelNativeEventSource =
   | 'ocr_preprocessing'
   | 'paddleocr_preflight'
-  | 'tool_result';
+  | 'tool_result'
+  | 'quote_runtime';
 
 export type SteelNativeSavedCounts = Record<string, number>;
 export type SteelNativeTableCounts = Record<string, number>;
@@ -42,12 +50,419 @@ export interface SteelNativeMemorySavedEvent extends SteelNativeEventBase {
   totalTableCounts?: SteelNativeTableCounts;
 }
 
-export type SteelNativeStreamEvent = SteelNativeParseStatusEvent | SteelNativeMemorySavedEvent;
+export interface SteelNativeQuoteAuditStartedEvent extends SteelNativeEventBase {
+  type: 'quote_audit';
+  stage: 'stage_2';
+  status: 'started';
+  message: 'Stage 2 started';
+}
+
+export interface SteelNativeCodeInterpreterAuditEvent extends SteelNativeEventBase {
+  type: 'quote_audit';
+  stage: 'stage_1' | 'stage_2';
+  status: 'executed';
+  message: 'Code Interpreter executed';
+  toolName: 'code_interpreter';
+}
+
+export type SteelNativeQuoteAuditEvent =
+  | SteelNativeQuoteAuditStartedEvent
+  | SteelNativeCodeInterpreterAuditEvent;
+
+export type SteelNativeStreamEvent =
+  | SteelNativeParseStatusEvent
+  | SteelNativeMemorySavedEvent
+  | SteelNativeQuoteAuditEvent;
 
 export interface SteelNativeEventEnvelope {
   event: typeof steelNativeStreamEventName;
   data: SteelNativeStreamEvent;
 }
+
+export interface SteelNativePreflightToolCallArgs {
+  output_mode: 'detailed';
+  return_images: boolean;
+  use_doc_orientation_classify: boolean;
+  use_doc_unwarping: boolean;
+  use_layout_detection: boolean;
+}
+
+export interface SteelNativePreflightToolCall {
+  type: 'tool_call';
+  id: string;
+  name: string;
+  args: SteelNativePreflightToolCallArgs;
+  output?: string;
+  progress: 0 | 1;
+}
+
+export interface SteelNativeHistory {
+  activityEvents: SteelNativeStreamEvent[];
+  preflightToolCalls: SteelNativePreflightToolCall[];
+}
+
+export type SteelNativeHistoryTarget = SteelNativeHistory | SteelNativeStreamEvent[];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isCountMap(value: unknown): value is Record<string, number> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((entry) => typeof entry === 'number' && Number.isFinite(entry))
+  );
+}
+
+function isSafePageRange(value: unknown): value is { pageStart: number; pageEnd: number } {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.pageStart) &&
+    Number.isSafeInteger(value.pageEnd) &&
+    (value.pageStart as number) >= 1 &&
+    (value.pageEnd as number) >= (value.pageStart as number)
+  );
+}
+
+function isMissingPageRangesByFileKey(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (ranges) => Array.isArray(ranges) && ranges.every((range) => isSafePageRange(range)),
+    )
+  );
+}
+
+function hasValidBaseEventFields(value: Record<string, unknown>): boolean {
+  return [
+    'conversationId',
+    'requestId',
+    'messageId',
+    'toolName',
+    'providerToolCallId',
+  ].every((field) => value[field] === undefined || typeof value[field] === 'string');
+}
+
+function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent {
+  if (
+    !isRecord(value) ||
+    typeof value.type !== 'string' ||
+    typeof value.source !== 'string' ||
+    !hasValidBaseEventFields(value)
+  ) {
+    return false;
+  }
+
+  if (
+    ![
+      'ocr_preprocessing',
+      'paddleocr_preflight',
+      'tool_result',
+      'quote_runtime',
+    ].includes(value.source)
+  ) {
+    return false;
+  }
+
+  if (value.type === 'parse_status') {
+    return (
+      typeof value.message === 'string' &&
+      ['saved', 'partial', 'skipped'].includes(value.parseStatus as string) &&
+      (value.errorMessage === undefined || typeof value.errorMessage === 'string') &&
+      (value.failedKeys === undefined || isStringArray(value.failedKeys)) &&
+      (value.missingPageRangesByFileKey === undefined ||
+        isMissingPageRangesByFileKey(value.missingPageRangesByFileKey)) &&
+      (value.savedCounts === undefined || isCountMap(value.savedCounts)) &&
+      (value.totalSavedCounts === undefined || isCountMap(value.totalSavedCounts)) &&
+      (value.savedTableCounts === undefined || isCountMap(value.savedTableCounts)) &&
+      (value.totalTableCounts === undefined || isCountMap(value.totalTableCounts))
+    );
+  }
+
+  if (value.type === 'memory_saved') {
+    return (
+      typeof value.message === 'string' &&
+      isCountMap(value.savedCounts) &&
+      (value.savedTableCounts === undefined || isCountMap(value.savedTableCounts)) &&
+      (value.totalSavedCounts === undefined || isCountMap(value.totalSavedCounts)) &&
+      (value.totalTableCounts === undefined || isCountMap(value.totalTableCounts))
+    );
+  }
+
+  if (value.type !== 'quote_audit') {
+    return false;
+  }
+
+  if (value.stage === 'stage_2' && value.status === 'started') {
+    return value.source === 'quote_runtime' && value.message === 'Stage 2 started';
+  }
+
+  return (
+    value.source === 'quote_runtime' &&
+    (value.stage === 'stage_1' || value.stage === 'stage_2') &&
+    value.status === 'executed' &&
+    value.message === 'Code Interpreter executed' &&
+    value.toolName === 'code_interpreter'
+  );
+}
+
+function isPreflightToolCallArgs(value: unknown): value is SteelNativePreflightToolCallArgs {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const keys = Object.keys(value).sort();
+  if (
+    keys.join(',') !==
+    [
+      'output_mode',
+      'return_images',
+      'use_doc_orientation_classify',
+      'use_doc_unwarping',
+      'use_layout_detection',
+    ]
+      .sort()
+      .join(',')
+  ) {
+    return false;
+  }
+  return (
+    value.output_mode === 'detailed' &&
+    typeof value.return_images === 'boolean' &&
+    typeof value.use_doc_orientation_classify === 'boolean' &&
+    typeof value.use_doc_unwarping === 'boolean' &&
+    typeof value.use_layout_detection === 'boolean'
+  );
+}
+
+function isSafePreflightOutput(value: string): boolean {
+  if (value.startsWith('Error:')) {
+    return value.length <= 512 && !/https?:\/\//iu.test(value);
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!isRecord(parsed)) {
+      return false;
+    }
+    const keys = Object.keys(parsed).sort();
+    const expected = [
+      'chunkIndex',
+      'chunkCount',
+      'filename',
+      'ocrEngine',
+      'ocrFileKey',
+      'outputStorage',
+      'pageEnd',
+      'pageStart',
+      'rawResultHash',
+      'rawTextLength',
+      'status',
+    ]
+      .sort()
+      .join(',');
+    if (keys.join(',') !== expected) {
+      return false;
+    }
+    return (
+      parsed.status === 'completed' &&
+      parsed.ocrEngine === 'paddleocr_vl' &&
+      parsed.outputStorage === 'steel_working_order_memory:paddleocr_preflight' &&
+      typeof parsed.ocrFileKey === 'string' &&
+      typeof parsed.filename === 'string' &&
+      typeof parsed.rawResultHash === 'string' &&
+      Number.isSafeInteger(parsed.chunkIndex) &&
+      Number.isSafeInteger(parsed.chunkCount) &&
+      Number.isSafeInteger(parsed.pageStart) &&
+      Number.isSafeInteger(parsed.pageEnd) &&
+      Number.isSafeInteger(parsed.rawTextLength) &&
+      parsed.chunkIndex >= 0 &&
+      parsed.chunkCount >= 1 &&
+      parsed.pageStart >= 1 &&
+      parsed.pageEnd >= parsed.pageStart &&
+      parsed.rawTextLength >= 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isSteelNativePreflightToolCall(value: unknown): value is SteelNativePreflightToolCall {
+  return (
+    isRecord(value) &&
+    value.type === 'tool_call' &&
+    typeof value.name === 'string' &&
+    (value.name === 'paddleocr_vl' ||
+      /^paddleocr_vl(?:---|_mcp_)[A-Za-z0-9_-]+$/u.test(value.name)) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    Buffer.byteLength(value.id, 'utf8') <= steelNativePreflightToolCallIdMaxBytes &&
+    isPreflightToolCallArgs(value.args) &&
+    (value.progress === 0 || value.progress === 1) &&
+    (value.output === undefined ||
+      (typeof value.output === 'string' && isSafePreflightOutput(value.output)))
+  );
+}
+
+function getHistory(target: SteelNativeHistoryTarget): SteelNativeHistory {
+  if (Array.isArray(target)) {
+    return { activityEvents: target, preflightToolCalls: [] };
+  }
+  return target;
+}
+
+function trimSteelNativeHistory(history: SteelNativeHistory): boolean {
+  while (history.activityEvents.length > steelNativeActivityEventMaxCount) {
+    history.activityEvents.shift();
+  }
+  while (history.preflightToolCalls.length > steelNativePreflightToolCallMaxCount) {
+    history.preflightToolCalls.shift();
+  }
+  const serialized = () => JSON.stringify(history);
+  let encoded = serialized();
+  if (typeof encoded !== 'string') {
+    return false;
+  }
+
+  while (Buffer.byteLength(encoded, 'utf8') > steelNativeActivityEventsMaxBytes) {
+    if (history.activityEvents.length > 0) {
+      history.activityEvents.shift();
+    } else if (history.preflightToolCalls.length > 0) {
+      history.preflightToolCalls.shift();
+    } else {
+      return false;
+    }
+    encoded = serialized();
+    if (typeof encoded !== 'string') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Append one validated native Steel event to a bounded activity sink.
+ *
+ * Sink identity stays stable because entries are evicted and appended in place.
+ * All failures are fail-closed and non-throwing so event persistence cannot
+ * interrupt the live SSE path.
+ */
+export function appendSteelNativeActivityEvent(
+  sink: SteelNativeHistoryTarget,
+  value: unknown,
+): boolean {
+  try {
+    if ((!Array.isArray(sink) && !isRecord(sink)) || !isSteelNativeEventData(value)) {
+      return false;
+    }
+
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') {
+      return false;
+    }
+    const eventBytes = Buffer.byteLength(serialized, 'utf8');
+    if (eventBytes > steelNativeActivityEventMaxBytes) {
+      return false;
+    }
+
+    const cloned = JSON.parse(serialized) as unknown;
+    if (!isSteelNativeEventData(cloned)) {
+      return false;
+    }
+
+    const history = getHistory(sink);
+    const entryBytes = history.activityEvents.map((entry) => {
+      const entryJson = JSON.stringify(entry);
+      if (typeof entryJson !== 'string') {
+        throw new Error('invalid existing Steel activity event');
+      }
+      return Buffer.byteLength(entryJson, 'utf8');
+    });
+    let totalBytes = entryBytes.reduce((total, bytes) => total + bytes, 0);
+
+    while (
+      history.activityEvents.length >= steelNativeActivityEventMaxCount ||
+      totalBytes + eventBytes > steelNativeActivityEventsMaxBytes
+    ) {
+      const removedBytes = entryBytes.shift();
+      if (removedBytes === undefined) {
+        break;
+      }
+      history.activityEvents.shift();
+      totalBytes -= removedBytes;
+    }
+
+    if (
+      history.activityEvents.length >= steelNativeActivityEventMaxCount ||
+      totalBytes + eventBytes > steelNativeActivityEventsMaxBytes
+    ) {
+      return false;
+    }
+
+    history.activityEvents.push(cloned);
+    if (!trimSteelNativeHistory(history)) {
+      history.activityEvents.pop();
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function upsertSteelNativePreflightToolCall(
+  history: SteelNativeHistory,
+  value: unknown,
+): boolean {
+  try {
+    if (
+      !isRecord(history) ||
+      !Array.isArray(history.activityEvents) ||
+      !Array.isArray(history.preflightToolCalls)
+    ) {
+      return false;
+    }
+    if (!isSteelNativePreflightToolCall(value)) {
+      return false;
+    }
+    const serialized = JSON.stringify(value);
+    if (
+      typeof serialized !== 'string' ||
+      Buffer.byteLength(serialized, 'utf8') > steelNativePreflightToolCallMaxBytes
+    ) {
+      return false;
+    }
+    const cloned = JSON.parse(serialized) as SteelNativePreflightToolCall;
+    const previousActivityEvents = history.activityEvents.slice();
+    const previousPreflightToolCalls = history.preflightToolCalls.slice();
+    const existingIndex = history.preflightToolCalls.findIndex((entry) => entry.id === cloned.id);
+    if (existingIndex >= 0) {
+      history.preflightToolCalls[existingIndex] = cloned;
+    } else {
+      if (history.preflightToolCalls.length >= steelNativePreflightToolCallMaxCount) {
+        history.preflightToolCalls.shift();
+      }
+      history.preflightToolCalls.push(cloned);
+    }
+    if (!trimSteelNativeHistory(history)) {
+      history.activityEvents.splice(0, history.activityEvents.length, ...previousActivityEvents);
+      history.preflightToolCalls.splice(
+        0,
+        history.preflightToolCalls.length,
+        ...previousPreflightToolCalls,
+      );
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const appendSteelNativePreflightToolCall: typeof upsertSteelNativePreflightToolCall =
+  upsertSteelNativePreflightToolCall;
 
 export interface BuildSteelNativeEventEnvelopesInput extends SteelNativeEventBase {
   capture: CaptureSteelNativeToolResultResult;
@@ -140,6 +555,41 @@ function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.toolName ? { toolName: input.toolName } : {}),
     ...(input.providerToolCallId ? { providerToolCallId: input.providerToolCallId } : {}),
+  };
+}
+
+export type BuildSteelQuoteAuditEventInput = Omit<SteelNativeEventBase, 'source'>;
+
+export function buildSteelQuoteAuditEvent(
+  input: BuildSteelQuoteAuditEventInput = {},
+): SteelNativeQuoteAuditStartedEvent {
+  return {
+    type: 'quote_audit',
+    message: 'Stage 2 started',
+    stage: 'stage_2',
+    status: 'started',
+    ...baseEvent({ ...input, source: 'quote_runtime' }),
+  };
+}
+
+export type BuildSteelCodeInterpreterAuditEventInput = Omit<
+  SteelNativeEventBase,
+  'source' | 'toolName'
+> & {
+  stage: 'stage_1' | 'stage_2';
+};
+
+export function buildSteelCodeInterpreterAuditEvent({
+  stage,
+  ...input
+}: BuildSteelCodeInterpreterAuditEventInput): SteelNativeCodeInterpreterAuditEvent {
+  return {
+    type: 'quote_audit',
+    message: 'Code Interpreter executed',
+    stage,
+    status: 'executed',
+    toolName: 'code_interpreter',
+    ...baseEvent({ ...input, source: 'quote_runtime' }),
   };
 }
 

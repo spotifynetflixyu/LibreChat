@@ -419,9 +419,17 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @param {string} responseId
  * @param {import('@librechat/api').Response} response
  * @param {string} agentId
+ * @param {number} [processingDurationMs]
  * @returns {Promise<void>}
  */
-async function saveResponseOutput(req, conversationId, responseId, response, agentId) {
+async function saveResponseOutput(
+  req,
+  conversationId,
+  responseId,
+  response,
+  agentId,
+  processingDurationMs,
+) {
   const responseText = extractSteelNativeResponseOutputText(response);
 
   const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
@@ -441,6 +449,9 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
       model: agentId,
       finish_reason: response.status === 'completed' ? 'stop' : response.status,
       tokenCount: response.usage?.output_tokens,
+      ...(Number.isSafeInteger(processingDurationMs) && processingDurationMs >= 0
+        ? { processingDurationMs }
+        : {}),
       metadata: buildSteelNativeResponseMessageMetadata({
         conversationId,
         responseId,
@@ -451,6 +462,10 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
         providerStateMode:
           req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
         contextMetadata: req.steelNativeContext?.contextMetadata,
+        activityEvents:
+          req.steelNativeContext?.steelHistory?.activityEvents ??
+          req.steelNativeContext?.steelActivityEvents,
+        preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
       }),
     },
     { context: 'Responses API - save assistant response' },
@@ -927,6 +942,7 @@ const executeResponse = async (envelope, { req, res }) => {
       emitResponseInProgress(handlerConfig);
     }
 
+    const steelHistory = { activityEvents: [], preflightToolCalls: [] };
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
       conversationId,
@@ -937,6 +953,8 @@ const executeResponse = async (envelope, { req, res }) => {
       store: shouldStoreResponse,
       providerStateMode: 'openai_responses_reconstructed',
       currentTurnFiles,
+      steelHistory,
+      steelActivityEvents: steelHistory.activityEvents,
     };
     const paddleOcrPreflight = await runSteelPaddleOcrPreflight({
       req,
@@ -1296,6 +1314,7 @@ const executeResponse = async (envelope, { req, res }) => {
             responseId,
             finalResponse,
             agentId,
+            Math.max(0, Date.now() - requestStartTime),
           );
 
           logger.debug(
@@ -1496,7 +1515,14 @@ const executeResponse = async (envelope, { req, res }) => {
 
           await saveInputMessages(req, conversationId, inputMessages, agentId);
 
-          await saveResponseOutput(req, conversationId, responseId, response, agentId);
+          await saveResponseOutput(
+            req,
+            conversationId,
+            responseId,
+            response,
+            agentId,
+            Math.max(0, Date.now() - requestStartTime),
+          );
 
           logger.debug(
             `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,

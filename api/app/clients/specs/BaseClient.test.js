@@ -543,12 +543,22 @@ describe('BaseClient', () => {
         messageId: expect.any(String),
         parentMessageId: expect.any(String),
         conversationId: expect.any(String),
+        processingDurationMs: expect.any(Number),
       });
 
       const response = await TestClient.sendMessage(userMessage);
       parentMessageId = response.messageId;
       conversationId = response.conversationId;
       expect(response).toEqual(expectedResult);
+    });
+
+    test('measures processing duration from the accepted generation epoch', async () => {
+      jest.spyOn(Date, 'now').mockReturnValue(25_000);
+      TestClient.jobCreatedAt = 10_000;
+
+      const response = await TestClient.sendMessage(userMessage);
+
+      expect(response.processingDurationMs).toBe(15_000);
     });
 
     test('should replace responseMessageId with new UUID when isRegenerate is true and messageId ends with underscore', async () => {

@@ -35,7 +35,7 @@ import type {
   TReasoningLabelEvent,
 } from 'librechat-data-provider';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin } from '~/store/families';
+import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin } from '~/store/families';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData } from '~/common';
@@ -110,6 +110,7 @@ const START_GENERATION_NETWORK_RETRIES = 3;
 const START_GENERATION_READINESS_TIMEOUT_MS = 120000;
 const SERVER_NOT_READY_CODE = 'SERVER_NOT_READY';
 const PREDECESSOR_MISMATCH_CODE = 'GENERATION_PREDECESSOR_MISMATCH';
+const RECOVERY_PAYLOAD_MISMATCH_CODE = 'RECOVERY_PAYLOAD_MISMATCH';
 const STEER_RECOVERY_REQUEST_PREFIX = 'steer-recovery:';
 
 type StartGenerationError = {
@@ -235,6 +236,63 @@ const getRecoverySteerId = (submission: TSubmission): string | null => {
   }
   const steerId = clientRequestId.slice(STEER_RECOVERY_REQUEST_PREFIX.length);
   return steerId.length > 0 ? steerId : null;
+};
+
+const getRecoveryPayloadMismatch = (error: unknown): boolean => {
+  const candidate = toStartGenerationError(error);
+  const data = candidate?.response?.data;
+  return (
+    candidate?.response?.status === 409 &&
+    data != null &&
+    typeof data === 'object' &&
+    (data as { code?: unknown }).code === RECOVERY_PAYLOAD_MISMATCH_CODE
+  );
+};
+
+const stripQueuedRecovery = (item: QueuedMessage): QueuedMessage => {
+  const {
+    clientRequestId: _clientRequestId,
+    recoverySteerId: _recoverySteerId,
+    recoveryClientSteerId: _recoveryClientSteerId,
+    ...ordinary
+  } = item;
+  return ordinary;
+};
+
+const withAuthoritativeRecoverySource = (
+  origin: QueuedMessageOrigin,
+  source: TPendingSteer,
+): QueuedMessageOrigin => {
+  const {
+    files: _files,
+    clientRequestId: _clientRequestId,
+    recoverySteerId: _recoverySteerId,
+    recoveryClientSteerId: _recoveryClientSteerId,
+    ...local
+  } = origin.item;
+  const item: QueuedMessage = {
+    ...local,
+    text: source.text,
+    ...(source.files != null && source.files.length > 0 && { files: source.files }),
+  };
+  return { ...origin, item };
+};
+
+const hasPersistedRecoveryDelivery = (
+  messages: TMessage[],
+  recoverySteerId: string,
+  recoveryClientSteerId?: string,
+): boolean => {
+  const appliedIds = new Set(collectAppliedSteerIds(messages));
+  if (appliedIds.has(recoverySteerId)) {
+    return true;
+  }
+  if (recoveryClientSteerId != null && appliedIds.has(recoveryClientSteerId)) {
+    return true;
+  }
+  return messages.some(
+    (message) => message.isCreatedByUser === true && message.messageId === recoverySteerId,
+  );
 };
 
 type StartGenerationResult =
@@ -388,7 +446,7 @@ const waitForRetryDelay = (delay: number, signal?: AbortSignal): Promise<boolean
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 
-const hasConcreteConversationId = (conversationId?: string | null) =>
+const hasConcreteConversationId = (conversationId?: string | null): conversationId is string =>
   !!conversationId &&
   conversationId !== Constants.NEW_CONVO &&
   conversationId !== Constants.PENDING_CONVO;
@@ -986,6 +1044,120 @@ export default function useResumableSSE(
    *  follow-up messages (reported on the run's final/abort event; the abort
    *  HTTP response consumes the same data as a fallback in useChatHelpers). */
   const convertSteersToQueued = useSteerConvert();
+
+  /** Reconcile a recovery start 409 against durable messages and the parked
+   * source. A true result means the mismatch was conclusively handled; false
+   * preserves the existing exact-4xx restore path. */
+  const reconcileRecoveryPayloadMismatch = useCallback(
+    async (currentSubmission: TSubmission, signal?: AbortSignal): Promise<boolean> => {
+      const recoverySteerId = getRecoverySteerId(currentSubmission);
+      const conversationId = currentSubmission.conversation?.conversationId;
+      if (recoverySteerId == null || !hasConcreteConversationId(conversationId)) {
+        return false;
+      }
+      const isCurrent = () => !signal?.aborted && submissionRef.current === currentSubmission;
+      if (!isCurrent()) {
+        return false;
+      }
+
+      const fetchPersistedMessages = async (): Promise<TMessage[] | null> => {
+        try {
+          const messageQueryKey = [QueryKeys.messages, conversationId] as const;
+          await queryClient.invalidateQueries({
+            queryKey: messageQueryKey,
+            refetchType: 'none',
+          });
+          if (!isCurrent()) {
+            return null;
+          }
+          const fetched = await queryClient.fetchQuery<TMessage[]>({ queryKey: messageQueryKey });
+          return isCurrent() && Array.isArray(fetched) ? fetched : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const persistedMessages = await fetchPersistedMessages();
+      if (persistedMessages == null) {
+        return false;
+      }
+
+      const origin = currentSubmission.queuedMessageOrigin as QueuedMessageOrigin | undefined;
+      if (
+        hasPersistedRecoveryDelivery(
+          persistedMessages,
+          recoverySteerId,
+          origin?.item.recoveryClientSteerId,
+        )
+      ) {
+        return true;
+      }
+
+      let status: Awaited<ReturnType<typeof fetchStreamStatus>>;
+      try {
+        status = await fetchStreamStatus(conversationId);
+        if (!isCurrent()) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+
+      if (!supportsGenerationProtocolV2(status) || status.active !== false) {
+        return false;
+      }
+
+      const source = status.unrecoveredSteers?.find((steer) => steer.steerId === recoverySteerId);
+      if (source != null) {
+        const authoritativeOrigin =
+          origin == null ? undefined : withAuthoritativeRecoverySource(origin, source);
+        convertSteersToQueued(
+          conversationId,
+          [
+            {
+              ...source,
+              ...(authoritativeOrigin != null && { queuedOrigin: authoritativeOrigin }),
+            },
+          ],
+          {
+            generationProtocolVersion: GENERATION_PROTOCOL_VERSION,
+            allowPreviouslyConvertedIds: [recoverySteerId],
+          },
+        );
+        return true;
+      }
+
+      if (origin == null) {
+        return false;
+      }
+
+      // Source absence can race another tab that just consumed and persisted
+      // it after our first messages read. Re-read before removing the recovery
+      // fence; otherwise the downgraded ordinary row could deliver twice.
+      const latestMessages = await fetchPersistedMessages();
+      if (latestMessages == null) {
+        return false;
+      }
+      if (
+        hasPersistedRecoveryDelivery(
+          latestMessages,
+          recoverySteerId,
+          origin.item.recoveryClientSteerId,
+        )
+      ) {
+        return true;
+      }
+      restoreQueuedSubmission({
+        ...currentSubmission,
+        queuedMessageOrigin: {
+          ...origin,
+          item: stripQueuedRecovery(origin.item),
+        },
+      });
+      return true;
+    },
+    [convertSteersToQueued, queryClient, restoreQueuedSubmission],
+  );
 
   /** Error events carry no `pendingSteers` payload (the server drops its copy
    *  on failure), but every acknowledged chip's text is local — convert them
@@ -3525,51 +3697,61 @@ export default function useResumableSSE(
       const startError = toStartGenerationError(lastError);
       const errorData = startError?.response?.data;
       const responseStatus = startError?.response?.status;
-      if (responseStatus != null && responseStatus >= 400 && responseStatus < 500) {
-        // The server rejected admission before exposing a generation. Restore
-        // the exact queue row/position; ambiguous transport/5xx outcomes must
-        // first reconcile durable state instead of risking a duplicate start.
-        restoreQueuedSubmission(currentSubmission);
-      } else {
-        const recoverySteerId = getRecoverySteerId(currentSubmission);
-        const recoveryConvoId = currentSubmission.conversation?.conversationId;
-        if (recoverySteerId != null && recoveryConvoId) {
-          try {
-            const status = await fetchStreamStatus(recoveryConvoId);
-            if (signal?.aborted) {
-              return null;
-            }
-            const releasedSource = status.unrecoveredSteers?.find(
-              (steer) => steer.steerId === recoverySteerId,
-            );
-            if (
-              status.active === false &&
-              supportsGenerationProtocolV2(status) &&
-              releasedSource != null
-            ) {
-              convertSteersToQueued(recoveryConvoId, [releasedSource], {
-                generationProtocolVersion: GENERATION_PROTOCOL_VERSION,
-                allowPreviouslyConvertedIds: [recoverySteerId],
+      const reconciledRecoveryMismatch = getRecoveryPayloadMismatch(lastError)
+        ? await reconcileRecoveryPayloadMismatch(currentSubmission, signal)
+        : false;
+      if (signal?.aborted || submissionRef.current !== currentSubmission) {
+        return null;
+      }
+      if (!reconciledRecoveryMismatch) {
+        if (responseStatus != null && responseStatus >= 400 && responseStatus < 500) {
+          // The server rejected admission before exposing a generation. Restore
+          // the exact queue row/position; ambiguous transport/5xx outcomes must
+          // first reconcile durable state instead of risking a duplicate start.
+          restoreQueuedSubmission(currentSubmission);
+        } else {
+          const recoverySteerId = getRecoverySteerId(currentSubmission);
+          const recoveryConvoId = currentSubmission.conversation?.conversationId;
+          if (recoverySteerId != null && recoveryConvoId) {
+            try {
+              const status = await fetchStreamStatus(recoveryConvoId);
+              if (signal?.aborted) {
+                return null;
+              }
+              const releasedSource = status.unrecoveredSteers?.find(
+                (steer) => steer.steerId === recoverySteerId,
+              );
+              if (
+                status.active === false &&
+                supportsGenerationProtocolV2(status) &&
+                releasedSource != null
+              ) {
+                convertSteersToQueued(recoveryConvoId, [releasedSource], {
+                  generationProtocolVersion: GENERATION_PROTOCOL_VERSION,
+                  allowPreviouslyConvertedIds: [recoverySteerId],
+                });
+              }
+            } catch (error) {
+              if (signal?.aborted) {
+                return null;
+              }
+              logger.warn('ResumableSSE', 'Could not recover source after start failure', {
+                conversationId: recoveryConvoId,
+                error,
               });
             }
-          } catch (error) {
-            if (signal?.aborted) {
-              return null;
-            }
-            logger.warn('ResumableSSE', 'Could not recover source after start failure', {
-              conversationId: recoveryConvoId,
-              error,
-            });
           }
         }
       }
       if (signal?.aborted) {
         return null;
       }
-      errorHandler({
-        data: getStreamStartFailureData(errorData),
-        submission: currentSubmission as EventSubmission,
-      });
+      if (!reconciledRecoveryMismatch) {
+        errorHandler({
+          data: getStreamStartFailureData(errorData),
+          submission: currentSubmission as EventSubmission,
+        });
+      }
       setShowStopButton(false);
       setIsSubmitting(false);
       setSubmission(null);
@@ -3579,6 +3761,7 @@ export default function useResumableSSE(
       clearStepMaps,
       convertSteersToQueued,
       errorHandler,
+      reconcileRecoveryPayloadMismatch,
       restoreQueuedSubmission,
       setIsSubmitting,
       setShowStopButton,

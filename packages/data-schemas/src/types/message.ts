@@ -21,6 +21,8 @@ export interface IMessage extends Document {
   isTemporary?: boolean;
   unfinished?: boolean;
   error?: boolean;
+  /** Inclusive end-to-end processing time for successful assistant responses. */
+  processingDurationMs?: number;
   finish_reason?: string;
   feedback?: {
     rating: TFeedbackRating;

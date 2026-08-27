@@ -202,6 +202,11 @@ describe('ResumableAgentController tenant context', () => {
     );
     expect(tenantSeenBySave).toEqual({ tenantId: 'tenant-a', userId: 'user-123' });
     expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ unfinished: true }),
+      expect.objectContaining({ unsetProcessingDurationMs: true }),
+    );
   });
 
   it('saves the partial response without tenant context when the user has no tenant', async () => {
@@ -210,5 +215,10 @@ describe('ResumableAgentController tenant context', () => {
     expect(mockTenantStorageRun).not.toHaveBeenCalled();
     expect(tenantSeenBySave).toBeUndefined();
     expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ unfinished: true }),
+      expect.objectContaining({ unsetProcessingDurationMs: true }),
+    );
   });
 });

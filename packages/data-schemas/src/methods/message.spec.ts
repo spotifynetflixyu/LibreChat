@@ -90,6 +90,44 @@ describe('Message Operations', () => {
     };
   });
 
+  it('persists and overwrites processingDurationMs for the same message id', async () => {
+    const first = await saveMessage(mockCtx, {
+      ...mockMessageData,
+      isCreatedByUser: false,
+      processingDurationMs: 12_000,
+    });
+    const second = await saveMessage(mockCtx, {
+      ...mockMessageData,
+      isCreatedByUser: false,
+      processingDurationMs: 15_000,
+    });
+
+    expect(first?.processingDurationMs).toBe(12_000);
+    expect(second?.processingDurationMs).toBe(15_000);
+    expect(
+      (await Message.findOne({ messageId: mockMessageData.messageId }).lean())
+        ?.processingDurationMs,
+    ).toBe(15_000);
+  });
+
+  it('unsets a prior processing duration for an aborted same-id save', async () => {
+    await saveMessage(mockCtx, {
+      ...mockMessageData,
+      isCreatedByUser: false,
+      processingDurationMs: 12_000,
+    });
+    await saveMessage(
+      mockCtx,
+      { ...mockMessageData, isCreatedByUser: false },
+      { unsetProcessingDurationMs: true },
+    );
+
+    expect(
+      (await Message.findOne({ messageId: mockMessageData.messageId }).lean())
+        ?.processingDurationMs,
+    ).toBeUndefined();
+  });
+
   describe('saveMessage', () => {
     it('should save a message for an authenticated user', async () => {
       const result = await saveMessage(mockCtx, mockMessageData);

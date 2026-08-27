@@ -24,6 +24,8 @@ const {
   isSteerPreemptSupported,
   toPendingSteer,
   isDelegateOcrQuoteOnlyTurn,
+  appendSteelNativeActivityEvent,
+  upsertSteelNativePreflightToolCall,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -108,6 +110,94 @@ function mergeAttachments(existing, incoming) {
   return out;
 }
 
+function isMetadataRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Merge activity captured before and after a HITL pause without trusting row metadata. */
+async function mergePersistedSteelActivityMetadata({
+  responseMetadata,
+  conversationId,
+  responseMessageId,
+}) {
+  let rows;
+  try {
+    rows = await getMessages({ conversationId, messageId: responseMessageId }, 'metadata');
+  } catch (error) {
+    logger.warn(
+      '[ResumeAgentController] Failed to read prior Steel activity metadata',
+      error?.message ?? error,
+    );
+    return responseMetadata ?? {};
+  }
+
+  const persistedMetadata = isMetadataRecord(rows?.[0]?.metadata) ? rows[0].metadata : {};
+  const persistedSteel = isMetadataRecord(persistedMetadata.steel)
+    ? persistedMetadata.steel
+    : {};
+  const currentSteel = isMetadataRecord(responseMetadata?.steel)
+    ? responseMetadata.steel
+    : {};
+  const persistedEvents = Array.isArray(persistedSteel.activityEvents)
+    ? persistedSteel.activityEvents
+    : [];
+  const currentEvents = Array.isArray(currentSteel.activityEvents)
+    ? currentSteel.activityEvents
+    : [];
+  const persistedCards = Array.isArray(persistedSteel.preflightToolCalls)
+    ? persistedSteel.preflightToolCalls
+    : [];
+  const currentCards = Array.isArray(currentSteel.preflightToolCalls)
+    ? currentSteel.preflightToolCalls
+    : [];
+  const steelHistory = { activityEvents: [], preflightToolCalls: [] };
+  if (
+    typeof appendSteelNativeActivityEvent !== 'function' ||
+    typeof upsertSteelNativePreflightToolCall !== 'function'
+  ) {
+    return responseMetadata ?? {};
+  }
+  for (const event of [...persistedEvents, ...currentEvents]) {
+    appendSteelNativeActivityEvent(steelHistory, event);
+  }
+  for (const card of [...persistedCards, ...currentCards]) {
+    upsertSteelNativePreflightToolCall(steelHistory, card);
+  }
+
+  const persistedNative = isMetadataRecord(persistedSteel.native) ? persistedSteel.native : null;
+  const currentNative = isMetadataRecord(currentSteel.native) ? currentSteel.native : null;
+  const {
+    activityEvents: _persistedActivityEvents,
+    preflightToolCalls: _persistedPreflightToolCalls,
+    native: _persistedNative,
+    ...persistedSteelWithoutEvents
+  } = persistedSteel;
+  const {
+    activityEvents: _currentActivityEvents,
+    preflightToolCalls: _currentPreflightToolCalls,
+    native: _currentNative,
+    ...currentSteelWithoutEvents
+  } = currentSteel;
+  const mergedSteel = {
+    ...persistedSteelWithoutEvents,
+    ...currentSteelWithoutEvents,
+    ...(persistedNative || currentNative
+      ? { native: { ...(persistedNative ?? {}), ...(currentNative ?? {}) } }
+      : {}),
+    ...(steelHistory.activityEvents.length > 0
+      ? { activityEvents: steelHistory.activityEvents }
+      : {}),
+    ...(steelHistory.preflightToolCalls.length > 0
+      ? { preflightToolCalls: steelHistory.preflightToolCalls }
+      : {}),
+  };
+  return {
+    ...persistedMetadata,
+    ...(responseMetadata ?? {}),
+    steel: mergedSteel,
+  };
+}
+
 /**
  * Resolve the current segment's tool artifacts and merge them with any already
  * persisted on the response row. A resumed turn can span multiple pause segments;
@@ -168,7 +258,13 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
     conversationId,
     responseMessageId,
   });
-  if (content.length === 0 && attachments.length === 0) {
+  const currentMetadata = client?.buildResponseMetadata?.() ?? null;
+  const metadata = await mergePersistedSteelActivityMetadata({
+    responseMetadata: currentMetadata,
+    conversationId,
+    responseMessageId,
+  });
+  if (content.length === 0 && attachments.length === 0 && Object.keys(metadata).length === 0) {
     return;
   }
   const savedResponseMessage = await saveMessage(
@@ -182,10 +278,14 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
       conversationId,
       ...(content.length > 0 && { content }),
       ...(attachments.length > 0 && { attachments }),
+      ...(Object.keys(metadata).length > 0 && { metadata }),
       unfinished: true,
       user: userId,
     },
-    { context: 'api/server/controllers/agents/resume.js - re-pause progress persist' },
+    {
+      context: 'api/server/controllers/agents/resume.js - re-pause progress persist',
+      unsetProcessingDurationMs: true,
+    },
   );
   if (!savedResponseMessage) {
     throw new Error('Re-pause response progress could not be persisted');
@@ -317,23 +417,12 @@ async function finalizeResumedTurn({
     isCreatedByUser: false,
     user: userId,
   };
+  if (!preemptIncomplete) {
+    responseMessage.processingDurationMs = Math.max(0, Date.now() - job.createdAt);
+  }
   if (meta.agent_id ?? req.body?.agent_id) {
     responseMessage.agent_id = meta.agent_id ?? req.body.agent_id;
   }
-  // Persist tool artifacts (code files, images, UI resources) the resumed continuation
-  // produced — BaseClient.sendMessage awaits these before saving, but the lean resume
-  // path bypasses it, so do it here or they vanish on reload / for late subscribers.
-  // MERGE with any already on the row (earlier pause segments) rather than overwrite —
-  // the final segment's client only holds its own segment's artifacts.
-  const attachments = await resolveAccumulatedAttachments({
-    client,
-    conversationId,
-    responseMessageId,
-  });
-  if (attachments.length > 0) {
-    responseMessage.attachments = attachments;
-  }
-
   // Response metadata: the resume client only sees POST-resume usage, while the job's
   // tracked tokenUsage is cumulative across the pause. Take the cumulative usage (+
   // summary marker) from the job, and contextUsage / thoughtSignatures from the client
@@ -347,8 +436,27 @@ async function finalizeResumedTurn({
       ? { summaryUsedTokens: cumulativeMeta.summaryUsedTokens }
       : {}),
   };
-  if (Object.keys(responseMetadata).length > 0) {
-    responseMessage.metadata = responseMetadata;
+  const mergedResponseMetadata = await mergePersistedSteelActivityMetadata({
+    responseMetadata,
+    conversationId,
+    responseMessageId,
+  });
+  if (Object.keys(mergedResponseMetadata).length > 0) {
+    responseMessage.metadata = mergedResponseMetadata;
+  }
+
+  // Persist tool artifacts (code files, images, UI resources) the resumed continuation
+  // produced — BaseClient.sendMessage awaits these before saving, but the lean resume
+  // path bypasses it, so do it here or they vanish on reload / for late subscribers.
+  // MERGE with any already on the row (earlier pause segments) rather than overwrite —
+  // the final segment's client only holds its own segment's artifacts.
+  const attachments = await resolveAccumulatedAttachments({
+    client,
+    conversationId,
+    responseMessageId,
+  });
+  if (attachments.length > 0) {
+    responseMessage.attachments = attachments;
   }
   // Carry the resumed run's context-window calibration (BaseClient.sendMessage persists
   // this on the response). Without it, the NEXT turn can't seed its pruner from this
@@ -380,7 +488,10 @@ async function finalizeResumedTurn({
     const savedResponseMessage = await saveMessage(
       { userId, isTemporary, interfaceConfig: req?.config?.interfaceConfig },
       responseMessage,
-      { context: 'api/server/controllers/agents/resume.js - resumed response end' },
+      {
+        context: 'api/server/controllers/agents/resume.js - resumed response end',
+        ...(preemptIncomplete && { unsetProcessingDurationMs: true }),
+      },
     );
     if (!savedResponseMessage) {
       throw new Error('Resumed response could not be persisted before terminal publication');

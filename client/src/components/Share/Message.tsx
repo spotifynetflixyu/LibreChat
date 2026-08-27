@@ -3,7 +3,7 @@ import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader'
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
-import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
+import { getHeaderPrefixForScreenReader, getMessageAriaLabel, isValidTimestamp } from '~/utils';
 import SearchContent from '~/components/Chat/Messages/Content/SearchContent';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
@@ -58,7 +58,12 @@ export default function Message(props: TMessageProps) {
             icon={<Icon message={message} conversation={conversation} />}
             label={messageLabel}
             hoverLabel={getHeaderModelName(message.model)}
-            timestamp={message.createdAt ?? message.clientTimestamp}
+            timestamp={
+              isValidTimestamp(message.createdAt) ? message.createdAt : message.clientTimestamp
+            }
+            processingDurationMs={
+              !message.isCreatedByUser ? message.processingDurationMs : undefined
+            }
             ariaLabel={getMessageAriaLabel(message, localize)}
             headerPrefix={getHeaderPrefixForScreenReader(message, localize)}
             isCreatedByUser={isCreatedByUser}

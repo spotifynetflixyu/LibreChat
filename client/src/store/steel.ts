@@ -6,6 +6,7 @@ export type SteelNativeActivitySource =
   | 'assistant_markdown'
   | 'ocr_preprocessing'
   | 'paddleocr_preflight'
+  | 'quote_runtime'
   | 'responses_output'
   | 'tool_result';
 
@@ -22,6 +23,40 @@ export type SteelOcrMissingPageRangesByFileKey = Record<
 >;
 
 export type SteelNativeActivityEvent =
+  | {
+      type: 'quote_audit';
+      source: 'quote_runtime';
+      message: 'Stage 2 started';
+      stage: 'stage_2';
+      status: 'started';
+      savedCounts?: SteelNativeSavedCounts;
+      savedTableCounts?: SteelNativeTableCounts;
+      totalSavedCounts?: SteelNativeSavedCounts;
+      totalTableCounts?: SteelNativeTableCounts;
+      conversationId?: string;
+      requestId?: string;
+      messageId?: string;
+      toolName?: string;
+      providerToolCallId?: string;
+      receivedAt?: number;
+    }
+  | {
+      type: 'quote_audit';
+      source: 'quote_runtime';
+      message: 'Code Interpreter executed';
+      stage: 'stage_1' | 'stage_2';
+      status: 'executed';
+      toolName: 'code_interpreter';
+      savedCounts?: SteelNativeSavedCounts;
+      savedTableCounts?: SteelNativeTableCounts;
+      totalSavedCounts?: SteelNativeSavedCounts;
+      totalTableCounts?: SteelNativeTableCounts;
+      conversationId?: string;
+      requestId?: string;
+      messageId?: string;
+      providerToolCallId?: string;
+      receivedAt?: number;
+    }
   | {
       type: 'parse_status';
       source: SteelNativeActivitySource;

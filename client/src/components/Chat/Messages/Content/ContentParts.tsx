@@ -183,6 +183,10 @@ type ContentPartsProps = {
   manualSkills?: string[];
   /** ISO timestamp of the parent message, surfaced in parallel column headers. */
   createdAt?: string | null;
+  /** Completed processing duration surfaced in parallel assistant headers. */
+  processingDurationMs?: number;
+  /** Persisted Steel activity events restored from message metadata. */
+  persistedActivityEvents?: readonly unknown[];
   /**
    * Author icon + label node re-rendered before content that resumes after an
    * inline STEER part — the steer renders as a full user turn inside the
@@ -240,6 +244,8 @@ const ContentParts = memo(function ContentParts({
   isCreatedByUser,
   isLatestMessage,
   createdAt,
+  processingDurationMs,
+  persistedActivityEvents,
   nestedActivityPhase = false,
   contentIndexOffset = 0,
   contentIndices,
@@ -387,7 +393,11 @@ const ContentParts = memo(function ContentParts({
       <PendingSkillCall key={`pending-skill-${name}`} skillName={name} loaded={hasRealContent} />
     ));
   const renderSteelActivity = () => (
-    <SteelActivity messageId={messageId} isCreatedByUser={isCreatedByUser} />
+    <SteelActivity
+      messageId={messageId}
+      isCreatedByUser={isCreatedByUser}
+      persistedActivityEvents={persistedActivityEvents}
+    />
   );
 
   const renderPart = useCallback(
@@ -582,6 +592,8 @@ const ContentParts = memo(function ContentParts({
           content={segmentContent}
           messageId={messageId}
           createdAt={createdAt}
+          processingDurationMs={!isCreatedByUser ? processingDurationMs : undefined}
+          persistedActivityEvents={persistedActivityEvents}
           authorHeader={authorHeader}
           conversationId={conversationId}
           attachments={attachments}
@@ -672,6 +684,7 @@ const ContentParts = memo(function ContentParts({
           content={content}
           messageId={messageId}
           createdAt={createdAt}
+          processingDurationMs={!isCreatedByUser ? processingDurationMs : undefined}
           conversationId={conversationId}
           attachments={attachments}
           searchResults={searchResults}

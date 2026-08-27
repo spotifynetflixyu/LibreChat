@@ -7,8 +7,9 @@
 3. 加工首查只傳工件主類別 `categories` 與 `processingCategories`，省略 `keyword` 與材料 filters。材料和加工 item 集中同一批查詢；例：`{"queries":[{"categories":["鐵板"]},{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}`。
 4. 首查先套用本規則的預設 query shape，再依已判定的個別鋼材規則加入該類允許且已確認的參數；不得把某類特例套到其他類別。`categories` 仍不明時列人工複核，不猜類別或參數。返回 direct `candidates` 後，直接依完整規格、材質、單位與價格欄位選用精確可報價候選。
 5. 材料結果回傳 `defaultMaterial`、粗材質族 `availableMaterials`、`defaultWhiteSteelSurface` 與白鐵表面 `availableWhiteSteelSurfaces` 時，`availableMaterials` 中白鐵只列一次；白鐵表面固定依 `[ST, 2B, NO1, HL, BA]` 顯示，不列為獨立材質族。多類別 query 依 `categoryMaterialOptions` 逐類別判讀預設材質、可用材質與白鐵表面，不把某類別的選項套用到其他類別。訂單明示白鐵／不鏽鋼但未明示表面時，依回傳 `defaultWhiteSteelSurface`，並在輸出說明已用該表面及可用表面選項；是否傳 `materials` 仍依前項非預設且 supported 條件。若同批預設材質不同，分開 query，依回傳 `defaultMaterialGroups` 分組。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
-6. 查詢沒有候選時，視為目前沒有資料，不重送相同 query，也不使用 `availableMaterials` 或 `availableWhiteSteelSurfaces` 猜測。只有首查缺少必要識別資料，且其後由使用者／來源確認，才另送只含受影響品項與新確認 `subcategory`、`materials`、`unit`、`thicknessMm`、`stockLengthMm` 或最短 `keyword` 的 query；不得夾帶已完成 item、複製候選 `productName` 或重複查詢。所有表單材料／鋼種／等級代號只原樣保留，不得作任何查價參數或 retry 條件。
-7. 已有精確且可報價候選就直接選價；沒有候選時保留品項、空白價格並列人工複核，仍須完成報價。
+6. 已確認訂單厚度、且材料或加工依厚度選價時，先從已確認訂單／OCR 來源列凍結來源厚度，並只把明示板厚正規化為數字 mm（例如 `PL15*300` => 15、`15T` => 15）；不得從 candidate 反推來源厚度，也不得把無關尺寸當厚度。無法確認時沿用既有缺資料／人工複核流程。對每筆已知厚度來源列，先篩選數字 `thicknessMinMm` <= 來源厚度 <= 數字 `thicknessMaxMm` 的 candidates；缺少或不可比較的界限不算涵蓋。只有在厚度篩選後，才比較其他已確認規格、材質、單位與可報價條件。首次結果未涵蓋全部已確認厚度時，依相同的有效查詢條件分組，只將各組去重後的缺漏厚度放入 `thicknessMm`，並且最多另呼叫一次 `search_price_candidates`；該次頂層 `queries` 每個 item 只保留受影響組的 `categories`、必要的 `processingCategories`、原本已合法使用的 filters 與缺漏 `thicknessMm`，不夾帶已涵蓋厚度、已完成 item、候選 `productName` 或猜測參數。補查後必須再逐筆驗證厚度涵蓋。
+7. 查詢沒有候選時，視為目前沒有資料，不重送相同 query，也不使用 `availableMaterials` 或 `availableWhiteSteelSurfaces` 猜測。第6條的單次缺漏厚度補查完成後，仍未涵蓋的厚度立即視為無資料，不得再查、改寫參數、更換關鍵字或形成 retry loop。除第6條外，只有首查缺少必要識別資料，且其後由使用者／來源確認，才另送只含受影響品項與新確認 `subcategory`、`materials`、`unit`、`thicknessMm`、`stockLengthMm` 或最短 `keyword` 的 query；不得夾帶已完成 item、複製候選 `productName` 或重複查詢。所有表單材料／鋼種／等級代號只原樣保留，不得作任何查價參數或 retry 條件。
+8. 已有精確且可報價候選就直接選價；沒有候選時保留品項、空白價格並列人工複核，仍須完成報價。
 
 參數使用情境與範例：
 
@@ -25,15 +26,15 @@
    - `keyword`：只有個別類別規則允許、來源已確認且其他欄位無法表達時，放一個最短通用品名或規格；是否可用於首查亦以個別規則為準。不得放候選 `productName` 或自行創造未經個別規則允許的範例值。
 4. 補充查詢例：首查缺少材質與厚度，之後來源確認時，只送受影響材料 item：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"],"thicknessMm":["10"]}]}`。不得重送原 query；`availableMaterials` 僅供說明，不可用來猜材質。
 5. 同批次的 `defaultMaterial`、材質／表面與其他條件須一致才合併 material item；不同預設材質群組不得合併。每個 query item 只能是材料或加工；材料 item 使用 `categories` 與必要材料參數，加工 item 使用 `categories`、`processingCategories` 與必要加工參數。
+6. 厚度先篩選再比對的例：來源 `PL15*300` 凍結厚度為 15 mm；先選數字厚度界限涵蓋 15 mm 且其他已確認欄位相符的 candidate。厚度界限只涵蓋 16 mm 的 candidate 即使品名相近、價格相同或排在候選前面，也不可選；品名相似不是厚度相符證據。
 
 
 二、選價與計算
 
-1. 採符合客戶等級的 `tierPrices` 與候選有效 `unit`。缺價為未知，不是0；候選標示不可報價時不得使用。
+1. 採符合客戶等級的 `tierPrices` 與候選有效 `unit`；本輪沒有客戶等級時預設 B。`計價基準`依 A=1、B=2、C=3、D=4、E=5、F=6 對應，`單價`只能複製同一已選 candidate 的對應 tier 價格，不得透過公式推導。缺價為未知，不是0；候選標示不可報價時不得使用。
 2. 未指定厚度時，在其他條件相符且可報價候選中採最小厚度。無法確認唯一產品則優先以標準的報價；類別或加工規則明示的例外優先。
-3. Kg／M 分別以總 kg／總 m 乘單價；其他單位原則為整數數量 × direct 單價。重量、長度、單價保留原精度，每一材料列最終小計各自 `ceil` 成 TWD 整數；加工列分開進位。
+3. `## system_order`先依個別類別規則計算每列精確`總數`：Kg、M、件數、支數、刀數、孔數或其他計價量不得混用通用公式。`## customer_quote`再逐列以`## system_order`精確`總數 × 單價`計算小計，每一材料列與加工列各自`ceil`成TWD整數。
 4. 材質、規格、unit、配料、計重或加工有類別規則時，以該細項規則為準；通用規則不得覆蓋其明示例外。
-5. 報價中所有計算（含重量、每列小計、加工小計、進位與總計）在完成查價後一律使用 OpenAI Python 工具；不得心算。所有輸入取自 `system_order`，逐列重算並重算總計，確認畫面顯示的小計加總等於總計；`customer_quote` 必須逐項複製 Python 結果。
 
 三、切工
 

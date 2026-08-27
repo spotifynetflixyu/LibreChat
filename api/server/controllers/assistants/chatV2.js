@@ -55,6 +55,7 @@ const { getOpenAIClient } = require('./helpers');
 const chatV2 = async (req, res) => {
   logger.debug('[/assistants/chat/] req.body', req.body);
   const appConfig = req.config;
+  const requestStartTime = Date.now();
 
   /** @type {{files: MongoFile[]}} */
   const {
@@ -458,6 +459,9 @@ const chatV2 = async (req, res) => {
       spec: endpointOption.spec,
       iconURL: endpointOption.iconURL,
     };
+    if (response.run.status === RunStatus.COMPLETED) {
+      responseMessage.processingDurationMs = Math.max(0, Date.now() - requestStartTime);
+    }
 
     sendEvent(res, {
       final: true,
@@ -466,6 +470,12 @@ const chatV2 = async (req, res) => {
         parentMessageId,
         thread_id,
       },
+      ...(responseMessage.processingDurationMs != null && {
+        responseMessage: {
+          messageId: responseMessage.messageId,
+          processingDurationMs: responseMessage.processingDurationMs,
+        },
+      }),
     });
     res.end();
 

@@ -1,17 +1,22 @@
 import { useTranslation } from 'react-i18next';
 import { cn, getMessageTimestamp } from '~/utils';
 import useTimeTick from '~/hooks/useTimeTick';
+import { formatElapsedTime } from './MessageElapsedTimer';
 
 type Timestamp = NonNullable<ReturnType<typeof getMessageTimestamp>>;
+const SECOND = 1_000;
+const MINUTE = 60_000;
 
 function TimestampText({
   timestamp,
   className,
   revealOnHover = true,
+  processingDurationMs,
 }: {
   timestamp: Timestamp;
   className?: string;
   revealOnHover?: boolean;
+  processingDurationMs?: number;
 }) {
   return (
     <time
@@ -25,6 +30,10 @@ function TimestampText({
       )}
     >
       {timestamp.isRecent ? timestamp.relative : timestamp.absolute}
+      {typeof processingDurationMs === 'number' &&
+        Number.isFinite(processingDurationMs) &&
+        Number.isSafeInteger(processingDurationMs) &&
+        processingDurationMs >= 0 && <> ({formatElapsedTime(processingDurationMs)})</>}
     </time>
   );
 }
@@ -36,21 +45,30 @@ function RecentTimestamp({
   language,
   className,
   revealOnHover,
+  processingDurationMs,
 }: {
   value?: string | null;
   language: string;
   className?: string;
   revealOnHover?: boolean;
+  processingDurationMs?: number;
 }) {
-  useTimeTick();
-  const timestamp = getMessageTimestamp(value, language);
+  const parsedTime = value ? Date.parse(value) : Number.NaN;
+  const age = Date.now() - parsedTime;
+  const now = useTimeTick(Number.isFinite(age) && age >= 0 && age < MINUTE ? SECOND : MINUTE);
+  const timestamp = getMessageTimestamp(value, language, now);
 
   if (!timestamp) {
     return null;
   }
 
   return (
-    <TimestampText timestamp={timestamp} className={className} revealOnHover={revealOnHover} />
+    <TimestampText
+      timestamp={timestamp}
+      className={className}
+      revealOnHover={revealOnHover}
+      processingDurationMs={processingDurationMs}
+    />
   );
 }
 
@@ -65,10 +83,12 @@ export default function MessageTimestamp({
   value,
   className,
   revealOnHover,
+  processingDurationMs,
 }: {
   value?: string | null;
   className?: string;
   revealOnHover?: boolean;
+  processingDurationMs?: number;
 }) {
   const { i18n } = useTranslation();
   const timestamp = getMessageTimestamp(value, i18n.language);
@@ -84,11 +104,17 @@ export default function MessageTimestamp({
         language={i18n.language}
         className={className}
         revealOnHover={revealOnHover}
+        processingDurationMs={processingDurationMs}
       />
     );
   }
 
   return (
-    <TimestampText timestamp={timestamp} className={className} revealOnHover={revealOnHover} />
+    <TimestampText
+      timestamp={timestamp}
+      className={className}
+      revealOnHover={revealOnHover}
+      processingDurationMs={processingDurationMs}
+    />
   );
 }

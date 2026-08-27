@@ -582,6 +582,7 @@ class BaseClient {
   }
 
   async sendMessage(message, opts = {}) {
+    const processingStartedAt = this.jobCreatedAt ?? Date.now();
     const appConfig = this.options.req?.config;
     /** @type {Promise<TMessage>} */
     let userMessagePromise;
@@ -885,6 +886,8 @@ class BaseClient {
     if (this.contextMeta) {
       responseMessage.contextMeta = this.contextMeta;
     }
+
+    responseMessage.processingDurationMs = Math.max(0, Date.now() - processingStartedAt);
 
     /** Resumable generation controllers must win the generation's terminal
      * CAS before this outcome-defining `unfinished:false` write can begin.

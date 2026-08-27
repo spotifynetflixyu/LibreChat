@@ -12,6 +12,8 @@ type MessageRowProps = {
   children: ReactNode;
   footer: ReactNode;
   timestamp?: string | null;
+  processingStartedAt?: string | null;
+  processingDurationMs?: number;
   isSubmitting?: boolean;
   parentMessageId?: string | null;
   ariaLabel?: string;
@@ -31,6 +33,8 @@ export default function MessageRow({
   footer,
   children,
   timestamp,
+  processingStartedAt,
+  processingDurationMs,
   ariaLabel,
   className,
   headerPrefix,
@@ -98,14 +102,18 @@ export default function MessageRow({
                 <span className="ml-auto shrink-0">
                   <MessageElapsedTimer
                     timerKey={id}
-                    startedAt={timestamp}
+                    startedAt={processingStartedAt ?? timestamp}
                     parentMessageId={parentMessageId}
                     isSubmitting
                     isCreatedByUser={isCreatedByUser}
                   />
                 </span>
               ) : (
-                <MessageTimestamp value={timestamp} className="ml-auto shrink-0 font-normal" />
+                <MessageTimestamp
+                  value={timestamp}
+                  processingDurationMs={processingDurationMs}
+                  className="ml-auto shrink-0 font-normal"
+                />
               )}
             </h2>
           ))}

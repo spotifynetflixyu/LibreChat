@@ -30,6 +30,7 @@ import {
   scrollToEnd,
   hasRealTitle,
   isValidTimestamp,
+  mergeRequestMessageTimestamp,
   setDocumentTitle,
   requestChatFocus,
   getAllContentText,
@@ -162,6 +163,43 @@ export const mergeRunMessagesTimestamp = ({
 
   const nextMessages = [...runMessages];
   nextMessages[responseIndex] = mergedResponse;
+  return nextMessages;
+};
+
+export const mergeAssistantProcessingDuration = ({
+  messages,
+  responseMessage,
+}: {
+  messages: TMessage[];
+  responseMessage?: TMessage;
+}): TMessage[] => {
+  const duration = responseMessage?.processingDurationMs;
+  if (
+    !responseMessage ||
+    typeof duration !== 'number' ||
+    !Number.isFinite(duration) ||
+    !Number.isSafeInteger(duration) ||
+    duration < 0
+  ) {
+    return messages;
+  }
+
+  const exactIndex = messages.findIndex(
+    (message) => message.messageId === responseMessage.messageId,
+  );
+  const responseIndex =
+    exactIndex >= 0
+      ? exactIndex
+      : messages.findLastIndex((message) => message.isCreatedByUser !== true);
+  if (responseIndex < 0) {
+    return messages;
+  }
+
+  const nextMessages = [...messages];
+  nextMessages[responseIndex] = {
+    ...nextMessages[responseIndex],
+    processingDurationMs: duration,
+  };
   return nextMessages;
 };
 
@@ -540,8 +578,13 @@ export default function useEventHandlers({
 
   const cancelHandler = useCallback(
     (data: TResData, submission: EventSubmission) => {
-      const { requestMessage, responseMessage, conversation } = data;
-      const { messages, isRegenerate = false } = submission;
+      const { requestMessage: serverRequestMessage, responseMessage, conversation } = data;
+      const { messages, userMessage, isRegenerate = false } = submission;
+      const requestMessage =
+        mergeRequestMessageTimestamp({
+          serverMessage: serverRequestMessage,
+          optimisticMessage: userMessage,
+        }) ?? serverRequestMessage;
       const convoUpdate =
         (conversation as TConversation | null) ?? (submission.conversation as TConversation);
 
@@ -577,8 +620,18 @@ export default function useEventHandlers({
 
   const syncHandler = useCallback(
     (data: TSyncData, submission: EventSubmission) => {
-      const { conversationId, thread_id, responseMessage, requestMessage } = data;
+      const {
+        conversationId,
+        thread_id,
+        responseMessage,
+        requestMessage: serverRequestMessage,
+      } = data;
       const { initialResponse, messages: _messages, userMessage } = submission;
+      const requestMessage =
+        mergeRequestMessageTimestamp({
+          serverMessage: serverRequestMessage,
+          optimisticMessage: userMessage,
+        }) ?? serverRequestMessage;
       /** Swap the optimistic user row for the server-stamped one IN PLACE.
        *  Filtering it out and re-appending at the tail would order any of its
        *  already-present children (abandoned responses from preempted
@@ -790,7 +843,7 @@ export default function useEventHandlers({
   const finalHandler = useCallback(
     (data: TFinalResData, submission: EventSubmission) => {
       const {
-        requestMessage,
+        requestMessage: serverRequestMessage,
         responseMessage: serverResponseMessage,
         conversation,
         runMessages,
@@ -802,6 +855,11 @@ export default function useEventHandlers({
         isRegenerate = false,
         isTemporary: _isTemporary = false,
       } = submission;
+      const requestMessage =
+        mergeRequestMessageTimestamp({
+          serverMessage: serverRequestMessage,
+          optimisticMessage: userMessage,
+        }) ?? serverRequestMessage;
       const responseMessage = mergeFinalResponseTimestamp({
         initialResponse: submission.initialResponse,
         responseMessage: serverResponseMessage,
@@ -943,6 +1001,14 @@ export default function useEventHandlers({
           finalMessages = mergeRunMessagesTimestamp({
             initialResponse: submission.initialResponse,
             runMessages,
+          });
+        } else if (
+          isAssistantsEndpoint(submissionConvo.endpoint) &&
+          responseMessage?.processingDurationMs != null
+        ) {
+          finalMessages = mergeAssistantProcessingDuration({
+            messages: currentMessages,
+            responseMessage,
           });
         } else if (isRegenerate && responseMessage) {
           finalMessages = mergeRegenerateFinalMessages({

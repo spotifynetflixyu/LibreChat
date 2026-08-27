@@ -2984,7 +2984,10 @@ describe('ResumableAgentController resume metadata', () => {
         content: response.content,
         unfinished: true,
       }),
-      expect.objectContaining({ context: expect.stringContaining('persist unfinished') }),
+      expect.objectContaining({
+        context: expect.stringContaining('persist unfinished'),
+        unsetProcessingDurationMs: true,
+      }),
     );
     expect(mockGenerationJobManager.approvals.finishPausePersistence).not.toHaveBeenCalled();
 
@@ -3395,7 +3398,10 @@ describe('ResumableAgentController resume metadata', () => {
           messageId: 'response-msg',
           unfinished: _label === 'unfinished preempt',
         }),
-        { context: expectedContext },
+        expect.objectContaining({
+          context: expectedContext,
+          ...(_label === 'unfinished preempt' && { unsetProcessingDurationMs: true }),
+        }),
       );
       expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledTimes(1);
       expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(

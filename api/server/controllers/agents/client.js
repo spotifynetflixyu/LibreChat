@@ -2577,7 +2577,7 @@ class AgentClient extends BaseClient {
    * Returns undefined when nothing was captured.
    * @returns {{
    *   thoughtSignatures?: Record<string, string>,
-   *   steel?: { provider?: unknown },
+   *   steel?: { provider?: unknown, activityEvents?: Array<import('@librechat/api').SteelNativeStreamEvent>, preflightToolCalls?: Array<import('@librechat/api').SteelNativePreflightToolCall> },
    *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
    *   usage?: import('librechat-data-provider').TResponseUsage,
    * } | undefined}
@@ -2585,7 +2585,7 @@ class AgentClient extends BaseClient {
   buildResponseMetadata() {
     /** @type {{
      *   thoughtSignatures?: Record<string, string>,
-     *   steel?: { provider?: unknown },
+     *   steel?: { provider?: unknown, activityEvents?: Array<import('@librechat/api').SteelNativeStreamEvent>, preflightToolCalls?: Array<import('@librechat/api').SteelNativePreflightToolCall> },
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
      * }} */
@@ -2594,6 +2594,22 @@ class AgentClient extends BaseClient {
       metadata.steel = {
         ...(metadata.steel ?? {}),
         provider: this.options.steelProviderMetadata,
+      };
+    }
+    const steelHistory = this.options?.req?.steelNativeContext?.steelHistory;
+    const activityEvents =
+      steelHistory?.activityEvents ?? this.options?.req?.steelNativeContext?.steelActivityEvents;
+    const preflightToolCalls = steelHistory?.preflightToolCalls;
+    if (Array.isArray(activityEvents) && activityEvents.length > 0) {
+      metadata.steel = {
+        ...(metadata.steel ?? {}),
+        activityEvents: [...activityEvents],
+      };
+    }
+    if (Array.isArray(preflightToolCalls) && preflightToolCalls.length > 0) {
+      metadata.steel = {
+        ...(metadata.steel ?? {}),
+        preflightToolCalls: [...preflightToolCalls],
       };
     }
     const signatures = this.collectedThoughtSignatures;

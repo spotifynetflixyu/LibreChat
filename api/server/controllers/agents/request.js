@@ -1167,6 +1167,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             partialMessage,
             {
               context: 'api/server/controllers/agents/request.js - partial response on disconnect',
+              unsetProcessingDurationMs: true,
             },
           );
 
@@ -1308,7 +1309,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * response write. A lost claim returns false, and BaseClient skips that
      * stale `unfinished:false` write entirely. The fallback invocation below
      * supports test/custom clients that do not derive from BaseClient. */
-    const claimBeforeResponsePersistence = async () => {
+    const claimBeforeResponsePersistence = async (responseMessage) => {
       if (terminalPersistenceChecked) {
         return terminalClaim != null;
       }
@@ -1318,6 +1319,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         // running→requires_action CAS. BaseClient must not start its ordinary
         // `unfinished:false` response write; the HITL branch persists the
         // partial row as unfinished before releasing that barrier.
+        delete responseMessage?.processingDurationMs;
         return false;
       }
       terminalWasAborted = job.abortController.signal.aborted;
@@ -1325,6 +1327,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       preemptIncomplete =
         (preemptStats?.emptyBoundaries ?? 0) > 0 ||
         client?.run?.getHaltReason?.() === 'preempt_incomplete';
+      if (terminalWasAborted || preemptIncomplete) {
+        delete responseMessage?.processingDurationMs;
+      }
       terminalClaim = await GenerationJobManager.claimTerminalJob(
         streamId,
         terminalWasAborted ? 'aborted' : 'complete',
@@ -1618,6 +1623,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 {
                   context:
                     'api/server/controllers/agents/request.js - HITL pause (persist unfinished)',
+                  unsetProcessingDurationMs: true,
                 },
               );
               if (!savedResponseMessage) {
@@ -1790,6 +1796,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
          * save resolved falsy. Re-save the terminal row idempotently and require
          * the returned durable row before publishing the normal FINAL. */
         const responseIsUnfinished = terminalWasAborted || preemptIncomplete;
+        if (responseIsUnfinished) {
+          delete response.processingDurationMs;
+        }
         const savedResponseMessage = await saveMessage(
           reqCtx,
           {
@@ -1801,6 +1810,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             context: responseIsUnfinished
               ? 'api/server/controllers/agents/request.js - terminal response unfinished'
               : 'api/server/controllers/agents/request.js - resumable response end',
+            ...(responseIsUnfinished && { unsetProcessingDurationMs: true }),
           },
         );
         if (!savedResponseMessage) {

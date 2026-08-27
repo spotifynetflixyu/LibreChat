@@ -1,4 +1,8 @@
 import type { SteelNativeContextMetadata } from './context';
+import type {
+  SteelNativePreflightToolCall,
+  SteelNativeStreamEvent,
+} from './events';
 import type { SteelNativeProviderStateMode } from './provider';
 
 export interface BuildSteelNativeResponseMessageMetadataInput {
@@ -10,10 +14,14 @@ export interface BuildSteelNativeResponseMessageMetadataInput {
   store: boolean;
   providerStateMode?: SteelNativeProviderStateMode;
   contextMetadata?: SteelNativeContextMetadata;
+  activityEvents?: readonly SteelNativeStreamEvent[];
+  preflightToolCalls?: readonly SteelNativePreflightToolCall[];
 }
 
 export interface SteelNativeResponseMessageMetadata {
   steel: {
+    activityEvents?: readonly SteelNativeStreamEvent[];
+    preflightToolCalls?: readonly SteelNativePreflightToolCall[];
     native: {
       ingress: 'open_responses';
       nativeContextVersion?: number;
@@ -43,6 +51,8 @@ export function buildSteelNativeResponseMessageMetadata({
   store,
   providerStateMode,
   contextMetadata,
+  activityEvents,
+  preflightToolCalls,
 }: BuildSteelNativeResponseMessageMetadataInput): SteelNativeResponseMessageMetadata {
   return {
     steel: {
@@ -67,6 +77,12 @@ export function buildSteelNativeResponseMessageMetadata({
           durable: store === true,
         },
       },
+      ...(Array.isArray(activityEvents) && activityEvents.length > 0
+        ? { activityEvents: [...activityEvents] }
+        : {}),
+      ...(Array.isArray(preflightToolCalls) && preflightToolCalls.length > 0
+        ? { preflightToolCalls: [...preflightToolCalls] }
+        : {}),
     },
   };
 }

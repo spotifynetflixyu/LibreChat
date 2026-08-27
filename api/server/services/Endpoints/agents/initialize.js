@@ -155,6 +155,12 @@ const initializeClient = async ({
   if (!endpointOption) {
     throw new Error('Endpoint option not provided');
   }
+  const steelHistory = { activityEvents: [], preflightToolCalls: [] };
+  req.steelNativeContext = {
+    ...(req.steelNativeContext ?? {}),
+    steelHistory,
+    steelActivityEvents: steelHistory.activityEvents,
+  };
   const appConfig = req.config;
   /** The normal controller resolves this once for timestamp anchoring. Reuse
    * that trusted document for child-thread execution policy; resume and direct
@@ -1376,6 +1382,8 @@ const initializeClient = async ({
     usageCost,
     contextUsageSink,
     usageEmitSink,
+    steelHistory,
+    steelActivityEvents: steelHistory.activityEvents,
   });
 
   const client = new AgentClient({
@@ -1414,6 +1422,8 @@ const initializeClient = async ({
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
+    steelHistory,
+    steelActivityEvents: steelHistory.activityEvents,
     steelProviderMetadata: steelProviderPolicy
       ? toSteelNativeProviderMetadata(steelProviderPolicy)
       : undefined,

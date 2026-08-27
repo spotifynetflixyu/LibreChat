@@ -1,6 +1,7 @@
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { ServerSentEvent } from '~/types';
+import { steelNativeActivityEventsMaxBytes } from '~/steel/native/events';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
@@ -11,12 +12,15 @@ function createInMemoryManager(): GenerationJobManagerClass {
   return createManagerWithStore(new InMemoryJobStore({ ttlAfterComplete: 60000 }));
 }
 
-function createManagerWithStore(store: InMemoryJobStore): GenerationJobManagerClass {
+function createManagerWithStore(
+  store: InMemoryJobStore,
+  isRedis = false,
+): GenerationJobManagerClass {
   const manager = new GenerationJobManagerClass();
   manager.configure({
     jobStore: store,
     eventTransport: new InMemoryEventTransport(),
-    isRedis: false,
+    isRedis,
   });
   manager.initialize();
   return manager;
@@ -125,6 +129,196 @@ describe('GenerationJobManager resume replay events', () => {
     const resumeState = await manager.getResumeState(streamId);
 
     expect(resumeState?.replayEvents).toEqual([runStepEvent, authEvent]);
+  });
+
+  test('replays bounded Steel activity without evicting OAuth state', async () => {
+    manager = createInMemoryManager();
+    const streamId = `steel-event-resume-${Date.now()}`;
+    await manager.createJob(streamId, 'user-1', streamId);
+
+    const oauthEvent = {
+      event: 'on_run_step',
+      data: {
+        id: 'step-oauth',
+        runId: 'USE_PRELIM_RESPONSE_MESSAGE_ID',
+        index: 0,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'call-oauth', name: 'oauth_mcp_Google-Workspace', args: '' }],
+        },
+      },
+    } satisfies ServerSentEvent;
+
+    await manager.emitChunk(streamId, oauthEvent);
+    for (let index = 0; index < 101; index += 1) {
+      await manager.emitChunk(streamId, {
+        event: 'steel_event',
+        data: {
+          source: 'paddleocr_preflight',
+          type: 'parse_status',
+          message: `PaddleOCR preflight ${index}`,
+          parseStatus: 'saved',
+        },
+      });
+    }
+    await manager.emitChunk(streamId, {
+      event: 'custom_event',
+      data: { message: 'must not be persisted' },
+    });
+
+    const resumeState = await manager.getResumeState(streamId);
+    const replayEvents = resumeState?.replayEvents ?? [];
+
+    expect(replayEvents).toHaveLength(101);
+    expect(replayEvents).toContainEqual(oauthEvent);
+    expect(replayEvents.filter((event) => event.event === 'steel_event')).toHaveLength(100);
+    expect(replayEvents).toContainEqual({
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'PaddleOCR preflight 100',
+        parseStatus: 'saved',
+      },
+    });
+    expect(replayEvents).not.toContainEqual({
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'PaddleOCR preflight 0',
+        parseStatus: 'saved',
+      },
+    });
+    expect(replayEvents).not.toContainEqual({
+      event: 'custom_event',
+      data: { message: 'must not be persisted' },
+    });
+  });
+
+  test('closes the Redis Steel replay snapshot gap without duplicate activation delivery', async () => {
+    const store = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+    manager = createManagerWithStore(store, true);
+    const streamId = `steel-event-redis-gap-${Date.now()}`;
+    await manager.createJob(streamId, 'user-1', streamId);
+
+    const steelEvent = {
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'PaddleOCR preflight saved',
+        parseStatus: 'saved',
+      },
+    } satisfies ServerSentEvent;
+    const originalGetResumeState = manager.getResumeState.bind(manager);
+    let emittedAfterSnapshot = false;
+    jest.spyOn(manager, 'getResumeState').mockImplementation(async (id, expectedCreatedAt) => {
+      const snapshot = await originalGetResumeState(id, expectedCreatedAt);
+      if (id === streamId && !emittedAfterSnapshot) {
+        emittedAfterSnapshot = true;
+        await manager!.emitChunk(streamId, steelEvent);
+      }
+      return snapshot;
+    });
+
+    const liveEvents: ServerSentEvent[] = [];
+    const result = await manager.subscribeWithResume(streamId, (event) => {
+      liveEvents.push(event);
+    });
+
+    expect(result.resumeState?.replayEvents).toBeUndefined();
+    expect(result.pendingEvents).toEqual([steelEvent]);
+    result.subscription?.activate();
+
+    const deliveredEvents = [...result.pendingEvents, ...liveEvents];
+    expect(
+      deliveredEvents.filter((event) => 'event' in event && event.event === 'steel_event'),
+    ).toHaveLength(1);
+    result.subscription?.unsubscribe();
+  });
+
+  test('drops malformed and oversized Steel replay entries while preserving OAuth state', async () => {
+    const store = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+    manager = createManagerWithStore(store);
+    const streamId = `steel-event-validation-${Date.now()}`;
+    const job = await manager.createJob(streamId, 'user-1', streamId);
+
+    const oauthEvent = {
+      event: 'on_run_step',
+      data: {
+        id: 'step-oauth-validation',
+        runId: 'USE_PRELIM_RESPONSE_MESSAGE_ID',
+        index: 0,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [
+            { id: 'call-oauth-validation', name: 'oauth_mcp_Google-Workspace', args: '' },
+          ],
+        },
+      },
+    } satisfies ServerSentEvent;
+    const malformedSteelEvent = {
+      event: 'steel_event',
+      data: { source: 'paddleocr_preflight', type: 'unknown', message: 'invalid' },
+    } satisfies ServerSentEvent;
+    const oversizedSteelEvent = {
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'x'.repeat(20_000),
+        parseStatus: 'saved',
+      },
+    } satisfies ServerSentEvent;
+    const legacyAggregateEvents = Array.from({ length: 80 }, (_, index) => ({
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: `legacy-${index}-${'x'.repeat(2_000)}`,
+        parseStatus: 'saved',
+      },
+    })) satisfies ServerSentEvent[];
+
+    await store.updateJob(
+      streamId,
+      {
+        replayEvents: JSON.stringify([
+          oauthEvent,
+          malformedSteelEvent,
+          oversizedSteelEvent,
+          ...legacyAggregateEvents,
+        ]),
+      },
+      job.createdAt,
+    );
+
+    const currentSteelEvent = {
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'current-valid',
+        parseStatus: 'saved',
+      },
+    } satisfies ServerSentEvent;
+    await manager.emitChunk(streamId, currentSteelEvent);
+    await manager.emitChunk(streamId, malformedSteelEvent);
+    await manager.emitChunk(streamId, oversizedSteelEvent);
+
+    const replayEvents = (await manager.getResumeState(streamId))?.replayEvents ?? [];
+    const steelReplayEvents = replayEvents.filter((event) => event.event === 'steel_event');
+    const steelBytes = steelReplayEvents.reduce(
+      (total, event) => total + Buffer.byteLength(JSON.stringify(event.data ?? null), 'utf8'),
+      0,
+    );
+
+    expect(replayEvents[0]).toEqual(oauthEvent);
+    expect(replayEvents).toContainEqual(currentSteelEvent);
+    expect(replayEvents).not.toContainEqual(malformedSteelEvent);
+    expect(replayEvents).not.toContainEqual(oversizedSteelEvent);
+    expect(steelBytes).toBeLessThanOrEqual(steelNativeActivityEventsMaxBytes);
   });
 
   test('retains emitted run steps when the live graph is unavailable during resume', async () => {

@@ -52,7 +52,7 @@ export interface MessageMethods {
   saveMessage(
     ctx: { userId: string; isTemporary?: boolean; interfaceConfig?: AppConfig['interfaceConfig'] },
     params: Partial<IMessage> & { newMessageId?: string },
-    metadata?: { context?: string },
+    metadata?: { context?: string; unsetProcessingDurationMs?: boolean },
   ): Promise<IMessage | null | undefined>;
   bulkSaveMessages(
     messages: Array<Partial<IMessage>>,
@@ -124,7 +124,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       interfaceConfig?: AppConfig['interfaceConfig'];
     },
     params: Partial<IMessage> & { newMessageId?: string },
-    metadata?: { context?: string },
+    metadata?: { context?: string; unsetProcessingDurationMs?: boolean },
   ) {
     if (!userId) {
       throw new Error('User not authenticated');
@@ -178,10 +178,16 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
         update.tokenCount = 0;
       }
+      if (metadata?.unsetProcessingDurationMs) {
+        delete update.processingDurationMs;
+      }
+      const updateOperation = metadata?.unsetProcessingDurationMs
+        ? { $set: update, $unset: { processingDurationMs: 1 } }
+        : update;
       const message = await Message.findOneAndUpdate(
         { messageId: params.messageId, user: userId },
-        update,
-        { upsert: true, new: true },
+        updateOperation,
+        { upsert: true, new: true, runValidators: true },
       );
 
       if (
@@ -287,6 +293,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       return await Message.findOneAndUpdate({ user, messageId }, message, {
         upsert: true,
         new: true,
+        runValidators: true,
       });
     } catch (err) {
       logger.error('Error recording message:', err);

@@ -12,6 +12,7 @@ const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}
 
 const mockMutate = jest.fn();
 const mockCancelSteer = jest.fn();
+const mockFetchStreamStatus = jest.fn();
 const mockShowToast = jest.fn();
 const mockMarkUsage = jest.fn();
 let mockMessages: TMessage[] | undefined;
@@ -23,6 +24,7 @@ jest.mock('~/data-provider', () => ({
     data: config?.select ? config.select(mockMessages) : mockMessages,
   }),
   useMarkFilesUsageMutation: () => ({ mutate: mockMarkUsage }),
+  fetchStreamStatus: (conversationId: string) => mockFetchStreamStatus(conversationId),
   supportsGenerationProtocolV2: (value: unknown) =>
     value != null &&
     typeof value === 'object' &&
@@ -96,6 +98,12 @@ describe('useSteering', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockMessages = undefined;
+    mockFetchStreamStatus.mockReset();
+    mockFetchStreamStatus.mockResolvedValue({
+      active: false,
+      generationProtocolVersion: 2,
+      unrecoveredSteers: [],
+    });
   });
 
   describe('effectiveAction', () => {
@@ -1509,6 +1517,31 @@ describe('useSteering', () => {
       expect(mockMutate).not.toHaveBeenCalled();
     });
 
+    it('does not cancel a queued row after auto-drain has already claimed it', async () => {
+      const { result } = setupWithState({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [
+          { id: 'raced-row', text: 'already draining', createdAt: 1 },
+        ]);
+      });
+      const row = result.current.queue[0];
+      act(() => {
+        result.current.steering.sendQueuedNow(row);
+      });
+
+      let actionCalled = false;
+      let completed = true;
+      await act(async () => {
+        completed = await result.current.steering.runQueuedAction(row, async () => {
+          actionCalled = true;
+          return true;
+        });
+      });
+
+      expect(completed).toBe(false);
+      expect(actionCalled).toBe(false);
+      expect(mockCancelSteer).not.toHaveBeenCalled();
+    });
+
     it('atomically discards a recovered source and downgrades its row in place', async () => {
       mockCancelSteer.mockResolvedValueOnce({ removed: true, generationProtocolVersion: 2 });
       const before: QueuedMessage = { id: 'queued-before', text: 'before', createdAt: 0 };
@@ -1602,6 +1635,126 @@ describe('useSteering', () => {
       expect(discarded).toBe(false);
       expect(mockCancelSteer).not.toHaveBeenCalled();
       expect(result.current.queue).toEqual([recovered]);
+    });
+
+    it('allows Delete to finish silently when an inactive v2 status proves the source absent', async () => {
+      const recovered = {
+        id: 'queued-leftover-delete',
+        text: 'delete this stale row',
+        createdAt: 1,
+        recoverySteerId: 'server-leftover',
+      };
+      const { result } = setupWithState({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [recovered]);
+      });
+      let completed = false;
+      let actionCalled = false;
+      await act(async () => {
+        completed = await result.current.steering.runQueuedAction(
+          recovered,
+          () => {
+            actionCalled = true;
+            return true;
+          },
+          { allowAbsentRecoverySource: true },
+        );
+      });
+      expect(completed).toBe(true);
+      expect(actionCalled).toBe(true);
+      expect(mockCancelSteer).not.toHaveBeenCalled();
+      expect(mockShowToast).not.toHaveBeenCalled();
+      expect(result.current.queue).toEqual([]);
+    });
+
+    it('keeps Edit strict when an inactive v2 status only proves the source absent', async () => {
+      const recovered = {
+        id: 'queued-leftover-edit',
+        text: 'do not edit stale delivery',
+        createdAt: 1,
+        recoverySteerId: 'server-leftover',
+        recoveryClientSteerId: 'client-leftover',
+      };
+      const { result } = setupWithState({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [recovered]);
+      });
+      let actionCalled = false;
+      let completed = true;
+      await act(async () => {
+        completed = await result.current.steering.runQueuedAction(recovered, () => {
+          actionCalled = true;
+          return true;
+        });
+      });
+      expect(completed).toBe(false);
+      expect(actionCalled).toBe(false);
+      expect(mockCancelSteer).toHaveBeenCalledWith({
+        conversationId: CONVO_ID,
+        steerId: 'server-leftover',
+        clientSteerId: 'client-leftover',
+      });
+      expect(result.current.queue).toEqual([recovered]);
+      expect(mockShowToast).toHaveBeenCalled();
+    });
+
+    it('retries a stale correlation with the authoritative server client id', async () => {
+      mockCancelSteer
+        .mockResolvedValueOnce({ removed: false })
+        .mockResolvedValueOnce({ removed: true });
+      mockFetchStreamStatus.mockResolvedValueOnce({
+        active: false,
+        generationProtocolVersion: 2,
+        unrecoveredSteers: [{ steerId: 'server-leftover', clientSteerId: 'authoritative-client' }],
+      });
+      const recovered = {
+        id: 'queued-leftover-retry',
+        text: 'retry source cancel',
+        createdAt: 1,
+        recoverySteerId: 'server-leftover',
+        recoveryClientSteerId: 'stale-client',
+      };
+      const { result } = setupWithState({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [recovered]);
+      });
+      let completed = false;
+      await act(async () => {
+        completed = await result.current.steering.runQueuedAction(recovered, () => true, {
+          allowAbsentRecoverySource: true,
+        });
+      });
+      expect(completed).toBe(true);
+      expect(mockCancelSteer).toHaveBeenNthCalledWith(2, {
+        conversationId: CONVO_ID,
+        steerId: 'server-leftover',
+        clientSteerId: 'authoritative-client',
+      });
+      expect(mockShowToast).not.toHaveBeenCalled();
+    });
+
+    it('restores a downgraded origin when a post-cancel UI action refuses', async () => {
+      mockCancelSteer.mockResolvedValueOnce({ removed: true });
+      const recovered = {
+        id: 'queued-leftover-action-refused',
+        text: 'restore ordinary origin',
+        createdAt: 1,
+        clientRequestId: 'recovery-attempt',
+        recoverySteerId: 'server-leftover',
+        recoveryClientSteerId: 'client-leftover',
+      };
+      const { result } = setupWithState({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [recovered]);
+      });
+      let completed = true;
+      await act(async () => {
+        completed = await result.current.steering.runQueuedAction(recovered, () => false);
+      });
+      expect(completed).toBe(false);
+      expect(result.current.queue).toEqual([
+        {
+          id: 'queued-leftover-action-refused',
+          text: 'restore ordinary origin',
+          createdAt: 1,
+        },
+      ]);
     });
 
     it('sendQueuedNow steers whenever steering is available, even under the queue preference', () => {

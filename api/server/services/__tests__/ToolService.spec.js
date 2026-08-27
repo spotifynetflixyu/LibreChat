@@ -1813,6 +1813,18 @@ describe('ToolService - Action Capability Gating', () => {
           outputStorage: 'steel_working_order_memory:paddleocr_preflight',
         }),
       );
+      expect(req.steelNativeContext.steelHistory.preflightToolCalls).toHaveLength(1);
+      expect(req.steelNativeContext.steelHistory.preflightToolCalls[0]).toEqual(
+        expect.objectContaining({
+          type: 'tool_call',
+          id: expect.stringContaining('steel_paddleocr_preflight_'),
+          name: `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR`,
+          progress: 1,
+        }),
+      );
+      expect(req.steelNativeContext.steelHistory.preflightToolCalls[0].args).not.toHaveProperty(
+        'input_data',
+      );
       expect(
         mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].memory.capturePaddleOcrChunkResult,
       ).toBeDefined();

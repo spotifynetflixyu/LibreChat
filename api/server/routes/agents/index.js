@@ -803,6 +803,7 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
             try {
               const persistedResponse = await saveMessage(messageContext, responseMessage, {
                 context: 'api/server/routes/agents/index.js - abort endpoint',
+                unsetProcessingDurationMs: true,
               });
               if (!persistedResponse) {
                 throw new Error('Abort response was not persisted');

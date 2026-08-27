@@ -28,6 +28,8 @@ const {
   isCodeSessionToolName,
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
+  steelNativeStreamEventName,
+  appendSteelNativeActivityEvent,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -389,6 +391,8 @@ function createDelegateOcrStreamHandler() {
  *   used to persist the breakdown for completed and non-aborted failed calls.
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
+ * @param {import('@librechat/api').SteelNativeHistory} [options.steelHistory]
+ *   Bounded request history persisted on the assistant message.
  * @returns {Record<string, t.EventHandler>} The default handlers.
  * @throws {Error} If the request is not found.
  */
@@ -409,6 +413,8 @@ function getDefaultHandlers({
   usageCost = null,
   contextUsageSink = null,
   usageEmitSink = null,
+  steelHistory = null,
+  steelActivityEvents = null,
 }) {
   if (!res || !aggregateContent) {
     throw new Error(
@@ -632,6 +638,17 @@ function getDefaultHandlers({
     handlers[GraphEvents.ON_TOOL_EXECUTE] = createToolExecuteHandler(toolExecuteOptions);
   }
   handlers[delegateOcrStreamEventName] = createDelegateOcrStreamHandler();
+  handlers[steelNativeStreamEventName] = {
+    handle: async (_event, data) => {
+      if (typeof appendSteelNativeActivityEvent === 'function') {
+        appendSteelNativeActivityEvent(
+          steelHistory ?? steelActivityEvents,
+          data,
+        );
+      }
+      await emitForJob({ event: steelNativeStreamEventName, data });
+    },
+  };
 
   handlers[GraphEvents.ON_SUBAGENT_UPDATE] = {
     /**

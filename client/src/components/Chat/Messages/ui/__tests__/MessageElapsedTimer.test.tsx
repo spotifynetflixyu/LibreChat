@@ -116,6 +116,37 @@ describe('MessageElapsedTimer', () => {
     expect(screen.getByTestId('message-elapsed-timer').textContent).toBe('0s');
   });
 
+  it('keeps the explicit response start across a page-switch remount', () => {
+    mockMessages = [
+      {
+        messageId: 'user-1',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        conversationId: 'conversation-1',
+        isCreatedByUser: true,
+        sender: 'User',
+        text: 'quote',
+        createdAt: new Date(100_000).toISOString(),
+      },
+    ];
+    jest.setSystemTime(120_000);
+
+    const props = {
+      isCreatedByUser: false,
+      isSubmitting: true,
+      startedAt: new Date(0).toISOString(),
+      parentMessageId: 'user-1',
+      timerKey: 'assistant-1',
+    };
+    const firstPage = render(<MessageElapsedTimer {...props} />);
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('2m 00s');
+
+    firstPage.unmount();
+    jest.setSystemTime(125_000);
+    render(<MessageElapsedTimer {...props} />);
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('2m 05s');
+  });
+
   it('freezes elapsed time when the assistant turn completes', () => {
     jest.setSystemTime(12_000);
     const { rerender } = render(

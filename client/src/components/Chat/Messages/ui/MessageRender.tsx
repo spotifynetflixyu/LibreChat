@@ -158,6 +158,10 @@ const MessageRender = memo(function MessageRender({
         conversation?.model,
       )}
       timestamp={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+      processingStartedAt={
+        isValidTimestamp(msg.clientTimestamp) ? msg.clientTimestamp : msg.createdAt
+      }
+      processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
       isSubmitting={isSubmitting}
       parentMessageId={msg.parentMessageId}
       ariaLabel={getMessageAriaLabel(msg, localize)}

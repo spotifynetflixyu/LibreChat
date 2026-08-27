@@ -75,6 +75,14 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: Boolean,
       default: false,
     },
+    processingDurationMs: {
+      type: Number,
+      min: 0,
+      validate: {
+        validator: (value: number) => Number.isSafeInteger(value),
+        message: 'processingDurationMs must be a safe non-negative integer',
+      },
+    },
     finish_reason: {
       type: String,
     },

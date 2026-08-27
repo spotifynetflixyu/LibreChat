@@ -147,6 +147,7 @@ type ParallelColumnsProps = {
   groupId: number;
   messageId: string;
   createdAt?: string | null;
+  processingDurationMs?: number;
   isSubmitting: boolean;
   lastContentIdx: number;
   conversationId?: string | null;
@@ -161,6 +162,7 @@ export const ParallelColumns = memo(function ParallelColumns({
   groupId,
   messageId,
   createdAt,
+  processingDurationMs,
   conversationId,
   isSubmitting,
   lastContentIdx,
@@ -191,6 +193,7 @@ export const ParallelColumns = memo(function ParallelColumns({
               agentId={agentId}
               messageId={messageId}
               createdAt={createdAt}
+              processingDurationMs={processingDurationMs}
               isSubmitting={isSubmitting}
               conversationId={conversationId}
             />
@@ -216,6 +219,7 @@ type ParallelContentRendererProps = {
   content?: Array<TMessageContentParts | undefined>;
   messageId: string;
   createdAt?: string | null;
+  processingDurationMs?: number;
   conversationId?: string | null;
   attachments?: TAttachment[];
   searchResults?: { [key: string]: SearchResultData };
@@ -243,6 +247,7 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
   content,
   messageId,
   createdAt,
+  processingDurationMs,
   conversationId,
   attachments,
   searchResults,
@@ -307,6 +312,7 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
           groupId={groupId}
           messageId={messageId}
           createdAt={createdAt}
+          processingDurationMs={processingDurationMs}
           renderPart={renderPart}
           isSubmitting={isSubmitting}
           conversationId={conversationId}

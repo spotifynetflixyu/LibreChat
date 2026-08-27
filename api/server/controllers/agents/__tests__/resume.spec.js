@@ -90,6 +90,24 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
+  appendSteelNativeActivityEvent: (sink, event) => {
+    const target = Array.isArray(sink) ? sink : sink?.activityEvents;
+    if (!Array.isArray(target) || event == null || typeof event !== 'object') {
+      return false;
+    }
+    target.push(JSON.parse(JSON.stringify(event)));
+    return true;
+  },
+  upsertSteelNativePreflightToolCall: (history, card) => {
+    if (!Array.isArray(history?.preflightToolCalls) || card == null || typeof card !== 'object') {
+      return false;
+    }
+    const copy = JSON.parse(JSON.stringify(card));
+    const index = history.preflightToolCalls.findIndex((entry) => entry.id === copy.id);
+    if (index >= 0) history.preflightToolCalls[index] = copy;
+    else history.preflightToolCalls.push(copy);
+    return true;
+  },
   GenerationJobManager: mockGenerationJobManager,
   captureAgentCheckpointGeneration: (...args) => mockCaptureAgentCheckpointGeneration(...args),
   deleteAgentCheckpoint: (...args) => mockDeleteAgentCheckpoint(...args),
@@ -1480,6 +1498,101 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
     });
 
+    it('merges persisted and resumed Steel activity events', async () => {
+      const persistedEvent = {
+        type: 'memory_saved',
+        source: 'tool_result',
+        message: 'persisted',
+        savedCounts: { price_evidence: 1 },
+      };
+      const resumedEvent = {
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        stage: 'stage_2',
+        status: 'started',
+        message: 'Stage 2 started',
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockGetMessages.mockResolvedValue([
+        {
+          metadata: {
+            steel: {
+              activityEvents: [persistedEvent],
+              native: { ingress: 'open_responses' },
+              unrelated: 'preserved',
+            },
+          },
+        },
+      ]);
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          buildResponseMetadata: jest.fn(() => ({
+            steel: { activityEvents: [resumedEvent], provider: { name: 'steel' } },
+          })),
+        }),
+        userMCPAuthMap: {},
+      });
+
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          metadata: {
+            steel: {
+              activityEvents: [persistedEvent, resumedEvent],
+              native: { ingress: 'open_responses' },
+              unrelated: 'preserved',
+              provider: { name: 'steel' },
+            },
+          },
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('deep-merges persisted Steel metadata when no history arrays exist', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockGetMessages.mockResolvedValue([
+        {
+          metadata: {
+            steel: {
+              native: { ingress: 'open_responses' },
+              unrelated: 'preserved',
+            },
+          },
+        },
+      ]);
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          buildResponseMetadata: jest.fn(() => ({
+            steel: { provider: { name: 'steel' } },
+          })),
+        }),
+        userMCPAuthMap: {},
+      });
+
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          metadata: {
+            steel: {
+              native: { ingress: 'open_responses' },
+              unrelated: 'preserved',
+              provider: { name: 'steel' },
+            },
+          },
+        }),
+        expect.anything(),
+      );
+    });
+
     it('resumes an ask_user_question with the free-form answer', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeAskUserJob());
       mockGenerationJobManager.getResumeState.mockResolvedValue({
@@ -1717,9 +1830,55 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         }),
         expect.objectContaining({
           context: 'api/server/controllers/agents/resume.js - re-pause progress persist',
+          unsetProcessingDurationMs: true,
         }),
       );
       expect(mockGenerationJobManager.publishTerminalClaim).not.toHaveBeenCalled();
+    });
+
+    it('re-pause: persists metadata-only Steel progress and merges prior events', async () => {
+      const priorEvent = {
+        type: 'memory_saved',
+        source: 'tool_result',
+        message: 'Prior event',
+        savedCounts: { price_evidence: 1 },
+      };
+      const currentEvent = {
+        type: 'memory_saved',
+        source: 'paddleocr_preflight',
+        message: 'Current event',
+        savedCounts: { paddleocr_preflight: 1 },
+      };
+      mockGetMessages.mockImplementation(async (_query, projection) =>
+        projection === 'metadata'
+          ? [{ metadata: { steel: { activityEvents: [priorEvent] } } }]
+          : [],
+      );
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          contentParts: [],
+          buildResponseMetadata: jest.fn(() => ({ steel: { activityEvents: [currentEvent] } })),
+          pendingApproval: { actionId: NEXT_ACTION_ID },
+        }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          unfinished: true,
+          metadata: expect.objectContaining({
+            steel: expect.objectContaining({ activityEvents: [priorEvent, currentEvent] }),
+          }),
+        }),
+        expect.anything(),
+      );
     });
 
     it('re-pause: persists artifacts produced before pausing again (unfinished)', async () => {
@@ -1746,6 +1905,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         expect.objectContaining({ attachments: [artifact], unfinished: true }),
         expect.objectContaining({
           context: 'api/server/controllers/agents/resume.js - re-pause progress persist',
+          unsetProcessingDurationMs: true,
         }),
       );
     });

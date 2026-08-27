@@ -78,28 +78,39 @@ jest.mock('../ToolCallGroup', () => ({
 
 jest.mock('../ActivityPhaseGroup', () => ({
   __esModule: true,
-  default: ({
-    children,
-    showCursor,
-    animateEntrance,
-  }: {
-    children: React.ReactNode;
-    showCursor?: boolean;
-    animateEntrance?: boolean;
-  }) => (
-    <div
-      data-testid="activity-phase-group"
-      data-show-cursor={String(showCursor === true)}
-      data-animate-entrance={String(animateEntrance === true)}
-    >
-      {children}
-    </div>
-  ),
+  default: (() => {
+    const react = jest.requireActual<typeof import('react')>('react');
+    return ({
+      children,
+      showCursor,
+      animateEntrance,
+    }: {
+      children: import('react').ReactNode;
+      showCursor?: boolean;
+      animateEntrance?: boolean;
+    }) => {
+      const firstChild = react.Children.toArray(children)[0];
+      const persistedActivityEvents =
+        react.isValidElement(firstChild) && Array.isArray(firstChild.props.persistedActivityEvents)
+          ? firstChild.props.persistedActivityEvents
+          : undefined;
+      return (
+        <div
+          data-testid="activity-phase-group"
+          data-show-cursor={String(showCursor === true)}
+          data-animate-entrance={String(animateEntrance === true)}
+          data-persisted-activity-count={persistedActivityEvents?.length ?? 0}
+        >
+          {children}
+        </div>
+      );
+    };
+  })(),
 }));
 
 jest.mock('../SteelActivity', () => ({
   __esModule: true,
-  default: () => null,
+  default: jest.fn(() => null),
 }));
 
 jest.mock('../Container', () => ({
@@ -134,19 +145,29 @@ jest.mock('../ParallelContent', () => ({
   ParallelContentRenderer: ({
     content,
     contentIndexOffset = 0,
+    processingDurationMs,
     renderResumeAttribution,
   }: {
     content?: Array<TMessageContentParts | undefined>;
     contentIndexOffset?: number;
+    processingDurationMs?: number;
     renderResumeAttribution?: (idx: number) => React.ReactNode;
   }) => (
-    <div data-testid="parallel-renderer" data-index-offset={contentIndexOffset}>
+    <div
+      data-testid="parallel-renderer"
+      data-index-offset={contentIndexOffset}
+      data-processing-duration-ms={processingDurationMs}
+    >
       {content?.map((_, idx) => renderResumeAttribution?.(idx + contentIndexOffset))}
     </div>
   ),
 }));
 
 import ContentParts from '../ContentParts';
+
+const mockSteelActivity = jest.requireMock('../SteelActivity').default as jest.MockedFunction<
+  (_props: { persistedActivityEvents?: readonly unknown[] }) => null
+>;
 
 const baseProps = {
   messageId: 'msg-1',
@@ -164,6 +185,23 @@ beforeEach(() => {
 });
 
 describe('ContentParts — interim skill cards', () => {
+  it('passes persisted Steel activity events to the primary activity renderer', () => {
+    mockSteelActivity.mockClear();
+    render(
+      <ContentParts
+        {...baseProps}
+        persistedActivityEvents={[{ type: 'memory_saved' }]}
+      />,
+    );
+
+    expect(mockSteelActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        persistedActivityEvents: expect.arrayContaining([{ type: 'memory_saved' }]),
+      }),
+      {},
+    );
+  });
+
   it('renders a PendingSkillCall per manual skill on assistant messages', () => {
     render(<ContentParts {...baseProps} manualSkills={['brand-guidelines', 'pptx']} />);
     const cards = screen.getAllByTestId('pending-skill-call');
@@ -217,6 +255,37 @@ describe('ContentParts — interim skill cards', () => {
     expect(parallelRenderer).toBeTruthy();
     expect(skillCard.compareDocumentPosition(parallelRenderer)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it('passes completed processing duration only to assistant parallel content', () => {
+    const parallelContent = [
+      {
+        type: ContentTypes.TEXT,
+        text: 'parallel',
+        groupId: 'group-1',
+      } as unknown as TMessageContentParts,
+    ];
+    const { rerender } = render(
+      <ContentParts {...baseProps} content={parallelContent} processingDurationMs={12_000} />,
+    );
+
+    expect(screen.getByTestId('parallel-renderer')).toHaveAttribute(
+      'data-processing-duration-ms',
+      '12000',
+    );
+
+    rerender(
+      <ContentParts
+        {...baseProps}
+        isCreatedByUser
+        content={parallelContent}
+        processingDurationMs={12_000}
+      />,
+    );
+
+    expect(screen.getByTestId('parallel-renderer')).not.toHaveAttribute(
+      'data-processing-duration-ms',
     );
   });
 
@@ -419,6 +488,36 @@ describe('ContentParts — post-steer author re-attribution', () => {
 });
 
 describe('ContentParts — activity phase state', () => {
+  it('preserves persisted Steel activity events while rendering recursive phase content', () => {
+    mockSteelActivity.mockClear();
+    const phase = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: 'Compared both agent results',
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_count: 1,
+      pending: false,
+    } as unknown as TMessageContentParts;
+    const persistedActivityEvents = [{ type: 'memory_saved' }];
+
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[{ type: ContentTypes.TEXT, text: 'result' } as TMessageContentParts, phase]}
+        persistedActivityEvents={persistedActivityEvents}
+      />,
+    );
+
+    expect(mockSteelActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ persistedActivityEvents }),
+      {},
+    );
+    expect(screen.getByTestId('activity-phase-group')).toHaveAttribute(
+      'data-persisted-activity-count',
+      '1',
+    );
+  });
+
   it('renders a completion-appended parent before the final root text', () => {
     const tool = {
       type: ContentTypes.TOOL_CALL,

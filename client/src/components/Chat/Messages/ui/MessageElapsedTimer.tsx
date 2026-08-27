@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useOptionalMessagesOperations } from '~/Providers';
+import useTimeTick from '~/hooks/useTimeTick';
+import { isValidTimestamp } from '~/utils';
 
 type TimerTimestamp = string | number | null | undefined;
 
@@ -47,22 +49,21 @@ export default function MessageElapsedTimer({
       return null;
     }
     const parentMessage = getMessages()?.find((message) => message.messageId === parentMessageId);
-    return parentMessage?.createdAt ?? parentMessage?.clientTimestamp ?? null;
+    return isValidTimestamp(parentMessage?.createdAt)
+      ? parentMessage.createdAt
+      : (parentMessage?.clientTimestamp ?? null);
   }, [getMessages, parentMessageId]);
 
   const parentStartedAtMs = parseTimestampMs(parentStartedAt);
   const responseStartedAtMs = parseTimestampMs(startedAt);
-  const resolvedStartedAt =
-    parentStartedAtMs === null || responseStartedAtMs === null
-      ? (parentStartedAtMs ?? responseStartedAtMs)
-      : Math.max(parentStartedAtMs, responseStartedAtMs);
+  const resolvedStartedAt = responseStartedAtMs ?? parentStartedAtMs;
   const keyRef = useRef<string | null | undefined>(timerKey);
   const resolvedStartedAtRef = useRef<number | null>(resolvedStartedAt);
   const hasStartedRef = useRef(isCreatedByUser !== true && isSubmitting);
   const wasSubmittingRef = useRef(isSubmitting);
   const [startAtMs, setStartAtMs] = useState(() => resolvedStartedAt ?? Date.now());
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [completedAtMs, setCompletedAtMs] = useState<number | null>(null);
+  const nowMs = useTimeTick(1_000);
 
   useLayoutEffect(() => {
     const keyChanged = keyRef.current !== timerKey;
@@ -85,8 +86,6 @@ export default function MessageElapsedTimer({
         return Math.min(current, resolvedStartedAt);
       });
     }
-
-    setNowMs(Date.now());
   }, [isCreatedByUser, isSubmitting, resolvedStartedAt, timerKey]);
 
   useEffect(() => {
@@ -109,13 +108,6 @@ export default function MessageElapsedTimer({
     }
     hasStartedRef.current = true;
     setCompletedAtMs(null);
-    setNowMs(Date.now());
-
-    const intervalId = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-
-    return () => window.clearInterval(intervalId);
   }, [isCreatedByUser, isSubmitting]);
 
   if (isCreatedByUser === true || !hasStartedRef.current) {

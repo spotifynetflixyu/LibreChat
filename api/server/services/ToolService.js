@@ -33,6 +33,9 @@ const {
   buildMCPAuthRunStepCompletedEvent,
   captureSteelNativeToolResult,
   buildSteelNativeEventEnvelopes,
+  appendSteelNativeActivityEvent,
+  upsertSteelNativePreflightToolCall,
+  steelNativeStreamEventName,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
   buildDefaultSteelGlobalAgentContext,
@@ -774,8 +777,16 @@ function mergeSteelNativeToolDefinitions(result, visibilityOptions = {}) {
   };
 }
 
-async function emitSteelNativeEvents({ events, res, streamId }) {
+async function emitSteelNativeEvents({ events, res, streamId, req }) {
   for (const event of events) {
+    if (event?.event === steelNativeStreamEventName) {
+      if (typeof appendSteelNativeActivityEvent === 'function') {
+        appendSteelNativeActivityEvent(
+          req?.steelNativeContext?.steelHistory ?? req?.steelNativeContext?.steelActivityEvents,
+          event.data,
+        );
+      }
+    }
     if (streamId) {
       await GenerationJobManager.emitChunk(streamId, event);
     } else if (typeof res?.write === 'function' && !res.writableEnded) {
@@ -824,6 +835,7 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
         captureResult.status === 'captured' ? captureResult.result.savedCounts : undefined,
     });
     await emitSteelNativeEvents({
+      req,
       res,
       streamId,
       events: buildSteelNativeEventEnvelopes({
@@ -1900,6 +1912,55 @@ function createSteelPaddleOcrToolCall({ providerToolCallId, toolName, args, outp
   };
 }
 
+function createSteelPaddleOcrHistoryToolCall({
+  providerToolCallId,
+  toolName,
+  args,
+  output,
+  progress,
+}) {
+  const runtimeParams = args?.runtime_params;
+  const compactArgs = {
+    output_mode: args?.output_mode === 'detailed' ? 'detailed' : 'detailed',
+    return_images: args?.return_images === true,
+    use_doc_orientation_classify: runtimeParams?.use_doc_orientation_classify === true,
+    use_doc_unwarping: runtimeParams?.use_doc_unwarping === true,
+    use_layout_detection: runtimeParams?.use_layout_detection === true,
+  };
+  let compactOutput;
+  if (typeof output === 'string') {
+    compactOutput = getSafeSteelPaddleOcrErrorMessage(new Error(output));
+    compactOutput = compactOutput.startsWith('Error:') ? compactOutput : `Error: ${compactOutput}`;
+  } else if (output !== undefined) {
+    try {
+      const allowed = {
+        status: output.status,
+        ocrEngine: output.ocrEngine,
+        ocrFileKey: String(output.ocrFileKey ?? '').slice(0, 256),
+        filename: String(output.filename ?? '').slice(0, 256),
+        chunkIndex: output.chunkIndex,
+        chunkCount: output.chunkCount,
+        pageStart: output.pageStart,
+        pageEnd: output.pageEnd,
+        rawTextLength: output.rawTextLength,
+        rawResultHash: String(output.rawResultHash ?? '').slice(0, 128),
+        outputStorage: output.outputStorage,
+      };
+      compactOutput = JSON.stringify(allowed);
+    } catch {
+      compactOutput = 'Error: PaddleOCR output unavailable';
+    }
+  }
+  return {
+    type: 'tool_call',
+    id: String(providerToolCallId ?? '').slice(0, 256),
+    name: toolName,
+    args: compactArgs,
+    ...(compactOutput !== undefined ? { output: compactOutput } : {}),
+    progress: progress === 1 ? 1 : 0,
+  };
+}
+
 function createSteelPaddleOcrRunStepEvent({
   requestId,
   stepId,
@@ -1984,6 +2045,7 @@ function createSteelPaddleOcrRunStepCompletedEvent({
 }
 
 async function emitSteelPaddleOcrToolStart({
+  req,
   res,
   streamId,
   requestId,
@@ -1993,7 +2055,19 @@ async function emitSteelPaddleOcrToolStart({
   args,
   index,
 }) {
+  if (typeof upsertSteelNativePreflightToolCall === 'function') {
+    upsertSteelNativePreflightToolCall(
+      req?.steelNativeContext?.steelHistory,
+      createSteelPaddleOcrHistoryToolCall({
+        providerToolCallId,
+        toolName,
+        args,
+        progress: 0,
+      }),
+    );
+  }
   await emitSteelNativeEvents({
+    req,
     res,
     streamId,
     events: [
@@ -2016,6 +2090,7 @@ async function emitSteelPaddleOcrToolStart({
 }
 
 async function emitSteelPaddleOcrToolCompleted({
+  req,
   res,
   streamId,
   stepId,
@@ -2025,7 +2100,20 @@ async function emitSteelPaddleOcrToolCompleted({
   output,
   index,
 }) {
+  if (typeof upsertSteelNativePreflightToolCall === 'function') {
+    upsertSteelNativePreflightToolCall(
+      req?.steelNativeContext?.steelHistory,
+      createSteelPaddleOcrHistoryToolCall({
+        providerToolCallId,
+        toolName,
+        args,
+        output,
+        progress: 1,
+      }),
+    );
+  }
   await emitSteelNativeEvents({
+    req,
     res,
     streamId,
     events: [
@@ -2108,6 +2196,7 @@ function createSteelPaddleOcrChunkRunner({
       let args = createArgs();
 
       await emitSteelPaddleOcrToolStart({
+        req,
         res,
         streamId,
         requestId,
@@ -2198,6 +2287,7 @@ function createSteelPaddleOcrChunkRunner({
         const rawOcrText = getPaddleOcrResultContent(result);
         const rawResultHash = hashPaddleOcrText(rawOcrText);
         await emitSteelPaddleOcrToolCompleted({
+          req,
           res,
           streamId,
           stepId,
@@ -2230,6 +2320,7 @@ function createSteelPaddleOcrChunkRunner({
       exhaustedError.ocrAdaptiveSplitEligible =
         invokeAttemptsUsed === steelPaddleOcrMaxAttempts;
       await emitSteelPaddleOcrToolCompleted({
+        req,
         res,
         streamId,
         stepId,
@@ -2343,6 +2434,16 @@ async function runSteelPaddleOcrPreflight({
   userMCPAuthMap,
   requestScopedConnections,
 }) {
+  if (req && req.steelNativeContext && !req.steelNativeContext.steelHistory) {
+    const steelHistory = {
+      activityEvents: Array.isArray(req.steelNativeContext.steelActivityEvents)
+        ? req.steelNativeContext.steelActivityEvents
+        : [],
+      preflightToolCalls: [],
+    };
+    req.steelNativeContext.steelHistory = steelHistory;
+    req.steelNativeContext.steelActivityEvents = steelHistory.activityEvents;
+  }
   const conversationId = getRequestConversationId(req);
   const turnIndex = req?.steelNativeContext?.assistantTurnIndex;
   const checkpointTurnIndex = req?.steelNativeContext?.memoryCheckpointTurnIndex;
@@ -2358,6 +2459,7 @@ async function runSteelPaddleOcrPreflight({
   const getNextToolEventIndex = () => nextToolEventIndex++;
   const finishPreflight = async (result) => {
     await emitSteelNativeEvents({
+      req,
       res,
       streamId,
       events: buildSteelPaddleOcrPreflightEventEnvelopes({
@@ -2527,6 +2629,7 @@ async function runSteelPaddleOcrPreflight({
       const errorMessage = redactMessage(error?.message ?? 'OCR preprocessing failed', 512);
       failedKeys.push(preprocessingFile.ocrFileKey);
       await emitSteelNativeEvents({
+        req,
         res,
         streamId,
         events: buildSteelOcrPreprocessingEventEnvelopes({
@@ -2591,6 +2694,7 @@ async function runSteelPaddleOcrPreflight({
             currentPaddleOcrSavedCount += 1;
           }
           return emitSteelNativeEvents({
+            req,
             res,
             streamId,
             events: buildSteelOcrPreprocessingEventEnvelopes({
@@ -2620,6 +2724,7 @@ async function runSteelPaddleOcrPreflight({
             groupSteelOcrMissingPageRangesByFileKey(currentFileFailures);
           currentOcrFailures.push(...currentFileFailures);
           await emitSteelNativeEvents({
+            req,
             res,
             streamId,
             events: buildSteelOcrPreprocessingEventEnvelopes({
@@ -2661,6 +2766,7 @@ async function runSteelPaddleOcrPreflight({
         }
         currentOcrFailures.push(createCurrentOcrFailureResult({ file, errorMessage }));
         await emitSteelNativeEvents({
+          req,
           res,
           streamId,
           events: buildSteelOcrPreprocessingEventEnvelopes({

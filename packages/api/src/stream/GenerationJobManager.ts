@@ -80,6 +80,7 @@ import { filterPersistableAbortContent } from './abortContent';
 import { toClientPendingAction } from '~/agents/hitl/policy';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { sanitizeJobMetadata } from './metadata';
+import { appendSteelNativeActivityEvent } from '../steel/native/events';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -406,6 +407,55 @@ function isOAuthReplayEvent(event: t.ServerSentEvent): boolean {
   }
 
   return false;
+}
+
+function isSteelReplayEvent(event: t.ServerSentEvent): boolean {
+  return 'event' in event && event.event === 'steel_event';
+}
+
+function getStableSteelReplayEventKey(event: t.ServerSentEvent): string | undefined {
+  if (!isSteelReplayEvent(event)) {
+    return undefined;
+  }
+
+  try {
+    return JSON.stringify(event);
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeSteelReplayEvents(replayEvents: t.ServerSentEvent[]): void {
+  const acceptedSteelEvents: t.ServerSentEvent[] = [];
+  const validatedSteelActivityEvents: Parameters<typeof appendSteelNativeActivityEvent>[0] = [];
+
+  for (const event of replayEvents) {
+    if (!isSteelReplayEvent(event)) {
+      continue;
+    }
+    const candidateSteelActivityEvents = [...validatedSteelActivityEvents];
+    if (!appendSteelNativeActivityEvent(candidateSteelActivityEvents, event.data)) {
+      continue;
+    }
+
+    validatedSteelActivityEvents.splice(
+      0,
+      validatedSteelActivityEvents.length,
+      ...candidateSteelActivityEvents,
+    );
+    acceptedSteelEvents.push(event);
+    while (acceptedSteelEvents.length > validatedSteelActivityEvents.length) {
+      acceptedSteelEvents.shift();
+    }
+  }
+
+  const acceptedSteelEventSet = new Set(acceptedSteelEvents);
+  for (let index = replayEvents.length - 1; index >= 0; index -= 1) {
+    const event = replayEvents[index];
+    if (isSteelReplayEvent(event) && !acceptedSteelEventSet.has(event)) {
+      replayEvents.splice(index, 1);
+    }
+  }
 }
 
 function normalizeRunStepReplayIndices(
@@ -4810,6 +4860,9 @@ class GenerationJobManagerClass {
     const pendingEvents: t.ServerSentEvent[] = [];
     const capturedEventSet = new Set<t.ServerSentEvent>();
     const snapshotCoveredEventSet = new Set<t.ServerSentEvent>();
+    const snapshotSteelReplayEventKeys = new Set<string>();
+    const pendingSteelReplayEventKeys = new Set<string>();
+    const liveSteelReplayEventKeys = new Set<string>();
     const seenEmissionEvents = new Set<t.ServerSentEvent>();
     const unclassifiedEmissions: Array<{ event: t.ServerSentEvent; sequence: number }> = [];
     let snapshotFrontier = 0;
@@ -4943,9 +4996,26 @@ class GenerationJobManagerClass {
         resumeState ? 'found' : 'missing',
       );
 
+      for (const event of resumeState?.replayEvents ?? []) {
+        const eventKey = getStableSteelReplayEventKey(event as t.ServerSentEvent);
+        if (eventKey) {
+          snapshotSteelReplayEventKeys.add(eventKey);
+        }
+      }
+
       const forwardLiveChunk = (event: t.ServerSentEvent): void => {
         if (capturedEventSet.has(event) || snapshotCoveredEventSet.has(event)) {
           return;
+        }
+        const eventKey = getStableSteelReplayEventKey(event);
+        if (eventKey) {
+          if (
+            snapshotSteelReplayEventKeys.has(eventKey) ||
+            pendingSteelReplayEventKeys.has(eventKey)
+          ) {
+            return;
+          }
+          liveSteelReplayEventKeys.add(eventKey);
         }
         onChunk(event);
       };
@@ -5000,6 +5070,32 @@ class GenerationJobManagerClass {
       if (!liveJob || liveJob.createdAt !== runtime.createdAt) {
         return cancelResumeSubscription();
       }
+
+      let liveReplayEvents: t.ServerSentEvent[] = [];
+      if (liveJob.replayEvents) {
+        try {
+          const parsedReplayEvents = JSON.parse(liveJob.replayEvents) as unknown;
+          if (Array.isArray(parsedReplayEvents)) {
+            liveReplayEvents = parsedReplayEvents as t.ServerSentEvent[];
+          }
+        } catch {
+          // Ignore malformed persisted replay events; resume state already handles this case.
+        }
+      }
+      for (const event of liveReplayEvents) {
+        const eventKey = getStableSteelReplayEventKey(event);
+        if (
+          !eventKey ||
+          snapshotSteelReplayEventKeys.has(eventKey) ||
+          liveSteelReplayEventKeys.has(eventKey) ||
+          pendingSteelReplayEventKeys.has(eventKey)
+        ) {
+          continue;
+        }
+        pendingSteelReplayEventKeys.add(eventKey);
+        pendingEvents.push(event);
+      }
+
       if (!resumeState?.pendingAction) {
         if (
           liveJob?.status === 'requires_action' &&
@@ -5978,6 +6074,9 @@ class GenerationJobManagerClass {
     if (event.event === UsageEvents.ON_TOKEN_USAGE) {
       return this.trackTokenUsage(streamId, event, expectedCreatedAt);
     }
+    if (isSteelReplayEvent(event)) {
+      return this.trackReplayEvent(streamId, event, expectedCreatedAt);
+    }
     if (
       (event.event === 'on_run_step' ||
         event.event === 'on_run_step_delta' ||
@@ -6137,7 +6236,7 @@ class GenerationJobManagerClass {
     event: t.ServerSentEvent,
     expectedCreatedAt: number,
   ): Promise<void> {
-    if (!isOAuthReplayEvent(event)) {
+    if (!isOAuthReplayEvent(event) && !isSteelReplayEvent(event)) {
       return;
     }
 
@@ -6249,6 +6348,8 @@ class GenerationJobManagerClass {
     } else {
       replayEvents.push(event);
     }
+
+    sanitizeSteelReplayEvents(replayEvents);
 
     await this.jobStore.updateJob(
       streamId,

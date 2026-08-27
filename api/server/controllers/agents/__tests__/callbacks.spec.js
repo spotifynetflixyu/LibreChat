@@ -8,6 +8,8 @@ jest.mock('nanoid', () => ({
 jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
+  steelNativeStreamEventName: 'steel_event',
+  appendSteelNativeActivityEvent: jest.fn(() => false),
   GenerationJobManager: {
     emitChunk: jest.fn(),
   },
@@ -81,12 +83,14 @@ jest.mock('~/server/services/Files/process', () => ({
 describe('getDefaultHandlers', () => {
   let getDefaultHandlers;
   let sendEvent;
+  let GenerationJobManager;
   let GraphEvents;
 
   beforeEach(() => {
     jest.clearAllMocks();
     ({ getDefaultHandlers } = require('../callbacks'));
     ({ sendEvent } = require('@librechat/api'));
+    ({ GenerationJobManager } = require('@librechat/api'));
     ({ GraphEvents } = require('@librechat/agents'));
   });
 
@@ -119,6 +123,91 @@ describe('getDefaultHandlers', () => {
     expect(aggregateContent).toHaveBeenCalledWith({ event, data });
     expect(sendEvent).toHaveBeenCalledTimes(1);
     expect(sendEvent).toHaveBeenCalledWith(expect.any(Object), { event, data });
+  });
+
+  it('forwards Steel quote audit events through standard SSE emission', async () => {
+    const res = { headersSent: true, writableEnded: false, write: jest.fn() };
+    const handlers = getDefaultHandlers({
+      res,
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+    });
+
+    await handlers.steel_event.handle('steel_event', {
+      type: 'quote_audit',
+      source: 'quote_runtime',
+      stage: 'stage_2',
+      status: 'started',
+      message: 'Stage 2 started',
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+    });
+
+    expect(sendEvent).toHaveBeenCalledWith(
+      res,
+      expect.objectContaining({
+        event: 'steel_event',
+        data: expect.objectContaining({
+          type: 'quote_audit',
+          source: 'quote_runtime',
+          stage: 'stage_2',
+          status: 'started',
+          message: 'Stage 2 started',
+        }),
+      }),
+    );
+  });
+
+  it('captures Steel events before forwarding them', async () => {
+    const { appendSteelNativeActivityEvent } = require('@librechat/api');
+    const steelActivityEvents = [];
+    const handlers = getDefaultHandlers({
+      res: { headersSent: true, writableEnded: false, write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      steelActivityEvents,
+    });
+    const data = {
+      type: 'quote_audit',
+      source: 'quote_runtime',
+      stage: 'stage_2',
+      status: 'started',
+      message: 'Stage 2 started',
+    };
+
+    await handlers.steel_event.handle(undefined, data);
+
+    expect(appendSteelNativeActivityEvent).toHaveBeenCalledWith(steelActivityEvents, data);
+  });
+
+  it('forwards Steel quote audit events through resumable job emission', async () => {
+    const handlers = getDefaultHandlers({
+      res: { headersSent: true, writableEnded: false, write: jest.fn() },
+      streamId: 'stream-1',
+      jobCreatedAt: 42,
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+    });
+
+    await handlers.steel_event.handle('steel_event', {
+      type: 'quote_audit',
+      source: 'quote_runtime',
+      stage: 'stage_2',
+      status: 'started',
+      message: 'Stage 2 started',
+    });
+
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'stream-1',
+      {
+        event: 'steel_event',
+        data: expect.objectContaining({ type: 'quote_audit' }),
+      },
+      { expectedCreatedAt: 42 },
+    );
   });
 
   it('projects delegate OCR chunks into one real message step and cleans it up', async () => {

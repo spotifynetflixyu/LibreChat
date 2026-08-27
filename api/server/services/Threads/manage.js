@@ -121,6 +121,7 @@ async function saveUserMessage(req, params) {
  * @param {string} [params.instructions] - Optional: from preset for `instructions` field.
  * @param {string} [params.spec] - Optional: Model spec identifier.
  * @param {string} [params.iconURL]
+ * @param {number} [params.processingDurationMs]
  * Overrides the instructions of the assistant.
  * @param {string} [params.promptPrefix] - Optional: from preset for `additional_instructions` field.
  * @return {Promise<Run>} A promise that resolves to the created run object.
@@ -145,6 +146,7 @@ async function saveAssistantMessage(req, params) {
     // tokenCount,
     iconURL: params.iconURL,
     spec: params.spec,
+    processingDurationMs: params.processingDurationMs,
   });
 
   await saveConvo(

@@ -7,6 +7,7 @@ type DryRunRule = {
   sourceFile: string;
   factType: string;
   promptLength: number;
+  ruleKind: string;
 };
 
 type DryRunSummary = {
@@ -16,6 +17,7 @@ type DryRunSummary = {
 
 type BuiltRule = {
   slug: string;
+  ruleKind: string;
   priority: number;
   ruleSections: string[];
   prompt: string;
@@ -124,6 +126,7 @@ describe('Steel rule sources', () => {
     const summary = runDryRun();
     const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
+    expect(summary.rules).toHaveLength(18);
     expect(sourceFiles.sort()).toEqual(listRuleFiles(rulesDir).sort());
     expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
     expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
@@ -143,6 +146,7 @@ describe('Steel rule sources', () => {
       'steel-drawing-vision-policy',
       'steel-ocr-main-agent-organizer-policy',
       'steel-ocr-subagent-organizer-policy',
+      'steel-quote-calculation-verification-policy',
       'steel-workbook-output-policy',
       'steel_category_price_lookup_guide',
       'steel_quote_rules_c_type',
@@ -158,6 +162,43 @@ describe('Steel rule sources', () => {
     ]);
 
     const builtRules = ruleSync.buildRules(repoRoot);
+    const quoteCalculationRule = builtRules.find(
+      (rule) => rule.slug === 'steel-quote-calculation-verification-policy',
+    );
+    expect(quoteCalculationRule).toMatchObject({
+      ruleKind: 'output',
+      priority: 10,
+      ruleSections: ['quote_calculation', 'quote_subtotal_validation', 'quote_total_validation'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'output_sheet_context'],
+        scopeType: 'company',
+        activeSheets: ['system_order', 'customer_quote', 'manual_review'],
+        confidence: 'high',
+      },
+      sourceRefs: [
+        {
+          sourceFile: 'docs/rules/報價計算驗證規則.txt',
+          locator: '報價計算驗證規則',
+          canonicalKey: 'steel-quote-calculation-verification-policy',
+          factType: 'output_rule',
+        },
+      ],
+    });
+    expect(quoteCalculationRule?.prompt.trim()).not.toBe('');
+    expect(quoteCalculationRule?.toolPolicy).not.toEqual({});
+    expect(quoteCalculationRule?.outputPolicy).toEqual({
+      subtotalSource: 'current_turn_python_results',
+      totalInput: 'ordered_displayed_nonblank_subtotals',
+      blankSubtotalHandling: 'exclude_from_total_and_manual_review',
+      totalRequired: true,
+      emptyConfirmedSubtotalTotal: 0,
+      preOutputTotalGate:
+        'displayed_nonblank_count_equals_python_input_count_and_total_equals_python_sum',
+      verificationFailure: 'correct_and_recalculate_before_output',
+    });
+    expect(
+      builtRules.findIndex((rule) => rule.slug === 'steel-quote-calculation-verification-policy'),
+    ).toBeLessThan(builtRules.findIndex((rule) => rule.slug === 'steel-workbook-output-policy'));
     const ocrIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-ocr-policy');
     const visionIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-vision-policy');
     const subagentIndex = builtRules.findIndex(

@@ -15,6 +15,7 @@ import {
   areMessageRowPropsEqual,
   isSubmittableMessage,
   createDualMessageContent,
+  mergeRequestMessageTimestamp,
 } from '../messages';
 
 const translations: Record<string, string> = {
@@ -238,6 +239,52 @@ describe('isValidTimestamp', () => {
   });
 });
 
+describe('mergeRequestMessageTimestamp', () => {
+  const serverMessage = makeMessage({ messageId: 'server' });
+
+  it('prefers valid server createdAt over every fallback', () => {
+    const result = mergeRequestMessageTimestamp({
+      serverMessage: { ...serverMessage, createdAt: '2026-06-12T15:42:00.000Z' },
+      optimisticMessage: {
+        ...serverMessage,
+        clientTimestamp: '2026-06-12T16:42:00.000Z',
+      },
+    });
+    expect(result?.createdAt).toBe('2026-06-12T15:42:00.000Z');
+    expect(result?.clientTimestamp).toBeUndefined();
+  });
+
+  it('keeps valid server clientTimestamp when createdAt is missing', () => {
+    const result = mergeRequestMessageTimestamp({
+      serverMessage: {
+        ...serverMessage,
+        createdAt: undefined,
+        clientTimestamp: '2026-06-12T15:42:00.000Z',
+      },
+      optimisticMessage: { ...serverMessage, clientTimestamp: '2026-06-12T16:42:00.000Z' },
+    });
+    expect(result?.clientTimestamp).toBe('2026-06-12T15:42:00.000Z');
+  });
+
+  it('copies an optimistic timestamp only when the server has no valid timestamp', () => {
+    const withClientTimestamp = mergeRequestMessageTimestamp({
+      serverMessage: { ...serverMessage, createdAt: 'invalid' },
+      optimisticMessage: { ...serverMessage, clientTimestamp: '2026-06-12T15:42:00.000Z' },
+    });
+    expect(withClientTimestamp?.clientTimestamp).toBe('2026-06-12T15:42:00.000Z');
+
+    const withCreatedAt = mergeRequestMessageTimestamp({
+      serverMessage: { ...serverMessage, createdAt: 'invalid' },
+      optimisticMessage: {
+        ...serverMessage,
+        clientTimestamp: 'invalid',
+        createdAt: '2026-06-12T16:42:00.000Z',
+      },
+    });
+    expect(withCreatedAt?.clientTimestamp).toBe('2026-06-12T16:42:00.000Z');
+  });
+});
+
 describe('getMessageTimestamp', () => {
   const NOW = new Date('2026-06-12T15:42:00.000Z').getTime();
 
@@ -322,6 +369,8 @@ const FIELD_MUTATIONS: Array<[string, Partial<TMessage>]> = [
   ['error', { error: true }],
   ['unfinished', { unfinished: true }],
   ['createdAt', { createdAt: '2026-07-02T00:00:00.000Z' }],
+  ['clientTimestamp', { clientTimestamp: '2026-07-02T00:00:00.000Z' }],
+  ['processingDurationMs', { processingDurationMs: 12_000 }],
   ['depth', { depth: 3 }],
   ['isCreatedByUser', { isCreatedByUser: true }],
   ['children length', { children: [makeFieldsMsg(), makeFieldsMsg()] }],

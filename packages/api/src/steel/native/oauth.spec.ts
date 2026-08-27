@@ -5,6 +5,7 @@ import type {
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
+import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
 import {
   ChatModelStreamHandler,
@@ -38,6 +39,16 @@ import {
 } from './delegate';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
 
+jest.mock('@langchain/core/callbacks/dispatch', () => {
+  const actual = jest.requireActual<typeof import('@langchain/core/callbacks/dispatch')>(
+    '@langchain/core/callbacks/dispatch',
+  );
+  return {
+    ...actual,
+    dispatchCustomEvent: jest.fn(actual.dispatchCustomEvent),
+  };
+});
+
 function createUsage(): LanguageModelV3GenerateResult['usage'] {
   return {
     inputTokens: {
@@ -68,6 +79,33 @@ function createGenerateResult(
       id: 'resp_native_oauth',
       modelId: 'gpt-5.5',
     },
+    warnings: [],
+  };
+}
+
+function createCodeInterpreterGenerateResult(text: string): LanguageModelV3GenerateResult {
+  return createGenerateResult([
+    {
+      type: 'tool-call',
+      toolCallId: 'call_python',
+      toolName: 'code_interpreter',
+      input: '{}',
+      providerExecuted: true,
+    },
+    { type: 'text', text },
+  ]);
+}
+
+function createStreamResult(parts: LanguageModelV3StreamPart[]) {
+  return {
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        for (const part of parts) {
+          controller.enqueue(part);
+        }
+        controller.close();
+      },
+    }),
     warnings: [],
   };
 }
@@ -134,6 +172,10 @@ function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
 }
 
 describe('OpenAI OAuth model adapter', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('uses the LibreChat credential loader for default provider credentials', async () => {
     const fetchFn = jest.fn() as unknown as FetchFunction;
     const loadAuthTokens = jest.fn(async () => ({
@@ -673,14 +715,7 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it('continues through the provider for non-terminal tool output', async () => {
-    const doGenerate = jest.fn(async () =>
-      createGenerateResult([
-        {
-          type: 'text',
-          text: '## 報價結果',
-        },
-      ]),
-    );
+    const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text: 'draft' }]));
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
         ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
@@ -698,8 +733,1074 @@ describe('OpenAI OAuth model adapter', () => {
       }),
     ]);
 
-    expect(result.content).toBe('## 報價結果');
+    expect(result.content).toBe('draft');
     expect(doGenerate).toHaveBeenCalledTimes(1);
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
+  });
+
+  it('runs a second stage for a valid generate heading sequence and suppresses draft quote', async () => {
+    const stageOne =
+      '## system_order\n\n| 品項 | 數量 |\n|---|---:|\n| A | 1 |\n\n## customer_data\n\n客戶 A';
+    const finalMarkdown = '| 品項 | 價格 |\n|---|---:|\n| A | 100 |';
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createGenerateResult([{ type: 'text', text: `${stageOne}\n\n## customer_quote\nDRAFT` }]),
+      )
+      .mockResolvedValueOnce(
+        createCodeInterpreterGenerateResult(`## customer_quote\n${finalMarkdown}`),
+      );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const steelTool = {
+      type: 'function',
+      function: {
+        name: 'search_price_candidates',
+        description: 'Search price candidates',
+        parameters: { type: 'object', properties: {} },
+      },
+    } as unknown as BindToolsInput;
+    const config = {
+      configurable: {
+        thread_id: 'conversation_1',
+        requestBody: { messageId: 'message_1' },
+      },
+    };
+
+    const result = await model
+      .bindTools([steelTool])
+      .invoke(
+        [
+          new HumanMessage('請報價'),
+          new ToolMessage({
+            content: '{"items":[{"name":"A"}]}',
+            name: 'search_price_candidates',
+            tool_call_id: 'call_price_1',
+          }),
+        ],
+        config,
+      );
+
+    expect(result.content).toBe(`${stageOne}\n\n## customer_quote\n${finalMarkdown}`);
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+    expect(dispatchCustomEvent).toHaveBeenCalledTimes(2);
+    const [generateEventName, generateEvent, generateConfig] = (
+      dispatchCustomEvent as jest.Mock
+    ).mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
+    expect(generateEventName).toBe('steel_event');
+    expect(generateEvent).toEqual(
+      expect.objectContaining({
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        stage: 'stage_2',
+        status: 'started',
+        message: 'Stage 2 started',
+        conversationId: 'conversation_1',
+        messageId: 'message_1',
+      }),
+    );
+    expect(generateConfig.configurable).toEqual(config.configurable);
+    expect(dispatchCustomEvent).toHaveBeenNthCalledWith(
+      2,
+      'steel_event',
+      expect.objectContaining({
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        stage: 'stage_2',
+        status: 'executed',
+        message: 'Code Interpreter executed',
+        toolName: 'code_interpreter',
+        providerToolCallId: 'call_python',
+      }),
+      expect.objectContaining({ configurable: config.configurable }),
+    );
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({
+      type: 'auto',
+    });
+    expect(
+      ((doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).toolChoice,
+    ).toEqual({
+      type: 'auto',
+    });
+    const stageOneCall = (doGenerate as jest.Mock).mock.calls[0][0] as LanguageModelV3CallOptions;
+    const stageTwoCall = (doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions;
+    expect(stageTwoCall.tools).toEqual(stageOneCall.tools);
+    expect(stageTwoCall.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'function', name: 'search_price_candidates' }),
+        expect.objectContaining({
+          type: 'provider',
+          id: 'openai.code_interpreter',
+          name: 'code_interpreter',
+        }),
+      ]),
+    );
+    const stageTwoPrompt = (
+      (doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions
+    ).prompt;
+    expect(stageTwoPrompt[stageTwoPrompt.length - 1]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'text', text: stageOne }],
+    });
+    expect(stageTwoPrompt.slice(0, stageOneCall.prompt.length)).toEqual(stageOneCall.prompt);
+  });
+
+  it.each([
+    ['missing system_order', '## customer_quote\nDRAFT'],
+    ['missing customer_quote', '## system_order\n\nA'],
+    ['reversed headings', '## customer_quote\nDRAFT\n\n## system_order\n\nA'],
+    ['inline mentions', 'Please use ## system_order and ## customer_quote'],
+    ['third-level headings', '### system_order\n\nA\n\n### customer_quote\nDRAFT'],
+    ['fenced headings', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```'],
+  ])('passes through %s without Stage2', async (_label, text) => {
+    const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text }]));
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    await expect(
+      model.invoke([
+        new HumanMessage('請報價'),
+        new ToolMessage({
+          content: '{}',
+          name: 'search_price_candidates',
+          tool_call_id: 'call_price_1',
+        }),
+      ]),
+    ).resolves.toEqual(expect.objectContaining({ content: text }));
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).not.toHaveBeenCalled();
+  });
+
+  it('passes through streamed headings inside a fenced block without Stage2', async () => {
+    const text = '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```';
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: '```markdown\n## system_' },
+        { type: 'text-delta', id: 'text_1', delta: 'order\n\nA\n\n## customer_quote\nDRAFT\n```' },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(text);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('passes through a mixed valid-looking response with a client tool call', async () => {
+    const text = '## system_order\n\nA\n\n## customer_quote\nDRAFT';
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        { type: 'text', text },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_price_2',
+          toolName: 'search_price_candidates',
+          input: '{}',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(result.content).toBe(text);
+    expect(result.tool_calls).toEqual([
+      expect.objectContaining({ name: 'search_price_candidates' }),
+    ]);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes through valid headings when the provider already used Code Interpreter', async () => {
+    const text = '## system_order\n\nA\n\n## customer_quote\n100';
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_python',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: true,
+        },
+        { type: 'text', text },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const config = {
+      configurable: {
+        thread_id: 'conversation_stage_1_generate',
+        requestBody: { messageId: 'message_stage_1_generate' },
+      },
+    };
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ], config);
+
+    expect(result.content).toBe(text);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).toHaveBeenCalledWith(
+      'steel_event',
+      expect.objectContaining({
+        type: 'quote_audit',
+        stage: 'stage_1',
+        status: 'executed',
+        message: 'Code Interpreter executed',
+        toolName: 'code_interpreter',
+        providerToolCallId: 'call_python',
+      }),
+      expect.objectContaining({ configurable: config.configurable }),
+    );
+  });
+
+  it('streams valid headings without Stage2 when the provider already used Code Interpreter', async () => {
+    const text = '## system_order\n\nA\n\n## customer_quote\n100';
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_python',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: true,
+        },
+        { type: 'text-delta', id: 'text_1', delta: text },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const config = {
+      configurable: {
+        thread_id: 'conversation_stage_1_stream',
+        requestBody: { messageId: 'message_stage_1_stream' },
+      },
+    };
+
+    const chunks = [];
+    for await (const chunk of await model.stream(
+      [
+        new HumanMessage('請報價'),
+        new ToolMessage({
+          content: '{}',
+          name: 'search_price_candidates',
+          tool_call_id: 'call_price_1',
+        }),
+      ],
+      config,
+    )) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(text);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(dispatchCustomEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).toHaveBeenCalledWith(
+      'steel_event',
+      expect.objectContaining({
+        type: 'quote_audit',
+        stage: 'stage_1',
+        status: 'executed',
+        message: 'Code Interpreter executed',
+        toolName: 'code_interpreter',
+        providerToolCallId: 'call_python',
+      }),
+      expect.objectContaining({ configurable: config.configurable }),
+    );
+  });
+
+  it('does not audit a client-executed Code Interpreter tool call', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_client_python',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: false,
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    await model.invoke(
+      [
+        new HumanMessage('請報價'),
+        new ToolMessage({
+          content: '{}',
+          name: 'search_price_candidates',
+          tool_call_id: 'call_price_1',
+        }),
+      ],
+      { configurable: { thread_id: 'conversation_client_python' } },
+    );
+
+    expect(dispatchCustomEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['customer then price', ['search_customers', 'search_price_candidates']],
+    ['price then customer', ['search_price_candidates', 'search_customers']],
+  ])('waits for all Steel tools when the order is %s', async (_label, toolOrder) => {
+    const finalMarkdown = '| 品項 | 價格 |\n|---|---:|\n| A | 100 |';
+    const stageOne = '## system_order\n\nA';
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createGenerateResult([{ type: 'text', text: `${stageOne}\n\n## customer_quote\nDRAFT` }]),
+      )
+      .mockResolvedValueOnce(
+        createCodeInterpreterGenerateResult(`## customer_quote\n${finalMarkdown}`),
+      );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請查客戶並報價'),
+      ...toolOrder.map(
+        (name, index) =>
+          new ToolMessage({
+            content: '{}',
+            name,
+            tool_call_id: `call_${index + 1}`,
+          }),
+      ),
+    ]);
+
+    expect(result.content).toBe(`${stageOne}\n\n## customer_quote\n${finalMarkdown}`);
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
+    expect(
+      ((doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).toolChoice,
+    ).toEqual({
+      type: 'auto',
+    });
+  });
+
+  it('runs a second stage for a valid streamed heading sequence and suppresses draft quote', async () => {
+    const stageOne = '## system_order\n\nA';
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: `${stageOne}\n\n## customer_` },
+          { type: 'text-delta', id: 'text_1', delta: 'quote\nDRAFT' },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        createStreamResult([
+          {
+            type: 'tool-call',
+            toolCallId: 'call_python',
+            toolName: 'code_interpreter',
+            input: '{}',
+            providerExecuted: true,
+          },
+          {
+            type: 'text-delta',
+            id: 'text_2',
+            delta: '\n',
+          },
+          {
+            type: 'text-delta',
+            id: 'text_2',
+            delta: '## customer_quote\n| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
+          },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const config = {
+      configurable: {
+        thread_id: 'conversation_2',
+        requestBody: { messageId: 'message_2' },
+      },
+    };
+
+    const output = await model.stream(
+      [
+        new HumanMessage('請報價'),
+        new ToolMessage({
+          content: '{"items":[{"name":"A"}]}',
+          name: 'search_price_candidates',
+          tool_call_id: 'call_price_1',
+        }),
+      ],
+      config,
+    );
+    const iterator = output[Symbol.asyncIterator]();
+    const first = await iterator.next();
+
+    expect(first.value?.content).toBe(stageOne);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).not.toHaveBeenCalled();
+
+    const chunks = first.done || !first.value ? [] : [first.value];
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) {
+        break;
+      }
+      const chunk = next.value;
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([
+      stageOne,
+      '\n\n## customer_quote\n| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
+      '',
+    ]);
+    expect(chunks.map((chunk) => chunk.content).join('').match(/## system_order/g)).toHaveLength(1);
+    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('DRAFT');
+    expect(doStream).toHaveBeenCalledTimes(2);
+    expect(dispatchCustomEvent).toHaveBeenCalledTimes(2);
+    const [streamEventName, streamEvent, streamConfig] = (
+      dispatchCustomEvent as jest.Mock
+    ).mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
+    expect(streamEventName).toBe('steel_event');
+    expect(streamEvent).toEqual(
+      expect.objectContaining({
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        stage: 'stage_2',
+        status: 'started',
+        message: 'Stage 2 started',
+      }),
+    );
+    expect(streamConfig).toEqual(expect.any(Object));
+    expect(dispatchCustomEvent).toHaveBeenNthCalledWith(
+      2,
+      'steel_event',
+      expect.objectContaining({
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        stage: 'stage_2',
+        status: 'executed',
+        message: 'Code Interpreter executed',
+        toolName: 'code_interpreter',
+        providerToolCallId: 'call_python',
+      }),
+      expect.objectContaining({ configurable: config.configurable }),
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(
+      ((doStream as jest.Mock).mock.calls[0][0] as LanguageModelV3CallOptions).toolChoice,
+    ).toEqual({
+      type: 'auto',
+    });
+    expect(
+      ((doStream as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).toolChoice,
+    ).toEqual({
+      type: 'auto',
+    });
+    expect(((doStream as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).tools).toEqual([
+      expect.objectContaining({
+        type: 'provider',
+        id: 'openai.code_interpreter',
+        name: 'code_interpreter',
+      }),
+    ]);
+    expect(chunks[chunks.length - 1]?.usage_metadata).toEqual({
+      input_tokens: 24,
+      output_tokens: 8,
+      total_tokens: 32,
+    });
+  });
+
+  it('returns combined generate output when Stage2 auto does not execute Code Interpreter', async () => {
+    const stageOne = '## system_order\n\nA';
+    const doGenerate = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createGenerateResult([{ type: 'text', text: `${stageOne}\n\n## customer_quote\nDRAFT` }]),
+      )
+      .mockResolvedValueOnce(
+        createGenerateResult([{ type: 'text', text: '## customer_quote\nUNVERIFIED' }]),
+      );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(result.content).toBe(`${stageOne}\n\n## customer_quote\nUNVERIFIED`);
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns combined stream output when Stage2 auto does not execute Code Interpreter', async () => {
+    const stageOne = '## system_order\n\nA';
+    const doGenerate = jest.fn();
+    const doStream = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: `${stageOne}\n\n## customer_quote\nDRAFT` },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        createStreamResult([
+          { type: 'text-delta', id: 'text_2', delta: '## customer_quote\nUNVERIFIED' },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([
+      stageOne,
+      '\n\n## customer_quote\nUNVERIFIED',
+      '',
+    ]);
+    expect(doStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('flushes pending Stage1 text before a client tool call and skips Stage2', async () => {
+    const stageOne = '## system_order\n\nA';
+    const draft = '\n\n## customer_quote\nDRAFT';
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: `${stageOne}${draft}` },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_price_2',
+          toolName: 'search_price_candidates',
+          input: '{}',
+        },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}${draft}`);
+    expect(chunks.findIndex((chunk) => chunk.content.includes('DRAFT'))).toBeLessThan(
+      chunks.findIndex((chunk) => chunk.tool_calls?.[0]?.name === 'search_price_candidates'),
+    );
+    expect(chunks[chunks.length - 1]?.usage_metadata).toEqual({
+      input_tokens: 12,
+      output_tokens: 4,
+      total_tokens: 16,
+    });
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).not.toHaveBeenCalled();
+  });
+
+  it('flushes pending Stage1 text before a provider error', async () => {
+    const stageOne = '## system_order\n\nA';
+    const draft = '\n\n## customer_quote\nDRAFT';
+    const providerError = new Error('stage one failed');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: `${stageOne}${draft}` },
+        { type: 'error', error: providerError },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const output = await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+    const iterator = output[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    const second = await iterator.next();
+    expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).toBe(
+      `${stageOne}${draft}`,
+    );
+    await expect(iterator.next()).rejects.toThrow(providerError);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(dispatchCustomEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a truncated generate result as a final draft', async () => {
+    const truncatedResult = createGenerateResult([{ type: 'text', text: 'partial' }]);
+    truncatedResult.finishReason = { unified: 'length', raw: 'length' };
+    const doGenerate = jest.fn(async () => truncatedResult);
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(result.content).toBe('partial');
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a truncated stream as a final draft', async () => {
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: 'partial' },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'length', raw: 'length' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual(['partial', '']);
+    expect(doStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes through a provider Code Interpreter generate result without retrying', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_python',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: true,
+        },
+        {
+          type: 'text',
+          text: '| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{"items":[{"name":"A"}]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(result.content).toBe('| 品項 | 價格 |\n|---|---:|\n| A | 100 |');
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
+  });
+
+  it('passes through a provider Code Interpreter stream without retrying', async () => {
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_python',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: true,
+        },
+        {
+          type: 'tool-result',
+          toolCallId: 'call_python',
+          toolName: 'code_interpreter',
+          result: '100',
+        },
+        {
+          type: 'text-delta',
+          id: 'text_1',
+          delta: '| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{"items":[{"name":"A"}]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([
+      '| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
+      '',
+    ]);
+    expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(false);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(
+      ((doStream as jest.Mock).mock.calls[0][0] as LanguageModelV3CallOptions).toolChoice,
+    ).toEqual({ type: 'auto' });
+  });
+
+  it('passes through a client price requery without retrying', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_price_2',
+          toolName: 'search_price_candidates',
+          input: '{"query":"A 2mm"}',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const result = await model.invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{"items":[{"name":"A"}]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(result.tool_calls).toEqual([
+      {
+        id: 'call_price_2',
+        name: 'search_price_candidates',
+        args: { query: 'A 2mm' },
+        type: 'tool_call',
+      },
+    ]);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
+  });
+
+  it('passes through a client price requery stream without retrying', async () => {
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_price_2',
+          toolName: 'search_price_candidates',
+          input: '{"query":"A 2mm"}',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{"items":[{"name":"A"}]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks[0]?.tool_calls).toEqual([
+      {
+        id: 'call_price_2',
+        name: 'search_price_candidates',
+        args: { query: 'A 2mm' },
+        type: 'tool_call',
+      },
+    ]);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(
+      ((doStream as jest.Mock).mock.calls[0][0] as LanguageModelV3CallOptions).toolChoice,
+    ).toEqual({ type: 'auto' });
+  });
+
+  it('keeps auto tool choice when a price result belongs to an earlier turn', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '先確認新需求',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    await model.invoke([
+      new HumanMessage('上一輪報價'),
+      new ToolMessage({
+        content: '{"items":[]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+      new HumanMessage('請確認新需求'),
+    ]);
+
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
+  });
+
+  it('keeps auto tool choice when there is no current-turn price result', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: '請提供規格',
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+
+    await model.invoke([new HumanMessage('請報價')]);
+
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
+  });
+
+  it('keeps auto tool choice and does not retry when Code Interpreter is disabled', async () => {
+    const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text: 'draft' }]));
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        enableCodeInterpreter: false,
+        model: 'gpt-5.5',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const tool = {
+      type: 'function',
+      function: {
+        name: 'search_customers',
+        description: 'Search customers',
+        parameters: { type: 'object', properties: {} },
+      },
+    } as unknown as BindToolsInput;
+
+    await model.bindTools([tool]).invoke([
+      new HumanMessage('請報價'),
+      new ToolMessage({
+        content: '{"items":[{"name":"A"}]}',
+        name: 'search_price_candidates',
+        tool_call_id: 'call_price_1',
+      }),
+    ]);
+
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
   });
 
   it('preserves native graph system context after tools are bound', async () => {

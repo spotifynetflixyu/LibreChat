@@ -8,10 +8,15 @@ import type {
 } from '~/store/steel';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import useLocalize from '~/hooks/useLocalize';
+import {
+  appendSteelNativeActivityEvent,
+  normalizePersistedSteelActivityEvent,
+} from '~/hooks/SSE/useSteelEventHandler';
 
 type SteelActivityProps = {
   messageId: string;
   isCreatedByUser?: boolean;
+  persistedActivityEvents?: readonly unknown[];
 };
 
 type Localize = ReturnType<typeof useLocalize>;
@@ -136,6 +141,10 @@ function getActivityLabel(
   event: SteelNativeActivityEvent,
   localize: ReturnType<typeof useLocalize>,
 ) {
+  if (event.type === 'quote_audit') {
+    return event.message;
+  }
+
   if (event.source === 'ocr_preprocessing') {
     return event.message;
   }
@@ -234,6 +243,10 @@ function getTotalCountText(
 }
 
 function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
+  if (event.type === 'quote_audit') {
+    return true;
+  }
+
   if (event.type === 'memory_saved') {
     return getSavedCountTotal(event) > 0;
   }
@@ -289,12 +302,30 @@ function getMissingPageRangeTexts(
 const SteelActivity = memo(function SteelActivity({
   messageId,
   isCreatedByUser,
+  persistedActivityEvents,
 }: SteelActivityProps) {
   const localize = useLocalize();
-  const events = useRecoilValue(steelNativeActivityByMessageId(messageId));
+  const liveEvents = useRecoilValue(steelNativeActivityByMessageId(messageId));
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const displayEvents = useMemo(() => events.filter(shouldDisplayEvent), [events]);
+  const displayEvents = useMemo(() => {
+    const mergedEvents = (persistedActivityEvents ?? []).reduce<SteelNativeActivityEvent[]>(
+      (current, persistedEvent) => {
+        const normalized = normalizePersistedSteelActivityEvent(persistedEvent);
+        return normalized ? appendSteelNativeActivityEvent(current, normalized) : current;
+      },
+      [],
+    );
+
+    const allEvents =
+      mergedEvents.length === 0
+        ? liveEvents
+        : liveEvents.reduce<SteelNativeActivityEvent[]>(
+            appendSteelNativeActivityEvent,
+            mergedEvents,
+          );
+    return allEvents.filter(shouldDisplayEvent);
+  }, [liveEvents, persistedActivityEvents]);
 
   if (isCreatedByUser || displayEvents.length === 0) {
     return null;

@@ -15,8 +15,9 @@ import type {
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
 import type { FetchFunction } from '@ai-sdk/provider-utils';
+import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
 import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
@@ -29,6 +30,11 @@ import type { OpenAIOAuthTokenLoader } from './credentials';
 
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import { loadOpenAIOAuthTokens } from './credentials';
+import {
+  buildSteelCodeInterpreterAuditEvent,
+  buildSteelQuoteAuditEvent,
+  steelNativeStreamEventName,
+} from './events';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -634,6 +640,312 @@ function createResponseMetadata({
   });
 }
 
+function hasCurrentTurnPriceResult(messages: BaseMessage[]): boolean {
+  let foundPriceResult = false;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message._getType() === 'human') {
+      return foundPriceResult;
+    }
+
+    if (message._getType() !== 'tool') {
+      continue;
+    }
+
+    const toolName = (message as BaseMessage & { name?: unknown }).name;
+    if (toolName === 'search_price_candidates') {
+      foundPriceResult = true;
+    }
+  }
+
+  return false;
+}
+
+function isCompletedTextResult(
+  finishReason?: LanguageModelV3GenerateResult['finishReason'],
+): boolean {
+  return finishReason?.unified === 'stop' || finishReason?.raw === 'stop';
+}
+
+function hasToolCall(
+  content: LanguageModelV3GenerateResult['content'] | LanguageModelV3StreamPart[],
+): boolean {
+  return content.some(
+    (part) => part.type === 'tool-call' || part.type === 'tool-input-start',
+  );
+}
+
+interface StageOneSlice {
+  content: string;
+}
+
+function parseStageOneSlice(text: string): StageOneSlice | undefined {
+  const headings: Array<{
+    name: 'system_order' | 'customer_data' | 'customer_quote';
+    start: number;
+  }> = [];
+  let quoteFound = false;
+  let fenceCharacter: '`' | '~' | undefined;
+  let fenceLength = 0;
+  let lineStart = 0;
+
+  while (lineStart <= text.length) {
+    const newlineIndex = text.indexOf('\n', lineStart);
+    const nextLineStart = newlineIndex < 0 ? text.length + 1 : newlineIndex + 1;
+    const lineEnd = newlineIndex < 0 ? text.length : newlineIndex;
+    const line = text.slice(lineStart, lineEnd).replace(/\r$/, '');
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+
+    if (fenceCharacter) {
+      const closingFence = line.match(/^ {0,3}(`+|~+)[ \t]*$/)?.[1];
+      if (closingFence?.[0] === fenceCharacter && closingFence.length >= fenceLength) {
+        fenceCharacter = undefined;
+        fenceLength = 0;
+      }
+      lineStart = nextLineStart;
+      continue;
+    }
+
+    if (fenceMatch) {
+      fenceCharacter = fenceMatch[1]?.[0] as '`' | '~';
+      fenceLength = fenceMatch[1]?.length ?? 0;
+      lineStart = nextLineStart;
+      continue;
+    }
+
+    const headingMatch = line.match(/^##[ \t]+([^\r\n]*)$/);
+    if (!headingMatch) {
+      lineStart = nextLineStart;
+      continue;
+    }
+
+    const rawTitle = headingMatch[1]?.trim();
+    const headingStart = lineStart;
+    if (!rawTitle) {
+      if (quoteFound) {
+        lineStart = nextLineStart;
+        continue;
+      }
+      return undefined;
+    }
+
+    const separatorIndex = rawTitle.indexOf('｜');
+    const name = (separatorIndex < 0 ? rawTitle : rawTitle.slice(0, separatorIndex)).trim();
+    if (name !== 'system_order' && name !== 'customer_data' && name !== 'customer_quote') {
+      if (quoteFound) {
+        lineStart = nextLineStart;
+        continue;
+      }
+      return undefined;
+    }
+
+    if (quoteFound) {
+      lineStart = nextLineStart;
+      continue;
+    }
+
+    if (separatorIndex >= 0 && rawTitle.slice(separatorIndex + 1).trim() === '') {
+      return undefined;
+    }
+
+    if (name === 'customer_quote') {
+      quoteFound = true;
+    }
+
+    headings.push({
+      name,
+      start: headingStart,
+    });
+
+    lineStart = nextLineStart;
+  }
+
+  if (headings.length !== 2 && headings.length !== 3) {
+    return undefined;
+  }
+
+  const [systemHeading, secondHeading, thirdHeading] = headings;
+  if (!systemHeading || systemHeading.name !== 'system_order') {
+    return undefined;
+  }
+
+  const quoteHeading = headings.length === 2 ? secondHeading : thirdHeading;
+  if (!quoteHeading || quoteHeading.name !== 'customer_quote') {
+    return undefined;
+  }
+
+  if (headings.length === 3 && secondHeading?.name !== 'customer_data') {
+    return undefined;
+  }
+
+  const content = text.slice(0, quoteHeading.start).replace(/[ \t\r\n]+$/, '');
+  return content === '' ? undefined : { content };
+}
+
+function shouldTransitionToStageTwo(
+  messages: BaseMessage[],
+  options: OpenAIOAuthModelOptions,
+  content: LanguageModelV3GenerateResult['content'] | LanguageModelV3StreamPart[],
+  finishReason?: LanguageModelV3GenerateResult['finishReason'],
+): boolean {
+  const text = content.reduce((result, part) => {
+    if (part.type === 'text') {
+      return `${result}${part.text}`;
+    }
+    if (part.type === 'text-delta') {
+      return `${result}${part.delta}`;
+    }
+    return result;
+  }, '');
+
+  return (
+    options.enableCodeInterpreter !== false &&
+    hasCurrentTurnPriceResult(messages) &&
+    !content.some((part) => part.type === 'error') &&
+    !hasToolCall(content) &&
+    isCompletedTextResult(finishReason) &&
+    parseStageOneSlice(text) !== undefined
+  );
+}
+
+function combineStageContent(stageOne: string, stageTwo: string): string {
+  const first = stageOne.replace(/[ \t\r\n]+$/, '');
+  const second = stageTwo.replace(/^[ \t\r\n]+/, '');
+  if (first === '') {
+    return second;
+  }
+  if (second === '') {
+    return first;
+  }
+  return `${first}\n\n${second}`;
+}
+
+function sumUsageValue(first: number | undefined, second: number | undefined): number | undefined {
+  if (first === undefined && second === undefined) {
+    return undefined;
+  }
+
+  return (first ?? 0) + (second ?? 0);
+}
+
+function mergeUsage(
+  first: LanguageModelV3Usage,
+  second: LanguageModelV3Usage,
+): LanguageModelV3Usage {
+  return {
+    inputTokens: {
+      total: sumUsageValue(first.inputTokens.total, second.inputTokens.total),
+      noCache: sumUsageValue(first.inputTokens.noCache, second.inputTokens.noCache),
+      cacheRead: sumUsageValue(first.inputTokens.cacheRead, second.inputTokens.cacheRead),
+      cacheWrite: sumUsageValue(first.inputTokens.cacheWrite, second.inputTokens.cacheWrite),
+    },
+    outputTokens: {
+      total: sumUsageValue(first.outputTokens.total, second.outputTokens.total),
+      text: sumUsageValue(first.outputTokens.text, second.outputTokens.text),
+      reasoning: sumUsageValue(first.outputTokens.reasoning, second.outputTokens.reasoning),
+    },
+  };
+}
+
+function shouldInspectCodeInterpreter(
+  messages: BaseMessage[],
+  options: OpenAIOAuthModelOptions,
+): boolean {
+  return options.enableCodeInterpreter !== false && hasCurrentTurnPriceResult(messages);
+}
+
+function getStringProperty(value: unknown, key: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const property = value[key];
+  return typeof property === 'string' && property !== '' ? property : undefined;
+}
+
+function getSteelQuoteAuditEventInput(
+  config?: Partial<RunnableConfig>,
+): Parameters<typeof buildSteelQuoteAuditEvent>[0] {
+  const configurable = config?.configurable;
+  const requestBodyRecord = isRecord(configurable) ? configurable.requestBody : undefined;
+
+  return {
+    conversationId: getStringProperty(configurable, 'thread_id'),
+    requestId:
+      getStringProperty(configurable, 'requestId') ??
+      getStringProperty(requestBodyRecord, 'requestId'),
+    messageId:
+      getStringProperty(requestBodyRecord, 'messageId') ??
+      getStringProperty(configurable, 'message_id'),
+    providerToolCallId: getStringProperty(configurable, 'providerToolCallId'),
+    toolName: getStringProperty(configurable, 'toolName'),
+  };
+}
+
+async function dispatchSteelQuoteAuditEvent(config?: Partial<RunnableConfig>): Promise<void> {
+  if (!config) {
+    return;
+  }
+
+  await dispatchCustomEvent(
+    steelNativeStreamEventName,
+    buildSteelQuoteAuditEvent(getSteelQuoteAuditEventInput(config)),
+    config as RunnableConfig,
+  );
+}
+
+type SteelCodeInterpreterAuditStage = 'stage_1' | 'stage_2';
+type SteelCodeInterpreterAuditPart =
+  | LanguageModelV3GenerateResult['content'][number]
+  | LanguageModelV3StreamPart;
+
+function isProviderCodeInterpreterToolCall(
+  part: SteelCodeInterpreterAuditPart,
+): part is LanguageModelV3ToolCall {
+  return (
+    part.type === 'tool-call' &&
+    part.toolName === 'code_interpreter' &&
+    part.providerExecuted === true
+  );
+}
+
+function createSteelCodeInterpreterAuditDispatcher(
+  config?: Partial<RunnableConfig>,
+): (stage: SteelCodeInterpreterAuditStage, parts: SteelCodeInterpreterAuditPart[]) => Promise<void> {
+  const seen = new Set<string>();
+  const eventInput = getSteelQuoteAuditEventInput(config);
+
+  return async (stage, parts) => {
+    if (!config) {
+      return;
+    }
+
+    for (const part of parts) {
+      if (!isProviderCodeInterpreterToolCall(part)) {
+        continue;
+      }
+
+      const providerToolCallId = part.toolCallId !== '' ? part.toolCallId : undefined;
+      const key = `${stage}:${providerToolCallId ?? ''}`;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      await dispatchCustomEvent(
+        steelNativeStreamEventName,
+        buildSteelCodeInterpreterAuditEvent({
+          ...eventInput,
+          stage,
+          providerToolCallId,
+        }),
+        config as RunnableConfig,
+      );
+    }
+  };
+}
+
 function toMessageChunk(result: LanguageModelV3GenerateResult, model: string): AIMessageChunk {
   const toolCalls = result.content
     .filter(
@@ -658,11 +970,13 @@ function createCallOptions({
   config,
   messages,
   options,
+  toolChoice,
   tools,
 }: {
   config?: Partial<RunnableConfig>;
   messages: BaseMessage[];
   options: OpenAIOAuthModelOptions;
+  toolChoice?: LanguageModelV3CallOptions['toolChoice'];
   tools?: BindToolsInput[];
 }): LanguageModelV3CallOptions {
   const languageModelTools = toLanguageModelTools(tools, options.enableCodeInterpreter !== false);
@@ -677,7 +991,7 @@ function createCallOptions({
     ...(languageModelTools
       ? {
           tools: languageModelTools,
-          toolChoice: { type: 'auto' as const },
+          toolChoice: toolChoice ?? { type: 'auto' as const },
         }
       : {}),
     ...(options.reasoningEffort
@@ -707,11 +1021,52 @@ function toStreamTextChunk(delta: string, model: string): AIMessageChunk {
   });
 }
 
-async function* toChunkStream({
+function getSafeStageOneTextEnd(text: string): number {
+  const lastNewline = text.lastIndexOf('\n');
+  if (lastNewline < 0) {
+    return 0;
+  }
+
+  return text.slice(0, lastNewline + 1).replace(/[ \t\r\n]+$/, '').length;
+}
+
+function toStreamFinalChunk({
+  additionalUsage,
+  finishReason,
   model,
+  response,
+  usage,
+}: {
+  additionalUsage?: LanguageModelV3Usage;
+  finishReason?: LanguageModelV3GenerateResult['finishReason'];
+  model: string;
+  response?: LanguageModelV3GenerateResult['response'];
+  usage?: LanguageModelV3Usage;
+}): AIMessageChunk {
+  const totalUsage = additionalUsage && usage ? mergeUsage(additionalUsage, usage) : usage;
+
+  return new AIMessageChunk({
+    content: '',
+    response_metadata: createResponseMetadata({
+      finishReason,
+      model,
+      response,
+    }),
+    usage_metadata: toUsageMetadata(totalUsage),
+  });
+}
+
+async function* toChunkStream({
+  additionalUsage,
+  model,
+  onPart,
+  prefixSeparator,
   stream,
 }: {
+  additionalUsage?: LanguageModelV3Usage;
   model: string;
+  onPart?: (part: LanguageModelV3StreamPart) => Promise<void>;
+  prefixSeparator?: boolean;
   stream: ReadableStream<LanguageModelV3StreamPart>;
 }): AsyncGenerator<AIMessageChunk> {
   const reader = stream.getReader();
@@ -719,6 +1074,7 @@ async function* toChunkStream({
   let usage: LanguageModelV3Usage | undefined;
   let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
   let completed = false;
+  let prefixSeparatorPending = prefixSeparator === true;
 
   try {
     while (true) {
@@ -728,8 +1084,17 @@ async function* toChunkStream({
         break;
       }
 
+      await onPart?.(value);
+
       if (value.type === 'text-delta') {
-        yield toStreamTextChunk(value.delta, model);
+        if (prefixSeparatorPending && value.delta.trim() === '') {
+          continue;
+        }
+        const text = prefixSeparatorPending
+          ? `\n\n${value.delta.replace(/^[ \t\r\n]+/, '')}`
+          : value.delta;
+        prefixSeparatorPending = false;
+        yield toStreamTextChunk(text, model);
       } else if (value.type === 'tool-call' && value.providerExecuted !== true) {
         yield toStreamToolCallChunk(value, model);
       } else if (value.type === 'response-metadata') {
@@ -748,15 +1113,7 @@ async function* toChunkStream({
     reader.releaseLock();
   }
 
-  yield new AIMessageChunk({
-    content: '',
-    response_metadata: createResponseMetadata({
-      finishReason,
-      model,
-      response,
-    }),
-    usage_metadata: toUsageMetadata(usage),
-  });
+  yield toStreamFinalChunk({ additionalUsage, finishReason, model, response, usage });
 }
 
 export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, RunnableConfig> {
@@ -779,6 +1136,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
   async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
     const providerModel = await this.getProviderModel();
+    const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
+    const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const result = await providerModel.doGenerate(
       createCallOptions({
         config,
@@ -788,7 +1147,50 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       }),
     );
 
-    return toMessageChunk(result, this.options.model);
+    if (inspectCodeInterpreter) {
+      await dispatchCodeInterpreterAudit('stage_1', result.content);
+    }
+
+    const stageOneText = getGeneratedText(result.content);
+    const stageOne = shouldTransitionToStageTwo(
+      messages,
+      this.options,
+      result.content,
+      result.finishReason,
+    )
+      ? parseStageOneSlice(stageOneText)
+      : undefined;
+    if (!stageOne) {
+      return toMessageChunk(result, this.options.model);
+    }
+
+    const stageTwoMessages = [...messages, new AIMessage(stageOne.content)];
+    await dispatchSteelQuoteAuditEvent(config);
+    const stageTwoResult = await providerModel.doGenerate(
+      createCallOptions({
+        config,
+        messages: stageTwoMessages,
+        options: this.options,
+        tools: this.options.tools,
+      }),
+    );
+
+    await dispatchCodeInterpreterAudit('stage_2', stageTwoResult.content);
+
+    return toMessageChunk(
+      {
+        ...stageTwoResult,
+        content: [
+          {
+            type: 'text',
+            text: combineStageContent(stageOne.content, getGeneratedText(stageTwoResult.content)),
+          },
+          ...stageTwoResult.content.filter((part) => part.type !== 'text'),
+        ],
+        usage: mergeUsage(result.usage, stageTwoResult.usage),
+      },
+      this.options.model,
+    );
   }
 
   protected async *_streamIterator(
@@ -811,9 +1213,126 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       }),
     );
 
+    if (!shouldInspectCodeInterpreter(messages, this.options)) {
+      yield* toChunkStream({
+        model: this.options.model,
+        stream: result.stream,
+      });
+      return;
+    }
+
+    const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
+    const reader = result.stream.getReader();
+    const parts: LanguageModelV3StreamPart[] = [];
+    let stageOneText = '';
+    let emittedTextLength = 0;
+    let response: LanguageModelV3GenerateResult['response'];
+    let usage: LanguageModelV3Usage | undefined;
+    let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
+    let transitionBlocked = false;
+    let completed = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          completed = true;
+          break;
+        }
+
+        parts.push(value);
+        await dispatchCodeInterpreterAudit('stage_1', [value]);
+
+        if (value.type === 'text-delta') {
+          stageOneText += value.delta;
+          if (transitionBlocked) {
+            yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
+            emittedTextLength = stageOneText.length;
+            continue;
+          }
+
+          const provisionalStageOne = parseStageOneSlice(stageOneText);
+          const safeEnd =
+            provisionalStageOne?.content.length ?? getSafeStageOneTextEnd(stageOneText);
+          if (safeEnd > emittedTextLength) {
+            yield toStreamTextChunk(
+              stageOneText.slice(emittedTextLength, safeEnd),
+              this.options.model,
+            );
+            emittedTextLength = safeEnd;
+          }
+          continue;
+        }
+
+        if (
+          value.type === 'tool-call' ||
+          value.type === 'tool-input-start' ||
+          value.type === 'error'
+        ) {
+          if (stageOneText.length > emittedTextLength) {
+            yield toStreamTextChunk(
+              stageOneText.slice(emittedTextLength),
+              this.options.model,
+            );
+            emittedTextLength = stageOneText.length;
+          }
+          transitionBlocked = true;
+
+          if (value.type === 'error') {
+            throw value.error instanceof Error ? value.error : new Error(String(value.error));
+          }
+          if (value.type === 'tool-call' && value.providerExecuted !== true) {
+            yield toStreamToolCallChunk(value, this.options.model);
+          }
+          continue;
+        }
+
+        if (value.type === 'response-metadata') {
+          response = value;
+        } else if (value.type === 'finish') {
+          usage = value.usage;
+          finishReason = value.finishReason;
+        }
+      }
+    } finally {
+      if (!completed) {
+        await reader.cancel().catch(() => undefined);
+      }
+      reader.releaseLock();
+    }
+
+    const stageOne = shouldTransitionToStageTwo(
+      messages,
+      this.options,
+      parts,
+      finishReason,
+    )
+      ? parseStageOneSlice(stageOneText)
+      : undefined;
+    if (!stageOne) {
+      if (stageOneText.length > emittedTextLength) {
+        yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
+      }
+      yield toStreamFinalChunk({ finishReason, model: this.options.model, response, usage });
+      return;
+    }
+
+    await dispatchSteelQuoteAuditEvent(config);
+    const stageTwoResult = await providerModel.doStream(
+      createCallOptions({
+        config,
+        messages: [...messages, new AIMessage(stageOne.content)],
+        options: this.options,
+        tools: this.options.tools,
+      }),
+    );
+
     yield* toChunkStream({
+      additionalUsage: usage,
       model: this.options.model,
-      stream: result.stream,
+      onPart: (part) => dispatchCodeInterpreterAudit('stage_2', [part]),
+      prefixSeparator: true,
+      stream: stageTwoResult.stream,
     });
   }
 

@@ -160,6 +160,7 @@ const ContentRender = memo(function ContentRender({
         conversation?.model,
       )}
       timestamp={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+      processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
       isSubmitting={isSubmitting}
       parentMessageId={msg.parentMessageId}
       ariaLabel={getMessageAriaLabel(msg, localize)}
@@ -212,6 +213,7 @@ const ContentRender = memo(function ContentRender({
         isSubmitting={isSubmitting}
         isCreatedByUser={msg.isCreatedByUser}
         createdAt={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+        processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
         conversationId={conversation?.conversationId}
         content={msg.content as Array<TMessageContentParts | undefined>}
       />

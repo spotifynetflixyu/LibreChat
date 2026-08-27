@@ -4,11 +4,11 @@
 
 未指定材質時依回傳 `defaultMaterial` 以黑鐵 Kg 選價；明示整片計價才採 `unit: 片` 候選。只有訂單自然語意明確要求且 category-supported、不同於黑鐵的 canonical 材質族／白鐵表面時，首查 `materials` 傳單一值；明確 alternatives 才傳多值 OR，同 default 黑鐵省略。只明示白鐵而未明示表面時使用回傳 `defaultWhiteSteelSurface`，輸出說明已用該表面並列出 `availableWhiteSteelSurfaces`。明示 ST、NO1、HL、BA 或 2B 時依原文首查，不把表面當獨立材質族；所有表單材料／鋼種／等級代號（例如但不限於 `SN490B`、`SN400B`、`STKR400`、`ST50` 及同類英數代號）只原樣保留，不作查價參數。
 
-記號判讀：記號 `PL` 後數字為厚度 mm，`*` 後數字為寬度 mm。例：`PL6*80` = 6mm 厚、80mm 寬；厚度與成品寬度用於候選判讀及重量計算，不作首查參數。
+記號判讀：記號 `PL` 後數字為厚度 mm，`*` 後數字為寬度 mm。例：`PL6*80` = 6mm 厚、80mm 寬；厚度與成品寬度用於候選判讀及重量計算。來源已確認厚度時，首查可用 `thicknessMm` 縮小候選；成品寬度不作首查參數。
 
 板材查價優先順序：
 
-1. 首查併入一般材料 item，使用 `categories: ["鐵板"]`；預設黑鐵只傳 `categories`，訂單明確要求非預設 canonical 材質／表面且 supported 時同一 item 加 `materials`。次類別 enum 為 `切板`、`切圓`、`切內外圓`、`平板`、`成型/配件`、`網板`、`花板`、`圍籬`；依返回候選的 `productName` 與 structured fields 判斷。
+1. 首查併入一般材料 item，使用 `categories: ["鐵板"]`；來源已確認一個或多個厚度時，將同類需求的厚度去重後放入同一個 `thicknessMm` array。多厚度首查例：`{"queries":[{"categories":["鐵板"],"thicknessMm":["6","9","10","12"]}]}`。預設黑鐵省略 `materials`；訂單明確要求非預設 canonical 材質／表面且 supported 時，才在同一 item 加 `materials`。次類別 enum 為 `切板`、`切圓`、`切內外圓`、`平板`、`成型/配件`、`網板`、`花板`、`圍籬`；依返回候選的 `productName` 與 structured fields 判斷。
 2. `unit`、`thicknessMm` 與 `subcategory` 只在必要識別資料已由使用者／來源確認時使用；`materials` 依前項 canonical 非預設條件。若首查缺少上述資料，之後確認時只另送受影響材料 item，不重送原 query。材料／鋼種代號只留在備註。
 3. 未指定加工關鍵字時，同材質、同厚度、同 unit 的候選依「雷射切割 → 四方切 → 版型切型」採第一個可報價類型。使用者明確指定其中一種時只採指定類型，指定類型缺價就送人工複核，不自動 fallback。
 4. 採 `unit: 片` 候選時比較返回的全部整片尺寸，不把 4x8、4x10、5x10、1M8 等寬長加入 query 或為尺寸重查；成品尺寸只用於配料。

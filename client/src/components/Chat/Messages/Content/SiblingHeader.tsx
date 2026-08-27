@@ -17,6 +17,8 @@ type SiblingHeaderProps = {
   messageId?: string;
   /** ISO timestamp of the parent message */
   createdAt?: string | null;
+  /** Completed processing duration for the parent assistant turn. */
+  processingDurationMs?: number;
   /** The conversationId */
   conversationId?: string | null;
   /** Whether a submission is in progress */
@@ -31,6 +33,7 @@ export default function SiblingHeader({
   agentId,
   messageId,
   createdAt,
+  processingDurationMs,
   conversationId,
   isSubmitting,
 }: SiblingHeaderProps) {
@@ -121,7 +124,7 @@ export default function SiblingHeader({
           />
         </div>
         <span className="truncate text-sm font-medium text-text-primary">{displayName}</span>
-        <MessageTimestamp value={createdAt} />
+        <MessageTimestamp value={createdAt} processingDurationMs={processingDurationMs} />
       </div>
       <button
         type="button"

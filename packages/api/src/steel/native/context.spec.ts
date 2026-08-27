@@ -94,16 +94,25 @@ function createDependencies(): SteelRuntimeContextDependencies {
     listOutputRules: jest.fn(async () => [
       createAgentRule({
         id: 2,
+        slug: 'steel-quote-calculation-output-rule',
+        ruleType: 'output',
+        title: 'Steel quote calculation output rule',
+        prompt: 'Calculation output rule fixture',
+        priority: 10,
+      }),
+      createAgentRule({
+        id: 3,
         slug: 'steel-output-rule',
         ruleType: 'output',
         title: 'Steel output rule',
-        prompt: 'Output rule fixture',
+        prompt: 'Workbook output rule fixture',
+        priority: 20,
       }),
     ]),
     listOtherGlobalRules: jest.fn(async () => ({
       ocrMainAgentRules: [
         createAgentRule({
-          id: 3,
+          id: 4,
           slug: 'steel-ocr-rule',
           ruleType: 'ocr',
           title: 'Steel OCR rule',
@@ -112,7 +121,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
           priority: 20,
         }),
         createAgentRule({
-          id: 4,
+          id: 5,
           slug: 'steel-vision-rule',
           ruleType: 'vision',
           title: 'Steel Vision rule',
@@ -121,7 +130,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
           priority: 36,
         }),
         createAgentRule({
-          id: 5,
+          id: 6,
           slug: 'steel-ocr-main-organizer-rule',
           ruleType: 'other',
           title: 'Steel OCR main organizer rule',
@@ -132,7 +141,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
       ],
       ocrSubagentRules: [
         createAgentRule({
-          id: 6,
+          id: 7,
           slug: 'steel-ocr-organizer-rule',
           ruleType: 'other',
           title: 'Steel OCR organizer rule',
@@ -141,7 +150,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
           priority: 37,
         }),
       ],
-      fileRules: [createAgentRule({ id: 7, slug: 'steel-file-rule', ruleSections: ['file_policy'] })],
+      fileRules: [createAgentRule({ id: 8, slug: 'steel-file-rule', ruleSections: ['file_policy'] })],
       sourcePriorityRules: [],
       markdownOutputRules: [],
     })),
@@ -180,7 +189,11 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).toContain('Agent rule fixture');
     expect(context.instructionPrefix).toContain('Use tier B when the customer tier is unknown.');
     expect(context.instructionPrefix).toContain('Quote rule fixture');
-    expect(context.instructionPrefix).toContain('Output rule fixture');
+    expect(context.instructionPrefix).toContain('Calculation output rule fixture');
+    expect(context.instructionPrefix).toContain('Workbook output rule fixture');
+    expect(context.instructionPrefix.indexOf('Calculation output rule fixture')).toBeLessThan(
+      context.instructionPrefix.indexOf('Workbook output rule fixture'),
+    );
     expect(context.instructionPrefix).not.toContain('OCR rule fixture');
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
     expect(context.runtimeContextText).toBe('');
@@ -308,13 +321,18 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).not.toContain('Agent rule fixture');
     expect(context.instructionPrefix).not.toContain('Use tier B when the customer tier is unknown.');
     expect(context.instructionPrefix).not.toContain('Quote rule fixture');
-    expect(context.instructionPrefix).not.toContain('Output rule fixture');
+    expect(context.instructionPrefix).not.toContain('Calculation output rule fixture');
+    expect(context.instructionPrefix).not.toContain('Workbook output rule fixture');
     expect(context.instructionPrefix).not.toContain('steel-file-rule');
     expect(context.instructionPrefix.indexOf('OCR rule fixture')).toBeLessThan(
       context.instructionPrefix.indexOf('Vision rule fixture'),
     );
     expect(context.instructionPrefix).toContain('OCR main organizer rule fixture');
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
+    expect(context.runtimeContextText).not.toMatch(/^# Current-turn OCR completion directive/u);
+    expect(context.runtimeContextText).toContain('metadata such as customer name');
+    expect(context.runtimeContextText).toContain('Answer any other user intent too');
+    expect(context.runtimeContextText).toContain('do not call delegate_ocr.');
     expect(context.runtimeContextText).toContain(
       'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
     );
@@ -336,6 +354,12 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContextText).not.toContain('raw OCR');
     expect(context.runtimeContextText).not.toContain('Steel Native Context Metadata');
     expect(context.runtimeContextText).not.toContain('currentOcrMarkdownResults');
+    expect(context.runtimeContextText.indexOf('| 鐵板 | 2 |')).toBeLessThan(
+      context.runtimeContextText.indexOf('# Current-turn OCR completion directive'),
+    );
+    expect(context.runtimeContextText).toContain(
+      'Your final answer MUST include the full organized OCR Markdown according to the active OCR main-agent rules',
+    );
   });
 
   it('does not invent source filenames for OCR Markdown results', async () => {
@@ -358,5 +382,39 @@ describe('Steel native context adapter', () => {
       'file_key: file:file-without-name\n<file:file-without-name>\nOCR Markdown',
     );
     expect(context.runtimeContextText).not.toContain('source_filename:');
+  });
+
+  it('does not add the OCR completion directive without organized Markdown or in standard mode', async () => {
+    const failureOnlyContext = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_failure_only', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        currentOcrFailures: [
+          {
+            ocrFileKey: 'file:missing.pdf',
+            fileUrl: 'https://files.example.test/missing.pdf',
+            pageStart: 1,
+            pageEnd: 2,
+          },
+        ],
+      },
+    });
+
+    const standardContext = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_standard_with_ocr', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'standard',
+      attachments: {
+        currentOcrMarkdownResults: [{ ocrFileKey: 'file:organized.pdf', content: 'Organized OCR' }],
+      },
+    });
+
+    expect(failureOnlyContext.runtimeContextText).not.toContain(
+      '# Current-turn OCR completion directive',
+    );
+    expect(standardContext.runtimeContextText).not.toContain(
+      '# Current-turn OCR completion directive',
+    );
   });
 });

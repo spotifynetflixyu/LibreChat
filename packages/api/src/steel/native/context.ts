@@ -464,6 +464,26 @@ export function buildSteelNativeRuntimeContextText({
     ? `# Source attachment metadata\n${attachmentContext}`
     : '';
 
+  const markdown = runtimeContext.attachments.currentOcrMarkdownResults
+    .map((result) => {
+      const content = typeof result.content === 'string' ? result.content.trim() : '';
+      if (!content) {
+        return '';
+      }
+
+      const fileKey = typeof result.ocrFileKey === 'string' ? result.ocrFileKey.trim() : '';
+      const filename = typeof result.filename === 'string' ? result.filename.trim() : '';
+      return [
+        fileKey ? `file_key: ${fileKey}` : '',
+        filename ? `source_filename: ${JSON.stringify(filename)}` : '',
+        content,
+      ]
+        .filter(Boolean)
+        .join('\n');
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
   if (
     mode !== 'ocr' ||
     (runtimeContext.attachments.currentOcrMarkdownResults.length === 0 &&
@@ -500,26 +520,12 @@ export function buildSteelNativeRuntimeContextText({
       ].join('\n');
     })
     .join('\n\n');
-  const markdown = runtimeContext.attachments.currentOcrMarkdownResults
-    .map((result) => {
-      const content = typeof result.content === 'string' ? result.content.trim() : '';
-      if (!content) {
-        return '';
-      }
-
-      const fileKey = typeof result.ocrFileKey === 'string' ? result.ocrFileKey.trim() : '';
-      const filename = typeof result.filename === 'string' ? result.filename.trim() : '';
-      return [
-        fileKey ? `file_key: ${fileKey}` : '',
-        filename ? `source_filename: ${JSON.stringify(filename)}` : '',
-        content,
-      ]
-        .filter(Boolean)
-        .join('\n');
-    })
+  const currentTurnOcrDirective = markdown
+    ? '# Current-turn OCR completion directive\nThe OCR organizer is complete. Your final answer MUST include the full organized OCR Markdown according to the active OCR main-agent rules, even when the current user turn includes metadata such as customer name. Answer any other user intent too, and do not call delegate_ocr.'
+    : '';
+  return [attachmentContextText, failures, markdown, currentTurnOcrDirective]
     .filter(Boolean)
     .join('\n\n');
-  return [attachmentContextText, failures, markdown].filter(Boolean).join('\n\n');
 }
 
 export async function buildSteelGlobalAgentContext({

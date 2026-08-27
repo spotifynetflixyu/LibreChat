@@ -96,6 +96,29 @@ describe('useQueueDrain', () => {
     expect(ask).toHaveBeenCalledWith({ text: 'first follow-up' }, emptyOverrides);
   });
 
+  it('does not delay-send a row restored after its run-end was consumed during Edit', async () => {
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(CONVO_ID), [queuedMessage('edit-race', 'edit me')]);
+    });
+
+    // Edit's queued-action transaction claims the row synchronously, then the
+    // completion signal arrives while its cancel request is still pending.
+    act(() => {
+      setters.setQueue!([]);
+      setters.setRunEnd!(runEnd());
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(ask).not.toHaveBeenCalled();
+
+    // A refused/late Edit restore is ordinary and remains available for an
+    // explicit user send; consuming the one-shot run-end must not auto-drain it.
+    act(() => {
+      setters.setQueue!([{ id: 'edit-race', text: 'edit me', createdAt: 1 }]);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it('parks a mismatched signal instead of draining into the wrong conversation', async () => {
     const { ask, setters } = setup(({ set }) => {
       set(store.queuedMessagesByConvoId(CONVO_ID), [queuedMessage('q1', 'stay put')]);

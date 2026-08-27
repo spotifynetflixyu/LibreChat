@@ -1,6 +1,7 @@
 import { buildSteelNativeResponseMessageMetadata } from './metadata';
 
 import { steelNativeInstructionPrefixSections } from './context';
+import { buildSteelQuoteAuditEvent } from './events';
 
 describe('Steel native response metadata', () => {
   it('builds auditable Open Responses message metadata', () => {
@@ -41,6 +42,64 @@ describe('Steel native response metadata', () => {
             store: true,
             durable: true,
           },
+        },
+      },
+    });
+  });
+
+  it('includes bounded activity events without dropping native storage metadata', () => {
+    const activityEvents = [buildSteelQuoteAuditEvent({ conversationId: 'convo-1' })];
+    expect(
+      buildSteelNativeResponseMessageMetadata({
+        conversationId: 'convo-1',
+        responseId: 'resp-1',
+        store: false,
+        activityEvents,
+      }),
+    ).toEqual({
+      steel: {
+        activityEvents,
+        native: {
+          ingress: 'open_responses',
+          conversationId: 'convo-1',
+          responseId: 'resp-1',
+          storage: {
+            requestedStore: null,
+            store: false,
+            durable: false,
+          },
+        },
+      },
+    });
+  });
+
+  it('persists preflight tool cards alongside native activity events', () => {
+    const preflightToolCalls = [
+      {
+        type: 'tool_call' as const,
+        id: 'paddle-1',
+        name: 'paddleocr_vl_mcp_PaddleOCR',
+        args: {
+          output_mode: 'detailed' as const,
+          return_images: false,
+          use_doc_orientation_classify: true,
+          use_doc_unwarping: true,
+          use_layout_detection: true,
+        },
+        progress: 0 as const,
+      },
+    ];
+    expect(
+      buildSteelNativeResponseMessageMetadata({
+        store: false,
+        preflightToolCalls,
+      }),
+    ).toEqual({
+      steel: {
+        preflightToolCalls,
+        native: {
+          ingress: 'open_responses',
+          storage: { requestedStore: null, store: false, durable: false },
         },
       },
     });

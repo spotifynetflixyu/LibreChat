@@ -13,6 +13,7 @@ import {
   useCancelSteerMutation,
   useSteerMessageMutation,
   useMarkFilesUsageMutation,
+  fetchStreamStatus,
   supportsGenerationProtocolV2,
 } from '~/data-provider';
 import {
@@ -66,6 +67,23 @@ type SubmitSteerOptions = {
   /** Interpret a retry receipt using the source generation's negotiated
    * protocol, not whichever replacement generation is currently active. */
   generationProtocolVersion?: GenerationProtocolVersion;
+};
+
+type QueuedAction = (item: QueuedMessage) => boolean | void | Promise<boolean | void>;
+type QueuedActionOptions = { allowAbsentRecoverySource?: boolean };
+type RecoverySourceLookup =
+  | { kind: 'absent' }
+  | { kind: 'present'; clientSteerId?: string }
+  | { kind: 'ambiguous' };
+
+const stripQueuedRecovery = (item: QueuedMessage): QueuedMessage => {
+  const {
+    clientRequestId: _clientRequestId,
+    recoverySteerId: _recoverySteerId,
+    recoveryClientSteerId: _recoveryClientSteerId,
+    ...ordinary
+  } = item;
+  return ordinary;
 };
 
 function getSteerErrorCode(error: unknown): SteerErrorCode | undefined {
@@ -659,68 +677,103 @@ export default function useSteering({
     [queueKey],
   );
 
-  /** Once a parked source is discarded it must never be retried as a recovery
-   * attempt. Downgrade the row in place so a guarded Edit that finds a newer
-   * draft can leave the same words, context, identity, and queue position as
-   * an ordinary local follow-up. */
-  const downgradeQueuedRecovery = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (id: string): boolean => {
-        const queue = snapshot.getLoadable(store.queuedMessagesByConvoId(queueKey)).getValue();
-        let found = false;
-        const next = queue.map((item) => {
-          if (item.id !== id) {
-            return item;
-          }
-          found = true;
-          const {
-            clientRequestId: _clientRequestId,
-            recoverySteerId: _recoverySteerId,
-            recoveryClientSteerId: _recoveryClientSteerId,
-            ...ordinary
-          } = item;
-          return ordinary;
-        });
-        if (found) {
-          set(store.queuedMessagesByConvoId(queueKey), next);
-        }
-        return found;
-      },
-    [queueKey],
-  );
-
-  /** Settle a queued row's terminal recovery source before an Edit/Remove.
-   * Ordinary rows have no server copy. A v2 leftover first uses its durable
-   * receipt to atomically discard the parked copy, then becomes an ordinary
-   * local row; the caller decides whether the live composer can consume it.
-   * The cancel deliberately omits the active epoch: the receipt belongs to the
-   * terminal source generation, not whichever run now occupies the chat. */
-  const discardQueued = useCallback(
-    async (item: QueuedMessage): Promise<boolean> => {
+  /** Settles a claimed queue row's terminal recovery source. The row is already
+   * absent from Recoil, so every status/cancel round trip is fenced by the
+   * caller's origin transaction and cannot race a concurrent drain. */
+  const cancelQueuedSource = useCallback(
+    async (
+      item: QueuedMessage,
+      allowAbsentRecoverySource = false,
+    ): Promise<QueuedMessage | null> => {
       if (item.recoverySteerId == null) {
-        return true;
+        return item;
       }
-      if (item.recoveryClientSteerId == null || !hasRealConvoId) {
+      if (!hasRealConvoId) {
         showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
-        return false;
+        return null;
       }
+
+      const readSource = async (): Promise<RecoverySourceLookup> => {
+        const status = await fetchStreamStatus(conversationId);
+        if (!supportsGenerationProtocolV2(status) || status.active !== false) {
+          return { kind: 'ambiguous' };
+        }
+        const source = status.unrecoveredSteers?.find(
+          (steer) => steer.steerId === item.recoverySteerId,
+        );
+        return source == null
+          ? { kind: 'absent' }
+          : { kind: 'present', clientSteerId: source.clientSteerId };
+      };
+
       try {
-        const { removed } = await cancelSteer({
+        if (item.recoveryClientSteerId == null) {
+          const source = await readSource();
+          if (source.kind === 'absent' && allowAbsentRecoverySource) {
+            return stripQueuedRecovery(item);
+          }
+          if (source.kind !== 'present' || source.clientSteerId == null) {
+            showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
+            return null;
+          }
+          const retry = await cancelSteer({
+            conversationId,
+            steerId: item.recoverySteerId,
+            clientSteerId: source.clientSteerId,
+          });
+          if (retry.removed === true) {
+            return stripQueuedRecovery(item);
+          }
+          const finalSource = await readSource();
+          if (finalSource.kind === 'absent' && allowAbsentRecoverySource) {
+            return stripQueuedRecovery(item);
+          }
+          showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
+          return null;
+        }
+        const first = await cancelSteer({
           conversationId,
           steerId: item.recoverySteerId,
-          clientSteerId: item.recoveryClientSteerId,
+          ...(item.recoveryClientSteerId != null && {
+            clientSteerId: item.recoveryClientSteerId,
+          }),
         });
-        if (removed !== true) {
-          showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
-          return false;
+        if (first.removed === true) {
+          return stripQueuedRecovery(item);
         }
-        return downgradeQueuedRecovery(item.id);
+
+        // A stale correlation can be retried with the server-authoritative
+        // client id. An absent source is safe only for Delete, never Edit.
+        const source = await readSource();
+        if (source.kind === 'absent' && allowAbsentRecoverySource) {
+          return stripQueuedRecovery(item);
+        }
+        if (source.kind !== 'present' || source.clientSteerId == null) {
+          showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
+          return null;
+        }
+
+        const retry = await cancelSteer({
+          conversationId,
+          steerId: item.recoverySteerId,
+          clientSteerId: source.clientSteerId,
+        });
+        if (retry.removed === true) {
+          return stripQueuedRecovery(item);
+        }
+
+        const finalSource = await readSource();
+        if (finalSource.kind === 'absent' && allowAbsentRecoverySource) {
+          return stripQueuedRecovery(item);
+        }
+        showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
+        return null;
       } catch {
         showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
-        return false;
+        return null;
       }
     },
-    [cancelSteer, conversationId, downgradeQueuedRecovery, hasRealConvoId, localize, showToast],
+    [cancelSteer, conversationId, hasRealConvoId, localize, showToast],
   );
 
   /** Capture-then-remove, including the item's neighbours, so any refused send
@@ -792,6 +845,68 @@ export default function useSteering({
         set(store.queuedMessagesByConvoId(queueKey), (prev) => insertQueuedOrigin(prev, origin));
       },
     [queueKey, releaseQueuedOrigin],
+  );
+
+  /** Claims a queued row synchronously, settles any durable recovery source,
+   * then invokes one UI action while the row remains claimed. A missing row
+   * means the auto-drain already won the race; no cancel or action is allowed
+   * in that case. */
+  const runQueuedAction = useCallback(
+    async (
+      item: QueuedMessage,
+      action: QueuedAction,
+      options?: QueuedActionOptions,
+    ): Promise<boolean> => {
+      const origin = takeQueued(item.id);
+      if (origin == null) {
+        return false;
+      }
+
+      let claimed = origin.item;
+      if (claimed.recoverySteerId != null) {
+        const settled = await cancelQueuedSource(claimed, options?.allowAbsentRecoverySource);
+        if (settled == null) {
+          restoreQueued(origin);
+          return false;
+        }
+        claimed = settled;
+      }
+
+      try {
+        const result = await action(claimed);
+        if (result === false) {
+          restoreQueued({ ...origin, item: claimed });
+          return false;
+        }
+      } catch (error) {
+        restoreQueued({ ...origin, item: claimed });
+        throw error;
+      }
+
+      releaseQueuedOrigin(origin);
+      return true;
+    },
+    [cancelQueuedSource, releaseQueuedOrigin, restoreQueued, takeQueued],
+  );
+
+  /** Backward-compatible source discard for non-chip callers. It uses the same
+   * claim transaction but leaves a successfully discarded row as an ordinary
+   * local item for the caller to consume later. */
+  const discardQueued = useCallback(
+    async (item: QueuedMessage): Promise<boolean> => {
+      const origin = takeQueued(item.id);
+      if (origin == null) {
+        return false;
+      }
+      const settled = await cancelQueuedSource(origin.item);
+      if (settled == null) {
+        restoreQueued(origin);
+        return false;
+      }
+      restoreQueued({ ...origin, item: settled });
+      return true;
+    },
+    [cancelQueuedSource, restoreQueued, takeQueued],
   );
 
   /**
@@ -1109,7 +1224,7 @@ export default function useSteering({
                   // and 5xx ambiguity.
                   upsertSteerChip(conversationId, {
                     steerId: localId,
-                     text: preparedText,
+                    text: preparedText,
                     status: 'failed',
                     createdAt,
                     ...(files && { files }),
@@ -1125,7 +1240,7 @@ export default function useSteering({
                 }
                 upsertSteerChip(conversationId, {
                   steerId: localId,
-                   text: preparedText,
+                  text: preparedText,
                   status: 'failed',
                   deliveryUncertain: true,
                   createdAt,
@@ -1495,6 +1610,7 @@ export default function useSteering({
       queueReclaimedSteer,
       enqueue,
       removeQueued,
+      runQueuedAction,
       discardQueued,
       sendQueuedNow,
       interruptAndSend,
@@ -1521,6 +1637,7 @@ export default function useSteering({
       queueReclaimedSteer,
       enqueue,
       removeQueued,
+      runQueuedAction,
       discardQueued,
       sendQueuedNow,
       interruptAndSend,

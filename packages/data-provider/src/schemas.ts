@@ -808,6 +808,8 @@ export const tMessageSchema = z.object({
   isTemporary: z.boolean().optional(),
   expiredAt: z.string().nullable().optional(),
   error: z.boolean().optional(),
+  /** Inclusive end-to-end processing time for successful assistant responses. */
+  processingDurationMs: z.number().finite().nonnegative().int().safe().optional(),
   clientTimestamp: z.string().optional(),
   createdAt: z
     .string()

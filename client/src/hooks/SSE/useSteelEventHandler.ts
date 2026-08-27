@@ -10,11 +10,12 @@ type MaybeSteelNativeActivityEnvelope = Partial<SteelNativeActivityEnvelope> & {
   data?: Partial<SteelNativeActivityEvent>;
 };
 
-const steelActivityEventTypes = new Set(['parse_status', 'memory_saved']);
+const steelActivityEventTypes = new Set(['parse_status', 'memory_saved', 'quote_audit']);
 const steelActivitySources = new Set([
   'assistant_markdown',
   'ocr_preprocessing',
   'paddleocr_preflight',
+  'quote_runtime',
   'responses_output',
   'tool_result',
 ]);
@@ -65,7 +66,7 @@ function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
   };
 }
 
-function normalizeSteelActivityEvent(
+export function normalizeSteelActivityEvent(
   event: MaybeSteelNativeActivityEnvelope,
 ): SteelNativeActivityEvent | null {
   if (event.event !== steelNativeStreamEventName || event.data == null) {
@@ -81,6 +82,57 @@ function normalizeSteelActivityEvent(
     typeof data.message !== 'string'
   ) {
     return null;
+  }
+
+  if (data.type === 'quote_audit') {
+    if (
+      data.source === 'quote_runtime' &&
+      data.message === 'Stage 2 started' &&
+      data.stage === 'stage_2' &&
+      data.status === 'started'
+    ) {
+      return {
+        type: 'quote_audit',
+        source: 'quote_runtime',
+        message: 'Stage 2 started',
+        stage: 'stage_2',
+        status: 'started',
+        ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
+        ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
+        ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
+        ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
+        ...(typeof data.providerToolCallId === 'string'
+          ? { providerToolCallId: data.providerToolCallId }
+          : {}),
+      };
+    }
+
+    if (
+      data.source !== 'quote_runtime' ||
+      data.message !== 'Code Interpreter executed' ||
+      (data.stage !== 'stage_1' && data.stage !== 'stage_2') ||
+      data.status !== 'executed' ||
+      data.toolName !== 'code_interpreter' ||
+      (data.providerToolCallId !== undefined &&
+        (typeof data.providerToolCallId !== 'string' || data.providerToolCallId === ''))
+    ) {
+      return null;
+    }
+
+    return {
+      type: 'quote_audit',
+      source: 'quote_runtime',
+      message: 'Code Interpreter executed',
+      stage: data.stage,
+      status: 'executed',
+      toolName: 'code_interpreter',
+      ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
+      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
+      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
+      ...(typeof data.providerToolCallId === 'string'
+        ? { providerToolCallId: data.providerToolCallId }
+        : {}),
+    };
   }
 
   if (data.type === 'parse_status') {
@@ -134,6 +186,19 @@ function normalizeSteelActivityEvent(
   };
 }
 
+export function normalizePersistedSteelActivityEvent(
+  value: unknown,
+): SteelNativeActivityEvent | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return normalizeSteelActivityEvent({
+    event: steelNativeStreamEventName,
+    data: value,
+  } as MaybeSteelNativeActivityEnvelope);
+}
+
 function getTargetMessageIds(
   event: SteelNativeActivityEvent,
   submission: EventSubmission,
@@ -168,6 +233,8 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     savedTableCounts: event.savedTableCounts,
     totalSavedCounts: event.totalSavedCounts,
     totalTableCounts: event.totalTableCounts,
+    stage: event.type === 'quote_audit' ? event.stage : undefined,
+    status: event.type === 'quote_audit' ? event.status : undefined,
     errorMessage: event.type === 'parse_status' ? event.errorMessage : undefined,
     failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
     missingPageRangesByFileKey:

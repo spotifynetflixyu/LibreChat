@@ -4,6 +4,7 @@ import {
   buildCreatedInitialResponse,
   mergeFinalResponseTimestamp,
   mergeRunMessagesTimestamp,
+  mergeAssistantProcessingDuration,
   getExistingConversationAbortMessages,
   isInitialNewConversationSubmission,
   mergeRegenerateFinalMessages,
@@ -147,6 +148,23 @@ describe('mergeRunMessagesTimestamp', () => {
     ];
 
     expect(mergeRunMessagesTimestamp({ initialResponse, runMessages })).toBe(runMessages);
+  });
+});
+
+describe('mergeAssistantProcessingDuration', () => {
+  it('updates the completed assistant sibling without touching user messages', () => {
+    const user = { messageId: 'user-1', isCreatedByUser: true } as TMessage;
+    const assistant = { messageId: 'assistant-1', isCreatedByUser: false } as TMessage;
+    const result = mergeAssistantProcessingDuration({
+      messages: [user, assistant],
+      responseMessage: {
+        messageId: assistant.messageId,
+        processingDurationMs: 12_000,
+      } as TMessage,
+    });
+
+    expect(result[0]).toBe(user);
+    expect(result[1]).toEqual(expect.objectContaining({ processingDurationMs: 12_000 }));
   });
 });
 describe('isInitialNewConversationSubmission', () => {

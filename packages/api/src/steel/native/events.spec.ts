@@ -1,11 +1,187 @@
 import {
+  appendSteelNativeActivityEvent,
+  upsertSteelNativePreflightToolCall,
+  buildSteelCodeInterpreterAuditEvent,
+  buildSteelQuoteAuditEvent,
   buildSteelNativeEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   steelNativeStreamEventName,
 } from './events';
 
+const memoryEvent = (message = 'Saved') => ({
+  type: 'memory_saved' as const,
+  source: 'tool_result' as const,
+  message,
+  savedCounts: { price_evidence: 1 },
+});
+
 describe('Steel native event mapping', () => {
+  it('appends validated events with bounded count and byte budgets', () => {
+    const sink = [] as ReturnType<typeof memoryEvent>[];
+    const identity = sink;
+
+    expect(appendSteelNativeActivityEvent(sink, memoryEvent())).toBe(true);
+    expect(sink).toHaveLength(1);
+    expect(sink).toBe(identity);
+
+    for (let index = 0; index < 110; index += 1) {
+      appendSteelNativeActivityEvent(sink, memoryEvent(String(index)));
+    }
+    expect(sink).toHaveLength(100);
+    expect(sink[0].message).toBe('10');
+  });
+
+  it('rejects malformed, oversized, and envelope values without throwing', () => {
+    const sink = [] as ReturnType<typeof memoryEvent>[];
+    const circular: Record<string, unknown> = {
+      type: 'memory_saved',
+      source: 'tool_result',
+      message: 'circular',
+      savedCounts: { price_evidence: 1 },
+    };
+    circular.self = circular;
+
+    expect(
+      appendSteelNativeActivityEvent(sink, {
+        event: steelNativeStreamEventName,
+        data: memoryEvent(),
+      }),
+    ).toBe(false);
+    expect(
+      appendSteelNativeActivityEvent(sink, { type: 'memory_saved', source: 'tool_result' }),
+    ).toBe(false);
+    expect(
+      appendSteelNativeActivityEvent(sink, { ...memoryEvent('x'.repeat(20 * 1024)) }),
+    ).toBe(false);
+    expect(() => appendSteelNativeActivityEvent(sink, circular)).not.toThrow();
+    expect(sink).toEqual([]);
+  });
+
+  it('evicts oldest events to stay under total JSON byte budget', () => {
+    const sink = [] as ReturnType<typeof memoryEvent>[];
+    const payload = (index: number) => memoryEvent(`${index}-${'x'.repeat(14 * 1024)}`);
+
+    for (let index = 0; index < 12; index += 1) {
+      expect(appendSteelNativeActivityEvent(sink, payload(index))).toBe(true);
+    }
+
+    expect(sink.length).toBeLessThan(12);
+    expect(Buffer.byteLength(JSON.stringify(sink), 'utf8')).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it('upserts redacted PaddleOCR cards under per-entry and complete-history budgets', () => {
+    const history = { activityEvents: [], preflightToolCalls: [] };
+    const card = {
+      type: 'tool_call' as const,
+      id: 'steel_paddleocr_preflight_pages_1_50',
+      name: 'paddleocr_vl---PaddleOCR',
+      args: {
+        output_mode: 'detailed' as const,
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      output: JSON.stringify({
+        status: 'completed',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:pdf-1',
+        filename: 'quote.pdf',
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        rawTextLength: 12,
+        rawResultHash: 'hash',
+        outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+      }),
+      progress: 0 as const,
+    };
+    const identity = history.preflightToolCalls;
+    expect(upsertSteelNativePreflightToolCall(history, card)).toBe(true);
+    expect(history.preflightToolCalls).toBe(identity);
+    expect(upsertSteelNativePreflightToolCall(history, { ...card, progress: 1 })).toBe(true);
+    expect(history.preflightToolCalls).toHaveLength(1);
+    expect(history.preflightToolCalls[0]?.progress).toBe(1);
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        ...card,
+        args: { ...card.args, input_data: 'https://secret' },
+      }),
+    ).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(history), 'utf8')).toBeLessThanOrEqual(128 * 1024);
+
+    for (let index = 0; index < 100; index += 1) {
+      appendSteelNativeActivityEvent(history, memoryEvent(`${index}-${'x'.repeat(1400)}`));
+    }
+    expect(Buffer.byteLength(JSON.stringify(history), 'utf8')).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it('rejects unsafe quote source and missing page ranges', () => {
+    const sink = [] as ReturnType<typeof memoryEvent>[];
+    expect(
+      appendSteelNativeActivityEvent(sink, {
+        type: 'quote_audit',
+        source: 'tool_result',
+        stage: 'stage_2',
+        status: 'started',
+        message: 'Stage 2 started',
+      }),
+    ).toBe(false);
+    expect(
+      appendSteelNativeActivityEvent(sink, {
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'failed',
+        parseStatus: 'partial',
+        missingPageRangesByFileKey: { 'file-1': [{ pageStart: 0, pageEnd: 2 }] },
+      }),
+    ).toBe(false);
+  });
+
+  it('builds a Stage 2 quote audit event with trace ids', () => {
+    expect(
+      buildSteelQuoteAuditEvent({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_1',
+      }),
+    ).toEqual({
+      type: 'quote_audit',
+      source: 'quote_runtime',
+      stage: 'stage_2',
+      status: 'started',
+      message: 'Stage 2 started',
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_1',
+    });
+  });
+
+  it('builds an exact positive Code Interpreter audit event', () => {
+    expect(
+      buildSteelCodeInterpreterAuditEvent({
+        stage: 'stage_1',
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_1',
+        providerToolCallId: 'call_python',
+      }),
+    ).toEqual({
+      type: 'quote_audit',
+      source: 'quote_runtime',
+      stage: 'stage_1',
+      status: 'executed',
+      message: 'Code Interpreter executed',
+      toolName: 'code_interpreter',
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_1',
+      providerToolCallId: 'call_python',
+    });
+  });
+
   it('maps captured tool result saves without emitting parse status', () => {
     const events = buildSteelNativeEventEnvelopes({
       source: 'tool_result',
