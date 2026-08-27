@@ -7,6 +7,7 @@ import type {
   LanguageModelV3GenerateResult,
   LanguageModelV3Message,
   LanguageModelV3Prompt,
+  LanguageModelV3ProviderTool,
   LanguageModelV3StreamPart,
   LanguageModelV3TextPart,
   LanguageModelV3ToolCall,
@@ -52,6 +53,7 @@ export interface OpenAIOAuthProviderOptions {
 }
 
 export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
+  enableCodeInterpreter?: boolean;
   frequencyPenalty?: number;
   maxOutputTokens?: number;
   model: string;
@@ -527,10 +529,22 @@ function toLanguageModelTool(tool: BindToolsInput): LanguageModelV3FunctionTool 
   };
 }
 
-function toLanguageModelTools(tools?: BindToolsInput[]): LanguageModelV3FunctionTool[] | undefined {
-  const converted = (tools ?? [])
+function toLanguageModelTools(
+  tools?: BindToolsInput[],
+  enableCodeInterpreter?: boolean,
+): Array<LanguageModelV3FunctionTool | LanguageModelV3ProviderTool> | undefined {
+  const converted: Array<LanguageModelV3FunctionTool | LanguageModelV3ProviderTool> = (tools ?? [])
     .map(toLanguageModelTool)
     .filter((tool): tool is LanguageModelV3FunctionTool => tool != null);
+
+  if (enableCodeInterpreter) {
+    converted.push({
+      type: 'provider',
+      id: 'openai.code_interpreter',
+      name: 'code_interpreter',
+      args: {},
+    });
+  }
 
   return converted.length > 0 ? converted : undefined;
 }
@@ -622,7 +636,10 @@ function createResponseMetadata({
 
 function toMessageChunk(result: LanguageModelV3GenerateResult, model: string): AIMessageChunk {
   const toolCalls = result.content
-    .filter((part): part is LanguageModelV3ToolCall => part.type === 'tool-call')
+    .filter(
+      (part): part is LanguageModelV3ToolCall =>
+        part.type === 'tool-call' && part.providerExecuted !== true,
+    )
     .map(toToolCall);
 
   return new AIMessageChunk({
@@ -648,7 +665,7 @@ function createCallOptions({
   options: OpenAIOAuthModelOptions;
   tools?: BindToolsInput[];
 }): LanguageModelV3CallOptions {
-  const languageModelTools = toLanguageModelTools(tools);
+  const languageModelTools = toLanguageModelTools(tools, options.enableCodeInterpreter !== false);
 
   return omitUndefined({
     abortSignal: getRunnableAbortSignal(config),
@@ -713,7 +730,7 @@ async function* toChunkStream({
 
       if (value.type === 'text-delta') {
         yield toStreamTextChunk(value.delta, model);
-      } else if (value.type === 'tool-call') {
+      } else if (value.type === 'tool-call' && value.providerExecuted !== true) {
         yield toStreamToolCallChunk(value, model);
       } else if (value.type === 'response-metadata') {
         response = value;

@@ -762,9 +762,122 @@ describe('OpenAI OAuth model adapter', () => {
             type: 'function',
             name: 'search_customers',
           }),
+          expect.objectContaining({
+            type: 'provider',
+            id: 'openai.code_interpreter',
+            name: 'code_interpreter',
+          }),
         ],
       }),
     );
+  });
+
+  it('adds the provider-hosted Code Interpreter by default and allows explicit disabling', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'text',
+          text: 'ok',
+        },
+      ]),
+    );
+    const tool = {
+      type: 'function',
+      function: {
+        name: 'search_customers',
+        description: 'Search customers',
+        parameters: { type: 'object', properties: {} },
+      },
+    } as unknown as BindToolsInput;
+    const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate });
+    const enabledModel = createOpenAIOAuthModel({
+      ...dependencies.options,
+      model: 'gpt-5.5',
+    });
+    await enabledModel.bindTools([tool]).invoke([new HumanMessage('報價')]);
+
+    expect(getGenerateCall(doGenerate).tools).toEqual([
+      expect.objectContaining({ type: 'function', name: 'search_customers' }),
+      {
+        type: 'provider',
+        id: 'openai.code_interpreter',
+        name: 'code_interpreter',
+        args: {},
+      },
+    ]);
+
+    doGenerate.mockClear();
+    const disabledModel = createOpenAIOAuthModel({
+      ...dependencies.options,
+      enableCodeInterpreter: false,
+      model: 'gpt-5.5',
+    });
+    await disabledModel.bindTools([tool]).invoke([new HumanMessage('報價')]);
+    expect(getGenerateCall(doGenerate).tools).toEqual([
+      expect.objectContaining({ type: 'function', name: 'search_customers' }),
+    ]);
+  });
+
+  it('omits provider-executed calls and results while preserving final text', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_python',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: true,
+        },
+        {
+          type: 'text',
+          text: '計算完成',
+        },
+      ]),
+    );
+    const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate });
+    const model = createOpenAIOAuthModel({
+      ...dependencies.options,
+      enableCodeInterpreter: true,
+      model: 'gpt-5.5',
+    });
+
+    const result = await model.invoke([new HumanMessage('請報價')]);
+    expect(result.content).toBe('計算完成');
+    expect(result.tool_calls).toHaveLength(0);
+
+    const doStream = jest.fn(async () => ({
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({
+            type: 'tool-call',
+            toolCallId: 'call_python',
+            toolName: 'code_interpreter',
+            input: '{}',
+            providerExecuted: true,
+          });
+          controller.enqueue({
+            type: 'tool-result',
+            toolCallId: 'call_python',
+            toolName: 'code_interpreter',
+            result: '計算完成',
+          });
+          controller.enqueue({ type: 'text-delta', id: 'text_1', delta: '計算完成' });
+          controller.close();
+        },
+      }),
+      warnings: [],
+    }));
+    const streamingModel = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+      enableCodeInterpreter: true,
+      model: 'gpt-5.5',
+    });
+    const chunks = [];
+    for await (const chunk of await streamingModel.stream([new HumanMessage('請報價')])) {
+      chunks.push(chunk);
+    }
+    expect(chunks.map((chunk) => chunk.content)).toEqual(['計算完成', '']);
+    expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(false);
   });
 
   it('passes native tools to the OAuth provider and maps tool calls back to AIMessageChunk', async () => {
@@ -811,6 +924,12 @@ describe('OpenAI OAuth model adapter', () => {
           },
           required: ['query'],
         },
+      },
+      {
+        type: 'provider',
+        id: 'openai.code_interpreter',
+        name: 'code_interpreter',
+        args: {},
       },
     ]);
     expect(result.tool_calls).toEqual([
@@ -1048,6 +1167,11 @@ describe('OpenAI OAuth model adapter', () => {
           expect.objectContaining({
             type: 'function',
             name: 'search_price_candidates',
+          }),
+          expect.objectContaining({
+            type: 'provider',
+            id: 'openai.code_interpreter',
+            name: 'code_interpreter',
           }),
         ],
       }),

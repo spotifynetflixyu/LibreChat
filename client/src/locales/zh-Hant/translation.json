@@ -1985,7 +1985,7 @@
   "com_ui_upload_invalid": "上傳的檔案無效。必須是不超過限制的圖片檔",
   "com_ui_upload_invalid_var": "上傳的檔案無效。必須是不超過 {{0}} MB 的圖片檔案",
   "com_ui_upload_ocr_text": "以文字形式上傳",
-  "com_ui_upload_provider": "上傳至供應商",
+  "com_ui_upload_provider": "上傳至 AI",
   "com_ui_upload_success": "檔案上傳成功",
   "com_ui_upload_type": "選擇上傳類型",
   "com_ui_usage": "使用率",
