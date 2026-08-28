@@ -1806,6 +1806,28 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockDisposeClient).toHaveBeenCalledTimes(1);
     });
 
+    it('re-pause: skips persistence when the segment has no content, artifacts, or metadata', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockGetMessages.mockResolvedValue([]);
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          pendingApproval: { actionId: NEXT_ACTION_ID },
+          contentParts: [],
+          artifactPromises: [],
+          buildResponseMetadata: jest.fn(() => null),
+        }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).not.toHaveBeenCalled();
+      expect(mockGenerationJobManager.publishTerminalClaim).not.toHaveBeenCalled();
+    });
+
     it('re-pause: persists the segment content (unfinished) so an expiring re-pause keeps it', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
       mockInitializeClient.mockResolvedValue({

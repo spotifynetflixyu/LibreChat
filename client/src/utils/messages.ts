@@ -430,6 +430,11 @@ export const isValidTimestamp = (value?: string | null): value is string => {
   return !Number.isNaN(new Date(value).getTime());
 };
 
+export const getMessageTimestampSource = (
+  message?: Pick<TMessage, 'createdAt' | 'clientTimestamp'> | null,
+): string | undefined =>
+  isValidTimestamp(message?.createdAt) ? message.createdAt : message?.clientTimestamp;
+
 /**
  * Preserve an optimistic user timestamp when a server request message omits
  * both timestamp fields during sync/final/cancel replacement.
@@ -658,6 +663,7 @@ export function areMessageFieldsEqual(
     prevMsg.unfinished === nextMsg.unfinished &&
     prevMsg.createdAt === nextMsg.createdAt &&
     prevMsg.clientTimestamp === nextMsg.clientTimestamp &&
+    prevMsg.metadata?.steel === nextMsg.metadata?.steel &&
     prevMsg.processingDurationMs === nextMsg.processingDurationMs &&
     prevMsg.depth === nextMsg.depth &&
     prevMsg.isCreatedByUser === nextMsg.isCreatedByUser &&

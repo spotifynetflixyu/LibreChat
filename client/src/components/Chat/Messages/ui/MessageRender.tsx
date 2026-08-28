@@ -7,6 +7,7 @@ import {
   cn,
   getHeaderPrefixForScreenReader,
   getMessageAriaLabel,
+  getMessageTimestampSource,
   isValidTimestamp,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
@@ -157,7 +158,7 @@ const MessageRender = memo(function MessageRender({
         msg.model,
         conversation?.model,
       )}
-      timestamp={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+      timestamp={getMessageTimestampSource(msg)}
       processingStartedAt={
         isValidTimestamp(msg.clientTimestamp) ? msg.clientTimestamp : msg.createdAt
       }

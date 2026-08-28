@@ -20,6 +20,7 @@ const {
   isSteelNativeProviderPolicyTarget,
   resolveSteelNativeProviderPolicy,
   toSteelNativeProviderMetadata,
+  createSteelNativeHistory,
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
   createStatefulCodeEnvironmentPolicyError,
@@ -155,7 +156,7 @@ const initializeClient = async ({
   if (!endpointOption) {
     throw new Error('Endpoint option not provided');
   }
-  const steelHistory = { activityEvents: [], preflightToolCalls: [] };
+  const steelHistory = createSteelNativeHistory();
   req.steelNativeContext = {
     ...(req.steelNativeContext ?? {}),
     steelHistory,
@@ -1383,7 +1384,6 @@ const initializeClient = async ({
     contextUsageSink,
     usageEmitSink,
     steelHistory,
-    steelActivityEvents: steelHistory.activityEvents,
   });
 
   const client = new AgentClient({
@@ -1423,7 +1423,6 @@ const initializeClient = async ({
     contextUsageSink,
     usageEmitSink,
     steelHistory,
-    steelActivityEvents: steelHistory.activityEvents,
     steelProviderMetadata: steelProviderPolicy
       ? toSteelNativeProviderMetadata(steelProviderPolicy)
       : undefined,

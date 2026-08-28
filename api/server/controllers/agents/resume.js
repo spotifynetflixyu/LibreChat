@@ -24,6 +24,7 @@ const {
   isSteerPreemptSupported,
   toPendingSteer,
   isDelegateOcrQuoteOnlyTurn,
+  createSteelNativeHistory,
   appendSteelNativeActivityEvent,
   upsertSteelNativePreflightToolCall,
 } = require('@librechat/api');
@@ -150,7 +151,7 @@ async function mergePersistedSteelActivityMetadata({
   const currentCards = Array.isArray(currentSteel.preflightToolCalls)
     ? currentSteel.preflightToolCalls
     : [];
-  const steelHistory = { activityEvents: [], preflightToolCalls: [] };
+  const steelHistory = createSteelNativeHistory();
   if (
     typeof appendSteelNativeActivityEvent !== 'function' ||
     typeof upsertSteelNativePreflightToolCall !== 'function'
@@ -191,11 +192,13 @@ async function mergePersistedSteelActivityMetadata({
       ? { preflightToolCalls: steelHistory.preflightToolCalls }
       : {}),
   };
-  return {
+  const { steel: _ignoredSteel, ...mergedMetadata } = {
     ...persistedMetadata,
     ...(responseMetadata ?? {}),
-    steel: mergedSteel,
   };
+  return Object.keys(mergedSteel).length > 0
+    ? { ...mergedMetadata, steel: mergedSteel }
+    : mergedMetadata;
 }
 
 /**

@@ -61,6 +61,7 @@ import {
   markStreamStartFailedMetadata,
   findPendingActionMessageIndex,
   insertQueuedOrigin,
+  stripQueuedRecovery,
 } from '~/utils';
 import {
   useGetUserBalance,
@@ -247,16 +248,6 @@ const getRecoveryPayloadMismatch = (error: unknown): boolean => {
     typeof data === 'object' &&
     (data as { code?: unknown }).code === RECOVERY_PAYLOAD_MISMATCH_CODE
   );
-};
-
-const stripQueuedRecovery = (item: QueuedMessage): QueuedMessage => {
-  const {
-    clientRequestId: _clientRequestId,
-    recoverySteerId: _recoverySteerId,
-    recoveryClientSteerId: _recoveryClientSteerId,
-    ...ordinary
-  } = item;
-  return ordinary;
 };
 
 const withAuthoritativeRecoverySource = (
@@ -1409,8 +1400,7 @@ export default function useResumableSSE(
       const removeUnhydratedOptimisticConversation = () => {
         if (
           !createdStreamIdsRef.current.has(currentStreamId) &&
-          optimisticStreamIdsRef.current.has(currentStreamId) &&
-          !hasConcreteConversationId(currentSubmission.conversation?.conversationId)
+          optimisticStreamIdsRef.current.has(currentStreamId)
         ) {
           removeConvoFromAllQueries(queryClient, currentStreamId);
         }
@@ -2976,8 +2966,7 @@ export default function useResumableSSE(
           clearAttachedGenerationCreatedAt();
           if (
             !createdStreamIdsRef.current.has(currentStreamId) &&
-            optimisticStreamIdsRef.current.has(currentStreamId) &&
-            !hasConcreteConversationId(convoId)
+            optimisticStreamIdsRef.current.has(currentStreamId)
           ) {
             if (isResume) {
               // A resumed subscribe attaches to an already-adopted stream (e.g. a deduped

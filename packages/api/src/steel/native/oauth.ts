@@ -680,107 +680,239 @@ interface StageOneSlice {
   content: string;
 }
 
-function parseStageOneSlice(text: string): StageOneSlice | undefined {
-  const headings: Array<{
-    name: 'system_order' | 'customer_data' | 'customer_quote';
-    start: number;
-  }> = [];
-  let quoteFound = false;
-  let fenceCharacter: '`' | '~' | undefined;
-  let fenceLength = 0;
-  let lineStart = 0;
+type StageOneHeadingName = 'system_order' | 'customer_data' | 'customer_quote';
 
-  while (lineStart <= text.length) {
-    const newlineIndex = text.indexOf('\n', lineStart);
-    const nextLineStart = newlineIndex < 0 ? text.length + 1 : newlineIndex + 1;
-    const lineEnd = newlineIndex < 0 ? text.length : newlineIndex;
-    const line = text.slice(lineStart, lineEnd).replace(/\r$/, '');
-    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+interface StageOneHeading {
+  name: StageOneHeadingName;
+  start: number;
+}
 
-    if (fenceCharacter) {
-      const closingFence = line.match(/^ {0,3}(`+|~+)[ \t]*$/)?.[1];
-      if (closingFence?.[0] === fenceCharacter && closingFence.length >= fenceLength) {
-        fenceCharacter = undefined;
-        fenceLength = 0;
-      }
-      lineStart = nextLineStart;
-      continue;
+type StageOneLine =
+  | { type: 'none' }
+  | { type: 'fence-close' }
+  | { type: 'fence-open'; character: '`' | '~'; length: number }
+  | { type: 'heading'; name?: StageOneHeadingName; separatorEmpty: boolean };
+
+function parseStageOneLine(
+  line: string,
+  fenceCharacter: '`' | '~' | undefined,
+  fenceLength: number,
+): StageOneLine {
+  const normalizedLine = line.replace(/\r$/, '');
+
+  if (fenceCharacter) {
+    const closingFence = normalizedLine.match(/^ {0,3}(`+|~+)[ \t]*$/)?.[1];
+    if (closingFence?.[0] === fenceCharacter && closingFence.length >= fenceLength) {
+      return { type: 'fence-close' };
     }
-
-    if (fenceMatch) {
-      fenceCharacter = fenceMatch[1]?.[0] as '`' | '~';
-      fenceLength = fenceMatch[1]?.length ?? 0;
-      lineStart = nextLineStart;
-      continue;
-    }
-
-    const headingMatch = line.match(/^##[ \t]+([^\r\n]*)$/);
-    if (!headingMatch) {
-      lineStart = nextLineStart;
-      continue;
-    }
-
-    const rawTitle = headingMatch[1]?.trim();
-    const headingStart = lineStart;
-    if (!rawTitle) {
-      if (quoteFound) {
-        lineStart = nextLineStart;
-        continue;
-      }
-      return undefined;
-    }
-
-    const separatorIndex = rawTitle.indexOf('｜');
-    const name = (separatorIndex < 0 ? rawTitle : rawTitle.slice(0, separatorIndex)).trim();
-    if (name !== 'system_order' && name !== 'customer_data' && name !== 'customer_quote') {
-      if (quoteFound) {
-        lineStart = nextLineStart;
-        continue;
-      }
-      return undefined;
-    }
-
-    if (quoteFound) {
-      lineStart = nextLineStart;
-      continue;
-    }
-
-    if (separatorIndex >= 0 && rawTitle.slice(separatorIndex + 1).trim() === '') {
-      return undefined;
-    }
-
-    if (name === 'customer_quote') {
-      quoteFound = true;
-    }
-
-    headings.push({
-      name,
-      start: headingStart,
-    });
-
-    lineStart = nextLineStart;
+    return { type: 'none' };
   }
 
+  const fenceMatch = normalizedLine.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (fenceMatch) {
+    const fence = fenceMatch[1];
+    return {
+      type: 'fence-open',
+      character: fence?.[0] as '`' | '~',
+      length: fence?.length ?? 0,
+    };
+  }
+
+  const headingMatch = normalizedLine.match(/^##[ \t]+([^\r\n]*)$/);
+  if (!headingMatch) {
+    return { type: 'none' };
+  }
+
+  const rawTitle = headingMatch[1]?.trim();
+  if (!rawTitle) {
+    return { type: 'heading', separatorEmpty: false };
+  }
+
+  const separatorIndex = rawTitle.indexOf('｜');
+  const name = (separatorIndex < 0 ? rawTitle : rawTitle.slice(0, separatorIndex)).trim();
+  const headingName =
+    name === 'system_order' || name === 'customer_data' || name === 'customer_quote'
+      ? name
+      : undefined;
+
+  return {
+    type: 'heading',
+    name: headingName,
+    separatorEmpty: separatorIndex >= 0 && rawTitle.slice(separatorIndex + 1).trim() === '',
+  };
+}
+
+function hasValidStageOneHeadings(headings: StageOneHeading[]): boolean {
   if (headings.length !== 2 && headings.length !== 3) {
-    return undefined;
+    return false;
   }
 
   const [systemHeading, secondHeading, thirdHeading] = headings;
   if (!systemHeading || systemHeading.name !== 'system_order') {
-    return undefined;
+    return false;
   }
 
   const quoteHeading = headings.length === 2 ? secondHeading : thirdHeading;
   if (!quoteHeading || quoteHeading.name !== 'customer_quote') {
-    return undefined;
+    return false;
   }
 
-  if (headings.length === 3 && secondHeading?.name !== 'customer_data') {
-    return undefined;
-  }
+  return headings.length !== 3 || secondHeading?.name === 'customer_data';
+}
 
-  const content = text.slice(0, quoteHeading.start).replace(/[ \t\r\n]+$/, '');
-  return content === '' ? undefined : { content };
+interface StageOneParser {
+  append(text: string): void;
+  getProvisionalContentEnd(): number | undefined;
+  getSafeTextEnd(): number;
+  finish(text: string): StageOneSlice | undefined;
+}
+
+function createStageOneParser(): StageOneParser {
+  const headings: StageOneHeading[] = [];
+  const pendingLineParts: string[] = [];
+  let pendingLineStart = 0;
+  let pendingLineContentEnd = 0;
+  let textLength = 0;
+  let lastNonWhitespacePosition = 0;
+  let safeTextEnd = 0;
+  let sawNewline = false;
+  let quoteFound = false;
+  let quoteStart: number | undefined;
+  let quoteContentEnd: number | undefined;
+  let fenceCharacter: '`' | '~' | undefined;
+  let fenceLength = 0;
+  let invalid = false;
+  let finished = false;
+
+  const processLine = (line: string, lineStart: number, contentEnd: number): void => {
+    const parsedLine = parseStageOneLine(line, fenceCharacter, fenceLength);
+    if (parsedLine.type === 'fence-open') {
+      fenceCharacter = parsedLine.character;
+      fenceLength = parsedLine.length;
+      return;
+    }
+    if (parsedLine.type === 'fence-close') {
+      fenceCharacter = undefined;
+      fenceLength = 0;
+      return;
+    }
+    if (parsedLine.type !== 'heading' || quoteFound) {
+      return;
+    }
+    if (!parsedLine.name || parsedLine.separatorEmpty) {
+      invalid = true;
+      return;
+    }
+
+    const heading = {
+      name: parsedLine.name,
+      start: lineStart,
+    };
+    headings.push(heading);
+    if (parsedLine.name === 'customer_quote') {
+      quoteFound = true;
+      quoteStart = lineStart;
+      quoteContentEnd = contentEnd;
+    }
+  };
+
+  const scanText = (text: string, offset: number): void => {
+    for (let index = 0; index < text.length; index += 1) {
+      if (!/[ \t\r\n]/.test(text[index] ?? '')) {
+        lastNonWhitespacePosition = offset + index + 1;
+      }
+    }
+  };
+
+  return {
+    append(text: string): void {
+      if (finished || text === '') {
+        return;
+      }
+
+      const baseOffset = textLength;
+      let segmentStart = 0;
+      while (segmentStart < text.length) {
+        const newlineIndex = text.indexOf('\n', segmentStart);
+        const segmentEnd = newlineIndex < 0 ? text.length : newlineIndex;
+        const segment = text.slice(segmentStart, segmentEnd);
+        if (segment !== '') {
+          if (pendingLineParts.length === 0) {
+            pendingLineContentEnd = lastNonWhitespacePosition;
+          }
+          pendingLineParts.push(segment);
+          scanText(segment, baseOffset + segmentStart);
+        }
+
+        if (newlineIndex < 0) {
+          break;
+        }
+
+        const line = pendingLineParts.join('');
+        pendingLineParts.length = 0;
+        processLine(line, pendingLineStart, pendingLineContentEnd);
+        sawNewline = true;
+        safeTextEnd = lastNonWhitespacePosition;
+        pendingLineStart = baseOffset + newlineIndex + 1;
+        pendingLineContentEnd = lastNonWhitespacePosition;
+        segmentStart = newlineIndex + 1;
+      }
+
+      textLength = baseOffset + text.length;
+    },
+
+    getProvisionalContentEnd(): number | undefined {
+      if (invalid) {
+        return undefined;
+      }
+      if (quoteStart !== undefined) {
+        return hasValidStageOneHeadings(headings) ? quoteContentEnd : undefined;
+      }
+
+      const pendingLine = pendingLineParts.join('');
+      const parsedLine = parseStageOneLine(pendingLine, fenceCharacter, fenceLength);
+      if (
+        parsedLine.type !== 'heading' ||
+        parsedLine.name !== 'customer_quote' ||
+        parsedLine.separatorEmpty
+      ) {
+        return undefined;
+      }
+
+      const provisionalHeadings = [...headings, { name: parsedLine.name, start: pendingLineStart }];
+      return hasValidStageOneHeadings(provisionalHeadings) ? pendingLineContentEnd : undefined;
+    },
+
+    getSafeTextEnd(): number {
+      return sawNewline ? safeTextEnd : 0;
+    },
+
+    finish(text: string): StageOneSlice | undefined {
+      if (!finished) {
+        const pendingLine = pendingLineParts.join('');
+        processLine(pendingLine, pendingLineStart, pendingLineContentEnd);
+        finished = true;
+      }
+
+      if (invalid || !hasValidStageOneHeadings(headings)) {
+        return undefined;
+      }
+
+      const quoteHeading = headings[headings.length === 2 ? 1 : 2];
+      if (!quoteHeading) {
+        return undefined;
+      }
+
+      const content = text.slice(0, quoteHeading.start).replace(/[ \t\r\n]+$/, '');
+      return content === '' ? undefined : { content };
+    },
+  };
+}
+
+function parseStageOneSlice(text: string): StageOneSlice | undefined {
+  const parser = createStageOneParser();
+  parser.append(text);
+  return parser.finish(text);
 }
 
 function shouldTransitionToStageTwo(
@@ -1021,15 +1153,6 @@ function toStreamTextChunk(delta: string, model: string): AIMessageChunk {
   });
 }
 
-function getSafeStageOneTextEnd(text: string): number {
-  const lastNewline = text.lastIndexOf('\n');
-  if (lastNewline < 0) {
-    return 0;
-  }
-
-  return text.slice(0, lastNewline + 1).replace(/[ \t\r\n]+$/, '').length;
-}
-
 function toStreamFinalChunk({
   additionalUsage,
   finishReason,
@@ -1223,13 +1346,14 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const reader = result.stream.getReader();
-    const parts: LanguageModelV3StreamPart[] = [];
+    const stageOneParser = createStageOneParser();
     let stageOneText = '';
     let emittedTextLength = 0;
     let response: LanguageModelV3GenerateResult['response'];
     let usage: LanguageModelV3Usage | undefined;
     let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
-    let transitionBlocked = false;
+    let sawToolCallOrInputStart = false;
+    let sawError = false;
     let completed = false;
 
     try {
@@ -1240,20 +1364,19 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           break;
         }
 
-        parts.push(value);
         await dispatchCodeInterpreterAudit('stage_1', [value]);
 
         if (value.type === 'text-delta') {
           stageOneText += value.delta;
-          if (transitionBlocked) {
+          stageOneParser.append(value.delta);
+          if (sawToolCallOrInputStart || sawError) {
             yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
             emittedTextLength = stageOneText.length;
             continue;
           }
 
-          const provisionalStageOne = parseStageOneSlice(stageOneText);
           const safeEnd =
-            provisionalStageOne?.content.length ?? getSafeStageOneTextEnd(stageOneText);
+            stageOneParser.getProvisionalContentEnd() ?? stageOneParser.getSafeTextEnd();
           if (safeEnd > emittedTextLength) {
             yield toStreamTextChunk(
               stageOneText.slice(emittedTextLength, safeEnd),
@@ -1270,17 +1393,15 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           value.type === 'error'
         ) {
           if (stageOneText.length > emittedTextLength) {
-            yield toStreamTextChunk(
-              stageOneText.slice(emittedTextLength),
-              this.options.model,
-            );
+            yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
             emittedTextLength = stageOneText.length;
           }
-          transitionBlocked = true;
 
           if (value.type === 'error') {
+            sawError = true;
             throw value.error instanceof Error ? value.error : new Error(String(value.error));
           }
+          sawToolCallOrInputStart = true;
           if (value.type === 'tool-call' && value.providerExecuted !== true) {
             yield toStreamToolCallChunk(value, this.options.model);
           }
@@ -1301,14 +1422,14 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       reader.releaseLock();
     }
 
-    const stageOne = shouldTransitionToStageTwo(
-      messages,
-      this.options,
-      parts,
-      finishReason,
-    )
-      ? parseStageOneSlice(stageOneText)
-      : undefined;
+    const stageOne =
+      this.options.enableCodeInterpreter !== false &&
+      hasCurrentTurnPriceResult(messages) &&
+      !sawError &&
+      !sawToolCallOrInputStart &&
+      isCompletedTextResult(finishReason)
+        ? stageOneParser.finish(stageOneText)
+        : undefined;
     if (!stageOne) {
       if (stageOneText.length > emittedTextLength) {
         yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);

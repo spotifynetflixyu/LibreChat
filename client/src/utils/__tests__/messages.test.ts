@@ -7,6 +7,7 @@ import {
   clearMessagesCache,
   clearArchivedConversationMessagesCache,
   clearDeletedConversationMessagesCache,
+  getMessageTimestampSource,
   isValidTimestamp,
   getMessageAriaLabel,
   getMessageTimestamp,
@@ -239,6 +240,23 @@ describe('isValidTimestamp', () => {
   });
 });
 
+describe('getMessageTimestampSource', () => {
+  it('prefers valid createdAt over clientTimestamp', () => {
+    expect(
+      getMessageTimestampSource({
+        createdAt: '2026-06-12T15:42:00.000Z',
+        clientTimestamp: '2026-06-12T16:42:00.000Z',
+      }),
+    ).toBe('2026-06-12T15:42:00.000Z');
+  });
+
+  it('falls back to clientTimestamp when createdAt is invalid', () => {
+    expect(getMessageTimestampSource({ createdAt: 'invalid', clientTimestamp: 'client' })).toBe(
+      'client',
+    );
+  });
+});
+
 describe('mergeRequestMessageTimestamp', () => {
   const serverMessage = makeMessage({ messageId: 'server' });
 
@@ -370,6 +388,7 @@ const FIELD_MUTATIONS: Array<[string, Partial<TMessage>]> = [
   ['unfinished', { unfinished: true }],
   ['createdAt', { createdAt: '2026-07-02T00:00:00.000Z' }],
   ['clientTimestamp', { clientTimestamp: '2026-07-02T00:00:00.000Z' }],
+  ['Steel metadata reference', { metadata: { steel: {} } }],
   ['processingDurationMs', { processingDurationMs: 12_000 }],
   ['depth', { depth: 3 }],
   ['isCreatedByUser', { isCreatedByUser: true }],
@@ -411,6 +430,17 @@ describe('areMessageFieldsEqual', () => {
 
   it.each(FIELD_MUTATIONS)('re-renders when %s changes', (_label, mutation) => {
     expect(areMessageFieldsEqual(makeFieldsMsg(), makeFieldsMsg(mutation))).toBe(false);
+  });
+
+  it('ignores unrelated metadata changes while tracking Steel hydration', () => {
+    const steel = { activityEvents: [] };
+    const previous = makeFieldsMsg({ metadata: { steel, unrelated: 'before' } });
+    const next = makeFieldsMsg({ metadata: { steel, unrelated: 'after' } });
+    expect(areMessageFieldsEqual(previous, next)).toBe(true);
+
+    expect(
+      areMessageFieldsEqual(previous, makeFieldsMsg({ metadata: { steel: { ...steel } } })),
+    ).toBe(false);
   });
 });
 

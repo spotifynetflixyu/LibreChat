@@ -409,11 +409,25 @@ function isOAuthReplayEvent(event: t.ServerSentEvent): boolean {
   return false;
 }
 
-function isSteelReplayEvent(event: t.ServerSentEvent): boolean {
-  return 'event' in event && event.event === 'steel_event';
+type SteelReplayEvent = t.StreamEvent & {
+  event: 'steel_event';
+  data: Record<string, unknown>;
+};
+
+function isSteelReplayEvent(event: unknown): event is SteelReplayEvent {
+  return (
+    event != null &&
+    typeof event === 'object' &&
+    'event' in event &&
+    event.event === 'steel_event' &&
+    'data' in event &&
+    event.data != null &&
+    typeof event.data === 'object' &&
+    !Array.isArray(event.data)
+  );
 }
 
-function getStableSteelReplayEventKey(event: t.ServerSentEvent): string | undefined {
+function getStableSteelReplayEventKey(event: unknown): string | undefined {
   if (!isSteelReplayEvent(event)) {
     return undefined;
   }
@@ -4997,7 +5011,7 @@ class GenerationJobManagerClass {
       );
 
       for (const event of resumeState?.replayEvents ?? []) {
-        const eventKey = getStableSteelReplayEventKey(event as t.ServerSentEvent);
+        const eventKey = getStableSteelReplayEventKey(event);
         if (eventKey) {
           snapshotSteelReplayEventKeys.add(eventKey);
         }
@@ -5071,12 +5085,13 @@ class GenerationJobManagerClass {
         return cancelResumeSubscription();
       }
 
-      let liveReplayEvents: t.ServerSentEvent[] = [];
+      let liveReplayEvents: SteelReplayEvent[] = [];
       if (liveJob.replayEvents) {
         try {
           const parsedReplayEvents = JSON.parse(liveJob.replayEvents) as unknown;
           if (Array.isArray(parsedReplayEvents)) {
-            liveReplayEvents = parsedReplayEvents as t.ServerSentEvent[];
+            liveReplayEvents = parsedReplayEvents.filter(isSteelReplayEvent);
+            sanitizeSteelReplayEvents(liveReplayEvents);
           }
         } catch {
           // Ignore malformed persisted replay events; resume state already handles this case.

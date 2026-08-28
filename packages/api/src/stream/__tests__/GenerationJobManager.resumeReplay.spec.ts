@@ -238,6 +238,60 @@ describe('GenerationJobManager resume replay events', () => {
     result.subscription?.unsubscribe();
   });
 
+  test('ignores malformed and oversized live replay entries while surfacing valid Steel', async () => {
+    const store = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+    manager = createManagerWithStore(store, true);
+    const streamId = `steel-event-live-validation-${Date.now()}`;
+    const job = await manager.createJob(streamId, 'user-1', streamId);
+    const steelEvent = {
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'PaddleOCR preflight saved',
+        parseStatus: 'saved',
+      },
+    } satisfies ServerSentEvent;
+    const malformedSteelEvent = {
+      event: 'steel_event',
+      data: { source: 'paddleocr_preflight', type: 'unknown', message: 'invalid' },
+    } satisfies ServerSentEvent;
+    const oversizedSteelEvent = {
+      event: 'steel_event',
+      data: {
+        source: 'paddleocr_preflight',
+        type: 'parse_status',
+        message: 'x'.repeat(20_000),
+        parseStatus: 'saved',
+      },
+    } satisfies ServerSentEvent;
+    await store.updateJob(
+      streamId,
+      {
+        replayEvents: JSON.stringify([
+          1,
+          null,
+          { event: 'steel_event' },
+          malformedSteelEvent,
+          oversizedSteelEvent,
+          steelEvent,
+          steelEvent,
+          'malformed',
+        ]),
+      },
+      job.createdAt,
+    );
+    jest.spyOn(manager, 'getResumeState').mockResolvedValue({
+      runSteps: [],
+      aggregatedContent: [],
+    });
+
+    const result = await manager.subscribeWithResume(streamId, jest.fn());
+
+    expect(result.pendingEvents).toEqual([steelEvent]);
+    result.subscription?.unsubscribe();
+  });
+
   test('drops malformed and oversized Steel replay entries while preserving OAuth state', async () => {
     const store = new InMemoryJobStore({ ttlAfterComplete: 60000 });
     manager = createManagerWithStore(store);

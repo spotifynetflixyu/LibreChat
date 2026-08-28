@@ -7,7 +7,7 @@ import {
   cn,
   getHeaderPrefixForScreenReader,
   getMessageAriaLabel,
-  isValidTimestamp,
+  getMessageTimestampSource,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { useAttachments, useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
@@ -20,6 +20,11 @@ import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import store from '~/store';
+import {
+  getPersistedSteelActivityEvents,
+  getPersistedSteelPreflightToolCallParts,
+  prependPersistedSteelPreflightToolCallParts,
+} from '~/utils/steel';
 
 type ContentRenderProps = {
   message?: TMessage;
@@ -111,6 +116,23 @@ const ContentRender = memo(function ContentRender({
     [msg?.children, msg?.depth, latestMessageDepth],
   );
   const isLatestMessage = msg?.messageId === latestMessageId;
+  const metadata = msg?.metadata;
+  const persistedActivityEvents = useMemo(
+    () => getPersistedSteelActivityEvents(metadata),
+    [metadata],
+  );
+  const persistedPreflightToolCallParts = useMemo(
+    () => getPersistedSteelPreflightToolCallParts(metadata),
+    [metadata],
+  );
+  const contentWithPersistedPreflight = useMemo(
+    () =>
+      prependPersistedSteelPreflightToolCallParts(
+        msg?.content as Array<TMessageContentParts | undefined> | undefined,
+        persistedPreflightToolCallParts,
+      ),
+    [msg?.content, persistedPreflightToolCallParts],
+  );
 
   const iconData: TMessageIcon = useMemo(
     () => ({
@@ -159,7 +181,7 @@ const ContentRender = memo(function ContentRender({
         msg.model,
         conversation?.model,
       )}
-      timestamp={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+      timestamp={getMessageTimestampSource(msg)}
       processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
       isSubmitting={isSubmitting}
       parentMessageId={msg.parentMessageId}
@@ -212,10 +234,11 @@ const ContentRender = memo(function ContentRender({
         isLatestMessage={isLatestMessage}
         isSubmitting={isSubmitting}
         isCreatedByUser={msg.isCreatedByUser}
-        createdAt={isValidTimestamp(msg.createdAt) ? msg.createdAt : msg.clientTimestamp}
+        createdAt={getMessageTimestampSource(msg)}
         processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
+        persistedActivityEvents={persistedActivityEvents}
         conversationId={conversation?.conversationId}
-        content={msg.content as Array<TMessageContentParts | undefined>}
+        content={contentWithPersistedPreflight}
       />
     </MessageRow>
   );

@@ -101,10 +101,41 @@ export interface SteelNativeHistory {
   preflightToolCalls: SteelNativePreflightToolCall[];
 }
 
+interface SteelNativeHistoryContext {
+  steelHistory?: SteelNativeHistory;
+  steelActivityEvents?: SteelNativeStreamEvent[];
+}
+
 export type SteelNativeHistoryTarget = SteelNativeHistory | SteelNativeStreamEvent[];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSteelNativeHistory(value: unknown): value is SteelNativeHistory {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.activityEvents) &&
+    Array.isArray(value.preflightToolCalls)
+  );
+}
+
+export function createSteelNativeHistory(): SteelNativeHistory {
+  return { activityEvents: [], preflightToolCalls: [] };
+}
+
+export function ensureSteelNativeHistory(context: SteelNativeHistoryContext): SteelNativeHistory {
+  const existingHistory = context.steelHistory;
+  const hasCanonicalHistory = isSteelNativeHistory(existingHistory);
+  const history = hasCanonicalHistory ? existingHistory : createSteelNativeHistory();
+
+  if (!hasCanonicalHistory && Array.isArray(context.steelActivityEvents)) {
+    history.activityEvents = context.steelActivityEvents;
+  }
+
+  context.steelHistory = history;
+  context.steelActivityEvents = history.activityEvents;
+  return history;
 }
 
 function isStringArray(value: unknown): value is string[] {

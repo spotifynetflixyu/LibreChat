@@ -7,6 +7,16 @@ import type {
 } from 'librechat-data-provider';
 import type { QueuedMessage, QueuedMessageOrigin } from '~/store/families';
 
+export const stripQueuedRecovery = (item: QueuedMessage): QueuedMessage => {
+  const {
+    clientRequestId: _clientRequestId,
+    recoverySteerId: _recoverySteerId,
+    recoveryClientSteerId: _recoveryClientSteerId,
+    ...ordinary
+  } = item;
+  return ordinary;
+};
+
 type SteerPart = Extract<TMessageContentParts, { type: ContentTypes.STEER }>;
 
 /** Returns the steer content part when `part` is one, else undefined. */

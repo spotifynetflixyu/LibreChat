@@ -44,6 +44,7 @@ const {
   extractSteelNativeMarkdownText,
   extractSteelNativeResponseOutputText,
   buildSteelNativeResponseMessageMetadata,
+  createSteelNativeHistory,
   // Responses API
   writeDone,
   buildResponse,
@@ -942,7 +943,7 @@ const executeResponse = async (envelope, { req, res }) => {
       emitResponseInProgress(handlerConfig);
     }
 
-    const steelHistory = { activityEvents: [], preflightToolCalls: [] };
+    const steelHistory = createSteelNativeHistory();
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
       conversationId,

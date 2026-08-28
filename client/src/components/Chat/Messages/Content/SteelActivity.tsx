@@ -308,24 +308,28 @@ const SteelActivity = memo(function SteelActivity({
   const liveEvents = useRecoilValue(steelNativeActivityByMessageId(messageId));
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const displayEvents = useMemo(() => {
-    const mergedEvents = (persistedActivityEvents ?? []).reduce<SteelNativeActivityEvent[]>(
-      (current, persistedEvent) => {
-        const normalized = normalizePersistedSteelActivityEvent(persistedEvent);
-        return normalized ? appendSteelNativeActivityEvent(current, normalized) : current;
-      },
-      [],
-    );
+  const persistedEvents = useMemo(
+    () =>
+      (persistedActivityEvents ?? []).reduce<SteelNativeActivityEvent[]>(
+        (current, persistedEvent) => {
+          const normalized = normalizePersistedSteelActivityEvent(persistedEvent);
+          return normalized ? appendSteelNativeActivityEvent(current, normalized) : current;
+        },
+        [],
+      ),
+    [persistedActivityEvents],
+  );
 
+  const displayEvents = useMemo(() => {
     const allEvents =
-      mergedEvents.length === 0
+      persistedEvents.length === 0
         ? liveEvents
         : liveEvents.reduce<SteelNativeActivityEvent[]>(
             appendSteelNativeActivityEvent,
-            mergedEvents,
+            persistedEvents,
           );
     return allEvents.filter(shouldDisplayEvent);
-  }, [liveEvents, persistedActivityEvents]);
+  }, [liveEvents, persistedEvents]);
 
   if (isCreatedByUser || displayEvents.length === 0) {
     return null;

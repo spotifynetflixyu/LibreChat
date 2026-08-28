@@ -22,6 +22,7 @@ import {
   clearAllDrafts,
   getPendingDraftId,
   insertQueuedOrigin,
+  stripQueuedRecovery,
 } from '~/utils';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useSetFilesToDelete } from '~/hooks/Files';
@@ -75,16 +76,6 @@ type RecoverySourceLookup =
   | { kind: 'absent' }
   | { kind: 'present'; clientSteerId?: string }
   | { kind: 'ambiguous' };
-
-const stripQueuedRecovery = (item: QueuedMessage): QueuedMessage => {
-  const {
-    clientRequestId: _clientRequestId,
-    recoverySteerId: _recoverySteerId,
-    recoveryClientSteerId: _recoveryClientSteerId,
-    ...ordinary
-  } = item;
-  return ordinary;
-};
 
 function getSteerErrorCode(error: unknown): SteerErrorCode | undefined {
   const response = (error as { response?: { data?: { code?: string } } } | undefined)?.response;

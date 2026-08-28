@@ -35,6 +35,7 @@ const {
   buildSteelNativeEventEnvelopes,
   appendSteelNativeActivityEvent,
   upsertSteelNativePreflightToolCall,
+  ensureSteelNativeHistory,
   steelNativeStreamEventName,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
@@ -2434,15 +2435,8 @@ async function runSteelPaddleOcrPreflight({
   userMCPAuthMap,
   requestScopedConnections,
 }) {
-  if (req && req.steelNativeContext && !req.steelNativeContext.steelHistory) {
-    const steelHistory = {
-      activityEvents: Array.isArray(req.steelNativeContext.steelActivityEvents)
-        ? req.steelNativeContext.steelActivityEvents
-        : [],
-      preflightToolCalls: [],
-    };
-    req.steelNativeContext.steelHistory = steelHistory;
-    req.steelNativeContext.steelActivityEvents = steelHistory.activityEvents;
+  if (req?.steelNativeContext) {
+    ensureSteelNativeHistory(req.steelNativeContext);
   }
   const conversationId = getRequestConversationId(req);
   const turnIndex = req?.steelNativeContext?.assistantTurnIndex;
