@@ -1,6 +1,6 @@
 import type { SteelAIDriver, SteelCapabilityMap, SteelModelOption } from 'librechat-data-provider';
 
-const activeSteelOAuthModel = 'gpt-5.5';
+const activeSteelOAuthModel = 'gpt-5.6-luna';
 
 interface LibreChatModelSpec {
   name: string;

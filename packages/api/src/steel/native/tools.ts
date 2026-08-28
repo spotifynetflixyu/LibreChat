@@ -8,7 +8,12 @@ import {
 
 import type { JsonSchemaType, LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelProviderToolName, SteelToolDefinition } from '../tools/registry';
-import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
+import type {
+  SteelToolSuccessResult,
+  SteelToolJsonObject,
+  SteelToolJsonValue,
+  SteelToolResult,
+} from '../tools/results';
 
 export type NativeSteelToolNameMap = Map<SteelProviderToolName, string>;
 
@@ -68,6 +73,10 @@ export interface SteelNativeToolExecuteInput {
 export type SteelNativeToolExecute = (
   input: SteelNativeToolExecuteInput,
 ) => Promise<SteelToolResult>;
+
+type SteelProviderVisibleSuccessResult =
+  | Omit<SteelToolSuccessResult, 'sourceRefs'>
+  | Pick<SteelToolSuccessResult, 'ok' | 'toolName' | 'data'>;
 
 export interface SteelNativeExecutableTool {
   name: string;
@@ -252,6 +261,18 @@ function compactJsonObjects(
         return source ? [compact(source)] : [];
       })
     : [];
+}
+
+function omitSourceRefs(source: SteelToolJsonObject): SteelToolJsonObject {
+  const result = { ...source };
+  delete result.sourceRefs;
+  return result;
+}
+
+function compactCustomerData(data: SteelToolJsonObject): SteelToolJsonObject {
+  const result = omitSourceRefs(data);
+  result.customers = compactJsonObjects(data.customers, omitSourceRefs);
+  return result;
 }
 
 const compactCandidateFields = [
@@ -559,9 +580,19 @@ function compactPriceCandidateData(
 function getProviderVisibleResult(
   result: SteelToolResult,
   steelToolName: SteelProviderToolName,
-): SteelToolResult | { ok: true; toolName: SteelProviderToolName; data: SteelToolJsonObject } {
-  if (!result.ok || steelToolName !== 'search_price_candidates') {
+): SteelToolResult | SteelProviderVisibleSuccessResult {
+  if (!result.ok) {
     return result;
+  }
+
+  if (steelToolName === 'search_customers') {
+    return {
+      ok: true,
+      toolName: result.toolName,
+      data: compactCustomerData(result.data),
+      durationMs: result.durationMs,
+      redactionVersion: result.redactionVersion,
+    };
   }
 
   const compactData = compactPriceCandidateData(result.data);

@@ -3,18 +3,17 @@
 一、輸出範圍
 
 1. 只輸出與本輪回答相關的表；每張表須呈現目前可確認的完整結果，不只列出本輪差異。
-2. `計價基準`取客戶等級：A=1、B=2、C=3、D=4、E=5、F=6；本輪沒有客戶等級時預設 B，因此`計價基準`=2。`system_order`.`單價`必須精確複製最終已選 candidate 中對應計價基準的`tierPrices`價格；單價是查價結果，不是重量或公式計算結果。`system_order`與`customer_quote`必須使用同一計價基準與單價作為小計輸入。
+2. `計價基準`取客戶等級：A=1、B=2、C=3、D=4、E=5、F=6；本輪沒有客戶等級時預設 B，因此`計價基準`=2。`system_order`.`單價`必須精確複製最終已選 candidate 中對應計價基準的`tierPrices`價格；單價是查價結果，不是重量或公式計算結果。
 
 二、通用格式
 
 1. 報價階段只對照使用者已確認的訂單表格，不得使用 Vision 重新檢視圖面，也不得從圖面補充或改寫報價資料；第一張表必須是唯一一張 `system_order` 逐項明細。每輪回覆只能輸出一個 `## system_order` 標題與一張接續的 `system_order` Markdown 表；所有來源、類別、材料與加工列都放入同一張表，不得重複表頭或依來源、類別、規格、頁次、段落拆成多張表。其他表與說明置後。
-2. 查詢返回相近品項但沒有精確可用候選時，可暫估並標低信心；查詢沒有候選時視為無資料。仍保留品項與加工列，未知數值欄位、`system_order`.`單價`、`customer_quote`.`小計`留空，`備註`寫「未確認」並列入`manual_review`。不得猜值或以0代替未知；只有使用者明示免計費或已有明確適用的零價規則時才填0。
+2. 查詢返回相近品項但沒有精確可用候選時，可暫估並標低信心；查詢沒有候選時視為無資料。仍保留品項與加工列，未知數值欄位與`system_order`.`單價`留空，`備註`寫「未確認」並列入`manual_review`。不得猜值或以0代替未知；只有使用者明示免計費或已有明確適用的零價規則時才填0。
 3. 已知客戶等級時取該等級對應的 candidate `tierPrices`；不明時取預設 B 對應的`tierPrices.B`。該 candidate 若將所需等級列在`fallbackTiers`，可採用其回傳的該等級`tierPrices`價格，但不得改變客戶等級與`計價基準`，並必須依下條列入人工複核。對應等級價格仍無值時留空，不得自行計算、借用其他 candidate 或以0代替。
-4. 實際採用任何 fallback 時，須列入 `manual_review`，並在報價表後的補充明寫「fallback 價格，須人工確認」及採用的價格基準。
+4. 實際採用任何 fallback 時，須列入 `manual_review`，並明寫「fallback 價格，須人工確認」及採用的價格基準。
 5. 最終回覆只呈現報價表、必要補充與說明，不附內部處理資料。
-6. 每張 Markdown 表標題必須使用 `## <markdown_name>` 並保留原名：`system_order`、`customer_data`、`customer_quote`、`manual_review`；有來源檔案時才輸出 `## <markdown_name>｜<filename>（<file_id>）`，多檔依來源順序以`、`連接，不得以檔名或 file_id 取代 Markdown 原名；沒有來源檔案時只輸出 `## <markdown_name>`，不得虛構檔案資訊。
-7. 缺值或缺價不得等待、延遲、拒絕或阻擋報價；即使任一小計未解決，仍須輸出正式的`system_order`與`customer_quote`。`customer_quote`最後一列必須是有數字的`總計`，數值只加總所有已確認且非空白的小計；空白小計不加入總計、不以0代替，且不得使總計留空。輸出總計前必須先通過【Steel 報價計算驗證規則】的總計驗證閘門，同時比對非空白小計筆數與本輪 Python 加總結果；未通過不得輸出最終 Markdown。`總計`列的`說明`須明寫總計未包含哪些空白小計品項。每筆材料與加工需求都必須保留。存在待複核項目時，將所有缺漏與低信心項目彙總成單一張 `manual_review` Markdown 表格；每筆未納入總計的空白小計品項都必須列入。不得以 bullet list 或散落段落取代。`manual_review`須是最後一張表及最後一個 section，後面不得再有任何表格、補充或文字；無待複核項目時不輸出空表。
-8. 若 history 最後一筆 AIMessage 已包含本輪完整的`## system_order`，只接續完成同一份報價，不得再輸出`## system_order`，不得再呼叫`search_price_candidates`、`search_customers`或其他 Steel tools。若該 AIMessage 同時包含`## customer_data`，必須沿用其中已確認的客戶、價格等級與報價條件，不得忽略或重複輸出；若未包含，不得自行補造`## customer_data`，未提供的客戶等級依本規則預設 B=2。只能依該 AIMessage 中的`## system_order`、可選的`## customer_data`與【Steel 報價計算驗證規則】使用 Python／Code Interpreter 計算並輸出`## customer_quote`，有待複核項目時才在最後接續`## manual_review`。
+6. 每張 Markdown 表標題必須使用 `## <markdown_name>` 並保留原名：`system_order`、`customer_data`、`manual_review`；有來源檔案時才輸出 `## <markdown_name>｜<filename>（<file_id>）`，多檔依來源順序以`、`連接，不得以檔名或 file_id 取代 Markdown 原名；沒有來源檔案時只輸出 `## <markdown_name>`，不得虛構檔案資訊。
+7. 缺值或缺價不得等待、延遲、拒絕或阻擋輸出；每筆材料與加工需求都必須保留在`system_order`。存在待複核項目時，將所有缺漏與低信心項目彙總成單一張 `manual_review` Markdown 表格，不得以 bullet list 或散落段落取代。`manual_review`須是最後一張表及最後一個 section；無待複核項目時不輸出空表。每輪查價輸出 flow 結束前，無論有無 `manual_review`，最後都必須輸出一句總結，且該句後不得再輸出其他內容：存在待複核項目時使用`查價輸出完成：共 Y 筆 system_order、N 項待複核事項。`；無待複核項目時使用`查價輸出完成：共 Y 筆 system_order，無待複核事項。`。Y、N 分別為本輪 `system_order` 資料列數及 `manual_review` 資料列數。
 
 三、`system_order`
 
@@ -41,5 +40,4 @@
 四、其他表
 
 1. `customer_data`只在本輪確認客戶名稱、聯絡資訊、價格等級或報價條件時輸出。
-2. `customer_quote`固定欄位為`項目`、`說明`、`小計`。材料依來源逐項列出；有加工需求的每筆來源材料不得與其他材料或來源合併。`## customer_quote`必須完全沿用`## system_order`的來源群組與列順序；不得重新計算重量或`總數`，只能使用`## system_order`同一列的精確`總數 × 單價`，再以`ceil`計算該列`小計`。每個群組第一列同樣必須是材料，後方緊接只屬於該筆材料的各加工列。孔／刀／切工／開槽等加工須分列，不得跨材料或來源統一計算、合併或彙總；每列須列該筆來源材料與計價量，不得併成單一材料費或加工費。不得顯示內部等級、成本、毛利、計價基準或tier；最後一列為`總計`，未確認費用不得混入已確認總額。
-3. `manual_review`固定欄位為`來源表格`、`來源件號 / 項次`、`問題欄位`、`目前判斷`、`需確認內容`、`影響範圍`；只列待確認／低信心項目，且不得取代其他表的必要列。
+2. `manual_review`固定欄位為`來源表格`、`來源件號 / 項次`、`問題欄位`、`目前判斷`、`需確認內容`、`影響範圍`；只列待確認／低信心項目，且不得取代其他表的必要列。規格不明、數量不明、價格不明，或任何數字／文字有辨識疑慮時，均須逐項列入 `manual_review`；不得標示為無待複核事項。

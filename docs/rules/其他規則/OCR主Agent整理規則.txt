@@ -9,10 +9,11 @@
 [/delegate_ocr]
 
 [ocr_main_merge]
-1. 依來源檔案分組。不論同一來源有多少 OCR chunks、頁段或整理後 Markdown，必須先合併全部列；每檔最終恰好輸出一個粗體標題與一張連續九欄 Markdown 表格，只能有一組表頭。不依 chunk／頁段分表，不重複標題或增加頁段／chunk 小標與說明段。同列「信心／複核備註」保留問題摘要；所有待複核項目另彙總成最後一張 `manual_review` Markdown 表格。不同來源不混 OCR 結果表；同輪多來源時，各來源表與單一彙總複核表置於同一份最終 Markdown 回覆。
-2. 合併時保留每筆來源列，不彙總、不合併同品名／規格，並維持來源頁數、項次、件號、圖號或其他可追溯代號。
-3. 欄位值以已提供的整理內容為準；缺值保持空白，信心與複核原因保留在同一列，不重新辨識來源、不查價、不產生正式報價。
-4. 本輪 OCR 預處理提供的整理後 Markdown 是由 raw PaddleOCR text 產生，屬於 PaddleOCR 結果。合併時必須保留 `PaddleOCR` 來源；舊整理內容若未附來源標籤，應補標 `PaddleOCR`，不得推定為 `AI OCR`。
+1. 本輪存在由 OCR Organizer 提供的整理後 OCR Markdown 時，最終回覆必須依本規則完整整理並輸出該 OCR Markdown。即使最新使用者文字只是客戶名、案名、備註、修正值、補充資料或其他附加意圖，也必須同時處理該意圖，不得用補充文字取代、縮減或略過 OCR 結果確認表。
+2. 依來源檔案分組。不論同一來源有多少 OCR chunks、頁段或整理後 Markdown，必須先合併全部列；每檔最終恰好輸出一個粗體標題與一張連續九欄 Markdown 表格，只能有一組表頭。不依 chunk／頁段分表，不重複標題或增加頁段／chunk 小標與說明段。同列「信心／複核備註」保留問題摘要；所有待複核項目另彙總成最後一張 `manual_review` Markdown 表格。不同來源不混 OCR 結果表；同輪多來源時，各來源表與單一彙總複核表置於同一份最終 Markdown 回覆。
+3. 合併時保留每筆來源列，不彙總、不合併同品名／規格，並維持來源頁數、項次、件號、圖號或其他可追溯代號。
+4. 欄位值以已提供的整理內容為準；缺值保持空白，信心與複核原因保留在同一列，不重新辨識來源、不查價、不產生正式報價。
+5. 本輪 OCR 預處理提供的整理後 Markdown 是由 raw PaddleOCR text 產生，屬於 PaddleOCR 結果。合併時必須保留 `PaddleOCR` 來源；舊整理內容若未附來源標籤，應補標 `PaddleOCR`，不得推定為 `AI OCR`。
 [/ocr_main_merge]
 
 [final_ocr_markdown]
@@ -23,5 +24,5 @@
 5. raw PaddleOCR text、OCR 子 Agent 整理結果，以及本輪提供的整理後 OCR Markdown，都是同一條 PaddleOCR 來源鏈；AI 的整理、合併、格式化或文字修正不會把來源變成 AI OCR。沒有看到 raw payload、工具事件或原始 PaddleOCR 回傳，不代表 PaddleOCR 失敗。
 6. 每筆 OCR 資料都必須在第九欄`OCR來源`標示來源：只使用 PaddleOCR 來源鏈時標 `PaddleOCR`；另由 AI OCR／Vision 直接讀取原始附件補充或修正欄位時標 `PaddleOCR/ AI OCR`；只有收到明確的 PaddleOCR 失敗或不可用結果，且該筆資料完全由 AI OCR 取得時才標 `AI OCR`。
 7. 不得因內容已整理成 Markdown、經過 AI 處理或缺少 raw payload 而改標 `AI OCR`，也不得宣稱未取得 PaddleOCR 資料。資料優先為 `PaddleOCR` > `AI OCR`；AI OCR 不得覆蓋、漏標或降級 PaddleOCR。
-8. 存在待複核項目時，所有 OCR 結果表之後只輸出一個 `## manual_review` section 與一張 Markdown 表格，固定欄位為`來源表格`、`來源件號 / 項次`、`問題欄位`、`目前判斷`、`需確認內容`、`影響範圍`；每筆可追溯回原 OCR 列。該表必須是回覆最後一張表與最後一個 section，後面不再輸出表格、說明或文字；無待複核項目時不輸出空表。待複核項目以此表呈現，不另列 bullet list 或散落段落。
+8. 存在待複核項目時，所有 OCR 結果表之後只輸出一個 `## manual_review` section 與一張 Markdown 表格，固定欄位為`來源表格`、`來源件號 / 項次`、`問題欄位`、`目前判斷`、`需確認內容`、`影響範圍`；每筆可追溯回原 OCR 列。該表必須是回覆最後一張表與最後一個 section。無待複核項目時不輸出空表。待複核項目以此表呈現，不另列 bullet list 或散落段落。每輪 OCR flow 結束前，無論有無 `manual_review`，最後都必須輸出一句總結，且該句後不得再輸出其他內容：存在待複核項目時使用`OCR 整理完成：共 X 個來源、Y 筆資料、N 項待複核事項。`；無待複核項目時使用`OCR 整理完成：共 X 個來源、Y 筆資料，無待複核事項。`。X、Y、N 分別為本輪 OCR 來源檔案數、所有 OCR 結果表資料列總數及 `manual_review` 資料列數。
 [/final_ocr_markdown]

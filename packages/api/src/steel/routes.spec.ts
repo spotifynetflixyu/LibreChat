@@ -14,7 +14,7 @@ function createResponse() {
 
 describe('Steel production route handlers', () => {
   it('lists the preserved Steel model options', async () => {
-    const getModelsConfig = jest.fn(async () => ({ openAI: ['gpt-5.5', 'gpt-5.4'] }));
+    const getModelsConfig = jest.fn(async () => ({ openAI: ['gpt-5.6-luna', 'gpt-5.5'] }));
     const handlers = createSteelRouteHandlers({ getModelsConfig });
     const req = {
       config: {
@@ -23,7 +23,7 @@ describe('Steel production route handlers', () => {
             {
               name: 'steel-default',
               default: true,
-              preset: { endpoint: 'openAI', model: 'gpt-5.5' },
+              preset: { endpoint: 'openAI', model: 'gpt-5.6-luna' },
             },
           ],
         },
@@ -36,7 +36,7 @@ describe('Steel production route handlers', () => {
     expect(getModelsConfig).toHaveBeenCalledWith(req);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
-      options: [expect.objectContaining({ model: 'gpt-5.5', defaultForSteel: true })],
+      options: [expect.objectContaining({ model: 'gpt-5.6-luna', defaultForSteel: true })],
     });
   });
 

@@ -43,7 +43,7 @@ export class OpenAIConfigError extends Error {
 }
 
 const providerValues = ['OAUTH', 'API'] as const;
-const defaultModel = 'gpt-5.5';
+const defaultModel = 'gpt-5.6-luna';
 const reasoningEffortValues = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 function getEnvValue(env: OpenAIConfigEnv, key: string, legacyKey: string): string | undefined {

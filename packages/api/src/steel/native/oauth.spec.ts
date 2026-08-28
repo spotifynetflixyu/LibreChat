@@ -83,19 +83,6 @@ function createGenerateResult(
   };
 }
 
-function createCodeInterpreterGenerateResult(text: string): LanguageModelV3GenerateResult {
-  return createGenerateResult([
-    {
-      type: 'tool-call',
-      toolCallId: 'call_python',
-      toolName: 'code_interpreter',
-      input: '{}',
-      providerExecuted: true,
-    },
-    { type: 'text', text },
-  ]);
-}
-
 function createStreamResult(parts: LanguageModelV3StreamPart[]) {
   return {
     stream: new ReadableStream<LanguageModelV3StreamPart>({
@@ -169,6 +156,17 @@ function createFakeOpenAIOAuthDependencies(input: { doGenerate: jest.Mock; doStr
 
 function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
   return doGenerate.mock.calls[0][0] as LanguageModelV3CallOptions;
+}
+
+function quoteMessages(userText = '請報價'): BaseMessage[] {
+  return [
+    new HumanMessage(userText),
+    new ToolMessage({
+      content: '{}',
+      name: 'search_price_candidates',
+      tool_call_id: 'call_price_fixture',
+    }),
+  ];
 }
 
 describe('OpenAI OAuth model adapter', () => {
@@ -738,118 +736,6 @@ describe('OpenAI OAuth model adapter', () => {
     expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
   });
 
-  it('runs a second stage for a valid generate heading sequence and suppresses draft quote', async () => {
-    const stageOne =
-      '## system_order\n\n| 品項 | 數量 |\n|---|---:|\n| A | 1 |\n\n## customer_data\n\n客戶 A';
-    const finalMarkdown = '| 品項 | 價格 |\n|---|---:|\n| A | 100 |';
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce(
-        createGenerateResult([{ type: 'text', text: `${stageOne}\n\n## customer_quote\nDRAFT` }]),
-      )
-      .mockResolvedValueOnce(
-        createCodeInterpreterGenerateResult(`## customer_quote\n${finalMarkdown}`),
-      );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
-    const steelTool = {
-      type: 'function',
-      function: {
-        name: 'search_price_candidates',
-        description: 'Search price candidates',
-        parameters: { type: 'object', properties: {} },
-      },
-    } as unknown as BindToolsInput;
-    const config = {
-      configurable: {
-        thread_id: 'conversation_1',
-        requestBody: { messageId: 'message_1' },
-      },
-    };
-
-    const result = await model
-      .bindTools([steelTool])
-      .invoke(
-        [
-          new HumanMessage('請報價'),
-          new ToolMessage({
-            content: '{"items":[{"name":"A"}]}',
-            name: 'search_price_candidates',
-            tool_call_id: 'call_price_1',
-          }),
-        ],
-        config,
-      );
-
-    expect(result.content).toBe(`${stageOne}\n\n## customer_quote\n${finalMarkdown}`);
-    expect(doGenerate).toHaveBeenCalledTimes(2);
-    expect(dispatchCustomEvent).toHaveBeenCalledTimes(2);
-    const [generateEventName, generateEvent, generateConfig] = (
-      dispatchCustomEvent as jest.Mock
-    ).mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
-    expect(generateEventName).toBe('steel_event');
-    expect(generateEvent).toEqual(
-      expect.objectContaining({
-        type: 'quote_audit',
-        source: 'quote_runtime',
-        stage: 'stage_2',
-        status: 'started',
-        message: 'Stage 2 started',
-        conversationId: 'conversation_1',
-        messageId: 'message_1',
-      }),
-    );
-    expect(generateConfig.configurable).toEqual(config.configurable);
-    expect(dispatchCustomEvent).toHaveBeenNthCalledWith(
-      2,
-      'steel_event',
-      expect.objectContaining({
-        type: 'quote_audit',
-        source: 'quote_runtime',
-        stage: 'stage_2',
-        status: 'executed',
-        message: 'Code Interpreter executed',
-        toolName: 'code_interpreter',
-        providerToolCallId: 'call_python',
-      }),
-      expect.objectContaining({ configurable: config.configurable }),
-    );
-    expect(getGenerateCall(doGenerate).toolChoice).toEqual({
-      type: 'auto',
-    });
-    expect(
-      ((doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).toolChoice,
-    ).toEqual({
-      type: 'auto',
-    });
-    const stageOneCall = (doGenerate as jest.Mock).mock.calls[0][0] as LanguageModelV3CallOptions;
-    const stageTwoCall = (doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions;
-    expect(stageTwoCall.tools).toEqual(stageOneCall.tools);
-    expect(stageTwoCall.tools).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'function', name: 'search_price_candidates' }),
-        expect.objectContaining({
-          type: 'provider',
-          id: 'openai.code_interpreter',
-          name: 'code_interpreter',
-        }),
-      ]),
-    );
-    const stageTwoPrompt = (
-      (doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions
-    ).prompt;
-    expect(stageTwoPrompt[stageTwoPrompt.length - 1]).toEqual({
-      role: 'assistant',
-      content: [{ type: 'text', text: stageOne }],
-    });
-    expect(stageTwoPrompt.slice(0, stageOneCall.prompt.length)).toEqual(stageOneCall.prompt);
-  });
-
   it.each([
     ['missing system_order', '## customer_quote\nDRAFT'],
     ['missing customer_quote', '## system_order\n\nA'],
@@ -1113,266 +999,6 @@ describe('OpenAI OAuth model adapter', () => {
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['customer then price', ['search_customers', 'search_price_candidates']],
-    ['price then customer', ['search_price_candidates', 'search_customers']],
-  ])('waits for all Steel tools when the order is %s', async (_label, toolOrder) => {
-    const finalMarkdown = '| 品項 | 價格 |\n|---|---:|\n| A | 100 |';
-    const stageOne = '## system_order\n\nA';
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce(
-        createGenerateResult([{ type: 'text', text: `${stageOne}\n\n## customer_quote\nDRAFT` }]),
-      )
-      .mockResolvedValueOnce(
-        createCodeInterpreterGenerateResult(`## customer_quote\n${finalMarkdown}`),
-      );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
-
-    const result = await model.invoke([
-      new HumanMessage('請查客戶並報價'),
-      ...toolOrder.map(
-        (name, index) =>
-          new ToolMessage({
-            content: '{}',
-            name,
-            tool_call_id: `call_${index + 1}`,
-          }),
-      ),
-    ]);
-
-    expect(result.content).toBe(`${stageOne}\n\n## customer_quote\n${finalMarkdown}`);
-    expect(doGenerate).toHaveBeenCalledTimes(2);
-    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
-    expect(
-      ((doGenerate as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).toolChoice,
-    ).toEqual({
-      type: 'auto',
-    });
-  });
-
-  it('runs a second stage for a valid streamed heading sequence and suppresses draft quote', async () => {
-    const stageOne = '## system_order\n\nA';
-    const doGenerate = jest.fn();
-    const doStream = jest
-      .fn()
-      .mockResolvedValueOnce(
-        createStreamResult([
-          { type: 'text-delta', id: 'text_1', delta: `${stageOne}\n\n## customer_` },
-          { type: 'text-delta', id: 'text_1', delta: 'quote\nDRAFT' },
-          {
-            type: 'finish',
-            usage: createUsage(),
-            finishReason: { unified: 'stop', raw: 'stop' },
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        createStreamResult([
-          {
-            type: 'tool-call',
-            toolCallId: 'call_python',
-            toolName: 'code_interpreter',
-            input: '{}',
-            providerExecuted: true,
-          },
-          {
-            type: 'text-delta',
-            id: 'text_2',
-            delta: '\n',
-          },
-          {
-            type: 'text-delta',
-            id: 'text_2',
-            delta: '## customer_quote\n| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
-          },
-          {
-            type: 'finish',
-            usage: createUsage(),
-            finishReason: { unified: 'stop', raw: 'stop' },
-          },
-        ]),
-      );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
-    const config = {
-      configurable: {
-        thread_id: 'conversation_2',
-        requestBody: { messageId: 'message_2' },
-      },
-    };
-
-    const output = await model.stream(
-      [
-        new HumanMessage('請報價'),
-        new ToolMessage({
-          content: '{"items":[{"name":"A"}]}',
-          name: 'search_price_candidates',
-          tool_call_id: 'call_price_1',
-        }),
-      ],
-      config,
-    );
-    const iterator = output[Symbol.asyncIterator]();
-    const first = await iterator.next();
-
-    expect(first.value?.content).toBe(stageOne);
-    expect(doStream).toHaveBeenCalledTimes(1);
-    expect(dispatchCustomEvent).not.toHaveBeenCalled();
-
-    const chunks = first.done || !first.value ? [] : [first.value];
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) {
-        break;
-      }
-      const chunk = next.value;
-      chunks.push(chunk);
-    }
-
-    expect(chunks.map((chunk) => chunk.content)).toEqual([
-      stageOne,
-      '\n\n## customer_quote\n| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
-      '',
-    ]);
-    expect(chunks.map((chunk) => chunk.content).join('').match(/## system_order/g)).toHaveLength(1);
-    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('DRAFT');
-    expect(doStream).toHaveBeenCalledTimes(2);
-    expect(dispatchCustomEvent).toHaveBeenCalledTimes(2);
-    const [streamEventName, streamEvent, streamConfig] = (
-      dispatchCustomEvent as jest.Mock
-    ).mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
-    expect(streamEventName).toBe('steel_event');
-    expect(streamEvent).toEqual(
-      expect.objectContaining({
-        type: 'quote_audit',
-        source: 'quote_runtime',
-        stage: 'stage_2',
-        status: 'started',
-        message: 'Stage 2 started',
-      }),
-    );
-    expect(streamConfig).toEqual(expect.any(Object));
-    expect(dispatchCustomEvent).toHaveBeenNthCalledWith(
-      2,
-      'steel_event',
-      expect.objectContaining({
-        type: 'quote_audit',
-        source: 'quote_runtime',
-        stage: 'stage_2',
-        status: 'executed',
-        message: 'Code Interpreter executed',
-        toolName: 'code_interpreter',
-        providerToolCallId: 'call_python',
-      }),
-      expect.objectContaining({ configurable: config.configurable }),
-    );
-    expect(doGenerate).not.toHaveBeenCalled();
-    expect(
-      ((doStream as jest.Mock).mock.calls[0][0] as LanguageModelV3CallOptions).toolChoice,
-    ).toEqual({
-      type: 'auto',
-    });
-    expect(
-      ((doStream as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).toolChoice,
-    ).toEqual({
-      type: 'auto',
-    });
-    expect(((doStream as jest.Mock).mock.calls[1][0] as LanguageModelV3CallOptions).tools).toEqual([
-      expect.objectContaining({
-        type: 'provider',
-        id: 'openai.code_interpreter',
-        name: 'code_interpreter',
-      }),
-    ]);
-    expect(chunks[chunks.length - 1]?.usage_metadata).toEqual({
-      input_tokens: 24,
-      output_tokens: 8,
-      total_tokens: 32,
-    });
-  });
-
-  it('runs Stage2 when Stage1 arrives as many small deltas', async () => {
-    const stageOne =
-      '## system_order｜訂單\n\n| 品項 | 數量 |\n|---|---:|\n| A | 1 |\n\n## customer_data｜客戶\n\n客戶 A';
-    const draft = '\n\n## customer_quote｜報價\nDRAFT';
-    const doGenerate = jest.fn();
-    const doStream = jest
-      .fn()
-      .mockResolvedValueOnce(
-        createStreamResult([
-          ...Array.from(`${stageOne}${draft}`, (delta, index) => ({
-            type: 'text-delta' as const,
-            id: `text_${index}`,
-            delta,
-          })),
-          {
-            type: 'finish',
-            usage: createUsage(),
-            finishReason: { unified: 'stop' as const, raw: 'stop' as const },
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        createStreamResult([
-          {
-            type: 'tool-call',
-            toolCallId: 'call_python',
-            toolName: 'code_interpreter',
-            input: '{}',
-            providerExecuted: true,
-          },
-          {
-            type: 'text-delta',
-            id: 'text_2',
-            delta: '## customer_quote\n| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
-          },
-          {
-            type: 'finish',
-            usage: createUsage(),
-            finishReason: { unified: 'stop', raw: 'stop' },
-          },
-        ]),
-      );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
-
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
-
-    const streamedText = chunks.map((chunk) => chunk.content).join('');
-    expect(streamedText).toBe(
-      `${stageOne}\n\n## customer_quote\n| 品項 | 價格 |\n|---|---:|\n| A | 100 |`,
-    );
-    expect(streamedText).not.toContain('DRAFT');
-    expect(doStream).toHaveBeenCalledTimes(2);
-  });
-
   it('keeps fenced headings as pass-through when opener and closer split across deltas', async () => {
     const text = '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```';
     const doGenerate = jest.fn();
@@ -1479,90 +1105,6 @@ describe('OpenAI OAuth model adapter', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('returns combined generate output when Stage2 auto does not execute Code Interpreter', async () => {
-    const stageOne = '## system_order\n\nA';
-    const doGenerate = jest
-      .fn()
-      .mockResolvedValueOnce(
-        createGenerateResult([{ type: 'text', text: `${stageOne}\n\n## customer_quote\nDRAFT` }]),
-      )
-      .mockResolvedValueOnce(
-        createGenerateResult([{ type: 'text', text: '## customer_quote\nUNVERIFIED' }]),
-      );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
-
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
-
-    expect(result.content).toBe(`${stageOne}\n\n## customer_quote\nUNVERIFIED`);
-    expect(doGenerate).toHaveBeenCalledTimes(2);
-  });
-
-  it('returns combined stream output when Stage2 auto does not execute Code Interpreter', async () => {
-    const stageOne = '## system_order\n\nA';
-    const doGenerate = jest.fn();
-    const doStream = jest
-      .fn()
-      .mockResolvedValueOnce(
-        createStreamResult([
-          { type: 'text-delta', id: 'text_1', delta: `${stageOne}\n\n## customer_quote\nDRAFT` },
-          {
-            type: 'finish',
-            usage: createUsage(),
-            finishReason: { unified: 'stop', raw: 'stop' },
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        createStreamResult([
-          { type: 'text-delta', id: 'text_2', delta: '## customer_quote\nUNVERIFIED' },
-          {
-            type: 'finish',
-            usage: createUsage(),
-            finishReason: { unified: 'stop', raw: 'stop' },
-          },
-        ]),
-      );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
-
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
-
-    expect(chunks.map((chunk) => chunk.content)).toEqual([
-      stageOne,
-      '\n\n## customer_quote\nUNVERIFIED',
-      '',
-    ]);
-    expect(doStream).toHaveBeenCalledTimes(2);
-  });
-
   it('flushes pending Stage1 text before a client tool call and skips Stage2', async () => {
     const stageOne = '## system_order\n\nA';
     const draft = '\n\n## customer_quote\nDRAFT';
@@ -1616,14 +1158,26 @@ describe('OpenAI OAuth model adapter', () => {
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
 
-  it('flushes pending Stage1 text before a provider error', async () => {
-    const stageOne = '## system_order\n\nA';
-    const draft = '\n\n## customer_quote\nDRAFT';
-    const providerError = new Error('stage one failed');
+  it('flushes buffered manual_review unchanged before a provider error', async () => {
+    const prefix = [
+      '## system_order',
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '|---|---:|---:|',
+      '| A | 2 | 10.5 |',
+      '',
+    ].join('\n');
+    const manualReview = ['## manual_review', '', '| 問題欄位 |', '|---|', '| 尺寸 |'].join('\n');
+    const providerError = new Error('provider failed');
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
       createStreamResult([
-        { type: 'text-delta', id: 'text_1', delta: `${stageOne}${draft}` },
+        { type: 'text-delta', id: 'text_1', delta: `${prefix}## manual_` },
+        {
+          type: 'text-delta',
+          id: 'text_1',
+          delta: `review\n${manualReview.slice('## manual_review\n'.length)}`,
+        },
         { type: 'error', error: providerError },
       ]),
     );
@@ -1634,20 +1188,18 @@ describe('OpenAI OAuth model adapter', () => {
       },
       terminalToolNames: ['delegate_ocr'],
     });
-    const output = await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    const output = await model.stream(quoteMessages());
     const iterator = output[Symbol.asyncIterator]();
 
     const first = await iterator.next();
     const second = await iterator.next();
+    expect(first.value?.content).toBe(prefix);
+    expect(second.value?.content).toBe(manualReview);
     expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).toBe(
-      `${stageOne}${draft}`,
+      `${prefix}${manualReview}`,
+    );
+    expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).not.toContain(
+      '## customer_quote',
     );
     await expect(iterator.next()).rejects.toThrow(providerError);
     expect(doStream).toHaveBeenCalledTimes(1);
@@ -2118,7 +1670,7 @@ describe('OpenAI OAuth model adapter', () => {
       model: 'gpt-5.5',
     });
 
-    const result = await model.invoke([new HumanMessage('請報價')]);
+    const result = await model.invoke(quoteMessages());
     expect(result.content).toBe('計算完成');
     expect(result.tool_calls).toHaveLength(0);
 
@@ -2682,6 +2234,481 @@ describe('OpenAI OAuth model adapter', () => {
         },
       },
     ]);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('generates customer_quote in the backend before manual_review with one provider call', async () => {
+    const providerText = [
+      '## system_order｜報價.pdf（file-1）',
+      '',
+      '| 備註 | 單價 | 品名規格 | 總數 |',
+      '|---|---:|---|---:|',
+      '| 現貨 | 38.5 | PL6\\|54 | 2.060154 |',
+      '',
+      '## manual_review｜報價.pdf（file-1）',
+      '',
+      '| 問題欄位 |',
+      '|---|',
+      '| 無 |',
+    ].join('\n');
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([{ type: 'text', text: providerText }]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+      model: 'gpt-5.5',
+    });
+
+    const result = await model.invoke(quoteMessages());
+    const content = String(result.content);
+
+    expect(content).toContain(
+      '## customer_quote｜報價.pdf（file-1）\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| PL6\\|54 | 2.060154 | 80 |\n| 總計 |  | 80 |',
+    );
+    expect(content.indexOf('## system_order')).toBeLessThan(content.indexOf('## customer_quote'));
+    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['invoke', 'stream'] as const)(
+    'preserves one existing customer_quote during %s',
+    async (mode) => {
+      const providerText = [
+        '## system_order',
+        '| 品名規格 | 總數 | 單價 |',
+        '| --- | --- | --- |',
+        '| A | 1 | 2 |',
+        '',
+        '## customer_quote',
+        '| 項目 | 總數 | 小計 |',
+        '| --- | --- | --- |',
+        '| A | 1 | 2 |',
+        '| 總計 |  | 2 |',
+      ].join('\n');
+      const doGenerate = jest.fn(async () =>
+        createGenerateResult([{ type: 'text', text: providerText }]),
+      );
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: providerText },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+
+      let content: string;
+      if (mode === 'invoke') {
+        content = String((await model.invoke(quoteMessages())).content);
+      } else {
+        const chunks = [];
+        for await (const chunk of await model.stream(quoteMessages())) {
+          chunks.push(chunk);
+        }
+        content = chunks.map((chunk) => chunk.content).join('');
+      }
+
+      expect(content).toBe(providerText);
+      expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    },
+  );
+
+  it.each(['invoke', 'stream'] as const)(
+    'does not compose customer_quote outside a current price-result flow during %s',
+    async (mode) => {
+      const providerText = [
+        '## system_order',
+        '| 品名規格 | 總數 | 單價 |',
+        '| --- | --- | --- |',
+        '| OCR only | 1 | 2 |',
+      ].join('\n');
+      const doGenerate = jest.fn(async () =>
+        createGenerateResult([{ type: 'text', text: providerText }]),
+      );
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: providerText },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+      const messages = [new HumanMessage('只整理內容')];
+
+      let content: string;
+      if (mode === 'invoke') {
+        content = String((await model.invoke(messages)).content);
+      } else {
+        const chunks = [];
+        for await (const chunk of await model.stream(messages)) {
+          chunks.push(chunk);
+        }
+        content = chunks.map((chunk) => chunk.content).join('');
+      }
+
+      expect(content).toBe(providerText);
+      expect(content).not.toContain('## customer_quote');
+    },
+  );
+
+  it('buffers a split manual_review heading and inserts one backend quote before it', async () => {
+    const prefix = [
+      '## system_order',
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '|---|---:|---:|',
+      '| A | 2 | 10.5 |',
+      '',
+    ].join('\n');
+    const manualReview = [
+      '## manual_review',
+      '',
+      '| 問題欄位 |',
+      '|---|',
+      '| 尺寸 |',
+    ].join('\n');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: `${prefix}## manual_` },
+        {
+          type: 'text-delta',
+          id: 'text_1',
+          delta: `review\n${manualReview.slice('## manual_review\n'.length)}`,
+        },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const output = await model.stream(quoteMessages());
+    const iterator = output[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value?.content).toContain('## system_order');
+    expect(first.value?.content).not.toContain('manual_review');
+
+    const chunks = first.done || !first.value ? [] : [first.value];
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) {
+        break;
+      }
+      chunks.push(next.value);
+    }
+    const content = chunks.map((chunk) => chunk.content).join('');
+
+    expect(content).toContain('| A | 2 | 21 |');
+    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
+    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('appends exactly one backend quote at clean stop without manual_review', async () => {
+    const providerText = [
+      '## system_order｜訂單',
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '|---|---:|---:|',
+      '| A | 2 | 10.5 |',
+    ].join('\n');
+    const expectedQuote = [
+      '## customer_quote｜訂單',
+      '',
+      '| 項目 | 總數 | 小計 |',
+      '| --- | --- | --- |',
+      '| A | 2 | 21 |',
+      '| 總計 |  | 21 |',
+    ].join('\n');
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([{ type: 'text', text: providerText }]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+      model: 'gpt-5.5',
+    });
+
+    const result = await model.invoke(quoteMessages());
+    const content = String(result.content);
+
+    expect(content).toBe(`${providerText}\n\n${expectedQuote}`);
+    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('inserts the backend quote after system_order and before trailing summary text', async () => {
+    const systemOrder = [
+      '## system_order｜訂單',
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '|---|---:|---:|',
+      '| A | 2 | 10.5 |',
+    ].join('\n');
+    const summary = '查價輸出完成：共 1 筆 system_order，無待複核事項。';
+    const providerText = `${systemOrder}\n\n${summary}`;
+    const expectedQuote = [
+      '## customer_quote｜訂單',
+      '',
+      '| 項目 | 總數 | 小計 |',
+      '| --- | --- | --- |',
+      '| A | 2 | 21 |',
+      '| 總計 |  | 21 |',
+    ].join('\n');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: providerText },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(quoteMessages())) {
+      chunks.push(chunk);
+    }
+    const content = chunks.map((chunk) => chunk.content).join('');
+
+    expect(content).toBe(`${systemOrder}\n\n${expectedQuote}\n\n${summary}`);
+    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(doStream).toHaveBeenCalledTimes(1);
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('preserves CRLF and trailing row spaces when inserting a streamed quote', async () => {
+    const systemOrder = [
+      '## system_order｜訂單',
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '|---|---:|---:|',
+      '| A | 2 | 10.5 |   ',
+    ].join('\r\n');
+    const summary = '查價輸出完成。';
+    const providerText = `${systemOrder}\r\n\r\n${summary}`;
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: providerText },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(quoteMessages())) {
+      chunks.push(chunk);
+    }
+    const content = chunks.map((chunk) => chunk.content).join('');
+
+    expect(content).toContain('| A | 2 | 10.5 |   \r\n\n## customer_quote｜訂單');
+    expect(content).toContain('| A | 2 | 21 |');
+    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf(summary));
+    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+  });
+
+  it('streams a split table row without a leading pipe before provider completion', async () => {
+    const prefix = [
+      '## system_order｜訂單',
+      '',
+      '品名規格 | 總數 | 單價',
+      '---|---:|---:',
+      '',
+    ].join('\n');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: prefix },
+        { type: 'text-delta', id: 'text_1', delta: 'A | 2 | 10.5' },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const output = await model.stream(quoteMessages());
+    const iterator = output[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    const second = await iterator.next();
+
+    expect(first.value?.content).toContain('品名規格 | 總數 | 單價');
+    expect(second.value?.content).toBe('A | 2 | 10.5');
+    expect(second.value?.content).not.toContain('customer_quote');
+    await iterator.return?.();
+  });
+
+  it.each([
+    ['單價', '| 品名規格 | 總數 |', '|---|---:|', '| A | 2 |'],
+    ['總數', '| 品名規格 | 單價 |', '|---|---:|', '| A | 10.5 |'],
+  ])(
+    'passes manual_review unchanged when system_order is missing %s',
+    async (_missing, header, separator, row) => {
+      const providerText = [
+        '## system_order｜訂單',
+        '',
+        header,
+        separator,
+        row,
+        '',
+        '## manual_review｜訂單',
+        '',
+        '| 問題欄位 |',
+        '|---|',
+        '| 尺寸 |',
+      ].join('\n');
+      const doGenerate = jest.fn();
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: providerText },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+
+      const chunks = [];
+      for await (const chunk of await model.stream(quoteMessages())) {
+        chunks.push(chunk);
+      }
+      const content = chunks.map((chunk) => chunk.content).join('');
+
+      expect(content).toBe(providerText);
+      expect(content).toContain('## manual_review｜訂單');
+      expect(content).not.toContain('## customer_quote');
+      expect(doStream).toHaveBeenCalledTimes(1);
+      expect(doGenerate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['length', 'tool-calls'] as const)(
+    'does not append a backend quote for a %s finish',
+    async (finishReason) => {
+      const providerText = [
+        '## system_order｜訂單',
+        '',
+        '| 品名規格 | 總數 | 單價 |',
+        '|---|---:|---:|',
+        '| A | 2 | 10.5 |',
+      ].join('\n');
+      const result = createGenerateResult([{ type: 'text', text: providerText }]);
+      result.finishReason = { unified: finishReason, raw: finishReason };
+      const doGenerate = jest.fn(async () => result);
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        model: 'gpt-5.5',
+      });
+
+      const output = await model.invoke(quoteMessages());
+
+      expect(output.content).toBe(providerText);
+      expect(String(output.content)).not.toContain('## customer_quote');
+      expect(doGenerate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('inserts a quote before a fenced manual_review at clean stop', async () => {
+    const systemOrder = [
+      '## system_order｜訂單',
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '|---|---:|---:|',
+      '| A | 2 | 10.5 |',
+    ].join('\n');
+    const fencedText = [
+      '```markdown',
+      '## manual_review｜訂單',
+      '',
+      '| 問題欄位 |',
+      '|---|',
+      '| 尺寸 |',
+      '```',
+    ].join('\n');
+    const providerText = `${systemOrder}\n\n${fencedText}`;
+    const expectedQuote = [
+      '## customer_quote｜訂單',
+      '',
+      '| 項目 | 總數 | 小計 |',
+      '| --- | --- | --- |',
+      '| A | 2 | 21 |',
+      '| 總計 |  | 21 |',
+    ].join('\n');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        {
+          type: 'text-delta',
+          id: 'text_1',
+          delta: providerText,
+        },
+        {
+          type: 'finish',
+          usage: createUsage(),
+          finishReason: { unified: 'stop', raw: 'stop' },
+        },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(quoteMessages())) {
+      chunks.push(chunk);
+    }
+    const content = chunks.map((chunk) => chunk.content).join('');
+    const fenceEnd = content.indexOf('```', content.indexOf('## manual_review'));
+    const quoteStart = content.indexOf('## customer_quote');
+
+    expect(content).toBe(`${systemOrder}\n\n${expectedQuote}\n\n${fencedText}`);
+    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(fenceEnd).toBeGreaterThan(-1);
+    expect(quoteStart).toBeLessThan(content.indexOf('```markdown'));
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });

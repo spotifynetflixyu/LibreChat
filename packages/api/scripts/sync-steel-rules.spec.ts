@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
 
@@ -12,6 +13,7 @@ type DryRunRule = {
 
 type DryRunSummary = {
   mode: string;
+  target: 'dev' | 'prod';
   rules: DryRunRule[];
 };
 
@@ -40,12 +42,23 @@ const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cj
 
 const ruleSync = jest.requireActual<{
   buildRules: (root: string) => BuiltRule[];
+  loadTargetEnv: (
+    root: string,
+    target: 'dev' | 'prod',
+    environment?: NodeJS.ProcessEnv,
+  ) => NodeJS.ProcessEnv;
+  parseArgs: (args: string[]) => {
+    apply: boolean;
+    dryRun: boolean;
+    help: boolean;
+    target: 'dev' | 'prod';
+  };
   syncRules: (pool: { connect: () => Promise<SyncClient> }, rules: object[]) => Promise<object[]>;
 }>('./sync-steel-rules.cjs');
 
-function runDryRun(): DryRunSummary {
+function runDryRun(target: 'dev' | 'prod' = 'dev'): DryRunSummary {
   return JSON.parse(
-    execFileSync(process.execPath, [syncScript, '--dry-run'], {
+    execFileSync(process.execPath, [syncScript, '--dry-run', '--target', target], {
       cwd: repoRoot,
       encoding: 'utf8',
     }),
@@ -108,7 +121,13 @@ describe('Steel rule sources', () => {
   });
 
   it('rejects conflicting or unknown CLI flags', () => {
-    for (const args of [['--dry-run', '--apply'], ['--unknown']]) {
+    for (const args of [
+      ['--dry-run', '--apply'],
+      ['--unknown'],
+      ['--target'],
+      ['--target', 'staging'],
+      ['--target', 'dev', '--target', 'prod'],
+    ]) {
       expect(() =>
         execFileSync(process.execPath, [syncScript, ...args], {
           cwd: repoRoot,
@@ -116,6 +135,37 @@ describe('Steel rule sources', () => {
           stdio: 'pipe',
         }),
       ).toThrow();
+    }
+  });
+
+  it('selects the requested dev or prod target', () => {
+    expect(ruleSync.parseArgs([]).target).toBe('dev');
+    expect(ruleSync.parseArgs(['--apply', '--target', 'prod'])).toMatchObject({
+      apply: true,
+      target: 'prod',
+    });
+    expect(runDryRun('prod').target).toBe('prod');
+  });
+
+  it('loads only the selected target database URL', () => {
+    const envRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-rule-target-'));
+    const environment = { STEEL_POSTGRES_URL: 'postgresql://inherited.example/dev' };
+    try {
+      fs.writeFileSync(
+        path.join(envRoot, '.env'),
+        'STEEL_POSTGRES_URL=postgresql://dev.example/steel\n',
+      );
+      fs.writeFileSync(
+        path.join(envRoot, '.env.prod'),
+        'STEEL_POSTGRES_URL=postgresql://prod.example/steel\n',
+      );
+
+      const loadedEnvironment = ruleSync.loadTargetEnv(envRoot, 'prod', environment);
+      expect(loadedEnvironment.STEEL_POSTGRES_URL).toBe('postgresql://prod.example/steel');
+      expect(loadedEnvironment).not.toBe(environment);
+      expect(environment.STEEL_POSTGRES_URL).toBe('postgresql://inherited.example/dev');
+    } finally {
+      fs.rmSync(envRoot, { recursive: true, force: true });
     }
   });
 
@@ -168,11 +218,11 @@ describe('Steel rule sources', () => {
     expect(quoteCalculationRule).toMatchObject({
       ruleKind: 'output',
       priority: 10,
-      ruleSections: ['quote_calculation', 'quote_subtotal_validation', 'quote_total_validation'],
+      ruleSections: ['system_order_calculation', 'system_order_validation'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'output_sheet_context'],
         scopeType: 'company',
-        activeSheets: ['system_order', 'customer_quote', 'manual_review'],
+        activeSheets: ['system_order'],
         confidence: 'high',
       },
       sourceRefs: [
@@ -187,18 +237,26 @@ describe('Steel rule sources', () => {
     expect(quoteCalculationRule?.prompt.trim()).not.toBe('');
     expect(quoteCalculationRule?.toolPolicy).not.toEqual({});
     expect(quoteCalculationRule?.outputPolicy).toEqual({
-      subtotalSource: 'current_turn_python_results',
-      totalInput: 'ordered_displayed_nonblank_subtotals',
-      blankSubtotalHandling: 'exclude_from_total_and_manual_review',
-      totalRequired: true,
-      emptyConfirmedSubtotalTotal: 0,
-      preOutputTotalGate:
-        'displayed_nonblank_count_equals_python_input_count_and_total_equals_python_sum',
-      verificationFailure: 'correct_and_recalculate_before_output',
+      systemOrderTotalSource: 'current_turn_python_results',
+      preserveExactTotal: true,
+      unitPriceSource: 'selected_candidate_tier_price',
     });
     expect(
       builtRules.findIndex((rule) => rule.slug === 'steel-quote-calculation-verification-policy'),
     ).toBeLessThan(builtRules.findIndex((rule) => rule.slug === 'steel-workbook-output-policy'));
+    const workbookOutputRule = builtRules.find(
+      (rule) => rule.slug === 'steel-workbook-output-policy',
+    );
+    expect(workbookOutputRule).toMatchObject({
+      selectors: {
+        activeSheets: ['system_order', 'customer_data', 'manual_review'],
+        synchronizedSheetsOnCustomerTierChange: ['system_order'],
+      },
+      outputPolicy: {
+        activeSheets: ['system_order', 'customer_data', 'manual_review'],
+        synchronizedSheetsOnCustomerTierChange: ['system_order'],
+      },
+    });
     const ocrIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-ocr-policy');
     const visionIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-vision-policy');
     const subagentIndex = builtRules.findIndex(

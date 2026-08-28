@@ -17,7 +17,7 @@ import type {
 import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import { AIMessage, AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
+import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
 import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
@@ -28,13 +28,10 @@ import type { ZodTypeAny } from 'zod';
 
 import type { OpenAIOAuthTokenLoader } from './credentials';
 
+import { buildCustomerQuoteFromMarkdown, createCustomerQuoteParser } from '../markdown/quote';
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import { loadOpenAIOAuthTokens } from './credentials';
-import {
-  buildSteelCodeInterpreterAuditEvent,
-  buildSteelQuoteAuditEvent,
-  steelNativeStreamEventName,
-} from './events';
+import { buildSteelCodeInterpreterAuditEvent, steelNativeStreamEventName } from './events';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -668,316 +665,39 @@ function isCompletedTextResult(
   return finishReason?.unified === 'stop' || finishReason?.raw === 'stop';
 }
 
-function hasToolCall(
-  content: LanguageModelV3GenerateResult['content'] | LanguageModelV3StreamPart[],
-): boolean {
-  return content.some(
-    (part) => part.type === 'tool-call' || part.type === 'tool-input-start',
-  );
-}
-
-interface StageOneSlice {
-  content: string;
-}
-
-type StageOneHeadingName = 'system_order' | 'customer_data' | 'customer_quote';
-
-interface StageOneHeading {
-  name: StageOneHeadingName;
-  start: number;
-}
-
-type StageOneLine =
-  | { type: 'none' }
-  | { type: 'fence-close' }
-  | { type: 'fence-open'; character: '`' | '~'; length: number }
-  | { type: 'heading'; name?: StageOneHeadingName; separatorEmpty: boolean };
-
-function parseStageOneLine(
-  line: string,
-  fenceCharacter: '`' | '~' | undefined,
-  fenceLength: number,
-): StageOneLine {
-  const normalizedLine = line.replace(/\r$/, '');
-
-  if (fenceCharacter) {
-    const closingFence = normalizedLine.match(/^ {0,3}(`+|~+)[ \t]*$/)?.[1];
-    if (closingFence?.[0] === fenceCharacter && closingFence.length >= fenceLength) {
-      return { type: 'fence-close' };
-    }
-    return { type: 'none' };
+function renderCustomerQuoteInsertion(
+  beforeQuote: string,
+  quoteMarkdown: string,
+  afterQuote: string,
+): string {
+  let beforeSeparator = '\n\n';
+  if (/(?:\r?\n){2}$/.test(beforeQuote)) {
+    beforeSeparator = '';
+  } else if (/\r?\n$/.test(beforeQuote)) {
+    beforeSeparator = '\n';
   }
 
-  const fenceMatch = normalizedLine.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-  if (fenceMatch) {
-    const fence = fenceMatch[1];
-    return {
-      type: 'fence-open',
-      character: fence?.[0] as '`' | '~',
-      length: fence?.length ?? 0,
-    };
+  if (afterQuote === '') {
+    return `${beforeSeparator}${quoteMarkdown}`;
   }
 
-  const headingMatch = normalizedLine.match(/^##[ \t]+([^\r\n]*)$/);
-  if (!headingMatch) {
-    return { type: 'none' };
-  }
-
-  const rawTitle = headingMatch[1]?.trim();
-  if (!rawTitle) {
-    return { type: 'heading', separatorEmpty: false };
-  }
-
-  const separatorIndex = rawTitle.indexOf('｜');
-  const name = (separatorIndex < 0 ? rawTitle : rawTitle.slice(0, separatorIndex)).trim();
-  const headingName =
-    name === 'system_order' || name === 'customer_data' || name === 'customer_quote'
-      ? name
-      : undefined;
-
-  return {
-    type: 'heading',
-    name: headingName,
-    separatorEmpty: separatorIndex >= 0 && rawTitle.slice(separatorIndex + 1).trim() === '',
-  };
+  const normalizedAfter = afterQuote.replace(/^(?:\r?\n)+/, '');
+  return `${beforeSeparator}${quoteMarkdown}\n\n${normalizedAfter}`;
 }
 
-function hasValidStageOneHeadings(headings: StageOneHeading[]): boolean {
-  if (headings.length !== 2 && headings.length !== 3) {
-    return false;
-  }
-
-  const [systemHeading, secondHeading, thirdHeading] = headings;
-  if (!systemHeading || systemHeading.name !== 'system_order') {
-    return false;
-  }
-
-  const quoteHeading = headings.length === 2 ? secondHeading : thirdHeading;
-  if (!quoteHeading || quoteHeading.name !== 'customer_quote') {
-    return false;
-  }
-
-  return headings.length !== 3 || secondHeading?.name === 'customer_data';
-}
-
-interface StageOneParser {
-  append(text: string): void;
-  getProvisionalContentEnd(): number | undefined;
-  getSafeTextEnd(): number;
-  finish(text: string): StageOneSlice | undefined;
-}
-
-function createStageOneParser(): StageOneParser {
-  const headings: StageOneHeading[] = [];
-  const pendingLineParts: string[] = [];
-  let pendingLineStart = 0;
-  let pendingLineContentEnd = 0;
-  let textLength = 0;
-  let lastNonWhitespacePosition = 0;
-  let safeTextEnd = 0;
-  let sawNewline = false;
-  let quoteFound = false;
-  let quoteStart: number | undefined;
-  let quoteContentEnd: number | undefined;
-  let fenceCharacter: '`' | '~' | undefined;
-  let fenceLength = 0;
-  let invalid = false;
-  let finished = false;
-
-  const processLine = (line: string, lineStart: number, contentEnd: number): void => {
-    const parsedLine = parseStageOneLine(line, fenceCharacter, fenceLength);
-    if (parsedLine.type === 'fence-open') {
-      fenceCharacter = parsedLine.character;
-      fenceLength = parsedLine.length;
-      return;
-    }
-    if (parsedLine.type === 'fence-close') {
-      fenceCharacter = undefined;
-      fenceLength = 0;
-      return;
-    }
-    if (parsedLine.type !== 'heading' || quoteFound) {
-      return;
-    }
-    if (!parsedLine.name || parsedLine.separatorEmpty) {
-      invalid = true;
-      return;
-    }
-
-    const heading = {
-      name: parsedLine.name,
-      start: lineStart,
-    };
-    headings.push(heading);
-    if (parsedLine.name === 'customer_quote') {
-      quoteFound = true;
-      quoteStart = lineStart;
-      quoteContentEnd = contentEnd;
-    }
-  };
-
-  const scanText = (text: string, offset: number): void => {
-    for (let index = 0; index < text.length; index += 1) {
-      if (!/[ \t\r\n]/.test(text[index] ?? '')) {
-        lastNonWhitespacePosition = offset + index + 1;
-      }
-    }
-  };
-
-  return {
-    append(text: string): void {
-      if (finished || text === '') {
-        return;
-      }
-
-      const baseOffset = textLength;
-      let segmentStart = 0;
-      while (segmentStart < text.length) {
-        const newlineIndex = text.indexOf('\n', segmentStart);
-        const segmentEnd = newlineIndex < 0 ? text.length : newlineIndex;
-        const segment = text.slice(segmentStart, segmentEnd);
-        if (segment !== '') {
-          if (pendingLineParts.length === 0) {
-            pendingLineContentEnd = lastNonWhitespacePosition;
-          }
-          pendingLineParts.push(segment);
-          scanText(segment, baseOffset + segmentStart);
-        }
-
-        if (newlineIndex < 0) {
-          break;
-        }
-
-        const line = pendingLineParts.join('');
-        pendingLineParts.length = 0;
-        processLine(line, pendingLineStart, pendingLineContentEnd);
-        sawNewline = true;
-        safeTextEnd = lastNonWhitespacePosition;
-        pendingLineStart = baseOffset + newlineIndex + 1;
-        pendingLineContentEnd = lastNonWhitespacePosition;
-        segmentStart = newlineIndex + 1;
-      }
-
-      textLength = baseOffset + text.length;
-    },
-
-    getProvisionalContentEnd(): number | undefined {
-      if (invalid) {
-        return undefined;
-      }
-      if (quoteStart !== undefined) {
-        return hasValidStageOneHeadings(headings) ? quoteContentEnd : undefined;
-      }
-
-      const pendingLine = pendingLineParts.join('');
-      const parsedLine = parseStageOneLine(pendingLine, fenceCharacter, fenceLength);
-      if (
-        parsedLine.type !== 'heading' ||
-        parsedLine.name !== 'customer_quote' ||
-        parsedLine.separatorEmpty
-      ) {
-        return undefined;
-      }
-
-      const provisionalHeadings = [...headings, { name: parsedLine.name, start: pendingLineStart }];
-      return hasValidStageOneHeadings(provisionalHeadings) ? pendingLineContentEnd : undefined;
-    },
-
-    getSafeTextEnd(): number {
-      return sawNewline ? safeTextEnd : 0;
-    },
-
-    finish(text: string): StageOneSlice | undefined {
-      if (!finished) {
-        const pendingLine = pendingLineParts.join('');
-        processLine(pendingLine, pendingLineStart, pendingLineContentEnd);
-        finished = true;
-      }
-
-      if (invalid || !hasValidStageOneHeadings(headings)) {
-        return undefined;
-      }
-
-      const quoteHeading = headings[headings.length === 2 ? 1 : 2];
-      if (!quoteHeading) {
-        return undefined;
-      }
-
-      const content = text.slice(0, quoteHeading.start).replace(/[ \t\r\n]+$/, '');
-      return content === '' ? undefined : { content };
-    },
-  };
-}
-
-function parseStageOneSlice(text: string): StageOneSlice | undefined {
-  const parser = createStageOneParser();
-  parser.append(text);
-  return parser.finish(text);
-}
-
-function shouldTransitionToStageTwo(
-  messages: BaseMessage[],
-  options: OpenAIOAuthModelOptions,
-  content: LanguageModelV3GenerateResult['content'] | LanguageModelV3StreamPart[],
-  finishReason?: LanguageModelV3GenerateResult['finishReason'],
-): boolean {
-  const text = content.reduce((result, part) => {
-    if (part.type === 'text') {
-      return `${result}${part.text}`;
-    }
-    if (part.type === 'text-delta') {
-      return `${result}${part.delta}`;
-    }
-    return result;
-  }, '');
-
-  return (
-    options.enableCodeInterpreter !== false &&
-    hasCurrentTurnPriceResult(messages) &&
-    !content.some((part) => part.type === 'error') &&
-    !hasToolCall(content) &&
-    isCompletedTextResult(finishReason) &&
-    parseStageOneSlice(text) !== undefined
-  );
-}
-
-function combineStageContent(stageOne: string, stageTwo: string): string {
-  const first = stageOne.replace(/[ \t\r\n]+$/, '');
-  const second = stageTwo.replace(/^[ \t\r\n]+/, '');
-  if (first === '') {
-    return second;
-  }
-  if (second === '') {
-    return first;
-  }
-  return `${first}\n\n${second}`;
-}
-
-function sumUsageValue(first: number | undefined, second: number | undefined): number | undefined {
-  if (first === undefined && second === undefined) {
+function composeCustomerQuote(text: string): string | undefined {
+  const quote = buildCustomerQuoteFromMarkdown(text);
+  if (!quote) {
     return undefined;
   }
 
-  return (first ?? 0) + (second ?? 0);
+  const beforeQuote = text.slice(0, quote.sourceEnd);
+  const afterQuote = text.slice(quote.sourceEnd);
+  return `${beforeQuote}${renderCustomerQuoteInsertion(beforeQuote, quote.markdown, afterQuote)}`;
 }
 
-function mergeUsage(
-  first: LanguageModelV3Usage,
-  second: LanguageModelV3Usage,
-): LanguageModelV3Usage {
-  return {
-    inputTokens: {
-      total: sumUsageValue(first.inputTokens.total, second.inputTokens.total),
-      noCache: sumUsageValue(first.inputTokens.noCache, second.inputTokens.noCache),
-      cacheRead: sumUsageValue(first.inputTokens.cacheRead, second.inputTokens.cacheRead),
-      cacheWrite: sumUsageValue(first.inputTokens.cacheWrite, second.inputTokens.cacheWrite),
-    },
-    outputTokens: {
-      total: sumUsageValue(first.outputTokens.total, second.outputTokens.total),
-      text: sumUsageValue(first.outputTokens.text, second.outputTokens.text),
-      reasoning: sumUsageValue(first.outputTokens.reasoning, second.outputTokens.reasoning),
-    },
-  };
+function hasClientToolCall(content: LanguageModelV3GenerateResult['content']): boolean {
+  return content.some((part) => part.type === 'tool-call' && part.providerExecuted !== true);
 }
 
 function shouldInspectCodeInterpreter(
@@ -998,7 +718,7 @@ function getStringProperty(value: unknown, key: string): string | undefined {
 
 function getSteelQuoteAuditEventInput(
   config?: Partial<RunnableConfig>,
-): Parameters<typeof buildSteelQuoteAuditEvent>[0] {
+): Omit<Parameters<typeof buildSteelCodeInterpreterAuditEvent>[0], 'stage'> {
   const configurable = config?.configurable;
   const requestBodyRecord = isRecord(configurable) ? configurable.requestBody : undefined;
 
@@ -1013,18 +733,6 @@ function getSteelQuoteAuditEventInput(
     providerToolCallId: getStringProperty(configurable, 'providerToolCallId'),
     toolName: getStringProperty(configurable, 'toolName'),
   };
-}
-
-async function dispatchSteelQuoteAuditEvent(config?: Partial<RunnableConfig>): Promise<void> {
-  if (!config) {
-    return;
-  }
-
-  await dispatchCustomEvent(
-    steelNativeStreamEventName,
-    buildSteelQuoteAuditEvent(getSteelQuoteAuditEventInput(config)),
-    config as RunnableConfig,
-  );
 }
 
 type SteelCodeInterpreterAuditStage = 'stage_1' | 'stage_2';
@@ -1044,7 +752,10 @@ function isProviderCodeInterpreterToolCall(
 
 function createSteelCodeInterpreterAuditDispatcher(
   config?: Partial<RunnableConfig>,
-): (stage: SteelCodeInterpreterAuditStage, parts: SteelCodeInterpreterAuditPart[]) => Promise<void> {
+): (
+  stage: SteelCodeInterpreterAuditStage,
+  parts: SteelCodeInterpreterAuditPart[],
+) => Promise<void> {
   const seen = new Set<string>();
   const eventInput = getSteelQuoteAuditEventInput(config);
 
@@ -1154,20 +865,16 @@ function toStreamTextChunk(delta: string, model: string): AIMessageChunk {
 }
 
 function toStreamFinalChunk({
-  additionalUsage,
   finishReason,
   model,
   response,
   usage,
 }: {
-  additionalUsage?: LanguageModelV3Usage;
   finishReason?: LanguageModelV3GenerateResult['finishReason'];
   model: string;
   response?: LanguageModelV3GenerateResult['response'];
   usage?: LanguageModelV3Usage;
 }): AIMessageChunk {
-  const totalUsage = additionalUsage && usage ? mergeUsage(additionalUsage, usage) : usage;
-
   return new AIMessageChunk({
     content: '',
     response_metadata: createResponseMetadata({
@@ -1175,68 +882,8 @@ function toStreamFinalChunk({
       model,
       response,
     }),
-    usage_metadata: toUsageMetadata(totalUsage),
+    usage_metadata: toUsageMetadata(usage),
   });
-}
-
-async function* toChunkStream({
-  additionalUsage,
-  model,
-  onPart,
-  prefixSeparator,
-  stream,
-}: {
-  additionalUsage?: LanguageModelV3Usage;
-  model: string;
-  onPart?: (part: LanguageModelV3StreamPart) => Promise<void>;
-  prefixSeparator?: boolean;
-  stream: ReadableStream<LanguageModelV3StreamPart>;
-}): AsyncGenerator<AIMessageChunk> {
-  const reader = stream.getReader();
-  let response: LanguageModelV3GenerateResult['response'];
-  let usage: LanguageModelV3Usage | undefined;
-  let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
-  let completed = false;
-  let prefixSeparatorPending = prefixSeparator === true;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        completed = true;
-        break;
-      }
-
-      await onPart?.(value);
-
-      if (value.type === 'text-delta') {
-        if (prefixSeparatorPending && value.delta.trim() === '') {
-          continue;
-        }
-        const text = prefixSeparatorPending
-          ? `\n\n${value.delta.replace(/^[ \t\r\n]+/, '')}`
-          : value.delta;
-        prefixSeparatorPending = false;
-        yield toStreamTextChunk(text, model);
-      } else if (value.type === 'tool-call' && value.providerExecuted !== true) {
-        yield toStreamToolCallChunk(value, model);
-      } else if (value.type === 'response-metadata') {
-        response = value;
-      } else if (value.type === 'finish') {
-        usage = value.usage;
-        finishReason = value.finishReason;
-      } else if (value.type === 'error') {
-        throw value.error instanceof Error ? value.error : new Error(String(value.error));
-      }
-    }
-  } finally {
-    if (!completed) {
-      await reader.cancel().catch(() => undefined);
-    }
-    reader.releaseLock();
-  }
-
-  yield toStreamFinalChunk({ additionalUsage, finishReason, model, response, usage });
 }
 
 export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, RunnableConfig> {
@@ -1274,43 +921,25 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       await dispatchCodeInterpreterAudit('stage_1', result.content);
     }
 
-    const stageOneText = getGeneratedText(result.content);
-    const stageOne = shouldTransitionToStageTwo(
-      messages,
-      this.options,
-      result.content,
-      result.finishReason,
-    )
-      ? parseStageOneSlice(stageOneText)
-      : undefined;
-    if (!stageOne) {
+    const generatedText = getGeneratedText(result.content);
+    const composedText =
+      inspectCodeInterpreter &&
+      !result.content.some((part) => part.type === 'error') &&
+      !hasClientToolCall(result.content) &&
+      isCompletedTextResult(result.finishReason)
+        ? composeCustomerQuote(generatedText)
+        : undefined;
+    if (!composedText) {
       return toMessageChunk(result, this.options.model);
     }
 
-    const stageTwoMessages = [...messages, new AIMessage(stageOne.content)];
-    await dispatchSteelQuoteAuditEvent(config);
-    const stageTwoResult = await providerModel.doGenerate(
-      createCallOptions({
-        config,
-        messages: stageTwoMessages,
-        options: this.options,
-        tools: this.options.tools,
-      }),
-    );
-
-    await dispatchCodeInterpreterAudit('stage_2', stageTwoResult.content);
-
     return toMessageChunk(
       {
-        ...stageTwoResult,
+        ...result,
         content: [
-          {
-            type: 'text',
-            text: combineStageContent(stageOne.content, getGeneratedText(stageTwoResult.content)),
-          },
-          ...stageTwoResult.content.filter((part) => part.type !== 'text'),
+          { type: 'text', text: composedText },
+          ...result.content.filter((part) => part.type !== 'text'),
         ],
-        usage: mergeUsage(result.usage, stageTwoResult.usage),
       },
       this.options.model,
     );
@@ -1336,25 +965,18 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       }),
     );
 
-    if (!shouldInspectCodeInterpreter(messages, this.options)) {
-      yield* toChunkStream({
-        model: this.options.model,
-        stream: result.stream,
-      });
-      return;
-    }
-
+    const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const reader = result.stream.getReader();
-    const stageOneParser = createStageOneParser();
-    let stageOneText = '';
+    const quoteParser = inspectCodeInterpreter ? createCustomerQuoteParser() : undefined;
+    let generatedText = '';
     let emittedTextLength = 0;
     let response: LanguageModelV3GenerateResult['response'];
     let usage: LanguageModelV3Usage | undefined;
     let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
-    let sawToolCallOrInputStart = false;
-    let sawError = false;
+    let bypassQuote = false;
     let completed = false;
+    let streamError: Error | undefined;
 
     try {
       while (true) {
@@ -1364,22 +986,28 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           break;
         }
 
-        await dispatchCodeInterpreterAudit('stage_1', [value]);
+        if (inspectCodeInterpreter) {
+          await dispatchCodeInterpreterAudit('stage_1', [value]);
+        }
 
         if (value.type === 'text-delta') {
-          stageOneText += value.delta;
-          stageOneParser.append(value.delta);
-          if (sawToolCallOrInputStart || sawError) {
-            yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
-            emittedTextLength = stageOneText.length;
+          if (!quoteParser) {
+            yield toStreamTextChunk(value.delta, this.options.model);
             continue;
           }
 
-          const safeEnd =
-            stageOneParser.getProvisionalContentEnd() ?? stageOneParser.getSafeTextEnd();
+          generatedText += value.delta;
+          if (bypassQuote) {
+            yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
+            emittedTextLength = generatedText.length;
+            continue;
+          }
+
+          quoteParser.append(value.delta);
+          const safeEnd = quoteParser.getSafeTextEnd();
           if (safeEnd > emittedTextLength) {
             yield toStreamTextChunk(
-              stageOneText.slice(emittedTextLength, safeEnd),
+              generatedText.slice(emittedTextLength, safeEnd),
               this.options.model,
             );
             emittedTextLength = safeEnd;
@@ -1388,20 +1016,19 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         }
 
         if (
-          value.type === 'tool-call' ||
-          value.type === 'tool-input-start' ||
+          (value.type === 'tool-call' && value.providerExecuted !== true) ||
+          (value.type === 'tool-input-start' && value.providerExecuted !== true) ||
           value.type === 'error'
         ) {
-          if (stageOneText.length > emittedTextLength) {
-            yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
-            emittedTextLength = stageOneText.length;
+          if (generatedText.length > emittedTextLength) {
+            yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
+            emittedTextLength = generatedText.length;
           }
 
           if (value.type === 'error') {
-            sawError = true;
             throw value.error instanceof Error ? value.error : new Error(String(value.error));
           }
-          sawToolCallOrInputStart = true;
+          bypassQuote = true;
           if (value.type === 'tool-call' && value.providerExecuted !== true) {
             yield toStreamToolCallChunk(value, this.options.model);
           }
@@ -1415,6 +1042,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           finishReason = value.finishReason;
         }
       }
+    } catch (error) {
+      streamError = error instanceof Error ? error : new Error(String(error));
     } finally {
       if (!completed) {
         await reader.cancel().catch(() => undefined);
@@ -1422,39 +1051,36 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       reader.releaseLock();
     }
 
-    const stageOne =
-      this.options.enableCodeInterpreter !== false &&
-      hasCurrentTurnPriceResult(messages) &&
-      !sawError &&
-      !sawToolCallOrInputStart &&
-      isCompletedTextResult(finishReason)
-        ? stageOneParser.finish(stageOneText)
-        : undefined;
-    if (!stageOne) {
-      if (stageOneText.length > emittedTextLength) {
-        yield toStreamTextChunk(stageOneText.slice(emittedTextLength), this.options.model);
+    if (streamError) {
+      if (generatedText.length > emittedTextLength) {
+        yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
       }
-      yield toStreamFinalChunk({ finishReason, model: this.options.model, response, usage });
-      return;
+      throw streamError;
     }
 
-    await dispatchSteelQuoteAuditEvent(config);
-    const stageTwoResult = await providerModel.doStream(
-      createCallOptions({
-        config,
-        messages: [...messages, new AIMessage(stageOne.content)],
-        options: this.options,
-        tools: this.options.tools,
-      }),
-    );
+    const quote =
+      quoteParser && !bypassQuote && isCompletedTextResult(finishReason)
+        ? quoteParser.finish()
+        : undefined;
+    if (quote && emittedTextLength <= quote.sourceEnd) {
+      if (quote.sourceEnd > emittedTextLength) {
+        yield toStreamTextChunk(
+          generatedText.slice(emittedTextLength, quote.sourceEnd),
+          this.options.model,
+        );
+      }
 
-    yield* toChunkStream({
-      additionalUsage: usage,
-      model: this.options.model,
-      onPart: (part) => dispatchCodeInterpreterAudit('stage_2', [part]),
-      prefixSeparator: true,
-      stream: stageTwoResult.stream,
-    });
+      const beforeQuote = generatedText.slice(0, quote.sourceEnd);
+      const afterQuote = generatedText.slice(quote.sourceEnd);
+      yield toStreamTextChunk(
+        renderCustomerQuoteInsertion(beforeQuote, quote.markdown, afterQuote),
+        this.options.model,
+      );
+      emittedTextLength = generatedText.length;
+    } else if (generatedText.length > emittedTextLength) {
+      yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
+    }
+    yield toStreamFinalChunk({ finishReason, model: this.options.model, response, usage });
   }
 
   private async getProviderModel(): Promise<LanguageModelV3> {

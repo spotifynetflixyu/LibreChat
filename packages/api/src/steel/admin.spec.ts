@@ -87,4 +87,20 @@ describe('Steel OpenAI OAuth admin handlers', () => {
 
     expect(invalidateUsageCache).toHaveBeenCalledTimes(3);
   });
+
+  it('reports capability smoke support for the active Steel model', async () => {
+    const handlers = createSteelAdminHandlers();
+    const response = createResponse();
+
+    await handlers.requestCapabilitySmoke({} as Request, response);
+
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.6-luna',
+        provider: 'openai_oauth_responses',
+        source: 'code_owned_support_matrix',
+      }),
+    );
+  });
 });

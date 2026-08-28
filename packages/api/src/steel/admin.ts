@@ -149,7 +149,7 @@ export function createSteelAdminHandlers({
           code_interpreter: 'unverified',
           conversation_state: 'not_applicable',
         },
-        model: 'gpt-5.5',
+        model: 'gpt-5.6-luna',
         provider: 'openai_oauth_responses',
         source: 'code_owned_support_matrix',
       });

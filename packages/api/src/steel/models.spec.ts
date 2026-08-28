@@ -1,10 +1,10 @@
 import { buildSteelModelOptions } from './models';
 
 describe('Steel model options', () => {
-  it('derives the gpt-5.5 option from LibreChat model specs', () => {
+  it('derives the gpt-5.6-luna option from LibreChat model specs', () => {
     const options = buildSteelModelOptions({
       models: {
-        openAI: ['gpt-5.5', 'gpt-5.4'],
+        openAI: ['gpt-5.6-luna', 'gpt-5.5'],
       },
       modelSpecs: {
         list: [
@@ -14,7 +14,7 @@ describe('Steel model options', () => {
             default: true,
             preset: {
               endpoint: 'openAI',
-              model: 'gpt-5.5',
+              model: 'gpt-5.6-luna',
             },
           },
           {
@@ -29,7 +29,7 @@ describe('Steel model options', () => {
         ],
       },
       capabilities: {
-        'openai_oauth_responses:gpt-5.5': {
+        'openai_oauth_responses:gpt-5.6-luna': {
           text: 'passed',
           streaming: 'passed',
           tool_calling: 'unverified',
@@ -49,8 +49,8 @@ describe('Steel model options', () => {
 
     expect(options).toEqual([
       expect.objectContaining({
-        id: 'openai_oauth_responses:gpt-5.5',
-        model: 'gpt-5.5',
+        id: 'openai_oauth_responses:gpt-5.6-luna',
+        model: 'gpt-5.6-luna',
         provider: 'openai_oauth_responses',
         source: 'librechat_model_spec',
         defaultForSteel: true,
@@ -59,13 +59,13 @@ describe('Steel model options', () => {
     ]);
   });
 
-  it('does not expose gpt-5.4 or lower endpoint models as active Steel options', () => {
+  it('does not expose gpt-5.5 or lower endpoint models as active Steel options', () => {
     const options = buildSteelModelOptions({
       models: {
-        openAI: ['gpt-5.5', 'gpt-5.4', 'gpt-4.1'],
+        openAI: ['gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-4.1'],
       },
     });
 
-    expect(options.map((option) => option.model)).toEqual(['gpt-5.5']);
+    expect(options.map((option) => option.model)).toEqual(['gpt-5.6-luna']);
   });
 });

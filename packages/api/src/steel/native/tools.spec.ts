@@ -160,15 +160,24 @@ describe('Steel native tool adapter', () => {
   });
 
   it('creates executable native Steel tools using mapped Steel tool names', async () => {
+    const fullResult: SteelToolResult = {
+      ok: true,
+      toolName: 'search_customers',
+      data: {
+        sourceRefs: [{ channel: 'admin_erp_xlsx', factType: 'customer' }],
+        customers: [
+          {
+            displayName: 'ACME',
+            sourceRefs: [{ channel: 'admin_erp_xlsx', factType: 'customer' }],
+          },
+        ],
+      },
+      sourceRefs: [{ channel: 'admin_erp_xlsx', factType: 'customer' }],
+      durationMs: 7,
+      redactionVersion: 1,
+    };
     const execute = jest.fn(
-      async (_input: Parameters<SteelNativeToolExecute>[0]): Promise<SteelToolResult> => ({
-        ok: true as const,
-        toolName: 'search_customers' as const,
-        data: { customers: [{ displayName: 'ACME' }] },
-        sourceRefs: [],
-        durationMs: 7,
-        redactionVersion: 1 as const,
-      }),
+      async (_input: Parameters<SteelNativeToolExecute>[0]): Promise<SteelToolResult> => fullResult,
     );
     const tool = createSteelNativeTool({
       nativeToolName: 'steel_search_customers',
@@ -191,11 +200,19 @@ describe('Steel native tool adapter', () => {
       providerToolCallId: 'call_123',
       toolName: 'search_customers',
     });
-    expect(result.content).toContain('"ok":true');
+    expect(JSON.parse(result.content)).toEqual({
+      ok: true,
+      toolName: 'search_customers',
+      data: { customers: [{ displayName: 'ACME' }] },
+      durationMs: 7,
+      redactionVersion: 1,
+    });
+    expect(result.content).not.toContain('sourceRefs');
     expect(result.artifact).toEqual(
       expect.objectContaining({
         type: 'steel_tool_result',
         toolName: 'search_customers',
+        result: fullResult,
       }),
     );
   });

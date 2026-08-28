@@ -74,6 +74,18 @@ or rule text. Verify these changes with the relevant parser or dry run, sync
 readback when applicable, and `git diff --check`. Add tests only when executable
 behavior changes or the user explicitly requests tests.
 
+### Rule Synchronization
+
+Use the repository's existing synchronization scripts for runtime rule updates;
+do not create ad hoc or temporary update scripts when an existing project script
+covers the workflow. For unified Steel rules under `docs/rules`, use
+`packages/api/scripts/sync-steel-rules.cjs` for dry-run, apply, and database
+readback, with the repository rule files remaining the source of truth.
+Always pass the intended target explicitly: `--target dev` loads `.env`, while
+`--target prod` loads `.env.prod`. Run `--dry-run` against the same target before
+`--apply`; do not infer the destination database from an ambient
+`STEEL_POSTGRES_URL`.
+
 ### Naming and File Organization
 
 - **Single-word file names** whenever possible (e.g., `permissions.ts`, `capabilities.ts`, `service.ts`).

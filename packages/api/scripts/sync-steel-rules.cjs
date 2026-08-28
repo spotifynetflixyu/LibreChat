@@ -36,43 +36,82 @@ function findRepoRoot(startDir) {
   return process.cwd();
 }
 
-function loadRootEnv(repoRoot) {
-  const envPath = path.join(repoRoot, '.env');
+function loadTargetEnv(repoRoot, target, environment = process.env) {
+  const envFile = target === 'prod' ? '.env.prod' : '.env';
+  const envPath = path.join(repoRoot, envFile);
   if (!fs.existsSync(envPath)) {
-    return;
+    throw new Error(`Missing ${target} environment file: ${envFile}`);
   }
 
-  require('dotenv').config({ path: envPath });
+  const parsed = require('dotenv').parse(fs.readFileSync(envPath));
+  const connectionString = parsed.STEEL_POSTGRES_URL?.trim();
+  if (!connectionString) {
+    throw new Error(`${envFile} must define STEEL_POSTGRES_URL`);
+  }
+
+  return {
+    ...environment,
+    STEEL_POSTGRES_URL: connectionString,
+  };
 }
 
 function parseArgs(argv) {
-  const apply = argv.includes('--apply');
-  const dryRun = argv.includes('--dry-run');
-  if (apply && dryRun) {
-    throw new Error('Use either --dry-run or --apply, not both.');
+  let apply = false;
+  let dryRun = false;
+  let help = false;
+  let target = 'dev';
+  let targetSeen = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--apply') {
+      apply = true;
+      continue;
+    }
+    if (arg === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+    if (arg === '--help' || arg === '-h') {
+      help = true;
+      continue;
+    }
+    if (arg === '--target') {
+      if (targetSeen) {
+        throw new Error('--target may only be specified once.');
+      }
+      const value = argv[index + 1];
+      if (value !== 'dev' && value !== 'prod') {
+        throw new Error('--target must be either dev or prod.');
+      }
+      target = value;
+      targetSeen = true;
+      index += 1;
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}`);
   }
 
-  const knownArgs = new Set(['--apply', '--dry-run', '--help', '-h']);
-  const unknownArg = argv.find((arg) => !knownArgs.has(arg));
-  if (unknownArg) {
-    throw new Error(`Unknown argument: ${unknownArg}`);
+  if (apply && dryRun) {
+    throw new Error('Use either --dry-run or --apply, not both.');
   }
 
   return {
     apply,
     dryRun: dryRun || !apply,
-    help: argv.includes('--help') || argv.includes('-h'),
+    help,
+    target,
   };
 }
 
 function printUsage() {
   process.stdout.write(`Usage:
-  node packages/api/scripts/sync-steel-rules.cjs --dry-run
-  node packages/api/scripts/sync-steel-rules.cjs --apply
+  node packages/api/scripts/sync-steel-rules.cjs --dry-run [--target dev|prod]
+  node packages/api/scripts/sync-steel-rules.cjs --apply [--target dev|prod]
 
-Default mode is --dry-run. --apply syncs agent, output, other, and category
-rules under docs/rules into steel.rules using STEEL_POSTGRES_URL, then reads
-rows back.
+Default mode is --dry-run and the default target is dev. --apply loads
+STEEL_POSTGRES_URL from .env for dev or .env.prod for prod, syncs agent, output,
+other, and category rules under docs/rules into steel.rules, then reads rows back.
 `);
 }
 
@@ -350,11 +389,11 @@ function buildRules(repoRoot) {
       slug: 'steel-quote-calculation-verification-policy',
       ruleKind: 'output',
       title: 'Steel 報價計算驗證規則',
-      ruleSections: ['quote_calculation', 'quote_subtotal_validation', 'quote_total_validation'],
+      ruleSections: ['system_order_calculation', 'system_order_validation'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'output_sheet_context'],
         scopeType: 'company',
-        activeSheets: ['system_order', 'customer_quote', 'manual_review'],
+        activeSheets: ['system_order'],
         confidence: 'high',
       },
       prompt: quoteCalculation.prompt,
@@ -363,14 +402,9 @@ function buildRules(repoRoot) {
         runAfter: 'price_lookup',
       },
       outputPolicy: {
-        subtotalSource: 'current_turn_python_results',
-        totalInput: 'ordered_displayed_nonblank_subtotals',
-        blankSubtotalHandling: 'exclude_from_total_and_manual_review',
-        totalRequired: true,
-        emptyConfirmedSubtotalTotal: 0,
-        preOutputTotalGate:
-          'displayed_nonblank_count_equals_python_input_count_and_total_equals_python_sum',
-        verificationFailure: 'correct_and_recalculate_before_output',
+        systemOrderTotalSource: 'current_turn_python_results',
+        preserveExactTotal: true,
+        unitPriceSource: 'selected_candidate_tier_price',
       },
       priority: 10,
       sourceRefs: [
@@ -390,8 +424,8 @@ function buildRules(repoRoot) {
       ruleSections: ['workbook_output', 'output_policy', 'output_sheet', 'customer_tier_sync'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'output_sheet_context'],
-        activeSheets: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
-        synchronizedSheetsOnCustomerTierChange: ['system_order', 'customer_quote'],
+        activeSheets: ['system_order', 'customer_data', 'manual_review'],
+        synchronizedSheetsOnCustomerTierChange: ['system_order'],
         confidence: 'high',
       },
       prompt: output.prompt,
@@ -399,12 +433,12 @@ function buildRules(repoRoot) {
         availableTools: ['search_customers', 'search_price_candidates'],
       },
       outputPolicy: {
-        activeSheets: ['system_order', 'customer_data', 'manual_review', 'customer_quote'],
+        activeSheets: ['system_order', 'customer_data', 'manual_review'],
         missingSheetBehavior: 'carry_forward_previous_active_sheet',
         emittedSheetBehavior: 'replace_previous_active_sheet',
         omittedRowsInEmittedSheet: 'clear_or_delete',
         defaultCustomerTierWhenUncertain: 'B',
-        synchronizedSheetsOnCustomerTierChange: ['system_order', 'customer_quote'],
+        synchronizedSheetsOnCustomerTierChange: ['system_order'],
       },
       priority: 20,
       sourceRefs: [
@@ -686,9 +720,10 @@ ORDER BY rule_kind ASC, priority ASC, slug ASC
   return result.rows;
 }
 
-function summarizeRules(rules, mode) {
+function summarizeRules(rules, mode, target) {
   return {
     mode,
+    target,
     rules: rules.map((rule) => ({
       slug: rule.slug,
       version: rule.version,
@@ -733,16 +768,16 @@ async function main() {
   }
 
   const repoRoot = findRepoRoot(path.resolve(__dirname, '..', '..', '..'));
-  loadRootEnv(repoRoot);
   const rules = buildRules(repoRoot);
-  const summary = summarizeRules(rules, args.apply ? 'apply' : 'dry-run');
+  const summary = summarizeRules(rules, args.apply ? 'apply' : 'dry-run', args.target);
 
   if (args.dryRun && !args.apply) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
     return;
   }
 
-  const pool = createSteelPostgresPool();
+  const targetEnv = loadTargetEnv(repoRoot, args.target);
+  const pool = createSteelPostgresPool(targetEnv);
 
   try {
     const row = await syncRules(pool, rules);
@@ -754,6 +789,7 @@ async function main() {
 
 module.exports = {
   buildRules,
+  loadTargetEnv,
   parseArgs,
   syncRules,
 };
