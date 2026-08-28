@@ -167,6 +167,16 @@ describe('MessageRow', () => {
     expect(screen.queryByTestId('message-timestamp')).not.toBeInTheDocument();
   });
 
+  it('does not use display timestamp as elapsed timer start for pending assistant', () => {
+    renderRow({
+      isCreatedByUser: false,
+      isSubmitting: true,
+      timestamp: '2026-08-18T12:00:00.000Z',
+    });
+
+    expect(screen.getByTestId('message-elapsed-timer')).not.toHaveAttribute('data-started-at');
+  });
+
   it('shows only timestamp in the same metadata slot after assistant completes', () => {
     renderRow({ isCreatedByUser: false, timestamp: '2026-08-18T12:00:00.000Z' });
 

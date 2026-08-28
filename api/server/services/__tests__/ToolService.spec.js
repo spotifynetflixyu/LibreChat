@@ -2705,15 +2705,23 @@ describe('ToolService - Action Capability Gating', () => {
       mockPaddleOcrToolLoads(invoke);
       mockPaddleOcrBatchWithOrganizer(organizerInputs);
 
-      const result = await runSteelPaddleOcrPreflight({
-        req,
-        res: {},
-        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
-        signal: new AbortController().signal,
-        streamId: 'stream-1',
-      });
+      jest.useFakeTimers();
+      let result;
+      try {
+        const resultPromise = runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        });
+        await jest.runAllTimersAsync();
+        result = await resultPromise;
+      } finally {
+        jest.useRealTimers();
+      }
 
-      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(invoke).toHaveBeenCalledTimes(3);
       expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
       expect(reinitMCPServer).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
@@ -2745,6 +2753,57 @@ describe('ToolService - Action Capability Gating', () => {
           }),
         ]),
       );
+    });
+
+    it('uses two fixed retry waits and persists only typed PaddleOCR diagnostics', async () => {
+      jest.useFakeTimers();
+      try {
+        const file = {
+          fileId: 'file-diagnostic',
+          filename: 'diagnostic.jpg',
+          mediaType: 'image/jpeg',
+        };
+        const req = createMockPaddleOcrPreflightReq(file);
+        const invokeError = new Error('PaddleOCR tool failed');
+        Object.defineProperty(invokeError, 'diagnosticCode', {
+          value: 'ai_studio_timeout',
+          enumerable: false,
+        });
+        const invoke = jest.fn().mockRejectedValue(invokeError);
+        mockSingleFilePaddleOcrPipeline(file);
+        mockPaddleOcrToolLoads(invoke);
+
+        const resultPromise = runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(invoke).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(2999);
+        expect(invoke).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(invoke).toHaveBeenCalledTimes(2);
+        await jest.advanceTimersByTimeAsync(2999);
+        expect(invoke).toHaveBeenCalledTimes(2);
+        await jest.advanceTimersByTimeAsync(1);
+        const result = await resultPromise;
+
+        expect(invoke).toHaveBeenCalledTimes(3);
+        expect(mockCapturePaddleOcrChunkResult).not.toHaveBeenCalled();
+        expect(result.currentOcrFailures).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              diagnosticCode: 'ai_studio_timeout',
+              stage: 'preflight',
+            }),
+          ]),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('rebuilds and retries PaddleOCR preflight after connection establishment timeout', async () => {
@@ -2788,7 +2847,11 @@ describe('ToolService - Action Capability Gating', () => {
     it('does not rebuild or retry non-transient PaddleOCR provider errors', async () => {
       const file = { fileId: 'file-invalid', filename: 'invalid.jpg', mediaType: 'image/jpeg' };
       const req = createMockPaddleOcrPreflightReq(file);
-      const providerError = new Error('invalid PaddleOCR authentication configuration');
+      const providerError = new Error('invalid PaddleOCR authentication configuration; timeout');
+      Object.defineProperty(providerError, 'diagnosticCode', {
+        value: 'ai_studio_auth',
+        enumerable: false,
+      });
       const invoke = jest.fn().mockRejectedValueOnce(providerError);
       mockSingleFilePaddleOcrPipeline(file);
       mockPaddleOcrToolLoads(invoke);
@@ -2843,7 +2906,7 @@ describe('ToolService - Action Capability Gating', () => {
       expect(providerError.cause).toBe(rebuildError);
     });
 
-    it('retries HTTP 408 once without rebuilding MCP and keeps the fallback turn active', async () => {
+    it('retries HTTP 408 twice without rebuilding MCP and keeps the fallback turn active', async () => {
       const file = {
         fileId: 'file-timeout',
         filename: 'timeout.pdf',
@@ -2856,18 +2919,26 @@ describe('ToolService - Action Capability Gating', () => {
       mockSingleFilePaddleOcrPipeline(file);
       mockPaddleOcrToolLoads(invoke);
 
-      const result = await runSteelPaddleOcrPreflight({
-        req,
-        res: {},
-        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
-        signal: new AbortController().signal,
-        streamId: 'stream-1',
-      });
+      jest.useFakeTimers();
+      let result;
+      try {
+        const resultPromise = runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        });
+        await jest.runAllTimersAsync();
+        result = await resultPromise;
+      } finally {
+        jest.useRealTimers();
+      }
 
       expect(reinitMCPServer).not.toHaveBeenCalled();
       expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
       expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
-      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(invoke).toHaveBeenCalledTimes(3);
       expect(result).toEqual(
         expect.objectContaining({
           status: 'partial',

@@ -102,7 +102,7 @@ export default function MessageRow({
                 <span className="ml-auto shrink-0">
                   <MessageElapsedTimer
                     timerKey={id}
-                    startedAt={processingStartedAt ?? timestamp}
+                    startedAt={processingStartedAt}
                     parentMessageId={parentMessageId}
                     isSubmitting
                     isCreatedByUser={isCreatedByUser}

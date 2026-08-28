@@ -17,6 +17,7 @@ import {
 } from './chunks';
 import { normalizeOcrOrganizerFileKey } from './organizer';
 import type { OcrOrganizer } from './organizer';
+import { isPaddleOcrDiagnosticCode, type PaddleOcrDiagnosticCode } from './diagnostics';
 
 export interface OcrPreprocessingFile extends SteelOcrFileReference {
   ocrFileKey: string;
@@ -99,6 +100,7 @@ export interface OcrPreprocessingFailure {
   pageStart?: number;
   pageEnd?: number;
   fileUrl?: string;
+  diagnosticCode?: PaddleOcrDiagnosticCode;
   errorMessage: string;
 }
 
@@ -193,6 +195,7 @@ interface OcrPreprocessingBatchWorkItem {
   initialState: OcrPreprocessingState;
   failures: OcrPreprocessingFailure[];
   preflightState?: OcrPreprocessingState;
+  organizerStateChanged: boolean;
   pdfChunkArtifacts?: readonly OcrPdfChunkArtifact[];
 }
 
@@ -242,6 +245,12 @@ function toFailure(input: {
   chunk?: OcrPreprocessingPageChunk;
   fileUrl?: string;
 }): OcrPreprocessingFailure {
+  const diagnosticCode =
+    input.error &&
+    typeof input.error === 'object' &&
+    isPaddleOcrDiagnosticCode((input.error as { diagnosticCode?: unknown }).diagnosticCode)
+      ? (input.error as { diagnosticCode: PaddleOcrDiagnosticCode }).diagnosticCode
+      : undefined;
   return {
     stage: input.stage,
     ...(input.chunk
@@ -252,6 +261,7 @@ function toFailure(input: {
         }
       : {}),
     ...(input.fileUrl !== undefined ? { fileUrl: input.fileUrl } : {}),
+    ...(diagnosticCode ? { diagnosticCode } : {}),
     errorMessage: toErrorMessage(input.error),
   };
 }
@@ -477,14 +487,16 @@ async function toFailedFileResultWithPartial(input: {
     file: workItem.file,
     failures: workItem.failures,
   });
-  let state: OcrPreprocessingState;
-  try {
-    state = await readPreprocessingState(pipeline, workItem.file);
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error;
+  let state = workItem.preflightState;
+  if (!state || workItem.organizerStateChanged) {
+    try {
+      state = await readPreprocessingState(pipeline, workItem.file);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      return failedResult;
     }
-    return failedResult;
   }
   try {
     const partial = getPartialResult({
@@ -599,6 +611,7 @@ export async function runOcrPreprocessingBatchPipeline(
       chunkCount,
       initialState: state,
       failures: [],
+      organizerStateChanged: false,
     });
   }
 
@@ -958,6 +971,7 @@ export async function runOcrPreprocessingBatchPipeline(
           content: organized.markdown,
           includeTotals: false,
         });
+        workItem.organizerStateChanged = true;
         await emitFileProgress(input, workItem.file, {
           stage: 'organizer_chunk_saved',
           chunkIndex: chunk.chunkIndex,

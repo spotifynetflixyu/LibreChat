@@ -37,6 +37,7 @@ const {
   hasRuntimeUrlPlaceholders,
   containsGraphTokenPlaceholder,
   isOAuthServer,
+  isPaddleOcrDiagnosticCode,
 } = require('@librechat/api');
 const {
   Time,
@@ -86,6 +87,20 @@ const PADDLEOCR_MEDIA_TYPES_BY_EXTENSION = {
   '.tiff': 'image/tiff',
   '.webp': 'image/webp',
 };
+const paddleOcrDiagnosticCodes = new Set([
+  'ai_studio_auth',
+  'ai_studio_unavailable',
+  'ai_studio_rate_limited',
+  'ai_studio_timeout',
+  'ai_studio_invalid_request',
+  'ai_studio_job_failed',
+  'ai_studio_response_parse',
+  'ai_studio_inference',
+]);
+const isSafePaddleOcrDiagnosticCode = (value) =>
+  typeof isPaddleOcrDiagnosticCode === 'function'
+    ? isPaddleOcrDiagnosticCode(value)
+    : paddleOcrDiagnosticCodes.has(value);
 
 const missingToolCache = new Map();
 const MISSING_TOOL_TTL_MS = 10_000;
@@ -1487,6 +1502,17 @@ function createToolInstance({
       const isOAuthFlowSignal =
         error.message === 'OAuth flow initiated - return early' ||
         error.message === 'Pending OAuth flow reused - return early';
+      const wrapMcpError = (message) => {
+        const wrappedError = new Error(message);
+        if (isSafePaddleOcrDiagnosticCode(error?.diagnosticCode)) {
+          Object.defineProperty(wrappedError, 'diagnosticCode', {
+            value: error.diagnosticCode,
+            enumerable: false,
+            configurable: true,
+          });
+        }
+        return wrappedError;
+      };
 
       if (isOAuthError) {
         if (
@@ -1494,18 +1520,22 @@ function createToolInstance({
           !requiresOAuthMachinery(capturedServerConfig) &&
           !isOAuthFlowSignal
         ) {
-          throw new Error(
+          throw wrapMcpError(
             `[MCP][${serverName}][${toolName}] upstream authentication failed; MCP OAuth is not configured for this server.`,
           );
         }
-        throw new Error(
+        throw wrapMcpError(
           `[MCP][${serverName}][${toolName}] OAuth authentication required. Please check the server logs for the authentication URL.`,
         );
       }
 
-      throw new Error(
-        `[MCP][${serverName}][${toolName}] tool call failed${error?.message ? `: ${error?.message}` : '.'}`,
+      const hasSafeDiagnosticCode = isSafePaddleOcrDiagnosticCode(error?.diagnosticCode);
+      const wrappedError = wrapMcpError(
+        `[MCP][${serverName}][${toolName}] tool call failed${
+          hasSafeDiagnosticCode ? '.' : error?.message ? `: ${error.message}` : '.'
+        }`,
       );
+      throw wrappedError;
     }
   };
 

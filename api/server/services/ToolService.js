@@ -70,6 +70,7 @@ const {
   runOcrPreprocessingBatchPipeline,
   getPaddleOcrResultContent,
   getPaddleOcrResultError,
+  isPaddleOcrDiagnosticCode: isPaddleOcrDiagnosticCodeFromApi,
   resolveOcrPreprocessingChunkSizePages,
   buildPdfPageChunks,
   normalizeOcrPageChunks,
@@ -647,9 +648,22 @@ const steelPaddleOcrTransportErrorPatterns = [
   'fetch failed',
   'network error',
 ];
-const steelPaddleOcrMaxAttempts = 2;
-const steelPaddleOcrRetryBaseDelayMs = 200;
-const steelPaddleOcrRetryJitterMs = 100;
+const steelPaddleOcrMaxAttempts = 3;
+const steelPaddleOcrRetryDelayMs = 3000;
+const steelPaddleOcrDiagnosticCodes = new Set([
+  'ai_studio_auth',
+  'ai_studio_unavailable',
+  'ai_studio_rate_limited',
+  'ai_studio_timeout',
+  'ai_studio_invalid_request',
+  'ai_studio_job_failed',
+  'ai_studio_response_parse',
+  'ai_studio_inference',
+]);
+const isPaddleOcrDiagnosticCode = (value) =>
+  typeof isPaddleOcrDiagnosticCodeFromApi === 'function'
+    ? isPaddleOcrDiagnosticCodeFromApi(value)
+    : steelPaddleOcrDiagnosticCodes.has(value);
 let defaultSteelNativeToolClient;
 
 const mcpServerPinPrefix = `${Constants.mcp_server}${Constants.mcp_delimiter}`;
@@ -1672,6 +1686,15 @@ function collectErrorMessages(error) {
 }
 
 function isRetryableSteelPaddleOcrPreflightError(error) {
+  if (isPaddleOcrDiagnosticCode(error?.diagnosticCode)) {
+    return [
+      'ai_studio_unavailable',
+      'ai_studio_rate_limited',
+      'ai_studio_timeout',
+      'ai_studio_job_failed',
+      'ai_studio_inference',
+    ].includes(error.diagnosticCode);
+  }
   const combined = collectErrorMessages(error).join('\n').toLowerCase();
   return (
     Boolean(combined) &&
@@ -1687,10 +1710,8 @@ function isTransportSteelPaddleOcrPreflightError(error) {
   );
 }
 
-function sleepSteelPaddleOcrRetry({ signal, attemptIndex }) {
-  const delay =
-    steelPaddleOcrRetryBaseDelayMs * 2 ** attemptIndex +
-    Math.floor(Math.random() * steelPaddleOcrRetryJitterMs);
+function sleepSteelPaddleOcrRetry({ signal }) {
+  const delay = steelPaddleOcrRetryDelayMs;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const error = new Error('OCR retry aborted');
@@ -2235,7 +2256,15 @@ function createSteelPaddleOcrChunkRunner({
           );
           const resultError = getPaddleOcrResultError(result);
           if (resultError) {
-            throw new Error(resultError);
+            const resultErrorObject = new Error(resultError);
+            if (isPaddleOcrDiagnosticCode(result?.diagnosticCode)) {
+              Object.defineProperty(resultErrorObject, 'diagnosticCode', {
+                value: result.diagnosticCode,
+                enumerable: false,
+                configurable: true,
+              });
+            }
+            throw resultErrorObject;
           }
         } catch (error) {
           if (isAbortError(error, signal)) {
@@ -2249,7 +2278,7 @@ function createSteelPaddleOcrChunkRunner({
             break;
           }
 
-          await sleepSteelPaddleOcrRetry({ signal, attemptIndex });
+          await sleepSteelPaddleOcrRetry({ signal });
           if (isTransportSteelPaddleOcrPreflightError(error)) {
             try {
               const rebuilt = await rebuildSteelPaddleOcrPreflightTool({
@@ -2315,6 +2344,13 @@ function createSteelPaddleOcrChunkRunner({
           : safeErrorMessage,
       );
       exhaustedError.cause = error;
+      if (isPaddleOcrDiagnosticCode(error?.diagnosticCode)) {
+        Object.defineProperty(exhaustedError, 'diagnosticCode', {
+          value: error.diagnosticCode,
+          enumerable: false,
+          configurable: true,
+        });
+      }
       if (typeof currentArtifact?.filepath === 'string') {
         exhaustedError.ocrFileUrl = currentArtifact.filepath;
       }
@@ -2403,6 +2439,9 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
     ...(result?.chunkIndex !== undefined ? { chunkIndex: result.chunkIndex } : {}),
     ...(result?.pageStart !== undefined ? { pageStart: result.pageStart } : {}),
     ...(result?.pageEnd !== undefined ? { pageEnd: result.pageEnd } : {}),
+    ...(isPaddleOcrDiagnosticCode(result?.diagnosticCode)
+      ? { diagnosticCode: result.diagnosticCode }
+      : {}),
     errorMessage: redactMessage(
       result?.errorMessage ?? errorMessage ?? 'OCR preprocessing failed',
       512,
@@ -2410,7 +2449,7 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
   };
 }
 
-function sanitizeCurrentOcrPageRanges(pageRanges, chunkCount) {
+function sanitizeCurrentOcrPageRanges(pageRanges, chunkCount, { allowGaps = false } = {}) {
   if (
     !Array.isArray(pageRanges) ||
     !Number.isInteger(chunkCount) ||
@@ -2433,37 +2472,9 @@ function sanitizeCurrentOcrPageRanges(pageRanges, chunkCount) {
     const previous = sanitized[sanitized.length - 1];
     if (
       previous &&
-      (range.pageStart <= previous.pageEnd || range.pageStart !== previous.pageEnd + 1)
+      (range.pageStart <= previous.pageEnd ||
+        (!allowGaps && range.pageStart !== previous.pageEnd + 1))
     ) {
-      return [];
-    }
-    sanitized.push({ pageStart: range.pageStart, pageEnd: range.pageEnd });
-  }
-  return sanitized;
-}
-
-function sanitizeCurrentOcrPartialPageRanges(pageRanges, chunkCount) {
-  if (
-    !Array.isArray(pageRanges) ||
-    !Number.isInteger(chunkCount) ||
-    chunkCount < 1 ||
-    pageRanges.length !== chunkCount
-  ) {
-    return [];
-  }
-
-  const sanitized = [];
-  for (const range of pageRanges) {
-    if (
-      !Number.isInteger(range?.pageStart) ||
-      range.pageStart < 1 ||
-      !Number.isInteger(range?.pageEnd) ||
-      range.pageEnd < range.pageStart
-    ) {
-      return [];
-    }
-    const previous = sanitized[sanitized.length - 1];
-    if (previous && range.pageStart <= previous.pageEnd) {
       return [];
     }
     sanitized.push({ pageStart: range.pageStart, pageEnd: range.pageEnd });
@@ -2503,9 +2514,7 @@ function createCurrentOcrMergedMarkdownResult({
       pipelineVersion: ocrPreprocessingPipelineVersion,
       sourcePdfKey,
       chunkCount,
-      pageRanges: partial
-        ? sanitizeCurrentOcrPartialPageRanges(pageRanges, chunkCount)
-        : sanitizeCurrentOcrPageRanges(pageRanges, chunkCount),
+      pageRanges: sanitizeCurrentOcrPageRanges(pageRanges, chunkCount, { allowGaps: partial }),
       ocrRuleVersion,
       source: 'paddleocr_markdowns',
       ...(partial ? { partial: true } : {}),
@@ -2782,7 +2791,7 @@ async function runSteelPaddleOcrPreflight({
         }),
       });
       currentOcrFailures.push(
-        createCurrentOcrFailureResult({ file: preprocessingFile, errorMessage }),
+        createCurrentOcrFailureResult({ file: preprocessingFile, result: error, errorMessage }),
       );
       logger.warn('[Steel OCR] OCR preprocessing pipeline failed for current PDF', {
         conversationId,
@@ -2910,7 +2919,9 @@ async function runSteelPaddleOcrPreflight({
         if (!failedKeys.includes(file.ocrFileKey)) {
           failedKeys.push(file.ocrFileKey);
         }
-        currentOcrFailures.push(createCurrentOcrFailureResult({ file, errorMessage }));
+        currentOcrFailures.push(
+          createCurrentOcrFailureResult({ file, result: error, errorMessage }),
+        );
         await emitSteelNativeEvents({
           req,
           res,

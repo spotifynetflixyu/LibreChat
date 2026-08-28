@@ -147,6 +147,58 @@ describe('MessageElapsedTimer', () => {
     expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('2m 05s');
   });
 
+  it('uses the parent user timestamp across a page-switch remount when assistant start is absent', () => {
+    mockMessages = [
+      {
+        messageId: 'user-1',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        conversationId: 'conversation-1',
+        isCreatedByUser: true,
+        sender: 'User',
+        text: 'quote',
+        createdAt: new Date(100_000).toISOString(),
+      },
+    ];
+    jest.setSystemTime(120_000);
+
+    const firstPage = render(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        parentMessageId="user-1"
+        timerKey="assistant-1"
+      />,
+    );
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('20s');
+
+    firstPage.unmount();
+    jest.setSystemTime(125_000);
+    render(
+      <MessageElapsedTimer
+        isCreatedByUser={false}
+        isSubmitting
+        parentMessageId="user-1"
+        timerKey="assistant-1"
+      />,
+    );
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('25s');
+  });
+
+  it('starts from mount time when pending assistant has no explicit or parent timestamp', () => {
+    jest.setSystemTime(30_000);
+
+    render(<MessageElapsedTimer isCreatedByUser={false} isSubmitting />);
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('0s');
+
+    act(() => {
+      jest.advanceTimersByTime(2_000);
+    });
+
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('2s');
+  });
+
   it('freezes elapsed time when the assistant turn completes', () => {
     jest.setSystemTime(12_000);
     const { rerender } = render(

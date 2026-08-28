@@ -34,6 +34,10 @@ import { preProcessGraphTokens } from '~/utils/graph';
 import { formatToolContent } from './parsers';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
+import {
+  classifyPaddleOcrDiagnostic,
+  type PaddleOcrDiagnosticCode,
+} from '../steel/ocr/diagnostics';
 
 function createOboToolCallErrorMessage(
   logPrefix: string,
@@ -80,6 +84,8 @@ export class MCPManager extends UserConnectionManager {
       takeoverClaimed?: boolean;
     }
   >();
+
+  private readonly paddleOcrCaptureLocks = new WeakMap<MCPConnection, Promise<void>>();
 
   /** Creates and initializes the singleton MCPManager instance */
   public static async createInstance(configs: t.MCPServers): Promise<MCPManager> {
@@ -186,6 +192,91 @@ export class MCPManager extends UserConnectionManager {
       signal.addEventListener('abort', onAbort, { once: true });
       recovery.then(onRecoveryResolved, onRecoveryRejected);
     });
+  }
+
+  private isPaddleOcrCall(serverName: string, toolName: string): boolean {
+    return serverName.toLowerCase() === 'paddleocr' && toolName.toLowerCase() === 'paddleocr_vl';
+  }
+
+  private async acquirePaddleOcrCapture(
+    connection: MCPConnection,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    const previous = this.paddleOcrCaptureLocks.get(connection) ?? Promise.resolve();
+    let releaseCurrent!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    this.paddleOcrCaptureLocks.set(
+      connection,
+      previous.then(() => current),
+    );
+    try {
+      await this.waitForActiveRecovery(previous, signal);
+    } catch (error) {
+      releaseCurrent();
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        releaseCurrent();
+      }
+    };
+  }
+
+  private async readPaddleOcrDiagnostic(
+    connection: MCPConnection,
+    cursor: number,
+    signal?: AbortSignal,
+  ): Promise<PaddleOcrDiagnosticCode | undefined> {
+    const flushWindowMs = 75;
+    const activeSignal = signal;
+    await new Promise<void>((resolve, reject) => {
+      if (activeSignal?.aborted) {
+        reject(
+          activeSignal.reason instanceof Error
+            ? activeSignal.reason
+            : new Error('MCP diagnostic wait aborted'),
+        );
+        return;
+      }
+      const timer = setTimeout(() => {
+        activeSignal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, flushWindowMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        activeSignal?.removeEventListener('abort', onAbort);
+        reject(
+          activeSignal?.reason instanceof Error
+            ? activeSignal.reason
+            : new Error('MCP diagnostic wait aborted'),
+        );
+      };
+      activeSignal?.addEventListener('abort', onAbort, { once: true });
+    });
+    return classifyPaddleOcrDiagnostic(connection.readStderrSince(cursor));
+  }
+
+  private attachPaddleOcrDiagnostic(
+    error: unknown,
+    diagnosticCode?: PaddleOcrDiagnosticCode,
+  ): unknown {
+    if (!diagnosticCode || !error || typeof error !== 'object') {
+      return error;
+    }
+    try {
+      Object.defineProperty(error, 'diagnosticCode', {
+        value: diagnosticCode,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch {
+      return error;
+    }
+    return error;
   }
 
   protected override getActiveConnectionRecovery(
@@ -820,6 +911,7 @@ Please follow these instructions when using tools from the respective MCP server
       let deferredDisposalHeld = false;
       let attachSharedOAuthHandler: ((relay: OAuthLifecycleRelay) => () => void) | undefined;
       let disposeAfterCall = false;
+      let releasePaddleOcrCapture: (() => void) | undefined;
       const retainConnectionLease = () => {
         if (!connection || connectionRetained) {
           return;
@@ -1088,17 +1180,29 @@ Please follow these instructions when using tools from the respective MCP server
             },
           );
 
+        const capturePaddleOcr =
+          this.isPaddleOcrCall(serverName, toolName) && connection.hasStderrCapture?.() === true;
+        let paddleOcrStderrCursor = 0;
+        if (capturePaddleOcr) {
+          releasePaddleOcrCapture = await this.acquirePaddleOcrCapture(connection, options?.signal);
+          paddleOcrStderrCursor = connection.getStderrCursor();
+        }
+        const getPaddleOcrDiagnostic = async () =>
+          capturePaddleOcr
+            ? this.readPaddleOcrDiagnostic(connection!, paddleOcrStderrCursor, options?.signal)
+            : undefined;
+
         let result: Awaited<ReturnType<typeof requestTool>>;
         try {
           result = await requestTool();
         } catch (error) {
           const requestOAuthHandler = attachSharedOAuthHandler;
           if (!requestOAuthHandler || !userId) {
-            throw error;
+            throw this.attachPaddleOcrDiagnostic(error, await getPaddleOcrDiagnostic());
           }
 
           if (!connection.isOAuthAuthenticationError(error)) {
-            throw error;
+            throw this.attachPaddleOcrDiagnostic(error, await getPaddleOcrDiagnostic());
           }
 
           try {
@@ -1121,12 +1225,22 @@ Please follow these instructions when using tools from the respective MCP server
               throw recoveryError;
             }
             if (options?.signal?.aborted) {
-              throw recoveryError;
+              throw this.attachPaddleOcrDiagnostic(recoveryError, await getPaddleOcrDiagnostic());
             }
             logger.warn(`${logPrefix}[${toolName}] Runtime OAuth recovery failed`, recoveryError);
-            throw error;
+            throw this.attachPaddleOcrDiagnostic(error, await getPaddleOcrDiagnostic());
           }
-          result = await requestTool();
+          try {
+            result = await requestTool();
+          } catch (retryError) {
+            throw this.attachPaddleOcrDiagnostic(retryError, await getPaddleOcrDiagnostic());
+          }
+        }
+        const diagnosticCode = result?.isError ? await getPaddleOcrDiagnostic() : undefined;
+        if (diagnosticCode) {
+          const diagnosticError = new Error('PaddleOCR MCP tool returned an error');
+          this.attachPaddleOcrDiagnostic(diagnosticError, diagnosticCode);
+          throw diagnosticError;
         }
         const hasPersistentUserConnections =
           !!userId && (this.userConnections.get(userId)?.size ?? 0) > 0;
@@ -1145,6 +1259,7 @@ Please follow these instructions when using tools from the respective MCP server
         // Rethrowing allows the caller (createMCPTool) to handle the final user message
         throw error;
       } finally {
+        releasePaddleOcrCapture?.();
         await releaseConnectionLease();
         // Ephemeral connections are never stored in userConnections, so disposing
         // is the only cleanup needed; removing the map entry here could orphan a

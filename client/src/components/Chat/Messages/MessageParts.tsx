@@ -145,7 +145,9 @@ function MessageParts(props: TMessageProps) {
           )}
           timestamp={getMessageTimestampSource(message)}
           processingStartedAt={
-            isValidTimestamp(message.clientTimestamp) ? message.clientTimestamp : message.createdAt
+            !message.isCreatedByUser && isValidTimestamp(message.clientTimestamp)
+              ? message.clientTimestamp
+              : undefined
           }
           processingDurationMs={!message.isCreatedByUser ? message.processingDurationMs : undefined}
           isSubmitting={isSubmitting}

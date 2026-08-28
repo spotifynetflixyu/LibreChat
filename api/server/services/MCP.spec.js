@@ -1498,6 +1498,91 @@ describe('User parameter passing tests', () => {
   });
 
   describe('createMCPTool', () => {
+    it.each([
+      [
+        'generic',
+        'PaddleOCR MCP tool returned an error: secret stderr token',
+        'tool call failed',
+      ],
+      [
+        'auth',
+        'PaddleOCR authentication failed: secret stderr token',
+        'OAuth authentication required',
+      ],
+    ])(
+      'preserves typed diagnostics through the %s error wrapper',
+      async (_branch, rawMessage, expectedMessage) => {
+        const mockUser = { id: 'diagnostic-wrapper-user', role: 'USER' };
+        const mockRes = { write: jest.fn(), flush: jest.fn() };
+        const { getRoleByName } = require('~/models');
+        getRoleByName.mockResolvedValue({
+          permissions: {
+            [PermissionTypes.MCP_SERVERS]: {
+              [Permissions.USE]: true,
+            },
+          },
+        });
+        mockGetMCPManager.mockReturnValue({
+          callTool: jest.fn().mockImplementation(async () => {
+            const rawError = new Error(rawMessage);
+            Object.defineProperty(rawError, 'diagnosticCode', {
+              value: 'ai_studio_timeout',
+              enumerable: false,
+            });
+            throw rawError;
+          }),
+        });
+        mockGetFlowStateManager.mockReturnValue({
+          createFlowWithHandler: jest.fn(),
+          failFlow: jest.fn(),
+        });
+
+        const mcpTool = await createMCPTool({
+          res: mockRes,
+          user: mockUser,
+          config: {
+            type: 'stdio',
+            command: 'paddleocr_mcp',
+            args: [],
+            requiresOAuth: true,
+          },
+          toolKey: `paddleocr_vl${D}PaddleOCR`,
+          provider: 'openai',
+          userMCPAuthMap: {},
+          availableTools: {
+            [`paddleocr_vl${D}PaddleOCR`]: {
+              function: {
+                description: 'PaddleOCR tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          },
+        });
+
+        let wrappedError;
+        try {
+          await mcpTool.invoke(
+            {},
+            {
+              configurable: { user: mockUser },
+              metadata: { provider: 'openai', thread_id: 'thread-1', run_id: 'run-1' },
+              toolCall: {},
+            },
+          );
+        } catch (error) {
+          wrappedError = error;
+        }
+
+        expect(wrappedError).toBeInstanceOf(Error);
+        expect(wrappedError).toHaveProperty('diagnosticCode', 'ai_studio_timeout');
+        expect(Object.prototype.propertyIsEnumerable.call(wrappedError, 'diagnosticCode')).toBe(
+          false,
+        );
+        expect(wrappedError.message).toContain(expectedMessage);
+        expect(wrappedError.message).not.toMatch(/stderr|secret|token/i);
+      },
+    );
+
     it('keeps shared OAuth recovery alive when one tool caller aborts', async () => {
       const mockUser = { id: 'shared-recovery-user', role: 'USER' };
       const mockRes = { write: jest.fn(), flush: jest.fn() };

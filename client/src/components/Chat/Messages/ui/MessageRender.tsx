@@ -160,7 +160,9 @@ const MessageRender = memo(function MessageRender({
       )}
       timestamp={getMessageTimestampSource(msg)}
       processingStartedAt={
-        isValidTimestamp(msg.clientTimestamp) ? msg.clientTimestamp : msg.createdAt
+        !msg.isCreatedByUser && isValidTimestamp(msg.clientTimestamp)
+          ? msg.clientTimestamp
+          : undefined
       }
       processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
       isSubmitting={isSubmitting}

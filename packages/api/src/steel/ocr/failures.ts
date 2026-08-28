@@ -36,9 +36,13 @@ export function groupSteelOcrMissingPageRangesByFileKey(
 
   for (const failure of failures) {
     const { ocrFileKey, pageStart, pageEnd, stage, mediaType } = failure;
+    const normalizedMediaType =
+      typeof mediaType === 'string'
+        ? (mediaType.trim().toLowerCase().split(';', 1)[0]?.trim() ?? '')
+        : '';
     if (
       stage !== 'paddleocr' ||
-      mediaType !== 'application/pdf' ||
+      normalizedMediaType !== 'application/pdf' ||
       typeof ocrFileKey !== 'string' ||
       ocrFileKey.length === 0 ||
       !isPageIndex(pageStart) ||

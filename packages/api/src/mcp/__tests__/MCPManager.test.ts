@@ -4192,5 +4192,101 @@ describe('MCPManager', () => {
         }),
       ).rejects.toThrow('requires a flowManager');
     });
+
+    it('throws a typed PaddleOCR diagnostic without exposing stderr', async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = await MCPManager.createInstance(newMCPServersConfig('PaddleOCR'));
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+          setRequestHeaders: jest.fn(),
+          hasStderrCapture: jest.fn().mockReturnValue(true),
+          getStderrCursor: jest.fn().mockReturnValue(0),
+          readStderrSince: jest.fn().mockReturnValue('AuthenticationError secret-token'),
+          timeout: 30_000,
+          client: {
+            request: jest.fn().mockResolvedValue({
+              content: [{ type: 'text', text: 'provider error' }],
+              isError: true,
+            }),
+          },
+        } as unknown as MCPConnection;
+        (graphUtils.preProcessGraphTokens as jest.Mock).mockResolvedValue({
+          type: 'stdio',
+          command: 'paddleocr_mcp',
+          args: [],
+        });
+        jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+
+        const resultPromise = manager.callTool({
+          serverName: 'PaddleOCR',
+          serverConfig: {
+            type: 'stdio',
+            command: 'paddleocr_mcp',
+            args: [],
+          },
+          toolName: 'paddleocr_vl',
+          provider: 'openai',
+          flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+        });
+        const handledResult = resultPromise.then(
+          () => undefined,
+          (errorValue) => errorValue,
+        );
+        await jest.runAllTimersAsync();
+        const error = await handledResult;
+        expect(error.diagnosticCode).toBe('ai_studio_auth');
+        expect(error.message).not.toContain('secret-token');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('serializes concurrent PaddleOCR calls on one captured connection', async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = await MCPManager.createInstance(newMCPServersConfig('PaddleOCR'));
+        let activeCalls = 0;
+        let maxActiveCalls = 0;
+        const request = jest.fn().mockImplementation(async () => {
+          activeCalls += 1;
+          maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+          activeCalls -= 1;
+          return { content: [{ type: 'text', text: 'ok' }], isError: false };
+        });
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+          setRequestHeaders: jest.fn(),
+          hasStderrCapture: jest.fn().mockReturnValue(true),
+          getStderrCursor: jest.fn().mockReturnValue(0),
+          readStderrSince: jest.fn().mockReturnValue(''),
+          timeout: 30_000,
+          client: { request },
+        } as unknown as MCPConnection;
+        (graphUtils.preProcessGraphTokens as jest.Mock).mockResolvedValue({
+          type: 'stdio',
+          command: 'paddleocr_mcp',
+          args: [],
+        });
+        jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+        const call = () =>
+          manager.callTool({
+            serverName: 'PaddleOCR',
+            serverConfig: { type: 'stdio', command: 'paddleocr_mcp', args: [] },
+            toolName: 'paddleocr_vl',
+            provider: 'openai',
+            flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+          });
+        const first = call();
+        const second = call();
+        await jest.runAllTimersAsync();
+        await Promise.all([first, second]);
+        expect(maxActiveCalls).toBe(1);
+        expect(request).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });

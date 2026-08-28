@@ -17,6 +17,9 @@ export function getPaddleOcrResultText(result: unknown): string | undefined {
   if (typeof result === 'string') {
     return result;
   }
+  if (Array.isArray(result)) {
+    return getPaddleOcrResultText(result[0]);
+  }
   if (!isRecord(result)) {
     return undefined;
   }
@@ -32,6 +35,9 @@ export function getPaddleOcrResultText(result: unknown): string | undefined {
 }
 
 export function getPaddleOcrResultContent(result: unknown): string {
+  if (Array.isArray(result)) {
+    return getPaddleOcrResultContent(result[0]);
+  }
   const text = getPaddleOcrResultText(result);
   if (text !== undefined) {
     return text;
@@ -43,6 +49,9 @@ export function getPaddleOcrResultContent(result: unknown): string {
 }
 
 export function getPaddleOcrResultError(result: unknown): string | undefined {
+  if (Array.isArray(result)) {
+    return getPaddleOcrResultError(result[0]);
+  }
   if (!isRecord(result)) {
     if (typeof result !== 'string') {
       return undefined;

@@ -62,4 +62,18 @@ describe('groupSteelOcrMissingPageRangesByFileKey', () => {
       ]),
     ).toEqual({});
   });
+
+  it('normalizes PDF media types before grouping failures', () => {
+    expect(
+      groupSteelOcrMissingPageRangesByFileKey([
+        {
+          ocrFileKey: 'file:pdf',
+          mediaType: '  Application/PDF ; charset=binary  ',
+          stage: 'paddleocr',
+          pageStart: 1,
+          pageEnd: 2,
+        },
+      ]),
+    ).toEqual({ 'file:pdf': [{ pageStart: 1, pageEnd: 2 }] });
+  });
 });

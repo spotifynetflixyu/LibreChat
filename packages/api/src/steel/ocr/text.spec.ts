@@ -29,6 +29,13 @@ describe('PaddleOCR result text', () => {
     );
   });
 
+  it('recognizes formatted MCP tuple content', () => {
+    expect(getPaddleOcrResultError(["Error calling tool 'paddleocr_vl'", undefined])).toBe(
+      "Error calling tool 'paddleocr_vl'",
+    );
+    expect(getPaddleOcrResultContent(['Recovered OCR text', undefined])).toBe('Recovered OCR text');
+  });
+
   it('does not flag valid OCR content containing Error', () => {
     expect(getPaddleOcrResultError({ status: 'success', content: 'Error rate report' })).toBe(
       undefined,

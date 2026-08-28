@@ -1322,6 +1322,10 @@ describe('OCR preprocessing orchestrator', () => {
     };
     const paddleError = new Error('chunk 2 failed') as Error & { ocrFileUrl: string };
     paddleError.ocrFileUrl = 'https://refreshed.example/chunk-2.pdf';
+    Object.defineProperty(paddleError, 'diagnosticCode', {
+      value: 'ai_studio_job_failed',
+      enumerable: false,
+    });
     const paddleOcr = {
       runChunk: jest.fn(async ({ chunk }) => {
         if (chunk.chunkIndex === 2) {
@@ -1389,6 +1393,7 @@ describe('OCR preprocessing orchestrator', () => {
             pageStart: 26,
             pageEnd: 50,
             fileUrl: 'https://refreshed.example/chunk-2.pdf',
+            diagnosticCode: 'ai_studio_job_failed',
           }),
         ],
         partial: {
@@ -1838,6 +1843,84 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     );
     expect(result).not.toHaveProperty('markdown');
+  });
+
+  it('uses cached organized chunks for partial output without rereading unchanged state', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 2, chunkSizePages: 1 });
+    const state = {
+      ...emptyState({
+        ocrFileKey: 'file:cached-partial',
+        sourcePdfKey: 'uploads/cached-partial.pdf',
+        ocrRuleVersion: 'rules-v2',
+        chunkCount: 2,
+      }),
+      chunks: [
+        {
+          ...chunks[0]!,
+          rawSaved: true,
+          organizedSaved: true,
+          rawResultHash: 'hash-1',
+          rawOcrText: 'raw-1',
+          organizedMarkdown: '| item | value |\n|---|---|\n| cached | 1 |',
+        },
+        {
+          ...chunks[1]!,
+          rawSaved: true,
+          organizedSaved: false,
+          rawResultHash: 'hash-2',
+          rawOcrText: 'raw-2',
+        },
+      ],
+    };
+    const memory = {
+      readOcrPreprocessingState: jest.fn().mockResolvedValue(state),
+      capturePaddleOcrChunkResult: jest.fn(),
+      captureOcrPreprocessingChunkMarkdown: jest.fn(),
+    };
+    const organizer = {
+      organize: jest.fn().mockRejectedValue(new Error('organizer unavailable')),
+    };
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_cached_partial',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [
+        {
+          file: {
+            ocrFileKey: 'file:cached-partial',
+            filename: 'cached-partial.pdf',
+            sourcePdfKey: 'uploads/cached-partial.pdf',
+          },
+          chunks,
+          artifacts: {
+            ensurePdfChunkArtifacts: jest.fn(async () =>
+              chunks.map((chunk) => ({
+                ...chunk,
+                filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf`,
+                storageKey: `chunks/${chunk.chunkIndex}.pdf`,
+              })),
+            ),
+          },
+        },
+      ],
+      memory,
+      organizer,
+      paddleOcr: { runChunk: jest.fn() },
+    });
+
+    expect(memory.readOcrPreprocessingState).toHaveBeenCalledTimes(2);
+    expect(organizer.organize).toHaveBeenCalledTimes(2);
+    expect(memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        partial: {
+          markdown: '| item | value |\n| --- | --- |\n| cached | 1 |',
+          pageRanges: [{ pageStart: 1, pageEnd: 1 }],
+          chunkCount: 1,
+        },
+      }),
+    );
   });
 
   it('propagates PaddleOCR save cancellation without continuing to organizer', async () => {

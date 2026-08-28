@@ -137,6 +137,8 @@ const TOOL_LIST_REFRESH_RETRY_MAX_MS = 30_000;
 const MAX_REDIRECTS = 5;
 const DEFAULT_MCP_STREAMABLE_HTTP_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MCP_STREAMABLE_HTTP_MAX_LINE_BYTES = 5 * 1024 * 1024;
+const MCP_STDERR_RING_MAX_ENTRIES = 64;
+const MCP_STDERR_RING_MAX_BYTES = 32 * 1024;
 
 function getNonNegativeIntegerEnv(name: string, defaultValue: number): number {
   const raw = process.env[name];
@@ -184,6 +186,14 @@ function getChunkBytes(chunk: unknown): Uint8Array {
     return new Uint8Array(view);
   }
   return new Uint8Array();
+}
+
+function boundStderrText(value: string): string {
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.byteLength <= MCP_STDERR_RING_MAX_BYTES) {
+    return value;
+  }
+  return bytes.subarray(-MCP_STDERR_RING_MAX_BYTES).toString('utf8');
 }
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
@@ -996,6 +1006,22 @@ interface MCPConnectionParams {
   ephemeralConnection?: boolean;
 }
 
+interface StderrCaptureEntry {
+  sequence: number;
+  text: string;
+  bytes: number;
+}
+
+interface StderrCapture {
+  stream: NodeJS.ReadableStream;
+  onData: (chunk: unknown) => void;
+  onEnd: () => void;
+  pending: string;
+  entries: StderrCaptureEntry[];
+  bytes: number;
+  nextSequence: number;
+}
+
 /** Result of an MCP `tools/list` request: one page of tools plus an optional pagination cursor. */
 type MCPListToolsResult = Awaited<ReturnType<Client['listTools']>>;
 
@@ -1049,6 +1075,8 @@ export class MCPConnection extends EventEmitter {
     tools: MCPListToolsResult['tools'];
     publicationRevision?: string;
   } | null = null;
+
+  private stderrCapture: StderrCapture | null = null;
 
   private hasConnected = false;
   private isDisposed = false;
@@ -1158,6 +1186,117 @@ export class MCPConnection extends EventEmitter {
 
   getRequestHeaders(): Record<string, string> | null | undefined {
     return this.requestHeaders;
+  }
+
+  public hasStderrCapture(): boolean {
+    return this.stderrCapture !== null;
+  }
+
+  public getStderrCursor(): number {
+    const capture = this.stderrCapture;
+    if (!capture) {
+      return 0;
+    }
+    this.flushStderrPending(capture);
+    return capture.nextSequence;
+  }
+
+  public readStderrSince(cursor: number): string {
+    const capture = this.stderrCapture;
+    if (!capture) {
+      return '';
+    }
+    this.flushStderrPending(capture);
+    return capture.entries
+      .filter((entry) => entry.sequence >= cursor)
+      .map((entry) => entry.text)
+      .join('\n');
+  }
+
+  private flushStderrPending(capture: StderrCapture): void {
+    if (capture.pending === '') {
+      return;
+    }
+    this.appendStderrEntry(capture, capture.pending);
+    capture.pending = '';
+  }
+
+  private appendStderrEntry(capture: StderrCapture, text: string): void {
+    if (text === '') {
+      return;
+    }
+    const boundedText = boundStderrText(text);
+    const bytes = Buffer.byteLength(boundedText, 'utf8');
+    const entry: StderrCaptureEntry = {
+      sequence: capture.nextSequence++,
+      text: boundedText,
+      bytes,
+    };
+    capture.entries.push(entry);
+    capture.bytes += bytes;
+    while (
+      capture.entries.length > MCP_STDERR_RING_MAX_ENTRIES ||
+      capture.bytes > MCP_STDERR_RING_MAX_BYTES
+    ) {
+      const removed = capture.entries.shift();
+      if (!removed) {
+        break;
+      }
+      capture.bytes -= removed.bytes;
+    }
+  }
+
+  private attachStderrCapture(transport: Transport, enabled: boolean): void {
+    if (!enabled || !(transport instanceof StdioClientTransport)) {
+      return;
+    }
+    const stream = transport.stderr as NodeJS.ReadableStream | null;
+    if (!stream || typeof stream.on !== 'function') {
+      return;
+    }
+    const capture: StderrCapture = {
+      stream,
+      onData: () => undefined,
+      onEnd: () => undefined,
+      pending: '',
+      entries: [],
+      bytes: 0,
+      nextSequence: 0,
+    };
+    capture.onData = (chunk: unknown) => {
+      const text = textDecoder.decode(getChunkBytes(chunk));
+      const parts = text.split(/\r?\n/gu);
+      capture.pending = boundStderrText(capture.pending + (parts.shift() ?? ''));
+      if (parts.length === 0) {
+        return;
+      }
+      this.appendStderrEntry(capture, capture.pending);
+      capture.pending = '';
+      const trailing = parts.pop();
+      for (const part of parts) {
+        this.appendStderrEntry(capture, part);
+      }
+      capture.pending = boundStderrText(trailing ?? '');
+    };
+    capture.onEnd = () => this.flushStderrPending(capture);
+    stream.on('data', capture.onData);
+    stream.on('end', capture.onEnd);
+    stream.on('close', capture.onEnd);
+    this.stderrCapture = capture;
+  }
+
+  private clearStderrCapture(): void {
+    const capture = this.stderrCapture;
+    if (!capture) {
+      return;
+    }
+    capture.stream.removeListener('data', capture.onData);
+    capture.stream.removeListener('end', capture.onEnd);
+    capture.stream.removeListener('close', capture.onEnd);
+    capture.entries.length = 0;
+    capture.pending = '';
+    capture.bytes = 0;
+    this.stderrCapture = null;
   }
 
   constructor(params: MCPConnectionParams) {
@@ -1451,18 +1590,24 @@ export class MCPConnection extends EventEmitter {
       }
 
       switch (type) {
-        case 'stdio':
+        case 'stdio': {
           if (!isStdioOptions(options)) {
             throw new Error('Invalid options for stdio transport.');
           }
-          return new StdioClientTransport({
+          const stderr =
+            options.stderr ?? (this.serverName.toLowerCase() === 'paddleocr' ? 'pipe' : undefined);
+          const transport = new StdioClientTransport({
             command: options.command,
             args: options.args,
             // workaround bug of mcp sdk that can't pass env:
             // https://github.com/modelcontextprotocol/typescript-sdk/issues/216
             env: { ...getDefaultEnvironment(), ...(options.env ?? {}) },
             ...(options.cwd !== undefined && { cwd: options.cwd }),
+            ...(stderr !== undefined && { stderr }),
           });
+          this.attachStderrCapture(transport, stderr === 'pipe');
+          return transport;
+        }
 
         case 'websocket': {
           if (!isWebSocketOptions(options)) {
@@ -1924,6 +2069,7 @@ export class MCPConnection extends EventEmitter {
     this.connectPromise = (async () => {
       try {
         if (this.transport) {
+          this.clearStderrCapture();
           try {
             await this.terminateStreamableSession();
             await this.client.close();
@@ -2322,6 +2468,7 @@ export class MCPConnection extends EventEmitter {
     this.clearToolListRefreshRetry();
     try {
       if (this.transport) {
+        this.clearStderrCapture();
         await this.terminateStreamableSession();
         await this.client.close();
         this.transport = null;

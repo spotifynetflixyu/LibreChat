@@ -12,6 +12,7 @@ jest.mock('~/utils', () => ({
   getHeaderPrefixForScreenReader: () => '',
   getMessageAriaLabel: () => 'Assistant message',
   getMessageTimestampSource: (message?: TMessage | null) => message?.createdAt,
+  isValidTimestamp: (value?: string | null) => !!value && !Number.isNaN(new Date(value).getTime()),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -75,7 +76,7 @@ jest.mock('~/components/Chat/Messages/SubRow', () => ({
 }));
 jest.mock('~/components/Chat/Messages/ui/MessageRow', () => ({
   __esModule: true,
-  default: ({ children }: { children: ReactNode }) => <>{children}</>,
+  default: jest.fn(({ children }: { children: ReactNode }) => <>{children}</>),
 }));
 jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
   __esModule: true,
@@ -85,6 +86,8 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
 import ContentRender from '../ContentRender';
 
 const mockContentParts = jest.requireMock('~/components/Chat/Messages/Content/ContentParts')
+  .default as jest.Mock;
+const mockMessageRow = jest.requireMock('~/components/Chat/Messages/ui/MessageRow')
   .default as jest.Mock;
 
 const preflightToolCall = {
@@ -130,7 +133,10 @@ const chatContext = {
 } as TMessageChatContext;
 
 describe('ContentRender Steel history hydration', () => {
-  beforeEach(() => mockContentParts.mockClear());
+  beforeEach(() => {
+    mockContentParts.mockClear();
+    mockMessageRow.mockClear();
+  });
 
   it('passes persisted events and preflight cards for non-Assistants history messages', () => {
     const activityEvents = [
@@ -186,5 +192,38 @@ describe('ContentRender Steel history hydration', () => {
       id: 'paddle-1',
       name: 'paddleocr_vl---PaddleOCR',
     });
+
+    const passedRow = mockMessageRow.mock.calls[0][0] as { processingStartedAt?: string };
+    expect(passedRow.processingStartedAt).toBeUndefined();
+  });
+
+  it('passes valid assistant client timestamp as processing start without using createdAt', () => {
+    const message = {
+      messageId: 'assistant-1',
+      conversationId: 'conversation-1',
+      parentMessageId: null,
+      isCreatedByUser: false,
+      text: 'Streaming OCR response',
+      createdAt: '2026-08-28T00:01:00.000Z',
+      clientTimestamp: '2026-08-28T00:00:00.000Z',
+      content: [],
+    } as TMessage;
+
+    render(
+      <RecoilRoot>
+        <ContentRender
+          message={message}
+          siblingIdx={0}
+          siblingCount={1}
+          currentEditId={null}
+          setSiblingIdx={jest.fn()}
+          setCurrentEditId={jest.fn()}
+          chatContext={chatContext}
+        />
+      </RecoilRoot>,
+    );
+
+    const passedRow = mockMessageRow.mock.calls[0][0] as { processingStartedAt?: string };
+    expect(passedRow.processingStartedAt).toBe(message.clientTimestamp);
   });
 });
