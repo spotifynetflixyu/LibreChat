@@ -1,12 +1,14 @@
 import {
   buildDefaultSteelGlobalAgentContext,
   buildSteelGlobalAgentContext,
+  createSteelContextDependencies,
   prepareLibreChatSteelChatContext,
 } from './context';
 
 import type { SteelRuntimeContextDependencies } from '../runtime/context';
 import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
+import type { SteelRepositoryClient } from '../repositories/types';
 
 function createAgentRule(overrides: Partial<SteelAgentRule> = {}): SteelAgentRule {
   return {
@@ -99,25 +101,29 @@ function createDependencies(): SteelRuntimeContextDependencies {
       }),
     ]),
     listOtherGlobalRules: jest.fn(async () => ({
-      ocrMainAgentRules: [
+      ocrSharedRules: [
         createAgentRule({
           id: 4,
-          slug: 'steel-ocr-rule',
+          slug: 'steel-ocr-shared-rule',
           ruleType: 'ocr',
-          title: 'Steel OCR rule',
-          prompt: 'OCR rule fixture',
-          ruleSections: ['file_ocr'],
+          title: 'Steel OCR shared rule',
+          prompt: 'OCR shared rule fixture',
+          ruleSections: ['ocr_shared'],
           priority: 20,
         }),
+      ],
+      ocrVisionRules: [
         createAgentRule({
           id: 5,
           slug: 'steel-vision-rule',
           ruleType: 'vision',
           title: 'Steel Vision rule',
           prompt: 'Vision rule fixture',
-          ruleSections: ['vision_evidence'],
+          ruleSections: ['vision_processing'],
           priority: 36,
         }),
+      ],
+      ocrMainRules: [
         createAgentRule({
           id: 6,
           slug: 'steel-ocr-main-organizer-rule',
@@ -131,11 +137,11 @@ function createDependencies(): SteelRuntimeContextDependencies {
             'Final OCR Markdown rule fixture',
             '[/final_ocr_markdown]',
           ].join('\n'),
-          ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
+          ruleSections: ['ocr_main_flow', 'ocr_vision', 'ocr_main_merge', 'final_ocr_markdown'],
           priority: 38,
         }),
       ],
-      ocrSubagentRules: [
+      ocrOrganizerRules: [
         createAgentRule({
           id: 7,
           slug: 'steel-ocr-organizer-rule',
@@ -154,6 +160,48 @@ function createDependencies(): SteelRuntimeContextDependencies {
 }
 
 describe('Steel native context adapter', () => {
+  it('classifies raw reviewed OCR rules from the database into exact runtime groups', async () => {
+    const rows = [
+      ['shared', ['ocr_shared'], '[ocr_shared]\nShared\n[/ocr_shared]'],
+      ['vision', ['vision_processing'], '[vision_processing]\nVision\n[/vision_processing]'],
+      [
+        'flow',
+        ['ocr_main_flow', 'ocr_vision', 'ocr_main_merge', 'final_ocr_markdown'],
+        '[ocr_main_flow]\nFlow\n[/ocr_main_flow]\n[ocr_vision]\nIntegration\n[/ocr_vision]',
+      ],
+      ['organizer', ['ocr_organizer'], '[ocr_organizer]\nOrganizer\n[/ocr_organizer]'],
+    ].map(([slug, ruleSections, prompt], index) => ({
+      id: index + 1,
+      slug: `steel-ocr-${slug}`,
+      version: 1,
+      rule_kind: 'other',
+      title: `OCR ${slug}`,
+      locale: 'zh-TW',
+      rule_sections: ruleSections,
+      selectors: {},
+      prompt,
+      tool_policy: {},
+      output_policy: {},
+      priority: 35 + index,
+      active: true,
+      review_state: 'reviewed',
+    }));
+    const query = jest.fn().mockResolvedValue({ rows });
+    const dependencies = createSteelContextDependencies({
+      runtimeRulesClient: { query } as unknown as SteelRepositoryClient,
+    });
+
+    const groups = await dependencies.listOtherGlobalRules();
+
+    expect(query).toHaveBeenCalledWith(expect.any(String), ['reviewed', 'other']);
+    expect(groups.ocrSharedRules.map((rule) => rule.slug)).toEqual(['steel-ocr-shared']);
+    expect(groups.ocrVisionRules.map((rule) => rule.slug)).toEqual(['steel-ocr-vision']);
+    expect(groups.ocrMainRules.map((rule) => rule.slug)).toEqual(['steel-ocr-flow']);
+    expect(groups.ocrOrganizerRules.map((rule) => rule.slug)).toEqual([
+      'steel-ocr-organizer',
+    ]);
+  });
+
   it('prepares LibreChat history without duplicating the current user turn', () => {
     const file = {
       fileId: 'file_1',
@@ -251,7 +299,7 @@ describe('Steel native context adapter', () => {
     );
   });
 
-  it('uses only OCR then Vision rules in OCR mode and serializes organized Markdown only', async () => {
+  it('uses shared, Vision, then main rules in OCR mode and serializes organized Markdown only', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_ocr', activeHistory: [] },
       dependencies: createDependencies(),
@@ -321,8 +369,11 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).not.toContain('Calculation output rule fixture');
     expect(context.instructionPrefix).not.toContain('Workbook output rule fixture');
     expect(context.instructionPrefix).not.toContain('steel-file-rule');
-    expect(context.instructionPrefix.indexOf('OCR rule fixture')).toBeLessThan(
+    expect(context.instructionPrefix.indexOf('OCR shared rule fixture')).toBeLessThan(
       context.instructionPrefix.indexOf('Vision rule fixture'),
+    );
+    expect(context.instructionPrefix.indexOf('Vision rule fixture')).toBeLessThan(
+      context.instructionPrefix.indexOf('OCR main organizer rule fixture'),
     );
     expect(context.instructionPrefix).toContain('OCR main organizer rule fixture');
     expect(context.instructionPrefix).toContain('[ocr_main_merge]');
@@ -333,25 +384,23 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContextText).toContain(
       'Satisfy any other user intent only within those allowed sections',
     );
-    expect(context.runtimeContextText).toContain('do not call delegate_ocr.');
     expect(context.runtimeContextText).toContain(
       'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
     );
     expect(context.runtimeContextText).toContain('| 鐵板 | 2 |');
     expect(context.runtimeContextText).toContain(
-      'file_key: file:missing.pdf\nfile_url: https://files.example.test/missing.pdf\nmissing_page_ranges: 1-2, 4-5',
+      'ocr_failure_stage: paddleocr\npaddleocr_status: failed\nfile_key: file:missing.pdf\nfailed_page_ranges: 1-2, 4-5\nfile_url: https://files.example.test/missing.pdf',
     );
     expect(context.runtimeContextText).toContain(
-      'file_key: file:other.pdf\nfile_url: https://files.example.test/other.pdf\nmissing_page_ranges: 3',
+      'ocr_failure_stage: organizer\nfile_key: file:other.pdf\nfailed_page_ranges: 3\nfile_url: https://files.example.test/other.pdf',
     );
     expect(context.runtimeContextText).toContain(
-      'file_key: file:photo.jpg\nfile_url: https://files.example.test/photo.jpg\nmissing_page_ranges: 1',
+      'ocr_failure_stage: paddleocr\npaddleocr_status: failed\nfile_key: file:photo.jpg\nfailed_page_ranges: unavailable\nfile_url: https://files.example.test/photo.jpg',
     );
     expect(context.runtimeContextText).not.toContain('PaddleOCR timeout');
     expect(context.runtimeContextText).not.toContain('Organizer failed');
     expect(context.runtimeContextText).not.toContain('Image OCR failed');
     expect(context.runtimeContextText).not.toContain('chunk_indexes');
-    expect(context.runtimeContextText).not.toContain('stage:');
     expect(context.runtimeContextText).not.toContain('raw OCR');
     expect(context.runtimeContextText).not.toContain('Steel Native Context Metadata');
     expect(context.runtimeContextText).not.toContain('currentOcrMarkdownResults');
@@ -373,7 +422,6 @@ describe('Steel native context adapter', () => {
     );
     expect(directive).toContain('Satisfy any other user intent only within those allowed sections');
     expect(directive).not.toContain('Answer any other user intent too');
-    expect(directive).toContain('do not call delegate_ocr.');
   });
 
   it('does not invent source filenames for OCR Markdown results', async () => {
@@ -442,6 +490,19 @@ describe('Steel native context adapter', () => {
               ],
             },
           },
+          {
+            ocrFileKey: 'file:partial-gap.pdf',
+            filename: 'partial-gap.pdf',
+            content: '<file:partial-gap.pdf>\n| OCR |\n| --- |\n| partial gap |',
+            ocrPreprocessing: {
+              chunkCount: 2,
+              pageRanges: [
+                { pageStart: 1, pageEnd: 10 },
+                { pageStart: 21, pageEnd: 30 },
+              ],
+              partial: true,
+            },
+          },
         ],
       },
     });
@@ -456,6 +517,75 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContextText).toContain('file_key: file:legacy.pdf\n<file:legacy.pdf>');
     expect(context.runtimeContextText).toContain('file_key: file:gap.pdf\n<file:gap.pdf>');
     expect(context.runtimeContextText).not.toContain('file_key: file:gap.pdf\npage_ranges:');
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:partial-gap.pdf\nsource_filename: "partial-gap.pdf"\npage_ranges: 1-10, 21-30\nchunk_count: 2\n<file:partial-gap.pdf>',
+    );
+  });
+
+  it('rejects unsafe failure URLs and falls back to a safe AI-visible URL', async () => {
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_failure_urls', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        currentOcrFailures: [
+          {
+            ocrFileKey: 'file:safe-fallback.pdf',
+            fileUrl: 'storage:private/chunk.pdf',
+            ocrFileUrl: 'https://files.example.test/safe-fallback.pdf?signature=ok',
+            stage: 'paddleocr',
+            pageStart: 1,
+            pageEnd: 2,
+          },
+          {
+            ocrFileKey: 'file:credentialed.pdf',
+            fileUrl: 'https://user:secret@files.example.test/private.pdf',
+            stage: 'paddleocr',
+            pageStart: 3,
+            pageEnd: 4,
+          },
+          {
+            ocrFileKey: 'file:local.pdf',
+            fileUrl: '/srv/librechat/uploads/local.pdf',
+            stage: 'paddleocr',
+            pageStart: 5,
+            pageEnd: 6,
+          },
+          {
+            ocrFileKey: 'file:distinct.pdf',
+            fileUrl: 'https://files.example.test/distinct-pages-7-8.pdf',
+            stage: 'paddleocr',
+            pageStart: 7,
+            pageEnd: 8,
+          },
+          {
+            ocrFileKey: 'file:distinct.pdf',
+            fileUrl: 'https://files.example.test/distinct-pages-9-10.pdf',
+            stage: 'paddleocr',
+            pageStart: 9,
+            pageEnd: 10,
+          },
+        ],
+      },
+    });
+
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:safe-fallback.pdf\nfailed_page_ranges: 1-2\nfile_url: https://files.example.test/safe-fallback.pdf?signature=ok',
+    );
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:credentialed.pdf\nfailed_page_ranges: 3-4\nfile_url: unavailable',
+    );
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:local.pdf\nfailed_page_ranges: 5-6\nfile_url: unavailable',
+    );
+    expect(context.runtimeContextText).not.toContain('user:secret');
+    expect(context.runtimeContextText).not.toContain('/srv/librechat/uploads/local.pdf');
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:distinct.pdf\nfailed_page_ranges: 7-8\nfile_url: https://files.example.test/distinct-pages-7-8.pdf',
+    );
+    expect(context.runtimeContextText).toContain(
+      'file_key: file:distinct.pdf\nfailed_page_ranges: 9-10\nfile_url: https://files.example.test/distinct-pages-9-10.pdf',
+    );
   });
 
   it('renders image OCR Markdown without page metadata', async () => {

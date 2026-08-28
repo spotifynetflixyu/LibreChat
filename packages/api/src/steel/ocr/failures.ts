@@ -35,8 +35,10 @@ export function groupSteelOcrMissingPageRangesByFileKey(
   const rangesByFileKey = new Map<string, SteelOcrMissingPageRange[]>();
 
   for (const failure of failures) {
-    const { ocrFileKey, pageStart, pageEnd } = failure;
+    const { ocrFileKey, pageStart, pageEnd, stage, mediaType } = failure;
     if (
+      stage !== 'paddleocr' ||
+      mediaType !== 'application/pdf' ||
       typeof ocrFileKey !== 'string' ||
       ocrFileKey.length === 0 ||
       !isPageIndex(pageStart) ||

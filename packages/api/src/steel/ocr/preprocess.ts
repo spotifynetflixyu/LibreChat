@@ -98,6 +98,7 @@ export interface OcrPreprocessingFailure {
   chunkIndex?: number;
   pageStart?: number;
   pageEnd?: number;
+  fileUrl?: string;
   errorMessage: string;
 }
 
@@ -105,6 +106,11 @@ export interface RunOcrPreprocessingFailedFileResult extends OcrPreprocessingFai
   file: OcrPreprocessingFile;
   status: 'failed';
   failures: OcrPreprocessingFailure[];
+  partial?: {
+    markdown: string;
+    pageRanges: OcrPageRange[];
+    chunkCount: number;
+  };
 }
 
 export interface RunOcrPreprocessingBatchFileInput {
@@ -234,6 +240,7 @@ function toFailure(input: {
   stage: OcrPreprocessingFailureStage;
   error: unknown;
   chunk?: OcrPreprocessingPageChunk;
+  fileUrl?: string;
 }): OcrPreprocessingFailure {
   return {
     stage: input.stage,
@@ -244,8 +251,32 @@ function toFailure(input: {
           pageEnd: input.chunk.pageEnd,
         }
       : {}),
+    ...(input.fileUrl !== undefined ? { fileUrl: input.fileUrl } : {}),
     errorMessage: toErrorMessage(input.error),
   };
+}
+
+function getPaddleOcrFileUrl(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object') {
+    const fileUrl = (error as { ocrFileUrl?: unknown }).ocrFileUrl;
+    if (typeof fileUrl === 'string' && fileUrl.trim() !== '') {
+      return fileUrl.trim();
+    }
+  }
+  return fallback;
+}
+
+function toPaddleOcrFailure(input: {
+  chunk: OcrPreprocessingPageChunk;
+  artifact: OcrPdfChunkArtifact;
+  error: unknown;
+}): OcrPreprocessingFailure {
+  return toFailure({
+    stage: 'paddleocr',
+    chunk: input.chunk,
+    error: input.error,
+    fileUrl: getPaddleOcrFileUrl(input.error, input.artifact.filepath),
+  });
 }
 
 function toFailedFileResult(input: {
@@ -338,7 +369,7 @@ function isImageOcrFile(file: OcrPreprocessingFile): boolean {
 
 function getResultPageRanges(
   file: OcrPreprocessingFile,
-  chunks: readonly OcrPreprocessingPageChunk[],
+  chunks: readonly OcrPageRange[],
 ): OcrPageRange[] {
   return isImageOcrFile(file)
     ? []
@@ -381,6 +412,50 @@ function getExpectedSavedChunkMarkdowns(
   );
 }
 
+function getPartialResult(input: {
+  file: OcrPreprocessingFile;
+  state: OcrPreprocessingState;
+  chunks: readonly OcrPreprocessingPageChunk[];
+  failures: readonly OcrPreprocessingFailure[];
+  ocrRuleVersion: string;
+}): RunOcrPreprocessingFailedFileResult['partial'] {
+  const failedRanges = new Set(
+    input.failures
+      .filter((failure) => failure.pageStart !== undefined && failure.pageEnd !== undefined)
+      .map((failure) =>
+        getOcrPageRangeKey({ pageStart: failure.pageStart!, pageEnd: failure.pageEnd! }),
+      ),
+  );
+  const chunks: { chunkIndex: number; pageStart: number; pageEnd: number; markdown: string }[] = [];
+  for (const chunk of getExpectedSavedChunkMarkdowns(input.state, input.chunks)) {
+    if (
+      chunk.pageStart === undefined ||
+      chunk.pageEnd === undefined ||
+      failedRanges.has(getOcrPageRangeKey({ pageStart: chunk.pageStart, pageEnd: chunk.pageEnd }))
+    ) {
+      continue;
+    }
+    chunks.push({
+      chunkIndex: chunk.chunkIndex,
+      pageStart: chunk.pageStart,
+      pageEnd: chunk.pageEnd,
+      markdown: chunk.markdown,
+    });
+  }
+  if (chunks.length === 0) {
+    return undefined;
+  }
+  return {
+    markdown: mergeChunkMarkdownForFileKey({
+      ocrFileKey: input.file.ocrFileKey,
+      ocrRuleVersion: input.ocrRuleVersion,
+      chunks,
+    }),
+    pageRanges: getResultPageRanges(input.file, chunks),
+    chunkCount: chunks.length,
+  };
+}
+
 async function readPreprocessingState(
   input: RunOcrPreprocessingBatchPipelineInput,
   file: OcrPreprocessingFile,
@@ -391,6 +466,38 @@ async function readPreprocessingState(
     ocrFileKey: file.ocrFileKey,
     ocrRuleVersion: input.ocrRuleVersion,
   });
+}
+
+async function toFailedFileResultWithPartial(input: {
+  pipeline: RunOcrPreprocessingBatchPipelineInput;
+  workItem: OcrPreprocessingBatchWorkItem;
+}): Promise<RunOcrPreprocessingFailedFileResult> {
+  const { pipeline, workItem } = input;
+  const failedResult = toFailedFileResult({
+    file: workItem.file,
+    failures: workItem.failures,
+  });
+  let state: OcrPreprocessingState;
+  try {
+    state = await readPreprocessingState(pipeline, workItem.file);
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+    return failedResult;
+  }
+  try {
+    const partial = getPartialResult({
+      file: workItem.file,
+      state,
+      chunks: workItem.chunks,
+      failures: workItem.failures,
+      ocrRuleVersion: pipeline.ocrRuleVersion,
+    });
+    return partial ? { ...failedResult, partial } : failedResult;
+  } catch {
+    return failedResult;
+  }
 }
 
 async function emitFileProgress(
@@ -629,12 +736,12 @@ export async function runOcrPreprocessingBatchPipeline(
           throw error;
         }
         if (!isAdaptiveSplitEligiblePaddleOcrError(error)) {
-          workItem.failures.push(toFailure({ stage: 'paddleocr', chunk, error }));
+          workItem.failures.push(toPaddleOcrFailure({ chunk, artifact, error }));
           continue;
         }
         const split = splitExactFiftyPageRange(chunk);
         if (!split) {
-          workItem.failures.push(toFailure({ stage: 'paddleocr', chunk, error }));
+          workItem.failures.push(toPaddleOcrFailure({ chunk, artifact, error }));
           continue;
         }
         const nextChunks = normalizeOcrPageChunks([
@@ -694,7 +801,7 @@ export async function runOcrPreprocessingBatchPipeline(
               throw childError;
             }
             workItem.failures.push(
-              toFailure({ stage: 'paddleocr', chunk: childChunk, error: childError }),
+              toPaddleOcrFailure({ chunk: childChunk, artifact: childArtifact, error: childError }),
             );
             continue;
           }
@@ -871,9 +978,9 @@ export async function runOcrPreprocessingBatchPipeline(
       continue;
     }
     if (workItem.failures.length > 0) {
-      resultSlots[workItem.index] = toFailedFileResult({
-        file: workItem.file,
-        failures: workItem.failures,
+      resultSlots[workItem.index] = await toFailedFileResultWithPartial({
+        pipeline: input,
+        workItem,
       });
       continue;
     }

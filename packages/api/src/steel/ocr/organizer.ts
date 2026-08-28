@@ -15,6 +15,8 @@ export interface OcrOrganizer {
   organize(input: OcrOrganizerInput): Promise<{ markdown: string }>;
 }
 
+const sharedRulesStart = '[ocr_shared]';
+const sharedRulesEnd = '[/ocr_shared]';
 const organizerRulesStart = '[ocr_organizer]';
 const organizerRulesEnd = '[/ocr_organizer]';
 const fallbackOrganizerRules =
@@ -93,12 +95,32 @@ export function resolveOcrOrganizerRulesText(rules: string): string {
     return fallbackOrganizerRules;
   }
 
-  return readMarkedSection(
+  const hasSharedMarkers = rules.includes(sharedRulesStart) || rules.includes(sharedRulesEnd);
+  const hasOrganizerMarkers =
+    rules.includes(organizerRulesStart) || rules.includes(organizerRulesEnd);
+  if (!hasSharedMarkers || !hasOrganizerMarkers) {
+    throw new Error(
+      'Invalid OCR organizer rule markers (missing shared markers or organizer markers): expected exactly one [ocr_shared], [/ocr_shared], [ocr_organizer], and [/ocr_organizer].',
+    );
+  }
+
+  const sharedSection = readMarkedSection(
+    rules,
+    'shared',
+    sharedRulesStart,
+    sharedRulesEnd,
+  ).section;
+  const organizerSection = readMarkedSection(
     rules,
     'organizer',
     organizerRulesStart,
     organizerRulesEnd,
   ).section;
+
+  return [
+    `${sharedRulesStart}\n${sharedSection}\n${sharedRulesEnd}`,
+    `${organizerRulesStart}\n${organizerSection}\n${organizerRulesEnd}`,
+  ].join('\n\n');
 }
 
 export function buildOcrOrganizerPrompt(input: OcrOrganizerInput): string {

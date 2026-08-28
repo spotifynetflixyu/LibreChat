@@ -1302,10 +1302,30 @@ describe('OCR preprocessing orchestrator', () => {
         rawOcrText: `raw-${chunk.chunkIndex}`,
       })),
     };
+    const organizedState: OcrPreprocessingState = {
+      ...rawState,
+      chunks: [
+        ...rawState.chunks.map((chunk) => ({
+          ...chunk,
+          organizedSaved: true,
+          organizedMarkdown:
+            chunk.chunkIndex === 1
+              ? '| item | value |\n|---|---|\n| first | 1 |'
+              : '| item | value |\n|---|---|\n| third | 3 |',
+        })),
+        {
+          ...chunks[1]!,
+          organizedSaved: true,
+          organizedMarkdown: '| item | value |\n|---|---|\n| stale failed | 2 |',
+        },
+      ],
+    };
+    const paddleError = new Error('chunk 2 failed') as Error & { ocrFileUrl: string };
+    paddleError.ocrFileUrl = 'https://refreshed.example/chunk-2.pdf';
     const paddleOcr = {
       runChunk: jest.fn(async ({ chunk }) => {
         if (chunk.chunkIndex === 2) {
-          throw new Error('chunk 2 failed');
+          throw paddleError;
         }
         return {
           rawResult: { text: `raw-${chunk.chunkIndex}` },
@@ -1321,7 +1341,8 @@ describe('OCR preprocessing orchestrator', () => {
       readOcrPreprocessingState: jest
         .fn()
         .mockResolvedValueOnce(initialState)
-        .mockResolvedValueOnce(rawState),
+        .mockResolvedValueOnce(rawState)
+        .mockResolvedValueOnce(organizedState),
       capturePaddleOcrChunkResult: jest.fn(),
       captureOcrPreprocessingChunkMarkdown: jest.fn(),
     };
@@ -1367,11 +1388,114 @@ describe('OCR preprocessing orchestrator', () => {
             chunkIndex: 2,
             pageStart: 26,
             pageEnd: 50,
+            fileUrl: 'https://refreshed.example/chunk-2.pdf',
+          }),
+        ],
+        partial: {
+          markdown: '| item | value |\n| --- | --- |\n| first | 1 |\n| third | 3 |',
+          pageRanges: [
+            { pageStart: 1, pageEnd: 25 },
+            { pageStart: 51, pageEnd: 70 },
+          ],
+          chunkCount: 2,
+        },
+      }),
+    );
+    expect(result.files[0]).not.toHaveProperty('markdown');
+  });
+
+  it('retains primary PaddleOCR failure when partial state reread fails', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 2, chunkSizePages: 1 });
+    const initialState = emptyState({
+      ocrFileKey: 'file:partial-reread-failure',
+      sourcePdfKey: 'uploads/partial-reread-failure.pdf',
+      ocrRuleVersion: 'rules-v2',
+      chunkCount: 2,
+    });
+    const rawState: OcrPreprocessingState = {
+      ...initialState,
+      chunks: [
+        {
+          ...chunks[0]!,
+          rawSaved: true,
+          organizedSaved: false,
+          rawResultHash: 'hash-1',
+          rawOcrText: 'raw-1',
+        },
+      ],
+    };
+    const paddleError = new Error('chunk 2 failed');
+    const memory = {
+      readOcrPreprocessingState: jest
+        .fn()
+        .mockResolvedValueOnce(initialState)
+        .mockResolvedValueOnce(rawState)
+        .mockRejectedValueOnce(new Error('state reread failed')),
+      capturePaddleOcrChunkResult: jest.fn(),
+      captureOcrPreprocessingChunkMarkdown: jest.fn(),
+    };
+
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_partial_reread_failure',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [
+        {
+          file: {
+            ocrFileKey: 'file:partial-reread-failure',
+            filename: 'partial-reread-failure.pdf',
+            sourcePdfKey: 'uploads/partial-reread-failure.pdf',
+          },
+          chunks,
+          artifacts: {
+            ensurePdfChunkArtifacts: jest.fn(async () =>
+              chunks.map((chunk) => ({
+                ...chunk,
+                filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf`,
+                storageKey: `chunks/${chunk.chunkIndex}.pdf`,
+              })),
+            ),
+          },
+        },
+      ],
+      memory,
+      organizer: { organize: jest.fn(async () => ({ markdown: 'organized first' })) },
+      paddleOcr: {
+        runChunk: jest.fn(async ({ chunk }) => {
+          if (chunk.chunkIndex === 2) {
+            throw paddleError;
+          }
+          return {
+            rawResult: { text: 'raw-1' },
+            rawOcrText: 'raw-1',
+            rawResultHash: 'hash-1',
+          };
+        }),
+      },
+    });
+
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({
+        status: 'failed',
+        stage: 'paddleocr',
+        chunkIndex: 2,
+        pageStart: 2,
+        pageEnd: 2,
+        fileUrl: 'https://cdn.example/chunk-2.pdf',
+        errorMessage: 'chunk 2 failed',
+        failures: [
+          expect.objectContaining({
+            stage: 'paddleocr',
+            chunkIndex: 2,
+            pageStart: 2,
+            pageEnd: 2,
+            fileUrl: 'https://cdn.example/chunk-2.pdf',
+            errorMessage: 'chunk 2 failed',
           }),
         ],
       }),
     );
-    expect(result.files[0]).not.toHaveProperty('markdown');
+    expect(result.files[0]).not.toHaveProperty('partial');
   });
 
   it('splits an exhausted exact 50-page parent, preserves later siblings, and suppresses the parent failure', async () => {

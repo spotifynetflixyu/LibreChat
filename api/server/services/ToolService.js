@@ -1115,7 +1115,7 @@ function createDelegateOcrExecute({ req, signal }) {
         });
         const rulesText = context.instructionPrefix?.trim();
         if (!rulesText) {
-          throw new Error('delegate_ocr could not load OCR, Vision, and OCR main-agent rules');
+          throw new Error('delegate_ocr could not load OCR shared, Vision processing, and OCR flow rules');
         }
         return rulesText;
       },
@@ -1243,23 +1243,14 @@ function compactSteelText(values) {
 }
 
 function renderSteelOcrRule(rule) {
-  return compactSteelText([
-    `## ${rule.slug}`,
-    rule.title,
-    `ruleType: ${rule.ruleType}`,
-    Array.isArray(rule.ruleSections) ? `ruleSections: ${rule.ruleSections.join(', ')}` : undefined,
-    rule.prompt,
-    rule.toolPolicy ? `toolPolicy: ${JSON.stringify(rule.toolPolicy)}` : undefined,
-    rule.outputPolicy ? `outputPolicy: ${JSON.stringify(rule.outputPolicy)}` : undefined,
-  ]).join('\n');
+  return compactSteelText([`## ${rule.title || 'OCR rule'}`, rule.prompt]).join('\n');
 }
 
 async function resolveSteelOcrPreprocessingRules() {
-  let subagentRules;
+  let otherRules;
   try {
     const dependencies = createSteelContextDependencies();
-    const otherRules = await dependencies.listOtherGlobalRules();
-    subagentRules = otherRules.ocrSubagentRules ?? [];
+    otherRules = await dependencies.listOtherGlobalRules();
   } catch (error) {
     logger.warn('[Steel OCR] Failed to load OCR rules for preprocessing; continuing fail-open', {
       error: error?.message,
@@ -1270,7 +1261,12 @@ async function resolveSteelOcrPreprocessingRules() {
     };
   }
 
-  const renderedRules = subagentRules.map(renderSteelOcrRule).join('\n\n').trim();
+  const sharedRules = otherRules.ocrSharedRules ?? [];
+  const organizerRules = otherRules.ocrOrganizerRules ?? [];
+  const renderedRules = [...sharedRules, ...organizerRules]
+    .map(renderSteelOcrRule)
+    .join('\n\n')
+    .trim();
   const effectiveOrganizerRules = resolveOcrOrganizerRulesText(renderedRules);
   const versionHash = crypto.createHash('sha256').update(effectiveOrganizerRules).digest('hex');
   return {
@@ -2319,6 +2315,9 @@ function createSteelPaddleOcrChunkRunner({
           : safeErrorMessage,
       );
       exhaustedError.cause = error;
+      if (typeof currentArtifact?.filepath === 'string') {
+        exhaustedError.ocrFileUrl = currentArtifact.filepath;
+      }
       exhaustedError.ocrAdaptiveSplitEligible =
         invokeAttemptsUsed === steelPaddleOcrMaxAttempts;
       await emitSteelPaddleOcrToolCompleted({
@@ -2368,16 +2367,38 @@ function createPreflightResult({
   };
 }
 
+function normalizeSafeSteelAiUrl(value) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value.trim());
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return undefined;
+    }
+    return url.toString();
+  } catch (error) {
+    return undefined;
+  }
+}
+
 function createCurrentOcrFailureResult({ file, result, errorMessage }) {
+  const fileUrl = [
+    result?.fileUrl,
+    result?.ocrFileUrl,
+    result?.file?.filepath,
+    result?.file?.path,
+    file?.filepath,
+    file?.path,
+  ]
+    .map(normalizeSafeSteelAiUrl)
+    .find((value) => value !== undefined);
   return {
     ocrFileKey: result?.file?.ocrFileKey ?? file?.ocrFileKey,
     filename: result?.file?.filename ?? file?.filename,
     mediaType: result?.file?.mediaType ?? file?.mediaType,
-    fileUrl:
-      result?.file?.filepath ??
-      result?.file?.path ??
-      file?.filepath ??
-      file?.path,
+    ...(fileUrl ? { fileUrl } : {}),
     stage: result?.stage ?? 'preflight',
     ...(result?.chunkIndex !== undefined ? { chunkIndex: result.chunkIndex } : {}),
     ...(result?.pageStart !== undefined ? { pageStart: result.pageStart } : {}),
@@ -2386,7 +2407,6 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
       result?.errorMessage ?? errorMessage ?? 'OCR preprocessing failed',
       512,
     ),
-    partialMarkdown: false,
   };
 }
 
@@ -2422,12 +2442,42 @@ function sanitizeCurrentOcrPageRanges(pageRanges, chunkCount) {
   return sanitized;
 }
 
+function sanitizeCurrentOcrPartialPageRanges(pageRanges, chunkCount) {
+  if (
+    !Array.isArray(pageRanges) ||
+    !Number.isInteger(chunkCount) ||
+    chunkCount < 1 ||
+    pageRanges.length !== chunkCount
+  ) {
+    return [];
+  }
+
+  const sanitized = [];
+  for (const range of pageRanges) {
+    if (
+      !Number.isInteger(range?.pageStart) ||
+      range.pageStart < 1 ||
+      !Number.isInteger(range?.pageEnd) ||
+      range.pageEnd < range.pageStart
+    ) {
+      return [];
+    }
+    const previous = sanitized[sanitized.length - 1];
+    if (previous && range.pageStart <= previous.pageEnd) {
+      return [];
+    }
+    sanitized.push({ pageStart: range.pageStart, pageEnd: range.pageEnd });
+  }
+  return sanitized;
+}
+
 function createCurrentOcrMergedMarkdownResult({
   file,
   markdown,
   chunkCount,
   pageRanges = [],
   ocrRuleVersion,
+  partial = false,
 }) {
   const safeOcrFileKey = normalizeOcrOrganizerFileKey({
     fileKey:
@@ -2453,11 +2503,51 @@ function createCurrentOcrMergedMarkdownResult({
       pipelineVersion: ocrPreprocessingPipelineVersion,
       sourcePdfKey,
       chunkCount,
-      pageRanges: sanitizeCurrentOcrPageRanges(pageRanges, chunkCount),
+      pageRanges: partial
+        ? sanitizeCurrentOcrPartialPageRanges(pageRanges, chunkCount)
+        : sanitizeCurrentOcrPageRanges(pageRanges, chunkCount),
       ocrRuleVersion,
       source: 'paddleocr_markdowns',
+      ...(partial ? { partial: true } : {}),
     },
   };
+}
+
+function getCurrentOcrPartialMarkdownResult({ fileResult, ocrRuleVersion }) {
+  const partial = fileResult?.partial;
+  const markdown =
+    typeof fileResult?.partialMarkdown === 'string'
+      ? fileResult.partialMarkdown
+      : typeof partial?.markdown === 'string'
+        ? partial.markdown
+        : '';
+  if (!markdown.trim()) {
+    return undefined;
+  }
+
+  const pageRanges = Array.isArray(fileResult?.partialPageRanges)
+    ? fileResult.partialPageRanges
+    : Array.isArray(partial?.pageRanges)
+      ? partial.pageRanges
+      : [];
+  const chunkCount =
+    Number.isInteger(fileResult?.partialChunkCount) && fileResult.partialChunkCount > 0
+      ? fileResult.partialChunkCount
+      : Number.isInteger(partial?.chunkCount) && partial.chunkCount > 0
+        ? partial.chunkCount
+        : pageRanges.length;
+  if (chunkCount < 1) {
+    return undefined;
+  }
+
+  return createCurrentOcrMergedMarkdownResult({
+    file: fileResult.file,
+    markdown,
+    chunkCount,
+    pageRanges,
+    ocrRuleVersion,
+    partial: true,
+  });
 }
 
 function labelOcrMarkdownResultContent(ocrFileKey, markdown) {
@@ -2760,6 +2850,13 @@ async function runSteelPaddleOcrPreflight({
         if (fileResult.status === 'failed') {
           if (!failedKeys.includes(fileResult.file.ocrFileKey)) {
             failedKeys.push(fileResult.file.ocrFileKey);
+          }
+          const partialMarkdownResult = getCurrentOcrPartialMarkdownResult({
+            fileResult,
+            ocrRuleVersion: ocrPreprocessingRules.ocrRuleVersion,
+          });
+          if (partialMarkdownResult) {
+            currentOcrMarkdownResults.push(partialMarkdownResult);
           }
           const failures =
             Array.isArray(fileResult.failures) && fileResult.failures.length > 0

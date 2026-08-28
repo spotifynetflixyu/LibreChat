@@ -657,33 +657,42 @@ describe('ToolService - Action Capability Gating', () => {
     });
     mockCreateSteelContextDependencies.mockReturnValue({
       listOtherGlobalRules: jest.fn().mockResolvedValue({
-        ocrMainAgentRules: [
+        ocrSharedRules: [
           {
-            slug: 'steel-drawing-ocr-policy',
-            title: 'Steel OCR',
-            ruleType: 'ocr',
-            ruleSections: ['file_ocr'],
-            prompt: [
-              'Main-agent OCR rerun policy',
-              '[ocr_shared]',
-              'Shared OCR evidence policy',
-              '[/ocr_shared]',
-            ].join('\n'),
+            slug: 'steel-ocr-shared-policy',
+            title: 'Steel OCR shared',
+            ruleType: 'other',
+            ruleSections: ['ocr_shared'],
+            prompt: ['[ocr_shared]', 'Shared OCR evidence policy', '[/ocr_shared]'].join('\n'),
             toolPolicy: {},
             outputPolicy: {},
           },
         ],
-        ocrSubagentRules: [
+        ocrVisionRules: [
+          {
+            slug: 'steel-vision-policy',
+            title: 'Vision processing rule',
+            ruleType: 'other',
+            ruleSections: ['vision_processing'],
+            prompt: '[ocr_vision]\nVision rule must not reach Organizer\n[/ocr_vision]',
+          },
+        ],
+        ocrMainRules: [
+          {
+            slug: 'steel-main-policy',
+            title: 'OCR main rule',
+            ruleType: 'other',
+            ruleSections: ['ocr_main_flow'],
+            prompt: '[ocr_main_merge]\nMain rule must not reach Organizer\n[/ocr_main_merge]',
+          },
+        ],
+        ocrOrganizerRules: [
           {
             slug: 'steel-ocr-subagent-organizer-policy',
             title: 'Steel OCR organizer',
             ruleType: 'other',
             ruleSections: ['ocr_organizer'],
-            prompt: [
-              '[ocr_organizer]',
-              'OCR rules text',
-              '[/ocr_organizer]',
-            ].join('\n'),
+            prompt: ['[ocr_organizer]', 'OCR rules text', '[/ocr_organizer]'].join('\n'),
             toolPolicy: {},
             outputPolicy: {},
           },
@@ -1354,7 +1363,10 @@ describe('ToolService - Action Capability Gating', () => {
       };
       mockCreateSteelContextDependencies.mockReturnValueOnce({
         listOtherGlobalRules: jest.fn().mockResolvedValue({
-          ocrSubagentRules: [
+          ocrSharedRules: [],
+          ocrVisionRules: [],
+          ocrMainRules: [],
+          ocrOrganizerRules: [
             {
               slug: 'malformed-organizer-rule',
               title: 'Malformed organizer rule',
@@ -1519,8 +1531,12 @@ describe('ToolService - Action Capability Gating', () => {
       const pipelineInput = mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0];
       expect(pipelineInput.ocrRulesText).toContain('OCR rules text');
       expect(pipelineInput.ocrRulesText).toContain('[ocr_organizer]');
+      expect(pipelineInput.ocrRulesText).toContain('[ocr_shared]');
       expect(pipelineInput.ocrRulesText).not.toContain('Main-agent OCR rerun policy');
-      expect(pipelineInput.ocrRulesText).not.toContain('[ocr_shared]');
+      expect(pipelineInput.ocrRulesText).not.toContain('Vision rule must not reach Organizer');
+      expect(pipelineInput.ocrRulesText).not.toContain('Main rule must not reach Organizer');
+      expect(pipelineInput.ocrRulesText).not.toContain('steel-ocr-shared-policy');
+      expect(pipelineInput.ocrRulesText).not.toContain('ruleSections:');
       const pipelineFileInput = pipelineInput.files[0];
       expect(typeof pipelineFileInput.artifacts.ensurePdfChunkArtifacts).toBe('function');
       expect(typeof pipelineInput.memory.capturePaddleOcrChunkResult).toBe('function');
@@ -2084,12 +2100,18 @@ describe('ToolService - Action Capability Gating', () => {
             pageStart: 1,
             pageEnd: 1,
             errorMessage: 'file B failed',
+            partial: {
+              markdown: '| file | value |\n|---|---|\n| B | organized pages 51-100 |',
+              pageRanges: [{ pageStart: 51, pageEnd: 100 }],
+              chunkCount: 1,
+            },
             failures: [
               {
                 stage: 'paddleocr',
                 chunkIndex: 1,
                 pageStart: 1,
                 pageEnd: 50,
+                fileUrl: 'storage:private/chunk-1.pdf',
                 errorMessage: 'file B chunk 1 failed',
               },
               {
@@ -2123,9 +2145,26 @@ describe('ToolService - Action Capability Gating', () => {
               ocrFileKey: 'file:pdf-a',
               content: expect.stringContaining('| A | organized |'),
             }),
+            expect.objectContaining({
+              ocrFileKey: 'file:pdf-b',
+              fileId: 'pdf-b',
+              filename: 'b.pdf',
+              mediaType: 'application/pdf',
+              content: expect.stringContaining('| B | organized pages 51-100 |'),
+              ocrPreprocessing: expect.objectContaining({
+                partial: true,
+                chunkCount: 1,
+                pageRanges: [{ pageStart: 51, pageEnd: 100 }],
+              }),
+            }),
           ],
           currentOcrFailures: [
-            expect.objectContaining({ ocrFileKey: 'file:pdf-b', pageStart: 1, pageEnd: 50 }),
+            expect.objectContaining({
+              ocrFileKey: 'file:pdf-b',
+              pageStart: 1,
+              pageEnd: 50,
+              fileUrl: 'https://files.example.test/uploads/user_123/pdf-b.pdf',
+            }),
             expect.objectContaining({ ocrFileKey: 'file:pdf-b', pageStart: 101, pageEnd: 120 }),
           ],
         }),
@@ -2242,6 +2281,15 @@ describe('ToolService - Action Capability Gating', () => {
         }),
       );
       expect(result).not.toHaveProperty('currentOcrMarkdownResults');
+      const organizerFailureStatus = mockEmitChunk.mock.calls
+        .map(([, event]) => event)
+        .find(
+          (event) =>
+            event?.data?.type === 'parse_status' &&
+            event.data.source === 'ocr_preprocessing' &&
+            event.data.parseStatus === 'partial',
+        );
+      expect(organizerFailureStatus?.data).not.toHaveProperty('missingPageRangesByFileKey');
     });
 
     it('lets the preprocessing pipeline reuse persisted organizer chunk Markdown', async () => {
@@ -4727,6 +4775,14 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockGetFiles.mock.calls[0][0]).not.toHaveProperty('tenantId');
       expect(getDownloadURL).not.toHaveBeenCalledWith({ file: fileRecord });
       const nestedMessages = stream.mock.calls[0][0];
+      expect(mockBuildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith({
+        conversation: req.steelNativeContext.delegateOcrContext.steelConversation,
+        renderProfile: 'agent_client',
+        mode: 'ocr',
+      });
+      expect(JSON.stringify(nestedMessages)).toContain('OCR_RULE');
+      expect(JSON.stringify(nestedMessages)).toContain('VISION_RULE');
+      expect(JSON.stringify(nestedMessages)).toContain('OCR_MAIN_RULE');
       expect(nestedMessages[1].content).toBe('重新核對第 35 頁孔數');
       expect(JSON.stringify(nestedMessages)).not.toContain('請重新確認開槽連續邊長');
       expect(JSON.stringify(nestedMessages)).toContain(freshUrl);

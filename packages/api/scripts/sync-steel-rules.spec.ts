@@ -273,33 +273,32 @@ describe('Steel rule sources', () => {
     });
     const ocrIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-ocr-policy');
     const visionIndex = builtRules.findIndex((rule) => rule.slug === 'steel-drawing-vision-policy');
-    const subagentIndex = builtRules.findIndex(
+    const organizerIndex = builtRules.findIndex(
       (rule) => rule.slug === 'steel-ocr-subagent-organizer-policy',
     );
-    const mainAgentIndex = builtRules.findIndex(
+    const mainFlowIndex = builtRules.findIndex(
       (rule) => rule.slug === 'steel-ocr-main-agent-organizer-policy',
     );
     expect(ocrIndex).toBeGreaterThanOrEqual(0);
     expect(visionIndex).toBe(ocrIndex + 1);
-    expect(subagentIndex).toBe(visionIndex + 1);
-    expect(mainAgentIndex).toBe(subagentIndex + 1);
+    expect(organizerIndex).toBe(visionIndex + 1);
+    expect(mainFlowIndex).toBe(organizerIndex + 1);
+    expect(builtRules[ocrIndex]).toMatchObject({
+      title: '圖面 OCR 共同規則',
+      ruleSections: ['ocr_shared'],
+    });
+    expect(builtRules[ocrIndex]?.selectors).not.toHaveProperty('otherGlobalRulesKey');
     expect(builtRules[visionIndex]).toMatchObject({
+      title: '圖面加工判斷規則',
       priority: 36,
-      ruleSections: ['file_vision', 'drawing_vision', 'vision_evidence'],
+      ruleSections: ['vision_processing'],
       selectors: {
-        otherGlobalRulesKey: 'ocrMainAgentRules',
-        requiresDrawingVision: true,
-        requiresExistingOcrOutput: true,
-      },
-      toolPolicy: {
-        visionMode: 'supplemental',
-        preserveOcrOnConflict: true,
+        appliesTo: ['steel_quote_runtime', 'other_global_rules'],
       },
       outputPolicy: {
-        outputFormat: 'ocr_field_supplement',
-        onlyFillMissingOrReviewFields: true,
-        forbidPriceLookup: true,
-        forbidFormalQuote: true,
+        outputFormat: 'processing_confirmation',
+        preservePerItemQuantities: true,
+        unconfirmedValueBehavior: 'leave_blank_and_review',
       },
       source: {
         sourceFile: 'docs/rules/其他規則/Vision規則.txt',
@@ -308,11 +307,12 @@ describe('Steel rule sources', () => {
     expect(builtRules[visionIndex]?.priority).toBeGreaterThan(
       builtRules[ocrIndex]?.priority ?? Number.POSITIVE_INFINITY,
     );
-    expect(builtRules[subagentIndex]).toMatchObject({
+    expect(builtRules[organizerIndex]).toMatchObject({
+      title: 'OCR 整理規則',
       priority: 37,
       ruleSections: ['ocr_organizer'],
       selectors: {
-        otherGlobalRulesKey: 'ocrSubagentRules',
+        appliesTo: ['steel_quote_runtime', 'steel_ocr_preprocessing', 'other_global_rules'],
       },
       outputPolicy: {
         organizerOutputFormat: 'chunk_local_markdown_table',
@@ -324,21 +324,30 @@ describe('Steel rule sources', () => {
         sourceFile: 'docs/rules/其他規則/OCR子Agent整理規則.txt',
       },
     });
-    expect(builtRules[mainAgentIndex]).toMatchObject({
+    expect(builtRules[organizerIndex]?.selectors).not.toHaveProperty('otherGlobalRulesKey');
+    expect(builtRules[mainFlowIndex]).toMatchObject({
+      title: 'OCR 流程與 Markdown 輸出規則',
       priority: 38,
-      ruleSections: ['delegate_ocr', 'ocr_main_merge', 'final_ocr_markdown'],
+      ruleSections: ['ocr_main_flow', 'ocr_vision', 'ocr_main_merge', 'final_ocr_markdown'],
       selectors: {
-        otherGlobalRulesKey: 'ocrMainAgentRules',
+        appliesTo: ['steel_quote_runtime', 'other_global_rules'],
       },
       outputPolicy: {
-        delegateOutputFormat: 'plain_text_or_markdown',
         mainOutputFormat: 'final_ocr_markdown',
         mergeScope: 'same_file_key',
+        integrateProcessingConfirmation: true,
       },
       source: {
         sourceFile: 'docs/rules/其他規則/OCR主Agent整理規則.txt',
       },
     });
+    expect(builtRules[mainFlowIndex]?.selectors).not.toHaveProperty('otherGlobalRulesKey');
+    expect(
+      [builtRules[ocrIndex], builtRules[visionIndex], builtRules[organizerIndex], builtRules[mainFlowIndex]].every(
+        (rule) =>
+          !/(主\s*Agent|子\s*Agent|主agent|子agent)/u.test(`${rule?.title}\n${rule?.prompt}`),
+      ),
+    ).toBe(true);
   });
 
   it('publishes delegate_ocr tool metadata', () => {

@@ -35,8 +35,10 @@ function createDependencies(): SteelRuntimeContextDependencies {
     listReviewedQuoteRules: jest.fn(async () => []),
     listOutputRules: jest.fn(async () => []),
     listOtherGlobalRules: jest.fn(async () => ({
-      ocrSubagentRules: [],
-      ocrMainAgentRules: [createAgentRule({ ruleSections: ['file_ocr'] })],
+      ocrSharedRules: [],
+      ocrVisionRules: [],
+      ocrMainRules: [createAgentRule({ ruleSections: ['ocr_main_flow'] })],
+      ocrOrganizerRules: [],
       fileRules: [],
       sourcePriorityRules: [],
       markdownOutputRules: [],
@@ -61,7 +63,7 @@ describe('Steel runtime context', () => {
     const context = await prepareSteelRuntimeContext(createInput(dependencies));
 
     expect(context.rules.agentRules).toHaveLength(1);
-    expect(context.rules.otherGlobalRules.ocrMainAgentRules).toHaveLength(1);
+    expect(context.rules.otherGlobalRules.ocrMainRules).toHaveLength(1);
     expect(context.attachments.currentOcrMarkdownResults).toEqual([]);
     expect(context).not.toHaveProperty('conversation');
     expect(context).not.toHaveProperty('outputSheets');

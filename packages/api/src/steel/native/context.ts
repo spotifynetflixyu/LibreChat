@@ -1,4 +1,3 @@
-import { groupSteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import { normalizeOcrOrganizerFileKey } from '../ocr/organizer';
 import { prepareLibreChatSteelRuntimeContext } from '../runtime/context';
 import { createSteelPostgresPool } from '../postgres';
@@ -188,6 +187,7 @@ function readValidOcrPreprocessingMetadata(
 
   const chunkCount = preprocessing.chunkCount;
   const pageRanges = preprocessing.pageRanges;
+  const partial = preprocessing.partial === true;
   if (
     typeof chunkCount !== 'number' ||
     !Number.isInteger(chunkCount) ||
@@ -217,13 +217,99 @@ function readValidOcrPreprocessingMetadata(
       return undefined;
     }
     const previous = normalizedRanges[normalizedRanges.length - 1];
-    if (previous && (pageStart <= previous.pageEnd || pageStart !== previous.pageEnd + 1)) {
+    if (previous && (pageStart <= previous.pageEnd || (!partial && pageStart !== previous.pageEnd + 1))) {
       return undefined;
     }
     normalizedRanges.push({ pageStart, pageEnd });
   }
 
   return { chunkCount, pageRanges: normalizedRanges };
+}
+
+function normalizeSafeSteelAiUrl(value: string | undefined): string | undefined {
+  if (!value || value.trim() === '') {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value.trim());
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+interface NativeOcrFailureGroup {
+  fileKey: string;
+  fileUrl: string;
+  stage: string;
+  ranges: { pageStart: number; pageEnd: number }[];
+}
+
+function getNativeOcrFailureStage(failure: SteelRuntimeJsonObject): string {
+  const stage = typeof failure.stage === 'string' ? failure.stage.trim().toLowerCase() : '';
+  if (stage === 'paddleocr') {
+    return stage;
+  }
+  return ['artifacts', 'organizer', 'merge', 'preflight', 'state'].includes(stage)
+    ? stage
+    : 'generic';
+}
+
+function readNativeOcrFailureRange(
+  failure: SteelRuntimeJsonObject,
+): { pageStart: number; pageEnd: number } | undefined {
+  const mediaType = typeof failure.mediaType === 'string' ? failure.mediaType.trim() : '';
+  if (mediaType.toLowerCase().startsWith('image/')) {
+    return undefined;
+  }
+  const pageStart = failure.pageStart;
+  const pageEnd = failure.pageEnd;
+  if (
+    typeof pageStart !== 'number' ||
+    !Number.isSafeInteger(pageStart) ||
+    pageStart < 1 ||
+    typeof pageEnd !== 'number' ||
+    !Number.isSafeInteger(pageEnd) ||
+    pageEnd < pageStart
+  ) {
+    return undefined;
+  }
+  return { pageStart, pageEnd };
+}
+
+function mergeNativeOcrFailureRanges(
+  ranges: readonly { pageStart: number; pageEnd: number }[],
+): { pageStart: number; pageEnd: number }[] {
+  const sortedRanges = [...ranges].sort(
+    (left, right) => left.pageStart - right.pageStart || left.pageEnd - right.pageEnd,
+  );
+  const mergedRanges: { pageStart: number; pageEnd: number }[] = [];
+  for (const range of sortedRanges) {
+    const previous = mergedRanges[mergedRanges.length - 1];
+    if (previous && range.pageStart <= previous.pageEnd + 1) {
+      previous.pageEnd = Math.max(previous.pageEnd, range.pageEnd);
+      continue;
+    }
+    mergedRanges.push({ ...range });
+  }
+  return mergedRanges;
+}
+
+function renderNativeOcrFailureRanges(
+  ranges: readonly { pageStart: number; pageEnd: number }[],
+): string {
+  const mergedRanges = mergeNativeOcrFailureRanges(ranges);
+  return mergedRanges.length > 0
+    ? mergedRanges
+        .map(({ pageStart, pageEnd }) =>
+          pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`,
+        )
+        .join(', ')
+    : 'unavailable';
 }
 
 function readOcrFileKey(result: SteelRuntimeJsonObject): {
@@ -274,18 +360,33 @@ function getRulePriority(rule: SteelAgentRule): number {
   return typeof rule.priority === 'number' ? rule.priority : Number.MAX_SAFE_INTEGER;
 }
 
-function buildOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
-  const ocrRules = runtimeContext.rules.otherGlobalRules.ocrMainAgentRules;
-  const orderedRules = ocrRules
+function sortOcrRules(rules: readonly SteelAgentRule[]): SteelAgentRule[] {
+  return rules
     .map((rule, index) => ({ rule, index }))
     .sort((left, right) => {
       const priorityOrder = getRulePriority(left.rule) - getRulePriority(right.rule);
       return priorityOrder !== 0 ? priorityOrder : left.index - right.index;
-    });
+    })
+    .map(({ rule }) => rule);
+}
 
-  return [
-    ...orderedRules.map(({ rule }) => renderAgentRule(rule)),
-  ];
+function buildOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  const { ocrSharedRules, ocrVisionRules, ocrMainRules } = runtimeContext.rules.otherGlobalRules;
+  const orderedRules: SteelAgentRule[] = [];
+  const seenRules = new Set<SteelAgentRule>();
+  for (const rule of [
+    ...sortOcrRules(ocrSharedRules),
+    ...sortOcrRules(ocrVisionRules),
+    ...sortOcrRules(ocrMainRules),
+  ]) {
+    if (seenRules.has(rule)) {
+      continue;
+    }
+    seenRules.add(rule);
+    orderedRules.push(rule);
+  }
+
+  return orderedRules.map(renderAgentRule);
 }
 
 export function buildSteelNativeInstructionPrefix({
@@ -323,32 +424,86 @@ export function buildSteelNativeInstructionPrefix({
   };
 }
 
-function hasRuleSection(rule: SteelAgentRule, matches: readonly string[]): boolean {
-  return rule.ruleSections.some((section) => matches.some((match) => section.includes(match)));
+function hasRuleSection(
+  rule: SteelAgentRule,
+  sections: readonly string[],
+  markers: readonly string[] = [],
+): boolean {
+  if (rule.ruleSections.some((section) => sections.includes(section))) {
+    return true;
+  }
+
+  return markers.some((marker) => rule.prompt.includes(marker));
 }
 
-function isOcrRule(rule: SteelAgentRule): boolean {
-  return hasRuleSection(rule, [
-    'file_ocr',
-    'drawing_ocr',
-    'vision_evidence',
-    'ocr_main_merge',
-    'final_ocr_markdown',
-  ]);
+const explicitOcrRuleSections = [
+  'ocr_shared',
+  'vision_processing',
+  'ocr_main_flow',
+  'ocr_organizer',
+] as const;
+
+function hasExplicitOcrRuleSection(rule: SteelAgentRule): boolean {
+  return rule.ruleSections.some((section) =>
+    explicitOcrRuleSections.some((knownSection) => knownSection === section),
+  );
+}
+
+function isOcrSharedRule(rule: SteelAgentRule): boolean {
+  if (hasExplicitOcrRuleSection(rule)) {
+    return hasRuleSection(rule, ['ocr_shared']);
+  }
+
+  return hasRuleSection(rule, ['ocr_shared'], ['[ocr_shared]']);
+}
+
+function isOcrVisionRule(rule: SteelAgentRule): boolean {
+  if (hasExplicitOcrRuleSection(rule)) {
+    return hasRuleSection(rule, ['vision_processing']);
+  }
+
+  return hasRuleSection(rule, ['ocr_vision'], ['[ocr_vision]']);
+}
+
+function isOcrMainRule(rule: SteelAgentRule): boolean {
+  if (hasExplicitOcrRuleSection(rule)) {
+    return hasRuleSection(rule, ['ocr_main_flow']);
+  }
+
+  return hasRuleSection(
+    rule,
+    [],
+    ['[ocr_main]', '[ocr_main_merge]', '[final_ocr_markdown]'],
+  );
 }
 
 function isOcrOrganizerRule(rule: SteelAgentRule): boolean {
-  return hasRuleSection(rule, ['ocr_organizer']);
+  if (hasExplicitOcrRuleSection(rule)) {
+    return hasRuleSection(rule, ['ocr_organizer']);
+  }
+
+  return hasRuleSection(rule, ['ocr_organizer'], ['[ocr_organizer]']);
 }
 
 function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
-  const ocrMainAgentRules = rules.filter(isOcrRule);
+  const ocrSharedRules = rules.filter(isOcrSharedRule);
+  const ocrVisionRules = rules.filter(isOcrVisionRule);
+  const ocrMainRules = rules.filter(isOcrMainRule);
+  const ocrOrganizerRules = rules.filter(isOcrOrganizerRule);
+  const ocrRuleSet = new Set([
+    ...ocrSharedRules,
+    ...ocrVisionRules,
+    ...ocrMainRules,
+    ...ocrOrganizerRules,
+  ]);
 
   return {
-    ocrSubagentRules: rules.filter(isOcrOrganizerRule),
-    ocrMainAgentRules,
+    ocrSharedRules,
+    ocrVisionRules,
+    ocrMainRules,
+    ocrOrganizerRules,
     fileRules: rules.filter(
-      (rule) => hasRuleSection(rule, ['file']) && !isOcrRule(rule) && !isOcrOrganizerRule(rule),
+      (rule) => hasRuleSection(rule, ['file', 'file_policy']) && !ocrRuleSet.has(rule),
     ),
     sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
     markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
@@ -579,33 +734,43 @@ export function buildSteelNativeRuntimeContextText({
     return attachmentContextText;
   }
 
-  const missingPageRangesByFileKey = groupSteelOcrMissingPageRangesByFileKey(
-    runtimeContext.attachments.currentOcrFailures,
-  );
-  const failuresByFileKey = new Map<string, { fileUrl?: string }>();
+  const failuresByGroup = new Map<string, NativeOcrFailureGroup>();
   for (const failure of runtimeContext.attachments.currentOcrFailures) {
-    const key = typeof failure.ocrFileKey === 'string' ? failure.ocrFileKey : 'unknown';
-    const current = failuresByFileKey.get(key) ?? {};
-    if (current.fileUrl === undefined && typeof failure.fileUrl === 'string') {
-      current.fileUrl = failure.fileUrl;
+    const { safeFileKey } = readOcrFileKey(failure);
+    const fileKey = safeFileKey || 'unknown';
+    const fileUrl = [failure.fileUrl, failure.ocrFileUrl]
+      .filter((value): value is string => typeof value === 'string')
+      .map(normalizeSafeSteelAiUrl)
+      .find((value): value is string => value !== undefined);
+    const stage = getNativeOcrFailureStage(failure);
+    const groupKey = `${stage}\u0000${fileKey}\u0000${fileUrl ?? 'unavailable'}`;
+    const current =
+      failuresByGroup.get(groupKey) ?? {
+        fileKey,
+        fileUrl: fileUrl ?? 'unavailable',
+        stage,
+        ranges: [],
+      };
+    const range = readNativeOcrFailureRange(failure);
+    if (range) {
+      current.ranges.push(range);
     }
-    failuresByFileKey.set(key, current);
+    failuresByGroup.set(groupKey, current);
   }
-  const failures = [...failuresByFileKey.entries()]
-    .map(([key, failure]) => {
-      const missingRanges = missingPageRangesByFileKey[key];
-      const safeFileKey = key === 'unknown' ? key : normalizeOcrOrganizerFileKey({ fileKey: key });
-      return [
-        `file_key: ${safeFileKey}`,
-        `file_url: ${failure.fileUrl ?? 'unavailable'}`,
-        `missing_page_ranges: ${
-          missingRanges
-            ?.map(({ pageStart, pageEnd }) =>
-              pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`,
-            )
-            .join(', ') ?? 'unavailable'
-        }`,
-      ].join('\n');
+  const failures = [...failuresByGroup.values()]
+    .map((failure) => {
+      const commonFields = [
+        `file_key: ${failure.fileKey}`,
+        `failed_page_ranges: ${renderNativeOcrFailureRanges(failure.ranges)}`,
+        `file_url: ${failure.fileUrl}`,
+      ];
+      return failure.stage === 'paddleocr'
+        ? [
+            'ocr_failure_stage: paddleocr',
+            'paddleocr_status: failed',
+            ...commonFields,
+          ].join('\n')
+        : [`ocr_failure_stage: ${failure.stage}`, ...commonFields].join('\n');
     })
     .join('\n\n');
   const currentTurnOcrDirective = markdown
@@ -614,7 +779,7 @@ export function buildSteelNativeRuntimeContextText({
         'Apply [ocr_main_merge] and [final_ocr_markdown].',
         'Your final answer MUST contain only per-source consolidated OCR table(s), an optional `manual_review` section/table, and the required OCR completion summary.',
         'Do not output page headings or page details. Do not output explanatory prose, bullet lists, calculations, or duplicate tables.',
-        'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name, and do not call delegate_ocr.',
+        'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',
       ].join('\n')
     : '';
   return [attachmentContextText, failures, markdown, currentTurnOcrDirective]

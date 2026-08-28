@@ -18,8 +18,10 @@ export interface SteelGlobalRuleGroups {
 }
 
 export interface SteelRuntimeOtherGlobalRules {
-  ocrSubagentRules: SteelAgentRule[];
-  ocrMainAgentRules: SteelAgentRule[];
+  ocrSharedRules: SteelAgentRule[];
+  ocrVisionRules: SteelAgentRule[];
+  ocrMainRules: SteelAgentRule[];
+  ocrOrganizerRules: SteelAgentRule[];
   fileRules: SteelAgentRule[];
   sourcePriorityRules: SteelAgentRule[];
   markdownOutputRules: SteelAgentRule[];
