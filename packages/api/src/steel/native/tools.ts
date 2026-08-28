@@ -75,7 +75,7 @@ export type SteelNativeToolExecute = (
 ) => Promise<SteelToolResult>;
 
 type SteelProviderVisibleSuccessResult =
-  | Omit<SteelToolSuccessResult, 'sourceRefs'>
+  | SteelToolSuccessResult
   | Pick<SteelToolSuccessResult, 'ok' | 'toolName' | 'data'>;
 
 export interface SteelNativeExecutableTool {
@@ -261,18 +261,6 @@ function compactJsonObjects(
         return source ? [compact(source)] : [];
       })
     : [];
-}
-
-function omitSourceRefs(source: SteelToolJsonObject): SteelToolJsonObject {
-  const result = { ...source };
-  delete result.sourceRefs;
-  return result;
-}
-
-function compactCustomerData(data: SteelToolJsonObject): SteelToolJsonObject {
-  const result = omitSourceRefs(data);
-  result.customers = compactJsonObjects(data.customers, omitSourceRefs);
-  return result;
 }
 
 const compactCandidateFields = [
@@ -586,13 +574,7 @@ function getProviderVisibleResult(
   }
 
   if (steelToolName === 'search_customers') {
-    return {
-      ok: true,
-      toolName: result.toolName,
-      data: compactCustomerData(result.data),
-      durationMs: result.durationMs,
-      redactionVersion: result.redactionVersion,
-    };
+    return result;
   }
 
   const compactData = compactPriceCandidateData(result.data);

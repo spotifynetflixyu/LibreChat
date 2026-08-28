@@ -550,7 +550,6 @@ CREATE TABLE IF NOT EXISTS steel.rules (
   priority INTEGER NOT NULL DEFAULT 100,
   active BOOLEAN NOT NULL DEFAULT true,
   review_state TEXT NOT NULL DEFAULT 'reviewed',
-  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
   published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   invalidated_at TIMESTAMPTZ,
   created_by TEXT,
@@ -565,7 +564,6 @@ ALTER TABLE steel.rules DROP CONSTRAINT IF EXISTS rules_review_state_check;
 ALTER TABLE steel.rules DROP CONSTRAINT IF EXISTS rules_selectors_check;
 ALTER TABLE steel.rules DROP CONSTRAINT IF EXISTS rules_tool_policy_check;
 ALTER TABLE steel.rules DROP CONSTRAINT IF EXISTS rules_output_policy_check;
-ALTER TABLE steel.rules DROP CONSTRAINT IF EXISTS rules_source_refs_check;
 ALTER TABLE steel.rules DROP CONSTRAINT IF EXISTS rules_slug_version_unique;
 ALTER TABLE steel.rules
   ADD CONSTRAINT rules_kind_check
@@ -582,9 +580,6 @@ ALTER TABLE steel.rules
 ALTER TABLE steel.rules
   ADD CONSTRAINT rules_output_policy_check
   CHECK (jsonb_typeof(output_policy) = 'object');
-ALTER TABLE steel.rules
-  ADD CONSTRAINT rules_source_refs_check
-  CHECK (jsonb_typeof(source_refs) = 'array');
 ALTER TABLE steel.rules
   ADD CONSTRAINT rules_slug_version_unique UNIQUE (slug, version);
 

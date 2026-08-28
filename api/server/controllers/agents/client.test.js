@@ -1025,14 +1025,15 @@ describe('AgentClient - titleConvo', () => {
       expect(mockRun.generateTitle).not.toHaveBeenCalled();
     });
 
-    it('should use titlePrompt from endpoint config', async () => {
-      const text = 'Test conversation text';
+    it('should preserve arbitrary conversation text and titlePrompt without attachments', async () => {
+      const text = 'Discuss quarterly planning, then summarize action items.';
       const abortController = new AbortController();
 
       await client.titleConvo({ text, abortController });
 
       expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
+          inputText: text,
           titlePrompt: 'Custom title prompt',
         }),
       );
@@ -1363,13 +1364,13 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
-    it('passes the current OCR filename and title rule to shared title generation', async () => {
+    it('passes the current attachment filename and title rule to shared title generation', async () => {
       mockAgent.endpoint = EModelEndpoint.openAIOAuth;
       mockAgent.provider = EModelEndpoint.openAIOAuth;
       client.options.attachments = [{ filename: 'PL.pdf' }];
       require('@librechat/api').generateTitle.mockResolvedValueOnce({
         model: 'gpt-5.5',
-        title: 'PL.pdf 內容核對',
+        title: 'PL.pdf OCR彙整表單製作',
         usage: {
           input_tokens: 9,
           output_tokens: 4,
@@ -1377,32 +1378,33 @@ describe('AgentClient - titleConvo', () => {
       });
 
       const result = await client.titleConvo({
-        text: 'OCR檔案內容，逐一列表給我核對。',
+        text: 'OCR檔案內容，給我OCR彙整表單',
         abortController: new AbortController(),
         immediate: true,
       });
 
-      expect(result).toBe('PL.pdf 內容核對');
+      expect(result).toBe('PL.pdf OCR彙整表單製作');
       expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           endpoint: EModelEndpoint.openAIOAuth,
           contentParts: [],
-          inputText: 'OCR檔案內容，逐一列表給我核對。',
+          inputText: 'OCR檔案內容，給我OCR彙整表單',
           titlePrompt: expect.stringContaining('File name(s): PL.pdf'),
         }),
       );
-      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
-        expect.objectContaining({
-          titlePrompt: expect.stringContaining('Example: "PL.pdf 內容核對"'),
-        }),
+      const titlePrompt = require('@librechat/api').generateTitle.mock.calls[0][0].titlePrompt;
+      expect(titlePrompt).toContain('Always use the conversation text as the source for the title.');
+      expect(titlePrompt).toContain(
+        'When filenames are provided, begin with the first attached filename exactly ("PL.pdf"), then summarize the conversation text.',
       );
+      expect(titlePrompt).toContain('Example: "PL.pdf OCR彙整表單製作"');
     });
 
-    it('passes OCR filename guidance to shared title generation for regular providers', async () => {
+    it('passes attachment filename guidance to shared title generation for regular providers', async () => {
       client.options.attachments = [{ filename: 'PL.pdf' }];
 
       await client.titleConvo({
-        text: 'OCR檔案內容，逐一列表給我核對。',
+        text: 'OCR檔案內容，給我OCR彙整表單',
         abortController: new AbortController(),
       });
 
@@ -1410,22 +1412,23 @@ describe('AgentClient - titleConvo', () => {
         expect.objectContaining({
           endpoint: EModelEndpoint.openAI,
           contentParts: [],
-          inputText: 'OCR檔案內容，逐一列表給我核對。',
+          inputText: 'OCR檔案內容，給我OCR彙整表單',
           titlePrompt: expect.stringContaining('File name(s): PL.pdf'),
         }),
       );
-      expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
-        expect.objectContaining({
-          titlePrompt: expect.stringContaining('Example: "PL.pdf 內容核對"'),
-        }),
+      const titlePrompt = require('@librechat/api').generateTitle.mock.calls[0][0].titlePrompt;
+      expect(titlePrompt).toContain('Always use the conversation text as the source for the title.');
+      expect(titlePrompt).toContain(
+        'When filenames are provided, begin with the first attached filename exactly ("PL.pdf"), then summarize the conversation text.',
       );
+      expect(titlePrompt).toContain('Example: "PL.pdf OCR彙整表單製作"');
     });
 
-    it('does not await pending attachments while generating OCR titles', async () => {
+    it('does not await pending attachments while generating titles', async () => {
       client.options.attachments = new Promise(() => {});
 
       const result = await client.titleConvo({
-        text: 'OCR檔案內容，逐一列表給我核對。',
+        text: 'OCR檔案內容，給我OCR彙整表單',
         abortController: new AbortController(),
       });
 
@@ -1433,7 +1436,7 @@ describe('AgentClient - titleConvo', () => {
       expect(require('@librechat/api').generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           contentParts: [],
-          inputText: 'OCR檔案內容，逐一列表給我核對。',
+          inputText: 'OCR檔案內容，給我OCR彙整表單',
           titlePrompt: 'Custom title prompt',
         }),
       );

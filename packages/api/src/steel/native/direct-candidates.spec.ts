@@ -41,7 +41,6 @@ describe('native direct candidate compaction', () => {
           }],
         },
       },
-      sourceRefs: [],
       durationMs: 0,
       redactionVersion: 1 as const,
     });
@@ -93,7 +92,6 @@ describe('native direct candidate compaction', () => {
         ],
         cuttingPrices: [],
       },
-      sourceRefs: [],
       durationMs: 0,
       redactionVersion: 1 as const,
     });
@@ -169,7 +167,6 @@ describe('native direct candidate compaction', () => {
         ],
         cuttingPrices: [],
       },
-      sourceRefs: [],
       durationMs: 0,
       redactionVersion: 1 as const,
     });

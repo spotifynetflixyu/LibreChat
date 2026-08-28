@@ -5,7 +5,6 @@ import type {
   SteelInstructionPacket,
   SteelQuoteDefault,
 } from '../repositories';
-import type { SteelSourceRef } from '../repositories/types';
 import type { SteelToolJsonObject, SteelToolJsonValue } from './results';
 import type {
   LookupDefaultsInput,
@@ -107,19 +106,6 @@ function getMatchedPacketGroup(packet: SteelInstructionPacket, requestedGroups: 
   );
 }
 
-function toSourceRefOutput(sourceRef: SteelSourceRef): SteelToolJsonObject {
-  return {
-    channel: sourceRef.channel,
-    factType: sourceRef.factType,
-    sourceFile: sourceRef.sourceFile ?? null,
-    sourceVersionId: sourceRef.sourceVersionId ?? null,
-    locator: sourceRef.locator ?? null,
-    confidence: sourceRef.confidence ?? null,
-    extractedLabel: sourceRef.extractedLabel ?? null,
-    canonicalKey: sourceRef.canonicalKey ?? null,
-  };
-}
-
 function sanitizeLegacyRuntimeToolText(value: string): string {
   return value
     .replace(
@@ -158,7 +144,6 @@ function toPacketOutput(
     blockingRules: sanitizeLegacyRuntimeToolTexts(packet.blockingRules),
     userVisibleNotes: sanitizeLegacyRuntimeToolTexts(packet.userVisibleNotes),
     confirmationQuestions: sanitizeLegacyRuntimeToolTexts(packet.confirmationQuestions),
-    sourceRefs: packet.sourceRefs.map(toSourceRefOutput),
   };
 }
 

@@ -1,4 +1,3 @@
-import type { SteelSourceRef } from '../repositories/types';
 import type { SteelToolName } from './schemas';
 
 export type SteelToolJsonValue =
@@ -21,7 +20,6 @@ export interface SteelToolSuccessResult {
   ok: true;
   toolName: SteelToolName;
   data: SteelToolJsonObject;
-  sourceRefs: SteelSourceRef[];
   durationMs: number;
   redactionVersion: 1;
 }
@@ -44,7 +42,6 @@ export interface SteelToolLogEntry {
   durationMs: number;
   inputSummary: string;
   outputSummary: string;
-  sourceRefs: SteelSourceRef[];
   errorCategory?: SteelToolErrorCategory;
   redactionVersion: 1;
 }

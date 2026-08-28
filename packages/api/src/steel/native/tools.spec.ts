@@ -164,15 +164,12 @@ describe('Steel native tool adapter', () => {
       ok: true,
       toolName: 'search_customers',
       data: {
-        sourceRefs: [{ channel: 'admin_erp_xlsx', factType: 'customer' }],
         customers: [
           {
             displayName: 'ACME',
-            sourceRefs: [{ channel: 'admin_erp_xlsx', factType: 'customer' }],
           },
         ],
       },
-      sourceRefs: [{ channel: 'admin_erp_xlsx', factType: 'customer' }],
       durationMs: 7,
       redactionVersion: 1,
     };
@@ -208,6 +205,7 @@ describe('Steel native tool adapter', () => {
       redactionVersion: 1,
     });
     expect(result.content).not.toContain('sourceRefs');
+    expect(JSON.stringify(result.artifact)).not.toContain('sourceRefs');
     expect(result.artifact).toEqual(
       expect.objectContaining({
         type: 'steel_tool_result',
@@ -361,7 +359,6 @@ describe('Steel native tool adapter', () => {
           noMatchQueryCount: 1,
         },
       },
-      sourceRefs: [],
       durationMs: 41,
       redactionVersion: 1,
     };
@@ -510,7 +507,6 @@ describe('Steel native tool adapter', () => {
         missingErpItemCodes: [],
         nextAction: 'use_candidates',
       },
-      sourceRefs: [],
       durationMs: 10,
       redactionVersion: 1,
     };
@@ -554,7 +550,6 @@ describe('Steel native tool adapter', () => {
         missingErpItemCodes: ['ERP-missing'],
         nextAction: 'manual_review',
       },
-      sourceRefs: [],
       durationMs: 10,
       redactionVersion: 1,
     };
@@ -603,7 +598,6 @@ describe('Steel native tool adapter', () => {
         ],
         cuttingPrices: [],
       },
-      sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1,
     };

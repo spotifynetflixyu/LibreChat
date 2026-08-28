@@ -1,4 +1,4 @@
-import type { SteelJsonValue, SteelQuoteDefault, SteelSourceRef } from '../repositories';
+import type { SteelJsonValue, SteelQuoteDefault } from '../repositories';
 import type { SteelToolJsonObject, SteelToolJsonValue } from './results';
 import type { LookupDefaultsInput } from './schemas';
 import type { SearchSteelQuoteDefaultsInput } from '../repositories';
@@ -181,30 +181,6 @@ function toToolJsonValue(value: SteelJsonValue): SteelToolJsonValue {
   return output;
 }
 
-function toToolSourceRef(sourceRef: SteelSourceRef): SteelToolJsonObject {
-  const output: SteelToolJsonObject = {
-    channel: sourceRef.channel,
-    factType: sourceRef.factType,
-  };
-
-  for (const key of [
-    'sourceFile',
-    'sourceVersionId',
-    'locator',
-    'confidence',
-    'extractedLabel',
-    'canonicalKey',
-  ] as const) {
-    const value = sourceRef[key];
-
-    if (value !== undefined) {
-      output[key] = value;
-    }
-  }
-
-  return output;
-}
-
 function toDefaultCandidate(
   quoteDefault: SteelQuoteDefault,
   matchedContext: MatchedDefaultContext,
@@ -233,7 +209,6 @@ function toDefaultCandidate(
     defaultParameters: toToolJsonValue(quoteDefault.defaultParameters),
     priority: quoteDefault.priority,
     confidence: quoteDefault.confidence,
-    sourceRefs: quoteDefault.sourceRefs.map(toToolSourceRef),
   };
 
   if (quoteDefault.originRevision) {

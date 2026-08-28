@@ -129,21 +129,6 @@ export type SteelRuleProposalDefaultParameter = z.infer<
   typeof steelRuleProposalDefaultParameterSchema
 >;
 
-export const steelRuleProposalSourceRefSchema = z
-  .object({
-    channel: z.string().min(1),
-    factType: z.string().min(1),
-    sourceFile: z.string().min(1).optional(),
-    sourceVersionId: z.string().min(1).optional(),
-    locator: z.string().min(1).optional(),
-    confidence: steelRuleProposalConfidenceSchema.optional(),
-    extractedLabel: z.string().min(1).optional(),
-    canonicalKey: z.string().min(1).optional(),
-  })
-  .strict();
-
-export type SteelRuleProposalSourceRef = z.infer<typeof steelRuleProposalSourceRefSchema>;
-
 interface ScopeCheckInput {
   scopeType: z.infer<typeof steelRuleProposalScopeTypeSchema>;
   customerId?: string;
@@ -187,7 +172,6 @@ const steelRuleProposalBaseSchema = z
     formulaVersionId: z.string().min(1).optional(),
     selector: steelRuleProposalSelectorSchema,
     proposedDefaultParameters: z.array(steelRuleProposalDefaultParameterSchema).min(1),
-    sourceRefs: z.array(steelRuleProposalSourceRefSchema).min(1),
     createdFromConversationId: z.string().min(1),
     reason: z.string().min(1),
     confidence: steelRuleProposalConfidenceSchema,

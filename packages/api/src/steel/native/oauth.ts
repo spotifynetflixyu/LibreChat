@@ -28,6 +28,10 @@ import type { ZodTypeAny } from 'zod';
 
 import type { OpenAIOAuthTokenLoader } from './credentials';
 
+import {
+  createSystemOrderNormalizer,
+  normalizeSystemOrderMarkdown,
+} from '../markdown/order';
 import { buildCustomerQuoteFromMarkdown, createCustomerQuoteParser } from '../markdown/quote';
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import { loadOpenAIOAuthTokens } from './credentials';
@@ -922,14 +926,17 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     }
 
     const generatedText = getGeneratedText(result.content);
-    const composedText =
+    const normalizedText =
       inspectCodeInterpreter &&
       !result.content.some((part) => part.type === 'error') &&
       !hasClientToolCall(result.content) &&
       isCompletedTextResult(result.finishReason)
-        ? composeCustomerQuote(generatedText)
+        ? normalizeSystemOrderMarkdown(generatedText)
         : undefined;
-    if (!composedText) {
+    const finalizedText = normalizedText
+      ? (composeCustomerQuote(normalizedText) ?? normalizedText)
+      : undefined;
+    if (!finalizedText || finalizedText === generatedText) {
       return toMessageChunk(result, this.options.model);
     }
 
@@ -937,7 +944,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       {
         ...result,
         content: [
-          { type: 'text', text: composedText },
+          { type: 'text', text: finalizedText },
           ...result.content.filter((part) => part.type !== 'text'),
         ],
       },
@@ -969,6 +976,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const reader = result.stream.getReader();
     const quoteParser = inspectCodeInterpreter ? createCustomerQuoteParser() : undefined;
+    const orderNormalizer = inspectCodeInterpreter ? createSystemOrderNormalizer() : undefined;
     let generatedText = '';
     let emittedTextLength = 0;
     let response: LanguageModelV3GenerateResult['response'];
@@ -991,19 +999,21 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         }
 
         if (value.type === 'text-delta') {
-          if (!quoteParser) {
+          if (!quoteParser || !orderNormalizer) {
             yield toStreamTextChunk(value.delta, this.options.model);
             continue;
           }
 
-          generatedText += value.delta;
           if (bypassQuote) {
-            yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
+            generatedText += value.delta;
+            yield toStreamTextChunk(value.delta, this.options.model);
             emittedTextLength = generatedText.length;
             continue;
           }
 
-          quoteParser.append(value.delta);
+          const normalizedDelta = orderNormalizer.append(value.delta);
+          generatedText += normalizedDelta;
+          quoteParser.append(normalizedDelta);
           const safeEnd = quoteParser.getSafeTextEnd();
           if (safeEnd > emittedTextLength) {
             yield toStreamTextChunk(
@@ -1020,6 +1030,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           (value.type === 'tool-input-start' && value.providerExecuted !== true) ||
           value.type === 'error'
         ) {
+          const pendingText = orderNormalizer?.finish({ raw: true }) ?? '';
+          generatedText += pendingText;
           if (generatedText.length > emittedTextLength) {
             yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
             emittedTextLength = generatedText.length;
@@ -1052,10 +1064,17 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     }
 
     if (streamError) {
+      generatedText += orderNormalizer?.finish({ raw: true }) ?? '';
       if (generatedText.length > emittedTextLength) {
         yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
       }
       throw streamError;
+    }
+
+    if (orderNormalizer && !bypassQuote) {
+      const pendingText = orderNormalizer.finish({ raw: !isCompletedTextResult(finishReason) });
+      generatedText += pendingText;
+      quoteParser?.append(pendingText);
     }
 
     const quote =

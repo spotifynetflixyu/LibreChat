@@ -1206,6 +1206,45 @@ describe('OpenAI OAuth model adapter', () => {
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
 
+  it('flushes an incomplete system_order row when the provider stream throws', async () => {
+    const partialText = [
+      '## system_order',
+      '| 品名規格 | 總數 | 單價 |',
+      '| --- | --- | --- |',
+      '| A | 2kg | NT$ 10',
+    ].join('\n');
+    const providerError = new Error('reader failed');
+    let pullCount = 0;
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () => ({
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        pull(controller) {
+          if (pullCount === 0) {
+            pullCount += 1;
+            controller.enqueue({ type: 'text-delta', id: 'text_1', delta: partialText });
+            return;
+          }
+          controller.error(providerError);
+        },
+      }),
+      warnings: [],
+    }));
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+    const output = await model.stream(quoteMessages());
+    const iterator = output[Symbol.asyncIterator]();
+
+    const prefix = await iterator.next();
+    const pendingRow = await iterator.next();
+
+    expect(`${prefix.value?.content ?? ''}${pendingRow.value?.content ?? ''}`).toBe(partialText);
+    expect(pendingRow.value?.content).toBe('| A | 2kg | NT$ 10');
+    await expect(iterator.next()).rejects.toThrow(providerError);
+    expect(doStream).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry a truncated generate result as a final draft', async () => {
     const truncatedResult = createGenerateResult([{ type: 'text', text: 'partial' }]);
     truncatedResult.finishReason = { unified: 'length', raw: 'length' };
@@ -1349,10 +1388,10 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content)).toEqual([
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(
       '| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
-      '',
-    ]);
+    );
+    expect(chunks.some((chunk) => chunk.content !== '')).toBe(true);
     expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(false);
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(
@@ -2270,6 +2309,57 @@ describe('OpenAI OAuth model adapter', () => {
     expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['invoke', 'stream'] as const)(
+    'normalizes only system_order numeric cells and composes the quote during %s',
+    async (mode) => {
+      const providerText = [
+        '## system_order｜訂單',
+        '| 品名規格 | 數量 | 總數 | 單價 | 計價基準 | 備註 |',
+        '| --- | --- | --- | --- | --- | --- |',
+        '| A | 2件 | 約 2.5 kg | NT$ 10 | c | keep |',
+        '',
+        '## manual_review',
+        '| 單價 | 計價基準 |',
+        '| --- | --- |',
+        '| NT$ 9 | A |',
+      ].join('\n');
+      const doGenerate = jest.fn(async () =>
+        createGenerateResult([{ type: 'text', text: providerText }]),
+      );
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: '## sys' },
+          { type: 'text-delta', id: 'text_1', delta: providerText.slice('## sys'.length) },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+
+      let content: string;
+      if (mode === 'invoke') {
+        content = String((await model.invoke(quoteMessages())).content);
+      } else {
+        const chunks = [];
+        for await (const chunk of await model.stream(quoteMessages())) {
+          chunks.push(chunk);
+        }
+        content = chunks.map((chunk) => chunk.content).join('');
+      }
+
+      expect(content).toContain('| A | 2 | 2.5 | 10 | 3 | keep |');
+      expect(content).toContain('| A | 2.5 | 25 |');
+      expect(content).toContain('## manual_review\n| 單價 | 計價基準 |\n| --- | --- |\n| NT$ 9 | A |');
+      expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    },
+  );
 
   it.each(['invoke', 'stream'] as const)(
     'preserves one existing customer_quote during %s',

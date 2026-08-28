@@ -81,17 +81,6 @@ export interface SteelRuleProposalDefaultParameter {
   reason?: string;
 }
 
-export interface SteelRuleProposalSourceRef {
-  channel: string;
-  factType: string;
-  sourceFile?: string;
-  sourceVersionId?: string;
-  locator?: string;
-  confidence?: SteelRuleProposalConfidence;
-  extractedLabel?: string;
-  canonicalKey?: string;
-}
-
 export interface SteelWorkingOrderMemorySourceRef {
   sourceKind: string;
   sourceId?: string;
@@ -225,7 +214,6 @@ export interface ISteelMemoryCandidate extends Document {
   formulaVersionId?: string;
   selector: SteelRuleProposalSelector;
   proposedDefaultParameters: SteelRuleProposalDefaultParameter[];
-  sourceRefs: SteelRuleProposalSourceRef[];
   createdFromConversationId: string;
   createdByUserId: string;
   reviewedByUserId?: string;

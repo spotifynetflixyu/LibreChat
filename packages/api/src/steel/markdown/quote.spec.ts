@@ -150,6 +150,28 @@ describe('Steel customer quote composer', () => {
     expect(result?.markdown).toContain('| C:\\\\path | 1 | 2 |');
   });
 
+  it('preserves the exact quote encoding for combined pipes and backslashes', () => {
+    const result = buildCustomerQuoteFromMarkdown(
+      [
+        '## system_order',
+        '| 品名規格 | 總數 | 單價 |',
+        '| --- | --- | --- |',
+        '| A\\|B \\\\ C | 1 | 2 |',
+      ].join('\n'),
+    );
+
+    expect(result?.markdown).toBe(
+      [
+        '## customer_quote',
+        '',
+        '| 項目 | 總數 | 小計 |',
+        '| --- | --- | --- |',
+        '| A\\|B \\\\ C | 1 | 2 |',
+        '| 總計 |  | 2 |',
+      ].join('\n'),
+    );
+  });
+
   it('uses reordered required columns, keeps extra columns, and escapes item pipes', () => {
     const result = buildCustomerQuoteFromMarkdown(
       [

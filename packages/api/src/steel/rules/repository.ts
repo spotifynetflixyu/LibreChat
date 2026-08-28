@@ -32,7 +32,6 @@ function toRecord(document: SteelRuleProposalDocument): SteelRuleProposalRecord 
     formulaVersionId: document.formulaVersionId,
     selector: document.selector,
     proposedDefaultParameters: document.proposedDefaultParameters,
-    sourceRefs: document.sourceRefs,
     createdFromConversationId: document.createdFromConversationId,
     createdByUserId: document.createdByUserId,
     reviewedByUserId: document.reviewedByUserId,

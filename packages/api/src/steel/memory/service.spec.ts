@@ -38,7 +38,6 @@ describe('Steel working-order memory writer', () => {
             {
               id: 21,
               displayName: '龍頂',
-              sourceRefs: [{ channel: 'customer', factType: 'customer', locator: 'row:21' }],
             },
           ],
         },
@@ -65,7 +64,6 @@ describe('Steel working-order memory writer', () => {
                 {
                   id: 10,
                   productName: '錏輕型鋼',
-                  sourceRefs: [{ channel: 'price', factType: 'price', locator: 'row:10' }],
                 },
               ],
             },
@@ -87,7 +85,13 @@ describe('Steel working-order memory writer', () => {
     );
     expect(document?.payload).not.toHaveProperty('searchQuery');
     expect(document?.sourceRefs).toEqual([
-      expect.objectContaining({ sourceKind: 'price:price', sourceId: 'call_price' }),
+      expect.objectContaining({ sourceKind: 'tool_result', sourceId: 'call_price' }),
+    ]);
+    const customerDocument = await SteelWorkingOrderMemory.findOne({
+      memoryKind: 'customer_fact',
+    }).lean();
+    expect(customerDocument?.sourceRefs).toEqual([
+      expect.objectContaining({ sourceKind: 'tool_result', sourceId: 'call_customer' }),
     ]);
   });
 
@@ -123,11 +127,13 @@ describe('Steel working-order memory writer', () => {
   });
 
   it('preserves raw PaddleOCR and organized chunk Markdown resume state', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
     const file = {
       fileId: 'file-a',
       filename: 'drawing.pdf',
       mediaType: 'application/pdf',
+      storageKey: 'uploads/drawing.pdf',
     };
     const chunk = {
       sourcePdfKey: 'pdf-a',
@@ -145,7 +151,6 @@ describe('Steel working-order memory writer', () => {
     await expect(
       writer.capturePaddleOcrChunkResult({
         conversationId: 'conversation_ocr',
-        providerToolCallId: 'call_ocr',
         turnIndex: 2,
         checkpointTurnIndex: 1,
         file,
@@ -153,8 +158,26 @@ describe('Steel working-order memory writer', () => {
         rawResultHash: 'hash-a',
         data: { text: 'raw OCR text' },
       }),
-    ).resolves.toEqual(
-      expect.objectContaining({ savedCounts: { paddleocr_preflight: 1 } }),
+    ).resolves.toEqual(expect.objectContaining({ savedCounts: { paddleocr_preflight: 1 } }));
+
+    const rawDocument = await SteelWorkingOrderMemory.findOne({
+      memoryKind: 'paddleocr_preflight',
+    }).lean();
+    expect(rawDocument).not.toHaveProperty('sourceRefs');
+    expect(rawDocument?.payload).toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'file:file-a',
+        storageKey: 'uploads/drawing.pdf',
+        ocrPreprocessing: expect.objectContaining({
+          sourcePdfKey: 'pdf-a',
+          pageStart: 1,
+          pageEnd: 2,
+          rawResultHash: 'hash-a',
+          pdfChunk: expect.objectContaining({
+            storageKey: 'chunks/a.pdf',
+          }),
+        }),
+      }),
     );
 
     await expect(
@@ -171,6 +194,23 @@ describe('Steel working-order memory writer', () => {
       }),
     ).resolves.toEqual(
       expect.objectContaining({ savedCounts: { ocr_preprocessing_chunk_markdown: 1 } }),
+    );
+
+    const organizedDocument = await SteelWorkingOrderMemory.findOne({
+      memoryKind: 'ocr_extract',
+    }).lean();
+    expect(organizedDocument).not.toHaveProperty('sourceRefs');
+    expect(organizedDocument?.payload).toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'file:file-a',
+        storageKey: 'uploads/drawing.pdf',
+        ocrPreprocessing: expect.objectContaining({
+          sourcePdfKey: 'pdf-a',
+          pageStart: 1,
+          pageEnd: 2,
+          rawResultHash: 'hash-a',
+        }),
+      }),
     );
 
     await expect(
@@ -192,5 +232,69 @@ describe('Steel working-order memory writer', () => {
         ],
       }),
     );
+  });
+
+  it('retains whole-file PaddleOCR identity without source references', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+
+    await expect(
+      writer.capturePaddleOcrResult({
+        conversationId: 'conversation_whole_ocr',
+        turnIndex: 4,
+        checkpointTurnIndex: 3,
+        file: {
+          fileId: 'file-whole',
+          storageKey: 'uploads/whole.pdf',
+          filename: 'whole.pdf',
+          mediaType: 'application/pdf',
+        },
+        data: {
+          sourcePdfKey: 'pdf-whole',
+          pageStart: 1,
+          pageEnd: 2,
+          rawResultHash: 'hash-whole',
+          text: 'whole-file OCR',
+        },
+      }),
+    ).resolves.toEqual(expect.objectContaining({ savedCounts: { paddleocr_preflight: 1 } }));
+
+    const document = await SteelWorkingOrderMemory.findOne({
+      conversationId: 'conversation_whole_ocr',
+      memoryKind: 'paddleocr_preflight',
+    }).lean();
+    expect(document).not.toHaveProperty('sourceRefs');
+    expect(document?.payload).toEqual(
+      expect.objectContaining({
+        ocrFileKey: 'file:file-whole',
+        fileId: 'file-whole',
+        storageKey: 'uploads/whole.pdf',
+        result: {
+          sourcePdfKey: 'pdf-whole',
+          pageStart: 1,
+          pageEnd: 2,
+          rawResultHash: 'hash-whole',
+          text: 'whole-file OCR',
+        },
+      }),
+    );
+
+    await expect(
+      writer.findMissingPaddleOcrFileKeys({
+        conversationId: 'conversation_whole_ocr',
+        files: [
+          {
+            fileId: 'file-whole',
+            storageKey: 'uploads/whole.pdf',
+            filename: 'whole.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      completedKeys: ['file:file-whole'],
+      missingFiles: [],
+      missingKeys: [],
+    });
   });
 });

@@ -3,7 +3,7 @@ import { searchSteelCustomers } from './customers';
 import type { SteelRepositoryClient } from './types';
 
 describe('Steel customer repository', () => {
-  it('searches customers by keyword and includes uppercase customer tier/source refs', async () => {
+  it('searches customers by keyword and includes uppercase customer tier', async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
         {
@@ -14,13 +14,6 @@ describe('Steel customer repository', () => {
           tax_id: '12345678',
           customer_tier: 'A',
           status: 'active',
-          source_refs: [
-            {
-              channel: 'admin_erp_xlsx',
-              factType: 'customer',
-              locator: 'sheet=客戶;row=2',
-            },
-          ],
         },
       ],
     });
@@ -37,6 +30,8 @@ describe('Steel customer repository', () => {
     ]);
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_aliases'));
     expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('customer_tiers'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('source_refs'));
+    expect(query.mock.calls[0]?.[0]).not.toEqual(expect.stringContaining('c.status,'));
     expect(result[0]).toMatchObject({
       id: 1,
       erpCustomerCode: 'C001',

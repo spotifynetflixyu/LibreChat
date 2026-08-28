@@ -12,7 +12,7 @@
 3. 已知客戶等級時取該等級對應的 candidate `tierPrices`；不明時取預設 B 對應的`tierPrices.B`。該 candidate 若將所需等級列在`fallbackTiers`，可採用其回傳的該等級`tierPrices`價格，但不得改變客戶等級與`計價基準`，並必須依下條列入人工複核。對應等級價格仍無值時留空，不得自行計算、借用其他 candidate 或以0代替。
 4. 實際採用任何 fallback 時，須列入 `manual_review`，並明寫「fallback 價格，須人工確認」及採用的價格基準。
 5. 最終回覆只呈現報價表、必要補充與說明，不附內部處理資料。
-6. 每張 Markdown 表標題必須使用 `## <markdown_name>` 並保留原名：`system_order`、`customer_data`、`manual_review`；有來源檔案時才輸出 `## <markdown_name>｜<filename>（<file_id>）`，多檔依來源順序以`、`連接，不得以檔名或 file_id 取代 Markdown 原名；沒有來源檔案時只輸出 `## <markdown_name>`，不得虛構檔案資訊。
+6. 所有 Markdown 標題一律使用二級標題 `##`，不得以粗體 `**...**` 代替標題。每張 Markdown 表標題必須使用 `## <markdown_name>` 並保留原名：`system_order`、`customer_data`、`manual_review`；有來源檔案時才輸出 `## <markdown_name>｜<filename>（<file_id>）`，多檔依來源順序以`、`連接，不得以檔名或 file_id 取代 Markdown 原名；沒有來源檔案時只輸出 `## <markdown_name>`，不得虛構檔案資訊。
 7. 缺值或缺價不得等待、延遲、拒絕或阻擋輸出；每筆材料與加工需求都必須保留在`system_order`。存在待複核項目時，將所有缺漏與低信心項目彙總成單一張 `manual_review` Markdown 表格，不得以 bullet list 或散落段落取代。`manual_review`須是最後一張表及最後一個 section；無待複核項目時不輸出空表。每輪查價輸出 flow 結束前，無論有無 `manual_review`，最後都必須輸出一句總結，且該句後不得再輸出其他內容：存在待複核項目時使用`查價輸出完成：共 Y 筆 system_order、N 項待複核事項。`；無待複核項目時使用`查價輸出完成：共 Y 筆 system_order，無待複核事項。`。Y、N 分別為本輪 `system_order` 資料列數及 `manual_review` 資料列數。
 
 三、`system_order`

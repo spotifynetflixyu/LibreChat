@@ -6,14 +6,6 @@ import type {
 } from './context';
 import type { SteelAgentRule } from '../repositories/rules';
 
-const sourceRefs = [
-  {
-    channel: 'repo_docs',
-    factType: 'agent_rule',
-    canonicalKey: 'runtime_context_fixture',
-  },
-];
-
 function createAgentRule(overrides: Partial<SteelAgentRule> = {}): SteelAgentRule {
   return {
     id: 1,
@@ -31,7 +23,6 @@ function createAgentRule(overrides: Partial<SteelAgentRule> = {}): SteelAgentRul
     confidence: 'high',
     active: true,
     reviewState: 'reviewed',
-    sourceRefs,
     ...overrides,
   };
 }
@@ -75,6 +66,7 @@ describe('Steel runtime context', () => {
     expect(context).not.toHaveProperty('conversation');
     expect(context).not.toHaveProperty('outputSheets');
     expect(context).not.toHaveProperty('toolPolicy');
+    expect(JSON.stringify(context)).not.toContain('sourceRefs');
     expect(dependencies.listAgentRules).toHaveBeenCalledWith();
   });
 

@@ -1,12 +1,7 @@
-import { getLimit, parseNullableString, parseRequiredNumber, parseSteelSourceRefs } from './types';
+import { getLimit, parseNullableString, parseRequiredNumber } from './types';
 import { priceTierCodes, type PriceTierCode } from '../pricing/enums';
 
-import type {
-  SteelRepositoryClient,
-  SteelSourceBackedRecord,
-  SteelSourceRef,
-  SteelSqlParameter,
-} from './types';
+import type { SteelRepositoryClient, SteelSqlParameter } from './types';
 
 interface SteelCustomerRow {
   id: string | number;
@@ -16,10 +11,9 @@ interface SteelCustomerRow {
   tax_id: string | null;
   customer_tier: string | null;
   status: string;
-  source_refs: unknown;
 }
 
-export interface SteelCustomer extends SteelSourceBackedRecord {
+export interface SteelCustomer {
   id: number;
   erpCustomerCode?: string;
   displayName: string;
@@ -27,7 +21,6 @@ export interface SteelCustomer extends SteelSourceBackedRecord {
   taxId?: string;
   customerTier: PriceTierCode | null;
   status: string;
-  sourceRefs: SteelSourceRef[];
 }
 
 export interface SearchSteelCustomersInput {
@@ -52,7 +45,6 @@ function toCustomer(row: SteelCustomerRow): SteelCustomer {
     taxId: parseNullableString(row.tax_id),
     customerTier: parseCustomerTier(row.customer_tier),
     status: row.status,
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
 }
 
@@ -94,8 +86,7 @@ SELECT
   c.legal_name,
   c.tax_id,
   c.customer_tier,
-  c.status,
-  c.source_refs
+  c.status
 FROM steel.customers c
 ${whereClause}
 ORDER BY

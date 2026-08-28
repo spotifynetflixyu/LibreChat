@@ -5,15 +5,12 @@ import {
   parseNullableString,
   parseRequiredNumber,
   parseReviewState,
-  parseSteelSourceRefs,
 } from './types';
 
 import type {
   SteelJsonValue,
   SteelRepositoryClient,
   SteelReviewState,
-  SteelSourceBackedRecord,
-  SteelSourceRef,
   SteelSqlParameter,
 } from './types';
 
@@ -34,10 +31,9 @@ interface SteelUnifiedRuleRow {
   priority: string | number;
   active: boolean;
   review_state: string;
-  source_refs: unknown;
 }
 
-export interface SteelAgentRule extends SteelSourceBackedRecord {
+export interface SteelAgentRule {
   id: number;
   slug: string;
   version: number;
@@ -54,10 +50,9 @@ export interface SteelAgentRule extends SteelSourceBackedRecord {
   confidence: string;
   active: boolean;
   reviewState: SteelReviewState;
-  sourceRefs: SteelSourceRef[];
 }
 
-export interface SteelQuoteRule extends SteelSourceBackedRecord {
+export interface SteelQuoteRule {
   id: number;
   ruleType: string;
   scopeType: string;
@@ -72,10 +67,9 @@ export interface SteelQuoteRule extends SteelSourceBackedRecord {
   confidence: string;
   active: boolean;
   reviewState: SteelReviewState;
-  sourceRefs: SteelSourceRef[];
 }
 
-export interface SteelCustomerRule extends SteelSourceBackedRecord {
+export interface SteelCustomerRule {
   id: number;
   ruleType: string;
   customerId: number | null;
@@ -91,7 +85,6 @@ export interface SteelCustomerRule extends SteelSourceBackedRecord {
   confidence: string;
   active: boolean;
   reviewState: SteelReviewState;
-  sourceRefs: SteelSourceRef[];
 }
 
 export interface SearchSteelRulesInput {
@@ -250,8 +243,7 @@ SELECT
   output_policy,
   priority,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.rules
 WHERE ${where.join('\n  AND ')}
 ORDER BY
@@ -295,7 +287,6 @@ function toAgentRule(row: SteelUnifiedRuleRow): SteelAgentRule {
     confidence: readStringField(selectors, 'confidence') ?? 'high',
     active: row.active,
     reviewState: parseReviewState(row.review_state),
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
 }
 
@@ -318,7 +309,6 @@ function toQuoteRule(row: SteelUnifiedRuleRow): SteelQuoteRule {
     confidence: readStringField(selectors, 'confidence') ?? 'high',
     active: row.active,
     reviewState: parseReviewState(row.review_state),
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
 }
 
@@ -382,8 +372,7 @@ SELECT
   output_policy,
   priority,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.rules
 WHERE review_state = $1
   AND active = true
@@ -440,8 +429,7 @@ SELECT
   output_policy,
   priority,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.rules
 WHERE review_state = $1
   AND active = true

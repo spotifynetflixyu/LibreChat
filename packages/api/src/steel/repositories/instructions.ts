@@ -1,17 +1,9 @@
-import {
-  getLimit,
-  parseJsonObject,
-  parseRequiredNumber,
-  parseReviewState,
-  parseSteelSourceRefs,
-} from './types';
+import { getLimit, parseJsonObject, parseRequiredNumber, parseReviewState } from './types';
 
 import type {
   SteelJsonValue,
   SteelRepositoryClient,
   SteelReviewState,
-  SteelSourceBackedRecord,
-  SteelSourceRef,
   SteelSqlParameter,
 } from './types';
 
@@ -32,10 +24,9 @@ interface SteelInstructionPacketRow {
   confidence: string;
   active: boolean;
   review_state: string;
-  source_refs: unknown;
 }
 
-export interface SteelInstructionPacket extends SteelSourceBackedRecord {
+export interface SteelInstructionPacket {
   id: number;
   slug: string;
   version: number;
@@ -52,7 +43,6 @@ export interface SteelInstructionPacket extends SteelSourceBackedRecord {
   confidence: string;
   active: boolean;
   reviewState: SteelReviewState;
-  sourceRefs: SteelSourceRef[];
 }
 
 export interface SearchSteelInstructionPacketsInput {
@@ -152,7 +142,6 @@ function toInstructionPacket(row: SteelInstructionPacketRow): SteelInstructionPa
     confidence: row.confidence,
     active: row.active,
     reviewState: parseReviewState(row.review_state),
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
 }
 
@@ -197,8 +186,7 @@ SELECT
   priority,
   confidence,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.instruction_packets
 ${whereClause}
 ORDER BY priority ASC, id ASC
@@ -231,8 +219,7 @@ SELECT
   priority,
   confidence,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.instruction_packets
 WHERE review_state = $1
   AND active = true

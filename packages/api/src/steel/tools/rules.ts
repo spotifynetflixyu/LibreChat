@@ -1,5 +1,5 @@
 import type { SteelCustomerRule, SteelQuoteRule, SteelQuoteDefault } from '../repositories';
-import type { SteelJsonValue, SteelSourceRef } from '../repositories/types';
+import type { SteelJsonValue } from '../repositories/types';
 import type { SteelToolJsonObject, SteelToolJsonValue } from './results';
 
 type RuleScopeType =
@@ -12,30 +12,6 @@ type RuleScopeType =
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values.filter((value) => value.trim() !== ''))];
-}
-
-function toToolSourceRef(sourceRef: SteelSourceRef): SteelToolJsonObject {
-  const output: SteelToolJsonObject = {
-    channel: sourceRef.channel,
-    factType: sourceRef.factType,
-  };
-
-  for (const key of [
-    'sourceFile',
-    'sourceVersionId',
-    'locator',
-    'confidence',
-    'extractedLabel',
-    'canonicalKey',
-  ] as const) {
-    const value = sourceRef[key];
-
-    if (value !== undefined) {
-      output[key] = value;
-    }
-  }
-
-  return output;
 }
 
 function toToolJsonValue(value: SteelJsonValue): SteelToolJsonValue {
@@ -80,14 +56,6 @@ function readNumber(value: SteelToolJsonValue | undefined): number | null {
 
 function readString(value: SteelToolJsonValue | undefined): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
-}
-
-function readSourceRefs(value: SteelToolJsonValue | undefined): SteelToolJsonObject[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter(isObject);
 }
 
 function readParameterInstruction(value: SteelToolJsonValue | undefined): string | null {
@@ -179,7 +147,6 @@ export function toInstructionPacketRule(packet: SteelToolJsonObject): SteelToolJ
     priority: readNumber(packet.priority) ?? 100,
     confidence: readString(packet.confidence) ?? 'medium',
     matchedFacets,
-    sourceRefs: readSourceRefs(packet.sourceRefs),
   };
 }
 
@@ -209,7 +176,6 @@ export function toQuoteDefaultCandidateRule(candidate: SteelToolJsonObject): Ste
     prompt: readQuoteDefaultPrompt(candidate),
     priority: readNumber(candidate.priority) ?? 100,
     confidence: readString(candidate.confidence) ?? 'medium',
-    sourceRefs: readSourceRefs(candidate.sourceRefs),
   };
 
   if (lineRefs.length > 0) {
@@ -237,7 +203,6 @@ export function toQuoteRule(rule: SteelQuoteRule): SteelToolJsonObject {
     prompt: rule.prompt,
     priority: rule.priority,
     confidence: rule.confidence,
-    sourceRefs: rule.sourceRefs.map(toToolSourceRef),
   };
 
   if (rule.productFamily) {
@@ -273,7 +238,6 @@ export function toCustomerRule(rule: SteelCustomerRule): SteelToolJsonObject {
     prompt: rule.prompt,
     priority: rule.priority,
     confidence: rule.confidence,
-    sourceRefs: rule.sourceRefs.map(toToolSourceRef),
   };
 
   if (rule.productFamily) {
@@ -313,7 +277,6 @@ export function toQuoteDefaultRule(quoteDefault: SteelQuoteDefault): SteelToolJs
     defaultParameters,
     priority: quoteDefault.priority,
     confidence: quoteDefault.confidence,
-    sourceRefs: quoteDefault.sourceRefs.map(toToolSourceRef),
   });
 }
 

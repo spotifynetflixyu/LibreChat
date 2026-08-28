@@ -141,7 +141,7 @@ function listTextFiles(repoRoot, sourceDir) {
     .map((entry) => path.join(sourceDir, entry));
 }
 
-function sourceRef(sourceFile, locator, canonicalKey, fileSha, factType = 'rule') {
+function ruleSource(sourceFile, locator, canonicalKey, fileSha, factType = 'rule') {
   return {
     channel: 'repo_docs',
     factType,
@@ -167,7 +167,7 @@ function unifiedRule({
   toolPolicy = {},
   outputPolicy = {},
   priority,
-  sourceRefs,
+  source,
 }) {
   return {
     slug,
@@ -183,7 +183,7 @@ function unifiedRule({
     priority,
     active: true,
     reviewState: 'reviewed',
-    sourceRefs,
+    source,
   };
 }
 
@@ -335,7 +335,7 @@ function categoryRule({ sourceFile, prompt, fileSha }) {
     toolPolicy: metadata.toolPolicy,
     outputPolicy: metadata.outputPolicy,
     priority: metadata.priority,
-    sourceRefs: [sourceRef(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule')],
+    source: ruleSource(sourceFile, metadata.locator, metadata.slug, fileSha, 'category_rule'),
   });
 }
 
@@ -358,7 +358,7 @@ function buildRules(repoRoot) {
     })
     .sort((left, right) => left.priority - right.priority || left.slug.localeCompare(right.slug));
 
-  return [
+  const rules = [
     unifiedRule({
       slug: 'steel-default-agent-instruction',
       ruleKind: 'agent',
@@ -375,15 +375,13 @@ function buildRules(repoRoot) {
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
       priority: 10,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/agent規則.txt',
-          'Steel 預設 Agent Instruction',
-          'agent_default_instruction',
-          agent.sha256,
-          'agent_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/agent規則.txt',
+        'Steel 預設 Agent Instruction',
+        'agent_default_instruction',
+        agent.sha256,
+        'agent_rule',
+      ),
     }),
     unifiedRule({
       slug: 'steel-quote-calculation-verification-policy',
@@ -407,15 +405,13 @@ function buildRules(repoRoot) {
         unitPriceSource: 'selected_candidate_tier_price',
       },
       priority: 10,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/報價計算驗證規則.txt',
-          '報價計算驗證規則',
-          'steel-quote-calculation-verification-policy',
-          quoteCalculation.sha256,
-          'output_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/報價計算驗證規則.txt',
+        '報價計算驗證規則',
+        'steel-quote-calculation-verification-policy',
+        quoteCalculation.sha256,
+        'output_rule',
+      ),
     }),
     unifiedRule({
       slug: 'steel-workbook-output-policy',
@@ -441,15 +437,13 @@ function buildRules(repoRoot) {
         synchronizedSheetsOnCustomerTierChange: ['system_order'],
       },
       priority: 20,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/輸出規則.txt',
-          'Steel 輸出規則',
-          'steel_output_sheet_policy',
-          output.sha256,
-          'output_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/輸出規則.txt',
+        'Steel 輸出規則',
+        'steel_output_sheet_policy',
+        output.sha256,
+        'output_rule',
+      ),
     }),
     unifiedRule({
       slug: 'steel-drawing-ocr-policy',
@@ -478,15 +472,13 @@ function buildRules(repoRoot) {
         forbidConfirmedTotalsFromOcrOnly: true,
       },
       priority: 35,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/其他規則/OCR規則.txt',
-          '圖面表格局部判讀流程',
-          'drawing_ocr_local_table_reading',
-          ocr.sha256,
-          'other_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/其他規則/OCR規則.txt',
+        '圖面表格局部判讀流程',
+        'drawing_ocr_local_table_reading',
+        ocr.sha256,
+        'other_rule',
+      ),
     }),
     unifiedRule({
       slug: 'steel-drawing-vision-policy',
@@ -518,15 +510,13 @@ function buildRules(repoRoot) {
         forbidFormalQuote: true,
       },
       priority: 36,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/其他規則/Vision規則.txt',
-          'Vision 圖面補充判讀規則',
-          'drawing_vision_supplemental_evidence',
-          vision.sha256,
-          'other_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/其他規則/Vision規則.txt',
+        'Vision 圖面補充判讀規則',
+        'drawing_vision_supplemental_evidence',
+        vision.sha256,
+        'other_rule',
+      ),
     }),
     unifiedRule({
       slug: 'steel-ocr-subagent-organizer-policy',
@@ -547,15 +537,13 @@ function buildRules(repoRoot) {
         forbidFormalQuote: true,
       },
       priority: 37,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/其他規則/OCR子Agent整理規則.txt',
-          'OCR 子 Agent 整理規則',
-          'ocr_subagent_organizer',
-          ocrSubagent.sha256,
-          'other_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/其他規則/OCR子Agent整理規則.txt',
+        'OCR 子 Agent 整理規則',
+        'ocr_subagent_organizer',
+        ocrSubagent.sha256,
+        'other_rule',
+      ),
     }),
     unifiedRule({
       slug: 'steel-ocr-main-agent-organizer-policy',
@@ -578,18 +566,18 @@ function buildRules(repoRoot) {
         forbidFormalQuote: true,
       },
       priority: 38,
-      sourceRefs: [
-        sourceRef(
-          'docs/rules/其他規則/OCR主Agent整理規則.txt',
-          'OCR 主 Agent 整理與合併規則',
-          'ocr_main_agent_merge',
-          ocrMainAgent.sha256,
-          'other_rule',
-        ),
-      ],
+      source: ruleSource(
+        'docs/rules/其他規則/OCR主Agent整理規則.txt',
+        'OCR 主 Agent 整理與合併規則',
+        'ocr_main_agent_merge',
+        ocrMainAgent.sha256,
+        'other_rule',
+      ),
     }),
     ...categoryRules,
   ];
+
+  return rules;
 }
 
 async function upsertRule(client, rule) {
@@ -609,7 +597,7 @@ INSERT INTO steel.rules (
   priority,
   active,
   review_state,
-  source_refs
+  created_by
 )
 VALUES (
   $1,
@@ -625,7 +613,7 @@ VALUES (
   $11,
   $12,
   $13,
-  $14::jsonb
+  $14
 )
 ON CONFLICT (slug, version)
 DO UPDATE
@@ -641,7 +629,7 @@ SET
   priority = EXCLUDED.priority,
   active = EXCLUDED.active,
   review_state = EXCLUDED.review_state,
-  source_refs = EXCLUDED.source_refs,
+  created_by = EXCLUDED.created_by,
   reviewed_at = NOW(),
   updated_at = NOW()
 `,
@@ -659,43 +647,19 @@ SET
       rule.priority,
       rule.active,
       rule.reviewState,
-      toJson(rule.sourceRefs),
+      'sync-steel-rules',
     ],
   );
 }
 
 async function deleteRemovedRules(client, rules) {
-  const legacyCategoryRuleSourceFiles = [
-    'docs/rules/鋼材規則.txt',
-    'docs/rules/鋼材規則/C型鋼.txt',
-    'docs/rules/鋼材規則/H型鋼.txt',
-    'docs/rules/鋼材規則/鐵板.txt',
-    'docs/rules/鋼材規則/孔.txt',
-    'docs/rules/鋼材規則/長管-切工.txt',
-    'docs/rules/類別規則/長管-切工.txt',
-    'docs/rules/類別規則/長條料-切工.txt',
-  ];
-  const sourceFiles = [
-    'docs/rules/agent規則.txt',
-    'docs/rules/輸出規則.txt',
-    'docs/rules/OCR規則.txt',
-    'docs/rules/其他規則/OCR規則.txt',
-    'docs/rules/其他功能/OCR整理規則.txt',
-    'docs/rules/其他規則/OCR整理規則.txt',
-    ...legacyCategoryRuleSourceFiles,
-    ...rules.flatMap((rule) => rule.sourceRefs.map((ref) => ref.sourceFile)),
-  ];
-  const sourceFileRefs = [...new Set(sourceFiles)].map((sourceFile) =>
-    JSON.stringify([{ sourceFile }]),
-  );
-
   await client.query(
     `
 DELETE FROM steel.rules
-WHERE source_refs @> ANY($1::jsonb[])
-  AND NOT (slug = ANY($2::text[]))
+WHERE created_by = 'sync-steel-rules'
+  AND NOT (slug = ANY($1::text[]))
 `,
-    [sourceFileRefs, rules.map((rule) => rule.slug)],
+    [rules.map((rule) => rule.slug)],
   );
 }
 
@@ -709,7 +673,7 @@ SELECT
   rule_sections,
   active,
   review_state,
-  source_refs
+  prompt
 FROM steel.rules
 WHERE slug = ANY($1::text[])
 ORDER BY rule_kind ASC, priority ASC, slug ASC
@@ -717,7 +681,10 @@ ORDER BY rule_kind ASC, priority ASC, slug ASC
     [rules.map((rule) => rule.slug)],
   );
 
-  return result.rows;
+  return result.rows.map(({ prompt, ...row }) => ({
+    ...row,
+    promptSha256: sha256(prompt || ''),
+  }));
 }
 
 function summarizeRules(rules, mode, target) {
@@ -729,9 +696,9 @@ function summarizeRules(rules, mode, target) {
       version: rule.version,
       ruleKind: rule.ruleKind,
       ruleSections: rule.ruleSections,
-      sourceFile: rule.sourceRefs[0].sourceFile,
-      factType: rule.sourceRefs[0].factType,
-      sha256: rule.sourceRefs[0].sha256,
+      sourceFile: rule.source.sourceFile,
+      factType: rule.source.factType,
+      sha256: rule.source.sha256,
       promptLength: rule.prompt.length,
     })),
   };

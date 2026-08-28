@@ -5,7 +5,6 @@ import type {
   SteelRuleProposalDefaultParameter,
   SteelRuleProposalSelector,
   SteelRuleProposalSelectorEntry,
-  SteelRuleProposalSourceRef,
 } from '~/types';
 
 const steelRuleProposalTypes = [
@@ -92,21 +91,6 @@ const steelRuleProposalDefaultParameterSchema: Schema<SteelRuleProposalDefaultPa
     { _id: false },
   );
 
-const steelRuleProposalSourceRefSchema: Schema<SteelRuleProposalSourceRef> =
-  new Schema<SteelRuleProposalSourceRef>(
-    {
-      channel: { type: String, required: true },
-      factType: { type: String, required: true },
-      sourceFile: { type: String },
-      sourceVersionId: { type: String },
-      locator: { type: String },
-      confidence: { type: String, enum: steelRuleProposalConfidences },
-      extractedLabel: { type: String },
-      canonicalKey: { type: String },
-    },
-    { _id: false },
-  );
-
 const steelMemoryCandidateSchema: Schema<ISteelMemoryCandidate> = new Schema<ISteelMemoryCandidate>(
   {
     proposalType: {
@@ -150,11 +134,6 @@ const steelMemoryCandidateSchema: Schema<ISteelMemoryCandidate> = new Schema<ISt
     },
     proposedDefaultParameters: {
       type: [steelRuleProposalDefaultParameterSchema],
-      required: true,
-      default: [],
-    },
-    sourceRefs: {
-      type: [steelRuleProposalSourceRefSchema],
       required: true,
       default: [],
     },

@@ -1,6 +1,7 @@
 import { buildPdfPageChunks } from './chunks';
 import { mergeChunkMarkdownForFileKey } from './merge';
 import { runOcrPreprocessingBatchPipeline, runOcrPreprocessingPipeline } from './preprocess';
+import { parseMarkdownTables } from '../markdown/table';
 
 import type { OcrPreprocessingState } from '../memory/service';
 import type { OcrOrganizer } from './organizer';
@@ -268,10 +269,22 @@ describe('OCR preprocessing orchestrator', () => {
     expect(organizer.organize).toHaveBeenNthCalledWith(1, {
       ocrRulesText: 'rules',
       rawOcrText: 'raw a',
+      sourceFile: 'a.pdf',
+      fileKey: 'file:file-a',
+      pageStart: 1,
+      pageEnd: 1,
+      chunkIndex: 1,
+      chunkCount: 1,
     });
     expect(organizer.organize).toHaveBeenNthCalledWith(2, {
       ocrRulesText: 'rules',
       rawOcrText: 'raw b',
+      sourceFile: 'b.pdf',
+      fileKey: 'file:file-b',
+      pageStart: 1,
+      pageEnd: 1,
+      chunkIndex: 1,
+      chunkCount: 1,
     });
     expect(result.files).toEqual([
       expect.objectContaining({
@@ -283,6 +296,164 @@ describe('OCR preprocessing orchestrator', () => {
         markdown: expect.stringContaining('organized b'),
       }),
     ]);
+  });
+
+  it('omits page metadata for image organizer inputs and returns empty page ranges', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 1 });
+    const state = {
+      ...emptyState({
+        ocrFileKey: 'file:photo',
+        sourcePdfKey: 'uploads/photo.jpg',
+        ocrRuleVersion: 'rules-v2',
+        chunkCount: 1,
+      }),
+      chunks: [
+        {
+          ...chunks[0],
+          rawSaved: true,
+          organizedSaved: false,
+          rawResultHash: 'hash-photo',
+          rawOcrText: 'raw photo',
+        },
+      ],
+    };
+    const organizedState = {
+      ...state,
+      chunks: [{ ...state.chunks[0], organizedSaved: true, organizedMarkdown: 'organized photo' }],
+    };
+    const organizer = { organize: jest.fn(async () => ({ markdown: 'organized photo' })) };
+    const result = await runOcrPreprocessingPipeline({
+      conversationId: 'steel_conversation_image',
+      file: {
+        ocrFileKey: 'file:photo',
+        fileId: 'photo',
+        filename: 'photo.jpg',
+        mediaType: 'image/jpeg',
+        sourcePdfKey: 'uploads/photo.jpg',
+      },
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      chunks,
+      artifacts: {
+        ensurePdfChunkArtifacts: jest.fn(async () => [
+          {
+            ...chunks[0],
+            filepath: 'https://cdn.example/photo.jpg',
+            storageKey: 'ocr/photo.jpg',
+          },
+        ]),
+      },
+      memory: {
+        readOcrPreprocessingState: jest
+          .fn()
+          .mockResolvedValueOnce(state)
+          .mockResolvedValueOnce(state)
+          .mockResolvedValueOnce(organizedState),
+        capturePaddleOcrChunkResult: jest.fn(),
+        captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
+          savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+        }),
+      },
+      organizer,
+      paddleOcr: { runChunk: jest.fn() },
+    });
+
+    expect(organizer.organize).toHaveBeenCalledWith({
+      ocrRulesText: 'rules',
+      rawOcrText: 'raw photo',
+      sourceFile: 'photo.jpg',
+      fileKey: 'file:photo',
+    });
+    expect(result).toEqual({
+      status: 'completed',
+      markdown: 'organized photo',
+      chunkCount: 1,
+      pageRanges: [],
+    });
+  });
+
+  it.each([
+    { label: 'filename-only', mediaType: undefined, filename: 'photo.png' },
+    { label: 'octet-stream', mediaType: 'application/octet-stream', filename: 'photo.webp' },
+  ])('recognizes $label image inputs without page metadata', async ({ mediaType, filename }) => {
+    const chunks = buildPdfPageChunks({ pageCount: 1 });
+    const baseState = emptyState({
+      ocrFileKey: `file:${filename}`,
+      sourcePdfKey: `uploads/${filename}`,
+      ocrRuleVersion: 'rules-v2',
+      chunkCount: 1,
+    });
+    const rawState = {
+      ...baseState,
+      chunks: [
+        {
+          ...chunks[0],
+          rawSaved: true,
+          organizedSaved: false,
+          rawResultHash: `hash-${filename}`,
+          rawOcrText: `raw ${filename}`,
+        },
+      ],
+    };
+    const organizedState = {
+      ...rawState,
+      chunks: [
+        {
+          ...rawState.chunks[0],
+          organizedSaved: true,
+          organizedMarkdown: `organized ${filename}`,
+        },
+      ],
+    };
+    let readCount = 0;
+    const organizer = { organize: jest.fn(async () => ({ markdown: `organized ${filename}` })) };
+    const result = await runOcrPreprocessingPipeline({
+      conversationId: `steel_conversation_${filename}`,
+      file: {
+        ocrFileKey: `file:${filename}`,
+        fileId: filename,
+        filename,
+        ...(mediaType !== undefined ? { mediaType } : {}),
+        sourcePdfKey: `uploads/${filename}`,
+      },
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      chunks,
+      artifacts: {
+        ensurePdfChunkArtifacts: jest.fn(async () => [
+          {
+            ...chunks[0],
+            filepath: `https://cdn.example/${filename}`,
+            storageKey: `ocr/${filename}`,
+          },
+        ]),
+      },
+      memory: {
+        readOcrPreprocessingState: jest.fn(async () => {
+          readCount += 1;
+          return readCount === 3 ? organizedState : rawState;
+        }),
+        capturePaddleOcrChunkResult: jest.fn(),
+        captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
+          savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+        }),
+      },
+      organizer,
+      paddleOcr: { runChunk: jest.fn() },
+    });
+
+    expect(organizer.organize).toHaveBeenCalledWith({
+      ocrRulesText: 'rules',
+      rawOcrText: `raw ${filename}`,
+      sourceFile: filename,
+      fileKey: `file:${filename}`,
+    });
+    expect(result).toEqual({
+      status: 'completed',
+      markdown: `organized ${filename}`,
+      chunkCount: 1,
+      pageRanges: [],
+    });
   });
 
   it('resumes each file from its own saved PaddleOCR and organizer progress', async () => {
@@ -385,9 +556,7 @@ describe('OCR preprocessing orchestrator', () => {
         return state;
       }),
       capturePaddleOcrChunkResult: jest.fn(async (input) => {
-        calls.push(
-          `save-raw:${input.file.ocrFileKey}:${input.providerToolCallId}:${input.chunk.chunkIndex}`,
-        );
+        calls.push(`save-raw:${input.file.ocrFileKey}:${input.chunk.chunkIndex}`);
         return { savedCounts: { paddleocr_preflight: 1 } };
       }),
       captureOcrPreprocessingChunkMarkdown: jest.fn(async (input) => {
@@ -459,7 +628,7 @@ describe('OCR preprocessing orchestrator', () => {
       'artifact:file:file-a',
       'artifact:file:file-b',
       'paddle:file:file-b:1',
-      'save-raw:file:file-b:ocr_preprocessing_file_file-b_pages_1_1:1',
+      'save-raw:file:file-b:1',
       'organize:raw a',
       'save-md:file:file-a:1',
       'organize:raw b',
@@ -560,6 +729,11 @@ describe('OCR preprocessing orchestrator', () => {
         '| A | 1 |  |',
         '| B |  | SS400 |',
       ].join('\n'),
+      chunkCount: 2,
+      pageRanges: [
+        { pageStart: 1, pageEnd: 50 },
+        { pageStart: 51, pageEnd: 100 },
+      ],
     });
     expect(artifacts.ensurePdfChunkArtifacts).not.toHaveBeenCalled();
     expect(rawRunner).not.toHaveBeenCalled();
@@ -707,7 +881,16 @@ describe('OCR preprocessing orchestrator', () => {
     expect(organizer.organize).toHaveBeenCalledTimes(1);
     expect(memory.readOcrPreprocessingState).toHaveBeenCalledTimes(3);
     expect(organizer.organize).toHaveBeenCalledWith(
-      { ocrRulesText: 'rules', rawOcrText: 'raw 2' },
+      {
+        ocrRulesText: 'rules',
+        rawOcrText: 'raw 2',
+        sourceFile: 'quote.pdf',
+        fileKey: 'file:file-100',
+        pageStart: 51,
+        pageEnd: 100,
+        chunkIndex: 2,
+        chunkCount: 2,
+      },
     );
     expect(memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -953,6 +1136,25 @@ describe('OCR preprocessing orchestrator', () => {
     expect(merged).toContain('| 品名 | 數量 | 材質 | 備註 |');
     expect(merged).toContain('| 鐵板 | 2 |  |  |');
     expect(merged).toContain('| 白鐵管 |  | 304 | 急件 |');
+  });
+
+  it('round-trips escaped pipes and backslashes while rebuilding merged tables', () => {
+    const source = ['| 品名 | 路徑 |', '| --- | --- |', '| A\\|B | C:\\\\path |'].join('\n');
+    const merged = mergeChunkMarkdownForFileKey({
+      ocrFileKey: 'file:escaped-cells',
+      ocrRuleVersion: 'rules-v2',
+      chunks: [{ chunkIndex: 1, markdown: source }],
+    });
+
+    expect(merged).toBe(source);
+    expect(parseMarkdownTables(merged)[0]?.rows).toEqual([['A|B', 'C:\\path']]);
+    expect(
+      mergeChunkMarkdownForFileKey({
+        ocrFileKey: 'file:escaped-cells',
+        ocrRuleVersion: 'rules-v2',
+        chunks: [{ chunkIndex: 1, markdown: merged }],
+      }),
+    ).toBe(source);
   });
 
   it('orders merged Markdown by page range rather than historical chunk index', () => {
@@ -1258,7 +1460,17 @@ describe('OCR preprocessing orchestrator', () => {
 
     expect(paddleRanges).toEqual(['1-50', '1-25', '26-50', '51-100']);
     expect(artifacts.commitPdfChunkSplit).toHaveBeenCalledTimes(1);
-    expect(result.files[0]).toEqual(expect.objectContaining({ status: 'completed', chunkCount: 3 }));
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({
+        status: 'completed',
+        chunkCount: 3,
+        pageRanges: [
+          { pageStart: 1, pageEnd: 25 },
+          { pageStart: 26, pageEnd: 50 },
+          { pageStart: 51, pageEnd: 100 },
+        ],
+      }),
+    );
     expect(result.files[0]).not.toHaveProperty('failures');
   });
 
@@ -1459,7 +1671,12 @@ describe('OCR preprocessing orchestrator', () => {
     expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
       expect.objectContaining({ content: 'organized markdown' }),
     );
-    expect(result).toEqual({ status: 'completed', markdown: 'organized markdown' });
+    expect(result).toEqual({
+      status: 'completed',
+      markdown: 'organized markdown',
+      chunkCount: 1,
+      pageRanges: [{ pageStart: 1, pageEnd: 1 }],
+    });
     expect(result.markdown).not.toContain('raw OCR text');
   });
 

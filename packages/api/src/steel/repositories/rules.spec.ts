@@ -3,6 +3,7 @@ import {
   listReviewedSteelOtherRules,
   listReviewedSteelOutputRules,
   listReviewedSteelQuoteRules,
+  searchSteelRules,
 } from './rules';
 
 import type { SteelRepositoryClient } from './types';
@@ -22,13 +23,6 @@ const agentRuleRow = {
   priority: '10',
   active: true,
   review_state: 'reviewed',
-  source_refs: [
-    {
-      channel: 'repo_docs',
-      factType: 'agent_rule',
-      canonicalKey: 'steel_default_agent_instruction',
-    },
-  ],
 };
 
 const quoteRuleRow = {
@@ -54,13 +48,6 @@ const quoteRuleRow = {
   priority: '40',
   active: true,
   review_state: 'reviewed',
-  source_refs: [
-    {
-      channel: 'repo_docs',
-      factType: 'quote_rule',
-      canonicalKey: 'plate_laser_cut_formula',
-    },
-  ],
 };
 
 const outputRuleRow = {
@@ -84,6 +71,16 @@ const otherRuleRow = {
 };
 
 describe('Steel agent and quote rule repositories', () => {
+  it('searches rules with a valid SELECT list', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [agentRuleRow] });
+
+    const result = await searchSteelRules({ query } as SteelRepositoryClient, {});
+    const sql = query.mock.calls[0]?.[0];
+
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
+    expect(result).toHaveLength(1);
+  });
+
   it('lists reviewed active agent rules without output or other rules', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [agentRuleRow] });
 
@@ -115,13 +112,6 @@ describe('Steel agent and quote rule repositories', () => {
       confidence: 'high',
       active: true,
       reviewState: 'reviewed',
-      sourceRefs: [
-        {
-          channel: 'repo_docs',
-          factType: 'agent_rule',
-          canonicalKey: 'steel_default_agent_instruction',
-        },
-      ],
     });
   });
 
@@ -155,6 +145,7 @@ describe('Steel agent and quote rule repositories', () => {
       'reviewed',
       'other',
     ]);
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
     expect(sql).toEqual(expect.stringContaining('rule_kind = $2'));
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({
@@ -172,6 +163,7 @@ describe('Steel agent and quote rule repositories', () => {
     const sql = query.mock.calls[0]?.[0];
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), ['reviewed']);
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
     expect(sql).toEqual(expect.stringContaining('active = true'));
     expect(sql).toEqual(expect.stringContaining("rule_kind = 'steel'"));
     expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
@@ -193,13 +185,6 @@ describe('Steel agent and quote rule repositories', () => {
       confidence: 'high',
       active: true,
       reviewState: 'reviewed',
-      sourceRefs: [
-        {
-          channel: 'repo_docs',
-          factType: 'quote_rule',
-          canonicalKey: 'plate_laser_cut_formula',
-        },
-      ],
     });
   });
 });

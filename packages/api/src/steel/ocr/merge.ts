@@ -1,4 +1,5 @@
 import { parseMarkdownTables } from '../markdown/table';
+import { escapeMarkdownTableCell } from '../markdown/row-codec';
 
 interface OcrPreprocessingMarkdownChunk {
   chunkIndex: number;
@@ -99,8 +100,4 @@ function renderMarkdownTable(headers: readonly string[], rows: readonly string[]
     `| ${headers.map(() => '---').join(' | ')} |`,
     ...rows.map((row) => `| ${row.map(escapeMarkdownTableCell).join(' | ')} |`),
   ].join('\n');
-}
-
-function escapeMarkdownTableCell(value: string): string {
-  return value.replace(/\|/gu, '\\|').replace(/\r?\n/gu, '<br>');
 }

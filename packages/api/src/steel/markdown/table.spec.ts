@@ -34,4 +34,21 @@ describe('Steel Markdown table parser', () => {
   it('can count tables directly from Markdown text', () => {
     expect(countMarkdownTables('| A | B |\n| --- | --- |\n| 1 | 2 |\n\nnot a table')).toBe(1);
   });
+
+  it('keeps escaped pipes and backslashes inside their cells', () => {
+    expect(
+      parseMarkdownTables(
+        ['| name | path |', '| --- | --- |', '| A\\|B | C:\\\\path |'].join('\n'),
+      ),
+    ).toEqual([
+      {
+        headers: ['name', 'path'],
+        rows: [['A|B', 'C:\\path']],
+      },
+    ]);
+  });
+
+  it('rejects a table whose separator width differs from its header', () => {
+    expect(parseMarkdownTables(['| A | B |', '| --- |', '| 1 | 2 |'].join('\n'))).toEqual([]);
+  });
 });

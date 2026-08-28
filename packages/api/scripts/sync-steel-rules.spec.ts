@@ -26,7 +26,7 @@ type BuiltRule = {
   selectors: Record<string, unknown>;
   toolPolicy: Record<string, unknown>;
   outputPolicy: Record<string, unknown>;
-  sourceRefs: { sourceFile: string }[];
+  source: { sourceFile: string; factType: string; sha256: string };
 };
 
 interface SyncClient {
@@ -39,6 +39,10 @@ const oldRulesDir = path.join(repoRoot, 'docs/rules/鋼材規則');
 const rulesDir = path.join(repoRoot, 'docs/rules');
 const categoryRulesDir = path.join(rulesDir, '類別規則');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
+const migrationSql = fs.readFileSync(
+  path.join(repoRoot, 'supabase/migration/20260828053235_remove_steel_rule_source_refs.sql'),
+  'utf8',
+);
 
 const ruleSync = jest.requireActual<{
   buildRules: (root: string) => BuiltRule[];
@@ -76,6 +80,20 @@ function listRuleFiles(directory: string): string[] {
 }
 
 describe('Steel rule sources', () => {
+  it('guards the legacy source backfill and is idempotent', () => {
+    expect(migrationSql).toContain('created_by IS NULL');
+    expect(migrationSql).toContain('jsonb_array_length(source_refs) = 1');
+    expect(migrationSql).toContain("source_refs->0->>'channel' = 'repo_docs'");
+    expect(migrationSql).toContain("source_refs->0->>'sourceFile' LIKE 'docs/rules/%.txt'");
+    expect(migrationSql).toContain(
+      "NULLIF(BTRIM(source_refs->0->>'canonicalKey'), '') IS NOT NULL",
+    );
+    expect(migrationSql).toContain("source_refs->0->>'sha256' ~ '^[0-9a-f]{64}$'");
+    expect(migrationSql).toContain('DROP CONSTRAINT IF EXISTS rules_source_refs_check');
+    expect(migrationSql).toContain('DROP COLUMN IF EXISTS source_refs');
+    expect(migrationSql).toContain('IF EXISTS');
+  });
+
   it('rolls back an interrupted publication on its dedicated connection', async () => {
     const client: SyncClient = {
       query: jest.fn(async (sql: string) => {
@@ -102,7 +120,7 @@ describe('Steel rule sources', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  it('cleans the retired combined long-material source path during publication', async () => {
+  it('deletes only stale rules previously managed by sync', async () => {
     const client: SyncClient = {
       query: jest.fn(async () => ({ rows: [] })),
       release: jest.fn(),
@@ -113,10 +131,8 @@ describe('Steel rule sources', () => {
     const deleteCall = client.query.mock.calls.find(([sql]) =>
       sql.includes('DELETE FROM steel.rules'),
     );
-    const sourceFileRefs = (deleteCall?.[1] as [string[], string[]] | undefined)?.[0] ?? [];
-    expect(sourceFileRefs).toContain(
-      JSON.stringify([{ sourceFile: 'docs/rules/類別規則/長條料-切工.txt' }]),
-    );
+    expect(deleteCall?.[0]).toContain("created_by = 'sync-steel-rules'");
+    expect(deleteCall?.[0]).not.toContain('source_refs');
     expect(client.query.mock.calls.map(([sql]) => sql.trim())).toContain('COMMIT');
   });
 
@@ -185,7 +201,7 @@ describe('Steel rule sources', () => {
     );
     const builtCategoryRules = ruleSync
       .buildRules(repoRoot)
-      .filter((rule) => rule.sourceRefs[0]?.sourceFile.startsWith('docs/rules/類別規則/'));
+      .filter((rule) => rule.source.sourceFile.startsWith('docs/rules/類別規則/'));
     expect(builtCategoryRules[0]?.slug).toBe('steel_category_price_lookup_guide');
     expect(
       builtCategoryRules.slice(1).every((rule) => rule.priority > builtCategoryRules[0]!.priority),
@@ -225,14 +241,12 @@ describe('Steel rule sources', () => {
         activeSheets: ['system_order'],
         confidence: 'high',
       },
-      sourceRefs: [
-        {
-          sourceFile: 'docs/rules/報價計算驗證規則.txt',
-          locator: '報價計算驗證規則',
-          canonicalKey: 'steel-quote-calculation-verification-policy',
-          factType: 'output_rule',
-        },
-      ],
+      source: {
+        sourceFile: 'docs/rules/報價計算驗證規則.txt',
+        locator: '報價計算驗證規則',
+        canonicalKey: 'steel-quote-calculation-verification-policy',
+        factType: 'output_rule',
+      },
     });
     expect(quoteCalculationRule?.prompt.trim()).not.toBe('');
     expect(quoteCalculationRule?.toolPolicy).not.toEqual({});
@@ -287,11 +301,9 @@ describe('Steel rule sources', () => {
         forbidPriceLookup: true,
         forbidFormalQuote: true,
       },
-      sourceRefs: [
-        {
-          sourceFile: 'docs/rules/其他規則/Vision規則.txt',
-        },
-      ],
+      source: {
+        sourceFile: 'docs/rules/其他規則/Vision規則.txt',
+      },
     });
     expect(builtRules[visionIndex]?.priority).toBeGreaterThan(
       builtRules[ocrIndex]?.priority ?? Number.POSITIVE_INFINITY,
@@ -308,11 +320,9 @@ describe('Steel rule sources', () => {
         forbidPriceLookup: true,
         forbidFormalQuote: true,
       },
-      sourceRefs: [
-        {
-          sourceFile: 'docs/rules/其他規則/OCR子Agent整理規則.txt',
-        },
-      ],
+      source: {
+        sourceFile: 'docs/rules/其他規則/OCR子Agent整理規則.txt',
+      },
     });
     expect(builtRules[mainAgentIndex]).toMatchObject({
       priority: 38,
@@ -325,11 +335,9 @@ describe('Steel rule sources', () => {
         mainOutputFormat: 'final_ocr_markdown',
         mergeScope: 'same_file_key',
       },
-      sourceRefs: [
-        {
-          sourceFile: 'docs/rules/其他規則/OCR主Agent整理規則.txt',
-        },
-      ],
+      source: {
+        sourceFile: 'docs/rules/其他規則/OCR主Agent整理規則.txt',
+      },
     });
   });
 
@@ -343,9 +351,7 @@ describe('Steel rule sources', () => {
       'search_price_candidates',
       'delegate_ocr',
     ]);
-    expect(agentRule?.sourceRefs.map(({ sourceFile }) => sourceFile)).toEqual([
-      'docs/rules/agent規則.txt',
-    ]);
+    expect(agentRule?.source.sourceFile).toBe('docs/rules/agent規則.txt');
   });
 
   it('publishes processing and cutting rule metadata', () => {

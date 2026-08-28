@@ -5,15 +5,12 @@ import {
   parseNullableString,
   parseRequiredNumber,
   parseReviewState,
-  parseSteelSourceRefs,
 } from './types';
 
 import type {
   SteelJsonValue,
   SteelRepositoryClient,
   SteelReviewState,
-  SteelSourceBackedRecord,
-  SteelSourceRef,
   SteelSqlParameter,
 } from './types';
 
@@ -37,10 +34,9 @@ interface SteelQuoteDefaultRow {
   confidence: string;
   active: boolean;
   review_state: string;
-  source_refs: unknown;
 }
 
-export interface SteelQuoteDefault extends SteelSourceBackedRecord {
+export interface SteelQuoteDefault {
   id: number;
   defaultType: string;
   originTable: string;
@@ -60,7 +56,6 @@ export interface SteelQuoteDefault extends SteelSourceBackedRecord {
   confidence: string;
   active: boolean;
   reviewState: SteelReviewState;
-  sourceRefs: SteelSourceRef[];
 }
 
 export interface SearchSteelQuoteDefaultsInput {
@@ -174,7 +169,6 @@ function toQuoteDefault(row: SteelQuoteDefaultRow): SteelQuoteDefault {
     confidence: row.confidence,
     active: row.active,
     reviewState: parseReviewState(row.review_state),
-    sourceRefs: parseSteelSourceRefs(row.source_refs),
   };
 }
 
@@ -228,8 +222,7 @@ SELECT
   priority,
   confidence,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.quote_defaults
 ${whereClause}
 ORDER BY
@@ -274,8 +267,7 @@ SELECT
   priority,
   confidence,
   active,
-  review_state,
-  source_refs
+  review_state
 FROM steel.quote_defaults
 WHERE review_state = $1
   AND active = true

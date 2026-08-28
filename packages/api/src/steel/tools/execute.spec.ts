@@ -131,6 +131,38 @@ function createHCuttingRow(id: number, heightMm: number, widthMm: number) {
 }
 
 describe('executeSteelTool', () => {
+  it('emits tool logs without source references', async () => {
+    const logEntries: object[] = [];
+    const nowValues = [1000, 1007];
+
+    await expect(
+      executeSteelTool({
+        client: createClient([[]]),
+        toolName: 'search_customers',
+        providerToolCallId: 'call-log',
+        arguments: { keywords: ['龍頂'] },
+        now: () => nowValues.shift() ?? 1007,
+        log: (entry) => {
+          logEntries.push(entry);
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(logEntries).toStrictEqual([
+      {
+        toolName: 'search_customers',
+        providerToolCallId: 'call-log',
+        status: 'success',
+        durationMs: 7,
+        inputSummary: 'args=keywords',
+        outputSummary: 'customers=0',
+        errorCategory: undefined,
+        redactionVersion: 1,
+      },
+    ]);
+    expect(logEntries[0]).not.toHaveProperty('sourceRefs');
+  });
+
   it('does not execute removed read_markdown calls', async () => {
     const result = await executeSteelTool({
       client: createClient([]),

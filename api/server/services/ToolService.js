@@ -64,6 +64,7 @@ const {
   parseOpenAIConfig,
   resolveOpenAIOAuthAuthFilePath,
   buildOcrOrganizerPrompt,
+  normalizeOcrOrganizerFileKey,
   resolveOcrOrganizerRulesText,
   mergeOcrPreprocessingStateMarkdown,
   runOcrPreprocessingBatchPipeline,
@@ -2389,17 +2390,70 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
   };
 }
 
-function createCurrentOcrMergedMarkdownResult({ file, markdown, chunkCount, ocrRuleVersion }) {
+function sanitizeCurrentOcrPageRanges(pageRanges, chunkCount) {
+  if (
+    !Array.isArray(pageRanges) ||
+    !Number.isInteger(chunkCount) ||
+    chunkCount < 1 ||
+    pageRanges.length !== chunkCount
+  ) {
+    return [];
+  }
+
+  const sanitized = [];
+  for (const range of pageRanges) {
+    if (
+      !Number.isInteger(range?.pageStart) ||
+      range.pageStart < 1 ||
+      !Number.isInteger(range?.pageEnd) ||
+      range.pageEnd < range.pageStart
+    ) {
+      return [];
+    }
+    const previous = sanitized[sanitized.length - 1];
+    if (
+      previous &&
+      (range.pageStart <= previous.pageEnd || range.pageStart !== previous.pageEnd + 1)
+    ) {
+      return [];
+    }
+    sanitized.push({ pageStart: range.pageStart, pageEnd: range.pageEnd });
+  }
+  return sanitized;
+}
+
+function createCurrentOcrMergedMarkdownResult({
+  file,
+  markdown,
+  chunkCount,
+  pageRanges = [],
+  ocrRuleVersion,
+}) {
+  const safeOcrFileKey = normalizeOcrOrganizerFileKey({
+    fileKey:
+      file?.ocrFileKey ??
+      file?.fileId ??
+      file?.file_id ??
+      file?.id ??
+      file?.storageKey ??
+      file?.storage_key ??
+      file?.filepath ??
+      file?.path ??
+      '',
+    fileId: file?.fileId ?? file?.file_id ?? file?.id,
+  });
   const { sourcePdfKey, ...visibleFile } = file;
   return {
     ...visibleFile,
+    ocrFileKey: safeOcrFileKey,
     kind: 'ocr_preprocessing_merged_markdown',
     ocrSource: 'ocr_preprocessing_merge',
-    content: labelOcrMarkdownResultContent(file.ocrFileKey, markdown),
+    content: labelOcrMarkdownResultContent(safeOcrFileKey, markdown),
     ocrPreprocessing: {
       pipelineVersion: ocrPreprocessingPipelineVersion,
       sourcePdfKey,
       chunkCount,
+      pageRanges: sanitizeCurrentOcrPageRanges(pageRanges, chunkCount),
       ocrRuleVersion,
       source: 'paddleocr_markdowns',
     },
@@ -2742,6 +2796,7 @@ async function runSteelPaddleOcrPreflight({
             file: fileResult.file,
             markdown: fileResult.markdown,
             chunkCount: fileResult.chunkCount,
+            pageRanges: fileResult.pageRanges,
             ocrRuleVersion: ocrPreprocessingRules.ocrRuleVersion,
           }),
         );

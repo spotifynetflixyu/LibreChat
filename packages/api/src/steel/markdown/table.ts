@@ -1,3 +1,5 @@
+import { isMarkdownTableSeparatorCell, parsePipeTableRow } from './row-codec';
+
 export interface SteelMarkdownTable {
   headers: string[];
   rows: string[][];
@@ -28,15 +30,11 @@ function getMarkdownTableBlocks(content: string): string[][] {
 }
 
 export function splitMarkdownTableRow(line: string): string[] {
-  return line
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim());
+  return parsePipeTableRow(line) ?? [];
 }
 
 function isSeparatorRow(cells: readonly string[]): boolean {
-  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return cells.every(isMarkdownTableSeparatorCell);
 }
 
 function parseMarkdownTable(block: string[]): SteelMarkdownTable | undefined {
@@ -46,7 +44,7 @@ function parseMarkdownTable(block: string[]): SteelMarkdownTable | undefined {
 
   const headers = splitMarkdownTableRow(block[0] ?? '');
   const separator = splitMarkdownTableRow(block[1] ?? '');
-  if (!isSeparatorRow(separator)) {
+  if (headers.length !== separator.length || !isSeparatorRow(separator)) {
     return undefined;
   }
 

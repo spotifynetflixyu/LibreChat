@@ -30,13 +30,6 @@ describe('Steel quote default repositories', () => {
           confidence: 'high',
           active: true,
           review_state: 'reviewed',
-          source_refs: [
-            {
-              channel: 'repo_docs',
-              factType: 'quote_default',
-              canonicalKey: 'default_tier_b',
-            },
-          ],
         },
       ],
     });
@@ -48,6 +41,7 @@ describe('Steel quote default repositories', () => {
       'reviewed',
     ]);
     expect(sql).toEqual(expect.stringContaining('active = true'));
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
     expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
     expect(sql).not.toEqual(expect.stringContaining('scope_type IN'));
     expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
@@ -72,13 +66,6 @@ describe('Steel quote default repositories', () => {
         confidence: 'high',
         active: true,
         reviewState: 'reviewed',
-        sourceRefs: [
-          {
-            channel: 'repo_docs',
-            factType: 'quote_default',
-            canonicalKey: 'default_tier_b',
-          },
-        ],
       },
     ]);
   });
@@ -111,15 +98,6 @@ describe('Steel quote default repositories', () => {
           confidence: 'high',
           active: true,
           review_state: 'reviewed',
-          source_refs: [
-            {
-              channel: 'repo_docs',
-              factType: 'quote_default',
-              sourceFile: 'tasks/steel-data-rules-architecture/instruction-packets.md',
-              locator: 'c-type-basic-quote-zh-v1',
-              canonicalKey: 'c_type_free_cutting_hole',
-            },
-          ],
         },
       ],
     });
@@ -141,6 +119,7 @@ describe('Steel quote default repositories', () => {
       10,
     ]);
     expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining('active = true'));
+    expect(query.mock.calls[0]?.[0]).not.toMatch(/review_state,\s*FROM/u);
     expect(result).toEqual([
       {
         id: 55,
@@ -167,15 +146,6 @@ describe('Steel quote default repositories', () => {
         confidence: 'high',
         active: true,
         reviewState: 'reviewed',
-        sourceRefs: [
-          {
-            channel: 'repo_docs',
-            factType: 'quote_default',
-            sourceFile: 'tasks/steel-data-rules-architecture/instruction-packets.md',
-            locator: 'c-type-basic-quote-zh-v1',
-            canonicalKey: 'c_type_free_cutting_hole',
-          },
-        ],
       },
     ]);
   });

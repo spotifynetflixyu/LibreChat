@@ -92,7 +92,6 @@ export interface FindMissingPaddleOcrFileKeysResult {
 export interface CapturePaddleOcrResultInput {
   conversationId: string;
   requestId?: string;
-  providerToolCallId?: string;
   turnIndex: number;
   checkpointTurnIndex: number;
   file: SteelOcrFileReference;
@@ -120,7 +119,6 @@ export interface OcrPreprocessingChunkCaptureInput {
 export interface CapturePaddleOcrChunkResultInput {
   conversationId: string;
   requestId?: string;
-  providerToolCallId?: string;
   turnIndex: number;
   checkpointTurnIndex: number;
   file: SteelOcrFileReference;
@@ -183,31 +181,6 @@ interface SteelWorkingOrderMemoryDocument {
   createdAt?: Date;
   summary?: string;
   payload?: SteelJsonValue;
-  sourceRefs?: {
-    sourceKind: string;
-    sourceId?: string;
-    filename?: string;
-    fileId?: string;
-    storageKey?: string;
-    mediaType?: string;
-    ocrFileKey?: string;
-    pageNumber?: number;
-    imageIndex?: number;
-    locator?: string;
-  }[];
-}
-
-interface MemorySourceRef {
-  sourceKind: string;
-  sourceId?: string;
-  filename?: string;
-  fileId?: string;
-  storageKey?: string;
-  mediaType?: string;
-  ocrFileKey?: string;
-  pageNumber?: number;
-  imageIndex?: number;
-  locator?: string;
 }
 
 const activeSavedMemoryKinds = ['customer_fact', 'price_evidence', 'ocr_extract', 'paddleocr_preflight'];
@@ -471,65 +444,6 @@ function getObjectProperty(value: SteelJsonValue, key: string): SteelJsonObject 
   return isJsonObject(property) ? property : undefined;
 }
 
-function getOcrDescriptorFromPayload(payload: SteelJsonObject): SteelOcrFileDescriptor | undefined {
-  const ocrFileKey = getStringProperty(payload, 'ocrFileKey');
-  if (ocrFileKey === undefined) {
-    return undefined;
-  }
-
-  return {
-    ocrFileKey,
-    ...(getStringProperty(payload, 'fileId') !== undefined
-      ? { fileId: getStringProperty(payload, 'fileId') }
-      : {}),
-    ...(getStringProperty(payload, 'storageKey') !== undefined
-      ? { storageKey: getStringProperty(payload, 'storageKey') }
-      : {}),
-    ...(getStringProperty(payload, 'filename') !== undefined
-      ? { filename: getStringProperty(payload, 'filename') }
-      : {}),
-    ...(getStringProperty(payload, 'mediaType') !== undefined
-      ? { mediaType: getStringProperty(payload, 'mediaType') }
-      : {}),
-    ...(getNumberProperty(payload, 'pageNumber') !== undefined
-      ? { pageNumber: getNumberProperty(payload, 'pageNumber') }
-      : {}),
-    ...(getNumberProperty(payload, 'imageIndex') !== undefined
-      ? { imageIndex: getNumberProperty(payload, 'imageIndex') }
-      : {}),
-    ...(getNumberProperty(payload, 'width') !== undefined
-      ? { width: getNumberProperty(payload, 'width') }
-      : {}),
-    ...(getNumberProperty(payload, 'height') !== undefined
-      ? { height: getNumberProperty(payload, 'height') }
-      : {}),
-  };
-}
-
-function toMemorySourceRefs({
-  providerToolCallId,
-  sourceRefs,
-}: {
-  providerToolCallId?: string;
-  sourceRefs: SteelJsonValue[];
-}): MemorySourceRef[] {
-  return sourceRefs.filter(isJsonObject).map((ref) => ({
-    sourceKind:
-      [getStringProperty(ref, 'channel'), getStringProperty(ref, 'factType')]
-        .filter((entry): entry is string => entry !== undefined)
-        .join(':') || 'tool_result',
-    sourceId: providerToolCallId,
-    filename: getStringProperty(ref, 'filename') ?? getStringProperty(ref, 'sourceFile'),
-    fileId: getStringProperty(ref, 'fileId') ?? getStringProperty(ref, 'file_id'),
-    storageKey: getStringProperty(ref, 'storageKey') ?? getStringProperty(ref, 'storage_key'),
-    mediaType: getStringProperty(ref, 'mediaType') ?? getStringProperty(ref, 'mimeType'),
-    ocrFileKey: getStringProperty(ref, 'ocrFileKey'),
-    pageNumber: getNumberProperty(ref, 'pageNumber') ?? getNumberProperty(ref, 'page'),
-    imageIndex: getNumberProperty(ref, 'imageIndex'),
-    locator: getStringProperty(ref, 'locator'),
-  }));
-}
-
 function getCustomerSummary(payload: SteelJsonObject): string {
   return [
     getStringProperty(payload, 'displayName'),
@@ -562,7 +476,6 @@ function createToolMemoryDocument(input: {
   sourceKind: 'tool_result' | 'ocr_result';
   payload: SteelJsonObject;
   summary: string;
-  sourceRefs?: MemorySourceRef[];
 }) {
   return {
     conversationId: input.conversationId,
@@ -574,15 +487,16 @@ function createToolMemoryDocument(input: {
     state: 'active',
     summary: input.summary,
     payload: input.payload,
-    sourceRefs:
-      input.sourceRefs && input.sourceRefs.length > 0
-        ? input.sourceRefs
-        : [
+    ...(input.sourceKind === 'tool_result'
+      ? {
+          sourceRefs: [
             {
               sourceKind: input.sourceKind,
               sourceId: input.providerToolCallId,
             },
           ],
+        }
+      : {}),
   };
 }
 
@@ -617,10 +531,6 @@ function getToolCaptureDocuments(input: CaptureToolResultInput) {
           sourceKind: 'tool_result',
           payload: customer,
           summary: getCustomerSummary(customer) || getFactSummary(customer),
-          sourceRefs: toMemorySourceRefs({
-            providerToolCallId: input.providerToolCallId,
-            sourceRefs: getArrayProperty(customer, 'sourceRefs'),
-          }),
         }),
       );
   }
@@ -644,10 +554,6 @@ function getToolCaptureDocuments(input: CaptureToolResultInput) {
           },
         },
         summary: getPriceSummary(candidate) || getFactSummary(candidate),
-        sourceRefs: toMemorySourceRefs({
-          providerToolCallId: input.providerToolCallId,
-          sourceRefs: getArrayProperty(candidate, 'sourceRefs'),
-        }),
       }),
     );
   }
@@ -904,24 +810,6 @@ function createOcrPreprocessingChunkMarkdownPayload({
   };
 }
 
-function createPaddleOcrSourceRef({
-  providerToolCallId,
-  payload,
-}: {
-  providerToolCallId?: string;
-  payload: SteelJsonObject;
-}): MemorySourceRef[] {
-  const descriptor = getOcrDescriptorFromPayload(payload);
-
-  return [
-    {
-      sourceKind: 'paddleocr_mcp',
-      sourceId: providerToolCallId,
-      ...(descriptor !== undefined ? toOcrFileMetadataPayload(descriptor) : {}),
-    },
-  ];
-}
-
 export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) {
   const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
 
@@ -964,7 +852,9 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         sourceKind: 'ocr_result',
         'payload.ocrFileKey': { $in: keys },
         'payload.ocrSource': 'paddleocr_mcp',
-      }).lean<SteelWorkingOrderMemoryDocument[]>();
+      })
+        .select({ 'payload.ocrFileKey': 1 })
+        .lean<SteelWorkingOrderMemoryDocument[]>();
       const completedSet = new Set(
         documents
           .map((document) =>
@@ -997,6 +887,13 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         'payload.ocrPreprocessing.sourcePdfKey': input.sourcePdfKey,
         'payload.ocrPreprocessing.pipelineVersion': pipelineVersion,
       })
+        .select({
+          memoryKind: 1,
+          'payload.kind': 1,
+          'payload.ocrPreprocessing': 1,
+          'payload.result': 1,
+          'payload.content': 1,
+        })
         .sort({ 'payload.ocrPreprocessing.pageStart': 1, 'payload.ocrPreprocessing.pageEnd': 1, turnIndex: 1, createdAt: 1 })
         .lean<SteelWorkingOrderMemoryDocument[]>();
 
@@ -1026,17 +923,12 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         createToolMemoryDocument({
           conversationId: input.conversationId,
           requestId: input.requestId,
-          providerToolCallId: input.providerToolCallId,
           turnIndex: input.turnIndex,
           checkpointTurnIndex: input.checkpointTurnIndex,
           memoryKind: 'paddleocr_preflight',
           sourceKind: 'ocr_result',
           payload,
           summary: getPaddleOcrSummary(payload),
-          sourceRefs: createPaddleOcrSourceRef({
-            providerToolCallId: input.providerToolCallId,
-            payload,
-          }),
         }),
       );
 
@@ -1074,7 +966,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
         createToolMemoryDocument({
           conversationId: input.conversationId,
           requestId: input.requestId,
-          providerToolCallId: input.providerToolCallId,
           turnIndex: input.turnIndex,
           checkpointTurnIndex: input.checkpointTurnIndex,
           memoryKind: 'paddleocr_preflight',
@@ -1087,10 +978,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
             },
           },
           summary: getPaddleOcrSummary(payload),
-          sourceRefs: createPaddleOcrSourceRef({
-            providerToolCallId: input.providerToolCallId,
-            payload,
-          }),
         }),
       );
 
@@ -1138,9 +1025,6 @@ export function createMongooseSteelWorkingOrderMemoryWriter(mongoose: Mongoose) 
           sourceKind: 'ocr_result',
           payload,
           summary: getFactSummary(payload),
-          sourceRefs: createPaddleOcrSourceRef({
-            payload,
-          }),
         }),
       );
 

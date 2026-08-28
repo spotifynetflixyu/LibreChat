@@ -388,13 +388,20 @@ function getNonSteelToolDefinitions(definitions) {
 function createMockOcrBatchResult(
   input,
   markdown = '| 項次 | 品名規格 |\n| --- | --- |\n| 1 | OCR |',
+  metadata = {},
 ) {
   return {
     files: (input.files ?? []).map((entry) => ({
       file: entry.file,
       status: 'completed',
       markdown,
-      chunkCount: entry.chunks?.[0]?.chunkCount ?? entry.chunks?.length ?? 0,
+      chunkCount:
+        metadata.chunkCount ?? entry.chunks?.[0]?.chunkCount ?? entry.chunks?.length ?? 0,
+      pageRanges:
+        metadata.pageRanges ??
+        (String(entry.file?.mediaType ?? '').toLowerCase().startsWith('image/')
+          ? []
+          : (entry.chunks ?? []).map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }))),
     })),
   };
 }
@@ -411,7 +418,11 @@ function createMockPaddleOcrPreflightReq(file) {
   return req;
 }
 
-function mockSingleFilePaddleOcrPipeline(file, markdown = '| OCR |\n| --- |\n| OCR result |') {
+function mockSingleFilePaddleOcrPipeline(
+  file,
+  markdown = '| OCR |\n| --- |\n| OCR result |',
+  metadata,
+) {
   const ocrFileKey = `file:${file.fileId}`;
   mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
     completedKeys: [],
@@ -451,7 +462,7 @@ function mockSingleFilePaddleOcrPipeline(file, markdown = '| OCR |\n| --- |\n| O
         chunkCount: 1,
       },
     });
-    return createMockOcrBatchResult(input, markdown);
+    return createMockOcrBatchResult(input, markdown, metadata);
   });
 }
 
@@ -504,6 +515,16 @@ function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
       const organizerInput = {
         ocrRulesText: input.ocrRulesText,
         rawOcrText: raw.rawOcrText,
+        sourceFile: pipelineFileInput.file.filename,
+        fileKey: pipelineFileInput.file.ocrFileKey,
+        ...(String(pipelineFileInput.file.mediaType ?? '').toLowerCase().startsWith('image/')
+          ? {}
+          : {
+              pageStart: chunk.pageStart,
+              pageEnd: chunk.pageEnd,
+              chunkIndex: chunk.chunkIndex,
+              chunkCount: chunk.chunkCount,
+            }),
       };
       organizerInputs.push(organizerInput);
       const organized = await input.organizer.organize(organizerInput);
@@ -514,6 +535,11 @@ function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
             status: 'completed',
             markdown: organized.markdown,
             chunkCount: 1,
+            pageRanges: String(pipelineFileInput.file.mediaType ?? '')
+              .toLowerCase()
+              .startsWith('image/')
+              ? []
+              : [{ pageStart: 1, pageEnd: 1 }],
           },
         ],
       };
@@ -683,7 +709,6 @@ describe('ToolService - Action Capability Gating', () => {
       ok: true,
       toolName: 'search_customers',
       data: { customers: [] },
-      sourceRefs: [],
       durationMs: 1,
       redactionVersion: 1,
     });
@@ -1522,6 +1547,10 @@ describe('ToolService - Action Capability Gating', () => {
             ocrSource: 'ocr_preprocessing_merge',
             ocrPreprocessing: expect.objectContaining({
               chunkCount: 2,
+              pageRanges: [
+                { pageStart: 1, pageEnd: 50 },
+                { pageStart: 51, pageEnd: 75 },
+              ],
               source: 'paddleocr_markdowns',
               sourcePdfKey: 'uploads/user_123/pdf-1__quote.pdf',
             }),
@@ -1529,6 +1558,34 @@ describe('ToolService - Action Capability Gating', () => {
           }),
         ],
       });
+    });
+
+    it('omits malformed OCR page ranges instead of retaining a partial subset', async () => {
+      const file = {
+        fileId: 'pdf-malformed-ranges',
+        filename: 'malformed-ranges.jpg',
+        mediaType: 'image/jpeg',
+      };
+      const req = createMockPaddleOcrPreflightReq(file);
+      mockSingleFilePaddleOcrPipeline(file, '| OCR |\n| --- |\n| malformed |', {
+        chunkCount: 2,
+        pageRanges: [
+          { pageStart: 1, pageEnd: 10 },
+          { pageStart: 12, pageEnd: 20 },
+        ],
+      });
+      mockPaddleOcrToolLoads(jest.fn().mockResolvedValue({ text: 'OCR' }));
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(result.currentOcrMarkdownResults?.[0]?.ocrPreprocessing).toEqual(
+        expect.objectContaining({ chunkCount: 2, pageRanges: [] }),
+      );
     });
 
     it('uses the original PDF artifact for PDFs under 50 pages while keeping OCR markdown flow', async () => {
@@ -2142,6 +2199,12 @@ describe('ToolService - Action Capability Gating', () => {
         await input.organizer.organize({
           ocrRulesText: input.ocrRulesText,
           rawOcrText: 'raw chunk OCR text',
+          sourceFile: 'quote.pdf',
+          fileKey: 'file:pdf-1',
+          pageStart: pageChunk.pageStart,
+          pageEnd: pageChunk.pageEnd,
+          chunkIndex: pageChunk.chunkIndex,
+          chunkCount: pageChunk.chunkCount,
         });
         return createMockOcrBatchResult(input, '| OCR |\n| --- |\n| organized after retry |');
       });
@@ -2158,9 +2221,10 @@ describe('ToolService - Action Capability Gating', () => {
       expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('raw chunk OCR text');
       expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('OCR rules text');
       expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('Main-agent OCR rerun policy');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('quote.pdf');
+      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('quote.pdf');
       expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('chunk-2.pdf');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('51-100');
+      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('page_range: 51-100');
+      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('chunk: 2/3');
       expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
         expect.not.objectContaining({ temperature: expect.anything() }),
       );
@@ -2552,8 +2616,14 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
       expect(mockCapturePaddleOcrChunkResult).toHaveBeenCalledTimes(1);
       expect(organizerInputs).toEqual([
-        expect.objectContaining({ rawOcrText: 'Recovered OCR text' }),
+        expect.objectContaining({
+          rawOcrText: 'Recovered OCR text',
+          sourceFile: 'error-content.jpg',
+          fileKey: 'file:file-error-content',
+        }),
       ]);
+      expect(organizerInputs[0]).not.toHaveProperty('pageStart');
+      expect(organizerInputs[0]).not.toHaveProperty('pageRange');
       expect(result).toEqual(
         expect.objectContaining({
           status: 'completed',
@@ -4460,7 +4530,6 @@ describe('ToolService - Action Capability Gating', () => {
           ok: true,
           toolName,
           data: {},
-          sourceRefs: [],
           durationMs: 0,
           redactionVersion: 1,
         };

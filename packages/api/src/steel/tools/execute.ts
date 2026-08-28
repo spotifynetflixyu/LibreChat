@@ -11,7 +11,7 @@ import type {
   SteelToolJsonObject,
   SteelToolErrorCategory,
 } from './results';
-import type { SteelRepositoryClient, SteelSourceRef } from '../repositories/types';
+import type { SteelRepositoryClient } from '../repositories/types';
 import type { PriceCategory, PriceLookupMaterialKind } from '../pricing/enums';
 import type { SteelToolName } from './schemas';
 
@@ -104,55 +104,6 @@ function summarizeInput(value: unknown): string {
   }
 
   return `args=${Object.keys(value).sort().join(',')}`;
-}
-
-function isSourceRef(value: unknown): value is SteelSourceRef {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const entry = value as { [key: string]: unknown };
-  return typeof entry.channel === 'string' && typeof entry.factType === 'string';
-}
-
-function collectSourceRefs(
-  value: unknown,
-  refs: SteelSourceRef[] = [],
-  seen = new WeakSet<object>(),
-): SteelSourceRef[] {
-  if (value === null || value === undefined) {
-    return refs;
-  }
-
-  if (isSourceRef(value)) {
-    refs.push(value);
-    return refs;
-  }
-
-  if (Array.isArray(value)) {
-    if (seen.has(value)) {
-      return refs;
-    }
-    seen.add(value);
-    value.forEach((entry) => collectSourceRefs(entry, refs, seen));
-    seen.delete(value);
-    return refs;
-  }
-
-  if (typeof value !== 'object') {
-    return refs;
-  }
-
-  if (seen.has(value)) {
-    return refs;
-  }
-  seen.add(value);
-  Object.values(value as { [key: string]: unknown }).forEach((entry) => {
-    collectSourceRefs(entry, refs, seen);
-  });
-  seen.delete(value);
-
-  return refs;
 }
 
 function summarizeOutput(data: SteelToolJsonObject): string {
@@ -920,7 +871,6 @@ async function emitLog(
   status: 'success' | 'error',
   durationMs: number,
   outputSummary: string,
-  sourceRefs: SteelSourceRef[],
   errorCategory?: SteelToolErrorCategory,
 ) {
   await options.log?.({
@@ -930,7 +880,6 @@ async function emitLog(
     durationMs,
     inputSummary: summarizeInput(options.arguments),
     outputSummary,
-    sourceRefs,
     errorCategory,
     redactionVersion: steelToolRedactionVersion,
   });
@@ -945,7 +894,7 @@ async function errorResult(
   const now = options.now ?? Date.now;
   const durationMs = getDurationMs(startTime, now);
 
-  await emitLog(options, 'error', durationMs, errorSummary, [], errorCategory);
+  await emitLog(options, 'error', durationMs, errorSummary, errorCategory);
 
   return {
     ok: false,
@@ -1041,16 +990,14 @@ export async function executeSteelTool(options: ExecuteSteelToolOptions): Promis
   try {
     const rawData = await dispatchSteelTool(options, options.toolName, parsedArgs.data);
     const data = sanitizeSteelToolOutput(rawData);
-    const sourceRefs = collectSourceRefs(data);
     const durationMs = getDurationMs(startTime, now);
 
-    await emitLog(options, 'success', durationMs, summarizeOutput(data), sourceRefs);
+    await emitLog(options, 'success', durationMs, summarizeOutput(data));
 
     return {
       ok: true,
       toolName: options.toolName,
       data,
-      sourceRefs,
       durationMs,
       redactionVersion: steelToolRedactionVersion,
     };

@@ -19,13 +19,6 @@ const instructionPacketRow = {
   confidence: 'high',
   active: true,
   review_state: 'reviewed',
-  source_refs: [
-    {
-      channel: 'repo_docs',
-      factType: 'instruction_packet',
-      canonicalKey: 'plate_runtime_packet',
-    },
-  ],
 };
 
 describe('Steel instruction packet repositories', () => {
@@ -41,6 +34,7 @@ describe('Steel instruction packet repositories', () => {
       'reviewed',
     ]);
     expect(sql).toEqual(expect.stringContaining('active = true'));
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
     expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
     expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
     expect(result).toEqual([
@@ -61,13 +55,6 @@ describe('Steel instruction packet repositories', () => {
         confidence: 'high',
         active: true,
         reviewState: 'reviewed',
-        sourceRefs: [
-          {
-            channel: 'repo_docs',
-            factType: 'instruction_packet',
-            canonicalKey: 'plate_runtime_packet',
-          },
-        ],
       },
     ]);
   });
@@ -82,6 +69,7 @@ describe('Steel instruction packet repositories', () => {
     const sql = query.mock.calls[0]?.[0];
 
     expect(sql).toEqual(expect.stringContaining('ILIKE'));
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
     expect(sql).toEqual(expect.stringContaining('LIMIT'));
   });
 });

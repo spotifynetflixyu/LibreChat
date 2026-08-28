@@ -12,8 +12,10 @@ import {
   getOcrPageRangeKey,
   normalizeOcrPageChunks,
   splitExactFiftyPageRange,
+  type OcrPageRange,
   type OcrPreprocessingPageChunk,
 } from './chunks';
+import { normalizeOcrOrganizerFileKey } from './organizer';
 import type { OcrOrganizer } from './organizer';
 
 export interface OcrPreprocessingFile extends SteelOcrFileReference {
@@ -80,6 +82,8 @@ export interface OcrPreprocessingMemoryStore {
 export interface RunOcrPreprocessingPipelineResult {
   status: 'ready' | 'completed';
   markdown: string;
+  chunkCount: number;
+  pageRanges: OcrPageRange[];
 }
 
 export type OcrPreprocessingFailureStage =
@@ -111,7 +115,6 @@ export interface RunOcrPreprocessingBatchFileInput {
 
 export interface RunOcrPreprocessingReadyFileResult extends RunOcrPreprocessingPipelineResult {
   file: OcrPreprocessingFile;
-  chunkCount: number;
 }
 
 export type RunOcrPreprocessingBatchFileResult =
@@ -295,6 +298,53 @@ function getPageCount(chunks: readonly OcrPreprocessingPageChunk[]) {
   return chunks.reduce((maxPage, chunk) => Math.max(maxPage, chunk.pageEnd), 0);
 }
 
+function getOcrSourceFile(file: OcrPreprocessingFile): string | undefined {
+  const candidates = [
+    file.filename,
+    file.name,
+    file.originalname,
+    file.filepath,
+    file.path,
+    file.sourcePdfKey,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.trim() === '') {
+      continue;
+    }
+    const path = candidate.trim().replace(/\\/gu, '/').split(/[?#]/u)[0] ?? '';
+    const basename = path.split('/').filter(Boolean).pop();
+    if (basename && basename !== '.' && basename !== '..') {
+      return basename;
+    }
+  }
+  return undefined;
+}
+
+function isImageOcrFile(file: OcrPreprocessingFile): boolean {
+  const mediaType =
+    typeof file.mediaType === 'string'
+      ? (file.mediaType.trim().toLowerCase().split(';', 1)[0] ?? '')
+      : '';
+  if (mediaType.startsWith('image/')) {
+    return true;
+  }
+  if (mediaType !== '' && mediaType !== 'application/octet-stream') {
+    return false;
+  }
+
+  const filename = getOcrSourceFile(file) ?? '';
+  return /\.(?:png|jpe?g|webp|bmp|gif|tiff?)$/iu.test(filename);
+}
+
+function getResultPageRanges(
+  file: OcrPreprocessingFile,
+  chunks: readonly OcrPreprocessingPageChunk[],
+): OcrPageRange[] {
+  return isImageOcrFile(file)
+    ? []
+    : chunks.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }));
+}
+
 function hasMissingRawChunk(
   state: OcrPreprocessingState,
   chunks: readonly OcrPreprocessingPageChunk[],
@@ -320,19 +370,15 @@ function getExpectedSavedChunkMarkdowns(
 ) {
   const expectedRanges = new Set(chunks.map(getOcrPageRangeKey));
   return getSavedOcrPreprocessingChunkMarkdowns(state).filter(
-    (chunk) =>
-      chunk.pageStart !== undefined &&
-      chunk.pageEnd !== undefined &&
-      expectedRanges.has(getOcrPageRangeKey(chunk)),
+    (chunk) => {
+      const { pageStart, pageEnd } = chunk;
+      return (
+        pageStart !== undefined &&
+        pageEnd !== undefined &&
+        expectedRanges.has(getOcrPageRangeKey({ pageStart, pageEnd }))
+      );
+    },
   );
-}
-
-function getOcrPreprocessingProviderToolCallId(input: {
-  file: OcrPreprocessingFile;
-  chunk: OcrPreprocessingPageChunk;
-}) {
-  const safeFileKey = input.file.ocrFileKey.replace(/[^A-Za-z0-9_-]+/g, '_');
-  return `ocr_preprocessing_${safeFileKey}_pages_${input.chunk.pageStart}_${input.chunk.pageEnd}`;
 }
 
 async function readPreprocessingState(
@@ -383,14 +429,16 @@ export async function runOcrPreprocessingBatchPipeline(
     if (!entry) {
       continue;
     }
-    let effectiveChunks = [...entry.chunks];
+    let effectiveChunks: OcrPreprocessingPageChunk[];
     try {
+      let resolvedChunks: readonly OcrPreprocessingPageChunk[] = entry.chunks;
       if (entry.artifacts.resolveCanonicalChunks) {
-        effectiveChunks = await entry.artifacts.resolveCanonicalChunks({
+        resolvedChunks = await entry.artifacts.resolveCanonicalChunks({
           sourcePdfKey: entry.file.sourcePdfKey,
-          chunks: effectiveChunks,
+          chunks: resolvedChunks,
         });
       }
+      effectiveChunks = normalizeOcrPageChunks(resolvedChunks);
     } catch (error) {
       if (isAbortError(error)) {
         throw error;
@@ -431,6 +479,7 @@ export async function runOcrPreprocessingBatchPipeline(
           chunks: savedChunkMarkdowns,
         }),
         chunkCount,
+        pageRanges: getResultPageRanges(entry.file, effectiveChunks),
       };
       continue;
     }
@@ -513,7 +562,6 @@ export async function runOcrPreprocessingBatchPipeline(
     await input.memory.capturePaddleOcrChunkResult({
       conversationId: input.conversationId,
       requestId: input.requestId,
-      providerToolCallId: getOcrPreprocessingProviderToolCallId({ file: workItem.file, chunk }),
       turnIndex,
       checkpointTurnIndex,
       file: workItem.file,
@@ -749,10 +797,24 @@ export async function runOcrPreprocessingBatchPipeline(
           chunkCount: workItem.chunkCount,
         });
         try {
-          organized = await input.organizer.organize({
+          const organizerInput = {
             ocrRulesText: input.ocrRulesText,
             rawOcrText: savedChunk.rawOcrText,
-          });
+            fileKey: normalizeOcrOrganizerFileKey({
+              fileKey: workItem.file.ocrFileKey,
+              fileId: workItem.file.fileId ?? workItem.file.file_id ?? workItem.file.id,
+            }),
+            sourceFile: getOcrSourceFile(workItem.file) ?? null,
+            ...(isImageOcrFile(workItem.file)
+              ? {}
+              : {
+                  pageStart: chunk.pageStart,
+                  pageEnd: chunk.pageEnd,
+                  chunkIndex: chunk.chunkIndex,
+                  chunkCount: workItem.chunkCount,
+                }),
+          };
+          organized = await input.organizer.organize(organizerInput);
           break;
         } catch (error) {
           if (isAbortError(error)) {
@@ -832,10 +894,14 @@ export async function runOcrPreprocessingBatchPipeline(
     if (!hasCompleteOrganizedChunks(finalState, workItem.chunks)) {
       const expectedRanges = new Set(workItem.chunks.map(getOcrPageRangeKey));
       const actualRanges = chunkMarkdowns.filter(
-        (chunk) =>
-          chunk.pageStart !== undefined &&
-          chunk.pageEnd !== undefined &&
-          expectedRanges.has(getOcrPageRangeKey(chunk)),
+        (chunk) => {
+          const { pageStart, pageEnd } = chunk;
+          return (
+            pageStart !== undefined &&
+            pageEnd !== undefined &&
+            expectedRanges.has(getOcrPageRangeKey({ pageStart, pageEnd }))
+          );
+        },
       ).length;
       resultSlots[workItem.index] = toFailedFileResult({
         file: workItem.file,
@@ -869,6 +935,7 @@ export async function runOcrPreprocessingBatchPipeline(
       status: 'completed',
       markdown,
       chunkCount: workItem.chunkCount,
+      pageRanges: getResultPageRanges(workItem.file, workItem.chunks),
     };
   }
 
@@ -914,5 +981,7 @@ export async function runOcrPreprocessingPipeline(
   return {
     status: fileResult.status,
     markdown: fileResult.markdown,
+    chunkCount: fileResult.chunkCount,
+    pageRanges: fileResult.pageRanges,
   };
 }

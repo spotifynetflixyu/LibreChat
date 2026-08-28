@@ -153,7 +153,6 @@ const db = require('~/models');
 const loadAgent = (params) => loadAgentFn(params, { getAgent: db.getAgent, getMCPServerTools });
 
 const MEMORY_INPUT_CHARS_PER_TOKEN = 8;
-const steelOcrReviewPromptPattern = /OCR檔案內容.*核對/;
 const maxLoggedErrorCauseDepth = 3;
 const maxLoggedErrorSerializedChars = 24_000;
 const maxLoggedErrorStringChars = Object.freeze({
@@ -279,11 +278,7 @@ function appendTitleGuidance(titlePrompt, guidance) {
   return [titlePrompt, guidance].filter(Boolean).join('\n\n');
 }
 
-function createTitleContext({ attachments, text }) {
-  if (!steelOcrReviewPromptPattern.test(text)) {
-    return {};
-  }
-
+function createTitleContext({ attachments }) {
   const filenames = Array.isArray(attachments)
     ? [...new Set(attachments.map(getAttachmentFilename).filter(Boolean))]
     : [];
@@ -292,10 +287,11 @@ function createTitleContext({ attachments, text }) {
   }
 
   const filenameText = filenames.join('、');
+  const firstFilename = filenames[0];
   return {
     guidance: [
       `File name(s): ${filenameText}`,
-      'Title rule: For OCR or file-content review conversations, include the file name in the title and describe the review intent. Example: "PL.pdf 內容核對".',
+      `Title rule: Always use the conversation text as the source for the title. Treat every attached filename as title context. When filenames are provided, begin with the first attached filename exactly ("${firstFilename}"), then summarize the conversation text. Example: "PL.pdf OCR彙整表單製作".`,
     ].join('\n'),
   };
 }
@@ -4256,10 +4252,7 @@ class AgentClient extends BaseClient {
       clientOptions.model = endpointConfig.titleModel;
     }
 
-    const titleContext = createTitleContext({
-      attachments: this.options.attachments,
-      text,
-    });
+    const titleContext = createTitleContext({ attachments: this.options.attachments });
     const titlePrompt = appendTitleGuidance(endpointConfig?.titlePrompt, titleContext.guidance);
     const chainOptions = {
       runName: 'TitleRun',
