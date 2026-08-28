@@ -435,6 +435,13 @@ export const getMessageTimestampSource = (
 ): string | undefined =>
   isValidTimestamp(message?.createdAt) ? message.createdAt : message?.clientTimestamp;
 
+export const getMessageProcessingStartedAt = (
+  message?: Pick<TMessage, 'isCreatedByUser' | 'clientTimestamp'> | null,
+): string | undefined =>
+  message?.isCreatedByUser === false && isValidTimestamp(message.clientTimestamp)
+    ? message.clientTimestamp
+    : undefined;
+
 /**
  * Preserve an optimistic user timestamp when a server request message omits
  * both timestamp fields during sync/final/cancel replacement.

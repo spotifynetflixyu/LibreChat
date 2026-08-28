@@ -1370,6 +1370,7 @@ button {
 }
 
 .markdown .markdown-table-wrapper table {
+  margin-top: 0.75rem;
   min-width: 100%;
   width: max-content;
 }

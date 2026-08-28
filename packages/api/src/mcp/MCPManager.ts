@@ -36,6 +36,7 @@ import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
 import {
   classifyPaddleOcrDiagnostic,
+  isPaddleOcrMcpServerName,
   type PaddleOcrDiagnosticCode,
 } from '../steel/ocr/diagnostics';
 
@@ -195,7 +196,7 @@ export class MCPManager extends UserConnectionManager {
   }
 
   private isPaddleOcrCall(serverName: string, toolName: string): boolean {
-    return serverName.toLowerCase() === 'paddleocr' && toolName.toLowerCase() === 'paddleocr_vl';
+    return isPaddleOcrMcpServerName(serverName) && toolName.toLowerCase() === 'paddleocr_vl';
   }
 
   private async acquirePaddleOcrCapture(
@@ -231,31 +232,35 @@ export class MCPManager extends UserConnectionManager {
     cursor: number,
     signal?: AbortSignal,
   ): Promise<PaddleOcrDiagnosticCode | undefined> {
+    const initialDiagnostic = classifyPaddleOcrDiagnostic(connection.readStderrSince(cursor));
+    if (initialDiagnostic) {
+      return initialDiagnostic;
+    }
+
     const flushWindowMs = 75;
-    const activeSignal = signal;
     await new Promise<void>((resolve, reject) => {
-      if (activeSignal?.aborted) {
+      if (signal?.aborted) {
         reject(
-          activeSignal.reason instanceof Error
-            ? activeSignal.reason
+          signal.reason instanceof Error
+            ? signal.reason
             : new Error('MCP diagnostic wait aborted'),
         );
         return;
       }
       const timer = setTimeout(() => {
-        activeSignal?.removeEventListener('abort', onAbort);
+        signal?.removeEventListener('abort', onAbort);
         resolve();
       }, flushWindowMs);
       const onAbort = () => {
         clearTimeout(timer);
-        activeSignal?.removeEventListener('abort', onAbort);
+        signal?.removeEventListener('abort', onAbort);
         reject(
-          activeSignal?.reason instanceof Error
-            ? activeSignal.reason
+          signal?.reason instanceof Error
+            ? signal.reason
             : new Error('MCP diagnostic wait aborted'),
         );
       };
-      activeSignal?.addEventListener('abort', onAbort, { once: true });
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
     return classifyPaddleOcrDiagnostic(connection.readStderrSince(cursor));
   }

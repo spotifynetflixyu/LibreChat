@@ -71,6 +71,7 @@ const {
   getPaddleOcrResultContent,
   getPaddleOcrResultError,
   isPaddleOcrDiagnosticCode: isPaddleOcrDiagnosticCodeFromApi,
+  PADDLE_OCR_MCP_SERVER_NAME: paddleOcrMcpServerNameFromApi,
   resolveOcrPreprocessingChunkSizePages,
   buildPdfPageChunks,
   normalizeOcrPageChunks,
@@ -601,7 +602,10 @@ const steelNativeToolPerToolLimits = Object.freeze({
  * cap without introducing process-global state.
  */
 const steelNativeToolRunStates = new WeakMap();
-const steelPaddleOcrMcpServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
+const steelPaddleOcrMcpServerName =
+  typeof paddleOcrMcpServerNameFromApi === 'string'
+    ? paddleOcrMcpServerNameFromApi
+    : process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
 const steelPaddleOcrRetryableErrorPatterns = [
   'connection timeout after',

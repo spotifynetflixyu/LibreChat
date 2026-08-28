@@ -126,4 +126,46 @@ describe('MCP stderr capture', () => {
     } as StdioOptions);
     expect(genericTransport.stderr).toBeNull();
   });
+
+  it('defaults configured PaddleOCR aliases to piped stderr', async () => {
+    const previousServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME;
+    process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME = '  OCRAlias  ';
+    try {
+      let constructTransport: (() => Promise<{ stderr: unknown }>) | undefined;
+      jest.isolateModules(() => {
+        const { MCPConnection: IsolatedMCPConnection } = require('../connection') as typeof import(
+          '../connection'
+        );
+        const connection = new IsolatedMCPConnection({
+          serverName: 'OCRAlias',
+          serverConfig: {
+            type: 'stdio',
+            command: 'paddleocr_mcp',
+            args: [],
+          } as StdioOptions,
+        });
+        constructTransport = () =>
+          (connection as unknown as {
+            constructTransport: (options: StdioOptions) => Promise<{ stderr: unknown }>;
+          }).constructTransport({
+            type: 'stdio',
+            command: 'paddleocr_mcp',
+            args: [],
+          });
+      });
+
+      if (!constructTransport) {
+        throw new Error('Expected isolated MCP transport constructor');
+      }
+      const transport = await constructTransport();
+      expect(transport.stderr).not.toBeNull();
+    } finally {
+      if (previousServerName === undefined) {
+        delete process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME;
+      } else {
+        process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME = previousServerName;
+      }
+      jest.resetModules();
+    }
+  });
 });

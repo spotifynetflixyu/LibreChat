@@ -1,6 +1,17 @@
-import { classifyPaddleOcrDiagnostic, isPaddleOcrDiagnosticCode } from './diagnostics';
+import {
+  classifyPaddleOcrDiagnostic,
+  isPaddleOcrDiagnosticCode,
+  isPaddleOcrMcpServerName,
+  PADDLE_OCR_MCP_SERVER_NAME,
+} from './diagnostics';
 
 describe('PaddleOCR diagnostics', () => {
+  it('uses PaddleOCR as default server name and matches aliases case-insensitively', () => {
+    expect(PADDLE_OCR_MCP_SERVER_NAME).toBe(process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME?.trim() || 'PaddleOCR');
+    expect(isPaddleOcrMcpServerName(PADDLE_OCR_MCP_SERVER_NAME.toUpperCase())).toBe(true);
+    expect(isPaddleOcrMcpServerName(`${PADDLE_OCR_MCP_SERVER_NAME}-other`)).toBe(false);
+  });
+
   it.each([
     ['HTTP 401: invalid API key', 'ai_studio_auth'],
     ['HTTP 429 too many requests', 'ai_studio_rate_limited'],

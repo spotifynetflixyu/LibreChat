@@ -7,8 +7,8 @@ import {
   getMessageAriaLabel,
   areMessageRowPropsEqual,
   getHeaderPrefixForScreenReader,
+  getMessageProcessingStartedAt,
   getMessageTimestampSource,
-  isValidTimestamp,
 } from '~/utils';
 import { useMessageHelpers, useLocalize, useAttachments, useContentMetadata } from '~/hooks';
 import {
@@ -144,11 +144,7 @@ function MessageParts(props: TMessageProps) {
             conversation?.model,
           )}
           timestamp={getMessageTimestampSource(message)}
-          processingStartedAt={
-            !message.isCreatedByUser && isValidTimestamp(message.clientTimestamp)
-              ? message.clientTimestamp
-              : undefined
-          }
+          processingStartedAt={getMessageProcessingStartedAt(message)}
           processingDurationMs={!message.isCreatedByUser ? message.processingDurationMs : undefined}
           isSubmitting={isSubmitting}
           parentMessageId={message.parentMessageId}

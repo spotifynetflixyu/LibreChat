@@ -7,8 +7,8 @@ import {
   cn,
   getHeaderPrefixForScreenReader,
   getMessageAriaLabel,
+  getMessageProcessingStartedAt,
   getMessageTimestampSource,
-  isValidTimestamp,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { useAttachments, useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
@@ -183,11 +183,7 @@ const ContentRender = memo(function ContentRender({
         conversation?.model,
       )}
       timestamp={getMessageTimestampSource(msg)}
-      processingStartedAt={
-        !msg.isCreatedByUser && isValidTimestamp(msg.clientTimestamp)
-          ? msg.clientTimestamp
-          : undefined
-      }
+      processingStartedAt={getMessageProcessingStartedAt(msg)}
       processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
       isSubmitting={isSubmitting}
       parentMessageId={msg.parentMessageId}

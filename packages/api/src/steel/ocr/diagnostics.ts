@@ -11,6 +11,16 @@ export const PADDLE_OCR_DIAGNOSTIC_CODES = [
 
 export type PaddleOcrDiagnosticCode = (typeof PADDLE_OCR_DIAGNOSTIC_CODES)[number];
 
+export const PADDLE_OCR_MCP_SERVER_NAME: string =
+  process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME?.trim() || 'PaddleOCR';
+
+export function isPaddleOcrMcpServerName(serverName: unknown): boolean {
+  return (
+    typeof serverName === 'string' &&
+    serverName.toLowerCase() === PADDLE_OCR_MCP_SERVER_NAME.toLowerCase()
+  );
+}
+
 const diagnosticPatterns: ReadonlyArray<readonly [PaddleOcrDiagnosticCode, RegExp]> = [
   ['ai_studio_rate_limited', /(?:rate[ -]?limit|too many requests|quota exceeded|\b429\b)/iu],
   [

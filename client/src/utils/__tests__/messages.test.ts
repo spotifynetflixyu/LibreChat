@@ -8,6 +8,7 @@ import {
   clearArchivedConversationMessagesCache,
   clearDeletedConversationMessagesCache,
   getMessageTimestampSource,
+  getMessageProcessingStartedAt,
   isValidTimestamp,
   getMessageAriaLabel,
   getMessageTimestamp,
@@ -254,6 +255,30 @@ describe('getMessageTimestampSource', () => {
     expect(getMessageTimestampSource({ createdAt: 'invalid', clientTimestamp: 'client' })).toBe(
       'client',
     );
+  });
+});
+
+describe('getMessageProcessingStartedAt', () => {
+  it('returns valid clientTimestamp for assistant messages', () => {
+    expect(
+      getMessageProcessingStartedAt({
+        isCreatedByUser: false,
+        clientTimestamp: '2026-06-12T15:42:00.000Z',
+      }),
+    ).toBe('2026-06-12T15:42:00.000Z');
+  });
+
+  it('returns undefined for user, missing, or invalid timestamps', () => {
+    expect(
+      getMessageProcessingStartedAt({
+        isCreatedByUser: true,
+        clientTimestamp: '2026-06-12T15:42:00.000Z',
+      }),
+    ).toBeUndefined();
+    expect(
+      getMessageProcessingStartedAt({ isCreatedByUser: false, clientTimestamp: 'invalid' }),
+    ).toBeUndefined();
+    expect(getMessageProcessingStartedAt()).toBeUndefined();
   });
 });
 

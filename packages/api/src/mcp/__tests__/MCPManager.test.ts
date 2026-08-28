@@ -4288,5 +4288,38 @@ describe('MCPManager', () => {
         jest.useRealTimers();
       }
     });
+
+    it('recognizes configured PaddleOCR aliases for tool calls', () => {
+      const previousServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME;
+      process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME = '  OCRAlias  ';
+      try {
+        let isPaddleOcrCall:
+          | ((serverName: string, toolName: string) => boolean)
+          | undefined;
+        jest.isolateModules(() => {
+          const { MCPManager: IsolatedMCPManager } = require('../MCPManager') as typeof import(
+            '../MCPManager'
+          );
+          isPaddleOcrCall = (
+            IsolatedMCPManager.prototype as unknown as {
+              isPaddleOcrCall: (serverName: string, toolName: string) => boolean;
+            }
+          ).isPaddleOcrCall;
+        });
+
+        if (!isPaddleOcrCall) {
+          throw new Error('Expected isolated PaddleOCR call predicate');
+        }
+        expect(isPaddleOcrCall.call({}, 'ocralias', 'paddleocr_vl')).toBe(true);
+        expect(isPaddleOcrCall.call({}, 'other-server', 'paddleocr_vl')).toBe(false);
+      } finally {
+        if (previousServerName === undefined) {
+          delete process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME;
+        } else {
+          process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME = previousServerName;
+        }
+        jest.resetModules();
+      }
+    });
   });
 });

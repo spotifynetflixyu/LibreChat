@@ -12,7 +12,12 @@ jest.mock('~/utils', () => ({
   getHeaderPrefixForScreenReader: () => '',
   getMessageAriaLabel: () => 'Assistant message',
   getMessageTimestampSource: (message?: TMessage | null) => message?.createdAt,
-  isValidTimestamp: (value?: string | null) => !!value && !Number.isNaN(new Date(value).getTime()),
+  getMessageProcessingStartedAt: (message?: TMessage | null) =>
+    message?.isCreatedByUser === false &&
+    !!message.clientTimestamp &&
+    !Number.isNaN(new Date(message.clientTimestamp).getTime())
+      ? message.clientTimestamp
+      : undefined,
 }));
 
 jest.mock('~/hooks', () => ({

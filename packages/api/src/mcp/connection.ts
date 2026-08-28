@@ -36,6 +36,7 @@ import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
 import { withTimeout } from '~/utils/promise';
 import { mcpConfig } from './mcpConfig';
+import { isPaddleOcrMcpServerName } from '../steel/ocr/diagnostics';
 
 type FetchLike = (url: string | URL, init?: RequestInit) => Promise<Response>;
 type ManagedDispatcher = Agent | ProxyAgent;
@@ -182,18 +183,18 @@ function getChunkBytes(chunk: unknown): Uint8Array {
     return new Uint8Array(chunk);
   }
   if (ArrayBuffer.isView(chunk)) {
-    const view = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-    return new Uint8Array(view);
+    return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
   }
   return new Uint8Array();
 }
 
 function boundStderrText(value: string): string {
-  const bytes = Buffer.from(value, 'utf8');
-  if (bytes.byteLength <= MCP_STDERR_RING_MAX_BYTES) {
+  if (Buffer.byteLength(value, 'utf8') <= MCP_STDERR_RING_MAX_BYTES) {
     return value;
   }
-  return bytes.subarray(-MCP_STDERR_RING_MAX_BYTES).toString('utf8');
+  return Buffer.from(value, 'utf8')
+    .subarray(-MCP_STDERR_RING_MAX_BYTES)
+    .toString('utf8');
 }
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
@@ -1595,7 +1596,7 @@ export class MCPConnection extends EventEmitter {
             throw new Error('Invalid options for stdio transport.');
           }
           const stderr =
-            options.stderr ?? (this.serverName.toLowerCase() === 'paddleocr' ? 'pipe' : undefined);
+            options.stderr ?? (isPaddleOcrMcpServerName(this.serverName) ? 'pipe' : undefined);
           const transport = new StdioClientTransport({
             command: options.command,
             args: options.args,
