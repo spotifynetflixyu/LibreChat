@@ -36,7 +36,6 @@ const {
   captureSteelNativeToolResult,
   buildSteelNativeEventEnvelopes,
   appendSteelNativeActivityEvent,
-  cloneSteelNativeHistory,
   upsertSteelNativePreflightToolCall,
   ensureSteelNativeHistory,
   steelNativeStreamEventName,
@@ -819,7 +818,7 @@ async function emitSteelNativeEvents({ events, res, streamId, req, historyChange
     streamId &&
     typeof GenerationJobManager?.updateMetadata === 'function'
   ) {
-    const history = cloneSteelNativeHistory(req?.steelNativeContext?.steelHistory);
+    const history = req?.steelNativeContext?.steelHistory;
     if (history) {
       await GenerationJobManager.updateMetadata(
         streamId,
@@ -2137,7 +2136,7 @@ function createSteelPaddleOcrHistoryToolCall({
   const runtimeParams = args?.runtime_params;
   const compactArgs = {
     ...(typeof args?.input_data === 'string' ? { input_data: args.input_data } : {}),
-    output_mode: args?.output_mode === 'detailed' ? 'detailed' : 'detailed',
+    output_mode: 'detailed',
     return_images: args?.return_images === true,
     use_doc_orientation_classify: runtimeParams?.use_doc_orientation_classify === true,
     use_doc_unwarping: runtimeParams?.use_doc_unwarping === true,
@@ -2158,6 +2157,12 @@ function createSteelPaddleOcrHistoryToolCall({
         pageStart: output.pageStart,
         pageEnd: output.pageEnd,
       };
+      const failureMessage =
+        output.paddleocr === 'fail'
+          ? getSafeSteelPaddleOcrErrorMessage(
+              new Error(output.errorMessage ?? 'PaddleOCR preflight failed'),
+            )
+          : undefined;
       const allowed =
         output.paddleocr === 'fail'
           ? {
@@ -2169,12 +2174,8 @@ function createSteelPaddleOcrHistoryToolCall({
               ...(isPaddleOcrDiagnosticCode(output.diagnosticCode)
                 ? { errorCode: output.diagnosticCode }
                 : {}),
-              error: getSafeSteelPaddleOcrErrorMessage(
-                new Error(output.errorMessage ?? 'PaddleOCR preflight failed'),
-              ),
-              errorMessage: getSafeSteelPaddleOcrErrorMessage(
-                new Error(output.errorMessage ?? 'PaddleOCR preflight failed'),
-              ),
+              error: failureMessage,
+              errorMessage: failureMessage,
             }
           : {
               status: 'ok',

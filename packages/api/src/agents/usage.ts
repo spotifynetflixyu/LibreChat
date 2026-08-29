@@ -23,7 +23,7 @@ import type {
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { EndpointTokenConfig } from '~/types/tokens';
 import { parseSteelNativeHistory } from '~/steel/native/events';
-import type { SteelNativePreflightToolCall, SteelNativeStreamEvent } from '~/steel/native/events';
+import type { SteelNativeHistory } from '~/steel/native/events';
 import {
   prepareStructuredTokenSpend,
   bulkWriteTransactions,
@@ -36,6 +36,12 @@ type SpendStructuredTokensFn = (
   txData: TxMetadata,
   tokenUsage: StructuredTokenUsage,
 ) => Promise<unknown>;
+
+type AbortedResponseMetadata = {
+  usage?: TResponseUsage;
+  summaryUsedTokens?: number;
+  steel?: SteelNativeHistory;
+};
 
 /**
  * Cache-creation (write) tokens across provider shapes: langchain's
@@ -447,16 +453,7 @@ export function buildAbortedResponseMetadata(
       }
     | null
     | undefined,
-):
-  | {
-      usage?: TResponseUsage;
-      summaryUsedTokens?: number;
-      steel?: {
-        activityEvents?: SteelNativeStreamEvent[];
-        preflightToolCalls?: SteelNativePreflightToolCall[];
-      };
-    }
-  | undefined {
+): AbortedResponseMetadata | undefined {
   const events = parseUsageEvents(job?.tokenUsage);
   const usage = aggregateEmittedUsage(events);
 
@@ -474,14 +471,7 @@ export function buildAbortedResponseMetadata(
   const summaryUsedTokens = computeSummaryUsedTokens(snapshot);
   const steelHistory = parseSteelNativeHistory(job?.steelHistory);
 
-  const metadata: {
-    usage?: TResponseUsage;
-    summaryUsedTokens?: number;
-    steel?: {
-      activityEvents?: SteelNativeStreamEvent[];
-      preflightToolCalls?: SteelNativePreflightToolCall[];
-    };
-  } = {};
+  const metadata: AbortedResponseMetadata = {};
   if (usage) {
     metadata.usage = usage;
   }
@@ -489,10 +479,7 @@ export function buildAbortedResponseMetadata(
     metadata.summaryUsedTokens = summaryUsedTokens;
   }
   if (steelHistory) {
-    metadata.steel = {
-      activityEvents: steelHistory.activityEvents,
-      preflightToolCalls: steelHistory.preflightToolCalls,
-    };
+    metadata.steel = steelHistory;
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }

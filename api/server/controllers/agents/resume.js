@@ -36,6 +36,7 @@ const {
 const { saveMessage, getConvo, getMessages } = require('~/models');
 const {
   GENERATION_PROTOCOL_HEADER,
+  sanitizeDurableErrorMessage,
   negotiateNewGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('./protocol');
@@ -47,35 +48,6 @@ function sendGenerationJson(res, status, body, generationProtocolVersion) {
     res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   }
   return res.status(status).json({ ...body, generationProtocolVersion });
-}
-
-function getSafeDurableResumeErrorMessage(error) {
-  const fallback = 'Resume failed';
-  let message = typeof error?.message === 'string' && error.message ? error.message : fallback;
-  message = message
-    .replace(/https?:\/\/[^\s"'<>]+/giu, '[redacted-url]')
-    .replace(/\b(Bearer\s+)[^\s"'<>]+/giu, '$1[redacted]')
-    .replace(
-      /\b((?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password)\s*[:=]\s*)[^\s,;"'&]+/giu,
-      '$1[redacted]',
-    );
-  message = [...message]
-    .map((character) => {
-      const codePoint = character.codePointAt(0);
-      return codePoint != null &&
-        ((codePoint >= 0 && codePoint <= 0x1f) ||
-          (codePoint >= 0x7f && codePoint <= 0x9f) ||
-          codePoint === 0x2028 ||
-          codePoint === 0x2029)
-        ? ' '
-        : character;
-    })
-    .join('')
-    .trim();
-  if (!message) {
-    return fallback;
-  }
-  return message.length > 512 ? `${message.slice(0, 511)}…` : message;
 }
 
 /**
@@ -631,7 +603,7 @@ async function persistFailedResumedTurn({
   checkpointGeneration,
   error,
 }) {
-  const errorMessage = getSafeDurableResumeErrorMessage(error);
+  const errorMessage = sanitizeDurableErrorMessage(error, 'Resume failed');
   const terminalClaim = await GenerationJobManager.claimTerminalJob(
     streamId,
     'error',

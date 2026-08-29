@@ -2,6 +2,34 @@ const GENERATION_PROTOCOL_HEADER = 'x-librechat-generation-protocol';
 const GENERATION_PROTOCOL_V1 = 1;
 const GENERATION_PROTOCOL_V2 = 2;
 
+function sanitizeDurableErrorMessage(error, fallback) {
+  let message = typeof error?.message === 'string' && error.message ? error.message : fallback;
+  message = message
+    .replace(/https?:\/\/[^\s"'<>]+/giu, '[redacted-url]')
+    .replace(/\b(Bearer\s+)[^\s"'<>]+/giu, '$1[redacted]')
+    .replace(
+      /\b((?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password)\s*[:=]\s*)[^\s,;"'&]+/giu,
+      '$1[redacted]',
+    );
+  message = [...message]
+    .map((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint != null &&
+        ((codePoint >= 0 && codePoint <= 0x1f) ||
+          (codePoint >= 0x7f && codePoint <= 0x9f) ||
+          codePoint === 0x2028 ||
+          codePoint === 0x2029)
+        ? ' '
+        : character;
+    })
+    .join('')
+    .trim();
+  if (!message) {
+    return fallback;
+  }
+  return message.length > 512 ? `${message.slice(0, 511)}…` : message;
+}
+
 function parseProtocolVersion(value) {
   if (value === GENERATION_PROTOCOL_V1 || value === '1') {
     return GENERATION_PROTOCOL_V1;
@@ -69,6 +97,7 @@ module.exports = {
   GENERATION_PROTOCOL_HEADER,
   GENERATION_PROTOCOL_V1,
   GENERATION_PROTOCOL_V2,
+  sanitizeDurableErrorMessage,
   getRequestedGenerationProtocol,
   getServerGenerationProtocol,
   getJobGenerationProtocol,

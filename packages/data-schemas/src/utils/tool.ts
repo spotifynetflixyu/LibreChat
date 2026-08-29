@@ -85,7 +85,11 @@ function firstString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === 'string' && value.trim() !== '');
 }
 
-function hasFailureResult(toolCall: Record<string, unknown>, result: string): boolean {
+function hasFailureResult(
+  toolCall: Record<string, unknown>,
+  result: string,
+  parsed: Record<string, unknown> | undefined,
+): boolean {
   if (
     toolCall.runStepStatus === 'failed' ||
     toolCall.runStepStatus === 'cancelled' ||
@@ -95,7 +99,6 @@ function hasFailureResult(toolCall: Record<string, unknown>, result: string): bo
   ) {
     return true;
   }
-  const parsed = parseResult(result);
   if (!parsed) {
     return false;
   }
@@ -181,7 +184,7 @@ export function compactToolCallOutput(
     });
   }
   const dataSizeBytes = Buffer.byteLength(result, 'utf8');
-  if (!hasFailureResult(toolCall, result)) {
+  if (!hasFailureResult(toolCall, result, parsed)) {
     return JSON.stringify({ status: 'ok', dataSizeBytes });
   }
 

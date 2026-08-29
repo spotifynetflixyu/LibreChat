@@ -430,10 +430,6 @@ function buildOcrMainRuleItems(
     });
 }
 
-function buildOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
-  return buildOcrMainRuleItems(runtimeContext, ['ocr_main_merge', 'final_ocr_markdown']);
-}
-
 function buildDelegateOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
   return [
     ...sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrSharedRules).map(renderAgentRule),
@@ -455,7 +451,11 @@ export function buildSteelNativeInstructionPrefix({
           buildSlot('agent', 'Steel Agent Rules', []),
           buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
           buildSlot('output', 'Steel Output Rules', []),
-          buildSlot('other', 'Steel OCR Rules', buildOcrRuleItems(runtimeContext)),
+          buildSlot(
+            'other',
+            'Steel OCR Rules',
+            buildOcrMainRuleItems(runtimeContext, ['ocr_main_merge', 'final_ocr_markdown']),
+          ),
         ]
       : mode === 'delegate_ocr'
         ? [
