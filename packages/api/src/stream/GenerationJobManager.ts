@@ -3893,17 +3893,23 @@ class GenerationJobManagerClass {
     }
     // The successful CAS may follow a same-generation approval transition.
     // Use the snapshot that selected the winning source status so host-side
-    // content transforms see metadata committed by that transition.
-    jobData = currentAfterConflict ?? jobData;
+    // content transforms see metadata committed by that transition. Keep this
+    // exact snapshot as the terminal owner; a replacement may appear before
+    // the post-CAS metadata refresh and must never change the claim epoch.
+    const claimedJobData = currentAfterConflict ?? jobData;
+    jobData = claimedJobData;
     const terminalClaim: TerminalJobClaim = Object.freeze({
       streamId,
-      createdAt: jobData.createdAt,
-      ...(jobData.conversationId != null && { conversationId: jobData.conversationId }),
+      createdAt: claimedJobData.createdAt,
+      ...(claimedJobData.conversationId != null && {
+        conversationId: claimedJobData.conversationId,
+      }),
       status: 'aborted',
       persistencePending: true,
       drainedSteers: Object.freeze([...drainedSteers]),
     });
     this.terminalClaimRuntimes.set(terminalClaim, runtime ?? null);
+    let providerDrainConfirmed = false;
 
     try {
       const pendingSteers = drainedSteers.map(toPendingSteer);
@@ -3925,6 +3931,27 @@ class GenerationJobManagerClass {
         this.releaseAbortSubscription(runtime);
       }
       runtime?.abortController.abort();
+
+      if (options?.awaitProviderDrain) {
+        await this.waitForProviderDrainIfRequired(streamId, jobData);
+        providerDrainConfirmed = true;
+      }
+
+      // Metadata can be written after the initial snapshot while the terminal
+      // CAS is waiting (Steel history is one such writer). Refresh only when
+      // the exact epoch that won the CAS is still present so a replacement
+      // can never leak its response metadata into this terminal result.
+      try {
+        const refreshedJob = await this.jobStore.getJob(streamId);
+        if (refreshedJob?.createdAt === terminalClaim.createdAt) {
+          jobData = refreshedJob;
+        }
+      } catch (metadataError) {
+        logger.warn(
+          `[GenerationJobManager] Failed to refresh committed abort metadata for ${streamId}:`,
+          metadataError,
+        );
+      }
 
       // A chunk append racing the initial non-destructive snapshot either
       // commits before the terminal CAS or loses its own running-status guard.
@@ -4034,7 +4061,7 @@ class GenerationJobManagerClass {
       };
     } finally {
       try {
-        if (options?.awaitProviderDrain) {
+        if (options?.awaitProviderDrain && !providerDrainConfirmed) {
           await this.waitForProviderDrainIfRequired(streamId, jobData);
         }
       } finally {

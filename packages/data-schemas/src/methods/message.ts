@@ -1,6 +1,7 @@
 import { RetentionMode } from 'librechat-data-provider';
 import type { DeleteResult, FilterQuery, Model } from 'mongoose';
 import type { AppConfig, IMessage } from '~/types';
+import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
 import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { createFallbackRetentionDate } from '~/utils/retention';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
@@ -140,8 +141,9 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
 
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
+      const persistedParams = compactMessageToolResults(params as Record<string, unknown>);
       const update: Record<string, unknown> = {
-        ...params,
+        ...persistedParams,
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
@@ -248,7 +250,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       const bulkOps = messages.map((message) => ({
         updateOne: {
           filter: { messageId: message.messageId },
-          update: message,
+          update: compactMessageToolResults(message),
           timestamps: !overrideTimestamp,
           upsert: true,
         },
@@ -281,14 +283,14 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   }) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const message = {
+      const message = compactMessageToolResults({
         user,
         endpoint,
         messageId,
         conversationId,
         parentMessageId,
         ...rest,
-      };
+      });
 
       return await Message.findOneAndUpdate({ user, messageId }, message, {
         upsert: true,
@@ -363,6 +365,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   }): Promise<{ matched: boolean; unfinished: boolean }> {
     const stages: Record<string, unknown>[] = [];
     if (output !== undefined) {
+      const persistedOutput = compactToolCallOutput(output);
       stages.push({
         $set: {
           content: {
@@ -395,7 +398,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
                           $mergeObjects: [
                             '$$part.tool_call',
                             {
-                              output: { $literal: output },
+                              output: { $literal: persistedOutput },
                               ...(markBackgrounded === true ? { backgrounded: true } : {}),
                             },
                           ],
@@ -494,7 +497,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const { messageId, ...update } = message;
+      const { messageId, ...rawUpdate } = message;
+      const update = compactMessageToolResults(rawUpdate);
       const updatedMessage = await Message.findOneAndUpdate({ messageId, user: userId }, update, {
         new: true,
       });

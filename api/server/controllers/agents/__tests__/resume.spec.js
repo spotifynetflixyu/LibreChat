@@ -246,13 +246,15 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     mockGenerationJobManager.emitDone.mockResolvedValue(undefined);
     mockGenerationJobManager.emitError.mockResolvedValue(undefined);
     mockGenerationJobManager.emitChunk.mockResolvedValue(undefined);
-    mockGenerationJobManager.claimTerminalJob.mockResolvedValue({
-      streamId: CONVO_ID,
-      createdAt: 1000,
-      status: 'complete',
-      persistencePending: true,
-      drainedSteers: [],
-    });
+    mockGenerationJobManager.claimTerminalJob.mockImplementation(
+      async (streamId, status, _error, createdAt) => ({
+        streamId,
+        createdAt,
+        status,
+        persistencePending: true,
+        drainedSteers: [],
+      }),
+    );
     mockGenerationJobManager.publishTerminalClaim.mockImplementation(
       async (_claim, finalEvent) => ({
         finalEvent: finalEvent ?? {
@@ -1217,7 +1219,6 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
 
     it('publishes reconciliation instead of a normal FINAL when the resumed response save returns no row', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
-      mockGenerationJobManager.completeJob.mockResolvedValue(false);
       mockSaveMessage.mockResolvedValue(undefined);
 
       await post(approveBody());
@@ -1228,11 +1229,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledTimes(1);
       expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(claim, null);
       expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(claim);
-      expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        'Resumed response could not be persisted before terminal publication',
-        1000,
-      );
+      expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
       expect(mockDeleteAgentCheckpoint).toHaveBeenCalledTimes(1);
     });
 
@@ -1324,11 +1321,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
 
       const claim = await mockGenerationJobManager.claimTerminalJob.mock.results[0].value;
       expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(claim);
-      expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        'transport down',
-        1000,
-      );
+      expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
     });
 
     it('does not release the slot in the finally when the client already released it on pause', async () => {
@@ -2090,10 +2083,13 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
     });
 
-    it('resume failure delegates single-winner error publication and prunes the checkpoint', async () => {
+    it('resume failure persists the error metadata before publication and prunes the checkpoint', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
       mockInitializeClient.mockResolvedValue({
         client: makeClient({
+          buildResponseMetadata: jest.fn(() => ({
+            steelActivityEvents: [{ id: 'event-1', stage: 'preflight', status: 'error' }],
+          })),
           resumeCompletion: jest.fn().mockRejectedValue(new Error('boom')),
         }),
         userMCPAuthMap: {},
@@ -2105,14 +2101,47 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await flush();
 
       expect(mockGenerationJobManager.emitError).not.toHaveBeenCalled();
-      expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(CONVO_ID, 'boom', 1000);
+      expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
+        CONVO_ID,
+        'error',
+        'boom',
+        1000,
+        { persistencePending: true },
+      );
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: USER_ID }),
+        expect.objectContaining({
+          messageId: RESPONSE_MSG_ID,
+          text: 'boom',
+          error: true,
+          unfinished: false,
+          metadata: expect.objectContaining({
+            steelActivityEvents: [
+              expect.objectContaining({ id: 'event-1', stage: 'preflight', status: 'error' }),
+            ],
+          }),
+        }),
+        expect.objectContaining({
+          context: 'api/server/controllers/agents/resume.js - failed resume response',
+        }),
+      );
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+        expect.objectContaining({
+          final: true,
+          responseMessage: expect.objectContaining({ text: 'boom', error: true }),
+        }),
+      );
+      expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
       expect(mockDeleteAgentCheckpoint).toHaveBeenCalledWith(
         CONVO_ID,
         { type: 'mongo' },
         { threadId: CONVO_ID, checkpointIds: ['checkpoint-old'] },
       );
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
-      expect(mockSaveMessage).not.toHaveBeenCalled();
     });
 
     it('contains checkpoint deletion failure after winning ordinary resume-error finalization', async () => {
@@ -2131,7 +2160,6 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await settled;
       await flush();
 
-      expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(CONVO_ID, 'boom', 1000);
       expect(mockLogger.error).toHaveBeenCalledWith(
         '[ResumeAgentController] Failed to prune checkpoint after failed resume finalization',
         checkpointError,
@@ -2152,13 +2180,20 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       });
       // A fresh interrupt moved the same epoch back to requires_action before
       // the error path's terminal CAS. Its newly written checkpoint is live.
-      mockGenerationJobManager.completeJob.mockResolvedValue(false);
+      mockGenerationJobManager.claimTerminalJob.mockResolvedValueOnce(null);
 
       await post(approveBody());
       await settled;
       await flush();
 
-      expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(CONVO_ID, 'boom', 1000);
+      expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
+        CONVO_ID,
+        'error',
+        'boom',
+        1000,
+        { persistencePending: true },
+      );
+      expect(mockSaveMessage).not.toHaveBeenCalled();
       expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
     });
 
@@ -2171,16 +2206,40 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         userMCPAuthMap: {},
       });
       // An unconditional fallback update could overwrite a pause or replacement
-      // that won while completeJob was failing.
-      mockGenerationJobManager.completeJob.mockRejectedValue(new Error('complete failed'));
+      // when the exact-epoch terminal claim fails.
+      mockGenerationJobManager.claimTerminalJob.mockRejectedValue(new Error('claim failed'));
 
       await post(approveBody());
       await settled;
       await flush();
 
       expect(mockJobStore.updateJob).not.toHaveBeenCalled();
+      expect(mockSaveMessage).not.toHaveBeenCalled();
       expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
+    });
+
+    it('publishes reconciliation when the failed-resume row cannot be persisted', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          resumeCompletion: jest.fn().mockRejectedValue(new Error('boom')),
+        }),
+        userMCPAuthMap: {},
+      });
+      mockSaveMessage.mockResolvedValueOnce(undefined);
+
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+        null,
+      );
+      expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+      );
     });
   });
 });

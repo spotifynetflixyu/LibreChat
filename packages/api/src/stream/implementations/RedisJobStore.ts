@@ -43,6 +43,7 @@ import {
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { isResolvedDelegateOcrPolicy } from '~/steel/native/delegate';
+import { parseSteelNativeHistory } from '~/steel/native/events';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
 
@@ -4502,6 +4503,10 @@ export class RedisJobStore implements IJobStoreV2 {
       replayEvents: data.replayEvents || undefined,
       contextUsage: data.contextUsage || undefined,
       tokenUsage: data.tokenUsage || undefined,
+      steelHistory: (() => {
+        const history = parseSteelNativeHistory(data.steelHistory);
+        return history ? JSON.stringify(history) : undefined;
+      })(),
       pendingAction: this.parsePendingAction(data.pendingAction),
       resolvedAskUserQuestions: this.parseResolvedAskUserQuestions(data.resolvedAskUserQuestions),
       pendingActionId: data.pendingActionId || undefined,

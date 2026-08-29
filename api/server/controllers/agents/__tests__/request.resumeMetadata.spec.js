@@ -3172,18 +3172,14 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockStartupTelemetry.end).toHaveBeenCalledWith('aborted');
   });
 
-  it('awaits background error finalization before releasing the slot and always disposes', async () => {
+  it('persists an unexpected background error before releasing the slot', async () => {
     const generationError = new Error('generation failed');
-    let rejectCompletion;
-    let signalCompletionStarted;
-    const completionStarted = new Promise((resolve) => {
-      signalCompletionStarted = resolve;
-    });
-    mockGenerationJobManager.completeJob.mockImplementation(() => {
-      signalCompletionStarted();
-      return new Promise((_, reject) => {
-        rejectCompletion = reject;
-      });
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValueOnce({
+      streamId: 'conversation-123',
+      createdAt: 1000,
+      status: 'error',
+      persistencePending: true,
+      drainedSteers: [],
     });
     const client = {
       options: {},
@@ -3203,27 +3199,162 @@ describe('ResumableAgentController resume metadata', () => {
     const res = createResumableResponse();
 
     await AgentController(req, res, jest.fn(), initializeClient, null);
-    await completionStarted;
-
-    // completeJob owns both the terminal CAS and error publication; the
-    // controller must not publish before terminal ownership is established.
-    expect(mockGenerationJobManager.emitError).not.toHaveBeenCalled();
-    expect(mockDecrementPendingRequest).not.toHaveBeenCalled();
-    expect(mockDisposeClient).not.toHaveBeenCalled();
-
-    rejectCompletion(new Error('store failed'));
-    await nextTick();
-
-    expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
-      'conversation-123',
-      generationError.message,
-      1000,
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
+        'conversation-123',
+        'error',
+        generationError.message,
+        1000,
+        { persistencePending: true },
+      );
+    });
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+        expect.objectContaining({ final: true }),
+      );
+    });
+    expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error' }),
     );
-    expect(mockGenerationJobManager.completeJob.mock.invocationCallOrder[0]).toBeLessThan(
-      mockDecrementPendingRequest.mock.invocationCallOrder[0],
-    );
+    expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
     expect(mockDecrementPendingRequest).toHaveBeenCalledWith('user-123');
     expect(mockDisposeClient).toHaveBeenCalledWith(client);
+  });
+
+  it('redacts secrets and URLs before persisting an unexpected background error', async () => {
+    const generationError = new Error(
+      'provider failed at https://storage.test/file?token=secret Bearer provider-token\nretry',
+    );
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValueOnce({
+      streamId: 'conversation-123',
+      createdAt: 1000,
+      status: 'error',
+      persistencePending: true,
+      drainedSteers: [],
+    });
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(generationError),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail safely.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalled();
+    });
+
+    const safeError = 'provider failed at [redacted-url] Bearer [redacted] retry';
+    expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
+      'conversation-123',
+      'error',
+      safeError,
+      1000,
+      { persistencePending: true },
+    );
+    const savedErrorMessage = mockSaveMessage.mock.calls.find(([, message]) => message.error)?.[1];
+    expect(savedErrorMessage?.text).toBe(safeError);
+    expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error' }),
+      expect.objectContaining({ responseMessage: expect.objectContaining({ text: safeError }) }),
+    );
+  });
+
+  it('does not save rows when unexpected error terminal claim is lost', async () => {
+    const generationError = new Error('generation claim lost');
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValueOnce(null);
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(generationError),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Claim can be lost.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
+        'conversation-123',
+        'error',
+        generationError.message,
+        1000,
+        { persistencePending: true },
+      );
+    });
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockGenerationJobManager.publishTerminalClaim).not.toHaveBeenCalled();
+    expect(mockGenerationJobManager.finishTerminalJob).not.toHaveBeenCalled();
+  });
+
+  it('reconciles unexpected error when required row save fails', async () => {
+    const generationError = new Error('provider failed');
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValueOnce({
+      streamId: 'conversation-123',
+      createdAt: 1000,
+      status: 'error',
+      persistencePending: true,
+      drainedSteers: [],
+    });
+    mockSaveMessage.mockResolvedValueOnce(undefined);
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(generationError),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Persist failure.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+        null,
+      );
+    });
+    expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error' }),
+    );
   });
 
   it('claims terminal ownership before FINAL and always finishes the winning claim', async () => {

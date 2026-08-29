@@ -2157,6 +2157,27 @@ describe('buildAbortedResponseMetadata', () => {
     });
     expect(result?.summaryUsedTokens).toBe(300);
   });
+
+  it('restores canonical Steel activity and preflight history from the job', () => {
+    const history = {
+      activityEvents: [
+        { type: 'memory_saved', source: 'tool_result', message: 'Saved', savedCounts: { x: 1 } },
+      ],
+      preflightToolCalls: [],
+    };
+    const result = buildAbortedResponseMetadata({ steelHistory: JSON.stringify(history) });
+    expect(result?.steel).toEqual(history);
+  });
+
+  it('drops malformed or unsafe Steel history from abort metadata', () => {
+    const result = buildAbortedResponseMetadata({
+      steelHistory: JSON.stringify({
+        activityEvents: [{ type: 'memory_saved' }],
+        preflightToolCalls: [],
+      }),
+    });
+    expect(result).toBeUndefined();
+  });
 });
 
 describe('resolveAgentTokenConfig', () => {

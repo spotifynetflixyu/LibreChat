@@ -22,7 +22,7 @@ import type {
 
 export const steelNativeContextVersion = 1 as const;
 
-export const steelNativeContextModes = ['standard', 'ocr'] as const;
+export const steelNativeContextModes = ['standard', 'ocr', 'delegate_ocr'] as const;
 
 export type SteelNativeContextMode = (typeof steelNativeContextModes)[number];
 
@@ -79,6 +79,7 @@ export interface SteelNativeConversationInput {
 
 export interface SteelNativeContextAttachmentsInput {
   currentTurnFiles?: readonly SteelNativeFileReference[];
+  currentPaddleOcrStatuses?: readonly SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
   currentOcrFailures?: readonly SteelRuntimeJsonObject[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
@@ -281,6 +282,42 @@ function readNativeOcrFailureRange(
   return { pageStart, pageEnd };
 }
 
+function renderNativePaddleOcrStatus(result: SteelRuntimeJsonObject): string {
+  if (result.paddleocr !== 'ok' && result.paddleocr !== 'fail') {
+    return '';
+  }
+  const { safeFileKey } = readOcrFileKey(result);
+  if (!safeFileKey) {
+    return '';
+  }
+  const chunkIndex =
+    typeof result.chunkIndex === 'number' &&
+    Number.isSafeInteger(result.chunkIndex) &&
+    result.chunkIndex >= 1
+      ? result.chunkIndex
+      : 'unavailable';
+  const chunkCount =
+    typeof result.chunkCount === 'number' &&
+    Number.isSafeInteger(result.chunkCount) &&
+    result.chunkCount >= 1
+      ? result.chunkCount
+      : 'unavailable';
+  const range = readNativeOcrFailureRange(result);
+  return [
+    `paddleocr_status: ${result.paddleocr}`,
+    `file_key: ${safeFileKey}`,
+    `chunk_index: ${chunkIndex}`,
+    `chunk_count: ${chunkCount}`,
+    `page_range: ${
+      range
+        ? range.pageStart === range.pageEnd
+          ? range.pageStart
+          : `${range.pageStart}-${range.pageEnd}`
+        : 'unavailable'
+    }`,
+  ].join('\n');
+}
+
 function mergeNativeOcrFailureRanges(
   ranges: readonly { pageStart: number; pageEnd: number }[],
 ): { pageStart: number; pageEnd: number }[] {
@@ -370,23 +407,39 @@ function sortOcrRules(rules: readonly SteelAgentRule[]): SteelAgentRule[] {
     .map(({ rule }) => rule);
 }
 
-function buildOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
-  const { ocrSharedRules, ocrVisionRules, ocrMainRules } = runtimeContext.rules.otherGlobalRules;
-  const orderedRules: SteelAgentRule[] = [];
-  const seenRules = new Set<SteelAgentRule>();
-  for (const rule of [
-    ...sortOcrRules(ocrSharedRules),
-    ...sortOcrRules(ocrVisionRules),
-    ...sortOcrRules(ocrMainRules),
-  ]) {
-    if (seenRules.has(rule)) {
-      continue;
-    }
-    seenRules.add(rule);
-    orderedRules.push(rule);
-  }
+function buildOcrMainRuleItems(
+  runtimeContext: SteelRuntimeContext,
+  sections: readonly ('ocr_main_merge' | 'final_ocr_markdown')[],
+): string[] {
+  return sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrMainRules)
+    .map((rule) => {
+      const prompt = rule.prompt.trim();
+      const extracted = sections.flatMap((section) => {
+        const marker = new RegExp(`\\[${section}\\][\\s\\S]*?\\[\\/${section}\\]`, 'u').exec(
+          prompt,
+        )?.[0];
+        return marker ? [marker] : [];
+      });
+      if (extracted.length === 0) {
+        return '';
+      }
+      if (extracted.join('\n') === prompt) {
+        return renderAgentRule(rule);
+      }
+      return compactText([`## ${rule.title}`, extracted.join('\n')]).join('\n');
+    });
+}
 
-  return orderedRules.map(renderAgentRule);
+function buildOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  return buildOcrMainRuleItems(runtimeContext, ['ocr_main_merge', 'final_ocr_markdown']);
+}
+
+function buildDelegateOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  return [
+    ...sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrSharedRules).map(renderAgentRule),
+    ...sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrVisionRules).map(renderAgentRule),
+    ...buildOcrMainRuleItems(runtimeContext, ['final_ocr_markdown']),
+  ];
 }
 
 export function buildSteelNativeInstructionPrefix({
@@ -404,6 +457,17 @@ export function buildSteelNativeInstructionPrefix({
           buildSlot('output', 'Steel Output Rules', []),
           buildSlot('other', 'Steel OCR Rules', buildOcrRuleItems(runtimeContext)),
         ]
+      : mode === 'delegate_ocr'
+        ? [
+            buildSlot('agent', 'Steel Agent Rules', []),
+            buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
+            buildSlot('output', 'Steel Output Rules', []),
+            buildSlot(
+              'other',
+              'Steel Delegate OCR Rules',
+              buildDelegateOcrRuleItems(runtimeContext),
+            ),
+          ]
       : [
           buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.map(renderAgentRule)),
           buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
@@ -698,6 +762,30 @@ export function buildSteelNativeRuntimeContextText({
     ? `# Source attachment metadata\n${attachmentContext}`
     : '';
 
+  const paddleOcrStatusFileKeys = new Set<string>();
+  const paddleOcrStatusRangeKeys = new Set<string>();
+  for (const status of runtimeContext.attachments.currentPaddleOcrStatuses) {
+    const { safeFileKey } = readOcrFileKey(status);
+    if (!safeFileKey) {
+      continue;
+    }
+    paddleOcrStatusFileKeys.add(safeFileKey);
+    const range = readNativeOcrFailureRange(status);
+    if (range) {
+      paddleOcrStatusRangeKeys.add(`${safeFileKey}:${range.pageStart}-${range.pageEnd}`);
+    }
+  }
+  const hasPaddleOcrStatus = (
+    fileKey: string,
+    range?: { pageStart: number; pageEnd: number },
+  ): boolean =>
+    range
+      ? paddleOcrStatusRangeKeys.has(`${fileKey}:${range.pageStart}-${range.pageEnd}`)
+      : paddleOcrStatusFileKeys.has(fileKey);
+  const paddleOcrStatuses = runtimeContext.attachments.currentPaddleOcrStatuses
+    .map(renderNativePaddleOcrStatus)
+    .filter(Boolean)
+    .join('\n\n');
   const markdown = runtimeContext.attachments.currentOcrMarkdownResults
     .map((result) => {
       const content = typeof result.content === 'string' ? result.content.trim() : '';
@@ -713,7 +801,32 @@ export function buildSteelNativeRuntimeContextText({
           pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`,
         )
         .join(', ');
+      const statusPageRanges = preprocessing?.pageRanges.length
+        ? preprocessing.pageRanges
+        : [undefined];
+      const legacyPaddleOcrStatuses = safeFileKey
+        ? statusPageRanges
+            .map((range, index) =>
+              hasPaddleOcrStatus(safeFileKey, range)
+                ? ''
+                : [
+                    'paddleocr_status: ok',
+                    `file_key: ${safeFileKey}`,
+                    `chunk_index: ${index + 1}`,
+                    `page_range: ${
+                      range
+                        ? range.pageStart === range.pageEnd
+                          ? range.pageStart
+                          : `${range.pageStart}-${range.pageEnd}`
+                        : 'unavailable'
+                    }`,
+                  ].join('\n'),
+            )
+            .filter(Boolean)
+            .join('\n\n')
+        : '';
       return [
+        ...(mode === 'ocr' ? [] : [legacyPaddleOcrStatuses]),
         safeFileKey ? `file_key: ${safeFileKey}` : '',
         filename ? `source_filename: ${JSON.stringify(filename)}` : '',
         pageRangeText ? `page_ranges: ${pageRangeText}` : '',
@@ -726,14 +839,28 @@ export function buildSteelNativeRuntimeContextText({
     .filter(Boolean)
     .join('\n\n');
 
+  if (mode === 'ocr') {
+    const currentTurnOcrDirective = markdown
+      ? [
+          '# Current-turn OCR completion directive',
+          'Apply [ocr_main_merge] and [final_ocr_markdown].',
+          'Your final answer MUST contain only per-source consolidated OCR table(s), an optional `manual_review` section/table, and the required OCR completion summary.',
+          'Do not output page headings or page details. Do not output explanatory prose, bullet lists, calculations, or duplicate tables.',
+          'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',
+        ].join('\n')
+      : '';
+    return [markdown, currentTurnOcrDirective].filter(Boolean).join('\n\n');
+  }
+
   if (
-    mode !== 'ocr' ||
-    (runtimeContext.attachments.currentOcrMarkdownResults.length === 0 &&
-      runtimeContext.attachments.currentOcrFailures.length === 0)
+    runtimeContext.attachments.currentPaddleOcrStatuses.length === 0 &&
+    runtimeContext.attachments.currentOcrMarkdownResults.length === 0 &&
+    runtimeContext.attachments.currentOcrFailures.length === 0
   ) {
     return attachmentContextText;
   }
 
+  const paddleOcrFailures: string[] = [];
   const failuresByGroup = new Map<string, NativeOcrFailureGroup>();
   for (const failure of runtimeContext.attachments.currentOcrFailures) {
     const { safeFileKey } = readOcrFileKey(failure);
@@ -743,6 +870,34 @@ export function buildSteelNativeRuntimeContextText({
       .map(normalizeSafeSteelAiUrl)
       .find((value): value is string => value !== undefined);
     const stage = getNativeOcrFailureStage(failure);
+    if (stage === 'paddleocr') {
+      const range = readNativeOcrFailureRange(failure);
+      if (hasPaddleOcrStatus(fileKey, range)) {
+        continue;
+      }
+      const chunkIndex =
+        typeof failure.chunkIndex === 'number' &&
+        Number.isSafeInteger(failure.chunkIndex) &&
+        failure.chunkIndex >= 1
+          ? failure.chunkIndex
+          : 'unavailable';
+      paddleOcrFailures.push(
+        [
+          'ocr_failure_stage: paddleocr',
+          'paddleocr_status: fail',
+          `file_key: ${fileKey}`,
+          `chunk_index: ${chunkIndex}`,
+          `page_range: ${
+            range
+              ? range.pageStart === range.pageEnd
+                ? range.pageStart
+                : `${range.pageStart}-${range.pageEnd}`
+              : 'unavailable'
+          }`,
+        ].join('\n'),
+      );
+      continue;
+    }
     const groupKey = `${stage}\u0000${fileKey}\u0000${fileUrl ?? 'unavailable'}`;
     const current =
       failuresByGroup.get(groupKey) ?? {
@@ -757,32 +912,16 @@ export function buildSteelNativeRuntimeContextText({
     }
     failuresByGroup.set(groupKey, current);
   }
-  const failures = [...failuresByGroup.values()]
-    .map((failure) => {
-      const commonFields = [
-        `file_key: ${failure.fileKey}`,
-        `failed_page_ranges: ${renderNativeOcrFailureRanges(failure.ranges)}`,
-        `file_url: ${failure.fileUrl}`,
-      ];
-      return failure.stage === 'paddleocr'
-        ? [
-            'ocr_failure_stage: paddleocr',
-            'paddleocr_status: failed',
-            ...commonFields,
-          ].join('\n')
-        : [`ocr_failure_stage: ${failure.stage}`, ...commonFields].join('\n');
-    })
-    .join('\n\n');
-  const currentTurnOcrDirective = markdown
-    ? [
-        '# Current-turn OCR completion directive',
-        'Apply [ocr_main_merge] and [final_ocr_markdown].',
-        'Your final answer MUST contain only per-source consolidated OCR table(s), an optional `manual_review` section/table, and the required OCR completion summary.',
-        'Do not output page headings or page details. Do not output explanatory prose, bullet lists, calculations, or duplicate tables.',
-        'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',
-      ].join('\n')
-    : '';
-  return [attachmentContextText, failures, markdown, currentTurnOcrDirective]
+  const otherFailures = [...failuresByGroup.values()].map((failure) => {
+    const commonFields = [
+      `file_key: ${failure.fileKey}`,
+      `failed_page_ranges: ${renderNativeOcrFailureRanges(failure.ranges)}`,
+      `file_url: ${failure.fileUrl}`,
+    ];
+    return [`ocr_failure_stage: ${failure.stage}`, ...commonFields].join('\n');
+  });
+  const failures = [...paddleOcrFailures, ...otherFailures].join('\n\n');
+  return [attachmentContextText, paddleOcrStatuses, failures, markdown]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -799,6 +938,10 @@ export async function buildSteelGlobalAgentContext({
   const preparedRuntimeContext = await prepareRuntimeContext({
     conversation: toRuntimeConversationInput(conversation),
     attachments: {
+      currentPaddleOcrStatuses:
+        attachments?.currentPaddleOcrStatuses !== undefined
+          ? [...attachments.currentPaddleOcrStatuses]
+          : undefined,
       currentOcrMarkdownResults:
         attachments?.currentOcrMarkdownResults !== undefined
           ? [...attachments.currentOcrMarkdownResults]

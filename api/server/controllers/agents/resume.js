@@ -49,6 +49,35 @@ function sendGenerationJson(res, status, body, generationProtocolVersion) {
   return res.status(status).json({ ...body, generationProtocolVersion });
 }
 
+function getSafeDurableResumeErrorMessage(error) {
+  const fallback = 'Resume failed';
+  let message = typeof error?.message === 'string' && error.message ? error.message : fallback;
+  message = message
+    .replace(/https?:\/\/[^\s"'<>]+/giu, '[redacted-url]')
+    .replace(/\b(Bearer\s+)[^\s"'<>]+/giu, '$1[redacted]')
+    .replace(
+      /\b((?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password)\s*[:=]\s*)[^\s,;"'&]+/giu,
+      '$1[redacted]',
+    );
+  message = [...message]
+    .map((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint != null &&
+        ((codePoint >= 0 && codePoint <= 0x1f) ||
+          (codePoint >= 0x7f && codePoint <= 0x9f) ||
+          codePoint === 0x2028 ||
+          codePoint === 0x2029)
+        ? ' '
+        : character;
+    })
+    .join('')
+    .trim();
+  if (!message) {
+    return fallback;
+  }
+  return message.length > 512 ? `${message.slice(0, 511)}…` : message;
+}
+
 /**
  * How long a resume waits on best-effort steering bookkeeping before answering
  * anyway. The approval is already consumed by that point, so a stalled Redis
@@ -351,6 +380,7 @@ async function finalizeResumedTurn({
   conversationId,
   addTitle,
   checkpointGeneration,
+  terminalState,
 }) {
   const userId = req.user.id;
   const checkpointerCfg = req.config?.endpoints?.[EModelEndpoint.agents]?.checkpointer;
@@ -486,6 +516,7 @@ async function finalizeResumedTurn({
     );
     return;
   }
+  terminalState.claimed = true;
   let terminalPublicationStarted = false;
   try {
     const savedResponseMessage = await saveMessage(
@@ -588,6 +619,129 @@ async function finalizeResumedTurn({
       });
     }
   }
+}
+
+async function persistFailedResumedTurn({
+  req,
+  client,
+  job,
+  streamId,
+  conversationId,
+  checkpointerCfg,
+  checkpointGeneration,
+  error,
+}) {
+  const errorMessage = getSafeDurableResumeErrorMessage(error);
+  const terminalClaim = await GenerationJobManager.claimTerminalJob(
+    streamId,
+    'error',
+    errorMessage,
+    job.createdAt,
+    { persistencePending: true },
+  );
+  if (!terminalClaim) {
+    return false;
+  }
+
+  let terminalPublicationStarted = false;
+  try {
+    const userId = req.user.id;
+    const meta = job.metadata ?? {};
+    const responseMessageId = meta.responseMessageId ?? client?.responseMessageId;
+    const userMessage = meta.userMessage;
+    if (!responseMessageId || !userMessage?.messageId) {
+      throw new Error('Failed resume message identity was unavailable');
+    }
+
+    const clientMetadata = client?.buildResponseMetadata?.() ?? null;
+    const cumulativeMetadata = buildAbortedResponseMetadata(job);
+    const responseMetadata = {
+      ...(clientMetadata ?? {}),
+      ...(cumulativeMetadata?.usage ? { usage: cumulativeMetadata.usage } : {}),
+      ...(cumulativeMetadata?.summaryUsedTokens != null
+        ? { summaryUsedTokens: cumulativeMetadata.summaryUsedTokens }
+        : {}),
+    };
+    const metadata = await mergePersistedSteelActivityMetadata({
+      responseMetadata,
+      conversationId,
+      responseMessageId,
+    });
+    const responseMessage = {
+      messageId: responseMessageId,
+      parentMessageId: userMessage.messageId,
+      conversationId,
+      sender: meta.sender ?? client?.sender ?? 'AI',
+      endpoint: meta.endpoint,
+      iconURL: meta.iconURL,
+      model: meta.model,
+      text: errorMessage,
+      unfinished: false,
+      error: true,
+      isCreatedByUser: false,
+      user: userId,
+      ...(Object.keys(metadata).length > 0 && { metadata }),
+    };
+    const savedResponseMessage = await saveMessage(
+      {
+        userId,
+        isTemporary: meta.isTemporary ?? req.body?.isTemporary,
+        interfaceConfig: req?.config?.interfaceConfig,
+      },
+      responseMessage,
+      { context: 'api/server/controllers/agents/resume.js - failed resume response' },
+    );
+    if (!savedResponseMessage) {
+      throw new Error('Failed resume response could not be persisted');
+    }
+
+    const persistedConversation = await getConvo(userId, conversationId);
+    const conversation = { ...(persistedConversation ?? {}), conversationId };
+    conversation.title = conversation.title || 'New Chat';
+    const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
+    const finalEvent = {
+      final: true,
+      conversation,
+      title: conversation.title,
+      requestMessage: sanitizeMessageForTransmit({
+        ...userMessage,
+        conversationId,
+        isCreatedByUser: true,
+      }),
+      responseMessage,
+      ...(pendingSteers.length > 0 && { pendingSteers }),
+    };
+    terminalPublicationStarted = true;
+    await GenerationJobManager.publishTerminalClaim(terminalClaim, finalEvent);
+  } catch (persistenceError) {
+    if (!terminalPublicationStarted) {
+      try {
+        await GenerationJobManager.publishTerminalClaim(terminalClaim, null);
+      } catch (publishError) {
+        logger.error(
+          '[ResumeAgentController] Failed to publish failed-resume reconciliation',
+          publishError,
+        );
+      }
+    }
+    logger.error('[ResumeAgentController] Failed to persist resume error response', persistenceError);
+  } finally {
+    try {
+      await GenerationJobManager.finishTerminalJob(terminalClaim);
+    } catch (finishError) {
+      logger.error('[ResumeAgentController] Failed to finish resume-error terminal claim', finishError);
+    }
+    await deleteFailedResumeCheckpoint(
+      {
+        conversationId,
+        checkpointerCfg,
+        job,
+        checkpointGeneration,
+      },
+      'failed resume finalization',
+    );
+  }
+  return true;
 }
 
 /**
@@ -930,6 +1084,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
   // request-scoped connections. Pre-seeding with a null `res` + `cleanupOnResponse:false`
   // mirrors the normal stream path (request.js); torn down in the `finally` below.
   req._resumableStreamId = streamId;
+  req._resumableJobCreatedAt = job.createdAt;
   getMCPRequestContext(req, undefined, { cleanupOnResponse: false });
 
   // ACK immediately; the continuation streams over the client's existing SSE.
@@ -1020,6 +1175,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
    * failed pause may have lost ownership to a newer action or generation. */
   let pausePersistenceFailed = false;
   let pausePersistenceFailureFinalized = false;
+  const terminalState = { claimed: false };
   try {
     if (
       !(await GenerationJobManager.beginProviderExecution(
@@ -1172,6 +1328,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       conversationId,
       addTitle,
       checkpointGeneration,
+      terminalState,
     });
   } catch (err) {
     logger.error('[ResumeAgentController] Resume failed', err);
@@ -1192,47 +1349,22 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       }
       return;
     }
-    // Job-replacement guard (mirrors finalizeResumedTurn's success-path guard): if a
-    // newer request reused this conversationId while the resume was failing, do NOT emit
-    // the error to / complete / prune the NEWER turn's job. The finally still releases
-    // the slot + disposes. Proceed with finalization if the replacement check itself fails.
-    let stillLive = true;
-    try {
-      const liveJob = await GenerationJobManager.getJobStore().getJob(streamId);
-      stillLive = !!liveJob && liveJob.createdAt === job.createdAt;
-    } catch (readErr) {
-      logger.warn('[ResumeAgentController] Replacement check failed; finalizing anyway', readErr);
+    if (terminalState.claimed) {
+      return;
     }
-    if (!stillLive) {
-      logger.warn(
-        `[ResumeAgentController] Skipping failed-resume finalization — job ${streamId} was replaced`,
-      );
-    } else {
-      // completeJob atomically claims running -> error and parks steers before
-      // publishing. If abort or a re-pause won, it returns false; only the
-      // terminal-CAS winner may delete this generation's checkpoint scope.
-      let errorFinalized = false;
-      try {
-        errorFinalized =
-          (await GenerationJobManager.completeJob(
-            streamId,
-            err?.message ?? 'Resume failed',
-            job.createdAt,
-          )) === true;
-      } catch (completeErr) {
-        logger.error('[ResumeAgentController] Failed to finalize failed resume', completeErr);
-      }
-      if (errorFinalized) {
-        await deleteFailedResumeCheckpoint(
-          {
-            conversationId,
-            checkpointerCfg,
-            job,
-            checkpointGeneration,
-          },
-          'failed resume finalization',
-        );
-      }
+    try {
+      await persistFailedResumedTurn({
+        req,
+        client,
+        job,
+        streamId,
+        conversationId,
+        checkpointerCfg,
+        checkpointGeneration,
+        error: err,
+      });
+    } catch (persistenceError) {
+      logger.error('[ResumeAgentController] Failed to finalize failed resume', persistenceError);
     }
   } finally {
     try {

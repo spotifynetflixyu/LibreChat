@@ -100,6 +100,7 @@ const preflightToolCall = {
   id: 'paddle-1',
   name: 'paddleocr_vl---PaddleOCR',
   args: {
+    input_data: 'https://files.example.test/chunk.pdf?signature=full-debug-value',
     output_mode: 'detailed' as const,
     return_images: false,
     use_doc_orientation_classify: true,
@@ -107,7 +108,8 @@ const preflightToolCall = {
     use_layout_detection: true,
   },
   output: JSON.stringify({
-    status: 'completed',
+    status: 'ok',
+    paddleocr: 'ok',
     ocrEngine: 'paddleocr_vl',
     ocrFileKey: 'ocr-1',
     filename: 'scan.pdf',
@@ -115,9 +117,7 @@ const preflightToolCall = {
     chunkCount: 1,
     pageStart: 1,
     pageEnd: 2,
-    rawTextLength: 3,
-    rawResultHash: 'hash',
-    outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+    dataSizeBytes: 3,
   }),
   progress: 1 as const,
 };
@@ -196,6 +196,10 @@ describe('ContentRender Steel history hydration', () => {
       type: ToolCallTypes.TOOL_CALL,
       id: 'paddle-1',
       name: 'paddleocr_vl---PaddleOCR',
+      args: expect.objectContaining({
+        input_data: 'https://files.example.test/chunk.pdf?signature=full-debug-value',
+      }),
+      output: preflightToolCall.output,
     });
 
     const passedRow = mockMessageRow.mock.calls[0][0] as { processingStartedAt?: string };

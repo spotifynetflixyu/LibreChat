@@ -218,20 +218,34 @@ describe('GenerationJobManager startup telemetry', () => {
       manager.beginProviderExecution(streamId, job.createdAt, job.metadata.providerExecutionId!),
     ).resolves.toBe(true);
     let abortSettled = false;
+    const beforePublish = jest.fn();
     const aborting = manager
-      .abortJob(streamId, { awaitProviderDrain: true })
+      .abortJob(streamId, { awaitProviderDrain: true, beforePublish })
       .finally(() => (abortSettled = true));
 
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(job.abortController.signal.aborted).toBe(true);
     expect(abortSettled).toBe(false);
+    expect(beforePublish).not.toHaveBeenCalled();
+
+    await manager.updateMetadata(
+      streamId,
+      { steelHistory: { activityEvents: [], preflightToolCalls: [] } },
+      job.createdAt,
+    );
 
     await manager.markProviderExecutionDrained(
       streamId,
       job.createdAt,
       job.metadata.providerExecutionId!,
     );
-    await expect(aborting).resolves.toMatchObject({ success: true });
+    await expect(aborting).resolves.toMatchObject({
+      success: true,
+      jobData: expect.objectContaining({
+        steelHistory: JSON.stringify({ activityEvents: [], preflightToolCalls: [] }),
+      }),
+    });
+    expect(beforePublish).toHaveBeenCalledTimes(1);
     expect(abortSettled).toBe(true);
     await manager.destroy();
   });
@@ -2052,6 +2066,73 @@ describe('GenerationJobManager startup telemetry', () => {
       });
     } finally {
       releaseCompletionCas?.();
+      await manager.destroy();
+    }
+  });
+
+  it('refreshes abort metadata committed before the terminal CAS completes', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const manager = new GenerationJobManagerClass();
+    manager.configure({
+      jobStore,
+      eventTransport: new InMemoryEventTransport(),
+      isRedis: false,
+      cleanupOnComplete: false,
+    });
+    manager.initialize();
+
+    const originalGetJob = jobStore.getJob.bind(jobStore);
+    const originalTransition = jobStore.transitionStatusAndDrainSteers.bind(jobStore);
+    let signalAbortAtCas: (() => void) | undefined;
+    const abortAtCas = new Promise<void>((resolve) => {
+      signalAbortAtCas = resolve;
+    });
+    let releaseAbortCas: (() => void) | undefined;
+    const abortCasGate = new Promise<void>((resolve) => {
+      releaseAbortCas = resolve;
+    });
+
+    try {
+      const streamId = 'stream-abort-history-metadata-race';
+      const job = await manager.createJob(streamId, 'user-1', streamId);
+      await jobStore.updateJob(streamId, { steelHistory: 'before-cas' }, job.createdAt);
+
+      // Redis returns a fresh object from each read. Clone in-memory reads so
+      // this regression test exercises the same snapshot semantics.
+      jest.spyOn(jobStore, 'getJob').mockImplementation(async (id) => {
+        const current = await originalGetJob(id);
+        return current ? { ...current } : null;
+      });
+      jest
+        .spyOn(jobStore, 'transitionStatusAndDrainSteers')
+        .mockImplementation(async (...args) => {
+          signalAbortAtCas?.();
+          await abortCasGate;
+          return originalTransition(...args);
+        });
+
+      const beforePublish = jest.fn(async () => undefined);
+      const aborting = manager.abortJob(streamId, {
+        expectedCreatedAt: job.createdAt,
+        beforePublish,
+      });
+      await abortAtCas;
+
+      await jobStore.updateJob(streamId, { steelHistory: 'after-cas' }, job.createdAt);
+      releaseAbortCas?.();
+
+      const result = await aborting;
+      expect(result).toMatchObject({
+        success: true,
+        jobData: expect.objectContaining({ steelHistory: 'after-cas' }),
+      });
+      expect(beforePublish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          jobData: expect.objectContaining({ steelHistory: 'after-cas' }),
+        }),
+      );
+    } finally {
+      releaseAbortCas?.();
       await manager.destroy();
     }
   });

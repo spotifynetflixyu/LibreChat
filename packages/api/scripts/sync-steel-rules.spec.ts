@@ -328,7 +328,7 @@ describe('Steel rule sources', () => {
     expect(builtRules[mainFlowIndex]).toMatchObject({
       title: 'OCR 流程與 Markdown 輸出規則',
       priority: 38,
-      ruleSections: ['ocr_main_flow', 'ocr_vision', 'ocr_main_merge', 'final_ocr_markdown'],
+      ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'other_global_rules'],
       },

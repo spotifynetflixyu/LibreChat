@@ -26,7 +26,7 @@ const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio
 
 const smokeFileUrl = process.argv[2];
 const minTextChars = Number(process.env.PADDLEOCR_SMOKE_MIN_TEXT_CHARS ?? 10);
-const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'markdown';
+const outputMode = process.env.PADDLEOCR_SMOKE_OUTPUT_MODE || 'detailed';
 const maxNewTokens = Number(process.env.PADDLEOCR_SMOKE_MAX_NEW_TOKENS ?? 2048);
 const toolName = process.env.PADDLEOCR_SMOKE_TOOL_NAME || 'paddleocr_vl';
 const serverName = process.env.PADDLEOCR_SMOKE_MCP_SERVER_NAME || 'PaddleOCR';

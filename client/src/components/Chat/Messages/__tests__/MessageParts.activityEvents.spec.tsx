@@ -153,6 +153,7 @@ describe('MessageParts Steel activity metadata', () => {
       id: 'paddle-1',
       name: 'paddleocr_vl---PaddleOCR',
       args: {
+        input_data: 'https://files.example.test/chunk.pdf?signature=full-debug-value',
         output_mode: 'detailed',
         return_images: false,
         use_doc_orientation_classify: true,
@@ -160,7 +161,8 @@ describe('MessageParts Steel activity metadata', () => {
         use_layout_detection: true,
       },
       output: JSON.stringify({
-        status: 'completed',
+        status: 'ok',
+        paddleocr: 'ok',
         ocrEngine: 'paddleocr_vl',
         ocrFileKey: 'ocr-1',
         filename: 'scan.pdf',
@@ -168,9 +170,7 @@ describe('MessageParts Steel activity metadata', () => {
         chunkCount: 1,
         pageStart: 1,
         pageEnd: 2,
-        rawTextLength: 3,
-        rawResultHash: 'hash',
-        outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+        dataSizeBytes: 3,
       }),
       progress: 1,
     };
@@ -188,8 +188,145 @@ describe('MessageParts Steel activity metadata', () => {
     const passed = mockContentParts.mock.calls[0][0];
     expect(passed.content).toHaveLength(2);
     expect(passed.content[0][ContentTypes.TOOL_CALL].name).toBe('paddleocr_vl---PaddleOCR');
+    expect(passed.content[0][ContentTypes.TOOL_CALL].args.input_data).toBe(
+      'https://files.example.test/chunk.pdf?signature=full-debug-value',
+    );
+    expect(passed.content[0][ContentTypes.TOOL_CALL].runStepStatus).toBe('completed');
     expect(passed.content[1]).toBe(existing);
     expect(passed.persistedActivityEvents).toHaveLength(1);
+  });
+
+  it('hydrates structured PaddleOCR failures with bounded diagnostics', () => {
+    const failure = {
+      type: 'tool_call',
+      id: 'paddle-failure-1',
+      name: 'paddleocr_vl---PaddleOCR',
+      args: {
+        input_data: 'uploads/user/scan.pdf',
+        output_mode: 'detailed',
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      output: JSON.stringify({
+        status: 'fail',
+        paddleocr: 'fail',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'ocr-failure-1',
+        filename: 'scan.pdf',
+        chunkIndex: 0,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 2,
+        dataSizeBytes: 0,
+        attemptsUsed: 2,
+        error: 'PaddleOCR timed out while processing pages 1-2',
+        errorCode: 'ai_studio_timeout',
+        errorMessage: 'PaddleOCR timed out while processing pages 1-2',
+      }),
+      progress: 1,
+    };
+
+    const unsafeFailure = {
+      ...failure,
+      id: 'paddle-failure-unsafe-url',
+      output: JSON.stringify({
+        ...JSON.parse(failure.output),
+        error: 'PaddleOCR failed',
+        errorMessage: 'PaddleOCR failed: https://secret.example.test/details',
+      }),
+    };
+
+    renderMessage({ steel: { preflightToolCalls: [failure, unsafeFailure] } });
+
+    const passed = mockContentParts.mock.calls[0][0];
+    expect(passed.content).toHaveLength(1);
+    expect(passed.content[0][ContentTypes.TOOL_CALL]).toMatchObject({
+      id: 'paddle-failure-1',
+      output: failure.output,
+      runStepStatus: 'failed',
+    });
+  });
+
+  it('retains historical PaddleOCR successes without the status marker', () => {
+    const historical = {
+      type: 'tool_call',
+      id: 'paddle-historical-1',
+      name: 'paddleocr_vl---PaddleOCR',
+      args: {
+        output_mode: 'detailed',
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      output: JSON.stringify({
+        status: 'completed',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'ocr-historical-1',
+        filename: 'scan.pdf',
+        chunkIndex: 0,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 2,
+        rawTextLength: 3,
+        rawResultHash: 'hash',
+        outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+      }),
+      progress: 1,
+    };
+
+    renderMessage({ steel: { preflightToolCalls: [historical] } });
+
+    expect(mockContentParts.mock.calls[0][0].content).toHaveLength(1);
+  });
+
+  it('hydrates oversized params but rejects oversized results', () => {
+    const oversizedParams = {
+      type: 'tool_call',
+      id: 'paddle-oversized-1',
+      name: 'paddleocr_vl---PaddleOCR',
+      args: {
+        input_data: 'x'.repeat(16 * 1024 + 1),
+        output_mode: 'detailed',
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      output: JSON.stringify({
+        status: 'ok',
+        paddleocr: 'ok',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'ocr-oversized-1',
+        filename: 'scan.pdf',
+        chunkIndex: 0,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 2,
+        dataSizeBytes: 3,
+      }),
+      progress: 1,
+    };
+
+    renderMessage({ steel: { preflightToolCalls: [oversizedParams] } });
+
+    expect(mockContentParts.mock.calls[0][0].content).toHaveLength(1);
+    expect(mockContentParts.mock.calls[0][0].content[0][ContentTypes.TOOL_CALL].args.input_data).toBe(
+      oversizedParams.args.input_data,
+    );
+
+    const oversizedResult = {
+      ...oversizedParams,
+      id: 'paddle-oversized-result-1',
+      output: 'x'.repeat(4 * 1024 + 1),
+    };
+
+    mockContentParts.mockClear();
+    renderMessage({ steel: { preflightToolCalls: [oversizedResult] } });
+
+    expect(mockContentParts.mock.calls[0][0].content).toEqual([]);
   });
 
   it('drops malformed and duplicate preflight cards when existing content wins', () => {

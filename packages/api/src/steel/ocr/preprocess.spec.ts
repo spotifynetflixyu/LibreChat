@@ -23,6 +23,10 @@ function emptyState(input: {
   };
 }
 
+function tableMarkdown(value: string): string {
+  return `| result |\n| --- |\n| ${value} |`;
+}
+
 function adaptiveSplitEligibleError(message: string) {
   const error = new Error(message) as Error & { ocrAdaptiveSplitEligible: boolean };
   error.ocrAdaptiveSplitEligible = true;
@@ -55,7 +59,7 @@ function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
       {
         ...rawState.chunks[0],
         organizedSaved: true,
-        organizedMarkdown: 'organized markdown',
+        organizedMarkdown: tableMarkdown('organized markdown'),
       },
     ],
   };
@@ -102,6 +106,215 @@ function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
 }
 
 describe('OCR preprocessing orchestrator', () => {
+  it('pairs each chunk raw text with its own signed artifact and stores tables only', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 100 });
+    const baseState = emptyState({
+      ocrFileKey: 'file:paired',
+      sourcePdfKey: 'uploads/paired.pdf',
+      ocrRuleVersion: 'rules-v2',
+      chunkCount: chunks.length,
+    });
+    const rawState: OcrPreprocessingState = {
+      ...baseState,
+      chunks: chunks.map((chunk) => ({
+        ...chunk,
+        rawSaved: true,
+        organizedSaved: false,
+        rawResultHash: `hash-${chunk.chunkIndex}`,
+        rawOcrText: `raw chunk ${chunk.chunkIndex}`,
+      })),
+    };
+    const organizedState: OcrPreprocessingState = {
+      ...rawState,
+      chunks: rawState.chunks.map((chunk) => ({
+        ...chunk,
+        organizedSaved: true,
+        organizedMarkdown: `| file | value |\n| --- | --- |\n| ${chunk.chunkIndex} | organized |`,
+      })),
+    };
+    const memory = {
+      readOcrPreprocessingState: jest
+        .fn()
+        .mockResolvedValueOnce(rawState)
+        .mockResolvedValueOnce(rawState)
+        .mockResolvedValueOnce(organizedState),
+      capturePaddleOcrChunkResult: jest.fn(),
+      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
+        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
+      }),
+    };
+    const organizer = {
+      organize: jest.fn(async ({ rawOcrText, artifactUrl }) => ({
+        markdown: [
+          `prose for ${rawOcrText}`,
+          `| file | value |`,
+          `| --- | --- |`,
+          `| ${rawOcrText} | ${artifactUrl} |`,
+          `| canonical | ${new URL(artifactUrl).origin}${new URL(artifactUrl).pathname} |`,
+          `| encoded | ${encodeURIComponent(`${new URL(artifactUrl).origin}${new URL(artifactUrl).pathname}`)} |`,
+          `| reordered | ${new URL(artifactUrl).origin}${new URL(artifactUrl).pathname}?expires=123&signature=reordered |`,
+          `| raw-path-encoded-query | ${new URL(artifactUrl).origin}${new URL(artifactUrl).pathname}%3Fsignature%3Dcross-encoded |`,
+          `| encoded-path-raw-query | ${encodeURIComponent(`${new URL(artifactUrl).origin}${new URL(artifactUrl).pathname}`)}?signature=cross-raw |`,
+          `| supplier | https://supplier.example/catalog/part-1 |`,
+        ].join('\n'),
+      })),
+    };
+    const artifacts = {
+      ensurePdfChunkArtifacts: jest.fn(async () =>
+        chunks.map((chunk) => ({
+          ...chunk,
+          filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf?signature=secret`,
+          storageKey: `chunks/chunk-${chunk.chunkIndex}.pdf`,
+        })),
+      ),
+    };
+
+    await runOcrPreprocessingPipeline({
+      conversationId: 'steel_conversation_pairing',
+      file: {
+        ocrFileKey: 'file:paired',
+        fileId: 'paired',
+        filename: 'paired.pdf',
+        mediaType: 'application/pdf',
+        sourcePdfKey: 'uploads/paired.pdf',
+      },
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      chunks,
+      artifacts,
+      memory,
+      organizer,
+      paddleOcr: { runChunk: jest.fn() },
+    });
+
+    expect(organizer.organize).toHaveBeenCalledTimes(2);
+    expect(organizer.organize.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({
+        rawOcrText: 'raw chunk 1',
+        artifactUrl: 'https://cdn.example/chunk-1.pdf?signature=secret',
+        mediaType: 'application/pdf',
+        pageStart: 1,
+        pageEnd: 50,
+      }),
+      expect.objectContaining({
+        rawOcrText: 'raw chunk 2',
+        artifactUrl: 'https://cdn.example/chunk-2.pdf?signature=secret',
+        mediaType: 'application/pdf',
+        pageStart: 51,
+        pageEnd: 100,
+      }),
+    ]);
+    expect(memory.captureOcrPreprocessingChunkMarkdown.mock.calls).toEqual(
+      expect.arrayContaining([
+        [expect.objectContaining({ content: expect.not.stringContaining('prose for') })],
+        [expect.objectContaining({ content: expect.not.stringContaining('https://cdn.example') })],
+        [expect.objectContaining({ content: expect.not.stringContaining('https%3A%2F%2F') })],
+        [expect.objectContaining({ content: expect.not.stringContaining('signature=') })],
+        [expect.objectContaining({ content: expect.not.stringContaining('expires=') })],
+        [expect.objectContaining({ content: expect.not.stringContaining('signature%3D') })],
+        [expect.objectContaining({ content: expect.not.stringContaining('cross-raw') })],
+        [
+          expect.objectContaining({
+            content: expect.stringContaining('https://supplier.example/catalog/part-1'),
+          }),
+        ],
+      ]),
+    );
+  });
+
+  it('uses the refreshed artifact from the successful PaddleOCR attempt for persistence and Organizer Vision', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 1 });
+    const chunk = chunks[0]!;
+    const baseState = emptyState({
+      ocrFileKey: 'file:refreshed',
+      sourcePdfKey: 'uploads/refreshed.pdf',
+      ocrRuleVersion: 'rules-v2',
+      chunkCount: 1,
+    });
+    const rawState: OcrPreprocessingState = {
+      ...baseState,
+      chunks: [
+        {
+          ...chunk,
+          rawSaved: true,
+          organizedSaved: false,
+          rawResultHash: 'hash-refreshed',
+          rawOcrText: 'raw refreshed OCR',
+        },
+      ],
+    };
+    const organizedState: OcrPreprocessingState = {
+      ...rawState,
+      chunks: [
+        {
+          ...rawState.chunks[0],
+          organizedSaved: true,
+          organizedMarkdown: tableMarkdown('organized refreshed OCR'),
+        },
+      ],
+    };
+    const originalArtifact = {
+      ...chunk,
+      filepath: 'https://cdn.example/refreshed.pdf?signature=old',
+      storageKey: 'chunks/refreshed.pdf',
+      source: 's3' as const,
+    };
+    const refreshedArtifact = {
+      ...originalArtifact,
+      filepath: 'https://cdn.example/refreshed.pdf?signature=new',
+    };
+    const memory = {
+      readOcrPreprocessingState: jest
+        .fn()
+        .mockResolvedValueOnce(baseState)
+        .mockResolvedValueOnce(rawState)
+        .mockResolvedValueOnce(organizedState),
+      capturePaddleOcrChunkResult: jest.fn().mockResolvedValue({ savedCounts: {} }),
+      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({ savedCounts: {} }),
+    };
+    const organizer = {
+      organize: jest.fn().mockResolvedValue({ markdown: tableMarkdown('organized refreshed OCR') }),
+    };
+
+    await runOcrPreprocessingPipeline({
+      conversationId: 'steel_conversation_refreshed',
+      file: {
+        ocrFileKey: 'file:refreshed',
+        fileId: 'refreshed',
+        filename: 'refreshed.pdf',
+        mediaType: 'application/pdf',
+        sourcePdfKey: 'uploads/refreshed.pdf',
+      },
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      chunks,
+      artifacts: {
+        ensurePdfChunkArtifacts: jest.fn().mockResolvedValue([originalArtifact]),
+      },
+      memory,
+      organizer,
+      paddleOcr: {
+        runChunk: jest.fn().mockResolvedValue({
+          rawResult: { content: 'raw refreshed OCR' },
+          rawOcrText: 'raw refreshed OCR',
+          rawResultHash: 'hash-refreshed',
+          artifact: refreshedArtifact,
+        }),
+      },
+    });
+
+    expect(memory.capturePaddleOcrChunkResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chunk: expect.objectContaining({
+          pdfChunk: expect.objectContaining({ filepath: refreshedArtifact.filepath }),
+        }),
+      }),
+    );
+    expect(organizer.organize).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactUrl: refreshedArtifact.filepath }),
+    );
+  });
+
   it('runs all message PaddleOCR chunks before any organizer chunk across multiple files', async () => {
     const firstChunk = buildPdfPageChunks({ pageCount: 1 });
     const secondChunk = buildPdfPageChunks({ pageCount: 1 });
@@ -194,7 +407,7 @@ describe('OCR preprocessing orchestrator', () => {
       organize: jest.fn(async (input) => {
         calls.push(`organize:${input.rawOcrText}`);
         return {
-          markdown: `organized ${input.rawOcrText.replace('raw ', '')}`,
+          markdown: tableMarkdown(`organized ${input.rawOcrText.replace('raw ', '')}`),
         };
       }),
     };
@@ -271,6 +484,7 @@ describe('OCR preprocessing orchestrator', () => {
       rawOcrText: 'raw a',
       sourceFile: 'a.pdf',
       fileKey: 'file:file-a',
+      artifactUrl: 'https://cdn.example/a-1.pdf',
       pageStart: 1,
       pageEnd: 1,
       chunkIndex: 1,
@@ -281,6 +495,7 @@ describe('OCR preprocessing orchestrator', () => {
       rawOcrText: 'raw b',
       sourceFile: 'b.pdf',
       fileKey: 'file:file-b',
+      artifactUrl: 'https://cdn.example/b-1.pdf',
       pageStart: 1,
       pageEnd: 1,
       chunkIndex: 1,
@@ -319,9 +534,11 @@ describe('OCR preprocessing orchestrator', () => {
     };
     const organizedState = {
       ...state,
-      chunks: [{ ...state.chunks[0], organizedSaved: true, organizedMarkdown: 'organized photo' }],
+      chunks: [
+        { ...state.chunks[0], organizedSaved: true, organizedMarkdown: tableMarkdown('organized photo') },
+      ],
     };
-    const organizer = { organize: jest.fn(async () => ({ markdown: 'organized photo' })) };
+    const organizer = { organize: jest.fn(async () => ({ markdown: tableMarkdown('organized photo') })) };
     const result = await runOcrPreprocessingPipeline({
       conversationId: 'steel_conversation_image',
       file: {
@@ -363,10 +580,12 @@ describe('OCR preprocessing orchestrator', () => {
       rawOcrText: 'raw photo',
       sourceFile: 'photo.jpg',
       fileKey: 'file:photo',
+      artifactUrl: 'https://cdn.example/photo.jpg',
+      mediaType: 'image/jpeg',
     });
     expect(result).toEqual({
       status: 'completed',
-      markdown: 'organized photo',
+      markdown: tableMarkdown('organized photo'),
       chunkCount: 1,
       pageRanges: [],
     });
@@ -401,12 +620,14 @@ describe('OCR preprocessing orchestrator', () => {
         {
           ...rawState.chunks[0],
           organizedSaved: true,
-          organizedMarkdown: `organized ${filename}`,
+          organizedMarkdown: tableMarkdown(`organized ${filename}`),
         },
       ],
     };
     let readCount = 0;
-    const organizer = { organize: jest.fn(async () => ({ markdown: `organized ${filename}` })) };
+    const organizer = {
+      organize: jest.fn(async () => ({ markdown: tableMarkdown(`organized ${filename}`) })),
+    };
     const result = await runOcrPreprocessingPipeline({
       conversationId: `steel_conversation_${filename}`,
       file: {
@@ -447,10 +668,12 @@ describe('OCR preprocessing orchestrator', () => {
       rawOcrText: `raw ${filename}`,
       sourceFile: filename,
       fileKey: `file:${filename}`,
+      artifactUrl: `https://cdn.example/${filename}`,
+      ...(mediaType !== undefined ? { mediaType } : {}),
     });
     expect(result).toEqual({
       status: 'completed',
-      markdown: `organized ${filename}`,
+          markdown: tableMarkdown(`organized ${filename}`),
       chunkCount: 1,
       pageRanges: [],
     });
@@ -568,7 +791,7 @@ describe('OCR preprocessing orchestrator', () => {
       organize: jest.fn(async (input) => {
         calls.push(`organize:${input.rawOcrText}`);
         return {
-          markdown: `organized ${input.rawOcrText.replace('raw ', '')}`,
+          markdown: tableMarkdown(`organized ${input.rawOcrText.replace('raw ', '')}`),
         };
       }),
     };
@@ -803,7 +1026,7 @@ describe('OCR preprocessing orchestrator', () => {
     const rawRunner = jest.fn();
     const organizer: OcrOrganizer = {
       organize: jest.fn(async (input) => ({
-        markdown: `organized ${input.rawOcrText.replace('raw ', '')}`,
+        markdown: tableMarkdown(`organized ${input.rawOcrText.replace('raw ', '')}`),
       })),
     };
     const initialState: OcrPreprocessingState = {
@@ -838,7 +1061,7 @@ describe('OCR preprocessing orchestrator', () => {
         {
           ...initialState.chunks[1],
           organizedSaved: true,
-          organizedMarkdown: 'organized 2',
+          organizedMarkdown: tableMarkdown('organized 2'),
         },
       ],
     };
@@ -886,6 +1109,7 @@ describe('OCR preprocessing orchestrator', () => {
         rawOcrText: 'raw 2',
         sourceFile: 'quote.pdf',
         fileKey: 'file:file-100',
+        artifactUrl: 'https://cdn.example/chunk-2.pdf',
         pageStart: 51,
         pageEnd: 100,
         chunkIndex: 2,
@@ -895,7 +1119,7 @@ describe('OCR preprocessing orchestrator', () => {
     expect(memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
       expect.objectContaining({
         rawResultHash: 'hash-2',
-        content: 'organized 2',
+        content: tableMarkdown('organized 2'),
       }),
     );
     expect(memory).not.toHaveProperty('captureOfficialOcrMarkdown');
@@ -1339,7 +1563,7 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     };
     const organizer = {
-      organize: jest.fn(async () => ({ markdown: 'organized' })),
+      organize: jest.fn(async () => ({ markdown: tableMarkdown('organized') })),
     };
     const memory = {
       readOcrPreprocessingState: jest
@@ -1464,7 +1688,7 @@ describe('OCR preprocessing orchestrator', () => {
         },
       ],
       memory,
-      organizer: { organize: jest.fn(async () => ({ markdown: 'organized first' })) },
+      organizer: { organize: jest.fn(async () => ({ markdown: tableMarkdown('organized first') })) },
       paddleOcr: {
         runChunk: jest.fn(async ({ chunk }) => {
           if (chunk.chunkIndex === 2) {
@@ -1583,7 +1807,9 @@ describe('OCR preprocessing orchestrator', () => {
         },
       ],
       memory,
-      organizer: { organize: jest.fn(async ({ rawOcrText }) => ({ markdown: `organized-${rawOcrText}` })) },
+      organizer: {
+        organize: jest.fn(async ({ rawOcrText }) => ({ markdown: tableMarkdown(`organized-${rawOcrText}`) })),
+      },
       paddleOcr,
     });
 
@@ -1699,7 +1925,7 @@ describe('OCR preprocessing orchestrator', () => {
       ocrRulesText: 'rules',
       files: [{ file: { ocrFileKey: 'file:split-child-failure', filename: 'split.pdf', sourcePdfKey: 'uploads/split-child-failure.pdf' }, chunks: initialChunks, artifacts }],
       memory,
-      organizer: { organize: jest.fn(async () => ({ markdown: 'organized' })) },
+      organizer: { organize: jest.fn(async () => ({ markdown: tableMarkdown('organized') })) },
       paddleOcr: {
         runChunk: jest.fn(async ({ chunk }) => {
           if (rangeKey(chunk) === '1-50') {
@@ -1775,7 +2001,9 @@ describe('OCR preprocessing orchestrator', () => {
         },
       }],
       memory,
-      organizer: { organize: jest.fn(async () => ({ markdown: 'organized missing child' })) },
+      organizer: {
+        organize: jest.fn(async () => ({ markdown: tableMarkdown('organized missing child') })),
+      },
       paddleOcr,
     });
 
@@ -1789,7 +2017,7 @@ describe('OCR preprocessing orchestrator', () => {
       organize: jest
         .fn()
         .mockRejectedValueOnce(new Error('transient organizer failure'))
-        .mockResolvedValueOnce({ markdown: 'organized markdown' }),
+        .mockResolvedValueOnce({ markdown: tableMarkdown('organized markdown') }),
     };
     const fixture = organizerRetryFixture({ organizer });
 
@@ -1798,11 +2026,11 @@ describe('OCR preprocessing orchestrator', () => {
     expect(organizer.organize).toHaveBeenCalledTimes(2);
     expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledTimes(1);
     expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
-      expect.objectContaining({ content: 'organized markdown' }),
+      expect.objectContaining({ content: tableMarkdown('organized markdown') }),
     );
     expect(result).toEqual({
       status: 'completed',
-      markdown: 'organized markdown',
+      markdown: tableMarkdown('organized markdown'),
       chunkCount: 1,
       pageRanges: [{ pageStart: 1, pageEnd: 1 }],
     });

@@ -203,6 +203,7 @@ jest.mock('@librechat/api', () => ({
   }),
   stripPaddleOcrToolsForMainAgent: (config) => config,
   stripSteelToolsForOcrTurn: jest.fn((config) => config),
+  createSteelNativeHistory: jest.fn(() => ({ activityEvents: [], preflightToolCalls: [] })),
   stripSteelOcrPartsFromProviderMessages: (...args) =>
     mockStripSteelOcrPartsFromProviderMessages(...args),
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
@@ -1335,6 +1336,16 @@ describe('createResponse controller', () => {
             result: { text: 'raw OCR' },
           },
         ],
+        currentPaddleOcrStatuses: [
+          {
+            paddleocr: 'ok',
+            ocrFileKey: 'file:file-drawing',
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 1,
+          },
+        ],
         currentOcrMarkdownResults,
       });
 
@@ -1362,17 +1373,9 @@ describe('createResponse controller', () => {
       expect(api.buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
         expect.objectContaining({
           attachments: {
-            currentTurnFiles: [
-              {
-                fileId: 'file-drawing',
-                filename: 'drawing.pdf',
-                mediaType: 'application/octet-stream',
-                source: 'librechat_file_record',
-                conversationId: 'mock-uuid-456',
-              },
-            ],
             currentOcrMarkdownResults,
           },
+          mode: 'ocr',
           conversation: expect.objectContaining({
             currentUserTurn: expect.objectContaining({
               files: [

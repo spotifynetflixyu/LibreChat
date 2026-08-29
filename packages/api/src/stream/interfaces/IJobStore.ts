@@ -151,6 +151,9 @@ export interface SerializableJobData {
   /** Serialized token usage events for active-stream resume (cross-replica safe) */
   tokenUsage?: string;
 
+  /** Serialized canonical Steel activity/card history for terminal recovery. */
+  steelHistory?: string;
+
   /** Endpoint metadata for abort handling - avoids storing functions */
   endpoint?: string;
   iconURL?: string;
@@ -293,6 +296,7 @@ export type JobMetadataPatch = Partial<
     | 'providerDrained'
     | 'generationProtocolVersion'
     | 'resolvedAskUserQuestions'
+    | 'steelHistory'
   >
 >;
 

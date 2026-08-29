@@ -299,16 +299,73 @@ describe('Steel native context adapter', () => {
     );
   });
 
-  it('uses shared, Vision, then main rules in OCR mode and serializes organized Markdown only', async () => {
+  it('uses main merge/final rules in OCR mode and serializes organized Markdown only', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_ocr', activeHistory: [] },
       dependencies: createDependencies(),
       mode: 'ocr',
       attachments: {
+        currentPaddleOcrStatuses: [
+          {
+            paddleocr: 'ok',
+            ocrFileKey: 'file:676b6f2c-0361-412a-92f0-92711c94ffef',
+            filename: 'PL.pdf',
+            mediaType: 'application/pdf',
+            chunkIndex: 1,
+            chunkCount: 2,
+            pageStart: 1,
+            pageEnd: 2,
+          },
+          {
+            paddleocr: 'ok',
+            ocrFileKey: 'file:676b6f2c-0361-412a-92f0-92711c94ffef',
+            filename: 'PL.pdf',
+            mediaType: 'application/pdf',
+            chunkIndex: 2,
+            chunkCount: 2,
+            pageStart: 3,
+            pageEnd: 4,
+          },
+          {
+            paddleocr: 'fail',
+            ocrFileKey: 'file:missing.pdf',
+            filename: 'missing.pdf',
+            mediaType: 'application/pdf',
+            chunkIndex: 1,
+            chunkCount: 3,
+            pageStart: 1,
+            pageEnd: 2,
+          },
+          {
+            paddleocr: 'fail',
+            ocrFileKey: 'file:missing.pdf',
+            filename: 'missing.pdf',
+            mediaType: 'application/pdf',
+            chunkIndex: 3,
+            chunkCount: 3,
+            pageStart: 4,
+            pageEnd: 5,
+          },
+          {
+            paddleocr: 'fail',
+            ocrFileKey: 'file:photo.jpg',
+            filename: 'photo.jpg',
+            mediaType: 'image/jpeg',
+            chunkIndex: 1,
+            chunkCount: 1,
+          },
+        ],
         currentOcrMarkdownResults: [
           {
             ocrFileKey: 'file:676b6f2c-0361-412a-92f0-92711c94ffef',
             filename: 'PL.pdf',
+            ocrPreprocessing: {
+              chunkCount: 2,
+              pageRanges: [
+                { pageStart: 1, pageEnd: 2 },
+                { pageStart: 3, pageEnd: 4 },
+              ],
+            },
             content:
               '<file:676b6f2c-0361-412a-92f0-92711c94ffef>\n| 品名 | 數量 |\n|---|---:|\n| 鐵板 | 2 |',
           },
@@ -369,12 +426,8 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).not.toContain('Calculation output rule fixture');
     expect(context.instructionPrefix).not.toContain('Workbook output rule fixture');
     expect(context.instructionPrefix).not.toContain('steel-file-rule');
-    expect(context.instructionPrefix.indexOf('OCR shared rule fixture')).toBeLessThan(
-      context.instructionPrefix.indexOf('Vision rule fixture'),
-    );
-    expect(context.instructionPrefix.indexOf('Vision rule fixture')).toBeLessThan(
-      context.instructionPrefix.indexOf('OCR main organizer rule fixture'),
-    );
+    expect(context.instructionPrefix).not.toContain('OCR shared rule fixture');
+    expect(context.instructionPrefix).not.toContain('Vision rule fixture');
     expect(context.instructionPrefix).toContain('OCR main organizer rule fixture');
     expect(context.instructionPrefix).toContain('[ocr_main_merge]');
     expect(context.instructionPrefix).toContain('[final_ocr_markdown]');
@@ -385,18 +438,13 @@ describe('Steel native context adapter', () => {
       'Satisfy any other user intent only within those allowed sections',
     );
     expect(context.runtimeContextText).toContain(
-      'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
+      'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\npage_ranges: 1-2, 3-4\nchunk_count: 2\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
     );
     expect(context.runtimeContextText).toContain('| 鐵板 | 2 |');
-    expect(context.runtimeContextText).toContain(
-      'ocr_failure_stage: paddleocr\npaddleocr_status: failed\nfile_key: file:missing.pdf\nfailed_page_ranges: 1-2, 4-5\nfile_url: https://files.example.test/missing.pdf',
-    );
-    expect(context.runtimeContextText).toContain(
-      'ocr_failure_stage: organizer\nfile_key: file:other.pdf\nfailed_page_ranges: 3\nfile_url: https://files.example.test/other.pdf',
-    );
-    expect(context.runtimeContextText).toContain(
-      'ocr_failure_stage: paddleocr\npaddleocr_status: failed\nfile_key: file:photo.jpg\nfailed_page_ranges: unavailable\nfile_url: https://files.example.test/photo.jpg',
-    );
+    expect(context.runtimeContextText).not.toContain('paddleocr_status:');
+    expect(context.runtimeContextText).not.toContain('ocr_failure_stage:');
+    expect(context.runtimeContextText).not.toContain('file_url:');
+    expect(context.runtimeContextText).not.toContain('https://files.example.test');
     expect(context.runtimeContextText).not.toContain('PaddleOCR timeout');
     expect(context.runtimeContextText).not.toContain('Organizer failed');
     expect(context.runtimeContextText).not.toContain('Image OCR failed');
@@ -424,6 +472,25 @@ describe('Steel native context adapter', () => {
     expect(directive).not.toContain('Answer any other user intent too');
   });
 
+  it('gives delegate_ocr DB-backed OCR, Vision, and final Markdown rules only', async () => {
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_delegate_ocr_rules', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'delegate_ocr',
+    });
+
+    expect(context.mode).toBe('delegate_ocr');
+    expect(context.instructionPrefix).toContain('OCR shared rule fixture');
+    expect(context.instructionPrefix).toContain('Vision rule fixture');
+    expect(context.instructionPrefix).toContain('[final_ocr_markdown]');
+    expect(context.instructionPrefix).toContain('Final OCR Markdown rule fixture');
+    expect(context.instructionPrefix).not.toContain('[ocr_main_merge]');
+    expect(context.instructionPrefix).not.toContain('OCR main organizer rule fixture');
+    expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
+    expect(context.instructionPrefix).not.toContain('Agent rule fixture');
+    expect(context.instructionPrefix).not.toContain('Quote rule fixture');
+  });
+
   it('does not invent source filenames for OCR Markdown results', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_ocr_without_filename', activeHistory: [] },
@@ -446,7 +513,48 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContextText).not.toContain('source_filename:');
   });
 
-  it('renders valid OCR page metadata and omits malformed or legacy metadata', async () => {
+  it('does not expose OCR chunk statuses when organized Markdown is present', async () => {
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_mixed_reuse', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        currentPaddleOcrStatuses: [
+          {
+            paddleocr: 'ok',
+            ocrFileKey: 'file:mixed.pdf',
+            filename: 'mixed.pdf',
+            mediaType: 'application/pdf',
+            chunkIndex: 3,
+            chunkCount: 3,
+            pageStart: 101,
+            pageEnd: 120,
+          },
+        ],
+        currentOcrMarkdownResults: [
+          {
+            ocrFileKey: 'file:mixed.pdf',
+            filename: 'mixed.pdf',
+            ocrPreprocessing: {
+              chunkCount: 3,
+              pageRanges: [
+                { pageStart: 1, pageEnd: 50 },
+                { pageStart: 51, pageEnd: 100 },
+                { pageStart: 101, pageEnd: 120 },
+              ],
+            },
+            content: '<file:mixed.pdf>\n| OCR |\n| --- |\n| mixed |',
+          },
+        ],
+      },
+    });
+
+    expect(context.runtimeContextText).toContain('| OCR |');
+    expect(context.runtimeContextText).not.toContain('paddleocr_status:');
+    expect(context.runtimeContextText).not.toContain('page_range:');
+  });
+
+  it('omits OCR status metadata and artifact URLs from OCR context', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_ocr_ranges', activeHistory: [] },
       dependencies: createDependencies(),
@@ -522,7 +630,7 @@ describe('Steel native context adapter', () => {
     );
   });
 
-  it('rejects unsafe failure URLs and falls back to a safe AI-visible URL', async () => {
+  it('keeps PaddleOCR failure URLs out of AI-visible context', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_ocr_failure_urls', activeHistory: [] },
       dependencies: createDependencies(),
@@ -569,23 +677,7 @@ describe('Steel native context adapter', () => {
       },
     });
 
-    expect(context.runtimeContextText).toContain(
-      'file_key: file:safe-fallback.pdf\nfailed_page_ranges: 1-2\nfile_url: https://files.example.test/safe-fallback.pdf?signature=ok',
-    );
-    expect(context.runtimeContextText).toContain(
-      'file_key: file:credentialed.pdf\nfailed_page_ranges: 3-4\nfile_url: unavailable',
-    );
-    expect(context.runtimeContextText).toContain(
-      'file_key: file:local.pdf\nfailed_page_ranges: 5-6\nfile_url: unavailable',
-    );
-    expect(context.runtimeContextText).not.toContain('user:secret');
-    expect(context.runtimeContextText).not.toContain('/srv/librechat/uploads/local.pdf');
-    expect(context.runtimeContextText).toContain(
-      'file_key: file:distinct.pdf\nfailed_page_ranges: 7-8\nfile_url: https://files.example.test/distinct-pages-7-8.pdf',
-    );
-    expect(context.runtimeContextText).toContain(
-      'file_key: file:distinct.pdf\nfailed_page_ranges: 9-10\nfile_url: https://files.example.test/distinct-pages-9-10.pdf',
-    );
+    expect(context.runtimeContextText).toBe('');
   });
 
   it('renders image OCR Markdown without page metadata', async () => {

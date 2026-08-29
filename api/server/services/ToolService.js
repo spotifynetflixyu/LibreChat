@@ -9,6 +9,8 @@ const {
   createBashExecutionTool,
   Constants: AgentConstants,
   createBashProgrammaticToolCallingTool,
+  initializeModel,
+  isOpenAILike,
 } = require('@librechat/agents');
 const {
   sendEvent,
@@ -34,6 +36,7 @@ const {
   captureSteelNativeToolResult,
   buildSteelNativeEventEnvelopes,
   appendSteelNativeActivityEvent,
+  cloneSteelNativeHistory,
   upsertSteelNativePreflightToolCall,
   ensureSteelNativeHistory,
   steelNativeStreamEventName,
@@ -61,9 +64,9 @@ const {
   createMongooseOcrPdfChunkArtifactRepository,
   createSteelContextDependencies,
   createOpenAIOAuthModel,
-  parseOpenAIConfig,
   resolveOpenAIOAuthAuthFilePath,
   buildOcrOrganizerPrompt,
+  buildOcrOrganizerAttachment,
   normalizeOcrOrganizerFileKey,
   resolveOcrOrganizerRulesText,
   mergeOcrPreprocessingStateMarkdown,
@@ -654,6 +657,7 @@ const steelPaddleOcrTransportErrorPatterns = [
 ];
 const steelPaddleOcrMaxAttempts = 3;
 const steelPaddleOcrRetryDelayMs = 3000;
+const steelPaddleOcrCallTimeoutMs = 10 * 60 * 1000;
 const steelPaddleOcrDiagnosticCodes = new Set([
   'ai_studio_auth',
   'ai_studio_unavailable',
@@ -797,18 +801,41 @@ function mergeSteelNativeToolDefinitions(result, visibilityOptions = {}) {
   };
 }
 
-async function emitSteelNativeEvents({ events, res, streamId, req }) {
+async function emitSteelNativeEvents({ events, res, streamId, req, historyChanged = false }) {
+  let steelHistoryChanged = historyChanged;
   for (const event of events) {
     if (event?.event === steelNativeStreamEventName) {
       if (typeof appendSteelNativeActivityEvent === 'function') {
-        appendSteelNativeActivityEvent(
-          req?.steelNativeContext?.steelHistory ?? req?.steelNativeContext?.steelActivityEvents,
-          event.data,
-        );
+        steelHistoryChanged =
+          appendSteelNativeActivityEvent(
+            req?.steelNativeContext?.steelHistory ?? req?.steelNativeContext?.steelActivityEvents,
+            event.data,
+          ) || steelHistoryChanged;
       }
     }
+  }
+  if (
+    steelHistoryChanged &&
+    streamId &&
+    typeof GenerationJobManager?.updateMetadata === 'function'
+  ) {
+    const history = cloneSteelNativeHistory(req?.steelNativeContext?.steelHistory);
+    if (history) {
+      await GenerationJobManager.updateMetadata(
+        streamId,
+        { steelHistory: history },
+        req?._resumableJobCreatedAt,
+      );
+    }
+  }
+  for (const event of events) {
     if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, event);
+      const expectedCreatedAt = req?._resumableJobCreatedAt;
+      await GenerationJobManager.emitChunk(
+        streamId,
+        event,
+        expectedCreatedAt == null ? undefined : { expectedCreatedAt },
+      );
     } else if (typeof res?.write === 'function' && !res.writableEnded) {
       sendEvent(res, event);
     }
@@ -1129,11 +1156,13 @@ function createDelegateOcrExecute({ req, signal }) {
         const context = await buildDefaultSteelGlobalAgentContext({
           conversation: steelConversation,
           renderProfile: 'agent_client',
-          mode: 'ocr',
+          mode: 'delegate_ocr',
         });
         const rulesText = context.instructionPrefix?.trim();
         if (!rulesText) {
-          throw new Error('delegate_ocr could not load OCR shared, Vision processing, and OCR flow rules');
+          throw new Error(
+            'delegate_ocr could not load OCR shared, Vision processing, and final OCR Markdown rules',
+          );
         }
         return rulesText;
       },
@@ -1280,8 +1309,9 @@ async function resolveSteelOcrPreprocessingRules() {
   }
 
   const sharedRules = otherRules.ocrSharedRules ?? [];
+  const visionRules = otherRules.ocrVisionRules ?? [];
   const organizerRules = otherRules.ocrOrganizerRules ?? [];
-  const renderedRules = [...sharedRules, ...organizerRules]
+  const renderedRules = [...sharedRules, ...visionRules, ...organizerRules]
     .map(renderSteelOcrRule)
     .join('\n\n')
     .trim();
@@ -1315,21 +1345,159 @@ function getMessageContentText(message) {
   return String(content ?? '');
 }
 
-function createSteelOcrOrganizer({ signal }) {
+const steelOpenAIOAuthProvider = 'openai_oauth_responses';
+
+function getDefinedNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function getDefinedBoolean(value) {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function getDefinedString(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+function getDefinedRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+function getFirstDefinedNumber(parameters, keys) {
+  for (const key of keys) {
+    const value = getDefinedNumber(parameters[key]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function getFirstDefinedBoolean(parameters, keys) {
+  for (const key of keys) {
+    const value = getDefinedBoolean(parameters[key]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function getFirstDefinedString(parameters, keys) {
+  for (const key of keys) {
+    const value = getDefinedString(parameters[key]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function resolveSteelOcrOrganizerOAuthOptions(agent) {
+  const parameters = agent?.model_parameters ?? {};
+  const model = getFirstDefinedString(parameters, ['model']) ?? getDefinedString(agent?.model);
+  if (!model) {
+    throw new Error('OCR organizer requires the selected Agent model');
+  }
+
+  const reasoning = getDefinedRecord(parameters.reasoning);
+  const modelKwargs = getDefinedRecord(parameters.modelKwargs);
+  const modelKwargsReasoning = getDefinedRecord(modelKwargs?.reasoning);
+  const reasoningEffort =
+    getFirstDefinedString(parameters, ['reasoningEffort', 'reasoning_effort']) ??
+    getDefinedString(reasoning?.effort) ??
+    getFirstDefinedString(modelKwargs ?? {}, ['reasoning_effort']) ??
+    getDefinedString(modelKwargsReasoning?.effort);
+  const authFilePath =
+    getFirstDefinedString(parameters, ['authFilePath', 'auth_file_path']) ??
+    resolveOpenAIOAuthAuthFilePath(process.env);
+  const ensureFresh = getFirstDefinedBoolean(parameters, ['ensureFresh', 'ensure_fresh']);
+  const frequencyPenalty = getFirstDefinedNumber(parameters, [
+    'frequencyPenalty',
+    'frequency_penalty',
+  ]);
+  const maxOutputTokens = getFirstDefinedNumber(parameters, [
+    'maxOutputTokens',
+    'max_output_tokens',
+    'maxTokens',
+    'max_tokens',
+    'maxCompletionTokens',
+    'max_completion_tokens',
+  ]);
+  const presencePenalty = getFirstDefinedNumber(parameters, [
+    'presencePenalty',
+    'presence_penalty',
+  ]);
+  const topP = getFirstDefinedNumber(parameters, ['topP', 'top_p']);
+  return {
+    ...(authFilePath ? { authFilePath } : {}),
+    ...(ensureFresh !== undefined ? { ensureFresh } : {}),
+    ...(frequencyPenalty !== undefined ? { frequencyPenalty } : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    model,
+    ...(presencePenalty !== undefined ? { presencePenalty } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(topP !== undefined ? { topP } : {}),
+  };
+}
+
+async function prepareSteelOcrOrganizerAttachment({ attachment, provider, signal }) {
+  if (
+    attachment.type !== 'file' ||
+    !(isOpenAILike(provider) || provider === 'openai_api')
+  ) {
+    return attachment;
+  }
+
+  const response = await fetch(attachment.url, signal ? { signal } : undefined);
+  if (!response.ok) {
+    throw new Error(`OCR organizer artifact download failed (${response.status})`);
+  }
+  const content = Buffer.from(await response.arrayBuffer()).toString('base64');
+  return {
+    ...attachment,
+    url: `data:${attachment.mime_type};base64,${content}`,
+  };
+}
+
+function createSteelOcrOrganizer({ agent, signal }) {
   let model;
+  const provider = agent?.provider ?? agent?.endpoint;
+  const isOAuth = provider === steelOpenAIOAuthProvider || agent?.endpoint === steelOpenAIOAuthProvider;
   return {
     async organize(input) {
       if (!model) {
-        const config = parseOpenAIConfig(process.env);
-        model = createOpenAIOAuthModel({
-          authFilePath: resolveOpenAIOAuthAuthFilePath(process.env),
-          maxOutputTokens: 16000,
-          model: config.model,
-          reasoningEffort: 'none',
-        });
+        if (isOAuth) {
+          model = createOpenAIOAuthModel(resolveSteelOcrOrganizerOAuthOptions(agent));
+        } else {
+          const selectedModel =
+            getFirstDefinedString(agent?.model_parameters ?? {}, ['model']) ??
+            getDefinedString(agent?.model);
+          if (!provider || !selectedModel) {
+            throw new Error('OCR organizer requires the selected Agent provider and model');
+          }
+          model = initializeModel({
+            provider,
+            clientOptions: {
+              ...(agent?.model_parameters ?? {}),
+              model: selectedModel,
+            },
+          });
+        }
       }
 
-      const messages = [new HumanMessage(buildOcrOrganizerPrompt(input))];
+      const mode = isOAuth ? 'oauth' : 'standard';
+      const prompt = buildOcrOrganizerPrompt(input);
+      const attachment = await prepareSteelOcrOrganizerAttachment({
+        attachment: buildOcrOrganizerAttachment(input, mode),
+        provider,
+        signal,
+      });
+      const messages = [
+        new HumanMessage({
+          content: [{ type: 'text', text: prompt }, attachment],
+        }),
+      ];
 
       const message = await model.invoke(messages, signal ? { signal } : undefined);
       return { markdown: getMessageContentText(message).trim() };
@@ -1666,6 +1834,20 @@ function isAbortError(error, signal) {
   return false;
 }
 
+function getParentAbortError(signal) {
+  if (signal?.reason instanceof Error && signal.reason.name === 'AbortError') {
+    return signal.reason;
+  }
+  const error = new Error(
+    signal?.reason instanceof Error ? signal.reason.message : 'OCR request aborted',
+  );
+  error.name = 'AbortError';
+  if (signal?.reason !== undefined) {
+    error.cause = signal.reason;
+  }
+  return error;
+}
+
 function collectErrorMessages(error) {
   const messages = [];
   const visited = new Set();
@@ -1788,6 +1970,16 @@ function createSteelPaddleOcrInvokeConfig({
       args,
     },
   };
+}
+
+function createSteelPaddleOcrCallTimeoutError() {
+  const error = new Error('PaddleOCR call timed out after 10 minutes');
+  Object.defineProperty(error, 'diagnosticCode', {
+    value: 'ai_studio_timeout',
+    enumerable: false,
+    configurable: true,
+  });
+  return error;
 }
 
 async function loadSteelPaddleOcrPreflightTool({
@@ -1944,6 +2136,7 @@ function createSteelPaddleOcrHistoryToolCall({
 }) {
   const runtimeParams = args?.runtime_params;
   const compactArgs = {
+    ...(typeof args?.input_data === 'string' ? { input_data: args.input_data } : {}),
     output_mode: args?.output_mode === 'detailed' ? 'detailed' : 'detailed',
     return_images: args?.return_images === true,
     use_doc_orientation_classify: runtimeParams?.use_doc_orientation_classify === true,
@@ -1956,8 +2149,7 @@ function createSteelPaddleOcrHistoryToolCall({
     compactOutput = compactOutput.startsWith('Error:') ? compactOutput : `Error: ${compactOutput}`;
   } else if (output !== undefined) {
     try {
-      const allowed = {
-        status: output.status,
+      const chunkIdentity = {
         ocrEngine: output.ocrEngine,
         ocrFileKey: String(output.ocrFileKey ?? '').slice(0, 256),
         filename: String(output.filename ?? '').slice(0, 256),
@@ -1965,10 +2157,31 @@ function createSteelPaddleOcrHistoryToolCall({
         chunkCount: output.chunkCount,
         pageStart: output.pageStart,
         pageEnd: output.pageEnd,
-        rawTextLength: output.rawTextLength,
-        rawResultHash: String(output.rawResultHash ?? '').slice(0, 128),
-        outputStorage: output.outputStorage,
       };
+      const allowed =
+        output.paddleocr === 'fail'
+          ? {
+              status: 'fail',
+              paddleocr: 'fail',
+              ...chunkIdentity,
+              dataSizeBytes: Buffer.byteLength(stringifySteelPaddleOcrPayload(output), 'utf8'),
+              attemptsUsed: output.attemptsUsed,
+              ...(isPaddleOcrDiagnosticCode(output.diagnosticCode)
+                ? { errorCode: output.diagnosticCode }
+                : {}),
+              error: getSafeSteelPaddleOcrErrorMessage(
+                new Error(output.errorMessage ?? 'PaddleOCR preflight failed'),
+              ),
+              errorMessage: getSafeSteelPaddleOcrErrorMessage(
+                new Error(output.errorMessage ?? 'PaddleOCR preflight failed'),
+              ),
+            }
+          : {
+              status: 'ok',
+              paddleocr: 'ok',
+              ...chunkIdentity,
+              dataSizeBytes: output.dataSizeBytes,
+            };
       compactOutput = JSON.stringify(allowed);
     } catch {
       compactOutput = 'Error: PaddleOCR output unavailable';
@@ -2078,8 +2291,9 @@ async function emitSteelPaddleOcrToolStart({
   args,
   index,
 }) {
+  let historyChanged = false;
   if (typeof upsertSteelNativePreflightToolCall === 'function') {
-    upsertSteelNativePreflightToolCall(
+    historyChanged = upsertSteelNativePreflightToolCall(
       req?.steelNativeContext?.steelHistory,
       createSteelPaddleOcrHistoryToolCall({
         providerToolCallId,
@@ -2093,6 +2307,7 @@ async function emitSteelPaddleOcrToolStart({
     req,
     res,
     streamId,
+    historyChanged,
     events: [
       createSteelPaddleOcrRunStepEvent({
         requestId,
@@ -2123,8 +2338,9 @@ async function emitSteelPaddleOcrToolCompleted({
   output,
   index,
 }) {
+  let historyChanged = false;
   if (typeof upsertSteelNativePreflightToolCall === 'function') {
-    upsertSteelNativePreflightToolCall(
+    historyChanged = upsertSteelNativePreflightToolCall(
       req?.steelNativeContext?.steelHistory,
       createSteelPaddleOcrHistoryToolCall({
         providerToolCallId,
@@ -2139,6 +2355,7 @@ async function emitSteelPaddleOcrToolCompleted({
     req,
     res,
     streamId,
+    historyChanged,
     events: [
       createSteelPaddleOcrRunStepCompletedEvent({
         stepId,
@@ -2175,6 +2392,7 @@ function createSteelPaddleOcrChunkRunner({
   requestScopedConnections,
   refreshArtifact,
   getNextIndex,
+  onChunkResult,
 }) {
   let paddleTool;
   let configurable;
@@ -2235,6 +2453,7 @@ function createSteelPaddleOcrChunkRunner({
       let invokeAttemptsUsed = 0;
       for (let attemptIndex = 0; attemptIndex < steelPaddleOcrMaxAttempts; attemptIndex += 1) {
         attemptsUsed = attemptIndex + 1;
+        let timeoutSignal;
         let result;
         try {
           if (attemptIndex > 0 && refreshArtifact) {
@@ -2243,6 +2462,8 @@ function createSteelPaddleOcrChunkRunner({
           }
           await ensureTool();
           invokeAttemptsUsed += 1;
+          timeoutSignal = AbortSignal.timeout(steelPaddleOcrCallTimeoutMs);
+          const callSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
           result = await invokeLoadedTool(
             paddleTool,
             args,
@@ -2252,7 +2473,7 @@ function createSteelPaddleOcrChunkRunner({
               agent,
               conversationId,
               requestId,
-              signal,
+              signal: callSignal,
               providerToolCallId,
               toolName,
               args,
@@ -2270,7 +2491,13 @@ function createSteelPaddleOcrChunkRunner({
             }
             throw resultErrorObject;
           }
-        } catch (error) {
+        } catch (caughtError) {
+          if (signal?.aborted) {
+            throw getParentAbortError(signal);
+          }
+          const error = timeoutSignal?.aborted
+            ? createSteelPaddleOcrCallTimeoutError()
+            : caughtError;
           if (isAbortError(error, signal)) {
             throw error;
           }
@@ -2333,10 +2560,18 @@ function createSteelPaddleOcrChunkRunner({
           }),
           index,
         });
+        onChunkResult?.(
+          createPaddleOcrChunkStatus({
+            file,
+            chunk,
+            paddleocr: 'ok',
+          }),
+        );
         return {
           rawResult: result,
           rawOcrText,
           rawResultHash,
+          artifact: currentArtifact,
         };
       }
 
@@ -2368,9 +2603,22 @@ function createSteelPaddleOcrChunkRunner({
         providerToolCallId,
         toolName,
         args,
-        output: `Error: ${redactMessage(exhaustedError.message)}`,
+        output: createPaddleOcrChunkFailureToolOutput({
+          file,
+          chunk,
+          errorMessage: exhaustedError.message,
+          diagnosticCode: exhaustedError.diagnosticCode,
+          attemptsUsed,
+        }),
         index,
       });
+      onChunkResult?.(
+        createPaddleOcrChunkStatus({
+          file,
+          chunk,
+          paddleocr: 'fail',
+        }),
+      );
       throw exhaustedError;
     },
   };
@@ -2383,6 +2631,7 @@ function createPreflightResult({
   failedKeys,
   skippedReason,
   currentPaddleOcrResults = [],
+  currentPaddleOcrStatuses = [],
   currentOcrMarkdownResults = [],
   currentOcrFailures = [],
   totalSavedCounts,
@@ -2400,6 +2649,7 @@ function createPreflightResult({
     failedKeys,
     skippedReason,
     currentPaddleOcrResults,
+    ...(currentPaddleOcrStatuses.length > 0 ? { currentPaddleOcrStatuses } : {}),
     ...(currentOcrMarkdownResults.length > 0 ? { currentOcrMarkdownResults } : {}),
     ...(currentOcrFailures.length > 0 ? { currentOcrFailures } : {}),
     ...(totalSavedCounts ? { totalSavedCounts } : {}),
@@ -2507,7 +2757,29 @@ function createCurrentOcrMergedMarkdownResult({
       '',
     fileId: file?.fileId ?? file?.file_id ?? file?.id,
   });
-  const { sourcePdfKey, ...visibleFile } = file;
+  const sourcePdfKey = file?.sourcePdfKey;
+  const visibleFile = { ...file };
+  for (const key of [
+    'sourcePdfKey',
+    'filepath',
+    'path',
+    'fileUrl',
+    'file_url',
+    'ocrFileUrl',
+    'ocr_file_url',
+    'url',
+    'downloadUrl',
+    'download_url',
+    'sourceUrl',
+    'source_url',
+  ]) {
+    delete visibleFile[key];
+  }
+  for (const key of ['storageKey', 'storage_key']) {
+    if (isHttpUrl(visibleFile[key])) {
+      delete visibleFile[key];
+    }
+  }
   return {
     ...visibleFile,
     ocrFileKey: safeOcrFileKey,
@@ -2516,7 +2788,7 @@ function createCurrentOcrMergedMarkdownResult({
     content: labelOcrMarkdownResultContent(safeOcrFileKey, markdown),
     ocrPreprocessing: {
       pipelineVersion: ocrPreprocessingPipelineVersion,
-      sourcePdfKey,
+      ...(isHttpUrl(sourcePdfKey) ? {} : { sourcePdfKey }),
       chunkCount,
       pageRanges: sanitizeCurrentOcrPageRanges(pageRanges, chunkCount, { allowGaps: partial }),
       ocrRuleVersion,
@@ -2570,6 +2842,7 @@ function labelOcrMarkdownResultContent(ocrFileKey, markdown) {
 function createPaddleOcrChunkToolOutput({ file, chunk, rawOcrText, rawResultHash }) {
   return {
     status: 'completed',
+    paddleocr: 'ok',
     ocrEngine: 'paddleocr_vl',
     ocrFileKey: file.ocrFileKey,
     filename: file.filename,
@@ -2578,8 +2851,83 @@ function createPaddleOcrChunkToolOutput({ file, chunk, rawOcrText, rawResultHash
     pageStart: chunk.pageStart,
     pageEnd: chunk.pageEnd,
     rawTextLength: rawOcrText.length,
+    dataSizeBytes: Buffer.byteLength(rawOcrText, 'utf8'),
     rawResultHash,
     outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+  };
+}
+
+function createPaddleOcrChunkStatus({ file, chunk, paddleocr }) {
+  const isImage = String(file?.mediaType ?? '')
+    .trim()
+    .toLowerCase()
+    .startsWith('image/');
+  return {
+    paddleocr,
+    ocrFileKey: file.ocrFileKey,
+    filename: file.filename,
+    mediaType: file.mediaType,
+    chunkIndex: chunk.chunkIndex,
+    chunkCount: chunk.chunkCount,
+    ...(!isImage ? { pageStart: chunk.pageStart, pageEnd: chunk.pageEnd } : {}),
+  };
+}
+
+function getFinalPaddleOcrChunkStatuses(statuses) {
+  return statuses.filter((status, index) => {
+    if (
+      status.paddleocr !== 'fail' ||
+      !Number.isSafeInteger(status.pageStart) ||
+      !Number.isSafeInteger(status.pageEnd)
+    ) {
+      return true;
+    }
+    const childRanges = statuses
+      .slice(index + 1)
+      .filter(
+        (candidate) =>
+          candidate.ocrFileKey === status.ocrFileKey &&
+          Number.isSafeInteger(candidate.pageStart) &&
+          Number.isSafeInteger(candidate.pageEnd) &&
+          candidate.pageStart >= status.pageStart &&
+          candidate.pageEnd <= status.pageEnd &&
+          (candidate.pageStart > status.pageStart || candidate.pageEnd < status.pageEnd),
+      )
+      .sort((left, right) => left.pageStart - right.pageStart);
+    let nextPage = status.pageStart;
+    for (const child of childRanges) {
+      if (child.pageStart > nextPage) {
+        return true;
+      }
+      nextPage = Math.max(nextPage, child.pageEnd + 1);
+      if (nextPage > status.pageEnd) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function createPaddleOcrChunkFailureToolOutput({
+  file,
+  chunk,
+  errorMessage,
+  diagnosticCode,
+  attemptsUsed,
+}) {
+  return {
+    status: 'failed',
+    paddleocr: 'fail',
+    ocrEngine: 'paddleocr_vl',
+    ocrFileKey: file.ocrFileKey,
+    filename: file.filename,
+    chunkIndex: chunk.chunkIndex,
+    chunkCount: chunk.chunkCount,
+    pageStart: chunk.pageStart,
+    pageEnd: chunk.pageEnd,
+    attemptsUsed,
+    ...(isPaddleOcrDiagnosticCode(diagnosticCode) ? { diagnosticCode } : {}),
+    errorMessage: getSafeSteelPaddleOcrErrorMessage(new Error(errorMessage)),
   };
 }
 
@@ -2603,6 +2951,7 @@ async function runSteelPaddleOcrPreflight({
   const attemptedKeys = [];
   const failedKeys = [];
   const currentPaddleOcrResults = [];
+  const currentPaddleOcrStatuses = [];
   const currentOcrMarkdownResults = [];
   const currentOcrFailures = [];
   let currentPaddleOcrSavedCount = 0;
@@ -2818,7 +3167,7 @@ async function runSteelPaddleOcrPreflight({
         ocrRuleVersion: ocrPreprocessingRules.ocrRuleVersion,
         ocrRulesText: ocrPreprocessingRules.ocrRulesText,
         memory: writer,
-        organizer: createSteelOcrOrganizer({ signal }),
+        organizer: createSteelOcrOrganizer({ agent, signal }),
         paddleOcr: createSteelPaddleOcrChunkRunner({
           req,
           res,
@@ -2839,6 +3188,7 @@ async function runSteelPaddleOcrPreflight({
               : artifact;
           },
           getNextIndex: getNextToolEventIndex,
+          onChunkResult: (status) => currentPaddleOcrStatuses.push(status),
         }),
         onProgress: ({ file, progress }) => {
           if (progress.stage === 'paddleocr_chunk_saved') {
@@ -2959,6 +3309,7 @@ async function runSteelPaddleOcrPreflight({
       failedKeys,
       skippedReason: undefined,
       currentPaddleOcrResults,
+      currentPaddleOcrStatuses: getFinalPaddleOcrChunkStatuses(currentPaddleOcrStatuses),
       currentOcrMarkdownResults,
       currentOcrFailures,
     }),

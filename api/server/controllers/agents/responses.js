@@ -1024,25 +1024,38 @@ const executeResponse = async (envelope, { req, res }) => {
         );
       }
     }
+    const ocrTurnActive = paddleOcrPreflight?.ocrTurnActive === true;
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
       conversation: steelConversation,
-      ...(currentTurnFiles.length > 0 ||
-      paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0 ||
-      paddleOcrPreflight?.currentOcrFailures?.length > 0
+      ...(ocrTurnActive
         ? {
             attachments: {
-              ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
               ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
                 ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
                 : {}),
-              ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
-                ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
-                : {}),
             },
           }
-        : {}),
+        : currentTurnFiles.length > 0 ||
+            paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0 ||
+            paddleOcrPreflight?.currentPaddleOcrStatuses?.length > 0 ||
+            paddleOcrPreflight?.currentOcrFailures?.length > 0
+          ? {
+              attachments: {
+                ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
+                ...(paddleOcrPreflight?.currentPaddleOcrStatuses?.length > 0
+                  ? { currentPaddleOcrStatuses: paddleOcrPreflight.currentPaddleOcrStatuses }
+                  : {}),
+                ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
+                  ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
+                  : {}),
+                ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
+                  ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
+                  : {}),
+              },
+            }
+          : {}),
       renderProfile: 'open_responses',
-      mode: paddleOcrPreflight?.ocrTurnActive === true ? 'ocr' : 'standard',
+      mode: ocrTurnActive ? 'ocr' : 'standard',
     });
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
@@ -1104,10 +1117,10 @@ const executeResponse = async (envelope, { req, res }) => {
         );
       }
     }
-    const providerMessages =
-      paddleOcrPreflight?.ocrTurnActive === true
-        ? formattedMessages
-        : stripSteelOcrPartsFromProviderMessages(formattedMessages, currentTurnFiles);
+    const providerMessages = stripSteelOcrPartsFromProviderMessages(
+      formattedMessages,
+      currentTurnFiles,
+    );
     req.steelNativeContext = {
       ...(req.steelNativeContext ?? {}),
       delegateOcrContext: {

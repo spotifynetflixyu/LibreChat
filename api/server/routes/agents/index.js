@@ -706,6 +706,7 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
           : undefined;
       const abortResult = await GenerationJobManager.abortJob(jobStreamId, {
         expectedCreatedAt: job.createdAt,
+        awaitProviderDrain: true,
         transformAbortContent: (content, abortJobData) => {
           if (!Array.isArray(content)) {
             return content;

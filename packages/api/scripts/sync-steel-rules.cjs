@@ -527,7 +527,7 @@ function buildRules(repoRoot) {
       slug: 'steel-ocr-main-agent-organizer-policy',
       ruleKind: 'other',
       title: 'OCR 流程與 Markdown 輸出規則',
-      ruleSections: ['ocr_main_flow', 'ocr_vision', 'ocr_main_merge', 'final_ocr_markdown'],
+      ruleSections: ['ocr_main_merge', 'final_ocr_markdown'],
       selectors: {
         appliesTo: ['steel_quote_runtime', 'other_global_rules'],
         includeWhenFileContext: true,

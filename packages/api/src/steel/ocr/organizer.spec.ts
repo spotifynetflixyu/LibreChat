@@ -1,4 +1,5 @@
 import {
+  buildOcrOrganizerAttachment,
   buildOcrOrganizerPrompt,
   normalizeOcrOrganizerFileKey,
   resolveOcrOrganizerRulesText,
@@ -15,6 +16,9 @@ describe('OCR organizer interface', () => {
         '[ocr_shared]',
         'SHARED_RULE_MUST_BE_INCLUDED',
         '[/ocr_shared]',
+        '[vision_processing]',
+        'VISION_RULE_MUST_BE_INCLUDED',
+        '[/vision_processing]',
         '[ocr_organizer]',
         organizerRule,
         '[/ocr_organizer]',
@@ -24,7 +28,6 @@ describe('OCR organizer interface', () => {
         '[final_ocr_markdown]',
         'FINAL_RULE_MUST_NOT_BE_INCLUDED',
         '[/final_ocr_markdown]',
-        'Vision_RULE_MUST_NOT_BE_INCLUDED',
       ].join('\n'),
       rawOcrText,
       sourceFile: 'quote"file.pdf',
@@ -49,6 +52,10 @@ describe('OCR organizer interface', () => {
         'SHARED_RULE_MUST_BE_INCLUDED',
         '[/ocr_shared]',
         '',
+        '[vision_processing]',
+        'VISION_RULE_MUST_BE_INCLUDED',
+        '[/vision_processing]',
+        '',
         '[ocr_organizer]',
         organizerRule,
         '[/ocr_organizer]',
@@ -61,23 +68,27 @@ describe('OCR organizer interface', () => {
     expect(prompt).toContain('[/ocr_organizer]');
     expect(prompt).toContain('[ocr_shared]');
     expect(prompt).toContain('[/ocr_shared]');
+    expect(prompt).toContain('[vision_processing]');
+    expect(prompt).toContain('VISION_RULE_MUST_BE_INCLUDED');
     expect(prompt).not.toContain('UNMARKED_MAIN_RULE');
     expect(prompt).toContain('SHARED_RULE_MUST_BE_INCLUDED');
     expect(prompt).not.toContain('MAIN_MERGE_RULE_MUST_NOT_BE_INCLUDED');
     expect(prompt).not.toContain('FINAL_RULE_MUST_NOT_BE_INCLUDED');
-    expect(prompt).not.toContain('Vision_RULE_MUST_NOT_BE_INCLUDED');
     expect(prompt).not.toContain('sourcePdfKey');
     expect(prompt).not.toContain('storageKey');
     expect(prompt).not.toContain('sourceRefs');
   });
 
-  it('returns shared then organizer rules when other rule sections are present', () => {
+  it('returns shared, Vision, then organizer rules when other rule sections are present', () => {
     expect(
       resolveOcrOrganizerRulesText(
         [
           '[ocr_shared]',
           'SHARED_RULE',
           '[/ocr_shared]',
+          '[vision_processing]',
+          'VISION_RULE',
+          '[/vision_processing]',
           '[ocr_organizer]',
           organizerRule,
           '[/ocr_organizer]',
@@ -89,6 +100,7 @@ describe('OCR organizer interface', () => {
     ).toBe(
       [
         '[ocr_shared]\nSHARED_RULE\n[/ocr_shared]',
+        '[vision_processing]\nVISION_RULE\n[/vision_processing]',
         `[ocr_organizer]\n${organizerRule}\n[/ocr_organizer]`,
       ].join('\n\n'),
     );
@@ -206,5 +218,54 @@ describe('OCR organizer interface', () => {
         chunkCount: 1,
       }),
     ).toThrow(/chunkIndex/u);
+  });
+
+  it('builds provider-specific URL attachment blocks without leaking URLs into text', () => {
+    const input = {
+      artifactUrl: 'https://cdn.example/chunk-1.pdf?signature=secret',
+      mediaType: 'application/pdf',
+      sourceFile: 'chunk-1.pdf',
+    };
+    expect(buildOcrOrganizerAttachment(input, 'oauth')).toEqual({
+      type: 'input_file',
+      file_url: input.artifactUrl,
+      filename: 'chunk-1.pdf',
+      media_type: 'application/pdf',
+    });
+    expect(buildOcrOrganizerAttachment(input, 'standard')).toEqual({
+      type: 'file',
+      source_type: 'url',
+      url: input.artifactUrl,
+      mime_type: 'application/pdf',
+      metadata: { filename: 'chunk-1.pdf' },
+    });
+
+    const image = {
+      artifactUrl: 'https://cdn.example/photo.png?signature=secret',
+      mediaType: 'image/png',
+      sourceFile: 'photo.png',
+    };
+    expect(buildOcrOrganizerAttachment(image, 'oauth')).toEqual({
+      type: 'image_url',
+      image_url: { url: image.artifactUrl, detail: 'high' },
+    });
+    expect(buildOcrOrganizerAttachment(image, 'standard')).toEqual({
+      type: 'image',
+      source_type: 'url',
+      url: image.artifactUrl,
+      mime_type: 'image/png',
+      metadata: { filename: 'photo.png' },
+    });
+
+    const prompt = buildOcrOrganizerPrompt({
+      ocrRulesText: '[ocr_shared]\nShared\n[/ocr_shared]\n[ocr_organizer]\nOrganizer\n[/ocr_organizer]',
+      rawOcrText: `OCR echoed ${input.artifactUrl}`,
+      sourceFile: input.sourceFile,
+      artifactUrl: input.artifactUrl,
+      mediaType: input.mediaType,
+      fileKey: 'file:chunk-1',
+    });
+    expect(prompt).not.toContain(input.artifactUrl);
+    expect(prompt).toContain('[REDACTED_ARTIFACT_URL]');
   });
 });

@@ -327,6 +327,48 @@ describe('ToolCallInfo', () => {
       );
     });
 
+    it('should render a full HTTP(S) input_data URL without a preview toggle', () => {
+      const signedUrl = `https://files.example.test/chunk-1.pdf?${'signature='.concat('a'.repeat(240))}`;
+
+      render(
+        <ToolCallInfo
+          input={JSON.stringify({
+            input_data: signedUrl,
+            metadata: { source: 'paddleocr' },
+          })}
+        />,
+      );
+
+      fireEvent.click(screen.getByText('Parameters').closest('button')!);
+
+      const value = screen.getByLabelText('input_data parameter value');
+      expect(value).toHaveTextContent(signedUrl);
+      expect(value.textContent).toBe(signedUrl);
+      expect(value).toHaveClass('break-all');
+      expect(
+        screen.queryByRole('button', { name: 'Show more input_data' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('should keep preview truncation for long non-URL parameter values', () => {
+      const longValue = 'x'.repeat(201);
+
+      render(
+        <ToolCallInfo
+          input={JSON.stringify({
+            description: longValue,
+            metadata: { source: 'paddleocr' },
+          })}
+        />,
+      );
+
+      fireEvent.click(screen.getByText('Parameters').closest('button')!);
+
+      const value = screen.getByLabelText('description parameter value');
+      expect(value.textContent).toBe(`${longValue.slice(0, 200)}…`);
+      expect(screen.getByRole('button', { name: 'Show more description' })).toBeInTheDocument();
+    });
+
     it('should render array parameter values as indented multiline JSON', () => {
       const queries = [{ category: '鐵板', material: '黑鐵', thicknessMm: ['15'] }];
 

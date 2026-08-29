@@ -4,6 +4,10 @@ export interface OcrOrganizerInput {
   ocrRulesText: string;
   rawOcrText: string;
   sourceFile?: string | null;
+  /** Signed URL for the exact source artifact represented by this chunk. */
+  artifactUrl?: string | null;
+  /** Source MIME type used to select the provider attachment schema. */
+  mediaType?: string | null;
   fileKey: string;
   pageStart?: number;
   pageEnd?: number;
@@ -17,6 +21,8 @@ export interface OcrOrganizer {
 
 const sharedRulesStart = '[ocr_shared]';
 const sharedRulesEnd = '[/ocr_shared]';
+const visionRulesStart = '[vision_processing]';
+const visionRulesEnd = '[/vision_processing]';
 const organizerRulesStart = '[ocr_organizer]';
 const organizerRulesEnd = '[/ocr_organizer]';
 const fallbackOrganizerRules =
@@ -110,6 +116,10 @@ export function resolveOcrOrganizerRulesText(rules: string): string {
     sharedRulesStart,
     sharedRulesEnd,
   ).section;
+  const hasVisionMarkers = rules.includes(visionRulesStart) || rules.includes(visionRulesEnd);
+  const visionSection = hasVisionMarkers
+    ? readMarkedSection(rules, 'vision_processing', visionRulesStart, visionRulesEnd).section
+    : undefined;
   const organizerSection = readMarkedSection(
     rules,
     'organizer',
@@ -119,8 +129,114 @@ export function resolveOcrOrganizerRulesText(rules: string): string {
 
   return [
     `${sharedRulesStart}\n${sharedSection}\n${sharedRulesEnd}`,
+    ...(visionSection
+      ? [`${visionRulesStart}\n${visionSection}\n${visionRulesEnd}`]
+      : []),
     `${organizerRulesStart}\n${organizerSection}\n${organizerRulesEnd}`,
   ].join('\n\n');
+}
+
+export type OcrOrganizerAttachment =
+  | {
+      type: 'input_file';
+      file_url: string;
+      filename?: string;
+      media_type: string;
+    }
+  | {
+      type: 'image_url';
+      image_url: { url: string; detail: 'high' };
+    }
+  | {
+      type: 'file';
+      source_type: 'url';
+      url: string;
+      mime_type: string;
+      metadata?: { filename?: string };
+    }
+  | {
+      type: 'image';
+      source_type: 'url';
+      url: string;
+      mime_type: string;
+      metadata?: { filename?: string };
+    };
+
+function normalizeOrganizerMediaType(mediaType: string | null | undefined): string {
+  return (mediaType?.trim().toLowerCase().split(';', 1)[0] ?? '').trim();
+}
+
+function isPdfMediaType(mediaType: string, sourceFile: string | null): boolean {
+  return mediaType === 'application/pdf' || sourceFile?.toLowerCase().endsWith('.pdf') === true;
+}
+
+function isImageMediaType(mediaType: string, sourceFile: string | null): boolean {
+  return (
+    mediaType.startsWith('image/') ||
+    ((mediaType === '' || mediaType === 'application/octet-stream') &&
+      /\.(?:png|jpe?g|webp|bmp|gif|tiff?)$/iu.test(sourceFile ?? ''))
+  );
+}
+
+/**
+ * Build exactly one provider attachment for the Organizer's chunk artifact.
+ * OAuth Responses uses its input_file/image_url blocks while standard
+ * LangChain providers consume URL-backed standard content blocks.
+ */
+export function buildOcrOrganizerAttachment(
+  input: Pick<OcrOrganizerInput, 'artifactUrl' | 'mediaType' | 'sourceFile'>,
+  mode: 'oauth' | 'standard',
+): OcrOrganizerAttachment {
+  const artifactUrl = input.artifactUrl?.trim();
+  if (!artifactUrl) {
+    throw new Error('OCR organizer artifact URL is unavailable');
+  }
+  try {
+    const parsed = new URL(artifactUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error('unsupported URL protocol');
+    }
+  } catch {
+    throw new Error('OCR organizer artifact URL is invalid');
+  }
+
+  const mediaType = normalizeOrganizerMediaType(input.mediaType);
+  const sourceFile = normalizeOcrOrganizerSourceFile(input.sourceFile);
+  if (isPdfMediaType(mediaType, sourceFile)) {
+    if (mode === 'oauth') {
+      return {
+        type: 'input_file',
+        file_url: artifactUrl,
+        ...(sourceFile ? { filename: sourceFile } : {}),
+        media_type: 'application/pdf',
+      };
+    }
+    return {
+      type: 'file',
+      source_type: 'url',
+      url: artifactUrl,
+      mime_type: 'application/pdf',
+      ...(sourceFile ? { metadata: { filename: sourceFile } } : {}),
+    };
+  }
+
+  if (isImageMediaType(mediaType, sourceFile)) {
+    if (mode === 'oauth') {
+      return {
+        type: 'image_url',
+        image_url: { url: artifactUrl, detail: 'high' },
+      };
+    }
+    return {
+      type: 'image',
+      source_type: 'url',
+      url: artifactUrl,
+      mime_type: mediaType.startsWith('image/') ? mediaType : 'image/*',
+      ...(sourceFile ? { metadata: { filename: sourceFile } } : {}),
+    };
+  }
+
+  throw new Error(`OCR organizer does not support artifact media type: ${mediaType || 'unknown'}`);
 }
 
 export function buildOcrOrganizerPrompt(input: OcrOrganizerInput): string {
@@ -150,7 +266,7 @@ export function buildOcrOrganizerPrompt(input: OcrOrganizerInput): string {
     }
   }
 
-  return [
+  const prompt = [
     'OCR chunk metadata (backend-authored):',
     `source_file: ${JSON.stringify(normalizeOcrOrganizerSourceFile(input.sourceFile))}`,
     `file_key: ${JSON.stringify(normalizeOcrOrganizerFileKey({ fileKey: input.fileKey }))}`,
@@ -168,4 +284,7 @@ export function buildOcrOrganizerPrompt(input: OcrOrganizerInput): string {
     'Raw OCR text:',
     input.rawOcrText,
   ].join('\n');
+
+  const artifactUrl = input.artifactUrl?.trim();
+  return artifactUrl ? prompt.split(artifactUrl).join('[REDACTED_ARTIFACT_URL]') : prompt;
 }

@@ -1,39 +1,19 @@
-【OCR 整理、Vision 整合與 Markdown 輸出規則】
-
-[ocr_main_flow]
-1. 依完整對話、最新使用者問題與本輪可用附件或 OCR 資料判斷處理目的；任務可包含文字解析、圖面加工核對、特定問題回答、資料比對或表格整理，不把整理 Markdown 視為唯一任務。
-2. 需要讀取圖片、掃描／影像 PDF、圖面、截圖或手寫附件時，先保留可用的 OCR 結果與來源資料，再依本規則完成確認與輸出。
-3. 當 image/PDF 頁面可用時，依 [ocr_vision] 使用模型內建 Vision，並套用【圖面加工判斷規則】。
-4. 後端提供 `ocr_failure_stage: paddleocr`、`paddleocr_status: failed`、`failed_page_ranges` 與可用 `file_url` 時，保留同檔已成功頁段的整理 Markdown 及 file metadata；模型內建 OCR／Vision 補讀只處理失敗頁段，不重做已成功頁段。`file_url: unavailable` 或無法補讀時，失敗頁段留空並列入 `manual_review`。此限制只適用 OCR 補讀，不限制 Vision 加工確認範圍。
-5. 已有 OCR 結果、整理後 Markdown、使用者明確修正值或已確認資料時，直接整理或回答；但只要資料涉及孔數、折工、切工／割型、切角／缺口或開槽連續邊長等圖面加工，不論 PaddleOCR 該頁是否成功，都必須依 [ocr_vision] 使用模型內建 Vision 檢視相關頁面與局部區域確認加工。
-6. 本輪含報價、估價、價格、單價或同義意圖時，不重新檢視圖面，只對照使用者已確認的訂單表格；OCR 整理不查價、不計價、不產生正式報價。
-[/ocr_main_flow]
-
-[ocr_vision]
-1. image/PDF 頁面可用時，使用模型內建 Vision 依【圖面加工判斷規則】確認孔數、折工、切工／割型、切角／缺口及開槽連續加工邊長；不得呼叫其他工具取代內建 Vision。
-2. 檢視所有含加工的相關頁面、視圖與局部區域；優先依 OCR 定位，PaddleOCR 失敗時依 `failed_page_ranges` 定位。不重新 OCR 整份文件，也不重讀與加工無關且已清楚的文字、表格、規格、數量或欄位；原始附件不可見或無法確認時，相關欄位留空並列入 `manual_review`。
-3. 逐件確認加工結果並整合進該來源唯一的 OCR 結果表；保留每件加工量、件數、總加工量、計算式、判斷依據與信心／複核原因。計量公式只依【圖面加工判斷規則】，本區不另建或重複公式。
-4. Vision 與 PaddleOCR 衝突時，不直接覆蓋；只有圖面明確證明 OCR 誤判時才修正，並在同列記錄原值、修正值與原因，否則保留兩者並列入 `manual_review`。未確認資料留空，不填 0、近似值或自行補齊。
-5. 每列記錄模型內建 OCR／Vision 對 PaddleOCR 結果是「僅確認」、「補充」、「更正」或「PaddleOCR 失敗後獨立取得」，供 [ocr_main_merge] 統一決定 `OCR來源`。僅確認既有值不得記為補充或更正。
-6. 對於必須 Vision 確認的加工資料，若無法確認且沒有可採用的模型內建 OCR／Vision 證據或資料，保留失敗狀態與待複核原因；未確認資料留空。
-7. 本區只處理加工確認與 OCR 資料整合，不查價、不計價、不產生正式報價。
-[/ocr_vision]
-
 [ocr_main_merge]
-1. 本輪存在任何 OCR 整理後 Markdown、預處理合併結果或 OCR chunks 時，包含 PaddleOCR 部分失敗時其他成功頁段的整理 Markdown 與 file metadata，最終回覆必須保留並完整合併輸出；附加的客戶名、案名、備註、修正值或其他意圖也須同時處理，不得取代或縮減 OCR 結果確認表。
-2. 依來源檔案分組。同一來源的所有 chunks、頁段與整理結果先合併全部資料列；每檔最終恰好輸出一個二級 Markdown 標題與一張連續 Markdown 表格，只能有一組表頭。
-3. 加工確認結果必須整合進同一來源唯一的 OCR 結果表，不另建 Vision 表；依實際內容自主加入加工欄位，保留每項加工的量、件數、總量、計算式、判斷依據與信心／複核原因。
-4. 先盤點該來源實際出現的欄位與同義欄位，合併同義欄名後再依使用者意圖與資料內容規劃欄位；欄位名稱、數量、順序不固定，不複製本規則範例 schema。
-5. 每列保留來源頁數、項次、件號、圖號或其他可追溯代號，不彙總、不合併同品名／規格；缺值留空，信心與複核原因保留在同列。
-6. raw PaddleOCR text、整理結果與本輪提供的 OCR Markdown 都是同一條 PaddleOCR 來源鏈；整理、合併、格式化或文字修正不改變來源。舊內容若未附來源標籤，補標 `PaddleOCR`，不得推定為 `AI OCR`。
-7. 每筆資料都須標示 OCR 來源：只使用 PaddleOCR 來源鏈時標 `PaddleOCR`；PaddleOCR 與模型內建 OCR／Vision 補充或更正結果共同採用時固定標 `PaddleOCR/ AI OCR`；PaddleOCR 失敗或不可用且資料完全由模型內建 OCR／Vision 取得時標 `AI OCR`；PaddleOCR 失敗且模型也未取得資料時，`OCR來源` 留空，不得標 `PaddleOCR`。模型內建 OCR／Vision 只確認既有 PaddleOCR 值且沒有補充或更正時，仍標 `PaddleOCR`，不加 `AI OCR`。
-8. 不輸出逐頁標題、逐頁表格、尺寸／加工 bullet list、分隔線或重複的第二張表；「逐一列表」只表示每筆資料在同一彙整表中各佔一列。
-9. 所有待複核項目最後彙總為單一 `manual_review` Markdown 表格；不同來源的 OCR 結果表不得混在一起。
+1. 不需要也不得使用 OCR 或 Vision 重新讀取、辨識或判讀原始 image/PDF；只需要依本輪提供的 filename、file_key、chunk 與 page range metadata，將所有 Organizer Markdown 排序並完整整合為一份最終 OCR Markdown，不得要求或使用 file URL。
+2. 本輪存在任何 OCR 整理後 Markdown、預處理合併結果或 OCR chunks 時，包含 PaddleOCR 部分失敗時其他成功頁段的整理 Markdown 與 file metadata，最終回覆必須保留並完整合併輸出；附加的客戶名、案名、備註、修正值或其他意圖也須同時處理，不得取代或縮減 OCR 結果確認表。
+3. 依來源檔案分組。同一來源的所有 chunks、頁段與整理結果先合併全部資料列；每檔最終恰好輸出一個二級 Markdown 標題與一張連續 Markdown 表格，只能有一組表頭。
+4. 加工確認結果必須整合進同一來源唯一的 OCR 結果表，不另建 Vision 表；依實際內容自主加入加工欄位，保留每項加工的量、件數、總量、計算式、判斷依據與信心／複核原因。
+5. 先盤點該來源實際出現的欄位與同義欄位，合併同義欄名後再依使用者意圖與資料內容規劃欄位；欄位名稱、數量、順序不固定，不複製本規則範例 schema。
+6. 每列保留來源頁數、項次、件號、圖號或其他可追溯代號，不彙總、不合併同品名／規格；來源頁碼須依 file metadata 的 chunk page range 換算為原始來源檔案頁碼，換算公式為「原始頁碼 = pageStart + chunk 內頁碼 - 1」，不得標注或並列 chunk PDF 的分塊內頁碼。例如 chunk page range 為 51–100 時，chunk `p.1` 只輸出原檔頁碼 `p.51`，chunk `p.50` 只輸出 `p.100`；缺值留空，信心與複核原因保留在同列。
+7. raw PaddleOCR text、整理結果與本輪提供的 OCR Markdown 都是同一條 PaddleOCR 來源鏈；整理、合併、格式化或文字修正不改變來源。舊內容若未附來源標籤，補標 `PaddleOCR`，不得推定為 `AI OCR`。
+8. 每筆資料都須標示 OCR 來源：只使用 PaddleOCR 來源鏈時標 `PaddleOCR`；PaddleOCR 與模型內建 OCR／Vision 補充或更正結果共同採用時固定標 `PaddleOCR/ AI OCR`；PaddleOCR 失敗或不可用且資料完全由模型內建 OCR／Vision 取得時標 `AI OCR`；PaddleOCR 失敗且模型也未取得資料時，`OCR來源` 留空，不得標 `PaddleOCR`。模型內建 OCR／Vision 只確認既有 PaddleOCR 值且沒有補充或更正時，仍標 `PaddleOCR`，不加 `AI OCR`。
+9. 不輸出逐頁標題、逐頁表格、尺寸／加工 bullet list、分隔線或重複的第二張表；「逐一列表」只表示每筆資料在同一彙整表中各佔一列。
+10. 所有待複核項目最後彙總為單一 `manual_review` Markdown 表格；不同來源的 OCR 結果表不得混在一起。
 [/ocr_main_merge]
 
 [final_ocr_markdown]
 1. Markdown 原名固定為 `OCR 結果確認表`；每個來源固定使用二級標題 `## OCR 結果確認表｜<filename>（<file_key>）`，不得用粗體代替標題。
-2. OCR 結果表欄位由本輪使用者意圖與來源資料自主規劃，可增減、改名、合併或重排；優先呈現可追溯來源、辨識值、數量／尺寸、信心／複核資訊與 OCR 來源，缺值留空。所有 OCR 結果表固定包含零件編號欄位；只能取自來源 OCR 或來源訂單列，來源缺值時留空，不得由品名、規格、圖號、頁碼、項次、型號／ERP code 或其他欄位推測代填。
+2. OCR 結果表欄位由本輪使用者意圖與來源資料自主規劃，可增減、改名、合併或重排；優先呈現可追溯來源、辨識值、數量／尺寸、信心／複核資訊與 OCR 來源，缺值留空。凡輸出來源頁碼／圖號欄位，其中頁碼須依 file metadata 的 chunk page range 換算成原始來源檔案頁碼（`pageStart + chunk 內頁碼 - 1`），不得顯示 chunk PDF 的分塊內頁碼；例如 chunk page range 為 51–100 時，chunk `p.1` 只輸出 `p.51`。所有 OCR 結果表固定包含零件編號欄位；只能取自來源 OCR 或來源訂單列，來源缺值時留空，不得由品名、規格、圖號、頁碼、項次、型號／ERP code 或其他欄位推測代填。
 3. OCR 或 Vision 已修正的內容直接使用修正值，並在同列保留原辨識值、修正內容與原因；模糊、缺字、遮擋、反光、低解析、字元歧義、規格／數量／尺寸不完整、列數不一致或需幾何判讀時，標示信心／複核資訊並納入 `manual_review`。
 4. 存在待複核項目時，所有 OCR 結果表之後只輸出一個 `## manual_review` section 與一張 Markdown 表格，固定欄位為`來源表格`、`來源件號 / 項次`、`問題欄位`、`目前判斷`、`需確認內容`、`影響範圍`；該表必須是最後一張表與最後一個 section。無待複核項目時不輸出空表，也不另列 bullet list。
 5. 每輪 OCR 處理結束前最後輸出一句總結，且該句後不得再輸出其他內容：有待複核項目時使用 `OCR 整理完成：共 X 個來源、Y 筆資料、N 項待複核事項。`；無待複核項目時使用 `OCR 整理完成：共 X 個來源、Y 筆資料，無待複核事項。`。X、Y、N 分別為來源檔案數、所有 OCR 結果表資料列總數及 `manual_review` 資料列數。

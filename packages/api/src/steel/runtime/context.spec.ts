@@ -65,6 +65,7 @@ describe('Steel runtime context', () => {
     expect(context.rules.agentRules).toHaveLength(1);
     expect(context.rules.otherGlobalRules.ocrMainRules).toHaveLength(1);
     expect(context.attachments.currentOcrMarkdownResults).toEqual([]);
+    expect(context.attachments.currentPaddleOcrStatuses).toEqual([]);
     expect(context).not.toHaveProperty('conversation');
     expect(context).not.toHaveProperty('outputSheets');
     expect(context).not.toHaveProperty('toolPolicy');
@@ -83,6 +84,7 @@ describe('Steel runtime context', () => {
       ]),
     );
     expect(context.attachments).toEqual({
+      currentPaddleOcrStatuses: [],
       currentOcrMarkdownResults: [expect.objectContaining({ ocrFileKey: 'file:quote.pdf' })],
       currentOcrFailures: [],
     });

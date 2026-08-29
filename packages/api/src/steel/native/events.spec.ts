@@ -1,13 +1,16 @@
 import {
   appendSteelNativeActivityEvent,
+  cloneSteelNativeHistory,
   upsertSteelNativePreflightToolCall,
   createSteelNativeHistory,
   ensureSteelNativeHistory,
+  parseSteelNativeHistory,
   buildSteelCodeInterpreterAuditEvent,
   buildSteelQuoteAuditEvent,
   buildSteelNativeEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
+  steelNativeHistoryMaxBytes,
   steelNativeStreamEventName,
 } from './events';
 
@@ -19,6 +22,260 @@ const memoryEvent = (message = 'Saved') => ({
 });
 
 describe('Steel native event mapping', () => {
+  it('strictly parses and clones bounded history', () => {
+    const history = createSteelNativeHistory();
+    appendSteelNativeActivityEvent(history, memoryEvent('persisted'));
+
+    const parsed = parseSteelNativeHistory(JSON.stringify(history));
+    expect(parsed).toEqual(history);
+    expect(parsed).not.toBe(history);
+    expect(parsed?.activityEvents).not.toBe(history.activityEvents);
+
+    const clone = cloneSteelNativeHistory(history);
+    expect(clone).toEqual(history);
+    expect(clone).not.toBe(history);
+  });
+
+  it('rejects malformed or over-budget persisted history', () => {
+    expect(parseSteelNativeHistory('{bad json')).toBeUndefined();
+    expect(
+      parseSteelNativeHistory({
+        activityEvents: [{ type: 'memory_saved' }],
+        preflightToolCalls: [],
+      }),
+    ).toBeUndefined();
+
+    const oversized = {
+      activityEvents: Array.from({ length: 101 }, () => memoryEvent()),
+      preflightToolCalls: [],
+    };
+    expect(parseSteelNativeHistory(oversized)).toBeUndefined();
+  });
+
+  it('reconstructs canonical history without unknown activity or preflight fields', () => {
+    const history = parseSteelNativeHistory({
+      activityEvents: [
+        {
+          ...memoryEvent('safe'),
+          input_data: { raw: 'provider payload' },
+          extras: { shouldNotPersist: true },
+          missingPageRangesByFileKey: {
+            'file:one': [{ pageStart: 1, pageEnd: 2, raw: 'provider payload' }],
+          },
+        },
+      ],
+      preflightToolCalls: [
+        {
+          type: 'tool_call',
+          id: 'steel_paddleocr_preflight_pages_1_2',
+          name: 'paddleocr_vl---PaddleOCR',
+          args: {
+            input_data:
+              'https://files.example.test/chunk.pdf?X-Amz-Signature=debug-signature-value',
+            output_mode: 'detailed',
+            return_images: false,
+            use_doc_orientation_classify: true,
+            use_doc_unwarping: true,
+            use_layout_detection: true,
+          },
+          progress: 0,
+          extras: { raw: 'provider payload' },
+        },
+      ],
+      rawProviderPayload: { shouldNotPersist: true },
+    });
+
+    expect(history).toEqual({
+      activityEvents: [
+        expect.objectContaining({
+          type: 'memory_saved',
+          source: 'tool_result',
+          message: 'safe',
+          savedCounts: { price_evidence: 1 },
+        }),
+      ],
+      preflightToolCalls: [
+        expect.objectContaining({
+          type: 'tool_call',
+          id: 'steel_paddleocr_preflight_pages_1_2',
+          name: 'paddleocr_vl---PaddleOCR',
+          progress: 0,
+        }),
+      ],
+    });
+    expect(history?.activityEvents[0]).not.toHaveProperty('input_data');
+    expect(history?.activityEvents[0]).not.toHaveProperty('extras');
+    expect(history?.preflightToolCalls[0]).not.toHaveProperty('extras');
+    expect(history?.preflightToolCalls[0]?.args.input_data).toBe(
+      'https://files.example.test/chunk.pdf?X-Amz-Signature=debug-signature-value',
+    );
+    expect(history?.activityEvents[0]).not.toHaveProperty('missingPageRangesByFileKey');
+
+    const nestedRanges = parseSteelNativeHistory({
+      activityEvents: [
+        {
+          type: 'parse_status',
+          source: 'ocr_preprocessing',
+          message: 'partial',
+          parseStatus: 'partial',
+          missingPageRangesByFileKey: {
+            'file:one': [{ pageStart: 1, pageEnd: 2, raw: 'provider payload' }],
+          },
+        },
+      ],
+      preflightToolCalls: [],
+    });
+    expect(nestedRanges?.activityEvents[0]).toEqual(
+      expect.objectContaining({
+        missingPageRangesByFileKey: {
+          'file:one': [{ pageStart: 1, pageEnd: 2 }],
+        },
+      }),
+    );
+  });
+
+  it('sanitizes persisted error messages and preflight error output', () => {
+    const errorMessage = [
+      'provider failed',
+      'https://user:password@example.test/report.pdf?X-Amz-Signature=secret&token=secret',
+      'token=secret',
+      'Bearer super-secret',
+      'line\nnext\u0000part',
+      'x'.repeat(600),
+    ].join(' ');
+    const sink: ReturnType<typeof memoryEvent>[] = [];
+
+    expect(
+      appendSteelNativeActivityEvent(sink, {
+        type: 'parse_status',
+        source: 'paddleocr_preflight',
+        message: 'PaddleOCR preflight partial',
+        parseStatus: 'partial',
+        errorMessage,
+      }),
+    ).toBe(true);
+
+    const persistedError = sink[0];
+    expect(persistedError).toEqual(
+      expect.objectContaining({
+        errorMessage: expect.any(String),
+      }),
+    );
+    const sanitized = (persistedError as { errorMessage?: string }).errorMessage;
+    expect(sanitized).toContain('[redacted-url]');
+    expect(sanitized).toContain('token=[REDACTED]');
+    expect(sanitized).toContain('Bearer [REDACTED]');
+    expect(sanitized).not.toContain('user:password@example.test');
+    expect(sanitized).not.toContain('super-secret');
+    expect(
+      [...(sanitized ?? '')].every((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return (
+          codePoint > 31 &&
+          (codePoint < 127 || codePoint > 159) &&
+          codePoint !== 0x2028 &&
+          codePoint !== 0x2029
+        );
+      }),
+    ).toBe(true);
+    expect(sanitized?.length).toBeLessThanOrEqual(512);
+
+    const legacyHistory = parseSteelNativeHistory({
+      activityEvents: [],
+      preflightToolCalls: [
+        {
+          type: 'tool_call',
+          id: 'steel_paddleocr_preflight_pages_1_2',
+          name: 'paddleocr_vl---PaddleOCR',
+          args: {
+            output_mode: 'detailed',
+            return_images: false,
+            use_doc_orientation_classify: true,
+            use_doc_unwarping: true,
+            use_layout_detection: true,
+          },
+          output: `Error: ${errorMessage}`,
+          progress: 0,
+        },
+      ],
+    });
+    expect(legacyHistory?.preflightToolCalls[0]?.output).toContain('[redacted-url]');
+    expect(legacyHistory?.preflightToolCalls[0]?.output).not.toContain('super-secret');
+
+    const history = createSteelNativeHistory();
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'steel_paddleocr_preflight_pages_1_2',
+        name: 'paddleocr_vl---PaddleOCR',
+        args: {
+          output_mode: 'detailed',
+          return_images: false,
+          use_doc_orientation_classify: true,
+          use_doc_unwarping: true,
+          use_layout_detection: true,
+        },
+        output: `Error: ${errorMessage}`,
+        progress: 0,
+      }),
+    ).toBe(false);
+
+    const structuredFailure = {
+      type: 'tool_call' as const,
+      id: 'steel_paddleocr_preflight_pages_3_4',
+      name: 'paddleocr_vl---PaddleOCR',
+      args: {
+        output_mode: 'detailed' as const,
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      output: JSON.stringify({
+        status: 'failed',
+        paddleocr: 'fail',
+        ocrEngine: 'paddleocr_vl',
+        ocrFileKey: 'file:pdf-1',
+        filename: 'quote.pdf',
+        chunkIndex: 1,
+        chunkCount: 2,
+        pageStart: 3,
+        pageEnd: 4,
+        attemptsUsed: 2,
+        diagnosticCode: 'ai_studio_timeout',
+        errorMessage: 'failed https://signed.example.test/?token=secret',
+      }),
+      progress: 1 as const,
+    };
+    expect(upsertSteelNativePreflightToolCall(history, structuredFailure)).toBe(true);
+    const persistedFailure = JSON.parse(history.preflightToolCalls[0]?.output ?? '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(persistedFailure).toEqual({
+      status: 'fail',
+      paddleocr: 'fail',
+      ocrEngine: 'paddleocr_vl',
+      ocrFileKey: 'file:pdf-1',
+      filename: 'quote.pdf',
+      chunkIndex: 1,
+      chunkCount: 2,
+      pageStart: 3,
+      pageEnd: 4,
+      dataSizeBytes: Buffer.byteLength(structuredFailure.output, 'utf8'),
+      attemptsUsed: 2,
+      errorCode: 'ai_studio_timeout',
+      error: 'failed [redacted-url]',
+      errorMessage: 'failed [redacted-url]',
+    });
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        ...structuredFailure,
+        output: JSON.stringify({ ...persistedFailure, rawProviderPayload: 'secret' }),
+      }),
+    ).toBe(false);
+  });
+
   it('creates independent canonical histories', () => {
     const first = createSteelNativeHistory();
     const second = createSteelNativeHistory();
@@ -30,7 +287,10 @@ describe('Steel native event mapping', () => {
 
   it('upgrades legacy activity events without replacing their array', () => {
     const activityEvents = [memoryEvent('legacy')];
-    const context = { steelActivityEvents: activityEvents };
+    const context: {
+      steelActivityEvents: typeof activityEvents;
+      steelHistory?: ReturnType<typeof createSteelNativeHistory>;
+    } = { steelActivityEvents: activityEvents };
 
     const history = ensureSteelNativeHistory(context);
 
@@ -86,9 +346,9 @@ describe('Steel native event mapping', () => {
     expect(
       appendSteelNativeActivityEvent(sink, { type: 'memory_saved', source: 'tool_result' }),
     ).toBe(false);
-    expect(
-      appendSteelNativeActivityEvent(sink, { ...memoryEvent('x'.repeat(20 * 1024)) }),
-    ).toBe(false);
+    expect(appendSteelNativeActivityEvent(sink, { ...memoryEvent('x'.repeat(20 * 1024)) })).toBe(
+      false,
+    );
     expect(() => appendSteelNativeActivityEvent(sink, circular)).not.toThrow();
     expect(sink).toEqual([]);
   });
@@ -105,13 +365,14 @@ describe('Steel native event mapping', () => {
     expect(Buffer.byteLength(JSON.stringify(sink), 'utf8')).toBeLessThanOrEqual(128 * 1024);
   });
 
-  it('upserts redacted PaddleOCR cards under per-entry and complete-history budgets', () => {
-    const history = { activityEvents: [], preflightToolCalls: [] };
+  it('upserts PaddleOCR cards with full debug URLs under history budgets', () => {
+    const history = createSteelNativeHistory();
     const card = {
       type: 'tool_call' as const,
       id: 'steel_paddleocr_preflight_pages_1_50',
       name: 'paddleocr_vl---PaddleOCR',
       args: {
+        input_data: 'https://files.example.test/chunk.pdf?signature=full-debug-value',
         output_mode: 'detailed' as const,
         return_images: false,
         use_doc_orientation_classify: true,
@@ -120,6 +381,7 @@ describe('Steel native event mapping', () => {
       },
       output: JSON.stringify({
         status: 'completed',
+        paddleocr: 'ok',
         ocrEngine: 'paddleocr_vl',
         ocrFileKey: 'file:pdf-1',
         filename: 'quote.pdf',
@@ -139,10 +401,25 @@ describe('Steel native event mapping', () => {
     expect(upsertSteelNativePreflightToolCall(history, { ...card, progress: 1 })).toBe(true);
     expect(history.preflightToolCalls).toHaveLength(1);
     expect(history.preflightToolCalls[0]?.progress).toBe(1);
+    expect(history.preflightToolCalls[0]?.args.input_data).toBe(
+      'https://files.example.test/chunk.pdf?signature=full-debug-value',
+    );
+    expect(JSON.parse(history.preflightToolCalls[0]?.output ?? '')).toEqual({
+      status: 'ok',
+      paddleocr: 'ok',
+      ocrEngine: 'paddleocr_vl',
+      ocrFileKey: 'file:pdf-1',
+      filename: 'quote.pdf',
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 50,
+      dataSizeBytes: 12,
+    });
     expect(
       upsertSteelNativePreflightToolCall(history, {
         ...card,
-        args: { ...card.args, input_data: 'https://secret' },
+        args: { ...card.args, unexpected: 'raw provider payload' },
       }),
     ).toBe(false);
     expect(Buffer.byteLength(JSON.stringify(history), 'utf8')).toBeLessThanOrEqual(128 * 1024);
@@ -151,6 +428,64 @@ describe('Steel native event mapping', () => {
       appendSteelNativeActivityEvent(history, memoryEvent(`${index}-${'x'.repeat(1400)}`));
     }
     expect(Buffer.byteLength(JSON.stringify(history), 'utf8')).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it('preserves oversized preflight params and rejects oversized results', () => {
+    const history = createSteelNativeHistory();
+    const inputData = `https://files.example.test/chunk.pdf?${'signature=x'.repeat(2_000)}`;
+    const card = {
+      type: 'tool_call' as const,
+      id: 'steel_paddleocr_preflight_large_params',
+      name: 'paddleocr_vl---PaddleOCR',
+      args: {
+        input_data: inputData,
+        output_mode: 'detailed' as const,
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      progress: 1 as const,
+    };
+
+    expect(upsertSteelNativePreflightToolCall(history, card)).toBe(true);
+    expect(history.preflightToolCalls[0]?.args.input_data).toBe(inputData);
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        ...card,
+        output: 'x'.repeat(4 * 1024 + 1),
+      }),
+    ).toBe(false);
+  });
+
+  it('evicts complete oldest cards before history reaches the Mongo-safe byte budget', () => {
+    const history = createSteelNativeHistory();
+    const inputData = `https://files.example.test/chunk.pdf?payload=${'x'.repeat(1024 * 1024)}`;
+
+    for (let index = 0; index < 13; index += 1) {
+      expect(
+        upsertSteelNativePreflightToolCall(history, {
+          type: 'tool_call',
+          id: `steel_paddleocr_preflight_large_${index}`,
+          name: 'paddleocr_vl---PaddleOCR',
+          args: {
+            input_data: `${inputData}${index}`,
+            output_mode: 'detailed',
+            return_images: false,
+            use_doc_orientation_classify: true,
+            use_doc_unwarping: true,
+            use_layout_detection: true,
+          },
+          progress: 0,
+        }),
+      ).toBe(true);
+    }
+
+    expect(history.preflightToolCalls.length).toBeLessThan(13);
+    expect(history.preflightToolCalls.at(-1)?.args.input_data).toBe(`${inputData}12`);
+    expect(Buffer.byteLength(JSON.stringify(history), 'utf8')).toBeLessThanOrEqual(
+      steelNativeHistoryMaxBytes,
+    );
   });
 
   it('rejects unsafe quote source and missing page ranges', () => {

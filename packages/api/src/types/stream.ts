@@ -4,6 +4,7 @@ import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
 import type { ServerSentEvent } from './events';
 import type { DelegateOcrPolicy } from '../steel/native/delegate';
+import type { SteelNativeHistory } from '../steel/native/events';
 
 export interface GenerationJobMetadata {
   userId: string;
@@ -59,6 +60,8 @@ export interface GenerationJobMetadata {
   /** Normal FINAL publication is waiting on required durable abort work. */
   terminalPersistencePending?: boolean;
   terminalPersistenceStartedAt?: number;
+  /** Canonical bounded Steel activity/card history for terminal recovery. */
+  steelHistory?: SteelNativeHistory;
   /** Set when the job is paused for human review (status === 'requires_action') */
   pendingAction?: Agents.PendingAction;
   /** Accepted ask-user answer retained until this generation terminalizes. */

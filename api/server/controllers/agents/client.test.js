@@ -3026,7 +3026,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result.prompt[0].content).toContain('Current turn file body');
     });
 
-    it('keeps OCR-capable request attachments in Steel context when provider processing filters them out', async () => {
+    it('keeps OCR files private to preprocessing and gives the main Agent only Organizer Markdown', async () => {
       const { buildDefaultSteelGlobalAgentContext } = require('@librechat/api');
       const currentFile = makeUploadedFile(
         'current-pdf',
@@ -3046,6 +3046,7 @@ describe('AgentClient - titleConvo', () => {
 
       mockRunSteelPaddleOcrPreflight.mockResolvedValueOnce({
         status: 'completed',
+        ocrTurnActive: true,
         completedKeys: ['file:current-pdf'],
         attemptedKeys: ['file:current-pdf'],
         failedKeys: [],
@@ -3056,6 +3057,16 @@ describe('AgentClient - titleConvo', () => {
             fileId: 'current-pdf',
             filename: 'drawing.pdf',
             result: { text: 'raw OCR' },
+          },
+        ],
+        currentPaddleOcrStatuses: [
+          {
+            paddleocr: 'ok',
+            ocrFileKey: 'file:current-pdf',
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 1,
           },
         ],
         currentOcrMarkdownResults,
@@ -3102,10 +3113,10 @@ describe('AgentClient - titleConvo', () => {
       expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
         expect.objectContaining({
           attachments: {
-            currentTurnFiles: [expectedReference],
             currentOcrMarkdownResults,
             priorActiveFileEvidence: [],
           },
+          mode: 'ocr',
         }),
       );
       expect(mockReq.steelNativeContext.currentTurnFiles).toEqual([expectedReference]);

@@ -1,6 +1,7 @@
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { isResolvedDelegateOcrPolicy } from '~/steel/native/delegate';
+import { cloneSteelNativeHistory } from '~/steel/native/events';
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
@@ -61,6 +62,12 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.activityPhaseSnapshot) {
     patch.activityPhaseSnapshot = metadata.activityPhaseSnapshot;
+  }
+  if (metadata.steelHistory) {
+    const history = cloneSteelNativeHistory(metadata.steelHistory);
+    if (history) {
+      patch.steelHistory = JSON.stringify(history);
+    }
   }
   return patch;
 }

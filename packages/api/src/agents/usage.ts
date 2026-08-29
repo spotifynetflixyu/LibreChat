@@ -22,6 +22,8 @@ import type {
 } from './transactions';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { EndpointTokenConfig } from '~/types/tokens';
+import { parseSteelNativeHistory } from '~/steel/native/events';
+import type { SteelNativePreflightToolCall, SteelNativeStreamEvent } from '~/steel/native/events';
 import {
   prepareStructuredTokenSpend,
   bulkWriteTransactions,
@@ -437,8 +439,24 @@ function parseUsageEvents(value?: string | null): TTokenUsageEvent[] {
  * partial answer text on top (no overlap to cancel).
  */
 export function buildAbortedResponseMetadata(
-  job: { tokenUsage?: string | null; contextUsage?: string | null } | null | undefined,
-): { usage?: TResponseUsage; summaryUsedTokens?: number } | undefined {
+  job:
+    | {
+        tokenUsage?: string | null;
+        contextUsage?: string | null;
+        steelHistory?: string | null;
+      }
+    | null
+    | undefined,
+):
+  | {
+      usage?: TResponseUsage;
+      summaryUsedTokens?: number;
+      steel?: {
+        activityEvents?: SteelNativeStreamEvent[];
+        preflightToolCalls?: SteelNativePreflightToolCall[];
+      };
+    }
+  | undefined {
   const events = parseUsageEvents(job?.tokenUsage);
   const usage = aggregateEmittedUsage(events);
 
@@ -454,13 +472,27 @@ export function buildAbortedResponseMetadata(
    *  not fold in summarization/earlier-call output, so the full baseline is the
    *  marker and the client's partial-text addition has no overlap to cancel. */
   const summaryUsedTokens = computeSummaryUsedTokens(snapshot);
+  const steelHistory = parseSteelNativeHistory(job?.steelHistory);
 
-  const metadata: { usage?: TResponseUsage; summaryUsedTokens?: number } = {};
+  const metadata: {
+    usage?: TResponseUsage;
+    summaryUsedTokens?: number;
+    steel?: {
+      activityEvents?: SteelNativeStreamEvent[];
+      preflightToolCalls?: SteelNativePreflightToolCall[];
+    };
+  } = {};
   if (usage) {
     metadata.usage = usage;
   }
   if (summaryUsedTokens != null) {
     metadata.summaryUsedTokens = summaryUsedTokens;
+  }
+  if (steelHistory) {
+    metadata.steel = {
+      activityEvents: steelHistory.activityEvents,
+      preflightToolCalls: steelHistory.preflightToolCalls,
+    };
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }

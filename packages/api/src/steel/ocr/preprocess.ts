@@ -1,4 +1,6 @@
 import { getSavedOcrPreprocessingChunkMarkdowns, mergeChunkMarkdownForFileKey } from './merge';
+import { escapeMarkdownTableCell } from '../markdown/row-codec';
+import { parseMarkdownTables } from '../markdown/table';
 
 import type {
   CaptureOcrPreprocessingChunkMarkdownInput,
@@ -60,6 +62,8 @@ export interface PaddleOcrChunkRunResult {
   rawResult: unknown;
   rawOcrText: string;
   rawResultHash: string;
+  /** Exact signed artifact used by the successful PaddleOCR attempt. */
+  artifact?: OcrPdfChunkArtifact;
 }
 
 export interface PaddleOcrChunkRunner {
@@ -377,6 +381,89 @@ function isImageOcrFile(file: OcrPreprocessingFile): boolean {
   return /\.(?:png|jpe?g|webp|bmp|gif|tiff?)$/iu.test(filename);
 }
 
+function getArtifactUrlRedactionVariants(artifactUrl: string): {
+  exact: string[];
+  paths: string[];
+} {
+  const variants = new Set<string>();
+  const add = (value: string) => {
+    if (value) {
+      variants.add(value);
+      variants.add(value.replaceAll('&', '&amp;'));
+      variants.add(encodeURI(value));
+      variants.add(encodeURIComponent(value));
+      try {
+        variants.add(decodeURIComponent(value));
+      } catch {
+        // Keep the original URL variants when it contains malformed escaping.
+      }
+    }
+  };
+
+  add(artifactUrl);
+  const paths = new Set<string>();
+  try {
+    const parsed = new URL(artifactUrl);
+    const path = `${parsed.origin}${parsed.pathname}`;
+    paths.add(path);
+    paths.add(path.replaceAll('&', '&amp;'));
+    paths.add(encodeURI(path));
+    paths.add(encodeURIComponent(path));
+    try {
+      paths.add(decodeURIComponent(path));
+    } catch {
+      // Keep the original path variants when it contains malformed escaping.
+    }
+  } catch {
+    // Attachment validation reports invalid URLs before Organizer invocation.
+  }
+  return {
+    exact: [...variants].sort((left, right) => right.length - left.length),
+    paths: [...paths].sort((left, right) => right.length - left.length),
+  };
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function redactArtifactUrl(markdown: string, artifactUrl: string): string {
+  const variants = getArtifactUrlRedactionVariants(artifactUrl);
+  const exactRedacted = variants.exact.reduce(
+    (content, variant) => content.split(variant).join('[REDACTED_ARTIFACT_URL]'),
+    markdown,
+  );
+  return variants.paths.reduce((content, path) => {
+    const query = '(?:(?:\\?|%3f)[^\\s|<>"\']*)?';
+    return content.replace(
+      new RegExp(`${escapeRegularExpression(path)}${query}`, 'giu'),
+      '[REDACTED_ARTIFACT_URL]',
+    );
+  }, exactRedacted);
+}
+
+function normalizeOrganizerMarkdown(markdown: string, artifactUrl?: string): string {
+  const artifactRedacted = artifactUrl
+    ? redactArtifactUrl(markdown, artifactUrl)
+    : markdown;
+  const redacted = artifactRedacted
+    .replace(/data:(?:application\/pdf|image\/[a-z0-9.+-]+);base64,[a-z0-9+/=]+/giu, '[REDACTED_DATA_URL]');
+  const tables = parseMarkdownTables(redacted);
+  if (tables.length === 0) {
+    throw new Error('OCR organizer output must contain at least one Markdown table');
+  }
+
+  return tables
+    .map((table) => [
+      `| ${table.headers.map(escapeMarkdownTableCell).join(' | ')} |`,
+      `| ${table.headers.map(() => '---').join(' | ')} |`,
+      ...table.rows.map(
+        (row) => `| ${row.map(escapeMarkdownTableCell).join(' | ')} |`,
+      ),
+    ].join('\n'))
+    .join('\n\n');
+}
+
 function getResultPageRanges(
   file: OcrPreprocessingFile,
   chunks: readonly OcrPageRange[],
@@ -665,11 +752,26 @@ export async function runOcrPreprocessingBatchPipeline(
       chunkIndex: chunk.chunkIndex,
       chunkCount: workItem.chunkCount,
     });
-    return await input.paddleOcr.runChunk({
+    const raw = await input.paddleOcr.runChunk({
       file: workItem.file,
       chunk,
       artifact,
     });
+    const effectiveArtifact = raw.artifact ?? artifact;
+    if (
+      effectiveArtifact.pageStart !== chunk.pageStart ||
+      effectiveArtifact.pageEnd !== chunk.pageEnd
+    ) {
+      throw new Error(
+        `PaddleOCR returned an artifact for the wrong page range ${effectiveArtifact.pageStart}-${effectiveArtifact.pageEnd}`,
+      );
+    }
+    workItem.pdfChunkArtifacts = (workItem.pdfChunkArtifacts ?? []).map((candidate) =>
+      candidate.pageStart === chunk.pageStart && candidate.pageEnd === chunk.pageEnd
+        ? effectiveArtifact
+        : candidate,
+    );
+    return { ...raw, artifact: effectiveArtifact };
   };
 
   const saveRawChunk = async (captureInput: {
@@ -678,7 +780,8 @@ export async function runOcrPreprocessingBatchPipeline(
     artifact: OcrPdfChunkArtifact;
     raw: PaddleOcrChunkRunResult;
   }) => {
-    const { workItem, chunk, artifact, raw } = captureInput;
+    const { workItem, chunk, raw } = captureInput;
+    const artifact = raw.artifact ?? captureInput.artifact;
     await input.memory.capturePaddleOcrChunkResult({
       conversationId: input.conversationId,
       requestId: input.requestId,
@@ -917,6 +1020,16 @@ export async function runOcrPreprocessingBatchPipeline(
           chunkCount: workItem.chunkCount,
         });
         try {
+          const artifact = findArtifact({
+            file: workItem.file,
+            artifacts: workItem.pdfChunkArtifacts ?? [],
+            chunk,
+          });
+          if (typeof artifact.filepath !== 'string' || artifact.filepath.trim() === '') {
+            throw new Error(
+              `Missing OCR organizer artifact URL for ${workItem.file.ocrFileKey} chunk ${chunk.chunkIndex}`,
+            );
+          }
           const organizerInput = {
             ocrRulesText: input.ocrRulesText,
             rawOcrText: savedChunk.rawOcrText,
@@ -925,6 +1038,8 @@ export async function runOcrPreprocessingBatchPipeline(
               fileId: workItem.file.fileId ?? workItem.file.file_id ?? workItem.file.id,
             }),
             sourceFile: getOcrSourceFile(workItem.file) ?? null,
+            artifactUrl: artifact.filepath,
+            ...(workItem.file.mediaType ? { mediaType: workItem.file.mediaType } : {}),
             ...(isImageOcrFile(workItem.file)
               ? {}
               : {
@@ -934,7 +1049,10 @@ export async function runOcrPreprocessingBatchPipeline(
                   chunkCount: workItem.chunkCount,
                 }),
           };
-          organized = await input.organizer.organize(organizerInput);
+          const organizerResult = await input.organizer.organize(organizerInput);
+          organized = {
+            markdown: normalizeOrganizerMarkdown(organizerResult.markdown, artifact.filepath),
+          };
           break;
         } catch (error) {
           if (isAbortError(error)) {

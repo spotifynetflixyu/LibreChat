@@ -53,11 +53,25 @@ function formatParamValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  try {
+    const { protocol } = new URL(value.trim());
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function ParameterValue({ name, value }: { name: string; value: unknown }) {
   const localize = useLocalize();
   const [isExpanded, setIsExpanded] = useState(false);
   const content = formatParamValue(value);
-  const canExpand = content.length > parameterPreviewLength;
+  const isFullUrl = name === 'input_data' && isHttpUrl(value);
+  const canExpand = !isFullUrl && content.length > parameterPreviewLength;
   const actionLabel = localize(isExpanded ? 'com_ui_show_less' : 'com_ui_show_more');
   const visibleContent =
     canExpand && !isExpanded ? `${content.slice(0, parameterPreviewLength)}…` : content;
@@ -65,7 +79,10 @@ function ParameterValue({ name, value }: { name: string; value: unknown }) {
   return (
     <>
       <span
-        className="mt-1 block max-h-[300px] max-w-full overflow-auto whitespace-pre-wrap break-words rounded bg-surface-tertiary px-1.5 py-0.5 font-mono text-text-primary"
+        className={cn(
+          'mt-1 block max-h-[300px] max-w-full overflow-auto whitespace-pre-wrap break-words rounded bg-surface-tertiary px-1.5 py-0.5 font-mono text-text-primary',
+          isFullUrl && 'break-all',
+        )}
         aria-label={`${name} parameter value`}
       >
         {visibleContent}

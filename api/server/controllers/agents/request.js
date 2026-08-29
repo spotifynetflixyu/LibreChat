@@ -50,6 +50,35 @@ function sendGenerationJson(res, status, body, generationProtocolVersion) {
   return res.status(status).json({ ...body, generationProtocolVersion });
 }
 
+function getSafeDurableGenerationErrorMessage(error) {
+  const fallback = 'Generation failed';
+  let message = typeof error?.message === 'string' && error.message ? error.message : fallback;
+  message = message
+    .replace(/https?:\/\/[^\s"'<>]+/giu, '[redacted-url]')
+    .replace(/\b(Bearer\s+)[^\s"'<>]+/giu, '$1[redacted]')
+    .replace(
+      /\b((?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password)\s*[:=]\s*)[^\s,;"'&]+/giu,
+      '$1[redacted]',
+    );
+  message = [...message]
+    .map((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint != null &&
+        ((codePoint >= 0 && codePoint <= 0x1f) ||
+          (codePoint >= 0x7f && codePoint <= 0x9f) ||
+          codePoint === 0x2028 ||
+          codePoint === 0x2029)
+        ? ' '
+        : character;
+    })
+    .join('')
+    .trim();
+  if (!message) {
+    return fallback;
+  }
+  return message.length > 512 ? `${message.slice(0, 511)}…` : message;
+}
+
 function getInitializationFailure(error) {
   if (error?.code === ErrorTypes.RESOURCE_RECOVERY_REQUIRED) {
     return {
@@ -1051,6 +1080,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     acceptAgentStartupTelemetry(req, streamId);
     startupTelemetry?.mark('metadata_persisted');
     req._resumableStreamId = streamId;
+    req._resumableJobCreatedAt = jobCreatedAt;
     getMCPRequestContext(req, undefined, { cleanupOnResponse: false });
     let recoveredSteerCommitted = false;
     const commitRecoveredSteer = async () => {
@@ -1274,6 +1304,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     }
 
     let userMessage;
+    let responseMessageId = preliminaryResponseMessageId;
 
     const getReqData = (data = {}) => {
       if (data.userMessage) {
@@ -1356,6 +1387,126 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }
     };
 
+    /** Persist an unexpected generation failure as a durable error response.
+     * The terminal claim fences competing abort/replacement owners before any
+     * user or assistant row is written. */
+    const persistUnexpectedGenerationError = async (error) => {
+      const generationError = getSafeDurableGenerationErrorMessage(error);
+      const claim = await GenerationJobManager.claimTerminalJob(
+        streamId,
+        'error',
+        generationError,
+        jobCreatedAt,
+        { persistencePending: true },
+      );
+      if (!claim) {
+        return false;
+      }
+
+      terminalClaim = claim;
+      let terminalPublicationStarted = false;
+      try {
+        const requestMessage = userMessage || preliminaryUserMessage;
+        if (!requestMessage?.messageId) {
+          throw new Error('User message was unavailable before error persistence');
+        }
+        const reqCtx = {
+          userId: req?.user?.id,
+          isTemporary: req?.body?.isTemporary,
+          interfaceConfig: req?.config?.interfaceConfig,
+        };
+        if (!client?.skipSaveUserMessage) {
+          const savedUserMessage = await saveMessage(
+            reqCtx,
+            {
+              ...requestMessage,
+              sender: requestMessage.sender || 'User',
+              isCreatedByUser: true,
+            },
+            { context: 'api/server/controllers/agents/request.js - error user message' },
+          );
+          if (!savedUserMessage) {
+            throw new Error('User message could not be persisted before error response');
+          }
+        }
+        await commitRecoveredSteer();
+
+        const reservedResponseMessageId =
+          responseMessageId ||
+          getPreliminaryResponseMessageId(req.body) ||
+          `${requestMessage.messageId.replace(/_+$/, '')}_`;
+        if (!reservedResponseMessageId) {
+          throw new Error('Response message was unavailable before error persistence');
+        }
+        const responseMetadata =
+          typeof client?.buildResponseMetadata === 'function'
+            ? client.buildResponseMetadata()
+            : undefined;
+        const responseMessage = {
+          messageId: reservedResponseMessageId,
+          parentMessageId: requestMessage.messageId,
+          conversationId,
+          sender: client?.sender || job.metadata?.sender || 'AI',
+          endpoint: endpointOption.endpoint,
+          iconURL: endpointIconURL,
+          model: responseModel,
+          text: generationError,
+          unfinished: false,
+          error: true,
+          isCreatedByUser: false,
+          user: userId,
+          ...(responseMetadata ? { metadata: responseMetadata } : {}),
+        };
+        const savedResponseMessage = await saveMessage(reqCtx, responseMessage, {
+          context: 'api/server/controllers/agents/request.js - error response',
+        });
+        if (!savedResponseMessage) {
+          throw new Error('Error response could not be persisted before terminal publication');
+        }
+
+        const persistedConversation =
+          req.resolvedConversation ?? (await getConvo(userId, conversationId));
+        if (!persistedConversation) {
+          throw new Error('Conversation could not be persisted before error response');
+        }
+        const conversation = { ...persistedConversation };
+        conversation.title =
+          conversation && !conversation.title ? null : conversation?.title || 'New Chat';
+        const finalEvent = {
+          final: true,
+          conversation,
+          title: conversation.title,
+          requestMessage: sanitizeMessageForTransmit(requestMessage),
+          responseMessage,
+        };
+        terminalPublicationStarted = true;
+        await GenerationJobManager.publishTerminalClaim(claim, finalEvent);
+      } catch (persistenceError) {
+        if (!terminalPublicationStarted) {
+          try {
+            await GenerationJobManager.publishTerminalClaim(claim, null);
+          } catch (reconcileError) {
+            logger.warn(
+              '[ResumableAgentController] Failed to publish generation-error reconciliation',
+              reconcileError,
+            );
+          }
+        }
+        logger.error(
+          `[ResumableAgentController] Error persisting generation failure for ${streamId}:`,
+          persistenceError,
+        );
+      } finally {
+        await finishOwnedTerminalClaim().catch((finishError) => {
+          logger.warn(
+            '[ResumableAgentController] Failed to finish generation-error terminal claim',
+            finishError,
+          );
+        });
+      }
+      return true;
+    };
+
     // Start background generation immediately. The stream layer buffers and persists events
     // until an SSE subscriber attaches, so generation no longer waits on subscriber readiness.
     const startGeneration = async () => {
@@ -1423,6 +1574,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       try {
         const onStart = (userMsg, respMsgId, _isNewConvo) => {
           userMessage = userMsg;
+          responseMessageId = respMsgId || responseMessageId;
 
           // Store userMessage and responseMessageId upfront for resume capability
           GenerationJobManager.updateMetadata(
@@ -1989,15 +2141,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           // abortJob already handled emitDone and completeJob
         } else {
           logger.error(`[ResumableAgentController] Generation error for ${streamId}:`, error);
-          const generationError = error.message || 'Generation failed';
           try {
-            // completeJob first wins running -> error and atomically parks
-            // steers, then publishes. A competing abort/pause emits nothing.
-            await GenerationJobManager.completeJob(streamId, generationError, jobCreatedAt);
-          } catch (completeErr) {
+            await persistUnexpectedGenerationError(error);
+          } catch (claimErr) {
             logger.warn(
-              '[ResumableAgentController] completeJob failed during generation-error cleanup',
-              completeErr,
+              '[ResumableAgentController] Failed to claim generation-error persistence',
+              claimErr,
             );
           } finally {
             startupTelemetry?.end('error', error);
@@ -2023,14 +2172,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         );
         startupTelemetry?.end('error', err);
         if (!pausePersistenceFailed) {
-          await GenerationJobManager.completeJob(streamId, err.message, jobCreatedAt).catch(
-            (completeErr) => {
-              logger.warn(
-                '[ResumableAgentController] completeJob failed during background-error cleanup',
-                completeErr,
-              );
-            },
-          );
+          await persistUnexpectedGenerationError(err).catch((claimErr) => {
+            logger.warn(
+              '[ResumableAgentController] Failed to claim generation-error persistence',
+              claimErr,
+            );
+          });
         }
         try {
           await finishResumableRequest(req, userId);

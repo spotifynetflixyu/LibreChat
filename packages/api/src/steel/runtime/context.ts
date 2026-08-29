@@ -40,6 +40,7 @@ export interface SteelRuntimeContext {
     otherGlobalRules: SteelRuntimeOtherGlobalRules;
   };
   attachments: {
+    currentPaddleOcrStatuses: SteelRuntimeJsonObject[];
     currentOcrMarkdownResults: SteelRuntimeJsonObject[];
     currentOcrFailures: SteelRuntimeJsonObject[];
   };
@@ -50,6 +51,7 @@ export interface SteelRuntimeContextConversationInput {
 }
 
 export interface SteelRuntimeContextAttachmentsInput {
+  currentPaddleOcrStatuses?: SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: SteelRuntimeJsonObject[];
   currentOcrFailures?: SteelRuntimeJsonObject[];
 }
@@ -134,6 +136,7 @@ export async function prepareSteelRuntimeContext({
       otherGlobalRules,
     },
     attachments: {
+      currentPaddleOcrStatuses: attachments?.currentPaddleOcrStatuses ?? [],
       currentOcrMarkdownResults: attachments?.currentOcrMarkdownResults ?? [],
       currentOcrFailures: attachments?.currentOcrFailures ?? [],
     },

@@ -164,6 +164,114 @@ describe('Message Operations', () => {
       );
       expect(logger.info).not.toHaveBeenCalled();
     });
+
+    it('preserves full tool params while compacting successful results', async () => {
+      const inputData = `https://files.example.test/chunk.pdf?${'signature=x'.repeat(2_000)}`;
+      const output = JSON.stringify({ rows: Array.from({ length: 2_000 }, (_, index) => index) });
+
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: 'call-success',
+              name: 'search_price_candidates',
+              args: { input_data: inputData, query: 'PL12' },
+              output,
+              progress: 1,
+              runStepStatus: 'completed',
+            },
+          },
+        ],
+      });
+
+      const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+      const toolCall = (saved?.content?.[0] as { tool_call?: Record<string, unknown> })?.tool_call;
+
+      expect(toolCall?.args).toEqual({ input_data: inputData, query: 'PL12' });
+      expect(JSON.parse(toolCall?.output as string)).toEqual({
+        status: 'ok',
+        dataSizeBytes: Buffer.byteLength(output, 'utf8'),
+      });
+      expect(toolCall?.output).not.toContain('rows');
+    });
+
+    it('persists bounded cleaned debug details for failed tool results', async () => {
+      const output = JSON.stringify({
+        status: 'failed',
+        error: {
+          code: 'ETIMEDOUT',
+          message: `provider timeout https://signed.example.test/file?token=secret ${'x'.repeat(2_000)}`,
+          password: 'abc"def',
+          nested: { accessToken: 'nested-secret' },
+        },
+      });
+
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: 'call-failure',
+              name: 'search_price_candidates',
+              args: { query: 'PL12' },
+              output,
+              progress: 1,
+              runStepStatus: 'failed',
+            },
+          },
+        ],
+      });
+
+      const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+      const toolCall = (saved?.content?.[0] as { tool_call?: Record<string, unknown> })?.tool_call;
+      const result = JSON.parse(toolCall?.output as string) as Record<string, unknown>;
+
+      expect(result.status).toBe('fail');
+      expect(result.dataSizeBytes).toBe(Buffer.byteLength(output, 'utf8'));
+      expect(result.errorCode).toBe('ETIMEDOUT');
+      expect(result.errorMessage).toEqual(expect.any(String));
+      expect((result.errorMessage as string).length).toBeLessThanOrEqual(512);
+      expect(result.error).toEqual(expect.any(String));
+      expect((result.error as string).length).toBeLessThanOrEqual(1_024);
+      expect(JSON.stringify(result)).not.toContain('signed.example.test');
+      expect(JSON.stringify(result)).not.toContain('token=secret');
+      expect(JSON.stringify(result)).not.toContain('abc');
+      expect(JSON.stringify(result)).not.toContain('nested-secret');
+    });
+
+    it('persists plain Error output as a failed result', async () => {
+      const output = 'Error: provider unavailable';
+
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: 'call-plain-error',
+              name: 'search_price_candidates',
+              args: { query: 'PL12' },
+              output,
+              progress: 1,
+            },
+          },
+        ],
+      });
+
+      const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+      const toolCall = (saved?.content?.[0] as { tool_call?: Record<string, unknown> })?.tool_call;
+      expect(JSON.parse(toolCall?.output as string)).toMatchObject({
+        status: 'fail',
+        dataSizeBytes: Buffer.byteLength(output, 'utf8'),
+        errorMessage: output,
+      });
+    });
   });
 
   describe('updateMessageText', () => {
@@ -222,6 +330,13 @@ describe('Message Operations', () => {
   });
 
   describe('updateToolCallResult', () => {
+    const expectCompactSuccess = (output: string | undefined, original: string) => {
+      expect(JSON.parse(output ?? '')).toEqual({
+        status: 'ok',
+        dataSizeBytes: Buffer.byteLength(original, 'utf8'),
+      });
+    };
+
     const toolCallContent = () => [
       { type: 'text', text: 'intro' },
       {
@@ -258,8 +373,8 @@ describe('Message Operations', () => {
         type: string;
         tool_call?: { id: string; output?: string };
       }>;
-      expect(content[1].tool_call?.output).toBe('stdout:\nhello');
-      expect(content[2].tool_call?.output).toBe('untouched');
+      expectCompactSuccess(content[1].tool_call?.output, 'stdout:\nhello');
+      expectCompactSuccess(content[2].tool_call?.output, 'untouched');
       expect(saved?.attachments).toEqual([{ file_id: 'f1', toolCallId: 'call_bg' }]);
     });
 
@@ -299,7 +414,37 @@ describe('Message Operations', () => {
       const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
       expect(saved?.attachments).toEqual([{ file_id: 'f1', toolCallId: 'call_bg' }]);
       const content = saved?.content as Array<{ tool_call?: { output?: string } }>;
-      expect(content[1].tool_call?.output).toBe('stdout:\nhello');
+      expectCompactSuccess(content[1].tool_call?.output, 'stdout:\nhello');
+    });
+
+    it('stores bounded debug details when a background tool result fails', async () => {
+      await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+      const output = JSON.stringify({
+        status: 'failed',
+        error: {
+          code: 'ETIMEDOUT',
+          message: `timeout https://signed.example.test/file?token=secret ${'x'.repeat(2_000)}`,
+        },
+      });
+
+      await updateToolCallResult({
+        userId: 'user123',
+        messageId: 'msg123',
+        conversationId: mockMessageData.conversationId as string,
+        toolCallId: 'call_bg',
+        output,
+      });
+
+      const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+      const content = saved?.content as Array<{ tool_call?: { output?: string } }>;
+      const result = JSON.parse(content[1].tool_call?.output ?? '') as Record<string, unknown>;
+      expect(result).toMatchObject({
+        status: 'fail',
+        dataSizeBytes: Buffer.byteLength(output, 'utf8'),
+        errorCode: 'ETIMEDOUT',
+      });
+      expect(JSON.stringify(result)).not.toContain('signed.example.test');
+      expect(JSON.stringify(result)).not.toContain('token=secret');
     });
 
     it('dedupes download-fallback attachments (no file_id) by filepath on re-apply', async () => {
@@ -375,8 +520,8 @@ describe('Message Operations', () => {
 
       const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
       const content = saved?.content as Array<{ tool_call?: { output?: string } }>;
-      expect(content[0].tool_call?.output).toBe('handle-a');
-      expect(content[1].tool_call?.output).toBe('stdout-b');
+      expectCompactSuccess(content[0].tool_call?.output, 'handle-a');
+      expectCompactSuccess(content[1].tool_call?.output, 'stdout-b');
     });
 
     it('flags unfinished partial rows so callers keep re-applying until finalize', async () => {
@@ -470,7 +615,7 @@ describe('Message Operations', () => {
 
       const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
       const content = saved?.content as Array<{ tool_call?: { output?: string } }>;
-      expect(content[1].tool_call?.output).toBe('{"background_task_id":"task-1"}');
+      expectCompactSuccess(content[1].tool_call?.output, '{"background_task_id":"task-1"}');
     });
   });
 

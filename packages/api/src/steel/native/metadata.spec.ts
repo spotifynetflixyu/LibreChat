@@ -80,6 +80,7 @@ describe('Steel native response metadata', () => {
         id: 'paddle-1',
         name: 'paddleocr_vl_mcp_PaddleOCR',
         args: {
+          input_data: 'https://files.example.test/chunk.pdf?signature=debug-value',
           output_mode: 'detailed' as const,
           return_images: false,
           use_doc_orientation_classify: true,
