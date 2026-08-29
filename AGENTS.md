@@ -23,10 +23,23 @@ do not create ad hoc or temporary update scripts when an existing project script
 covers the workflow. For unified Steel rules under `docs/rules`, use
 `packages/api/scripts/sync-steel-rules.cjs` for dry-run, apply, and database
 readback, with the repository rule files remaining the source of truth.
+Every Steel rule database mutation must use this script, including single-rule
+changes. Do not use ad hoc SQL, direct upserts, or temporary update scripts.
 Always pass the intended target explicitly: `--target dev` loads `.env`, while
 `--target prod` loads `.env.prod`. Run `--dry-run` against the same target before
 `--apply`; do not infer the destination database from an ambient
 `STEEL_POSTGRES_URL`.
+
+When both DEV and PROD are requested, run the complete dry-run, apply, and
+readback sequence separately for `--target dev` and `--target prod`. After each
+apply, verify the manifest and managed-row counts, `active=true`,
+`review_state=reviewed`, prompt SHA matches, and no stale managed rows.
+
+Supabase pooler URLs cannot be distinguished by hostname, port, and database
+path alone. Different Supabase projects may share a pooler endpoint and the
+`postgres` database label while encoding project identity in the URL username.
+Compare the project username or a secret-safe fingerprint of it, and never print
+connection URLs, usernames, passwords, or other credentials.
 
 ## Supabase Schema Rule
 
