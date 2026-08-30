@@ -6,6 +6,8 @@ import { loadOpenAIOAuthTokens } from './credentials';
 import { getOpenAIOAuthUsageRemaining, invalidateOpenAIOAuthUsageCache } from './usage';
 import { getOpenAIOAuthCredentialKey } from './auth-state';
 
+import type { OpenAIOAuthUsageCache, OpenAIOAuthUsageDeps } from './usage';
+
 const defaultLoadAuthTokens = jest.mocked(loadOpenAIOAuthTokens);
 const primaryResetAt = 1782471969;
 const weeklyResetAt = 1782975152;
@@ -372,6 +374,69 @@ describe('OpenAI OAuth usage remaining service', () => {
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
     expect(loadAuthTokens).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an invalidated request overwrite its replacement cache', async () => {
+    const cache: OpenAIOAuthUsageCache = {};
+    let resolveA: (response: Response) => void = () => undefined;
+    let resolveB: (response: Response) => void = () => undefined;
+    const responseA = new Promise<Response>((resolve) => {
+      resolveA = resolve;
+    });
+    const responseB = new Promise<Response>((resolve) => {
+      resolveB = resolve;
+    });
+    let fetchCount = 0;
+    const fetchImpl: typeof fetch = Object.assign(
+      () => {
+        fetchCount += 1;
+        return fetchCount === 1 ? responseA : responseB;
+      },
+      { preconnect: () => undefined },
+    );
+    const loadAuthTokens = jest.fn(async () => ({
+      accessToken: 'token_sensitive',
+      accountId: 'acct_sensitive',
+    }));
+    const authFilePath = '/tmp/auth-race.json';
+    const now = () => new Date('2026-06-26T07:00:00.000Z');
+    const deps: OpenAIOAuthUsageDeps = {
+      authFilePath,
+      cache,
+      fetch: fetchImpl,
+      loadAuthTokens,
+      now,
+    };
+
+    const first = getOpenAIOAuthUsageRemaining(deps);
+    await Promise.resolve();
+    expect(fetchCount).toBe(1);
+
+    invalidateOpenAIOAuthUsageCache({ authFilePath, cache });
+    const second = getOpenAIOAuthUsageRemaining(deps);
+    await Promise.resolve();
+    expect(fetchCount).toBe(2);
+    const key = getOpenAIOAuthCredentialKey(authFilePath);
+    const requestB = cache.inflight?.get(key);
+
+    resolveA(new Response(JSON.stringify(createUsagePayload(20))));
+    const firstResult = await first;
+
+    expect(firstResult.windows[0]?.remainingPercent).toBe(80);
+    expect(cache.entries?.get(key)).toBeUndefined();
+    expect(cache.inflight?.get(key)).toBe(requestB);
+
+    const third = getOpenAIOAuthUsageRemaining(deps);
+    expect(fetchCount).toBe(2);
+    expect(cache.inflight?.get(key)).toBe(requestB);
+
+    resolveB(new Response(JSON.stringify(createUsagePayload(70))));
+    const [secondResult, thirdResult] = await Promise.all([second, third]);
+
+    expect(secondResult.windows[0]?.remainingPercent).toBe(30);
+    expect(thirdResult.windows[0]?.remainingPercent).toBe(30);
+    await expect(getOpenAIOAuthUsageRemaining(deps)).resolves.toEqual(secondResult);
+    expect(fetchCount).toBe(2);
   });
 
   it('returns sanitized unavailable state when OAuth auth cannot be loaded', async () => {

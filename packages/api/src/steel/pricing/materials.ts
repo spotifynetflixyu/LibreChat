@@ -2,6 +2,20 @@ import { priceCategories, type PriceCategory } from './categories';
 
 export type SteelMaterialPriceCategory = Exclude<PriceCategory, `加工/${string}`>;
 
+const steelPriceHotDipMaterialCategories = new Set([
+  '平鐵',
+  '角鐵',
+  '圓管',
+  '圓條',
+  '扁方管',
+  '方管',
+  '槽鐵',
+]);
+
+export function isSteelPriceHotDipMaterialCategory(value: string): boolean {
+  return steelPriceHotDipMaterialCategories.has(value);
+}
+
 export function isSteelMaterialPriceCategory(
   category: PriceCategory,
 ): category is SteelMaterialPriceCategory {

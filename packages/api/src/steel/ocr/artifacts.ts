@@ -75,20 +75,17 @@ export function createMongooseOcrPdfChunkArtifactRepository(
         .lean<OcrPdfChunkArtifactRecord[]>();
     },
     async upsert(artifact) {
-      const rangeIdentity = {
-        sourcePdfKey: artifact.sourcePdfKey,
-        pipelineVersion: artifact.pipelineVersion,
-        pageStart: artifact.pageStart,
-        pageEnd: artifact.pageEnd,
-      };
-      const existing = await SteelOcrPdfChunkArtifact.findOne(rangeIdentity)
-        .select({ _id: 1 })
-        .lean<{ _id: unknown } | null>();
+      const rangeIdentity = [
+        artifact.sourcePdfKey,
+        artifact.pipelineVersion,
+        artifact.pageStart,
+        artifact.pageEnd,
+      ];
       const deterministicId = new mongoose.Types.ObjectId(
         createHash('sha256').update(JSON.stringify(rangeIdentity)).digest('hex').slice(0, 24),
       );
       await SteelOcrPdfChunkArtifact.updateOne(
-        { _id: existing?._id ?? deterministicId },
+        { _id: deterministicId },
         { $set: artifact },
         { upsert: true },
       );

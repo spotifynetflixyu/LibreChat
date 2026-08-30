@@ -1,4 +1,8 @@
-export const steelProviderEnum = ['openai_oauth_responses', 'openai_api'] as const;
+export {
+  steelAIDrivers as steelProviderEnum,
+  steelCapabilityStatuses as steelCapabilityStatusEnum,
+} from 'librechat-data-provider';
+
 export const steelWorkingOrderMemoryKindEnum = [
   'working_order_row',
   'customer_fact',
@@ -15,13 +19,6 @@ export const steelWorkingOrderMemorySourceKindEnum = [
   'user_input',
 ] as const;
 export const steelWorkingOrderMemoryStateEnum = ['active', 'superseded'] as const;
-export const steelCapabilityStatusEnum = [
-  'passed',
-  'failed',
-  'unverified',
-  'disabled',
-  'not_applicable',
-] as const;
 export const steelSourceOriginalFormatEnum = ['xlsx', 'xls', 'docx', 'doc'] as const;
 export const steelSourceNormalizedFormatEnum = ['xlsx', 'docx'] as const;
 export const steelSourceConversionStatusEnum = [

@@ -1,6 +1,16 @@
 import type { Document } from 'mongoose';
+import type {
+  steelAIDrivers,
+  steelCapabilityStatuses,
+  steelRuleProposalChargeTypes,
+  steelRuleProposalConfidences,
+  steelRuleProposalParameterValueTypes,
+  steelRuleProposalScopeTypes,
+  steelRuleProposalStatuses,
+  steelRuleProposalTypes,
+} from 'librechat-data-provider';
 
-export type SteelProviderId = 'openai_oauth_responses' | 'openai_api';
+export type SteelProviderId = (typeof steelAIDrivers)[number];
 export type SteelWorkingOrderMemoryKind =
   | 'working_order_row'
   | 'customer_fact'
@@ -15,12 +25,7 @@ export type SteelWorkingOrderMemorySourceKind =
   | 'ocr_result'
   | 'user_input';
 export type SteelWorkingOrderMemoryState = 'active' | 'superseded';
-export type SteelCapabilityStatus =
-  | 'passed'
-  | 'failed'
-  | 'unverified'
-  | 'disabled'
-  | 'not_applicable';
+export type SteelCapabilityStatus = (typeof steelCapabilityStatuses)[number];
 
 export type SteelSourceOriginalFormat = 'xlsx' | 'xls' | 'docx' | 'doc';
 export type SteelSourceNormalizedFormat = 'xlsx' | 'docx';
@@ -30,27 +35,13 @@ export type SteelSourceConversionStatus =
   | 'succeeded'
   | 'failed'
   | 'skipped';
-export type SteelRuleProposalType =
-  | 'customer_default'
-  | 'material_rule'
-  | 'price_override'
-  | 'formula_default';
-export type SteelRuleProposalStatus = 'needs_review' | 'reviewed' | 'rejected';
-export type SteelRuleProposalScopeType =
-  | 'customer'
-  | 'customer_tier'
-  | 'catalog_family'
-  | 'product_family'
-  | 'company';
-export type SteelRuleProposalChargeType =
-  | 'material'
-  | 'cutting'
-  | 'hole'
-  | 'slotting'
-  | 'bending'
-  | 'processing';
-export type SteelRuleProposalConfidence = 'low' | 'medium' | 'high';
-export type SteelRuleProposalParameterValueType = 'string' | 'number' | 'boolean' | 'null';
+export type SteelRuleProposalType = (typeof steelRuleProposalTypes)[number];
+export type SteelRuleProposalStatus = (typeof steelRuleProposalStatuses)[number];
+export type SteelRuleProposalScopeType = (typeof steelRuleProposalScopeTypes)[number];
+export type SteelRuleProposalChargeType = (typeof steelRuleProposalChargeTypes)[number];
+export type SteelRuleProposalConfidence = (typeof steelRuleProposalConfidences)[number];
+export type SteelRuleProposalParameterValueType =
+  (typeof steelRuleProposalParameterValueTypes)[number];
 export type SteelRuleProposalParameterValue = string | number | boolean | null;
 export type SteelJsonPrimitive = string | number | boolean | null;
 export type SteelJsonValue =

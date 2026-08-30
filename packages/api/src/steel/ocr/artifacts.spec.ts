@@ -1,13 +1,82 @@
+import mongoose from 'mongoose';
+import { createSteelOcrPdfChunkArtifactModel } from '@librechat/data-schemas';
+
 import { buildPdfPageChunks } from './chunks';
 import {
   buildOcrPdfChunkArtifactStorageKey,
   commitOcrPdfChunkSplit,
+  createMongooseOcrPdfChunkArtifactRepository,
   ensurePdfChunkArtifacts,
   resolveCanonicalOcrPageChunks,
   type OcrPdfChunkArtifactRecord,
 } from './artifacts';
 
+jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
+  createSteelOcrPdfChunkArtifactModel: jest.fn(),
+}));
+
+const createArtifactModel = jest.mocked(createSteelOcrPdfChunkArtifactModel);
+
 describe('OCR PDF chunk artifacts', () => {
+  it('upserts by a deterministic source, version, and page-range id', async () => {
+    const updateOne = jest.fn<
+      Promise<void>,
+      [
+        { _id: mongoose.Types.ObjectId },
+        { $set: OcrPdfChunkArtifactRecord },
+        { upsert: true },
+      ]
+    >(async () => undefined);
+    createArtifactModel.mockReturnValueOnce({ updateOne } as never);
+    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+    const artifact: OcrPdfChunkArtifactRecord = {
+      sourcePdfKey: 's3://bucket/original.pdf',
+      pipelineVersion: 1,
+      chunkIndex: 1,
+      chunkCount: 2,
+      pageStart: 1,
+      pageEnd: 50,
+      chunkSizePages: 50,
+      sourceFilename: 'original.pdf',
+      artifact: {
+        source: 's3',
+        storageKey: 'chunks/pages-1-50.pdf',
+        filepath: 'https://cdn.example/chunks/pages-1-50.pdf',
+        filename: 'pages-1-50.pdf',
+        bytes: 100,
+        contentType: 'application/pdf',
+      },
+    };
+
+    await repository.upsert(artifact);
+    await repository.upsert({
+      ...artifact,
+      chunkIndex: 9,
+      chunkCount: 9,
+      sourceFilename: 'renamed.pdf',
+      artifact: { ...artifact.artifact, bytes: 200 },
+    });
+    await repository.upsert({ ...artifact, sourcePdfKey: 's3://bucket/other.pdf' });
+    await repository.upsert({ ...artifact, pipelineVersion: 2 });
+    await repository.upsert({ ...artifact, pageStart: 51, pageEnd: 100 });
+
+    const firstId = updateOne.mock.calls[0]?.[0]._id;
+    const secondId = updateOne.mock.calls[1]?.[0]._id;
+    const changedIdentityIds = updateOne.mock.calls.slice(2).map(([filter]) => filter._id);
+    expect(firstId).toBeInstanceOf(mongoose.Types.ObjectId);
+    expect(firstId).toEqual(secondId);
+    expect(changedIdentityIds).toHaveLength(3);
+    expect(changedIdentityIds.every((id) => !id.equals(firstId))).toBe(true);
+    expect(new Set(changedIdentityIds.map(String)).size).toBe(3);
+    expect(updateOne).toHaveBeenNthCalledWith(
+      1,
+      { _id: firstId },
+      { $set: artifact },
+      { upsert: true },
+    );
+  });
+
   it('builds deterministic storage keys from source PDF key and page range', () => {
     expect(
       buildOcrPdfChunkArtifactStorageKey({

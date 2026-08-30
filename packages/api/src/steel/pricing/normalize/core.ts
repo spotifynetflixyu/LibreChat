@@ -1,6 +1,7 @@
 import { buildSteelPriceV4Rows, steelPriceV4WorkbookHeaders } from '../v4';
 import { materialKinds } from '../enums';
 import { inferProcessingAttributes } from './processing';
+import { isSteelPriceHotDipMaterialCategory } from '../materials';
 import { inferSteelPriceSubcategory } from '../subcategory';
 
 import type { SteelPriceV4Cell, SteelPriceV4WorkbookRow } from '../v4';
@@ -33,16 +34,6 @@ export type NormalizedSteelPriceV4WorkbookRow = Record<
   (typeof normalizedSteelPriceV4WorkbookHeaders)[number],
   SteelPriceV4Cell
 >;
-
-const hotDipMaterialCategories = new Set([
-  '平鐵',
-  '角鐵',
-  '圓管',
-  '圓條',
-  '扁方管',
-  '方管',
-  '槽鐵',
-]);
 
 const noPriceNamePattern = /沒做|勿用|沒出|沒貨|不生產|不用|沒現貨|無生產/u;
 const canonicalMaterialKinds = new Set<string>(materialKinds);
@@ -80,7 +71,7 @@ function normalizeMaterial(
   productName: string,
   value: SteelPriceV4Cell,
 ): string | null {
-  if (hotDipMaterialCategories.has(category) && /熱[浸進]鍍/u.test(productName)) {
+  if (isSteelPriceHotDipMaterialCategory(category) && /熱[浸進]鍍/u.test(productName)) {
     return '錏/鍍鋅';
   }
 

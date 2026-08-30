@@ -4,6 +4,7 @@ import {
   isProcessingMethod,
   isProcessingShape,
 } from './categories';
+import { isSteelPriceHotDipMaterialCategory } from './materials';
 import { inferSteelPriceSubcategory } from './subcategory';
 
 import type {
@@ -224,16 +225,6 @@ interface ParsedNameAttributes {
 }
 
 const sixMeterDefaultCategories = new Set<PriceCategory>([
-  '平鐵',
-  '角鐵',
-  '圓管',
-  '圓條',
-  '扁方管',
-  '方管',
-  '槽鐵',
-]);
-
-const hotDipMaterialCategories = new Set<PriceCategory>([
   '平鐵',
   '角鐵',
   '圓管',
@@ -1144,7 +1135,7 @@ function parseRow(row: SteelPriceV4WorkbookRow): SteelPriceV4Row {
     processingMethod: parseProcessingMethod(row.processing_method),
     processingShape: parseProcessingShape(row.processing_shape),
     material:
-      hotDipMaterialCategories.has(category) && /熱[浸進]鍍/u.test(productName ?? '')
+      isSteelPriceHotDipMaterialCategory(category) && /熱[浸進]鍍/u.test(productName ?? '')
         ? '錏/鍍鋅'
         : parseText(row.material),
     unit: parseText(row.unit),

@@ -26,13 +26,15 @@ export const steelCapabilityIds = [
 
 export type SteelAIDriverCapability = (typeof steelCapabilityIds)[number];
 
-export const steelCapabilityStatusSchema = z.enum([
+export const steelCapabilityStatuses = [
   'passed',
   'failed',
   'unverified',
   'disabled',
   'not_applicable',
-]);
+] as const;
+
+export const steelCapabilityStatusSchema = z.enum(steelCapabilityStatuses);
 
 export type SteelCapabilityStatus = z.infer<typeof steelCapabilityStatusSchema>;
 

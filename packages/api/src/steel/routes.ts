@@ -80,7 +80,9 @@ export function createSteelRouteHandlers({
   getOpenAIOAuthUsageRemaining: readOpenAIOAuthUsageRemaining = getOpenAIOAuthUsageRemaining,
   ruleProposalService,
 }: SteelRouteHandlersDeps): SteelRouteHandlers {
-  const getRuleProposalService = () => ruleProposalService ?? createDefaultRuleProposalService();
+  let resolvedRuleProposalService = ruleProposalService;
+  const getRuleProposalService = () =>
+    (resolvedRuleProposalService ??= createDefaultRuleProposalService());
 
   return {
     async listModels(req, res) {

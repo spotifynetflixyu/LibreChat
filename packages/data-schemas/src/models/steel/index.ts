@@ -19,86 +19,68 @@ import {
 
 type Mongoose = typeof import('mongoose');
 
-function getExistingModel<T>(mongoose: Mongoose, modelName: string): Model<T> | undefined {
-  return mongoose.models[modelName] as Model<T> | undefined;
-}
-
-function createSteelNamedStateModel(
+function createSteelModel<T>(
   mongoose: Mongoose,
   modelName: string,
-  schema: Schema<t.ISteelNamedState>,
+  schema: Schema<T>,
   collectionName: string,
-): Model<t.ISteelNamedState> {
+): Model<T> {
   return (
-    getExistingModel<t.ISteelNamedState>(mongoose, modelName) ||
-    mongoose.model<t.ISteelNamedState>(modelName, schema, collectionName)
+    (mongoose.models[modelName] as Model<T> | undefined) ||
+    mongoose.model<T>(modelName, schema, collectionName)
   );
 }
 
 export function createSteelWorkingOrderMemoryModel(
   mongoose: Mongoose,
 ): Model<t.ISteelWorkingOrderMemory> {
-  return (
-    getExistingModel<t.ISteelWorkingOrderMemory>(mongoose, 'SteelWorkingOrderMemory') ||
-    mongoose.model<t.ISteelWorkingOrderMemory>(
-      'SteelWorkingOrderMemory',
-      steelWorkingOrderMemorySchema,
-      'steel_working_order_memory',
-    )
+  return createSteelModel(
+    mongoose,
+    'SteelWorkingOrderMemory',
+    steelWorkingOrderMemorySchema,
+    'steel_working_order_memory',
   );
 }
 
 export function createSteelOcrPdfChunkArtifactModel(
   mongoose: Mongoose,
 ): Model<t.ISteelOcrPdfChunkArtifact> {
-  return (
-    getExistingModel<t.ISteelOcrPdfChunkArtifact>(mongoose, 'SteelOcrPdfChunkArtifact') ||
-    mongoose.model<t.ISteelOcrPdfChunkArtifact>(
-      'SteelOcrPdfChunkArtifact',
-      steelOcrPdfChunkArtifactSchema,
-      'steel_ocr_pdf_chunk_artifacts',
-    )
+  return createSteelModel(
+    mongoose,
+    'SteelOcrPdfChunkArtifact',
+    steelOcrPdfChunkArtifactSchema,
+    'steel_ocr_pdf_chunk_artifacts',
   );
 }
 
 export function createSteelAIRunModel(mongoose: Mongoose): Model<t.ISteelAIRun> {
-  return (
-    getExistingModel<t.ISteelAIRun>(mongoose, 'SteelAIRun') ||
-    mongoose.model<t.ISteelAIRun>('SteelAIRun', steelAIRunSchema, 'steel_ai_runs')
-  );
+  return createSteelModel(mongoose, 'SteelAIRun', steelAIRunSchema, 'steel_ai_runs');
 }
 
 export function createSteelAICapabilityModel(mongoose: Mongoose): Model<t.ISteelAICapability> {
-  return (
-    getExistingModel<t.ISteelAICapability>(mongoose, 'SteelAICapability') ||
-    mongoose.model<t.ISteelAICapability>(
-      'SteelAICapability',
-      steelAICapabilitySchema,
-      'steel_ai_capabilities',
-    )
+  return createSteelModel(
+    mongoose,
+    'SteelAICapability',
+    steelAICapabilitySchema,
+    'steel_ai_capabilities',
   );
 }
 
 export function createSteelSourceVersionModel(mongoose: Mongoose): Model<t.ISteelSourceVersion> {
-  return (
-    getExistingModel<t.ISteelSourceVersion>(mongoose, 'SteelSourceVersion') ||
-    mongoose.model<t.ISteelSourceVersion>(
-      'SteelSourceVersion',
-      steelSourceVersionSchema,
-      'steel_source_versions',
-    )
+  return createSteelModel(
+    mongoose,
+    'SteelSourceVersion',
+    steelSourceVersionSchema,
+    'steel_source_versions',
   );
 }
 
 export function createSteelToolCallModel(mongoose: Mongoose): Model<t.ISteelToolCall> {
-  return (
-    getExistingModel<t.ISteelToolCall>(mongoose, 'SteelToolCall') ||
-    mongoose.model<t.ISteelToolCall>('SteelToolCall', steelToolCallSchema, 'steel_tool_calls')
-  );
+  return createSteelModel(mongoose, 'SteelToolCall', steelToolCallSchema, 'steel_tool_calls');
 }
 
 export function createSteelExcelExportModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(
+  return createSteelModel(
     mongoose,
     'SteelExcelExport',
     steelExcelExportSchema,
@@ -107,11 +89,11 @@ export function createSteelExcelExportModel(mongoose: Mongoose): Model<t.ISteelN
 }
 
 export function createSteelProjectModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(mongoose, 'SteelProject', steelProjectSchema, 'steel_projects');
+  return createSteelModel(mongoose, 'SteelProject', steelProjectSchema, 'steel_projects');
 }
 
 export function createSteelProjectSourceModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(
+  return createSteelModel(
     mongoose,
     'SteelProjectSource',
     steelProjectSourceSchema,
@@ -120,7 +102,7 @@ export function createSteelProjectSourceModel(mongoose: Mongoose): Model<t.IStee
 }
 
 export function createSteelAdminImportSessionModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(
+  return createSteelModel(
     mongoose,
     'SteelAdminImportSession',
     steelAdminImportSessionSchema,
@@ -129,7 +111,7 @@ export function createSteelAdminImportSessionModel(mongoose: Mongoose): Model<t.
 }
 
 export function createSteelAdminMergeTableModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(
+  return createSteelModel(
     mongoose,
     'SteelAdminMergeTable',
     steelAdminMergeTableSchema,
@@ -138,7 +120,7 @@ export function createSteelAdminMergeTableModel(mongoose: Mongoose): Model<t.ISt
 }
 
 export function createSteelAdminMappingProfileModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(
+  return createSteelModel(
     mongoose,
     'SteelAdminMappingProfile',
     steelAdminMappingProfileSchema,
@@ -149,16 +131,14 @@ export function createSteelAdminMappingProfileModel(mongoose: Mongoose): Model<t
 export function createSteelMemoryCandidateModel(
   mongoose: Mongoose,
 ): Model<t.ISteelMemoryCandidate> {
-  return (
-    getExistingModel<t.ISteelMemoryCandidate>(mongoose, 'SteelMemoryCandidate') ||
-    mongoose.model<t.ISteelMemoryCandidate>(
-      'SteelMemoryCandidate',
-      steelMemoryCandidateSchema,
-      'steel_memory_candidates',
-    )
+  return createSteelModel(
+    mongoose,
+    'SteelMemoryCandidate',
+    steelMemoryCandidateSchema,
+    'steel_memory_candidates',
   );
 }
 
 export function createSteelMemoryModel(mongoose: Mongoose): Model<t.ISteelNamedState> {
-  return createSteelNamedStateModel(mongoose, 'SteelMemory', steelMemorySchema, 'steel_memories');
+  return createSteelModel(mongoose, 'SteelMemory', steelMemorySchema, 'steel_memories');
 }

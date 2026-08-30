@@ -1,4 +1,12 @@
 import { Schema } from 'mongoose';
+import {
+  steelRuleProposalChargeTypes,
+  steelRuleProposalConfidences,
+  steelRuleProposalParameterValueTypes,
+  steelRuleProposalScopeTypes,
+  steelRuleProposalStatuses,
+  steelRuleProposalTypes,
+} from 'librechat-data-provider';
 
 import type {
   ISteelMemoryCandidate,
@@ -6,36 +14,6 @@ import type {
   SteelRuleProposalSelector,
   SteelRuleProposalSelectorEntry,
 } from '~/types';
-
-const steelRuleProposalTypes = [
-  'customer_default',
-  'material_rule',
-  'price_override',
-  'formula_default',
-];
-
-const steelRuleProposalStatuses = ['needs_review', 'reviewed', 'rejected'];
-
-const steelRuleProposalScopeTypes = [
-  'customer',
-  'customer_tier',
-  'catalog_family',
-  'product_family',
-  'company',
-];
-
-const steelRuleProposalChargeTypes = [
-  'material',
-  'cutting',
-  'hole',
-  'slotting',
-  'bending',
-  'processing',
-];
-
-const steelRuleProposalConfidences = ['low', 'medium', 'high'];
-
-const steelRuleProposalValueTypes = ['string', 'number', 'boolean', 'null'];
 
 const steelRuleProposalSelectorEntrySchema: Schema<SteelRuleProposalSelectorEntry> =
   new Schema<SteelRuleProposalSelectorEntry>(
@@ -83,7 +61,7 @@ const steelRuleProposalDefaultParameterSchema: Schema<SteelRuleProposalDefaultPa
       valueType: {
         type: String,
         required: true,
-        enum: steelRuleProposalValueTypes,
+        enum: steelRuleProposalParameterValueTypes,
       },
       unit: { type: String },
       reason: { type: String },

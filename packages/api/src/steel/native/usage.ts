@@ -321,15 +321,19 @@ export async function getOpenAIOAuthUsageRemaining({
 
   try {
     const response = await request;
-    cacheResponse({
-      cache,
-      key,
-      nowMs,
-      response,
-      ttlMs: response.status === 'available' ? ttlMs : Math.min(ttlMs, unavailableTtlMs),
-    });
+    if (cache.inflight.get(key) === request) {
+      cacheResponse({
+        cache,
+        key,
+        nowMs,
+        response,
+        ttlMs: response.status === 'available' ? ttlMs : Math.min(ttlMs, unavailableTtlMs),
+      });
+    }
     return response;
   } finally {
-    cache.inflight.delete(key);
+    if (cache.inflight.get(key) === request) {
+      cache.inflight.delete(key);
+    }
   }
 }

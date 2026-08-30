@@ -417,6 +417,51 @@ describe('executeSteelTool', () => {
     });
   });
 
+  it('preserves processing candidate order in returned groups', async () => {
+    const generic = createProcessingRow({
+      id: '1600',
+      erp_item_code: 'CUT-GENERIC',
+      subcategory: '通用',
+      product_name: '通用切工',
+      normalized_spec_text: '通用切工',
+      spec_key: 'CUT-GENERIC 通用切工',
+    });
+    const specific = createProcessingRow({
+      id: '1601',
+      erp_item_code: 'CUT-SPECIFIC',
+      subcategory: '鐵板',
+      product_name: '鐵板切工',
+      normalized_spec_text: '鐵板切工',
+      spec_key: 'CUT-SPECIFIC 鐵板切工',
+    });
+
+    const result = await executeSteelTool({
+      client: createClient([[generic, specific]]),
+      toolName: 'search_price_candidates',
+      arguments: {
+        queries: [{ categories: ['鐵板'], processingCategories: ['加工/切工'] }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        processingPrice: {
+          queryResults: [
+            {
+              groups: [
+                {
+                  processingCategory: '加工/切工',
+                  items: [{ erpItemCode: 'CUT-GENERIC' }, { erpItemCode: 'CUT-SPECIFIC' }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it('matches prices cutting candidates to each material thickness query independently', async () => {
     const client = createClient([
       [],

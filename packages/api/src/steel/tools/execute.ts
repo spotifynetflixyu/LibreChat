@@ -18,7 +18,6 @@ import type { SteelToolName } from './schemas';
 import {
   compileProcessingKeyword,
   getProcessingCandidateText,
-  isGenericProcessingSubcategory,
   isProcessingCandidateApplicable,
   isProcessingCandidateSpecApplicable,
   matchesProcessingKeywordTerms,
@@ -550,14 +549,6 @@ function buildProcessingPrice(
     items.push(candidate);
     grouped.set(category, items);
   });
-  grouped.get('加工/切工')?.sort((left, right) => {
-    const leftSubcategory = typeof left.subcategory === 'string' ? left.subcategory : undefined;
-    const rightSubcategory = typeof right.subcategory === 'string' ? right.subcategory : undefined;
-    return (
-      Number(isGenericProcessingSubcategory(leftSubcategory)) -
-      Number(isGenericProcessingSubcategory(rightSubcategory))
-    );
-  });
   const groupOrder = requestedProcessingCategories
     ? [...new Set(requestedProcessingCategories)]
     : [...processingPriceCategories];
@@ -934,7 +925,7 @@ async function dispatchSteelTool(
 
 function reserveToolCall(
   runState: SteelToolRunState | undefined,
-  toolName: string,
+  toolName: SteelToolName,
 ): boolean {
   if (!runState) {
     return true;
@@ -944,8 +935,8 @@ function reserveToolCall(
     return false;
   }
 
-  const maxCallsForTool = runState.maxCallsByTool?.[toolName as SteelToolName];
-  const callsUsedForTool = runState.callsUsedByTool?.[toolName as SteelToolName] ?? 0;
+  const maxCallsForTool = runState.maxCallsByTool?.[toolName];
+  const callsUsedForTool = runState.callsUsedByTool?.[toolName] ?? 0;
   if (maxCallsForTool !== undefined && callsUsedForTool >= maxCallsForTool) {
     return false;
   }
@@ -953,7 +944,7 @@ function reserveToolCall(
   runState.callsUsed += 1;
   if (runState.maxCallsByTool) {
     runState.callsUsedByTool ??= {};
-    runState.callsUsedByTool[toolName as SteelToolName] = callsUsedForTool + 1;
+    runState.callsUsedByTool[toolName] = callsUsedForTool + 1;
   }
   return true;
 }
