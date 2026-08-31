@@ -487,6 +487,73 @@ function mockPaddleOcrToolLoads(...invokes) {
   }
 }
 
+function setupSequentialPaddleOcrPreflight() {
+  const pdf = {
+    fileId: 'pdf-interval',
+    filename: 'interval.pdf',
+    mediaType: 'application/pdf',
+  };
+  const image = {
+    fileId: 'image-interval',
+    filename: 'interval.jpg',
+    mediaType: 'image/jpeg',
+    filepath: 'https://files.example.test/interval.jpg',
+  };
+  const req = createMockReq([AgentCapabilities.tools]);
+  req.user = { id: 'user_123', tenantId: 'tenant-a' };
+  req.body = { conversationId: 'convo-interval' };
+  req.steelNativeContext = {
+    requestId: 'resp-interval',
+    assistantTurnIndex: 4,
+    memoryCheckpointTurnIndex: 3,
+    currentTurnFiles: [pdf, image],
+  };
+  mockGetFiles.mockResolvedValueOnce([
+    {
+      file_id: pdf.fileId,
+      filename: pdf.filename,
+      filepath: 'https://files.example.test/interval.pdf',
+      storageKey: 'uploads/user_123/pdf-interval__interval.pdf',
+      source: 's3',
+      type: pdf.mediaType,
+      bytes: 1234,
+      user: 'user_123',
+      tenantId: 'tenant-a',
+    },
+  ]);
+  mockGetPdfPageCount.mockResolvedValueOnce(2);
+  const pdfChunks = [
+    { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 1, chunkSizePages: 50 },
+    { chunkIndex: 2, chunkCount: 2, pageStart: 2, pageEnd: 2, chunkSizePages: 50 },
+  ];
+  mockBuildPdfPageChunks.mockReturnValueOnce(pdfChunks);
+  const invokeTimes = [];
+  const invoke = jest.fn().mockImplementation(async () => {
+    invokeTimes.push(performance.now());
+    return { content: 'OCR' };
+  });
+  mockPaddleOcrToolLoads(invoke);
+  mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
+    const pdfInput = input.files[0];
+    const imageInput = input.files[1];
+    const run = (entry, chunk, suffix) =>
+      input.paddleOcr.runChunk({
+        file: entry.file,
+        chunk,
+        artifact: {
+          ...chunk,
+          filepath: `https://files.example.test/${suffix}`,
+          storageKey: `ocr/${suffix}`,
+        },
+      });
+    await run(pdfInput, pdfInput.chunks[0], 'interval-chunk-1.pdf');
+    await run(pdfInput, pdfInput.chunks[1], 'interval-chunk-2.pdf');
+    await run(imageInput, imageInput.chunks[0], 'interval-image.jpg');
+    return createMockOcrBatchResult(input);
+  });
+  return { req, invoke, invokeTimes };
+}
+
 function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
   mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
     const pipelineFileInput = input.files[0];
@@ -2974,6 +3041,66 @@ describe('ToolService - Action Capability Gating', () => {
       }
     });
 
+    it('waits one second between completed PaddleOCR tasks while keeping the first call immediate', async () => {
+      jest.useFakeTimers();
+      try {
+        const { req, invoke, invokeTimes } = setupSequentialPaddleOcrPreflight();
+        const resultPromise = runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: new AbortController().signal,
+          streamId: 'stream-interval',
+        });
+
+        await jest.advanceTimersByTimeAsync(0);
+        expect(invoke).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(999);
+        expect(invoke).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(invoke).toHaveBeenCalledTimes(2);
+        await jest.advanceTimersByTimeAsync(999);
+        expect(invoke).toHaveBeenCalledTimes(2);
+        await jest.advanceTimersByTimeAsync(1);
+        const result = await resultPromise;
+
+        expect(invoke).toHaveBeenCalledTimes(3);
+        expect(invokeTimes[0]).toBeDefined();
+        expect(invokeTimes[1] - invokeTimes[0]).toBeGreaterThanOrEqual(1000);
+        expect(invokeTimes[2] - invokeTimes[1]).toBeGreaterThanOrEqual(1000);
+        expect(result.status).toBe('completed');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('aborts immediately while waiting between PaddleOCR tasks without starting the next invoke', async () => {
+      jest.useFakeTimers();
+      try {
+        const { req, invoke } = setupSequentialPaddleOcrPreflight();
+        const controller = new AbortController();
+        const resultPromise = runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+          signal: controller.signal,
+          streamId: 'stream-interval-abort',
+        });
+
+        await jest.advanceTimersByTimeAsync(0);
+        expect(invoke).toHaveBeenCalledTimes(1);
+        controller.abort();
+
+        await expect(resultPromise).rejects.toMatchObject({
+          name: 'AbortError',
+          message: 'OCR task interval aborted',
+        });
+        expect(invoke).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('gives every PaddleOCR chunk call an independent ten-minute hard deadline', async () => {
       jest.useFakeTimers();
       const firstTimeoutController = new AbortController();
@@ -3124,8 +3251,17 @@ describe('ToolService - Action Capability Gating', () => {
           streamId: 'stream-1',
         });
         await jest.advanceTimersByTimeAsync(6000);
+        expect(invoke).toHaveBeenCalledTimes(3);
+        await jest.advanceTimersByTimeAsync(999);
+        expect(invoke).toHaveBeenCalledTimes(3);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(invoke).toHaveBeenCalledTimes(4);
+        await jest.advanceTimersByTimeAsync(999);
+        expect(invoke).toHaveBeenCalledTimes(4);
+        await jest.advanceTimersByTimeAsync(1);
         const result = await resultPromise;
 
+        expect(invoke).toHaveBeenCalledTimes(5);
         expect(result.currentPaddleOcrStatuses).toEqual([
           expect.objectContaining({
             paddleocr: 'ok',

@@ -656,6 +656,7 @@ const steelPaddleOcrTransportErrorPatterns = [
 ];
 const steelPaddleOcrMaxAttempts = 3;
 const steelPaddleOcrRetryDelayMs = 3000;
+const steelPaddleOcrTaskIntervalMs = 1000;
 const steelPaddleOcrCallTimeoutMs = 10 * 60 * 1000;
 const steelPaddleOcrDiagnosticCodes = new Set([
   'ai_studio_auth',
@@ -1895,18 +1896,17 @@ function isTransportSteelPaddleOcrPreflightError(error) {
   );
 }
 
-function sleepSteelPaddleOcrRetry({ signal }) {
-  const delay = steelPaddleOcrRetryDelayMs;
+function sleepSteelPaddleOcrDelay({ signal, delay, abortMessage }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      const error = new Error('OCR retry aborted');
+      const error = new Error(abortMessage);
       error.name = 'AbortError';
       reject(error);
       return;
     }
     const onAbort = () => {
       clearTimeout(timer);
-      const error = new Error('OCR retry aborted');
+      const error = new Error(abortMessage);
       error.name = 'AbortError';
       reject(error);
     };
@@ -1915,6 +1915,14 @@ function sleepSteelPaddleOcrRetry({ signal }) {
       resolve();
     }, delay);
     signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function sleepSteelPaddleOcrRetry({ signal }) {
+  return sleepSteelPaddleOcrDelay({
+    signal,
+    delay: steelPaddleOcrRetryDelayMs,
+    abortMessage: 'OCR retry aborted',
   });
 }
 
@@ -2397,6 +2405,7 @@ function createSteelPaddleOcrChunkRunner({
 }) {
   let paddleTool;
   let configurable;
+  let lastTaskCompletedAt;
 
   const ensureTool = async () => {
     if (paddleTool) {
@@ -2419,8 +2428,8 @@ function createSteelPaddleOcrChunkRunner({
     }
   };
 
-  return {
-    async runChunk({ file, chunk, artifact }) {
+  const chunkExecutor = {
+    async run({ file, chunk, artifact }) {
       const providerToolCallId = `${getSteelPaddleOcrPreflightToolCallId(file.ocrFileKey)}_pages_${chunk.pageStart}_${chunk.pageEnd}`;
       const stepId = getSteelPaddleOcrPreflightStepId(providerToolCallId);
       const index = getNextIndex();
@@ -2621,6 +2630,27 @@ function createSteelPaddleOcrChunkRunner({
         }),
       );
       throw exhaustedError;
+    },
+  };
+
+  return {
+    async runChunk(input) {
+      if (lastTaskCompletedAt !== undefined) {
+        const elapsed = performance.now() - lastTaskCompletedAt;
+        if (elapsed < steelPaddleOcrTaskIntervalMs) {
+          await sleepSteelPaddleOcrDelay({
+            signal,
+            delay: steelPaddleOcrTaskIntervalMs - elapsed,
+            abortMessage: 'OCR task interval aborted',
+          });
+        }
+      }
+
+      try {
+        return await chunkExecutor.run(input);
+      } finally {
+        lastTaskCompletedAt = performance.now();
+      }
     },
   };
 }
