@@ -1,4 +1,5 @@
 import { buildPdfPageChunks } from './chunks';
+import { ocrPreprocessingChunkSizePagesEnvKey } from './config';
 import { mergeChunkMarkdownForFileKey } from './merge';
 import { runOcrPreprocessingBatchPipeline, runOcrPreprocessingPipeline } from './preprocess';
 import { parseMarkdownTables } from '../markdown/table';
@@ -1725,6 +1726,127 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     );
     expect(result.files[0]).not.toHaveProperty('partial');
+  });
+
+  it('splits configured 24-page parents and partial 15-page parents into retry ranges', async () => {
+    const originalChunkSizeEnv = process.env[ocrPreprocessingChunkSizePagesEnvKey];
+    process.env[ocrPreprocessingChunkSizePagesEnvKey] = '24';
+    try {
+      const initialChunks = buildPdfPageChunks({ pageCount: 39 });
+      let effectiveChunks = initialChunks;
+      const rawRanges = new Set<string>();
+      const markdownRanges = new Set<string>();
+      const rangeKey = (chunk: { pageStart: number; pageEnd: number }) =>
+        `${chunk.pageStart}-${chunk.pageEnd}`;
+      const readState = () => ({
+        ocrFileKey: 'file:split-configured',
+        sourcePdfKey: 'uploads/split-configured.pdf',
+        pipelineVersion: 1,
+        ocrRuleVersion: 'rules-v2',
+        chunkSizePages: 24,
+        chunkCount: effectiveChunks.length,
+        chunks: effectiveChunks.map((chunk) => ({
+          ...chunk,
+          rawSaved: rawRanges.has(rangeKey(chunk)),
+          organizedSaved: markdownRanges.has(rangeKey(chunk)),
+          ...(rawRanges.has(rangeKey(chunk))
+            ? {
+                rawResultHash: `hash-${rangeKey(chunk)}`,
+                rawOcrText: `raw-${rangeKey(chunk)}`,
+              }
+            : {}),
+          ...(markdownRanges.has(rangeKey(chunk))
+            ? { organizedMarkdown: `markdown-${rangeKey(chunk)}` }
+            : {}),
+        })),
+      });
+      const paddleRanges: string[] = [];
+      const paddleOcr = {
+        runChunk: jest.fn(async ({ chunk }) => {
+          paddleRanges.push(rangeKey(chunk));
+          if (!['1-12', '13-24', '25-36', '37-39'].includes(rangeKey(chunk))) {
+            throw adaptiveSplitEligibleError(`parent exhausted ${rangeKey(chunk)}`);
+          }
+          return {
+            rawResult: { text: `raw-${rangeKey(chunk)}` },
+            rawOcrText: `raw-${rangeKey(chunk)}`,
+            rawResultHash: `hash-${rangeKey(chunk)}`,
+          };
+        }),
+      };
+      const memory = {
+        readOcrPreprocessingState: jest.fn(async () => readState()),
+        capturePaddleOcrChunkResult: jest.fn(async ({ chunk }) => {
+          rawRanges.add(rangeKey(chunk));
+          return { savedCounts: { paddleocr_preflight: 1 } };
+        }),
+        captureOcrPreprocessingChunkMarkdown: jest.fn(async ({ chunk }) => {
+          markdownRanges.add(rangeKey(chunk));
+          return { savedCounts: { ocr_preprocessing_chunk_markdown: 1 } };
+        }),
+      };
+      const artifacts = {
+        ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) =>
+          chunks.map((chunk) => ({
+            ...chunk,
+            filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
+            storageKey: `chunks/${rangeKey(chunk)}.pdf`,
+          })),
+        ),
+        commitPdfChunkSplit: jest.fn(async ({ chunks }) => {
+          effectiveChunks = [...chunks];
+          return chunks.map((chunk) => ({
+            ...chunk,
+            filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
+            storageKey: `chunks/${rangeKey(chunk)}.pdf`,
+          }));
+        }),
+      };
+      const result = await runOcrPreprocessingBatchPipeline({
+        conversationId: 'steel_conversation_split_configured',
+        ocrRuleVersion: 'rules-v2',
+        ocrRulesText: 'rules',
+        files: [
+          {
+            file: {
+              ocrFileKey: 'file:split-configured',
+              filename: 'split-configured.pdf',
+              sourcePdfKey: 'uploads/split-configured.pdf',
+            },
+            chunks: initialChunks,
+            artifacts,
+          },
+        ],
+        memory,
+        organizer: {
+          organize: jest.fn(async ({ rawOcrText }) => ({
+            markdown: tableMarkdown(`organized-${rawOcrText}`),
+          })),
+        },
+        paddleOcr,
+      });
+
+      expect(paddleRanges).toEqual(['1-24', '1-12', '13-24', '25-39', '25-36', '37-39']);
+      expect(artifacts.commitPdfChunkSplit).toHaveBeenCalledTimes(2);
+      expect(result.files[0]).toEqual(
+        expect.objectContaining({
+          status: 'completed',
+          chunkCount: 4,
+          pageRanges: [
+            { pageStart: 1, pageEnd: 12 },
+            { pageStart: 13, pageEnd: 24 },
+            { pageStart: 25, pageEnd: 36 },
+            { pageStart: 37, pageEnd: 39 },
+          ],
+        }),
+      );
+    } finally {
+      if (originalChunkSizeEnv === undefined) {
+        delete process.env[ocrPreprocessingChunkSizePagesEnvKey];
+      } else {
+        process.env[ocrPreprocessingChunkSizePagesEnvKey] = originalChunkSizeEnv;
+      }
+    }
   });
 
   it('splits an exhausted exact 50-page parent, preserves later siblings, and suppresses the parent failure', async () => {

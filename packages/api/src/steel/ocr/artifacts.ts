@@ -8,7 +8,7 @@ import {
   normalizeOcrPageChunks,
   type OcrPageRange,
   type OcrPreprocessingPageChunk,
-  validateExactFiftyPageSplit,
+  validateOcrPageSplit,
 } from './chunks';
 
 type Mongoose = typeof import('mongoose');
@@ -55,7 +55,7 @@ export interface OcrPdfChunkArtifactRepository {
   compareAndSetSupersededByRanges?(input: {
     sourcePdfKey: string;
     pipelineVersion: number;
-    parent: OcrPageRange;
+    parent: OcrPageRange & Pick<OcrPreprocessingPageChunk, 'chunkSizePages'>;
     supersededByRanges: readonly OcrPageRange[];
   }): Promise<'updated' | 'idempotent'>;
 }
@@ -96,7 +96,6 @@ export function createMongooseOcrPdfChunkArtifactRepository(
       parent,
       supersededByRanges,
     }) {
-      const expected = validateExactFiftyPageSplit({ parent, children: supersededByRanges });
       const existingRows = await SteelOcrPdfChunkArtifact.find({
         sourcePdfKey,
         pipelineVersion,
@@ -111,6 +110,10 @@ export function createMongooseOcrPdfChunkArtifactRepository(
         );
       }
       const existing = existingRows[0]!;
+      const expected = validateOcrPageSplit({
+        parent: existing.supersededByRanges ? existing : parent,
+        children: supersededByRanges,
+      });
       if (existing.supersededByRanges) {
         const current = normalizeOcrPageChunks(existing.supersededByRanges).map(
           ({ pageStart, pageEnd }) => ({ pageStart, pageEnd }),
@@ -129,6 +132,7 @@ export function createMongooseOcrPdfChunkArtifactRepository(
         },
         {
           $set: {
+            chunkSizePages: parent.chunkSizePages,
             supersededByRanges: expected,
             supersededAt: new Date(),
           },
@@ -165,7 +169,7 @@ export function resolveCanonicalOcrPageChunks(input: {
   for (const row of input.artifactRows) {
     const key = getOcrPageRangeKey(row);
     if (row.supersededByRanges) {
-      validateExactFiftyPageSplit({ parent: row, children: row.supersededByRanges });
+      validateOcrPageSplit({ parent: row, children: row.supersededByRanges });
     }
     const existing = rowsByRange.get(key);
     if (existing) {
@@ -184,11 +188,19 @@ export function resolveCanonicalOcrPageChunks(input: {
         next.push(chunk);
         continue;
       }
-      const children = validateExactFiftyPageSplit({
-        parent: chunk,
+      const children = validateOcrPageSplit({
+        parent: row,
         children: row.supersededByRanges,
       });
-      next.push(...children.map((child) => ({ ...child, chunkIndex: 1, chunkCount: 2 })));
+      const childChunkSizePages = (row.chunkSizePages ?? getOcrPageRangePageCount(row)) / 2;
+      next.push(
+        ...children.map((child, index) => ({
+          ...child,
+          chunkIndex: index + 1,
+          chunkCount: children.length,
+          chunkSizePages: childChunkSizePages,
+        })),
+      );
       changed = true;
     }
     chunks = normalizeOcrPageChunks(next);
@@ -221,7 +233,7 @@ export interface EnsurePdfChunkArtifactsInput {
 }
 
 export interface CommitOcrPdfChunkSplitInput extends EnsurePdfChunkArtifactsInput {
-  parent: OcrPageRange;
+  parent: OcrPageRange & Pick<OcrPreprocessingPageChunk, 'chunkSizePages'>;
   children: readonly OcrPageRange[];
 }
 
@@ -354,7 +366,7 @@ export async function ensurePdfChunkArtifacts(
 export async function commitOcrPdfChunkSplit(
   input: CommitOcrPdfChunkSplitInput,
 ): Promise<EnsuredOcrPdfChunkArtifact[]> {
-  const children = validateExactFiftyPageSplit({
+  const children = validateOcrPageSplit({
     parent: input.parent,
     children: input.children,
   });

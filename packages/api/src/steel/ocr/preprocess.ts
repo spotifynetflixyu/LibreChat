@@ -13,10 +13,11 @@ import type {
 import {
   getOcrPageRangeKey,
   normalizeOcrPageChunks,
-  splitExactFiftyPageRange,
+  splitOcrPageRange,
   type OcrPageRange,
   type OcrPreprocessingPageChunk,
 } from './chunks';
+import { resolveOcrPreprocessingChunkSizePages } from './config';
 import { normalizeOcrOrganizerFileKey } from './organizer';
 import type { OcrOrganizer } from './organizer';
 import { isPaddleOcrDiagnosticCode, type PaddleOcrDiagnosticCode } from './diagnostics';
@@ -855,7 +856,7 @@ export async function runOcrPreprocessingBatchPipeline(
           workItem.failures.push(toPaddleOcrFailure({ chunk, artifact, error }));
           continue;
         }
-        const split = splitExactFiftyPageRange(chunk);
+        const split = splitOcrPageRange(chunk, resolveOcrPreprocessingChunkSizePages());
         if (!split) {
           workItem.failures.push(toPaddleOcrFailure({ chunk, artifact, error }));
           continue;

@@ -90,8 +90,53 @@ describe('OCR PDF chunk artifacts', () => {
     ).toMatch(/^ocr-preprocessing\/[a-f0-9]{64}\/v1\/pages-000001-000050\.pdf$/);
   });
 
+  it('updates reused legacy parent metadata when committing a new partial split', async () => {
+    const parentId = new mongoose.Types.ObjectId();
+    const legacyParent = {
+      _id: parentId,
+      sourcePdfKey: 's3://bucket/original.pdf',
+      pipelineVersion: 1,
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 15,
+      chunkSizePages: 50,
+    };
+    const lean = jest.fn(async () => [legacyParent]);
+    const limit = jest.fn(() => ({ lean }));
+    const find = jest.fn(() => ({ limit }));
+    const updateOne = jest.fn(async () => ({ modifiedCount: 1 }));
+    createArtifactModel.mockReturnValueOnce({ find, updateOne } as never);
+    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+
+    await expect(
+      repository.compareAndSetSupersededByRanges?.({
+        sourcePdfKey: legacyParent.sourcePdfKey,
+        pipelineVersion: legacyParent.pipelineVersion,
+        parent: { pageStart: 1, pageEnd: 15, chunkSizePages: 24 },
+        supersededByRanges: [
+          { pageStart: 1, pageEnd: 12 },
+          { pageStart: 13, pageEnd: 15 },
+        ],
+      }),
+    ).resolves.toBe('updated');
+    expect(updateOne).toHaveBeenCalledWith(
+      { _id: parentId, supersededByRanges: { $exists: false } },
+      {
+        $set: {
+          chunkSizePages: 24,
+          supersededByRanges: [
+            { pageStart: 1, pageEnd: 12 },
+            { pageStart: 13, pageEnd: 15 },
+          ],
+          supersededAt: expect.any(Date),
+        },
+      },
+    );
+  });
+
   it('reuses global artifact rows for the same source PDF key across conversations', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 100 });
+    const chunks = buildPdfPageChunks({ pageCount: 100, chunkSizePages: 50 });
     const rows = new Map();
     const repository = {
       findBySourcePdfKey: jest.fn(async () => [...rows.values()]),
@@ -144,7 +189,7 @@ describe('OCR PDF chunk artifacts', () => {
   });
 
   it('recreates stored rows whose S3 chunk object is missing', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 50 });
+    const chunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
     const rows = new Map();
     const repository = {
       findBySourcePdfKey: jest.fn(async () => [...rows.values()]),
@@ -237,7 +282,7 @@ describe('OCR PDF chunk artifacts', () => {
   });
 
   it('requires a committed parent marker before child rows supersede the default plan', () => {
-    const defaults = buildPdfPageChunks({ pageCount: 50 });
+    const defaults = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
     const childRows = [
       {
         ...defaults[0],
@@ -279,8 +324,35 @@ describe('OCR PDF chunk artifacts', () => {
     ]);
   });
 
+  it('uses the persisted parent chunk size for partial split markers', () => {
+    const parent = {
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 15,
+      chunkSizePages: 24,
+    };
+    expect(
+      resolveCanonicalOcrPageChunks({
+        defaultChunks: [parent],
+        artifactRows: [
+          {
+            ...parent,
+            supersededByRanges: [
+              { pageStart: 1, pageEnd: 12 },
+              { pageStart: 13, pageEnd: 15 },
+            ],
+          } as OcrPdfChunkArtifactRecord,
+        ],
+      }),
+    ).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 12, chunkSizePages: 12 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 13, pageEnd: 15, chunkSizePages: 12 },
+    ]);
+  });
+
   it('persists both child artifacts before committing the parent split marker', async () => {
-    const parent = buildPdfPageChunks({ pageCount: 50 })[0]!;
+    const parent = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 })[0]!;
     const children = [
       { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 25, chunkSizePages: 25 },
       { chunkIndex: 2, chunkCount: 2, pageStart: 26, pageEnd: 50, chunkSizePages: 25 },
@@ -350,10 +422,10 @@ describe('OCR PDF chunk artifacts', () => {
   it('rejects malformed parent markers', () => {
     expect(() =>
       resolveCanonicalOcrPageChunks({
-        defaultChunks: buildPdfPageChunks({ pageCount: 50 }),
+        defaultChunks: buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 }),
         artifactRows: [
           {
-            ...buildPdfPageChunks({ pageCount: 50 })[0],
+            ...buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 })[0],
             supersededByRanges: [{ pageStart: 1, pageEnd: 25 }],
           } as OcrPdfChunkArtifactRecord,
         ],

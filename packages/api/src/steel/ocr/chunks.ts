@@ -78,39 +78,45 @@ export function normalizeOcrPageChunks<
   }));
 }
 
-export function splitExactFiftyPageRange(
+export function splitOcrPageRange(
   range: OcrPageRange,
+  chunkSizePages: number = resolveOcrPreprocessingChunkSizePages(),
 ): [OcrPreprocessingPageChunk, OcrPreprocessingPageChunk] | undefined {
   assertOcrPageRange(range);
-  if (getOcrPageRangePageCount(range) !== 50) {
+  if (!Number.isInteger(chunkSizePages) || chunkSizePages < 2 || chunkSizePages % 2 !== 0) {
+    throw new Error('OCR preprocessing chunk size must be a positive even integer');
+  }
+  const retryChunkSizePages = chunkSizePages / 2;
+  const pageCount = getOcrPageRangePageCount(range);
+  if (pageCount <= retryChunkSizePages || pageCount > chunkSizePages) {
     return undefined;
   }
-  const middle = range.pageStart + 24;
+  const middle = range.pageStart + retryChunkSizePages - 1;
   return [
     {
       chunkIndex: 1,
       chunkCount: 2,
       pageStart: range.pageStart,
       pageEnd: middle,
-      chunkSizePages: 25,
+      chunkSizePages: retryChunkSizePages,
     },
     {
       chunkIndex: 2,
       chunkCount: 2,
       pageStart: middle + 1,
       pageEnd: range.pageEnd,
-      chunkSizePages: 25,
+      chunkSizePages: retryChunkSizePages,
     },
   ];
 }
 
-export function validateExactFiftyPageSplit(input: {
-  parent: OcrPageRange;
+export function validateOcrPageSplit(input: {
+  parent: OcrPageRange & Pick<OcrPreprocessingPageChunk, 'chunkSizePages'>;
   children: readonly OcrPageRange[];
 }): [OcrPageRange, OcrPageRange] {
-  const expected = splitExactFiftyPageRange(input.parent);
+  const expected = splitOcrPageRange(input.parent, input.parent.chunkSizePages);
   if (!expected || input.children.length !== 2) {
-    throw new Error('OCR split must replace one exact 50-page range with two exact 25-page ranges');
+    throw new Error('OCR split must replace one eligible range with two contiguous retry ranges');
   }
   const actual = normalizeOcrPageChunks(input.children).map(({ pageStart, pageEnd }) => ({
     pageStart,
@@ -118,7 +124,7 @@ export function validateExactFiftyPageSplit(input: {
   }));
   const expectedRanges = expected.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }));
   if (JSON.stringify(actual) !== JSON.stringify(expectedRanges)) {
-    throw new Error('OCR split children must be the two contiguous exact 25-page ranges');
+    throw new Error('OCR split children must be the two contiguous retry ranges');
   }
   return expectedRanges as [OcrPageRange, OcrPageRange];
 }

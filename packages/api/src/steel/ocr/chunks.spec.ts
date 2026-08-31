@@ -6,8 +6,8 @@ import {
   createPdfPageRangeChunker,
   getPdfPageCount,
   normalizeOcrPageChunks,
-  splitExactFiftyPageRange,
-  validateExactFiftyPageSplit,
+  splitOcrPageRange,
+  validateOcrPageSplit,
 } from './chunks';
 import { ocrPreprocessingChunkSizePagesEnvKey } from './config';
 
@@ -49,12 +49,21 @@ describe('OCR preprocessing PDF chunks', () => {
   });
 
   it('uses STEEL_OCR_PREPROCESSING_CHUNK_SIZE_PAGES when no explicit chunk size is provided', () => {
+    process.env[ocrPreprocessingChunkSizePagesEnvKey] = '24';
+
+    expect(buildPdfPageChunks({ pageCount: 51 })).toEqual([
+      { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 24, chunkSizePages: 24 },
+      { chunkIndex: 2, chunkCount: 3, pageStart: 25, pageEnd: 48, chunkSizePages: 24 },
+      { chunkIndex: 3, chunkCount: 3, pageStart: 49, pageEnd: 51, chunkSizePages: 24 },
+    ]);
+  });
+
+  it('normalizes a positive odd environment chunk size to the next even value', () => {
     process.env[ocrPreprocessingChunkSizePagesEnvKey] = '25';
 
     expect(buildPdfPageChunks({ pageCount: 51 })).toEqual([
-      { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 25, chunkSizePages: 25 },
-      { chunkIndex: 2, chunkCount: 3, pageStart: 26, pageEnd: 50, chunkSizePages: 25 },
-      { chunkIndex: 3, chunkCount: 3, pageStart: 51, pageEnd: 51, chunkSizePages: 25 },
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 26, chunkSizePages: 26 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 27, pageEnd: 51, chunkSizePages: 26 },
     ]);
   });
 
@@ -70,18 +79,34 @@ describe('OCR preprocessing PDF chunks', () => {
     ]);
   });
 
-  it('only validates exact 50-page to exact 25-page splits', () => {
-    const children = splitExactFiftyPageRange({ pageStart: 1, pageEnd: 50 });
+  it('splits eligible ranges into contiguous retry-sized ranges', () => {
+    const children = splitOcrPageRange({ pageStart: 1, pageEnd: 24 }, 24);
     expect(children).toHaveLength(2);
-    expect(validateExactFiftyPageSplit({ parent: { pageStart: 1, pageEnd: 50 }, children: children! })).toEqual([
+    expect(children).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 12, chunkSizePages: 12 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 13, pageEnd: 24, chunkSizePages: 12 },
+    ]);
+    expect(
+      validateOcrPageSplit({
+        parent: { pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
+        children: splitOcrPageRange({ pageStart: 1, pageEnd: 50 }, 50)!,
+      }),
+    ).toEqual([
       { pageStart: 1, pageEnd: 25 },
       { pageStart: 26, pageEnd: 50 },
     ]);
-    expect(splitExactFiftyPageRange({ pageStart: 1, pageEnd: 25 })).toBeUndefined();
+    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 12 }, 24)).toBeUndefined();
+    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 15 }, 24)).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 12, chunkSizePages: 12 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 13, pageEnd: 15, chunkSizePages: 12 },
+    ]);
     expect(() =>
-      validateExactFiftyPageSplit({
-        parent: { pageStart: 1, pageEnd: 50 },
-        children: [{ pageStart: 1, pageEnd: 24 }, { pageStart: 25, pageEnd: 50 }],
+      validateOcrPageSplit({
+        parent: { pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
+        children: [
+          { pageStart: 1, pageEnd: 24 },
+          { pageStart: 25, pageEnd: 50 },
+        ],
       }),
     ).toThrow();
   });
