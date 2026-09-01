@@ -360,6 +360,8 @@ describe('Steel native context adapter', () => {
             ocrFileKey: 'file:676b6f2c-0361-412a-92f0-92711c94ffef',
             sourceCode: 'F1',
             filename: 'PL.pdf',
+            sourceFilename: 'PL.pdf',
+            storageKey: 'uploads/user_123/676b6f2c__PL.pdf',
             ocrPreprocessing: {
               chunkCount: 2,
               pageRanges: [
@@ -374,7 +376,9 @@ describe('Steel native context adapter', () => {
         currentOcrFailures: [
           {
             ocrFileKey: 'file:missing.pdf',
+            sourceCode: 'F2',
             filename: 'missing.pdf',
+            sourceFilename: 'missing.pdf',
             mediaType: 'application/pdf',
             fileUrl: 'https://files.example.test/missing.pdf',
             stage: 'paddleocr',
@@ -385,7 +389,9 @@ describe('Steel native context adapter', () => {
           },
           {
             ocrFileKey: 'file:missing.pdf',
+            sourceCode: 'F2',
             filename: 'missing.pdf',
+            sourceFilename: 'missing.pdf',
             mediaType: 'application/pdf',
             fileUrl: 'https://files.example.test/missing.pdf',
             stage: 'paddleocr',
@@ -417,6 +423,10 @@ describe('Steel native context adapter', () => {
             errorMessage: 'Image OCR failed',
           },
         ],
+        currentOcrSourceFileMapping: [
+          { sourceCode: 'F1', sourceFilename: 'PL.pdf' },
+          { sourceCode: 'F2', sourceFilename: 'missing.pdf' },
+        ],
       },
     });
 
@@ -439,9 +449,13 @@ describe('Steel native context adapter', () => {
       'Satisfy any other user intent only within those allowed sections',
     );
     expect(context.runtimeContextText).toContain(
+      '# OCR source file mapping metadata\nsource_file_mapping:\n  - source_code: F1\n    source_filename: "PL.pdf"\n  - source_code: F2\n    source_filename: "missing.pdf"',
+    );
+    expect(context.runtimeContextText).toContain(
       'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_code: F1\nsource_filename: "PL.pdf"\npage_ranges: 1-2, 3-4\nchunk_count: 2\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
     );
     expect(context.runtimeContextText).toContain('| 鐵板 | 2 |');
+    expect(context.runtimeContextText).not.toContain('uploads/user_123/676b6f2c__PL.pdf');
     expect(context.runtimeContextText).not.toContain('paddleocr_status:');
     expect(context.runtimeContextText).not.toContain('ocr_failure_stage:');
     expect(context.runtimeContextText).not.toContain('file_url:');
@@ -463,7 +477,7 @@ describe('Steel native context adapter', () => {
     expect(directive).toContain('[ocr_main_merge]');
     expect(directive).toContain('[final_ocr_markdown]');
     expect(directive).toMatch(
-      /final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in backend F-code order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary/u,
+      /final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary/u,
     );
     expect(directive).toMatch(/Do not output page headings or page details/u);
     expect(directive).toMatch(
@@ -528,7 +542,7 @@ describe('Steel native context adapter', () => {
           },
           {
             ocrFileKey: 'file:invalid-source-code',
-            sourceCode: 'F01',
+            sourceCode: ' F12 ',
             content: '<file:invalid-source-code>\n| OCR |\n| --- |\n| invalid |',
           },
         ],
@@ -536,7 +550,37 @@ describe('Steel native context adapter', () => {
     });
 
     expect(context.runtimeContextText).toContain('source_code: F12');
-    expect(context.runtimeContextText).not.toContain('source_code: F01');
+    expect(context.runtimeContextText).not.toContain(
+      'file_key: file:invalid-source-code\nsource_code:',
+    );
+  });
+
+  it('renders explicit OCR source mapping even when every file fails', async () => {
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_mapping_only', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        currentOcrSourceFileMapping: [
+          { sourceCode: 'F1', sourceFilename: '' },
+          { sourceCode: 'F2', sourceFilename: 'second.pdf' },
+        ],
+        currentOcrFailures: [
+          {
+            ocrFileKey: 'file:first.pdf',
+            sourceCode: 'F1',
+            filename: 'request-first.pdf',
+            stage: 'paddleocr',
+          },
+        ],
+      },
+    });
+
+    expect(context.runtimeContextText).toContain(
+      '# OCR source file mapping metadata\nsource_file_mapping:\n  - source_code: F1\n    source_filename: ""\n  - source_code: F2\n    source_filename: "second.pdf"',
+    );
+    expect(context.runtimeContextText).not.toContain('request-first.pdf');
+    expect(context.runtimeContextText).not.toContain('# Current-turn OCR completion directive');
   });
 
   it('does not expose OCR chunk statuses when organized Markdown is present', async () => {
@@ -627,6 +671,7 @@ describe('Steel native context adapter', () => {
           {
             ocrFileKey: 'file:partial-gap.pdf',
             filename: 'partial-gap.pdf',
+            sourceFilename: 'partial-gap.pdf',
             content: '<file:partial-gap.pdf>\n| OCR |\n| --- |\n| partial gap |',
             ocrPreprocessing: {
               chunkCount: 2,
@@ -716,6 +761,7 @@ describe('Steel native context adapter', () => {
           {
             ocrFileKey: 'file:photo.jpg',
             filename: 'photo.jpg',
+            sourceFilename: 'photo.jpg',
             content: '<file:photo.jpg>\n| OCR |\n| --- |\n| image |',
             ocrPreprocessing: { chunkCount: 1, pageRanges: [] },
           },

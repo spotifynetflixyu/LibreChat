@@ -1291,6 +1291,9 @@ function toSteelOcrPreprocessingFile(file, fileRecord) {
     return undefined;
   }
 
+  const sourceFilename =
+    typeof fileRecord?.filename === 'string' ? fileRecord.filename.trim() : '';
+
   return {
     ...file,
     fileId: file.fileId ?? fileRecord?.file_id,
@@ -1300,6 +1303,7 @@ function toSteelOcrPreprocessingFile(file, fileRecord) {
     storageKey: file.storageKey ?? fileRecord?.storageKey,
     ocrFileKey: file.ocrFileKey,
     sourcePdfKey,
+    sourceFilename,
   };
 }
 
@@ -1307,8 +1311,7 @@ function getSteelOcrSourceCode(value) {
   if (typeof value !== 'string') {
     return undefined;
   }
-  const sourceCode = value.trim();
-  return /^F[1-9][0-9]*$/u.test(sourceCode) ? sourceCode : undefined;
+  return /^F[1-9][0-9]*$/u.test(value) ? value : undefined;
 }
 
 function withoutSteelOcrSourceCode(file) {
@@ -2819,6 +2822,7 @@ function createPreflightResult({
   currentPaddleOcrStatuses = [],
   currentOcrMarkdownResults = [],
   currentOcrFailures = [],
+  currentOcrSourceFileMapping = [],
   totalSavedCounts,
   totalTableCounts,
 }) {
@@ -2837,6 +2841,7 @@ function createPreflightResult({
     ...(currentPaddleOcrStatuses.length > 0 ? { currentPaddleOcrStatuses } : {}),
     ...(currentOcrMarkdownResults.length > 0 ? { currentOcrMarkdownResults } : {}),
     ...(currentOcrFailures.length > 0 ? { currentOcrFailures } : {}),
+    ...(currentOcrSourceFileMapping.length > 0 ? { currentOcrSourceFileMapping } : {}),
     ...(totalSavedCounts ? { totalSavedCounts } : {}),
     ...(totalTableCounts ? { totalTableCounts } : {}),
   };
@@ -2870,11 +2875,13 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
     .map(normalizeSafeSteelAiUrl)
     .find((value) => value !== undefined);
   const sourceCode = getSteelOcrSourceCode(result?.file?.sourceCode ?? file?.sourceCode);
+  const sourceFilename = typeof file?.sourceFilename === 'string' ? file.sourceFilename : '';
   return {
     ocrFileKey: result?.file?.ocrFileKey ?? file?.ocrFileKey,
     filename: result?.file?.filename ?? file?.filename,
     mediaType: result?.file?.mediaType ?? file?.mediaType,
     ...(sourceCode ? { sourceCode } : {}),
+    sourceFilename,
     ...(fileUrl ? { fileUrl } : {}),
     stage: result?.stage ?? 'preflight',
     ...(result?.chunkIndex !== undefined ? { chunkIndex: result.chunkIndex } : {}),
@@ -2946,8 +2953,10 @@ function createCurrentOcrMergedMarkdownResult({
   });
   const sourcePdfKey = file?.sourcePdfKey;
   const sourceCode = getSteelOcrSourceCode(file?.sourceCode);
+  const sourceFilename = typeof file?.sourceFilename === 'string' ? file.sourceFilename : '';
   const visibleFile = { ...file };
   delete visibleFile.sourceCode;
+  delete visibleFile.sourceFilename;
   for (const key of [
     'sourcePdfKey',
     'filepath',
@@ -2972,6 +2981,7 @@ function createCurrentOcrMergedMarkdownResult({
   return {
     ...visibleFile,
     ...(sourceCode ? { sourceCode } : {}),
+    sourceFilename,
     ocrFileKey: safeOcrFileKey,
     kind: 'ocr_preprocessing_merged_markdown',
     ocrSource: 'ocr_preprocessing_merge',
@@ -3216,6 +3226,13 @@ async function runSteelPaddleOcrPreflight({
     })
     .filter((target) => target !== undefined);
   const fileRecordsById = await getSteelCurrentFileRecords(req, files);
+  const currentOcrSourceFileMapping = currentTargets.map(({ descriptor, sourceCode }) => ({
+    sourceCode,
+    sourceFilename:
+      descriptor.fileId && typeof fileRecordsById.get(descriptor.fileId)?.filename === 'string'
+        ? fileRecordsById.get(descriptor.fileId).filename.trim()
+        : '',
+  }));
   const toolName = buildMCPToolKey(steelPaddleOcrToolName, steelPaddleOcrMcpServerName);
 
   if (currentTargets.length === 0) {
@@ -3521,6 +3538,7 @@ async function runSteelPaddleOcrPreflight({
       attemptedKeys,
       failedKeys,
       skippedReason: undefined,
+      currentOcrSourceFileMapping,
       currentPaddleOcrResults,
       currentPaddleOcrStatuses: getFinalPaddleOcrChunkStatuses(currentPaddleOcrStatuses),
       currentOcrMarkdownResults,

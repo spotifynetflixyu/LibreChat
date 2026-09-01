@@ -1033,12 +1033,16 @@ const executeResponse = async (envelope, { req, res }) => {
               ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
                 ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
                 : {}),
+              ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
+                ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
+                : {}),
             },
           }
         : currentTurnFiles.length > 0 ||
             paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0 ||
             paddleOcrPreflight?.currentPaddleOcrStatuses?.length > 0 ||
-            paddleOcrPreflight?.currentOcrFailures?.length > 0
+            paddleOcrPreflight?.currentOcrFailures?.length > 0 ||
+            paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
           ? {
               attachments: {
                 ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
@@ -1050,6 +1054,9 @@ const executeResponse = async (envelope, { req, res }) => {
                   : {}),
                 ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
                   ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
+                  : {}),
+                ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
+                  ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
                   : {}),
               },
             }

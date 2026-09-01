@@ -1413,6 +1413,11 @@ describe('ToolService - Action Capability Gating', () => {
         attemptedKeys: ['file:file-a', 'file:file-b', 'file:file-c'],
         failedKeys: [],
         skippedReason: undefined,
+        currentOcrSourceFileMapping: [
+          { sourceCode: 'F1', sourceFilename: '' },
+          { sourceCode: 'F2', sourceFilename: '' },
+          { sourceCode: 'F3', sourceFilename: '' },
+        ],
         currentPaddleOcrResults: [],
         currentOcrMarkdownResults: expect.arrayContaining([
           expect.objectContaining({
@@ -1453,8 +1458,35 @@ describe('ToolService - Action Capability Gating', () => {
           { fileId: 'file-c', filename: 'c.png', mediaType: 'image/png' },
         ],
       };
+      mockGetFiles.mockResolvedValueOnce([
+        { file_id: 'file-a', filename: 'persisted-a.png' },
+        { file_id: 'file-b', filename: 'persisted-b.png' },
+        { file_id: 'file-c', filename: 'persisted-c.png' },
+      ]);
       mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
         const [first, second, third] = input.files;
+        await input.memory.capturePaddleOcrChunkResult({
+          conversationId: input.conversationId,
+          requestId: input.requestId,
+          turnIndex: 4,
+          checkpointTurnIndex: 3,
+          file: first.file,
+          chunk: {
+            pipelineVersion: 1,
+            sourcePdfKey: first.file.sourcePdfKey,
+            chunkIndex: 1,
+            chunkCount: 1,
+            pageStart: 1,
+            pageEnd: 1,
+            pdfChunk: {
+              source: 's3',
+              storageKey: 'ocr/source-code-test.png',
+              filepath: 'https://files.example.test/source-code-test.png',
+            },
+          },
+          rawResultHash: 'source-code-test-hash',
+          data: { text: 'raw OCR' },
+        });
         return {
           files: [
             {
@@ -1497,19 +1529,90 @@ describe('ToolService - Action Capability Gating', () => {
           ({ file }) => file.sourceCode,
         ),
       ).toEqual(['F1', 'F2', 'F3']);
+      expect(mockCapturePaddleOcrChunkResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: expect.not.objectContaining({ sourceCode: 'F1' }),
+        }),
+      );
       expect(result).toEqual(
         expect.objectContaining({
           status: 'partial',
           completedKeys: ['file:file-c'],
           failedKeys: ['file:file-a', 'file:file-b'],
           currentOcrFailures: [
-            expect.objectContaining({ ocrFileKey: 'file:file-a', sourceCode: 'F1' }),
-            expect.objectContaining({ ocrFileKey: 'file:file-b', sourceCode: 'F2' }),
+            expect.objectContaining({
+              ocrFileKey: 'file:file-a',
+              sourceCode: 'F1',
+              sourceFilename: 'persisted-a.png',
+            }),
+            expect.objectContaining({
+              ocrFileKey: 'file:file-b',
+              sourceCode: 'F2',
+              sourceFilename: 'persisted-b.png',
+            }),
           ],
           currentOcrMarkdownResults: [
-            expect.objectContaining({ ocrFileKey: 'file:file-b', sourceCode: 'F2' }),
-            expect.objectContaining({ ocrFileKey: 'file:file-c', sourceCode: 'F3' }),
+            expect.objectContaining({
+              ocrFileKey: 'file:file-b',
+              sourceCode: 'F2',
+              sourceFilename: 'persisted-b.png',
+            }),
+            expect.objectContaining({
+              ocrFileKey: 'file:file-c',
+              sourceCode: 'F3',
+              sourceFilename: 'persisted-c.png',
+            }),
           ],
+          currentOcrSourceFileMapping: [
+            { sourceCode: 'F1', sourceFilename: 'persisted-a.png' },
+            { sourceCode: 'F2', sourceFilename: 'persisted-b.png' },
+            { sourceCode: 'F3', sourceFilename: 'persisted-c.png' },
+          ],
+        }),
+      );
+    });
+
+    it('uses the owner-scoped persisted filename for OCR source mapping', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-source-filename' };
+      req.steelNativeContext = {
+        requestId: 'resp-source-filename',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'file-db-name',
+            filename: 'request-name.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'file-db-name',
+          filename: 'persisted-name.pdf',
+          filepath: 'https://files.example.test/uploads/file-db-name.pdf',
+          storageKey: 'uploads/user_123/file-db-name.pdf',
+          source: 's3',
+          type: 'application/pdf',
+          user: 'user_123',
+        },
+      ]);
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(result.currentOcrSourceFileMapping).toEqual([
+        { sourceCode: 'F1', sourceFilename: 'persisted-name.pdf' },
+      ]);
+      expect(result.currentOcrMarkdownResults?.[0]).toEqual(
+        expect.objectContaining({
+          filename: 'request-name.pdf',
+          sourceFilename: 'persisted-name.pdf',
         }),
       );
     });
@@ -1720,6 +1823,7 @@ describe('ToolService - Action Capability Gating', () => {
         attemptedKeys: ['file:pdf-1'],
         failedKeys: [],
         skippedReason: undefined,
+        currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: 'quote.pdf' }],
         currentPaddleOcrResults: [],
         currentOcrMarkdownResults: [
           expect.objectContaining({
@@ -2760,6 +2864,7 @@ describe('ToolService - Action Capability Gating', () => {
         attemptedKeys: ['file:file-a'],
         failedKeys: [],
         skippedReason: undefined,
+        currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: 'a.pdf' }],
         currentPaddleOcrResults: [],
         currentOcrMarkdownResults: [
           expect.objectContaining({
@@ -2999,6 +3104,7 @@ describe('ToolService - Action Capability Gating', () => {
         attemptedKeys: ['file:file-second'],
         failedKeys: [],
         skippedReason: undefined,
+        currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: '' }],
         currentPaddleOcrResults: [],
         currentPaddleOcrStatuses: [
           {
@@ -3088,6 +3194,7 @@ describe('ToolService - Action Capability Gating', () => {
       ]);
       expect(organizerInputs[0]).not.toHaveProperty('pageStart');
       expect(organizerInputs[0]).not.toHaveProperty('pageRange');
+      expect(organizerInputs[0]).not.toHaveProperty('sourceCode');
       expect(result).toEqual(
         expect.objectContaining({
           status: 'completed',

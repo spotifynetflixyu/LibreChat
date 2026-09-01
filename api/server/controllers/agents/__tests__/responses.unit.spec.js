@@ -1347,6 +1347,7 @@ describe('createResponse controller', () => {
           },
         ],
         currentOcrMarkdownResults,
+        currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.pdf' }],
       });
 
       await createResponse(req, res);
@@ -1374,6 +1375,7 @@ describe('createResponse controller', () => {
         expect.objectContaining({
           attachments: {
             currentOcrMarkdownResults,
+            currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.pdf' }],
           },
           mode: 'ocr',
           conversation: expect.objectContaining({

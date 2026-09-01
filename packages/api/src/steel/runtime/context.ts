@@ -27,6 +27,11 @@ export interface SteelRuntimeOtherGlobalRules {
   markdownOutputRules: SteelAgentRule[];
 }
 
+export interface SteelRuntimeOcrSourceFileMapping {
+  sourceCode: string;
+  sourceFilename: string;
+}
+
 export interface SteelRuntimeContext {
   rules: {
     agentRules: SteelAgentRule[];
@@ -43,6 +48,7 @@ export interface SteelRuntimeContext {
     currentPaddleOcrStatuses: SteelRuntimeJsonObject[];
     currentOcrMarkdownResults: SteelRuntimeJsonObject[];
     currentOcrFailures: SteelRuntimeJsonObject[];
+    currentOcrSourceFileMapping: SteelRuntimeOcrSourceFileMapping[];
   };
 }
 
@@ -54,6 +60,7 @@ export interface SteelRuntimeContextAttachmentsInput {
   currentPaddleOcrStatuses?: SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: SteelRuntimeJsonObject[];
   currentOcrFailures?: SteelRuntimeJsonObject[];
+  currentOcrSourceFileMapping?: SteelRuntimeOcrSourceFileMapping[];
 }
 
 export interface SteelRuntimeContextDependencies {
@@ -139,6 +146,7 @@ export async function prepareSteelRuntimeContext({
       currentPaddleOcrStatuses: attachments?.currentPaddleOcrStatuses ?? [],
       currentOcrMarkdownResults: attachments?.currentOcrMarkdownResults ?? [],
       currentOcrFailures: attachments?.currentOcrFailures ?? [],
+      currentOcrSourceFileMapping: attachments?.currentOcrSourceFileMapping ?? [],
     },
   };
 }

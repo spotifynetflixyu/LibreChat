@@ -1701,13 +1701,13 @@ class AgentClient extends BaseClient {
       };
       appendSteelNativeFileReferences(
         currentTurnSteelFileReferences,
-        files,
+        attachments,
         seenSteelFileIds,
         steelReferenceOptions,
       );
       appendSteelNativeFileReferences(
         currentTurnSteelFileReferences,
-        attachments,
+        files,
         seenSteelFileIds,
         steelReferenceOptions,
       );
@@ -2025,6 +2025,9 @@ class AgentClient extends BaseClient {
             ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
               ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
               : {}),
+            ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
+              ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
+              : {}),
             priorActiveFileEvidence: [],
           }
         : {
@@ -2037,6 +2040,9 @@ class AgentClient extends BaseClient {
               : {}),
             ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
               ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
+              : {}),
+            ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
+              ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
               : {}),
             priorActiveFileEvidence: [],
           },

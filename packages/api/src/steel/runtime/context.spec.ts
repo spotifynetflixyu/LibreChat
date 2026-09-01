@@ -49,10 +49,11 @@ function createDependencies(): SteelRuntimeContextDependencies {
 function createInput(
   dependencies: SteelRuntimeContextDependencies,
   currentOcrMarkdownResults: Record<string, string>[] = [],
+  currentOcrSourceFileMapping = [],
 ): PrepareSteelRuntimeContextInput {
   return {
     conversation: { requestId: 'request_1' },
-    attachments: { currentOcrMarkdownResults },
+    attachments: { currentOcrMarkdownResults, currentOcrSourceFileMapping },
     dependencies,
   };
 }
@@ -87,9 +88,24 @@ describe('Steel runtime context', () => {
       currentPaddleOcrStatuses: [],
       currentOcrMarkdownResults: [expect.objectContaining({ ocrFileKey: 'file:quote.pdf' })],
       currentOcrFailures: [],
+      currentOcrSourceFileMapping: [],
     });
     expect(JSON.stringify(context)).not.toContain('currentPaddleOcrResults');
     expect(JSON.stringify(context)).not.toContain('outputSheets');
     expect(JSON.stringify(context)).not.toContain('conversation');
+  });
+
+  it('preserves explicit OCR source-file mapping independently of Markdown results', async () => {
+    const context = await prepareSteelRuntimeContext(
+      createInput(createDependencies(), [], [
+        { sourceCode: 'F1', sourceFilename: '' },
+        { sourceCode: 'F2', sourceFilename: 'second.pdf' },
+      ]),
+    );
+
+    expect(context.attachments.currentOcrSourceFileMapping).toEqual([
+      { sourceCode: 'F1', sourceFilename: '' },
+      { sourceCode: 'F2', sourceFilename: 'second.pdf' },
+    ]);
   });
 });

@@ -18,6 +18,7 @@ import type {
   SteelRuntimeContext,
   SteelRuntimeContextDependencies,
   SteelRuntimeJsonObject,
+  SteelRuntimeOcrSourceFileMapping,
 } from '../runtime/context';
 
 export const steelNativeContextVersion = 1 as const;
@@ -82,6 +83,7 @@ export interface SteelNativeContextAttachmentsInput {
   currentPaddleOcrStatuses?: readonly SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
   currentOcrFailures?: readonly SteelRuntimeJsonObject[];
+  currentOcrSourceFileMapping?: readonly SteelRuntimeOcrSourceFileMapping[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 }
 
@@ -370,8 +372,32 @@ function readOcrFileKey(result: SteelRuntimeJsonObject): {
 }
 
 function readValidOcrSourceCode(result: SteelRuntimeJsonObject): string | undefined {
-  const sourceCode = typeof result.sourceCode === 'string' ? result.sourceCode.trim() : '';
+  const sourceCode = typeof result.sourceCode === 'string' ? result.sourceCode : '';
   return /^F[1-9][0-9]*$/u.test(sourceCode) ? sourceCode : undefined;
+}
+
+function renderOcrSourceFileMapping(
+  mappings: readonly SteelRuntimeOcrSourceFileMapping[],
+): string {
+  const entries = mappings
+    .map((mapping) => ({
+      sourceCode: typeof mapping?.sourceCode === 'string' ? mapping.sourceCode : '',
+      sourceFilename: typeof mapping?.sourceFilename === 'string' ? mapping.sourceFilename : '',
+    }))
+    .filter(({ sourceCode }) => /^F[1-9][0-9]*$/u.test(sourceCode))
+    .map(({ sourceCode, sourceFilename }) => [sourceCode, sourceFilename.trim()] as const);
+  if (entries.length === 0) {
+    return '';
+  }
+
+  return [
+    '# OCR source file mapping metadata',
+    'source_file_mapping:',
+    ...entries.flatMap(([sourceCode, sourceFilename]) => [
+      `  - source_code: ${sourceCode}`,
+      `    source_filename: ${JSON.stringify(sourceFilename)}`,
+    ]),
+  ].join('\n');
 }
 
 function replaceLeadingOcrFileLabel(content: string, rawFileKey: string, safeFileKey: string) {
@@ -800,7 +826,8 @@ export function buildSteelNativeRuntimeContextText({
 
       const { rawFileKey, safeFileKey } = readOcrFileKey(result);
       const sourceCode = readValidOcrSourceCode(result);
-      const filename = typeof result.filename === 'string' ? result.filename.trim() : '';
+      const filename =
+        typeof result.sourceFilename === 'string' ? result.sourceFilename.trim() : '';
       const preprocessing = readValidOcrPreprocessingMetadata(result);
       const pageRangeText = preprocessing?.pageRanges
         .map(({ pageStart, pageEnd }) =>
@@ -847,17 +874,20 @@ export function buildSteelNativeRuntimeContextText({
     .join('\n\n');
 
   if (mode === 'ocr') {
+    const sourceFileMapping = renderOcrSourceFileMapping(
+      runtimeContext.attachments.currentOcrSourceFileMapping,
+    );
     const currentTurnOcrDirective = markdown
       ? [
           '# Current-turn OCR completion directive',
           'Apply [ocr_main_merge] and [final_ocr_markdown].',
-          'Your final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in backend F-code order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary.',
-          'In OCR and manual_review tables, use backend `source_code` verbatim for `來源`; never use filename or file_key, and never invent or renumber a code.',
+          'Your final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary.',
+          'Copy `source_code` and `source_filename` from `source_file_mapping` into the mapping table. In OCR and manual_review tables, use each file metadata `source_code` verbatim for `來源`; never use `source_filename` or `file_key`, and never invent or renumber a code.',
           'Do not output page headings or page details, explanatory prose, bullet lists, calculations, or duplicate tables.',
           'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',
         ].join('\n')
       : '';
-    return [markdown, currentTurnOcrDirective].filter(Boolean).join('\n\n');
+    return [sourceFileMapping, markdown, currentTurnOcrDirective].filter(Boolean).join('\n\n');
   }
 
   if (
@@ -957,6 +987,10 @@ export async function buildSteelGlobalAgentContext({
       currentOcrFailures:
         attachments?.currentOcrFailures !== undefined
           ? [...attachments.currentOcrFailures]
+          : undefined,
+      currentOcrSourceFileMapping:
+        attachments?.currentOcrSourceFileMapping !== undefined
+          ? [...attachments.currentOcrSourceFileMapping]
           : undefined,
     },
     dependencies,

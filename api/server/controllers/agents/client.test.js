@@ -3070,6 +3070,7 @@ describe('AgentClient - titleConvo', () => {
           },
         ],
         currentOcrMarkdownResults,
+        currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.pdf' }],
       });
 
       client.options.attachments = [currentFile];
@@ -3114,6 +3115,7 @@ describe('AgentClient - titleConvo', () => {
         expect.objectContaining({
           attachments: {
             currentOcrMarkdownResults,
+            currentOcrSourceFileMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.pdf' }],
             priorActiveFileEvidence: [],
           },
           mode: 'ocr',
@@ -3126,6 +3128,35 @@ describe('AgentClient - titleConvo', () => {
         }),
       });
       expect(mockReq.steelNativeContext.delegateOcrContext).not.toHaveProperty('history');
+    });
+
+    it('preserves original upload order when processed OCR files are reordered', async () => {
+      const image = makeUploadedFile('image-first', 'first.png', 'image/png');
+      const pdf = makeUploadedFile('pdf-second', 'second.pdf', 'application/pdf');
+      client.options.attachments = [image, pdf];
+      client.addFileContextToMessage = jest.fn().mockResolvedValue(undefined);
+      client.processAttachments = jest.fn().mockResolvedValue([pdf, image]);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: '請 OCR 這些附件。',
+            isCreatedByUser: true,
+          },
+        ],
+        'msg-1',
+        {},
+      );
+
+      expect(
+        mockRunSteelPaddleOcrPreflight.mock.calls[0][0].req.steelNativeContext.currentTurnFiles,
+      ).toEqual([
+        expect.objectContaining({ fileId: 'image-first', filename: 'first.png' }),
+        expect.objectContaining({ fileId: 'pdf-second', filename: 'second.pdf' }),
+      ]);
     });
   });
 
