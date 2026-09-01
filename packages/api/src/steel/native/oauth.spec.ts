@@ -27,6 +27,7 @@ import { RunnableLambda } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
+import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import {
   createOpenAIOAuthGraphModel,
   createOpenAIOAuthModel,
@@ -167,6 +168,26 @@ function quoteMessages(userText = '請報價'): BaseMessage[] {
       tool_call_id: 'call_price_fixture',
     }),
   ];
+}
+
+function ocrMessages(): BaseMessage[] {
+  return [new SystemMessage(OCR_COMPLETION_DIRECTIVE_MARKER), new HumanMessage('整理 OCR')];
+}
+
+function ocrMarkdown(): string {
+  return [
+    '## 來源檔案對照表',
+    '',
+    '| 來源 | 檔名 |',
+    '| --- | --- |',
+    '| F1 | file.pdf |',
+    '',
+    '## OCR 結果確認表',
+    '',
+    '| 來源 | 零件編號 |',
+    '| --- | --- |',
+    '| F1 | P1 |',
+  ].join('\n');
 }
 
 describe('OpenAI OAuth model adapter', () => {
@@ -2161,6 +2182,104 @@ describe('OpenAI OAuth model adapter', () => {
     expect(chunks.map((chunk) => chunk.content)).toEqual(['第一段', '第二段', '']);
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  it('finalizes OCR Markdown on invoke only after a clean stop', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([{ type: 'text', text: ocrMarkdown() }]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+      model: 'gpt-5.5',
+    });
+
+    const result = await model.invoke(ocrMessages());
+
+    expect(result.content).toBe(
+      `${ocrMarkdown()}\n\nOCR 整理完成：共 1 個來源、1 筆資料，無待複核事項。`,
+    );
+  });
+
+  it('does not append an OCR summary when the provider returns no Markdown tables', async () => {
+    const doGenerate = jest.fn(async () =>
+      createGenerateResult([{ type: 'text', text: 'plain text' }]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+      model: 'gpt-5.5',
+    });
+
+    const result = await model.invoke(ocrMessages());
+
+    expect(result.content).toBe('plain text');
+  });
+
+  it('buffers split OCR stream text and appends one backend summary last', async () => {
+    const source = ocrMarkdown();
+    const splitAt = source.indexOf('## OCR 結果確認表');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: source.slice(0, splitAt) },
+        { type: 'text-delta', id: 'text_1', delta: source.slice(splitAt) },
+        { type: 'finish', usage: createUsage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(ocrMessages())) {
+      chunks.push(chunk);
+    }
+
+    const summary = 'OCR 整理完成：共 1 個來源、1 筆資料，無待複核事項。';
+    expect(chunks.map((chunk) => chunk.content)).toEqual([`${source}\n\n${summary}`, '']);
+    expect(chunks[chunks.length - 2]?.content).toBe(`${source}\n\n${summary}`);
+    expect(
+      chunks
+        .map((chunk) => chunk.content)
+        .join('')
+        .match(/OCR 整理完成：/gu),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    { finishReason: { unified: 'length' as const, raw: 'length' }, label: 'non-stop' },
+    { finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' }, label: 'tool call' },
+  ])('leaves buffered OCR text unchanged for $label results', async ({ finishReason, label }) => {
+    const source = ocrMarkdown();
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: source },
+        ...(label === 'tool call'
+          ? [
+              {
+                type: 'tool-call' as const,
+                toolCallId: 'call_ocr',
+                toolName: 'delegate_ocr',
+                input: '{}',
+              },
+            ]
+          : []),
+        { type: 'finish', usage: createUsage(), finishReason },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(ocrMessages())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(source);
+    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('OCR 整理完成：');
   });
 
   it('creates a message run step before forwarding native OAuth graph text deltas', async () => {

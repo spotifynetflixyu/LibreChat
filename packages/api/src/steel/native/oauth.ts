@@ -32,6 +32,7 @@ import {
   createSystemOrderNormalizer,
   normalizeSystemOrderMarkdown,
 } from '../markdown/order';
+import { finalizeOcrMarkdown, OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { buildCustomerQuoteFromMarkdown, createCustomerQuoteParser } from '../markdown/quote';
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import { loadOpenAIOAuthTokens } from './credentials';
@@ -704,6 +705,14 @@ function hasClientToolCall(content: LanguageModelV3GenerateResult['content']): b
   return content.some((part) => part.type === 'tool-call' && part.providerExecuted !== true);
 }
 
+function hasOcrCompletionDirective(messages: BaseMessage[]): boolean {
+  return messages.some((message) =>
+    getTextFromContent(message.content)
+      .split(/\r?\n/u)
+      .some((line) => line === OCR_COMPLETION_DIRECTIVE_MARKER),
+  );
+}
+
 function shouldInspectCodeInterpreter(
   messages: BaseMessage[],
   options: OpenAIOAuthModelOptions,
@@ -910,6 +919,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
   async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
     const providerModel = await this.getProviderModel();
+    const ocrMode = hasOcrCompletionDirective(messages);
     const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const result = await providerModel.doGenerate(
@@ -926,6 +936,29 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     }
 
     const generatedText = getGeneratedText(result.content);
+    if (ocrMode) {
+      const finalizedText =
+        isCompletedTextResult(result.finishReason) &&
+        !result.content.some((part) => part.type === 'error') &&
+        !hasClientToolCall(result.content)
+          ? finalizeOcrMarkdown(generatedText)
+          : generatedText;
+      if (finalizedText === generatedText) {
+        return toMessageChunk(result, this.options.model);
+      }
+
+      return toMessageChunk(
+        {
+          ...result,
+          content: [
+            { type: 'text', text: finalizedText },
+            ...result.content.filter((part) => part.type !== 'text'),
+          ],
+        },
+        this.options.model,
+      );
+    }
+
     const normalizedText =
       inspectCodeInterpreter &&
       !result.content.some((part) => part.type === 'error') &&
@@ -972,9 +1005,116 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       }),
     );
 
+    const ocrMode = hasOcrCompletionDirective(messages);
     const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const reader = result.stream.getReader();
+
+    if (ocrMode) {
+      let generatedText = '';
+      let emittedTextLength = 0;
+      let response: LanguageModelV3GenerateResult['response'];
+      let usage: LanguageModelV3Usage | undefined;
+      let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
+      let completed = false;
+      let streamError: Error | undefined;
+      let hasClientTool = false;
+
+      const flushRawText = () => {
+        if (generatedText.length <= emittedTextLength) {
+          return undefined;
+        }
+
+        const pendingText = generatedText.slice(emittedTextLength);
+        emittedTextLength = generatedText.length;
+        return pendingText;
+      };
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            completed = true;
+            break;
+          }
+
+          if (inspectCodeInterpreter) {
+            await dispatchCodeInterpreterAudit('stage_1', [value]);
+          }
+
+          if (value.type === 'text-delta') {
+            generatedText += value.delta;
+            continue;
+          }
+
+          if (value.type === 'response-metadata') {
+            response = value;
+            continue;
+          }
+
+          if (value.type === 'finish') {
+            usage = value.usage;
+            finishReason = value.finishReason;
+            continue;
+          }
+
+          if (value.type === 'error') {
+            streamError =
+              value.error instanceof Error ? value.error : new Error(String(value.error));
+            break;
+          }
+
+          if (
+            (value.type === 'tool-call' && value.providerExecuted !== true) ||
+            (value.type === 'tool-input-start' && value.providerExecuted !== true)
+          ) {
+            hasClientTool = true;
+            const pendingText = flushRawText();
+            if (pendingText) {
+              yield toStreamTextChunk(pendingText, this.options.model);
+            }
+            if (value.type === 'tool-call') {
+              yield toStreamToolCallChunk(value, this.options.model);
+            }
+          }
+        }
+      } catch (error) {
+        streamError = error instanceof Error ? error : new Error(String(error));
+      } finally {
+        if (!completed) {
+          await reader.cancel().catch(() => undefined);
+        }
+        reader.releaseLock();
+      }
+
+      if (streamError) {
+        const pendingText = flushRawText();
+        if (pendingText) {
+          yield toStreamTextChunk(pendingText, this.options.model);
+        }
+        throw streamError;
+      }
+
+      if (!hasClientTool && isCompletedTextResult(finishReason)) {
+        const finalizedText = finalizeOcrMarkdown(generatedText);
+        if (finalizedText !== generatedText) {
+          yield toStreamTextChunk(finalizedText, this.options.model);
+        } else if (generatedText.length > emittedTextLength) {
+          const pendingText = flushRawText();
+          if (pendingText) {
+            yield toStreamTextChunk(pendingText, this.options.model);
+          }
+        }
+      } else {
+        const pendingText = flushRawText();
+        if (pendingText) {
+          yield toStreamTextChunk(pendingText, this.options.model);
+        }
+      }
+      yield toStreamFinalChunk({ finishReason, model: this.options.model, response, usage });
+      return;
+    }
+
     const quoteParser = inspectCodeInterpreter ? createCustomerQuoteParser() : undefined;
     const orderNormalizer = inspectCodeInterpreter ? createSystemOrderNormalizer() : undefined;
     let generatedText = '';

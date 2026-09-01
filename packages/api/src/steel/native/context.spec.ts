@@ -477,12 +477,13 @@ describe('Steel native context adapter', () => {
     expect(directive).toContain('[ocr_main_merge]');
     expect(directive).toContain('[final_ocr_markdown]');
     expect(directive).toMatch(
-      /final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary/u,
+      /final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## OCR 結果確認表`, followed by an optional final `## manual_review` table/u,
     );
     expect(directive).toMatch(/Do not output page headings or page details/u);
     expect(directive).toMatch(
       /Do not output page headings or page details, explanatory prose, bullet lists, calculations, or duplicate tables/u,
     );
+    expect(directive).toContain('End after the final table.');
     expect(directive).toContain('Satisfy any other user intent only within those allowed sections');
     expect(directive).not.toContain('Answer any other user intent too');
   });
